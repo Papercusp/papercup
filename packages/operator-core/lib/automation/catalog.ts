@@ -106,6 +106,26 @@ const AGENT_SPAWNING_PATTERNS: RegExp[] = [
 
 const DOCS_PATTERNS: RegExp[] = [/doc/i, /^knowledge-pack-/i];
 
+/**
+ * Learning-pipeline routines identified by NAME, checked BEFORE the group slug for the same
+ * reason Docs is: the owner thinks of the whole `improvement-*` family as one pipeline (the
+ * Blender) and expects one place to pause it, but the DB files them across different groups —
+ * `improvement-watchdog` is grouped `health` while its siblings `improvement-implement` /
+ * `-triage` / `-human-digest` are grouped `self-improvement`. That split rendered the
+ * pipeline's single biggest work-item emitter in the Agents pane while the rest of the family
+ * sat in Blender, so pausing "the Blender" demonstrably did NOT stop it (2026-07-25: the
+ * watchdog kept minting duplicate work items every 15 min).
+ */
+const LEARNING_NAME_PATTERNS: RegExp[] = [
+  /^improvement-/i,
+  /^bp-singleton-/i,
+  /^gym-cycle$/i,
+  /^template-gym$/i,
+  /^pot-eval-battery$/i,
+  /^scout-/i,
+  /prospector-cadence$/i,
+];
+
 export function routineSpawnsAgent(name: string): boolean {
   return AGENT_SPAWNING_PATTERNS.some((re) => re.test(name));
 }
@@ -119,6 +139,9 @@ export function routineSpawnsAgent(name: string): boolean {
  */
 export function classifyRoutine(name: string, groupSlug: string | null): AutomationCategory {
   if (DOCS_PATTERNS.some((re) => re.test(name))) return 'docs';
+  // Before the group, like Docs: the learning pipeline must present as ONE pane even though
+  // its routines are filed under different group slugs (see LEARNING_NAME_PATTERNS).
+  if (LEARNING_NAME_PATTERNS.some((re) => re.test(name))) return 'learning';
   if (groupSlug === 'agent-loops' || /^loop-su-/i.test(name)) return 'agent-loops';
   if (groupSlug === 'self-improvement') return 'learning';
   if (groupSlug === 'supervision') return 'supervision';

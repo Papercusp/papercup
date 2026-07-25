@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterAll } from 'vitest';
+import { signalLaneOf, sourceFilesWorkItem } from './signal-lane';
 import {
   planWatchdogCaptures,
   collectServiceDownSignals,
@@ -2480,5 +2481,87 @@ describe('latestAt plumbing (audit P-005)', () => {
       { tool_name: 'docs:get', class: 'structural' as const, n: 7, total: 7, sample: 'boom', latest_at: '2026-06-09T10:30:00.000Z' },
     ]);
     expect(signals[0].latestAt).toBe('2026-06-09T10:30:00.000Z');
+  });
+});
+
+// ── watchdog-churn-delta-gate-2026-07-25 ─────────────────────────────────────
+
+describe('partitionSignalsByKnownKeys — DELTA GATE (P-003/D-001: standing ≠ new)', () => {
+  const dup = (watchdogKey: string, state: string, updatedAt: string): WatchdogKeyDup => ({ watchdogKey, state, updatedAt });
+
+  it('suppresses a signal whose key fired on the previous ran tick (the churn fix)', () => {
+    // The exact live-state shape that minted 60 copies of one key: no `latestAt`, and the
+    // prior item already retired by another subsystem, so NO dup row exists to match on.
+    const s = sig({ source: 'stalled-claim', key: 'stalled-work-item-claims' });
+    const out = partitionSignalsByKnownKeys([s], [], ['stalled-claim:stalled-work-item-claims']);
+    expect(out.standing).toEqual([s]);
+    expect(out.fresh).toEqual([]);
+  });
+
+  it('files a key that was NOT in the previous tick (absent→present is a real detection)', () => {
+    const s = sig({ source: 'stalled-claim', key: 'stalled-work-item-claims' });
+    const out = partitionSignalsByKnownKeys([s], [], ['service-down:desktop']);
+    expect(out.fresh).toEqual([s]);
+    expect(out.standing).toEqual([]);
+  });
+
+  it('fails OPEN when there is no prior tick (first run / pre-migration rows)', () => {
+    const s = sig({ source: 'migration-drift', key: 'migration-drift' });
+    expect(partitionSignalsByKnownKeys([s], []).fresh).toEqual([s]);
+    expect(partitionSignalsByKnownKeys([s], [], []).fresh).toEqual([s]);
+  });
+
+  it('keeps knownOpen ahead of the delta gate so known-open AGING still gets its keys', () => {
+    // A filed+open item must stay in knownOpen even while standing, or persistence stops
+    // escalating (consume-edges P-020 / EI-363).
+    const s = sig({ source: 'service-down', key: 'desktop' });
+    const out = partitionSignalsByKnownKeys([s], [dup('service-down:desktop', 'open', '2026-07-25T00:00:00.000Z')], [
+      'service-down:desktop',
+    ]);
+    expect(out.knownOpen).toEqual([s]);
+    expect(out.standing).toEqual([]);
+  });
+
+  it('the delta gate covers the live-state hole the resolution checks structurally miss', () => {
+    // Live-state collectors omit `latestAt`, so the resolved-dup guard is skipped entirely
+    // and the signal used to fall through to `fresh` — re-filing every 15 min forever.
+    const s = sig({ source: 'unresolved-escalation', key: 'escalation:papercusp:x' });
+    const resolved = [dup('unresolved-escalation:escalation:papercusp:x', 'resolved', '2026-07-25T00:00:00.000Z')];
+    expect(partitionSignalsByKnownKeys([s], resolved).fresh).toEqual([s]); // old behaviour
+    expect(partitionSignalsByKnownKeys([s], resolved, ['unresolved-escalation:escalation:papercusp:x']).standing).toEqual([s]);
+  });
+
+  it('preserves origin-scoped matching (a drill signal is not absorbed by an organic row)', () => {
+    const s = sig({ source: 'red-test', key: 'lib/a.test.ts', origin: 'drill' });
+    const organicOpen: WatchdogKeyDup = {
+      watchdogKey: 'red-test:lib/a.test.ts',
+      state: 'open',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+      signalOrigin: 'organic',
+    };
+    const out = partitionSignalsByKnownKeys([s], [organicOpen]);
+    expect(out.knownOpen).toEqual([]);
+    expect(out.fresh).toEqual([s]);
+  });
+});
+
+describe('signal lanes — metric vs defect (P-005/P-006: stats are not improvements)', () => {
+  it('classifies coordination/throughput measurements as metric (never file)', () => {
+    for (const src of ['stalled-claim', 'unresolved-escalation', 'perf-regression', 'failed-spawn', 'escalation-spike']) {
+      expect(signalLaneOf(src)).toBe('metric');
+      expect(sourceFilesWorkItem(src)).toBe(false);
+    }
+  });
+
+  it('classifies concrete named defects + live infra alerts as defect (still file)', () => {
+    for (const src of ['red-test', 'smoke-fail', 'migration-drift', 'repeated-tool-error', 'service-down']) {
+      expect(signalLaneOf(src)).toBe('defect');
+      expect(sourceFilesWorkItem(src)).toBe(true);
+    }
+  });
+
+  it('an UNKNOWN source fails open to defect (a new collector keeps filing until classified)', () => {
+    expect(signalLaneOf('some-brand-new-collector')).toBe('defect');
+    expect(sourceFilesWorkItem('some-brand-new-collector')).toBe(true);
   });
 });

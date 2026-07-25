@@ -41,6 +41,7 @@ import { STALE_PLAN_CLAIM_GRACE_MS } from '../../plan-items/stale-claims';
 import { checkMigrationDrift } from '../../migration-drift';
 import { findIssuesByWatchdogKeys } from '../../issues-engineer';
 import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
+import { sourceFilesWorkItem } from './signal-lane';
 import { effectiveOrigin, type SignalOrigin } from './provenance';
 import {
   processKnownOpenAging,
@@ -280,6 +281,16 @@ export interface WatchdogTickRecord {
   knownOpenKeys?: string[];
   /** Keys dropped as resolved-with-stale-evidence — not regressions (audit P-005 / D-002). */
   staleResolvedKeys?: string[];
+  /**
+   * EVERY `${source}:${key}` observed this tick, whatever the partition decided
+   * (watchdog-churn-delta-gate-2026-07-25 P-002). This is the ledger the NEXT tick's delta
+   * gate diffs against — a key present here is, next tick, a standing condition rather than
+   * a new detection. Recorded for all signals (not just filed ones) precisely because the
+   * churn case is a signal whose item no longer exists.
+   */
+  seenKeys?: string[];
+  /** Keys the P-003 delta gate suppressed as standing (already seen last tick). */
+  standingKeys?: string[];
   collectors: CollectorStatus[];
   /** Improvement ids the watchdog filed ABOUT ITSELF this tick (P-002). */
   selfEscalations: string[];
@@ -397,6 +408,20 @@ export interface SignalPartition {
    * pre-dates the resolution → stale lookback-window evidence, not a regression.
    */
   staleResolved: WatchdogSignal[];
+  /**
+   * DELTA GATE (watchdog-churn-delta-gate-2026-07-25 P-003 / D-001): the key was already
+   * seen in the PREVIOUS `ran` tick, so this is a STANDING condition the watchdog just
+   * detected — not a new detection. Suppressed instead of re-filed.
+   *
+   * This is the bucket that fixes the churn. `knownOpen` / `staleResolved` only catch a
+   * signal while an item EXISTS for it: a live-state collector omits `latestAt`, so once a
+   * separate subsystem retires the item (improvement-hygiene dup-close, watchdog-auto-close,
+   * watchdog-green-resolve) the resolved-dup guard is skipped entirely and the signal falls
+   * through to `fresh` and re-files — every 15 min, forever (60 copies of one stalled-claim
+   * key in 7d). Diffing against the prior tick's `seenKeys` closes that hole without
+   * depending on the item's lifecycle at all.
+   */
+  standing: WatchdogSignal[];
 }
 
 /**
@@ -408,20 +433,31 @@ export interface SignalPartition {
  *   - only RESOLVED matches + the signal opted into `resolutionCooldownMs` and
  *     the newest resolution is within that window before `latestAt`
  *     → `staleResolved` (fix landed, still propagating — EI-427 deploy lag);
+ *   - the key was seen in the PREVIOUS `ran` tick → `standing` (the delta gate,
+ *     P-003 / D-001: a condition the watchdog just detected is not a NEW
+ *     detection). Checked AFTER `knownOpen` so a filed item keeps feeding
+ *     known-open aging, and before the resolution checks so it also covers the
+ *     live-state hole those checks structurally miss;
  *   - otherwise → `fresh` (genuinely new, or a real regression with fresh
  *     evidence — including a live-state signal with no `latestAt`, whose firing
  *     means the problem exists NOW).
  * Unparseable timestamps fail open (fresh): a phantom re-file beats a
- * suppressed real regression.
+ * suppressed real regression. `priorSeenKeys` empty/omitted likewise fails open
+ * (no prior tick, or pre-migration rows) → byte-identical to the old behaviour.
  */
-export function partitionSignalsByKnownKeys(signals: WatchdogSignal[], dups: WatchdogKeyDup[]): SignalPartition {
+export function partitionSignalsByKnownKeys(
+  signals: WatchdogSignal[],
+  dups: WatchdogKeyDup[],
+  priorSeenKeys: readonly string[] = [],
+): SignalPartition {
+  const seenLastTick = new Set(priorSeenKeys);
   const byKey = new Map<string, WatchdogKeyDup[]>();
   for (const d of dups) {
     const list = byKey.get(d.watchdogKey);
     if (list) list.push(d);
     else byKey.set(d.watchdogKey, [d]);
   }
-  const out: SignalPartition = { fresh: [], knownOpen: [], staleResolved: [] };
+  const out: SignalPartition = { fresh: [], knownOpen: [], staleResolved: [], standing: [] };
   for (const s of signals) {
     // Origin-scoped matching (frontier P-002/D-002): a dup only counts when its
     // signal_origin matches the signal's — an organic open item must not absorb
@@ -432,6 +468,15 @@ export function partitionSignalsByKnownKeys(signals: WatchdogSignal[], dups: Wat
     );
     if (matches.some((m) => m.state === 'open')) {
       out.knownOpen.push(s);
+      continue;
+    }
+    // DELTA GATE (P-003 / D-001): this exact key already fired on the previous ran tick, so
+    // the condition is STANDING — the watchdog is re-detecting what it just detected, not
+    // finding something new. Suppress. This is deliberately independent of whether an item
+    // exists: the churn happens precisely when another subsystem retired the item between
+    // ticks, which is the case the item-state checks below cannot see.
+    if (seenLastTick.has(watchdogKeyOf(s))) {
+      out.standing.push(s);
       continue;
     }
     if (matches.length > 0 && s.latestAt) {
@@ -2970,10 +3015,11 @@ export async function recordWatchdogTick(rec: WatchdogTickRecord): Promise<void>
   await sql`
     INSERT INTO harness_shared.watchdog_ticks
       (workspace_id, install_slug, status, signals, captured, declined_duplicates, deferred, deferred_keys,
-       known_open_keys, stale_resolved_keys, collectors, self_escalations)
+       known_open_keys, stale_resolved_keys, seen_keys, collectors, self_escalations)
     VALUES (${rec.workspaceId}, ${rec.installSlug ?? null}, ${rec.status}, ${rec.signals},
             ${rec.captured}::text[], ${rec.declinedDuplicates}, ${rec.deferred}, ${rec.deferredKeys ?? []}::text[],
             ${rec.knownOpenKeys ?? []}::text[], ${rec.staleResolvedKeys ?? []}::text[],
+            ${rec.seenKeys ?? []}::text[],
             ${JSON.stringify(rec.collectors)}::text::jsonb, ${rec.selfEscalations}::text[])
   `;
 }
@@ -2998,6 +3044,11 @@ export interface RecentTick {
   collectors: CollectorStatus[];
   /** Keys deferred on that tick (P-009) — fed back as the escalation history. */
   deferredKeys?: string[];
+  /**
+   * Every key OBSERVED on that tick (P-002) — the delta gate's diff basis. Optional so
+   * injected test fakes and pre-migration rows read as `[]`, which fails the gate OPEN.
+   */
+  seenKeys?: string[];
 }
 
 /**
@@ -3012,8 +3063,10 @@ export async function readRecentWatchdogTicks(
 ): Promise<RecentTick[]> {
   if (limit <= 0) return [];
   const { sql } = getOrgPg();
-  const rows = await sql<{ status: 'ran' | 'skipped'; collectors: CollectorStatus[]; deferred_keys: string[] }[]>`
-    SELECT status, collectors, deferred_keys
+  const rows = await sql<
+    { status: 'ran' | 'skipped'; collectors: CollectorStatus[]; deferred_keys: string[]; seen_keys: string[] }[]
+  >`
+    SELECT status, collectors, deferred_keys, seen_keys
       FROM harness_shared.watchdog_ticks
      WHERE workspace_id = ${workspaceId}
        AND ${filter.status ? sql`status = ${filter.status}` : sql`TRUE`}
@@ -3023,6 +3076,8 @@ export async function readRecentWatchdogTicks(
     status: r.status,
     collectors: Array.isArray(r.collectors) ? r.collectors : [],
     deferredKeys: Array.isArray(r.deferred_keys) ? r.deferred_keys : [],
+    // P-002: pre-migration rows have no column value → [] → the delta gate fails OPEN.
+    seenKeys: Array.isArray(r.seen_keys) ? r.seen_keys : [],
   }));
 }
 
@@ -3238,6 +3293,18 @@ export interface WatchdogTickResult {
   /** Signals dropped pre-plan: resolved dup + evidence pre-dating the resolution (audit P-005 / D-002). */
   staleResolved: number;
   staleResolvedKeys: string[];
+  /**
+   * Signals dropped by the P-003 DELTA GATE: the key already fired on the previous ran tick,
+   * so this is a standing condition rather than a new detection. The churn fix's headline
+   * counter — a healthy steady state has a high `standing` and a near-zero `captured`.
+   */
+  standing: number;
+  standingKeys: string[];
+  /** Signals dropped by the P-006 METRIC LANE: a statistic, routed to the Blender rather than filed. */
+  metricSuppressed: number;
+  metricSuppressedKeys: string[];
+  /** Every key observed this tick (P-002) — persisted as the NEXT tick's delta basis. */
+  seenKeys: string[];
   /** Per-collector outcomes this tick (P-001) — the read path for self-escalation (P-002). */
   collectors: CollectorStatus[];
   /** Improvement ids the watchdog filed about its OWN broken collectors (P-002). */
@@ -3309,13 +3376,30 @@ async function runWatchdogTickBody(
   // never consumes the per-tick capture budget (live evidence: every slot burned
   // on declined title-dups for a whole 24h window). Best-effort: a read failure
   // degrades to the old behavior (everything planned, title net catches dups).
-  let partition: SignalPartition = { fresh: signals, knownOpen: [], staleResolved: [] };
+  // The previous `ran` tick, read ONCE and shared by the P-003 delta gate (its `seenKeys`)
+  // and the P-009 deferred-escalation boost below (its `deferredKeys`) — one indexed read per
+  // tick rather than one per consumer. Best-effort: on failure both consumers degrade to
+  // their no-history behaviour, which is exactly today's semantics.
+  let priorTick: RecentTick | undefined;
+  if (signals.length > 0) {
+    try {
+      priorTick = (await readRecentTicks(workspaceId, 1, { status: 'ran' }))[0];
+    } catch {
+      /* no prior-tick history this tick: delta gate off (fails open), deferred boost empty */
+    }
+  }
+  const priorSeenKeys = priorTick?.seenKeys ?? [];
+
+  let partition: SignalPartition = { fresh: signals, knownOpen: [], staleResolved: [], standing: [] };
   if (signals.length > 0) {
     try {
       const dups = await readKeyDups([...new Set(signals.map(watchdogKeyOf))]);
-      partition = partitionSignalsByKnownKeys(signals, dups);
+      partition = partitionSignalsByKnownKeys(signals, dups, priorSeenKeys);
     } catch (e) {
       console.warn(`[improvement-watchdog] key-dup pre-filter failed (degrading to title dedup): ${e instanceof Error ? e.message : e}`);
+      // The dup pre-filter is gone, but the delta gate is independent of it and is the
+      // load-bearing anti-churn guard — apply it alone rather than re-filing everything.
+      if (priorSeenKeys.length > 0) partition = partitionSignalsByKnownKeys(signals, [], priorSeenKeys);
     }
   }
 
@@ -3352,11 +3436,20 @@ async function runWatchdogTickBody(
   // (more fresh signals than the cap can admit) is the boost meaningful — so a
   // healthy/quiet tick still does zero PG reads (the P-002 no-read-when-healthy
   // invariant). Best-effort — a read failure just means no escalation this tick.
+  // P-006 / D-002 METRIC LANE: a throughput/coordination measurement (stalled claims,
+  // unanswered escalations, spawn-failure rates, SLO moves) is not a defect a code-writing
+  // worker can patch — filing it as a `bug` dispatches a worker at a condition no edit
+  // fixes. Those signals stay fully collected and are still written to watchdog_ticks, so
+  // they continue to reach ideation via scout/watchdog-health-lane.ts (the Blender corpus
+  // digest); they simply never mint a work item. Defect-lane signals are unaffected.
+  const fileable = partition.fresh.filter((s) => sourceFilesWorkItem(s.source));
+  const metricSuppressed = partition.fresh.filter((s) => !sourceFilesWorkItem(s.source));
+
   const planCap = Math.max(0, opts.maxPerTick ?? 3);
-  const priorDeferredKeys = partition.fresh.length > planCap
-    ? await readRecentTicks(workspaceId, 1, { status: 'ran' }).then((t) => t[0]?.deferredKeys ?? []).catch(() => [] as string[])
-    : [];
-  const plan = planWatchdogCaptures(partition.fresh, { ...opts, priorDeferredKeys });
+  // Reuses the single prior-tick read above (P-011: `ran` only, so a skipped tick can't wipe
+  // the boost) instead of issuing a second identical query.
+  const priorDeferredKeys = fileable.length > planCap ? (priorTick?.deferredKeys ?? []) : [];
+  const plan = planWatchdogCaptures(fileable, { ...opts, priorDeferredKeys });
   const captured: string[] = [];
   let declinedDuplicates = 0;
   for (const s of plan.toCapture) {
@@ -3444,6 +3537,14 @@ async function runWatchdogTickBody(
     knownOpenKeys: partition.knownOpen.map(watchdogKeyOf),
     staleResolved: partition.staleResolved.length,
     staleResolvedKeys: partition.staleResolved.map(watchdogKeyOf),
+    standing: partition.standing.length,
+    standingKeys: partition.standing.map(watchdogKeyOf),
+    metricSuppressed: metricSuppressed.length,
+    metricSuppressedKeys: metricSuppressed.map(watchdogKeyOf),
+    // P-002: EVERY key observed this tick — the next tick's delta basis. Deliberately the
+    // full signal set, not just the filed ones: the churn case is a signal whose item was
+    // retired between ticks, so a filed-only ledger would miss exactly the keys that matter.
+    seenKeys: [...new Set(signals.map(watchdogKeyOf))],
     collectors,
     selfEscalations,
     agingEscalations,
@@ -3462,6 +3563,8 @@ async function runWatchdogTickBody(
       deferredKeys: result.deferredKeys,
       knownOpenKeys: result.knownOpenKeys,
       staleResolvedKeys: result.staleResolvedKeys,
+      seenKeys: result.seenKeys,
+      standingKeys: result.standingKeys,
       collectors: result.collectors,
       selfEscalations: result.selfEscalations,
     });
@@ -3528,6 +3631,14 @@ export async function runWatchdogTick(
     knownOpenKeys: [],
     staleResolved: 0,
     staleResolvedKeys: [],
+    standing: 0,
+    standingKeys: [],
+    metricSuppressed: 0,
+    metricSuppressedKeys: [],
+    // A skipped tick observed nothing. Safe for the delta gate because it reads the most
+    // recent `ran` tick only — an empty skipped row can never wipe the diff basis (the same
+    // reasoning as the P-011 deferred-keys boost).
+    seenKeys: [],
     collectors: [],
     selfEscalations: [],
     agingEscalations: [],
