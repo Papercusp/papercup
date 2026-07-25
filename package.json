@@ -152,6 +152,7 @@
     "lint:mdx": "tsx scripts/check-mdx.mjs",
     "lint:github-identity-terms": "node scripts/check-github-identity-terms.mjs",
     "lint:shell-syntax": "tsx scripts/check-shell-syntax.mjs",
+    "lint:assert-integrity": "node scripts/check-assert-integrity.mjs",
     "lint:insight-citations": "tsx scripts/check-insight-citations.mjs",
     "lint:no-retired": "node scripts/check-no-retired-imports.mjs",
     "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",

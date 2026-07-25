@@ -1461,6 +1461,8 @@ interface GymArchiveSeed {
  *  of a RUN having happened, independent of whether it minted a proposal (a
  *  losing candidate mints none, which used to make the whole run invisible). */
 interface GymRecentCycle {
+  /** WI-5786: run-scoped identity; `cycle` alone repeats across runs. */
+  cycleId?: string;
   harnessSlug: string;
   cycle: number;
   parentId: string | null;
@@ -1843,7 +1845,7 @@ function GymView({
                     );
                     return (
                       <div
-                        key={`${c.harnessSlug}:${c.cycle}`}
+                        key={c.cycleId || `${c.harnessSlug}:${c.cycle}:${c.candidateId ?? ''}`}
                         className="pc-learning__muted"
                         style={{
                           display: "inline-flex",

@@ -313,6 +313,10 @@ export async function listScoutArchiveSeeds(
  *  cycle's gym_runs (WI-5685: a cycle whose candidate LOSES mints no proposal,
  *  so without this read a completed run is invisible to the Learning tab). */
 export interface GymRecentCycleRow {
+  /** Run-scoped cycle identity (`cyc-<runToken>-c<cycle>`) — the stable row key.
+   *  WI-5786: `cycle` alone is NOT unique (autoloop runs are maxCycles=1, so
+   *  every run's cycle number is 1); only this discriminates one run from the next. */
+  cycleId: string;
   harnessSlug: string;
   cycle: number;
   parentId: string | null;
@@ -335,20 +339,30 @@ export async function listRecentCyclesForWorkspace(
   const limit = Math.min(Math.max(q.limit ?? 20, 1), 100);
   const toMs = (v: unknown): number | null =>
     v == null ? null : v instanceof Date ? v.getTime() : new Date(String(v)).getTime();
+  // WI-5786: join runs by the cycle's CANDIDATE (gym_runs.variant_id), NOT by
+  // `cycle`. Cycle numbers repeat across runs (maxCycles=1 ⇒ always 1), so a
+  // join on `cycle` cross-products every run of every past run onto every cycle
+  // row — inflating runCount and smearing timings. `candidate_id` is run-unique
+  // (WI-5697's `cand-<runToken>-c<cycle>`), so it selects exactly this cycle's
+  // challenger runs. Baseline/champion runs (variant_id='baseline') belong to no
+  // challenger cycle and are correctly excluded.
   const rows = (await sql`
-    SELECT c.harness_slug, c.cycle, c.parent_id, c.candidate_id, c.decision,
+    SELECT c.cycle_id, c.harness_slug, c.cycle, c.parent_id, c.candidate_id, c.decision,
            count(r.run_id)::int AS run_count,
            min(r.started_at) AS started_at,
-           max(r.finished_at) AS finished_at
+           max(r.finished_at) AS finished_at,
+           c.created_at
       FROM harness_gym_durable.gym_cycles c
       LEFT JOIN harness_gym_durable.gym_runs r
-        ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug AND r.cycle = c.cycle
+        ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+       AND r.variant_id = c.candidate_id
      WHERE c.workspace_id = ${q.workspaceId}
        ${q.harnessSlug ? sql`AND c.harness_slug = ${q.harnessSlug}` : sql``}
-     GROUP BY c.harness_slug, c.cycle, c.parent_id, c.candidate_id, c.decision
-     ORDER BY max(r.finished_at) DESC NULLS LAST, c.cycle DESC
+     GROUP BY c.cycle_id, c.harness_slug, c.cycle, c.parent_id, c.candidate_id, c.decision, c.created_at
+     ORDER BY coalesce(max(r.finished_at), c.created_at) DESC NULLS LAST
      LIMIT ${limit}`) as Row[];
   return rows.map((r) => ({
+    cycleId: String(r.cycle_id ?? ''),
     harnessSlug: String(r.harness_slug ?? ''),
     cycle: Number(r.cycle ?? 0),
     parentId: r.parent_id == null ? null : String(r.parent_id),
@@ -356,7 +370,9 @@ export async function listRecentCyclesForWorkspace(
     decision: r.decision == null ? null : String(r.decision),
     runCount: Number(r.run_count ?? 0),
     startedAt: toMs(r.started_at),
-    finishedAt: toMs(r.finished_at),
+    // Fall back to the cycle's own recorded time so a cycle whose runs were
+    // pruned (or which errored before any run finished) still carries a "when".
+    finishedAt: toMs(r.finished_at) ?? toMs(r.created_at),
   }));
 }
 

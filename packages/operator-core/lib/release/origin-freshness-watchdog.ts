@@ -49,7 +49,6 @@ import { canonicalRepoKey } from '../sync/pot-git/repo-identity';
 import { hiveGitRepoPath, readNamespaceRef, defaultRunGit, type RunGit } from '../sync/pot-git/storage';
 import { githubOriginDevicePubkey } from '../sync/pot-git/github-ingress';
 import { BRIDGE_CANONICAL_REF } from '../sync/pot-git/github-bridge-tick';
-import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import {
   evaluateOriginFreshness,
   DEFAULT_AHEAD_COUNT_MAX,

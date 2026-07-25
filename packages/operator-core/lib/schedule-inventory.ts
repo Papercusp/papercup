@@ -122,6 +122,66 @@ export const EXTERNAL_PROCESS_TIMERS: ExternalProcessTimer[] = [
   { process: 'psu-launcher', name: 'psu-supervisor-heartbeat', cadence: 'every ~60s', source: 'apps/operator/scripts/psu-launcher.mjs' },
 ];
 
+/**
+ * SYNC-TRIGGERED sweeps — recurring work whose cadence is "after each git-sync"
+ * rather than a cron or an interval.
+ *
+ * They ran in the host for months while being absent from every inventory and
+ * every owner-facing pane, because they are neither a routines row nor a timer.
+ * The owner found the hole from the outside (2026-07-25: "in the docs tab i'm
+ * seeing knowledge pack routines but what about the routine that checks for
+ * drifted documentation?"). It was real — the sweep exists and runs, it simply
+ * had no identity anywhere.
+ */
+export interface SyncTriggeredSweep {
+  name: string;
+  cadence: string;
+  /** `true`/`false` when statically known; `null` ⇒ resolve from `flag`. */
+  armed: boolean | null;
+  /** Feature-flag key whose value IS the armed state, when armed is null. */
+  flag?: string;
+  /** Where the code lives. */
+  source: string;
+  /** What fires it. */
+  trigger?: string;
+  note: string;
+}
+
+/**
+ * The doc pipeline is TWO rows, not one, because they have different risk
+ * profiles and collapsing them would hide the one that costs money: DETECTION
+ * always runs and is free (a sha comparison); REPAIR spawns an LLM agent per
+ * drift batch and is gated behind the owner-authority dark flag DOC_STEWARD.
+ */
+export const SYNC_TRIGGERED_SWEEPS: SyncTriggeredSweep[] = [
+  {
+    name: 'doc-freshness-sweep',
+    cadence: 'after each git-sync',
+    armed: true, // detection is unconditional
+    source: 'packages/operator-core/lib/harness/docs/sweep-after-sync.ts',
+    trigger: 'git-sync-action.ts → runDocFreshnessSweepAfterSync',
+    note: "Detects drifted docs by comparing HEAD against each doc's anchored code. Free — no agent spawn.",
+  },
+  {
+    name: 'doc-steward-dispatch',
+    cadence: 'after each git-sync (when drift is found)',
+    armed: null,
+    flag: 'papercusp-doc-steward',
+    source: 'packages/operator-core/lib/harness/docs/doc-steward-dispatch.ts',
+    note: 'Spawns an LLM doc-steward agent to re-sync drifted docs. Owner-authority dark flag — OFF means drift is still detected, just not auto-repaired.',
+  },
+];
+
+/** Resolve a sweep's armed state from its feature flag; null when unknowable. */
+async function resolveFlagArmed(flagKey: string): Promise<boolean | null> {
+  try {
+    const { getFlag } = await import('@papercusp/flags/server');
+    return (await getFlag(flagKey, 'papercusp')) === true;
+  } catch {
+    return null; // unknown beats a guess
+  }
+}
+
 export interface ScheduleInventoryDeps {
   getDbosSchedules: () => Promise<DbosScheduledEntry[]>;
   getRoutines: () => Promise<RoutineRow[]>;
@@ -131,6 +191,8 @@ export interface ScheduleInventoryDeps {
   getInProcessChecks: () => InProcessChecksResult;
   /** STATIC manifest of separate-process timers (source 'external-process', P-014); live fire-state requires federation (follow-on). */
   getExternalProcess: () => ExternalProcessTimer[];
+  /** STATIC manifest of sync-triggered sweeps (emitted as source 'in-process', category 'sync-triggered'). */
+  getSyncTriggered: () => SyncTriggeredSweep[];
 }
 
 const iso = (d: Date | null | undefined): string | null =>
@@ -195,6 +257,7 @@ export async function collectScheduleInventory(
   const getChecks = deps.getInProcessChecks ?? defaultGetInProcessChecks;
   const getManaged = deps.getManaged ?? (() => listManaged());
   const getExternal = deps.getExternalProcess ?? (() => EXTERNAL_PROCESS_TIMERS);
+  const getSyncTriggered = deps.getSyncTriggered ?? (() => SYNC_TRIGGERED_SWEEPS);
 
   const [dbos, routines] = await Promise.all([
     getDbos().catch(() => [] as DbosScheduledEntry[]),
@@ -217,6 +280,12 @@ export async function collectScheduleInventory(
     external = getExternal();
   } catch {
     external = [];
+  }
+  let syncTriggered: SyncTriggeredSweep[];
+  try {
+    syncTriggered = getSyncTriggered();
+  } catch {
+    syncTriggered = [];
   }
 
   const rows: ScheduleInventoryRow[] = [];
@@ -357,56 +426,27 @@ export async function collectScheduleInventory(
    * agent-spawner as "running" is exactly the kind of confident-but-wrong
    * status this inventory exists to eliminate.
    */
-  let stewardArmed: boolean | null = null;
-  try {
-    const [{ getFlag }, { FLAGS }] = await Promise.all([
-      import('@papercusp/flags/server'),
-      import('@papercusp/flags'),
-    ]);
-    stewardArmed = (await getFlag(FLAGS.DOC_STEWARD, 'papercusp')) === true;
-  } catch {
-    stewardArmed = null; // unknown — better than a guess
+  for (const s of syncTriggered) {
+    // `armed: null` on the manifest means "ask the flag" — resolved once below,
+    // never guessed. Reporting a disabled agent-spawner as running is exactly
+    // the confident-but-wrong status this inventory exists to eliminate.
+    const armed = s.armed !== null ? s.armed : s.flag ? await resolveFlagArmed(s.flag) : null;
+    rows.push({
+      source: 'in-process',
+      scope: 'operator',
+      tier: 'ephemeral',
+      category: 'sync-triggered',
+      name: s.name,
+      installSlug: null,
+      cadence: s.cadence,
+      armed,
+      lastFire: null,
+      nextFire: null,
+      lastError: null,
+      groupSlug: null,
+      detail: { source: s.source, ...(s.trigger ? { trigger: s.trigger } : {}), ...(s.flag ? { flag: s.flag } : {}), note: s.note },
+    });
   }
-
-  rows.push({
-    source: 'in-process',
-    scope: 'operator',
-    tier: 'ephemeral',
-    category: 'sync-triggered',
-    name: 'doc-freshness-sweep',
-    installSlug: null,
-    cadence: 'after each git-sync',
-    armed: true, // detection is unconditional
-    lastFire: null,
-    nextFire: null,
-    lastError: null,
-    groupSlug: null,
-    detail: {
-      source: 'packages/operator-core/lib/harness/docs/sweep-after-sync.ts',
-      trigger: 'git-sync-action.ts → runDocFreshnessSweepAfterSync',
-      note: 'Detects drifted docs by comparing HEAD against each doc\'s anchored code. Free — no agent spawn.',
-    },
-  });
-
-  rows.push({
-    source: 'in-process',
-    scope: 'operator',
-    tier: 'ephemeral',
-    category: 'sync-triggered',
-    name: 'doc-steward-dispatch',
-    installSlug: null,
-    cadence: 'after each git-sync (when drift is found)',
-    armed: stewardArmed,
-    lastFire: null,
-    nextFire: null,
-    lastError: null,
-    groupSlug: null,
-    detail: {
-      source: 'packages/operator-core/lib/harness/docs/doc-steward-dispatch.ts',
-      flag: 'papercusp-doc-steward',
-      note: 'Spawns an LLM doc-steward agent to re-sync drifted docs. Owner-authority dark flag — OFF means drift is still detected, just not auto-repaired.',
-    },
-  });
 
   return rows.sort(
     (a, b) => a.source.localeCompare(b.source) || a.name.localeCompare(b.name),

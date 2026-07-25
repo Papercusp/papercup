@@ -288,7 +288,16 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
     },
     async persistCycle(rec) {
       await insertCycle(cfg.gymSql, {
-        cycleId: `cyc-${rec.cycle}`,
+        // WI-5786: run-scoped for the SAME reason `newVariantId` is (WI-5697's
+        // doc above) — a bare `cyc-${cycle}` is deterministic ACROSS runs
+        // (autoloop always runs maxCycles=1 ⇒ always "cyc-1"), and the durable
+        // copy upserts ON CONFLICT (workspace_id, harness_slug, cycle_id), so
+        // every run OVERWROTE the previous run's cycle row. The gym's whole
+        // durable history therefore collapsed to a single row and the Learning
+        // tab could never show a recent run (owner report 2026-07-25). Still
+        // deterministic per cycle WITHIN a run, so RB-006's rate-limit-retry
+        // idempotency is preserved.
+        cycleId: `cyc-${runId}-c${rec.cycle}`,
         cycle: rec.cycle,
         parentId: rec.parentId,
         candidateId: rec.candidateId,

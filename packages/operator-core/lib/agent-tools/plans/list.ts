@@ -53,6 +53,35 @@ const HARNESS_SLUGS_MAX = 64;
  */
 const PLANS_LIST_SOFT_TTL_MS = 45_000;
 
+/**
+ * Aggregate dimensions (claimable-read-tool-and-sql-encapsulation-audit-2026-07-21
+ * P-005). The "how many plans by status / per harness / created per day" question
+ * was the last plans read with no arg for it, so agents hand-wrote it as raw SQL
+ * against `harness_shared.harness_plans` — the exact shape that trips the
+ * workspace+harness scoping footgun (see the raw-sql-plan-slug-needs-workspace-
+ * harness-scope insight), because a hand-written predicate omits the tenant keys
+ * this tool always applies. Every dimension here is derived from a row the read
+ * already builds — no extra query, no new SQL.
+ */
+const GROUP_BY_KEYS = [
+  "status",
+  "harness",
+  "template",
+  "owner",
+  "initiative",
+  "origin",
+  "startStatus",
+  "scheduled",
+  "importance",
+  "createdDay",
+  "updatedDay",
+] as const;
+type GroupByKey = (typeof GROUP_BY_KEYS)[number];
+
+/** Dimensions that need per-plan item resolution — everything else can run
+ *  compact (no itemCounts pass) when the caller wants counts only. */
+const GROUP_KEYS_NEEDING_ITEMS = new Set<GroupByKey>(["importance"]);
+
 const argsSchema = z.object({
   status: z
     .enum([...PLAN_STATUSES] as [string, ...string[]])
@@ -157,6 +186,18 @@ const argsSchema = z.object({
     .describe(
       "Skip per-plan item-state resolution — omit itemCounts + maxImportance for a smaller, cheaper result (keeps slug/title/status/updated/created/owner/template/nextAction/harness). Use for a fast directory scan; drop it when you need effective item counts.",
     ),
+  groupBy: z
+    .enum([...GROUP_BY_KEYS] as [GroupByKey, ...GroupByKey[]])
+    .optional()
+    .describe(
+      'Aggregate the matched plans into { key, count } groups (returned as `groups`, alongside the rows) — the counts/group-by read that otherwise gets hand-written as raw SQL. Dimensions: status, harness, template, owner, initiative, origin, startStatus, scheduled, importance (hottest OPEN item), createdDay/updatedDay (UTC day buckets). Aggregates over EVERY row the other filters matched; `limit` then bounds only the returned rows, never the counts.',
+    ),
+  aggregateOnly: z
+    .boolean()
+    .optional()
+    .describe(
+      "With groupBy: return the `groups` only (plans: []), and skip per-plan item resolution where the dimension doesn't need it — the cheap shape for a pure counts question. Ignored without groupBy.",
+    ),
   harness: harnessArg,
 });
 
@@ -226,6 +267,77 @@ const IMPORTANCE_RANK = Object.fromEntries(
   IMPORTANCE_LEVELS.map((level, i) => [level, i]),
 ) as Record<Importance, number>;
 
+/** One aggregate bucket: the dimension value (stringified; `null` when the row
+ *  has no value for it) and how many plans fell in it. */
+export type PlanGroup = { key: string | null; count: number };
+
+/** The dimension value for one row — the single place a groupBy key maps onto a
+ *  plan row, so a new dimension is one case, not a new query. */
+function groupValue(
+  row: {
+    status: string;
+    harness: string;
+    template: string | null;
+    owner: string | null;
+    initiative: string | null;
+    origin: "scout" | null;
+    startStatus: string | null;
+    scheduled: boolean;
+    maxImportance: Importance | null;
+    created: string | null;
+    updated: string | null;
+  },
+  key: GroupByKey,
+): string | null {
+  switch (key) {
+    case "status":
+      return row.status;
+    case "harness":
+      return row.harness;
+    case "template":
+      return row.template;
+    case "owner":
+      return row.owner;
+    case "initiative":
+      return row.initiative;
+    case "origin":
+      return row.origin;
+    case "startStatus":
+      return row.startStatus;
+    case "scheduled":
+      return row.scheduled ? "true" : "false";
+    case "importance":
+      return row.maxImportance;
+    // UTC day bucket — `created` is a date-ish string, `updated` a full ISO
+    // timestamp; both slice to YYYY-MM-DD. Unparseable/absent ⇒ null bucket.
+    case "createdDay":
+      return isoOrNull(row.created)?.slice(0, 10) ?? null;
+    case "updatedDay":
+      return isoOrNull(row.updated)?.slice(0, 10) ?? null;
+  }
+}
+
+/** Count rows per dimension value, most-populous first (ties alphabetical, the
+ *  null bucket last) — a stable order so a repeated call reads the same. */
+function buildGroups(
+  rows: readonly Parameters<typeof groupValue>[0][],
+  key: GroupByKey,
+): PlanGroup[] {
+  const counts = new Map<string | null, number>();
+  for (const row of rows) {
+    const v = groupValue(row, key);
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  return [...counts]
+    .map(([k, count]) => ({ key: k, count }))
+    .sort((a, b) => {
+      if (a.count !== b.count) return b.count - a.count;
+      if (a.key === null) return 1;
+      if (b.key === null) return -1;
+      return a.key.localeCompare(b.key);
+    });
+}
+
 /** PG timestamps arrive as Date (node-postgres) or string depending on
  *  pool config — normalize to ISO; null when absent/unparseable. */
 function isoOrNull(ts: unknown): string | null {
@@ -285,8 +397,17 @@ export default defineTool({
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
     const includeInstances = args.includeInstances === true;
-    const compact = args.compact === true;
+    // P-005 aggregate path: `aggregateOnly` is only meaningful with a dimension.
+    const groupBy = args.groupBy;
+    const aggregateOnly = args.aggregateOnly === true && !!groupBy;
+    // A counts-only read skips the (expensive) per-plan item-state pass unless the
+    // dimension itself is item-derived.
+    const compact =
+      args.compact === true ||
+      (aggregateOnly && !(groupBy && GROUP_KEYS_NEEDING_ITEMS.has(groupBy)));
     // Server-side recency/order/limit (pushed into the SQL, not post-filtered).
+    // With `groupBy`, `limit` is NOT pushed down: the aggregate must see every
+    // matched row, so the cap applies to the returned rows only (below).
     const sourceFilters = {
       ...(resolveSince(args.createdSince)
         ? { createdSince: resolveSince(args.createdSince) }
@@ -295,7 +416,7 @@ export default defineTool({
         ? { updatedSince: resolveSince(args.updatedSince) }
         : {}),
       ...(args.order ? { order: args.order } : {}),
-      ...(args.limit && args.limit > 0 ? { limit: args.limit } : {}),
+      ...(args.limit && args.limit > 0 && !groupBy ? { limit: args.limit } : {}),
     };
 
     // P-029: build the list of harness slugs to read.
@@ -353,11 +474,13 @@ export default defineTool({
       createdSince: args.createdSince ?? null,
       updatedSince: args.updatedSince ?? null,
       compact,
+      groupBy: groupBy ?? null,
+      aggregateOnly,
       workspaceWide: args.workspaceWide === true,
       harnesses: [...perHarness].sort(),
     };
 
-    const { plans, harnessCount, batchUnknown } = await cachedRead(
+    const { plans, groups, harnessCount, batchUnknown } = await cachedRead(
       ctx as CachedReadCtx,
       {
         tool: "plans:list",
@@ -610,11 +733,17 @@ export default defineTool({
         } else if (args.order === "slug") {
           augmentedRows.sort((a, b) => a.slug.localeCompare(b.slug));
         }
-        const plans =
+        // P-005: aggregate over EVERY matched row — before `limit`, which bounds
+        // only what comes back. (With groupBy the SQL-side limit is skipped too,
+        // so `augmentedRows` really is the full matched set.)
+        const groups = groupBy ? buildGroups(augmentedRows, groupBy) : null;
+
+        const limited =
           args.limit && args.limit > 0
             ? augmentedRows.slice(0, args.limit)
             : augmentedRows;
-        return { plans, harnessCount: batches.length, batchUnknown };
+        const plans = aggregateOnly ? [] : limited;
+        return { plans, groups, harnessCount: batches.length, batchUnknown };
       },
     );
 
@@ -627,11 +756,15 @@ export default defineTool({
       includeLegacy,
       compact,
       harnessCount,
+      ...(groupBy && { groupBy, groupCount: groups?.length ?? 0 }),
       ...(allUnknown.length > 0 && { unknownHarnesses: allUnknown }),
     });
 
     // {data} envelope (not a hand-rolled ToolResult) so the payload-tier shapers
     // apply; HTTP/sync consumers still read identical `{"plans":[...]}` JSON text.
-    return { data: { plans } };
+    // `groups` rides alongside only when asked for — the shapers spread the data
+    // object, so the aggregate survives every payload tier untrimmed (it is small
+    // and IS the answer when groupBy was passed).
+    return { data: { plans, ...(groups ? { groups } : {}) } };
   },
 });

@@ -4,6 +4,7 @@ import {
   humanInterval,
   summarizeInventory,
   EXTERNAL_PROCESS_TIMERS,
+  SYNC_TRIGGERED_SWEEPS,
   SCHEDULE_SOURCES,
   type RoutineRow,
 } from './schedule-inventory';
@@ -57,6 +58,7 @@ describe('collectScheduleInventory', () => {
         armed: true,
       }),
       getExternalProcess: () => [], // this test asserts the dbos/routines/in-process union only
+      getSyncTriggered: () => [], // sync-triggered sweeps have their own test below
     });
 
     expect(rows).toHaveLength(3);
@@ -91,6 +93,7 @@ describe('collectScheduleInventory', () => {
       getManaged: () => [],
       getInProcessChecks: () => ({ checks: [{ name: 'service-health', intervalMs: 60_000 }], armed: false }),
       getExternalProcess: () => [],
+      getSyncTriggered: () => [],
     });
     expect(rows.map((r) => r.source)).toEqual(['in-process']);
     expect(rows[0].armed).toBe(false);
@@ -106,6 +109,7 @@ describe('collectScheduleInventory', () => {
         { process: 'inference-gateway', name: 'gw-self-heal', cadence: 'every ~10s', source: 'inference-gateway/gateway.ts' },
         { process: 'psu-launcher', name: 'psu-supervisor-heartbeat', cadence: 'every ~60s', source: 'apps/operator/scripts/psu-launcher.mjs' },
       ],
+      getSyncTriggered: () => [],
     });
     expect(rows.map((r) => r.source)).toEqual(['external-process', 'external-process']);
     const gw = rows.find((r) => r.name === 'gw-self-heal')!;
@@ -118,6 +122,47 @@ describe('collectScheduleInventory', () => {
       lastFire: null,
     });
     expect(gw.detail).toMatchObject({ process: 'inference-gateway', source: 'inference-gateway/gateway.ts' });
+  });
+
+  /**
+   * The owner asked, of the Docs pane, "what about the routine that checks for
+   * drifted documentation?" — and was right: it ran after every git-sync while
+   * appearing in no inventory and no pane, because it is neither a routines row
+   * nor a timer. These rows are how a sync-triggered sweep gets an identity.
+   */
+  it('lists sync-triggered sweeps, splitting free DETECTION from the agent-spawning REPAIR', async () => {
+    const rows = await collectScheduleInventory({
+      getDbosSchedules: async () => [],
+      getRoutines: async () => [],
+      getManaged: () => [],
+      getInProcessChecks: () => ({ checks: [], armed: false }),
+      getExternalProcess: () => [],
+      getSyncTriggered: () => [
+        { name: 'doc-freshness-sweep', cadence: 'after each git-sync', armed: true, source: 'a.ts', note: 'free' },
+        { name: 'doc-steward-dispatch', cadence: 'after each git-sync', armed: false, flag: 'papercusp-doc-steward', source: 'b.ts', note: 'spawns' },
+      ],
+    });
+    expect(rows.map((r) => r.name)).toEqual(['doc-freshness-sweep', 'doc-steward-dispatch']);
+    expect(rows.every((r) => r.source === 'in-process' && r.category === 'sync-triggered')).toBe(true);
+    // Detection is unconditional; repair reports the flag's real state. A
+    // dark-flagged agent-spawner must never read as armed.
+    expect(rows.find((r) => r.name === 'doc-freshness-sweep')!.armed).toBe(true);
+    const repair = rows.find((r) => r.name === 'doc-steward-dispatch')!;
+    expect(repair.armed).toBe(false);
+    expect(repair.detail).toMatchObject({ flag: 'papercusp-doc-steward' });
+  });
+
+  it('the DEFAULT sync-triggered manifest carries the doc drift pipeline', async () => {
+    // Guards the hole itself: if someone drops these from the manifest, the doc
+    // drift sweep goes invisible again exactly as the owner found it.
+    expect(SYNC_TRIGGERED_SWEEPS.map((s) => s.name)).toEqual([
+      'doc-freshness-sweep',
+      'doc-steward-dispatch',
+    ]);
+    // The repair half must stay flag-resolved, never hardcoded armed.
+    const repair = SYNC_TRIGGERED_SWEEPS.find((s) => s.name === 'doc-steward-dispatch')!;
+    expect(repair.armed).toBeNull();
+    expect(repair.flag).toBe('papercusp-doc-steward');
   });
 
   it('the DEFAULT external-process manifest covers the gateway + watchdog + psu-launcher (D-007)', async () => {
