@@ -13,7 +13,9 @@
  *     when compaction is off, never a silent death.
  * This suite pins those capabilities as marker strings against the installed bundle so
  * an omp downgrade/regression trips HERE, in tests, instead of resurrecting the
- * 2026-07-13 incident in a live fleet. Verified against omp 16.3.3.
+ * 2026-07-13 incident in a live fleet. Verified against omp 16.3.3; re-verified
+ * against 17.0.7 (which minifies the remote-compaction client fn name — see the
+ * remote-compaction test's note; markers re-pinned to minification-stable config keys).
  *
  * The omp install is user-level (bun-managed, `~/node_modules/@oh-my-pi/...`, the
  * `omp` bin symlinks into it) — NOT a repo dependency — so the whole suite SKIPS
@@ -64,7 +66,13 @@ describe.skipIf(!installed)('installed omp bundle contract (P-003)', () => {
   it('ships the remote-compaction client + settings keys the P-001/P-002 delivery writes', () => {
     const src = bundle();
     // P-002: compaction.remoteEndpoint → gateway /maintenance/summarize rides this client.
-    expect(src).toContain('requestRemoteCompaction');
+    // Pin the remote-compaction capability via the CONFIG keys that survive minification:
+    // `remoteEndpoint` (the settings seam Papercusp's delivery actually rides) and the
+    // `remoteCompaction` model-config key. omp <=16.3.3 also exposed the client as a named
+    // `requestRemoteCompaction` fn, but 17.x minifies that fn to a local — the fn name is no
+    // longer a stable marker (its rename is not a regression; the capability still ships),
+    // so we pin the config keys instead. Re-verified against omp 17.0.7.
+    expect(src).toContain('remoteCompaction');
     expect(src).toContain('remoteEndpoint');
     const schema = readFileSync(SETTINGS_SCHEMA, 'utf8');
     expect(schema).toContain('remoteEndpoint');
