@@ -18,6 +18,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { canonicalHarnessSlug } from '../../../harness/operator-home-harness';
 import type postgres from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
@@ -213,8 +214,30 @@ function composeKey(row: HarnessPlanRow): string {
   return row.plan_slug;
 }
 
+/**
+ * WI-5720 — canonicalize the AUTHORED harness_slug at the wire boundary.
+ *
+ * A plan row applies under `row.harness_slug` (writeToPg), so a peer or log-replay
+ * that still tags a RETIRED slug re-materialises the plan under a dead harness — one
+ * with no registered Pot, invisible in the Pot's plan list, and impossible to drain.
+ * Migration 359 closed this on the OUTBOUND capture path only; observed inbound on
+ * 2026-07-01→07-09, which re-created 78 `papercup` plan rows months after the rename
+ * was declared complete.
+ *
+ * Canonicalizing here (rather than at each write site) means every downstream
+ * consumer — the membership guard, the write-authority check, the PG upsert, the
+ * per-part recompose — sees the live slug. Collisions stay safe: the existing
+ * `ON CONFLICT … DO NOTHING` (bootstrap path) / LWW-guarded `DO UPDATE` decide
+ * whether the incoming op wins, exactly as for any other op on that plan.
+ * A non-retired slug passes through byte-identical (same object reference).
+ */
+function canonicalizeRowSlug(row: HarnessPlanRow): HarnessPlanRow {
+  const canonical = canonicalHarnessSlug(row.harness_slug);
+  return canonical === row.harness_slug ? row : { ...row, harness_slug: canonical };
+}
+
 function decodeValue(raw: unknown): HarnessPlanRow | null {
-  return isHarnessPlanRow(raw) ? raw : null;
+  return isHarnessPlanRow(raw) ? canonicalizeRowSlug(raw) : null;
 }
 
 async function writeToPg(

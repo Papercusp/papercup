@@ -22,6 +22,7 @@ import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store';
 import { ensurePlanPartsBaseline } from '../../../plan-parts/federation';
+import { canonicalHarnessSlug } from '../../../harness/operator-home-harness';
 
 /** The federated subset of a harness_plan_parts row (the wire shape). */
 export interface PlanPartWireRow {
@@ -81,8 +82,22 @@ function composeKey(row: PlanPartWireRow): string {
   return `${row.plan_slug}/${row.part_key}`; // == harness_plan_parts.part_fed_key (mig 270)
 }
 
+/**
+ * WI-5720 — canonicalize the AUTHORED harness_slug at the wire boundary, mirroring
+ * projections/harness-plans.ts. A part op applies under `row.harness_slug` (see the
+ * `effOpts` spread in applyPart), so a peer still tagging a RETIRED slug writes its
+ * parts — and recomposes the plan document — under a dead harness with no Pot. The
+ * plan ROW and its PARTS must canonicalize identically or they land in different
+ * partitions and the recompose targets the wrong row. Non-retired slugs pass through
+ * byte-identical (same object reference).
+ */
+function canonicalizeRowSlug(row: PlanPartWireRow): PlanPartWireRow {
+  const canonical = canonicalHarnessSlug(row.harness_slug);
+  return canonical === row.harness_slug ? row : { ...row, harness_slug: canonical };
+}
+
 function decodeValue(raw: unknown): PlanPartWireRow | null {
-  return isPlanPartWireRow(raw) ? raw : null;
+  return isPlanPartWireRow(raw) ? canonicalizeRowSlug(raw) : null;
 }
 
 async function flagOn(opts: HarnessPlanPartsProjectionOpts): Promise<boolean> {

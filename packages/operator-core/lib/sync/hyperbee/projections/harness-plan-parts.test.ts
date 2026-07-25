@@ -70,3 +70,42 @@ describe('harness-plan-parts projection', () => {
     expect((await store.getParts('p1')).size).toBe(0);
   });
 });
+
+/**
+ * WI-5720 — a part op tagged with a RETIRED harness slug must canonicalize at the same
+ * wire boundary as the plan ROW (projections/harness-plans.ts). If the two disagree the
+ * parts land in one partition and the recomposed document in another, so the recompose
+ * targets a harness_plans row that does not exist. Observed live: inbound federation
+ * wrote 2066 `papercup` parts alongside 78 `papercup` plan rows in July 2026, months
+ * after the rename.
+ */
+describe('harness-plan-parts projection — retired harness_slug canonicalization (WI-5720)', () => {
+  it('rewrites a retired papercup slug to papercusp at the wire boundary', () => {
+    expect(_testing.decodeValue(part('p1', 'item:P-001', 'x', { harness_slug: 'papercup' }))?.harness_slug)
+      .toBe('papercusp');
+    expect(_testing.decodeValue(part('p1', 'item:P-001', 'x', { harness_slug: 'papercup-hive' }))?.harness_slug)
+      .toBe('papercusp');
+  });
+
+  it('leaves a live slug untouched, by reference', () => {
+    const row = part('p1', 'item:P-001', 'x', { harness_slug: 'oddsmith-hive' });
+    expect(_testing.decodeValue(row)).toBe(row);
+  });
+
+  it('a retired-slug part APPLIES to the canonical harness instead of being dropped as foreign', async () => {
+    // The receiver is bound to `papercusp`; a peer still tagging `papercup` used to fall
+    // through applyPart's cross-member path and write under the dead slug. Canonicalized,
+    // it is an own-slug op and lands in the receiver's own store.
+    const store = new InMemoryPlanPartsStore();
+    const proj = buildHarnessPlanPartsProjection({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      store,
+      isFlagOn: async () => true,
+      recomposeSink: async () => {},
+    });
+    const decoded = _testing.decodeValue(part('p1', 'item:P-001', 'x', { harness_slug: 'papercup' }))!;
+    await proj.writeToPg(decoded, { authorPubkey: 'A', origin: 'remote', ts: 100 });
+    expect((await store.getParts('p1')).size).toBe(1);
+  });
+});
