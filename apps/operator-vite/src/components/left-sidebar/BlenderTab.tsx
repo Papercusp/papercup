@@ -7,7 +7,7 @@
  * surface to see or stop them — the Blender is that surface.
  */
 import { Blend } from 'lucide-react';
-import { BLENDER_PANE_CATEGORIES } from '@papercusp/operator-core/lib/automation/catalog';
+import { BLENDER_PANE_CATEGORIES } from '@papercusp/operator-core/lib/automation/pane-categories';
 import AutomationPane from './AutomationPane';
 
 export default function BlenderTab({ active }: { active: boolean }) {

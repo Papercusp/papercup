@@ -24,6 +24,9 @@ import type { Sql } from 'postgres';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import type { LearningLoopHealth } from '../blueprint/learning-loop-health';
 
+/** Untyped row bag from a raw tagged-template query (the gym control-plane idiom). */
+type Row = Record<string, unknown>;
+
 /**
  * blueprintId → the feature flag gating that lane's behavior, or null for a
  * lane with no flag gate (always-on by construction). Kept as data so the
@@ -77,6 +80,9 @@ export interface FrontierLaneSnapshot {
   flagOn: boolean | null;
   /** FB-01 governor registration (read-only), when one matches this lane. */
   governor: FrontierGovernorInfo | null;
+  /** WI-5800: what this lane has produced; null when the lane has no outcome
+   *  table wired yet (or its read degraded) — never a fabricated zero. */
+  outcome?: FrontierLaneOutcome | null;
 }
 
 export interface FrontierSnapshot {
@@ -84,6 +90,177 @@ export interface FrontierSnapshot {
   /** Governor rows matching no lane — surfaced, never silently dropped. */
   unmatchedGovernor: FrontierGovernorInfo[];
   generatedAt: string;
+}
+
+/**
+ * WI-5800 (owner ask 2026-07-25): what a lane has actually PRODUCED.
+ *
+ * The panel could previously only say a lane was firing — never whether it
+ * yielded anything, so a loop that ticked forever and produced nothing (or
+ * produced findings it never validated) read identically to a healthy one.
+ * `closure` is the load-bearing field: it states whether the loop CLOSES,
+ * which is the difference between "learning" and "burning tokens".
+ */
+export interface FrontierLaneOutcome {
+  /** Artifacts produced all-time. */
+  total: number;
+  /** Produced in the last 7 days — is it still producing? */
+  recent7d: number;
+  /** ISO timestamp of the newest artifact; null when the lane produced none. */
+  newestAt: string | null;
+  /** Display chips, pre-ordered. */
+  breakdown: Array<{ label: string; n: number; tone?: 'good' | 'warn' | 'bad' | 'mute' }>;
+  /** One-line verdict on whether the loop closes. */
+  closure: string;
+  /** Tone for `closure` — 'bad'/'warn' means the loop is not closing. */
+  closureTone: 'good' | 'warn' | 'bad' | 'mute';
+}
+
+/**
+ * Leg 4 — per-lane outcome rollups, one query per producing lane. Every lane
+ * degrades INDEPENDENTLY (a missing table ⇒ that lane reads no outcome, never
+ * a failed snapshot), matching the other legs' fail-soft contract. Lanes with
+ * no outcome table yet simply have no entry.
+ */
+export async function readLaneOutcomes(
+  sql: Sql,
+  workspaceId: string,
+): Promise<Record<string, FrontierLaneOutcome>> {
+  const out: Record<string, FrontierLaneOutcome> = {};
+  const num = (v: unknown): number => Number(v ?? 0);
+  const iso = (v: unknown): string | null =>
+    v == null ? null : v instanceof Date ? v.toISOString() : new Date(String(v)).toISOString();
+  const leg = async (id: string, run: () => Promise<FrontierLaneOutcome | null>) => {
+    try {
+      const r = await run();
+      if (r) out[id] = r;
+    } catch (err) {
+      console.warn(`[learning.frontier] outcome read failed for ${id}:`, err instanceof Error ? err.message : err);
+    }
+  };
+
+  await Promise.all([
+    leg('calibration', async () => {
+      const [r] = (await sql`
+        SELECT count(*) total,
+               count(*) FILTER (WHERE created_at > now() - interval '7 days') recent7d,
+               max(created_at) newest,
+               count(*) FILTER (WHERE outcome IS TRUE) correct,
+               count(*) FILTER (WHERE outcome IS FALSE) wrong,
+               count(*) FILTER (WHERE resolved_at IS NULL) unresolved,
+               count(*) FILTER (WHERE resolved_at IS NULL AND horizon_ts < now()) overdue
+          FROM harness_shared.calibration_predictions
+         WHERE workspace_id = ${workspaceId}`) as Row[];
+      if (!r || num(r.total) === 0) return null;
+      const correct = num(r.correct);
+      const resolved = correct + num(r.wrong);
+      const overdue = num(r.overdue);
+      const pct = resolved > 0 ? Math.round((correct / resolved) * 100) : null;
+      return {
+        total: num(r.total),
+        recent7d: num(r.recent7d),
+        newestAt: iso(r.newest),
+        breakdown: [
+          { label: 'right', n: correct, tone: 'good' },
+          { label: 'wrong', n: num(r.wrong), tone: 'mute' },
+          { label: 'open', n: num(r.unresolved), tone: 'mute' },
+          ...(overdue > 0 ? [{ label: 'overdue', n: overdue, tone: 'warn' as const }] : []),
+        ],
+        closure:
+          pct == null
+            ? 'no bets resolved yet'
+            : `${resolved} bets resolved · ${pct}% called correctly`,
+        closureTone: pct == null ? 'warn' : 'good',
+      };
+    }),
+
+    leg('regret', async () => {
+      const [r] = (await sql`
+        SELECT count(*) total,
+               count(*) FILTER (WHERE mined_at > now() - interval '7 days') recent7d,
+               max(mined_at) newest,
+               count(*) FILTER (WHERE replay_status = 'replayed') replayed,
+               count(*) FILTER (WHERE replay_status = 'skipped') skipped
+          FROM harness_shared.regret_findings
+         WHERE workspace_id = ${workspaceId}`) as Row[];
+      if (!r || num(r.total) === 0) return null;
+      const replayed = num(r.replayed);
+      const total = num(r.total);
+      return {
+        total,
+        recent7d: num(r.recent7d),
+        newestAt: iso(r.newest),
+        breakdown: [
+          { label: 'replayed', n: replayed, tone: 'good' },
+          { label: 'skipped', n: num(r.skipped), tone: 'mute' },
+        ],
+        closure: `${replayed} of ${total} findings replayed`,
+        closureTone: replayed === 0 ? 'bad' : replayed / total >= 0.5 ? 'good' : 'warn',
+      };
+    }),
+
+    leg('transfer', async () => {
+      const [r] = (await sql`
+        SELECT count(*) total,
+               count(*) FILTER (WHERE created_at > now() - interval '7 days') recent7d,
+               max(created_at) newest,
+               count(*) FILTER (WHERE test_count > 0) tested,
+               count(*) FILTER (WHERE tier = 'probationary') probationary,
+               count(*) FILTER (WHERE tier = 'trusted') trusted
+          FROM harness_shared.transfer_lessons
+         WHERE workspace_id = ${workspaceId}`) as Row[];
+      if (!r || num(r.total) === 0) return null;
+      const tested = num(r.tested);
+      const total = num(r.total);
+      return {
+        total,
+        recent7d: num(r.recent7d),
+        newestAt: iso(r.newest),
+        breakdown: [
+          { label: 'trusted', n: num(r.trusted), tone: 'good' },
+          { label: 'probationary', n: num(r.probationary), tone: 'mute' },
+          { label: 'tested', n: tested, tone: tested === 0 ? 'bad' : 'good' },
+        ],
+        // The whole point of the transfer harness is to TEST a distilled lesson;
+        // minting lessons nothing ever tests is the loop failing open.
+        closure:
+          tested === 0
+            ? `${total} lessons distilled, none ever tested — loop does not close`
+            : `${tested} of ${total} lessons tested`,
+        closureTone: tested === 0 ? 'bad' : tested / total >= 0.5 ? 'good' : 'warn',
+      };
+    }),
+
+    leg('prompt-ablation', async () => {
+      const [r] = (await sql`
+        SELECT count(*) total,
+               count(*) FILTER (WHERE started_at > now() - interval '7 days') recent7d,
+               max(started_at) newest,
+               count(*) FILTER (WHERE verdict = 'load-bearing') load_bearing,
+               count(*) FILTER (WHERE verdict = 'no-delta') no_delta,
+               count(*) FILTER (WHERE verdict = 'inconclusive') inconclusive
+          FROM harness_shared.prompt_ablation_runs
+         WHERE workspace_id = ${workspaceId}`) as Row[];
+      if (!r || num(r.total) === 0) return null;
+      const total = num(r.total);
+      const inconclusive = num(r.inconclusive);
+      const decisive = total - inconclusive;
+      return {
+        total,
+        recent7d: num(r.recent7d),
+        newestAt: iso(r.newest),
+        breakdown: [
+          { label: 'load-bearing', n: num(r.load_bearing), tone: 'good' },
+          { label: 'no-delta', n: num(r.no_delta), tone: 'mute' },
+          { label: 'inconclusive', n: inconclusive, tone: inconclusive > decisive ? 'warn' : 'mute' },
+        ],
+        closure: `${decisive} of ${total} runs reached a verdict`,
+        closureTone: decisive === 0 ? 'bad' : decisive / total >= 0.5 ? 'good' : 'warn',
+      };
+    }),
+  ]);
+
+  return out;
 }
 
 /** Tolerant lane↔registration match: exact id, `<id>:…` (the gym:/blender:
@@ -142,6 +319,14 @@ export async function readFrontierSnapshot(sql: Sql, workspaceId: string): Promi
     console.warn('[learning.frontier] governor read failed:', err instanceof Error ? err.message : err);
   }
 
+  // Leg 4 — per-lane outcome rollups (WI-5800). Fail-soft as a whole AND per lane.
+  let outcomes: Record<string, FrontierLaneOutcome> = {};
+  try {
+    outcomes = await readLaneOutcomes(sql, workspaceId);
+  } catch (err) {
+    console.warn('[learning.frontier] outcome rollup failed:', err instanceof Error ? err.message : err);
+  }
+
   const matched = new Set<string>();
   const lanes: FrontierLaneSnapshot[] = health.map((h) => {
     const flagKey = FRONTIER_LANE_FLAGS[h.blueprintId] ?? null;
@@ -161,6 +346,7 @@ export async function readFrontierSnapshot(sql: Sql, workspaceId: string): Promi
       flagKey,
       flagOn: flagKey == null ? null : (flagStates.get(flagKey) ?? null),
       governor: gov,
+      outcome: outcomes[h.blueprintId] ?? null,
     };
   });
 

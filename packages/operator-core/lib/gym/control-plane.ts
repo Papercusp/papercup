@@ -314,7 +314,7 @@ export async function listScoutArchiveSeeds(
  *  so without this read a completed run is invisible to the Learning tab). */
 export interface GymRecentCycleRow {
   /** Run-scoped cycle identity (`cyc-<runToken>-c<cycle>`) — the stable row key.
-   *  WI-5786: `cycle` alone is NOT unique (autoloop runs are maxCycles=1, so
+   *  WI-5799: `cycle` alone is NOT unique (autoloop runs are maxCycles=1, so
    *  every run's cycle number is 1); only this discriminates one run from the next. */
   cycleId: string;
   harnessSlug: string;
@@ -339,7 +339,7 @@ export async function listRecentCyclesForWorkspace(
   const limit = Math.min(Math.max(q.limit ?? 20, 1), 100);
   const toMs = (v: unknown): number | null =>
     v == null ? null : v instanceof Date ? v.getTime() : new Date(String(v)).getTime();
-  // WI-5786: join runs by the cycle's CANDIDATE (gym_runs.variant_id), NOT by
+  // WI-5799: join runs by the cycle's CANDIDATE (gym_runs.variant_id), NOT by
   // `cycle`. Cycle numbers repeat across runs (maxCycles=1 ⇒ always 1), so a
   // join on `cycle` cross-products every run of every past run onto every cycle
   // row — inflating runCount and smearing timings. `candidate_id` is run-unique

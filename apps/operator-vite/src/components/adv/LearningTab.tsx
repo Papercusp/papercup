@@ -1461,7 +1461,7 @@ interface GymArchiveSeed {
  *  of a RUN having happened, independent of whether it minted a proposal (a
  *  losing candidate mints none, which used to make the whole run invisible). */
 interface GymRecentCycle {
-  /** WI-5786: run-scoped identity; `cycle` alone repeats across runs. */
+  /** WI-5799: run-scoped identity; `cycle` alone repeats across runs. */
   cycleId?: string;
   harnessSlug: string;
   cycle: number;

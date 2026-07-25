@@ -61,16 +61,19 @@ const TASKS: LoopTask[] = [
   { taskId: 't-probe', pool: 'probe', repoUrl: 'r', repoCommit: 'c', spec: 's', intent: 'score:5', projectContext: 'p' },
 ];
 
-/** A tagged-template Sql stub recording the statements persistCycle issues. */
-function fakeSql(sink: string[]): Sql {
-  return ((strings: TemplateStringsArray) => {
+/** A tagged-template Sql stub recording the statements persistCycle issues,
+ *  and (WI-5799) their interpolated values so id-shape can be asserted. */
+function fakeSql(sink: string[], valueSink?: unknown[][]): Sql {
+  return ((strings: TemplateStringsArray, ...values: unknown[]) => {
     sink.push(strings.join('?'));
+    valueSink?.push(values);
     return Promise.resolve([]);
   }) as unknown as Sql;
 }
 
 function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signals: Record<string, unknown> = {}) {
   const sqlSink: string[] = [];
+  const sqlValues: unknown[][] = [];
   const proposals: LoopProposalRecord[] = [];
   const proposerCalls: Array<{ system: string; user: string }> = [];
   const proposerCall: GymLlmCall = async (opts) => {
@@ -83,7 +86,7 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
     };
   };
   const deps = buildLoopDeps({
-    gymSql: fakeSql(sqlSink),
+    gymSql: fakeSql(sqlSink, sqlValues),
     ports: {} as never,
     judgeCall: fakeJudge,
     proposerCall,
@@ -102,7 +105,7 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
     },
     ...over,
   });
-  return { deps, sqlSink, proposals, proposerCalls };
+  return { deps, sqlSink, sqlValues, proposals, proposerCalls };
 }
 
 describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
@@ -213,6 +216,35 @@ describe('buildLoopDeps — propose / persistCycle / recordProposal seams', () =
     const { deps, sqlSink } = makeDeps();
     await deps.persistCycle({ cycle: 3, parentId: 'baseline', candidateId: 'cand-c3', decision: 'accept', gateResults: { ok: true } });
     expect(sqlSink.join('\n')).toMatch(/gym_cycles/);
+  });
+
+  it('WI-5799: persistCycle mints a RUN-SCOPED cycle_id, so a later run cannot overwrite an earlier run cycle row', async () => {
+    // The durable copy upserts ON CONFLICT (workspace_id, harness_slug, cycle_id).
+    // Autoloop runs are maxCycles=1, so a bare `cyc-${cycle}` was ALWAYS 'cyc-1'
+    // and every run silently overwrote the last — the gym's entire durable
+    // history collapsed to one row (owner report: "no recent runs in the gym tab").
+    const rec = {
+      cycle: 1,
+      parentId: 'baseline',
+      candidateId: 'cand-c1',
+      decision: 'accept' as const,
+      gateResults: { ok: true },
+    };
+    const runA = makeDeps({ runId: 'runaaa' });
+    const runB = makeDeps({ runId: 'runbbb' });
+    await runA.deps.persistCycle(rec);
+    await runB.deps.persistCycle(rec);
+
+    const cycleIdOf = (values: unknown[][]): unknown => values.at(-1)?.[0];
+    expect(cycleIdOf(runA.sqlValues)).toBe('cyc-runaaa-c1');
+    expect(cycleIdOf(runB.sqlValues)).toBe('cyc-runbbb-c1');
+    // The property that matters: SAME cycle number, DIFFERENT runs ⇒ distinct rows.
+    expect(cycleIdOf(runA.sqlValues)).not.toBe(cycleIdOf(runB.sqlValues));
+
+    // ...while staying deterministic WITHIN a run, so a rate-limited retry of the
+    // same cycle still upserts its own row rather than minting a duplicate (RB-006).
+    await runA.deps.persistCycle(rec);
+    expect(cycleIdOf(runA.sqlValues)).toBe('cyc-runaaa-c1');
   });
 
   it('newVariantId is deterministic per cycle WITHIN a run (intra-run retry idempotency, RB-006), and recordProposal is wired through', async () => {

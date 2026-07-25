@@ -21,9 +21,9 @@ import {
   BLENDER_PANE_CATEGORIES,
   DOCS_PANE_CATEGORIES,
   CATCH_ALL_PANE_CATEGORIES,
-  classifyRoutine,
   type AutomationCategory,
-} from './catalog';
+} from './pane-categories';
+import { classifyRoutine } from './catalog';
 
 /** Every pane in the left rail that renders scheduled work, by its category claim. */
 const PANES: Record<string, readonly AutomationCategory[]> = {

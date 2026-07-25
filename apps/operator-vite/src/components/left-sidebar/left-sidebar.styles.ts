@@ -1290,20 +1290,36 @@ body.has-left-sidebar .pc-header {
   border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); background: var(--bg-2, rgba(255, 255, 255, 0.04));
   white-space: nowrap; }
 .pc-auto__spacer { flex: 1; }
-.pc-auto__action { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; white-space: nowrap;
-  font-size: 10px; font-weight: 700; padding: 4px 7px; border-radius: 6px; cursor: pointer;
-  color: var(--fg-dim, #b9d4e8); background: var(--bg-3, rgba(255, 255, 255, 0.05));
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.22)); }
+/* The whole-pane action on the MUG idiom (owner, 2026-07-25 round 3: "the
+   pause/start buttons in the blender docs and agents tabs all look very bad
+   make them look better like the ones in the mug tab").
+   Round 2 restyled the per-row toggle (.pc-auto__toggle) but LEFT THIS ONE —
+   so the pane still led with a flat grey --bg-3 chip with a hairline border,
+   sitting in the header where the eye lands first, next to a Mug tab whose
+   buttons are filled and tinted. That mismatch is what still read as "bad".
+   Now it matches .pc-queen__btn: same 11.5px/720 type, same 7px radius, same
+   tinted-fill + matching-border treatment, and the same semantic colour rule —
+   ACCENT for the go action (Resume all), GOOD for the stop action (Pause all),
+   exactly as the Mug's pause control colours itself. */
+.pc-auto__action { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  flex-shrink: 0; white-space: nowrap;
+  font-size: 11.5px; font-weight: 720; padding: 5px 9px; border-radius: 7px; cursor: pointer;
+  color: var(--fg, #e7f7ff);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 54%); }
 .pc-auto__action:hover:not(:disabled) { color: var(--fg, #e7f7ff);
   border-color: color-mix(in srgb, var(--accent), transparent 48%);
-  background: color-mix(in srgb, var(--accent), transparent 90%); }
-.pc-auto__action:disabled { opacity: 0.5; cursor: default; }
-.pc-auto__action--danger { color: var(--bad, #f87171);
-  border-color: color-mix(in srgb, var(--bad, #f87171), transparent 68%);
-  background: color-mix(in srgb, var(--bad, #f87171), transparent 92%); }
+  background: color-mix(in srgb, var(--accent), transparent 82%); }
+.pc-auto__action:disabled { opacity: 0.55; cursor: default; }
+/* "Pause all" — the STOP action. Mirrors .pc-queen__btn--stop (good/green),
+   not a red alarm: pausing your own agents is a normal, reversible control,
+   and the Mug already established green as what "click to stop" looks like. */
+.pc-auto__action--danger { color: var(--fg, #e7f7ff);
+  background: color-mix(in srgb, var(--good, #34d399), transparent 86%);
+  border-color: color-mix(in srgb, var(--good, #34d399), transparent 58%); }
 .pc-auto__action--danger:hover:not(:disabled) { color: var(--fg, #e7f7ff);
-  border-color: color-mix(in srgb, var(--bad, #f87171), transparent 44%);
-  background: color-mix(in srgb, var(--bad, #f87171), transparent 86%); }
+  border-color: color-mix(in srgb, var(--good, #34d399), transparent 44%);
+  background: color-mix(in srgb, var(--good, #34d399), transparent 80%); }
 .pc-auto__action:focus-visible, .pc-auto__lane:focus-visible, .pc-auto__toggle:focus-visible {
   outline: 1px solid var(--accent); outline-offset: 1px; }
 

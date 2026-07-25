@@ -320,10 +320,25 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   (a one-off group-by, join, or recency slice you won't run repeatedly). A HOT read with
   a stable shape belongs behind a TOOL that wraps the canonical SQL so it can't drift —
   e.g. "what's claimable" is `work_items:claimable`, NOT a raw floor query (see the
-  claimability note below). For a filtered / aggregate / recency read with no dedicated
-  tool, use **`dev:pg_query`** (read-only SELECT — read-only txn + `statement_timeout` +
-  row cap) or a server-side `*:list` filter — never fetch a whole `*:list` and
-  `jq`/python a spilled projection. (su can also `psql` the admin URL directly:
+  claimability note below). **Before you write `SELECT`, check this table** — these are the
+  reads agents most often hand-write, and each already has a tool that scopes + applies the
+  real semantics for you:
+
+  | you want | use | not |
+  |---|---|---|
+  | what issue-family work is claimable now | `work_items:claimable { harness }` | `WHERE status='open'` / the `work_items_claimable` view (overcounts ~13×) |
+  | a filtered work-item / issue slice | `work_items:list` (server-side filters) | `SELECT … FROM harness_shared.work_items` |
+  | what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` | `SELECT … FROM harness_shared.harness_plans` |
+  | plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` over `harness_plans` |
+  | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
+  | prose / full-text | `search:fulltext` · `search:semantic` | `ILIKE '%…%'` |
+  | code graph / call sites | `gitnexus:query` | a hand-walk of the tree |
+
+  Nothing in the table fits and the shape is genuinely one-off? Then **`dev:pg_query`**
+  (read-only SELECT — read-only txn + `statement_timeout` + row cap) or a server-side
+  `*:list` filter — never fetch a whole `*:list` and `jq`/python a spilled projection.
+  If you find yourself writing the *same* query a second time, that is the signal it
+  should be a tool (or an arg on one), not a snippet. (su can also `psql` the admin URL directly:
   `getHarnessAdminUrl()` / the live operator's `DATABASE_URL`.) ⚠ Multi-tenant
   tables (`harness_plans`, the `*_consolidated` tables, …) key on
   `(workspace_id, harness_slug, <slug/id>)` — a raw filter on just the slug/id

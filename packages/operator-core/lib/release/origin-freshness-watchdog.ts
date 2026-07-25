@@ -526,6 +526,15 @@ export function startOriginFreshnessWatchdog(sql: Sql, opts: OriginFreshnessWatc
       if (r.alarmed.length > 0) {
         console.warn(`[origin-freshness-watchdog] alarmed on: ${r.alarmed.join(', ')}`);
       }
+      // WI-5791: surface the watchdog's OWN failure at the same volume as the
+      // failures it watches for. Without this the blind state is only visible to
+      // a caller that inspects the result object — and nothing ever did, which is
+      // how it stayed blind from the day it shipped.
+      if (r.blind) {
+        console.warn(
+          `[origin-freshness-watchdog] BLIND — this sweep watched nothing. Origin-freshness is NOT being monitored.`,
+        );
+      }
     });
   };
 

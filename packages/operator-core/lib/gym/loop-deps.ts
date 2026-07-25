@@ -288,7 +288,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
     },
     async persistCycle(rec) {
       await insertCycle(cfg.gymSql, {
-        // WI-5786: run-scoped for the SAME reason `newVariantId` is (WI-5697's
+        // WI-5799: run-scoped for the SAME reason `newVariantId` is (WI-5697's
         // doc above) — a bare `cyc-${cycle}` is deterministic ACROSS runs
         // (autoloop always runs maxCycles=1 ⇒ always "cyc-1"), and the durable
         // copy upserts ON CONFLICT (workspace_id, harness_slug, cycle_id), so

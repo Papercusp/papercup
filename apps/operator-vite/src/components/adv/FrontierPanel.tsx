@@ -156,6 +156,9 @@ export function FrontierPanel({
                 <th scope="col">flag</th>
                 <th scope="col">budget</th>
                 <th scope="col">spent</th>
+                <th scope="col" title="What the lane has actually PRODUCED — and whether that output loop closes. A lane can fire forever and produce nothing; this column is the difference.">
+                  produced
+                </th>
                 <th scope="col">last activity</th>
               </tr>
             </thead>
@@ -234,6 +237,48 @@ export function FrontierPanel({
                       )}
                     </td>
                     <td>{l.governor ? money(l.governor.spentUsd) : "—"}</td>
+                    {/* WI-5800: the outcome column. A lane with no wired outcome
+                        table reads "—" rather than a fabricated zero. */}
+                    <td className="pc-frontier__produced">
+                      {l.outcome ? (
+                        <>
+                          <span className="pc-frontier__prodhead">
+                            <strong>{l.outcome.total}</strong>
+                            {l.outcome.recent7d > 0 ? (
+                              <em title="Produced in the last 7 days.">
+                                {" "}
+                                +{l.outcome.recent7d} this week
+                              </em>
+                            ) : (
+                              <em title="Nothing produced in the last 7 days.">
+                                {" "}
+                                none this week
+                              </em>
+                            )}
+                          </span>
+                          <span className="pc-frontier__chips">
+                            {l.outcome.breakdown.map((b) => (
+                              <span
+                                key={b.label}
+                                className={`pc-frontier__pill pc-frontier__pill--${b.tone ?? "mute"}`}
+                              >
+                                {b.n} {b.label}
+                              </span>
+                            ))}
+                          </span>
+                          <em
+                            className={`pc-frontier__closure pc-frontier__closure--${l.outcome.closureTone}`}
+                            title="Does this loop CLOSE? A loop that produces findings it never validates is not learning."
+                          >
+                            {l.outcome.closure}
+                          </em>
+                        </>
+                      ) : (
+                        <span title="No outcome table wired for this lane yet — not a zero, an unknown.">
+                          —
+                        </span>
+                      )}
+                    </td>
                     <td
                       title={
                         l.activitySource
@@ -292,6 +337,19 @@ export function FrontierPanel({
       .pc-frontier__pill--bad { color: var(--bad, #f87171); border-color: color-mix(in srgb, var(--bad, #f87171) 45%, transparent); }
       .pc-frontier__pill--mute { color: var(--fg-mute, #7f9bb4); }
       .pc-frontier__flag--warn { color: var(--warn, #fbbf24); font-weight: 700; }
+      /* WI-5800 produced column — the one cell allowed to wrap, so the
+         breakdown chips + closure line stay legible without widening the grid. */
+      .pc-frontier__produced { white-space: normal; min-width: 230px; max-width: 360px; }
+      .pc-frontier__prodhead { display: block; }
+      .pc-frontier__prodhead strong { font-size: 12.5px; color: var(--fg, #dbeafe); }
+      .pc-frontier__prodhead em { font-style: normal; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
+      .pc-frontier__chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 3px 0 2px; }
+      .pc-frontier__chips .pc-frontier__pill { font-size: 9.5px; padding: 0 6px; }
+      .pc-frontier__closure { display: block; font-style: normal; font-size: 10px; line-height: 1.35; }
+      .pc-frontier__closure--good { color: var(--good, #34d399); }
+      .pc-frontier__closure--warn { color: var(--warn, #fbbf24); }
+      .pc-frontier__closure--bad { color: var(--bad, #f87171); font-weight: 700; }
+      .pc-frontier__closure--mute { color: var(--fg-mute, #7f9bb4); }
       .pc-frontier__unmatched { margin: 6px 2px 0; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
       `}</style>
     </section>

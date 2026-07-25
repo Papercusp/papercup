@@ -3,9 +3,13 @@
  *
  * Plans, work-items, issues, observations, tool_invocations, scorecards,
  * recipes, … are PG-CANONICAL; the `*:list` tools and `docs/plans/*.md` are
- * projections. Use this for any filtered / aggregate / recency read instead of
- * fetching a full `*:list` and post-filtering. Read-only enforced (write
- * attempts are rejected by the transaction), statement_timeout + row cap.
+ * projections. This is the ESCAPE HATCH for a genuinely one-off analytic read —
+ * NOT the default way to read canonical state
+ * (claimable-read-tool-and-sql-encapsulation-audit-2026-07-21 P-004): a hot read
+ * with a stable shape belongs behind a tool that wraps the SQL so it cannot
+ * drift (work_items:claimable, plans:list's filters + groupBy, …). Read-only
+ * enforced (write attempts are rejected by the transaction), statement_timeout +
+ * row cap.
  */
 
 import { z } from 'zod';
@@ -27,14 +31,16 @@ export default defineTool({
   capability: 'intel:read',
   guidance: {
     when:
-      "A filtered / aggregate / recency read of PG-CANONICAL state. Plans, work-items, issues, observations (engineer_issues), tool_invocations, scorecards are PG tables — the `*:list` tools and `docs/plans/*.md` files are PROJECTIONS. Query PG directly instead of fetching a whole `*:list` and post-filtering (which returns a huge result that spills to a file → don't then jq the projection). Example — recent plans this workspace: `SELECT plan_slug,status,created FROM harness_shared.harness_plans WHERE created >= '2026-06-17' AND workspace_id = '<ws>' ORDER BY created DESC LIMIT 50`. Aggregates (counts/group-by) are first-class here and awkward to jq.",
+      "A GENUINELY ad-hoc / analytic read of PG-CANONICAL state — a one-off group-by, join, or slice you will not run again. A HOT read with a stable shape belongs behind a TOOL that wraps the SQL so it cannot drift, and most already do: claimable issue work → work_items:claimable (a raw status='open' overcounts ~13×); a work-item slice → work_items:list; the plan directory, recency, or plan COUNTS → plans:list (createdSince/updatedSince/order/limit/groupBy); plan items → plans:items; prose → search:*; code graph → gitnexus:query. Reach here only when no tool exposes the shape (and still don't jq a whole `*:list`).",
     notWhen:
-      'To CHANGE state — use the documented write verbs (plans:*, work_items:*, issues:* — they emit audit + sync invalidation). Writes are rejected here anyway (read-only transaction). For code-graph queries use `gitnexus:query`; for prose full-text use `search:fulltext` / `search:semantic`.',
+      "A read a tool above already covers — hand-written claimability + plan queries are the documented footguns, and a predicate missing workspace_id/harness_slug on a multi-tenant table silently matches another tenant. Writing the same query twice ⇒ it should be a tool. Also not to CHANGE state: use the write verbs (audit + sync invalidation); writes are rejected here anyway.",
     chaining:
       'Alias any duplicate output column names (the result is wrapped in a subquery for the row cap, and PG rejects duplicate subquery columns). Pass `maxRows` to widen the cap up to ' +
       String(PG_READ_QUERY_HARD_MAX_ROWS) +
       '; if `truncated` is true, add a tighter WHERE / LIMIT rather than raising the cap blindly.',
     seeAlso: [
+      'work_items:claimable (what issue-family work is claimable RIGHT NOW — the SSOT claim floors as a tool; a raw status=open query is not claimability)',
+      'plans:list (plan directory, recency filters, and groupBy/aggregateOnly counts — instead of hand-written SQL over harness_plans)',
       'dev:pg_active_queries (live / long-running queries)',
       'dev:pg_table_sizes (table + index sizes)',
       'dev:pg_health (connection + pool health)',

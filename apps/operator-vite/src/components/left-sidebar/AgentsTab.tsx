@@ -31,7 +31,7 @@ import { useMemo } from 'react';
 import { Bot, CalendarClock, Users } from 'lucide-react';
 import { parseAsStringLiteral, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { CATCH_ALL_PANE_CATEGORIES } from '@papercusp/operator-core/lib/automation/catalog';
+import { CATCH_ALL_PANE_CATEGORIES } from '@papercusp/operator-core/lib/automation/pane-categories';
 import type { AutomationCatalog } from '@papercusp/operator-core/lib/automation/catalog';
 import AutomationPane, { scheduleLaneValue } from './AutomationPane';
 import AskAgentPane from './AskAgentPane';
