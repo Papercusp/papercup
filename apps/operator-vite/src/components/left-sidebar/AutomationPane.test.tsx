@@ -48,6 +48,11 @@ type Routine = {
   spawnsAgent: boolean;
   active: boolean;
   lastFiredAt: string | null;
+  /** Which of the five host scheduling mechanisms this row came from. */
+  source: string;
+  /** Only `routines` rows can be paused from the pane — `routines:set` writes
+   *  that table and nothing else. */
+  controllable: boolean;
 };
 
 const routine = (over: Partial<Routine> = {}): Routine => ({
@@ -58,6 +63,8 @@ const routine = (over: Partial<Routine> = {}): Routine => ({
   spawnsAgent: true,
   active: true,
   lastFiredAt: '2026-07-25T18:00:00.000Z',
+  source: 'routines',
+  controllable: true,
   ...over,
 });
 
@@ -75,7 +82,14 @@ const catalog = {
   ],
 };
 
-function renderPane() {
+function renderPane(overrideCatalog?: { routines: Routine[] }) {
+  if (overrideCatalog) {
+    H.catalogResult = {
+      data: [{ ...catalog, ...overrideCatalog }],
+      loading: false,
+      error: null,
+    };
+  }
   return render(
     <AutomationPane
       active
@@ -206,5 +220,54 @@ describe('AutomationPane — controls', () => {
     fireEvent.click(screen.getByTestId('automation-toggle-gym-cycle'));
     await waitFor(() => expect(screen.getByText(/routine locked/)).toBeTruthy());
     vi.unstubAllGlobals();
+  });
+});
+
+/**
+ * Schedules that are LISTED but not pausable from this pane.
+ *
+ * The pane now reads all five host scheduling mechanisms, not just
+ * `harness_shared.routines`, so the owner can see every scheduled thing (owner
+ * mandate 2026-07-25). But `routines:set` only writes the routines table — the
+ * other four have no switch here. They must therefore render as INERT MARKERS,
+ * never as buttons: this pane's original defect was offering pause controls
+ * that could not act, and a clickable-but-doomed toggle would reproduce exactly
+ * that failure in a new place.
+ */
+describe('AutomationPane — non-routine schedules', () => {
+  const uncontrollable = routine({
+    name: 'doc-freshness-sweep',
+    source: 'in-process',
+    controllable: false,
+    spawnsAgent: true,
+    active: true,
+  });
+
+  it('renders a marker, NOT a toggle, for a schedule it cannot pause', () => {
+    renderPane({ routines: [uncontrollable] });
+    expect(screen.queryByTestId('automation-toggle-doc-freshness-sweep')).toBeNull();
+    expect(screen.getByTestId('automation-nocontrol-doc-freshness-sweep')).toBeTruthy();
+  });
+
+  it('still LISTS it — being unpausable is not a reason to hide it', () => {
+    renderPane({ routines: [uncontrollable] });
+    expect(screen.getByTestId('automation-row-doc-freshness-sweep')).toBeTruthy();
+  });
+
+  it('offers no "Pause all" when nothing in the pane is actually pausable', () => {
+    // The button's count must equal what the click can deliver; a pane of
+    // uncontrollable rows can deliver nothing, so it must not offer the action.
+    renderPane({ routines: [uncontrollable] });
+    expect(screen.queryByTestId('automation-pause-all')).toBeNull();
+    expect(screen.queryByTestId('automation-resume-all')).toBeNull();
+  });
+
+  it('counts only pausable spenders in "Pause all"', () => {
+    renderPane({ routines: [uncontrollable, routine({ name: 'gym-cycle' })] });
+    const btn = screen.getByTestId('automation-pause-all');
+    // One controllable spender present, so the button promises exactly one.
+    expect(btn.textContent).toMatch(/Pause all/);
+    expect(screen.getByTestId('automation-nocontrol-doc-freshness-sweep')).toBeTruthy();
+    expect(screen.getByTestId('automation-toggle-gym-cycle')).toBeTruthy();
   });
 });

@@ -154,6 +154,11 @@ const AGENT_SPAWNING_PATTERNS: RegExp[] = [
   // cheap ones and hidden the expensive one.
   /(^|-)wake($|-)/i,
   /^loop-su-/i, // agent-armed continuation loops
+  // The post-git-sync doc repair. It spawns an LLM doc-steward per drift batch
+  // (555 lifetime spawns, ~$40/day before it was gated), so it MUST carry the
+  // token flag — the detection half beside it is free, and the owner has to be
+  // able to tell them apart at a glance.
+  /^doc-steward/i,
   /prospector-cadence$/i,
   /^hive-canary$/i,
   /^autonomy-trust-scan$/i,

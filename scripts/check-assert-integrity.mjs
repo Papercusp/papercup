@@ -1,0 +1,255 @@
+#!/usr/bin/env node
+/**
+ * check-assert-integrity.mjs — mechanical guard for the CAN-FALSELY-PASS assert
+ * class in the live-federation rig scenarios (WI-5788, generalizing WI-5715 /
+ * WI-5768 / plan item P-411).
+ *
+ * WHY THIS EXISTS
+ * WI-5715 held the shared-hive release gate RED for its entire history via an
+ * assert that could never pass. P-411 then audited every scenario for the two
+ * mirror-image failure modes and WI-5768 fixed what it found. But an audit is an
+ * ACT, not a GUARD: it buys one clean snapshot and no ratchet. Within the hour,
+ * b9-attestation.sh landed carrying the very class the audit had just swept for
+ * (its mtime post-dates WI-5768's completion). This lint is that missing ratchet
+ * — P-411's rule made executable:
+ *
+ *     EVERY "COULDN'T MEASURE" MUST BE A FAIL, NEVER A PASS.
+ *
+ * A negative/threshold assert over a REMOTE probe (ssh + psql) cannot tell
+ * "confirmed zero" from "the query never ran" — both are an empty string. Coercing
+ * that empty to 0 sets the baseline to the most permissive value for a
+ * strictly-increasing assert, so a single transient blip scores PASS. That is not
+ * hypothetical: it is live in b9-attestation.sh LEG3/LEG4 today, where an earlier
+ * leg guarantees the counter is already nonzero.
+ *
+ *   node scripts/check-assert-integrity.mjs
+ *
+ * THE FALSE-POSITIVE DISCRIMINATOR (why this is not noise): a finding requires the
+ * variable to be COMMAND-SUBSTITUTION-DERIVED *and* permissively coerced *and* used
+ * in an assert. That is what separates a real unmeasured-probe baseline from an
+ * honest local counter like rig_assert_absent's `measured=0`, and it is why the
+ * correctly fail-closed sites (rig_assert_absent / rig_assert_row_absent, and
+ * deb-hetzner-coord-controlplane.sh's `[ "$n_x" = 1 ]` call sites) stay green.
+ *
+ * SUPPRESSION: put `# assert-integrity-ok: <reason>` on the offending line or the
+ * line above it. A deliberate exception must carry its justification at the site —
+ * never a silent allowlist entry. Whole-file exemptions go in ALLOW below.
+ *
+ * Scope: tracked .sh under papercusp-desktop/bin/ (the rig + scenario surface).
+ * Excludes *.selftest.sh (they assert ON these shapes deliberately).
+ */
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { resolve, dirname, relative } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SCOPE = 'papercusp-desktop/bin/';
+
+/** Whole-file exemptions. Prefer the inline `# assert-integrity-ok:` pragma. */
+const ALLOW = new Set([]);
+
+const PRAGMA = 'assert-integrity-ok:';
+
+/** Vars assigned anywhere from a command substitution — the probe-derived set. */
+function cmdSubVars(lines) {
+  const set = new Set();
+  for (const line of lines) {
+    // VAR="$(...)"  |  VAR=$(...)  |  local VAR="$(...)"
+    const m = line.match(/^\s*(?:local\s+|declare\s+-\w+\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\()/);
+    if (m) set.add(m[1]);
+  }
+  return set;
+}
+
+const suppressed = (lines, i) =>
+  (lines[i] ?? '').includes(PRAGMA) || (lines[i - 1] ?? '').includes(PRAGMA);
+
+const NUM_CMP = /-(?:gt|ge|lt|le|eq|ne)\b/;
+
+function scan(file, text) {
+  const lines = text.split('\n');
+  const derived = cmdSubVars(lines);
+  const out = [];
+  const add = (i, rule, msg) => {
+    if (!suppressed(lines, i)) out.push({ file, line: i + 1, rule, msg });
+  };
+
+  // Which derived vars are later used in a NUMERIC comparison anywhere?
+  const numericallyCompared = new Set();
+  for (const line of lines) {
+    if (!NUM_CMP.test(line)) continue;
+    for (const v of derived) if (line.includes(`$${v}`) || line.includes(`\${${v}}`)) numericallyCompared.add(v);
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*#/.test(line)) continue;
+
+    // R1 — unmeasured value coerced PERMISSIVE, then used in a threshold compare.
+    //      `[ -z "$X" ] && X=0`  |  `X="${X:-0}"`  |  `X=$(... || echo 0)`
+    const c1 = line.match(/\[\s*-z\s+"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?\s*\]\s*&&\s*\1=(\S+)/);
+    const c2 = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)="?\$\{\1:-([^}]*)\}"?/);
+    const c3 = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=.*\|\|\s*echo\s+(\S+)\s*\)/);
+    const c = c1 || c2 || c3;
+    if (c) {
+      const [v, lit] = [c[1], c[2]];
+      if (derived.has(v) && numericallyCompared.has(v)) {
+        add(
+          i,
+          'R1-permissive-coercion',
+          `"${v}" comes from a command substitution, is coerced to ${lit} when EMPTY, then used in a numeric assert. An empty read means EITHER a confirmed value OR a probe that never ran — coercing it to ${lit} makes an unmeasurable probe score as the permissive case. Track the exit code and FAIL when unmeasured (see rig_assert_absent in bin/lib/deb-hetzner-rig.sh).`,
+        );
+      }
+    }
+
+    // R2 — a probe-derived var pre-initialised to the value its assert treats as PASS.
+    const d = line.match(/^\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\d+|"[^"$]*")\s*(?:#.*)?$/);
+    if (d) {
+      const [v, lit] = [d[1], d[2].replace(/"/g, '')];
+      if (derived.has(v)) {
+        const assertedPass = lines.some((l) =>
+          new RegExp(`\\[\\s*"?\\$\\{?${v}\\}?"?\\s*=\\s*"?${lit}"?\\s*\\]`).test(l),
+        );
+        if (assertedPass) {
+          add(
+            i,
+            'R2-default-to-pass',
+            `"${v}" is pre-set to ${lit} and later asserted with = ${lit} as the success condition, but is only conditionally assigned from a probe. If the probe is skipped or fails, the assert passes VACUOUSLY. Give the unmeasured case its own explicit branch.`,
+          );
+        }
+      }
+    }
+
+    // R3 — `grep -c` captured into a threshold compare with no rc guard.
+    if (/\$\([^)]*grep\s+-c\b/.test(line)) {
+      const m = line.match(/^\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)=/);
+      const guarded = /rc=\$\?|\|\|\s*(?:return|exit|\{)/.test(line) || /rc=\$\?/.test(lines[i + 1] ?? '');
+      if (m && numericallyCompared.has(m[1]) && !guarded) {
+        add(
+          i,
+          'R3-grep-c-unguarded',
+          `"${m[1]}" is a \`grep -c\` count fed into a numeric assert with no exit-code guard. grep -c prints 0 and exits 1 on a MISSING file or an empty stream, so a probe that never produced output is indistinguishable from a genuine zero.`,
+        );
+      }
+    }
+
+    // R4 — empty-read branch that warns and CONTINUES instead of failing.
+    const e = line.match(/^\s*(?:els)?if\s*\[\s*-z\s+"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?\s*\]\s*;?\s*then/);
+    if (e && derived.has(e[1])) {
+      let body = '';
+      for (let j = i + 1; j < lines.length; j++) {
+        if (/^\s*(fi|elif|else)\b/.test(lines[j])) break;
+        body += lines[j] + '\n';
+      }
+      if (!/\b(return|exit)\b/.test(body) && /\becho\b/.test(body)) {
+        add(
+          i,
+          'R4-empty-read-continues',
+          `"${e[1]}" is probe-derived; the empty branch logs and CONTINUES, so the scenario can still report success. An empty read conflates "nothing to check" with "the probe failed" and with "the thing under test is genuinely missing" — disambiguate (prove the precondition upstream) or FAIL.`,
+        );
+      }
+    }
+
+    // R5 — `local X="$(cmd)"` masks the command's exit status ($? is always 0).
+    if (/^\s*local\s+[A-Za-z_][A-Za-z0-9_]*="?\$\(/.test(line)) {
+      const near = [lines[i + 1] ?? '', lines[i + 2] ?? ''].join('\n');
+      if (/\$\?/.test(near)) {
+        add(
+          i,
+          'R5-local-masks-rc',
+          `\`local X="$(cmd)"\` makes $? the exit status of \`local\` (always 0), not of the command — the following rc check is dead. Split it: \`local X; X="$(cmd)"; rc=$?\`.`,
+        );
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Enumerate the rig/scenario scripts.
+ *
+ * Deliberately a filesystem walk, NOT `git ls-files`: papercusp-desktop is a
+ * SUBMODULE, so a superproject `git ls-files` returns ZERO matches here and this
+ * lint would scan nothing and exit 0 — a green that means "I never looked". That
+ * is precisely the can-falsely-pass class this file exists to catch, so it must
+ * not be the way this file finds its own inputs. (Caught on the first run of this
+ * lint, which is the only reason it is written this way.)
+ */
+function scriptsInScope() {
+  const dir = resolve(ROOT, SCOPE);
+  const out = [];
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = resolve(d, e.name);
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules' || e.name === '_retired' || e.name === 'target') continue;
+        walk(p);
+      } else if (e.name.endsWith('.sh') && !e.name.endsWith('.selftest.sh')) {
+        out.push(relative(ROOT, p));
+      }
+    }
+  };
+  walk(dir);
+  return out.filter((f) => !ALLOW.has(f)).sort();
+}
+
+/**
+ * The lint's own "couldn't measure is not a pass" guard. If the scope resolves to
+ * implausibly few files, the enumeration broke (submodule moved, dir renamed) and
+ * a ✓ would be a lie. Fail loudly instead.
+ */
+const MIN_EXPECTED_SCRIPTS = 10;
+
+function main() {
+  const tracked = scriptsInScope();
+
+  if (tracked.length < MIN_EXPECTED_SCRIPTS) {
+    console.error(
+      `✗ assert-integrity: scope "${SCOPE}" resolved to only ${tracked.length} script(s) ` +
+        `(expected >= ${MIN_EXPECTED_SCRIPTS}).\n\n` +
+        '  This lint scanned essentially nothing, so a PASS here would mean "I never looked" —\n' +
+        '  the exact can-falsely-pass class it exists to catch. Fix the path or lower\n' +
+        '  MIN_EXPECTED_SCRIPTS deliberately; do not let it report green on an empty scan.',
+    );
+    process.exit(1);
+  }
+
+  const findings = [];
+  for (const f of tracked) {
+    let text;
+    try {
+      text = readFileSync(resolve(ROOT, f), 'utf8');
+    } catch {
+      continue;
+    }
+    findings.push(...scan(f, text));
+  }
+
+  if (findings.length === 0) {
+    console.log(`✓ assert integrity: no can-falsely-pass shapes in ${tracked.length} rig/scenario script(s).`);
+    process.exit(0);
+  }
+
+  console.error('✗ assert-integrity: probe(s) whose FAILURE TO RUN can read as a PASS.\n');
+  console.error('  Rule (P-411): every "couldn\'t measure" must be a FAIL, never a pass.\n');
+  for (const f of findings) {
+    console.error(`    ${f.file}:${f.line}  [${f.rule}]`);
+    console.error(`      ${f.msg}\n`);
+  }
+  console.error(
+    `  ${findings.length} finding(s). Fix, or annotate the line with "# ${PRAGMA} <reason>"\n` +
+      '  if the shape is genuinely safe here. See WI-5788 / plan item P-411.',
+  );
+  process.exit(1);
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : '';
+if (import.meta.url === invokedPath) main();
+
+export { scan };

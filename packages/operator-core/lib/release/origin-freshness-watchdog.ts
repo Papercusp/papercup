@@ -44,7 +44,7 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { loadHarnessRegistry, type ProjectEntry } from '../harness-registry';
-import { getPotGitMode } from '../harness/git-sync/hive-git-mode';
+import { getPotGitMode, POT_GIT_MODE_SETTING_KEY } from '../harness/git-sync/hive-git-mode';
 import { canonicalRepoKey } from '../sync/pot-git/repo-identity';
 import { hiveGitRepoPath, readNamespaceRef, defaultRunGit, type RunGit } from '../sync/pot-git/storage';
 import { githubOriginDevicePubkey } from '../sync/pot-git/github-ingress';
@@ -93,10 +93,65 @@ function potHomeSlugOf(entry: ProjectEntry): string | undefined {
   return entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
 }
 
+/**
+ * WI-5791 — every workspace that owns a harness registry.
+ *
+ * Deliberately NOT falling back to `DEFAULT_WORKSPACE_ID` when this read fails:
+ * that fallback is exactly how this watchdog spent its whole life sweeping an
+ * empty workspace while reporting a clean pass. An empty list makes the sweep
+ * check nothing, which the zero-coverage self-report then reports LOUDLY —
+ * silence must never read as health.
+ */
+async function listRegistryWorkspaceIds(sql: Sql): Promise<string[]> {
+  try {
+    const rows = await sql<{ workspace_id: string }[]>`
+      SELECT DISTINCT workspace_id
+        FROM harness_shared.harness_registry
+       WHERE workspace_id IS NOT NULL AND workspace_id <> ''
+       ORDER BY workspace_id`;
+    return rows.map((r) => r.workspace_id);
+  } catch (e) {
+    console.warn(
+      `[origin-freshness-watchdog] workspace enumeration failed — this sweep covers NOTHING: ${e instanceof Error ? e.message : e}`,
+    );
+    return [];
+  }
+}
+
+/**
+ * WI-5791 — does this watchdog have anything to watch?
+ *
+ * The bug this guards against is not "the verdict was wrong", it is "the verdict
+ * was never computed" — a sweep that examines zero entries returns exactly the
+ * same shape as a sweep where everything is healthy. So ask the question the
+ * sweep itself cannot: are there bridged pots in the DB that a covering sweep
+ * MUST have checked? If yes and we checked none, the watchdog is blind and says
+ * so, instead of reporting a clean pass forever.
+ */
+async function countBridgedPots(sql: Sql): Promise<number> {
+  try {
+    const rows = await sql<{ n: string | number }[]>`
+      SELECT count(*) AS n
+        FROM harness_shared.pot_settings
+       WHERE setting_key = ${POT_GIT_MODE_SETTING_KEY}
+         AND value #>> '{}' = 'bridged'`;
+    return Number(rows[0]?.n ?? 0);
+  } catch {
+    return 0; // unknown — never manufacture a false blindness alarm
+  }
+}
+
 export interface OriginFreshnessWatchdogResult {
   alarmed: string[];
   recovered: string[];
   checked: number;
+  /**
+   * WI-5791 — the sweep covered NOTHING while bridged pots exist, i.e. this
+   * watchdog is not watching anything. Distinct from `checked: 0` alone, which
+   * is legitimate on an install with no bridged pots. Never set on a healthy
+   * pass, so a caller can treat its presence as a defect signal.
+   */
+  blind?: boolean;
 }
 
 /**
@@ -144,20 +199,45 @@ export async function checkOriginFreshness(
 ): Promise<OriginFreshnessWatchdogResult> {
   const out: OriginFreshnessWatchdogResult = { alarmed: [], recovered: [], checked: 0 };
   const runGit = opts.runGit ?? defaultRunGit;
-  const workspaceId = opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
   const stallSustainMinSweeps = opts.stallSustainMinSweeps ?? DEFAULT_STALL_SUSTAIN_MIN_SWEEPS;
   const now = Date.now();
   const recoveredForBroadcast: string[] = [];
 
   try {
-    let projects: ProjectEntry[];
-    try {
-      projects = (await loadHarnessRegistry(workspaceId)).projects;
-    } catch {
-      return out;
+    // WI-5791 — sweep EVERY workspace that owns a harness registry, not one
+    // hard-coded default.
+    //
+    // This used to be `loadHarnessRegistry(opts.workspaceId ?? DEFAULT_WORKSPACE_ID)`,
+    // and no caller has ever passed `opts.workspaceId` — `startOriginFreshnessWatchdog`
+    // calls `checkOriginFreshness(sql, opts)` with the boot's empty opts. So every
+    // sweep since this watchdog shipped (WI-5607) loaded the registry of workspace
+    // `'default'`, which holds 14 unrelated scratch pots and not one bridged hive,
+    // while every real pot lives in `'papercusp-workspace'`. The pass returned
+    // `checked: 0` — it never entered the per-entry body, never wrote `of_origin_sha`,
+    // and therefore could never age a tip or raise `tipAgeStale`. The watchdog built
+    // to catch a silently-stalled egress was itself silently stalled, for its whole
+    // life, and nothing said so: `checked: 0` is indistinguishable from a clean pass
+    // at every surface that reads this result.
+    //
+    // That is the same shape as the bug this watchdog exists to catch, and as
+    // EI-10103 in the sibling main-behind watchdog (a workspace it could not resolve
+    // meant its escalation write threw into an outer catch). See
+    // agent-insights/absorbing-state-guards-and-self-report-detectors. The
+    // zero-coverage self-report below is the guard that makes the class visible.
+    const workspaceIds = opts.workspaceId ? [opts.workspaceId] : await listRegistryWorkspaceIds(sql);
+    const workspaceIdsSwept = workspaceIds.length;
+    const targets: { workspaceId: string; entry: ProjectEntry }[] = [];
+    for (const wsId of workspaceIds) {
+      let projects: ProjectEntry[];
+      try {
+        projects = (await loadHarnessRegistry(wsId)).projects;
+      } catch {
+        continue; // one unreadable workspace must never abort the whole sweep
+      }
+      for (const entry of projects) targets.push({ workspaceId: wsId, entry });
     }
 
-    for (const entry of projects) {
+    for (const { workspaceId, entry } of targets) {
       if (!entry.github_remote) continue; // nothing to be "origin"-fresh against
       const potHomeSlug = potHomeSlugOf(entry);
       if (!potHomeSlug) continue;
@@ -411,6 +491,20 @@ export async function checkOriginFreshness(
             : `origin freshness RECOVERED on ${recoveredForBroadcast.length} hives (${list}) — origin has caught back up.`,
       });
     }
+    // WI-5791 — the self-report. A sweep that checked nothing is not a healthy
+    // sweep, and until now it was reported as one. Only meaningful when bridged
+    // pots actually exist: a workspace with none legitimately checks zero.
+    if (out.checked === 0) {
+      const bridged = await countBridgedPots(sql);
+      if (bridged > 0) {
+        out.blind = true;
+        console.warn(
+          `[origin-freshness-watchdog] BLIND: checked 0 entries across ${workspaceIdsSwept} workspace(s) while ${bridged} bridged pot(s) exist. ` +
+            `This watchdog is not watching anything — treat every 'clean' origin-freshness pass as unverified until fixed.`,
+        );
+      }
+    }
+
     return out;
   } catch (e) {
     console.warn(`[origin-freshness-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);

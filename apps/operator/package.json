@@ -144,6 +144,7 @@
     "@xterm/xterm": "^6.0.0",
     "@xyflow/react": "^12.10.2",
     "ajv": "^8.18.0",
+    "ajv-errors": "^3.0.0",
     "ajv-formats": "^3.0.1",
     "b4a": "^1.6.7",
     "better-sqlite3": "^12.9.0",
