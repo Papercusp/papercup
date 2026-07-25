@@ -181,3 +181,16 @@ probehome.*/
 # Playwright MCP session snapshots — agent browser-session debris, never source.
 # Carried owner-identity UI text into the 0.0.12 cut (WI-4776 lint); keep untracked.
 .playwright-mcp/
+
+# AppImage extractions (`--appimage-extract`) unpack the ENTIRE bundled app: a
+# 90MB libwebkit2gtk .so, 64MB corestore .sst files, zellij/kopia binaries, a
+# 75MB git bundle. A perf test left one at tools/perf-test/wdio/.appimage-extract
+# on 2026-07-20 and git-sync's blanket `git add -A` committed 2.26 GB of it
+# (46c2a163d6), pushing the pot-git publish guard's new-bytes total to 2301 MB —
+# past its 500 MB cap. The guard then refused EVERY publish, and since its
+# baseline only advances THROUGH a successful publish, the refusal was
+# self-perpetuating: deleting the files 10 minutes later did nothing (the blobs
+# stay reachable from a commit inside the judged range) and origin/staging sat
+# frozen for 5 days. Never source — ignore the whole class so it cannot recur.
+**/.appimage-extract/
+**/squashfs-root/
