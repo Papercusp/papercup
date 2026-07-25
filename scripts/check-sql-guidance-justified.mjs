@@ -64,11 +64,16 @@ const COVERED_TABLES = [
   'engineer_issues',
 ];
 
-/** A SELECT … FROM <covered table> on one line — the "run this" shape. */
+/** A SELECT … FROM <covered table> — the "run this" shape. Matched over a
+ *  WINDOW of lines, not the single grep line: a query whose column list wraps
+ *  puts SELECT and FROM on different lines, and a line-local regex would let
+ *  every multi-line query through (the easiest possible bypass of this guard). */
 const SQL_RE = new RegExp(
-  `\\bselect\\b[\\s\\S]{0,200}?\\bfrom\\s+(?:harness_shared\\.)?(${COVERED_TABLES.join('|')})\\b`,
+  `\\bselect\\b[\\s\\S]{0,400}?\\bfrom\\s+(?:harness_shared\\.)?(${COVERED_TABLES.join('|')})\\b`,
   'i',
 );
+/** Lines above the FROM that may hold the opening SELECT. */
+const SELECT_LOOKBACK = 6;
 
 /** The justification marker; everything after the colon is the reason. The `m`
  *  flag matters: the marker is searched in a multi-LINE window, so `$` must mean
@@ -193,23 +198,30 @@ for (const line of raw.split('\n')) {
   const lineno = Number(linenoStr);
   if (isTestFile(file)) continue;
 
-  const sqlMatch = content.match(SQL_RE);
-  if (!sqlMatch) continue;
-
   const src = fileText(file);
   if (!src) continue;
+  const lines = src.split('\n');
+
+  // The SELECT may sit on an earlier line than the FROM git grep matched — look
+  // back a few lines so a wrapped column list can't slip past.
+  const windowStart = Math.max(0, lineno - 1 - SELECT_LOOKBACK);
+  const sqlWindow = lines.slice(windowStart, lineno).join('\n');
+  const sqlMatch = sqlWindow.match(SQL_RE);
+  if (!sqlMatch) continue;
 
   // TS: only the agent-facing description/guidance text counts.
   if (file.endsWith('.ts')) {
-    const off = lineOffset(src, lineno) + (sqlMatch.index ?? 0);
+    // Anchor on the FROM (this line) — it is inside the same literal as the SELECT.
+    const off = lineOffset(src, lineno) + Math.max(0, content.toLowerCase().indexOf('from'));
     const inGuidance = guidanceRegions(src).some(([a, b]) => off >= a && off <= b);
     if (!inGuidance) continue;
   }
 
-  // A justified site: the marker (WITH a reason) on this line or just above.
-  const lines = src.split('\n');
-  const window = lines.slice(Math.max(0, lineno - 1 - MARKER_LOOKBACK), lineno).join('\n');
-  if (MARKER_RE.test(window)) continue;
+  // A justified site: the marker (WITH a reason) on this line, just above it, or
+  // just above the SELECT that opened the query (which may be further up).
+  const markerFrom = Math.max(0, windowStart - MARKER_LOOKBACK);
+  const markerWindow = lines.slice(markerFrom, lineno).join('\n');
+  if (MARKER_RE.test(markerWindow)) continue;
 
   hits.push({ file, lineno, table: sqlMatch[1].toLowerCase(), content: content.trim() });
 }

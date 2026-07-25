@@ -58,6 +58,14 @@ import {
 
 const WATCHDOG_PHASE = 'origin-freshness-watchdog';
 const WATCHDOG_KIND = 'origin-freshness-watchdog';
+/** WI-5791: stable condition key for "this watchdog is watching nothing". */
+const WATCHDOG_BLIND_CONDITION_KEY = 'origin-freshness:watchdog-blind';
+/**
+ * WI-5791: edge-trigger state for the blindness broadcast, so a persistent
+ * blindness alarms ONCE rather than every sweep. Process-level by design — a
+ * restart re-announcing a still-blind watchdog is correct, not noise.
+ */
+let lastSweepWasBlind = false;
 /** EI-9030b idiom: consecutive sweeps the verdict must hold before it broadcasts. */
 const DEFAULT_STALL_SUSTAIN_MIN_SWEEPS = 2;
 /** git-sync ticks every 3 min; 15m matches every sibling watchdog's sweep cadence. */
@@ -493,6 +501,13 @@ export async function checkOriginFreshness(
     // WI-5791 — the self-report. A sweep that checked nothing is not a healthy
     // sweep, and until now it was reported as one. Only meaningful when bridged
     // pots actually exist: a workspace with none legitimately checks zero.
+    //
+    // This deliberately does NOT stop at a console.warn. The whole lesson of this
+    // incident is that a signal nobody reads is not a detector — a warn buried in
+    // the bg-host journal would be the same mistake one level up. It goes to the
+    // same severe-event surface a real origin-freshness stall uses, keyed on a
+    // stable conditionKey so it dedupes rather than storms, and edge-triggered off
+    // module state so a persistent blindness broadcasts once, not every 15 minutes.
     if (out.checked === 0) {
       const bridged = await countBridgedPots(sql);
       if (bridged > 0) {
@@ -501,7 +516,29 @@ export async function checkOriginFreshness(
           `[origin-freshness-watchdog] BLIND: checked 0 entries across ${workspaceIdsSwept} workspace(s) while ${bridged} bridged pot(s) exist. ` +
             `This watchdog is not watching anything — treat every 'clean' origin-freshness pass as unverified until fixed.`,
         );
+        if (!lastSweepWasBlind) {
+          lastSweepWasBlind = true;
+          await broadcastSevereEvent({
+            summary: `origin-freshness watchdog is BLIND — it checked 0 pots while ${bridged} bridged pot(s) exist. Origin freshness is NOT being monitored.`,
+            body:
+              `The sweep enumerated ${workspaceIdsSwept} workspace(s) and found no eligible entry, so no origin tip was measured, aged, or judged ` +
+              `on this pass. A 'clean' origin-freshness result right now means NOTHING WAS CHECKED — not that origin is healthy.\n\n` +
+              `This is the failure mode described in agent-insights/absorbing-state-guards-and-self-report-detectors (Shape D): a correctly ` +
+              `written detector aimed at an empty set reports a clean pass forever. Claim it: check which workspaces own a harness registry ` +
+              `(harness_shared.harness_registry) versus which own the bridged pots (harness_shared.pot_settings, setting_key='hiveGit.mode'), ` +
+              `and confirm the sweep's scope covers the latter.`,
+            category: 'severe-event',
+            conditionKey: WATCHDOG_BLIND_CONDITION_KEY,
+          });
+        }
       }
+    } else if (lastSweepWasBlind) {
+      // Coverage came back — retract the blindness alarm, same as any recovery.
+      lastSweepWasBlind = false;
+      await broadcastSevereEventResolvedMany({
+        conditionKeys: [WATCHDOG_BLIND_CONDITION_KEY],
+        summary: `origin-freshness watchdog RECOVERED coverage — it is checking ${out.checked} pot(s) again.`,
+      });
     }
 
     return out;

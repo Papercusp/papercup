@@ -61,8 +61,23 @@ function cmdSubVars(lines) {
   return set;
 }
 
-const suppressed = (lines, i) =>
-  (lines[i] ?? '').includes(PRAGMA) || (lines[i - 1] ?? '').includes(PRAGMA);
+/**
+ * A pragma counts when it is on the offending line, or ANYWHERE in the contiguous comment
+ * block immediately above it. Requiring it on exactly the preceding line punished the
+ * authors doing the right thing: a genuine exemption needs a real WHY, a real WHY runs to
+ * several comment lines, and only the FIRST carried the token — so the suppression silently
+ * did nothing and the finding stayed red. Scanning the attached block keeps the pragma bound
+ * to the line (a blank line or any code ends the block) while letting the reason breathe.
+ */
+const suppressed = (lines, i) => {
+  if ((lines[i] ?? '').includes(PRAGMA)) return true;
+  for (let j = i - 1; j >= 0; j--) {
+    const l = lines[j] ?? '';
+    if (!/^\s*#/.test(l)) return false; // block ended (blank line or code) — not attached
+    if (l.includes(PRAGMA)) return true;
+  }
+  return false;
+};
 
 const NUM_CMP = /-(?:gt|ge|lt|le|eq|ne)\b/;
 
@@ -155,9 +170,21 @@ function scan(file, text) {
       // gets pragma'd by reflex too.
       const statusVars = [...body.matchAll(/(?:^\s*|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=([1-9]\d*)\s*(?:;|$)/gm)]
         .map((m) => m[1]);
-      const propagatesFailure = statusVars.some((v) =>
-        lines.some((l) => new RegExp(`\\b(?:return|exit)\\s+"?\\$\\{?${v}\\}?"?`).test(l)),
-      );
+      // Propagation takes two shapes, and BOTH must be recognised or the rule punishes a
+      // correct refactor: (a) the var is returned/exited directly (`exit "$FAIL"`), or
+      // (b) the var is TESTED in a condition that guards a return/exit within a few lines
+      // (`if [ "$FAIL" != 0 ]; then echo …; exit 1`). Shape (b) is what a script adopts the
+      // moment it needs more than two outcomes — e.g. a distinct exit for "partial/skipped" —
+      // and treating that as non-propagating re-reds code that just got MORE honest.
+      const propagatesFailure = statusVars.some((v) => {
+        const direct = new RegExp(`\\b(?:return|exit)\\s+"?\\$\\{?${v}\\}?"?`);
+        const tested = new RegExp(`\\[\\s*"?\\$\\{?${v}\\}?"?\\s*(?:!=|=|-ne|-eq|-gt|-ge|-lt|-le)`);
+        return lines.some((l, k) => {
+          if (direct.test(l)) return true;
+          if (!tested.test(l)) return false;
+          return lines.slice(k, k + 4).some((n) => /\b(?:exit|return)\b/.test(n));
+        });
+      });
       if (!/\b(return|exit)\b/.test(body) && !propagatesFailure && /\becho\b/.test(body)) {
         add(
           i,

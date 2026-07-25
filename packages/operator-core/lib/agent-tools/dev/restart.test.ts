@@ -169,23 +169,52 @@ describe('dev:restart dry run', () => {
   });
 });
 
+// EI-18643120769203916: a withheld restart is a REFUSAL, not a partial success.
+// The old code ran this check INSIDE guardResource, so an un-enabled call
+// drained the target (leaving it quiesced on old code) and returned ok:true —
+// which reads as "the restart happened" to any caller that checks `ok`.
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
-  it('target:dev drains but withholds the restart, without touching the cooldown marker, and the note points at authorize:true', async () => {
+  it('target:dev REFUSES with ok:false and does NOT drain — no guard, no lock, no audit — and the note points at authorize:true', async () => {
     guardM.mockImplementation(runGuard(fenceOk()) as never);
     const b = body(await call({ confirm: true }));
-    expect(b).toMatchObject({ ok: true, target: 'dev', drained: true, restarted: false });
-    expect(b.note).toMatch(/authorize:true/);
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'dev',
+      reason: 'restart_withheld',
+      restarted: false,
+      drained: false,
+    });
+    expect(b.note).toMatch(/authorize:\s*true/);
+    // The whole point: the refusal happens BEFORE any side effect.
+    expect(guardM).not.toHaveBeenCalled();
     // dev has no cooldownResource — the debounce path must never engage for it.
     expect(acquireM).not.toHaveBeenCalled();
     expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
   });
 
-  it('target:staging withholds the restart too, and never claims the cooldown marker (nothing real happened to debounce)', async () => {
+  it('target:staging is refused the same way — no drain, and the cooldown marker is never claimed (nothing real happened to debounce)', async () => {
     guardM.mockImplementation(runGuard(fenceOk()) as never);
     const b = body(await call({ confirm: true, target: 'staging' }));
-    expect(b).toMatchObject({ ok: true, target: 'staging', drained: true, restarted: false });
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'staging',
+      reason: 'restart_withheld',
+      restarted: false,
+      drained: false,
+    });
+    expect(guardM).not.toHaveBeenCalled();
     expect(acquireM).not.toHaveBeenCalled();
     expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('the refusal states plainly that nothing was done, so ok:false is not read as "drained but not restarted"', async () => {
+    guardM.mockImplementation(runGuard(fenceOk()) as never);
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+    expect(b).toMatchObject({ ok: false, drained: false, restarted: false });
+    expect(b.note).toMatch(/NOTHING was done/i);
+    expect(b.note).toMatch(/papercup-bg-host\.service/);
   });
 });
 
@@ -212,7 +241,7 @@ describe('dev:restart confirm:true + authorize:true, PAPERCUSP_ALLOW_DEV_RESTART
   it('confirm:true alone (authorize omitted, no env) still withholds — authorize does not implicitly follow from confirm', async () => {
     guardM.mockImplementation(runGuard(fenceOk()) as never);
     const b = body(await call({ confirm: true, target: 'dev' }));
-    expect(b).toMatchObject({ ok: true, target: 'dev', restarted: false });
+    expect(b).toMatchObject({ ok: false, target: 'dev', reason: 'restart_withheld', restarted: false });
     expect(auditUnsafeM).not.toHaveBeenCalled();
   });
 

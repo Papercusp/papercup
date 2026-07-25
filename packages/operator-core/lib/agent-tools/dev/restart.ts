@@ -228,7 +228,13 @@ export default defineTool({
     /** Short free-text reason, recorded on the audit_log row when a real
      *  restart fires (either enablement route). Optional but encouraged when
      *  using `authorize` in place of the env gate. */
-    reason: z.string().max(300).optional(),
+    reason: z
+      .string()
+      .max(300)
+      .optional()
+      .describe(
+        'Short free-text reason (MAX 300 chars — keep it to one line; a longer diagnosis belongs on the work-item) recorded on the audit_log row. Expected whenever you pass authorize:true.',
+      ),
   }),
   async handler(args, ctx) {
     const target: RestartTarget = args.target ?? 'dev';
@@ -252,7 +258,7 @@ export default defineTool({
         dry_run: true,
         target,
         would_run: restartCmd,
-        note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} The real restart also requires PAPERCUSP_ALLOW_DEV_RESTART=1.`,
+        note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} confirm:true ALONE is not enough — the real restart also needs the enablement gate: pass authorize:true + a short \`reason\` (≤300 chars) in the same call, or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process. Without it the call is REFUSED outright (ok:false, nothing drained).`,
       });
     }
 
@@ -266,6 +272,30 @@ export default defineTool({
     // and, unlike the raw-systemctl bypass it replaces, always audited below.
     const enabledByArg = args.authorize === true;
     const enabled = enabledByEnv || enabledByArg;
+
+    // EI-18643120769203916: refuse BEFORE any side effect. This check used to
+    // live INSIDE guardResource, so a call without the enablement gate acquired
+    // exclusive(<resource>), DRAINED every current user, and then reported
+    // `ok:true, drained:true, restarted:false`. Two defects in one:
+    //   1. It half-executed — the target was left QUIESCED and still running
+    //      old code, an end state strictly worse than either doing nothing or
+    //      restarting.
+    //   2. `ok:true` reads as success. An agent that fires the documented call
+    //      and checks `ok` concludes the restart landed. That is the likeliest
+    //      driver of EI-18642482762875484 (six workers re-learned the bg-host
+    //      stale-runtime lesson over ~5 days while the restart never fired).
+    // A withheld restart is a REFUSAL, not a partial success: no lock, no
+    // drain, ok:false.
+    if (!enabled) {
+      return json({
+        ok: false,
+        target,
+        reason: 'restart_withheld',
+        restarted: false,
+        drained: false,
+        note: `Restart REFUSED — the enablement gate is not set, and NOTHING was done: no lock taken, no drain, ${cfg.unit} left running exactly as it was. To actually restart it, re-call with { confirm: true, authorize: true, reason: '<why, ≤300 chars>' } (audited), or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process.`,
+      });
+    }
 
     // WI-4221 debounce: for a cooldown-bearing target (staging), try to claim
     // the cooldown marker FIRST, before touching the drain-gate at all. If a
@@ -377,15 +407,9 @@ export default defineTool({
         reason: `${cfg.resource} restart`,
       },
       async (fence) => {
-        if (!enabled) {
-          return json({
-            ok: true,
-            target,
-            drained: true,
-            restarted: false,
-            note: 'Drain complete, but restart WITHHELD — set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process, OR re-call with confirm:true, authorize:true (and a `reason`) to enable it in-band for this call.',
-          });
-        }
+        // NOTE: the `!enabled` refusal happens BEFORE this guard is ever entered
+        // (EI-18643120769203916) — reaching here means a real restart is
+        // authorized, so the drain we just performed is always followed through.
         // D-001 fencing: re-verify we still hold the effective exclusive at our
         // fence immediately before the destructive restart. A paused/zombie
         // holder whose lease lapsed and was re-granted is rejected here rather

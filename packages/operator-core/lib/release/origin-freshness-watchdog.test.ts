@@ -41,9 +41,10 @@ vi.mock('../sync/pot-git/storage', () => ({
   readNamespaceRef: async () => null,
   defaultRunGit: async () => ({ code: 0, stdout: '', stderr: '' }),
 }));
+const broadcasts = vi.hoisted(() => ({ alarm: vi.fn(async () => true), resolved: vi.fn(async () => undefined) }));
 vi.mock('../severe-event-broadcast', () => ({
-  broadcastSevereEvent: async () => undefined,
-  broadcastSevereEventResolvedMany: async () => undefined,
+  broadcastSevereEvent: broadcasts.alarm,
+  broadcastSevereEventResolvedMany: broadcasts.resolved,
 }));
 
 import { checkOriginFreshness } from './origin-freshness-watchdog';
@@ -79,8 +80,20 @@ const BRIDGED_ENTRY = { slug: 'papercusp', self_repo: true, github_remote: 'git@
 beforeEach(() => {
   registries.byWorkspace.clear();
   gitModes.byPotHome.clear();
+  broadcasts.alarm.mockClear();
+  broadcasts.resolved.mockClear();
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
+
+/**
+ * The blindness broadcast is edge-triggered off MODULE-level state, so these
+ * tests take a FRESH module instance each time — otherwise they'd silently
+ * depend on execution order and stop testing the edge at all.
+ */
+async function freshWatchdog() {
+  vi.resetModules();
+  return (await import('./origin-freshness-watchdog')).checkOriginFreshness;
+}
 
 describe('WI-5791 — coverage: the sweep must reach every workspace, not just the default', () => {
   it('checks a bridged pot living in a NON-default workspace (the five-day blind spot)', async () => {
@@ -159,5 +172,71 @@ describe('WI-5791 — self-report: a sweep that covers nothing must not read as 
     const res = await checkOriginFreshness(sql, {});
 
     expect(res.blind).toBe(true);
+  });
+});
+
+describe('WI-5791 — the blindness alarm reaches a surface someone reads, without storming', () => {
+  it('broadcasts a severe event the first time it goes blind', async () => {
+    const check = await freshWatchdog();
+    const { sql } = makeSql({ workspaceIds: ['default'], bridgedPots: 3 });
+
+    await check(sql, {});
+
+    expect(broadcasts.alarm).toHaveBeenCalledTimes(1);
+    const ev = broadcasts.alarm.mock.calls[0][0] as { conditionKey: string; summary: string };
+    expect(ev.conditionKey).toBe('origin-freshness:watchdog-blind');
+    expect(ev.summary).toContain('BLIND');
+  });
+
+  it('does NOT re-broadcast on every subsequent blind sweep (15-min storm guard)', async () => {
+    const check = await freshWatchdog();
+    const { sql } = makeSql({ workspaceIds: ['default'], bridgedPots: 3 });
+
+    // broadcastSevereEvent messages EVERY agent and does not dedupe on
+    // conditionKey — so an un-edge-triggered alarm would page the whole fleet
+    // every sweep, forever.
+    await check(sql, {});
+    await check(sql, {});
+    await check(sql, {});
+
+    expect(broadcasts.alarm).toHaveBeenCalledTimes(1);
+  });
+
+  it('retracts the alarm when coverage comes back', async () => {
+    const check = await freshWatchdog();
+    const blind = makeSql({ workspaceIds: ['default'], bridgedPots: 3 });
+    await check(blind.sql, {});
+    expect(broadcasts.alarm).toHaveBeenCalledTimes(1);
+
+    registries.byWorkspace.set('papercusp-workspace', [BRIDGED_ENTRY]);
+    gitModes.byPotHome.set('papercusp', 'bridged');
+    const covered = makeSql({
+      workspaceIds: ['papercusp-workspace'],
+      bridgedPots: 3,
+      routineRow: { egress_head: 'a'.repeat(40), of_origin_sha: null, of_origin_since_ms: null, of_alerted: false },
+    });
+
+    const res = await check(covered.sql, {});
+
+    expect(res.blind).toBeUndefined();
+    expect(broadcasts.resolved).toHaveBeenCalledTimes(1);
+    const resolved = broadcasts.resolved.mock.calls[0][0] as { conditionKeys: string[] };
+    expect(resolved.conditionKeys).toEqual(['origin-freshness:watchdog-blind']);
+  });
+
+  it('never broadcasts on a healthy covering sweep', async () => {
+    const check = await freshWatchdog();
+    registries.byWorkspace.set('papercusp-workspace', [BRIDGED_ENTRY]);
+    gitModes.byPotHome.set('papercusp', 'bridged');
+    const { sql } = makeSql({
+      workspaceIds: ['papercusp-workspace'],
+      bridgedPots: 1,
+      routineRow: { egress_head: 'a'.repeat(40), of_origin_sha: null, of_origin_since_ms: null, of_alerted: false },
+    });
+
+    await check(sql, {});
+
+    expect(broadcasts.alarm).not.toHaveBeenCalled();
+    expect(broadcasts.resolved).not.toHaveBeenCalled();
   });
 });

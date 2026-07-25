@@ -365,6 +365,22 @@ jobs:
       - name: Lint shell script syntax
         run: npm run lint:shell-syntax
 
+      # Assert-integrity guard (WI-5788 / P-411): rig + scenario scripts whose probe
+      # FAILING TO RUN reads as a PASS — an unmeasured counter coerced to a permissive
+      # baseline, a var pre-set to its own success literal, an empty-read branch that
+      # logs and continues. This class is invisible to `bash -n` (the scripts parse
+      # fine) and invisible to the live gate (it reports GREEN — that is the bug), so
+      # only a static rule catches it. The point-in-time audit that found the first
+      # batch was outrun by new scripts within a day; this is the mechanical version
+      # so the class cannot re-enter. GATING.
+      #
+      # NOTE: the lint refuses to report green on an empty scan (MIN_EXPECTED_SCRIPTS)
+      # — papercusp-desktop is a SUBMODULE, so a `git ls-files` walk from the
+      # superproject finds ZERO scripts here, and a "pass" from scanning nothing would
+      # be the exact can-falsely-pass shape this guard exists to catch.
+      - name: Lint scenario assert integrity
+        run: npm run lint:assert-integrity
+
       # Insight-doc citation guard (WI-1576): an agent-insights doc's `documents:`
       # frontmatter citation that no longer resolves on disk (the cited file was
       # renamed/moved/deleted and the doc never updated) silently points an agent

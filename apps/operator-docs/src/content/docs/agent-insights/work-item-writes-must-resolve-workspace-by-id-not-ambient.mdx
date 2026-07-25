@@ -40,6 +40,8 @@ paths that trust the ambient value are still exposed.
 Resolve the item's ACTUAL workspace by id, ambient-independent, then scope the write to it:
 
 ```
+-- sql-snippet-justified: IMPLEMENTATION pattern for the write path itself (resolving an
+-- item's own workspace before writing) — it is what a tool must do, not a read to run.
 SELECT harness_slug, workspace_id
   FROM harness_shared.work_items
  WHERE feature_id = ${id} AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}

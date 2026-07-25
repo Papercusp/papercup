@@ -46,10 +46,24 @@ export const CRITICAL_BOOT_MODULES: readonly string[] = [
   // first-party workspace packages (statically imported by host-bootstrap)
   '@papercusp/plugin-loader',
   '@papercusp/operator-core',
-  // the 2026-06-25 culprits: MCP SDK + its transitive azure/typespec chain (via mem0)
+  // the 2026-06-25 culprits: MCP SDK + mem0
+  //
+  // WI-5801: `@typespec/ts-http-runtime/package.json` and `@azure/core-util/package.json`
+  // used to sit here as sentinels for "mem0's transitive azure/typespec chain". They were
+  // REMOVED because mem0ai@3.0.3 depends only on axios/openai/uuid/zod — that chain is gone
+  // from the tree entirely, and neither package appears in package-lock.json or is declared
+  // by anything. So any `npm install` prunes them as extraneous, after which this preflight
+  // resolve-failed 2/9 and exited 78, refusing to boot a PERFECTLY HEALTHY tree. It took
+  // papercup-bg-host (routines/git-sync/substrate) into a crash-loop fleet-wide.
+  //
+  // That is precisely the false positive the manifest comment above warns about, and it is
+  // the specific hazard of a SENTINEL: a sentinel's whole job is to be a package you do not
+  // directly depend on, which means an upstream dependency bump can delete it without any
+  // signal here. The failure is also LATENT — a running host survives on already-loaded
+  // modules and only dies on its NEXT restart, so the blame lands on whatever change that
+  // restart happened to carry. `boot-integrity-preflight.test.ts` now resolve-checks this
+  // whole manifest against the real tree so a dropped entry fails a test instead of the fleet.
   '@modelcontextprotocol/sdk/package.json',
-  '@typespec/ts-http-runtime/package.json',
-  '@azure/core-util/package.json',
   'mem0ai',
   // core HTTP / DB / fs runtime
   'hono',

@@ -69,6 +69,8 @@ SELECT tick_at, known_open_keys, captured FROM harness_shared.watchdog_ticks
  ORDER BY tick_at DESC LIMIT 3;
 
 -- What is the masking EI ACTUALLY about? (read the body, not the key)
+-- sql-snippet-justified: watchdog forensics keyed on payload->>'watchdogKey' —
+-- an internal dedup key no work-item tool filters on.
 SELECT issue_id, state, payload->>'watchdogKey', left(body,200)
   FROM harness_shared.engineer_issues
  WHERE payload->>'watchdogKey' = 'repeated-tool-error:memory:search:structural';

@@ -69,6 +69,16 @@ export const IDEATOR_OUTPUT_HEADROOM_TOKENS = 16_384;
  */
 const ADMISSION_BACKSTOP_GRACE_MS = 5_000;
 
+/**
+ * WI-5784 — how far INSIDE the owning cycle's deadline this call's backstop must
+ * fire. A backstop armed at (or past) the cycle deadline is dead code: the cycle's
+ * timer wins and the tick records an opaque "cycle timed out during phase ideate"
+ * instead of an honest, capacity-classifiable per-ideator error. Kept BELOW
+ * cycle.ts's RETRY_LADDER_DEADLINE_MARGIN_MS (10s) so the retry ladder's more
+ * precise 429/529 error still lands first when it applies.
+ */
+const CYCLE_DEADLINE_MARGIN_MS = 5_000;
+
 /** One planned ideator: a lens, its within-lens index (drives domain rotation), and a global index. */
 export interface IdeatorSlot {
   lens: CreativeLens;
@@ -530,7 +540,24 @@ async function callIdeatorLlm(
   const grace = opts.admissionBackstopGraceMs ?? ADMISSION_BACKSTOP_GRACE_MS;
   const totalCeilingMs = (() => {
     if (admissionBudgetMs === undefined) return hasGenerationCap ? generationTimeoutMs : undefined;
-    return admissionBudgetMs + (hasGenerationCap ? generationTimeoutMs : 0) + grace;
+    const uncapped = admissionBudgetMs + (hasGenerationCap ? generationTimeoutMs : 0) + grace;
+    // WI-5784 — CLAMP the ceiling strictly INSIDE the owning cycle's deadline.
+    //
+    // Without this the arithmetic cancels: admissionBudget is `remaining - genCap`,
+    // so admissionBudget + genCap + grace === `remaining + grace` — the backstop was
+    // always armed AFTER the cycle deadline and could never win the race. The cycle's
+    // own timer fired first, every time, recording the useless "Scout cycle timed out
+    // after 600000ms during phase ideate" instead of the honest, capacity-classifiable
+    // per-ideator error the messages below were written to produce. That is 42 of the
+    // 55 scout error ticks in the 7d window that broke the <5% release bar.
+    //
+    // The ladder is deliberate, outermost-last: retry-ladder bail (cycle deadline −10s,
+    // cycle.ts RETRY_LADDER_DEADLINE_MARGIN_MS) → this backstop (−5s) → cycle timer (0).
+    // The more precise error therefore still wins when it applies; this only guarantees
+    // SOMETHING honest fires before the guillotine.
+    const remaining = (opts.cycleDeadlineMs as number) - Date.now();
+    const insideCycle = Math.max(0, remaining - CYCLE_DEADLINE_MARGIN_MS);
+    return Math.min(uncapped, insideCycle);
   })();
 
   if (totalCeilingMs === undefined && !opts.signal) {

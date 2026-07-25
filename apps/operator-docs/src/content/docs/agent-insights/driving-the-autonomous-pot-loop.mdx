@@ -88,6 +88,8 @@ select last_fired_at, next_fire_at from harness_shared.routines where name = 'wa
 -- Counting only status='done' reads a HEALTHY loop as "zero completions" —
 -- an su burned a wake concluding the forward half was stalled when 9
 -- completions had landed that hour. Count the whole terminal set:
+-- sql-snippet-justified: loop-health forensics — no tool exposes a terminal-set
+-- count across the whole status family in a time window.
 select count(*) filter (where taken_by is not null) as taken,
        count(*) filter (where status in ('done','resolved','closed','passed')
              and updated_ts > extract(epoch from now())*1000 - 3600*1000) as done_1h

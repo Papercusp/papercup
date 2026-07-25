@@ -393,6 +393,31 @@ describe('runIdeators — admission vs generation budgets (WI-4475)', () => {
     expect(budget!).toBeGreaterThan(0);
   });
 
+  it('WI-5784: the backstop fires STRICTLY INSIDE the cycle deadline, so the cycle timer never guillotines the honest error', async () => {
+    // THE BUG: admissionBudget is `remaining - generationCap`, so the old ceiling
+    // `admissionBudget + generationCap + grace` collapsed to `remaining + grace` —
+    // armed AFTER the owning cycle's own timer, hence unreachable. Every such call
+    // was recorded as the opaque "Scout cycle timed out after 600000ms during phase
+    // ideate" (42 of 55 scout error ticks in the 7d window that broke the <5% bar)
+    // instead of the capacity-classifiable message this call is written to produce.
+    const { call } = governedLlm({ admissionMs: 0, admit: false }); // never returns
+    const remaining = 5_200; // margin is 5_000 ⇒ the ceiling lands ~200ms out
+    const started = Date.now();
+    const res = await runIdeators(digest, {
+      llmCall: call,
+      perLens: 1,
+      lenses: ['analogical'],
+      ideatorTimeoutMs: 1_000,
+      cycleDeadlineMs: started + remaining,
+    });
+    const elapsed = Date.now() - started;
+    expect(res.ideas).toHaveLength(0);
+    // THE INVARIANT: we gave up with time still on the cycle clock, so the phase can
+    // still conclude and the tick can record WHY. Pre-fix this took `remaining + grace`.
+    expect(elapsed).toBeLessThan(remaining);
+    expect(res.ideators[0]?.error ?? '').toMatch(/never admitted|no capacity|before the cycle deadline/i);
+  });
+
   it('no cycle deadline ⇒ no admission bound imposed (pre-WI-4475 callers/tests unchanged)', async () => {
     const { call, seen } = governedLlm({ admissionMs: 0, generationMs: 0 });
     await runIdeators(digest, { llmCall: call, perLens: 1, lenses: ['analogical'] });
