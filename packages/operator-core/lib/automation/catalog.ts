@@ -1,0 +1,237 @@
+/**
+ * Automation catalog — the read model behind the owner-facing automation panes
+ * (Blender = learning agents, Docs = documentation agents).
+ *
+ * WHY THIS EXISTS (2026-07-25, owner ask): the owner's weekly Claude limit was
+ * being consumed by cron-spawned agents with NO owner-facing surface to see or
+ * configure them. Every existing surface produced a false negative — the
+ * agents-running roster reads empty because these agents are EPHEMERAL (spawn →
+ * a few turns → exit), so nothing is ever listed while spend is continuous.
+ * See /internal/docs/agent-insights/attributing-claude-token-spend.
+ *
+ * This module joins the two halves the owner needs in one place:
+ *   - WHAT IS SCHEDULED — `harness_shared.routines` (cadence, active, last/next fire)
+ *   - WHAT IT COSTS     — `harness_shared.agent_usage_samples` rolled up by role
+ *
+ * ⚠ DELIBERATELY NOT JOINED: routine → cost. `agent_usage_samples.account_id` is
+ * frequently NULL and there is no foreign key from a usage row back to the routine
+ * that spawned it, so any per-routine cost number would be a guess presented as a
+ * fact. Spend is reported by ROLE alongside the schedule, never fused into it.
+ * (An earlier version of this investigation asserted exactly such an unproven link
+ * and was wrong twice.) If per-routine attribution is wanted, the fix is to stamp
+ * the spawning routine onto the usage row at spawn time — not to infer it here.
+ */
+import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../workspace-registry';
+
+/** Owner-facing grouping. One pane per category (Blender → learning, Docs → docs). */
+export type AutomationCategory = 'learning' | 'docs' | 'supervision' | 'health' | 'infra' | 'agent-loops';
+
+export const AUTOMATION_CATEGORIES: readonly AutomationCategory[] = [
+  'learning',
+  'docs',
+  'supervision',
+  'health',
+  'infra',
+  'agent-loops',
+] as const;
+
+export interface AutomationRoutine {
+  name: string;
+  installSlug: string;
+  group: string | null;
+  category: AutomationCategory;
+  cron: string | null;
+  /** Human cadence, e.g. "every 30m" — derived from cron for display. */
+  cadence: string | null;
+  active: boolean;
+  /** True when this routine's fire spawns a model-backed agent (i.e. it can cost tokens). */
+  spawnsAgent: boolean;
+  lastFiredAt: string | null;
+  nextFireAt: string | null;
+}
+
+export interface AutomationRoleSpend {
+  role: string;
+  modelClass: string | null;
+  turns: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  lastSeenAt: string | null;
+}
+
+export interface AutomationCategorySummary {
+  category: AutomationCategory;
+  total: number;
+  active: number;
+  /** Active routines in this category that spawn a model-backed agent. */
+  activeSpawning: number;
+}
+
+export interface AutomationCatalog {
+  routines: AutomationRoutine[];
+  categories: AutomationCategorySummary[];
+  /** 7-day spend by agent role. NOT attributable per-routine — see module header. */
+  spend7d: AutomationRoleSpend[];
+  spend7dTotalUsd: number;
+  generatedAt: string;
+}
+
+/**
+ * Routines whose fire spawns a model-backed agent (and therefore consumes tokens),
+ * matched by name. Everything else is a pure system sweep (SQL/git/gc) that costs
+ * nothing — keeping them visually distinct is the whole point of the pane: the owner
+ * must be able to tell "this one can spend money" from "this one cannot" at a glance.
+ */
+const AGENT_SPAWNING_PATTERNS: RegExp[] = [
+  /^bp-singleton-/i, // blueprint learning singletons (scout, red-queen, regret, …)
+  /^gym-cycle$/i,
+  /^template-gym$/i,
+  /^pot-eval-battery$/i,
+  /^improvement-(implement|triage|watchdog|human-digest|invalid-args-miner)$/i,
+  /wake$/i, // overwatch-wake, pot-wake, wake-brain
+  /^loop-su-/i, // agent-armed continuation loops
+  /prospector-cadence$/i,
+  /^hive-canary$/i,
+  /^autonomy-trust-scan$/i,
+  /^coord-invariant-monitor$/i,
+  /^claim-discipline-watch$/i,
+];
+
+const DOCS_PATTERNS: RegExp[] = [/doc/i, /^knowledge-pack-/i];
+
+export function routineSpawnsAgent(name: string): boolean {
+  return AGENT_SPAWNING_PATTERNS.some((re) => re.test(name));
+}
+
+/**
+ * Classify a routine into an owner-facing category.
+ *
+ * Docs is checked BEFORE the group, because a documentation routine may be filed
+ * under self-improvement/health by its group_slug while the owner thinks of it as
+ * "the documentation agent" and looks for it in the Docs pane.
+ */
+export function classifyRoutine(name: string, groupSlug: string | null): AutomationCategory {
+  if (DOCS_PATTERNS.some((re) => re.test(name))) return 'docs';
+  if (groupSlug === 'agent-loops' || /^loop-su-/i.test(name)) return 'agent-loops';
+  if (groupSlug === 'self-improvement') return 'learning';
+  if (groupSlug === 'supervision') return 'supervision';
+  if (groupSlug === 'health') return 'health';
+  if (groupSlug === 'git-sync' || groupSlug === 'release') return 'infra';
+  // Ungrouped: fall back to name shape so nothing lands in a category the owner
+  // would never think to open.
+  if (/^bp-singleton-|gym|improvement-|eval-battery|prospector/i.test(name)) return 'learning';
+  if (/git-sync|checkpoint|release|deploy|gc|reaper|retention|precompute/i.test(name)) return 'infra';
+  if (/wake|overwatch|coord-|claim-|canary|autonomy/i.test(name)) return 'supervision';
+  return 'health';
+}
+
+/** Render a cron expression as a short human cadence for the pane. */
+export function cronCadence(cron: string | null): string | null {
+  if (!cron) return null;
+  const f = cron.trim().split(/\s+/);
+  // 6-field (with seconds) or 5-field.
+  const [, min, hour] = f.length >= 6 ? f : ['0', ...f];
+  const everyMin = min?.match(/^\*\/(\d+)$/);
+  if (everyMin && hour === '*') return `every ${everyMin[1]}m`;
+  const everyHour = hour?.match(/^\*\/(\d+)$/);
+  if (everyHour) return `every ${everyHour[1]}h`;
+  if (min?.includes(',') && hour === '*') return `${min.split(',').length}×/hour`;
+  if (hour === '*') return 'hourly';
+  if (/^\d+$/.test(hour ?? '')) return 'daily';
+  return cron;
+}
+
+export async function getAutomationCatalog(): Promise<AutomationCatalog> {
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const iso = (d: Date | null | undefined): string | null =>
+    d && !Number.isNaN(new Date(d).getTime()) ? new Date(d).toISOString() : null;
+
+  const rows = await sql<
+    Array<{
+      name: string;
+      install_slug: string;
+      group_slug: string | null;
+      trigger_config: Record<string, unknown> | null;
+      active: boolean;
+      last_fired_at: Date | null;
+      next_fire_at: Date | null;
+    }>
+  >`
+    SELECT name, install_slug, group_slug, trigger_config, active, last_fired_at, next_fire_at
+      FROM harness_shared.routines
+     WHERE workspace_id = ${ws}
+     ORDER BY active DESC, name ASC`;
+
+  const routines: AutomationRoutine[] = rows.map((r) => {
+    const cron = typeof r.trigger_config?.cron === 'string' ? (r.trigger_config.cron as string) : null;
+    return {
+      name: r.name,
+      installSlug: r.install_slug,
+      group: r.group_slug,
+      category: classifyRoutine(r.name, r.group_slug),
+      cron,
+      cadence: cronCadence(cron),
+      active: r.active === true,
+      spawnsAgent: routineSpawnsAgent(r.name),
+      lastFiredAt: iso(r.last_fired_at),
+      nextFireAt: iso(r.next_fire_at),
+    };
+  });
+
+  const categories: AutomationCategorySummary[] = AUTOMATION_CATEGORIES.map((category) => {
+    const inCat = routines.filter((x) => x.category === category);
+    return {
+      category,
+      total: inCat.length,
+      active: inCat.filter((x) => x.active).length,
+      activeSpawning: inCat.filter((x) => x.active && x.spawnsAgent).length,
+    };
+  });
+
+  const spendRows = await sql<
+    Array<{
+      role: string | null;
+      model_class: string | null;
+      turns: string | null;
+      out_tok: string | null;
+      cache_r: string | null;
+      usd: string | null;
+      last_ts: string | null;
+    }>
+  >`
+    SELECT role,
+           model_class,
+           sum(turn_count)::text          AS turns,
+           sum(output_tokens)::text       AS out_tok,
+           sum(cache_read_tokens)::text   AS cache_r,
+           sum(cost_usd)::text            AS usd,
+           max(ts)::text                  AS last_ts
+      FROM harness_shared.agent_usage_samples
+     WHERE workspace_id = ${ws}
+       AND ts > (extract(epoch from now()) * 1000 - 7 * 86400000)
+     GROUP BY role, model_class
+     ORDER BY sum(cost_usd) DESC NULLS LAST`;
+
+  const spend7d: AutomationRoleSpend[] = spendRows
+    .filter((r) => r.role)
+    .map((r) => ({
+      role: r.role as string,
+      modelClass: r.model_class,
+      turns: Number(r.turns ?? 0) || 0,
+      outputTokens: Number(r.out_tok ?? 0) || 0,
+      cacheReadTokens: Number(r.cache_r ?? 0) || 0,
+      costUsd: Number(r.usd ?? 0) || 0,
+      lastSeenAt: r.last_ts ? new Date(Number(r.last_ts)).toISOString() : null,
+    }));
+
+  return {
+    routines,
+    categories,
+    spend7d,
+    spend7dTotalUsd: spend7d.reduce((a, b) => a + b.costUsd, 0),
+    generatedAt: new Date().toISOString(),
+  };
+}
