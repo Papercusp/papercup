@@ -21,8 +21,10 @@
  *     not exist cleanly (shared swarm; see findings-M), and inventing one would be
  *     the exact dishonesty this surface exists to prevent.
  */
+import { Radio } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
+import RailSection from './RailSection';
 
 export interface FedHive {
   potId: string;
@@ -90,7 +92,39 @@ export function substrateLabel(s: FedStatus['substrate']): string {
   return `substrate active · ${parts.join(' · ')}`;
 }
 
-export default function HiveFederationStatus() {
+/**
+ * The COLLAPSED-header signal (owner ask 2026-07-25). Same honesty contract as the
+ * body: it may only report a PROBLEM or a plain count — never a positive "synced"
+ * claim the substrate cannot back. Ordered worst-first so a closed section still
+ * shows the one thing that needs attention. Pure + exported for tests.
+ */
+export function federationSummary(
+  data: FedStatus | null,
+): { label: string; tone: 'good' | 'warn' | 'bad' | 'mute' } {
+  if (!data) return { label: '…', tone: 'mute' };
+  if (drainLabel(data.substrate.drain)) return { label: '⚠ not syncing', tone: 'bad' };
+  if (!data.substrate.active) return { label: 'substrate inactive', tone: 'bad' };
+  if (data.substrate.degraded > 0) {
+    return { label: `⚠ ${data.substrate.degraded} degraded`, tone: 'warn' };
+  }
+  if (data.hives.length === 0) return { label: 'none published', tone: 'mute' };
+  const stranded = data.hives.filter((h) => h.visibility !== 'private' && h.reachablePeers === 0).length;
+  if (stranded > 0) return { label: `⚠ ${stranded} unreached`, tone: 'warn' };
+  return { label: `${data.hives.length} published`, tone: 'good' };
+}
+
+export interface HiveFederationStatusProps {
+  /**
+   * Render inside a collapsible RailSection rather than an always-open panel
+   * (owner ask 2026-07-25 — this panel plus the local-pots control pushed the
+   * Pots tab's p2p roster below the fold). The collapsed header still carries
+   * the worst-first signal from federationSummary(), so closing it never hides
+   * a problem.
+   */
+  collapsible?: boolean;
+}
+
+export default function HiveFederationStatus({ collapsible = false }: HiveFederationStatusProps = {}) {
   const t = useLexicon();
   // P-009 (data-sync-push-completion): push-driven federation status. The
   // `network.federationStatus` resolver serves the SAME { ok, substrate, hives }
@@ -104,12 +138,10 @@ export default function HiveFederationStatus() {
 
   const degraded = data?.substrate.degraded ?? 0;
 
-  return (
-    <div className="pclsb-panel" data-testid="hive-federation-status">
-      <div className="pclsb-panel__bar">
-        <span className="pclsb-panel__bar-label">federation status</span>
-      </div>
-
+  // In collapsible mode the RailSection header carries the title + the
+  // worst-first summary, so the panel's own bar would just repeat it.
+  const body = (
+    <>
       {error && !data && (
         <div className="pclsb-panel__error">
           status unavailable: {error instanceof Error ? error.message : String(error)}
@@ -184,6 +216,31 @@ export default function HiveFederationStatus() {
           </div>
         </>
       )}
+    </>
+  );
+
+  if (collapsible) {
+    const { label, tone } = federationSummary(data);
+    return (
+      <RailSection
+        paramKey="potsFed"
+        icon={Radio}
+        title="Federation"
+        summary={label}
+        tone={tone}
+        testId="hive-federation-status"
+      >
+        {body}
+      </RailSection>
+    );
+  }
+
+  return (
+    <div className="pclsb-panel" data-testid="hive-federation-status">
+      <div className="pclsb-panel__bar">
+        <span className="pclsb-panel__bar-label">federation status</span>
+      </div>
+      {body}
     </div>
   );
 }
