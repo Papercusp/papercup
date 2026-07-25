@@ -20,7 +20,7 @@
  * at the sidebar (LeftSidebar hides the tab when off); this also renders a clear
  * dark/empty state defensively.
  */
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
@@ -78,9 +78,19 @@ function countdownLabel(ms: number | null): string {
 /**
  * Fire an overwatch loop-control tool through the gated/audited run-tool bridge
  * (mirrors hive-control.ts `runHiveControl`, the Queen-tab path). The tool persists
- * `overwatch_started` and fires `notifySyncInvalidate('overwatch.controlState')`, so
- * this panel refreshes live after the toggle. Throws on failure so the caller can
- * surface it inline.
+ * `overwatch_started` and fires `notifySyncInvalidate('overwatch.controlState')`.
+ * Throws on failure so the caller can surface it inline.
+ *
+ * ⚠ That server-side invalidate is NOT sufficient on its own, and this pane used to
+ * rely on it alone — which is exactly why the owner reported (2026-07-25) that
+ * "if I click pause or start the state doesn't update until I click away and switch
+ * back". A pane must reflect its OWN mutation from its OWN callback: the push is a
+ * best-effort convenience for OTHER clients (and only lands at all on the SSE
+ * transport — a polling-transport client has no subscriber to receive it), whereas
+ * a remount happens to refetch, which is why tab-switching "fixed" it. The caller
+ * therefore invalidates its own reads AND holds an optimistic flag; every sibling
+ * pane in this rail already does the same (MugTab `steeringQ.invalidate()`,
+ * AutomationPane `cat.invalidate()`).
  */
 async function runOverwatchControl(tool: 'kettle:start' | 'kettle:pause', harness: string | null): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
@@ -112,6 +122,17 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   );
   const [busy, setBusy] = useState(false);
   const [ctrlErr, setCtrlErr] = useState<string | null>(null);
+  // Optimistic Start/Pause overlay (owner bug 2026-07-25) — the header flips the
+  // instant the owner clicks, instead of waiting a network round-trip plus a
+  // refetch. `writingRef` is the SYNCHRONOUS in-flight count (React state lags a
+  // render): the reconcile effect below must not drop the overlay because an
+  // unrelated drift-repair poll landed mid-write, or the button would visibly snap
+  // back to the old state and then forward again. Same shape as MugTab's overlay.
+  const [optimisticStarted, setOptimisticStarted] = useState<boolean | null>(null);
+  const writingRef = useRef(0);
+  useEffect(() => {
+    if (writingRef.current === 0) setOptimisticStarted(null);
+  }, [ctrl.data]);
 
   // A 1s ticker so the "Last run" age + "Next run" countdown stay live BETWEEN
   // sync fetches (the server stamps ageMs/nextRunInMs at resolve time; we advance
@@ -157,9 +178,10 @@ export default function OverwatchTab({ active }: { active: boolean }) {
     );
   }
 
-  const running = !!control?.started && !!control?.flagEnabled;
-  const preArmed = !!control?.started && !control?.flagEnabled;
-  const isStarted = !!control?.started;
+  // The VIEW state = the server bit with the optimistic overlay on top.
+  const isStarted = optimisticStarted ?? !!control?.started;
+  const running = isStarted && !!control?.flagEnabled;
+  const preArmed = isStarted && !control?.flagEnabled;
   const tone = running ? 'good' : preArmed ? 'warn' : 'mute';
   const stateLabel = running ? 'Running' : preArmed ? 'Pre-armed' : 'Paused';
   const cadenceMin = control ? Math.round(control.cadenceSec / 60) : null;
@@ -170,14 +192,28 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   const nextWake = control?.armed ? whenLabel(control.nextWakeAt) : 'not armed';
 
   const toggle = async () => {
+    const next = !isStarted;
+    writingRef.current += 1;
+    setOptimisticStarted(next);
     setBusy(true);
     setCtrlErr(null);
     try {
-      await runOverwatchControl(isStarted ? 'kettle:pause' : 'kettle:start', slug);
+      await runOverwatchControl(next ? 'kettle:start' : 'kettle:pause', slug);
     } catch (e) {
+      // The write was refused — drop the overlay so the header shows the truth
+      // again rather than a state the server never accepted.
+      setOptimisticStarted(null);
       setCtrlErr(e instanceof Error ? e.message : String(e));
     } finally {
+      writingRef.current -= 1;
       setBusy(false);
+      // Refresh OUR OWN reads — never wait on the server push (see
+      // runOverwatchControl's header). All three derive from the started bit:
+      // controlState is the header, snapshot is the anomaly brief that only
+      // exists while running, liveness is the last/next-wake strip.
+      void ctrl.invalidate?.();
+      void snap.invalidate?.();
+      void live.invalidate?.();
     }
   };
 
@@ -194,12 +230,22 @@ export default function OverwatchTab({ active }: { active: boolean }) {
               <span className="pc-owsb__subtitle">Supervisor loop</span>
             </span>
           </div>
-          {slug && (
-            <Tooltip label={`Supervised ${t('pot', { lower: true })}`}>
-              <span className="pc-owsb__hive">{slug}</span>
-            </Tooltip>
-          )}
-          <Tooltip label={isStarted ? `Pause the ${kettle.toLowerCase()} supervisor (kettle:pause)` : `Start the ${kettle.toLowerCase()} supervisor (kettle:start)`}>
+          {/* SCOPE, not a pot selector (owner question 2026-07-25: "what do those
+              pot labels mean if they should be operating at the workspace level?").
+              The old chip rendered the bare home-pot slug, which read as "this
+              supervises pot X" — but there is exactly ONE Kettle per workspace and
+              Start/Pause here governs all of it. The slug is only the row its state
+              is keyed to, so it moves into the tooltip as provenance. */}
+          <Tooltip
+            label={
+              `One ${kettle} supervises the whole workspace — Start/Pause here affects every ` +
+              `${t('pot', { plural: true, lower: true })}, not one.` +
+              (slug ? ` Its state is stored on the home ${t('pot', { lower: true })} “${slug}”.` : '')
+            }
+          >
+            <span className="pc-owsb__hive" data-testid="overwatch-scope">workspace</span>
+          </Tooltip>
+          <Tooltip label={isStarted ? `Pause the ${kettle.toLowerCase()} supervisor for the whole workspace (kettle:pause)` : `Start the ${kettle.toLowerCase()} supervisor for the whole workspace (kettle:start)`}>
             <button
               type="button"
               className="pc-owsb__toggle"

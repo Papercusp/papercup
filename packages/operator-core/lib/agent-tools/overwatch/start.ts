@@ -20,6 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
+import { resolveHomePotSlug } from '../pot/_resolve';
 import {
   setOverwatchStarted,
   setOverwatchCadenceSec,
@@ -64,7 +65,13 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolvePotHomeSlug(args.harness, undefined);
+    // `resolvePotHomeSlug` is ENV-ONLY, and PAPERCUSP_POT_HOME_SLUG is unset on the
+    // dev/green operators. That made this the owner-visible half of the 2026-07-25
+    // Kettle bug: once PAUSED, overwatch.controlState reported potSlug:null, so the
+    // sidebar's Start button called this tool with NO harness and got
+    // `no_home_harness` back — Start looked dead. Fall back to the registry home
+    // pot, the same slug the steering UI writes to (mug-steering-panel GAP 1).
+    const installSlug = resolvePotHomeSlug(args.harness, undefined) ?? (await resolveHomePotSlug(workspaceId));
     if (!installSlug) {
       return {
         content: [

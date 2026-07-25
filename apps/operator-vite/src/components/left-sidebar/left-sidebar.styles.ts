@@ -9,6 +9,13 @@
  * --left-sidebar-w var) so the app shifts right, sits AFTER the op-chat
  * sidebar (offset by --op-chat-w), collapses to a thin expand-rail, and is
  * drag-resizable from its RIGHT edge. Everything is prefixed pclsb.
+ *
+ * ⚠ The whole sheet below is ONE TEMPLATE LITERAL. A stray backtick or `${` —
+ * including inside a CSS comment, e.g. quoting a token name as `--foo` — closes
+ * the string and the file stops PARSING: `npm run typecheck` hard-fails and every
+ * test that imports this module reports as UNMATCHED (a transform error, which
+ * reads like a test-router problem rather than a syntax one). Write token names
+ * bare (--foo), never in backticks.
  */
 export const LEFT_SIDEBAR_CSS = `
 .pclsb {
@@ -1258,7 +1265,7 @@ body.has-left-sidebar .pc-header {
 
    Tokens here stay inside the audited operator vocabulary (--bg-2/--bg-3/--fg/
    --fg-mute/--border/--accent/--warn/--bad). The previous revision of this block
-   invented `--bg-elev` / `--bg-elev-hover`, which nothing defines — that reds
+   invented --bg-elev / --bg-elev-hover, which nothing defines — that reds
    app/_lints/css-tokens.test.ts and, with the letter-spacing below, was blocking
    the whole fleet's unit gate. Do not reintroduce an undeclared token: the
    fallback makes it LOOK fine locally while the lint (rightly) fails. */

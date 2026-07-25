@@ -21,6 +21,7 @@ import { sendMessage } from '../coordination/messages';
 import { CUE_AUTHORITY_FIELD, hiveWideCueAuthority } from '../coordination/cue-authority';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
+import { resolveHomePotSlug } from '../pot/_resolve';
 import { setOverwatchStarted } from '../../overwatch/control-state';
 import { clearOverwatchWake } from '../../overwatch/wake-bridge';
 
@@ -57,7 +58,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolvePotHomeSlug(args.harness, undefined);
+    // `resolvePotHomeSlug` is ENV-ONLY, and PAPERCUSP_POT_HOME_SLUG is unset on the
+    // dev/green operators — so a no-`harness` call from the UI refused with
+    // `no_home_harness` and the owner's click did nothing (2026-07-25). Fall back
+    // to the registry home pot, the same slug the steering UI writes to
+    // (mug-steering-panel GAP 1).
+    const installSlug = resolvePotHomeSlug(args.harness, undefined) ?? (await resolveHomePotSlug(workspaceId));
     if (!installSlug) {
       return {
         content: [

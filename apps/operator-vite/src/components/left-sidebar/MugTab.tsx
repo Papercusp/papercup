@@ -564,11 +564,23 @@ export default function MugTab({ active }: { active: boolean }) {
           <span className="pc-queen__title">{t('brain')}</span>
           <span className="pc-queen__subtitle">Plans and places work</span>
         </span>
-        {home && (
-          <Tooltip label={`The home ${t('brain')} this steers`}>
-            <span className="pc-queen__hive">{home}</span>
-          </Tooltip>
-        )}
+        {/* SCOPE, not a pot selector (owner question 2026-07-25: "what do those pot
+            labels mean if they should be operating at the workspace level?"). There
+            is exactly ONE Mug per workspace; this chip used to render the bare
+            home-pot slug, which read as "this steers pot X". It doesn't — pausing
+            here pauses new work everywhere, and the actual per-pot lever is
+            Work → eligible pots. The slug is just the row the settings are keyed to,
+            so it moves into the tooltip as provenance. */}
+        <Tooltip
+          label={
+            `One ${t('brain')} runs the whole workspace — these controls affect every ` +
+            `${t('pot', { plural: true, lower: true })}. To narrow which ${t('pot', { plural: true, lower: true })} ` +
+            `it may place work into, use Work → ${t('pot', { plural: true })}.` +
+            (home ? ` Settings are stored on the home ${t('pot', { lower: true })} “${home}”.` : '')
+          }
+        >
+          <span className="pc-queen__hive" data-testid="mug-scope">workspace</span>
+        </Tooltip>
         <span className="pc-queen__spacer" />
         {activePaneHasOverrides && (
           <button
