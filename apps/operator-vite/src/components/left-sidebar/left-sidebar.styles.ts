@@ -1264,11 +1264,13 @@ body.has-left-sidebar .pc-header {
    can spend money", because that is this surface's entire reason to exist.
 
    Tokens here stay inside the audited operator vocabulary (--bg-2/--bg-3/--fg/
-   --fg-mute/--border/--accent/--warn/--bad). The previous revision of this block
-   invented --bg-elev / --bg-elev-hover, which nothing defines — that reds
+   --fg-mute/--border/--accent/--warn/--bad), matching the .pc-queen__* block this
+   mirrors. The previous revision reached for --bg-elev-hover, which NOTHING
+   defines (its sibling --bg-elev is real — globals.css defines it as
+   var(--bg-raised) — but the -hover variant was never declared). That reds
    app/_lints/css-tokens.test.ts and, with the letter-spacing below, was blocking
-   the whole fleet's unit gate. Do not reintroduce an undeclared token: the
-   fallback makes it LOOK fine locally while the lint (rightly) fails. */
+   the whole fleet's unit gate. Beware the shape of this mistake: a var() fallback
+   makes an undeclared token LOOK fine locally, so only the lint catches it. */
 .pc-auto { display: flex; flex-direction: column; gap: 9px; min-height: 0; overflow-y: auto; }
 
 /* 1 — header bar (mirrors .pc-queen__bar) */
