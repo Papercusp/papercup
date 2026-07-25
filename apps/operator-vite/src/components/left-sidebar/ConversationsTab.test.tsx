@@ -1,0 +1,312 @@
+// @vitest-environment jsdom
+/**
+ * ConversationsTab coverage — the curated stream at rail width (WI-5754).
+ *
+ * The pins here are the things the NARROW layout is: that all four sources land
+ * in one stream, that the source chips and search filter it, that a click DRILLS
+ * IN (detail replaces the list) and back returns, that an open question can be
+ * replied to / accepted through the audited endpoints, and — the placement the
+ * owner corrected mid-build — that this pane carries NO compose control, because
+ * asking lives in the Agents tab.
+ *
+ * nuqs is a per-key store seeded with spy setters; sync queries are dispatched by
+ * queryName; fetch is stubbed so the write assertions see the real request body.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+
+const nuqsState: Record<string, unknown> = { lsc: '', lscq: '', lscs: 'all' };
+const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
+vi.mock('nuqs', () => ({
+  ...nuqsParsers,
+  useQueryState: (key: string, parser?: { defaultValue?: unknown }) => {
+    const set = vi.fn(async (v: unknown) => {
+      nuqsState[key] = v;
+    });
+    nuqsSetters[key] = set;
+    return [nuqsState[key] ?? parser?.defaultValue ?? '', set];
+  },
+  parseAsString: { withDefault: (d: unknown) => ({ defaultValue: d }) },
+  parseAsStringLiteral: () => ({ withDefault: (d: unknown) => ({ defaultValue: d }) }),
+}));
+
+const H = vi.hoisted(() => ({
+  results: {} as Record<
+    string,
+    { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }
+  >,
+}));
+const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName, enabled }: { queryName: string; enabled?: boolean }) =>
+    enabled === false ? blank() : (H.results[queryName] ?? blank()),
+}));
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }));
+
+import ConversationsTab from './ConversationsTab';
+
+const QUESTION = {
+  id: 'conv-1',
+  kind: 'question',
+  state: 'open',
+  scope: 'operator',
+  harness_slug: null,
+  title: 'Fold the out-of-lane bugs into the drain?',
+  asker_id: 'su-791667d4',
+  topics: ['bug-drain'],
+  created_ts: '2026-07-20T23:00:00Z',
+  updated_ts: '2026-07-20T23:04:26Z',
+};
+const DELIBERATION = {
+  thread_id: 'thr-1',
+  parent_kind: 'issue',
+  parent_ref: 'WI-5738',
+  title: 'p2p publish guard refusal is silent',
+  created_by: 'su-61c46ac0',
+  harness_slug: 'papercusp',
+  created_at: '2026-07-25T20:00:00Z',
+  last_post_at: '2026-07-25T20:14:34Z',
+  post_count: 1,
+};
+const AGENT_CHAT = {
+  id: 'chat-1',
+  harness_slug: 'papercusp',
+  role: 'worker',
+  feature_id: 'WI-5404',
+  title: 'remote placement misses pot-level offers',
+  created_at: 1_753_000_000_000,
+  updated_at: 1_753_100_000_000,
+  archived_at: null,
+  total_input_tokens: 0,
+  total_output_tokens: 0,
+  total_cost_usd_cents: 0,
+  turns: 2,
+};
+const MESSAGE = {
+  id: 'msg-1',
+  harness_slug: 'papercusp',
+  from_slug: 'mug',
+  to_slug: 'su-4ca244e4',
+  to_role: null,
+  kind: 'Priority',
+  subject: 'Take WI-5727 first',
+  body: 'It is the dependency edge for three other items.',
+  status: 'pending',
+  created_at: '2026-07-25T18:00:00Z',
+  from_feature_id: null,
+  to_feature_id: 'WI-5727',
+};
+
+function seedAllFour() {
+  H.results['conversations.questionsList'] = { ...blank(), data: [QUESTION] };
+  H.results['conversations.deliberationList'] = { ...blank(), data: [DELIBERATION] };
+  H.results['conversations.agentChatList'] = { ...blank(), data: [AGENT_CHAT] };
+  H.results['conversations.messageList'] = { ...blank(), data: [MESSAGE] };
+}
+
+beforeEach(() => {
+  for (const k of Object.keys(H.results)) delete H.results[k];
+  nuqsState.lsc = '';
+  nuqsState.lscq = '';
+  nuqsState.lscs = 'all';
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })),
+  );
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe('ConversationsTab — the unified stream', () => {
+  it('merges all four sources into one stream, newest first', () => {
+    seedAllFour();
+    render(<ConversationsTab active />);
+    const rows = screen.getAllByTestId(/^conversation-row-/);
+    expect(rows).toHaveLength(4);
+    // deliberation (20:14) > mail (18:00) > agent chat (epoch 1_753_100_000_000
+    // = 2025) > question (2026-07-20)… ordering is by updatedAt descending.
+    expect(rows[0].getAttribute('data-testid')).toBe('conversation-row-deliberations:thr-1');
+    expect(screen.getByTestId('conversations-count').textContent).toBe('4');
+  });
+
+  // An inactive tab must not fetch: the rail mounts only the active pane, and a
+  // background pane paying for four list queries is exactly what `enabled`
+  // exists to prevent.
+  it('renders nothing while the tab is inactive', () => {
+    seedAllFour();
+    const { container } = render(<ConversationsTab active={false} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('filters by source chip, and counts each source', () => {
+    seedAllFour();
+    render(<ConversationsTab active />);
+    // Every chip carries its own count, so the owner can see what is there
+    // without switching to it.
+    expect(screen.getByTestId('conversations-filter-threads').textContent).toContain('1');
+    fireEvent.click(screen.getByTestId('conversations-filter-messages'));
+    expect(nuqsSetters.lscs).toHaveBeenCalledWith('messages');
+  });
+
+  it('applies the source filter from the URL', () => {
+    seedAllFour();
+    nuqsState.lscs = 'messages';
+    render(<ConversationsTab active />);
+    const rows = screen.getAllByTestId(/^conversation-row-/);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].getAttribute('data-testid')).toBe('conversation-row-messages:msg-1');
+    expect(screen.getByTestId('conversations-count').textContent).toBe('1 of 4');
+  });
+
+  it('searches across every displayed field, not just the title', () => {
+    seedAllFour();
+    nuqsState.lscq = 'su-4ca244e4'; // a RECIPIENT, which is not in any title
+    render(<ConversationsTab active />);
+    const rows = screen.getAllByTestId(/^conversation-row-/);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].getAttribute('data-testid')).toBe('conversation-row-messages:msg-1');
+  });
+
+  it('drills in on a row click by writing the compound selection', () => {
+    seedAllFour();
+    render(<ConversationsTab active />);
+    fireEvent.click(screen.getByTestId('conversation-row-threads:conv-1'));
+    expect(nuqsSetters.lsc).toHaveBeenCalledWith('threads:conv-1');
+  });
+
+  it('shows an empty state naming the Agents tab when nothing is recorded', () => {
+    render(<ConversationsTab active />);
+    expect(screen.getByText(/No conversations/)).toBeTruthy();
+    expect(screen.getByText(/Agents tab/)).toBeTruthy();
+  });
+});
+
+describe('ConversationsTab — detail mode', () => {
+  const DETAIL = {
+    id: 'conv-1',
+    kind: 'question',
+    state: 'open',
+    scope: 'operator',
+    title: 'Fold the out-of-lane bugs into the drain?',
+    body: 'Two clean options: repoint the slug, or leave them out-of-lane.',
+    asker_id: 'su-791667d4',
+    accepted_answer: null,
+    promoted_issue_id: null,
+    topics: ['bug-drain'],
+    posts: [{ id: 1, author_id: 'su-abc', body: 'Leaning toward leaving them out.', created_ts: '2026-07-20T23:02:00Z' }],
+    subscriber_count: 2,
+  };
+
+  function openQuestion() {
+    seedAllFour();
+    nuqsState.lsc = 'threads:conv-1';
+    H.results['conversations.questionDetail'] = { ...blank(), data: [DETAIL] };
+    render(<ConversationsTab active />);
+  }
+
+  it('replaces the list with the detail, and offers a way back', () => {
+    openQuestion();
+    expect(screen.queryByTestId(/^conversation-row-/)).toBeNull();
+    expect(screen.getByText(DETAIL.body)).toBeTruthy();
+    fireEvent.click(screen.getByTestId('conversation-back'));
+    expect(nuqsSetters.lsc).toHaveBeenCalledWith(null);
+  });
+
+  it('posts a reply through the audited coordination endpoint', async () => {
+    openQuestion();
+    fireEvent.change(screen.getByLabelText('Reply'), { target: { value: 'Leave them out-of-lane.' } });
+    fireEvent.click(screen.getByTestId('conversation-reply'));
+    const [url, init] = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe('/api/admin/coordination/conversations/post');
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      conversation_id: 'conv-1',
+      body: 'Leave them out-of-lane.',
+    });
+  });
+
+  it('accepting an answer resolves rather than posting', () => {
+    openQuestion();
+    fireEvent.change(screen.getByLabelText('Reply'), { target: { value: 'Out-of-lane, deliberately.' } });
+    fireEvent.click(screen.getByTestId('conversation-accept'));
+    const [url, init] = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe('/api/admin/coordination/conversations/resolve');
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      conversation_id: 'conv-1',
+      accepted_answer: 'Out-of-lane, deliberately.',
+    });
+  });
+
+  // Reply + accept are disabled on anything already terminal — the wide surface
+  // refuses a post to a resolved conversation server-side, and the rail must not
+  // offer a control whose only outcome is that refusal.
+  it('offers no composer on a resolved question', () => {
+    seedAllFour();
+    nuqsState.lsc = 'threads:conv-1';
+    H.results['conversations.questionDetail'] = { ...blank(), data: [{ ...DETAIL, state: 'resolved', accepted_answer: 'Left out-of-lane.' }] };
+    render(<ConversationsTab active />);
+    expect(screen.queryByTestId('conversation-reply')).toBeNull();
+    expect(screen.getByText('Left out-of-lane.')).toBeTruthy();
+  });
+
+  // keepPreviousData hands back the PREVIOUS id's detail on a switch (WI-4142).
+  // Rendering it under the new title would attribute one conversation's content
+  // to another — the guard must fall through to the loading state instead.
+  it('never renders another conversation’s detail while the selected one loads', () => {
+    seedAllFour();
+    nuqsState.lsc = 'threads:conv-1';
+    H.results['conversations.questionDetail'] = { ...blank(), data: [{ ...DETAIL, id: 'conv-STALE', body: 'stale body' }] };
+    render(<ConversationsTab active />);
+    expect(screen.queryByText('stale body')).toBeNull();
+    expect(screen.getByText(/Loading conversation/)).toBeTruthy();
+  });
+
+  it('renders a deliberation read-only, with what it is attached to', () => {
+    seedAllFour();
+    nuqsState.lsc = 'deliberations:thr-1';
+    H.results['conversations.deliberationDetail'] = {
+      ...blank(),
+      data: [{ thread: DELIBERATION, posts: [{ id: 9, author_id: 'su-61c46ac0', body: 'Correction to the framing.', created_at: '2026-07-25T20:14:34Z', harness_slug: 'papercusp' }] }],
+    };
+    render(<ConversationsTab active />);
+    // The callout renders "<kind> · <ref>" across text nodes, so match the line.
+    expect(screen.getByText(/issue · WI-5738/)).toBeTruthy();
+    expect(screen.getByText('Correction to the framing.')).toBeTruthy();
+    expect(screen.queryByTestId('conversation-reply')).toBeNull();
+  });
+
+  it('flattens agent-chat transcript turns', () => {
+    seedAllFour();
+    nuqsState.lsc = 'agentchats:chat-1';
+    H.results['conversations.agentChatDetail'] = {
+      ...blank(),
+      data: [{ ...AGENT_CHAT, transcript: [{ role: 'user', content: [{ text: 'Widen the offer query.' }] }] }],
+    };
+    render(<ConversationsTab active />);
+    expect(screen.getByText('Widen the offer query.')).toBeTruthy();
+  });
+
+  it('renders work-item mail with its routing and related work', () => {
+    seedAllFour();
+    nuqsState.lsc = 'messages:msg-1';
+    H.results['conversations.messageDetail'] = { ...blank(), data: [MESSAGE] };
+    render(<ConversationsTab active />);
+    expect(screen.getByText('mug → su-4ca244e4')).toBeTruthy();
+    expect(screen.getByText(/WI-5727/)).toBeTruthy();
+  });
+});
+
+describe('ConversationsTab — placement', () => {
+  // Owner correction mid-build (2026-07-25): "the ask tab should be in the
+  // agents pane not the conversations pane". If a later change reintroduces a
+  // compose control here, the rail would offer two places to ask — which is the
+  // exact duplication this pin exists to catch.
+  it('carries no compose control — asking lives in the Agents tab', () => {
+    seedAllFour();
+    render(<ConversationsTab active />);
+    expect(screen.queryByText(/^Ask/)).toBeNull();
+    expect(screen.queryByTestId('ask-agent-pane')).toBeNull();
+  });
+});

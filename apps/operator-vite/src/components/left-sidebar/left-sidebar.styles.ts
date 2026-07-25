@@ -61,6 +61,11 @@ export const LEFT_SIDEBAR_CSS = `
 .pclsb[data-tab="hives"] {
   --pclsb-current-accent: var(--warn, #fbbf24);
 }
+/* Conversations keeps the app's own accent: its FOUR source hues already do the
+   wayfinding inside the pane, so a fifth pane-level tint would fight them. */
+.pclsb[data-tab="conversations"] {
+  --pclsb-current-accent: var(--accent, #38bdf8);
+}
 
 /* Body reservation — the app shifts right by op-chat + this rail. This rule
    composes with (and must win over) the op-chat-only reservation; both default
@@ -1335,25 +1340,54 @@ body.has-left-sidebar .pc-header {
   border: 1px solid color-mix(in srgb, var(--bad, #f43f5e), transparent 58%);
   background: color-mix(in srgb, var(--bad, #f43f5e), transparent 90%); }
 
-.pc-auto__list { display: flex; flex-direction: column; gap: 3px; }
-.pc-auto__row { display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 6px;
+/* DENSITY (owner ask 2026-07-25: "Make the routines view more compact so you can
+   display more in same space then currently. Currently there is a lot of empty
+   space on the cards."). The row was a 3-LINE stack — name / cadence+token flag /
+   "last fired" — inside a padded card, so a routine cost ~46px of height and the
+   right-hand third of every card was blank. It is now TWO lines: the name shares
+   its line with the last-fired clock (right-aligned, where the empty space was),
+   and cadence + token flag sit under it. ~30px per routine — roughly half again
+   as many visible in the same pane. */
+.pc-auto__list { display: flex; flex-direction: column; gap: 2px; }
+.pc-auto__row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px;
   background: var(--bg-2, rgba(255, 255, 255, 0.035)); opacity: 0.55; }
 .pc-auto__row.is-active { opacity: 1; }
-.pc-auto__row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.pc-auto__row-main { display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline; column-gap: 6px; row-gap: 0; min-width: 0; flex: 1; }
 .pc-auto__name { font-size: 11.5px; font-weight: 600; color: var(--fg, #e7f7ff);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pc-auto__meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
-.pc-auto__tokenflag { display: inline-flex; align-items: center; gap: 3px; font-weight: 600;
+.pc-auto__meta { grid-column: 1; display: flex; align-items: center; gap: 5px;
+  font-size: 10px; line-height: 1.25; color: var(--fg-mute, #7f9bb4);
+  min-width: 0; overflow: hidden; white-space: nowrap; }
+.pc-auto__tokenflag { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; flex: 0 0 auto;
   color: var(--warn, #f59e0b); background: color-mix(in srgb, var(--warn, #f59e0b), transparent 88%);
-  padding: 1px 4px; border-radius: 4px; }
-.pc-auto__when { font-size: 9.5px; color: var(--fg-mute, #7f9bb4); opacity: 0.8; }
+  padding: 0 4px; border-radius: 4px; }
+/* Pulled up onto the name's line — this is the blank third the owner saw. */
+.pc-auto__when { grid-column: 2; grid-row: 1; justify-self: end; flex: 0 0 auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9.5px; color: var(--fg-mute, #7f9bb4); opacity: 0.8; white-space: nowrap; }
+
+/* The pause/start control on the MUG idiom (owner ask 2026-07-25: "the pause and
+   start buttons look retarted, make them like the ones in the mug tab"). It was
+   a bare transparent-square icon button, which read as an unfilled input next to
+   the Mug's filled, tinted, semantic buttons. Now it matches .pc-queen__btn--go /
+   --stop: a tinted fill + matching border, ACCENT while running (click to pause)
+   and GOOD while paused (click to resume) — the same colour language the Mug's
+   pause control uses, so the two panes agree on what a running thing looks like. */
 .pc-auto__toggle { display: inline-flex; align-items: center; justify-content: center; flex: none;
-  width: 26px; height: 26px; border-radius: 6px; cursor: pointer; color: var(--fg-mute, #7f9bb4);
-  background: transparent; border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); }
-.pc-auto__toggle.is-on { color: var(--warn, #f59e0b);
-  border-color: color-mix(in srgb, var(--warn, #f59e0b), transparent 65%); }
-.pc-auto__toggle:hover:not(:disabled) { background: color-mix(in srgb, var(--accent), transparent 90%); }
-.pc-auto__toggle:disabled { opacity: 0.45; cursor: not-allowed; }
+  width: 26px; height: 24px; border-radius: 7px; cursor: pointer;
+  font: inherit; font-size: 11.5px; font-weight: 720;
+  color: var(--fg, #e7f7ff);
+  background: color-mix(in srgb, var(--good, #34d399), transparent 88%);
+  border: 1px solid color-mix(in srgb, var(--good, #34d399), transparent 60%); }
+.pc-auto__toggle.is-on {
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+  border-color: color-mix(in srgb, var(--accent), transparent 54%); }
+.pc-auto__toggle:hover:not(:disabled) { color: var(--fg, #e7f7ff);
+  border-color: color-mix(in srgb, var(--accent), transparent 48%);
+  background: color-mix(in srgb, var(--accent), transparent 90%); }
+.pc-auto__toggle:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.pc-auto__toggle:disabled { opacity: 0.55; cursor: default; }
 
 .pc-auto__section { display: flex; flex-direction: column; gap: 4px; padding: 8px 9px; border-radius: 8px;
   border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
@@ -1411,5 +1445,642 @@ body.has-left-sidebar .pc-header {
 /* The nested panels keep their own padding for the non-collapsible mounts; inside
    the Pots tab the RailSection already supplies it, so drop the double inset. */
 .pclsb-pots .pclsb-sect .pclsb-panel { padding: 0; gap: 5px; }
+
+/* ── Conversations tab (WI-5754) ─────────────────────────────────────────────
+   The curated stream at rail width. Two modes in one column: a filtered LIST,
+   and a DETAIL that replaces it (drill-in, not master-detail — there is no room
+   for a second column at 300px).
+
+   SOURCE COLOUR is the load-bearing decision here. /adv writes the source as a
+   text pill ("Questions & discussions"); that pill alone would eat a third of a
+   narrow row, so source identity moves to a 2px left stripe + a short label.
+   The four hues are an ANALOGOUS SWEEP off the app accent — sky, indigo, teal,
+   violet — deliberately avoiding good/warn/bad, which stay reserved for STATE
+   pills. A stripe must never be readable as a warning. */
+.pclsb-conv {
+  --conv-threads: var(--accent, #38bdf8);
+  --conv-deliberations: #818cf8;
+  --conv-agentchats: #2dd4bf;
+  --conv-messages: #c084fc;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* header bar */
+.pclsb-conv__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px 6px;
+}
+.pclsb-conv__bartitle {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-conv__count {
+  margin-left: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim, #b9d4e8);
+}
+.pclsb-conv__spacer { flex: 1; }
+.pclsb-conv__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-mute, #7f9bb4);
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+.pclsb-conv__chip:hover:not(:disabled) {
+  color: var(--fg, #e7f7ff);
+  border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+}
+.pclsb-conv__chip:disabled { opacity: 0.5; cursor: default; }
+
+/* search */
+.pclsb-conv__search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 10px 7px;
+  padding: 0 9px;
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-conv__search:focus-within {
+  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 50%);
+}
+.pclsb-conv__search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--fg, #e7f7ff);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.pclsb-conv__search input::placeholder { color: var(--fg-mute, #7f9bb4); }
+
+/* source chips — horizontally scrollable so five never wrap at 300px */
+.pclsb-conv__chips {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 5px;
+  padding: 0 10px 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pclsb-conv__chips::-webkit-scrollbar { display: none; }
+.pclsb-conv__chipbtn {
+  --chip: var(--fg-mute, #7f9bb4);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-dim, #b9d4e8);
+  font-size: 11px;
+  font-weight: 680;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.pclsb-conv__chipbtn--all { --chip: var(--accent, #38bdf8); }
+.pclsb-conv__chipbtn--threads { --chip: var(--conv-threads); }
+.pclsb-conv__chipbtn--deliberations { --chip: var(--conv-deliberations); }
+.pclsb-conv__chipbtn--agentchats { --chip: var(--conv-agentchats); }
+.pclsb-conv__chipbtn--messages { --chip: var(--conv-messages); }
+.pclsb-conv__chipbtn .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--chip);
+  flex: 0 0 auto;
+}
+.pclsb-conv__chipbtn .ct {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+}
+.pclsb-conv__chipbtn:hover {
+  border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+  color: var(--fg, #e7f7ff);
+}
+.pclsb-conv__chipbtn.is-on {
+  background: color-mix(in oklab, var(--chip), transparent 86%);
+  border-color: color-mix(in oklab, var(--chip), transparent 52%);
+  color: var(--fg, #e7f7ff);
+}
+
+/* the three-line row */
+.pclsb-conv__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+}
+.pclsb-conv__row {
+  --src: var(--conv-threads);
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 9px 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: color-mix(in srgb, var(--bg-1, #0b1220), transparent 28%);
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.pclsb-conv__row + .pclsb-conv__row { margin-top: 5px; }
+.pclsb-conv__row--threads { --src: var(--conv-threads); }
+.pclsb-conv__row--deliberations { --src: var(--conv-deliberations); }
+.pclsb-conv__row--agentchats { --src: var(--conv-agentchats); }
+.pclsb-conv__row--messages { --src: var(--conv-messages); }
+.pclsb-conv__row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--src);
+}
+.pclsb-conv__row:hover {
+  border-color: color-mix(in oklab, var(--src), transparent 58%);
+  background: color-mix(in oklab, var(--src), transparent 93%);
+}
+.pclsb-conv__row:focus-visible {
+  outline: 1px solid color-mix(in oklab, var(--src), transparent 20%);
+  outline-offset: -1px;
+}
+.pclsb-conv__top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+}
+.pclsb-conv__srcicon { color: var(--src); flex: 0 0 auto; }
+.pclsb-conv__src {
+  font-size: 9.5px;
+  font-weight: 780;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--src);
+  white-space: nowrap;
+}
+.pclsb-conv__age {
+  margin-left: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--fg-mute, #7f9bb4);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+.pclsb-conv__state {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.pclsb-conv__state.is-good {
+  background: color-mix(in oklab, var(--good, #34d399), transparent 86%);
+  color: var(--good, #34d399);
+}
+.pclsb-conv__state.is-warn {
+  background: color-mix(in oklab, var(--warn, #fbbf24), transparent 86%);
+  color: var(--warn, #fbbf24);
+}
+.pclsb-conv__state.is-neutral {
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  color: var(--fg-dim, #b9d4e8);
+}
+.pclsb-conv__title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--fg, #e7f7ff);
+}
+.pclsb-conv__meta {
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--fg-mute, #7f9bb4);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pclsb-conv__meta span { overflow: hidden; text-overflow: ellipsis; }
+.pclsb-conv__meta .sep { opacity: 0.4; flex: 0 0 auto; }
+.pclsb-conv__meta .ref { color: var(--fg-dim, #b9d4e8); flex: 0 0 auto; }
+
+/* detail mode */
+.pclsb-conv__backrow {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px 7px;
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+}
+.pclsb-conv__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-dim, #b9d4e8);
+  font-size: 11px;
+  font-weight: 680;
+  cursor: pointer;
+}
+.pclsb-conv__back:hover {
+  color: var(--fg, #e7f7ff);
+  border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+}
+.pclsb-conv__detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 10px 14px;
+}
+.pclsb-conv__kicker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.pclsb-conv__detail .pclsb-conv__src { color: var(--accent, #38bdf8); }
+.pclsb-conv__h {
+  margin: 0 0 7px;
+  font-size: 14px;
+  font-weight: 680;
+  line-height: 1.32;
+  color: var(--fg, #e7f7ff);
+  text-wrap: pretty;
+}
+.pclsb-conv__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 9px;
+  margin-bottom: 9px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-conv__tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
+.pclsb-conv__tag {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  color: var(--fg-dim, #b9d4e8);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+.pclsb-conv__body {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg-dim, #b9d4e8);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pclsb-conv__callout {
+  --co: var(--good, #34d399);
+  display: flex;
+  gap: 8px;
+  padding: 8px 9px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--co), transparent 66%);
+  background: color-mix(in oklab, var(--co), transparent 91%);
+}
+.pclsb-conv__callout.is-link { --co: var(--accent, #38bdf8); }
+.pclsb-conv__callout > svg { color: var(--co); flex: 0 0 auto; margin-top: 1px; }
+.pclsb-conv__callout b {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--co);
+  margin-bottom: 3px;
+}
+.pclsb-conv__callout p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-dim, #b9d4e8);
+  overflow-wrap: anywhere;
+}
+.pclsb-conv__seclabel {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-conv__seclabel::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+}
+.pclsb-conv__post {
+  padding: 7px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: color-mix(in srgb, var(--bg-1, #0b1220), transparent 34%);
+}
+.pclsb-conv__post + .pclsb-conv__post { margin-top: 5px; }
+.pclsb-conv__post .who {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+  margin-bottom: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-conv__post .who b { color: var(--fg-dim, #b9d4e8); font-weight: 600; }
+.pclsb-conv__post p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-dim, #b9d4e8);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* transcript turns read as a dialogue: the operator's side keeps the source
+   accent, the agent's is muted, so scanning a long transcript is possible
+   without reading the role labels. */
+.pclsb-conv__turn {
+  border-left: 2px solid color-mix(in oklab, var(--conv-agentchats), transparent 55%);
+}
+.pclsb-conv__turn.is-agent {
+  border-left-color: color-mix(in oklab, var(--fg-mute, #7f9bb4), transparent 60%);
+}
+
+/* reply composer (open questions only — composing a NEW question lives in the
+   Agents tab, owner 2026-07-25) */
+.pclsb-conv__replybox {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: color-mix(in srgb, var(--bg-deep, #050d18), transparent 25%);
+}
+.pclsb-conv__textarea {
+  width: 100%;
+  border-radius: 9px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg, #e7f7ff);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 7px 9px;
+  min-height: 46px;
+  outline: none;
+  resize: vertical;
+}
+.pclsb-conv__textarea:focus {
+  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 50%);
+}
+.pclsb-conv__crow { display: flex; gap: 6px; }
+.pclsb-conv__btn {
+  flex: 1;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 8px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-dim, #b9d4e8);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.pclsb-conv__btn:hover:not(:disabled) {
+  color: var(--fg, #e7f7ff);
+  border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+}
+.pclsb-conv__btn:disabled { opacity: 0.5; cursor: default; }
+.pclsb-conv__btn.is-primary {
+  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 52%);
+  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+  color: var(--fg, #e7f7ff);
+}
+.pclsb-conv__btn.is-good {
+  border-color: color-mix(in oklab, var(--good, #34d399), transparent 58%);
+  background: color-mix(in oklab, var(--good, #34d399), transparent 88%);
+  color: var(--good, #34d399);
+}
+
+/* states */
+.pclsb-conv__loading,
+.pclsb-conv__empty {
+  margin: 8px 0;
+  padding: 10px;
+  font-size: 11.5px;
+  color: var(--fg-mute, #7f9bb4);
+  text-align: center;
+}
+.pclsb-conv__blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 14px 0;
+  padding: 18px 12px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-1, #0b1220), transparent 36%);
+  text-align: center;
+}
+.pclsb-conv__blank > svg { color: var(--fg-mute, #7f9bb4); opacity: 0.6; }
+.pclsb-conv__blank b { font-size: 12px; font-weight: 680; color: var(--fg-dim, #b9d4e8); }
+.pclsb-conv__blank span { font-size: 11px; line-height: 1.5; color: var(--fg-mute, #7f9bb4); }
+.pclsb-conv__error {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--bad, #f87171), transparent 64%);
+  background: color-mix(in oklab, var(--bad, #f87171), transparent 91%);
+  color: color-mix(in oklab, var(--bad, #f87171), var(--fg, #e7f7ff) 32%);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.pclsb-conv__error p { margin: 0 0 6px; }
+.pclsb-conv__err {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: color-mix(in oklab, var(--bad, #f87171), var(--fg, #e7f7ff) 30%);
+}
+.pclsb-conv__readonly {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 9px 10px 11px;
+  border-top: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: color-mix(in srgb, var(--bg-deep, #050d18), transparent 25%);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-conv__readonly > svg { flex: 0 0 auto; }
+
+/* ── Ask an agent (Agents tab, WI-5754) ──────────────────────────────────────
+   Composing a question lives HERE, not in Conversations (owner 2026-07-25).
+   A recipient is REQUIRED, so the send button stays disabled until one is
+   chosen — the hint below it says why rather than letting the click fail. */
+.pclsb-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 10px 4px;
+  padding: 9px 10px 11px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-1, #0b1220), transparent 40%);
+}
+.pclsb-ask__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--fg-mute, #7f9bb4);
+}
+.pclsb-ask__title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+/* Collapsed, Ask is a single clickable row — the disclosure header IS the
+   button, so the dense Routines lane pays one row for it. */
+.pclsb-ask__head {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+.pclsb-ask__head:hover { color: var(--fg, #e7f7ff); }
+.pclsb-ask__head:focus-visible { outline: 1px solid var(--accent, #38bdf8); outline-offset: 2px; border-radius: 6px; }
+.pclsb-ask__chev { margin-left: auto; display: inline-flex; }
+.pclsb-ask:not(.is-open) { gap: 0; padding: 7px 10px; }
+.pclsb-ask__label {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-mute, #7f9bb4);
+  margin-top: 2px;
+}
+/* A bare <select>/<input>/<textarea> does NOT inherit the panel theme — every
+   field is styled explicitly. */
+.pclsb-select,
+.pclsb-ask__input,
+.pclsb-ask__textarea {
+  width: 100%;
+  border-radius: 9px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg, #e7f7ff);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  outline: none;
+}
+.pclsb-select { cursor: pointer; min-height: 28px; }
+.pclsb-select:disabled { opacity: 0.6; cursor: default; }
+.pclsb-ask__textarea { min-height: 54px; line-height: 1.45; resize: vertical; }
+.pclsb-select:focus,
+.pclsb-ask__input:focus,
+.pclsb-ask__textarea:focus {
+  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 50%);
+}
+.pclsb-ask__input::placeholder,
+.pclsb-ask__textarea::placeholder { color: var(--fg-mute, #7f9bb4); }
+.pclsb-ask__send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  margin-top: 2px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 52%);
+  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+  color: var(--fg, #e7f7ff);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.pclsb-ask__send:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 76%);
+}
+.pclsb-ask__send:disabled { opacity: 0.45; cursor: default; }
+.pclsb-ask__hint,
+.pclsb-ask__ok,
+.pclsb-ask__err {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.pclsb-ask__hint { color: var(--fg-mute, #7f9bb4); }
+.pclsb-ask__ok { color: var(--good, #34d399); }
+.pclsb-ask__err { color: color-mix(in oklab, var(--bad, #f87171), var(--fg, #e7f7ff) 30%); }
 
 `;

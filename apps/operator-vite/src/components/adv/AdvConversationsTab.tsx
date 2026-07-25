@@ -81,6 +81,7 @@ import {
   fmtConversationTs,
   isSystemConversationActor,
   normalizedConversationText,
+  turnText,
   unifiedConversationSignature,
   type AgentChatDetail,
   type AgentChatRow,
@@ -115,41 +116,14 @@ const COMMS_LIST_LIMIT = 100;
 // after the merge lets a busy source starve every other conversation type.
 const UNIFIED_LIST_LIMIT = COMMS_LIST_LIMIT * 4;
 const UNIFIED_ROW_HEIGHT = 108;
-const READ_TIMEOUT_MS = 15_000;
 const INITIAL_LOAD_STALL_MS = 8_000;
 
-async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
-  const isRead = verb.endsWith('/list') || verb.endsWith('/get');
-  const res = await fetch(`/api/admin/coordination/${verb}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    cache: 'no-store',
-    ...(isRead ? { signal: AbortSignal.timeout(READ_TIMEOUT_MS) } : {}),
-  });
-  if (!res.ok) throw new Error(`${verb}: HTTP ${res.status}`);
-  return (await res.json()) as T;
-}
-
-// agent-chat timestamps are bigint epoch-ms; coord/message ones are ISO
-// strings. Normalise either to a display string.
-function fmtTs(v: string | number | null | undefined): string {
-  if (v == null) return '';
-  const d = new Date(typeof v === 'number' ? v : v);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-function fmtRel(v: string | number | null | undefined): string {
-  if (v == null) return '—';
-  const t = typeof v === 'number' ? v : Date.parse(v);
-  if (Number.isNaN(t)) return '—';
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.round(h / 24)}d ago`;
-}
+// Local names for the shared transport/format helpers, so the ~4k call sites in
+// this file keep reading as they did while the DEFINITIONS live in one place.
+const coord = coordFetch;
+const fmtTs = fmtConversationTs;
+const fmtRel = fmtConversationRel;
+const errText = conversationErrText;
 
 /** Shimmering placeholder rows shown while a rail / stream loads. */
 function LoadingRows({ rows = 4, label = 'Loading' }: { rows?: number; label?: string }) {
@@ -178,10 +152,6 @@ function LoadError({ message, onRetry }: { message: string; onRetry: () => void 
       </button>
     </ErrorBanner>
   );
-}
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 // Stable row-chrome callbacks for the inline RichGrid lists (U1). Hoisted so
@@ -257,153 +227,6 @@ const VIEW_ACCENT: Record<ConvView, string> = {
 };
 
 /**
- * AskComposer — the "+ Ask" primary action's modal (the Conversations analogue of
- * the Create sidebar's "+ New plan"). Opens a `question` conversation routed to
- * topic subscribers via coord:ask (force_open so it always reaches peers rather
- * than returning inline knowledge candidates — a human asking the fleet wants the
- * thread). Uses the shared picker-kit field vocabulary so it matches Create.
- */
-function AskComposer({
-  open,
-  onOpenChange,
-  onAsked,
-}: {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  onAsked: () => void;
-}) {
-  const [question, setQuestion] = useState('');
-  const [topics, setTopics] = useState('');
-  const [harness, setHarness] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const reset = () => {
-    setQuestion('');
-    setTopics('');
-    setHarness('');
-    setError(null);
-  };
-
-  const submit = async () => {
-    const q = question.trim();
-    if (!q || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const topicList = topics
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .slice(0, 8);
-      await coord('coord/ask', {
-        question: q,
-        topics: topicList.length ? topicList : undefined,
-        harness: harness.trim() || undefined,
-        force_open: true,
-      });
-      toast.success('Question opened — routed to topic subscribers; answers land in Conversations.', { duration: 4000 });
-      reset();
-      onOpenChange(false);
-      onAsked();
-    } catch (e) {
-      setError(friendlyApiError(undefined, errText(e)));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onOpenChange={(o) => {
-        if (!o) reset();
-        onOpenChange(o);
-      }}
-      title="Ask the agents"
-      contentStyle={{
-        width: 'min(540px, 96vw)',
-        background: 'var(--bg-popover, #0d1829)',
-        border: '1px solid var(--border)',
-        borderRadius: 10,
-        padding: 22,
-        color: 'var(--fg, #e8e8ea)',
-      }}
-    >
-      <p style={{ margin: '0 0 16px', fontSize: 12.5, lineHeight: 1.5, color: 'var(--fg-dim)' }}>
-        Opens a question conversation routed to the agents who own the topics you tag. Answers arrive back in
-        <strong>Conversations</strong> — this never blocks.
-      </p>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-      <div style={{ marginBottom: 14 }}>
-        <FieldLabel>Question</FieldLabel>
-        <textarea
-          autoFocus
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void submit();
-          }}
-          placeholder="What do you want to ask the fleet?"
-          rows={4}
-          maxLength={2000}
-          style={{ ...inputStyle, resize: 'vertical', minHeight: 88, lineHeight: 1.5 }}
-        />
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        <FieldLabel>Topics</FieldLabel>
-        <input
-          value={topics}
-          onChange={(e) => setTopics(e.target.value)}
-          placeholder="e.g. inference-gateway, sync (comma-separated)"
-          style={inputStyle}
-        />
-        <HintText>Routes a miss to the right people. Without topics, only direct subscribers see it.</HintText>
-      </div>
-      <div style={{ marginBottom: 18 }}>
-        <FieldLabel>Scope to a pot (optional)</FieldLabel>
-        <input
-          value={harness}
-          onChange={(e) => setHarness(e.target.value)}
-          placeholder="harness slug — leave blank for workspace-wide"
-          style={inputStyle}
-        />
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-        <button type="button" style={secondaryBtnStyle} onClick={() => onOpenChange(false)} disabled={busy}>
-          Cancel
-        </button>
-        <button
-          type="button"
-          style={{ ...primaryBtnStyle, opacity: !question.trim() || busy ? 0.6 : 1 }}
-          onClick={() => void submit()}
-          disabled={!question.trim() || busy}
-        >
-          {busy ? 'Asking…' : 'Ask'}
-        </button>
-      </div>
-    </Modal>
-  );
-}
-
-interface UnifiedConversationRow {
-  id: string;
-  source: Exclude<ConvView, 'inbox' | 'feed'>;
-  sourceId: string;
-  typeLabel: string;
-  kind: string;
-  state: string;
-  title: string;
-  preview: string;
-  actor?: string;
-  recipient?: string;
-  harnessSlug?: string | null;
-  relatedRef?: string | null;
-  count?: number;
-  updatedAt: number;
-}
-
-/**
  * Keep the selected conversation visibly anchored in the right pane while its
  * detail query warms. A bare shimmer made a successful click look like a no-op
  * in the desktop webview, especially on the first cross-source selection.
@@ -446,124 +269,6 @@ const UNIFIED_FILTER_COLUMNS: readonly FilterableColumn<UnifiedConversationRow>[
   { key: 'pot', header: 'Pot', filter: { type: 'enum', accessor: (row) => row.harnessSlug ?? null } },
   { key: 'related', header: 'Related work', filter: { type: 'enum', accessor: (row) => row.relatedRef ?? null } },
 ];
-
-function conversationEpoch(value: unknown): number {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-  const parsed = Date.parse(String(value ?? ''));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-/** Compose the inbox from the SAME four cached list queries the source views
- * consume. A row click therefore remounts onto a warm list cache instead of
- * replacing one aggregate query with a cold REST request. */
-function normalizedConversationText(value: string | null | undefined): string {
-  return (value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-}
-
-/** System-origin coordination is diagnostic telemetry, not a curated
- * conversation. Keep this predicate shared by every curated source so the
- * Conversations and Raw events tabs remain a true partition. */
-export function isSystemConversationActor(value: string | null | undefined): boolean {
-  return /^system(?:$|[-_:/.])/i.test((value ?? '').trim());
-}
-
-/** A deliberately strict cross-source signature. Distinct conversations may
- * legitimately share a work-item or title, so collapse them only when every
- * user-visible identity field and the activity timestamp are identical. */
-function unifiedConversationSignature(row: UnifiedConversationRow): string {
-  return [
-    normalizedConversationText(row.title),
-    normalizedConversationText(row.preview),
-    normalizedConversationText(row.actor),
-    normalizedConversationText(row.recipient),
-    normalizedConversationText(row.harnessSlug),
-    normalizedConversationText(row.relatedRef),
-  ].join('|');
-}
-
-export function composeUnifiedConversationRows(
-  questions: readonly ConvRow[],
-  deliberations: readonly ThreadRow[],
-  agentChats: readonly AgentChatRow[],
-  messages: readonly MsgRow[],
-  limit: number,
-): UnifiedConversationRow[] {
-  const candidates: UnifiedConversationRow[] = [
-    ...questions.filter((row) => !isSystemConversationActor(row.asker_id)).map((row) => ({
-      id: `threads:${row.id}`,
-      source: 'threads' as const,
-      sourceId: row.id,
-      typeLabel: 'Questions & discussions',
-      kind: row.kind,
-      state: row.state,
-      title: row.title ?? row.id,
-      preview: (row.topics ?? []).map((topic) => `#${topic}`).join('  '),
-      actor: row.asker_id,
-      harnessSlug: row.harness_slug,
-      relatedRef: row.promoted_issue_id,
-      updatedAt: conversationEpoch(row.updated_ts ?? row.created_ts),
-    })),
-    ...deliberations.filter((row) => !isSystemConversationActor(row.created_by)).map((row) => ({
-      id: `deliberations:${row.thread_id}`,
-      source: 'deliberations' as const,
-      sourceId: row.thread_id,
-      typeLabel: 'Group decisions',
-      kind: row.parent_kind ?? '',
-      state: '',
-      title: row.title ?? row.thread_id,
-      preview: [row.parent_kind, row.parent_ref].filter(Boolean).join(' · '),
-      actor: row.created_by ?? undefined,
-      harnessSlug: row.harness_slug,
-      relatedRef: row.parent_ref,
-      count: row.post_count,
-      updatedAt: conversationEpoch(row.last_post_at ?? row.created_at),
-    })),
-    ...agentChats.filter((row) => !isSystemConversationActor(row.role)).map((row) => ({
-      id: `agentchats:${row.id}`,
-      source: 'agentchats' as const,
-      sourceId: row.id,
-      typeLabel: 'Agent chat',
-      kind: row.role ?? '',
-      state: row.archived_at == null ? 'open' : 'archived',
-      title: row.title ?? row.id,
-      preview: [row.role, row.feature_id].filter(Boolean).join(' · '),
-      actor: row.role ?? undefined,
-      harnessSlug: row.harness_slug,
-      relatedRef: row.feature_id,
-      count: row.turns,
-      updatedAt: conversationEpoch(row.updated_at ?? row.created_at),
-    })),
-    ...messages.filter((row) => !isSystemConversationActor(row.from_slug)).map((row) => ({
-      id: `messages:${row.id}`,
-      source: 'messages' as const,
-      sourceId: row.id,
-      typeLabel: 'Work-item mail',
-      kind: row.kind,
-      state: row.status,
-      title: row.subject || row.body || row.id,
-      preview: row.body ?? '',
-      actor: row.from_slug,
-      recipient: row.to_slug ?? row.to_role ?? undefined,
-      harnessSlug: row.harness_slug,
-      relatedRef: row.to_feature_id ?? row.from_feature_id,
-      updatedAt: conversationEpoch(row.created_at),
-    })),
-  ];
-
-  const identities = new Set<string>();
-  const semanticRows = new Set<string>();
-  const deduplicated: UnifiedConversationRow[] = [];
-  for (const row of candidates.sort((a, b) => b.updatedAt - a.updatedAt)) {
-    const identity = `${row.source}:${row.sourceId}`;
-    const semantic = unifiedConversationSignature(row);
-    if (identities.has(identity) || semanticRows.has(semantic)) continue;
-    identities.add(identity);
-    semanticRows.add(semantic);
-    deduplicated.push(row);
-    if (deduplicated.length === limit) break;
-  }
-  return deduplicated;
-}
 
 /**
  * The unified inbox is a projection, not a new communication store. Its rows
@@ -1698,40 +1403,6 @@ type ConvStateFilter = (typeof CONV_STATES)[number];
 const CONV_KINDS = ['all', 'question', 'discussion'] as const;
 type ConvKindFilter = (typeof CONV_KINDS)[number];
 
-interface ConvRow {
-  id: string;
-  kind: string;
-  state: string;
-  scope: string;
-  harness_slug: string | null;
-  title: string | null;
-  asker_id: string;
-  topics?: string[];
-  promoted_issue_id?: string | null;
-  created_ts: string;
-  updated_ts?: string;
-}
-interface ConvPost {
-  id: number;
-  author_id: string | null;
-  body: string;
-  created_ts?: string;
-}
-interface ConvDetailT {
-  id: string;
-  kind: string;
-  state: string;
-  scope: string;
-  harness_slug?: string | null;
-  title: string | null;
-  body?: string;
-  asker_id?: string;
-  accepted_answer?: string | null;
-  promoted_issue_id?: string | null;
-  topics: string[];
-  posts: ConvPost[];
-  subscriber_count: number;
-}
 /**
  * The Q&A thread reply box (P3 extract). Owns its own mid-edit draft (useState —
  * a draft is render-only, never user-meaningful URL state per the nuqs rule); the
@@ -2090,20 +1761,6 @@ function ThreadsView({
 
 // ─── Deliberations — coord:thread / deliberate / vote posts on an entity ────
 
-interface ThreadRow {
-  thread_id: string;
-  parent_kind: string | null;
-  parent_ref: string | null;
-  title: string | null;
-  created_by: string | null;
-  harness_slug: string | null;
-  created_at: string;
-  last_post_at: string | null;
-  post_count: number;
-}
-interface ThreadPost { id: number; author_id: string | null; body: string | null; created_at: string; harness_slug: string | null }
-interface DeliberationDetail { thread: ThreadRow; posts: ThreadPost[] }
-
 function DeliberationsView({
   detailOnly = false,
   loadingSummary,
@@ -2279,33 +1936,6 @@ function DeliberationsView({
 }
 
 // ─── Agent chats — the per-feature/per-role multi-turn transcripts ──────
-
-interface AgentChatRow {
-  id: string;
-  harness_slug: string | null;
-  role: string | null;
-  feature_id: string | null;
-  title: string | null;
-  created_at: string | number;
-  updated_at?: string | number | null;
-  archived_at: string | number | null;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_cost_usd_cents: number;
-  turns: number;
-}
-interface AgentChatTurn { ts?: string; role?: string; content?: unknown }
-interface AgentChatDetail extends AgentChatRow { transcript?: AgentChatTurn[] }
-
-function turnText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((p) => (typeof p === 'string' ? p : p && typeof p === 'object' && 'text' in p ? String((p as { text: unknown }).text) : JSON.stringify(p)))
-      .join('\n');
-  }
-  return content == null ? '' : JSON.stringify(content);
-}
 
 function AgentChatsView({
   detailOnly = false,
@@ -2549,21 +2179,6 @@ function AgentChatsView({
 }
 
 // ─── Messages — work-item-scoped agent↔agent messages ──────────────────
-
-interface MsgRow {
-  id: string;
-  harness_slug: string | null;
-  from_slug: string;
-  to_slug: string | null;
-  to_role: string | null;
-  kind: string;
-  subject: string | null;
-  body: string | null;
-  status: string;
-  created_at: string;
-  from_feature_id: string | null;
-  to_feature_id: string | null;
-}
 
 function MessagesView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
   const [open, setOpen] = useQueryState('msg', parseAsString);

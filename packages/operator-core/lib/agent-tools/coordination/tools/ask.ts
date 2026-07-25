@@ -37,11 +37,16 @@ export default defineTool({
   args: z.object({
     question: hardText(LIMITS.ANNOTATION),
     topics: z.array(z.string().min(1)).max(8).optional().describe('Topic slugs to route a miss to (topics:list). Strongly recommended — without them only direct subscribers see the question.'),
+    to: z.array(z.string().min(1)).max(8).optional().describe('Agent ids to ask DIRECTLY. They are subscribed to the question before fan-out, so it reaches them even when no topic routes to them; implies force_open (you asked a person, not the knowledge base). Topics still widen the audience on top.'),
     harness: z.string().optional().describe('Scope the question to a harness (restricts knowledge search + tags the conversation harness-scoped).'),
     force_open: z.boolean().optional().describe('Open a peer question even if the knowledge tier returned candidates (use when the inline candidates did not answer you).'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // A DIRECTED ask names a person, so the knowledge tier must not answer on
+    // their behalf — addressing someone implies force_open (WI-5754).
+    const directTo = args.to ?? [];
+    const forceOpen = args.force_open || directTo.length > 0;
 
     const tier = await runKnowledgeTier({
       query: args.question,
@@ -50,7 +55,7 @@ export default defineTool({
       harness_slug: args.harness ?? null,
     });
 
-    if (tier.candidates.length > 0 && !args.force_open) {
+    if (tier.candidates.length > 0 && !forceOpen) {
       return {
         content: [{
           type: 'text' as const,
@@ -71,6 +76,7 @@ export default defineTool({
       body: args.question,
       topics: args.topics,
       harness_slug: args.harness,
+      direct_to: directTo,
     });
 
     return {
@@ -82,12 +88,13 @@ export default defineTool({
           conversation_id: opened.conversation.id,
           scope: opened.conversation.scope,
           topics: opened.topics,
+          asked: opened.direct_to,
           unrouted: opened.unrouted,
           notified_subscribers: opened.delivered,
           searched: tier.searched,
           hint: opened.unrouted
-            ? 'Question opened, but NO topics tagged → only direct subscribers will see it. Add topics (topics:list) for routing.'
-            : `Question opened to topic subscribers; peer answers arrive in your inbox on a later turn. If you are BLOCKED on the answer, events:await { event: 'conversation:answered:${opened.conversation.id}' } and end your turn — the resolve wakes you. conversations:resolve when answered (captures the answer for the next asker).`,
+            ? 'Question opened, but NO topics tagged and NO agent addressed → only existing subscribers will see it. Add topics (topics:list), or pass `to` to ask someone directly.'
+            : `Question opened to ${opened.direct_to.length ? `${opened.direct_to.join(', ')} (+ topic subscribers)` : 'topic subscribers'}; answers arrive in your inbox on a later turn. If you are BLOCKED on the answer, events:await { event: 'conversation:answered:${opened.conversation.id}' } and end your turn — the resolve wakes you. conversations:resolve when answered (captures the answer for the next asker).`,
         }),
       }],
     };

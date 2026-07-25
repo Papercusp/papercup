@@ -10,8 +10,12 @@
  *
  * SAFETY: auto-closing real improvement items is dangerous, so the decision is heavily
  * guarded (open + watchdog-keyed + organic + no LIVE in-flight dispatch + eligible
- * source + old enough + enough tick history) AND the whole sweep is gated by a
- * DEFAULT-OFF flag (`FLAGS.WATCHDOG_AUTO_CLOSE`) — inert until the owner enables it.
+ * source + old enough + enough tick history) AND the whole sweep is gated by
+ * `FLAGS.WATCHDOG_AUTO_CLOSE` — an owner-authority flag that DEFAULTS OFF (in DARK_FLAGS
+ * per EI-7230: auto-closing without owner review is unsafe). The sweep runs only while the
+ * flag is enabled (a workspace override in operator_flag_overrides, PostHog, or
+ * /admin/features) and reverts to escalate-only when it is off. Do NOT assume the default
+ * here reflects the live value — resolve `getFlag` (below) for the actual state.
  * NOTE (EI-7317): a bare `assignee` does NOT block retirement on its own — only a live
  * `in-flight-dispatch` row means someone is genuinely still working it. An assignee left
  * over from a resolved/abandoned dispatch is not active work; see decideAutoClose.

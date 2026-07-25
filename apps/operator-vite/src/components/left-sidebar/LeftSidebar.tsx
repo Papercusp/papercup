@@ -37,7 +37,7 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Network, Coffee, Thermometer, CupSoda, KeyRound, Blend, FileText, Bot, Coins, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Network, Coffee, Thermometer, CupSoda, KeyRound, Blend, FileText, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -85,6 +85,14 @@ const DocsTab = lazy(() => import('./DocsTab'));
 // Without it the "no unknown token usage" goal is unmet — 13 spending routines
 // lived outside Blender+Docs on the day these panes were built.
 const AgentsTab = lazy(() => import('./AgentsTab'));
+// 💬 Conversations — the curated conversation stream (Q&A, group decisions,
+// agent chats, work-item mail) at rail width (WI-5754, owner ask 2026-07-25).
+// It is the SAME four SSE-cached reads /adv's Conversations tab consumes — see
+// components/conversations/unified-conversations for the shared composition —
+// re-laid-out as a single drill-in column. Reading only: composing a question
+// lives in the Agents tab (AskAgentPane), so the rail has exactly one place to
+// ask and one place to read.
+const ConversationsTab = lazy(() => import('./ConversationsTab'));
 // 💰 Spend — the ONE workspace-wide cost surface (owner correction 2026-07-25).
 // Blender/Docs/Agents each had their own "Spend" lane, but spend is recorded per
 // agent ROLE with no link back to the spawning routine, so each pane hand-picked
@@ -131,6 +139,13 @@ const TABS = [
   { id: 'docs', label: (_t: BoundLexicon) => 'Docs', icon: FileText, tip: (_t: BoundLexicon) => 'Documentation agents — doc regeneration & knowledge-pack schedules', render: (a: boolean) => <DocsTab active={a} /> },
   { id: 'agents', label: (_t: BoundLexicon) => 'Agents', icon: Bot, tip: (_t: BoundLexicon) => 'Every other scheduled agent — supervision, health sweeps, armed loops', render: (a: boolean) => <AgentsTab active={a} /> },
   { id: 'spend', label: (_t: BoundLexicon) => 'Spend', icon: Coins, tip: (_t: BoundLexicon) => 'What every agent in this workspace cost over the last 7 days', render: (a: boolean) => <SpendTab active={a} /> },
+  // 💬 Conversations sits LAST (owner ask 2026-07-25). Appending rather than
+  // inserting keeps the owner-set order of every tab before it untouched — the
+  // order is pinned by a test precisely so a later addition can't quietly
+  // reshuffle it. Label is "Convos": a 3-column tab cell fits ~8 characters
+  // beside its icon at the rail's 300px minimum, and "Conversations" would
+  // ellipsise; the pane header carries the full word.
+  { id: 'conversations', label: (_t: BoundLexicon) => 'Convos', icon: MessagesSquare, tip: (_t: BoundLexicon) => 'Conversations — questions, group decisions, agent chats and work-item mail', render: (a: boolean) => <ConversationsTab active={a} /> },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];

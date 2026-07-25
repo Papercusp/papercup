@@ -160,6 +160,14 @@ export interface OpenConversationInput {
   topics?: string[];
   scope?: ConversationScope;
   harness_slug?: string;
+  /**
+   * Agents this conversation is addressed to DIRECTLY (WI-5754). They are
+   * subscribed to the conversation object BEFORE the open fans out, so the
+   * existing subscriber fan-out delivers to them — no second notification path.
+   * Topic routing still applies on top; this only guarantees a named recipient
+   * is reached even when no topic routes to them (or none was tagged at all).
+   */
+  direct_to?: string[];
 }
 
 export interface OpenConversationResult {
@@ -168,6 +176,8 @@ export interface OpenConversationResult {
   topics: string[];
   delivered: number;
   unrouted: boolean;
+  /** The named recipients actually subscribed (the asker is never one). */
+  direct_to: string[];
 }
 
 export async function openConversationCore(
@@ -225,10 +235,31 @@ export async function openConversationCore(
     notify_kind: input.kind === 'question' ? 'question_opened' : 'discussion_opened',
     isResolution: false,
   };
+  // Named recipients (WI-5754) subscribe BEFORE the fan-out, so the SAME
+  // subscriber fan-out below reaches them — a directed ask needs no second
+  // delivery path, and the recipient stays subscribed for the whole thread.
+  // The asker is excluded: they self-subscribe just after, and fanout already
+  // shields them from being notified of their own question.
+  const directTo = [...new Set(input.direct_to ?? [])].filter(
+    (agentId) => agentId && agentId !== identity.ownerId,
+  );
+  for (const agentId of directTo) {
+    await selfSubscribe(deps, id, agentId, now);
+  }
+
   const delivered = await fanout(deps, convRef(id), ev, identity.ownerId);
   await selfSubscribe(deps, id, identity.ownerId, now);
 
-  return { conversation, thread_id: thread.thread_id, topics, delivered, unrouted: topics.length === 0 };
+  // `unrouted` means NOBODY was addressed — with a named recipient the question
+  // always has somewhere to land, so an untagged directed ask is not unrouted.
+  return {
+    conversation,
+    thread_id: thread.thread_id,
+    topics,
+    delivered,
+    unrouted: topics.length === 0 && directTo.length === 0,
+    direct_to: directTo,
+  };
 }
 
 // ── Post / answer ────────────────────────────────────────────────────────────

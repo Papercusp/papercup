@@ -365,6 +365,27 @@ export function fmtConversationRel(v: string | number | null | undefined): strin
   return `${Math.round(h / 24)}d ago`;
 }
 
+/**
+ * An agent-chat transcript turn's content is either a plain string or an array
+ * of content parts (the provider block shape). Flatten either to text — shared,
+ * because both the wide transcript and the rail's render the same turns.
+ */
+export function turnText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p) =>
+        typeof p === 'string'
+          ? p
+          : p && typeof p === 'object' && 'text' in p
+            ? String((p as { text: unknown }).text)
+            : JSON.stringify(p),
+      )
+      .join('\n');
+  }
+  return content == null ? '' : JSON.stringify(content);
+}
+
 /** The same clock, abbreviated for a 300px row where `ago` does not fit. */
 export function fmtConversationAge(v: string | number | null | undefined): string {
   const rel = fmtConversationRel(v);

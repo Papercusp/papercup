@@ -59,6 +59,28 @@ describe('classifyRoutine', () => {
     expect(classifyRoutine('knowledge-pack-hygiene', 'health')).toBe('docs');
   });
 
+  it('routes the whole improvement-* family to the Blender pane regardless of group_slug (P-008)', () => {
+    // The bug this fixes: improvement-watchdog is grouped `health` in the DB while its
+    // siblings improvement-implement / -triage / -human-digest are grouped
+    // `self-improvement`. Before name-before-group ordering, the watchdog — the pipeline's
+    // single biggest work-item emitter — rendered in the Agents/Health pane, so pausing
+    // "the Blender" demonstrably did NOT stop it (2026-07-25 duplicate-churn). The name
+    // must win over the group so the family presents as ONE pausable pane.
+    expect(classifyRoutine('improvement-watchdog', 'health')).toBe('learning');
+    expect(classifyRoutine('improvement-implement', 'self-improvement')).toBe('learning');
+    expect(classifyRoutine('improvement-triage', 'self-improvement')).toBe('learning');
+    expect(classifyRoutine('improvement-human-digest', 'health')).toBe('learning');
+    // Even ungrouped, the name shape alone lands it in learning.
+    expect(classifyRoutine('improvement-watchdog', null)).toBe('learning');
+  });
+
+  it('does not sweep a genuinely-health routine into learning by the P-008 ordering', () => {
+    // Regression guard for name-before-group: a health routine whose name matches NO
+    // learning/docs pattern must still land in the Health pane, not get pulled forward.
+    expect(classifyRoutine('cargo-test', 'health')).toBe('health');
+    expect(classifyRoutine('pg-vacuum-sweep', 'health')).toBe('health');
+  });
+
   it('routes agent-armed continuation loops to agent-loops', () => {
     expect(classifyRoutine('loop-su-abc', 'agent-loops')).toBe('agent-loops');
     expect(classifyRoutine('loop-su-abc', null)).toBe('agent-loops');
