@@ -63,6 +63,15 @@ export interface HiveLearningsSnapshot {
   organicCount: number;
   /** True when the memory store was unreachable (UI renders "unavailable"). */
   unavailable?: boolean;
+  /**
+   * WHY the store was unreachable, verbatim from the backend. Previously the
+   * catch below swallowed this and the UI could only say "Shared memory
+   * unavailable" — a dead end for the reader (owner report 2026-07-25, whose
+   * actual cause was a corrupted `mem0ai` install: "Cannot find package
+   * .../mem0ai/node_modules/uuid"). An unavailability the user cannot act on
+   * is a bug in the message, not just the backend.
+   */
+  unavailableReason?: string;
 }
 
 export interface HiveLearningsDeps {
@@ -81,8 +90,17 @@ export async function readHiveLearnings(
   let entries: MemoryEntry[];
   try {
     entries = await deps.listPool(`hive:${potSlug}`);
-  } catch {
-    return { hive: potSlug, rows: [], packs: [], organicCount: 0, unavailable: true };
+  } catch (err) {
+    // Carry the reason (see `unavailableReason`) — never swallow it.
+    const reason = err instanceof Error ? err.message : String(err);
+    return {
+      hive: potSlug,
+      rows: [],
+      packs: [],
+      organicCount: 0,
+      unavailable: true,
+      unavailableReason: reason.slice(0, 300),
+    };
   }
 
   // Resolve each referenced pack ONCE (batched — never per-row).

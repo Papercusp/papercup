@@ -16,6 +16,7 @@ export function LearningPageHeader({
   signal,
   tone = "neutral",
   action,
+  generatedAt,
 }: {
   icon: LucideIcon;
   title: string;
@@ -28,6 +29,15 @@ export function LearningPageHeader({
   signal?: string;
   tone?: LearningTone;
   action?: ReactNode;
+  /**
+   * WI-5803 (owner ask 2026-07-25): when this view's data was generated —
+   * rendered PROMINENTLY, not as a footnote. Every learning surface is a
+   * snapshot of a moving system; a reader who cannot see the as-of time cannot
+   * tell "nothing is happening" from "this panel is stale", which is exactly
+   * the confusion that sent us chasing a phantom empty gym. Accepts an ISO
+   * string or epoch ms.
+   */
+  generatedAt?: string | number | null;
 }) {
   return (
     <div className="pc-learning-visual__head">
@@ -35,6 +45,9 @@ export function LearningPageHeader({
         <Icon size={15} aria-hidden />
         {title}
       </h2>
+      {generatedAt != null && generatedAt !== "" ? (
+        <GeneratedStamp at={generatedAt} />
+      ) : null}
       {question ? (
         <span className="pc-learning-visual__question">{question}</span>
       ) : null}
@@ -281,6 +294,18 @@ export function LearningVisualStyles() {
          tone-filled pill read as a confusing "info pill". Now plain inline text —
          a small muted label with the number tone-tinted, the ONE accent the header
          carries. No pill chrome, no uppercase. */
+      /* WI-5803 — the as-of stamp. Legible, not a footnote: a reader must be able
+         to tell a quiet system from a stale panel at a glance. */
+      .pc-learning-visual__asof {
+        font-size: 11px; font-weight: 700; letter-spacing: 0.01em;
+        color: var(--accent, #7dd3fc); border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 35%, transparent);
+        border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      .pc-learning-visual__asof.is-stale {
+        color: var(--warn, #fbbf24);
+        border-color: color-mix(in srgb, var(--warn, #fbbf24) 45%, transparent);
+      }
       .pc-learning-visual__signal { color: var(--fg-mute); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0; }
       .pc-learning-visual__signal.is-good { color: #34d399; }
       .pc-learning-visual__signal.is-warn { color: #fbbf24; }
@@ -360,5 +385,33 @@ export function LearningVisualStyles() {
       @container learning (max-width: 1060px) { .pc-learning-visual__layout { grid-template-columns: minmax(150px, .66fr) minmax(290px, 2fr); } .pc-learning-visual__evidence { grid-column: 1 / -1; } }
       @container learning (max-width: 720px) { .pc-learning-visual__layout { grid-template-columns: 1fr; } .pc-learning-visual__evidence { grid-column: auto; } .pc-learning-visual__barrow { grid-template-columns: 1fr; gap: 6px; } }
     `}</style>
+  );
+}
+
+/**
+ * WI-5803 — the "as of" stamp. Deliberately high-contrast and adjacent to the
+ * title rather than tucked in a corner: its whole job is to stop a reader
+ * trusting stale numbers. Shows relative age (the thing you actually judge by)
+ * with the absolute timestamp on hover, and turns amber past 10 minutes.
+ */
+export function GeneratedStamp({ at }: { at: string | number }) {
+  const ms = typeof at === "number" ? at : Date.parse(at);
+  if (!Number.isFinite(ms)) return null;
+  const ageMin = (Date.now() - ms) / 60_000;
+  const rel =
+    ageMin < 1
+      ? "just now"
+      : ageMin < 60
+        ? `${Math.round(ageMin)}m ago`
+        : ageMin < 60 * 24
+          ? `${Math.round(ageMin / 60)}h ago`
+          : `${Math.round(ageMin / (60 * 24))}d ago`;
+  return (
+    <span
+      className={`pc-learning-visual__asof${ageMin >= 10 ? " is-stale" : ""}`}
+      title={`Data generated ${new Date(ms).toLocaleString()}`}
+    >
+      as of {rel}
+    </span>
   );
 }

@@ -3244,7 +3244,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const harnessSlug = a.hive || undefined;
       const fetchSnapshot = (slug: string | undefined) =>
         routeWithWorkspace(async (tx) => {
-          const [proposals, autoloops, archiveSeeds, cycles] = await Promise.all([
+          const [proposals, autoloops, archiveSeeds, cycles, runs] = await Promise.all([
             listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50, ...(slug ? { harnessSlug: slug } : {}) }),
             listAutoloopsForWorkspace(tx, { workspaceId: ws, ...(slug ? { harnessSlug: slug } : {}) }),
             // WI-5412 item 4: the Scout-seeded MAP-Elites niches — where the
@@ -3275,38 +3275,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return { proposals, autoloops, archiveSeeds, cycles, runs, generatedAt: new Date().toISOString() };
         });
       const scoped = await fetchSnapshot(harnessSlug);
-      // "Empty" = no EXPERIMENTS (challenger proposals + Scout-seeded archive
-      // niches). A lone autoloop CONFIG row is NOT an experiment and must not
-      // suppress the fallback: the `papercusp` Hive has 1 autoloop config but 0
-      // proposals, which used to (a) keep this fallback from firing and (b) trip
-      // the GymView's own `proposals===0 && archiveSeeds===0` empty state — so
-      // the workspace's 3 real proposals sat unseen behind "No gym experiments"
-      // (owner report 2026-07-19). The view's emptiness test uses these same
-      // lists (proposals + archiveSeeds + cycles since WI-5685); keep the two
-      // in lockstep.
-      const scopedIsEmpty =
-        scoped.proposals.length === 0 && scoped.archiveSeeds.length === 0 && scoped.cycles.length === 0;
-      // (WI-5420) The per-Hive lens above assumes a Hive's HOME slug IS the
-      // gym's harness_slug — true for a gym that ran through the per-hive
-      // autoloop (system:gym-cycle), but NOT for one run any other way (e.g. a
-      // manual `gym-loop-run.ts` CLI invocation, which defaults its
-      // harness_slug to the fixed 'gymloopharness' bucket rather than the
-      // target hive — the observed WI-5420 case: 3 real pending proposals sat
-      // invisible under a Hive-scoped read). A Hive whose scoped read is empty
-      // can genuinely have never run a gym cycle — OR it can be hiding real
-      // proposals recorded under such an unaffiliated slug. Rather than render
-      // the empty state while real rows sit unseen, fall back to the unscoped
-      // workspace-wide rollup and flag it (`scopeFallback: true`) so the UI can
-      // say so explicitly — never a silent re-attribution of another harness's
-      // data to this Hive.
-      if (harnessSlug && scopedIsEmpty) {
-        const fallback = await fetchSnapshot(undefined);
-        const fallbackHasData =
-          fallback.proposals.length > 0 || fallback.archiveSeeds.length > 0 || fallback.cycles.length > 0;
-        if (fallbackHasData) {
-          return [{ ...fallback, scopeFallback: true }];
-        }
-      }
+      // WI-5802 (owner report 2026-07-25): NO CROSS-TENANT FALLBACK.
+      //
+      // This used to detect an empty Hive-scoped read and silently return the
+      // WORKSPACE-WIDE rollup flagged `scopeFallback: true` (WI-5420). The intent
+      // was kind — surface real rows recorded under an unaffiliated slug like
+      // 'gymloopharness' rather than render an empty state. The effect was not:
+      // selecting the Oddsmith pot showed PAPERCUSP's gym experiments, with only a
+      // muted one-line note to say so. Showing tenant A's data under tenant B's
+      // lens is a correctness bug; a note does not make it correct, and the owner
+      // read it (rightly) as the view lying about scope.
+      //
+      // A selected pot now shows ONLY that pot's data, or an honest empty state.
+      // The real WI-5420 problem — CLI gym runs landing in the 'gymloopharness'
+      // bucket instead of the target hive — is a WRITE-SIDE attribution bug and
+      // must be fixed there, not papered over on read.
       return [scoped];
     },
   },

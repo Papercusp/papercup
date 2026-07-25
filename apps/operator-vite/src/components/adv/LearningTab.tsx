@@ -1472,6 +1472,18 @@ interface GymRecentCycle {
   startedAt: number | null;
   finishedAt: number | null;
 }
+/** WI-5801: one variant's runs within a cycle, straight from gym_runs. */
+interface GymRecentRun {
+  harnessSlug: string;
+  variantId: string;
+  cycle: number;
+  runCount: number;
+  states: string[];
+  startedAt: number | null;
+  finishedAt: number | null;
+  decision: string | null;
+  isBaseline: boolean;
+}
 interface GymSnapshot {
   proposals: GymProposal[];
   autoloops: GymAutoloop[];
@@ -1479,6 +1491,10 @@ interface GymSnapshot {
   archiveSeeds?: GymArchiveSeed[];
   /** Recent completed cycles (WI-5685) — absent on older server snapshots. */
   cycles?: GymRecentCycle[];
+  /** WI-5801: recent RUN activity from gym_runs — the table that accumulates. */
+  runs?: GymRecentRun[];
+  /** ISO timestamp this snapshot was generated server-side. */
+  generatedAt?: string;
   /**
    * WI-5420: true when the requested Hive's own gym-scoped read came back
    * empty and the server fell back to the workspace-wide rollup below (real
@@ -1635,66 +1651,20 @@ function GymView({
     staleTime: 30_000,
     enabled: hiveReady,
   });
-  const scopedSnap = sync.data?.[0];
-  // Client-side safety net (owner report 2026-07-19): a hive-scoped read can come
-  // back with 0 EXPERIMENTS (proposals + archiveSeeds) yet not carry
-  // `scopeFallback` — e.g. the `papercusp` Hive, which owns 1 autoloop config
-  // but no proposals, so the server's fallback (which the config used to make
-  // look non-empty) never fired and the workspace's real proposals sat unseen
-  // behind "No gym experiments". When the scoped read has no experiments and the
-  // server did not already fall back, refetch the workspace-wide rollup and use
-  // it. Once the matching server fix is live, `scopeFallback` is set and this
-  // second read never enables. Mirrors the server's own scoped→wide fallback.
-  const scopedNoExperiments =
-    Boolean(scopedSnap) &&
-    (scopedSnap?.proposals?.length ?? 0) === 0 &&
-    (scopedSnap?.archiveSeeds?.length ?? 0) === 0 &&
-    (scopedSnap?.cycles?.length ?? 0) === 0;
-  const needWide =
-    hiveReady &&
-    Boolean(hive) &&
-    scopedNoExperiments &&
-    !scopedSnap?.scopeFallback;
-  const wideSync = useSyncQuery<GymSnapshot>({
-    queryName: "learning.gym",
-    args: {},
-    staleTime: 30_000,
-    enabled: needWide,
-  });
-  const wideSnap = wideSync.data?.[0];
-  const useWide =
-    needWide &&
-    Boolean(wideSnap) &&
-    ((wideSnap?.proposals?.length ?? 0) > 0 ||
-      (wideSnap?.archiveSeeds?.length ?? 0) > 0 ||
-      (wideSnap?.cycles?.length ?? 0) > 0);
-  const snap = useWide ? wideSnap : scopedSnap;
+  // WI-5802 (owner report 2026-07-25): the client-side cross-tenant fallback is
+  // GONE, matching the server. It used to refetch the workspace-wide rollup when
+  // the selected pot's own read was empty — which is how selecting Oddsmith
+  // rendered PAPERCUSP's gym experiments. A selected pot now shows only its own
+  // data, or an honest empty state naming the pot.
+  const snap = sync.data?.[0];
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
   const archiveSeeds = snap?.archiveSeeds ?? [];
   const cycles = snap?.cycles ?? [];
-  // WI-5696 (owner ask 2026-07-20): a completed cycle is a challenger EVENT,
-  // not its own category — it renders as a compact time line under "Recent
-  // challengers", and ONLY when no proposal card already tells its story.
-  // Candidate ids RECYCLE across runs (every run's challenger is cand-c1), so
-  // the match is time-windowed: only a proposal created around this cycle's
-  // window represents THIS run — a stale same-named card must not hide it.
-  const unproposedCycles = cycles.filter(
-    (c) =>
-      !proposals.some(
-        (p) =>
-          p.harnessSlug === c.harnessSlug &&
-          p.cycle === c.cycle &&
-          (!c.candidateId || (p.variantId ?? "") === c.candidateId) &&
-          (c.startedAt == null || p.createdAt >= c.startedAt - 6 * 3600_000),
-      ),
-  );
-  // WI-5420: the server fell back to the workspace-wide rollup because this
-  // Hive's own gym-scoped read was empty — say so, don't silently reattribute
-  // another harness's experiments to this Hive. `useWide` is the client-side
-  // equivalent (the scoped read had no experiments), so it reads the same note.
-  const scopeFallback =
-    Boolean(hive) && (Boolean(scopedSnap?.scopeFallback) || useWide);
+  // WI-5801: RUN activity, read from gym_runs — the table that actually
+  // accumulates. This is what answers "is the gym doing anything lately";
+  // `cycles` only gains a row when a cycle COMPLETES.
+  const runs = snap?.runs ?? [];
   const activeAutoloops = autoloops.filter(
     (autoloop) => autoloop.enabled || autoloop.status === "running",
   );
@@ -1723,6 +1693,7 @@ function GymView({
       <LearningPageHeader
         icon={Dumbbell}
         title="Prompt gym"
+        generatedAt={snap?.generatedAt}
         signal={running > 0 ? `${running} active` : undefined}
         tone={running > 0 ? "good" : "neutral"}
         action={
@@ -1752,15 +1723,6 @@ function GymView({
         challenger that beats the champion on the benchmark is promoted
         automatically — the ledger below is the audit trail.
       </p>
-
-      {scopeFallback ? (
-        <p
-          className="pc-learning__muted pc-learning__scopenote"
-          title={`This ${t("pot")}'s own gym harness has no recorded experiments; showing the workspace-wide rollup instead so real data is never hidden.`}
-        >
-          {`Showing gym experiments from all ${t("pot", { plural: true, lower: true })} — none are scoped to this ${t("pot")} yet.`}
-        </p>
-      ) : null}
 
       {snap && proposals.length >= 4 ? (
         // The header signal already carries "N active" (running loops); this line
@@ -1810,21 +1772,28 @@ function GymView({
           gate (or any pre-first-result gap) rendered undefined `snap` as "No gym
           experiments" even though the workspace had proposals (owner report
           2026-07-19; the server returns them correctly — verified end-to-end). */}
-      {(!snap && !sync.error) || (needWide && !wideSnap && !wideSync.error) ? (
+      {!snap && !sync.error ? (
         <p className="pc-learning__empty">Loading gym experiments…</p>
       ) : sync.error ? (
         <LearningVisualError
           title="Gym unavailable"
           onRetry={() => sync.invalidate()}
         />
-      ) : proposals.length === 0 && archiveSeeds.length === 0 && cycles.length === 0 ? (
+      ) : proposals.length === 0 &&
+        archiveSeeds.length === 0 &&
+        cycles.length === 0 &&
+        runs.length === 0 ? (
         <LearningVisualEmpty
           icon={Dumbbell}
-          title="No gym experiments in this workspace yet"
+          title={
+            hive
+              ? `No gym activity for ${hive} yet`
+              : "No gym activity in this workspace yet"
+          }
         />
       ) : (
         <>
-          {proposals.length > 0 || unproposedCycles.length > 0 ? (
+          {proposals.length > 0 || runs.length > 0 ? (
             <>
               <div className="pc-learning__sectionhead">
                 <h2>Recent challengers</h2>
@@ -1836,16 +1805,22 @@ function GymView({
                   proposal is already told by that card); once WI-5697 restores
                   proposal-minting for every decision, these lines vanish via
                   the dedupe. */}
-              {unproposedCycles.length > 0 ? (
+              {runs.length > 0 ? (
                 <div className="pc-learning__gymcycles" aria-label="Recent gym runs">
-                  {unproposedCycles.map((c) => {
-                    const decided = c.decision === "accept" || c.decision === "promote";
-                    const decisionColor = statusToneColor(
-                      decided ? "accepted" : c.decision ? "rejected" : "pending",
-                    );
+                  {runs.map((r) => {
+                    const promoted = r.decision === "accept" || r.decision === "promote";
+                    const tone = r.isBaseline
+                      ? "pending"
+                      : promoted
+                        ? "accepted"
+                        : r.decision
+                          ? "rejected"
+                          : "pending";
+                    const decisionColor = statusToneColor(tone);
+                    const when = r.finishedAt ?? r.startedAt;
                     return (
                       <div
-                        key={c.cycleId || `${c.harnessSlug}:${c.cycle}:${c.candidateId ?? ''}`}
+                        key={`${r.harnessSlug}:${r.variantId}:${r.cycle}`}
                         className="pc-learning__muted"
                         style={{
                           display: "inline-flex",
@@ -1855,27 +1830,35 @@ function GymView({
                           fontSize: 12,
                           padding: "2px 0",
                         }}
-                        title={`Cycle ${c.cycle} on ${c.harnessSlug}: ${c.candidateId ?? "—"} challenged ${c.parentId ?? "—"} across ${c.runCount} scored run(s)${c.finishedAt ? ` — finished ${new Date(c.finishedAt).toLocaleString()}` : ""}. No challenger card was recorded for this cycle (WI-5697).`}
+                        title={`${r.runCount} scored run(s) of ${r.variantId} in cycle ${r.cycle} on ${r.harnessSlug}${r.states.length ? ` — outcomes: ${r.states.join(", ")}` : ""}${when ? ` — ${new Date(when).toLocaleString()}` : ""}`}
                       >
-                        {c.finishedAt ? (
-                          <span className="pc-learning__age">{whenLabel(c.finishedAt)}</span>
+                        {when ? (
+                          <span className="pc-learning__age">{whenLabel(when)}</span>
                         ) : null}
                         <span
                           className="pc-learning__chip"
                           style={{ color: decisionColor, borderColor: decisionColor }}
                         >
-                          {decided ? (
+                          {r.isBaseline ? (
+                            <Clock size={10} aria-hidden />
+                          ) : promoted ? (
                             <CheckCircle2 size={10} aria-hidden />
-                          ) : c.decision ? (
+                          ) : r.decision ? (
                             <XCircle size={10} aria-hidden />
                           ) : (
                             <Clock size={10} aria-hidden />
                           )}
-                          {decided ? "promoted" : c.decision ? "champion held" : "no decision"}
+                          {r.isBaseline
+                            ? "champion baseline"
+                            : promoted
+                              ? "promoted"
+                              : r.decision
+                                ? "champion held"
+                                : "evaluated"}
                         </span>
                         <span>
-                          {c.candidateId ?? "—"} vs {c.parentId ?? "—"} · {c.runCount} run
-                          {c.runCount === 1 ? "" : "s"} · {c.harnessSlug}
+                          {r.variantId} · cycle {r.cycle} · {r.runCount} run
+                          {r.runCount === 1 ? "" : "s"} · {r.harnessSlug}
                         </span>
                       </div>
                     );
@@ -4613,8 +4596,15 @@ function LearningsView({
             Loading the {t("pot", { lower: true })}&rsquo;s shared memory…
           </p>
         ) : snap?.unavailable ? (
+          // Name the CAUSE. "unavailable" with no reason is a dead end for the
+          // reader (owner report 2026-07-25 — the real cause was a corrupted
+          // mem0ai install, invisible from this screen).
           <LearningVisualError
-            title="Shared memory unavailable"
+            title={
+              snap.unavailableReason
+                ? `Shared memory unavailable — ${snap.unavailableReason}`
+                : "Shared memory unavailable"
+            }
             onRetry={() => sync.invalidate()}
           />
         ) : filtered.length === 0 ? (

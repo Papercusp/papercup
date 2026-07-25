@@ -1,4 +1,13 @@
 node_modules/
+# ...and any SIDECAR COPY of it. `node_modules/` matches that exact name only, so
+# a repair/rollback backup like `node_modules.bak.wi5769/` is NOT ignored — and
+# git-sync auto-commits the whole tree, so one such directory tries to push
+# ~100k files and trips the GitHub 100MB blob limit (observed 2026-07-25: a
+# concurrent-install repair left node_modules.bak.wi5769/, and git-sync had to
+# exclude @cloudflare/workerd's 118MB binary from the auto-commit). Taking a
+# backup before a risky reinstall is the RIGHT instinct — this just makes it safe.
+node_modules.bak*/
+node_modules.old*/
 .next/
 .next-prod/
 .next-build-cache/

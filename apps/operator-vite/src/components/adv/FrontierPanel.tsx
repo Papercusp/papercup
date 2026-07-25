@@ -121,6 +121,7 @@ export function FrontierPanel({
       <LearningPageHeader
         icon={Radar}
         title="Frontier lanes"
+        generatedAt={snap?.generatedAt}
         question="Which learning loops are actually alive — routine firing, flag ON, budget set?"
         action={
           <button
