@@ -37,7 +37,7 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Network, Coffee, Thermometer, CupSoda, KeyRound, Blend, FileText, Bot, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Network, Coffee, Thermometer, CupSoda, KeyRound, Blend, FileText, Bot, Coins, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -85,6 +85,12 @@ const DocsTab = lazy(() => import('./DocsTab'));
 // Without it the "no unknown token usage" goal is unmet — 13 spending routines
 // lived outside Blender+Docs on the day these panes were built.
 const AgentsTab = lazy(() => import('./AgentsTab'));
+// 💰 Spend — the ONE workspace-wide cost surface (owner correction 2026-07-25).
+// Blender/Docs/Agents each had their own "Spend" lane, but spend is recorded per
+// agent ROLE with no link back to the spawning routine, so each pane hand-picked
+// overlapping roles and reported the SAME dollars as its own. Cost is a peer tab
+// now, sitting right of Agents, with the attribution limit stated on it.
+const SpendTab = lazy(() => import('./SpendTab'));
 // (The 📥 Inbox tab (EI-13037) MOVED to the op-chat sidebar — owner placement
 // correction 2026-07-16: this middle rail is the SETTINGS surface; the far-left
 // papercup-chat sidebar is the live surface. See _components/inbox/InboxPane.)
@@ -97,7 +103,7 @@ const AgentsTab = lazy(() => import('./AgentsTab'));
 // Brain, Operator, Fleet; the-hive skin shows Hive, Queen, Sentinel, Colony.
 // Overwatch has no TermKey (D-002) so it stays literal in both packs.
 // ORDER IS OWNER-SET (2026-07-25): Accounts · Pots · Papercup · Mug · Kettle ·
-// Blender · Docs · Agents. The owner reads the rail left-to-right as
+// Blender · Docs · Agents · Spend. The owner reads the rail left-to-right as
 // "who am I / what am I running / who talks to me" (Accounts → Pots → Papercup)
 // before the autonomous machinery (Mug → Kettle → the three scheduled-agent
 // panes). Tab IDS ARE FROZEN — `?lst=<id>` deep links, ui:dispatch, and the
@@ -124,6 +130,7 @@ const TABS = [
   { id: 'blender', label: (_t: BoundLexicon) => 'Blender', icon: Blend, tip: (_t: BoundLexicon) => 'Learning agents — scheduled self-improvement loops, and what they cost', render: (a: boolean) => <BlenderTab active={a} /> },
   { id: 'docs', label: (_t: BoundLexicon) => 'Docs', icon: FileText, tip: (_t: BoundLexicon) => 'Documentation agents — doc regeneration & knowledge-pack schedules', render: (a: boolean) => <DocsTab active={a} /> },
   { id: 'agents', label: (_t: BoundLexicon) => 'Agents', icon: Bot, tip: (_t: BoundLexicon) => 'Every other scheduled agent — supervision, health sweeps, armed loops', render: (a: boolean) => <AgentsTab active={a} /> },
+  { id: 'spend', label: (_t: BoundLexicon) => 'Spend', icon: Coins, tip: (_t: BoundLexicon) => 'What every agent in this workspace cost over the last 7 days', render: (a: boolean) => <SpendTab active={a} /> },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];

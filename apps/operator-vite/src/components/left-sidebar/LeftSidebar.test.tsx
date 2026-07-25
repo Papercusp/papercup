@@ -30,6 +30,7 @@ vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }
 vi.mock('./BlenderTab', () => ({ default: () => <div data-testid="panel-blender" /> }));
 vi.mock('./DocsTab', () => ({ default: () => <div data-testid="panel-docs" /> }));
 vi.mock('./AgentsTab', () => ({ default: () => <div data-testid="panel-agents" /> }));
+vi.mock('./SpendTab', () => ({ default: () => <div data-testid="panel-spend" /> }));
 // SwarmTab / VoiceTab are deliberately NOT stubbed: this rail no longer mounts
 // them at all (WI-5162 — they are op-chat sidebar faces now). A stub here would
 // hide a regression that re-added them. See the "moved out" test below.
@@ -105,7 +106,11 @@ describe('<LeftSidebar> shell', () => {
   // t('overwatch')); the useLexicon mock above echoes the key, so they render as
   // the bare key names (restore-pot-lexicon P-005 — the classic pack shows
   // Pots / Papercup / Brain / Kettle at runtime).
-  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Blender · Docs · Agents', () => {
+  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Blender · Docs · Agents · Spend', () => {
+    // The shared useFlag mock answers every flag, so this turns BOTH gated tabs
+    // (overwatch + sentinel) on — the full rail is what the owner's ordering
+    // describes; the gated-off subset is covered by the flag tests below.
+    H.overwatchOn = true;
     renderRail();
     const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
     expect(tabs.map((x) => x.textContent?.trim())).toEqual([
@@ -117,12 +122,16 @@ describe('<LeftSidebar> shell', () => {
       'Blender',
       'Docs',
       'Agents',
+      // Cost is ONE workspace-wide tab at the end of the rail, not a lane inside
+      // each automation pane (owner correction 2026-07-25).
+      'Spend',
     ]);
   });
 
   // The collapsed icon rail is a SECOND rendering of the same TABS array, and the
   // owner navigates by it while collapsed — so it must carry the same order.
   it('keeps the collapsed icon rail in the same order as the expanded tabs', () => {
+    H.overwatchOn = true;
     renderRail('?lsb=false');
     const railButtons = Array.from(
       document.querySelectorAll<HTMLElement>('[data-testid^="left-sidebar-rail-"]'),
@@ -139,6 +148,7 @@ describe('<LeftSidebar> shell', () => {
       'blender',
       'docs',
       'agents',
+      'spend',
     ]);
   });
 

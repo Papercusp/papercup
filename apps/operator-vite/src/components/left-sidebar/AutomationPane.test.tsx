@@ -3,11 +3,11 @@
  * AutomationPane.test — the shared body behind the Blender / Docs / Agents tabs.
  *
  * Covers the 2026-07-25 owner ask "improve the design of the blender and docs tab
- * so it more closely models the mug tab design": the pane must present the Mug's
- * three-part structure (header bar → lane strip → one lane's panel) rather than
- * one long scroll, so the spend total is answerable without scrolling past every
- * routine. It also pins the behaviour that must survive that restyle — the pause
- * writes, and the pane invalidating its OWN read after its own write.
+ * so it more closely models the mug tab design" — the pane leads with the Mug's
+ * header bar (identity + scope + whole-pane action) over a titled section, not a
+ * bare list — plus the same day's correction that COST does not belong here at
+ * all (see the no-spend regression below). It also pins what must survive both:
+ * the pause writes, and the pane invalidating its OWN read after its own write.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Blend } from 'lucide-react';
@@ -83,9 +83,7 @@ function renderPane() {
       title="Blender"
       subtitle="Learns and self-improves"
       icon={Blend}
-      viewParam="blenderView"
       blurb="Learning agents that run on a schedule."
-      spendRoles={['gym', 'scout']}
     />,
   );
 }
@@ -123,39 +121,12 @@ describe('AutomationPane — Mug-modelled layout (owner ask 2026-07-25)', () => 
     expect(screen.getByText('workspace')).toBeTruthy();
   });
 
-  it('renders a lane strip whose values answer both questions without opening a lane', () => {
+  it('states the spend-capable count in the section header', () => {
     renderPane();
-    const lanes = screen.getAllByRole('tab');
-    expect(lanes.map((l) => l.textContent)).toEqual([
-      expect.stringContaining('Schedule'),
-      expect.stringContaining('Spend'),
-    ]);
-    // Only the learning routines count (doc-sweep is another pane's), and only
-    // the ACTIVE spenders: gym-cycle. blueprint-singleton is paused, tidy-cache
-    // spawns nothing.
-    expect(lanes[0].textContent).toContain('1 can spend');
-    // spendRoles filters to gym + scout ⇒ 12.50 + 4.25, NOT worker's extra 1.00.
-    expect(lanes[1].textContent).toContain('$16.75');
-  });
-
-  it('shows ONE lane at a time — spend is not buried under the routine list', () => {
-    renderPane();
-    // Schedule lane (default): routines visible, spend rows not.
-    expect(screen.getByTestId('automation-row-gym-cycle')).toBeTruthy();
-    expect(screen.queryByText('1,200 turns')).toBeNull();
-
-    H.nuqsState.blenderView = 'spend';
-    cleanup();
-    renderPane();
-
-    expect(screen.getByText('1,200 turns')).toBeTruthy();
-    expect(screen.queryByTestId('automation-row-gym-cycle')).toBeNull();
-  });
-
-  it('switches lane through the URL param, not local state (agent-driveable)', () => {
-    renderPane();
-    fireEvent.click(screen.getByTestId('automation-lane-spend'));
-    expect(H.nuqsSetters['blenderView']).toHaveBeenCalledWith('spend');
+    // Only the learning routines count (doc-sweep belongs to the Docs pane) and
+    // only the ACTIVE spenders: gym-cycle. blueprint-singleton is paused;
+    // tidy-cache spawns nothing.
+    expect(screen.getByTestId('automation-status').textContent).toBe('1 can spend');
   });
 
   it('lists only this pane’s categories, spending routines first', () => {
@@ -163,12 +134,27 @@ describe('AutomationPane — Mug-modelled layout (owner ask 2026-07-25)', () => 
     const names = screen
       .getAllByTestId(/^automation-row-/)
       .map((el) => el.getAttribute('data-testid'));
+    // gym-cycle (spawns + active) → blueprint-singleton (spawns, paused) →
+    // tidy-cache (no spawn). doc-sweep is another pane's category.
     expect(names).toEqual([
-      'automation-row-blueprint-singleton',
       'automation-row-gym-cycle',
+      'automation-row-blueprint-singleton',
       'automation-row-tidy-cache',
-    ].sort() === names ? names : ['automation-row-gym-cycle', 'automation-row-blueprint-singleton', 'automation-row-tidy-cache']);
-    expect(names).not.toContain('automation-row-doc-sweep');
+    ]);
+  });
+
+  /**
+   * REGRESSION (owner correction 2026-07-25): "Why is the spend tab inside
+   * blender? is that showing only blender related spend? It looks like not." It
+   * wasn't — spend has no routine-level attribution, so the per-pane lane was
+   * double-counting shared roles across Blender/Docs/Agents. Cost lives ONLY in
+   * the workspace SpendTab now; this pane must never grow a cost readout again.
+   */
+  it('shows NO spend figures — cost belongs to the one workspace Spend tab', () => {
+    renderPane();
+    expect(screen.queryByText(/\$/)).toBeNull();
+    expect(screen.queryByText(/turns/)).toBeNull();
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
   });
 });
 

@@ -19,7 +19,6 @@ export default function DocsTab({ active }: { active: boolean }) {
       title="Docs"
       subtitle="Writes and refreshes docs"
       icon={FileText}
-      viewParam="docsView"
       blurb="Documentation agents — doc regeneration, knowledge-pack delivery and hygiene. Anything marked “tokens” spends money every time it fires."
     />
   );

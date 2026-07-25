@@ -17,9 +17,7 @@ export default function BlenderTab({ active }: { active: boolean }) {
       title="Blender"
       subtitle="Learns and self-improves"
       icon={Blend}
-      viewParam="blenderView"
       blurb="Learning agents that run on a schedule — blueprint singletons, the gym cycle, and the improvement pipeline. Anything marked “tokens” spends money every time it fires."
-      spendRoles={['scout', 'gym', 'worker', 'mug', 'kettle']}
     />
   );
 }

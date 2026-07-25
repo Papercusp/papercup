@@ -25,9 +25,7 @@ export default function AgentsTab({ active }: { active: boolean }) {
       title="Agents"
       subtitle="Supervises and sweeps"
       icon={Bot}
-      viewParam="agentsView"
       blurb="Every other scheduled agent — supervision, health sweeps, and armed continuation loops. Anything marked “tokens” spends money every time it fires."
-      spendRoles={['worker', 'mug', 'kettle', 'release-fixer', 'cup']}
     />
   );
 }
