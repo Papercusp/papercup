@@ -114,8 +114,22 @@ describe('scheduleLaneValue', () => {
   it('leads with how many scheduled agents can SPEND — the pane’s whole reason to exist', () => {
     expect(scheduleLaneValue([routine(), routine({ name: 'b' })] as never)).toBe('2 can spend');
   });
-  it('says All paused when every spender is off (not "0 can spend")', () => {
-    expect(scheduleLaneValue([routine({ active: false })] as never)).toBe('All paused');
+  it('says None can spend when every spender is off (not "0 can spend")', () => {
+    expect(scheduleLaneValue([routine({ active: false })] as never)).toBe('None can spend');
+  });
+  // Regression for the live Docs-pane misread (2026-07-25): the old wording was
+  // "All paused", which is FALSE whenever a non-spending routine is still
+  // running — exactly the Docs case, where knowledge-pack-delivery/hygiene were
+  // both active. The counter only ever means money, so its zero case must not
+  // make a claim about running-ness.
+  it('never says "paused" when a non-spending routine is still active', () => {
+    const rows = [
+      routine({ name: 'doc-steward-dispatch', active: false, spawnsAgent: true }),
+      routine({ name: 'knowledge-pack-delivery', active: true, spawnsAgent: false }),
+    ];
+    const value = scheduleLaneValue(rows as never);
+    expect(value).toBe('None can spend');
+    expect(value).not.toMatch(/paused/i);
   });
   it('reports a plain count when nothing in the category spends tokens', () => {
     expect(scheduleLaneValue([routine({ spawnsAgent: false })] as never)).toBe('1 scheduled');

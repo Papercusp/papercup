@@ -86,13 +86,23 @@ function agoLabel(iso: string | null): string {
  * The header's headline status — what the owner needs to know before reading a
  * single row: how many of this pane's scheduled agents can spend money right now.
  * Pure.
+ *
+ * ⚠ This counter is about MONEY, not about running-ness — it only ever looks at
+ * `spawnsAgent` rows. The zero case therefore must NOT say "All paused": seen
+ * live on the Docs pane (2026-07-25), it read "All paused" while
+ * knowledge-pack-delivery had fired 75m earlier and knowledge-pack-hygiene 15h
+ * earlier — both genuinely running, neither a spender. "All paused" is the one
+ * phrasing that invites the false global reading; "None can spend" keeps the
+ * column's single money meaning, stays parallel with the `N can spend` and
+ * `None scheduled` branches, and still avoids the robotic literal "0 can spend"
+ * this branch was originally written to dodge.
  */
 export function scheduleLaneValue(rows: readonly AutomationRoutine[]): string {
   if (rows.length === 0) return 'None scheduled';
   const spending = rows.filter((r) => r.active && r.spawnsAgent).length;
   if (spending > 0) return `${spending} can spend`;
-  const paused = rows.filter((r) => r.spawnsAgent).length;
-  return paused > 0 ? 'All paused' : `${rows.length} scheduled`;
+  const spenders = rows.filter((r) => r.spawnsAgent).length;
+  return spenders > 0 ? 'None can spend' : `${rows.length} scheduled`;
 }
 
 export interface AutomationPaneProps {

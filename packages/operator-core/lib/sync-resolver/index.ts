@@ -3237,7 +3237,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as { hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
-      const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace, listScoutArchiveSeeds, listRecentCyclesForWorkspace } = await import(
+      const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace, listScoutArchiveSeeds, listRecentCyclesForWorkspace, listRecentGymRunsForWorkspace } = await import(
         '../gym/control-plane'
       );
       const ws = activeWorkspaceId();
@@ -3262,8 +3262,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
               console.warn('[learning.gym] recent-cycles read failed:', err instanceof Error ? err.message : err);
               return [];
             }),
+            // WI-5801: recent RUN activity, straight from gym_runs. The cycles leg
+            // above can be a single stale row (a cycle row is written once per
+            // COMPLETED cycle and was overwritten in place pre-WI-5799), which is
+            // why the tab kept reading "no recent runs" while the gym was plainly
+            // running. Runs accumulate per (variant, task, repeat) as they finish.
+            listRecentGymRunsForWorkspace(tx, { workspaceId: ws, limit: 20, ...(slug ? { harnessSlug: slug } : {}) }).catch((err) => {
+              console.warn('[learning.gym] recent-runs read failed:', err instanceof Error ? err.message : err);
+              return [];
+            }),
           ]);
-          return { proposals, autoloops, archiveSeeds, cycles };
+          return { proposals, autoloops, archiveSeeds, cycles, runs, generatedAt: new Date().toISOString() };
         });
       const scoped = await fetchSnapshot(harnessSlug);
       // "Empty" = no EXPERIMENTS (challenger proposals + Scout-seeded archive

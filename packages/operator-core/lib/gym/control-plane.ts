@@ -376,6 +376,69 @@ export async function listRecentCyclesForWorkspace(
   }));
 }
 
+/** One variant's evaluation within a cycle, derived from the RUNS themselves. */
+export interface GymRecentRunGroupRow {
+  harnessSlug: string;
+  variantId: string;
+  cycle: number;
+  runCount: number;
+  /** Terminal states seen, most common first (e.g. 'escalated', 'completed'). */
+  states: string[];
+  startedAt: number | null;
+  finishedAt: number | null;
+  /** 'accept' | 'reject' | null — from the cycle row when one names this variant. */
+  decision: string | null;
+  /** True when this variant is the champion/baseline rather than a challenger. */
+  isBaseline: boolean;
+}
+
+/**
+ * Recent gym RUN activity, read from `gym_runs` — the table that actually
+ * accumulates (owner report, repeatedly: "I still see no recent runs").
+ *
+ * Why not `gym_cycles`: a cycle row is written ONCE PER COMPLETED CYCLE and, until
+ * WI-5799, was overwritten in place — so the durable cycles table can hold a single
+ * stale row while the gym is demonstrably running (9 runs, newest today, against one
+ * cycle row created five days earlier). Runs are keyed per (variant, task, repeat) and
+ * are written as they finish, so they show in-flight and baseline work too. THIS is the
+ * honest answer to "is the gym doing anything lately".
+ */
+export async function listRecentGymRunsForWorkspace(
+  sql: Sql,
+  q: { workspaceId: string; harnessSlug?: string; limit?: number },
+): Promise<GymRecentRunGroupRow[]> {
+  const limit = Math.min(Math.max(q.limit ?? 20, 1), 100);
+  const toMs = (v: unknown): number | null =>
+    v == null ? null : v instanceof Date ? v.getTime() : new Date(String(v)).getTime();
+  const rows = (await sql`
+    SELECT r.harness_slug, r.variant_id, r.cycle,
+           count(*)::int AS run_count,
+           array_remove(array_agg(DISTINCT r.terminal_state), NULL) AS states,
+           min(r.started_at) AS started_at,
+           max(r.finished_at) AS finished_at,
+           max(c.decision) AS decision
+      FROM harness_gym_durable.gym_runs r
+      LEFT JOIN harness_gym_durable.gym_cycles c
+        ON c.workspace_id = r.workspace_id AND c.harness_slug = r.harness_slug
+       AND c.candidate_id = r.variant_id
+     WHERE r.workspace_id = ${q.workspaceId}
+       ${q.harnessSlug ? sql`AND r.harness_slug = ${q.harnessSlug}` : sql``}
+     GROUP BY r.harness_slug, r.variant_id, r.cycle
+     ORDER BY max(r.finished_at) DESC NULLS LAST, min(r.started_at) DESC
+     LIMIT ${limit}`) as Row[];
+  return rows.map((r) => ({
+    harnessSlug: String(r.harness_slug ?? ''),
+    variantId: String(r.variant_id ?? ''),
+    cycle: Number(r.cycle ?? 0),
+    runCount: Number(r.run_count ?? 0),
+    states: Array.isArray(r.states) ? r.states.map((s) => String(s)) : [],
+    startedAt: toMs(r.started_at),
+    finishedAt: toMs(r.finished_at),
+    decision: r.decision == null ? null : String(r.decision),
+    isBaseline: String(r.variant_id ?? '') === 'baseline',
+  }));
+}
+
 export interface DecideResult {
   ok: boolean;
   reason?: string;
