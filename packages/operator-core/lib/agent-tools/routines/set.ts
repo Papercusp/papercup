@@ -220,6 +220,19 @@ export default defineTool({
       { dryRun: args.dryRun },
     );
 
+    // Refresh the owner's automation panes (Blender / Docs) the moment a pause or
+    // retune commits — they read `automation.catalog`. Skipped on a dryRun (nothing
+    // changed) and never allowed to fail the mutation: the routine row is already
+    // written, so a dead SSE hub must not turn a successful pause into an error.
+    if (outcome.applied && !outcome.dryRun) {
+      try {
+        const { notifySyncInvalidate } = await import('../../sync-sse');
+        notifySyncInvalidate('automation.catalog');
+      } catch {
+        /* SSE hub unavailable — the pane still refreshes on its next poll */
+      }
+    }
+
     return {
       content: [
         {

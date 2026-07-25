@@ -194,6 +194,17 @@ export default defineTool({
       { dryRun: args.dryRun },
     );
 
+    // Keep the owner's automation panes (Blender / Docs) live after a bulk
+    // pause/resume — same contract as routines:set. Never fails the mutation.
+    if (outcome.applied && !outcome.dryRun) {
+      try {
+        const { notifySyncInvalidate } = await import('../../sync-sse');
+        notifySyncInvalidate('automation.catalog');
+      } catch {
+        /* SSE hub unavailable — the pane still refreshes on its next poll */
+      }
+    }
+
     return {
       data: {
         ok: true,

@@ -37,7 +37,7 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Network, Coffee, Thermometer, CupSoda, KeyRound, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Network, Coffee, Thermometer, CupSoda, KeyRound, Blend, FileText, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -70,6 +70,16 @@ const OverwatchTab = lazy(() => import('./OverwatchTab'));
 // sidebar is the quick live-override surface; full workspace settings hold the
 // defaults. Flag-gated (PAPERCUP); hidden until the role is live.
 const PapercupTab = lazy(() => import('./PapercupTab'));
+// 🌀 Blender — the LEARNING agents' schedule + pause controls (owner ask
+// 2026-07-25). Cron-spawned learning agents (blueprint singletons, gym cycle,
+// improvement pipeline) were consuming the owner's weekly Claude limit with NO
+// owner-facing surface: they are ephemeral (spawn → a few turns → exit), so the
+// agents-running roster reads empty while spend is continuous. This is where
+// they become visible and stoppable.
+const BlenderTab = lazy(() => import('./BlenderTab'));
+// 📄 Docs — the same treatment for the documentation agents (doc regeneration,
+// knowledge-pack delivery/hygiene).
+const DocsTab = lazy(() => import('./DocsTab'));
 // (The 📥 Inbox tab (EI-13037) MOVED to the op-chat sidebar — owner placement
 // correction 2026-07-16: this middle rail is the SETTINGS surface; the far-left
 // papercup-chat sidebar is the live surface. See _components/inbox/InboxPane.)
@@ -88,6 +98,11 @@ const TABS = [
   // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.
   { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
   { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
+  // 🌀 Blender + 📄 Docs sit immediately after the Kettle (overwatch) tab — owner
+  // placement 2026-07-25. Literal labels in both lexicon packs: they name concrete
+  // automation surfaces, not cup-cast brand nouns, so there is no TermKey to resolve.
+  { id: 'blender', label: (_t: BoundLexicon) => 'Blender', icon: Blend, tip: (_t: BoundLexicon) => 'Learning agents — scheduled self-improvement loops, and what they cost', render: (a: boolean) => <BlenderTab active={a} /> },
+  { id: 'docs', label: (_t: BoundLexicon) => 'Docs', icon: FileText, tip: (_t: BoundLexicon) => 'Documentation agents — doc regeneration & knowledge-pack schedules', render: (a: boolean) => <DocsTab active={a} /> },
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
   // (The Fleet + Peers tabs MOVED to the op-chat sidebar — owner ask 2026-07-17
   // (WI-5162): they now sit right of the 🫖 Pot Health "kettle" button as faces

@@ -3173,6 +3173,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── automation.catalog — the Blender / Docs panes' schedule + spend read model ──
+  //
+  // (owner ask 2026-07-25.) Every scheduled routine, classified into an
+  // owner-facing category, with `spawnsAgent` marking the ones that can COST
+  // TOKENS — plus a 7d spend rollup by role. This exists because cron-spawned
+  // agents are EPHEMERAL: the agents-running roster reads empty while spend runs
+  // continuously, so there was no surface on which the owner could see, let alone
+  // pause, the things consuming their weekly limit.
+  //
+  // `routines:set` / `routines:group-set` invalidate this name, so a pause flips
+  // the pane live. Spend is reported BY ROLE and never fused into a per-routine
+  // number — there is no FK from a usage row to its spawning routine, and inventing
+  // one would present a guess as a fact (see the module header).
+  'automation.catalog': {
+    resolve: async () => {
+      const { getAutomationCatalog } = await import('../automation/catalog');
+      return [await getAutomationCatalog()];
+    },
+  },
+
   // ── mugBrief.floorView — the chat sidebar's pot-status panel (P-018) ──
   //
   // (operator-chat-sidebar-revival-2026-07-13 P-018, mockup variant A.) A compact
