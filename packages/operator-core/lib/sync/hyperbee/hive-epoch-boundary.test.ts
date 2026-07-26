@@ -5,7 +5,7 @@
  * a REMAINING member unwraps it and decrypts content — and the REMOVED member, absent
  * from the wrap set, is cut off. Keychain + hive-settings-store mocked in-memory.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 
 // in-memory keychain (device keys + epoch keys share the id-keyed map; serviceName ignored)
@@ -67,6 +67,74 @@ describe('advanceEpochAndWrap — structure', () => {
     const b = await makeDevice('dev-b2');
     expect((await advanceEpochAndWrap(c, CTX, [b.pubkeyBase64])).newEpoch).toBe(1);
     expect((await advanceEpochAndWrap(c, CTX, [b.pubkeyBase64])).newEpoch).toBe(2);
+  });
+});
+
+describe('advanceEpochAndWrap — WI-6044 malformed-device guard (WI-3927 parity)', () => {
+  // 'pk-creator' is the real leaked test-fixture value from WI-3927: ~10 chars instead of the
+  // 43/44-char base64 of a 32-byte key, so wrapKeyToMember throws on it.
+  const MALFORMED = 'pk-creator';
+
+  // The skip is intentionally NOISY (a silent skip is how WI-6043 cost hours), so the warn is
+  // asserted behaviour here, not incidental output the suite should tolerate.
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('SKIPS an unwrappable device, still grants to every well-formed member, and SAYS SO', async () => {
+    const c = createHiveEpochCrypto();
+    const b = await makeDevice('dev-guard-b');
+    const cc = await makeDevice('dev-guard-c');
+
+    // Pre-guard this THREW and aborted the whole pass, starving b and cc for one bad row.
+    const res = await advanceEpochAndWrap(c, CTX, [b.pubkeyBase64, MALFORMED, cc.pubkeyBase64]);
+
+    expect(res.wrapped.map((w) => w.memberDevicePubkey).sort()).toEqual(
+      [b.pubkeyBase64, cc.pubkeyBase64].sort(),
+    );
+    expect(res.skippedDevicePubkeys).toEqual([MALFORMED]);
+    // The boundary must still have ADVANCED — an aborted advance is what lets a revoked
+    // member keep reading post-boundary content (the WI-6043 leak symptom).
+    expect(res.newEpoch).toBe(1);
+    // Must be diagnosable from logs alone, naming the offending key and WI-6044.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toMatch(/WI-6044/);
+    expect(warn.mock.calls[0]?.[0]).toContain(MALFORMED);
+  });
+
+  it('does NOT report skippedDevicePubkeys, or warn, on the healthy path', async () => {
+    const c = createHiveEpochCrypto();
+    const b = await makeDevice('dev-guard-healthy');
+    const res = await advanceEpochAndWrap(c, CTX, [b.pubkeyBase64]);
+    expect(res.skippedDevicePubkeys).toBeUndefined();
+    expect(res.wrapped).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('THROWS when every remaining device is unwrappable, rather than persisting an epoch nobody can read', async () => {
+    const c = createHiveEpochCrypto();
+    // Degenerate case: skipping all of them would return wrapped:[] for an ALREADY-advanced
+    // epoch, locking the whole pot out of its own content — strictly worse than failing.
+    await expect(advanceEpochAndWrap(c, CTX, [MALFORMED, 'also-bad'])).rejects.toThrow(/WI-6044/);
+  });
+
+  it('still dedupes and ignores empty pubkeys while guarding', async () => {
+    const c = createHiveEpochCrypto();
+    const b = await makeDevice('dev-guard-dedupe');
+    const res = await advanceEpochAndWrap(c, CTX, [
+      '',
+      b.pubkeyBase64,
+      b.pubkeyBase64,
+      MALFORMED,
+      MALFORMED,
+    ]);
+    expect(res.wrapped).toHaveLength(1);
+    expect(res.skippedDevicePubkeys).toEqual([MALFORMED]); // deduped, not counted twice
+    expect(warn).toHaveBeenCalledTimes(1); // warned once, not once per duplicate
   });
 });
 
