@@ -994,6 +994,157 @@
   cursor: not-allowed;
 }
 
+/* ── Combobox (harness/Combobox.tsx) ──────────────────────────────────────
+ * The searchable single-select — Popover + cmdk. Visually a sibling of
+ * .h-select-item above (same surface, same highlight), so a screen mixing a
+ * Select and a Combobox reads as one control family.
+ * hud-session-launcher-and-board-tabs-2026-07-26 P-003/P-006/P-007.
+ */
+
+.h-combobox__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  min-width: 0;
+}
+
+.h-combobox__trigger:hover:not(:disabled) { border-color: var(--border-strong); }
+.h-combobox__trigger:focus-visible { border-color: var(--accent); }
+.h-combobox__trigger:disabled { opacity: 0.48; cursor: not-allowed; }
+
+/* The label is the part that must ellipsize — the chevron never shrinks. */
+.h-combobox__trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.h-combobox__trigger-label--placeholder {
+  color: color-mix(in oklab, var(--fg), transparent 42%);
+}
+
+.h-combobox__panel {
+  background: color-mix(in srgb, var(--bg-deeper), transparent 2%);
+  color: var(--fg);
+  border: 1px solid color-mix(in oklab, var(--accent), transparent 62%);
+  border-radius: 10px;
+  padding: 6px;
+  font-size: 12px;
+  box-shadow: 0 18px 54px rgb(0 0 0 / 0.62), inset 0 1px 0 rgb(255 255 255 / 0.06);
+  backdrop-filter: blur(14px) saturate(150%);
+  /* Never narrower than the control it drops from, never wider than the
+     viewport allows. */
+  min-width: max(var(--radix-popover-trigger-width, 220px), 240px);
+  max-width: min(460px, var(--radix-popover-content-available-width, 460px));
+}
+
+.h-combobox__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 7px;
+  margin-bottom: 4px;
+  background: var(--bg-1, var(--bg-2));
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.h-combobox__input:focus { border-color: var(--accent); }
+.h-combobox__input::placeholder { color: color-mix(in oklab, var(--fg), transparent 55%); }
+
+/* P-006 — THE overflow fix. The old Radix Select rendered an unbounded
+   Viewport with no scroll buttons, so a long plan list simply ran off the
+   bottom of the screen with no way to reach the rest. Bounded by whichever
+   is smaller: the caller's ceiling, or the room actually left below the
+   trigger (Radix measures the latter for us). */
+.h-combobox__list {
+  max-height: min(
+    var(--h-combobox-max-list, 320px),
+    var(--radix-popover-content-available-height, 320px)
+  );
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.h-combobox__group [cmdk-group-heading] {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--fg), transparent 38%);
+}
+
+.h-combobox__item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+  color: var(--fg);
+  background: transparent;
+}
+
+/* cmdk marks the keyboard-active row with data-selected, not Radix's
+   data-highlighted — same visual as .h-select-item[data-highlighted]. */
+.h-combobox__item[data-selected='true'] {
+  background: color-mix(in oklab, var(--accent), transparent 84%);
+}
+
+.h-combobox__item[data-disabled='true'] {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.h-combobox__item-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.h-combobox__item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* P-007 — the second line (e.g. "updated Sat 26 Jul 2026, 14:03"). Smaller
+   and dimmer so the title still leads the row. */
+.h-combobox__item-detail {
+  font-size: 10px;
+  line-height: 1.35;
+  color: color-mix(in oklab, var(--fg), transparent 45%);
+  font-variant-numeric: tabular-nums;
+}
+
+.h-combobox__item-check {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent-cool);
+}
+
+.h-combobox__empty {
+  padding: 10px 8px;
+  color: color-mix(in oklab, var(--fg), transparent 42%);
+}
+
 
 
 

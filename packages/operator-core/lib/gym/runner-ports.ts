@@ -17,6 +17,7 @@
  * → safe to splice into the DROP SCHEMA identifier.
  */
 import { execFile as execFileCb } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { rm as rmCb } from 'node:fs';
 import { basename } from 'node:path';
 import { promisify } from 'node:util';
@@ -28,6 +29,54 @@ const execFileP = promisify(execFileCb);
 const rmP = promisify(rmCb);
 
 const SAFE_SLUG = /^[a-z0-9]+$/;
+
+/**
+ * Capabilities the gym pipeline's spawned roles need on the EPHEMERAL gym-operator.
+ *
+ * Pipeline roles carry no `system_principals` row and no `BLUEPRINT_ROLE_CAPS`
+ * entry, so `loadRoleCapabilities` resolves them to an EMPTY set — deliberate
+ * least-privilege on the LIVE operator (role-principal-caps.ts), but fatal in the
+ * gym: the worker's session runs with the native Write/Edit/Bash tools disabled,
+ * so the capability-gated MCP mutation tools are its ONLY write path, and with
+ * zero caps every gym run dead-ends as `escalated` with an empty diff (100% of
+ * runs 2026-07-20 → 2026-07-26; the workers' own escalation reports name exactly
+ * these missing caps). The gym DB is ephemeral and per-cycle, so seeding here is
+ * scoped: the LIVE operator's worker principals stay empty-cap.
+ */
+export const GYM_PIPELINE_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = {
+  // The implementation agent — edits + runs tests in its throwaway clone, and must
+  // be able to escalate / file an improvement when it cannot (its only failure channel).
+  worker: [
+    'capability:fs-read',
+    'capability:fs-write',
+    'capability:bash',
+    'capability:git',
+    'coord:read',
+    'coord:write',
+    'locks:read',
+    'locks:write',
+  ],
+  // Runs the repo's own tests against the worker's change — execute + read, no fs-write.
+  validator: ['capability:fs-read', 'capability:bash', 'capability:git', 'coord:read', 'coord:write'],
+  // Reads the clone to plan chunks (native reads suffice today); coord for escalation parity.
+  scoper: ['capability:fs-read', 'coord:read', 'coord:write'],
+};
+
+/**
+ * Idempotently seed the gym pipeline-role principals into the gym PG so the
+ * ephemeral operator's `loadRoleCapabilities` resolves them. bearer_hash is a
+ * random unmatchable value — pipeline roles authenticate via signed role URLs,
+ * never bearers. Capabilities reconcile to the code set on conflict (the gym DB
+ * is per-cycle; conflict only occurs on same-stack replays).
+ */
+export async function ensureGymPipelinePrincipals(sql: Sql, workspaceId: string): Promise<void> {
+  for (const [name, caps] of Object.entries(GYM_PIPELINE_ROLE_CAPS)) {
+    await sql`
+      INSERT INTO harness_shared.system_principals (workspace_id, name, bearer_hash, capabilities)
+      VALUES (${workspaceId}, ${name}, ${randomBytes(32).toString('hex')}, ${JSON.stringify(caps)}::jsonb)
+      ON CONFLICT (workspace_id, name) DO UPDATE SET capabilities = EXCLUDED.capabilities`;
+  }
+}
 
 export interface GymRunnerPortsConfig {
   /** Base URL of the dedicated gym-operator, e.g. http://127.0.0.1:3971. */
