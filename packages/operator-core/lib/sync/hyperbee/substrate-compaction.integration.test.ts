@@ -105,7 +105,7 @@ describe('substrate compaction under live replication — $0 local parity (multi
         //    seeds its cursor at the writer's snapshot index and folds forward. ──
         const joiner = spawnPeerChild(
           cfg({ role: 'reader', peerIndex: 2, root: root('j'), expectedWinners: COUNT, mergePollMs: 500, catchUpTimeoutMs: TEN_MIN }),
-          () => {},
+          (l) => console.log(l),
         );
         handles.push(joiner);
         expect(await joiner.waitFor('ready', TEN_MIN)).toBeTruthy();

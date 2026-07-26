@@ -105,6 +105,10 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
     },
 
     async registerThrowawayHarness({ slug, clonePath }) {
+      // Every gym entrypoint registers its throwaway harness through this port, so
+      // seeding here (cheap idempotent upsert) fixes the zero-capability worker for
+      // ALL gym paths — see GYM_PIPELINE_ROLE_CAPS above for why the seed exists.
+      await ensureGymPipelinePrincipals(sql, cfg.workspaceId);
       const res = await doFetch(`${cfg.operatorBaseUrl}/api/harness/projects`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

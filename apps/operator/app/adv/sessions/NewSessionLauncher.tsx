@@ -27,22 +27,55 @@ import { useCallback, useMemo, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
-import { Select, type SelectEntry } from '@/app/harness/Select';
+import { Combobox, type ComboboxEntry, type ComboboxOption } from '@/app/harness/Combobox';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
-import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
+import {
+  formatAbsoluteUpdated,
+  formatRelativeUpdated,
+} from '@papercusp/operator-core/lib/format/relative-time';
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 
 export const PLAN_SELECT_PLACEHOLDER = '__select_plan__';
 export const MODEL_SELECT_DEFAULT = '__default_model__';
 
-export const OMP_MODEL_OPTIONS = [
+export const OMP_MODEL_OPTIONS: ComboboxOption[] = [
   { value: MODEL_SELECT_DEFAULT, label: 'Default' },
   { value: 'sonnet', label: 'Claude Sonnet' },
   { value: 'opus', label: 'Claude Opus' },
   { value: 'haiku', label: 'Claude Haiku' },
   { value: 'gpt-5.2', label: 'GPT-5.2' },
 ];
+
+export const EFFORT_SELECT_DEFAULT = '__default_effort__';
+
+/**
+ * Effort levels (P-008, owner ask 2026-07-26). These are the reasoning-depth
+ * suffixes the launcher appends to the model spec — `psu --model` takes
+ * `<modelId>[:<effort>]`, so "sonnet" + "high" is sent as "sonnet:high".
+ * Kept as its own control rather than exploding the model list into
+ * model×effort combinations.
+ */
+export const EFFORT_OPTIONS: ComboboxOption[] = [
+  { value: EFFORT_SELECT_DEFAULT, label: 'Default effort' },
+  { value: 'low', label: 'Low', detail: 'Fastest, cheapest — shallow reasoning' },
+  { value: 'medium', label: 'Medium', detail: 'Balanced reasoning depth vs cost' },
+  { value: 'high', label: 'High', detail: 'Deepest reasoning, slowest and priciest' },
+];
+
+/**
+ * Compose the `--model` spec from the two controls. Effort is meaningless
+ * without an explicit model (the default model's effort is the backend's to
+ * choose), so it is dropped rather than sent as a bare ":high".
+ *
+ * Pure — exported for unit-test access.
+ */
+export function composeModelSpec(model: string, effort: string): string | null {
+  const m = model.trim();
+  if (!m) return null;
+  const e = effort.trim();
+  return e ? `${m}:${e}` : m;
+}
 
 /**
  * Build the grouped + sorted option tree for the "Start from plan
@@ -56,10 +89,14 @@ export function buildLaunchPlanOptions(
   activeHarness: string | null | undefined,
   loading: boolean,
   noHarnessLabel = '(unassigned)',
-): SelectEntry[] {
-  const placeholder = {
+): ComboboxEntry[] {
+  // Kept as a real row rather than folded into the Combobox's `placeholder`
+  // prop: since P-005 made the plan optional, "no plan" is a legitimate
+  // CHOICE, so the list needs a way to get back to it after one is picked.
+  const placeholder: ComboboxOption = {
     value: PLAN_SELECT_PLACEHOLDER,
     label: loading ? 'Loading plans…' : 'Select plan…',
+    detail: loading ? undefined : 'Launch with no plan bound',
   };
   if (plans.length === 0) return [placeholder];
 
@@ -97,27 +134,45 @@ export function buildLaunchPlanOptions(
     ...(byHarness.has(NO_HARNESS_KEY) ? [NO_HARNESS_KEY] : []),
   ];
 
-  const groups: SelectEntry[] = orderedKeys.map((key) => {
+  const groups: ComboboxEntry[] = orderedKeys.map((key) => {
     const label = key === NO_HARNESS_KEY ? noHarnessLabel : key;
     return {
       kind: 'group' as const,
       label,
-      options: byHarness.get(key)!.map((plan) => ({
-        value: plan.slug,
-        label: formatLaunchPlanOptionLabel(plan),
-      })),
+      options: byHarness.get(key)!.map(
+        (plan): ComboboxOption => ({
+          value: plan.slug,
+          label: plan.title?.trim() || plan.slug,
+          detail: formatLaunchPlanOptionDetail(plan),
+          // The slug is searchable but not shown — titles are what a human
+          // scans, slugs are what they half-remember from a plan doc.
+          keywords: [plan.slug, plan.harness ?? ''].filter(Boolean),
+        }),
+      ),
     };
   });
 
   return [placeholder, ...groups];
 }
 
-/** "<title> · updated 5d ago" or just "<title>" when no updated field. */
-function formatLaunchPlanOptionLabel(plan: PlanListRow): string {
-  const title = plan.title?.trim() || plan.slug;
-  if (!plan.updated) return title;
+/**
+ * The row's second line: "updated 26 Jul 2026, 14:03 · yesterday".
+ *
+ * P-007 (owner ask 2026-07-26: "display the full time details not just
+ * 'today'"). The absolute stamp leads because that is the information the
+ * owner was missing — `formatRelativeUpdated` collapses everything inside
+ * 24h to "today", so a plan touched a minute ago and one touched 23 hours
+ * ago were indistinguishable. The relative form is kept alongside it as the
+ * at-a-glance cue, not as the only answer.
+ *
+ * Returns undefined (no second line) when the plan has no `updated` field.
+ */
+function formatLaunchPlanOptionDetail(plan: PlanListRow): string | undefined {
+  if (!plan.updated) return undefined;
+  const abs = formatAbsoluteUpdated(plan.updated);
+  if (!abs) return undefined;
   const rel = formatRelativeUpdated(plan.updated);
-  return rel ? `${title} · updated ${rel}` : title;
+  return rel ? `updated ${abs} · ${rel}` : `updated ${abs}`;
 }
 
 export interface NewSessionLauncherProps {
@@ -146,6 +201,7 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
   const [activeHarnessSlug] = useQueryState('slug', parseAsString);
   const [planSlug, setPlanSlug] = useState<string | null>(null);
   const [model, setModel] = useState('');
+  const [effort, setEffort] = useState('');
   const [launching, setLaunching] = useState(false);
 
   const planList = usePlanList({ includeArchived: true, includeLegacy: true });
@@ -172,7 +228,8 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
     if (launching) return;
     setLaunching(true);
     try {
-      const chosenModel = model.trim();
+      // P-008: effort rides on the model spec as "<model>:<effort>".
+      const chosenModel = composeModelSpec(model, effort);
       const label = selectedPlan
         ? selectedPlan.title?.trim() || selectedPlan.slug
         : 'su session';
@@ -180,7 +237,7 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         slug: null,
         planSlug: selectedPlan?.slug ?? null,
         label,
-        model: chosenModel || null,
+        model: chosenModel,
       });
       if (result.ok && result.warning) {
         // EI-18696184925888288: launch-su's spawn call succeeded but the
@@ -205,27 +262,40 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
     } finally {
       setLaunching(false);
     }
-  }, [model, launching, selectedPlan, onLaunched]);
+  }, [model, effort, launching, selectedPlan, onLaunched]);
 
   return (
     <div
       className={`pc-new-session-launcher${className ? ` ${className}` : ''}`}
       aria-label="Launch a new agent session"
     >
-      <Select
+      <Combobox
         triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--plan"
         value={planSlug ?? PLAN_SELECT_PLACEHOLDER}
         onChange={(value) => setPlanSlug(value === PLAN_SELECT_PLACEHOLDER ? null : value)}
         disabled={planList.loading}
         ariaLabel="Plan for new session"
+        searchPlaceholder="Search plans…"
+        emptyLabel="No plans match"
         options={planOptions}
       />
-      <Select
+      <Combobox
         triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
         value={model || MODEL_SELECT_DEFAULT}
         onChange={(value) => setModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
         ariaLabel="Model for new session"
+        searchPlaceholder="Search models…"
+        emptyLabel="No models match"
         options={OMP_MODEL_OPTIONS}
+      />
+      <Combobox
+        triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--effort"
+        value={effort || EFFORT_SELECT_DEFAULT}
+        onChange={(value) => setEffort(value === EFFORT_SELECT_DEFAULT ? '' : value)}
+        ariaLabel="Effort level for new session"
+        searchPlaceholder="Search effort levels…"
+        emptyLabel="No effort levels match"
+        options={EFFORT_OPTIONS}
       />
       <Button
         variant="primary"

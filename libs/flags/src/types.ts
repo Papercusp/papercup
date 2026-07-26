@@ -1029,9 +1029,16 @@ export const FLAGS = {
   // DEFAULT OFF — DELIBERATE (NOT the alpha flags-default-on policy): the runner is
   // genuinely incomplete (M2 in-container modality unbuilt; the SWE-bench-Pro grader
   // needs a dedicated Docker host + GB-scale image pulls) and infra-heavy (it spins
-  // real harnesses + pulls per-instance images). It ships dark until the ~50-task
-  // pilot (P-009) proves the end-to-end path. The owner flips it ON after that — the
-  // pending flip is surfaced in the plan's ## Now + every lane report.
+  // real harnesses + pulls per-instance images).
+  // DEFAULT OFF — PERMANENTLY, and NOT awaiting a graduation. WI-5646 (owner decision
+  // 2026-07-26) RETIRED the external-bench blueprint: its design premise ("the treatment
+  // IS the shipped coding system, byte for byte") died when the per-feature coding spine
+  // was retired 2026-06-24 and `coding` was reassigned to the pot/Mug architecture, so the
+  // arm would benchmark a system that no longer exists. The previous graduation condition
+  // recorded here — "ships dark until the ~50-task P-009 pilot proves the end-to-end path,
+  // the owner flips it ON after that" — is VOID; that pilot will not run. Do NOT flip ON.
+  // What it still gates is the eval UI + run/reproducibility stores, kept ONLY so historical
+  // run data stays readable. A pot/Mug benchmark is a NEW blueprint with its OWN flag.
   EXTERNAL_BENCH: "papercusp-external-bench",
   // system-health-tab-2026-06-15: gates the read-only HEALTH tab (a live
   // at-a-glance dashboard of the whole running system — Queen / bees / work-feed
@@ -2002,7 +2009,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // (flags:get confirmed true) with zero blast radius (done-without-test watchdog
     // signalCount:0 across every tick since activation) — default ON.
     // incomplete — the code is not fully working / unverified on a path that matters
-    [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'the external-bench grader adapter is incomplete (M2 in-container modality unbuilt) + infra-heavy (Docker/GB image pulls); dark until the P-009 ~50-task pilot proves the end-to-end path.' }],
+    [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'WI-5646 (owner decision 2026-07-26): the external-bench BLUEPRINT is now RETIRED — its design premise ("the treatment IS the shipped coding system, byte for byte") died when the per-feature coding spine was retired 2026-06-24 and `coding` was reassigned to the pot/Mug architecture, so it would benchmark a system that no longer exists. This flag stays dark PERMANENTLY and is NOT awaiting graduation — the prior "dark until the P-009 ~50-task pilot proves the end-to-end path" condition is void; that pilot will not run. (Also still true: the grader adapter is incomplete — M2 in-container modality unbuilt — and infra-heavy.) Do NOT flip ON. It gates the eval UI + run/reproducibility stores, which are kept only to read HISTORICAL run data. Benchmarking the pot/Mug architecture is a NEW blueprint + its own flag, not this one.' }],
     [FLAGS.CODEX_GATEWAY_OAUTH_PROXY, { case: 'incomplete', reason: 'WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).' }],
     [FLAGS.ONBOARDING_PREVIEW_FEATURES, { case: 'incomplete', reason: 'owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.' }],
     // PER_POT_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
