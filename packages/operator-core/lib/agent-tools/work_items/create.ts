@@ -37,6 +37,7 @@ import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 import {
   admitSubjectForFleetTarget,
   notifyFleetScopeRefusal,
+  fleetScopeLeaderRemedy,
 } from '../../scheduler/fleet-scope-admission';
 import type { ClaimSpecSubject } from '../../scheduler/claim-spec-match';
 import { ROUTING_GATE_INTENTS } from '../../routing-gate-hints';
@@ -321,7 +322,12 @@ export default defineTool({
               ok: false as const,
               title: spec.title,
               error: admission.code,
-              message: `${admission.reason}. The item was not created, so no out-of-scope claim exists.`,
+              // EI-18673501896258575: same concrete remedy fleetScopeLeaderRemedy already
+              // sent to the fleet leader (via notifyFleetScopeRefusal) — echoed to the
+              // CALLER too, so a member acting on an explicit leader directive can see the
+              // exact scheduler:set_claim_spec shape needed instead of filing the item
+              // unclaimed and waiting, blind, for the leader to notice the notification.
+              message: `${admission.reason}. The item was not created, so no out-of-scope claim exists. ${fleetScopeLeaderRemedy(admission)}`,
             };
           }
         }

@@ -24,6 +24,7 @@ vi.mock('../plans/set-status', () => ({
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitSubjectForFleetTarget: vi.fn(async () => admission.decision),
   notifyFleetScopeRefusal: admission.notify,
+  fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
 
 import { assignItem, planItemEffectiveStatus } from '../../plan-items/assignments';
@@ -60,6 +61,9 @@ describe('plan_items:assign fleet admission', () => {
     expect(b.results[0].refused).toMatch(/fleet_scope_violation/);
     expect(assignM).not.toHaveBeenCalled();
     expect(admission.notify).toHaveBeenCalledOnce();
+    // EI-18673501896258575: the caller sees the SAME concrete remedy the leader was
+    // notified with, not just a bare refusal reason.
+    expect(b.results[0].refused).toMatch(/remedy: scheduler:set_claim_spec/);
   });
 
   // EI-2295 (push-assign leg): re-assigning an already-DONE/dropped item is a no-op

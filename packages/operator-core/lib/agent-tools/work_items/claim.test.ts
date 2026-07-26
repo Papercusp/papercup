@@ -20,6 +20,7 @@ vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn(), classifyClaimFailur
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitWorkItemForFleetTarget: vi.fn(async () => fleetAdmission.decision),
   notifyFleetScopeRefusal: fleetAdmission.notify,
+  fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
 // Claim-time recall port (P-008) is exercised in its own memory/claim-port.test.ts;
 // mock it here so the handler test stays a hermetic unit (no real memory backend).
@@ -67,6 +68,10 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-out', error: 'fleet_scope_violation' });
     expect(claimM).not.toHaveBeenCalled();
     expect(fleetAdmission.notify).toHaveBeenCalledOnce();
+    // EI-18673501896258575: the caller sees the SAME concrete remedy the leader was
+    // notified with — not just a bare refusal reason, so a member acting on an
+    // explicit leader directive knows the scheduler:set_claim_spec fix exists.
+    expect(b.results[0].hint).toMatch(/remedy: scheduler:set_claim_spec/);
   });
 
   it('refuses implicit claims as the shared su-loopback fallback', async () => {

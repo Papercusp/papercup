@@ -32,6 +32,7 @@ import {
   type GateVerdictTarget,
 } from '../../release/gate-verdict-target';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
+import { describeGateRedOwnership, type GateRedOwnership } from '../../release/gate-red-ownership';
 import { STALE_MS } from '../../liveness';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
@@ -527,6 +528,13 @@ export function gateStallEscalationBody(opts: {
   candidate?: string | null;
   failingTests?: string[];
   nowMs: number;
+  /** EI-18672078222841101: WHO already owns this red, from the `last_fixer` record the
+   *  dispatcher keys its own dedup on. Without it this escalation is a broadcast with no
+   *  ownership field, and every recipient's individually-correct "a red gate blocking my
+   *  work is mine to green" produces N parallel diagnoses of one single-owner question
+   *  (observed: 3 agents, same leg, inside 15 minutes). Optional so an unwired/legacy
+   *  caller still renders exactly as before. */
+  ownership?: GateRedOwnership;
 }): string {
   const tests = (opts.failingTests ?? []).slice(0, 20);
   return JSON.stringify({
@@ -537,11 +545,19 @@ export function gateStallEscalationBody(opts: {
     candidate: opts.candidate ? opts.candidate.slice(0, 12) : null,
     failingTests: tests,
     emitted_at: opts.nowMs,
+    ownership: opts.ownership
+      ? {
+          state: opts.ownership.state,
+          covered: opts.ownership.covered,
+          spawnId: opts.ownership.spawnId,
+          ownerSignature: opts.ownership.ownerSignature,
+        }
+      : null,
     detail: `green-checkpoint has held main for ${opts.consecutiveReds} checkpoint(s)${
       opts.heldHrs != null ? ` (~${opts.heldHrs}h since the last green)` : ''
     }; staging changes are NOT reaching the release.${
       tests.length ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.` : ''
-    }`,
+    }${opts.ownership ? '' : ''}`,
   });
 }
 
@@ -629,12 +645,17 @@ export async function trackGateStall(
   // green verdict resets the streak.
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
+  // EI-18672078222841101: `last_fixer` rides along in the SAME metadata row we already
+  // read — no extra round-trip, and deliberately NOT a new ownership record. It is the
+  // signature-keyed record the dispatcher already keys its own dedup on, so the owner this
+  // escalation names can never disagree with the owner the dispatcher is deferring to.
   const rows = (await sql.unsafe(
-    `SELECT metadata->'gate_health' AS gh FROM harness_shared.routines
+    `SELECT metadata->'gate_health' AS gh, metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean; failingTests?: string[]; retriageStaleTip?: string | null; retriageDetail?: string | null } | null }>;
+  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean; failingTests?: string[]; retriageStaleTip?: string | null; retriageDetail?: string | null } | null; lf: ReleaseFixerRecord | null }>;
   const gh = rows[0]?.gh ?? {};
+  const lastFixer = rows[0]?.lf ?? null;
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
   // work landed on `main` through a path this routine never saw — a MANUAL detached run
@@ -713,15 +734,41 @@ export async function trackGateStall(
     if ((stalledByCount || stalledByAge) && !stallAlerted) {
       stallAlerted = true;
       const heldHrs = lastGreenAt ? Math.round((Date.now() - lastGreenAt) / 3_600_000) : null;
+      // EI-18672078222841101: resolve the CURRENT owner before saying anything about one.
+      // The old body asserted "A release-fixer is on it" unconditionally — which is simply
+      // false whenever the dispatched fixer died without clearing the red, and that false
+      // reassurance is the version of this bug that leaves a gate unowned instead of
+      // triple-owned. Same signature derivation as the dispatcher (P-012: sorted failing
+      // files, candidate as fallback) so the two cannot key on different things.
+      const currentSignature =
+        failingTests && failingTests.length > 0 ? failingTests.slice().sort().join(',') : (candidate ?? null);
+      const ownership = describeGateRedOwnership({
+        ownerSignature: lastFixer?.signature ?? null,
+        currentSignature,
+        dispatchedAtMs: lastFixer?.at ?? null,
+        spawnId: lastFixer?.spawnId ?? null,
+        // Only meaningful for the fixer holding THIS signature; a mismatch short-circuits
+        // to 'stale-signature' anyway, so skip the liveness query in that case.
+        fixerAlive:
+          lastFixer?.signature && lastFixer.signature === currentSignature
+            ? await releaseFixerSpawnAlive(sql, lastFixer.spawnId).catch(() => null)
+            : null,
+        nowMs: Date.now(),
+      });
       try {
         const { notifyAttention } = await import('../../attention-notify');
         await notifyAttention({
           kind: 'intervention',
           title: 'Release pipeline STALLED — main frozen',
-          body: `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. A release-fixer is on it; manual help may be needed.`,
+          body: `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. ${ownership.label}`,
           importance: 'urgent',
           workspaceId: ctx.workspaceId,
-          data: { consecutiveReds, candidate: candidate?.slice(0, 12) ?? null },
+          data: {
+            consecutiveReds,
+            candidate: candidate?.slice(0, 12) ?? null,
+            ownership: ownership.state,
+            ownerSpawnId: ownership.spawnId,
+          },
         });
       } catch (e) {
         console.warn(`[green-checkpoint] stall alert failed: ${e instanceof Error ? e.message : e}`);
@@ -745,6 +792,7 @@ export async function trackGateStall(
               candidate,
               failingTests,
               nowMs: Date.now(),
+              ownership,
             }),
             Date.now(),
             ctx.workspaceId,

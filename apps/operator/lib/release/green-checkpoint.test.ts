@@ -1736,6 +1736,63 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
     expect(out.flakeSuspects).toEqual([]);
   });
 
+  // EI-18673560248447615: the verdict note is what an agent reads to decide whether a red
+  // is theirs. Before this, it named the FILE and (post-EI-18669336904251384) ruled out
+  // load — but never said WHAT failed, so triage still meant opening a separate ~5000-line
+  // full-suite log. Regression-guard both the retry line and the verdict note.
+  describe('names the failing CASES so triage never needs the separate full-suite log', () => {
+    const outWithCases = [
+      'Affected workspaces (1): @papercusp/operator-core',
+      '',
+      '>>> @papercusp/operator-core :: npm run test',
+      ' ❯ lib/scout/scheduler-workspace-scope.test.ts (4 tests | 1 failed) 120ms',
+      '     × schedules within the workspace scope 22ms',
+      '>>> @papercusp/operator-core FAILED',
+      '',
+      '1 non-quarantined task(s) failed.',
+    ].join('\n');
+
+    it('puts the case name in the red VERDICT note', async () => {
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+        durationMs: 22,
+      });
+      const out = await attemptFlakeAbsorption(outWithCases, isolationRun, undefined, { sleep: async () => {} });
+      expect(out.absorbedToGreen).toBe(false);
+      expect(out.note).toContain('schedules within the workspace scope');
+      expect(out.note).toContain('lib/scout/scheduler-workspace-scope.test.ts');
+    });
+
+    it('puts the case name on the retry line too, alongside the not-load attribution', async () => {
+      const logs: string[] = [];
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+        durationMs: 22, // < ISOLATION_LOAD_STARVATION_MIN_MS ⇒ "too fast to be load-starved"
+      });
+      await attemptFlakeAbsorption(outWithCases, isolationRun, (s) => logs.push(s), { sleep: async () => {} });
+      const retryLine = logs.find((l) => l.includes('still failing after attempt'));
+      expect(retryLine).toBeDefined();
+      expect(retryLine).toContain('too fast to be load-starved');
+      expect(retryLine).toContain('schedules within the workspace scope');
+    });
+
+    it('still reads correctly when no case names are parseable (build break)', async () => {
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+      });
+      // INCIDENT_OUTPUT has failing FILES but no `×` case rows.
+      const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, { sleep: async () => {} });
+      expect(out.note).toContain('STILL FAILED in isolation');
+      expect(out.note).not.toContain('failed case(s)');
+    });
+  });
+
   it('a THROWING isolation runner defaults to red (uncertainty never flips to green)', async () => {
     const isolationRun = async (): Promise<IsolationResult> => {
       throw new Error('vitest spawn failed');

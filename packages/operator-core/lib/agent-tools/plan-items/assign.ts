@@ -26,6 +26,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import {
   admitSubjectForFleetTarget,
   notifyFleetScopeRefusal,
+  fleetScopeLeaderRemedy,
 } from '../../scheduler/fleet-scope-admission';
 
 interface AssignSpecItem {
@@ -146,7 +147,10 @@ export default defineTool({
             ok: false,
             plan: it.plan,
             item: it.item,
-            refused: `${admission.code}: ${admission.reason}`,
+            // EI-18673501896258575: same concrete remedy already sent to the fleet leader
+            // (via notifyFleetScopeRefusal) — echoed to the caller so they see the exact
+            // scheduler:set_claim_spec shape instead of only a bare refusal reason.
+            refused: `${admission.code}: ${admission.reason} ${fleetScopeLeaderRemedy(admission)}`,
           };
         }
         const existingOwner = await agentNameOwner(workspaceId, it.assignee);

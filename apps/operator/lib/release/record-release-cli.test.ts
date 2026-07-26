@@ -11,12 +11,25 @@ import {
   computeReleaseCompleteness,
   formatCompletenessAlert,
   formatMobileRegressionAlert,
+  isImplausiblyTiny,
+  MIN_PLAUSIBLE_ARTIFACT_BYTES,
   releaseBundleRoots,
   releaseTag,
   scanArtifacts,
   scanMobileArtifactSources,
   scanMobileArtifacts,
 } from './record-release-cli';
+
+/**
+ * A buffer safely above MIN_PLAUSIBLE_ARTIFACT_BYTES, for fixtures that must be
+ * FOUND (not skipped for being implausibly tiny). `tag` seeds the leading bytes so
+ * different fixtures still hash differently.
+ */
+function plausibleBytes(tag: string): Buffer {
+  const buf = Buffer.alloc(MIN_PLAUSIBLE_ARTIFACT_BYTES + 1024);
+  Buffer.from(tag).copy(buf, 0);
+  return buf;
+}
 
 describe('computeReleaseCompleteness — every desktop product×platform, not just GUI (WI-5515)', () => {
   const gui = (platform: string) => ({ product: 'gui' as const, platform });
@@ -250,15 +263,28 @@ describe('releaseTag', () => {
   });
 });
 
+describe('isImplausiblyTiny — the artifact-recorder plausibility floor (EI-18673480587329034)', () => {
+  it('flags anything below the floor, and nothing at or above it', () => {
+    expect(isImplausiblyTiny(0)).toBe(true);
+    expect(isImplausiblyTiny(245)).toBe(true); // the real AppleDouble sidecar size that prompted this
+    expect(isImplausiblyTiny(MIN_PLAUSIBLE_ARTIFACT_BYTES - 1)).toBe(true);
+    expect(isImplausiblyTiny(MIN_PLAUSIBLE_ARTIFACT_BYTES)).toBe(false);
+    expect(isImplausiblyTiny(MIN_PLAUSIBLE_ARTIFACT_BYTES + 1)).toBe(false);
+    expect(isImplausiblyTiny(1_306_392_652)).toBe(false); // a real mac dmg size
+  });
+});
+
 describe('scanArtifacts', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-scan-'));
   afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
   fs.mkdirSync(path.join(tmp, 'deb'), { recursive: true });
   fs.mkdirSync(path.join(tmp, 'appimage'), { recursive: true });
-  fs.writeFileSync(path.join(tmp, 'deb', 'Papercusp GUI_0.0.9_amd64.deb'), 'deb-bytes');
+  const debBytes = plausibleBytes('deb-bytes');
+  const appimageBytes = plausibleBytes('appimage-bytes');
+  fs.writeFileSync(path.join(tmp, 'deb', 'Papercusp GUI_0.0.9_amd64.deb'), debBytes);
   fs.writeFileSync(path.join(tmp, 'deb', 'Papercusp GUI_0.0.8_amd64.deb'), 'old-version');
-  fs.writeFileSync(path.join(tmp, 'appimage', 'Papercusp_GUI_0.0.9_amd64.AppImage'), 'appimage-bytes');
+  fs.writeFileSync(path.join(tmp, 'appimage', 'Papercusp_GUI_0.0.9_amd64.AppImage'), appimageBytes);
   fs.writeFileSync(path.join(tmp, 'appimage', 'Papercusp_GUI_0.0.9_amd64.AppImage.sig'), 'sig');
 
   const found = scanArtifacts([tmp], '0.0.9', 'desktop-v0.0.9-alpha');
@@ -279,9 +305,8 @@ describe('scanArtifacts', () => {
 
   it('records real size and a real sha256 of the actual bytes', () => {
     const deb = found.find((a) => a.name.endsWith('.deb'))!;
-    expect(deb.size).toBe('deb-bytes'.length);
-    // sha256("deb-bytes")
-    expect(deb.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(deb.size).toBe(debBytes.length);
+    expect(deb.sha256).toBe(createHash('sha256').update(debBytes).digest('hex'));
     const appimage = found.find((a) => a.name.endsWith('.AppImage'))!;
     expect(appimage.sha256).not.toBe(deb.sha256);
   });
@@ -306,9 +331,9 @@ describe('scanArtifacts', () => {
     fs.mkdirSync(path.join(mac, 'dmg'), { recursive: true });
     // Windows lands in inno/ — the subdir the old list omitted entirely.
     fs.mkdirSync(path.join(win, 'inno'), { recursive: true });
-    fs.writeFileSync(path.join(lin, 'deb', 'Papercusp GUI_0.0.9_amd64.deb'), 'l');
-    fs.writeFileSync(path.join(mac, 'dmg', 'Papercusp GUI_0.0.9_universal-apple-darwin.dmg'), 'm');
-    fs.writeFileSync(path.join(win, 'inno', 'Papercusp GUI_0.0.9_x64-setup.exe'), 'w');
+    fs.writeFileSync(path.join(lin, 'deb', 'Papercusp GUI_0.0.9_amd64.deb'), plausibleBytes('l'));
+    fs.writeFileSync(path.join(mac, 'dmg', 'Papercusp GUI_0.0.9_universal-apple-darwin.dmg'), plausibleBytes('m'));
+    fs.writeFileSync(path.join(win, 'inno', 'Papercusp GUI_0.0.9_x64-setup.exe'), plausibleBytes('w'));
     fs.writeFileSync(path.join(win, 'inno', 'Papercusp GUI_0.0.9_x64-setup.exe.sig'), 'sig');
 
     const all = scanArtifacts([lin, mac, win], '0.0.9', 'desktop-v0.0.9-alpha');
@@ -332,11 +357,14 @@ describe('scanArtifacts', () => {
     const win = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-span-'));
     fs.mkdirSync(path.join(win, 'inno'), { recursive: true });
     const inno = path.join(win, 'inno');
+    // The bare stub stays tiny on purpose — it must be caught by isSpannedInstaller
+    // (structural: companion .bin disks exist), not by the size floor, so this test
+    // keeps pinning the SPANNED-installer behavior specifically.
     fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup.exe'), 'stub');
     fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup-1.bin'), 'd1');
     fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup-2.bin'), 'd2');
-    fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup.zip'), 'zip');
-    fs.writeFileSync(path.join(inno, 'Papercusp GUI_0.0.12_x64-setup.exe'), 'gui');
+    fs.writeFileSync(path.join(inno, 'Papercusp Server_0.0.12_x64-setup.zip'), plausibleBytes('zip'));
+    fs.writeFileSync(path.join(inno, 'Papercusp GUI_0.0.12_x64-setup.exe'), plausibleBytes('gui'));
 
     // scanArtifacts warns (by design) as it skips the bare spanned stub; swallow
     // + assert that warning so vitest-fail-on-console stays green and the skip is pinned.
@@ -360,10 +388,47 @@ describe('scanArtifacts', () => {
   it('records an artifact reachable from two roots exactly ONCE', () => {
     const a = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-dup-'));
     fs.mkdirSync(path.join(a, 'dmg'), { recursive: true });
-    fs.writeFileSync(path.join(a, 'dmg', 'Papercusp GUI_0.0.9_universal-apple-darwin.dmg'), 'm');
+    fs.writeFileSync(path.join(a, 'dmg', 'Papercusp GUI_0.0.9_universal-apple-darwin.dmg'), plausibleBytes('m'));
     // same root passed twice (the salvage/reuse path can alias two trees)
     expect(scanArtifacts([a, a], '0.0.9', 'desktop-v0.0.9-alpha')).toHaveLength(1);
     fs.rmSync(a, { recursive: true, force: true });
+  });
+
+  it('EI-18673480587329034: SKIPS a truncated/tiny file that name+extension would otherwise classify as real', () => {
+    // A truncated copy, a 0-byte placeholder, or a partial rsync — none carry a
+    // `._` prefix, so the AppleDouble-only fix would happily record it. The size
+    // floor is the residual: whatever the shape, too small can never be real.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-tiny-'));
+    fs.mkdirSync(path.join(dir, 'deb'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'deb', 'Papercusp GUI_0.0.9_amd64.deb'), 'x'.repeat(37)); // 37 bytes — nowhere near real
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const found = scanArtifacts([dir], '0.0.9', 'desktop-v0.0.9-alpha');
+    expect(found).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('SKIPPING Papercusp GUI_0.0.9_amd64.deb'),
+    );
+    warn.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records a file exactly one byte over the plausibility floor, and rejects one byte under', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-boundary-'));
+    fs.mkdirSync(path.join(dir, 'deb'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'deb', 'Papercusp GUI_0.0.9_amd64.deb'),
+      Buffer.alloc(MIN_PLAUSIBLE_ARTIFACT_BYTES),
+    );
+    expect(scanArtifacts([dir], '0.0.9', 'desktop-v0.0.9-alpha')).toHaveLength(1);
+
+    fs.writeFileSync(
+      path.join(dir, 'deb', 'Papercusp GUI_0.0.9_amd64.deb'),
+      Buffer.alloc(MIN_PLAUSIBLE_ARTIFACT_BYTES - 1),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(scanArtifacts([dir], '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
+    warn.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('hashes a file LARGER than one read chunk — the whole file, not just the first 1 MiB', () => {
@@ -394,13 +459,27 @@ describe('scanMobileArtifacts — the phone builds live in a SEPARATE repo, unve
     expect(scanMobileArtifacts('/no/such/mobile/root', '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
   });
 
+  it('EI-18673480587329034: SKIPS a truncated/partial mobile build the same way scanArtifacts does', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-tiny-'));
+    const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
+    fs.mkdirSync(apkDir, { recursive: true });
+    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), 'partial-download'); // far below the floor
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha')).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('SKIPPING Papercusp_0.0.9_android.apk'));
+    warn.mockRestore();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it('records a debug APK under a SYNTHESIZED versioned name + a RELATIVE url', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
     const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
     fs.mkdirSync(apkDir, { recursive: true });
     // The built APK carries NO version — that is the whole reason this function
     // synthesizes the recorded name instead of filtering by a version substring.
-    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), 'apk-bytes');
+    const apkBytes = plausibleBytes('apk-bytes');
+    fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), apkBytes);
 
     const found = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha');
     expect(found).toHaveLength(1);
@@ -409,7 +488,7 @@ describe('scanMobileArtifacts — the phone builds live in a SEPARATE repo, unve
       platform: 'android-universal',
       name: 'Papercusp_0.0.9_android.apk',
       url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_android.apk',
-      size: 'apk-bytes'.length,
+      size: apkBytes.length,
     });
     expect(found[0].sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(found[0].url).not.toMatch(/^https?:\/\//); // base path is the secret
@@ -420,14 +499,18 @@ describe('scanMobileArtifacts — the phone builds live in a SEPARATE repo, unve
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
     fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/release'), { recursive: true });
     fs.mkdirSync(path.join(root, 'android/app/build/outputs/apk/debug'), { recursive: true });
-    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/release/app-release.apk'), 'RELEASE');
-    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/debug/app-debug.apk'), 'debug-bytes');
+    const releaseBytes = plausibleBytes('RELEASE');
+    fs.writeFileSync(path.join(root, 'android/app/build/outputs/apk/release/app-release.apk'), releaseBytes);
+    fs.writeFileSync(
+      path.join(root, 'android/app/build/outputs/apk/debug/app-debug.apk'),
+      plausibleBytes('debug-bytes'),
+    );
 
     const apks = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha').filter((a) =>
       a.name.endsWith('.apk'),
     );
     expect(apks).toHaveLength(1);
-    expect(apks[0].size).toBe('RELEASE'.length); // release bytes, not debug
+    expect(apks[0].size).toBe(releaseBytes.length); // release bytes, not debug
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -435,7 +518,7 @@ describe('scanMobileArtifacts — the phone builds live in a SEPARATE repo, unve
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-'));
     const ipaDir = path.join(root, 'ios/build/export');
     fs.mkdirSync(ipaDir, { recursive: true });
-    fs.writeFileSync(path.join(ipaDir, 'Papercup.ipa'), 'ipa-bytes');
+    fs.writeFileSync(path.join(ipaDir, 'Papercup.ipa'), plausibleBytes('ipa-bytes'));
 
     const ios = scanMobileArtifacts(root, '0.0.9', 'desktop-v0.0.9-alpha').find(
       (a) => a.platform === 'ios-arm64',
@@ -575,7 +658,10 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
     fs.mkdirSync(dmg);
     // The 245-byte sidecar rsync leaves beside a mac bundle, and the real thing.
     fs.writeFileSync(path.join(dmg, '._Papercusp GUI_0.0.12_universal-apple-darwin.dmg'), 'x');
-    fs.writeFileSync(path.join(dmg, 'Papercusp GUI_0.0.12_universal-apple-darwin.dmg'), 'real');
+    fs.writeFileSync(
+      path.join(dmg, 'Papercusp GUI_0.0.12_universal-apple-darwin.dmg'),
+      plausibleBytes('real'),
+    );
 
     const found = scanArtifacts([dir], '0.0.12', 'v0.0.12-alpha');
     expect(found.map((a) => a.name)).toEqual(['Papercusp GUI_0.0.12_universal-apple-darwin.dmg']);

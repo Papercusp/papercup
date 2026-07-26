@@ -413,6 +413,34 @@ export function isSpannedInstaller(dir: string, name: string): boolean {
 }
 
 /**
+ * Minimum plausible size for ANY installer/app artifact this recorder ships, in
+ * bytes. Below this floor, a file cannot possibly BE what its name claims no
+ * matter how well the name/extension match — every real product here (deb,
+ * AppImage, dmg, exe, msi, the normalized spanned-installer zip, apk, aab, ipa) is,
+ * in practice, multiple megabytes.
+ *
+ * This is the RESIDUAL half of the EI-18103803991060000 / EI-18673480587329034
+ * AppleDouble finding: the `._` skip above catches ONE known-implausible shape (a
+ * resource-fork sidecar, by NAME); this catches EVERY implausible shape by SIZE
+ * alone — a truncated copy from an interrupted rsync, a 0-byte placeholder, a
+ * partially-written file — none of which carry a `._` prefix or any other
+ * name-based tell. Structural (a real size check), not a name heuristic — same
+ * spirit as `isSpannedInstaller` being a structural (companion-file) check rather
+ * than a size guess.
+ */
+export const MIN_PLAUSIBLE_ARTIFACT_BYTES = 1024 * 1024; // 1 MiB
+
+/**
+ * Is this file too small to plausibly BE the installer/app its name claims?
+ * Exported so the floor is unit-testable on its own, and so callers other than
+ * `scanArtifacts`/`scanMobileArtifacts` (any future artifact source) can reuse the
+ * exact same rule rather than re-guessing a threshold.
+ */
+export function isImplausiblyTiny(size: number): boolean {
+  return size < MIN_PLAUSIBLE_ARTIFACT_BYTES;
+}
+
+/**
  * Where cargo BUILDS the linux bundle — honoring the box-global `[build] target-dir`
  * (this dev box: `~/.cargo-target`) exactly the way the old default did.
  *
@@ -523,6 +551,22 @@ export function scanArtifacts(
           );
           continue;
         }
+        // EI-18673480587329034 — the recorder had no plausibility floor at all: it
+        // would record ANY version-matching, extension-classified file at whatever
+        // size it happened to be. A truncated .deb from an interrupted copy, a
+        // 0-byte placeholder, or a partially-rsynced .dmg all look identical to a
+        // real installer to the checks above (name + extension), and would be
+        // published with a confident size + sha256. Same principle as the spanned
+        // check above: a download that cannot install is worse than an absent one.
+        if (isImplausiblyTiny(stat.size)) {
+          console.warn(
+            `  ⚠ SKIPPING ${name} — only ${stat.size} byte(s), far below any real installer ` +
+              `(floor: ${MIN_PLAUSIBLE_ARTIFACT_BYTES.toLocaleString()} bytes). Likely a truncated ` +
+              `copy, an empty placeholder, or a partial transfer — recording it would publish a ` +
+              `download that cannot install.`,
+          );
+          continue;
+        }
         // The same artifact can be reachable from two roots (a salvage/reuse path
         // rsyncs bytes into a second tree). Record it once — a duplicated row would
         // show the tester the same download twice.
@@ -584,11 +628,23 @@ export function scanMobileArtifacts(
   for (const { src, outName } of scanMobileArtifactSources(mobileRoot, version)) {
     const kind = classifyArtifact(outName);
     if (!kind) continue;
+    const size = fs.statSync(src).size;
+    // Same residual-plausibility floor as scanArtifacts (EI-18673480587329034): a
+    // truncated/partial APK or IPA build is exactly as publishable-looking, and
+    // exactly as broken, as a truncated desktop installer.
+    if (isImplausiblyTiny(size)) {
+      console.warn(
+        `  ⚠ SKIPPING ${outName} (${src}) — only ${size} byte(s), far below any real mobile build ` +
+          `(floor: ${MIN_PLAUSIBLE_ARTIFACT_BYTES.toLocaleString()} bytes). Likely a truncated or ` +
+          `partial build artifact — recording it would publish a download that cannot install.`,
+      );
+      continue;
+    }
     found.push({
       ...kind,
       name: outName,
       url: `${tag}/${outName}`,
-      size: fs.statSync(src).size,
+      size,
       sha256: sha256File(src),
     });
   }

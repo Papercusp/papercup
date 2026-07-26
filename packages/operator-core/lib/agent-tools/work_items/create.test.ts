@@ -21,6 +21,7 @@ vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitSubjectForFleetTarget: vi.fn(async () => fleetAdmission.decision),
   notifyFleetScopeRefusal: fleetAdmission.notify,
+  fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
 // Create-time dedup port (P-009) — mock so this handler test stays hermetic
 // (the memory-pools leg is pinned in memory/claim-port.test.ts).
@@ -157,6 +158,9 @@ describe('work_items:create handler (keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, error: 'fleet_scope_violation' });
     expect(createM).not.toHaveBeenCalled();
     expect(fleetAdmission.notify).toHaveBeenCalledOnce();
+    // EI-18673501896258575: the caller sees the SAME concrete remedy the leader was
+    // notified with, not just a bare refusal reason.
+    expect(b.results[0].message).toMatch(/remedy: scheduler:set_claim_spec/);
   });
 
   it('batch-level harness is the default for items that omit one', async () => {

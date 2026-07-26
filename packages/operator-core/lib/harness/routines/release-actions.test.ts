@@ -13,6 +13,7 @@
  * subprocess, no network.
  */
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } from 'vitest';
+import { describeGateRedOwnership } from '../../release/gate-red-ownership';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
@@ -144,6 +145,64 @@ describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
     expect(body.failingTests).toEqual([]);
     expect(body.detail).not.toContain('since the last green');
     expect(body.detail).not.toContain('Failing:');
+  });
+
+  /**
+   * EI-18672078222841101 — the escalation must say WHO owns the red, because three agents
+   * each read a red alert with no ownership field and each correctly-but-redundantly took
+   * the gate. Ownership is optional here so an unwired caller renders exactly as before.
+   */
+  it('carries the ownership verdict, so a responder can tell "covered" from "yours to take"', () => {
+    const owned = JSON.parse(
+      gateStallEscalationBody({
+        installSlug: 'x',
+        consecutiveReds: 3,
+        heldHrs: 2,
+        nowMs: 1,
+        ownership: describeGateRedOwnership({
+          ownerSignature: 'a.test.ts',
+          currentSignature: 'a.test.ts',
+          spawnId: 'spawn-9',
+          dispatchedAtMs: 1_000,
+          fixerAlive: true,
+          nowMs: 61_000,
+        }),
+      }),
+    );
+    expect(owned.ownership).toMatchObject({ state: 'owned-live', covered: true, spawnId: 'spawn-9' });
+    expect(owned.detail).toContain('OWNED');
+    expect(owned.detail).toContain('Do NOT start a parallel diagnosis');
+
+    const gone = JSON.parse(
+      gateStallEscalationBody({
+        installSlug: 'x',
+        consecutiveReds: 3,
+        heldHrs: 2,
+        nowMs: 1,
+        ownership: describeGateRedOwnership({
+          ownerSignature: 'a.test.ts',
+          currentSignature: 'a.test.ts',
+          spawnId: 'spawn-dead',
+          dispatchedAtMs: 1_000,
+          fixerAlive: false,
+          nowMs: 61_000,
+        }),
+      }),
+    );
+    // The specific regression: the old body asserted "A release-fixer is on it"
+    // unconditionally, which is FALSE here and leaves the gate unowned.
+    expect(gone.ownership).toMatchObject({ state: 'owner-gone', covered: false });
+    expect(gone.detail).toContain('UNOWNED');
+    expect(gone.detail).toContain('CONFIRMED GONE');
+  });
+
+  it('renders ownership as null (and identically to before) when no owner was resolved', () => {
+    const body = JSON.parse(
+      gateStallEscalationBody({ installSlug: 'x', consecutiveReds: 3, heldHrs: null, nowMs: 1 }),
+    );
+    expect(body.ownership).toBeNull();
+    expect(body.detail).not.toContain('OWNED');
+    expect(body.detail).not.toContain('UNOWNED');
   });
 });
 

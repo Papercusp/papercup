@@ -25,6 +25,7 @@ import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import {
   admitWorkItemForFleetTarget,
   notifyFleetScopeRefusal,
+  fleetScopeLeaderRemedy,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
@@ -146,7 +147,14 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
       ok: false,
       id: it.id,
       error: admission.code,
-      hint: `${admission.reason}. The claim was refused before mutation.`,
+      // EI-18673501896258575: surface the SAME concrete remedy the fleet leader was just
+      // notified with, to the CALLER too — previously only fleetScopeLeaderRemedy's text
+      // reached the leader (via notifyFleetScopeRefusal); the refused caller saw only the
+      // bare reason and had no way to know "widen the spec" was even an option, let alone
+      // the exact scheduler:set_claim_spec call shape, so a member acting on an explicit
+      // leader directive had to file the work unclaimed and wait, blind, for their leader
+      // to notice the notification.
+      hint: `${admission.reason}. The claim was refused before mutation. ${fleetScopeLeaderRemedy(admission)}`,
     };
   }
   const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness });
