@@ -277,10 +277,18 @@ host-global `journalctl` scan sat *inside* a per-pot fan-out, so \~12 hives mean
 \~24 concurrent scans of a 1.2GB journal; one of the two calls was also missing
 `-u <unit>`, so it walked **every** unit on the box — 25.97s to return 17 bytes.
 
-**Amplifier**: `zero-harness/rest-query-batch` resolves with `Promise.all`, so
-the batch response waits for the **slowest** query in it. One slow resolver
-holds every other panel in that batch hostage — which is why an unrelated
-rubrics panel felt \~10s.
+**Amplifier (removed 2026-07-26 — kept here because the shape recurs)**:
+`zero-harness/rest-query-batch` resolved with `Promise.all`, so the batch
+response waited for the **slowest** query in it. One slow resolver held every
+other panel in that batch hostage — which is why an unrelated rubrics panel felt
+\~10s. That amplifier is **gone**: the client now issues one
+`GET /rest-query` per query through a bounded concurrency gate
+(`libs/generic/sync/src/transports/polling/query-fetcher.ts`), so a slow
+resolver costs only its own panel. Do not read the "keep it out of a batch"
+advice below as still actionable — there is no batch. The underlying rule
+survives unchanged, and is now the *only* protection: **a slow resolver is slow
+for the user who needs it**, and the fix is to make it fast, not to route around
+it.
 
 **Fix — precompute into Postgres; do not just cache.** A background routine
 writes the derived rows; the resolver becomes a plain `SELECT`. This is
@@ -294,9 +302,10 @@ implemented: `harness_shared.derived_read_snapshots` + the producer registry in
 | `storage.usage`       | 20.0s  | **0.092s** |
 | `plans.lint`          | 13.8s  | **0.130s** |
 
-And the amplifier, measured directly: a batch requesting all three together
-returns in **0.54s**. Before, that same batch took as long as its slowest member
-— over 27 seconds — because `Promise.all` waits for the last one.
+And the amplifier, measured directly at the time: a batch requesting all three
+together returned in **0.54s**, where before it took as long as its slowest
+member — over 27 seconds — because `Promise.all` waits for the last one. (The
+batch endpoint has since been retired; see the amplifier note above.)
 
 To add one: register a producer in `derived-reads/producers.ts` and make the
 resolver `return readDerivedSnapshotRows('<key>')`. A read NEVER computes on a
@@ -335,8 +344,10 @@ cold-load stall this exists to remove.
    table the resolver reads. Push the cost to write-time, off the user's path.
 3. Never assume host binaries (`journalctl`, `systemctl`, `du`, `git`) exist.
    The shipping target is a desktop app, not this dev box.
-4. If a resolver is unavoidably slow, keep it **out of a batch** with
-   interactive queries, or it becomes everyone's latency.
+4. If a resolver is unavoidably slow, that is now *its own* panel's latency and
+   nobody else's — the batch that used to spread it across the page is gone
+   (2026-07-26). Make it fast anyway: it still occupies one of the client's
+   bounded in-flight slots, and it is still a user waiting.
 
 **The guard that keeps rule 1 true:**
 `packages/operator-core/lib/sync-resolver/no-heavy-io-on-read-path.test.ts`

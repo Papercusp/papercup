@@ -148,10 +148,25 @@ export function computeBenchSuggestion(
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
     if (a.stalled) {
+      // EI-18679536216711688: `stalled` is derived purely from MCP tool-call
+      // recency (tool_invocations), which goes silent by design during a long
+      // foreground exec (a test run, a build) — no MCP round-trip happens until
+      // the command returns. The prior text ("likely live-loop-polling a peer's
+      // critical path") asserted a SPECIFIC, CONFIDENT cause the signal cannot
+      // actually distinguish from "mid a long foreground exec" — a live incident
+      // saw exactly that: a member mid test-run flagged stalled=true with this
+      // fabricated diagnosis, and following the paired remedy (coord:send
+      // { endTurn: true }) would have ESC'd a productive turn and destroyed
+      // in-flight work. Report the OBSERVATION (no recent MCP call) and the
+      // AMBIGUITY honestly instead of naming a wrong cause, and point at the one
+      // cheap way to disambiguate before acting.
       return {
         reason:
-          "holds a claim not advancing while alive — likely live-loop-polling a peer's " +
-          'critical path instead of parking on an event (fleet:bench).',
+          'no recent MCP tool call while alive and holding a claim — may be genuinely wedged, ' +
+          'OR mid a long foreground exec (a test run, a build) that emits no MCP calls until it ' +
+          'returns; this signal cannot tell the two apart. Check sessions:timeline for recent ' +
+          'local (Edit/Write/Bash) activity BEFORE concluding it is wedged or ending its turn — ' +
+          'fleet:bench only once genuinely stuck is confirmed.',
         item: a.doing?.id ?? null,
         itemTitle: a.doing?.title ?? null,
       };

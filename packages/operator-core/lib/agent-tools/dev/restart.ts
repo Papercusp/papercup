@@ -11,9 +11,19 @@
  * Safe by default on a shared box:
  *   - No `confirm` → DRY RUN. Reports what it would do; takes NO lock,
  *     drains nobody, restarts nothing.
- *   - `confirm: true` → acquires + drains, then restarts ONLY if
- *     `PAPERCUSP_ALLOW_DEV_RESTART=1`; otherwise it drains and reports that
- *     the restart was withheld (the env gate is the shared-box backstop).
+ *   - `confirm: true` WITHOUT the enablement gate (`PAPERCUSP_ALLOW_DEV_RESTART=1`
+ *     or per-call `authorize: true`) → REFUSED outright, before any side effect:
+ *     ok:false, reason:'restart_withheld', nothing locked, nothing drained.
+ *   - `confirm: true` WITH the gate → acquires + drains, then restarts.
+ *
+ * EI-18643120769203916: that refusal used to happen INSIDE the drain block, so an
+ * un-enabled call acquired the lock, DRAINED every current user, and then reported
+ * `ok:true, drained:true, restarted:false`. Two defects: it half-executed (leaving
+ * the target quiesced on old code — worse than either doing nothing or restarting),
+ * and `ok:true` reads as success, so an agent firing the documented call and
+ * checking `ok` concluded the restart had landed. That is the likeliest driver of
+ * EI-18642482762875484, where six workers re-learned the bg-host stale-runtime
+ * lesson over ~5 days while the restart never actually fired.
  *
  * WI-4221 (staging debounce/coalescing): `papercup-staging-api.service` was
  * being restarted raw (uncoordinated `systemctl`) every ~5-6min for hours —

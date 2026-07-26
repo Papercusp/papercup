@@ -208,6 +208,23 @@ describe('computeBenchSuggestion (pure, EI-9943)', () => {
     const benched = projectMember(baseAgent({ stalled: true, verdict: 'speaking', parkedOn: ['k'], doing }), NOW);
     expect('benchSuggestion' in benched).toBe(false);
   });
+
+  // EI-18679536216711688 (recurrence guard): `stalled` is derived purely from MCP
+  // tool-call recency, which is indistinguishable from a member mid a long
+  // foreground exec (a test run) that emits no MCP calls until it returns — this
+  // is exactly that fixture. The suggestion must NOT assert a specific wrong
+  // cause (a fabricated diagnosis reading as fact invites a destructive
+  // coord:send { endTurn: true } on a productively-working member); it must
+  // hedge honestly and point at sessions:timeline as the disambiguation step
+  // before any escalation.
+  it('does NOT assert a confident wrong cause for a stalled+speaking member — hedges instead (foreground-exec false-positive)', () => {
+    const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: [], doing });
+    expect(s).toBeDefined();
+    expect(s?.reason.toLowerCase()).not.toContain('live-loop-polling');
+    expect(s?.reason.toLowerCase()).toContain('may be genuinely wedged');
+    expect(s?.reason.toLowerCase()).toContain('foreground exec');
+    expect(s?.reason.toLowerCase()).toContain('sessions:timeline');
+  });
 });
 
 describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {

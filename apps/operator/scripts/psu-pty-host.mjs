@@ -2433,14 +2433,13 @@ export function hostThroughPty(o) {
       // line. Ungated raw/osc bypass it — a force-interrupt byte must land
       // immediately (mid-turn), and osc writes the display, not the input line.
       const releaseInject = msg.gated ? await injectMutex.acquire() : null;
+      let deferMutexRelease = false;
       try {
-        process.stderr.write(`TRACE-A gated=${msg.gated} mode=${msg.mode}\n`);
         if (msg.gated) {
           // (1) Human keystroke gate (P-013): don't corrupt a line the user is
           // mid-typing. Only meaningful when there IS a bridged terminal a human
           // could be typing into.
           if (bridgeTty) await idleGate.waitIdle();
-          process.stderr.write(`TRACE-B idleGate done\n`);
           // (2) Agent mid-turn gate (coord-wake-mid-turn-2026-06-30 /
           // clean-boundary-only-kill WI-1818, D-006): don't write a wake `turn`
           // into a TUI that is still generating (wedges it, needs ESC), and —
@@ -2452,7 +2451,6 @@ export function hostThroughPty(o) {
           // gating it on bridgeTty left reset/recycle unguarded whenever the host
           // ran without a bridged terminal.
           const atPrompt = await agentBusyGate.waitAtPrompt();
-          process.stderr.write(`TRACE-C busyGate done deferred=${atPrompt.deferred}\n`);
           if (atPrompt.deferred) {
             // Agent stayed mid-turn past the cap. DROP the live inject/kill rather
             // than wedge the turn or lose in-flight work — the wake is already
@@ -2598,12 +2596,35 @@ export function hostThroughPty(o) {
         // settled turn (D-006 clean-boundary). reset/turn/raw/osc fall through to
         // the write plan below.
         if (msg.mode === 'recycle' || msg.mode === 'carry-respawn') {
-          await recycleChild(msg.data, {
+          // EI-18679050054551625 / WI-5872 follow-up: recycleChild() is a
+          // multi-second operation by construction (kill the current child,
+          // wait for it to die, respawn, wait for the fresh child's own
+          // startup + busy period, then carry-inject once IT settles — the
+          // sibling clean-boundary tests below deliberately budget 3+ seconds
+          // for it to land). Awaiting it here before acking meant the ACK
+          // protocol's round-trip routinely exceeded injectIntoHost()'s
+          // default 2000ms client timeout, so a perfectly-accepted recycle
+          // was reported back to the caller as `ok:false`. The busy-gate
+          // above already made the accept/defer decision (a still-busy agent
+          // took the 'deferred-busy-gate' return above and never reaches
+          // here) — from this point recycleChild() proceeding is not in
+          // question, so ack "delivered" now and let the kill+respawn+carry
+          // run as a background continuation, same pattern as the turn/reset
+          // verify-in-background fix just below. The inject mutex stays held
+          // (deferMutexRelease) until that continuation actually finishes, so
+          // a following gated inject still can't interleave mid-recycle.
+          deferMutexRelease = true;
+          const releaseAfterRecycle = releaseInject;
+          void recycleChild(msg.data, {
             systemPromptAddendum:
               msg.mode === 'carry-respawn' ? msg.systemPromptAddendum : '',
             drillId: msg.mode === 'carry-respawn' ? msg.drillId : '',
             sessionClass: msg.mode === 'carry-respawn' ? msg.sessionClass : '',
-          });
+          })
+            .catch(() => {})
+            .finally(() => {
+              if (releaseAfterRecycle) releaseAfterRecycle();
+            });
           return { ok: true, reason: 'delivered' };
         }
         // COMPACT — RETIRED (P-022, 2026-07-18): native compaction is removed
@@ -2697,11 +2718,33 @@ export function hostThroughPty(o) {
         // WI-2930: a turn/reset submit targets the agent's stdin and must be
         // verified like the compact writes above (raw = control bytes and osc =
         // display bytes have no submit to verify).
-        process.stderr.write(`TRACE-D pre-verifySubmitted mode=${msg.mode}\n`);
         if (msg.mode === 'turn' || msg.mode === 'reset') {
-          await verifySubmitted(`${msg.mode} inject`);
+          // EI-18679050054551625 / WI-5872 follow-up: verifySubmitted()'s poll
+          // loop sleeps a FULL pollMs (default 5000ms, env
+          // PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS) before its very first
+          // check, and can run up to `polls` iterations resubmitting a CR —
+          // it is a best-effort confirm-and-resubmit safety net, not a
+          // precondition for a truthful "delivered" ack (the actual write
+          // above already landed). Awaiting it here before acking meant the
+          // ACK protocol's round-trip always exceeded injectIntoHost()'s
+          // default 2000ms client timeout for every turn/reset delivery —
+          // observed as 9/10 psu-pty-host-turn.integration.test.ts cases red,
+          // each timing out at ~2000-2200ms despite the write having actually
+          // succeeded (confirmed via trace instrumentation: the handler
+          // reaches verifySubmitted and never returns before the client
+          // gives up). Ack "delivered" now; let verify+resubmit run as a
+          // background continuation, same pattern as the recycle/carry-
+          // respawn fix above — the inject mutex stays held
+          // (deferMutexRelease) until it finishes, preserving the "gate wait
+          // -> pty write -> submit verify" one-at-a-time invariant.
+          deferMutexRelease = true;
+          const releaseAfterVerify = releaseInject;
+          void verifySubmitted(`${msg.mode} inject`)
+            .catch(() => {})
+            .finally(() => {
+              if (releaseAfterVerify) releaseAfterVerify();
+            });
         }
-        process.stderr.write(`TRACE-E post-verifySubmitted\n`);
         return { ok: true, reason: 'delivered' };
       } catch (err) {
         // P-001a: an error path must clear the coalesce slot too (claim is
@@ -2724,8 +2767,12 @@ export function hostThroughPty(o) {
       } finally {
         // EI-8822: always free the inject mutex — on success, an early return
         // (defer/recycle/compact), OR a throw — so one inject never wedges the
-        // queue behind an unreleased lock.
-        if (releaseInject) releaseInject();
+        // queue behind an unreleased lock. EI-18679050054551625: skip it here
+        // when deferMutexRelease is set — the turn/reset verify-in-background
+        // or recycle/carry-respawn-in-background continuation above owns
+        // releasing it once that continuation actually finishes, so the mutex
+        // still covers the full "gate wait -> write/recycle -> verify" span.
+        if (!deferMutexRelease && releaseInject) releaseInject();
       }
       })().catch((err) => ({
         ok: false,

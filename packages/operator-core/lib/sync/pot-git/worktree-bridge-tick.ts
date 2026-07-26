@@ -79,18 +79,16 @@ export interface WorktreeBridgeTickInput {
    * are already local (this machine IS the integrator, or P-202's
    * ref-announce fetch already synced the namespace into the local mirror).
    *
-   * KNOWN LIMITATION (mirrors the integrator-tick.ts EPOCH NOTE): the caller
-   * wiring (git-sync-action.ts) does not yet resolve a live swarm connection
-   * to a SPECIFIC peer by device pubkey — a peer-connection registry keyed by
-   * device identity doesn't exist yet (P-201 built the dial primitive,
-   * `openHiveGitFetchDuplex`, but not "which live socket is device X on").
-   * Until that lands, this seam is safe to omit on a single-authority
-   * dev-box run (the integrator's own machine never needs it) and on any
-   * machine whose local mirror is already current via P-202's ref-announce
-   * fetch; a true cold multi-machine fetch-on-demand needs the registry —
-   * tracked for Phase 3 (P-301 live drill).
+   * Receives the ANNOUNCING device's pubkey so the caller can dial that
+   * specific peer (EI-14555). WI-3583's per-device registry
+   * (`peer-dial-registry.ts`) resolves device pubkey → live swarm socket, so
+   * git-sync-action.ts now wires this the same way it wires the ref-announce
+   * leg's `openStream` — a cold machine whose mirror lacks the announced sha
+   * fetches on demand instead of rejecting `unknown-sha` forever. Still
+   * optional: omit when the objects are always local (the integrator's own
+   * machine) or in offline tests that serve from a fixed socket.
    */
-  openDuplex?: () => Promise<Duplex>;
+  openDuplex?: (devicePubkeyBase64: string) => Promise<Duplex>;
   runGit?: RunGit;
   fetchTimeoutMs?: number;
 }

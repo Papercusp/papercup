@@ -2147,6 +2147,85 @@ This makes the arm gate agree with the chokepoint: if the policy would auto-deci
 * `packages/operator-core/lib/autonomy/arm-reversible-action.ts` — the fix lives here
 * `packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts` — the work\_items wiring that calls it
 
+# Arrow loses to JSON on Papercusp sync payloads (and why the estimate said otherwise)
+
+> A measured negative result — Apache Arrow is net slower than JSON for our sync reads. Includes the two estimation mistakes that made it look like a win, both of which generalize.
+
+**Verdict: do not convert Papercusp sync reads to Apache Arrow.** It is \~21ms/wave *slower* end-to-end on real data. This page exists so nobody re-proposes it from first principles, and — more usefully — so the two mistakes that made it look attractive don’t get repeated on the next format decision.
+
+Measured 2026-07-26 with `apache-arrow` v21.2.0. Full record: plan `arrow-zero-copy-sync-reads-2026-07-26` D-003.
+
+## The numbers
+
+[Section titled “The numbers”](#the-numbers)
+
+Three fattest sync payloads, pulled live from `:3070`:
+
+```plaintext
+                        JSON        Arrow      delta
+  server encode        11.5 ms      41.3 ms   +29.8 ms
+  client decode        11.5 ms       2.5 ms    -9.0 ms
+  NET                  23.0 ms      43.8 ms   +20.9 ms   <== Arrow LOSES
+  bytes on wire         3.97 MB      3.23 MB      -19%
+```
+
+Arrow’s client decode really is \~4.6× faster and the wire really is 19% smaller. But `tableFromJSON` encode costs 3.6× what `JSON.stringify` does, and that swamps both wins.
+
+## Mistake 1 — the estimate used a synthetic payload
+
+[Section titled “Mistake 1 — the estimate used a synthetic payload”](#mistake-1--the-estimate-used-a-synthetic-payload)
+
+The figure that motivated the work (55.1ms for the JSON path) came from a hand-built 12,000-row payload of uniform wide rows. Real sync payloads are 153–2,760 rows, and **V8’s `JSON.parse` is optimized C++** — it handles the real ones in 3–9ms, not 20ms.
+
+The synthetic number was 2–4× too pessimistic, which was enough to invert the conclusion.
+
+> **Generalizes to:** never size a serialization-format decision on synthetic data. Pull the real payload. It is usually one `curl` against the running operator.
+
+## Mistake 2 — our rows are not tabular
+
+[Section titled “Mistake 2 — our rows are not tabular”](#mistake-2--our-rows-are-not-tabular)
+
+Arrow’s advantage is a columnar layout over flat, typed columns. Ours are nested blobs:
+
+| query             | rows  | size    | shape                                                            |
+| ----------------- | ----- | ------- | ---------------------------------------------------------------- |
+| `plans.items`     | 2,760 | 1.64 MB | 3 cols — **92% of bytes is one nested `item` dict per row**      |
+| `plans.attention` | 153   | 1.53 MB | 7 cols — **98% of bytes is a nested `items` list** (\~10 KB/row) |
+| `plans.list`      | 880   | 0.80 MB | 22 cols — the most tabular, and the **worst** result             |
+
+`tableFromJSON` cannot infer heterogeneous nested structures, so they degrade to JSON-stringified strings held inside Arrow columns. That is still JSON parsing — just deferred to field-access time, after you have already paid Arrow’s encode.
+
+Note the shape of the failure: `plans.list`, the *most* column-like of the three, came out exactly break-even client-side (3.3ms vs 3.3ms) while costing +18.9ms to encode. More columns did not help.
+
+## What would have to change before re-measuring
+
+[Section titled “What would have to change before re-measuring”](#what-would-have-to-change-before-re-measuring)
+
+The resolvers would have to emit **flat, typed, genuinely columnar rows**. That is projection work, not a format change. If that ever lands and payloads are still large, re-measure — but a format swap alone will not rescue this.
+
+## The thing that was actually worth finding
+
+[Section titled “The thing that was actually worth finding”](#the-thing-that-was-actually-worth-finding)
+
+The measurement’s real value was diagnostic. Those three queries are 65% of a 5.94 MB hydration wave **and** the three slowest resolvers (905 / 620 / 577 ms). Size and latency share one cause: the `plans.*` sync resolvers do no projection at all — they pass through whatever `callPlansRead()` returns, whole nested object per row.
+
+Tracked as **WI-5910**. The chokepoint is `callPlansReadRaw` in `packages/operator-core/lib/agent-tools/plans/read-dispatch.ts` (per the 2026-07-19 whole-app payload audit): it is the single in-process dispatch feeding both the `/api/admin/plans/*` REST routes and the `@papercusp/sync` `plans.*` resolvers, and agent/MCP sessions do not reach it — so a display projection there is UI-only and cannot regress the agent-facing payload tier.
+
+## Two adjacent facts established by the same investigation
+
+[Section titled “Two adjacent facts established by the same investigation”](#two-adjacent-facts-established-by-the-same-investigation)
+
+* **The copy into the webview is 4.6ms per 6.65MB.** So true shared memory — an mmap’d store, or leaving the webview for a native/Electron renderer — is worth \~4.6ms. That is not a performance argument. If webview replacement is ever revisited, argue it on memory footprint (EI-278 records sustained `/adv` fetch load as the dominant workload behind a 16GB webview OOM), not on copies.
+* **Tauri 2.11.5 supports raw byte IPC bodies.** `InvokeResponseBody` has a `Raw(Vec<u8>)` variant and `Channel::send(data) where TSend: IpcResponse` accepts it. The `"Tauri's IPC serializer is JSON-based"` comment in `ipc-stream.ts` is v1-era and stale; every non-SSE sync response body is currently base64’d out and back (\~12ms/wave). Tracked as **WI-5911** — format-independent, so this verdict does not touch it.
+
+## The pattern worth carrying
+
+[Section titled “The pattern worth carrying”](#the-pattern-worth-carrying)
+
+Three separate comments in this subsystem asserted constraints that had quietly expired and were being obeyed anyway: the batcher’s 6-connection-per-host justification (webapp-era, dead once desktop moved to IPC), `ipc-stream.ts`’s JSON-serializer claim (Tauri v1-era), and a stale client-side `AttentionKind` mirror. Each cost real time.
+
+When a comment states a constraint that is load-bearing for a design decision, **re-verify it before building on it** — especially a comment that predates a platform pivot.
+
 # The attention/importance system (Planning tab)
 
 > How plan-item importance + the unified AttentionItem feed fit together, and two non-obvious gotchas — parseWarnings become lint ERRORS, and (historically) the Plans tab had no in-app chat host (now superseded by the inline PlanChat host).
@@ -22025,7 +22104,7 @@ Hundreds of rows in one result usually means hundreds of DOM nodes mounted on fi
 
 **On a loopback/desktop deployment, transfer is never the explanation** — 479KB over loopback is \~5ms. The real costs are (a) server compute in the resolver, (b) paying it twice (defect 1), (c) client parse + render (defects 2–3). WI-5412’s resolver spent \~0.4s shipping 7,146 topic-tag ids OUT of Postgres and back IN via `ANY(...)` (`listIssues`’ topic filter — now an `EXISTS` join, \~180ms).
 
-**Discipline:** never explain slowness without a staged measurement. `curl -w %{time_total}` the `rest-query-batch` endpoint per query, then time the resolver’s stages in a tsx script. The 2026-07-18 measurement contradicted the intuited explanation in under ten minutes.
+**Discipline:** never explain slowness without a staged measurement. `curl -w %{time_total}` the `rest-query` endpoint per query (it was `rest-query-batch` until the batcher was dropped on 2026-07-26), then time the resolver’s stages in a tsx script. The 2026-07-18 measurement contradicted the intuited explanation in under ten minutes.
 
 ## The library guard (auto-on in development)
 
@@ -26364,8 +26443,8 @@ Post-WI-840 re-measurement, with a **route-level** attribution this doc’s earl
 * **Today’s dominant traffic: `GET /admin/plans/:verb` — 1,090 req/hr, `principal_kind=system`, bearer-token.** That is **`apps/tui` (the pui dock)**: `client.rs` `plans_list()` / `attention_typed()` GET `admin/plans/list|attention`, driven by `main.rs refetch_all` (every panel, on SSE-invalidate + a 60s safety net) — and the desktop dock runs **5–9 pui processes** (`pui chat`, two `brain-view`s, `dock-driver`, `wake-pane`, …), each with its own loop. At \~1.18MB per attention response and \~555KB per list response that is the \~50GB/day residual.
 * **Verified NOT the desktop webviews**: fetch-taps + `performance` resource entries in both live Tauri webviews show zero rest-query/admin-plans calls; neither visible page subscribes plans queries.
 * **The rows-delta client seam (SYNC\_RESOURCE\_DELTA, P-006) is live and the server half is PROVEN** — a cursor round-trip against `/api/zero-harness/rest-query-batch` returns `mode:delta` at **8.8KB vs 1.18MB full (134x)** — but it only covers the sync path, which is no longer the traffic. Do not verify it via `tool_invocations.metadata deltaMode`: that field records the TOOL-layer delta, not the wire negotiation (always reads `full` on this path).
-* **Fix direction for the pui residual** (EI-7028): the trimmed payload shape ALREADY EXISTS server-side (`attention-shape.ts` `shapePlansAttention(data, tier)`, built for MCP ctx-tiers) — expose an opt-in `?tier=trimmed` on the `/admin/plans/:verb` proxy and have pui pass it (its panes render top-N items, not 1.18MB); and/or move `refetch_all`’s plans reads onto the delta-negotiated batch endpoint. Beware `apps/tui/src/models.rs` typed parsing when changing the shape.
-* Meta-gotcha that stalled this diagnosis: `libs/generic/sync/src/transports/polling/batch-fetcher.ts` contained a raw NUL byte (cache-key delimiter), so ripgrep classified it BINARY and every content search skipped it — the delta wiring looked absent when it wasn’t. Fixed to the escaped form (backslash-u0000) 2026-07-03; if a file’s matches mysteriously don’t appear, check for NUL bytes.
+* **Fix direction for the pui residual** (EI-7028): the trimmed payload shape ALREADY EXISTS server-side (`attention-shape.ts` `shapePlansAttention(data, tier)`, built for MCP ctx-tiers) — expose an opt-in `?tier=trimmed` on the `/admin/plans/:verb` proxy and have pui pass it (its panes render top-N items, not 1.18MB); and/or move `refetch_all`’s plans reads onto the delta-negotiated sync endpoint. Beware `apps/tui/src/models.rs` typed parsing when changing the shape. **Update 2026-07-26:** the batch endpoint named above is deprecated and client-less (drop-sync-batcher-2026-07-25) — the same delta negotiation lives on `GET /rest-query` (`?delta=<cursor>`, `?delta=` cold), so target that, not `rest-query-batch`.
+* Meta-gotcha that stalled this diagnosis: `libs/generic/sync/src/transports/polling/batch-fetcher.ts` (deleted 2026-07-26; the delta wiring now lives in its replacement, `query-fetcher.ts`) contained a raw NUL byte (cache-key delimiter), so ripgrep classified it BINARY and every content search skipped it — the delta wiring looked absent when it wasn’t. Fixed to the escaped form (backslash-u0000) 2026-07-03; if a file’s matches mysteriously don’t appear, check for NUL bytes.
 
 ## Fixed 2026-07-03 (su-6c9e4, EI-7028) — pui pinned panes now fetch only what they render; `?payloadTier=` already works on the admin proxy
 
@@ -48684,7 +48763,7 @@ Reference: `WorkItemsPanel.tsx` + the `workItems.byHarness` resolver.
 
 **Why**: it is never Postgres. Each of those resolvers performed **expensive derived work synchronously, on the user-facing read, per page load, uncached** — a subprocess (`journalctl`), a recursive disk walk (`du`-style sizing), or a full-corpus parse (linting every plan). `soakReport` was the worst case: a host-global `journalctl` scan sat *inside* a per-pot fan-out, so \~12 hives meant \~24 concurrent scans of a 1.2GB journal; one of the two calls was also missing `-u <unit>`, so it walked **every** unit on the box — 25.97s to return 17 bytes.
 
-**Amplifier**: `zero-harness/rest-query-batch` resolves with `Promise.all`, so the batch response waits for the **slowest** query in it. One slow resolver holds every other panel in that batch hostage — which is why an unrelated rubrics panel felt \~10s.
+**Amplifier (removed 2026-07-26 — kept here because the shape recurs)**: `zero-harness/rest-query-batch` resolved with `Promise.all`, so the batch response waited for the **slowest** query in it. One slow resolver held every other panel in that batch hostage — which is why an unrelated rubrics panel felt \~10s. That amplifier is **gone**: the client now issues one `GET /rest-query` per query through a bounded concurrency gate (`libs/generic/sync/src/transports/polling/query-fetcher.ts`), so a slow resolver costs only its own panel. Do not read the “keep it out of a batch” advice below as still actionable — there is no batch. The underlying rule survives unchanged, and is now the *only* protection: **a slow resolver is slow for the user who needs it**, and the fix is to make it fast, not to route around it.
 
 **Fix — precompute into Postgres; do not just cache.** A background routine writes the derived rows; the resolver becomes a plain `SELECT`. This is implemented: `harness_shared.derived_read_snapshots` + the producer registry in `packages/operator-core/lib/derived-reads/`, refreshed by the `system:precompute-derived-reads` routine. Measured on `:3170` after the change:
 
@@ -48694,7 +48773,7 @@ Reference: `WorkItemsPanel.tsx` + the `workItems.byHarness` resolver.
 | `storage.usage`       | 20.0s  | **0.092s** |
 | `plans.lint`          | 13.8s  | **0.130s** |
 
-And the amplifier, measured directly: a batch requesting all three together returns in **0.54s**. Before, that same batch took as long as its slowest member — over 27 seconds — because `Promise.all` waits for the last one.
+And the amplifier, measured directly at the time: a batch requesting all three together returned in **0.54s**, where before it took as long as its slowest member — over 27 seconds — because `Promise.all` waits for the last one. (The batch endpoint has since been retired; see the amplifier note above.)
 
 To add one: register a producer in `derived-reads/producers.ts` and make the resolver `return readDerivedSnapshotRows('<key>')`. A read NEVER computes on a miss — it returns the last snapshot (or empty, with a staleness marker) and lets the routine fill it, because a compute-on-miss path reintroduces exactly the cold-load stall this exists to remove.
 
@@ -48713,7 +48792,7 @@ To add one: register a producer in `derived-reads/producers.ts` and make the res
 1. A resolver does **I/O against Postgres and nothing else**. No `child_process`, no recursive `fs` walk, no full-corpus parse.
 2. Derived/aggregate values are **materialized by a scheduled routine** into a table the resolver reads. Push the cost to write-time, off the user’s path.
 3. Never assume host binaries (`journalctl`, `systemctl`, `du`, `git`) exist. The shipping target is a desktop app, not this dev box.
-4. If a resolver is unavoidably slow, keep it **out of a batch** with interactive queries, or it becomes everyone’s latency.
+4. If a resolver is unavoidably slow, that is now *its own* panel’s latency and nobody else’s — the batch that used to spread it across the page is gone (2026-07-26). Make it fast anyway: it still occupies one of the client’s bounded in-flight slots, and it is still a user waiting.
 
 **The guard that keeps rule 1 true:** `packages/operator-core/lib/sync-resolver/no-heavy-io-on-read-path.test.ts` statically walks the resolver registry and fails if any directly-reached module spawns a subprocess. When first written it found **six** more offenders below the 12s bar (WI-5476); all are now resolved and it holds at **zero** known offenders. Note the three treatments — not every hit is a precompute:
 

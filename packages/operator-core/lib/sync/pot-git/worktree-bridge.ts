@@ -69,8 +69,14 @@ export interface WorktreeBridgeConfig {
    * Dial a FRESH per-fetch duplex to a peer that can serve the integrator's
    * namespace (G-2). Omitted ⇒ no transport fetch — the objects are expected
    * to already be in the local mirror (e.g. this machine IS the integrator).
+   *
+   * Receives the ANNOUNCING device's pubkey (`incoming.device_pubkey`) — the
+   * same identity `fetchPeerNamespace` then asks for on the wire, so the
+   * duplex MUST terminate on that device (EI-14555). A zero-arg closure stays
+   * assignable here (TS permits fewer params), which is why the offline tests
+   * that dial a fixed unix socket needed no change.
    */
-  openDuplex?: () => Promise<Duplex>;
+  openDuplex?: (devicePubkeyBase64: string) => Promise<Duplex>;
   /**
    * Device gate for the announcement — MANDATORY (HIGH fix, 2026-07-02
    * cross-review): `expectedDevice` = the current integrator authority, or
@@ -201,7 +207,7 @@ export async function handleStagingAdvance(
     if (cfg.openDuplex) {
       let duplex: Duplex;
       try {
-        duplex = await cfg.openDuplex();
+        duplex = await cfg.openDuplex(incoming.device_pubkey);
       } catch (e) {
         return { outcome: 'fetch-failed', detail: `openDuplex failed: ${e instanceof Error ? e.message : String(e)}` };
       }
