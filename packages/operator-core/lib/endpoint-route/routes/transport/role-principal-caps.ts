@@ -88,7 +88,15 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // dev:rate_governor_status, change_ledger), the plan state (plans:read), recent app
   // notifications (notifications:read → notifications:recent), activity (activity:read),
   // and search (search:read) to ground its nudges. PLUS messages:write so it can forward a
-  // directive to a specific agent (messages:send). DELIBERATELY WITHOUT work_items:write /
+  // directive to a specific agent — dispatched as execute-action `op:'send_directive'`, which
+  // performs a coord send and returns a stable `msg_id`. (The old `messages:send` mail verb is
+  // RETIRED — _retired/work-item-mail/ — so do not describe this grant in terms of it.)
+  // ⚠ DO NOT "SWEEP" `messages:write` BELOW. It is a live CAPABILITY name, not a retired tool
+  // verb: operator-suggestion-schema.ts pins `capability: z.literal('messages:write')` in
+  // SuggestionSchema's `action:'send_directive'` arm, so removing the grant on line ~109 breaks
+  // EVERY operator directive card. Capability names and tool verbs are both spelled
+  // `namespace:verb` and are DIFFERENT surfaces — see agent-trap-guards-2026-07-26#D-003.
+  // DELIBERATELY WITHOUT work_items:write /
   // harness:write / plans:write / routines:write / cup:spawn / processes:kill: it NUDGES
   // the Queen to re-place, it never re-places/edits/restarts (D-001/D-002). The capability
   // ENVELOPE (capability-envelope/policy.ts ROLE_ENVELOPES.overwatch) ALSO denies

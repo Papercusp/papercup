@@ -147,6 +147,14 @@ export interface SyncTriggeredSweep {
   source: string;
   /** What fires it. */
   trigger?: string;
+  /**
+   * Does a fire bill a model? Declared HERE, beside the sweep, because whoever
+   * adds one knows the answer and nothing downstream can infer it — a sync-triggered
+   * sweep has no `target_role` for the automation catalog to classify it by
+   * (agents-system-pane-split-2026-07-26 D-001). This is the one non-routines
+   * source that can dispatch an agent, which is exactly why it must say so.
+   */
+  spends: 'llm' | 'none';
   note: string;
 }
 
@@ -163,6 +171,7 @@ export const SYNC_TRIGGERED_SWEEPS: SyncTriggeredSweep[] = [
     armed: true, // detection is unconditional
     source: 'packages/operator-core/lib/harness/docs/sweep-after-sync.ts',
     trigger: 'git-sync-action.ts → runDocFreshnessSweepAfterSync',
+    spends: 'none',
     note: "Detects drifted docs by comparing HEAD against each doc's anchored code. Free — no agent spawn.",
   },
   {
@@ -171,6 +180,7 @@ export const SYNC_TRIGGERED_SWEEPS: SyncTriggeredSweep[] = [
     armed: null,
     flag: 'papercusp-doc-steward',
     source: 'packages/operator-core/lib/harness/docs/doc-steward-dispatch.ts',
+    spends: 'llm',
     note: 'Spawns an LLM doc-steward agent to re-sync drifted docs. Owner-authority dark flag — OFF means drift is still detected, just not auto-repaired.',
   },
 ];
@@ -452,7 +462,7 @@ export async function collectScheduleInventory(
       nextFire: null,
       lastError: null,
       groupSlug: null,
-      detail: { source: s.source, ...(s.trigger ? { trigger: s.trigger } : {}), ...(s.flag ? { flag: s.flag } : {}), note: s.note },
+      detail: { source: s.source, spends: s.spends, ...(s.trigger ? { trigger: s.trigger } : {}), ...(s.flag ? { flag: s.flag } : {}), note: s.note },
     });
   }
 

@@ -1,48 +1,87 @@
 /**
  * Automation catalog classification tests.
  *
- * The stakes here are specific: `spawnsAgent` is what renders the "tokens" flag in
- * the Blender/Docs panes, and `classifyRoutine` decides WHICH pane a routine appears
- * in. A miss on either means a routine that spends the owner's weekly Claude limit
- * is invisible or unpausable — the exact failure these panes were built to end
- * (owner ask 2026-07-25). So the real cron names observed on the box are pinned.
+ * The stakes are specific: the spend classification renders the "tokens" flag the
+ * owner uses to decide what to pause, and `classifyRoutine` decides which category a
+ * routine carries. A miss means a routine spending the weekly Claude limit is
+ * invisible or unpausable — the failure these panes were built to end.
+ *
+ * ⚠ The `routineSpawnsAgent` name-regex this file used to pin is RETIRED
+ * (agents-system-pane-split-2026-07-26 D-001). Its assertions were themselves wrong:
+ * this file previously pinned `template-gym`, `improvement-watchdog`,
+ * `improvement-triage` and `wake-brain` as "observed firing and billing tokens",
+ * and none of them bills anything. That is what a name-regex buys you — a test that
+ * faithfully asserts the guess. Spend now derives from `target_role`; the cases
+ * below are the corrections, and routine-classification.test.ts holds the rest.
  */
 import { describe, expect, it } from 'vitest';
-import { classifyRoutine, cronCadence, routineSpawnsAgent } from './catalog';
+import {
+  classifyRoutine,
+  collapseFanOut,
+  cronCadence,
+  loopCadence,
+  routineSpawnsAgent,
+  type AutomationRoutine,
+} from './catalog';
+import { spendForTargetRole } from './routine-classification';
 
-describe('routineSpawnsAgent', () => {
-  // Every one of these was observed firing on 2026-07-25 and billing tokens.
+describe('spend classification (replaces the retired routineSpawnsAgent regex)', () => {
   it.each([
-    'bp-singleton-scout-0',
-    'bp-singleton-red-queen-0',
-    'gym-cycle',
-    'template-gym',
-    'improvement-implement',
-    'improvement-watchdog',
-    'improvement-triage',
-    'overwatch-wake',
-    'pot-wake',
-    'wake-brain',
-    'pot-eval-battery',
-    'oddsmith-prospector-cadence',
-    'loop-su-d7fa235d-a4c8-4e2d-a41e-f4937fe66e64',
-  ])('flags %s as agent-spawning (it costs tokens)', (name) => {
-    expect(routineSpawnsAgent(name)).toBe(true);
+    ['bp-singleton-scout-0', 'system:blueprint-run'],
+    ['bp-singleton-red-queen-0', 'system:blueprint-run'],
+    ['pot-eval-battery', 'system:blueprint-run'],
+    ['hive-wake', 'system:blueprint-run'],
+    ['gym-cycle', 'system:gym-cycle'],
+    ['improvement-implement', 'system:improvement-implement'],
+    ['overwatch-wake', 'system:overwatch-launch'],
+    ['loop-su-d7fa235d-a4c8-4e2d-a41e-f4937fe66e64', 'system:loop-wake'],
+  ])('flags %s (%s) as a spender', (_name, role) => {
+    expect(spendForTargetRole(role)).toBe('llm');
   });
 
-  // Pure system sweeps — SQL/git/gc only. Flagging these would cry wolf and train
-  // the owner to ignore the flag that matters.
+  // Pure system sweeps — SQL/git/gc only. Flagging these cries wolf and trains the
+  // owner to ignore the flag that matters.
   it.each([
-    'git-sync',
-    'green-checkpoint',
-    'cross-hive-outbox-drain',
-    'precompute-derived-reads',
-    'telemetry-retention',
-    'idle-session-reaper',
-    'gc-plan-runs',
-    'pr-poll',
-  ])('does not flag the pure system sweep %s', (name) => {
-    expect(routineSpawnsAgent(name)).toBe(false);
+    ['git-sync', 'system:git-sync'],
+    ['green-checkpoint', 'system:green-checkpoint'],
+    ['cross-hive-outbox-drain', 'system:cross-hive-outbox-drain'],
+    ['precompute-derived-reads', 'system:precompute-derived-reads'],
+    ['telemetry-retention', 'system:telemetry-retention'],
+    ['idle-session-reaper', 'system:idle-session-reaper'],
+    ['gc-plan-runs', 'system:gc-plan-runs'],
+    ['pr-poll', 'system:pr-poll'],
+  ])('does not flag the pure system sweep %s', (_name, role) => {
+    expect(spendForTargetRole(role)).toBe('none');
+  });
+
+  // The regressions this change exists to fix — each was asserted as a spender by
+  // the retired regex, and each is provably free.
+  it.each([
+    ['wake-brain', 'system:wake-brain', 'its handler is `async (ctx) => { void ctx; }`'],
+    ['improvement-watchdog', 'system:improvement-watchdog', 'a SQL pass that files work items'],
+    ['improvement-triage', 'system:improvement-triage', 'explicitly never dispatches'],
+    ['improvement-human-digest', 'system:improvement-human-digest', 'ranks and sends'],
+  ])('corrects the old false positive %s (%s)', (_name, role) => {
+    expect(spendForTargetRole(role)).toBe('none');
+  });
+
+  it('refuses the retired name-regex rather than answering wrongly', () => {
+    expect(() => routineSpawnsAgent()).toThrow(/retired/i);
+  });
+});
+
+describe('loopCadence', () => {
+  it('renders a loop reschedule interval, which carries no cron', () => {
+    expect(loopCadence(60)).toBe('every 1m');
+    expect(loopCadence(300)).toBe('every 5m');
+    expect(loopCadence(3600)).toBe('every 1h');
+    expect(loopCadence(90)).toBe('every 90s');
+  });
+
+  it('has no cadence for a missing or nonsensical interval', () => {
+    expect(loopCadence(null)).toBeNull();
+    expect(loopCadence(0)).toBeNull();
+    expect(loopCadence(-5)).toBeNull();
   });
 });
 
@@ -110,5 +149,123 @@ describe('cronCadence', () => {
 
   it('returns null for an event-driven routine with no cron', () => {
     expect(cronCadence(null)).toBeNull();
+  });
+});
+
+// ── collapseFanOut ─────────────────────────────────────────────────────────────
+// `git-sync` is ONE routine installed on 19 pots, `green-checkpoint` on 14,
+// `cross-hive-outbox-drain` on 13, `hive-wake` on 16. Rendered per-install those
+// four names alone were 60+ peer rows — most of why the owner read the pane as a
+// wall ("there are like 100 git-sync schedules/routines").
+describe('collapseFanOut', () => {
+  const row = (
+    over: Partial<AutomationRoutine> & { name: string; installSlug: string },
+  ): AutomationRoutine => ({
+    group: null,
+    category: 'infra',
+    cron: '0 */2 * * * *',
+    cadence: 'every 2m',
+    active: true,
+    spend: 'none',
+    spendWhy: null,
+    spawnsAgent: false,
+    kind: 'scheduled',
+    family: 'git-release',
+    liveness: 'running',
+    control: 'routine',
+    needsAttention: false,
+    installs: [over.installSlug],
+    ownerId: null,
+    ownerLastActiveAt: null,
+    triggerLabel: null,
+    lastFiredAt: null,
+    nextFireAt: null,
+    source: 'routines',
+    controllable: true,
+    ...over,
+  });
+
+  it('collapses one routine installed on many pots into a single row', () => {
+    const out = collapseFanOut([
+      row({ name: 'git-sync', installSlug: 'papercusp' }),
+      row({ name: 'git-sync', installSlug: 'oddsmith' }),
+      row({ name: 'git-sync', installSlug: 'hello-world' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.installs).toEqual(['hello-world', 'oddsmith', 'papercusp']);
+  });
+
+  it('keeps distinct routines apart', () => {
+    const out = collapseFanOut([
+      row({ name: 'git-sync', installSlug: 'papercusp' }),
+      row({ name: 'green-checkpoint', installSlug: 'papercusp' }),
+    ]);
+    expect(out.map((r) => r.name).sort()).toEqual(['git-sync', 'green-checkpoint']);
+  });
+
+  // One stalled pot must not hide behind fifteen healthy ones — the collapsed row
+  // reports the WORST liveness, or collapsing would bury exactly what it should show.
+  it('reports the worst liveness across installs', () => {
+    const out = collapseFanOut([
+      row({ name: 'git-sync', installSlug: 'a', liveness: 'running' }),
+      row({ name: 'git-sync', installSlug: 'b', liveness: 'stalled' }),
+      row({ name: 'git-sync', installSlug: 'c', liveness: 'running' }),
+    ]);
+    expect(out[0]!.liveness).toBe('stalled');
+    expect(out[0]!.needsAttention).toBe(true);
+  });
+
+  it('is active when any install is active', () => {
+    const out = collapseFanOut([
+      row({ name: 'git-sync', installSlug: 'a', active: false, liveness: 'dormant' }),
+      row({ name: 'git-sync', installSlug: 'b', active: true, liveness: 'running' }),
+    ]);
+    expect(out[0]!.active).toBe(true);
+  });
+
+  it('reports dormant only when every install is dormant', () => {
+    const out = collapseFanOut([
+      row({ name: 'hive-wake', installSlug: 'a', active: false, liveness: 'dormant' }),
+      row({ name: 'hive-wake', installSlug: 'b', active: false, liveness: 'dormant' }),
+    ]);
+    expect(out[0]!.liveness).toBe('dormant');
+    expect(out[0]!.active).toBe(false);
+  });
+
+  it('takes the most recent fire and the earliest next fire', () => {
+    const out = collapseFanOut([
+      row({
+        name: 'git-sync',
+        installSlug: 'a',
+        lastFiredAt: '2026-07-26T10:00:00.000Z',
+        nextFireAt: '2026-07-26T18:00:00.000Z',
+      }),
+      row({
+        name: 'git-sync',
+        installSlug: 'b',
+        lastFiredAt: '2026-07-26T13:00:00.000Z',
+        nextFireAt: '2026-07-26T14:00:00.000Z',
+      }),
+    ]);
+    expect(out[0]!.lastFiredAt).toBe('2026-07-26T13:00:00.000Z');
+    expect(out[0]!.nextFireAt).toBe('2026-07-26T14:00:00.000Z');
+  });
+
+  // Each loop belongs to a distinct session and its name is already unique, so
+  // there is nothing to collapse — and collapsing them would merge unrelated agents.
+  it('leaves per-session loops alone', () => {
+    const out = collapseFanOut([
+      row({ name: 'loop-su-aaa', installSlug: 'papercusp', kind: 'loop', family: 'loops' }),
+      row({ name: 'loop-su-bbb', installSlug: 'papercusp', kind: 'loop', family: 'loops' }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('is only controllable when every install is', () => {
+    const out = collapseFanOut([
+      row({ name: 'git-sync', installSlug: 'a', controllable: true }),
+      row({ name: 'git-sync', installSlug: 'b', controllable: false }),
+    ]);
+    expect(out[0]!.controllable).toBe(false);
   });
 });

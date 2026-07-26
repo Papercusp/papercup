@@ -26,7 +26,7 @@
  *     runtime import-time validation sees post-merge.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import {
@@ -40,80 +40,23 @@ import {
   type DependencyHostSets,
   type PackDescriptor,
 } from '@papercusp/blueprint-distribution';
+import {
+  buildBuiltinToolCatalog,
+  buildDistributionUnits,
+  type DistributionUnitInfo,
+} from '../static-tool-catalog';
 
 const __dirname = dirname(new URL(import.meta.url).pathname);
 const REPO = join(__dirname, '../../../../');
 
-// ─── static built-in tool catalog (mirror of tools-md-sync's Pass 1) ────────
+// ─── static built-in tool catalog + in-repo distribution units ─────────────
+// Scan logic lives in ../static-tool-catalog.ts (shared with
+// prompt-blueprint-verb-catalog.test.ts, P-007, so there's exactly one static
+// catalog scanner in the tree, not two drifting copies).
 
-// Every dir that holds `defineTool({ name: '<group>:<verb>' })` projections.
-// Wider than tools-md-sync's scan: coord-ops/agent-tools.ts (the dual-surface
-// coord:vote/deliberate/ask-owner projections) and agent-mcp's define-ui-tool
-// live OUTSIDE the two classic dirs. If a dep fails here for a tool that
-// exists live, the fix is extending this list (the failure message names the
-// tool).
-const TOOL_SOURCE_DIRS = [
-  'packages/agent-mcp/src',
-  'packages/operator-core/lib/agent-tools',
-  'packages/operator-core/lib/coord-ops',
-  // A couple of endpoint routes carry an MCP `name:` projection too.
-  'packages/operator-core/lib/endpoint-route/routes',
-];
-
-function walkTsFiles(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out;
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) walkTsFiles(full, out);
-    else if (entry.endsWith('.ts') && !entry.includes('.test.')) out.push(full);
-  }
-  return out;
-}
-
-const BUILTIN_TOOLS = new Set<string>();
-for (const dir of TOOL_SOURCE_DIRS) {
-  for (const file of walkTsFiles(join(REPO, dir))) {
-    const src = readFileSync(file, 'utf8');
-    if (!src.includes('defineTool(')) continue;
-    // Same shape as tools-md-sync: a name with a `:`/`.` separator. matchAll —
-    // a file may define more than one tool.
-    for (const m of src.matchAll(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/g)) {
-      BUILTIN_TOOLS.add(m[1]);
-    }
-  }
-}
-
-// ─── in-repo distribution units (plugins + packs), the installable tier ─────
-
-interface UnitInfo {
-  name: string;
-  kind: 'plugin' | 'pack';
-  tools: string[];
-}
-
-const UNITS: UnitInfo[] = [];
-const pluginsRoot = join(REPO, 'libs/papercusp/plugins');
-if (existsSync(pluginsRoot)) {
-  for (const entry of readdirSync(pluginsRoot)) {
-    const manifestPath = join(pluginsRoot, entry, 'papercusp.json');
-    if (!existsSync(manifestPath)) continue;
-    const json = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
-    const short = String(json.name ?? entry).replace(/^@[^/]+\//, '');
-    const tools: string[] = [];
-    if (Array.isArray(json.tools)) {
-      for (const tool of json.tools as Array<Record<string, any>>) {
-        tools.push(tool.expose?.mcp?.name ?? `${short}.${tool.name}`);
-      }
-    }
-    if (Array.isArray(json.capabilities)) {
-      for (const cap of json.capabilities as string[]) {
-        const m = /^tools:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$/.exec(cap);
-        if (m) tools.push(`${m[1]}.${m[2]}`);
-      }
-    }
-    UNITS.push({ name: short, kind: json.kind === 'pack' ? 'pack' : 'plugin', tools });
-  }
-}
+const BUILTIN_TOOLS = buildBuiltinToolCatalog(REPO);
+type UnitInfo = DistributionUnitInfo;
+const UNITS: UnitInfo[] = buildDistributionUnits(REPO);
 
 const DESCRIPTORS: PackDescriptor[] = UNITS.map((u) => ({
   name: u.name,

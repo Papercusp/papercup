@@ -65,12 +65,12 @@ const gate = readFileSync(GATE_PATH, 'utf8');
 /** The whole §1 admission chain, from the PSI helper to the closing `fi` of the decision. */
 function extractAdmissionChain(): string {
   const m = gate.match(
-    /^gate_cpu_pressure_some\(\) \{\n[\s\S]*?\n  log "admission OK:[^\n]*\nfi$/m,
+    /^gate_cpu_pressure_some\(\) \{\n[\s\S]*?\n  echo "ADMISSION: PROCEED [^\n]*\nfi$/m,
   );
   expect(
     m?.[0],
     'could not extract the §1 admission chain from the gate source — did the helper or the ' +
-      'trailing `admission OK` log line get renamed? Re-anchor this test, do not delete it.',
+      'trailing `ADMISSION: PROCEED` echo get renamed? Re-anchor this test, do not delete it.',
   ).toBeTruthy();
   return m![0];
 }

@@ -389,6 +389,9 @@ import './dev/ipc_echo';
 import './dev/state_counter';
 import './dev/event_emitter';
 import './dev/processes';
+// bash-to-tool-substitution-2026-07-26 D-010 item 3 / D-017 — "what is listening
+// on :NNNN and who owns it", the ss/lsof/netstat intent that had no tool form.
+import './dev/listening_ports';
 import './dev/session_detail';
 import './dev/resolve_owner';
 // tool-call-batching-wrappers-2026-06-21 P-001 — tool co-occurrence miner

@@ -43,6 +43,19 @@ export {
 export type { AutomationCategory } from './pane-categories';
 import type { AutomationCategory } from './pane-categories';
 import { AUTOMATION_CATEGORIES } from './pane-categories';
+import {
+  routineFamily,
+  routineKind,
+  routineLiveness,
+  routineNeedsAttention,
+  spendForTargetRole,
+  spendReasonForTargetRole,
+  type RoutineControl,
+  type RoutineFamily,
+  type RoutineKind,
+  type RoutineLiveness,
+  type RoutineSpend,
+} from './routine-classification';
 
 export interface AutomationRoutine {
   name: string;
@@ -53,8 +66,43 @@ export interface AutomationRoutine {
   /** Human cadence, e.g. "every 30m" — derived from cron for display. */
   cadence: string | null;
   active: boolean;
-  /** True when this routine's fire spawns a model-backed agent (i.e. it can cost tokens). */
+  /**
+   * Does firing this bill a model? Derived from `target_role` via
+   * TARGET_ROLE_SPEND — NOT from the routine's name (the retired
+   * AGENT_SPAWNING_PATTERNS regex flagged `wake-brain`, a no-op tombstone, and
+   * four of the five `improvement-*` routines that never dispatch).
+   *
+   * `'unknown'` means the role has no classification — surfaced as its own state
+   * rather than defaulting to `none`, so a new system action cannot present itself
+   * as free.
+   */
+  spend: RoutineSpend | 'unknown';
+  /** One-line reason behind `spend`, for the row tooltip. Null when unknown. */
+  spendWhy: string | null;
+  /** True when this routine's fire spawns a model-backed agent. Alias of `spend === 'llm'`. */
   spawnsAgent: boolean;
+  /** What fires it: a clock, an event, or an armed agent loop. */
+  kind: RoutineKind;
+  /** Subject grouping for the browse-by-family view. */
+  family: RoutineFamily;
+  /** Is it actually going to run again? `active` alone cannot say (see routine-classification). */
+  liveness: RoutineLiveness;
+  /** Where this row's on/off switch lives — replaces the ambiguous `controllable: false` padlock. */
+  control: RoutineControl;
+  /** Does this row want the owner's attention right now? */
+  needsAttention: boolean;
+  /**
+   * Every install slug this routine is deployed to. `git-sync` is ONE routine
+   * installed on 19 pots; the pane renders one row carrying all 19 rather than 19
+   * peer rows. Always ≥1 and always contains `installSlug`.
+   */
+  installs: string[];
+  /** For a loop row: the session that armed it (routines.target_owner_id). */
+  ownerId: string | null;
+  /** For a loop row: when that session was last active — why a stalled loop is stalled. */
+  ownerLastActiveAt: string | null;
+  /** For a triggered row: what fires it, e.g. "after each git-sync". Null otherwise. */
+  triggerLabel: string | null;
   lastFiredAt: string | null;
   nextFireAt: string | null;
   /**
@@ -150,35 +198,22 @@ export interface AutomationCatalog {
 }
 
 /**
- * Routines whose fire spawns a model-backed agent (and therefore consumes tokens),
- * matched by name. Everything else is a pure system sweep (SQL/git/gc) that costs
- * nothing — keeping them visually distinct is the whole point of the pane: the owner
- * must be able to tell "this one can spend money" from "this one cannot" at a glance.
+ * ⚠ RETIRED: `AGENT_SPAWNING_PATTERNS` (agents-system-pane-split-2026-07-26 D-001).
+ *
+ * The "can this spend money?" answer used to be a list of regexes matched against
+ * the routine's NAME. It was wrong in both directions and its output drove the
+ * owner-facing "tokens" flag:
+ *
+ *   • `/(^|-)wake($|-)/` flagged `wake-brain`, whose handler is
+ *     `async (ctx) => { void ctx; }` — a retired tombstone that cannot spend.
+ *   • `/^improvement-(implement|triage|watchdog|human-digest|invalid-args-miner)$/`
+ *     flagged five routines; only `improvement-implement` returns `durableSpawns`.
+ *
+ * Spend now derives from `target_role` — the handler the routines engine actually
+ * dispatches to — via `spendForTargetRole()` in ./routine-classification, whose
+ * table is cross-checked against the live registry by a test. See that module's
+ * header for the full rationale.
  */
-const AGENT_SPAWNING_PATTERNS: RegExp[] = [
-  /^bp-singleton-/i, // blueprint learning singletons (scout, red-queen, regret, …)
-  /^gym-cycle$/i,
-  /^template-gym$/i,
-  /^pot-eval-battery$/i,
-  /^improvement-(implement|triage|watchdog|human-digest|invalid-args-miner)$/i,
-  // `wake` as a whole word ANYWHERE in the name — not an anchored suffix. The
-  // dominant spender observed on 2026-07-25 was `wake-brain` ($706/7d on opus),
-  // which a `/wake$/` suffix match silently misses while still matching its
-  // siblings `overwatch-wake` / `pot-wake` — i.e. the pane would have flagged the
-  // cheap ones and hidden the expensive one.
-  /(^|-)wake($|-)/i,
-  /^loop-su-/i, // agent-armed continuation loops
-  // The post-git-sync doc repair. It spawns an LLM doc-steward per drift batch
-  // (555 lifetime spawns, ~$40/day before it was gated), so it MUST carry the
-  // token flag — the detection half beside it is free, and the owner has to be
-  // able to tell them apart at a glance.
-  /^doc-steward/i,
-  /prospector-cadence$/i,
-  /^hive-canary$/i,
-  /^autonomy-trust-scan$/i,
-  /^coord-invariant-monitor$/i,
-  /^claim-discipline-watch$/i,
-];
 
 const DOCS_PATTERNS: RegExp[] = [/doc/i, /^knowledge-pack-/i];
 
@@ -202,8 +237,16 @@ const LEARNING_NAME_PATTERNS: RegExp[] = [
   /prospector-cadence$/i,
 ];
 
-export function routineSpawnsAgent(name: string): boolean {
-  return AGENT_SPAWNING_PATTERNS.some((re) => re.test(name));
+/**
+ * @deprecated Name-based spend detection is retired (D-001) — it cannot see the
+ * handler, so it guessed. Use `spendForTargetRole(targetRole)` instead. Kept only
+ * so an out-of-tree caller fails loudly at review rather than silently getting a
+ * wrong answer.
+ */
+export function routineSpawnsAgent(): never {
+  throw new Error(
+    'routineSpawnsAgent() is retired — spend derives from target_role. Use spendForTargetRole() from lib/automation/routine-classification.',
+  );
 }
 
 /**
@@ -247,39 +290,170 @@ export function cronCadence(cron: string | null): string | null {
   return cron;
 }
 
+/** "every 5m" for a loop's reschedule interval — loops carry no cron. */
+export function loopCadence(intervalSec: number | null | undefined): string | null {
+  if (intervalSec == null || !Number.isFinite(intervalSec) || intervalSec <= 0) return null;
+  if (intervalSec % 3600 === 0) return `every ${intervalSec / 3600}h`;
+  if (intervalSec % 60 === 0) return `every ${intervalSec / 60}m`;
+  return `every ${Math.round(intervalSec)}s`;
+}
+
+/**
+ * Spend for a NON-routines inventory row, which has no `target_role` to classify by.
+ *
+ * `sync-triggered` sweeps DECLARE it (SYNC_TRIGGERED_SWEEPS.spends) because they are
+ * the one host source that can dispatch an agent — `doc-steward-dispatch` spawns a
+ * doc-steward per drift batch. Every other source (DBOS scheduled workflows, managed
+ * timers, in-process sweeps, external-process timers) runs host code inline and has
+ * no spawn seam at all, so `none` is a structural fact about the mechanism rather
+ * than a per-row guess — which is why this is not the silent unknown→none default
+ * that D-002 forbids.
+ */
+function inventorySpend(row: { category: string; source: string; detail?: Record<string, unknown> | null }): {
+  spend: RoutineSpend | 'unknown';
+  why: string | null;
+} {
+  if (row.category === 'sync-triggered') {
+    const declared = row.detail?.spends;
+    if (declared === 'llm') return { spend: 'llm', why: 'Dispatches an agent when its trigger fires' };
+    if (declared === 'none') return { spend: 'none', why: 'Runs inline on its trigger — no agent spawn' };
+    return { spend: 'unknown', why: null };
+  }
+  return { spend: 'none', why: `Host ${row.source} machinery — runs inline, no agent spawn seam` };
+}
+
+/**
+ * Collapse per-pot fan-out: one row per (name, kind), carrying every install.
+ *
+ * `git-sync` is ONE routine installed on 19 pots; `green-checkpoint` on 14;
+ * `cross-hive-outbox-drain` on 13; `hive-wake` on 16. Listed per-install they were
+ * 60+ peer rows of four things, which is most of why the pane read as a wall.
+ *
+ * The collapsed row reports the UNION honestly: active if ANY install is active,
+ * the worst liveness across installs (so one stalled pot cannot hide behind
+ * fifteen healthy ones), the most recent fire, and the earliest next fire. Loops
+ * are deliberately NOT collapsed — each is a distinct session's loop and its name
+ * is already unique.
+ */
+export function collapseFanOut(rows: readonly AutomationRoutine[]): AutomationRoutine[] {
+  const byKey = new Map<string, AutomationRoutine[]>();
+  for (const r of rows) {
+    const key = `${r.kind} ${r.name}`;
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(r);
+    else byKey.set(key, [r]);
+  }
+
+  const worst = (xs: readonly AutomationRoutine[]): RoutineLiveness =>
+    xs.some((x) => x.liveness === 'stalled')
+      ? 'stalled'
+      : xs.some((x) => x.liveness === 'running')
+        ? 'running'
+        : 'dormant';
+
+  const maxIso = (xs: Array<string | null>): string | null =>
+    xs.filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
+  const minIso = (xs: Array<string | null>): string | null =>
+    xs.filter((x): x is string => Boolean(x)).sort().at(0) ?? null;
+
+  const out: AutomationRoutine[] = [];
+  for (const group of byKey.values()) {
+    const head = group[0]!;
+    if (group.length === 1) {
+      out.push(head);
+      continue;
+    }
+    const active = group.some((g) => g.active);
+    const liveness = worst(group);
+    out.push({
+      ...head,
+      active,
+      liveness,
+      needsAttention: routineNeedsAttention({
+        liveness,
+        control: head.control,
+        active,
+        spend: head.spend,
+      }),
+      // Sorted so the row is stable across reads regardless of SQL ordering.
+      installs: group.map((g) => g.installSlug).sort(),
+      lastFiredAt: maxIso(group.map((g) => g.lastFiredAt)),
+      nextFireAt: minIso(group.map((g) => g.nextFireAt)),
+      // Controllable only if every install is — a partially-controllable row would
+      // offer a switch that silently misses some pots.
+      controllable: group.every((g) => g.controllable),
+    });
+  }
+  return out;
+}
+
 export async function getAutomationCatalog(): Promise<AutomationCatalog> {
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
   const iso = (d: Date | null | undefined): string | null =>
     d && !Number.isNaN(new Date(d).getTime()) ? new Date(d).toISOString() : null;
 
+  // The LEFT JOIN on coord_presence is what lets a stalled loop EXPLAIN itself: a
+  // `loop-<ownerId>` row whose owning session last spoke five days ago is stalled
+  // *because the owner is gone*, and that sentence is the whole reason the row is
+  // actionable rather than mysterious.
   const rows = await sql<
     Array<{
       name: string;
       install_slug: string;
       group_slug: string | null;
       trigger_config: Record<string, unknown> | null;
+      target_role: string | null;
+      target_owner_id: string | null;
+      reschedule_interval_sec: number | null;
       active: boolean;
       last_fired_at: Date | null;
       next_fire_at: Date | null;
+      owner_last_active_at: Date | null;
     }>
   >`
-    SELECT name, install_slug, group_slug, trigger_config, active, last_fired_at, next_fire_at
-      FROM harness_shared.routines
-     WHERE workspace_id = ${ws}
-     ORDER BY active DESC, name ASC`;
+    SELECT r.name, r.install_slug, r.group_slug, r.trigger_config, r.target_role,
+           r.target_owner_id, r.reschedule_interval_sec, r.active,
+           r.last_fired_at, r.next_fire_at,
+           p.last_active_at AS owner_last_active_at
+      FROM harness_shared.routines r
+      LEFT JOIN harness_shared.coord_presence p
+             ON p.owner_id = r.target_owner_id
+            AND p.workspace_id = r.workspace_id
+     WHERE r.workspace_id = ${ws}
+     ORDER BY r.active DESC, r.name ASC`;
 
   const routines: AutomationRoutine[] = rows.map((r) => {
     const cron = typeof r.trigger_config?.cron === 'string' ? (r.trigger_config.cron as string) : null;
+    const kind = routineKind({ name: r.name });
+    const spend = spendForTargetRole(r.target_role);
+    const active = r.active === true;
+    // A row is clock-driven when something schedules its next fire: a cron, or a
+    // loop's reschedule interval. Only such a row can be STALLED — a row with no
+    // clock has no next fire by design.
+    const clockDriven = Boolean(cron) || r.reschedule_interval_sec != null;
+    const liveness = routineLiveness({ active, nextFireAt: iso(r.next_fire_at), clockDriven });
+    const control: RoutineControl = 'routine';
     return {
       name: r.name,
       installSlug: r.install_slug,
       group: r.group_slug,
       category: classifyRoutine(r.name, r.group_slug),
       cron,
-      cadence: cronCadence(cron),
-      active: r.active === true,
-      spawnsAgent: routineSpawnsAgent(r.name),
+      cadence: cronCadence(cron) ?? loopCadence(r.reschedule_interval_sec),
+      active,
+      spend,
+      spendWhy: spendReasonForTargetRole(r.target_role),
+      spawnsAgent: spend === 'llm',
+      kind,
+      family: routineFamily(r.name, kind),
+      liveness,
+      control,
+      needsAttention: routineNeedsAttention({ liveness, control, active, spend }),
+      installs: [r.install_slug],
+      ownerId: r.target_owner_id,
+      ownerLastActiveAt: iso(r.owner_last_active_at),
+      triggerLabel: null,
       lastFiredAt: iso(r.last_fired_at),
       nextFireAt: iso(r.next_fire_at),
       source: 'routines' as const,
@@ -306,27 +480,60 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
     const inventory = await collectScheduleInventory();
     external = inventory
       .filter((row) => row.source !== 'routines')
-      .map((row) => ({
-        name: row.name,
-        installSlug: row.installSlug ?? row.source,
-        group: row.groupSlug,
-        category: classifyRoutine(row.name, row.groupSlug),
-        cron: null,
-        cadence: row.cadence || null,
+      .map((row) => {
+        // `sync-triggered` rows (doc-freshness-sweep, doc-steward-dispatch) fire on
+        // an EVENT, not a clock — they are function calls at the end of git-sync.
+        // Calling them "schedules" is what produced the padlock with the false
+        // tooltip "runs as an in-process schedule"; they get their own kind and
+        // name their trigger instead of faking a cadence.
+        const syncTriggered = row.category === 'sync-triggered';
+        const kind = routineKind({ name: row.name, syncTriggered });
         // `armed` is null for sources that cannot report it; treat unknown as
         // running, because claiming a live sweep is "off" is the worse error.
-        active: row.armed !== false,
-        spawnsAgent: routineSpawnsAgent(row.name),
-        lastFiredAt: row.lastFire,
-        nextFireAt: row.nextFire,
-        source: row.source,
-        controllable: false,
-      }));
+        const active = row.armed !== false;
+        const { spend, why: spendWhy } = inventorySpend(row);
+        // Only a routines row has a `routines:set` switch. A sync-triggered sweep
+        // whose armed state comes from a feature flag has a REAL switch — the flag —
+        // so it is `flag`, not an inert padlock. Everything else is genuinely
+        // uncontrollable from here and says so with its source.
+        const control: RoutineControl =
+          typeof row.detail?.flag === 'string' ? 'flag' : 'none';
+        const liveness = routineLiveness({
+          active,
+          nextFireAt: row.nextFire,
+          clockDriven: kind !== 'triggered' && Boolean(row.nextFire || row.cadence),
+        });
+        return {
+          name: row.name,
+          installSlug: row.installSlug ?? row.source,
+          group: row.groupSlug,
+          category: classifyRoutine(row.name, row.groupSlug),
+          cron: null,
+          cadence: syncTriggered ? null : row.cadence || null,
+          active,
+          spend,
+          spendWhy,
+          spawnsAgent: spend === 'llm',
+          kind,
+          family: routineFamily(row.name, kind),
+          liveness,
+          control,
+          needsAttention: routineNeedsAttention({ liveness, control, active, spend }),
+          installs: [row.installSlug ?? row.source],
+          ownerId: null,
+          ownerLastActiveAt: null,
+          triggerLabel: syncTriggered ? row.cadence || 'on an event' : null,
+          lastFiredAt: row.lastFire,
+          nextFireAt: row.nextFire,
+          source: row.source,
+          controllable: false,
+        };
+      });
   } catch {
     external = [];
   }
 
-  const allRoutines = [...routines, ...external];
+  const allRoutines = collapseFanOut([...routines, ...external]);
 
   const categories: AutomationCategorySummary[] = AUTOMATION_CATEGORIES.map((category) => {
     const inCat = allRoutines.filter((x) => x.category === category);
