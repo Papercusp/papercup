@@ -41,6 +41,11 @@ async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | 
       available: rows.filter((r) => r.available).length,
       // A truly-usable account can serve AND is not in an edge-throttle cooldown (a bare-429/IP wall).
       usable: rows.filter((r) => r.available && !r.edgeThrottled).length,
+      // EI-18664933641195210: break out WHY unusable accounts are unusable, so a poolExhausted advice
+      // can name egress-throttle (owner-infra) vs usage-wall (just wait) instead of lumping both into
+      // one vague "walled/rate-paused/edge-throttled" phrase that reads as generic quota exhaustion.
+      edgeThrottledCount: rows.filter((r) => r.edgeThrottled).length,
+      usageWalledCount: rows.filter((r) => r.usageWalled).length,
     };
   } catch {
     return undefined;

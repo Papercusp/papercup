@@ -517,6 +517,13 @@ window-geometry step breaks. Two fixes:
    `screenshot --selector ... --title Papercusp -o out.png` (the tool takes
    `-t, --title <regex>`; `Papercusp` matches the X11 title regardless of
    the dynamic `document.title`).
+   - **Or just pass `--pid` and nothing else** (EI-18662939265185207): a
+     local patch now resolves the window by PID (`xdotool search --pid`,
+     on the target's own DISPLAY) automatically whenever `--title`/
+     `--window-id` are both omitted — no more title guessing. See
+     [tauri-agent-tools-screenshot-resolves-window-by-pid](/internal/docs/agent-insights/tauri-agent-tools-screenshot-resolves-window-by-pid)
+     for the fix and why it's a **local, reinstall-losable** patch (the
+     `--help` output names the EI if you need to reapply it).
 2. **Prefer the bridge-based layout check** — it does no window lookup at
    all, so it cannot hit this trap. `@papercusp/tauri-verify`'s
    `verify.layout()` measures the same facts a layout screenshot proves

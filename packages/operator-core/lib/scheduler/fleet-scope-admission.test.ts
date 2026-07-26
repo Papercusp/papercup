@@ -719,6 +719,96 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
   });
 
+  // EI-18663622382734446: a claim-spec that matches ZERO rows is indistinguishable from a
+  // drained queue at the member's end unless fleetScopedMiss names the case loudly. Live
+  // incident: spec `p2p-release-lane@8` matched 0 of 1250 rows for 4.5h while two members
+  // separately, in good faith, reported "floor-gated, not a spec bug" — because the miss they
+  // could actually observe (windDown:true, a bare message) is the SAME shape a genuine drain
+  // produces. These tests assert the zero-match case gets its own loud, escalate-worthy shape.
+  describe('EI-18663622382734446: a spec matching ZERO rows is named loudly, never folded into a bare drain', () => {
+    const issueScope = {
+      ownerId: 'su-member',
+      fleetSlug: 'p2p-release',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'p2p-release-lane',
+          revision: 8,
+          view: { filter: { field: 'plan', op: '=' as const, value: 'p2p-release' } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+          states: ['open'],
+        },
+        revision: 1,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+
+    const zeroMatchBreakdown = {
+      matchedByFilter: 0,
+      claimable: 0,
+      excluded: {
+        taken: 0,
+        claimHold: 0,
+        needsHuman: 0,
+        observationLane: 0,
+        externalBlocker: 0,
+        planLaneReserved: 0,
+        federationDetector: 0,
+        loopNoise: 0,
+        alreadyCompleted: 0,
+        crossMachineRig: 0,
+        blockedDep: 0,
+        cooldown: 0,
+      },
+    };
+
+    it('sets a distinct top-level reason + loud error + escalate advice, but still windDown:true (correct to stop pulling)', () => {
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: zeroMatchBreakdown });
+      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
+      expect(miss.error).toMatch(/ESCALATE to your fleet leader NOW/);
+      expect(miss.advice).toMatch(/ESCALATE to your fleet leader NOW/);
+      expect(miss.advice).toMatch(/spec_matches_nothing/);
+      expect(miss.excludedBreakdown).toEqual(zeroMatchBreakdown);
+      // The old (pre-fix) summary text actively said the OPPOSITE of the truth for this case
+      // ("not a scope/spec bug — re-authoring the claim spec will not help"); assert it is gone.
+      expect(miss.excludedBreakdownSummary).not.toMatch(/re-authoring the claim spec will not help/);
+      expect(miss.excludedBreakdownSummary).toMatch(/SPEC ITSELF is the problem/);
+    });
+
+    it('is mutually exclusive with the divergent (claim-path bug) case by construction', () => {
+      // divergent requires claimable > 0, which cannot coexist with matchedByFilter === 0
+      // (claimable is a subset of matchedByFilter) — assert the miss never claims both.
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: zeroMatchBreakdown });
+      expect(miss.error).not.toMatch(/CLAIM-PATH\/READ-PATH DIVERGENCE/);
+    });
+
+    it('a paused miss suppresses specEmpty just like every other breakdown-derived signal', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        pausedReason: 'owner pause',
+        issueBreakdown: zeroMatchBreakdown,
+      });
+      expect(miss.paused).toBe(true);
+      expect(miss.reason).toBeUndefined();
+      expect(miss.excludedBreakdown).toBeUndefined();
+    });
+
+    it('cooldown never masks specEmpty — a truly empty spec takes precedence in the error/advice', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        cooldownDiag: { cooldownExcluded: 1, earliestExpiryMs: Date.now() + 5_000, earliestRowId: 'WI-1' },
+        issueBreakdown: zeroMatchBreakdown,
+      });
+      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
+      expect(miss.advice).toMatch(/ESCALATE to your fleet leader NOW/);
+    });
+  });
+
   // EI-18666093519248020: the INVARIANT behind the four recurrences of the claim-path/read-path
   // divergence class (EI-10062 -> WI-4309 -> WI-5275 -> WI-5822). Each was a different way for the
   // claim path's narrowing to diverge from the spec filter; each surfaced to members as

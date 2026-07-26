@@ -248,6 +248,37 @@ test('EI-12282 — gateway reports spare bee slots but the REAL account pool is 
   assert.equal(r.throttled, true);
   assert.match(r.advice, /EXHAUSTED/);
   assert.match(r.advice, /0\/7 claude accounts are usable/);
+  // No edge/usage-wall breakdown supplied on this fixture ⇒ unchanged generic phrasing, no dominant-cause clause.
+  assert.doesNotMatch(r.advice, /DOMINANT CAUSE/);
+});
+
+test('EI-18664933641195210 — poolExhausted names EGRESS-THROTTLE as the dominant cause (owner-infra, not quota)', () => {
+  // The real incident this regression pins: every account looked "walled/rate-paused/edge-throttled" in the
+  // generic phrasing, which reads as ordinary quota exhaustion — but the actual cause was three DOWN forward
+  // proxies forcing every account onto one already-throttled shared IP. The breakdown must say so loudly.
+  const hr = {
+    reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+  };
+  const accountAvailability = { provider: 'claude', total: 5, available: 2, usable: 0, edgeThrottledCount: 5, usageWalledCount: 1 };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.poolExhausted, true);
+  assert.match(r.advice, /EXHAUSTED/);
+  assert.match(r.advice, /DOMINANT CAUSE/);
+  assert.match(r.advice, /5\/5 edge-throttled/);
+  assert.match(r.advice, /OWNER-GATED/, 'egress-throttle dominant ⇒ points at owner-provisioned infra, not a quota wait');
+});
+
+test('EI-18664933641195210 — poolExhausted names USAGE-WALL as the dominant cause (just wait, no infra escalation)', () => {
+  const hr = {
+    reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+  };
+  const accountAvailability = { provider: 'claude', total: 5, available: 0, usable: 0, edgeThrottledCount: 0, usageWalledCount: 5 };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.poolExhausted, true);
+  assert.match(r.advice, /dominant cause: 5\/5 usage-walled/);
+  assert.doesNotMatch(r.advice, /OWNER-GATED/, 'usage-wall dominant ⇒ no infra escalation language');
 });
 
 test('EI-12282 — poolExhausted does NOT fire when real accounts ARE usable (no false alarm)', () => {

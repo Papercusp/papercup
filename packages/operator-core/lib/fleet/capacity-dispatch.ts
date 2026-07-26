@@ -57,6 +57,21 @@ export interface AccountPoolAvailability {
   usable: number;
   /** Total accounts considered for the provider. */
   total: number;
+  /**
+   * How many accounts are edge-throttled (a live Cloudflare/per-IP bare-429 cooldown — the egress-IP
+   * locus, NOT the account's own usage window). WI-5785-adjacent (EI-18664933641195210): when this is
+   * the dominant reason accounts are unusable, the real fault is almost always the shared/failed egress
+   * path (a down forward-proxy forcing every account onto one throttled IP), not account quota — an
+   * OWNER-GATED infra problem, not something waiting-for-reset fixes. Optional: omit to skip the
+   * distinction (byte-identical advice to before this field existed).
+   */
+  edgeThrottledCount?: number;
+  /**
+   * How many accounts are genuinely usage-walled (5h/7d utilization at/over cap — the account's OWN
+   * budget window, unrelated to egress). When THIS dominates, the fix is "wait for reset" or "add
+   * accounts", not an infra fix. Optional, same fail-safe-omit contract as `edgeThrottledCount`.
+   */
+  usageWalledCount?: number;
 }
 
 export interface CapacityDispatchConfig {
@@ -392,10 +407,34 @@ export function buildCapacityReport(
     }
   }
 
+  // EI-18664933641195210: name the DOMINANT cause of the exhaustion when the caller supplied the
+  // edge-throttle / usage-wall breakdown — the two causes need OPPOSITE operator responses
+  // (egress-throttle ⇒ escalate to the owner about the proxy/egress path; usage-wall ⇒ just wait
+  // for the reset), and a bare "walled/rate-paused/edge-throttled" phrase reads as generic quota
+  // exhaustion either way, which sent a real egress-proxy outage down the wrong (quota) diagnosis.
+  const exhaustionCause = ((): string | null => {
+    if (!poolExhausted) return null;
+    const edge = acct!.edgeThrottledCount ?? 0;
+    const wall = acct!.usageWalledCount ?? 0;
+    if (edge === 0 && wall === 0) return null; // no breakdown supplied → unchanged generic phrasing
+    if (edge > 0 && edge >= wall) {
+      return (
+        ` — DOMINANT CAUSE: ${edge}/${acct!.total} edge-throttled (a live per-IP/Cloudflare bare-429 ` +
+        `cooldown, NOT account quota). This usually means the egress path itself is broken (a down/` +
+        `unreachable forward-proxy forcing accounts onto one shared, already-throttled IP) — an ` +
+        `OWNER-GATED infra issue (egress proxies are owner-provisioned), not something that clears on ` +
+        `its own; escalate rather than waiting for a quota reset.`
+      );
+    }
+    return (
+      ` — dominant cause: ${wall}/${acct!.total} usage-walled (their own 5h/7d budget window is at cap) ` +
+      `→ this clears on the window reset; adding accounts or waiting is the fix, no infra escalation needed.`
+    );
+  })();
   const advice = restartRecovering
     ? `gateway restarting (uptime ${Math.round((hr.processUptimeMs ?? 0) / 1000)}s) → startup capacity snapshot is recovering; place at normal ceiling and re-check next wake`
     : poolExhausted
-    ? `pool EXHAUSTED: gateway reports ~${dispatchBudget ?? 0} bee slots but ${acct!.usable}/${acct!.total} ${acct!.provider ?? 'claude'} accounts are usable (rest walled/rate-paused/edge-throttled) → HOLD placements; dispatchBudget is a QUEUE figure, not real inference capacity (fresh spawns will die on their first call)`
+    ? `pool EXHAUSTED: gateway reports ~${dispatchBudget ?? 0} bee slots but ${acct!.usable}/${acct!.total} ${acct!.provider ?? 'claude'} accounts are usable (rest walled/rate-paused/edge-throttled) → HOLD placements; dispatchBudget is a QUEUE figure, not real inference capacity (fresh spawns will die on their first call)${exhaustionCause ?? ''}`
     : poolBlocked
     ? 'pool SATURATED (paused/rejected) → place ONLY top-ranked tier-1 work; hold bee batch until it recovers'
     : factor <= 0.25

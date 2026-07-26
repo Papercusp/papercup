@@ -450,6 +450,24 @@ are cwd-relative, and the same-looking command can silently select zero files.
 Pass additional Vitest flags after a second `--`, e.g.
 `npm run test:file -- path/to/file.test.ts -- --reporter=verbose`.
 
+**`npm install`/`npm ci` on this shared tree is a mutation every OTHER concurrent
+agent can see mid-flight — serialize it, never run it bare.** `node_modules` is
+unsynchronized global mutable state: one agent's install rewrites `node_modules/.bin`
+out from under every other agent's test run (`vitest: not found` / a bare
+`ERR_MODULE_NOT_FOUND` into `node_modules` — neither error names the real cause), and
+two OVERLAPPING installs can leave a package durably HALF-WRITTEN (e.g. a `dist/`
+with only `.d.ts` files, zero `.js` — not a version-resolution problem, does not
+self-heal) (EI-18662389554660036). Always run **`npm run install:safe`** (passes
+through to `npm install` by default; `node scripts/npm-install-safe.mjs ci` /
+`... install --legacy-peer-deps` for other subcommands) instead of a bare `npm
+install`/`npm ci` — it serializes concurrent installs across every agent process on
+the host via a filesystem mutex (`scripts/lib/fs-mutex.mjs`, keyed off the repo
+root's real/symlink-resolved path) before the rest of the tree ever sees a rewrite.
+If a test run ever fails with the signature above, another agent is very likely
+mid-install right now — `npm run test:file` detects it and prints a
+`TEST_FILE_MID_INSTALL_SUSPECTED` hint instead of leaving you to chase a phantom bug;
+wait for it to finish (or check `ps aux | grep 'npm install'`) and retry.
+
 ## Browser checks — use `verdict`
 
 Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
