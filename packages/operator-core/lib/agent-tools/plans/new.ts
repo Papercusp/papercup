@@ -341,6 +341,10 @@ export default defineTool({
         const rows = await listPlanIndexRows({
           ...(harnessSlug ? { harnessSlug } : {}),
           includeArchived: true,
+          // Dedup matches on slug/title only (findSimilarPlans' row type is literally
+          // {planSlug,title,status,archived}), so skip the items detoast entirely — it is
+          // ~2/3 of this query's cost (P-006).
+          includeItems: false,
         });
         let similar: Array<SimilarPlan & { similarity?: number }> = findSimilarPlans(
           dedupTokens(slug, args.title),

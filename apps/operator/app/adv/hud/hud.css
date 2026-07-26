@@ -589,6 +589,20 @@
 
 .hud__state--error { color: var(--bad); }
 
+/* A caveat about what the board could NOT load. Sits above the columns and,
+   unlike the empty-state, renders even when there are cards — so it needs to
+   read as a qualifier on them, not as a replacement for them: left-aligned and
+   boxed rather than centred like the full-surface states. */
+.hud__state--notice {
+  padding: 8px 10px;
+  margin: 0 0 8px;
+  text-align: left;
+  color: var(--warn);
+  background: rgb(from var(--warn) r g b / 0.08);
+  border: 1px solid rgb(from var(--warn) r g b / 0.25);
+  border-radius: 6px;
+}
+
 /* A five-column grid does not convey its counts linearly, and the counts ARE
    the point of the board — so the live summary is announced. globals.css has no
    sr-only utility, so it is defined here rather than assumed. */

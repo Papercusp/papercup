@@ -110,6 +110,22 @@ export interface HudEntityColumnsProps {
   emptyLabel: string;
   /** Noun for the search placeholder + filtered-empty message ("plans"). */
   noun: string;
+  /**
+   * A caveat about what the board is showing, rendered ABOVE the columns and —
+   * critically — independently of whether there are cards.
+   *
+   * `emptyLabel` cannot serve this role: it only renders on the `total === 0`
+   * branch, so a board that loaded NOTHING but still has cards from another
+   * source silently reads as complete. That is not hypothetical — the Work
+   * items tab gates its read on a resolved harness, and the unattributed asks
+   * folded into needs-you kept `total` above zero, so a session with no harness
+   * showed 146 "work items", none of which were work items, with nothing on
+   * screen saying why (verified live 2026-07-26).
+   *
+   * Same principle as the per-column "+N more": a board that cannot show you
+   * everything has to SAY so, or every count on it becomes untrustworthy.
+   */
+  notice?: string | null;
 }
 
 export default function HudEntityColumns({
@@ -122,6 +138,7 @@ export default function HudEntityColumns({
   error,
   emptyLabel,
   noun,
+  notice = null,
 }: HudEntityColumnsProps) {
   const visibleColumns = focusColumn
     ? board.columns.filter((c) => c.id === focusColumn)
@@ -166,6 +183,14 @@ export default function HudEntityColumns({
 
         <span className="hud__spacer" />
       </div>
+
+      {/* Outside the branch below on purpose: a caveat about what could not be
+          loaded has to survive the board having cards anyway. */}
+      {notice ? (
+        <p className="hud__state hud__state--notice" role="status">
+          {notice}
+        </p>
+      ) : null}
 
       {error ? (
         <p className="hud__state hud__state--error">Could not read {noun}: {error}</p>

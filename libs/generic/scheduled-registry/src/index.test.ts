@@ -243,3 +243,81 @@ describe('managedSetInterval / listManaged', () => {
     expect(row.lastFireAt).toBe(8_000); // most-recent across instances
   });
 });
+
+/**
+ * P-011 (stop-discarded-dedup-and-audit-server-polling-2026-07-26): the D-004 push-don't-poll
+ * `classification` a call site declares must actually reach the INVENTORY — that is the whole
+ * point of the field. `lint:timer-classification` enforces that new call sites DECLARE one;
+ * nothing below it proved the declared value is stored, defaulted, or aggregated correctly.
+ */
+describe('timer classification (P-011 / D-004)', () => {
+  it('records a declared classification on the entry and surfaces it in the inventory', () => {
+    harness();
+    managedSetInterval('system-health', 30_000, () => undefined, {
+      category: 'global-sweep',
+      classification: 'violation',
+    });
+
+    expect(listManaged()[0].classification).toBe('violation');
+    expect(getManaged('system-health')?.classification).toBe('violation');
+  });
+
+  it('defaults to null when the call site omits one (a site the shrink-only lint BASELINE still grandfathers)', () => {
+    harness();
+    managedSetInterval('legacy-sweep', 1000, () => undefined, { category: 'global-sweep' });
+
+    // null, NOT undefined: the inventory column is always present, so a grandfathered
+    // site reads as "not yet classified" rather than as a missing field.
+    expect(getManaged('legacy-sweep')?.classification).toBeNull();
+  });
+
+  it.each(['must-sample', 'timeout-reaper', 'violation'] as const)(
+    'round-trips the %s verdict unchanged',
+    (verdict) => {
+      harness();
+      managedSetInterval(`t-${verdict}`, 1000, () => undefined, {
+        category: 'global-sweep',
+        classification: verdict,
+      });
+      expect(getManaged(`t-${verdict}`)?.classification).toBe(verdict);
+    },
+  );
+
+  it('instanced aggregation adopts a later instance classification when the first declared none', () => {
+    harness();
+    // Per-connection timers are armed from one call site, but an UNCLASSIFIED arm must not
+    // mask a classified sibling — otherwise the inventory row reports "unclassified" for a
+    // timer that was in fact classified, and the audit under-counts.
+    managedSetInterval('ws-keepalive', 20_000, () => undefined, { category: 'lifecycle', instanced: true });
+    managedSetInterval('ws-keepalive', 20_000, () => undefined, {
+      category: 'lifecycle',
+      instanced: true,
+      classification: 'must-sample',
+    });
+
+    const row = getManaged('ws-keepalive')!;
+    expect(row.instances).toBe(2);
+    expect(row.classification).toBe('must-sample');
+  });
+
+  it('instanced aggregation is FIRST-WINS: a later differing classification does not overwrite one already set', () => {
+    harness();
+    managedSetInterval('mixed', 20_000, () => undefined, {
+      category: 'lifecycle',
+      instanced: true,
+      classification: 'must-sample',
+    });
+    managedSetInterval('mixed', 20_000, () => undefined, {
+      category: 'lifecycle',
+      instanced: true,
+      classification: 'violation',
+    });
+
+    // Pinning the documented intent of the `g.classification == null` guard in listManaged():
+    // instances of ONE name are the same call site, so a disagreement is a code bug, not a
+    // state to merge. First-wins keeps the row stable rather than order-dependent-looking;
+    // if divergent classifications per name ever become legitimate, THIS test is the one to
+    // revisit deliberately.
+    expect(getManaged('mixed')?.classification).toBe('must-sample');
+  });
+});

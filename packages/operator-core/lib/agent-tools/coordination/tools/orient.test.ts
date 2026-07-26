@@ -754,6 +754,132 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(r.ok).toBe(true);
       expect(r.leaderBrief).toBeNull();
     });
+
+    // ── EI-18731216945970087: presence/registry leadership DRIFT ──
+    describe('presence/registry drift recovery (EI-18731216945970087)', () => {
+      it('presence resolves NO fleet, but the registry says the caller leads one: leaderBrief still folds + a LOUD presenceDrift is reported', async () => {
+        const { call, calls } = fakeCall({
+          ...CORE,
+          'fleet:leader-brief': () => LEADER_BRIEF_RESULT,
+        });
+        const presenceDriftCheck = vi.fn(async () => 'mail-retirement');
+        const r = await composeOrient(
+          { mode: 'monitor' },
+          call,
+          'su-leader',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          // presence itself found NO fleet — the exact reported failure shape.
+          { fleetSlug: null, fleetRole: null },
+          undefined,
+          undefined,
+          presenceDriftCheck,
+        );
+        expect(presenceDriftCheck).toHaveBeenCalledTimes(1);
+        expect(r.leaderBrief).toMatchObject({
+          ...LEADER_BRIEF_RESULT,
+          claimSpec: null,
+        });
+        expect(r.presenceDrift).toEqual({
+          fleet: 'mail-retirement',
+          note: expect.stringContaining('PRESENCE DRIFT'),
+        });
+        expect(calls.find((c) => c.name === 'fleet:leader-brief')?.args).toMatchObject({
+          fleet: 'mail-retirement',
+        });
+      });
+
+      it('the registry AGREES the caller leads nothing: no drift reported, no leaderBrief fold, presenceDriftCheck still only fires once', async () => {
+        const { call, calls } = fakeCall({ ...CORE });
+        const presenceDriftCheck = vi.fn(async () => null);
+        const r = await composeOrient(
+          { mode: 'monitor' },
+          call,
+          'su-1',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { fleetSlug: null, fleetRole: null },
+          undefined,
+          undefined,
+          presenceDriftCheck,
+        );
+        expect(presenceDriftCheck).toHaveBeenCalledTimes(1);
+        expect(r.presenceDrift).toBeUndefined();
+        expect(r.leaderBrief).toBeUndefined();
+        expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
+      });
+
+      it('presence ALREADY resolved a fleet (member or leader): the drift check never runs — no extra round-trip on the common path', async () => {
+        const { call } = fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT });
+        const presenceDriftCheck = vi.fn(async () => 'some-other-fleet');
+        await composeOrient(
+          { mode: 'monitor' },
+          call,
+          'su-member',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { fleetSlug: 'p2p-git', fleetRole: 'member' },
+          undefined,
+          undefined,
+          presenceDriftCheck,
+        );
+        expect(presenceDriftCheck).not.toHaveBeenCalled();
+      });
+
+      it('FULL mode never runs the drift check, even with no resolvable fleet', async () => {
+        const { call } = fakeCall({ ...CORE });
+        const presenceDriftCheck = vi.fn(async () => 'mail-retirement');
+        const r = await composeOrient(
+          {},
+          call,
+          'su-leader',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { fleetSlug: null, fleetRole: null },
+          undefined,
+          undefined,
+          presenceDriftCheck,
+        );
+        expect(presenceDriftCheck).not.toHaveBeenCalled();
+        expect(r.presenceDrift).toBeUndefined();
+      });
+
+      it('a throwing presenceDriftCheck degrades silently — never breaks orientation, no leaderBrief', async () => {
+        const { call } = fakeCall({ ...CORE });
+        const presenceDriftCheck = vi.fn(async () => {
+          throw new Error('registry down');
+        });
+        const r = await composeOrient(
+          { mode: 'monitor' },
+          call,
+          'su-leader',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { fleetSlug: null, fleetRole: null },
+          undefined,
+          undefined,
+          presenceDriftCheck,
+        );
+        expect(r.ok).toBe(true);
+        expect(r.presenceDrift).toBeUndefined();
+        expect(r.leaderBrief).toBeUndefined();
+      });
+    });
   });
 
   // ── P-002 / D-001: queen-loop steering is withheld from a RESPONSIVE caller's recall ──

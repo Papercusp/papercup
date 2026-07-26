@@ -18,6 +18,10 @@
 import { useMemo } from "react";
 import { useQueryState, parseAsString } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
+// The shared design primitive — a bare `title=` on a <button> is blocked by
+// app/_lints/design-primitives.test.ts ("blocks title-only tooltips on
+// buttons"): it is invisible to keyboard/touch users and unstyled.
+import { Tooltip } from "@/app/harness/Tooltip";
 import type { ReleaseReadinessSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-release-readiness-read";
 import type { ImprovementDigest } from "@papercusp/operator-core/lib/harness/improvements/digest";
 import type { RetainExtrasSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-retain-read";
@@ -161,17 +165,17 @@ export default function LearningLoopFace() {
             </h3>
             <div className="pc-lf__loop">
               {STAGE_LINKS.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`pc-lf__node${derived.bottleneck === s.id ? " is-hot" : ""}`}
-                  onClick={() => open(s.lview)}
-                  title={`Open Learning → ${s.label}`}
-                >
-                  <span className="pc-lf__nk">{s.label}</span>
-                  <span className="pc-lf__nv">{nodeValue(s.id)}</span>
-                  <span className="pc-lf__ns">{nodeSub(s.id)}</span>
-                </button>
+                <Tooltip key={s.id} label={`Open Learning → ${s.label}`}>
+                  <button
+                    type="button"
+                    className={`pc-lf__node${derived.bottleneck === s.id ? " is-hot" : ""}`}
+                    onClick={() => open(s.lview)}
+                  >
+                    <span className="pc-lf__nk">{s.label}</span>
+                    <span className="pc-lf__nv">{nodeValue(s.id)}</span>
+                    <span className="pc-lf__ns">{nodeSub(s.id)}</span>
+                  </button>
+                </Tooltip>
               ))}
             </div>
             {derived.bottleneckNote ? (
@@ -189,13 +193,15 @@ export default function LearningLoopFace() {
               Release readiness{" "}
               <span className="pc-lf__hn">{derived.verdict ?? "unreadable"}</span>
             </h3>
-            <button type="button" className="pc-lf__meterbtn" onClick={() => open("benchmark")} title="Open Learning → Verify">
-              <span className="pc-lf__meter" role="img" aria-label={`${derived.passed} of ${derived.bars.length} readiness bars pass`}>
-                {derived.bars.map((s, i) => (
-                  <span key={i} className={`pc-lf__seg pc-lf__seg--${s}`} />
-                ))}
-              </span>
-            </button>
+            <Tooltip label="Open Learning → Verify">
+              <button type="button" className="pc-lf__meterbtn" onClick={() => open("benchmark")}>
+                <span className="pc-lf__meter" role="img" aria-label={`${derived.passed} of ${derived.bars.length} readiness bars pass`}>
+                  {derived.bars.map((s, i) => (
+                    <span key={i} className={`pc-lf__seg pc-lf__seg--${s}`} />
+                  ))}
+                </span>
+              </button>
+            </Tooltip>
             {derived.ticks != null ? (
               <p className="pc-lf__note">
                 live window <strong>{derived.ticks} tick(s)</strong>
@@ -248,7 +254,9 @@ const LEARNING_FACE_CSS = `
 .pc-lf__node:hover, .pc-lf__node:focus-visible { background: color-mix(in srgb, var(--bg-raised), transparent 0%); outline: none; }
 .pc-lf__node.is-hot { box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.5); }
 .pc-lf__node.is-hot .pc-lf__nk { color: #34d399; }
-.pc-lf__nk { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-mute); }
+/* letter-spacing stays 0 — nonzero tracking is blocked by the design-primitive
+   lint (/internal/docs/design: stable type sizes, letter-spacing: 0). */
+.pc-lf__nk { font-size: 9px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute); }
 .pc-lf__nv { font: 700 15px ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--fg); }
 .pc-lf__ns { font-size: 9px; color: var(--fg-mute); }
 .pc-lf__note { margin: 0; font-size: 10.5px; color: var(--fg-mute); }

@@ -42,6 +42,44 @@ afterEach(() => {
   vi.doUnmock('../../../process-kill');
 });
 
+// ── P-012 / D-009: the guidance must not advertise reach the tool lacks ──
+//
+// killProcess() only signals kinds in KILLABLE; anything else alive comes back
+// `unsupported_kind`. The old guidance said "stop the runaway harness", which
+// is precisely the vitest/tsc/gate case it CANNOT kill — and the three error
+// codes mean three different things an agent must not conflate (a live process
+// reported absent was EI-18698120633403217).
+describe('processes:kill guidance matches what it can actually do', () => {
+  it('enumerates exactly the KILLABLE kinds', async () => {
+    const { default: tool } = await import('../kill');
+    const { KILLABLE } = await import('../../../process-kill');
+    const when = tool.guidance?.when ?? '';
+    for (const kind of KILLABLE) {
+      expect(when).toContain(kind);
+    }
+    // Protected-but-visible kinds must not read as killable.
+    expect(when).not.toMatch(/paperclip|\bnext\b/);
+  });
+
+  it('does not advertise killing build/test jobs, and says where they go instead', async () => {
+    const { default: tool } = await import('../kill');
+    const notWhen = tool.guidance?.notWhen ?? '';
+    expect(tool.guidance?.when ?? '').not.toMatch(/runaway harness/i);
+    expect(notWhen).toMatch(/vitest|tsc|build/i);
+    expect(notWhen).toContain('capability:bash');
+  });
+
+  it('distinguishes the three failure modes in its returns doc', async () => {
+    const { default: tool } = await import('../kill');
+    const returns = tool.guidance?.returns ?? '';
+    for (const code of ['pid_not_found', 'unsupported_kind', 'protected_kind']) {
+      expect(returns).toContain(code);
+    }
+    // The specific false claim this replaced: absent vs. merely-invisible.
+    expect(returns).toContain('EI-18698120633403217');
+  });
+});
+
 describe('processes:kill (bulk keyed-array, P-006)', () => {
   it('n=1 { pid }: passes pid + signal + actor + workspace through; one keyed result', async () => {
     const mock = vi.fn(async () => ({ ok: true, pid: 1234, kind: 'omp', signal: 'SIGTERM' }));

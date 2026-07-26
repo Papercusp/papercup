@@ -60,6 +60,43 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(r.stdout.trim()).toBe('ok');
   });
 
+  // WI-6140: green-checkpoint's greenCmd IS `npm run test:affected`, which now routes
+  // through this wrapper. The release gate must never QUEUE behind ad-hoc agent sweeps —
+  // it races a 60-min wall-clock reaper measured from workflow CREATION, so a slot wait
+  // (up to PC_HEAVY_TIMEOUT_SEC=900s) comes straight off that budget and resurfaces as a
+  // "stale routine" reap that reads as an infra flake.
+  it('exempts the release gate (GREEN_CHECKPOINT=1) from the semaphore entirely', () => {
+    // A slot dir path that does NOT exist yet but IS creatable: a non-exempt run would
+    // mkdir it and take a slot, so "never created" proves we exec'd before the slot
+    // machinery — and distinguishes this from the fail-open path below, which only
+    // triggers when the dir CANNOT be made.
+    const slots = join(dir, 'never-created');
+    const r = spawnSync('bash', [PC_HEAVY, 'bash', '-c', 'printf %s "$PC_HEAVY_BYPASS"'], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', PC_HEAVY_DIR: slots, GREEN_CHECKPOINT: '1' },
+      cwd: dir,
+      timeout: 30_000,
+    });
+    expect(r.status).toBe(0);
+    // still marked bypassed, so nested heavy children don't re-queue either
+    expect(r.stdout).toBe('1');
+    expect(existsSync(slots)).toBe(false);
+  });
+
+  it('still throttles an ordinary sweep when GREEN_CHECKPOINT is unset', () => {
+    // The other half of the invariant above: the exemption must be keyed to the release
+    // gate, not accidentally open to everyone.
+    const slots = join(dir, 'made-by-ordinary-run');
+    const r = spawnSync('bash', [PC_HEAVY, 'bash', '-c', 'echo ok'], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', PC_HEAVY_DIR: slots, PC_HEAVY_IONICE: '', PC_HEAVY_SLOTS: '2' },
+      cwd: dir,
+      timeout: 30_000,
+    });
+    expect(r.status).toBe(0);
+    expect(existsSync(slots)).toBe(true);
+  });
+
   it('runs unthrottled (fail-open) when the slot dir cannot be created', () => {
     const r = spawnSync('bash', [PC_HEAVY, 'bash', '-c', 'echo ran'], {
       encoding: 'utf8',

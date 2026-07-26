@@ -267,6 +267,17 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
             ? `No work items in ${harnessSlug}.`
             : 'Pick a harness to see its work items.'
         }
+        /* The read above is gated on a resolved harness, so with none the board
+           holds ONLY the unattributed asks — which still push `total` above
+           zero and therefore suppress `emptyLabel` entirely. Without this the
+           tab reads as a complete work-item board while containing no work
+           items at all (verified live 2026-07-26: 146 needs-you, zero of them
+           work items, no explanation on screen). Say what is missing. */
+        notice={
+          harnessSlug
+            ? null
+            : 'No harness is selected, so no work items could be loaded — these are asks that belong to no single harness. Pick a harness to see its work items.'
+        }
         noun="work items"
       />
     ) : null;

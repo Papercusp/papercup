@@ -831,19 +831,31 @@ export type PlanIndexRow = Omit<PlanRow, 'content'>;
  * PAYLOAD PROJECTION (db-performance-remediation-2026-07-26 P-006). This was the single
  * most expensive statement in the database: 1.84M calls over 16.5 days returning 730M
  * rows, 15.1% of ALL database time, at a ~298 ms mean. The plan was never the problem —
- * the table holds under 1000 rows and the scan takes 7 ms. The cost is DETOASTING and
- * SERIALIZING large jsonb that most callers never read (proved by re-running the query
- * with real output: 49.7 ms wide vs 4.5 ms narrow for identical rows).
+ * the table holds under 1000 rows and the scan itself takes 7 ms. The cost is DETOASTING
+ * and SERIALIZING large jsonb columns that most callers never read.
  *
- * So the heavy columns are now OPT-IN, and the default is the cheap shape:
- *   - `items` ships WITHOUT each item's `text` (74% of the column's bytes) unless
- *     `itemText: true`. Every structural field — id / status / importance / blockedBy /
- *     phase / decisionRefs — is still present, which is all the hot polling callers
- *     (system-health, pot/survey, scout) ever read. `plans:list` renders item prose, so
- *     it opts in.
- *   - `now_state` and `template_data` are omitted unless `heavyFields: true`; nothing on
- *     the LIST path reads them (template_data is only consumed by the single-plan
- *     mutation path). `now_next` stays — plans:list renders it as nextAction.
+ * Measured on the live hot query (same rows, real output, `\o /dev/null`):
+ *   full wide ...................................... ~80 ms
+ *   drop now_state + template_data ................. ~57 ms   <- the default here
+ *   also drop items ................................ ~19 ms   <- includeItems: false
+ *
+ * ⚠ A REJECTED optimization worth recording so nobody re-attempts it: projecting `items`
+ * with each element's `text` key stripped server-side (`jsonb_agg(e.value - 'text')`)
+ * removes 74% of the column's BYTES but measured ~88 ms — SLOWER than shipping it whole.
+ * Postgres must still detoast and re-parse the entire jsonb to rewrite it, and that CPU
+ * exceeds the serialization it saves. Byte count is not the cost model here; detoast is.
+ *
+ * Hence the two knobs, both defaulting to the cheap side:
+ *   - `now_state` / `template_data` are omitted unless `heavyFields: true`. Nothing on the
+ *     LIST path reads either (template_data is consumed only by the single-plan mutation
+ *     path). `now_next` stays — plans:list renders it as nextAction.
+ *   - `items` still ships by default because the hot polling callers (system-health,
+ *     pot/survey, scout) all read item status; a caller that needs none of it passes
+ *     `includeItems: false` and gets an empty array plus the ~3x speedup above.
+ *
+ * The residual cost is item detoast on a query called 1.84M times, which no column
+ * projection can remove — that is a CALL-COUNT problem, and belongs to the Phase 2
+ * precompute work (plan D-005), not here.
  */
 export async function listPlanIndexRows(
   opts: PlanSourceOpts & {
@@ -865,11 +877,12 @@ export async function listPlanIndexRows(
     updatedSince?: string;
     /** Row order: 'updated'/'created' = recency DESC, 'slug' (default) = slug ASC. */
     order?: 'updated' | 'created' | 'slug';
-    /** Ship each item's `text` too (P-006). Default false — structural fields only.
-     *  Only a caller that RENDERS item prose needs this. */
-    itemText?: boolean;
+    /** Ship the `items` jsonb (P-006). Default true — most callers read item status.
+     *  Pass false when you need none of it: detoasting items is ~2/3 of this query's
+     *  cost (~57 ms -> ~19 ms measured), and `items` then arrives as `[]`. */
+    includeItems?: boolean;
     /** Ship `now_state` + `template_data` (P-006). Default false — no LIST-path
-     *  consumer reads them. */
+     *  consumer reads them; omitting them measured ~80 ms -> ~57 ms. */
     heavyFields?: boolean;
   } = {},
 ): Promise<PlanIndexRow[]> {
@@ -900,11 +913,10 @@ export async function listPlanIndexRows(
             ? tx`ORDER BY created_at DESC NULLS LAST`
             : tx`ORDER BY plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
-      // P-006 payload projection (see the function docstring). `- 'text'` strips ONLY the
-      // prose from each element, keeping every structural field; WITH ORDINALITY + ORDER BY
-      // preserves item order, which the pot/survey plan-item DAG walk depends on; and a
-      // NULL items column still yields [] so `row.items.length` stays safe. The heavy
-      // fragment emits typed NULLs so the row shape (and rowFromDb) is identical either way.
+      // P-006 payload projection (see the function docstring for the measurements).
+      // includeItems:false yields an empty array rather than NULL so `row.items.length`
+      // stays safe; the heavy fragment emits typed NULLs so the row shape — and therefore
+      // rowFromDb — is identical whether or not the caller opted in.
       const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
         ? tx`now_state, template_data,`
@@ -1009,8 +1021,8 @@ export async function listPlanIndexRowsForWorkspace(
     updatedSince?: string;
     /** Row order: 'updated'/'created' = recency DESC, default = harness+slug ASC. */
     order?: 'updated' | 'created' | 'slug';
-    /** Ship each item's `text` too (P-006). Default false — structural fields only. */
-    itemText?: boolean;
+    /** Ship the `items` jsonb (P-006). Default true; false yields `[]` and is ~3x faster. */
+    includeItems?: boolean;
     /** Ship `now_state` + `template_data` (P-006). Default false. */
     heavyFields?: boolean;
   },

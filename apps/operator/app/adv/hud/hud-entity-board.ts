@@ -386,7 +386,7 @@ export function toWorkItemCard(item: HudWorkItemInput, nowMs: number): HudEntity
     badges.push({
       id: `${item.id}:sev`,
       label: item.severity,
-      tone: SEVERITY_TONE[item.severity.toLowerCase() as keyof typeof SEVERITY_TONE] ?? 'neutral',
+      tone: toBadgeTone(SEVERITY_TONE[item.severity.toLowerCase() as keyof typeof SEVERITY_TONE]),
     });
   }
   if (item.assignee) {

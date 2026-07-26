@@ -307,6 +307,15 @@ export interface OrientResult {
    *  (fleet-reliability-verification-2026-07-10 P-007). Absent for a non-leader / non-fleet
    *  caller, or in full mode; null on a failed fold. */
   leaderBrief?: unknown | null;
+  /** EI-18731216945970087: present ONLY when composeOrient caught a presence/registry
+   *  leadership DRIFT — the caller's presence row (coord_presence.fleet_slug/fleet_role)
+   *  showed no fleet at all on a monitor tick, but `harness_shared.agent_fleets
+   *  .leader_owner_id` (the durable registry fact) says they lead one. The
+   *  `leaderBrief` above is still folded for the recovered fleet — this field exists
+   *  so the drift itself is LOUD (never a silent leaderBrief omission) and so a
+   *  repeat caller knows their presence row is not settling. Absent on the (default)
+   *  agreeing path. */
+  presenceDrift?: { fleet: string; note: string };
   /** Monitor-mode fleet DELTA (fleet-deltas-leader-primitives P-004): what changed
    *  in the fleet since this caller's last monitor orient, diffed server-side
    *  against the (owner, 'fleet:monitor') read cursor — the caller carries nothing.
@@ -627,6 +636,8 @@ export async function composeOrient(
     // P-004: fold the mechanical owner-present bit when the handler resolved it (undefined ⇒
     // leg absent; the handler passes null on a read failure).
     ...(ownerPresent !== undefined ? { ownerPresent } : {}),
+    // EI-18731216945970087: loud, never silent — see the presenceDriftCheck doc above.
+    ...(presenceDrift !== undefined ? { presenceDrift } : {}),
   };
 
   // ── leaderBrief fold (fleet-reliability-verification-2026-07-10 P-007): a MONITOR
@@ -634,11 +645,13 @@ export async function composeOrient(
   // health brief in this SAME round-trip — the lever that collapses "monitor orient +
   // a separate fleet:assignments scan" into one call. Gated the OPPOSITE way from the
   // full-mode fleet legs below (monitor-only); BEST-EFFORT, absent for a non-leader /
-  // non-fleet caller or any failure.
-  if (monitor && fleetMembership?.fleetRole === 'leader' && fleetMembership.fleetSlug) {
+  // non-fleet caller or any failure. Reads `effectiveFleetMembership` (not the raw
+  // presence-only `fleetMembership`) so a caught presence/registry drift (above) still
+  // gets its leaderBrief instead of silently dropping it a second time.
+  if (monitor && effectiveFleetMembership?.fleetRole === 'leader' && effectiveFleetMembership.fleetSlug) {
     try {
       const brief = await call('fleet:leader-brief', {
-        fleet: fleetMembership.fleetSlug,
+        fleet: effectiveFleetMembership.fleetSlug,
         ...(args.harness ? { harness: args.harness } : {}),
       });
       // P-015: hydrate the EXISTING leader brief instead of introducing a parallel
@@ -651,7 +664,7 @@ export async function composeOrient(
       let claimSpec: unknown = null;
       try {
         claimSpec = await call('scheduler:get_claim_spec', {
-          fleet: fleetMembership.fleetSlug,
+          fleet: effectiveFleetMembership.fleetSlug,
         });
         hydrated.claimSpec = claimSpec;
       } catch {

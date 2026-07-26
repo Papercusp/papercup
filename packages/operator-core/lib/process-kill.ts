@@ -17,7 +17,13 @@ import { getOrgPg } from '@papercusp/db-org';
 import { listProcesses, probeProcess, type ProcessEntry } from './dev-data';
 
 export type KillableKind = 'run.sh' | 'omp' | 'claude';
-const KILLABLE: Set<string> = new Set(['run.sh', 'omp', 'claude']);
+/**
+ * Exported so the tool's GUIDANCE can be pinned to it in a test: if this set
+ * is ever widened, the processes:kill guidance that enumerates it must be
+ * updated in the same change (P-012 — a tool must not advertise reach it
+ * does not have).
+ */
+export const KILLABLE: Set<string> = new Set(['run.sh', 'omp', 'claude']);
 
 export interface KillProcessInput {
   pid: number;

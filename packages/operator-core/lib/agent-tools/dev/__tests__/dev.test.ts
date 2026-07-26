@@ -261,6 +261,51 @@ describe('dev:processes', () => {
     await tool.handler({ kinds: ['paperclip'] }, MAKE_CTX());
     expect(mock).toHaveBeenCalledWith({ kinds: ['paperclip'] });
   });
+
+  // ── P-012 / D-009: the description must not out-claim the implementation ──
+  //
+  // listProcesses() drops every cmdline classified 'other', so this tool
+  // structurally CANNOT answer "what is running on this host" (822 atoms,
+  // 51.4% of the process/job family) or "is my job done" (vitest/tsc/gate).
+  // It used to advertise itself as "the unified diagnostic view", which made
+  // it the #1 tools:find hit for the whole-host inventory question it drops
+  // on the floor. These guards fail if that over-claim comes back.
+
+  it('discloses that it filters, so an empty result is never read as "nothing is running"', async () => {
+    const { default: tool } = await import('../processes');
+    const text = `${tool.description} ${tool.guidance?.when ?? ''} ${tool.guidance?.notWhen ?? ''}`;
+    // Names the limitation explicitly...
+    expect(text).toMatch(/not a general process list|NOT a general process list/i);
+    expect(text).toMatch(/drop|filter/i);
+    // ...and specifically warns against the empty-means-idle misreading.
+    expect(tool.description).toMatch(/never "nothing is running"|no agent processes/i);
+    // ...and never re-adopts the phrase that caused the false match.
+    expect(text).not.toMatch(/unified diagnostic view/i);
+  });
+
+  it('redirects both superseded intents (whole-host inventory, and "is my job done")', async () => {
+    const { default: tool } = await import('../processes');
+    const notWhen = tool.guidance?.notWhen ?? '';
+    // whole-host inventory -> plain ps/pgrep, which D-009 keeps as correct, never-gated bash
+    expect(notWhen).toMatch(/\bps\b|pgrep/);
+    // "is my job done" -> the job-handle surface (P-022), not a process scan
+    expect(notWhen).toContain('capability:bash_output');
+    // and the compaction trap that makes the native handle unsafe
+    expect(notWhen).toContain('EI-16611');
+  });
+
+  it('keeps the advertised kind list in step with the real KIND_ENUM', async () => {
+    // If someone widens the classifier + enum, the description must be widened
+    // with it — otherwise the doc silently under-reports what is returned.
+    // Pinned to the EXPORTED enum, not a copy, so it cannot pass vacuously.
+    const { default: tool, KIND_ENUM } = await import('../processes');
+    expect(KIND_ENUM.length).toBe(6);
+    for (const kind of KIND_ENUM) {
+      expect(tool.description).toContain(kind);
+    }
+    // 'other' is the dropped bucket — never a selectable kind.
+    expect(KIND_ENUM as readonly string[]).not.toContain('other');
+  });
 });
 
 // ── dev:session_detail ──────────────────────────────────────────────

@@ -88,6 +88,23 @@ if [ "${PC_HEAVY_BYPASS:-}" = "1" ]; then
   exec "$@"
 fi
 
+# WI-6140 — the RELEASE GATE is never made to QUEUE. green-checkpoint's greenCmd is
+# `npm run test:affected`, which now routes through this wrapper; without this exemption
+# the hourly release gate would wait up to PC_HEAVY_TIMEOUT_SEC (900s) behind ad-hoc agent
+# sweeps. It is already racing a 60-min wall-clock reaper measured from workflow CREATION,
+# so 15 idle minutes come straight off that budget and resurface as a "stale routine" reap
+# that reads as an infra flake (the 2026-06-29 incident shape) rather than as queueing.
+# The gate still runs DEFERENTIALLY — green-checkpoint spawns it `heavy: true` (nice 10 +
+# ionice 7, EI-78) — so this exempts it from ADMISSION, never from PRIORITY. The cap still
+# does its job: it bounds the AGENT sweeps that are the actual load source (measured load
+# 165 on a 128-core box, 2026-07-26), which is what was starving this gate.
+# GREEN_CHECKPOINT=1 is set by buildGreenCheckpointEnv (green-checkpoint.ts) and inherited
+# by the whole child tree, so this covers the main suite AND its isolation re-runs.
+if [ "${GREEN_CHECKPOINT:-}" = "1" ]; then
+  export PC_HEAVY_BYPASS=1
+  exec "$@"
+fi
+
 _cores="$(nproc 2>/dev/null || echo 8)"
 _slots="${PC_HEAVY_SLOTS:-}"
 if [ -z "$_slots" ]; then

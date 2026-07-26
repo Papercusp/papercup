@@ -30,8 +30,10 @@ export default defineTool({
   description:
     'Send SIGTERM (or SIGKILL) to one OR many tracked OS pids in ONE call — pass `pid` for one or `pids` for several. Returns { ok, results:[{ ok, pid, kind, signal | error }], counts } — correlate each result by its pid, not by position; a protected/absent pid fails only itself.',
   guidance: {
-    when: 'User says "kill that process", "stop the runaway harness" — sends SIGTERM (then SIGKILL after timeout) to tracked OS process(es). Killing several at once? Pass them all via `pids`.',
-    notWhen: 'For SPAWNED agents, use `orchestrator.cancel`. For DELEGATES, use the delegate-cancel endpoint. processes:kill is the OS-level escape hatch.',
+    when: 'Kill an AGENT process you already have a pid for — only kinds `run.sh | omp | claude` are killable. Killing several at once? Pass them all via `pids`.',
+    notWhen: 'NOT for a runaway BUILD/TEST job (vitest, tsc, gate, deploy, container): those are not a tracked kind, so they come back `unsupported_kind` — signal them with plain `kill(1)`, or start them via `capability:bash { run_in_background: true }` so you hold a real job handle instead. For SPAWNED agents use `orchestrator.cancel`; for DELEGATES, the delegate-cancel endpoint. `paperclip | pty | next` are visible but deliberately protected (`protected_kind`).',
+    returns:
+      '{ ok, results:[{ ok, pid, kind, signal | error, detail? }], counts } — keyed by pid, not position. The three failure modes mean DIFFERENT things: `pid_not_found` = the pid genuinely does not exist on the host; `unsupported_kind` = it IS alive but outside the six tracked kinds (do not read this as "gone" — EI-18698120633403217 was exactly that false claim); `protected_kind` = tracked but off-limits.',
   },
   capability: 'processes:kill',
   args: z
