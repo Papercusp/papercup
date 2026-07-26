@@ -36,22 +36,42 @@ const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
 /** A routineFire may be inside its first DBOS step; operation_outputs is written
  *  when that step checkpoints, not when it starts. The longest legit no-output
  *  first step is the GREEN-CHECKPOINT suite: its action (release-actions.ts) does a
- *  single ~55-min `await runScript(...)` over the test suite with NO intermediate
+ *  single up-to-120-min `await runScript(...)` over the test suite with NO intermediate
  *  DBOS checkpoint, so it records nothing in operation_outputs until it completes.
- *  This window MUST stay ABOVE that suite's full runtime, else the reaper cancels a
- *  HEALTHY long checkpoint at the window and the green gate (→ every fleet deploy)
- *  wedges — the 2026-06-29 incident this constant caused at 25m (green-checkpoint-
- *  reaper-window-vs-suite). Earlier this was 25m, tuned only for Scout's 20-min
- *  cycle, before green-checkpoint's runtime grew to 55m.
+ *
+ *  ⚠ THIS IS A WALL-CLOCK CAP FROM CREATION, **NOT** A SINCE-LAST-OUTPUT SILENCE
+ *  TIMER — the name misleads (verified 2026-07-26, WI-6112). The predicate below is
+ *  literally `created_at < now - THIS` plus "has no operation_outputs row with
+ *  function_id > 0", and `created_at` is used deliberately (see the comment above the
+ *  query) so DBOS recovery churn cannot reset it. The "output" it waits for is a DBOS
+ *  STEP CHECKPOINT, not stdout: green-checkpoint logs continuously to a file the whole
+ *  time and still records NOTHING here until its single step returns. So a chatty,
+ *  perfectly healthy run does NOT escape this window — the invariant is that the run's
+ *  TOTAL runtime must fit inside it.
+ *
+ *  This window MUST therefore stay ABOVE the last moment a healthy-or-self-terminating
+ *  checkpoint can still be running without having checkpointed, else the reaper cancels
+ *  a HEALTHY long checkpoint and the green gate (→ every fleet deploy) wedges — the
+ *  2026-06-29 incident this constant caused at 25m (green-checkpoint-reaper-window-vs-
+ *  suite), re-armed silently when the suite timeout grew 55m→120m (EI-7553) and this
+ *  stayed at 60m: a 60–90m run under full-fleet load was reaped mid-flight while its
+ *  own timeout still had 30m to go (WI-6112).
  *
  *  INVARIANT (cross-file, same convention as the result MARKERs / lock-stale in
- *  release-actions.ts + green-checkpoint.ts): keep
- *    GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (55m, release-actions.ts)  <  THIS (60m)
- *      <  CHECKPOINT_LOCK_STALE_MS (65m, green-checkpoint.ts)
- *  so a checkpoint is SIGTERM-killed by its own suite timeout (recording its result
- *  → a terminal, non-reapable workflow) before this reaper window elapses, yet still
- *  before its run-lock is stale-reclaimable. Whoever retunes one must retune these. */
-const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 60 * 60 * 1000;
+ *  release-actions.ts + green-checkpoint.ts) — the full chain must stay MONOTONIC:
+ *    GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (120m, release-actions.ts)
+ *      <  SELF_WATCHDOG_MS            (180m, green-checkpoint.ts)
+ *      <  THIS                        (185m)
+ *      <  CHECKPOINT_LOCK_STALE_MS    (190m, green-checkpoint.ts)
+ *  Reading the chain: a live parent SIGTERMs the suite at its own timeout (recording a
+ *  result → a terminal, non-reapable workflow); if the parent died, the run's SELF
+ *  watchdog kills it; only PAST both can a still-non-terminal no-output fire be
+ *  presumed wedged, so THIS sits above the watchdog — yet still below the run-lock's
+ *  stale-reclaim, so the dedup pin is freed (→ routine requeued) before a peer attempt
+ *  can force-reclaim the lock. Whoever retunes one must retune these; the ordering is
+ *  asserted by apps/operator/lib/release/release-timing-invariants.test.ts, which is
+ *  the guard that was missing when this silently inverted. */
+export const DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS = 185 * 60 * 1000;
 /** WI-1416: the FAST-orphan window for a routineFire in the genuinely anomalous
  *  ENQUEUED-with-no-live-queue-row state (see the corrected queue-row semantics on
  *  the stale query below). This path used to fire at `staleSchedulerMs` (90s) for ANY
@@ -154,7 +174,7 @@ export async function reapDeadExecutorWorkflows(
     // operation_outputs is a checkpoint/output table, not a live "step entered"
     // table. function_id=0 is only routine-fire-start; it proves claim context was
     // recorded, not that the target action is running. A legitimate long first
-    // step (green-checkpoint's ~55m suite is the proven case) may have only that
+    // step (green-checkpoint's up-to-120m suite is the proven case) may have only that
     // start row until it completes or records its own timeout/error, so routineFire
     // uses the LONGER first-action-output window than the scheduler tick.
     //
