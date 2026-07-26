@@ -33,8 +33,9 @@ vi.mock('../../work-item-checkpoint', () => ({
   getClaimTimeCheckpointHint: (...a: unknown[]) => getClaimTimeCheckpointHint(...a),
 }));
 
-import { claimWorkItem } from '../../work-items';
+import { claimWorkItem, getWorkItem } from '../../work-items';
 const claimM = vi.mocked(claimWorkItem);
+const getWorkItemM = vi.mocked(getWorkItem);
 const tool = (await import('./claim')).default;
 
 type Out = { data: any };
@@ -46,6 +47,11 @@ beforeEach(() => {
   identity.workspaceId = 'ws-1';
   fleetAdmission.decision = { allowed: true, scoped: false };
   claimM.mockImplementation(async (id: string) => ({ id, harness: 'papercup', assignee: 'me' }) as never);
+  // WI-5946: claimOne now unconditionally pre-reads the item via getWorkItem to check
+  // payload._claimHold before claiming. These tests exercise the checkpoint-hint path only
+  // (no claim-hold scenario), so default to "no pre-existing item row" (null) — matches
+  // assessClaimHoldGuard's own no-op-on-null-item behavior and keeps the claim path unaffected.
+  getWorkItemM.mockResolvedValue(null as never);
   getClaimTimeCheckpointHint.mockResolvedValue(null);
 });
 

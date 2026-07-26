@@ -14,12 +14,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
-import { createNuqsMock } from '@papercusp/test-config/nuqs-mock';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 // chat-ref-pills-2026-07-26 P-008: OperatorChat (rendered by SessionChatModal
 // via LiveSessionChat) now owns `useQueryState` calls for the ref-pill popup
-// routing below — every suite rendering it needs a nuqs mock.
-vi.mock('nuqs', () => createNuqsMock());
+// routing below — every suite rendering it needs a nuqs mock. Hand-rolled +
+// resettable (same pattern PlansPane.test.tsx uses), not `createNuqsMock()`'s
+// singleton, so state can't leak between this file's own test cases.
+const { nuqs, nuqsSetters } = vi.hoisted(() => ({
+  nuqs: {} as Record<string, unknown>,
+  nuqsSetters: {} as Record<string, ReturnType<typeof vi.fn>>,
+}));
+function mkNuqsSetter(key: string) {
+  if (!nuqsSetters[key]) nuqsSetters[key] = vi.fn(async (v: unknown) => { nuqs[key] = v; });
+  return nuqsSetters[key];
+}
+vi.mock('nuqs', () => ({
+  ...nuqsParsers,
+  useQueryState: (key: string, parser?: { _d?: unknown }) => [
+    nuqs[key] !== undefined ? nuqs[key] : parser?._d,
+    mkNuqsSetter(key),
+  ],
+  parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
+}));
 // The two popup DESTINATIONS (→ PlanDetail / DetailPanel) are heavy — mocked
 // the SAME way PlansPane.test.tsx mocks PlanPopupModal away, to a tiny probe
 // asserting only what THIS file cares about: which id/harness reached them.
@@ -152,6 +169,7 @@ beforeEach(() => {
   H.results = {};
   attentionInvalidate.mockClear();
   lastWorkItemPopupProps = {};
+  for (const k of Object.keys(nuqs)) delete nuqs[k];
 });
 afterEach(() => {
   cleanup();

@@ -56,13 +56,13 @@ export default defineTool({
     //     kind='bug' filter matches ZERO rows and reads exactly like a drained queue.
     //   · An unrecognized `spec` returns { ok:false, error, candidates } — never a silent
     //     whole-backlog fallback, which would look like a suddenly-huge lane.
-    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP so they do not sum; `sampleExcluded` (1-10) adds `excludedSample` — ids per floor for stale-hold triage without raw SQL.",
+    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP so they do not sum; `sampleExcluded` (1-10) adds `excludedSample` — ids per floor for stale-hold triage.",
   guidance: {
     when: "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. SSOT, not raw SQL or the claimable view.",
     notWhen:
       "Taking an item → work_items:claim / claim_next / scheduler:get_next (this only reports). Feature-family (F-…) claimability, or a backlog incl. gated rows → work_items:list.",
     chaining:
-      "work_items:claimable → work_items:claim { id } (take a surfaced row) · or scheduler:get_next (top-ranked pick).",
+      "→ work_items:claim { id } (take a surfaced row) · scheduler:get_next (top-ranked pick).",
     seeAlso: [
       'scheduler:get_next (claims the single top-ranked eligible item — same floors)',
       'work_items:observe (claimability of specific ids you already have)',
@@ -70,7 +70,7 @@ export default defineTool({
     byRole: {
       mug: {
         when:
-          "Before winding a fleet down confirm claimableCount===0 here (the drain-stamp records this oracle); a count from `status='open'` alone means a premature drain.",
+          "Before winding a fleet down confirm claimableCount===0 here (the drain-stamp records this oracle); `status='open'` alone risks a premature drain.",
       },
     },
   },

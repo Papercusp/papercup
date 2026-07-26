@@ -11,28 +11,50 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { createNuqsMock } from '@papercusp/test-config/nuqs-mock';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 // chat-ref-pills-2026-07-26 P-008: OperatorChat now owns `useQueryState` calls
 // (the "which popup is open" state for the D-002 seam below) — every suite
-// that renders it needs a nuqs mock (nuqs-mock.ts's own incompleteness-class
-// rationale). The two popup DESTINATIONS get their own dedicated test files;
-// here they're stubbed to a tiny probe so this suite only asserts OperatorChat's
-// OWN wiring (which id/harness it hands them), not their internals.
-vi.mock('nuqs', () => createNuqsMock());
+// that renders it needs a nuqs mock. A hand-rolled keyed store (same pattern
+// PlansPane.test.tsx uses for its own `pplan`) rather than `createNuqsMock()`'s
+// singleton, so it can be RESET between tests (the singleton's state would
+// otherwise leak across this suite's own test cases).
+const { nuqs, nuqsSetters } = vi.hoisted(() => ({
+  nuqs: {} as Record<string, unknown>,
+  nuqsSetters: {} as Record<string, ReturnType<typeof vi.fn>>,
+}));
+function mkNuqsSetter(key: string) {
+  if (!nuqsSetters[key]) nuqsSetters[key] = vi.fn(async (v: unknown) => { nuqs[key] = v; });
+  return nuqsSetters[key];
+}
+vi.mock('nuqs', () => ({
+  ...nuqsParsers,
+  useQueryState: (key: string, parser?: { _d?: unknown }) => [
+    nuqs[key] !== undefined ? nuqs[key] : parser?._d,
+    mkNuqsSetter(key),
+  ],
+  parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
+}));
+// The two popup DESTINATIONS get their own dedicated test files; here they're
+// stubbed to a tiny probe (gated on id/planSlug like the REAL components are,
+// so a "closed" assertion means the same thing) — this suite only asserts
+// OperatorChat's OWN wiring (which id/harness it hands them), not their
+// internals.
 let lastWorkItemPopupProps: Record<string, any> = {};
 vi.mock('./work-items/WorkItemPopupModal', () => ({
   default: (props: Record<string, any>) => {
     lastWorkItemPopupProps = props;
-    return <div data-testid="wi-popup" data-id={props.id ?? ''} data-harness={props.harnessSlug ?? ''} />;
+    return props.id ? <div data-testid="wi-popup" data-id={props.id} data-harness={props.harnessSlug ?? ''} /> : null;
   },
 }));
 let lastPlanPopupProps: Record<string, any> = {};
 vi.mock('./plans/PlanPopupModal', () => ({
   default: (props: Record<string, any>) => {
     lastPlanPopupProps = props;
-    return <div data-testid="plan-popup" data-plan={props.planSlug ?? ''} data-harness={props.harnessSlug ?? ''} />;
+    return props.planSlug ? (
+      <div data-testid="plan-popup" data-plan={props.planSlug} data-harness={props.harnessSlug ?? ''} />
+    ) : null;
   },
 }));
 // Capture the props OperatorChat hands ChatConversation, and render a tiny
@@ -92,6 +114,7 @@ afterEach(() => {
   lastCardProps = {};
   lastWorkItemPopupProps = {};
   lastPlanPopupProps = {};
+  for (const k of Object.keys(nuqs)) delete nuqs[k];
   cleanup();
 });
 
@@ -291,12 +314,17 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
     });
 
     it('opens the WorkItemPopupModal scoped to harnessSlug on a work-item ref activation', () => {
-      render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
+      const { rerender } = render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
       expect(screen.queryByTestId('wi-popup')).toBeNull();
 
       act(() => {
         lastProps.onWorkRefActivate({ id: 'WI-5952', kind: 'work-item' });
       });
+      // The mock setter mutates the shared nuqs store synchronously but that
+      // mutation alone doesn't trigger React's own re-render (it's a plain
+      // object write, not a state hook) — force one, same as a real nuqs
+      // setter's own state update would.
+      rerender(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
 
       const popup = screen.getByTestId('wi-popup');
       expect(popup.getAttribute('data-id')).toBe('WI-5952');
@@ -304,11 +332,12 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
     });
 
     it('opens the (reused) PlanPopupModal on a plan-item ref activation, with the message plan_slug', () => {
-      render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
+      const { rerender } = render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
 
       act(() => {
         lastProps.onWorkRefActivate({ id: 'P-008', kind: 'plan-item', planSlug: 'chat-ref-pills-2026-07-26' });
       });
+      rerender(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
 
       const popup = screen.getByTestId('plan-popup');
       expect(popup.getAttribute('data-plan')).toBe('chat-ref-pills-2026-07-26');

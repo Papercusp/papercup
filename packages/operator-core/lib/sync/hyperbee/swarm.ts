@@ -446,6 +446,164 @@ const guardCountedSockets = new WeakSet<object>();
 const swarmJoinSocketTopics = new WeakMap<object, Set<string>>();
 
 /**
+ * WI-5923 (the "harder half" — the close()-side session-vs-leave fix landed
+ * separately, see `HyperswarmLike.join().destroy` above). THE DEFECT: Shared-
+ * Hive topics are joined ONCE PER MEMBER HARNESS on a topic that is per-HIVE
+ * (boot.ts), so a shared process swarm can hold MULTIPLE `joinHarnessSwarm`
+ * instances — one per harness — live on the SAME topic, sharing ONE underlying
+ * Hyperswarm `PeerDiscovery` (hyperswarm dedupes `join()` by topic and hands
+ * back a refcounted session — see the `HyperswarmLike.join().destroy` doc
+ * above). Each instance ran its OWN independent escalation ladder (severed /
+ * unpaired rungs) and, on firing, called the OLD `forceRejoinNow` which did a
+ * raw `opts.swarm.leave(opts.topic)` — the PROCESS-WIDE, unconditional
+ * teardown (`discovery.destroy()` regardless of any sibling's still-live
+ * session — hyperswarm/index.js). With detectors typically ~2.5s out of phase,
+ * each harness's "repair" destroyed the discovery the OTHER harness had just
+ * rebuilt, in a self-cancelling loop bounded only by `MAX_UNPAIRED_ESCALATIONS`
+ * (ratified defect, WI-5923 thread).
+ *
+ * THE FIX: a forced rejoin cannot be scoped to just ONE harness's session
+ * without leaving siblings orphaned (session-preserving teardown — the
+ * close()-side fix — is not "fresh" enough to clear stale DHT announce/lookup
+ * state, which is WHY a forced rejoin exists in the first place; see
+ * `forceRejoinNow`'s original doc). So a forced rejoin is inherently a
+ * TOPIC-WIDE operation. This registry gives every `joinHarnessSwarm` instance
+ * sharing a (swarm, topic) pair ONE shared `TopicRejoinCoordinator` instead of
+ * acting alone: any instance's escalation ladder still fires independently
+ * (each harness's own connection/pairing state is still its own business), but
+ * the actual repair — evict this topic's dead sockets, ONE real
+ * `swarm.leave(topic)`, then EVERY registered sibling re-joins to get a fresh
+ * session on the new shared discovery — happens EXACTLY ONCE per coordinated
+ * rejoin, with concurrent requests (the very same ~2.5s-apart firing pattern
+ * that used to cause the ping-pong) collapsing onto the SAME in-flight
+ * operation instead of each triggering their own. No sibling is ever left
+ * holding a reference to a discovery some OTHER harness silently destroyed.
+ *
+ * Keyed by swarm instance (WeakMap — multiple test swarms/process teardown
+ * never collide or leak) then by topic hex (a plain Map, cleaned up in
+ * `close()` once the last participant on that topic unregisters — a
+ * long-lived shared process swarm joins/leaves many distinct topics over its
+ * life, so this must not grow unbounded).
+ */
+interface TopicRejoinParticipant {
+  /** Evict THIS participant's own dead/zombie sockets and drop its claim on
+   *  them in `swarmJoinSocketTopics`, BEFORE the shared `swarm.leave()` — the
+   *  same per-instance eviction the old (pre-WI-5923-topic-fix) `forceRejoinNow`
+   *  did for itself alone. Never throws (best-effort, mirrors the original). */
+  evictOwnSockets(): void;
+  /** Re-`swarm.join()` to obtain a fresh session for THIS participant on the
+   *  coordinator's newly-recreated shared discovery, and re-arm this
+   *  participant's own fast self-heal window — called once per participant
+   *  AFTER the coordinator's single shared `swarm.leave()`. */
+  rejoinOwnSession(): void;
+}
+
+class TopicRejoinCoordinator {
+  private readonly participants = new Map<symbol, TopicRejoinParticipant>();
+  private inFlight: Promise<void> | null = null;
+
+  constructor(
+    private readonly swarm: HyperswarmLike,
+    private readonly topic: Buffer,
+  ) {}
+
+  register(token: symbol, participant: TopicRejoinParticipant): void {
+    this.participants.set(token, participant);
+  }
+
+  unregister(token: symbol): void {
+    this.participants.delete(token);
+  }
+
+  get participantCount(): number {
+    return this.participants.size;
+  }
+
+  /**
+   * Perform (or join) ONE topic-wide forced rejoin. A caller mid-flight when
+   * another caller's rejoin is already running just awaits that SAME
+   * operation — this is what stops the WI-5923 ping-pong: two siblings firing
+   * ~2.5s apart used to independently destroy-then-rebuild the one shared
+   * discovery, undoing each other's repair every cycle forever. Now the
+   * second (and any later) request during an in-flight rejoin is folded into
+   * the first's single leave()+rejoin() sequence.
+   */
+  async requestRejoin(): Promise<void> {
+    if (this.inFlight) {
+      await this.inFlight;
+      return;
+    }
+    const run = this.performRejoin().finally(() => {
+      this.inFlight = null;
+    });
+    this.inFlight = run;
+    await run;
+  }
+
+  private async performRejoin(): Promise<void> {
+    // Snapshot: a participant can unregister (its own `close()`) mid-flight —
+    // iterate a copy so a concurrent close() can't mutate the Map we're
+    // walking, and a since-unregistered participant simply won't be asked to
+    // rejoin (its own close() already tore its session down correctly).
+    const participants = Array.from(this.participants.values());
+    for (const p of participants) {
+      try {
+        p.evictOwnSockets();
+      } catch {
+        /* best-effort, mirrors the original per-instance eviction */
+      }
+    }
+    // The ONE real, topic-wide teardown — deliberately NOT session.destroy():
+    // a forced rejoin exists precisely to clear stale DHT announce/lookup
+    // state that a refcounted session-decrement alone cannot clear (see
+    // `forceRejoinNow`'s doc). Every registered sibling below rebuilds its own
+    // session on the fresh discovery this creates, so nobody is left orphaned.
+    await Promise.resolve(this.swarm.leave(this.topic)).catch(() => {});
+    for (const p of participants) {
+      try {
+        p.rejoinOwnSession();
+      } catch {
+        // best-effort — a participant whose own rejoin failed is retried at
+        // its OWN next escalation tick, same as the original single-instance
+        // forceRejoinNow's failure handling.
+      }
+    }
+  }
+}
+
+const topicRejoinCoordinators = new WeakMap<HyperswarmLike, Map<string, TopicRejoinCoordinator>>();
+
+function getTopicRejoinCoordinator(
+  swarm: HyperswarmLike,
+  topic: Buffer,
+  topicHex: string,
+): TopicRejoinCoordinator {
+  let byTopic = topicRejoinCoordinators.get(swarm);
+  if (!byTopic) {
+    byTopic = new Map();
+    topicRejoinCoordinators.set(swarm, byTopic);
+  }
+  let coordinator = byTopic.get(topicHex);
+  if (!coordinator) {
+    coordinator = new TopicRejoinCoordinator(swarm, topic);
+    byTopic.set(topicHex, coordinator);
+  }
+  return coordinator;
+}
+
+/** Drop a (swarm, topicHex)'s coordinator once its last participant
+ *  unregisters — called from `close()`. Without this a long-lived shared
+ *  process swarm that joins/leaves many distinct topics over its life would
+ *  leak one Map entry per ever-joined topic. */
+function releaseTopicRejoinCoordinatorIfEmpty(swarm: HyperswarmLike, topicHex: string): void {
+  const byTopic = topicRejoinCoordinators.get(swarm);
+  const coordinator = byTopic?.get(topicHex);
+  if (coordinator && coordinator.participantCount === 0) {
+    byTopic?.delete(topicHex);
+  }
+}
+
+/**
  * EI-1599 — content-replication peer accounting. `announceTopicStateByMuxer`
  * is a WeakMap (keyed by muxer, for GC) and therefore NOT enumerable, so it
  * cannot answer "how many peers is hive X actually content-syncing with" —
