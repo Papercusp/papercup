@@ -259,10 +259,19 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
 
   it('reports active:true (held_externally) when the manual unit is idle but a live process holds the shared run-lock', () => {
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const checkpointHead = 'a0d9300182aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const integrationHead = '6ea7bdad60bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    // Distinguish the two `-C <root>` targets by their actual path — `/tree` (the integration
+    // root, via currentCheckpointCandidate) vs `/tree-checkpoint` (the isolated checkpoint
+    // checkout, via checkpointRootMirror) — a mock that ignored `-C` would mask exactly the
+    // EI-18695275971973546 bug (candidate silently reported as the wrong tree's HEAD).
     const execFn = vi.fn((cmd: string, args: string[]) => {
       if (cmd === 'systemctl') return inactiveUnit();
-      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
-        return { status: 0, stdout: '98817077fd79af9dfee00076a1c6e90445d268af\n', stderr: '' };
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') {
+        const root = args[args.indexOf('-C') + 1];
+        if (root === '/tree-checkpoint') return { status: 0, stdout: `${checkpointHead}\n`, stderr: '' };
+        return { status: 0, stdout: `${integrationHead}\n`, stderr: '' };
+      }
       if (cmd === 'git' && args.includes('--format=%ct'))
         return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 500), stderr: '' };
       return { status: 1, stdout: '', stderr: '' };
@@ -274,12 +283,33 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
 
     expect(r.active).toBe(true);
     expect(r.held_externally).toBe(true);
-    expect(r.candidate).toBeNull(); // unknown — we don't know the holder's own log path
-    expect(r.candidate_stale).toBe(false); // never replaceable — EI-11667 safety
+    // EI-18695275971973546: `candidate` resolves to the CHECKPOINT tree's HEAD — the real
+    // in-flight candidate — never the integration root's (which is only "if launched now").
+    expect(r.candidate).toBe(checkpointHead);
+    expect(r.current_head).toBe(integrationHead);
+    expect(r.current_candidate).toBe(integrationHead);
+    expect(r.candidate_stale).toBe(false); // never replaceable — EI-11667 safety, regardless of resolution
     expect(r.started_at).toBe(startedAt);
     expect(r.elapsed_sec).toBeGreaterThan(0);
     expect(r.eta_sec).toBeGreaterThan(0);
     expect(pidAlive).toHaveBeenCalledWith(4242);
+  });
+
+  it('EI-18695275971973546: candidate stays null (never crashes) when the checkpoint tree is unreadable — e.g. mid-checkout', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl') return inactiveUnit();
+      // Every git call fails — mirrors a checkpoint tree that doesn't exist yet / mid-setup.
+      return { status: 1, stdout: '', stderr: 'not a git repository' };
+    });
+    const pidAlive = vi.fn(() => true);
+    const readLockOwner = vi.fn(() => ({ pid: 4242, startedAt }));
+
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive, readLockOwner);
+
+    expect(r.held_externally).toBe(true);
+    expect(r.candidate).toBeNull();
+    expect(r.candidate_stale).toBe(false);
   });
 
   it('reports active:false when the run-lock file is missing/unreadable (the common case — nothing running)', () => {

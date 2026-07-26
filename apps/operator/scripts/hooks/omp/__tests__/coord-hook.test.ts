@@ -141,6 +141,7 @@ import {
   reportTurnAskIngest,
   _resetOpenAskGatesForTests,
   SUBSTITUTION_PREFILTER_HEADS,
+  RESOURCE_PREFILTER_RE,
   SUBST_SPLIT_RE,
   SUBST_RUNNER_RE,
   SUBST_ENV_RE,

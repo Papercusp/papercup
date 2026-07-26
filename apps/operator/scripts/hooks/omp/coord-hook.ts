@@ -1323,8 +1323,11 @@ export const SUBST_ENV_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
  */
 export const SUBSTITUTION_PREFILTER_HEADS = new Set(['sed', 'cat', 'head', 'tail', 'psql']);
 
-/** Resource-registry pre-filter — mirrors the shell hook's `_needs_check` regex. */
-const RESOURCE_PREFILTER_RE =
+/** Resource-registry pre-filter — mirrors the shell hook's `_needs_check` regex.
+ *  Exported for the same reason as the three atomizer regexes above: so the
+ *  parity test can compare its source to the shell hook's rather than trusting
+ *  two files to be edited together. */
+export const RESOURCE_PREFILTER_RE =
   /systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(?:dev|build)/;
 
 /** True when any atom of `command` has a head a substitution row could claim. */

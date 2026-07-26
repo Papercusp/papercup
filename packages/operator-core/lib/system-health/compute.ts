@@ -606,7 +606,7 @@ export interface StalePausedRoutine {
 export function computeStalePausedRoutines(
   rows: ReadonlyArray<StalePausedRoutineInput>,
   now: number,
-  opts: { generalMs?: number; criticalMs?: number; criticalNames?: ReadonlySet<string>; currentInstallSlug?: string } = {},
+  opts: { generalMs?: number; criticalMs?: number; criticalNames?: ReadonlySet<string>; currentInstallSlug?: string | null } = {},
 ): StalePausedRoutine[] {
   const generalMs = opts.generalMs ?? STALE_PAUSE_GENERAL_MS;
   const criticalMs = opts.criticalMs ?? STALE_PAUSE_CRITICAL_MS;
@@ -643,7 +643,7 @@ export function computeStalePausedRoutines(
  *  (e.g. `ctx.potSlug`) — passed through so `critical` only fires for a stale pause
  *  on THIS install's own release routine, not any sibling hive's / throwaway repro
  *  harness's paused copy of a same-named routine. */
-export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: string): Promise<StalePausedRoutine[]> {
+export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: string | null): Promise<StalePausedRoutine[]> {
   const rows = await sql<Array<{ name: string; metadata: Record<string, unknown> | null; updated_at: Date | null; install_slug: string | null }>>`
     SELECT name, metadata, updated_at, install_slug FROM harness_shared.routines WHERE active = false`;
   const inputs: StalePausedRoutineInput[] = rows.map((r) => {

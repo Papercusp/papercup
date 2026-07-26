@@ -245,6 +245,52 @@ describe('release:checkpoint-run', () => {
     expect(String(b.note)).toMatch(/cannot free this slot/i);
     expect(String(b.note)).toContain('checkpoint:await');
     expect(String(b.note)).not.toMatch(/Pass replaceStale:true/);
+    // EI-18695275971973546: candidate unresolved ⇒ the note must say so explicitly, rather
+    // than silently letting the reader assume it matches current_candidate.
+    expect(String(b.note)).toMatch(/could not be resolved/i);
+  });
+
+  // EI-18695275971973546: a wrong "this run can go green" broadcast happened because
+  // `current_candidate` (a HYPOTHETICAL fresh-launch value) was misread as the in-flight run's
+  // actual candidate while `candidate` sat null. Once `candidate` resolves (from the checkpoint
+  // checkout's own HEAD), the note must name it explicitly and tell the reader to trust IT.
+  it('EI-18695275971973546: a resolved held_externally candidate is named explicitly in the note, distinct from current_candidate', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: false,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      reason: 'already_running',
+      alreadyRunning: {
+        active: true,
+        unit: 'papercup-green-checkpoint-manual-1fxzuva (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)',
+        candidate: 'a0d9300182aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        current_head: '6ea7bdad60bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        current_candidate: '6ea7bdad60bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        candidate_stale: false,
+        started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+        elapsed_sec: 300,
+        eta_sec: 10500,
+        held_externally: true,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(b).toMatchObject({
+      ok: false,
+      already_running: true,
+      held_externally: true,
+      candidate: 'a0d9300182aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+    expect(String(b.note)).toContain('a0d9300182aa');
+    expect(String(b.note)).toMatch(/verify your fix against THAT sha/i);
+    expect(String(b.note)).not.toMatch(/Pass replaceStale:true/);
   });
 
   it('passes force:true through to the launch primitive', async () => {
