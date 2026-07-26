@@ -17,9 +17,16 @@ const h = vi.hoisted(() => ({
    *  test can populate one without the other. Empty by default: "no
    *  reply-equivalent activity found" (the pre-existing-behavior default). */
   threadRows: [] as unknown[],
+  /** EI-18689956983040659: the supersede-check probe queries the SAME table
+   *  (coord_event_log) as the main due-query, so it's dispatched by matching
+   *  the query's own `supersede-check` SQL comment rather than by table name.
+   *  Empty by default: "no superseding message found" (the pre-existing-
+   *  behavior default). */
+  supersedeRows: [] as unknown[],
   sqlCalls: [] as unknown[][],
   /** Per-test override of the whole dispatch (e.g. to simulate a probe
-   *  failure) — null means "use the default rows/threadRows dispatch". */
+   *  failure) — null means "use the default rows/threadRows/supersedeRows
+   *  dispatch". */
   sqlImpl: null as ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>) | null,
 }));
 
@@ -31,6 +38,7 @@ vi.mock('@papercusp/db-org', () => ({
         if (h.sqlImpl) return h.sqlImpl(strings, ...values);
         const text = strings.join('');
         if (text.includes('coord_thread_posts')) return Promise.resolve(h.threadRows);
+        if (text.includes('supersede-check')) return Promise.resolve(h.supersedeRows);
         return Promise.resolve(h.rows);
       },
       { unsafe: vi.fn() },
@@ -90,6 +98,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.rows = [];
   h.threadRows = [];
+  h.supersedeRows = [];
   h.sqlCalls = [];
   h.sqlImpl = null;
 });
@@ -98,7 +107,7 @@ describe('runReplyDeadlineSweepOnce', () => {
   it('is a no-op when nothing is due', async () => {
     h.rows = [];
     const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-    expect(result).toEqual({ due: 0, nudged: 0, autoResolved: 0, truncated: false });
+    expect(result).toEqual({ due: 0, nudged: 0, autoResolved: 0, superseded: 0, truncated: false });
     expect(sendMessage).not.toHaveBeenCalled();
     expect(wakeRecipients).not.toHaveBeenCalled();
   });
@@ -106,7 +115,7 @@ describe('runReplyDeadlineSweepOnce', () => {
   it('nudges the ORIGINAL sender once, carrying related_msg_id as the idempotency marker', async () => {
     h.rows = [row()];
     const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-    expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, truncated: false });
+    expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     const [identity, opts] = (sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -140,7 +149,7 @@ describe('runReplyDeadlineSweepOnce', () => {
       .mockImplementationOnce(async () => undefined);
 
     const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-    expect(result).toEqual({ due: 2, nudged: 1, autoResolved: 0, truncated: false });
+    expect(result).toEqual({ due: 2, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
     expect(sendMessage).toHaveBeenCalledTimes(2);
     // the failed item's wake must never fire either.
     expect(wakeRecipients).toHaveBeenCalledTimes(1);
@@ -154,20 +163,20 @@ describe('runReplyDeadlineSweepOnce', () => {
       throw new Error('wake down');
     });
     const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-    expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, truncated: false });
+    expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
   });
 
   it('skips a row with no resolvable `from` instead of throwing', async () => {
     h.rows = [row({ from_id: undefined as unknown as string })];
     const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-    expect(result).toEqual({ due: 0, nudged: 0, autoResolved: 0, truncated: false });
+    expect(result).toEqual({ due: 0, nudged: 0, autoResolved: 0, superseded: 0, truncated: false });
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it('respects the batch limit and reports truncated:true when more remain', async () => {
     h.rows = [row({ msg_id: 'a' }), row({ msg_id: 'b' }), row({ msg_id: 'c' })];
     const result = await runReplyDeadlineSweepOnce({ nowMs: NOW, limit: 2 });
-    expect(result).toEqual({ due: 3, nudged: 2, autoResolved: 0, truncated: true });
+    expect(result).toEqual({ due: 3, nudged: 2, autoResolved: 0, superseded: 0, truncated: true });
     expect(sendMessage).toHaveBeenCalledTimes(2);
   });
 
@@ -191,7 +200,7 @@ describe('runReplyDeadlineSweepOnce', () => {
       h.threadRows = [threadRow({ thread_id: 'issue-thread-WI-3232', author_id: 'su-recipient' })];
 
       const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-      expect(result).toEqual({ due: 1, nudged: 0, autoResolved: 1, truncated: false });
+      expect(result).toEqual({ due: 1, nudged: 0, autoResolved: 1, superseded: 0, truncated: false });
 
       expect(sendMessage).toHaveBeenCalledTimes(1);
       const [identity, opts] = (sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -220,7 +229,7 @@ describe('runReplyDeadlineSweepOnce', () => {
       h.rows = [row({ summary: 'any update on this?' })];
       h.threadRows = [threadRow()]; // present but irrelevant — nothing to match against
       const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, truncated: false });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
       expect(wakeRecipients).toHaveBeenCalledTimes(1);
     });
 
@@ -228,7 +237,7 @@ describe('runReplyDeadlineSweepOnce', () => {
       h.rows = [row({ summary: 'please send the WI-3232 VM-verify report' })];
       h.threadRows = []; // nobody posted
       const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, truncated: false });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
       expect(wakeRecipients).toHaveBeenCalledTimes(1);
     });
 
@@ -236,14 +245,14 @@ describe('runReplyDeadlineSweepOnce', () => {
       h.rows = [row({ summary: 'please send the WI-3232 VM-verify report', to_ids: ['su-recipient'] })];
       h.threadRows = [threadRow({ author_id: 'su-someone-else' })];
       const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, truncated: false });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
     });
 
     it('still alarms when the matching post predates the original message (stale/unrelated prior post)', async () => {
       h.rows = [row({ summary: 'please send the WI-3232 VM-verify report', sent_at_ms: String(NOW - 5 * 60_000) })];
       h.threadRows = [threadRow({ posted_at_ms: String(NOW - 60 * 60_000) })]; // posted well BEFORE the message was sent
       const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, truncated: false });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
     });
 
     it('the query passes the ORIGINAL send timestamp as the activity-since bound', async () => {

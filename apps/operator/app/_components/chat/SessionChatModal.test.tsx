@@ -53,8 +53,12 @@ vi.mock('../work-items/WorkItemPopupModal', () => ({
     return null;
   },
 }));
+let lastPlanPopupProps: Record<string, any> | null = null;
 vi.mock('../plans/PlanPopupModal', () => ({
-  default: () => null,
+  default: (props: Record<string, any>) => {
+    lastPlanPopupProps = props;
+    return null;
+  },
 }));
 // hud-first-nav-and-dossier-2026-07-26 P-003: AgentDossier's own behavior is
 // covered by AgentDossier.test.tsx — stubbed here (same pattern as
@@ -190,6 +194,7 @@ beforeEach(() => {
   H.results = {};
   attentionInvalidate.mockClear();
   lastWorkItemPopupProps = {};
+  lastPlanPopupProps = null;
   lastAgentDossierProps = null;
   for (const k of Object.keys(nuqs)) delete nuqs[k];
 });
@@ -670,6 +675,45 @@ describe('SessionChatModal', () => {
       // click itself is the thing that safely does nothing.
       fireEvent.click(pill);
       expect(lastWorkItemPopupProps.id ?? null).toBeNull();
+    });
+
+    // WI-5997: a real transcript click on a P- ref pill previously no-op'd —
+    // session-transcript-mapping.ts never set ChatMessage.planSlug, so
+    // handleWorkRefActivate's `if (ref.planSlug) …` branch always skipped.
+    // This is the end-to-end regression test for that fix: roster
+    // currentPlanSlug → mapped message planSlug → pill click → PlanPopupModal.
+    it('a P- ref pill click opens PlanPopupModal, scoped to the roster entry\'s currentPlanSlug (WI-5997)', async () => {
+      seedRoster([
+        { ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member', currentPlanSlug: 'gui-chat-session-controls-2026-07-25' },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const { rerender } = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'see P-001 for the plan item' }]));
+      });
+
+      const pill = await waitFor(() => screen.getByLabelText('P-001'));
+      fireEvent.click(pill);
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      expect(lastPlanPopupProps?.planSlug).toBe('gui-chat-session-controls-2026-07-25');
+    });
+
+    it('a P- ref pill click no-ops when the roster entry carries no currentPlanSlug (no plan context to open)', async () => {
+      seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member', currentPlanSlug: null }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const { rerender } = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'see P-001 for the plan item' }]));
+      });
+
+      const pill = await waitFor(() => screen.getByLabelText('P-001'));
+      fireEvent.click(pill);
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      expect(lastPlanPopupProps?.planSlug ?? null).toBeNull();
     });
   });
 

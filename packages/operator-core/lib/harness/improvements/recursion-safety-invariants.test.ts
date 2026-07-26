@@ -150,6 +150,7 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     origin: 'local',
     terminalOwner: null,
     terminalCompletionRef: null,
+    featureOrder: null,
     createdAt: '2026-06-01T00:00:00Z',
     updatedAt: '2026-06-01T00:00:00Z',
     ...p,
@@ -276,6 +277,7 @@ describe('P-049.3 — unbudgeted loops refuse unattended; every frontier gate is
   const reg = (p: Partial<LearningLoopRegistration>): LearningLoopRegistration => ({
     workspaceId: 'ws',
     loopId: 'loop',
+    potSlug: null,
     displayName: 'loop',
     budgetKind: 'lifetime',
     budgetUsd: null,
@@ -773,6 +775,7 @@ describe('P-090 — per-category autonomy gate: the five recursion-safety invari
       reversibility: 'reversible',
       revertHandle: { kind: 'config-edit' },
       decision: null,
+      decisionId: null,
       tripReason: null,
       windowUntilMs: over.armedAtMs + 86_400_000,
       resolvedAtMs: over.status === 'armed' ? null : over.armedAtMs + 86_400_000,

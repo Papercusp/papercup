@@ -1434,7 +1434,7 @@ body.has-left-sidebar .pc-header {
    EI-18135716653974462 / WI-5581, the one the HUD board was migrated off after
    an owner-screenshotted regression. DO NOT move the flex back onto the button,
    and do not "verify" this control in a browser — a browser cannot see it. */
-/* 26px, not 24: globals.css's `:where(button, .pc-btn)` baseline sets a
+/* 26px, not 24: globals.css's :where(button, .pc-btn) baseline sets a
    min-height: 26px tap-target floor. A 24px height silently lost to it and
    rendered a 24x26 EGG rather than a circle — caught by measuring the real
    WebKitGTK webview, invisible in the unit tests. Match the floor instead of

@@ -30,6 +30,7 @@ const decisions = (counts: Record<string, number>): { decision: string }[] =>
 const loop = (over: Partial<LearningLoopRegistration> = {}): LearningLoopRegistration => ({
   workspaceId: 'ws',
   loopId: 'gym-autoloop',
+  potSlug: null,
   displayName: 'gym-autoloop',
   budgetKind: 'lifetime',
   budgetUsd: 10,

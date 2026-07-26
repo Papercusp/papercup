@@ -40,6 +40,23 @@
  * REPLACES the alarm with a quiet, non-waking auto-resolved note (still
  * carrying `related_msg_id` as the idempotency marker, so it is never
  * re-checked) instead of a false-alarm wake.
+ *
+ * EI-18689956983040659: a reply isn't the only way the QUESTION itself stops
+ * being open, either — the SENDER can withdraw or supersede it. Observed
+ * live: a sender briefed a recipient with `expectsReply:true`, then 48s later
+ * sent a retraction ("false alarm, do NOT build it") to the same recipient —
+ * yet the sweep fired a "reply deadline missed" alarm + wake ~30m later,
+ * even though `coord:inbox{unanswered_only:true}` already correctly read 0
+ * (nothing owed). `findDueReplyDeadlines`' own idempotency check only looks
+ * for a sibling row carrying `related_msg_id = <original msg_id>` — it never
+ * considers that the ORIGINAL SENDER moved the conversation forward
+ * themselves. Before alarming, this sweep now also checks whether the sender
+ * sent ANY later directed message to (at least one of) the same recipients
+ * — a supersede/retraction/follow-up implies the sender is no longer
+ * blocked-waiting on the original ask. A hit auto-resolves the deadline
+ * (quiet note, no alarm, no wake) the same way an EI-13610 reply-equivalent
+ * hit does; checked FIRST since it needs no auto-ref detection and directly
+ * addresses the sender's own side of the exchange.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -151,6 +168,59 @@ async function findDueReplyDeadlines(
     });
 }
 
+export interface SupersedingMessage {
+  /** The later message's own msg_id (for the auto-resolved note's prose). */
+  msgId: string;
+  /** When the sender sent it (epoch ms). */
+  sentAtMs: number;
+}
+
+/**
+ * EI-18689956983040659: did the ORIGINAL SENDER send any LATER directed
+ * message to (at least one of) the same recipients, strictly after the
+ * original ask? A supersede/retraction/follow-up is the clearest case, but
+ * this deliberately doesn't require `related_msg_id`-threading or any
+ * particular content — ANY later directed message from the same sender to
+ * the same recipient(s) is evidence the sender has moved the conversation
+ * forward themselves and is no longer sitting blocked-waiting on the
+ * original ask (mirrors unanswered-directed.ts's WI-5345 rationale for the
+ * symmetric "recipient replied, even unthreaded" case). Returns the single
+ * earliest such message (enough to annotate the auto-resolved note with), or
+ * `null` when nothing matches (the normal genuinely-still-due case).
+ */
+async function findSupersedingMessage(
+  workspaceId: string,
+  originalMsgId: string,
+  from: string,
+  to: string[],
+  sentAtMs: number,
+): Promise<SupersedingMessage | null> {
+  if (!to.length) return null;
+  const { sql } = getOrgPg();
+  const rows = await sql<{ msg_id: string; ts_ms: string }[]>`
+    -- EI-18689956983040659 supersede-check: a later directed message from the
+    -- SAME sender to (at least one of) the SAME recipients.
+    SELECT e.msg_id, (extract(epoch FROM e.ts) * 1000)::bigint AS ts_ms
+      FROM harness_shared.coord_event_log e
+     WHERE e.workspace_id = ${workspaceId}
+       AND e.surface = 'messages'
+       AND e.msg_id <> ${originalMsgId}
+       AND e.body->>'from' = ${from}
+       AND e.ts > to_timestamp(${sentAtMs}::double precision / 1000)
+       AND jsonb_typeof(e.body->'to') = 'array'
+       AND EXISTS (
+         SELECT 1 FROM jsonb_array_elements_text(e.body->'to') t
+          WHERE t = ANY(${to}::text[])
+       )
+     ORDER BY e.ts ASC
+     LIMIT 1
+  `;
+  const r = rows[0];
+  if (!r) return null;
+  const ts = Number(r.ts_ms);
+  return { msgId: r.msg_id, sentAtMs: Number.isFinite(ts) ? ts : sentAtMs };
+}
+
 export interface ReplyEquivalentActivity {
   /** The WI-/EI- id whose thread carries the answer. */
   workItemId: string;
@@ -225,16 +295,27 @@ export interface ReplyDeadlineSweepResult {
   /** EI-13610: due deadlines auto-resolved by reply-equivalent thread activity
    *  (no alarm sent — a quiet, non-waking note instead). */
   autoResolved: number;
+  /** EI-18689956983040659: due deadlines auto-resolved because the ORIGINAL
+   *  SENDER themself sent a later directed message to the same recipient(s)
+   *  (a supersede/retraction/follow-up) — no alarm sent. Counted separately
+   *  from `autoResolved` since it's a distinct signal (the sender's own
+   *  follow-up, not the recipient's answer). */
+  superseded: number;
   /** True when the due backlog exceeded the batch limit (more remain next tick). */
   truncated: boolean;
 }
 
 /**
  * One sweep pass: find every message whose reply deadline has passed with no
- * reply yet (up to the batch limit). Before alarming, EI-13610: check whether
- * any awaited recipient has since posted on the thread of a WI-/EI- id
- * mentioned in the original message — reply-equivalent activity a coord-only
- * check would miss. If so, send a quiet auto-resolved note (still carrying
+ * reply yet (up to the batch limit). Before alarming:
+ *  - EI-18689956983040659: check whether the ORIGINAL SENDER sent a later
+ *    directed message to the same recipient(s) — a supersede/retraction the
+ *    sender themself issued, which means they're no longer waiting on a
+ *    reply to the original ask regardless of what the recipient does.
+ *  - EI-13610: check whether any awaited recipient has since posted on the
+ *    thread of a WI-/EI- id mentioned in the original message — reply-
+ *    equivalent activity a coord-only check would miss.
+ * Either hit sends a quiet auto-resolved note (still carrying
  * `related_msg_id` as the idempotency marker) instead of the alarm + wake.
  * Otherwise, nudge the ORIGINAL sender once — a visible coord message + a
  * fail-soft inbox-wake so an idle sender is re-invoked NOW. Fully fail-soft
@@ -250,8 +331,46 @@ export async function runReplyDeadlineSweepOnce(
 
   let nudged = 0;
   let autoResolved = 0;
+  let superseded = 0;
   for (const d of batch) {
     try {
+      // EI-18689956983040659: check FIRST whether the sender superseded their
+      // own ask — cheapest check (no auto-ref detection needed) and the most
+      // direct signal, since it doesn't depend on the recipient doing
+      // anything at all. Fail-soft: a probe failure falls through to the
+      // ordinary checks, never silently swallows a genuinely-overdue one.
+      let supersede: SupersedingMessage | null = null;
+      try {
+        supersede = await findSupersedingMessage(d.workspaceId, d.msgId, d.from, d.to, d.sentAtMs);
+      } catch (e) {
+        console.warn(
+          `[reply-deadline-sweep] supersede probe for ${d.msgId} failed: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+
+      if (supersede) {
+        // Quiet + non-waking: the SENDER already moved the conversation
+        // forward themselves — alarming them about their own superseded ask
+        // is exactly the false alarm this bug reports. related_msg_id still
+        // lands so the idempotency NOT EXISTS check retires this deadline.
+        await sendMessage(RECONCILE_IDENTITY, {
+          to: [d.from],
+          summary:
+            `✅ reply deadline auto-resolved: you sent a later message (${supersede.msgId}) to the same ` +
+            `recipient(s) — treating the original ask as superseded (${d.summary ?? d.msgId})`,
+          body:
+            `Your message ${d.msgId}${d.to.length ? ` to ${d.to.join(', ')}` : ''}` +
+            `${d.planSlug ? ` (plan ${d.planSlug})` : ''} had a reply deadline with no reply, but you sent a ` +
+            `later message (${supersede.msgId}) to the same recipient(s) at ` +
+            `${new Date(supersede.sentAtMs).toISOString()} — treating that as a supersede/retraction of the ` +
+            'original ask. No action needed unless you are still actually waiting on a reply to it.',
+          plan_slug: d.planSlug,
+          related_msg_id: d.msgId,
+        });
+        superseded += 1;
+        continue;
+      }
+
       // EI-13610: probe for reply-equivalent thread activity BEFORE alarming.
       // Fail-soft by design — a probe failure just falls through to the
       // ordinary alarm path (never silently swallows a genuinely-overdue one).
@@ -329,5 +448,5 @@ export async function runReplyDeadlineSweepOnce(
     }
   }
 
-  return { due: due.length, nudged, autoResolved, truncated: due.length > batch.length };
+  return { due: due.length, nudged, autoResolved, superseded, truncated: due.length > batch.length };
 }

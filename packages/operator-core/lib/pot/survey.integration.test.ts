@@ -45,7 +45,7 @@ async function seed(
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, source_plan_slug, origin, audit_verdict, payload)
-    VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
+    VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'open'},
             ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.planSlug ?? null},
             ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null},
             ${opts.payload ? JSON.stringify(opts.payload) : null}::text::jsonb)`;
@@ -69,7 +69,7 @@ async function seedIssue(
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, payload)
-    VALUES (${harness}, ${id}, ${opts.kind ?? 'bug'}, 'todo',
+    VALUES (${harness}, ${id}, ${opts.kind ?? 'bug'}, 'open',
             ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, 'local', ${JSON.stringify(payload)}::text::jsonb)`;
 }
 
@@ -182,13 +182,28 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     expect(rows.map((r) => r.feature_id)).toEqual(['WI-A1']);
   });
 
-  it('excludes assigned + non-todo items and orders oldest-first', async () => {
+  it('excludes assigned + non-open items and orders oldest-first', async () => {
     await seed(MEMBER_A, 'WI-taken', { takenBy: 'cup-1', createdTs: 0 });
     await seed(MEMBER_A, 'WI-passed', { status: 'passed', createdTs: 1 });
     await seed(MEMBER_A, 'WI-new', { createdTs: 3 });
     await seed(MEMBER_A, 'WI-old', { createdTs: 2 });
     const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
-    expect(rows.map((r) => r.feature_id)).toEqual(['WI-old', 'WI-new']); // oldest-first, only todo+unassigned
+    expect(rows.map((r) => r.feature_id)).toEqual(['WI-old', 'WI-new']); // oldest-first, only open+unassigned
+  });
+
+  it('EI-18690462961089460/EI-13699 (work-item-status-full-unify regression): a row genuinely sitting at the LEGACY \'todo\' token is NOT surfaced — only \'open\' is the current claimable status', async () => {
+    // Migration 638 (2026-07-19) rewrote feature-family status todo -> open; no writer
+    // produces 'todo' anymore. A row somehow still AT 'todo' (a pre-migration leftover,
+    // or a future regression reverting fetchFrontierRows back to the retired literal)
+    // must NOT be treated as placeable — pinning the CURRENT token, not the legacy one,
+    // is exactly what silently broke the frontier for a week between 07-19 and 07-26.
+    await seed(MEMBER_A, 'WI-LEGACY-TODO', { status: 'todo', createdTs: 1 });
+    await seed(MEMBER_A, 'WI-CURRENT-OPEN', { status: 'open', createdTs: 2 });
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    expect(rows.map((r) => r.feature_id)).toEqual(['WI-CURRENT-OPEN']);
+
+    const placeable = await countPlaceableFrontier(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    expect(placeable).toBe(1);
   });
 
   it('respects the limit cap', async () => {

@@ -26,6 +26,7 @@ function reg(overrides: Partial<LearningLoopRegistration> = {}): LearningLoopReg
   return {
     workspaceId: 'w',
     loopId: 'frontier:test-loop',
+    potSlug: null,
     displayName: 'Test loop',
     budgetKind: 'lifetime',
     budgetUsd: 10,

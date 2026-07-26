@@ -346,6 +346,69 @@ for _seg in re.split(r'[;&|\n]', command):
     if re.match(r'systemctl\b\s+(?:stop|kill)\s+user@\d+\.service\b(?:\s|$)', _es):
         deny(_EXIT_GUARD_DENY.format(op='systemctl stop/kill user@<uid>.service'))
 
+# ── pkill/killall host-wide dev-process guard (EI-18690252462401774) ───────
+# `pkill -f <substring>` (and `killall <name>`) match by process cmdline/name
+# SUBSTRING across the ENTIRE host process table — not scoped to the caller's
+# own PID tree. Confirmed live: an agent cleaning up its OWN redundant
+# backgrounded `npm run test:affected` job ran `pkill -f "test:affected"`,
+# which matched and killed 5-6 OTHER agents' in-flight `test:affected` runs
+# on this shared host at the same instant (2026-07-26) — each victim saw an
+# unexplained process death, not an obvious self-inflicted footgun, so it
+# cost every one of them a confused re-diagnosis instead of a one-line "oh,
+# that was a pkill".
+#
+# UNCONDITIONAL — same rationale as the systemd exit-guard just above: the
+# hazard is host-wide process-table scope, not tied to a particular working
+# tree or an agent-session marker, and this hook only ever mediates Claude/
+# Codex's own Bash-tool calls (never the owner's raw terminal), so firing
+# unconditionally cannot over-block real interactive work.
+#
+# Curated dev/build/test substring list (same "best-effort common patterns"
+# philosophy as the heavy-admission gate above) — this only fires when the
+# pkill/killall argument plausibly names a shared command another agent on
+# the box might be running right now, so a genuinely unique/caller-specific
+# identifier is not blocked by this heuristic.
+_PKILL_DEV_TOKEN_RE = re.compile(
+    r'test:affected|test:file|test:all|\bvitest\b|\bjest\b|\bplaywright\b'
+    r'|\bcargo\b|\brustc\b|npm\s+run|npm\s+test|npm\s+start|\btsc\b|ts-node'
+    r'|\bpytest\b|turbo\s+run|next\s+dev|next\s+start|\bwebpack\b|\btauri\b'
+    r'|\bnode\b|\bpython3?\b|\bgradle\b|\bmvn\b|\bmaven\b',
+    re.IGNORECASE,
+)
+_PKILL_DENY = (
+    'pkill/killall host-wide dev-process guard (EI-18690252462401774): `{op}` '
+    'matches by SUBSTRING across the ENTIRE host process table — not scoped to '
+    'your own PID tree. On this shared box this has already killed OTHER '
+    "agents' in-flight test/build runs that happened to share the same command "
+    'substring (5-6 peer `test:affected` runs died at once on 2026-07-26, each '
+    'looking like an unrelated crash to its owner). Kill YOUR OWN process by its '
+    'SPECIFIC PID instead: `kill <pid>` — the pid is printed when you '
+    '`run_in_background`, or from `ps aux` filtered to a marker you can verify '
+    'is really your own process (e.g. its /proc/<pid>/environ or full command '
+    'line), never a bare pattern match. If you truly need pattern matching, '
+    'scope it to your own process tree first (e.g. list children of $$ / your '
+    'own shell PID) rather than a host-wide substring.'
+)
+for _seg in re.split(r'[;&|\n]', command):
+    _pk = _seg.strip()
+    for _ in range(8):
+        _pk_next = re.sub(
+            r'^\s*(?:'
+            r'sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*'
+            r'|env(?:\s+[A-Za-z_]\w*=\S*)*'
+            r'|nice(?:\s+-n\s*-?\d+)?'
+            r'|ionice(?:\s+-\w+(?:\s+\d+)?)*'
+            r'|xargs(?:\s+-\w+)*'
+            r'|rtk|time|command|nohup|exec|setsid|nocorrect|stdbuf|doas|nocache'
+            r')\s+',
+            '', _pk, count=1)
+        if _pk_next == _pk:
+            break
+        _pk = _pk_next
+    _pk_m = re.match(r'(pkill|killall)\b(.*)$', _pk, re.IGNORECASE | re.DOTALL)
+    if _pk_m and _PKILL_DEV_TOKEN_RE.search(_pk_m.group(2)):
+        deny(_PKILL_DENY.format(op=_pk.strip()[:160]))
+
 # ── tauri-agent-tools target guard (EI-10939) ────────────────────────────────
 # SAFETY. `tauri-agent-tools` picks its target by scanning /tmp for
 # `tauri-dev-bridge-<pid>.token` files and taking THE FIRST LIVE ONE IT HAPPENS
@@ -979,9 +1042,64 @@ try:
 except Exception:
     pass  # admission control must never wedge a command
 
-# Cheap local pre-filter — skip the HTTP round-trip for the 99% of commands
-# that can't touch a registered resource. Tokens mirror the seeded patterns.
-if not re.search(r'systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(dev|build)', command):
+# ── Substitution pre-filter (bash-to-tool-substitution-2026-07-26, P-016) ───
+# The bash→tool substitution registry claims commands by the VERB at the head
+# of a command atom (`sed -n '1,80p' f`, `cat f`, `psql -c "SELECT …"`). Testing
+# those verbs as bare substrings would be a disaster: `re.search('cat', cmd)`
+# matches "concatenate", "duplicate", "categories" — so nearly every command
+# would pay the HTTP round-trip this pre-filter exists to avoid.
+#
+# So this is a direct port of the server's own atomizer
+# (packages/operator-core/lib/bash-substitution/atomize.ts): split on the same
+# separators, peel the same runner/env prefixes, take the first token with any
+# leading path stripped. Matching the server's definition of an ATOM here is not
+# tidiness — a pre-filter that disagrees with the matcher silently drops the
+# very commands a rule was written for, and that failure is invisible (no error,
+# just an advisory that never fires).
+_SUBST_SPLIT_RE = re.compile(r'\|\||&&|\||;|\n')
+_SUBST_RUNNER_RE = re.compile(
+    r'^(?:sudo\s+(?:-n\s+)?|nohup\s+|timeout\s+\S+\s+|time\s+|env\s+|command\s+|exec\s+)+')
+_SUBST_ENV_RE = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+')
+
+# Atom heads any enabled registry row can claim. Kept as a SET (not a regex
+# alternation) so it stays a cheap hash lookup on the hot path.
+#
+# DRIFT IS THE HAZARD HERE — the same one migration 665's comment names about
+# the resource pre-filter ("a new resource with a novel pattern needs a token
+# added here"). A row added to the registry whose verb is missing from this set
+# is enforced nowhere and reports nothing. That is guarded mechanically rather
+# than by memory: bash-resource-gate.test.ts replays every atom in the committed
+# equivalence FIXTURES through this script and asserts each one reaches the
+# operator, so adding a pair without adding its verb here fails that test.
+_SUBSTITUTION_HEADS = frozenset(('sed', 'cat', 'head', 'tail', 'psql'))
+
+
+def _substitution_prefilter_hit(cmd):
+    for part in _SUBST_SPLIT_RE.split(cmd):
+        atom = part.strip()
+        while True:
+            stripped = _SUBST_ENV_RE.sub('', _SUBST_RUNNER_RE.sub('', atom))
+            if stripped == atom:
+                break
+            atom = stripped
+        if not atom:
+            continue
+        head = atom.split()[0].split('/')[-1].strip('({`$\'"')
+        if head in _SUBSTITUTION_HEADS:
+            return True
+    return False
+
+
+# Cheap local pre-filter — skip the HTTP round-trip for the commands that can
+# touch neither a registered resource nor a substitution rule. Tokens mirror the
+# seeded patterns.
+try:
+    _needs_check = bool(
+        re.search(r'systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(dev|build)', command)
+    ) or _substitution_prefilter_hit(command)
+except Exception:
+    _needs_check = False  # a pre-filter bug must never wedge a command
+if not _needs_check:
     allow()
 
 # Per-session owner (so the caller's OWN exclusive doesn't gate their own
@@ -1042,15 +1160,74 @@ for item in (result.get('content') or []):
             break
         except Exception:
             continue
-if not inner or inner.get('decision') != 'block':
+if not inner:
     allow()
 
-matched = inner.get('matched') or []
-names = ', '.join(m.get('resource', '?') for m in matched) or 'a registered resource'
-deny(
-    f"resource-gate: this command touches {names}, which has an exclusive hold "
-    f"in flight (a peer is restarting/migrating it). Wait for the 'back up' "
-    f"broadcast, or coordinate via locks:list / locks:acquire_resource. "
-    f"Use the blessed wrapper (dev:restart / db:migrate) instead of a raw command."
-)
+# ── Substitution verdict (bash-to-tool-substitution-2026-07-26, P-016) ──────
+# Same round-trip, second question: did a registry rule claim this command?
+# This is a new matched CLASS inside the existing three-tier design, NOT a
+# fourth mechanism (plan D-003) — `advise` reuses the ADVISORY channel three
+# guards above already ride on, and `deny` reuses deny().
+#
+# The resource verdict is evaluated FIRST and wins: an exclusive hold means a
+# peer is mid restart/migration right now, which is a live collision, whereas a
+# substitution is a lasting suggestion about tool choice. Telling an agent
+# "prefer capability:read" while its command would collide with a migration
+# would bury the urgent message under the educational one.
+#
+# Wrapped whole in try/except: a malformed substitutions payload must degrade to
+# the resource-only behaviour this file had before, never wedge a command.
+try:
+    _subs = inner.get('substitutions') or []
+    _stier = inner.get('substitutionTier')
+except Exception:
+    _subs, _stier = [], None
+
+if inner.get('decision') == 'block':
+    matched = inner.get('matched') or []
+    names = ', '.join(m.get('resource', '?') for m in matched) or 'a registered resource'
+    deny(
+        f"resource-gate: this command touches {names}, which has an exclusive hold "
+        f"in flight (a peer is restarting/migrating it). Wait for the 'back up' "
+        f"broadcast, or coordinate via locks:list / locks:acquire_resource. "
+        f"Use the blessed wrapper (dev:restart / db:migrate) instead of a raw command."
+    )
+
+try:
+    if _stier in ('advise', 'deny') and _subs:
+        # One line per claimed intent: the advisory_text is authored per row and
+        # is the whole point of the registry — a tier that fires without it
+        # teaches nothing, which is the dev:processes outcome migration 665's
+        # CHECK constraint exists to prevent.
+        _lines = []
+        for _s in _subs:
+            _tool = _s.get('toolName') or '?'
+            _text = (_s.get('advisoryText') or '').strip()
+            _atom = (_s.get('atom') or '').strip()
+            _lines.append(
+                '  • `%s` → %s\n    %s' % (_atom[:160], _tool, _text) if _text
+                else '  • `%s` → %s' % (_atom[:160], _tool)
+            )
+        _body = '\n'.join(_lines)
+
+        if _stier == 'deny':
+            deny(
+                'substitution-gate: this command has a tool form that must be used '
+                'instead.\n\n%s\n\nRe-run using the tool above. (This rule reached '
+                '`deny` only by proving equivalence against real sampled commands, '
+                'or because the prohibition already existed independently.)' % _body
+            )
+        elif not ADVISORY:
+            # SOFT: rides out as additionalContext on an explicit allow. The
+            # command proceeds exactly as issued — this only teaches the routing.
+            ADVISORY = (
+                'bash→tool advisory: a tool already answers this question '
+                'directly.\n\n%s\n\nThe tool call is cheaper (no shell round-trip, '
+                'structured result) and is what the routing table points at. '
+                'Advisory only; this command is proceeding as issued.' % _body
+            )
+except Exception:
+    pass  # advisory must never wedge a command
+
+allow()
 PYEOF

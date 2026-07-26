@@ -473,7 +473,14 @@ export async function fetchFrontierRows(
       FROM harness_shared.harness_features_consolidated wi
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
-       AND status = 'todo'
+       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
+       -- 'todo' was rewritten to the unified claimable token 'open' (issue-family already
+       -- used 'open'). This literal was never updated, so every genuinely-placeable
+       -- feature-family row has been silently invisible to the Mug's survey since that
+       -- migration ran (EI-13699 2026-07-17 pre-dates it and had a different proximate
+       -- cause; EI-18690462961089460 2026-07-26 is the post-migration recurrence this
+       -- fixes — pot:survey read frontier:0 while work_items:claimable read ~1062).
+       AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
        -- EI-13501: a claim-held item (payload._claimHold — the SAME general-purpose
@@ -547,7 +554,14 @@ export async function fetchEscalatedIssueFrontierRows(
       FROM harness_shared.work_items wi
      WHERE workspace_id = ${workspaceId}
        AND item_kind IN ('bug', 'change', 'task')
-       AND status = 'todo'
+       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
+       -- 'todo' was rewritten to the unified claimable token 'open' (issue-family already
+       -- used 'open'). This literal was never updated, so every genuinely-placeable
+       -- feature-family row has been silently invisible to the Mug's survey since that
+       -- migration ran (EI-13699 2026-07-17 pre-dates it and had a different proximate
+       -- cause; EI-18690462961089460 2026-07-26 is the post-migration recurrence this
+       -- fixes — pot:survey read frontier:0 while work_items:claimable read ~1062).
+       AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND COALESCE(payload -> '_ei' ->> 'severity', 'minor') IN ('critical', 'major')
        AND ${autoPickableWhereSql(sql, workspaceId)}
@@ -609,7 +623,14 @@ export async function countPlaceableFrontier(
       FROM harness_shared.harness_features_consolidated wi
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
-       AND status = 'todo'
+       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
+       -- 'todo' was rewritten to the unified claimable token 'open' (issue-family already
+       -- used 'open'). This literal was never updated, so every genuinely-placeable
+       -- feature-family row has been silently invisible to the Mug's survey since that
+       -- migration ran (EI-13699 2026-07-17 pre-dates it and had a different proximate
+       -- cause; EI-18690462961089460 2026-07-26 is the post-migration recurrence this
+       -- fixes — pot:survey read frontier:0 while work_items:claimable read ~1062).
+       AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
        -- EI-13501: MUST mirror fetchFrontierRows' claim-hold exclusion (this count
@@ -665,7 +686,14 @@ export async function countQuarantinedFrontier(
       FROM harness_shared.harness_features_consolidated f
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
-       AND status = 'todo'
+       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
+       -- 'todo' was rewritten to the unified claimable token 'open' (issue-family already
+       -- used 'open'). This literal was never updated, so every genuinely-placeable
+       -- feature-family row has been silently invisible to the Mug's survey since that
+       -- migration ran (EI-13699 2026-07-17 pre-dates it and had a different proximate
+       -- cause; EI-18690462961089460 2026-07-26 is the post-migration recurrence this
+       -- fixes — pot:survey read frontier:0 while work_items:claimable read ~1062).
+       AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        -- The ONE inverted leg: everything else mirrors countPlaceableFrontier, so
        -- the two partition the same row set into admissible vs. quarantined.
@@ -771,7 +799,14 @@ export async function fetchReconcileFrontier(
       ) cn ON true
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
-       AND status = 'todo'
+       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
+       -- 'todo' was rewritten to the unified claimable token 'open' (issue-family already
+       -- used 'open'). This literal was never updated, so every genuinely-placeable
+       -- feature-family row has been silently invisible to the Mug's survey since that
+       -- migration ran (EI-13699 2026-07-17 pre-dates it and had a different proximate
+       -- cause; EI-18690462961089460 2026-07-26 is the post-migration recurrence this
+       -- fixes — pot:survey read frontier:0 while work_items:claimable read ~1062).
+       AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
        AND NOT EXISTS (

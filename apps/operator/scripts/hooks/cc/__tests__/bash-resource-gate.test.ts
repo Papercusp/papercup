@@ -12,7 +12,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,7 +49,7 @@ function runGate(
     },
     timeout: 15_000,
   });
-  return { stdout: r.stdout ?? '', status: r.status };
+  return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
 }
 
 function expectDeny(out: { stdout: string; status: number | null }) {
@@ -475,6 +476,61 @@ describe('systemd user-manager exit/kill guard (EI-13135)', () => {
     ['"systemctl --user exit" inside a quoted string, not command position', 'echo "systemctl --user exit"'],
     ['a stop of an unrelated numbered service (not user@)', 'systemctl stop worker@1000.service'],
     ['ordinary command', 'ls -la'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command)));
+  });
+});
+
+/**
+ * EI-18690252462401774 — pkill/killall host-wide dev-process guard.
+ *
+ * `pkill -f <substring>` (and `killall <name>`) match by process cmdline/name
+ * SUBSTRING across the ENTIRE host process table, not scoped to the caller's
+ * own PID tree. An agent cleaning up its OWN redundant backgrounded
+ * `npm run test:affected` job ran `pkill -f "test:affected"` and collaterally
+ * killed 5-6 OTHER agents' in-flight `test:affected` runs on this shared host
+ * (2026-07-26). UNCONDITIONAL: like the systemd exit-guard above, this fires
+ * with NO agent marker and NO tree/cwd condition — the hazard is host-wide
+ * process-table scope, not a working tree.
+ */
+function expectPkillDeny(out: { stdout: string; status: number | null }) {
+  const reason = denyReason(out);
+  expect(reason).toContain('EI-18690252462401774');
+}
+
+describe('pkill/killall host-wide dev-process guard (EI-18690252462401774)', () => {
+  it.each([
+    ['pkill -f test:affected (the exact repro)', 'pkill -f "test:affected"'],
+    ['pkill -f test:affected, unquoted', 'pkill -f test:affected'],
+    ['killall vitest', 'killall vitest'],
+    ['pkill -f npm run test', 'pkill -f "npm run test"'],
+    ['pkill -f vitest', 'pkill -f vitest'],
+    ['pkill -f jest', 'pkill -f jest'],
+    ['pkill -f tsc', 'pkill -f tsc'],
+    ['pkill node', 'pkill node'],
+    ['killall -9 python3', 'killall -9 python3'],
+    ['pkill -f playwright', 'pkill -f playwright'],
+    ['pkill -f cargo', 'pkill -f cargo'],
+    ['sudo-prefixed', 'sudo pkill -f "npm run test"'],
+    ['compound &&', 'cd /tmp && pkill -f vitest'],
+    ['compound ;', 'echo done ; killall vitest'],
+    ['newline-separated', 'true\npkill -f test:affected'],
+    ['rtk-wrapped (the same wrapper-bypass class as the git-guard)', 'rtk pkill -f vitest'],
+    ['time-wrapped', 'time pkill -f test:affected'],
+    ['env-wrapped', 'env FOO=bar pkill -f vitest'],
+  ])('denies %s — with NO agent marker, NO tree cwd', (_label, command) => {
+    expectPkillDeny(runGate(bashCmd(command)));
+  });
+
+  it.each([
+    ['a genuinely unique/caller-specific pattern', 'pkill -f my-unique-script-xyz123'],
+    ['killing a specific PID (the recommended remedy)', 'kill -9 12345'],
+    ['killing a specific PID, plain', 'kill 12345'],
+    ['read-only pgrep (not pkill/killall)', 'pgrep vitest'],
+    ['prose mention, not command position', 'echo "you could pkill -f vitest here"'],
+    ['a commit message mentioning it', 'git commit -m "fix: guard against pkill -f test:affected"'],
+    ['ordinary command', 'ls -la'],
+    ['ordinary process listing', 'ps aux | grep vitest'],
   ])('allows %s', (_label, command) => {
     expectAllow(runGate(bashCmd(command)));
   });
@@ -1136,5 +1192,173 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     // false deny; already covered structurally by the existing `(( a >= b ))`
     // allow-case above, this asserts the un-`=`-suffixed `>100` form too.
     expectAllow(runGate(bashCmd('echo $(( 1 > 100 ))', { cwd: CANON }), CANON_ENV));
+  });
+});
+
+// ── Substitution gate (bash-to-tool-substitution-2026-07-26, P-016) ─────────
+// Two distinct things are under test and they fail differently:
+//   1. the PRE-FILTER — does a command a registry rule could claim actually
+//      reach the operator? A pre-filter miss is SILENT: no error, just an
+//      advisory that never fires for the commands it was written for.
+//   2. the VERDICT HANDLING — given a substitution payload, does `advise` ride
+//      out as a non-blocking additionalContext and `deny` actually deny?
+describe('substitution pre-filter', () => {
+  // With OPERATOR_URL pointed at a dead port, a command that PASSES the
+  // pre-filter attempts HTTP and fails open with a diagnostic on stderr, while
+  // one filtered out returns in silence. That difference is the probe.
+  const reachedOperator = (out: { stderr: string }) => out.stderr.includes('operator unreachable');
+
+  it.each([
+    ['sed range read', "sed -n '1,80p' packages/foo.ts"],
+    ['sed behind a cd', "cd /repo && sed -n '1,80p' packages/foo.ts"],
+    ['cat a file', 'cat packages/operator-core/lib/foo.ts'],
+    ['head a file', 'head -n 20 packages/foo.ts'],
+    ['tail a file', 'tail -n 50 packages/foo.ts'],
+    ['psql select', 'psql -d papercusp -c "SELECT 1"'],
+    ['behind sudo', "sudo sed -n '1,5p' /etc/hosts"],
+    ['behind an env assignment', 'FOO=bar cat notes.txt'],
+    ['second atom in a pipeline', 'echo hi; cat notes.txt'],
+  ])('routes %s to the operator', (_label, command) => {
+    expect(reachedOperator(runGate(bashCmd(command)))).toBe(true);
+  });
+
+  it.each([
+    ['a plain listing', 'ls -la'],
+    ['a word merely CONTAINING a verb', 'echo concatenate the duplicates'],
+    ['a path merely containing a verb', 'node scripts/cat-herder.mjs'],
+    ['an unrelated npm script', 'npm run lint'],
+  ])('does NOT pay an HTTP round-trip for %s', (_label, command) => {
+    const out = runGate(bashCmd(command));
+    expect(reachedOperator(out)).toBe(false);
+    expectAllow(out);
+  });
+
+  // THE ANTI-DRIFT GUARD. The pre-filter keeps a hand-written verb set, and a
+  // registry pair whose verb is missing from it is enforced nowhere while every
+  // other test stays green. This replays the REAL atoms behind every recorded
+  // equivalence verdict — the same frozen corpus those verdicts were computed
+  // from — and asserts each still reaches the operator. Add a pair without
+  // adding its verb and this goes red.
+  const FIXTURE_DIR = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../../packages/operator-core/lib/bash-substitution/fixtures',
+  );
+
+  it('every atom behind a recorded verdict passes the pre-filter', () => {
+    const files = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.sample.json'));
+    expect(files.length).toBeGreaterThan(0);
+
+    const missed: string[] = [];
+    for (const file of files) {
+      const fixture = JSON.parse(readFileSync(join(FIXTURE_DIR, file), 'utf8')) as {
+        sample: { atom: string }[];
+      };
+      for (const { atom } of fixture.sample) {
+        if (!reachedOperator(runGate(bashCmd(atom)))) missed.push(`${file}: ${atom}`);
+      }
+    }
+    expect(missed, `pre-filter dropped atoms a registry rule claims:\n${missed.join('\n')}`).toEqual(
+      [],
+    );
+  });
+});
+
+describe('substitution verdict handling', () => {
+  // A stand-in operator returning a real MCP envelope, so the hook's own
+  // response parsing is exercised rather than mocked away.
+  let server: Server;
+  let url = '';
+  let reply: Record<string, unknown> = {};
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...reply }) }] },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+    const addr = server.address();
+    url = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((ok) => server.close(() => ok()));
+  });
+
+  const CAT = 'cat packages/operator-core/lib/foo.ts';
+  const SUB = {
+    intentLabel: 'file-whole-read',
+    toolName: 'capability:read',
+    tier: 'advise',
+    advisoryText: 'capability:read { file_path } returns the whole file.',
+    atom: CAT,
+  };
+  const run = (command = CAT) => runGate(bashCmd(command), { PAPERCUSP_OPERATOR_URL: url });
+
+  it('tier=advise rides out as a NON-BLOCKING additionalContext', () => {
+    reply = { decision: 'allow', matched: [], substitutions: [SUB], substitutionTier: 'advise' };
+    const out = run();
+    const hook = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('allow'); // the command still runs
+    expect(hook.additionalContext).toContain('capability:read');
+    expect(hook.additionalContext).toContain('proceeding as issued');
+  });
+
+  it('tier=observe changes nothing the agent sees', () => {
+    reply = {
+      decision: 'allow',
+      matched: [],
+      substitutions: [{ ...SUB, tier: 'observe' }],
+      substitutionTier: 'observe',
+    };
+    expectAllow(run());
+  });
+
+  it('tier=deny blocks and names the tool to use instead', () => {
+    reply = {
+      decision: 'allow',
+      matched: [],
+      substitutions: [{ ...SUB, tier: 'deny' }],
+      substitutionTier: 'deny',
+    };
+    const hook = JSON.parse(run().stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('deny');
+    expect(hook.permissionDecisionReason).toContain('capability:read');
+  });
+
+  it('an in-flight RESOURCE hold outranks a substitution advisory', () => {
+    // A lock collision is happening right now; tool-choice guidance is not.
+    // Burying the urgent message under the educational one is the failure.
+    reply = {
+      decision: 'block',
+      matched: [{ resource: 'dev:restart' }],
+      substitutions: [SUB],
+      substitutionTier: 'advise',
+    };
+    const hook = JSON.parse(run().stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('deny');
+    expect(hook.permissionDecisionReason).toContain('resource-gate');
+  });
+
+  it('degrades to pre-P-016 behaviour when the payload carries no substitutions', () => {
+    reply = { decision: 'allow', matched: [] };
+    expectAllow(run());
+  });
+
+  it('never wedges a command on a malformed substitutions payload', () => {
+    reply = { decision: 'allow', matched: [], substitutions: 'not-an-array', substitutionTier: 'advise' };
+    const out = run();
+    expect(out.status).toBe(0);
+    if (out.stdout.trim()) {
+      expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('allow');
+    }
   });
 });

@@ -17,9 +17,11 @@
  *     the agent to start a turn and pick it up.
  *
  * Composes the shipped wake substrate (`wakeRecipients` fires the per-owner inbox-wake key;
- * `reportIdleRecipients` classifies a miss) — it builds NO second wake pump, and reports an
- * `ended`/dead target LOUDLY (a wake that reached nobody is a relaunch signal, never a silent
- * woken:0).
+ * `reportIdleRecipients` classifies a miss) — it builds NO second wake pump, and reports a
+ * miss as one of TWO distinct kinds, never folded together (WI-5994): `ended` (genuinely dead,
+ * no scheduled fire) is a LOUD relaunch signal, never a silent woken:0; `dormant-scheduled`
+ * (an armed loop with a known future nextFireAt) reports its delivery ETA instead — the
+ * message is DEFERRED, not lost, so a caller must not relaunch/reassign on that alone.
  */
 
 import { z } from 'zod';
@@ -33,7 +35,7 @@ import { softText, clampText, LIMITS } from '../../limits';
 export default defineTool({
   name: 'coord:wake',
   description:
-    "Wake a PARKED agent NOW so it starts a turn and re-orients on its already-claimed lane — the discoverable alias for the events:emit coord:inbox-wake:<id> key (which agents kept 404ing on as coord:wake/coord:nudge). Single-target (never '*'). Optional `note` is a one-line nudge; omit for a bare wake. Returns { ok, to, woken, recipient_dead?, warning? }. A wake that reaches no live session is a LOUD miss (the target is `ended` → relaunch it), never a silent woken:0. To ALSO hand off a lane, use coord:dispatch; to deliver a contextual message, coord:send {wake:'required'}.",
+    "Wake a PARKED agent NOW so it starts a turn and re-orients on its already-claimed lane — the discoverable alias for the events:emit coord:inbox-wake:<id> key (which agents kept 404ing on as coord:wake/coord:nudge). Single-target (never '*'). Optional `note` is a one-line nudge; omit for a bare wake. Returns { ok, to, woken, recipient_dead?, recipient_dormant_scheduled?, warning? }. A miss reports WHICH kind: `ended` (genuinely dead, no scheduled fire) is a LOUD miss — relaunch it, never treat as silent woken:0; a target with an armed loop instead reports `recipient_dormant_scheduled` with its next fire ETA — delivery is DEFERRED, not lost, so do NOT relaunch/reassign on that alone. To ALSO hand off a lane, use coord:dispatch; to deliver a contextual message, coord:send {wake:'required'}.",
   guidance: {
     when: 'The work is ALREADY assigned to the target (plan_items:assign or a prior dispatch) and you just need it to start a turn and pick it up — a re-orient nudge. Pick a `parked` target (coord:presence → sessionState:parked).',
     notWhen: 'You are assigning a NEW lane — use coord:dispatch (assign+wake+confirm). You have a contextual message to deliver — use coord:send {wake:\'required\'}. The target is `ended` (coord:presence) — it needs a relaunch/resume, not a wake.',
