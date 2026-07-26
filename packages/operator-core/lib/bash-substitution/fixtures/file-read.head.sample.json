@@ -7,7 +7,7 @@
     {
       "sid": "su-a28a5f3c-4f45-465e-af05-e1e6e05668a9",
       "ts": "2026-07-26T02:39:58.180Z",
-      "atom": "head -1 /home/marsh-office/.papercusp/live-fed-gate/triage/serve-b-220159.log"
+      "atom": "head -1 /home/dev/.papercusp/live-fed-gate/triage/serve-b-220159.log"
     },
     {
       "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
@@ -72,7 +72,7 @@
     {
       "sid": "su-5d27fac9-98b3-4012-8537-18b12cdf114d",
       "ts": "2026-07-25T23:55:01.492Z",
-      "atom": "head -40 /home/marsh-office/papercupai-workspace/papercusp/.claude/skills/verdict/SKILL.md 2>/dev/null"
+      "atom": "head -40 /home/dev/papercupai-workspace/papercusp/.claude/skills/verdict/SKILL.md 2>/dev/null"
     },
     {
       "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
@@ -102,7 +102,7 @@
     {
       "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
       "ts": "2026-07-21T10:12:53.489Z",
-      "atom": "head -60 /home/marsh-office/.papercusp/scratch/wi5672-routine-capture.sh"
+      "atom": "head -60 /home/dev/.papercusp/scratch/wi5672-routine-capture.sh"
     },
     {
       "sid": "su-1204f89e-6d36-44ed-9b18-54ff8ac9530d",

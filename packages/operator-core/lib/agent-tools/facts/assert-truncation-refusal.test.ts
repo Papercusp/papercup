@@ -1,5 +1,5 @@
 /**
- * EI-18685042986450096 (Avi, owner-flagged): facts:assert used to write a
+ * EI-18685042986450096 (owner-flagged): facts:assert used to write a
  * clipped body UNCONDITIONALLY and only disclose the loss AFTER the write
  * (truncationField) — silently dropping the operative clause 3x, once
  * removing a discriminator rule's verdict sentence entirely. The handler now

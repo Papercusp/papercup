@@ -116,7 +116,7 @@ describe('SessionActions — params (radio, options vary by ctx)', () => {
 
 describe('SessionActions — launchInNewTerminal', () => {
   it('resume posts resumeSessionId + fork:false + a label to the console launch route', async () => {
-    const ctx: SessionActionCtx = { ...baseCtx, agent: 'claude', sessionId: 's1', ownerLabel: 'Avi' };
+    const ctx: SessionActionCtx = { ...baseCtx, agent: 'claude', sessionId: 's1', ownerLabel: 'Ada' };
     await launchInNewTerminal(ctx, false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
@@ -124,7 +124,7 @@ describe('SessionActions — launchInNewTerminal', () => {
     expect(init.method).toBe('POST');
     expect(init.headers).toMatchObject({ 'content-type': 'text/plain' });
     const body = JSON.parse(init.body as string);
-    expect(body).toMatchObject({ resumeSessionId: 's1', fork: false, label: 'resume · Avi' });
+    expect(body).toMatchObject({ resumeSessionId: 's1', fork: false, label: 'resume · Ada' });
   });
 
   it('fork posts fork:true and a fork-labelled request', async () => {

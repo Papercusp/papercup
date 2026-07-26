@@ -30,7 +30,7 @@
 #   (c) STRANDED TMP — a "*.tmp" pg_dump staging directory under BACKUP_DUMP_DIR/pg/ older
 #       than BACKUP_STALE_TMP_MAX_H. This is the recurrence guard for EI-18678678853631218
 #       (2026-07-26): a failed pg_dump -Fd leaves a 0700 postgres-owned "$db.tmp" that a
-#       marsh-office `rm -rf` cannot remove on the failure path. Because pg_dump -Fd refuses
+#       service-user `rm -rf` cannot remove on the failure path. Because pg_dump -Fd refuses
 #       a non-empty target, ONE stranded .tmp silently fails every subsequent hourly run for
 #       that database forever — (a) and (b) both eventually catch that (the artifact goes
 #       stale / the log fills with FAILs), but this signal names the ACTUAL mechanism
@@ -324,7 +324,7 @@ fi
 # ── (c) STRANDED TMP — the EI-18678678853631218 recurrence guard ───────────
 # A "*.tmp" pg_dump -Fd staging directory under $BACKUP_DUMP_DIR/pg/ that survives past
 # one dump cycle means the failure-path cleanup could not remove it (0700 postgres-owned,
-# `rm -rf` as marsh-office denied) — and because pg_dump -Fd refuses a non-empty target,
+# `rm -rf` as the service user denied) — and because pg_dump -Fd refuses a non-empty target,
 # that ONE stranded .tmp silently fails every later run of that database. db-backup.sh's
 # rm_tmp() now falls back to `sudo -n rm -rf`, so this should never fire; if it does, the
 # fallback itself is failing (e.g. a sudoers change) and needs a human, not just a retry.
@@ -339,7 +339,7 @@ if [ -d "$PG_DIR" ]; then
 
 $STALE_TMPS
 
-pg_dump -Fd refuses to write into a non-empty target, so as long as a stale '.tmp' sits here the database it belongs to fails EVERY hourly run — silently, unless (a)/(b) above happen to also fire. This is the EI-18678678853631218 failure shape: a failed dump's 0700 postgres-owned '.tmp' cannot be removed by a plain \`rm -rf\` running as marsh-office on the failure path.
+pg_dump -Fd refuses to write into a non-empty target, so as long as a stale '.tmp' sits here the database it belongs to fails EVERY hourly run — silently, unless (a)/(b) above happen to also fire. This is the EI-18678678853631218 failure shape: a failed dump's 0700 postgres-owned '.tmp' cannot be removed by a plain \`rm -rf\` running as the service user on the failure path.
 
 CHECK FIRST: db-backup.sh's rm_tmp() (added 2026-07-26) should already fall back to \`sudo -n rm -rf\` for exactly this case — if a .tmp is still stranded, that fallback itself is failing (e.g. a sudoers/NOPASSWD change, disk-full on the delete). Read \$BACKUP_DUMP_DIR/db-backup.log for 'WARN could not remove stale tmp' to confirm, then fix the sudoers/perms gap. Manual recovery: \`sudo rm -rf <path>\` once, to let the next hourly run proceed."
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then

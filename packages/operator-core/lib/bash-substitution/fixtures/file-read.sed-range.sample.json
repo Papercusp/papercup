@@ -67,7 +67,7 @@
     {
       "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
       "ts": "2026-07-21T00:24:16.382Z",
-      "atom": "sed -n '19570,19700p' /home/marsh-office/.papercusp/live-fed-gate/triage/serve-a-202043.log"
+      "atom": "sed -n '19570,19700p' /home/dev/.papercusp/live-fed-gate/triage/serve-a-202043.log"
     },
     {
       "sid": "su-3dfbc0fd-e642-46b0-b81e-abed2ae62eea",

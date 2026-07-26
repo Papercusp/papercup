@@ -1,8 +1,8 @@
 diff --git a/node_modules/hyperdht/lib/connect.js b/node_modules/hyperdht/lib/connect.js
-index 86afb4e..d85689f 100644
+index 86afb4e..69dc640 100644
 --- a/node_modules/hyperdht/lib/connect.js
 +++ b/node_modules/hyperdht/lib/connect.js
-@@ -217,17 +217,94 @@ async function holepunch(c, opts) {
+@@ -217,17 +217,105 @@ async function holepunch(c, opts) {
  
    const relayed = diffAddress(serverAddress, relayAddress)
  
@@ -64,7 +64,18 @@ index 86afb4e..d85689f 100644
 +  mark('udxAddresses4', candidates.map(a => ({ host: a.host, port: a.port, bogon: isBogon(a.host) })))
 +  mark('udxAddresses4AllBogon', candidates.length > 0 && candidates.every(a => isBogon(a.host)))
 +  mark('udxRemoteHolepunchable', remoteHolepunchable)
-+  mark('udxFirewall', payload.firewall)
++  // Emit firewall as a SELF-DESCRIBING LABEL, never the raw enum ordinal.
++  // FIREWALL = { UNKNOWN:0, OPEN:1, CONSISTENT:2, RANDOM:3 } — so the raw value
++  // renders as `firewall: 0` for UNKNOWN, which reads as falsy/none/"no firewall"
++  // and is the EXACT INVERSION of the truth (OPEN is 1, not 0). This field is
++  // load-bearing for the WI-5980 verdict: UNKNOWN is precisely the firewalled
++  // case that forces DHT egress onto the clientSocket. A reader who treats 0 as
++  // "not firewalled" concludes the opposite of what the data says.
++  // 'UNKNOWN(0)' cannot be misread, and cannot be confused with an ABSENT field
++  // (a stale bundle omits the key entirely rather than emitting a falsy value).
++  const FIREWALL_LABEL = { 0: 'UNKNOWN', 1: 'OPEN', 2: 'CONSISTENT', 3: 'RANDOM' }
++  const fw = payload.firewall
++  mark('udxFirewall', `${FIREWALL_LABEL[fw] ?? 'UNRECOGNIZED'}(${fw})`)
 +
    if (payload.firewall === FIREWALL.OPEN || (relayed && !remoteHolepunchable)) {
      const addr = getFirstRemoteAddress(payload.addresses4, serverAddress)
@@ -97,7 +108,7 @@ index 86afb4e..d85689f 100644
    const onabort = () => {
      c.session.destroy()
      maybeDestroyEncryptedSocket(c, HOLEPUNCH_ABORTED())
-@@ -477,6 +554,18 @@ async function connectThroughNode(c, address, socket) {
+@@ -477,6 +565,18 @@ async function connectThroughNode(c, address, socket) {
      payload
    }
  

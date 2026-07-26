@@ -220,7 +220,7 @@ export default defineTool({
         : args.slot === 'wall'
           ? normalizeWallSlot(args.key, args.body)
           : { key: args.key, body: args.body };
-    // EI-18685042986450096 (Avi, owner-flagged): the old behavior wrote the
+    // EI-18685042986450096 (owner-flagged): the old behavior wrote the
     // clipped body UNCONDITIONALLY and only disclosed the loss AFTER the write
     // (truncationField below) — silently dropping the OPERATIVE clause 3x,
     // once removing a discriminator rule's verdict sentence entirely. A fact

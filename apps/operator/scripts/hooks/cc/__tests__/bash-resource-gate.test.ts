@@ -16,6 +16,9 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The audited pairs, so the pre-filter guard reads each pair's VERDICT rather
+// than inferring enforceability from a fixture filename.
+import { ALL_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pretooluse-bash-resource-gate.sh');
 
@@ -1450,9 +1453,24 @@ describe('substitution pre-filter', () => {
     '../../../../../../packages/operator-core/lib/bash-substitution/fixtures',
   );
 
-  it('every atom behind a recorded verdict passes the pre-filter', () => {
-    const files = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.sample.json'));
-    expect(files.length).toBeGreaterThan(0);
+  // Scoped to the ENFORCEABLE pairs, exactly as the OMP hook's mirror of this
+  // guard is. A `not-a-substitute` pair (P-008's `ps`/`pgrep`) is dropped by
+  // `matchCommandToSubstitutions` unconditionally per D-007, so its atoms can
+  // never produce an advisory however the pre-filter behaves — admitting them
+  // would charge every `ps` call on the box a round-trip to be told nothing.
+  // The verdict is read off the pair, never inferred from a filename.
+  it('every atom behind an ENFORCEABLE verdict passes the pre-filter', () => {
+    const enforceable = new Set(
+      ALL_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
+        (p) => `${p.id}.sample.json`,
+      ),
+    );
+    const files = readdirSync(FIXTURE_DIR).filter(
+      (f) => f.endsWith('.sample.json') && enforceable.has(f),
+    );
+    // Exact, not `> 0`: a filter that silently dropped fixtures would make this
+    // guard vacuously green.
+    expect(files.length, 'a fixture is missing for some enforceable pair').toBe(enforceable.size);
 
     const missed: string[] = [];
     for (const file of files) {

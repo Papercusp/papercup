@@ -7,7 +7,7 @@
     {
       "sid": "su-9d23464a-a46e-4be8-80d1-50be8f4d0dc4",
       "ts": "2026-07-19T18:08:32.426Z",
-      "atom": "cat \"/home/marsh-office/.cargo-target/release/bundle/build-provenance.json\""
+      "atom": "cat \"/home/dev/.cargo-target/release/bundle/build-provenance.json\""
     },
     {
       "sid": "su-1204f89e-6d36-44ed-9b18-54ff8ac9530d",
@@ -17,17 +17,17 @@
     {
       "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
       "ts": "2026-07-20T08:27:58.776Z",
-      "atom": "cat /home/marsh-office/.config/systemd/user/papercup-staging-api.service.d/40-pgbouncer.conf 2>&1"
+      "atom": "cat /home/dev/.config/systemd/user/papercup-staging-api.service.d/40-pgbouncer.conf 2>&1"
     },
     {
       "sid": "su-21cd5f76-1476-4ee0-b596-30bc43b98bc9",
       "ts": "2026-07-21T01:14:22.057Z",
-      "atom": "cat /home/marsh-office/.papercusp/live-fed-gate/triage/scn.replication_soak-192224.log"
+      "atom": "cat /home/dev/.papercusp/live-fed-gate/triage/scn.replication_soak-192224.log"
     },
     {
       "sid": "su-772cf615-c6a4-488e-8491-b553ced6b4ac",
       "ts": "2026-07-20T18:20:38.404Z",
-      "atom": "cat /home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/653-fed-key-generated-col-stamp-mask.sql"
+      "atom": "cat /home/dev/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/653-fed-key-generated-col-stamp-mask.sql"
     },
     {
       "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
@@ -37,27 +37,27 @@
     {
       "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
       "ts": "2026-07-17T17:50:21.788Z",
-      "atom": "cat /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/0725437e-bf4c-473c-91f9-628579e9fe7f/tasks/bli2gad9p.output 2>&1"
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/0725437e-bf4c-473c-91f9-628579e9fe7f/tasks/bli2gad9p.output 2>&1"
     },
     {
       "sid": "su-fd41c149-504a-4421-9b10-3f9a6d94faa2",
       "ts": "2026-07-20T06:27:44.964Z",
-      "atom": "cat /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/529a0fae-a03d-477a-ba0c-db92bbb99efa/tasks/b49vpe8x2.output"
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/529a0fae-a03d-477a-ba0c-db92bbb99efa/tasks/b49vpe8x2.output"
     },
     {
       "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
       "ts": "2026-07-26T01:46:32.613Z",
-      "atom": "cat /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/929e59e5-abb8-4e42-b66d-9e56b9a530d0/tasks/bp21z5fw7.output"
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/929e59e5-abb8-4e42-b66d-9e56b9a530d0/tasks/bp21z5fw7.output"
     },
     {
       "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
       "ts": "2026-07-21T06:18:18.413Z",
-      "atom": "cat /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/c58fa2f2-2b22-4050-9ba0-164ca5fd4cae/tasks/btpym9rqz.output"
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/c58fa2f2-2b22-4050-9ba0-164ca5fd4cae/tasks/btpym9rqz.output"
     },
     {
       "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
       "ts": "2026-07-26T02:56:05.968Z",
-      "atom": "cat /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/fd86ac5d-d0f2-46e2-a689-507e4555f524/tasks/b05puxdv5.output'"
+      "atom": "cat /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/fd86ac5d-d0f2-46e2-a689-507e4555f524/tasks/b05puxdv5.output'"
     },
     {
       "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
