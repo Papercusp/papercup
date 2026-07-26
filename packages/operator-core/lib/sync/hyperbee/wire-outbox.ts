@@ -48,6 +48,7 @@ import {
   type OutboxDrainHandle,
 } from './outbox-drain';
 import { fanoutOutboxRow } from './fanout-projection';
+import { hubListen, listenHubEnabled } from '../../pg-listen-hub';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { registerPlanClobberNotifier } from './plan-clobber-notify';
 import { sendMessage } from '../../agent-tools/coordination/messages';
@@ -135,6 +136,16 @@ export async function wireOutboxForHarness(
         fanout: fanoutOutboxRow,
         epochEncrypt: rekeyDeps?.epochEncrypt,
         onSessionClosed: deps.onSessionClosed,
+        // P-008 (shared-hive-cross-machine-scale-10k): this is the PRODUCTION seam,
+        // so it is the one place that may safely route the drain's LISTEN through
+        // the shared hub — it runs against the real harness-admin database the hub
+        // itself connects to (`getHarnessAdminUrl()`). Without this, `pg.listen`
+        // reserves a dedicated PG backend PER HARNESS on the single global
+        // `substrate_outbox` channel: N harnesses = N connections, each discarding
+        // the other N-1 harnesses' payloads. The hub multiplexes them onto ONE
+        // ref-counted backend. Kill-switch: PAPERCUSP_LISTEN_HUB=0 (also OFF by
+        // default on laptop/workstation hosts) restores the per-harness listener.
+        listen: listenHubEnabled() ? hubListen : undefined,
       }));
 
   // (1) Best-effort one-time backfill. A failure here must not stop the drain —

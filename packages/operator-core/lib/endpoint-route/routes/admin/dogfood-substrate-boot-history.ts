@@ -70,7 +70,13 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   rekey_grant_failed: true,
   rekey_grant_skipped: true,
   rekey_boundary_skipped: true,
+  // WI-6043 (2026-07-26): the success-path twin of rekey_boundary_skipped.
+  rekey_boundary_applied: true,
   epoch_gate_built: true,
+  // WI-6043: pre-existing gap in this allow-list (epoch_gate_skipped was added to the
+  // BootHistoryKind union but never mirrored here) — closed in passing while fixing the
+  // rekey_boundary_applied compile error this same map guards against.
+  epoch_gate_skipped: true,
   epoch_gate_seen: true,
   epoch_defer: true,
   epoch_decrypt_fail: true,

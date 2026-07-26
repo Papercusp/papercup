@@ -746,6 +746,30 @@ export interface StartDrainOptions {
   fanout?: OutboxFanoutFn;
   /** Re-key encrypt-on-capture capability (C-001) — threaded to each drain pass. */
   epochEncrypt?: EpochEncryptCapability;
+  /**
+   * P-008 (shared-hive-cross-machine-scale-10k): subscribe to the outbox NOTIFY
+   * channel through a SHARED connection instead of this drain's own `pg.listen`.
+   *
+   * WHY: `pg.listen` reserves a dedicated PG backend per call, and this drain is
+   * started ONCE PER HARNESS — so N booted harnesses held N dedicated connections
+   * all subscribed to the SAME global `substrate_outbox` channel, each discarding
+   * the other N-1 harnesses' payloads. That is a hard connection-count wall at the
+   * 10k-hive scale this plan targets, and pure waste: the payload is already
+   * `ws::slug`-addressed, so one connection can fan out in-process.
+   *
+   * Pass {@link hubListen} (see `pg-listen-hub.ts`) to collapse every harness onto
+   * ONE backend — postgres-js multiplexes multiple `.listen()` calls on a single
+   * `sql` instance, and the hub ref-counts so the LAST unsubscribe closes it.
+   *
+   * OMITTED ⇒ byte-identical legacy behavior (this drain's own `pg.listen`). The
+   * default is deliberately NOT the hub: the hub connects to `getHarnessAdminUrl()`,
+   * so a caller that passes a DIFFERENT `pg` (an integration test's containerised
+   * database) must keep listening on its own connection or it would silently
+   * subscribe to the wrong database. The production seam (`wire-outbox.ts`) opts in.
+   *
+   * Contract: resolve to an unsubscribe fn; it is called once on drain teardown.
+   */
+  listen?: (channel: string, cb: (payload: string) => void) => Promise<() => void>;
   /** Test seam: override the per-pass watchdog timeout (`DRAIN_PASS_TIMEOUT_MS`).
    *  0 disables the watchdog. Production omits it. */
   _passTimeoutMs?: number;
@@ -861,8 +885,12 @@ export function startOutboxDrain(
   // inside `drainSafely`'s catch — can release them from one place.
   let pollTimer: ReturnType<typeof managedSetInterval> | null = null;
   let listenReq: ReturnType<typeof pg.listen> | undefined;
+  // P-008: set instead of `listenReq` when `opts.listen` (the shared hub) is used.
+  // Resolves to the hub's ref-counted unsubscribe — releasing OUR subscription only;
+  // the shared backend closes when the LAST harness detaches.
+  let sharedUnsubscribe: Promise<() => void> | undefined;
 
-  /** Idempotent: clears the poll timer + closes the LISTEN connection. */
+  /** Idempotent: clears the poll timer + releases the LISTEN subscription. */
   async function stopInternal(): Promise<void> {
     if (stopped) return;
     stopped = true;
@@ -874,7 +902,11 @@ export function startOutboxDrain(
       }
     }
     try {
-      if (listenReq) {
+      if (sharedUnsubscribe) {
+        // Shared-hub path: drop OUR subscription. Never closes a peer harness's
+        // listener — the hub ref-counts and only the last detach ends the backend.
+        (await sharedUnsubscribe)();
+      } else if (listenReq) {
         const req = await listenReq;
         await req.unlisten();
       }
@@ -1356,15 +1388,21 @@ export function startOutboxDrain(
   // Immediate catch-up drain.
   void drainSafely();
 
-  // LISTEN — drain on a matching NOTIFY. `pg.listen` reserves its own dedicated
-  // connection internally; the returned request's `unlisten()` releases it.
-  listenReq = pg.listen(NOTIFY_CHANNEL, (payload) => {
+  // LISTEN — drain on a matching NOTIFY. Two paths, SAME filter semantics: this
+  // drain reacts only to its own `ws::slug` payload either way.
+  //   - shared (P-008, `opts.listen`): every harness rides ONE ref-counted backend.
+  //   - legacy (default): `pg.listen` reserves its own dedicated connection
+  //     internally; the returned request's `unlisten()` releases it.
+  const onNotify = (payload: string): void => {
     if (stopped) return;
     if (payload === wantPayload) void drainSafely();
-  });
-  // Surface a listen-setup failure without crashing the boot path.
-  void Promise.resolve(listenReq).catch((e: unknown) => {
-
+  };
+  const listenSetup: Promise<unknown> = opts.listen
+    ? (sharedUnsubscribe = opts.listen(NOTIFY_CHANNEL, onNotify))
+    : Promise.resolve((listenReq = pg.listen(NOTIFY_CHANNEL, onNotify)));
+  // Surface a listen-setup failure without crashing the boot path. The poll-fallback
+  // timer below still guarantees drain liveness if the subscription never lands.
+  void listenSetup.catch((e: unknown) => {
     console.error(
       `[outbox-drain] LISTEN setup failed for ${wantPayload}:`,
       e instanceof Error ? e.message : String(e),
