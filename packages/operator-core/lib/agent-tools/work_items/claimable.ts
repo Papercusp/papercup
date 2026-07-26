@@ -25,6 +25,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import {
   aggregateIssueClaimExclusions,
   listIssueClaimableRows,
+  sampleIssueClaimExclusions,
 } from '../../scheduler/get-next';
 import {
   resolveFleetClaimSpec,
@@ -39,7 +40,7 @@ export default defineTool({
   name: 'work_items:claimable',
   profile: 'engineer',
   description:
-    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses (not `status='open'`, which overcounts ~13×). READ-ONLY: never claims. Returns { ok, harness, claimableCount, matchedByFilter, returned, claimable:[{ id, kind, title, status, severity, plan, featureOrder, createdTs }], excludedBreakdown, spec }. `claimableCount` is the trustworthy drain/wind-down number; `excludedBreakdown` buckets OVERLAP (rows can hit several floors) so they don't sum. An unrecognized `spec` (no matching fleet/specId) returns `{ ok:false, error, candidates }` — never a silent whole-backlog fallback.",
+    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses (not `status='open'`, which overcounts ~13×). READ-ONLY: never claims. Returns { ok, harness, claimableCount, matchedByFilter, returned, claimable:[{ id, kind, title, status, severity, plan, featureOrder, createdTs }], excludedBreakdown, spec }. `claimableCount` is the trustworthy drain/wind-down number; `excludedBreakdown` buckets OVERLAP (rows can hit several floors) so they don't sum. Pass `sampleExcluded` (1-10) to also get `excludedSample`: up to that many ids PER FLOOR (same overlapping-bucket semantics) — 'which items are on hold, and are those holds stale' without a hand-rolled raw-SQL query (a query against harness_shared.work_items filtering the legacy `kind` column, instead of the real family discriminator `item_kind`, silently matches ZERO rows and reads as a drained lane — EI-18682848605075155). An unrecognized `spec` (no matching fleet/specId) returns `{ ok:false, error, candidates }` — never a silent whole-backlog fallback.",
   guidance: {
     when: "You need how many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a wind-down/drain call, a backlog read, or picking work. SSOT; use instead of raw SQL on work_items or the claimable view.",
     notWhen:
@@ -84,6 +85,15 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('skip the row list — return only claimableCount + matchedByFilter + excludedBreakdown (cheaper)'),
+    sampleExcluded: z
+      .number()
+      .int()
+      .positive()
+      .max(10)
+      .optional()
+      .describe(
+        'also return `excludedSample`: up to this many ids PER FLOOR (taken/claimHold/needsHuman/…, same overlapping-bucket semantics as excludedBreakdown) — the ROW-LEVEL diagnostic companion to the counts, answering "which items" instead of just "how many" without raw SQL. Omit to skip (cheaper — one extra bounded query per call when set).',
+      ),
   }),
   async handler(args, ctx) {
     const harness = args.harness;
@@ -181,6 +191,9 @@ export default defineTool({
     const claimable = args.breakdownOnly
       ? []
       : await listIssueClaimableRows(filter, { harness, states, assignee, spec }, limit);
+    const excludedSample = args.sampleExcluded
+      ? await sampleIssueClaimExclusions(filter, { harness, states, assignee }, args.sampleExcluded)
+      : undefined;
 
     const payload = {
       ok: true as const,
@@ -193,6 +206,10 @@ export default defineTool({
       claimable,
       /** Per-floor stranding counts (INDEPENDENT/overlapping — they do NOT sum). */
       excludedBreakdown: breakdown.excluded,
+      /** Only present when `sampleExcluded` was passed: up to that many ids PER FLOOR
+       *  (same overlapping-bucket semantics as excludedBreakdown) — which rows, not just
+       *  how many. */
+      ...(excludedSample ? { excludedSample } : {}),
       spec: specProvenance,
       states: states ? [...states] : null,
       note:

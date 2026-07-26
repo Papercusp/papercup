@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../scheduler/get-next', () => ({
   aggregateIssueClaimExclusions: vi.fn(),
   listIssueClaimableRows: vi.fn(),
+  sampleIssueClaimExclusions: vi.fn(),
 }));
 vi.mock('../../scheduler/claim-spec-store', () => ({
   resolveFleetClaimSpec: vi.fn(),
@@ -23,11 +24,16 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'probe' }),
 }));
 
-import { aggregateIssueClaimExclusions, listIssueClaimableRows } from '../../scheduler/get-next';
+import {
+  aggregateIssueClaimExclusions,
+  listIssueClaimableRows,
+  sampleIssueClaimExclusions,
+} from '../../scheduler/get-next';
 import { resolveFleetClaimSpec, listFleetClaimSpecCandidates } from '../../scheduler/claim-spec-store';
 
 const aggM = vi.mocked(aggregateIssueClaimExclusions);
 const listM = vi.mocked(listIssueClaimableRows);
+const sampleM = vi.mocked(sampleIssueClaimExclusions);
 const recM = vi.mocked(resolveFleetClaimSpec);
 const candM = vi.mocked(listFleetClaimSpecCandidates);
 
@@ -68,6 +74,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   aggM.mockResolvedValue(BREAKDOWN as never);
   listM.mockResolvedValue(ROWS as never);
+  sampleM.mockResolvedValue({} as never);
   recM.mockResolvedValue(null as never);
   candM.mockResolvedValue([] as never);
 });
@@ -205,5 +212,36 @@ describe('work_items:claimable handler', () => {
     expect(aggM.mock.calls[0]![1]).toEqual(expect.objectContaining({ states: ['open', 'failing'] }));
     expect(listM.mock.calls[0]![1]).toEqual(expect.objectContaining({ states: ['open', 'failing'] }));
     expect(listM.mock.calls[0]![2]).toBe(5);
+  });
+
+  it('omitting sampleExcluded skips the sampler entirely and omits excludedSample from the payload', async () => {
+    const out = await run({ harness: 'papercup' });
+    expect(sampleM).not.toHaveBeenCalled();
+    expect(out.excludedSample).toBeUndefined();
+  });
+
+  it('sampleExcluded calls the sampler with the same filter/harness/states/assignee + the given limit, and surfaces excludedSample', async () => {
+    sampleM.mockResolvedValue({
+      taken: ['WI-1', 'WI-2'],
+      claimHold: ['WI-3'],
+      needsHuman: [],
+      observationLane: [],
+      externalBlocker: [],
+      planLaneReserved: [],
+      federationDetector: [],
+      loopNoise: [],
+      alreadyCompleted: [],
+      crossMachineRig: [],
+      blockedDep: [],
+      cooldown: [],
+    } as never);
+    const out = await run({ harness: 'papercup', kind: 'bug', sampleExcluded: 5 });
+    expect(sampleM).toHaveBeenCalledWith(
+      { field: 'kind', op: '=', value: 'bug' },
+      expect.objectContaining({ harness: 'papercup', assignee: 'probe' }),
+      5,
+    );
+    expect(out.excludedSample.taken).toEqual(['WI-1', 'WI-2']);
+    expect(out.excludedSample.claimHold).toEqual(['WI-3']);
   });
 });

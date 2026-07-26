@@ -90,6 +90,20 @@ describe('askOp', () => {
     expect(caps.sleep).toHaveBeenCalledTimes(5);
   });
 
+  it('EI-18682693723293580: timeout_s=0 returns immediately with zero polls (the code:run-safe default)', async () => {
+    // The agent-facing coord:ask-owner TOOL defaults timeout_s to 0 precisely so a
+    // caller inside code:run (foreground, ~55s hard cap) never blocks past its own
+    // budget. Pin the mechanism here at the op level: timeout_s=0 must skip the poll
+    // loop ENTIRELY (not "one 2s poll" — the old `Math.max(1, …)` floor forced that
+    // even at timeout_s=0, defeating the whole point of a non-blocking default).
+    const caps = { ...baseCaps(), readAnswer: vi.fn().mockResolvedValue({ answered: false, answer: null }) };
+    const a = askOp.argsSchema.parse({ question: 'q', timeout_s: 0 });
+    const out = await askOp.run(a, makeCtx(caps));
+    expect(out).toEqual({ answered: false, answer: null, conversation_id: 'c1' });
+    expect(caps.sleep).not.toHaveBeenCalled();
+    expect(caps.readAnswer).toHaveBeenCalledTimes(1);
+  });
+
   it('swallows an escalate failure (the thread is the durable ask surface)', async () => {
     const caps = {
       ...baseCaps(),

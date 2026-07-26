@@ -687,7 +687,7 @@ const ALL_ISSUE_CLAIM_FLOORS_PASS =
  * a row projection) can reference any base column; the aggregate wrapper ignores the extra
  * columns (a pure `count(*)` is unaffected).
  */
-function issueClaimCandidateSubquery(
+export function issueClaimCandidateSubquery(
   sql: OrgSql,
   args: {
     compiled: SqlFragment;
@@ -830,6 +830,124 @@ export async function aggregateIssueClaimExclusions(
       blockedDep: r?.blocked_dep ?? 0,
       cooldown: r?.cooldown ?? 0,
     },
+  };
+}
+
+/** Bounded per-floor SAMPLE of excluded row ids — the companion read to
+ *  {@link aggregateIssueClaimExclusions}'s counts. Each array is capped at the caller's
+ *  `sampleLimit`; buckets OVERLAP exactly like the counts (a row can appear in more than
+ *  one floor's sample). `taken` samples rows failing `ok_untaken` alone (mirrors how the
+ *  counts treat it); every other bucket samples the UNTAKEN subset, same as the counts. */
+export interface IssueClaimExclusionSample {
+  taken: string[];
+  claimHold: string[];
+  needsHuman: string[];
+  observationLane: string[];
+  externalBlocker: string[];
+  planLaneReserved: string[];
+  federationDetector: string[];
+  loopNoise: string[];
+  alreadyCompleted: string[];
+  crossMachineRig: string[];
+  blockedDep: string[];
+  cooldown: string[];
+}
+
+/**
+ * Bounded per-floor sample of excluded row IDS — answers "which items, not just how many"
+ * without a hand-rolled raw-SQL query against `harness_shared.work_items` (a query that
+ * silently returns 0 rows if it filters the table's legacy free-text `kind` column —
+ * feature sub-category, e.g. infra/security — instead of the real family discriminator
+ * `item_kind`; EI-18682848605075155). Wraps the SAME {@link issueClaimCandidateSubquery} +
+ * floor predicates {@link aggregateIssueClaimExclusions} counts, materialized ONCE via a
+ * `WITH` CTE and sampled per floor, so a sampled id can never disagree with what the counts
+ * say is excluded, and adding/removing a floor there automatically applies here too.
+ * READ-ONLY, no claim side-effect — this is purely a diagnostic companion to the counts.
+ */
+export async function sampleIssueClaimExclusions(
+  filter: FilterNode | undefined,
+  opts: {
+    harness: string;
+    states?: readonly string[];
+    assignee?: string;
+    rigAvailable?: boolean;
+  },
+  sampleLimit: number,
+): Promise<IssueClaimExclusionSample> {
+  const sql = getOrgPg().sql;
+  const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
+  const issueWs = issuesScopeWorkspace();
+  const operatorScopeSlug = `operator:${issueWs}`;
+  const assignee = opts.assignee ?? '';
+  const compiled = compileFilter(sql, filter);
+  const cooldown = releaseCooldownSec();
+  const sub = issueClaimCandidateSubquery(sql, {
+    compiled,
+    assignee,
+    cooldown,
+    harness: opts.harness,
+    states,
+    issueWs,
+    operatorScopeSlug,
+    rigAvailable: opts.rigAvailable,
+  });
+
+  // Each floor's sample is its own bounded scalar subquery over the materialized `sub`
+  // CTE — cheap (an index-friendly LIMIT-capped scan of an already-computed row set), and
+  // structurally tied to the SAME ok_* booleans the counts filter on, never a re-derived
+  // predicate that could drift from them.
+  const sampleOf = (predicateSql: string, extraGuard = 'ok_untaken AND ') => sql`
+    (SELECT COALESCE(array_agg(feature_id), ARRAY[]::text[]) FROM (
+       SELECT feature_id FROM sub
+        WHERE spec_match AND ${sql.unsafe(extraGuard)}${sql.unsafe(predicateSql)}
+        ORDER BY updated_ts DESC NULLS LAST
+        LIMIT ${sampleLimit}
+     ) t)
+  `;
+
+  const rows = (await sql`
+    WITH sub AS (${sub})
+    SELECT
+      ${sampleOf('NOT ok_untaken', '')}        AS taken,
+      ${sampleOf('NOT ok_claim_hold')}          AS claim_hold,
+      ${sampleOf('NOT ok_needs_human')}         AS needs_human,
+      ${sampleOf('NOT ok_observation')}         AS observation_lane,
+      ${sampleOf('NOT ok_external_blocker')}    AS external_blocker,
+      ${sampleOf('NOT ok_plan_lane')}           AS plan_lane_reserved,
+      ${sampleOf('NOT ok_federation')}          AS federation_detector,
+      ${sampleOf('NOT ok_loop_noise')}          AS loop_noise,
+      ${sampleOf('NOT ok_completed')}           AS already_completed,
+      ${sampleOf('NOT ok_rig')}                 AS cross_machine_rig,
+      ${sampleOf('NOT ok_no_blocker')}          AS blocked_dep,
+      ${sampleOf('NOT ok_cooldown')}            AS cooldown
+  `) as Array<{
+    taken: string[];
+    claim_hold: string[];
+    needs_human: string[];
+    observation_lane: string[];
+    external_blocker: string[];
+    plan_lane_reserved: string[];
+    federation_detector: string[];
+    loop_noise: string[];
+    already_completed: string[];
+    cross_machine_rig: string[];
+    blocked_dep: string[];
+    cooldown: string[];
+  }>;
+  const r = rows[0];
+  return {
+    taken: r?.taken ?? [],
+    claimHold: r?.claim_hold ?? [],
+    needsHuman: r?.needs_human ?? [],
+    observationLane: r?.observation_lane ?? [],
+    externalBlocker: r?.external_blocker ?? [],
+    planLaneReserved: r?.plan_lane_reserved ?? [],
+    federationDetector: r?.federation_detector ?? [],
+    loopNoise: r?.loop_noise ?? [],
+    alreadyCompleted: r?.already_completed ?? [],
+    crossMachineRig: r?.cross_machine_rig ?? [],
+    blockedDep: r?.blocked_dep ?? [],
+    cooldown: r?.cooldown ?? [],
   };
 }
 

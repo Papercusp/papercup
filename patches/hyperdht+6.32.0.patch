@@ -21,3 +21,41 @@ index 86afb4e..4f0cef0 100644
    c.payload = new SecurePayload(hs.holepunchSecret)
  
    c.onsocket = function (socket, port, host) {
+diff --git a/node_modules/hyperdht/lib/server.js b/node_modules/hyperdht/lib/server.js
+index 0433c8a..58de4b7 100644
+--- a/node_modules/hyperdht/lib/server.js
++++ b/node_modules/hyperdht/lib/server.js
+@@ -334,6 +334,16 @@ module.exports = class Server extends EventEmitter {
+             keepAlive: this.dht.connectionKeepAlive
+           })
+ 
++          // WI-5863 (inbound half of the connect.js:477 instrumentation): the DIAL
++          // path sets udxRelayed from peerHandshake, but the ACCEPT path never did —
++          // so every connection this side accepted reported `undefined`, which any
++          // `?? false` / falsy render silently converts into "hyperdht said
++          // not-relayed". That is the absent-vs-zero trap, and it would have
++          // fabricated a confirmation of the committed relayed:false prediction.
++          // This is the DIRECT accept: rawStream was pointed at the PEER's own
++          // address from remotePayload.udx above, so it is by construction unrelayed.
++          Object.defineProperty(hs.encryptedSocket, 'udxRelayed', { value: false, configurable: true })
++
+           this.onconnection(hs.encryptedSocket)
+         }
+ 
+@@ -673,6 +683,16 @@ module.exports = class Server extends EventEmitter {
+ 
+         hs.encryptedSocket = this.createSecretStream(false, hs.rawStream, { handshake: h })
+ 
++        // WI-5863 (inbound half): the RELAYED accept — rawStream was just pointed at
++        // hs.relaySocket.rawStream's remote (the RELAY's address), not the peer's, so
++        // this connection is relayed by construction. Recording the addresses too:
++        // they are the independent ground truth if the flag and the address ever
++        // disagree (a mis-set flag, an undefined, or a wrong-object read all show up
++        // as a mismatch here).
++        Object.defineProperty(hs.encryptedSocket, 'udxRelayed', { value: true, configurable: true })
++        Object.defineProperty(hs.encryptedSocket, 'udxRelayHost', { value: remoteHost, configurable: true })
++        Object.defineProperty(hs.encryptedSocket, 'udxRelayPort', { value: remotePort, configurable: true })
++
+         this.onconnection(hs.encryptedSocket)
+       })
+ 

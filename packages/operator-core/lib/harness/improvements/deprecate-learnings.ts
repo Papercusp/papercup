@@ -226,8 +226,11 @@ export const NEGATIVE_RESULT_FACT_TTL_SEC = 90 * 24 * 3600;
  *    (owner-ratified D-006: a dead end leaks no capability, only a warning).
  *  - key `negative-result/<planSlug>` (≤120 chars) — re-deprecating the same
  *    draft refreshes ONE fact, never accretes duplicates.
- *  - body budgets tried/stalled/salvageable into the 500-char fact cap
- *    (stalled first — it is the "don't go here" signal peers act on).
+ *  - body budgets tried/stalled/salvageable into the FACT_BODY_MAX_CHARS cap
+ *    (stalled first — it is the "don't go here" signal peers act on). Named,
+ *    never a literal: this comment said "500-char" and went stale when the cap
+ *    moved to 1200, and the matching hardcoded 500 in the test reddened the
+ *    green gate for the whole fleet (WI-5945).
  *  - `potHomeSlug` = the RESOLVED federation slug (member → hive home); the
  *    caller resolves (emit does it via {@link resolveFactFederationSlug}).
  */
