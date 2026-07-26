@@ -245,10 +245,37 @@ describe('writeToPg gate (TEETH) + demux + disposition invariant + delete', () =
   });
 
   it('demuxes on the hive-home slug even with a neutered verifier', async () => {
+    const dropped: string[] = [];
     const { sql, calls } = fakeTemplateSql();
-    const p = buildWorkOffersProjection({ ...opts, sql, verifyRecord: async () => true });
+    const p = buildWorkOffersProjection({
+      ...opts, sql, verifyRecord: async () => true,
+      onDroppedOffer: (reason) => dropped.push(reason),
+    });
     await p.writeToPg(signedRow({}, { harness_slug: 'some-other-hive' }), undefined);
     expect(calls.length).toBe(0);
+    // EI-18746869686083430: the demux drop is REPORTED now (it was a bare return —
+    // the one path on which an inbound offer vanished with no trace at all).
+    expect(dropped).toEqual(['demux_mismatch']);
+  });
+
+  it('EI-18746869686083430: a demux drop is COUNTED but NOT logged per-op', async () => {
+    // Deliberately quiet: on a multi-hive host every foreign-hive op takes this path,
+    // so a warn per op would be pure noise. The aggregate counter still answers the
+    // only question that matters — "did MY op vanish at the demux?".
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { sql, calls } = fakeAppliedSql(1);
+      const p = buildWorkOffersProjection({ ...opts, sql, verifyRecord: async () => true });
+      await p.writeToPg(signedRow({}, { harness_slug: 'some-other-hive' }), undefined);
+      await new Promise((resolve) => setTimeout(resolve, 0)); // fire-and-forget bump
+      expect(calls.filter((c) => /INSERT INTO harness_shared\.p2p_work_offers/.test(c.text)).length).toBe(0);
+      const counter = calls.find((c) => /p2p_refused_op_counters/.test(c.text));
+      expect(counter, 'the demux drop must still bump a counter').toBeTruthy();
+      expect(counter!.vals).toContain('offer-apply:demux_mismatch');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('deleteFromPg parses the fed key defensively and LWW-guards the delete', async () => {

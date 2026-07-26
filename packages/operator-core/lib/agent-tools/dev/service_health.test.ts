@@ -20,7 +20,13 @@ vi.mock("../../projected-tool-deps", () => ({
     lastInsertErrorAt: "2026-07-05T15:00:00.000Z",
   })),
 }));
-vi.mock("../../supervision/unit-reconciler", () => ({
+// WI-6149: PARTIAL mock. `supervisionSnapshot` is stubbed (it reads the
+// reconciler's module singleton), but `isActiveStateDown` must be the REAL
+// implementation — it is the shared down-or-not oracle the overlay now calls, and
+// stubbing it would let the tool and the reconciler drift apart again, which is
+// the precise defect that oracle was extracted to prevent.
+vi.mock("../../supervision/unit-reconciler", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../supervision/unit-reconciler")>()),
   supervisionSnapshot: vi.fn(() => [
     { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
     { name: "substrate-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
@@ -236,10 +242,42 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
       expect(out[0]?.recentRestartNote).toBeUndefined();
     });
 
-    it("activeState: 'inactive' also reports active:false (down is down, regardless of WHY)", async () => {
+    /**
+     * ⚠ RENAMED by WI-6149. This test was called "down is down, regardless of
+     * WHY" — and that claim is exactly what item 4 disproved. Conflating
+     * `inactive`, `activating` and `failed` into one boolean is what made a
+     * healthy hourly oneshot read as "confirmed DOWN" through this very overlay.
+     *
+     * The raw `active` boolean is UNCHANGED (it still means "ActiveState is
+     * literally 'active'"); what is new is that the WHY is now recoverable from
+     * `activeState`, and the verdict from `healthy`. For a PERSISTENT unit like
+     * staging-api the verdict is still unhealthy — the semantics did not soften,
+     * they got a name. (The episodic case is in service-health-unit-coverage.test.ts,
+     * where a registry row can carry `episodic`.)
+     */
+    it("activeState: 'inactive' on a persistent unit is unhealthy, and the WHY is now readable", async () => {
       const probeFn = vi.fn(async () => ({ ok: true, mainPid: 0, activeState: "inactive" }));
       const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
       expect(out[0]?.active).toBe(false);
+      expect(out[0]?.activeState).toBe("inactive");
+      expect(out[0]?.healthy).toBe(false);
+      // and it is DISTINGUISHABLE from the other two states that share active:false
+      const [failed] = await overlaySystemdRestartRecency(
+        [stagingEntry],
+        vi.fn(async () => ({ ok: true, mainPid: 0, activeState: "failed" })),
+        registry,
+      );
+      const [starting] = await overlaySystemdRestartRecency(
+        [stagingEntry],
+        vi.fn(async () => ({ ok: true, mainPid: 0, activeState: "activating" })),
+        registry,
+      );
+      expect(failed?.activeState).toBe("failed");
+      expect(starting?.activeState).toBe("activating");
+      // mid-start is NOT a fault — this is where the overlay used to disagree with
+      // the reconciler's own isUnitDown.
+      expect(starting?.healthy).toBe(true);
+      expect(failed?.healthy).toBe(false);
     });
 
     it("DOWN (activeState:'failed') is distinguishable from a probe failure (ok:false) — different `active` values", async () => {

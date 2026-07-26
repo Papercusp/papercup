@@ -409,8 +409,49 @@ describe('service pattern boundaries', () => {
       expect(result.expression).toContain('staging-api');
     });
 
-    it('does not cover a unit outside the registry entirely', () => {
+    /**
+     * ⚠ ALSO INVERTED by WI-6149 (D-010 item 4). `papercup-oddsmith-sidecar` was
+     * this pair's headline uncovered unit — 73 `is-active` atoms, more than any
+     * other, plus 28 of the 32 raw `restart` atoms. Item 4 measured it
+     * (persistent `Type=simple`, `Restart=always`, fixed `ODDSMITH_HONO_PORT=46229`,
+     * ~22 restarts/day with a ≤2s window) and gave it a damped probe. Kept as a
+     * regression guard, since the verdict now rests on this coverage.
+     */
+    it('DOES cover oddsmith-sidecar now that :46229 is probed (was the headline gap)', () => {
       const result = systemctlIsActive.cover('systemctl --user is-active papercup-oddsmith-sidecar.service');
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('oddsmith-sidecar');
+    });
+
+    /**
+     * WI-6149: the exclusions are the OTHER half of item 4's answer, and each
+     * reports WHY it can never be registered rather than a bare "not registered"
+     * — an unexplained exclusion reads as an oversight and invites the next agent
+     * to add a probe that would alarm constantly.
+     */
+    it('does not cover a deliberately-excluded unit, and says which structural reason', () => {
+      for (const [atom, needle] of [
+        ['systemctl --user is-active papercusp-db-backup.service', 'ONESHOT'],
+        ['systemctl --user is-active papercup-green-checkpoint-manual-1fxzuva.service', 'TRANSIENT'],
+        ['systemctl is-active auditd', 'SYSTEM-scope'],
+        ['systemctl is-active fail2ban', 'NOT INSTALLED'],
+      ] as const) {
+        const result = systemctlIsActive.cover(atom);
+        expect(result.covered, atom).toBe(false);
+        expect(result.reason, atom).toContain(needle);
+      }
+    });
+
+    /** WI-6149: a unit LIST in one call — `systemctlUnit` only ever sees the head. */
+    it('does not cover a multi-unit call, and counts the units it names', () => {
+      const result = systemctlIsActive.cover('systemctl is-active fail2ban crowdsec 2>/dev/null');
+      expect(result.covered).toBe(false);
+      expect(result.reason).toContain('2 units in one call');
+      expect(result.reason).toContain('crowdsec');
+    });
+
+    it('still does not cover a genuinely unknown unit', () => {
+      const result = systemctlIsActive.cover('systemctl --user is-active papercup-not-a-real-unit.service');
       expect(result.covered).toBe(false);
       expect(result.reason).toContain('outside the supervision registry');
     });

@@ -38868,15 +38868,16 @@ var init_generated = __esm({
       lastReleasedAt: timestamp("last_released_at", { withTimezone: true, mode: "string" }),
       embedding: vector({ dimensions: 384 }),
       embeddingMode: text("embedding_mode"),
-      terminalReason: text("terminal_reason")
+      terminalReason: text("terminal_reason"),
+      authority: text()
     }, (table2) => [
-      index("harness_features_consolidated_claimed_progress_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("timestamptz_ops"), table2.lastProgressAt.asc().nullsLast().op("timestamptz_ops")).where(sql`((taken_by IS NOT NULL) AND (taken_by <> ''::text))`),
-      index("hfc_assignee_rank_idx").using("btree", table2.workspaceId.asc().nullsLast().op("int4_ops"), table2.takenBy.asc().nullsLast().op("text_ops"), table2.assigneeRank.asc().nullsLast().op("int4_ops")).where(sql`((taken_by IS NOT NULL) AND (assignee_rank IS NOT NULL))`),
+      index("harness_features_consolidated_claimed_progress_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.lastProgressAt.asc().nullsLast().op("timestamptz_ops")).where(sql`((taken_by IS NOT NULL) AND (taken_by <> ''::text))`),
+      index("hfc_assignee_rank_idx").using("btree", table2.workspaceId.asc().nullsLast().op("text_ops"), table2.takenBy.asc().nullsLast().op("text_ops"), table2.assigneeRank.asc().nullsLast().op("text_ops")).where(sql`((taken_by IS NOT NULL) AND (assignee_rank IS NOT NULL))`),
       index("hfc_audit_pending_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("text_ops")).where(sql`((origin = 'remote'::text) AND ((audit_verdict IS NULL) OR (audit_verdict = 'pending'::text)))`),
-      index("hfc_created_by_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("int8_ops"), table2.createdByGithubUserId.asc().nullsLast().op("text_ops")).where(sql`(created_by_github_user_id IS NOT NULL)`),
+      index("hfc_created_by_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.createdByGithubUserId.asc().nullsLast().op("int8_ops")).where(sql`(created_by_github_user_id IS NOT NULL)`),
       index("hfc_design_status_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.designStatus.asc().nullsLast().op("text_ops")).where(sql`(design_status IS NOT NULL)`),
       index("hfc_item_kind_idx").using("btree", table2.workspaceId.asc().nullsLast().op("text_ops"), table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.itemKind.asc().nullsLast().op("text_ops")),
-      index("hfc_needs_design_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("bool_ops"), table2.needsDesign.asc().nullsLast().op("bool_ops")).where(sql`(needs_design = true)`),
+      index("hfc_needs_design_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("bool_ops"), table2.needsDesign.asc().nullsLast().op("text_ops")).where(sql`(needs_design = true)`),
       index("hfc_origin_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.origin.asc().nullsLast().op("text_ops")).where(sql`(origin = 'remote'::text)`),
       index("hfc_pending_done_idx").using("btree", table2.status.asc().nullsLast().op("text_ops")).where(sql`((status = 'pending_done'::text) AND (completion_ref IS NOT NULL))`),
       index("hfc_plan_wave_idx").using("btree", table2.sourcePlanSlug.asc().nullsLast().op("text_ops"), table2.wave.asc().nullsLast().op("text_ops")).where(sql`(source_plan_slug IS NOT NULL)`),
@@ -38890,9 +38891,11 @@ var init_generated = __esm({
       index("hfc_taken_by_idx").using("btree", table2.workspaceId.asc().nullsLast().op("text_ops"), table2.takenBy.asc().nullsLast().op("text_ops")).where(sql`(taken_by IS NOT NULL)`),
       index("hfc_updated_idx").using("btree", table2.updatedTs.desc().nullsFirst().op("int8_ops")),
       index("hfc_verifier_divergence_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.featureId.asc().nullsLast().op("text_ops")).where(sql`(verifier_last_error IS NOT NULL)`),
-      index("hfc_verifier_pending_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("timestamptz_ops"), table2.verifierLastCheckedAt.asc().nullsFirst().op("text_ops")).where(sql`((completion_ref IS NOT NULL) AND (verified_done_at_remote_ts IS NULL))`),
+      index("hfc_verifier_pending_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.verifierLastCheckedAt.asc().nullsFirst().op("text_ops")).where(sql`((completion_ref IS NOT NULL) AND (verified_done_at_remote_ts IS NULL))`),
       index("hfc_working_users_active_idx").using("btree", table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.status.asc().nullsLast().op("text_ops")).where(sql`(array_length(working_users, 1) IS NOT NULL)`),
       index("hfc_workspace_idx").using("btree", table2.workspaceId.asc().nullsLast().op("text_ops")),
+      index("work_items_authority_idx").using("btree", table2.workspaceId.asc().nullsLast().op("text_ops"), table2.harnessSlug.asc().nullsLast().op("text_ops"), table2.authority.asc().nullsLast().op("text_ops")).where(sql`(authority IS NOT NULL)`),
+      index("work_items_authority_proposed_idx").using("btree", table2.terminalOwner.asc().nullsLast().op("text_ops"), table2.updatedTs.asc().nullsLast().op("int8_ops")).where(sql`(authority = 'proposed'::text)`),
       index("work_items_embedding_hnsw_idx").using("hnsw", table2.embedding.asc().nullsLast().op("vector_cosine_ops")),
       index("work_items_embedding_mode_idx").using("btree", table2.embeddingMode.asc().nullsLast().op("text_ops")).where(sql`(embedding_mode IS NOT NULL)`),
       primaryKey({ columns: [table2.featureId, table2.harnessSlug], name: "work_items_pkey" }),
@@ -38900,6 +38903,7 @@ var init_generated = __esm({
       check("hfc_design_status_chk", sql`(design_status IS NULL) OR (design_status = ANY (ARRAY['pending'::text, 'accepted'::text, 'ignored'::text]))`),
       check("hfc_rank_writer_chk", sql`(rank_writer IS NULL) OR (rank_writer = ANY (ARRAY['cup'::text, 'mug'::text]))`),
       check("work_items_signal_origin_chk", sql`(((payload -> '_ei'::text) ->> 'signal_origin'::text) IS NULL) OR (((payload -> '_ei'::text) ->> 'signal_origin'::text) = ANY (ARRAY['organic'::text, 'drill'::text, 'replay'::text, 'shadow'::text])))) NOT VALID`),
+      check("work_items_authority_check", sql`(authority IS NULL) OR (authority = ANY (ARRAY['proposed'::text, 'validated'::text, 'committed'::text, 'pending_human'::text, 'invalid'::text]))`),
       check("hfc_workspace_nonempty", sql`workspace_id <> ''::text`)
     ]);
     llmTestMatrixResultsInHarnessShared = harnessShared.view("llm_test_matrix_results", {
@@ -39275,8 +39279,9 @@ var init_generated = __esm({
       baseHarnessSlug: text("base_harness_slug"),
       baseOrigin: text("base_origin"),
       featureOrder: integer("feature_order"),
-      terminalReason: text("terminal_reason")
-    }).as(sql`SELECT workspace_id, feature_id AS issue_id, CASE WHEN harness_slug ~~ 'operator:%'::text OR harness_slug = ''::text THEN 'operator'::text ELSE 'harness:'::text || harness_slug END AS scope, title, COALESCE(summary, ''::text) AS body, COALESCE((payload -> '_ei'::text) ->> 'severity'::text, 'minor'::text) AS severity, COALESCE((payload -> '_ei'::text) ->> 'source'::text, 'engineer'::text) AS source, status AS state, taken_by AS assignee, (payload -> '_ei'::text) ->> 'found_during'::text AS found_during, (payload -> '_ei'::text) ->> 'linked_feature_id'::text AS linked_feature_id, (payload -> '_ei'::text) ->> 'created_by'::text AS created_by, to_timestamp((created_ts::numeric / 1000.0)::double precision) AS created_at, to_timestamp((updated_ts::numeric / 1000.0)::double precision) AS updated_at, author_pubkey, origin, _search, item_kind AS kind, payload - '_ei'::text AS payload, (payload -> '_ei'::text) ->> 'assigned_by'::text AS assigned_by, taken_at AS assigned_at, assignee_rank, rank_writer, rank_updated_at, fed_ts, COALESCE((payload -> '_ei'::text) ->> 'signal_origin'::text, 'organic'::text) AS signal_origin, fed_hlc, terminal_owner, terminal_completion_ref, last_progress_at, harness_slug AS base_harness_slug, origin AS base_origin, feature_order, terminal_reason FROM harness_shared.work_items WHERE item_kind = ANY (ARRAY['bug'::text, 'change'::text, 'task'::text])`);
+      terminalReason: text("terminal_reason"),
+      authority: text()
+    }).as(sql`SELECT workspace_id, feature_id AS issue_id, CASE WHEN harness_slug ~~ 'operator:%'::text OR harness_slug = ''::text THEN 'operator'::text ELSE 'harness:'::text || harness_slug END AS scope, title, COALESCE(summary, ''::text) AS body, COALESCE((payload -> '_ei'::text) ->> 'severity'::text, 'minor'::text) AS severity, COALESCE((payload -> '_ei'::text) ->> 'source'::text, 'engineer'::text) AS source, status AS state, taken_by AS assignee, (payload -> '_ei'::text) ->> 'found_during'::text AS found_during, (payload -> '_ei'::text) ->> 'linked_feature_id'::text AS linked_feature_id, (payload -> '_ei'::text) ->> 'created_by'::text AS created_by, to_timestamp((created_ts::numeric / 1000.0)::double precision) AS created_at, to_timestamp((updated_ts::numeric / 1000.0)::double precision) AS updated_at, author_pubkey, origin, _search, item_kind AS kind, payload - '_ei'::text AS payload, (payload -> '_ei'::text) ->> 'assigned_by'::text AS assigned_by, taken_at AS assigned_at, assignee_rank, rank_writer, rank_updated_at, fed_ts, COALESCE((payload -> '_ei'::text) ->> 'signal_origin'::text, 'organic'::text) AS signal_origin, fed_hlc, terminal_owner, terminal_completion_ref, last_progress_at, harness_slug AS base_harness_slug, origin AS base_origin, feature_order, terminal_reason, authority FROM harness_shared.work_items WHERE item_kind = ANY (ARRAY['bug'::text, 'change'::text, 'task'::text])`);
     fleetAssignmentInHarnessShared = harnessShared.view("fleet_assignment", {
       source: text(),
       workspaceId: text("workspace_id"),
@@ -39389,8 +39394,9 @@ var init_generated = __esm({
       lastReleasedAt: timestamp("last_released_at", { withTimezone: true, mode: "string" }),
       embedding: vector({ dimensions: 384 }),
       embeddingMode: text("embedding_mode"),
-      terminalReason: text("terminal_reason")
-    }).with({ "checkOption": "cascaded" }).as(sql`SELECT harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata, kind, project_id, expected_cost_cents, tags, needs_human_review, ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at, workspace_id, _search, deprecation_reason, see_also, needs_design, design_status, design_spec_id, discarded_design_work, completion_ref, created_by_github_user_id, working_users, worked_by_history, verified_done_at_remote_ts, verifier_last_error, verifier_last_checked_at, source_plan_slug, source_plan_item_ids, wave, feature_order, author_pubkey, origin, audit_verdict, audit_reasons, audited_at, item_kind, payload, assignee_rank, rank_writer, rank_updated_at, fed_ts, swarm_affinity, redundancy, verified_author_github_user_id, schedule, schedule_active, scheduled_at, tzid, template_slug, run_seq, requeue_count, fed_hlc, last_progress_at, terminal_owner, terminal_completion_ref, last_released_by, last_released_at, embedding, embedding_mode, terminal_reason FROM harness_shared.work_items WHERE item_kind <> ALL (ARRAY['bug'::text, 'change'::text, 'task'::text])`);
+      terminalReason: text("terminal_reason"),
+      authority: text()
+    }).as(sql`SELECT harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata, kind, project_id, expected_cost_cents, tags, needs_human_review, ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at, workspace_id, _search, deprecation_reason, see_also, needs_design, design_status, design_spec_id, discarded_design_work, completion_ref, created_by_github_user_id, working_users, worked_by_history, verified_done_at_remote_ts, verifier_last_error, verifier_last_checked_at, source_plan_slug, source_plan_item_ids, wave, feature_order, author_pubkey, origin, audit_verdict, audit_reasons, audited_at, item_kind, payload, assignee_rank, rank_writer, rank_updated_at, fed_ts, swarm_affinity, redundancy, verified_author_github_user_id, schedule, schedule_active, scheduled_at, tzid, template_slug, run_seq, requeue_count, fed_hlc, last_progress_at, terminal_owner, terminal_completion_ref, last_released_by, last_released_at, embedding, embedding_mode, terminal_reason, authority FROM harness_shared.work_items WHERE item_kind <> ALL (ARRAY['bug'::text, 'change'::text, 'task'::text])`);
     operatorDecisionsInHarnessShared = harnessShared.view("operator_decisions", {
       id: text(),
       // You can use { mode: "bigint" } if numbers are exceeding js number limitations
@@ -543505,6 +543511,14 @@ function dropOffer(opts, reason, row, provenance) {
     opts.onDroppedOffer(reason, row);
     return;
   }
+  if (QUIET_DROP_REASONS.has(reason)) {
+    void bumpRefusedOpCounter(
+      { workspaceId: opts.workspaceId, potSlug: row.harness_slug, reason: `offer-apply:${reason}` },
+      opts.sql
+    ).catch(() => {
+    });
+    return;
+  }
   console.warn(
     `[work-offers] DROPPED inbound offer op (${reason}): publisher=${row.publisher_github_user_id} offer=${row.offer_id} kind=${row.offer_kind} status=${row.status} hive=${row.harness_slug} origin=${provenance?.origin ?? "local"} v=${row.record_version}`
   );
@@ -543521,7 +543535,10 @@ function decodeValue23(raw2) {
   return isWorkOfferWireRow(raw2) ? raw2 : null;
 }
 async function writeToPg23(opts, row, provenance) {
-  if (row.harness_slug !== opts.harnessSlug) return;
+  if (row.harness_slug !== opts.harnessSlug) {
+    dropOffer(opts, "demux_mismatch", row, provenance);
+    return;
+  }
   const verify2 = opts.verifyRecord ?? realVerifyWorkOffer;
   const verdict = await verify2(opts, row);
   if (verdict !== true) {
@@ -543624,6 +543641,7 @@ function buildWorkOffersProjection(opts) {
     deleteFromPg: (key12, delTs, delHlc) => deleteFromPg23(opts, key12, delTs, delHlc)
   };
 }
+var QUIET_DROP_REASONS;
 var init_work_offers = __esm({
   "../../packages/operator-core/lib/sync/hyperbee/projections/work-offers.ts"() {
     "use strict";
@@ -543632,6 +543650,7 @@ var init_work_offers = __esm({
     init_receipts();
     init_ed25519();
     init_offer_store_schema();
+    QUIET_DROP_REASONS = /* @__PURE__ */ new Set(["demux_mismatch"]);
   }
 });
 
@@ -566896,8 +566915,25 @@ var init_seed = __esm({
 // ../../packages/operator-core/lib/memory/anthropic-judge.ts
 var anthropic_judge_exports = {};
 __export(anthropic_judge_exports, {
-  createAnthropicJudge: () => createAnthropicJudge
+  conflictJudgeAvailable: () => conflictJudgeAvailable,
+  createAnthropicJudge: () => createAnthropicJudge,
+  resetConflictJudgeWarnForTest: () => resetConflictJudgeWarnForTest,
+  warnConflictJudgeUnavailableOnce: () => warnConflictJudgeUnavailableOnce
 });
+function conflictJudgeAvailable(opts) {
+  return Boolean((opts?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? "").trim());
+}
+function warnConflictJudgeUnavailableOnce() {
+  if (_warnedJudgeUnavailable) return;
+  _warnedJudgeUnavailable = true;
+  if (process.env.NODE_ENV === "test") return;
+  console.warn(
+    "[memory] conflict-check is ENABLED (PAPERCUSP_MEMORY_CONFLICT_CHECK) but no ANTHROPIC_API_KEY resolves in this process, so the judge is a no-op and no contradiction can ever be detected. The neighbour search that feeds it is being SKIPPED rather than paid for. Set a key (gateway-routed) to enable it for real, or set PAPERCUSP_MEMORY_CONFLICT_CHECK=off to make the intent explicit."
+  );
+}
+function resetConflictJudgeWarnForTest() {
+  _warnedJudgeUnavailable = false;
+}
 function createAnthropicJudge(opts) {
   const apiKey = opts?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? "";
   const model = opts?.model ?? MODEL;
@@ -566945,7 +566981,7 @@ function createAnthropicJudge(opts) {
     return Promise.race([llmCall2, timeout2]);
   };
 }
-var MODEL, MAX_TOKENS, TIMEOUT_MS;
+var MODEL, MAX_TOKENS, TIMEOUT_MS, _warnedJudgeUnavailable;
 var init_anthropic_judge = __esm({
   "../../packages/operator-core/lib/memory/anthropic-judge.ts"() {
     "use strict";
@@ -566953,6 +566989,7 @@ var init_anthropic_judge = __esm({
     MODEL = "claude-haiku-4-5";
     MAX_TOKENS = 256;
     TIMEOUT_MS = 5e3;
+    _warnedJudgeUnavailable = false;
   }
 });
 
@@ -666189,6 +666226,7 @@ async function bootstrapFromPeer(localRepoPath, duplex, opts = {}) {
       return partial2();
     }
     const before = await readShallowBoundary(localRepoPath);
+    const rungStartedAt = Date.now();
     res = await fetchOverDuplex(localRepoPath, stream2, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
       timeoutMs: opts.timeoutMs,
       noTags: true,
@@ -666202,8 +666240,14 @@ async function bootstrapFromPeer(localRepoPath, duplex, opts = {}) {
     progressed = true;
     if (phase === "deepen") {
       const after = await readShallowBoundary(localRepoPath);
-      if (after === before) forceUnshallow = true;
-      else deepenNext = await writeDeepenStep(localRepoPath, runGit5, deepenNext * 2);
+      if (after === before) {
+        forceUnshallow = true;
+      } else {
+        const elapsed = Date.now() - rungStartedAt;
+        const target = (opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS) * DEEPEN_TARGET_FRACTION;
+        const scaled = elapsed < target * DEEPEN_GROW_BELOW_FRACTION ? deepenNext * 2 : elapsed > target ? Math.floor(deepenNext / 2) : deepenNext;
+        deepenNext = await writeDeepenStep(localRepoPath, runGit5, scaled);
+      }
     } else if (phase === "unshallow") {
       forceUnshallow = false;
     }
@@ -666266,7 +666310,7 @@ seed ${key12}/${q4.rest}: ${w4.stderr.trim()}`;
     skippedSelf
   };
 }
-var ZERO_SHA4, BOOTSTRAP_QUARANTINE_PREFIX, ALL_NAMESPACES_QUARANTINE_REFSPEC, DEEPEN_CONFIG_KEY, MIN_DEEPEN_COMMITS, INITIAL_DEEPEN_COMMITS, MAX_DEEPEN_COMMITS, DEFAULT_MAX_STEPS;
+var ZERO_SHA4, BOOTSTRAP_QUARANTINE_PREFIX, ALL_NAMESPACES_QUARANTINE_REFSPEC, DEEPEN_CONFIG_KEY, MIN_DEEPEN_COMMITS, INITIAL_DEEPEN_COMMITS, MAX_DEEPEN_COMMITS, DEEPEN_TARGET_FRACTION, DEEPEN_GROW_BELOW_FRACTION, DEFAULT_MAX_STEPS;
 var init_bootstrap2 = __esm({
   "../../packages/operator-core/lib/sync/pot-git/bootstrap.ts"() {
     "use strict";
@@ -666279,6 +666323,8 @@ var init_bootstrap2 = __esm({
     MIN_DEEPEN_COMMITS = 16;
     INITIAL_DEEPEN_COMMITS = 64;
     MAX_DEEPEN_COMMITS = 8192;
+    DEEPEN_TARGET_FRACTION = 0.25;
+    DEEPEN_GROW_BELOW_FRACTION = 0.5;
     DEFAULT_MAX_STEPS = 12;
   }
 });
@@ -682090,6 +682136,12 @@ async function runBootstrapLeg(slug6, workspaceId) {
     if (!potHomeSlug) return;
     const repoKey = canonicalRepoKey(entry3);
     const repoPath = await ensurePotGitRepo(potHomeSlug, repoKey);
+    const swept = await sweepStalePackTmpFiles(repoPath).catch(() => null);
+    if (swept && swept.removed.length > 0) {
+      console.log(
+        `[git-sync] ${slug6}: reclaimed ${swept.removed.length} orphaned pack temp file(s), ${(swept.bytesReclaimed / 1e9).toFixed(2)} GB`
+      );
+    }
     const actor = await resolveUsageActor();
     const selfDevicePubkey = actor?.devicePubkey ?? (await loadCachedLocalAnnounceIdentity().catch(() => null))?.devicePubkeyBase64;
     const members = await listHiveMembers(workspaceId, potHomeSlug);
@@ -778539,6 +778591,14 @@ var init_process = __esm({
 function supervisionNameFor(unit) {
   return SUPERVISION_ROW_NAME[unit] ?? unit;
 }
+function exclusionReasonFor(unit) {
+  const exact = EXCLUSION_REASON[unit];
+  if (exact) return exact;
+  for (const [key12, reason] of Object.entries(EXCLUSION_REASON)) {
+    if (key12.endsWith("*") && unit.startsWith(key12.slice(0, -1))) return reason;
+  }
+  return null;
+}
 function additionalUnits(atom) {
   const match3 = /^systemctl\s+((?:--?\S+\s+)*)(\S+)\s*(.*)$/.exec(atom);
   if (!match3) return [];
@@ -778572,7 +778632,7 @@ function curlTarget(atom) {
   if (!match3) return null;
   return { port: match3[1] ?? "80", path: match3[2] ?? "/" };
 }
-var PROBED_PORTS, UNIT_TO_PROBE, SUPERVISED_BUT_UNPROBED, SUPERVISION_ROW_NAME, DISCARDS_BODY, systemctlIsActive, curlHealthProbe, listeningPorts, SERVICE_PAIRS;
+var PROBED_PORTS, UNIT_TO_PROBE, SUPERVISED_BUT_UNPROBED, SUPERVISION_ROW_NAME, EXCLUSION_REASON, DISCARDS_BODY, systemctlIsActive, curlHealthProbe, listeningPorts, SERVICE_PAIRS;
 var init_service = __esm({
   "../../packages/operator-core/lib/bash-substitution/pairs/service.ts"() {
     "use strict";
@@ -778619,6 +778679,14 @@ var init_service = __esm({
       "papercup-live-federation-gate": "live-federation-gate",
       "papercup-live-federation-gate.timer": "live-federation-gate-timer"
     };
+    EXCLUSION_REASON = {
+      "papercup-green-checkpoint-manual-*": 'is a per-run TRANSIENT unit (systemd-run --unit= with a random suffix), so no static registry can ever name it \u2014 "is my checkpoint run still going?" is run-scoped, not health-scoped',
+      "papercusp-db-backup": "is a timer-driven ONESHOT (measured: 152s active per 3600s), deliberately excluded \u2014 `inactive` is its healthy state, and the last-run RESULT it is really being asked about is served by papercup-backup-health + STATUS.json + papercusp-db-backup-alert, not by a liveness probe",
+      auditd: "is a SYSTEM-scope unit; the supervision registry and its reconciler are `systemctl --user` only (SupervisionLayer has no systemd-system member), so it cannot be represented without a new layer + a second exec path",
+      pgbouncer: "is a SYSTEM-scope unit; the supervision registry and its reconciler are `systemctl --user` only (SupervisionLayer has no systemd-system member), so it cannot be represented without a new layer + a second exec path",
+      fail2ban: "is NOT INSTALLED on this host (LoadState=not-found) \u2014 probing an absent unit is the permanent phantom-DOWN class that got :3001 and :4321 removed (EI-188 / EI-276)",
+      crowdsec: "is NOT INSTALLED on this host (LoadState=not-found) \u2014 probing an absent unit is the permanent phantom-DOWN class that got :3001 and :4321 removed (EI-188 / EI-276)"
+    };
     DISCARDS_BODY = /-o\s+\/dev\/null\b/;
     systemctlIsActive = {
       id: "service.systemctl-is-active",
@@ -778656,6 +778724,10 @@ var init_service = __esm({
             covered: true,
             expression: `dev:service_health \u2192 supervision.find(s => s.name === '${supervisionNameFor(unit)}').{activeState,healthy}`
           };
+        }
+        const excluded = exclusionReasonFor(unit);
+        if (excluded) {
+          return { covered: false, reason: `${unit} ${excluded}; keep using systemctl` };
         }
         return {
           covered: false,
@@ -809165,6 +809237,15 @@ function dedupThreshold() {
   const raw2 = Number(process.env.PAPERCUSP_MEMORY_DEDUP_THRESHOLD);
   return Number.isFinite(raw2) && raw2 > 0 && raw2 <= 1 ? raw2 : 0.9;
 }
+function neighbourQueryMaxChars() {
+  const raw2 = Number(process.env.PAPERCUSP_MEMORY_NEIGHBOUR_QUERY_CHARS);
+  return Number.isFinite(raw2) ? raw2 : 512;
+}
+function neighbourSearchQuery(content3) {
+  const max2 = neighbourQueryMaxChars();
+  if (max2 <= 0 || content3.length <= max2) return content3;
+  return content3.slice(0, max2);
+}
 function runbookShapeHint(content3) {
   if (!content3 || content3.length < RUNBOOK_HINT_MIN_CHARS) return null;
   const lines = content3.split("\n");
@@ -809345,16 +809426,21 @@ var init_remember = __esm({
           }
           throw err12;
         }
-        if (!args26.force && (dedupEnabled() || conflictCheckEnabled())) {
+        const dedupWanted = !args26.force && dedupEnabled();
+        const conflictWanted = !args26.force && conflictCheckEnabled();
+        const judgeAvailable = conflictJudgeAvailable();
+        if (conflictWanted && !judgeAvailable) warnConflictJudgeUnavailableOnce();
+        const conflictUsable = conflictWanted && judgeAvailable;
+        if (dedupWanted || conflictUsable) {
           try {
             const neighbors = await withMemoryToolTimeout(
-              backend.search(args26.content, {
+              backend.search(neighbourSearchQuery(args26.content), {
                 scope: scopeKey,
                 limit: DEDUP_TOP_K
               }),
               "memory:remember dedup-search"
             );
-            if (dedupEnabled()) {
+            if (dedupWanted) {
               let top;
               let best = -Infinity;
               for (const n7 of neighbors) {
@@ -809382,7 +809468,7 @@ var init_remember = __esm({
                 };
               }
             }
-            if (neighbors.length > 0) {
+            if (conflictUsable && neighbors.length > 0) {
               const conflict = await checkConflicts({
                 newText: args26.content,
                 neighbors: neighbors.map((n7) => ({ id: n7.id, text: n7.text, score: n7.score })),

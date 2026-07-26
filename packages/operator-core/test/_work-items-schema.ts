@@ -116,8 +116,10 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     -- legacy pre-authority close (D-005/D-008). Live carries a CHECK constraint on the
     -- value set; it is omitted here for the same reason the other CHECKs are — fixtures
     -- insert deliberately-odd rows, and the enum is asserted against the migration by
-    -- work-item-authority.test.ts rather than by this fixture.
-    authority text,
+    -- work-item-completion-authority.test.ts rather than by this fixture.
+    -- NOT the plan-item authority axis (system|owner = who may act) — see D-009 for why
+    -- this one is spelled out in full.
+    completion_authority text,
     last_released_by text,
     last_released_at timestamptz,
     _search tsvector GENERATED ALWAYS AS (
@@ -182,7 +184,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- one is an explicit list, so it has to be named here or every integration test
       -- reading authority through the issue family would see "column does not exist"
       -- while live works fine.
-      authority
+      completion_authority
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;

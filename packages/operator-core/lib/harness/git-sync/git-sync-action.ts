@@ -60,7 +60,14 @@ import {
   type AnnounceBudgetState,
 } from '../../sync/pot-git/ref-announce';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
-import { defaultRunGit, deviceNamespaceKey, ensurePotGitRepo, hiveGitRepoPath, listNamespaces } from '../../sync/pot-git/storage';
+import {
+  defaultRunGit,
+  deviceNamespaceKey,
+  ensurePotGitRepo,
+  hiveGitRepoPath,
+  listNamespaces,
+  sweepStalePackTmpFiles,
+} from '../../sync/pot-git/storage';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
@@ -1627,6 +1634,23 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // (missing cwd), and the first store is only ever created by the LATER
     // own-head leg — which then poisons the warm check below forever.
     const repoPath = await ensurePotGitRepo(potHomeSlug, repoKey);
+
+    // EI-18745600910177355: reclaim leaked partial packs HERE, before any of
+    // the gates below can return early. `bootstrapFromPeer` also sweeps, but
+    // the leg exits ahead of it on every "nothing to do" path — no attested
+    // peers, no live dial path, already warm — and "no live dial path" is
+    // PRECISELY the stuck state in which a joiner sits accumulating them tick
+    // after tick (live-caught on the rig: 21 GB of orphans in a store that
+    // could not dial anyone, so the sweep inside bootstrap was unreachable).
+    // A joiner that cannot make progress is the one that most needs its disk
+    // back. Best-effort, never throws into the tick.
+    const swept = await sweepStalePackTmpFiles(repoPath).catch(() => null);
+    if (swept && swept.removed.length > 0) {
+      console.log(
+        `[git-sync] ${slug}: reclaimed ${swept.removed.length} orphaned pack temp file(s), ` +
+          `${(swept.bytesReclaimed / 1e9).toFixed(2)} GB`,
+      );
+    }
 
     const actor = await resolveUsageActor();
     // Self-identification must NOT ride on gh reachability: resolveUsageActor

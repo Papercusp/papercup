@@ -126,7 +126,16 @@ export type WorkOfferDropReason =
   /** an injected verifier returned a bare `false` (no reason available). */
   | 'unspecified'
   /** the upsert's LWW compare matched no row: a strictly-older redelivery. */
-  | 'lww_superseded';
+  | 'lww_superseded'
+  /** the row is tagged with a DIFFERENT hive than this projection is bound to
+   *  (EI-18746869686083430). Counted but NOT logged per-op: on a multi-hive host
+   *  this is the ordinary, expected outcome for every foreign-hive op, so a warn
+   *  per op would be pure noise while an aggregate counter still answers the only
+   *  question that matters — "did MY op vanish here?". */
+  | 'demux_mismatch';
+
+/** Reasons that are counted but never logged per-op (expected, high-volume). */
+const QUIET_DROP_REASONS = new Set<WorkOfferDropReason>(['demux_mismatch']);
 
 /** `true` ⇒ apply. A reason ⇒ drop, and SAY WHICH. A plain `false` is still
  *  accepted from an injected test seam and normalizes to 'unspecified'. */
@@ -202,6 +211,13 @@ function dropOffer(
     opts.onDroppedOffer(reason, row);
     return;
   }
+  if (QUIET_DROP_REASONS.has(reason)) {
+    void bumpRefusedOpCounter(
+      { workspaceId: opts.workspaceId, potSlug: row.harness_slug, reason: `offer-apply:${reason}` },
+      opts.sql as Parameters<typeof bumpRefusedOpCounter>[1],
+    ).catch(() => {});
+    return;
+  }
   console.warn(
     `[work-offers] DROPPED inbound offer op (${reason}): publisher=${row.publisher_github_user_id} ` +
       `offer=${row.offer_id} kind=${row.offer_kind} status=${row.status} ` +
@@ -248,7 +264,15 @@ async function writeToPg(
   provenance?: ProvenanceContext,
 ): Promise<void> {
   // Demux: this projection only applies its own Hive's offer ops.
-  if (row.harness_slug !== opts.harnessSlug) return;
+  // EI-18746869686083430: this was a bare `return` — the ONE path on which an inbound
+  // offer could vanish with no counter and no log, which is a large part of why the
+  // b→a tail took three gate runs to localize (a dropped op and a never-sent op looked
+  // identical). Counted (quietly — see QUIET_DROP_REASONS) so "did my op vanish at the
+  // demux?" is now an SQL question. The drop itself is unchanged and still correct.
+  if (row.harness_slug !== opts.harnessSlug) {
+    dropOffer(opts, 'demux_mismatch', row, provenance);
+    return;
+  }
 
   // SECURITY GATE: verify signature + attestation before applying. Forged → drop.
   // WI-6207: a drop is now OBSERVABLE (reason + counter). Unchanged behaviour —

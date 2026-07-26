@@ -1,9 +1,27 @@
 /**
- * The AUTHORITY axis for work-item completion.
+ * The COMPLETION-AUTHORITY axis for work-items.
  *
  * Plan: agent-protocol-authority-semantics-2026-07-26, P-003.
- * Schema: migration 677 (`harness_shared.work_items.authority`, exposed on both
- * family views). Writers land in P-004; nothing in this module has a caller yet.
+ * Schema: `harness_shared.work_items.completion_authority` (migration 677 added it,
+ * 678 renamed it — see D-009), exposed on both family views. Writers land in P-004;
+ * nothing in this module has a caller yet.
+ *
+ * ── NOT THE OTHER `authority` (D-009) ────────────────────────────────────────
+ * `authority` is already a load-bearing axis in this system, and it means something
+ * else. Plan items carry `authority: 'system' | 'owner'` (libs/generic/plan-parser)
+ * meaning WHO IS AUTHORIZED TO ACT, where `owner` always derives needsHuman. This
+ * module is about HOW TRUSTWORTHY A TERMINAL CLAIM IS.
+ *
+ * The two are easy to conflate because both carry a human-attention value — `owner`
+ * there, `pending_human` here — so the tempting inference is that they are one axis.
+ * They are not: `pending_human` says a COMPLETION cannot be settled without the owner;
+ * `authority: owner` says the WORK may not be done without the owner. An item can be
+ * `authority: system` (any agent may do it) and still land `pending_human` (this
+ * particular close needs ratification), and vice versa.
+ *
+ * Sibling modules make the same distinction elsewhere and are also not this:
+ * `work-item-claim-authority.ts` (who owns a claim) and
+ * `work-item-replica-authority.ts` (which replica is canonical).
  *
  * ── THE PROBLEM ──────────────────────────────────────────────────────────────
  * A terminal state conflates two orthogonal facts:
@@ -28,7 +46,7 @@
  * `.optional()`. The rule reads as enforced and is not.
  *
  * A state table describing this axis in a doc would have exactly that defect. So the
- * table below is the executable one: {@link AUTHORITY_TRANSITIONS} is the sole
+ * table below is the executable one: {@link COMPLETION_AUTHORITY_TRANSITIONS} is the sole
  * definition, {@link canTransition} is how callers ask, and the unit tests assert the
  * table's own invariants. Prose that disagrees with this file is wrong by construction.
  */
@@ -51,7 +69,7 @@ import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
  *                 INDEPENDENT of its closer — a green run located in the test-run
  *                 ledger, a cited commit that provably exists, an owner ratification.
  *                 Counts toward burn-down. **No writer ships in this phase**; see the
- *                 honesty note on {@link AUTHORITY_TRANSITIONS}.
+ *                 honesty note on {@link COMPLETION_AUTHORITY_TRANSITIONS}.
  *
  * `pending_human` The claim cannot be settled by agent or machine and awaits owner
  *                 ratification. Does NOT count toward burn-down.
@@ -70,9 +88,9 @@ import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
  *                         reclassified. This is D-005 expressed structurally rather
  *                         than as a policy someone has to remember.
  */
-export type WorkItemAuthority = 'proposed' | 'validated' | 'committed' | 'pending_human' | 'invalid';
+export type WorkItemCompletionAuthority = 'proposed' | 'validated' | 'committed' | 'pending_human' | 'invalid';
 
-export const WORK_ITEM_AUTHORITIES: readonly WorkItemAuthority[] = [
+export const WORK_ITEM_COMPLETION_AUTHORITIES: readonly WorkItemCompletionAuthority[] = [
   'proposed',
   'validated',
   'committed',
@@ -80,8 +98,8 @@ export const WORK_ITEM_AUTHORITIES: readonly WorkItemAuthority[] = [
   'invalid',
 ] as const;
 
-export function isWorkItemAuthority(v: unknown): v is WorkItemAuthority {
-  return typeof v === 'string' && (WORK_ITEM_AUTHORITIES as readonly string[]).includes(v);
+export function isWorkItemCompletionAuthority(v: unknown): v is WorkItemCompletionAuthority {
+  return typeof v === 'string' && (WORK_ITEM_COMPLETION_AUTHORITIES as readonly string[]).includes(v);
 }
 
 /**
@@ -99,16 +117,16 @@ export function isWorkItemAuthority(v: unknown): v is WorkItemAuthority {
  * `owner`         owner or fleet-leader ratification.
  * `corroboration` an independent confirmation source. RESERVED — see below.
  */
-export type AuthorityActor = 'gate' | 'system' | 'owner' | 'corroboration';
+export type CompletionAuthorityActor = 'gate' | 'system' | 'owner' | 'corroboration';
 
 /** The `from` side of a transition; `null` = no judgement recorded yet. */
-export type AuthorityFrom = WorkItemAuthority | null;
+export type CompletionAuthorityFrom = WorkItemCompletionAuthority | null;
 
-export interface AuthorityTransition {
-  from: AuthorityFrom;
-  to: WorkItemAuthority;
+export interface CompletionAuthorityTransition {
+  from: CompletionAuthorityFrom;
+  to: WorkItemCompletionAuthority;
   /** Principal classes permitted to make this transition. */
-  by: readonly AuthorityActor[];
+  by: readonly CompletionAuthorityActor[];
   /** Why this edge exists — the condition under which it fires. */
   when: string;
 }
@@ -153,7 +171,7 @@ export interface AuthorityTransition {
  * deliverable; if P-013 does not land one, the honest move is to DROP it from the enum
  * and the constraint, not to leave it as decoration.
  */
-export const AUTHORITY_TRANSITIONS: readonly AuthorityTransition[] = [
+export const COMPLETION_AUTHORITY_TRANSITIONS: readonly CompletionAuthorityTransition[] = [
   // ── entry: the gate mints an authority at close time ───────────────────────
   {
     from: null,
@@ -252,15 +270,15 @@ export const AUTHORITY_TRANSITIONS: readonly AuthorityTransition[] = [
 ] as const;
 
 /** Is this transition legal, and (optionally) legal for this actor? */
-export function canTransition(from: AuthorityFrom, to: WorkItemAuthority, by?: AuthorityActor): boolean {
-  const edge = AUTHORITY_TRANSITIONS.find((t) => t.from === from && t.to === to);
+export function canTransition(from: CompletionAuthorityFrom, to: WorkItemCompletionAuthority, by?: CompletionAuthorityActor): boolean {
+  const edge = COMPLETION_AUTHORITY_TRANSITIONS.find((t) => t.from === from && t.to === to);
   if (!edge) return false;
   return by === undefined || edge.by.includes(by);
 }
 
 /** Every authority reachable from `from` (optionally, by this actor). */
-export function transitionsFrom(from: AuthorityFrom, by?: AuthorityActor): readonly WorkItemAuthority[] {
-  return AUTHORITY_TRANSITIONS.filter((t) => t.from === from && (by === undefined || t.by.includes(by))).map(
+export function transitionsFrom(from: CompletionAuthorityFrom, by?: CompletionAuthorityActor): readonly WorkItemCompletionAuthority[] {
+  return COMPLETION_AUTHORITY_TRANSITIONS.filter((t) => t.from === from && (by === undefined || t.by.includes(by))).map(
     (t) => t.to,
   );
 }
@@ -276,7 +294,7 @@ export function transitionsFrom(from: AuthorityFrom, by?: AuthorityActor): reado
  * Callers must pass whether the row's lifecycle state is terminal; this module does not
  * know the per-family terminal sets (feature: passed|deprecated, issue: resolved|closed).
  */
-export function countsTowardBurnDown(authority: AuthorityFrom, isTerminal: boolean): boolean {
+export function countsTowardBurnDown(authority: CompletionAuthorityFrom, isTerminal: boolean): boolean {
   if (!isTerminal) return false;
   if (authority === null) return true; // legacy pre-authority close — D-005
   return authority === 'committed' || authority === 'validated';
@@ -286,7 +304,7 @@ export function countsTowardBurnDown(authority: AuthorityFrom, isTerminal: boole
  * Is a terminal row a LEGACY close — made before the authority contract existed, and
  * therefore exempt from nagging, reopening, and reclassification (D-005)?
  */
-export function isLegacyClose(authority: AuthorityFrom, isTerminal: boolean): boolean {
+export function isLegacyClose(authority: CompletionAuthorityFrom, isTerminal: boolean): boolean {
   return isTerminal && authority === null;
 }
 
@@ -323,6 +341,6 @@ export function isSufficientEvidence(evidence: CompletionVerificationEvidence | 
  */
 export function authorityForCompletion(
   evidence: CompletionVerificationEvidence | null | undefined,
-): Extract<WorkItemAuthority, 'committed' | 'proposed'> {
+): Extract<WorkItemCompletionAuthority, 'committed' | 'proposed'> {
   return isSufficientEvidence(evidence) ? 'committed' : 'proposed';
 }
