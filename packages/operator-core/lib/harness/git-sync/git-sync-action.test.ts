@@ -402,6 +402,39 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync', 'git-sync:papercup']);
   });
 
+  // WI-5960: the routine acquires `git-sync:<slug>` under `ctx.workspaceId || '*'`
+  // (asserted as 'ws-42' above) — an agent's own `locks:acquire_resource {
+  // resource: 'git-sync:<slug>' }` (the su playbook's documented tree-pause
+  // mechanism) MUST land in that exact same domain, or its exclusive hold is
+  // invisible to this routine's conflict check and git-sync commits straight
+  // through it (observed live 2026-07-26: 6 commits landed during a held,
+  // un-expired exclusive hold — coordination-domain.ts's `resourceLockDomain`/
+  // `workspaceScopedLockDomain` is the fix). This pins the two sides of that
+  // contract against EACH OTHER so a future edit to either side's fallback
+  // (`|| '*'` here, `activeWorkspaceId() || '*'` there) can't silently diverge
+  // without failing a test — set the SAME env var the routine's `ctx.workspaceId`
+  // models, and assert coordination-domain.ts resolves to the identical domain.
+  it('WI-5960: the acquired coordinationDomain for git-sync:<slug> agrees with coordination-domain.ts\'s own resourceLockDomain/workspaceScopedLockDomain', async () => {
+    const savedEnv = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = 'ws-42'; // mirrors ctx.workspaceId used above
+    try {
+      runGitSyncMock.mockResolvedValue(syncedOutcome);
+      await action(ctx);
+
+      const acquiredDomain = (tryAcquireResourceMock.mock.calls[0][1] as { coordinationDomain: string })
+        .coordinationDomain;
+      expect(acquiredDomain).toBe('ws-42');
+      // The exact invariant an su's locks:acquire_resource relies on: resolving
+      // the SAME resource name through coordination-domain.ts's own logic must
+      // land in the domain the routine actually acquired under.
+      expect(resourceLockDomain('git-sync:papercup')).toBe(acquiredDomain);
+      expect(workspaceScopedLockDomain()).toBe(acquiredDomain);
+    } finally {
+      if (savedEnv === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = savedEnv;
+    }
+  });
+
   it('a harness with NO extra_lock_resources acquires only its own per-slug resource', async () => {
     registryProjects = [{ slug: 'otherapp', path: repoDir }];
     runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });

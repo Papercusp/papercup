@@ -668,6 +668,55 @@ export function claimsByAgent(rows: FleetAssignmentRow[]): Map<string, AgentClai
   return map;
 }
 
+/**
+ * WI-5975 — how the claim's item-scoped progress signal is REPORTED, as an
+ * explicit discriminator instead of a bare null.
+ *
+ *   never-checkpointed — the holder has recorded NO item-scoped progress at all.
+ *                        This is the ABSENCE of a signal: it says nothing about
+ *                        whether the work is advancing. Extremely common — an
+ *                        agent can work productively for hours and simply never
+ *                        checkpoint.
+ *   stale-since        — progress WAS recorded, and the last one is older than
+ *                        the window. This is a MEASURED staleness — a real signal.
+ *
+ * The two conditions used to render identically (a null/old `lastProgressAt`),
+ * so a leader read both as "abandoned" and moved to reassign work off agents
+ * that were alive and mid-task. Same defect class as a job-runner reporting a
+ * pipeline's exit code as the command's: a layer that cannot answer returns a
+ * confident-looking value instead of naming its own ignorance.
+ */
+export type ClaimProgressSignal = 'never-checkpointed' | 'stale-since';
+
+/**
+ * WI-5975 — the verdict a leader is meant to ACT on, paired with its sanctioned
+ * action so the action is not invented at the moment of impatience.
+ *
+ *   orphan             → reclaim. The presence oracle says the holder is GONE;
+ *                        the claim outlived the process. Nobody is coming back.
+ *   held-by-live-agent → ask. The holder is LIVE. The item is not checkpointing,
+ *                        which is worth surfacing, but a live holder's work is
+ *                        NOT abandoned and must never be reclaimed out from
+ *                        under it on a progress-recency signal alone.
+ */
+export type ClaimReclaimVerdict = 'orphan' | 'held-by-live-agent';
+
+/**
+ * The holder-liveness inputs {@link summarizeOrphan} needs to tell an abandoned
+ * claim from a quiet-but-working one.
+ *
+ * `sessionState` mirrors the presence oracle's verdict (the `SessionState` union
+ * in agent-tools/coordination/presence-wakeability) — declared structurally here
+ * so this data-layer leaf keeps no agent-tools import; a drift test pins the two
+ * unions together. It OUTRANKS the row's heartbeat-derived `holderAlive`, which
+ * is raw process-keepalive freshness and reads true on a warm-dead session.
+ */
+export interface HolderActivity {
+  sessionState?: 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded' | null;
+  /** Last recorded tool invocation — GENUINE work, not a keepalive beat. */
+  lastToolCallAt?: string | null;
+}
+
 /** The wire shape an orphaned claim is reported in (fleet:assignments + /api/adv/roster). */
 export interface OrphanedClaimSummary {
   source: FleetAssignmentSource;
@@ -679,9 +728,38 @@ export interface OrphanedClaimSummary {
   expires: string | null;
   holder_present: boolean;
   holder_heartbeat_at: string | null;
+  /** WI-5975: absence rendered AS absence — never a bare null. */
+  progress: ClaimProgressSignal;
+  /** The measured progress timestamp; null exactly when progress is 'never-checkpointed'. */
+  last_progress_at: string | null;
+  /** WI-5975: is this really abandoned, or just quiet? */
+  verdict: ClaimReclaimVerdict;
+  /** WI-5975: the sanctioned next step for that verdict. */
+  action: 'reclaim' | 'ask';
+  /** The holder's last GENUINE work (tool invocation) — the signal that separates
+   *  a working-but-not-checkpointing agent from a wedged one. */
+  holder_last_tool_call_at?: string | null;
 }
 
-export function summarizeOrphan(r: FleetAssignmentRow): OrphanedClaimSummary {
+/**
+ * Summarize one reclaim-candidate claim for a leader surface.
+ *
+ * WI-5975: `holder` carries the authoritative liveness. When it says the holder
+ * is `live`, the row is reported as `held-by-live-agent`/`ask` — NEVER as an
+ * orphan — however old the progress signal is. Liveness outranks progress
+ * recency: a claim not checkpointing is a reason to ASK the holder, and only a
+ * holder the oracle says is GONE is a reason to reclaim.
+ *
+ * Falls back to the row's heartbeat-derived `holderAlive` only when no oracle
+ * verdict is available, so an un-decorated caller degrades to the old behaviour
+ * rather than manufacturing a confident verdict from missing input.
+ */
+export function summarizeOrphan(
+  r: FleetAssignmentRow,
+  holder?: HolderActivity | null,
+): OrphanedClaimSummary {
+  const liveHolder =
+    holder?.sessionState != null ? holder.sessionState === 'live' : r.holderAlive === true;
   return {
     source: r.source,
     agent: r.agentId,
@@ -692,5 +770,17 @@ export function summarizeOrphan(r: FleetAssignmentRow): OrphanedClaimSummary {
     expires: r.claimExpiresTs,
     holder_present: r.holderPresent,
     holder_heartbeat_at: r.holderHeartbeatAt,
+    progress: r.lastProgressAt ? 'stale-since' : 'never-checkpointed',
+    last_progress_at: r.lastProgressAt,
+    verdict: liveHolder ? 'held-by-live-agent' : 'orphan',
+    action: liveHolder ? 'ask' : 'reclaim',
+    ...(holder?.lastToolCallAt !== undefined
+      ? { holder_last_tool_call_at: holder.lastToolCallAt }
+      : {}),
   };
+}
+
+/** WI-5975: a row a leader may actually reclaim — the holder is gone, not merely quiet. */
+export function isReclaimCandidate(s: OrphanedClaimSummary): boolean {
+  return s.verdict === 'orphan';
 }

@@ -13,6 +13,12 @@ const NOW = 1_700_000_000_000;
 const isoMs = (ms: number): string => new Date(ms).toISOString();
 const date = (ms: number): Date => new Date(ms);
 
+/** The two real, coexisting lock domains on this box (WI-5979): the release
+ *  checkout :3070 serves from, and the staging tree the Tauri desktop's :3270
+ *  serves from. Every live lock row was recorded under the former. */
+const DOMAIN_RELEASE = '/ws/papercup-release';
+const DOMAIN_STAGING = '/ws/papercusp';
+
 function lock(overrides: Partial<ActiveLockRow> = {}): ActiveLockRow {
   return {
     path: 'a.ts',
@@ -21,6 +27,7 @@ function lock(overrides: Partial<ActiveLockRow> = {}): ActiveLockRow {
     intent: 'editing a',
     acquired_ts: date(NOW - 60_000),
     expires_ts: date(NOW + 600_000),
+    coordination_domain: DOMAIN_RELEASE,
     ...overrides,
   };
 }
@@ -36,6 +43,7 @@ function waiter(overrides: Partial<WaiterRow> = {}): WaiterRow {
     wait_until: date(NOW + 120_000),
     status: 'waiting',
     ahead_count: 0,
+    coordination_domain: DOMAIN_RELEASE,
     ...overrides,
   };
 }
@@ -64,6 +72,54 @@ describe('deriveAgentLocks', () => {
     expect(out.waiting[0].aheadCount).toBe(2);
     expect(out.waiting[0].blockedBy).toEqual([
       expect.objectContaining({ path: 'a.ts', holder: 'su-2', holderLabel: 'peer' }),
+    ]);
+  });
+
+  // ── WI-5979: cross-domain reads ────────────────────────────────────────────
+  // getAgentLocks now reads EVERY lock domain (coordinationDomain: null) because
+  // the domain is a property of the READER's checkout, not of the lock: the
+  // dossier used to key on its own repo root, so a desktop operator serving from
+  // the staging tree matched none of the locks recorded under the release root
+  // and rendered "No locks held or waiting." for every agent — silently, since an
+  // empty read raises no error. Reading across domains is what makes that work;
+  // these two tests pin the halves of it that could regress.
+
+  it('surfaces a held lock recorded in a domain other than the reader’s own', () => {
+    const queue: QueueResult = {
+      // Recorded by the :3070 operator (release root) — the reader here is the
+      // desktop operator, whose own domain is DOMAIN_STAGING.
+      active_locks: [lock({ path: 'a.ts', owner: 'su-1', coordination_domain: DOMAIN_RELEASE })],
+      waiting: [],
+    };
+    const out = deriveAgentLocks(queue, 'su-1');
+    expect(out.held).toHaveLength(1);
+    expect(out.held[0]).toMatchObject({ path: 'a.ts' });
+  });
+
+  it('never attributes a blocker across lock domains (same path, different checkout)', () => {
+    const queue: QueueResult = {
+      // Same repo-relative path, two different physical checkouts — these are two
+      // different files and must not be reported as blocking each other.
+      active_locks: [
+        lock({ path: 'a.ts', owner: 'su-2', owner_label: 'peer', coordination_domain: DOMAIN_RELEASE }),
+      ],
+      waiting: [waiter({ owner: 'su-1', paths: ['a.ts'], coordination_domain: DOMAIN_STAGING })],
+    };
+    const out = deriveAgentLocks(queue, 'su-1');
+    expect(out.waiting).toHaveLength(1);
+    expect(out.waiting[0].blockedBy).toEqual([]);
+  });
+
+  it('still attributes a blocker within the same lock domain', () => {
+    const queue: QueueResult = {
+      active_locks: [
+        lock({ path: 'a.ts', owner: 'su-2', owner_label: 'peer', coordination_domain: DOMAIN_STAGING }),
+      ],
+      waiting: [waiter({ owner: 'su-1', paths: ['a.ts'], coordination_domain: DOMAIN_STAGING })],
+    };
+    const out = deriveAgentLocks(queue, 'su-1');
+    expect(out.waiting[0].blockedBy).toEqual([
+      expect.objectContaining({ path: 'a.ts', holder: 'su-2' }),
     ]);
   });
 

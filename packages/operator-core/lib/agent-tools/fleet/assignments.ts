@@ -26,10 +26,13 @@ import {
   groupByAgent,
   lastToolCallAtByOwner,
   listFleetAssignments,
+  isReclaimCandidate,
   orphanedClaims,
   stalledClaims,
   summarizeOrphan,
   type AgentAssignment,
+  type FleetAssignmentRow,
+  type HolderActivity,
 } from '../../fleet/assignments';
 import {
   getAllWakeModeOverrides,
@@ -505,30 +508,32 @@ export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Top-level `self` = your ownerId; your own row is stamped `isSelf:true`. Each live agent carries its ordered work-list — `doing`, `queued`, `load` — the placement read. Surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` and declared-but-unclaimed intents. Each row carries the derived lifecycle `verdict` (including monitoring|waiting|parked-awaiting-capability for healthy loop owners, with nextFireAt; otherwise booted|joined|first-turn-done|speaking|stalled|dead), `wakeMode` (auto|manual), and `unanswered` directed-message state. Read this, not a stale coord broadcast.',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Top-level `self` = your ownerId; your own row is stamped `isSelf:true`. Each live agent carries its ordered work-list — `doing`, `queued`, `load` — the placement read. Surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (no item-scoped progress in window) claims, each row carrying `verdict`+`action`: only `orphan`/`reclaim` (holder gone per the oracle) may be reclaimed — `held-by-live-agent`/`ask` means a LIVE holder simply has not checkpointed, which is never grounds to release its work. Act on `summary.reclaimable_claims`, NOT on the orphaned/stalled counts. `progress` states absence explicitly (`never-checkpointed` vs `stale-since`) — plus per-claim `activity` and declared-but-unclaimed intents. Each row carries the derived lifecycle `verdict` (including monitoring|waiting|parked-awaiting-capability for healthy loop owners, with nextFireAt; otherwise booted|joined|first-turn-done|speaking|stalled|dead), `wakeMode` (auto|manual), and `unanswered` directed-message state. Read this, not a stale coord broadcast.',
   guidance: {
     when: 'Answering "who\'s running / what is agent X doing / X\'s ordered work-list / how loaded is X / is anyone on plan P". The state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.',
     notWhen:
       'You want to be notified of future changes (subscribe the fleet_assignment change-feed) or you need full message history (coord:inbox).',
     chaining:
-      'fleet:assignments { plan } → an orphaned/stalled claim → work_items:release / plan_items:release, or pick it up yourself; never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging an agent about its work.',
+      'fleet:assignments { plan } → a row with action:\'reclaim\' → work_items:release / plan_items:release, or pick it up yourself; a row with action:\'ask\' → coord:send the holder and WAIT for the answer, never release it. Never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging an agent about its work.',
     // Result-aware (D-003): the work_items:release pointer surfaces with a REAL
     // count ONLY when there are orphaned/stalled claims to reclaim — dynamically
     // gated so a clean fleet pays no "See also:" bloat. The two adjacent-lens
     // pointers are always relevant, so they stay static in the returned list.
     seeAlso: (result) => {
       const j = readJsonResult<{
-        summary?: { orphaned_claims?: number; stalled_claims?: number };
+        summary?: { reclaimable_claims?: number };
       }>(result);
       // seeAlso runs on the SERIALIZED result — the {data} envelope may be TOON
       // on the MCP transport (readJsonResult → undefined). TOON renders nested
-      // scalars as `orphaned_claims: N` lines, so a cheap regex keeps the
+      // scalars as `reclaimable_claims: N` lines, so a cheap regex keeps the
       // conditional reclaim pointer alive on compact responses (fail-open to 0).
       const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
       const num = (key: string): number => Number(new RegExp(`\\b${key}\\b["']?\\s*:\\s*(\\d+)`).exec(text)?.[1] ?? 0);
-      const reclaimable = j?.summary
-        ? (j.summary.orphaned_claims ?? 0) + (j.summary.stalled_claims ?? 0)
-        : num('orphaned_claims') + num('stalled_claims');
+      // WI-5975: count ONLY genuinely-reclaimable claims (holder gone). This
+      // previously summed orphaned+stalled, so a fleet whose every "stalled"
+      // claim was held by a live, actively-working agent still got told to go
+      // free N claims — the tool prescribing the exact action the bug is about.
+      const reclaimable = j?.summary?.reclaimable_claims ?? num('reclaimable_claims');
       const out: SeeAlsoEntry[] = [
         'coord:roster { view:"claims" } (the unified who-on-what-item lens)',
         "fleet:status (the fleet's leader + live members)",
@@ -663,6 +668,30 @@ export default defineTool({
     const stalled = stalledClaims(rows).filter(
       (row) => !row.agentId || !healthyLoopOwners.has(row.agentId),
     );
+    // WI-5975: the holder-liveness map every reclaim-candidate row is summarized
+    // against. `agents` is already decorated (reconcileWakeability →
+    // `sessionState`, decorateMemberVerdicts → `lastToolCallAt`), so the
+    // AUTHORITATIVE verdict is in hand here — it just never reached the rendered
+    // rows, which is why a claim held by an agent heartbeating 2s ago was
+    // reported to leaders in the same shape, and same reclaimable bucket, as a
+    // claim whose holder was genuinely gone.
+    const holderActivity = new Map<string, HolderActivity>(
+      agents.map((a) => [
+        a.agentId,
+        { sessionState: a.sessionState ?? null, lastToolCallAt: a.lastToolCallAt ?? null },
+      ]),
+    );
+    const summarizeFor = (row: FleetAssignmentRow) =>
+      summarizeOrphan(row, row.agentId ? (holderActivity.get(row.agentId) ?? null) : null);
+    const orphanRows = orphans.map(summarizeFor);
+    const stalledRows = stalled.map(summarizeFor);
+    // WI-5975: only rows whose holder the oracle says is GONE are reclaimable.
+    // A live holder that has not checkpointed is surfaced (it is still a real
+    // "not visibly advancing" signal) but counted separately, so neither the
+    // summary nor the work_items:release nudge below can advise reclaiming work
+    // out from under an agent that is alive and mid-task.
+    const reclaimableRows = [...orphanRows, ...stalledRows].filter(isReclaimCandidate);
+    const liveHeldRows = [...orphanRows, ...stalledRows].filter((s) => !isReclaimCandidate(s));
     // Plan-item COVERAGE rollup: which plan items are being worked via a LINKED
     // work-item (or a direct claim) even when no plan-item lease names them — the
     // blind spot that makes plans:items show an actively-worked item as unworked.
@@ -783,6 +812,13 @@ export default defineTool({
       claims: rows.filter((r) => r.source !== 'presence').length,
       orphaned_claims: orphans.length,
       stalled_claims: stalled.length,
+      // WI-5975: the two numbers a leader should actually act on. `reclaimable`
+      // counts ONLY claims whose holder the oracle says is gone; `held_by_live_agent`
+      // counts the quiet-but-alive ones, whose sanctioned action is ASK. The raw
+      // orphaned/stalled counts above conflated them, which is how a reassign got
+      // aimed at an agent that was working.
+      reclaimable_claims: reclaimableRows.length,
+      held_by_live_agent: liveHeldRows.length,
       // EI-6074: distinct plan-item deliverables held by >1 principal via the
       // work-item↔plan-item coverage edge — the silent cross-table duplicate.
       coverage_collisions: collisions.length,
@@ -830,9 +866,21 @@ export default defineTool({
         ...(self ? { self } : {}),
         summary,
         // Abandoned work first — the reason this view is claim-primary.
-        orphaned: orphans.map(summarizeOrphan),
-        // Stalled work (live holder, no progress) — also reclaimable, also "not covered".
-        stalled: stalled.map(summarizeOrphan),
+        orphaned: orphanRows,
+        // Stalled work (no item-scoped progress in the window). WI-5975: each row
+        // carries `verdict` + `action` — 'held-by-live-agent'/'ask' when the
+        // oracle says the holder is live, 'orphan'/'reclaim' only when it is gone.
+        // Read those, not the array name: presence in `stalled` is NOT permission
+        // to reclaim.
+        stalled: stalledRows,
+        ...(liveHeldRows.length
+          ? {
+              live_holder_note:
+                `${liveHeldRows.length} of the rows above are held by agents the presence oracle reports LIVE ` +
+                `(verdict:'held-by-live-agent'). They are not abandoned — a missing checkpoint is not evidence of a ` +
+                `stopped agent. ASK the holder before touching the claim; do not release it.`,
+            }
+          : {}),
         // Coverage collisions (EI-6074): two distinct principals resolving to the
         // same deliverable via the work-item↔plan-item coverage edge. Omitted when clean.
         ...(collisions.length ? { coverage_collisions: collisions } : {}),

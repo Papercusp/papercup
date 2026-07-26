@@ -15,6 +15,13 @@ vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
 }));
 vi.mock('./su-lock-store', () => ({ tryHeartbeatResource: vi.fn() }));
+// WI-5960: a special-domain (git-sync:*, host-global) lease was ACQUIRED under a
+// domain other than the caller's own tree-scoped one — heartbeat must be able to
+// find it there too. Distinct from the caller's 'dom' so the fallback tests below
+// can tell "found on the caller domain" apart from "found on the fallback".
+vi.mock('./coordination-domain', () => ({
+  candidateResourceLockDomains: vi.fn(() => ['dom', 'ws-scoped-domain', 'papercusp-host-global']),
+}));
 
 import { tryHeartbeatResource } from './su-lock-store';
 const hbM = vi.mocked(tryHeartbeatResource);
@@ -77,5 +84,43 @@ describe('locks:heartbeat_resource handler', () => {
       '44444444-4444-4444-4444-444444444444',
     ]);
     expect(hbM).toHaveBeenCalledTimes(2);
+  });
+
+  // WI-5960: before this fix, heartbeat resolved EVERY lease through only the
+  // caller's own tree-scoped domain — so a `git-sync:<slug>` (or host-global)
+  // lease, correctly ACQUIRED under a different domain, silently found nothing
+  // to extend on every heartbeat and expired on schedule regardless. Pins the
+  // fallback: the caller domain is tried first (cheap, common case), and a miss
+  // there now falls through to the special-domain families instead of giving up.
+  it('WI-5960: falls back to a special-domain lease when the caller domain finds nothing to extend', async () => {
+    hbM.mockImplementation(async (_tx, domain) =>
+      domain === 'ws-scoped-domain'
+        ? { extended: true, expires_ts: new Date('2026-02-01T00:00:00Z') }
+        : { extended: false, expires_ts: null },
+    );
+    const b = body(await call());
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [
+        {
+          ok: true,
+          lock_id: '33333333-3333-3333-3333-333333333333',
+          extended: true,
+          expires_ts: '2026-02-01T00:00:00.000Z',
+        },
+      ],
+    });
+    // tried the caller's own domain ('dom') first, THEN the fallback that hit —
+    // never skipped straight to the special domain, and stopped once it found it.
+    expect(hbM.mock.calls.map((c) => c[1])).toEqual(['dom', 'ws-scoped-domain']);
+  });
+
+  it('WI-5960: reports the no-op (never-alive) result when NO domain — caller or special — has the lease', async () => {
+    hbM.mockResolvedValue({ extended: false, expires_ts: null } as never);
+    const b = body(await call());
+    expect(b.results[0]).toMatchObject({ ok: false, extended: false, expires_ts: null });
+    // every candidate domain was tried, in order, before giving up.
+    expect(hbM.mock.calls.map((c) => c[1])).toEqual(['dom', 'ws-scoped-domain', 'papercusp-host-global']);
   });
 });

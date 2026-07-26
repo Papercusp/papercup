@@ -44,6 +44,22 @@ const ROUTINES_DDL = `
     updated_at timestamptz NOT NULL DEFAULT now(),
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb
   )`;
+// EI-18674157526367861: `liveHolderFragment` now UNIONs in `activeTurnHolderFragment`
+// (the cross-CLI worker activity bridge sink, migration 143) — this test's own
+// minimal DDL fixture predates that fix and never created the table, so every test
+// here started failing with `relation "harness_shared.agent_activity" does not
+// exist` (discovered live while verifying an unrelated WI-5964 change to this file's
+// seedPresence helper). Same deliberately-minimal projection as the sibling
+// work-items-stale-claims.integration.test.ts's AGENT_ACTIVITY_DDL (only the columns
+// activeTurnHolderFragment reads: owner_id/kind/summary/created_at).
+const AGENT_ACTIVITY_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
+    id BIGSERIAL PRIMARY KEY,
+    owner_id text NOT NULL,
+    kind text NOT NULL,
+    summary text,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`;
 
 let db: FreshPgDb;
 let sql: postgres.Sql;
@@ -58,6 +74,7 @@ beforeAll(async () => {
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(ROUTINES_DDL);
+  await sql.unsafe(AGENT_ACTIVITY_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -65,7 +82,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.routines`;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.routines, harness_shared.agent_activity`;
 });
 
 describe('agent-operability P-003 — one dead-owner sweep', () => {

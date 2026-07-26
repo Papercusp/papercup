@@ -1092,7 +1092,11 @@ export async function mergeRosterWithAssignments(
   await resolveThinkingForEntries(thinkingCandidates);
   return {
     active,
-    orphanedClaims: orphanedClaims(assignmentRows).map(summarizeOrphan),
+    // WI-5975: explicit single-arg — `.map(summarizeOrphan)` would pass the array
+    // INDEX into the holder-activity parameter. This surface lists only genuine
+    // orphans (holder dead), so the row's own liveness is the right input and the
+    // verdict resolves to 'orphan'/'reclaim' as before.
+    orphanedClaims: orphanedClaims(assignmentRows).map((r) => summarizeOrphan(r)),
   };
 }
 

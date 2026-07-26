@@ -585,9 +585,11 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
 }
 
 const OP_CHAT_SIDEBAR_CSS = `
-/* ── Inbox face (EI-13037, owner placement 2026-07-16) — the pane's third
-   toggle, LEFT of Papercup: [📥 Inbox] [🥤 Papercup] [🫖 Pot Health].
-   Pill chrome mirrors .op-chat-pot-toggle so the three read as peers. */
+/* ── Shared face-pill chrome (originally the EI-13037 Inbox toggle; the
+   Inbox face itself retired hud-consolidation-2026-07-26 P-003 — these
+   classes are named after it but are shared base styling now used by the
+   Plans toggle: [📋 Plans] [🥤 Papercup] [🫖 Pot Health]).
+   Pill chrome mirrors .op-chat-pot-toggle so they read as peers. */
 .op-chat-header-main .op-chat-inbox-toggle {
   flex: 0 1 auto;
   min-width: 0;

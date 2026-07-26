@@ -334,7 +334,10 @@ describe('AdvShell — strip + header', () => {
     const moreTrigger = screen.getByRole('button', { name: 'More sections' });
     expect(moreTrigger.className).toContain('pc-advshell__more-trigger--active');
     fireEvent.click(moreTrigger);
-    expect(await screen.findByText('Docs')).toBeTruthy();
+    // 'docs' is both the just-mounted active tab (so it's already "Recent") AND
+    // a member of its permanent "Build" group — both listings are expected
+    // (standard recent-item UX), so assert presence via findAllByText.
+    expect((await screen.findAllByText('Docs')).length).toBeGreaterThan(0);
   });
 
   it('selecting a tab from the More menu writes the tab to the URL and closes the menu', async () => {

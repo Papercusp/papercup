@@ -650,6 +650,67 @@ export async function stampFleetMembershipAtBoot(opts: {
 }
 
 /**
+ * EI-11110 / WI-5976 (text-vs-registry authorization contradiction): a fleet/auto
+ * launch used to bake "AUTO mode is ON" (and its watermarked, authoritative-
+ * looking instructionPrecedence snapshot) into the session PROSE ONLY, computed
+ * from the launch request's local `autoMode`/`drainMode` booleans — never written
+ * to the actual mode registry (`harness_shared.agent_modes`) that `mode:set` /
+ * `coord:orient` read live. A fresh session's first prompt would assert AUTO is
+ * on while the very next `coord:orient` call (reading the real registry) reported
+ * NO active modes and 'confirm-before-execution' — a live instance of the forged-
+ * authority shape WI-5976 describes: authorization expressed as prose that
+ * outlives/contradicts the revocable registry state it claims to summarize.
+ *
+ * This persists the SAME launch-time decision through the identical write path
+ * `mode:set` uses (setMode + refreshControlAnchorAfterMutation), so every later
+ * live read agrees with the kickoff prose from turn 1 instead of only the
+ * one-shot launch snapshot agreeing with itself. Best-effort: a registry hiccup
+ * must never fail the launch (the caller awaits this but ignores a thrown error
+ * only in the sense of not failing the request — this function itself never
+ * throws, returning a message instead, mirroring stampFleetMembershipAtBoot).
+ */
+export async function syncLaunchModeToRegistry(opts: {
+  workspaceId: string;
+  ownerId: string;
+  autoMode: boolean;
+  drainMode: boolean;
+  reason: string;
+}): Promise<string | null> {
+  if (!opts.autoMode) return null;
+  try {
+    const { setMode } = await import('../../../modes/store');
+    const { refreshControlAnchorAfterMutation } = await import(
+      '../../../agent-tools/coordination/control-anchor'
+    );
+    for (const modeId of opts.drainMode ? ['auto', 'drain'] : ['auto']) {
+      const res = await setMode({
+        workspaceId: opts.workspaceId,
+        ownerId: opts.ownerId,
+        modeId,
+        enabled: true,
+        reason: opts.reason,
+        setBy: opts.ownerId,
+      });
+      if (!res.ok && !res.stickyConflict) {
+        // A genuine write failure (not the benign already-owner-directed case,
+        // which just means a peer/earlier launch already armed it more strongly)
+        return res.error ?? `setMode('${modeId}') failed`;
+      }
+    }
+    await refreshControlAnchorAfterMutation({
+      ownerId: opts.ownerId,
+      workspaceId: opts.workspaceId,
+      origin: 'system',
+      actorId: opts.ownerId,
+      source: 'mode:set',
+    });
+    return null;
+  } catch (e: any) {
+    return e?.message ?? String(e);
+  }
+}
+
+/**
  * fleet-auto-mode (WI-1356): the durable AUTO-mode activation a fleet/auto launch
  * bakes into the session — a fleet member has no human at its keyboard, so it must
  * start in the persona's "act, don't ask, loop until done" standing state. Injected
@@ -1572,55 +1633,26 @@ const post = defineTool({
     const drainMode = modeRaw === 'drain';
     const autoMode = body.auto === true || drainMode;
 
-    // EI-11110 / WI-5976 (text-vs-registry authorization contradiction): autoMode/
-    // drainMode used to be baked ONLY as prose (the seeded kickoff text below) and
-    // into the launch-time instructionPrecedence SNAPSHOT (source:'bootstrap-su',
-    // computed from these same local booleans) — never written to the actual mode
-    // registry (harness_shared.agent_modes) that mode:set/coord:orient read. A
-    // fresh session's FIRST prompt would assert "AUTO mode is ON" with an
-    // authoritative-looking watermarked precedence block, while the very next
-    // coord:orient call (source:'coord:orient', reading the real registry) reported
-    // NO active modes and 'confirm-before-execution' — a live, reproduced instance
-    // of the forged-authority shape WI-5976 describes, not merely a hypothetical.
-    // Fix: persist the SAME decision into the registry via the identical write path
-    // `mode:set` uses, so every later live read agrees with the prose from turn 1.
-    // Best-effort + awaited (not fire-and-forget) — a registry hiccup must never
-    // fail the launch, but we do want it to have landed before the agent's first
-    // coord:orient, which can happen within seconds of boot.
-    if (autoMode) {
-      try {
-        const { setMode } = await import('../../../modes/store');
-        const { refreshControlAnchorAfterMutation } = await import(
-          '../../../agent-tools/coordination/control-anchor'
-        );
-        const reason = drainMode
-          ? 'fleet launch: --mode=drain (DRAIN implies AUTO)'
-          : fleetPin.fleetSlug
-            ? 'fleet launch: --auto'
-            : 'launch: --auto';
-        for (const modeId of drainMode ? ['auto', 'drain'] : ['auto']) {
-          await setMode({
-            workspaceId: workspace,
-            ownerId: sid,
-            modeId,
-            enabled: true,
-            reason,
-            setBy: sid,
-          });
-        }
-        await refreshControlAnchorAfterMutation({
-          ownerId: sid,
-          workspaceId: workspace,
-          origin: 'system',
-          actorId: sid,
-          source: 'mode:set',
-        });
-      } catch (e: any) {
-        process.stderr.write(
-          `[bootstrap-su] launch-time mode-registry sync failed (non-fatal — the kickoff prose ` +
-            `may now disagree with the registry until the agent self-registers via mode:set): ${e?.message}\n`,
-        );
-      }
+    // EI-11110 / WI-5976: keep the mode REGISTRY in sync with the AUTO/DRAIN prose
+    // this launch is about to bake into the prompt (see syncLaunchModeToRegistry's
+    // doc comment for the full contradiction this closes). Best-effort — logged,
+    // never fails the launch.
+    const modeSyncErr = await syncLaunchModeToRegistry({
+      workspaceId: workspace,
+      ownerId: sid,
+      autoMode,
+      drainMode,
+      reason: drainMode
+        ? 'fleet launch: --mode=drain (DRAIN implies AUTO)'
+        : fleetPin.fleetSlug
+          ? 'fleet launch: --auto'
+          : 'launch: --auto',
+    });
+    if (modeSyncErr) {
+      process.stderr.write(
+        `[bootstrap-su] launch-time mode-registry sync failed (non-fatal — the kickoff prose ` +
+          `may now disagree with the registry until the agent self-registers via mode:set): ${modeSyncErr}\n`,
+      );
     }
 
     // solo-launch-provenance: identity-shaped only — refuse garbage loudly rather

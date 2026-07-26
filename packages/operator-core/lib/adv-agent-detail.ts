@@ -24,7 +24,6 @@ import {
   readQueue,
   type QueueResult,
 } from './agent-tools/locks/su-lock-store';
-import { lockCoordinationDomain } from './agent-tools/locks/coordination-domain';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { readCodexHomeDiagnostics, type CodexHomeDiagnostics } from './role-codex-home';
 import {
@@ -154,7 +153,15 @@ export function deriveAgentLocks(queue: QueueResult, owner: string): AgentLocks 
       queuedAt: iso(w.queued_ts),
       waitUntil: iso(w.wait_until),
       blockedBy: queue.active_locks
-        .filter((l) => l.owner !== owner && w.paths.includes(l.path))
+        // WI-5979: match WITHIN a lock domain. The read is now cross-domain, and
+        // the same repo-relative path in two different checkouts is two different
+        // physical files — cross-attributing them would invent blockers.
+        .filter(
+          (l) =>
+            l.owner !== owner &&
+            l.coordination_domain === w.coordination_domain &&
+            w.paths.includes(l.path),
+        )
         .map((l) => ({
           path: l.path,
           holder: l.owner,
@@ -279,7 +286,21 @@ export async function getAgentLocks(owner: string): Promise<AgentLocks> {
     const sql = getTxPool();
     // Unfiltered read: we need other owners' active locks (to attribute
     // blockers) and the global ahead_count. The result is small (active edits).
-    const queue = await readQueue(sql, { coordinationDomain: lockCoordinationDomain() });
+    //
+    // WI-5979: `coordinationDomain: null` = read across EVERY domain, deliberately
+    // NOT `lockCoordinationDomain()`. That helper keys off the repo root of the
+    // process that loaded it, so this dossier read matched only locks acquired
+    // through an operator running from the SAME checkout. In practice the ports
+    // disagree — :3070 serves from papercup-release while the Tauri desktop's
+    // :3270 serves from the staging tree — so every lock (100% of live rows were
+    // recorded under the release root) was invisible to the desktop dossier, and
+    // invisible SILENTLY: an empty read is not an error, so "No locks held or
+    // waiting." was indistinguishable from a wrong-namespace lookup.
+    //
+    // `owner` is a globally-unique ownerId, so the domain filter added no
+    // correctness to a per-agent diagnostic — only this bug. Blocker attribution
+    // stays within-domain in deriveAgentLocks.
+    const queue = await readQueue(sql, { coordinationDomain: null });
     return deriveAgentLocks(queue, owner);
   } catch (e) {
     return { ...EMPTY_LOCKS, error: e instanceof Error ? e.message : String(e) };
