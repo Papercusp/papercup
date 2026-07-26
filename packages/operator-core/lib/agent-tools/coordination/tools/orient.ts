@@ -1292,7 +1292,13 @@ export function assembleOrientOutput(legs: {
   taskToolSchemaPack?: unknown;
   result: object;
 }): Record<string, unknown> {
-  const { ok, me, claimable, inbox, ...resultRest } = legs.result as Record<string, unknown>;
+  // EI-18731216945970087: `presenceDrift` is destructured OUT here (like ok/me/
+  // claimable/inbox) so it rides ONLY the prioritized `legs.presenceDrift` slot
+  // below, not also `resultRest` at the bottom — it is a rare, small, safety-
+  // critical diagnostic that must survive the result-door's truncation, not get
+  // buried behind leaderBrief/memory/planEvents.
+  const { ok, me, claimable, inbox, presenceDrift: _presenceDriftFromResult, ...resultRest } =
+    legs.result as Record<string, unknown>;
   return {
     ...(legs.self ? { self: legs.self } : {}),
     ...(legs.recovery ? { recovery: legs.recovery } : {}),

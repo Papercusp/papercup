@@ -1,3 +1,5 @@
+import nodeCluster from 'node:cluster';
+
 /**
  * background-workers.ts — the ONE evaluation of the EI-126 rule: should THIS
  * process run shared-DB background machinery (federation drains, DBOS
@@ -119,4 +121,34 @@ export function requestOnlyHost(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.PAPERCUSP_BACKGROUND_WORKERS != null
     ? env.PAPERCUSP_BACKGROUND_WORKERS === '0'
     : env.PAPERCUSP_HONO_PORT === '3170';
+}
+
+/**
+ * Does THIS process actually own (i.e. boot + hold the handles for) the hyperbee
+ * substrate? The single source of truth for that question — deliberately shared by
+ * both sides of the booted-handles sync so they can never disagree:
+ *
+ *   - READ side (`in-process-status.ts`): decides whether to trust the process-local
+ *     handle map or fall back to the primary's cached broadcast.
+ *   - WRITE side (`cluster-booted-handles-sync.ts`): decides whether this process is
+ *     even ENTITLED to broadcast a snapshot.
+ *
+ * `nodeCluster.isPrimary` alone answers "am I a node:cluster-forked worker", NOT "did I
+ * boot the substrate". Under the dedicated `papercup-bg-host` topology those diverge:
+ * :3070/:3270 are each their own unforked cluster primary yet are declared request-only
+ * and never boot the substrate — bg-host does.
+ *
+ * EI-18735338283879820: keeping this predicate in ONE place is the actual fix. WI-5307
+ * corrected the read side with an inline copy of this expression but left the write side
+ * ungated, so a request-only primary happily broadcast an EMPTY snapshot every 5s; workers
+ * cached it as fresh and rendered `reachedSubstrateOwner:true, bootedCount:0` — a confident
+ * false zero, indistinguishable from a genuinely dead substrate, while bg-host had 51
+ * harnesses booted. Two copies of one rule is what let the halves drift apart.
+ */
+export function isSubstrateOwnerProcess(opts?: {
+  isPrimary?: boolean;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  const isPrimary = opts?.isPrimary ?? nodeCluster.isPrimary;
+  return isPrimary && !requestOnlyHost(opts?.env ?? process.env);
 }

@@ -34,6 +34,7 @@
  */
 
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { isSubstrateOwnerProcess } from '../../background-workers';
 import { listBootedHandles, type BootedHandleSummary } from './boot-all';
 
 /** IPC message type the primary broadcasts to every worker each interval. */
@@ -43,6 +44,18 @@ export interface BootedHandlesSnapshotMessage {
   type: typeof BOOTED_HANDLES_SNAPSHOT_TYPE;
   handles: BootedHandleSummary[];
   sentAt: number;
+  /**
+   * EI-18735338283879820: the sender's assertion that it genuinely OWNS the substrate
+   * (booted it, holds the handle map) — not merely that it is a cluster primary.
+   *
+   * An empty `handles` array is only meaningful when it comes from the owner. From a
+   * non-owner it means "I never booted anything", which is NOT the same claim and must
+   * never be cached as though the substrate were verified-empty. Carrying provenance ON
+   * the message means the receiver can reject a poisoned snapshot even if some future
+   * call site forgets the send-side gate — the send-side check alone is exactly the kind
+   * of single-point rule that already drifted once.
+   */
+  ownsSubstrate: boolean;
 }
 
 export interface BootedHandlesBroadcasterHandle {
@@ -61,15 +74,31 @@ export function startBootedHandlesBroadcaster(opts: {
   broadcast: (message: BootedHandlesSnapshotMessage) => void;
   intervalMs?: number;
   now?: () => number;
+  /** Test seam / explicit override for "does this process own the substrate?". */
+  ownsSubstrate?: boolean;
 }): BootedHandlesBroadcasterHandle {
   const intervalMs = opts.intervalMs ?? 5_000;
   const now = opts.now ?? (() => Date.now());
   const beat = (): void => {
+    // EI-18735338283879820: a process that does not OWN the substrate must never
+    // broadcast. Its `listBootedHandles()` is unconditionally `[]` (it never booted
+    // anything), and a punctual empty snapshot is indistinguishable to the receiver from
+    // the real owner reporting a verified-empty substrate — so broadcasting it
+    // MANUFACTURES a confident false zero rather than leaving an honest blind spot.
+    //
+    // Evaluated per-beat, not once at start, so a process whose role is established
+    // after wiring still settles on the correct answer.
+    //
+    // With no broadcast the worker cache stays null and resolveEffectiveBootedHandles
+    // falls through to `reachedSubstrateOwner: false` — an explicit "could not reach the
+    // owner", which is the honest and strictly more useful answer.
+    if (!(opts.ownsSubstrate ?? isSubstrateOwnerProcess())) return;
     try {
       opts.broadcast({
         type: BOOTED_HANDLES_SNAPSHOT_TYPE,
         handles: listBootedHandles(),
         sentAt: now(),
+        ownsSubstrate: true,
       });
     } catch {
       /* best-effort — a dead/draining worker channel never throws past broadcast() anyway */
@@ -117,9 +146,14 @@ export function startWorkerBootedHandlesCache(
   const off = opts.off ?? ((event: 'message', cb: (message: unknown) => void) => process.off(event, cb));
   const listener = (message: unknown): void => {
     const m = message as Partial<BootedHandlesSnapshotMessage> | null | undefined;
-    if (m?.type === BOOTED_HANDLES_SNAPSHOT_TYPE && Array.isArray(m.handles)) {
-      cachedRemote = { handles: m.handles as BootedHandleSummary[], receivedAt: now() };
-    }
+    if (m?.type !== BOOTED_HANDLES_SNAPSHOT_TYPE || !Array.isArray(m.handles)) return;
+    // EI-18735338283879820: only a snapshot the sender AFFIRMATIVELY claims ownership for
+    // may populate the cache. `ownsSubstrate !== true` also (deliberately) rejects a
+    // legacy snapshot from an older process that predates the field: unknown provenance
+    // is treated as untrusted, so a rolling deploy degrades to an honest
+    // `reachedSubstrateOwner:false` blind spot rather than a confident false zero.
+    if (m.ownsSubstrate !== true) return;
+    cachedRemote = { handles: m.handles as BootedHandleSummary[], receivedAt: now() };
   };
   on('message', listener);
   return {

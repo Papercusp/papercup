@@ -244,10 +244,14 @@ export function getInProcessSubstrateStatus(
   // WI-5307: a node:cluster primary that has DECLARED itself request-only (the
   // dedicated-bg-host topology's :3070/:3270 hosts) never boots the substrate — see the
   // resolveEffectiveBootedHandles doc comment above.
-  const isSubstrateOwnerProcess =
-    opts.isSubstrateOwnerProcessForTest ?? (nodeCluster.isPrimary && !requestOnlyHost());
+  // EI-18735338283879820: use the SHARED predicate (background-workers.ts) rather than an
+  // inline copy. The inline copy here was correct, but its twin on the broadcast side was
+  // missing entirely — one rule expressed in two places is what let the halves drift into
+  // a confident false zero. Both sides now read the same function.
+  const isSubstrateOwner =
+    opts.isSubstrateOwnerProcessForTest ?? isSubstrateOwnerProcess();
   const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
-    isSubstrateOwnerProcess,
+    isSubstrateOwnerProcess: isSubstrateOwner,
     resolveRemote: opts.resolveRemoteBootedHandles,
   });
   const progress = listBootstrapProgress();

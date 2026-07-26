@@ -30,7 +30,7 @@
  * server modules) into a file whose whole value is being testable without a DOM.
  */
 
-import type { HudAsk, HudBadge } from './hud-board-model';
+import type { BadgeTone, HudAsk, HudBadge } from './hud-board-model';
 import { HUD_ASK_KIND_LABEL } from './hud-board-model';
 import { SEVERITY_TONE } from '../../harness/theme';
 
@@ -376,6 +376,34 @@ export function buildPlanBoard(plans: HudPlanInput[], opts: HudEntityBuildOption
 }
 
 /* ── work items ──────────────────────────────────────────────────────────── */
+
+/**
+ * Narrow the shared theme's `ToneKey` to the board's `BadgeTone`.
+ *
+ * `SEVERITY_TONE` is reused from `harness/theme` rather than kept as a second
+ * local copy — but the theme's tone vocabulary is WIDER than a badge's: it
+ * carries presentation-only keys (`fg`, …) that no chip knows how to render.
+ * Every value currently mapped happens to be a legal badge tone, which is
+ * exactly what makes a bare cast tempting and wrong: it would compile today
+ * and start emitting an unstyleable chip the day somebody maps a severity to
+ * one of the other keys.
+ *
+ * So this narrows by CHECKING, and falls back to the neutral chip for anything
+ * outside the badge vocabulary — the same "degrade to something renderable
+ * rather than trust the input" posture `workItemColumn` takes for an
+ * unrecognized state.
+ */
+const BADGE_TONES: ReadonlySet<string> = new Set<BadgeTone>([
+  'neutral',
+  'accent',
+  'good',
+  'warn',
+  'bad',
+]);
+
+export function toBadgeTone(tone: string | undefined | null): BadgeTone {
+  return tone && BADGE_TONES.has(tone) ? (tone as BadgeTone) : 'neutral';
+}
 
 export function toWorkItemCard(item: HudWorkItemInput, nowMs: number): HudEntityCard {
   const column = workItemColumn(item.state);

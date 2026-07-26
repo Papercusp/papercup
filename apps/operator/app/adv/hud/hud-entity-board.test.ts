@@ -18,6 +18,7 @@ import {
   planColumn,
   planCountsSummary,
   shortAssignee,
+  toBadgeTone,
   toWorkItemCard,
   workItemColumn,
   type HudPlanInput,
@@ -297,6 +298,32 @@ describe('cards', () => {
   it('derives an age from the injected clock, never Date.now()', () => {
     const card = toWorkItemCard(item({ updatedAt: '2026-07-26T17:30:00.000Z' }), NOW);
     expect(card.sinceSec).toBe(1800);
+  });
+});
+
+describe('toBadgeTone', () => {
+  // The seam between the shared theme's tone vocabulary and the board's.
+  // `SEVERITY_TONE` is imported from harness/theme, whose ToneKey is WIDER
+  // than BadgeTone — it carries presentation-only keys no chip can render.
+  // Today every mapped severity happens to be a legal badge tone, which is
+  // precisely why this needs a test: a bare cast would compile and only break
+  // when someone maps a severity to one of the other keys.
+  it('passes through every tone a chip can actually render', () => {
+    for (const t of ['neutral', 'accent', 'good', 'warn', 'bad'] as const) {
+      expect(toBadgeTone(t)).toBe(t);
+    }
+  });
+
+  it('degrades an out-of-vocabulary theme tone to neutral instead of emitting it', () => {
+    // 'fg' is a real ToneKey in harness/theme and NOT a BadgeTone.
+    expect(toBadgeTone('fg')).toBe('neutral');
+    expect(toBadgeTone('chartreuse')).toBe('neutral');
+  });
+
+  it('survives a missing severity mapping', () => {
+    expect(toBadgeTone(undefined)).toBe('neutral');
+    expect(toBadgeTone(null)).toBe('neutral');
+    expect(toBadgeTone('')).toBe('neutral');
   });
 });
 
