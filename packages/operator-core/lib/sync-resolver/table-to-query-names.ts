@@ -148,6 +148,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // planSlugScope cannot match it. It must invalidate WITH plans.attention or
     // an open detail pane keeps showing a resolved item's stale actions.
     'plans.attentionItem',
+    // plans.attentionCounts (WI-5955) — the badge aggregate. MUST invalidate with
+    // plans.attention or the "needs you" badge goes stale while the list beside
+    // it updates, which is exactly the badge-vs-pane disagreement the counts were
+    // designed to avoid.
+    'plans.attentionCounts',
     'plans.search',
     // plans.byHive (WI-259 P-006) — the cross-member plan rollup. A FEDERATED plan
     // write lands on harness_plans under the author member's slug + fires the change
@@ -448,7 +453,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // a live `plans.attention` refresh regardless of plan_slug (EI-14209: the
   // Inbox pane needed a manual reload). Bare full-bust target, same shape as
   // harness_plans -> plans.attention below.
-  'harness_shared.coord_open_escalations': ['plans.attention', 'plans.attentionItem'],
+  'harness_shared.coord_open_escalations': [
+    'plans.attention',
+    'plans.attentionItem',
+    'plans.attentionCounts',
+  ],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 
   // ── Insights / activity ledger (v5 addendum 3) ──────────────────

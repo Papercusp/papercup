@@ -22,6 +22,11 @@
 
 /* ── header: counts + toggles ─────────────────────────────────────────────── */
 
+/* flex:none — this is fixed chrome, never the flexible region (.hud__cols is).
+   Without it the default flex-shrink:1 applies: at ~95 sessions the wrapped
+   count chips make this row taller, the column then shrinks its siblings, and
+   the fleet strip below is squashed to a sliver of its chips (owner screenshot
+   2026-07-26 02-00-52). Same reason .hud__unattributed already declares it. */
 .hud__top {
   display: flex;
   align-items: center;
@@ -30,6 +35,7 @@
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
   flex-wrap: wrap;
+  flex: none;
 }
 
 .hud__counts {
@@ -117,6 +123,10 @@
   background: var(--bg-2);
   overflow-x: auto;
   flex-wrap: nowrap;
+  /* Fixed chrome — see .hud__top. This is the row the screenshot showed
+     clipped: it scrolls horizontally on purpose, so it must never also be
+     allowed to shrink vertically. */
+  flex: none;
 }
 
 /* Same WebKitGTK button-flex collapse as .hud__count above: the button resets
@@ -289,6 +299,13 @@
   color: inherit;
   cursor: pointer;
   width: 100%;
+  /* Containment backstop. The per-element clamps below are already correct and
+     complete (.hud__card-b min-width:0; .hud__reason has the full -webkit-box +
+     box-orient + overflow trio; .hud__plan truncates), so this is not the
+     primary clamp — it is the guarantee that if ANY descendant does escape at
+     scale, it cannot paint over the neighbouring card. Long monospace plan
+     slugs and chips were doing exactly that at ~95 sessions. */
+  overflow: hidden;
 }
 
 .hud__card-row {

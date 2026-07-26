@@ -25,19 +25,18 @@ import { Popover } from '@/app/harness/Popover';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
-import { ChevronLeft, ChevronRight, ClipboardList, Inbox as InboxIcon, SlidersHorizontal, Volume2, VolumeX } from 'lucide-react';
-import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from 'nuqs';
+import { ChevronLeft, ChevronRight, ClipboardList, SlidersHorizontal, Volume2, VolumeX } from 'lucide-react';
+import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
+import { useRouter } from '@/lib/router-compat/navigation';
 import { OperatorChat } from './OperatorChat';
 import { resolveInboxDrillIn } from './chat/curator-card-drill-in';
 import { PotHealthPane } from './PotHealthPane';
 import { useInboxAttention, useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
 
-// The Inbox view (EI-13037) pulls the Queue detail card chain — lazy so the
-// boot-critical chat chunk stays lean; it loads on first toggle.
-const InboxPane = lazy(() => import('./inbox/InboxPane'));
 // The Plans view (owner-plans-single-pane-2026-07-17) pulls PlanDetail + the
-// plan popup + sessions tab — lazy for the same boot-lean reason as Inbox.
+// plan popup + sessions tab — lazy for the boot-lean reason (the boot-critical
+// chat chunk stays lean; it loads on first toggle).
 const PlansPane = lazy(() => import('./plans/PlansPane'));
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
@@ -72,10 +71,13 @@ const STORAGE_KEY = 'papercusp.operatorChat.width';
 const AUDIENCE_MODE_OVERFLOW_WIDTH = 620;
 
 /** The header toggles' view values: the chat body ⇄ the full-height Pot
- *  Health view (WI-4778) ⇄ the human Inbox (EI-13037, owner placement
- *  correction 2026-07-16 — the inbox lives WITH the Papercup chat in this
- *  far-left "live running stuff" sidebar). URL state via nuqs so agents
- *  (ui:get_state / ui:dispatch) can see + drive it.
+ *  Health view (WI-4778) ⇄ the simplified Plans tracker. URL state via nuqs so
+ *  agents (ui:get_state / ui:dispatch) can see + drive it.
+ *
+ *  The human Inbox face (EI-13037) was retired (hud-consolidation-2026-07-26
+ *  P-003) — every ask it surfaced is now covered by the HUD board's asks/
+ *  unattributed lane (hud-consolidation P-002 proved coverage first), and a
+ *  drill-in opens the agent's conversation there instead (P-004, below).
  *
  *  EXTRA faces (WI-5162: [👥 Fleet] [🎧 Peers], mounted right of 🫖) widen this
  *  enum at runtime — their panes live in operator-vite and arrive as `faces`

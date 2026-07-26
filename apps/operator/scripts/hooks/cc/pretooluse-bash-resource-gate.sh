@@ -186,19 +186,36 @@ try:
         # real-world safe pattern is often itself inside quotes (e.g.
         # `echo "EXIT=${PIPESTATUS[0]}"`), which quote-stripping would erase.
         if not re.search(r'pipefail|PIPESTATUS|EXIT\s*=\s*\$\?', command):
-            # A top-level `|` (not `||`) immediately followed by tail/head/grep
-            # (optionally via a path, with flags/args) running to the end of its
-            # `;`/`&&`/`||`/newline-delimited segment.
+            # A top-level `|` (not `||`) immediately followed by an
+            # EXIT-CODE-MASKING stage (optionally via a path, with flags/args)
+            # running to the end of its `;`/`&&`/`||`/newline-delimited segment.
+            #
+            # EI-18686555459167489: the original list was tail/head/grep only,
+            # which let the most natural idiom for a LONG verification run walk
+            # straight through — `tsc 2>&1 | tee build.log`, `… | wc -l`,
+            # `… | sed -n '1,40p'`, `… | sort | uniq -c`. Every one of those
+            # exits 0 no matter what the upstream did, so the notification still
+            # reports a false green; the advisory just wasn't there to say so.
+            # The underlying truth is that ANY downstream stage replaces the
+            # upstream's status, so the stage list is only a heuristic for "the
+            # caller probably cares about the upstream's exit code" — it should
+            # cover the common text filters, not just the three first observed.
+            # (`grep` is doubly hazardous: it exits 1 on NO MATCH, so it can also
+            # INVERT a clean run into an apparent failure.)
             _PIPE_TAIL_RE = re.compile(
-                r'(?<!\|)\|(?!\|)\s*(?:\S*/)?(?:tail|head|grep|egrep|fgrep)\b[^|;&\n]*$'
+                r'(?<!\|)\|(?!\|)\s*(?:\S*/)?'
+                r'(?:tail|head|grep|egrep|fgrep|tee|wc|sed|awk|sort|uniq|cut|tr'
+                r'|jq|column|xargs|cat|tac|nl|less|more)'
+                r'\b[^|;&\n]*$'
             )
             for _pseg in re.split(r'&&|\|\||;|\n', _pipe_cmd):
                 if _PIPE_TAIL_RE.search(_pseg.strip()):
                     ADVISORY = (
                         'background-pipe exit-code advisory (EI-8871/EI-14065): this '
-                        'backgrounded command pipes into tail/head/grep — the completion '
-                        "notification will report THAT stage's exit code, not the real "
-                        'command\'s (tail/head/grep exit 0 almost regardless of upstream '
+                        'backgrounded command pipes into tail/head/grep/tee/wc/sed/awk/sort '
+                        "— the completion notification will report THAT stage's exit code, "
+                        'not the real '
+                        'command\'s (those stages exit 0 almost regardless of upstream '
                         'failure), so a failing test/build/rsync/ssh can read as "completed '
                         '(exit code 0)". Redirect to a log file instead (`cmd > '
                         '/tmp/x.log 2>&1`) and read the log/grep it separately, or add `set '

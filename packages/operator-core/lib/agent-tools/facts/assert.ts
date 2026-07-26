@@ -12,10 +12,12 @@
  *            long-form how-it-works.
  */
 import { z } from 'zod';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   assertFact,
   resolveFactScopeRef,
+  clampFactBody,
   FACT_SCOPES,
   FACT_BODY_MAX_CHARS,
   DEAD_END_KEY_PREFIX,
@@ -164,6 +166,17 @@ export default defineTool({
     audienceScope: z.string().max(160).optional().describe('Restrict WHO receives this fact in folds (v1 grammar: "fleet:<slug>") — it then folds ONLY into orients of that fleet\'s members. Omit = every reader of the scope. Orthogonal to `scope` (what the fact is about). facts:list still shows it to everyone (delivery relevance, not secrecy).'),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
+    acceptTruncation: z
+      .boolean()
+      .optional()
+      .describe(
+        `Explicit opt-in to force the write through when body exceeds the ${FACT_BODY_MAX_CHARS}-char cap. WITHOUT this, an ` +
+          `over-cap body is REFUSED (no write happens) — the error names the overage and previews the exact tail that would be ` +
+          `cut, so you can re-write it tight instead of losing it silently (EI-18685042986450096: the old truncate-and-report-` +
+          `after behavior dropped the operative clause of a fact 3x, once removing a rule's verdict sentence entirely). Pass ` +
+          `true only when you deliberately want the clipped write to land anyway (P-007: a write is never rejected outright — ` +
+          `this is the one way to still get the old lossy-but-never-lost behavior).`,
+      ),
   }),
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');
@@ -207,11 +220,29 @@ export default defineTool({
         : args.slot === 'wall'
           ? normalizeWallSlot(args.key, args.body)
           : { key: args.key, body: args.body };
-    // A wall slot with no EXPLICIT ttlSec defaults to WALL_DEFAULT_TTL_SEC (90d)
-    // rather than the ordinary 7d default — the whole point of the slot is that
-    // routine decay must not silently clear an owner-gated blocker. An explicit
-    // ttlSec always wins (a caller who deliberately wants a shorter wall can).
-    const ttlSec = args.ttlSec ?? (args.slot === 'wall' ? WALL_DEFAULT_TTL_SEC : undefined);
+    // EI-18685042986450096 (Avi, owner-flagged): the old behavior wrote the
+    // clipped body UNCONDITIONALLY and only disclosed the loss AFTER the write
+    // (truncationField below) — silently dropping the OPERATIVE clause 3x,
+    // once removing a discriminator rule's verdict sentence entirely. A fact
+    // folds VERBATIM as binding context, so an unnoticed truncation is not a
+    // clipped note, it is a wrong instruction presented as complete. REFUSE
+    // BEFORE the write (name the overage, preview the exact tail that would be
+    // cut) unless the caller explicitly accepts the loss via acceptTruncation —
+    // preserving P-007's "never lose a write outright" invariant (the caller
+    // always has a path forward: shorten it, or explicitly opt in) while
+    // closing the "silent after-the-fact" gap this item is about.
+    if (args.acceptTruncation !== true) {
+      const wouldStore = clampFactBody(slotted.body);
+      const preview = truncationField(slotted.body, wouldStore);
+      if (preview) {
+        throw new InvalidInputError(
+          `facts:assert — body is ${preview.droppedChars} char(s) over the ${FACT_BODY_MAX_CHARS}-char cap and would be ` +
+            `CLIPPED, silently dropping this operative tail: "${preview.droppedTail ?? '(tail unavailable)'}". No write ` +
+            `happened. Either shorten the body to front-load the operative clause within ${FACT_BODY_MAX_CHARS} chars, or ` +
+            `re-call with acceptTruncation:true to force the clipped write through anyway.`,
+        );
+      }
+    }
     const fact = await assertFact({
       scope: args.scope,
       scopeRef: scopeRef ?? null,

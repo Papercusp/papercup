@@ -1,0 +1,17 @@
+[Unit]
+Description=Papercusp orphaned-vitest-worker reaper — reaps forks.js/vmForks.js pool workers left behind when a vitest run's parent CLI is SIGKILLed (EI-18686031108193522)
+# Deliberately a systemd timer, NOT a DBOS scheduled workflow and NOT an
+# in-process operator tick (dbos-scheduler-consolidation-2026-06-03 D-004 /
+# EI-1622): this is a dev-box host-level process leak (infra hygiene, not
+# product), the same reasoning as papercup-webkit-reaper.service and
+# papercup-perf-signals-capture.service.
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Reaper should finish in well under a minute (walks /proc once); 60s
+# timeout prevents a stuck /proc read from blocking the next timer tick.
+TimeoutStartSec=60
+ExecStart=%h/papercupai-workspace/papercusp/bin/reap-orphaned-vitest-workers.sh

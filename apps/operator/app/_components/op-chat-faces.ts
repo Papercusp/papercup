@@ -44,8 +44,13 @@ export type OpChatFace = {
 };
 
 /** Built-in view values the host owns; an extra face may not shadow one.
- *  'plans' — the simplified plan-tracking face (owner-plans-single-pane-2026-07-17 P-001). */
-export const BUILT_IN_CHAT_VIEWS = ['chat', 'pot', 'inbox', 'plans'] as const;
+ *  'plans' — the simplified plan-tracking face (owner-plans-single-pane-2026-07-17 P-001).
+ *  'inbox' was retired (hud-consolidation-2026-07-26 P-003) — the human Inbox
+ *  face is gone; asks now open as a HUD conversation (?tab=hud&hudsession=).
+ *  Deliberately DROPPED, not kept as a dead enum member, so a stale
+ *  `?opcv=inbox` bookmark/deep-link falls back to the `chat` default instead
+ *  of selecting a face with no pane to render. */
+export const BUILT_IN_CHAT_VIEWS = ['chat', 'pot', 'plans'] as const;
 
 /**
  * Drop faces whose id collides with a built-in view or with an earlier face.

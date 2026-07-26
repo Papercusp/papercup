@@ -821,6 +821,46 @@ describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
     expectAllow(runGate(bashWithInput({ command: 'npm run test:affected 2>&1 | tail -100' })));
   });
 
+  // EI-18686555459167489: the list was tail/head/grep only, so the most natural
+  // idiom for a LONG verification run (tee the output to a log, count the
+  // errors, slice it with sed) walked straight through and still produced a
+  // false "exit code 0". These are the stages that actually showed up in the
+  // incident class, and every one of them exits 0 regardless of upstream.
+  it.each([
+    ['tee (save the output AND see it — the most likely miss)', 'npx tsc --noEmit 2>&1 | tee /tmp/tsc.log'],
+    ['wc (count the errors)', 'npx tsc --noEmit 2>&1 | wc -l'],
+    ['sed (slice the output)', "npm run build 2>&1 | sed -n '1,40p'"],
+    ['awk', 'npm test 2>&1 | awk "{print $1}"'],
+    ['sort', 'npm test 2>&1 | sort'],
+    ['uniq', 'npm test 2>&1 | uniq -c'],
+    ['cut', 'npm test 2>&1 | cut -d: -f1'],
+    ['jq', 'npm test --json 2>&1 | jq .'],
+    ['cat', 'npm test 2>&1 | cat'],
+  ])('fires on a backgrounded pipe into %s', (_label, command) => {
+    expectPipeAdvisory(runGate(bashWithInput({ command, run_in_background: true })));
+  });
+
+  it('still fires when the masking stage is reached via a path', () => {
+    expectPipeAdvisory(
+      runGate(bashWithInput({ command: 'npm test 2>&1 | /usr/bin/tee /tmp/x.log', run_in_background: true })),
+    );
+  });
+
+  it('still silent when a widened stage is used but the caller handles pipefail', () => {
+    expectAllow(
+      runGate(
+        bashWithInput({
+          command: 'set -o pipefail; npx tsc --noEmit 2>&1 | tee /tmp/tsc.log',
+          run_in_background: true,
+        }),
+      ),
+    );
+  });
+
+  it('does not false-positive on a widened stage name appearing as a plain argument', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm test -- --reporter=tee', run_in_background: true })));
+  });
+
   it('silent for a plain backgrounded command with no pipe', () => {
     expectAllow(runGate(bashWithInput({ command: 'npm run test:affected > /tmp/x.log 2>&1', run_in_background: true })));
   });
