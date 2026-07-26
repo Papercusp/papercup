@@ -129,6 +129,10 @@ export default defineTool({
       scope: effScope,
       hive: args.pot,
       workspace: args.workspace,
+      // EI-18653888556683414: a targeted owner lookup defaults to workspace-wide
+      // (not hive-narrowed) so a live peer outside the caller's own Hive is
+      // still found instead of reading as "no such agent".
+      targetedOwner: !!args.owner,
     });
     // P-011: include_detail adds the cross-DB held-files lane. The lock store is
     // keyed by coordinationDomain (the repo root, not workspaceId) — resolve it

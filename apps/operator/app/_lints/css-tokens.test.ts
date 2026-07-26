@@ -58,6 +58,11 @@ const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
   // Sonner writes these per-toast; globals.css uses them to keep stacked toasts compact.
   '--toasts-before',
   '--lift-amount',
+  // The adv HUD derives a per-fleet accent colour in JS and injects it on each card
+  // (app/adv/hud/hud.css documents this at the top of the file: "fleetColor … is injected
+  // as the --hud-fleet custom property per card"). Runtime-set by definition, so it can
+  // never appear in a CSS source — exactly what this allowlist is for.
+  '--hud-fleet',
   '--front-toast-height',
   // Voice controls write live input levels for the mic activity ring.
   '--mic-level',

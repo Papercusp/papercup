@@ -62,6 +62,10 @@ export interface PresenceScopeArgs {
   scope?: 'hive' | 'workspace' | 'all';
   hive?: string;
   workspace?: string;
+  /** EI-18653888556683414: this scope resolution is feeding a TARGETED { owner }
+   *  point-lookup (find ONE specific known agent id/label), not a browse-roster
+   *  read — see resolvePresenceScope for why that changes the default. */
+  targetedOwner?: boolean;
 }
 
 export interface ResolvedPresenceScope {
@@ -160,7 +164,17 @@ export async function resolvePresenceScope(
 ): Promise<ResolvedPresenceScope> {
   const c = ctx ?? {};
   const callerWs = args.workspace ?? c.workspaceId ?? null;
-  const scope = args.hive ? 'hive' : (args.scope ?? 'hive');
+  // EI-18653888556683414: a TARGETED { owner } point-lookup ("find this ONE
+  // specific agent id I already know") must NOT be silently narrowed to the
+  // caller's own Hive by the generic browse-roster default — the caller isn't
+  // browsing, they already know exactly who they want. Hive-scoping it made a
+  // genuinely LIVE peer registered under a different Hive (or no Hive) come
+  // back as an empty roster, indistinguishable from "no such agent exists",
+  // which nearly caused a live work-item claim to be force-released as
+  // orphaned. Only the DEFAULT changes here: an explicit `scope` or `hive`
+  // argument from the caller is still honored exactly as before.
+  const defaultScope = args.targetedOwner ? 'workspace' : 'hive';
+  const scope = args.hive ? 'hive' : (args.scope ?? defaultScope);
   let hiveFilter: string | null = null;
   let scopeNote: string | undefined;
   if (scope === 'hive') {
@@ -177,6 +191,9 @@ export async function resolvePresenceScope(
       }
     }
     if (!hiveFilter) scopeNote = 'caller has no Hive (SU/operator or unmapped harness) — fell back to workspace scope';
+  } else if (scope === 'workspace' && args.targetedOwner && args.scope == null && args.hive == null) {
+    scopeNote =
+      'targeted owner lookup — searched workspace-wide (not narrowed to your Hive) so a live peer registered under a different Hive is still found; pass scope:"hive" to narrow';
   }
   // all → no filters; hive+resolved → workspace+hive; hive-without-a-hive / workspace → workspace only.
   // F-M2 (workspace-data-isolation-leaks): a non-'all' scope with no caller workspace

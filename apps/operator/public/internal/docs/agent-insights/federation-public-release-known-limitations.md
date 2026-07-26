@@ -400,7 +400,17 @@ a new `hasStalledLogs()` predicate (boot.ts, fed from the `admitted` map's
 shows zero live replicator peers, instead of dropping to the 60s slow keepalive
 regardless. Unit-pinned in `swarm-self-heal.test.ts` (fake-timer cadence
 assertions: stays fast while stalled, falls back to the dead-zone/slow-keepalive
-once the stall clears, a throwing predicate never breaks the loop). **Still
+once the stall clears, a throwing predicate never breaks the loop). **Known
+gap (found 2026-07-25, EI-18665254552552477):** the mitigation only covers a
+stalled *admitted* remote — `hasStalledLogs()` iterates the `admitted` map and
+falls through to `false` when it is empty, so a peer that has never admitted
+*any* remote (its announce channel never pairs at all) reads as "not stalled"
+and stays on the 60s slow cadence — backwards, since zero admitted remotes is
+the worst case this mitigation exists to catch, not the healthiest. Reproduced
+live in gate run `20260725-183831`: 20.5 minutes, 188 established connections,
+zero inbound frames, zero admitted remotes for the whole window, on the
+slowest retry cadence throughout. Complementary to (not covered by) the
+separate rung-(c) swarm fix. **Still
 open:** live verification on the 2-node containerized rig
 (`bin/local-matrix.sh`, P-006) and/or the tower+VM NAT rig (Brief 8's setup) —
 this is a real-network timing fix that a real restricted-cone-NAT rig run is

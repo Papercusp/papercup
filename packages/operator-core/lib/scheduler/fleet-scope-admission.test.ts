@@ -718,6 +718,131 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
   });
 
+  // EI-18666093519248020: the INVARIANT behind the four recurrences of the claim-path/read-path
+  // divergence class (EI-10062 -> WI-4309 -> WI-5275 -> WI-5822). Each was a different way for the
+  // claim path's narrowing to diverge from the spec filter; each surfaced to members as
+  // `windDown:true` + "FLOOR-GATED miss ... checkpoint, release, loop:end" while their lane still
+  // had claimable rows. The mechanism kept getting fixed; the invariant was never asserted, so
+  // recurrence #4 was as invisible as #1 — found only when a member hand-compared a get_next miss
+  // against work_items:claimable and saw `claimable: 19` inside the very response telling it to
+  // stand down. These tests assert that a miss can never again certify a drain the oracle contradicts.
+  describe('EI-18666093519248020: claimable > 0 is a DIVERGENCE, never a drain', () => {
+    const divergentScope = {
+      ownerId: 'su-member',
+      fleetSlug: 'p2p-release',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'p2p-release-lane',
+          revision: 9,
+          view: { filter: { field: 'kind', op: '=' as const, value: 'bug' } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+          states: ['open'],
+        },
+        revision: 9,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+
+    // The live reproduction, verbatim from the 2026-07-26 p2p-release pull that found this:
+    // 22 rows matched the spec filter, 19 survived every floor, and get_next still reported
+    // windDown + floor-gated. A by-id claim on one of the 19 then succeeded.
+    const divergentBreakdown = {
+      matchedByFilter: 22,
+      claimable: 19,
+      excluded: {
+        taken: 0,
+        claimHold: 1,
+        needsHuman: 1,
+        observationLane: 0,
+        externalBlocker: 0,
+        planLaneReserved: 0,
+        federationDetector: 0,
+        loopNoise: 0,
+        alreadyCompleted: 0,
+        crossMachineRig: 0,
+        blockedDep: 0,
+        cooldown: 1,
+      },
+    };
+
+    it('does NOT set windDown when the oracle still reports claimable rows (the harmful half)', () => {
+      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+      expect(miss.windDown).toBe(false);
+    });
+
+    it('names the divergence in `error` instead of claiming the scope matched nothing', () => {
+      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+      expect(miss.error).toMatch(/CLAIM-PATH\/READ-PATH DIVERGENCE/);
+      expect(miss.error).toMatch(/19 of 22/);
+      expect(miss.error).toMatch(/NOT drained and NOT floor-gated/);
+      // the old bare message must NOT be what a diverging member is told
+      expect(miss.error).not.toMatch(/NOT allowed to fall through to the generic backlog/);
+    });
+
+    it('advice tells the member to keep working (claim by id) and to report a claim-path bug — never to stand down', () => {
+      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+      expect(miss.advice).toMatch(/DO NOT STAND DOWN/);
+      expect(miss.advice).toMatch(/work_items:claimable/);
+      expect(miss.advice).toMatch(/work_items:claim/);
+      expect(miss.advice).toMatch(/CLAIM-PATH BUG/);
+      // must not carry the floor-gated stand-down instruction
+      expect(miss.advice).not.toMatch(/FLOOR-GATED miss \(WI-5561\)/);
+      expect(miss.advice).not.toMatch(/loop:end/);
+    });
+
+    it('the breakdown summary says the pool is NOT floor-gated, so the floor counts are not misread as the cause', () => {
+      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+      expect(miss.excludedBreakdown).toEqual(divergentBreakdown);
+      expect(miss.excludedBreakdownSummary).toMatch(/NOT floor-gated/);
+      expect(miss.excludedBreakdownSummary).toMatch(/19 of them survive ALL floors/);
+      expect(miss.excludedBreakdownSummary).not.toMatch(/genuinely floor-gated/);
+    });
+
+    it('a divergence outranks a cooldown re-attribution (never renders as do-not-escalate cooldown noise)', () => {
+      const miss = fleetScopedMiss(divergentScope, [], {
+        cooldownDiag: { cooldownExcluded: 1, earliestExpiryMs: Date.now() + 5_000, earliestRowId: 'WI-9011' },
+        issueBreakdown: divergentBreakdown,
+      });
+      expect(miss.windDown).toBe(false);
+      expect(miss.error).toMatch(/CLAIM-PATH\/READ-PATH DIVERGENCE/);
+      expect(miss.advice).toMatch(/DO NOT STAND DOWN/);
+    });
+
+    // The other side of the guard: a GENUINE floor-gated drain must be untouched, or the fix
+    // would trade a false stand-down for a fleet that never stands down at all.
+    it('claimable === 0 keeps the existing floor-gated verdict verbatim (windDown + stand-down advice)', () => {
+      const genuinelyDrained = { ...divergentBreakdown, claimable: 0 };
+      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: genuinelyDrained });
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/NOT allowed to fall through to the generic backlog/);
+      expect(miss.advice).toMatch(/FLOOR-GATED miss \(WI-5561\)/);
+      expect(miss.excludedBreakdownSummary).toMatch(/genuinely floor-gated/);
+      expect(miss.excludedBreakdownSummary).not.toMatch(/NOT floor-gated/);
+    });
+
+    it('a PAUSED fleet still stands down even though a divergent breakdown was passed (pause is a real stand-down)', () => {
+      const miss = fleetScopedMiss(divergentScope, [], {
+        pausedReason: 'owner pause',
+        issueBreakdown: divergentBreakdown,
+      });
+      expect(miss.paused).toBe(true);
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/winding-down/);
+      expect(miss.excludedBreakdown).toBeUndefined();
+    });
+
+    it('a miss with NO breakdown at all is unchanged (windDown, original message)', () => {
+      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: null });
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/NOT allowed to fall through to the generic backlog/);
+    });
+  });
+
   // EI-18221674485894260: a fleet-scope refusal must POINT AT the concrete widen tool
   // (scheduler:set_claim_spec) so a leader never has to hunt a tool ToolSearch/tools:find
   // failed to surface. The prior body said only "Re-steer the member's claim spec" —

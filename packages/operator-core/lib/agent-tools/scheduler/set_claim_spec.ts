@@ -457,6 +457,7 @@ export default defineTool({
         // lane-authoring and never refuses; only a cratered AUTHORED lane does.
         let previousMatched: number | null = null;
         let previousSource: 'authored' | 'default' = 'default';
+        let previousFilter: ClaimSpec['view']['filter'] | undefined;
         try {
           const rec = await getClaimSpecRecord({
             cupId: targetBeeId,
@@ -465,6 +466,7 @@ export default defineTool({
           if (rec.source !== 'default') {
             previousSource = 'authored';
             previousMatched = (await previewSpecPoolEffect(rec.spec, countScope)).matched;
+            previousFilter = rec.spec.view.filter;
           }
         } catch {
           /* previous unmeasurable — guard degrades to fresh-spec rules */
@@ -476,6 +478,8 @@ export default defineTool({
           previousMatched,
           previousSource,
           confirm: args.confirmCollapse === true,
+          filter: validated.spec.view.filter,
+          previousFilter,
         });
         if (verdict.refuse) {
           return {

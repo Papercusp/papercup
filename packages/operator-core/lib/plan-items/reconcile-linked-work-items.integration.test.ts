@@ -30,6 +30,7 @@ interface StubWorkItem {
   state: string;
   family: 'issue' | 'feature';
   lastProgressAt: string | null;
+  payload?: Record<string, unknown> | null;
 }
 
 const h2 = vi.hoisted(() => ({
@@ -41,13 +42,35 @@ const h2 = vi.hoisted(() => ({
   }),
 }));
 const setWorkItemState = h2.setWorkItemState;
+// EI-18653945816361859: recording stubs for the stale-lane-hold clear path —
+// mergeWorkItemPayload / setWorkItemClaimHold apply directly to the in-memory
+// stub so a subsequent activeExternalBlockers/readWorkItemHeldOpenBy read (the
+// REAL pure functions, imported actual below) sees the mutation.
+const h4 = vi.hoisted(() => ({
+  mergeWorkItemPayload: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+    const wi = h2.items.get(id);
+    if (wi) wi.payload = { ...(wi.payload ?? {}), ...patch };
+    return wi ?? null;
+  }),
+  setWorkItemClaimHold: vi.fn(async (id: string, hold: boolean) => {
+    const wi = h2.items.get(id);
+    if (wi?.payload && !hold) {
+      const { held_open_by, held_open_at, held_open_reason, _claimHold, ...rest } = wi.payload;
+      wi.payload = rest;
+    }
+    return wi ? { id, harness: wi.harness, hold, applicable: true } : null;
+  }),
+}));
 vi.mock('../work-items', async () => {
   const actual = await vi.importActual<typeof import('../work-items')>('../work-items');
   return {
     isSettledWorkItemState: actual.isSettledWorkItemState,
     SETTLED_WORK_ITEM_STATES: actual.SETTLED_WORK_ITEM_STATES,
+    readWorkItemHeldOpenBy: actual.readWorkItemHeldOpenBy,
     getWorkItem: (id: string) => h2.items.get(id) ?? null,
     setWorkItemState: h2.setWorkItemState,
+    mergeWorkItemPayload: h4.mergeWorkItemPayload,
+    setWorkItemClaimHold: h4.setWorkItemClaimHold,
   };
 });
 
@@ -60,7 +83,7 @@ const h3 = vi.hoisted(() => ({
 }));
 vi.mock('../agent-tools/plans/source', () => ({ getPlanRow: h3.getPlanRow }));
 
-const { reconcileLinkedWorkItemsForPlanItem, reconcileOrphanedPlanItemWorkItems } = await import(
+const { reconcileLinkedWorkItemsForPlanItem, reconcileOrphanedPlanItemWorkItems, planLaneBlockerRef } = await import(
   './reconcile-linked-work-items'
 );
 
@@ -325,6 +348,68 @@ describe('reconcileLinkedWorkItemsForPlanItem — dropped plan item (EI-14693)',
 
     expect(result.reconciled).toEqual([]);
     expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconcileLinkedWorkItemsForPlanItem — stale plan-lane hold cleared before terminal flip (EI-18653945816361859)', () => {
+  beforeEach(() => {
+    h4.mergeWorkItemPayload.mockClear();
+    h4.setWorkItemClaimHold.mockClear();
+  });
+
+  it('clears a stale plan-lane external blocker + held_open lease BEFORE the terminal flip', async () => {
+    const laneRef = planLaneBlockerRef('p1', 'P-011');
+    stub({
+      id: 'WI-stale-hold',
+      state: 'blocked',
+      lastProgressAt: null,
+      payload: {
+        held_open_by: 'system:plan-item-lane-sync',
+        held_open_at: new Date().toISOString(),
+        _claimHold: true,
+        externalBlockers: [
+          {
+            kind: 'gate',
+            capability: 'live-dependency',
+            capabilitySource: 'explicit',
+            ref: laneRef,
+            summary: 'plan lane blocked',
+            status: 'active',
+            createdAt: new Date().toISOString(),
+            createdBy: 'system:plan-item-lane-sync',
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+    await edge({ plan: 'p1', item: 'P-011', srcRef: 'WI-stale-hold' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-011', status: 'done' }] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-011' });
+
+    expect(h4.mergeWorkItemPayload).toHaveBeenCalledWith(
+      'WI-stale-hold',
+      expect.objectContaining({ externalBlockers: expect.any(Array) }),
+      expect.anything(),
+    );
+    expect(h4.setWorkItemClaimHold).toHaveBeenCalledWith(
+      'WI-stale-hold',
+      false,
+      expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+    );
+    expect(result.reconciled).toEqual(['WI-stale-hold']);
+    expect(setWorkItemState).toHaveBeenCalledWith('WI-stale-hold', 'resolved', expect.anything());
+  });
+
+  it('is a no-op when the linked item carries no plan-lane hold at all', async () => {
+    stub({ id: 'WI-clean', state: 'open', lastProgressAt: null, payload: null });
+    await edge({ plan: 'p1', item: 'P-012', srcRef: 'WI-clean' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-012', status: 'done' }] });
+
+    await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-012' });
+
+    expect(h4.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h4.setWorkItemClaimHold).not.toHaveBeenCalled();
   });
 });
 

@@ -40,6 +40,7 @@ import {
   setWorkItemClaimHold,
   mergeWorkItemPayload,
   isSettledWorkItemState,
+  readWorkItemHeldOpenBy,
   SETTLED_WORK_ITEM_STATES,
   type WorkItem,
 } from '../work-items';
@@ -221,6 +222,21 @@ export async function reconcileLinkedWorkItemsForPlanItem(
         continue;
       }
       const targetState = wi.family === 'feature' ? target.feature : target.issue;
+      // EI-18653945816361859: this SAME reconciler has just confirmed the plan item
+      // is genuinely terminal — so any plan-lane-sync hold it (or a prior blocked/
+      // needs-human pass) left on this work-item is by definition stale. Without
+      // this, a work-item that went blocked->done WITHOUT first passing back
+      // through `actionable` (the common shape: a blocked item is resolved
+      // straight to done) still carries the lane-sync `held_open_by` lease +
+      // `plan-lane:` external blocker from applyLaneGateToWorkItem's gate leg, and
+      // setWorkItemState's held-open guard below refuses the terminal transition
+      // ("HELD OPEN by system:plan-item-lane-sync") — silently swallowed by this
+      // function's outer try/catch, leaving the item non-terminal forever until an
+      // agent discovers it and force-closes it by hand. Lift it FIRST (the exact
+      // ungate mechanics applyLaneGateToWorkItem uses for an actionable lane) so
+      // the terminal flip below never races a hold it itself makes obsolete.
+      // Best-effort: a clear failure here must not block the transition attempt.
+      await clearStaleLaneHold(wi, planLaneBlockerRef(item.planSlug, item.itemId));
       try {
         await setWorkItemState(wi.id, targetState, {
           harness: wi.harness ?? undefined,
@@ -287,6 +303,42 @@ const PLAN_LANE_SYNC_ACTOR = 'system:plan-item-lane-sync';
 /** The synthetic external-blocker ref that marks a lane-parked work-item. */
 export function planLaneBlockerRef(planSlug: string, itemId: string): string {
   return `plan-lane:${planItemRef(planSlug, itemId)}`;
+}
+
+/**
+ * EI-18653945816361859: lift a STALE plan-lane-sync hold from a work-item whose
+ * plan item has just been confirmed terminal (done/dropped) — the exact `ungate`
+ * mechanics `applyLaneGateToWorkItem` uses for an `actionable` lane, applied
+ * inline ahead of a terminal transition rather than a lane re-sync. Clears BOTH
+ * halves the gate leg can have stamped: the `plan-lane:` external blocker
+ * (`updateExternalBlockerHistory`) and, when it is the holder, the
+ * `held_open_by` lease (`setWorkItemClaimHold`'s `by` provenance) that would
+ * otherwise trip `setWorkItemState`'s held-open guard ("HELD OPEN by
+ * system:plan-item-lane-sync") and get silently swallowed by this reconciler's
+ * per-item try/catch, leaving the work-item non-terminal forever. A no-op when
+ * neither is present. Best-effort: never throws — the terminal transition
+ * attempt that follows must run either way. */
+async function clearStaleLaneHold(wi: WorkItem, laneRef: string): Promise<void> {
+  try {
+    const harness = wi.harness ?? undefined;
+    const hasLaneBlocker = activeExternalBlockers(wi.payload).some(
+      (b) => b.kind === PLAN_LANE_BLOCKER_KIND && b.ref === laneRef,
+    );
+    if (hasLaneBlocker) {
+      const { blockers } = updateExternalBlockerHistory(
+        wi.payload,
+        { kind: PLAN_LANE_BLOCKER_KIND, ref: laneRef, clear: true },
+        PLAN_LANE_SYNC_ACTOR,
+      );
+      await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
+    }
+    const heldOpen = readWorkItemHeldOpenBy(wi.payload);
+    if (heldOpen?.by === PLAN_LANE_SYNC_ACTOR) {
+      await setWorkItemClaimHold(wi.id, false, { harness, by: PLAN_LANE_SYNC_ACTOR });
+    }
+  } catch {
+    // best-effort — the terminal transition attempt below still runs either way.
+  }
 }
 
 /** The lane status a linked work-item is synced to. `blocked`/`needs-human` PARK

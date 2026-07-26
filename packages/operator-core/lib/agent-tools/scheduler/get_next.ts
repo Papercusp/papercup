@@ -300,7 +300,7 @@ export default defineTool({
     notWhen:
       'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull. Claiming a SPECIFIC item by id → work_items:claim. Plain oldest-first self-select is only for non-fleet callers → work_items:claim_next.',
     chaining:
-      'scheduler:get_next → work_items:set_state → work_items:release. Your leader re-steers via scheduler:set_claim_spec. A non-fleet MISS may park on one work-item:claimable event. A fleet scoped miss returns windDown:true: checkpoint/release, loop:end, and report to the leader; resume only after a spec revision or claimable event.',
+      'scheduler:get_next → work_items:set_state → work_items:release. Your leader re-steers via scheduler:set_claim_spec. A non-fleet MISS may park on one work-item:claimable event. A fleet scoped miss returns windDown:true: checkpoint/release, loop:end, and report to the leader; resume only after a spec revision or claimable event. windDown:false with excludedBreakdown.claimable>0 is a claim-path bug, NOT a drain — keep working via claim-by-id.',
     seeAlso: [
       'work_items:claimable (how many / which items are claimable, WITHOUT claiming — same oracle, no side-effect)',
       'work_items:claim_next (plain oldest-first self-select, no spec)',

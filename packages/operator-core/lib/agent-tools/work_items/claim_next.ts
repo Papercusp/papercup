@@ -41,7 +41,7 @@ export default defineTool({
   guidance: {
     when: 'You are an idle agent picking up work. Fleet members should prefer scheduler:get_next; this older wrapper is still fleet-scope-safe even if the scheduler flag is off.',
     notWhen: 'A SPECIFIC item must go to a SPECIFIC agent → work_items:claim with an explicit assignee. Named claim bypasses self-select readiness floors, but it never bypasses a fleet member\'s claim-spec boundary.',
-    chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a non-fleet miss, read drained/pendingUnclaimed. On a fleet scoped miss, windDown:true means checkpoint/release, loop:end, and report to the leader; do not scan generic backlog.',
+    chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a non-fleet miss, read drained/pendingUnclaimed. On a fleet scoped miss, windDown:true means checkpoint/release, loop:end, and report to the leader; do not scan generic backlog. windDown:false with excludedBreakdown.claimable>0 is a claim-path bug, NOT a drain — claim by id instead.',
     // EI-6981: when the scheduler-spec bridge is OFF, the legacy path self-selects the
     // OLDEST unclaimed item HARNESS-WIDE, not just your fleet/plan — a peer's "solo takeover"
     // of an item they haven't formally

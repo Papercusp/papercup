@@ -99,3 +99,23 @@ own CLI internals, outside this repo, and "make it durable across an arbitrary
 process replacement" is not something papercusp can implement from here. The
 durable fix available to us is this documented pattern, plus the
 `capability:bash` escape hatch for the genuinely-must-survive case.
+
+## Compounding trap: a "wrapper shell" completion notification can precede the real work finishing
+
+A distinct but related gotcha (WI-5766/WI-5775, 2026-07-25), independent of any
+respawn: the `cmd & echo launched pid $!` backgrounding idiom run via native
+`Bash { run_in_background: true }` backgrounds the *inner* `cmd`, but the tool's
+own tracked process is the *outer wrapper shell* — which exits (and fires a
+"task completed" notification) the instant it has echoed the launched pid,
+**not** when `cmd` itself finishes. A "task X: COMPLETED exit code 0"
+notification is therefore *not* proof the real work is done; it only proves
+the wrapper returned. Combined with the process-respawn loss above, this
+produced a stale carried checkpoint claiming a job had completed when the real
+child (verified via `ps`/`kill -0` on its actual pid) was still running minutes
+later.
+
+**Never background a command by wrapping it in your own `&`** — pass the
+command directly with `run_in_background: true` and let the tool track the
+real process; if you must wrap, treat "task completed" as proof only that the
+wrapper exited and independently confirm the real work via its own pid/log/exit
+marker before trusting or checkpointing a "completed" claim.

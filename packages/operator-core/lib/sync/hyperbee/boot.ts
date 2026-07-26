@@ -788,14 +788,19 @@ export function classifySameHiveMember(input: {
  * simply isn't there).
  */
 export function computeHasStalledLogs(
-  admitted: ReadonlyMap<string, Partial<{ peersCount(): number | undefined }>>,
+  // `unknown` values (not `Partial<{ peersCount... }>>` directly) so a caller
+  // can pass its real `Map<string, AdmittedLog>` without a variance fight —
+  // same per-item cast convention this file already uses at every other
+  // `peersCount()` read site (e.g. the `maybePeersCount` casts above).
+  admitted: ReadonlyMap<string, unknown>,
   ownLogKeyHex: string,
   liveConnectionCount: number,
 ): boolean {
   let sawRemoteAdmitted = false;
-  for (const [keyHex, log] of admitted) {
+  for (const [keyHex, rawLog] of admitted) {
     if (keyHex === ownLogKeyHex) continue;
     sawRemoteAdmitted = true;
+    const log = rawLog as Partial<{ peersCount(): number | undefined }>;
     if (typeof log.peersCount !== 'function') continue;
     try {
       if (log.peersCount() === 0) return true;

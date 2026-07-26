@@ -5,7 +5,8 @@
  * future threshold tweak that would have let either starvation through fails loudly here.
  */
 import { describe, expect, it } from 'vitest';
-import { evaluateCollapseGuard } from './spec-pool-preview';
+import { evaluateCollapseGuard, filterNodesEqual, isProvableSuperset } from './spec-pool-preview';
+import type { FilterNode } from './claim-spec';
 
 describe('evaluateCollapseGuard — refusal shapes', () => {
   it('REFUSES matched=0 of a nonempty pool (starvation #1: kind scope with zero rows)', () => {
@@ -119,5 +120,103 @@ describe('evaluateCollapseGuard — refusal shapes', () => {
     });
     expect(v.refuse).toBe(false);
     expect(v.warning).toBeUndefined();
+  });
+});
+
+describe('evaluateCollapseGuard — EI-18653814284166347 (superset blindness + no-delta refusal)', () => {
+  const planLeaf: FilterNode = { field: 'plan', op: '=', value: 'p2p-release-lane' };
+  const tagsLeaf: FilterNode = { field: 'tags', op: '=', value: 'p2p-release' };
+  const rev6Filter: FilterNode = { all: [planLeaf] };
+  const rev7SupersetFilter: FilterNode = { any: [rev6Filter, tagsLeaf] };
+
+  it('REPRO: rev6→rev7 superset, both matching 0/1211 — the guard used to wrongly refuse this', () => {
+    const v = evaluateCollapseGuard({
+      matched: 0,
+      pool: 1211,
+      previousMatched: 0,
+      previousSource: 'authored',
+      confirm: false,
+      filter: rev7SupersetFilter,
+      previousFilter: rev6Filter,
+    });
+    expect(v.refuse).toBe(false);
+  });
+
+  it('defect #1 alone (no filter info supplied): matched=0, previousMatched=0 — no delta, do not refuse', () => {
+    const v = evaluateCollapseGuard({
+      matched: 0,
+      pool: 1211,
+      previousMatched: 0,
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(v.refuse).toBe(false);
+  });
+
+  it('still REFUSES a genuine 0-match FIRST occurrence (previousMatched>0 → real narrowing, not a no-delta case)', () => {
+    const v = evaluateCollapseGuard({
+      matched: 0,
+      pool: 1211,
+      previousMatched: 500,
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(v.refuse).toBe(true);
+  });
+
+  it('defect #2 alone: a provable superset with a HEALTHY previousMatched still short-circuits (never refuses)', () => {
+    const v = evaluateCollapseGuard({
+      matched: 2,
+      pool: 1211,
+      previousMatched: 500,
+      previousSource: 'authored',
+      confirm: false,
+      filter: rev7SupersetFilter,
+      previousFilter: rev6Filter,
+    });
+    expect(v.refuse).toBe(false);
+  });
+
+  it('does NOT short-circuit an unrelated any:[...] that does not literally contain the incumbent filter', () => {
+    const unrelatedAny: FilterNode = { any: [tagsLeaf, { field: 'kind', op: '=', value: 'bug' }] };
+    const v = evaluateCollapseGuard({
+      matched: 3,
+      pool: 1211,
+      previousMatched: 321,
+      previousSource: 'authored',
+      confirm: false,
+      filter: unrelatedAny,
+      previousFilter: rev6Filter,
+    });
+    expect(v.refuse).toBe(true); // falls through to the ordinary revision-collapse check
+  });
+});
+
+describe('isProvableSuperset / filterNodesEqual', () => {
+  const leaf: FilterNode = { field: 'kind', op: '=', value: 'bug' };
+  const other: FilterNode = { field: 'tags', op: '=', value: 'p2p' };
+
+  it('filterNodesEqual: identical leaves equal; different field/op/value do not', () => {
+    expect(filterNodesEqual(leaf, { ...leaf })).toBe(true);
+    expect(filterNodesEqual(leaf, other)).toBe(false);
+    expect(filterNodesEqual(leaf, { field: 'kind', op: '!=', value: 'bug' })).toBe(false);
+    expect(filterNodesEqual({ field: 'kind', op: 'in', value: ['a', 'b'] }, { field: 'kind', op: 'in', value: ['a', 'b'] })).toBe(true);
+    expect(filterNodesEqual({ field: 'kind', op: 'in', value: ['a', 'b'] }, { field: 'kind', op: 'in', value: ['a', 'c'] })).toBe(false);
+  });
+
+  it('isProvableSuperset: true when candidate is any:[X, ...] and X equals previous', () => {
+    expect(isProvableSuperset({ any: [leaf, other] }, leaf)).toBe(true);
+  });
+
+  it('isProvableSuperset: false when candidate is any:[...] but none of its children equal previous', () => {
+    expect(isProvableSuperset({ any: [other] }, leaf)).toBe(false);
+  });
+
+  it('isProvableSuperset: false when candidate is not an any node at all (e.g. all:[...])', () => {
+    expect(isProvableSuperset({ all: [leaf, other] }, leaf)).toBe(false);
+  });
+
+  it('isProvableSuperset: recurses into a nested any', () => {
+    expect(isProvableSuperset({ any: [{ any: [leaf] }, other] }, leaf)).toBe(true);
   });
 });

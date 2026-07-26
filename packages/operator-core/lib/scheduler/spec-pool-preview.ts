@@ -33,7 +33,7 @@
  * net, not a new single point of failure) — callers report previewError instead.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import type { ClaimSpec } from './claim-spec';
+import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
 import { compileFilter } from './get-next';
 import { observationLaneExclusionSql } from '../work-items';
 
@@ -90,6 +90,65 @@ export interface CollapseGuardInput {
   previousSource: 'authored' | 'default';
   /** The caller's confirmCollapse flag. */
   confirm: boolean;
+  /** The candidate revision's view.filter — optional; enables the provable-superset short-circuit below. */
+  filter?: FilterNode;
+  /** The incumbent (previously-stored) spec's view.filter — same-key requirement as `filter`. */
+  previousFilter?: FilterNode;
+}
+
+/**
+ * Structural equality over the filter AST — order-independent for combinator arrays'
+ * ELEMENTS content (not position: `all`/`any` are still compared positionally, since a
+ * differently-ORDERED equivalent tree is a distinct-but-equivalent revision, not the
+ * literal syntactic match `isProvableSuperset` needs). Leaves compare field/op/value;
+ * an array `value` (an `in` leaf) compares element-wise.
+ */
+export function filterNodesEqual(a: FilterNode, b: FilterNode): boolean {
+  const aAny = (a as { any?: FilterNode[] }).any;
+  const bAny = (b as { any?: FilterNode[] }).any;
+  if (aAny || bAny) {
+    if (!aAny || !bAny || aAny.length !== bAny.length) return false;
+    return aAny.every((child, i) => filterNodesEqual(child, bAny[i]));
+  }
+  const aAll = (a as { all?: FilterNode[] }).all;
+  const bAll = (b as { all?: FilterNode[] }).all;
+  if (aAll || bAll) {
+    if (!aAll || !bAll || aAll.length !== bAll.length) return false;
+    return aAll.every((child, i) => filterNodesEqual(child, bAll[i]));
+  }
+  const aNot = (a as { not?: FilterNode }).not;
+  const bNot = (b as { not?: FilterNode }).not;
+  if (aNot || bNot) {
+    if (!aNot || !bNot) return false;
+    return filterNodesEqual(aNot, bNot);
+  }
+  const al = a as FilterLeaf;
+  const bl = b as FilterLeaf;
+  if (al.field !== bl.field || al.op !== bl.op) return false;
+  return filterValuesEqual(al.value, bl.value);
+}
+
+function filterValuesEqual(a: FilterLeaf['value'], b: FilterLeaf['value']): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => v === b[i]);
+  }
+  return a === b;
+}
+
+/**
+ * EI-18653814284166347 (SUPERSET BLINDNESS): a revision of the shape `{ any: [X, ...] }`
+ * where `X` structurally equals the INCUMBENT filter is statically provable to match a
+ * SUPERSET of the incumbent's rows — an `any` over the old filter plus more can only ever
+ * match the same rows or more, never fewer. That is a cheap syntactic check, independent of
+ * the measured counts, so a candidate satisfying it can never be the narrowing/starvation
+ * shape the guard exists to catch (recurses into a nested `any` so `{any:[{any:[X,Y]},Z]}`
+ * is still recognised as a superset of X).
+ */
+export function isProvableSuperset(candidate: FilterNode, previous: FilterNode): boolean {
+  const children = (candidate as { any?: FilterNode[] }).any;
+  if (!children) return false;
+  return children.some((child) => filterNodesEqual(child, previous) || isProvableSuperset(child, previous));
 }
 
 export interface CollapseGuardVerdict {
@@ -108,9 +167,37 @@ const RATIO = 0.05;
  * from the COUNT so the thresholds are unit-testable without Postgres.
  */
 export function evaluateCollapseGuard(input: CollapseGuardInput): CollapseGuardVerdict {
-  const { matched, pool, previousMatched, previousSource, confirm } = input;
+  const { matched, pool, previousMatched, previousSource, confirm, filter, previousFilter } = input;
 
-  const zeroMatch = matched === 0 && pool > 0;
+  // EI-18653814284166347 defect #2 (SUPERSET BLINDNESS): a statically-provable superset of
+  // the incumbent filter cannot possibly be the narrowing shape either refusal below exists
+  // to catch — skip the guard outright, whatever the measured matched/previousMatched say.
+  // (If matched still comes back surprisingly low for a provable superset, that is a SEPARATE
+  // bug — e.g. a SQL-vs-JS filter-evaluator disagreement — not a spec-authoring mistake, so
+  // this guard must not conflate the two by refusing here.)
+  if (filter && previousFilter && isProvableSuperset(filter, previousFilter)) {
+    return {
+      refuse: false,
+      errors: [],
+      ...(matched === 0 && pool > 0
+        ? {
+            warning:
+              `spec matches 0 of ${pool} claimable row(s), but this revision is a statically-provable SUPERSET ` +
+              `of the incumbent filter (an any:[...] containing it) — it cannot narrow the pool, so the ` +
+              `pool-collapse guard does not apply. A still-zero match here points at a different bug (e.g. the ` +
+              `SQL and JS filter evaluators disagreeing on a referenced field), not this spec revision.`,
+          }
+        : {}),
+    };
+  }
+
+  // EI-18653814284166347 defect #1 (NO-DELTA REFUSAL): a revision that matches 0 changes
+  // NOTHING about starvation when the INCUMBENT already matched 0 — refusing achieves no
+  // protection (the pool was already just as starved under the spec being replaced) and only
+  // trains callers to reflex-pass confirmCollapse:true, destroying the guard's value for a
+  // revision that actually IS the first one to hide the backlog.
+  const noDelta = previousSource === 'authored' && previousMatched === 0;
+  const zeroMatch = matched === 0 && pool > 0 && !noDelta;
   const revisionCollapse =
     previousSource === 'authored' &&
     previousMatched !== null &&

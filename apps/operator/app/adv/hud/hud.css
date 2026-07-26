@@ -25,7 +25,7 @@
 .hud__top {
   display: flex;
   align-items: center;
-  gap: var(--space-md, 12px);
+  gap: 12px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
@@ -44,7 +44,7 @@
   gap: 6px;
   padding: 3px 9px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 4px);
+  border-radius: 4px;
   font-size: 11px;
   color: var(--fg-mute);
   background: transparent;
@@ -63,7 +63,7 @@
 .hud__count:hover { border-color: var(--border-strong); }
 .hud__count[aria-pressed='true'] {
   border-color: var(--accent);
-  background: var(--accent-soft-bg, rgb(from var(--accent) r g b / 0.12));
+  background: rgb(from var(--accent) r g b / 0.12);
   color: var(--fg);
 }
 .hud__count--hot { border-color: var(--warn); color: var(--warn); }
@@ -90,9 +90,9 @@
   gap: 7px;
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-full, 9999px);
+  border-radius: 9999px;
   font-size: 11px;
-  color: var(--fg-2, var(--fg-mute));
+  color: var(--fg-mute);
   background: transparent;
   cursor: pointer;
   white-space: nowrap;
@@ -151,7 +151,7 @@
   padding: 7px 9px;
   border: 1px solid var(--border);
   border-bottom: 0;
-  border-radius: var(--radius-sm, 4px) var(--radius-sm, 4px) 0 0;
+  border-radius: 4px 4px 0 0;
   background: var(--bg-2);
   /* Sentence-case header, matching .pc-auto__section-title in the left sidebar.
      The previous uppercase + letter-spacing:0.09em treatment was off-family and
@@ -185,7 +185,7 @@
   flex: 1 1 auto;
   min-height: 0;
   border: 1px solid var(--border);
-  border-radius: 0 0 var(--radius-sm, 4px) var(--radius-sm, 4px);
+  border-radius: 0 0 4px 4px;
   background: var(--bg-2);
   padding: 7px;
   display: flex;
@@ -209,7 +209,7 @@
   gap: 7px;
   padding: 8px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 4px);
+  border-radius: 4px;
   background: var(--bg);
   text-align: left;
   font: inherit;
@@ -218,7 +218,7 @@
   width: 100%;
 }
 
-.hud__card:hover { border-color: var(--border-strong); background: var(--bg-hover, var(--bg-raised)); }
+.hud__card:hover { border-color: var(--border-strong); background: var(--bg-raised); }
 .hud__card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .hud__card--needs-you { border-color: rgb(from var(--warn) r g b / 0.45); }
@@ -298,7 +298,7 @@
   font-size: 9.5px;
   line-height: 1.6;
   padding: 1px 5px;
-  border-radius: var(--radius-xs, 3px);
+  border-radius: 3px;
   border: 1px solid var(--border);
   color: var(--fg-mute);
   white-space: nowrap;

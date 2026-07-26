@@ -521,6 +521,28 @@ export function fleetScopedMiss(
   // WI-5561: surfaced alongside the generic/cooldown message (never while paused — the pause
   // message already fully explains the miss).
   const breakdown = !paused ? (opts?.issueBreakdown ?? null) : null;
+  // EI-18666093519248020: the INVARIANT this whole diagnosis rests on — `breakdown.claimable`
+  // is, per its own contract (see IssueClaimExclusionBreakdown.claimable), "the count a
+  // self-selecting caller would actually see as claimable RIGHT NOW ... the ONE number the
+  // whole claimability-clarity plan makes trustworthy — the `0 claimable` a wind-down / drain
+  // decision hinges on". So `claimed nothing` AND `claimable > 0` is not a drained lane and
+  // not a floor story: it is the CLAIM path disagreeing with the READ path, i.e. a bug in the
+  // claim path's own narrowing.
+  //
+  // That exact disagreement has now shipped FOUR times — EI-10062 (id-allowlist spec claimed
+  // any row), WI-4309 (issue-only id-allowlist could never be served), WI-5275 (an `id` leaf
+  // under a positive `any` skipped tier 3 entirely, starving a whole fleet), WI-5822 (the claim
+  // path could only ever see the kind/id legs, so paths/plan/title/tag specs matched nothing and
+  // ~88% of pulls reported a false drain). Every one was fixed by patching the narrowing; the
+  // invariant itself was never asserted, which is why recurrence #4 was as invisible as #1 and
+  // was found only because a member hand-compared this response against work_items:claimable.
+  //
+  // Reporting `windDown:true` + "checkpoint, release, loop:end" in that state is the harmful
+  // part: a member that obeys stands its loop down while its own lane still has claimable rows,
+  // and a fleet can go quiet while every surface looks correct. So when claimable > 0 we refuse
+  // to certify a drain — no windDown, no stand-down advice — and instead name the divergence
+  // loudly enough that the NEXT recurrence is a one-line report instead of an investigation.
+  const divergent = breakdown != null && breakdown.claimable > 0;
   // EI-15185: derive the ready-made `payload_filter` for a `work-item:claimable`
   // idle-park await from the member's OWN claim-spec view — the missing "how do I
   // scope this await" answer that led members to register an UNSCOPED await and
@@ -543,7 +565,13 @@ export function fleetScopedMiss(
     error: paused
       ? `fleet '${scope.fleetSlug}' is winding-down (paused${opts?.pausedReason ? `: ${opts.pausedReason}` : ''}); ` +
         'do NOT pull new work from this fleet\'s lanes — stand down until a fleet:resume (control_state=active) lands'
-      : cooldown
+      : divergent
+        ? `CLAIM-PATH/READ-PATH DIVERGENCE: the claim path selected nothing, but the shared claimability oracle reports ` +
+          `${breakdown!.claimable} of ${breakdown!.matchedByFilter} in-spec issue-family row(s) passing spec_match AND every claim floor ` +
+          `for fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision}. Your lane is NOT drained and NOT floor-gated — ` +
+          'this is an internal inconsistency in the claim path\'s own spec narrowing (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class). ' +
+          'windDown is deliberately NOT set: do not stand down.'
+        : cooldown
         ? `${cooldown.cooldownExcluded} in-spec row(s) matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision} ` +
           `but ${cooldown.cooldownExcluded === 1 ? 'is' : 'are'} excluded ONLY by YOUR OWN release-cooldown floor` +
           (cooldownExpirySec != null ? ` (earliest expiry in ~${cooldownExpirySec}s)` : '') +
@@ -557,7 +585,10 @@ export function fleetScopedMiss(
       source: scope.record.source,
     },
     quarantinedIds,
-    windDown: true as const,
+    // EI-18666093519248020: a claim-path/read-path divergence is NOT a drained lane, so it must
+    // never be certified as one. `windDown` is THE signal a member stands its loop down on, so
+    // it stays false while the oracle still reports claimable rows.
+    windDown: !divergent,
     // EI-15185: the ready-made payload_filter derived from THIS member's own claim
     // spec — present only when the spec can be narrowed over the claimable payload's
     // fields (id/kind/title/plan). Copy it verbatim into the idle-park await below.
@@ -582,12 +613,26 @@ export function fleetScopedMiss(
               .sort((a, b) => (b[1] as number) - (a[1] as number))
               .map(([k, n]) => `${k}=${n}`)
               .join(', ') +
-            ' (buckets are independent, a row can count under more than one; 0 candidates surviving ALL floors means the pool is genuinely floor-gated, not a scope/spec bug — re-authoring the claim spec will not help).',
+            (divergent
+              ? ` — BUT ${breakdown.claimable} of them survive ALL floors, so this pool is NOT floor-gated. The floors below are ` +
+                'informational only; they are not why you got nothing. The claim path failed to select rows the shared oracle ' +
+                'reports as claimable (buckets are independent, a row can count under more than one).'
+              : ' (buckets are independent, a row can count under more than one; 0 candidates surviving ALL floors means the pool is genuinely floor-gated, not a scope/spec bug — re-authoring the claim spec will not help).'),
         }
       : {}),
     advice: paused
       ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Do NOT re-park a work-item:claimable await while paused (any pre-pause await of yours was just cancelled server-side, EI-15777 — a peer\'s compliant release will no longer re-wake you for nothing). Resume normal pull cadence only after a fleet:resume cue.'
-      : cooldown
+      : divergent
+        ? 'DO NOT STAND DOWN, and do NOT re-author the claim spec — neither is the problem. The claim path returned nothing while ' +
+          'the shared claimability oracle (the SAME floors, via aggregateIssueClaimExclusions) reports rows that pass every one of ' +
+          'them, so this is a defect in the claim path\'s spec narrowing, not a drained or floor-gated lane. ' +
+          'To keep working RIGHT NOW: list with work_items:claimable { harness, spec: <your fleet slug> } and take a specific row with ' +
+          'work_items:claim { id } — the by-id path does not depend on the narrowing that is failing here (note a by-id claim has no ' +
+          'terminal-state floor by design, EI-8972, so check the returned item\'s state before building on it). ' +
+          'Then report this verdict to your fleet leader as a CLAIM-PATH BUG (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class), ' +
+          'quoting excludedBreakdown.claimable — it is the reproduction. If a fix for that class is already committed, the most ' +
+          'likely cause is that it has not DEPLOYED yet: the operator you are calling may still run the pre-fix release checkout.'
+        : cooldown
         ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. ' +
           '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'
         : breakdown

@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
+import { parseSummaryFailedCounts } from './lib/vitest-summary.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
@@ -607,6 +608,25 @@ for (const t of tasks) {
       errSync(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
       r = run();
       if (r.status === 0) errSync(`>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`);
+    }
+  }
+  // EI-18653696921091778: an exit code of 0 does NOT imply "no reds" — vitest can
+  // print a summary reporting failed test files/tests yet still exit 0 (observed
+  // live 2026-07-25, root cause not yet pinned down; load-dependent per the report).
+  // Cross-check the captured summary text against the exit code whenever we have
+  // it; a nonzero failed-count with a "successful" exit is treated as a failure —
+  // fail-safe, since trusting the suspicious green would silently hold the gate
+  // open for a genuinely red suite (the opposite mistake — an occasional false
+  // failure on a truly-clean run — just costs a rerun, and is loudly explained).
+  if (r.status === 0 && captureOutput()) {
+    const summary = parseSummaryFailedCounts(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+    if (summary && (summary.testFiles > 0 || summary.tests > 0)) {
+      errSync(
+        `\n⚠⚠ ${t.ws.name} exited 0 but its own vitest summary reports ${summary.testFiles} failed test file(s) / ` +
+          `${summary.tests} failed test(s) — treating as a FAILURE (EI-18653696921091778: an exit-code/summary ` +
+          `mismatch must never read as green). Full run log: ${RUN_LOG_PATH}`,
+      );
+      r = { ...r, status: 1 };
     }
   }
   if (r.status !== 0) {

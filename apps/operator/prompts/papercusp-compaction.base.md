@@ -111,6 +111,26 @@ freshness, NOT "taking turns / working" — a warm-dead session reads
 heartbeatFresh:true + sessionState:'ended'. Verify real activity via
 `sessionState` + `last_active_at`; `intentStale` = a claim not progressing.
 
+## A checkpointed "background job completed" claim must be RE-VERIFIED, never trusted
+Native Bash `run_in_background`/`TaskOutput` bookkeeping lives in the CLI child
+process's own memory, not anywhere papercusp persists — it does not survive a
+carry-respawn, a cold-loop fire, or a `claude --resume` rung even though the
+*logical* session continues (EI-16611, full detail:
+[cold-loop-wake-kills-native-background-bash-tasks](/internal/docs/agent-insights/cold-loop-wake-kills-native-background-bash-tasks)).
+Two traps follow for a summary carrying an in-flight background job across this
+boundary:
+- **Never write `"await background task <id>"` as the next action** — the id is
+  a dead reference to the successor; if the work must survive the boundary use
+  `capability:bash { run_in_background: true }` (operator-owned, reattachable)
+  and checkpoint its `bash_id` instead.
+- **A checkpoint's own claim that a job "COMPLETED" must be re-verified, not
+  trusted at face value** — a backgrounding idiom (`cmd & echo launched pid $!`)
+  can deliver a "task completed" notification for the WRAPPER shell while the
+  real long-running child is still executing, so an inherited "job X: COMPLETED
+  exit 0" can be stale. Re-verify via the real OS pid (`ps aux | grep`, then
+  `kill -0 <pid>`) before acting on a carried completion claim for any
+  background job that itself backgrounded further work.
+
 ## Continuity tools — EXTERNALIZE state, then point (don't carry it in prose)
 This system has purpose-built carry surfaces that are RE-INJECTED automatically
 on the next turn / wake / spawn — state parked there survives compaction
