@@ -188,7 +188,7 @@ export async function reapDeadExecutorWorkflows(
     // only reaps the state that IS anomalous under the corrected semantics: an
     // ENQUEUED row (never dequeued) with no live queue row — e.g. a crash between
     // the queue delete and the status flip, or a prior partial reap — after its own
-    // longer, env-tunable orphan window. A PENDING no-output fire is left to the 60m
+    // longer, env-tunable orphan window. A PENDING no-output fire is left to the
     // no-output window, its explicit deadline, or the dead-executor branch.
     //
     // SEMANTICS CORRECTED AGAIN (WI-3519, verified live 2026-07-09): in this DBOS
@@ -204,7 +204,7 @@ export async function reapDeadExecutorWorkflows(
     // (recent updated_at) or recently drained to SUCCESS/ERROR within the orphan
     // window. CANCELLED is deliberately NOT liveness — the reaper's own cancels
     // bump updated_at and would self-mask a genuinely wedged queue. A healthy
-    // backlog behind live workers is left alone (the 60m no-output window, explicit
+    // backlog behind live workers is left alone (the no-output window, explicit
     // deadlines, and the dead-executor branch still backstop true wedges).
     //
     // Use created_at, not started_at_epoch_ms or updated_at: DBOS recovery can

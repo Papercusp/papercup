@@ -195,13 +195,19 @@ function runScript(
  * (EI-7553 posts 50747/50749 — run verifiably alive at 59m, SIGTERM'd, verdict
  * row null forever). 120m covers the measured worst case with ~30m headroom.
  *
- * INVARIANT: keep this STRICTLY LESS than SELF_WATCHDOG_MS (green-checkpoint.ts,
- * 3h) and CHECKPOINT_LOCK_STALE_MS (green-checkpoint.ts, 190m) — a run must be
- * killed by THIS timeout (and release
- * its lock) before that lock is stale-reclaimable, else the next hourly fire
- * spawns a SECOND concurrent suite and OOMs the box. operator-core cannot import
- * from apps/operator, so the two constants live in separate files; whoever
- * retunes one must retune the other (same convention as the result MARKERs above).
+ * INVARIANT: keep this the SMALLEST link in the gate's timing chain —
+ *   THIS (120m)  <  SELF_WATCHDOG_MS (180m, green-checkpoint.ts)
+ *     <  DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS (185m, dbos/dbos-executor-reaper.ts)
+ *     <  CHECKPOINT_LOCK_STALE_MS (190m, green-checkpoint.ts)
+ * — a run must be killed by THIS timeout (and release its lock) before that lock is
+ * stale-reclaimable, else the next hourly fire spawns a SECOND concurrent suite and
+ * OOMs the box; and the DBOS reaper's no-output window must sit above the whole run so
+ * it cannot cancel a HEALTHY checkpoint's bookkeeping row mid-suite. That last link was
+ * MISSING from this list when this budget was raised 55m→120m, so the reaper (still 60m)
+ * silently became the tightest bound and reaped healthy runs — WI-6112. operator-core
+ * cannot import from apps/operator, so the constants live in separate files; whoever
+ * retunes one must retune the others (same convention as the result MARKERs above), and
+ * apps/operator/lib/release/release-timing-invariants.test.ts asserts the ordering.
  *
  * Deeper root (see green-checkpoint.ts GREEN_CHECKPOINT_MAX_FORKS notes): the
  * box's memory BASELINE / the :3070 operator-cluster size. Freeing memory there

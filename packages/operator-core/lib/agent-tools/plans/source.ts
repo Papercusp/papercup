@@ -821,38 +821,6 @@ export async function listPlanRows(
  *  columns only. What `plans:list` renders from (audit P-042). */
 export type PlanIndexRow = Omit<PlanRow, 'content'>;
 
-/** Minimal shape of the postgres.js tagged-template callback both list helpers receive. */
-type PlanTx = (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
-
-/**
- * SQL fragment for the `items` column (db-performance-remediation-2026-07-26 P-006).
- *
- * Default strips ONLY each element's `text` key via the jsonb `-` operator, so every
- * structural field (id / status / importance / blockedBy / phase / decisionRefs) survives
- * untouched — that is precisely what the hot polling callers read, and it removes 74% of
- * the column's bytes. `WITH ORDINALITY` + `ORDER BY` preserves item order, which the
- * plan-item DAG walk in pot/survey depends on. A NULL/absent items column still yields
- * `[]`, matching the previous non-null contract callers rely on (`row.items.length`).
- */
-function planItemsProjection(tx: PlanTx, itemText: boolean | undefined) {
-  return itemText
-    ? tx`items`
-    : tx`(SELECT COALESCE(jsonb_agg(e.value - 'text' ORDER BY e.ord), '[]'::jsonb)
-            FROM jsonb_array_elements(COALESCE(items, '[]'::jsonb)) WITH ORDINALITY e(value, ord)) AS items`;
-}
-
-/**
- * SQL fragment for the two heavy columns no LIST-path consumer reads (P-006). Emits typed
- * NULLs so the row shape — and therefore `rowFromDb` — is unchanged whether or not the
- * caller opted in. Trailing comma is part of the fragment; the call site supplies
- * `now_next` after it.
- */
-function planHeavyProjection(tx: PlanTx, heavyFields: boolean | undefined) {
-  return heavyFields
-    ? tx`now_state, template_data,`
-    : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
-}
-
 /**
  * Index-only listing: every projection column, never the content blob, with
  * the archived/status filters pushed into SQL and an optional LIMIT
@@ -932,8 +900,18 @@ export async function listPlanIndexRows(
             ? tx`ORDER BY created_at DESC NULLS LAST`
             : tx`ORDER BY plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
-      const itemsCol = planItemsProjection(tx, opts.itemText);
-      const heavyCols = planHeavyProjection(tx, opts.heavyFields);
+      // P-006 payload projection (see the function docstring). `- 'text'` strips ONLY the
+      // prose from each element, keeping every structural field; WITH ORDINALITY + ORDER BY
+      // preserves item order, which the pot/survey plan-item DAG walk depends on; and a
+      // NULL items column still yields [] so `row.items.length` stays safe. The heavy
+      // fragment emits typed NULLs so the row shape (and rowFromDb) is identical either way.
+      const itemsCol = opts.itemText
+        ? tx`items`
+        : tx`(SELECT COALESCE(jsonb_agg(e.value - 'text' ORDER BY e.ord), '[]'::jsonb)
+                FROM jsonb_array_elements(COALESCE(items, '[]'::jsonb)) WITH ORDINALITY e(value, ord)) AS items`;
+      const heavyCols = opts.heavyFields
+        ? tx`now_state, template_data,`
+        : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
@@ -1065,8 +1043,14 @@ export async function listPlanIndexRowsForWorkspace(
             ? tx`ORDER BY created_at DESC NULLS LAST`
             : tx`ORDER BY harness_slug ASC, plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
-      const itemsCol = planItemsProjection(tx, opts.itemText);
-      const heavyCols = planHeavyProjection(tx, opts.heavyFields);
+      // P-006 payload projection — identical to listPlanIndexRows above; see its docstring.
+      const itemsCol = opts.itemText
+        ? tx`items`
+        : tx`(SELECT COALESCE(jsonb_agg(e.value - 'text' ORDER BY e.ord), '[]'::jsonb)
+                FROM jsonb_array_elements(COALESCE(items, '[]'::jsonb)) WITH ORDINALITY e(value, ord)) AS items`;
+      const heavyCols = opts.heavyFields
+        ? tx`now_state, template_data,`
+        : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,

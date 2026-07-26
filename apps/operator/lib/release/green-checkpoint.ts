@@ -309,7 +309,7 @@ function defaultPidAlive(pid: number): boolean {
 }
 
 /** A checkpoint run is bounded by the routine's suite timeout
- *  (GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in harness/routines/release-actions.ts — 55m), so a
+ *  (GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in harness/routines/release-actions.ts — 120m), so a
  *  lock held longer than THIS is DEFINITIVELY stale and is reclaimed even if its recorded
  *  pid still looks alive. Without this, a run that hung past its timeout / crashed without
  *  releasing / left a lock whose pid got RECYCLED to an unrelated live process wedged
@@ -331,7 +331,7 @@ export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
 /** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
  *  (green-checkpoint.ts) itself, independent of the supervising parent
  *  (release-actions.ts's `runScript`, which SIGTERMs the whole process group at
- *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS=55m + escalates to SIGKILL 15s later).
+ *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS=120m + escalates to SIGKILL 15s later).
  *
  *  That parent-side kill relies on the PARENT (the bg-host / routines-tick node
  *  process) staying alive long enough for its in-memory `setTimeout` to fire.
@@ -347,7 +347,7 @@ export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
  *  time-based) lets a LATER attempt proceed, but does nothing to the orphan
  *  itself — it lingers, leaking RSS/FDs/docker containers, and each repeat
  *  orphan compounds the resource pressure on this memory-constrained box. This
- *  froze `main` ~97h on 2026-06-30 even with the reaper's 60m no-output window
+ *  froze `main` ~97h on 2026-06-30 even with the reaper's then-60m no-output window
  *  in place (that window only cancels the DBOS-level bookkeeping row — it has
  *  no reach into an already-orphaned OS process tree).
  *
