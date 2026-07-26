@@ -250,14 +250,29 @@ export async function openConversationCore(
   const delivered = await fanout(deps, convRef(id), ev, identity.ownerId);
   await selfSubscribe(deps, id, identity.ownerId, now);
 
-  // `unrouted` means NOBODY was addressed — with a named recipient the question
-  // always has somewhere to land, so an untagged directed ask is not unrouted.
+  // `unrouted` means NOBODY WAS ACTUALLY REACHED — measured from the fan-out,
+  // not inferred from "did the asker supply topics".
+  //
+  // It used to be `topics.length === 0 && directTo.length === 0`, i.e. "you
+  // tagged something, so you're fine". That is a FALSE ASSURANCE, and it hid a
+  // total routing failure for weeks (2026-07-25 audit): topic fan-out resolves
+  // TOPIC subscribers, and this workspace has ZERO live topic subscriptions —
+  // across 30 distinct topics used by open questions, not one had a subscriber.
+  // The proof: 13 open questions were correctly topic-tagged, still ended up
+  // with only the asker subscribed, and 100% of them got zero replies. Each of
+  // those askers was told "opened to topic subscribers" and reasonably believed
+  // the question had landed somewhere.
+  //
+  // Deriving it from `delivered` cannot drift from reality: directTo recipients
+  // are subscribed BEFORE the fan-out above, and the asker is excluded from it,
+  // so delivered === 0 means literally no other agent was notified — whatever
+  // the asker tagged.
   return {
     conversation,
     thread_id: thread.thread_id,
     topics,
     delivered,
-    unrouted: topics.length === 0 && directTo.length === 0,
+    unrouted: delivered === 0,
     direct_to: directTo,
   };
 }

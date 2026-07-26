@@ -444,10 +444,21 @@ async function completeOne(
   // `state` (exactly the fix the reporter applied). Also fires when an explicit `state` write failed
   // (stateError) or landed on a non-terminal state — in every case the item is still claimable.
   const finalState = (workItem?.state ?? existing.state ?? '').toLowerCase();
-  const stateWarning =
-    finalState && !TERMINAL_WORK_ITEM_STATES.has(finalState)
-      ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', so it stays claimable and the auto-loop may re-place work on it. Pass top-level \`state\` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') to close it.`
-      : undefined;
+  // EI-18661904412177717: the warning MUST distinguish "you passed no state" from "your state
+  // was not applied". The single wording ("Pass top-level `state` …") told a caller who HAD
+  // passed one to do the exact thing they just did — so the natural next move is to re-send the
+  // identical call and get the identical result (the reporter did, twice). A warning that
+  // prescribes an action the caller already took is worse than no warning: it actively routes
+  // them into a loop instead of at the real cause.
+  const nonTerminalHint = `so it stays claimable and the auto-loop may re-place work on it`;
+  const terminalVocab = `(feature: 'passed'|'deprecated'; issue: 'resolved'|'closed')`;
+  const stateWarning = !finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
+    ? undefined
+    : stateError
+      ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or pass a valid TERMINAL state ${terminalVocab}.`
+      : effectiveState
+        ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — pass a TERMINAL state ${terminalVocab}.`
+        : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`;
 
   // flush-to-proceed-stretch-discipline-2026-07-04 P-006: verification linting. A settled
   // unit is either VERIFIED (`tests`) or CONSCIOUSLY DEFERRED (`deferred`) — never silent. A
@@ -732,13 +743,19 @@ export default defineTool({
       .object({
         id: z.string().min(1).optional().describe('single-complete shorthand: the work-item id (use with `completion`)'),
         harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
-        /** Optional terminal state to also set (single-complete shorthand). */
+        /** Optional terminal state to also set. Like `harness`, it is the DEFAULT for
+         *  items:[…] entries that omit their own `state` (EI-18661904412177717). */
         state: z.string().min(1).max(40).optional(),
         /** The structured completion record (single-complete shorthand). */
         completion: completionSpec.optional(),
         /** Optional kind-specific structured output (single-complete shorthand). */
         outputPayload: z.unknown().optional(),
-        items: z.array(itemSpec).min(1).max(100).optional().describe('complete many work-items at once — each { id, completion, state?, harness? }'),
+        items: z
+          .array(itemSpec)
+          .min(1)
+          .max(100)
+          .optional()
+          .describe('complete many work-items at once — each { id, completion, state?, harness? }; an omitted per-item state/harness falls back to the top-level one'),
       })
       .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.completion)), {
         // EI-6999: the first shape error a caller hits should state the FULL
@@ -767,8 +784,18 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const isBulkForm = Boolean(args.items?.length);
+    // EI-18661904412177717: the batch path defaulted `harness` from the top level but SILENTLY
+    // DROPPED the top-level `state` — so `{ state:'resolved', items:[…] }` recorded every
+    // completion, returned ok:true, and left every item `wip`/claimable, while the stateWarning
+    // instructed the caller to "pass top-level `state`" — exactly what they had just passed.
+    // An agent that trusts ok:true walks away believing a batch is closed when it is all still
+    // claimable, and the auto-loop re-places finished work: a silent correctness failure in the
+    // completion-integrity path. `state` now defaults per-item exactly like `harness` (a
+    // per-item `state` still wins), so the two forms cannot disagree. Defaulted HERE, at the
+    // single list-construction site, so every downstream `it.state` reader (the remote-authored
+    // refusal, the test-completion gate, the inference/close-intent logic) sees the same value.
     const list: CompleteItem[] = isBulkForm
-      ? args.items!.map((it) => ({ ...it, harness: it.harness ?? args.harness }))
+      ? args.items!.map((it) => ({ ...it, harness: it.harness ?? args.harness, state: it.state ?? args.state }))
       : [{ id: args.id as string, harness: args.harness, state: args.state, completion: args.completion!, outputPayload: args.outputPayload }];
     const env = await runBulk(list, (it) => completeOne(it, ident, ctx), { keyOf: (it) => ({ id: it.id }) });
     // EI-14676: the generic bulk contract's top-level `ok` means "the batch ran" (see

@@ -3262,7 +3262,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
               console.warn('[learning.gym] recent-cycles read failed:', err instanceof Error ? err.message : err);
               return [];
             }),
-            // WI-5801: recent RUN activity, straight from gym_runs. The cycles leg
+            // WI-5808: recent RUN activity, straight from gym_runs. The cycles leg
             // above can be a single stale row (a cycle row is written once per
             // COMPLETED cycle and was overwritten in place pre-WI-5799), which is
             // why the tab kept reading "no recent runs" while the gym was plainly
@@ -3275,7 +3275,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return { proposals, autoloops, archiveSeeds, cycles, runs, generatedAt: new Date().toISOString() };
         });
       const scoped = await fetchSnapshot(harnessSlug);
-      // WI-5802 (owner report 2026-07-25): NO CROSS-TENANT FALLBACK.
+      // WI-5809 (owner report 2026-07-25): NO CROSS-TENANT FALLBACK.
       //
       // This used to detect an empty Hive-scoped read and silently return the
       // WORKSPACE-WIDE rollup flagged `scopeFallback: true` (WI-5420). The intent

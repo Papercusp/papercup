@@ -1472,7 +1472,7 @@ interface GymRecentCycle {
   startedAt: number | null;
   finishedAt: number | null;
 }
-/** WI-5801: one variant's runs within a cycle, straight from gym_runs. */
+/** WI-5808: one variant's runs within a cycle, straight from gym_runs. */
 interface GymRecentRun {
   harnessSlug: string;
   variantId: string;
@@ -1491,7 +1491,7 @@ interface GymSnapshot {
   archiveSeeds?: GymArchiveSeed[];
   /** Recent completed cycles (WI-5685) — absent on older server snapshots. */
   cycles?: GymRecentCycle[];
-  /** WI-5801: recent RUN activity from gym_runs — the table that accumulates. */
+  /** WI-5808: recent RUN activity from gym_runs — the table that accumulates. */
   runs?: GymRecentRun[];
   /** ISO timestamp this snapshot was generated server-side. */
   generatedAt?: string;
@@ -1651,7 +1651,7 @@ function GymView({
     staleTime: 30_000,
     enabled: hiveReady,
   });
-  // WI-5802 (owner report 2026-07-25): the client-side cross-tenant fallback is
+  // WI-5809 (owner report 2026-07-25): the client-side cross-tenant fallback is
   // GONE, matching the server. It used to refetch the workspace-wide rollup when
   // the selected pot's own read was empty — which is how selecting Oddsmith
   // rendered PAPERCUSP's gym experiments. A selected pot now shows only its own
@@ -1661,7 +1661,7 @@ function GymView({
   const autoloops = snap?.autoloops ?? [];
   const archiveSeeds = snap?.archiveSeeds ?? [];
   const cycles = snap?.cycles ?? [];
-  // WI-5801: RUN activity, read from gym_runs — the table that actually
+  // WI-5808: RUN activity, read from gym_runs — the table that actually
   // accumulates. This is what answers "is the gym doing anything lately";
   // `cycles` only gains a row when a cycle COMPLETES.
   const runs = snap?.runs ?? [];

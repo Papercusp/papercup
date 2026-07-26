@@ -30,7 +30,7 @@ export function LearningPageHeader({
   tone?: LearningTone;
   action?: ReactNode;
   /**
-   * WI-5803 (owner ask 2026-07-25): when this view's data was generated —
+   * WI-5810 (owner ask 2026-07-25): when this view's data was generated —
    * rendered PROMINENTLY, not as a footnote. Every learning surface is a
    * snapshot of a moving system; a reader who cannot see the as-of time cannot
    * tell "nothing is happening" from "this panel is stale", which is exactly
@@ -294,7 +294,7 @@ export function LearningVisualStyles() {
          tone-filled pill read as a confusing "info pill". Now plain inline text —
          a small muted label with the number tone-tinted, the ONE accent the header
          carries. No pill chrome, no uppercase. */
-      /* WI-5803 — the as-of stamp. Legible, not a footnote: a reader must be able
+      /* WI-5810 — the as-of stamp. Legible, not a footnote: a reader must be able
          to tell a quiet system from a stale panel at a glance. */
       .pc-learning-visual__asof {
         font-size: 11px; font-weight: 700; letter-spacing: 0.01em;
@@ -389,7 +389,7 @@ export function LearningVisualStyles() {
 }
 
 /**
- * WI-5803 — the "as of" stamp. Deliberately high-contrast and adjacent to the
+ * WI-5810 — the "as of" stamp. Deliberately high-contrast and adjacent to the
  * title rather than tucked in a corner: its whole job is to stop a reader
  * trusting stale numbers. Shows relative age (the thing you actually judge by)
  * with the absolute timestamp on hover, and turns amber past 10 minutes.

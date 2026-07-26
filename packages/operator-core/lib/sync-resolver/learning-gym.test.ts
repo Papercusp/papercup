@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * harness_slug = …`) are covered at the control-plane/integration layer; here we
  * pin the resolver's arg threading + the workspace-wide default.
  *
- * WI-5802: there is NO cross-tenant fallback. A Hive-scoped read that comes back
+ * WI-5809: there is NO cross-tenant fallback. A Hive-scoped read that comes back
  * empty returns EMPTY — it never silently substitutes the workspace-wide rollup.
  * The old WI-5420 behavior (fall back + flag `scopeFallback`) meant selecting the
  * Oddsmith pot rendered PAPERCUSP's gym experiments behind a muted note; showing
@@ -118,9 +118,9 @@ describe('learning.gym — per-Hive lens (P-041)', () => {
   });
 });
 
-describe('learning.gym — scope isolation: NO cross-tenant fallback (WI-5802)', () => {
+describe('learning.gym — scope isolation: NO cross-tenant fallback (WI-5809)', () => {
   it('an empty Hive-scoped read stays EMPTY — it never substitutes another pot\'s data', async () => {
-    // The workspace HAS data, but none of it is scoped to this hive. Pre-WI-5802
+    // The workspace HAS data, but none of it is scoped to this hive. Pre-WI-5809
     // the resolver returned that other data flagged `scopeFallback` — which is how
     // selecting Oddsmith rendered papercusp's gym experiments (owner report).
     listRecentProposalsForWorkspace
@@ -167,7 +167,7 @@ describe('learning.gym — scope isolation: NO cross-tenant fallback (WI-5802)',
   });
 });
 
-describe('learning.gym — recent RUN activity (WI-5801)', () => {
+describe('learning.gym — recent RUN activity (WI-5808)', () => {
   it('threads the hive through to the runs reader and returns it on the snapshot', async () => {
     listRecentGymRunsForWorkspace.mockResolvedValue([
       { harnessSlug: 'gymloopharness', variantId: 'baseline', cycle: 0, runCount: 3 },
@@ -183,7 +183,7 @@ describe('learning.gym — recent RUN activity (WI-5801)', () => {
     expect(rows[0].runs).toEqual([
       { harnessSlug: 'gymloopharness', variantId: 'baseline', cycle: 0, runCount: 3 },
     ]);
-    // WI-5803: every snapshot carries its generation time so the UI can stamp it.
+    // WI-5810: every snapshot carries its generation time so the UI can stamp it.
     expect(typeof rows[0].generatedAt).toBe('string');
   });
 
