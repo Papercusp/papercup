@@ -211,16 +211,39 @@ describe('seedGitSyncRoutineForMember (P-001/P-008 seed side)', () => {
     expect(modeCalls).toEqual([{ ws: 'ws-1', hive: 'shop-hive' }]);
     // rule 2 decides outright — the GitHub permissions probe is skipped entirely
     expect(probeCalls).toEqual([]);
-    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({ triggerConfig: { push: false } });
+    // WI-6017: bridged hiveGitMode is the seed-time sibling of git-sync-action.ts's
+    // runtime override — a NON-joiner member seeded WHILE the hive is already
+    // bridged must opt submodule origin-push back IN at seed time (push:false is
+    // ambiguous on its own; without this the member's submodules would silently
+    // strand, never getting a true→false flip to trigger the runtime override).
+    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({
+      triggerConfig: { push: false, pushSubmoduleOrigins: true },
+    });
   });
 
-  it("p2p-only hive mode → seeds push:false (p2p_only_hive)", async () => {
+  it("p2p-only hive mode → seeds push:false (p2p_only_hive) + pushSubmoduleOrigins:true (WI-6017, same as bridged)", async () => {
     const { deps } = seedDeps({ resolveHiveGitMode: async () => 'p2p-only' });
     const out = await seedGitSyncRoutineForMember(
       { workspaceId: 'ws', installSlug: 'shop', entry: memberEntry() },
       deps,
     );
     expect(out).toMatchObject({ seeded: true, push: false, pushReason: expect.stringContaining('p2p_only_hive') });
+    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({
+      triggerConfig: { push: false, pushSubmoduleOrigins: true },
+    });
+  });
+
+  it("WI-6017 / AH-6: a JOINER seeded into an already-bridged hive still gets push:false, but pushSubmoduleOrigins is NOT opted in — a joiner must push nothing, anywhere, even though decideGitSyncPush's own reason string says 'bridged_hive' not 'joiner_side' (hiveGitMode rules win precedence over joinerSide in the decider)", async () => {
+    const { deps, probeCalls } = seedDeps({ resolveHiveGitMode: async () => 'bridged' });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws', installSlug: 'shop', entry: memberEntry(), joinerSide: true },
+      deps,
+    );
+    expect(out).toMatchObject({ seeded: true, push: false, pushReason: expect.stringContaining('bridged_hive') });
+    expect(probeCalls).toEqual([]);
+    const cfg = (upsertRoutineMock.mock.calls[0][1] as { triggerConfig: Record<string, unknown> }).triggerConfig;
+    expect(cfg.push).toBe(false);
+    expect('pushSubmoduleOrigins' in cfg).toBe(false);
   });
 
   it("legacy mode leaves the seed byte-for-byte unchanged (probe consulted, push from GitHub)", async () => {
@@ -231,6 +254,9 @@ describe('seedGitSyncRoutineForMember (P-001/P-008 seed side)', () => {
     );
     expect(out).toMatchObject({ seeded: true, push: true, pushReason: expect.stringContaining('github_permissions_push_true') });
     expect(probeCalls).toEqual([{ owner: 'acme', repo: 'shop' }]);
+    // WI-6017: legacy mode must stay byte-for-byte unchanged — no pushSubmoduleOrigins key at all.
+    const cfg = (upsertRoutineMock.mock.calls[0][1] as { triggerConfig: Record<string, unknown> }).triggerConfig;
+    expect('pushSubmoduleOrigins' in cfg).toBe(false);
   });
 
   it('a NON-hive member (no hive_slug, not self_repo) never resolves a mode', async () => {

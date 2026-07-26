@@ -113,6 +113,7 @@ const DETAIL: AgentDetail = {
     lastCheckpoint: { text: 'did the thing, left the other thing', updatedAtMs: Date.now() - 2 * 86_400_000 },
     unansweredDirectedCount: 2,
     lastToolCallAt: new Date(Date.now() - 30_000).toISOString(),
+    unavailableSignals: [],
   },
 };
 
@@ -369,6 +370,29 @@ describe('AgentDossier', () => {
     } satisfies AgentDetail;
     const { findByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
     expect(await findByText('none held')).toBeTruthy();
+  });
+
+  // EI-18694403367371331: an agent demonstrably HOLDING WI-5993 rendered
+  // "none held" because the underlying read threw, not because it genuinely
+  // held nothing — the panel must render these two cases distinctly.
+  it('EI-18694403367371331: a claim read that THREW renders "unavailable", never the same "none held" as a genuine empty claim', async () => {
+    syncState.detail = {
+      ...DETAIL,
+      signals: { ...DETAIL.signals, currentClaim: null, unavailableSignals: ['currentClaim'] },
+    } satisfies AgentDetail;
+    const { findByText, queryByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+    expect(await findByText('⚠ unavailable (read failed)')).toBeTruthy();
+    expect(queryByText('none held')).toBeNull();
+  });
+
+  it('EI-18694403367371331: a loop read that THREW renders "unavailable", never the same "no loop" as a genuinely-never-armed agent', async () => {
+    syncState.detail = {
+      ...DETAIL,
+      signals: { ...DETAIL.signals, loop: null, unavailableSignals: ['loop'] },
+    } satisfies AgentDetail;
+    const { findByText, queryByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+    expect(await findByText('⚠ unavailable (read failed)')).toBeTruthy();
+    expect(queryByText('no loop')).toBeNull();
   });
 
   it('P-005: no unanswered-directed messages hides the row (not "0 peers waiting")', async () => {

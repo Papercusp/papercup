@@ -19,7 +19,9 @@ import { ErrorDetail } from './ErrorDetail';
  * navigation — so changing `?tab=` escapes a crashed tab instead of staying
  * stuck. The fallback offers a WORKING reload: `hardReload()` bypasses the
  * desktop host's reload suppression, and the usual cause here is a stale
- * bundle after `vite build --watch` rewrote `dist/` underneath the page.
+ * bundle after a ONE-SHOT dev rebuild (a gate run, a timer, `npm run build`)
+ * swapped `dist/` underneath the page — NOT `vite build --watch`, which
+ * retains old chunks specifically so this doesn't happen (EI-18694489428714850).
  */
 interface Props {
   children: ReactNode;
@@ -43,16 +45,24 @@ interface State {
  *  packaged desktop (WI-2902). Re-exported for this module's existing tests. */
 export { CHUNK_LOAD_ERROR_RE };
 
-/** The error-card explanatory copy, honest for the current shell: blame the
- *  build watcher only in a dev shell; in the packaged app describe it as the
- *  transient load hiccup it actually is (WI-2902). */
+/** The error-card explanatory copy, honest for the current shell: blame a
+ *  dev-shell rebuild only in a dev shell; in the packaged app describe it as
+ *  the transient load hiccup it actually is (WI-2902).
+ *
+ *  Deliberately does NOT say "the dev build watcher" (EI-18694489428714850):
+ *  a real `vite build --watch` singleton RETAINS old chunks (emptyOutDir:false
+ *  + age-prune) precisely so an open page keeps resolving them — the watcher
+ *  is the one dev regime that does NOT cause this. The actual usual cause is a
+ *  ONE-SHOT rebuild (a gate run, a timer, an agent typing `npm run build`)
+ *  that swaps `dist/` out from under an already-open page. Blaming "the
+ *  watcher" sent readers looking in the wrong place; keep this generic. */
 function ErrorCardBody(): ReactNode {
   return inDevBuildWatcherShell() ? (
     <p style={BODY}>
-      Often this just means the app was rebuilt underneath the page — the dev
-      build watcher rewrote the bundle, so an already-open view can no longer
-      load part of itself. Reloading picks up the latest build. If it persists
-      after a reload, it&rsquo;s a real bug; the details are below.
+      Often this just means the app was rebuilt underneath the page — a dev
+      build ran and replaced part of the bundle, so an already-open view can no
+      longer load part of itself. Reloading picks up the latest build. If it
+      persists after a reload, it&rsquo;s a real bug; the details are below.
     </p>
   ) : (
     <p style={BODY}>

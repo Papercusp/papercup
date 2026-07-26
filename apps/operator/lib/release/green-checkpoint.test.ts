@@ -1514,6 +1514,61 @@ describe('realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744
   });
 });
 
+// EI-18694489428714850: PAPERCUSP_RETAIN_DIST_CHUNKS had ZERO callers for weeks even though
+// the retention mechanism (WI-1484) was fully built — nothing ever set the env var that turns
+// it on for a one-shot build, so every gate-triggered SPA rebuild kept emptying dist/ and
+// 404ing any open desktop webview's lazy chunks. The bug wasn't a missing FEATURE, it was a
+// missing WIRE — exactly the kind of regression a green suite can't catch unless something
+// asserts the wire is actually connected. This test IS that assertion: it locks in that the
+// checkpoint's SPA build call always passes PAPERCUSP_RETAIN_DIST_CHUNKS=1, so a future
+// refactor of this call site (or of buildGreenCheckpointEnv) that silently drops it fails
+// loudly here instead of quietly reintroducing the exact same class of bug.
+describe('realCheckpointDeps.runGreen — SPA build retains dist chunks (EI-18694489428714850)', () => {
+  let tree: string;
+  let logDir: string;
+  beforeEach(() => {
+    tree = mkdtempSync(join(tmpdir(), 'gc-spa-retain-'));
+    logDir = mkdtempSync(join(tmpdir(), 'gc-logs-'));
+  });
+  afterEach(() => {
+    rmSync(tree, { recursive: true, force: true });
+    rmSync(logDir, { recursive: true, force: true });
+  });
+
+  it('passes PAPERCUSP_RETAIN_DIST_CHUNKS=1 to the operator-vite build — the whole point of WI-1484', async () => {
+    // No lint:tsc/lint:migrations/identity/design-primitives scripts on this fake tree, so
+    // those legs are structurally skipped (hasNpmScript false) and stay at their default-ok
+    // — isolating this test to exactly the leg under test: the SPA build call.
+    writeFileSync(join(tree, 'package.json'), JSON.stringify({ name: 'x', scripts: { 'test:affected': 'true' } }));
+    let buildEnv: NodeJS.ProcessEnv | undefined;
+    let buildCalled = false;
+    const exec: CheckpointExec = async (cmd, args, opts) => {
+      if (cmd === 'git' && args[0] === 'grep') {
+        // exit 1 = git grep's "no match" — i.e. no committed conflict markers.
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      if (cmd === 'npm' && args.includes('--workspace') && args.includes('@papercusp/operator-vite') && args.includes('build')) {
+        buildCalled = true;
+        buildEnv = opts?.env;
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      // the greenCmd itself (`npm run test:affected`) — green, nothing failing.
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const cfg = releaseConfig({
+      checkpointRoot: tree,
+      checkpointLogDir: logDir,
+      greenCmd: 'npm run test:affected',
+      // spaBuildWorkspace deliberately NOT overridden — defaults to
+      // '@papercusp/operator-vite', so this test exercises the real SPA-build leg.
+    });
+    const r = await realCheckpointDeps(cfg, exec).runGreen(tree, 'base');
+    expect(r.green).toBe(true);
+    expect(buildCalled).toBe(true); // the build leg actually ran — didn't skip/short-circuit
+    expect(buildEnv?.PAPERCUSP_RETAIN_DIST_CHUNKS).toBe('1');
+  });
+});
+
 // load-flake-isolation-2026-06-23: the SAFE load-flake absorber. The 2026-06-23 incident:
 // runner-aggregate.test.ts + scheduler-workspace-scope.test.ts (both @papercusp/operator-core)
 // failed the gate under the 8-fork checkpoint load but PASS in isolation, and the

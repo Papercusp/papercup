@@ -2734,11 +2734,30 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
         bootstrap?: DhtBootstrapNode[];
         dht?: unknown;
         firewall?: (remotePublicKey: Buffer) => boolean;
+        seed?: Buffer;
       }) => HyperswarmLike;
     }
   ).default;
   const guard = getSwarmGuard();
   const opts = swarmConstructorOpts();
+  // EI-18683526122026208: persist the transport identity across restarts.
+  // Without a `seed`/`keyPair`, hyperswarm mints `DHT.keyPair(undefined)` — a
+  // fresh cryptographically random keypair on EVERY process boot — so this
+  // process could never reconnect to a peer as the SAME identity after a
+  // restart. loadOrGenerateSwarmSeed() persists a 32-byte seed the first time
+  // this box constructs the shared swarm and reuses it on every later boot
+  // (see identity/swarm-keypair.ts for the scope decision). Best-effort: a
+  // keychain failure must not block swarm construction — fall back to an
+  // ephemeral random identity (today's behavior) rather than throwing.
+  let swarmSeed: Buffer | undefined;
+  try {
+    swarmSeed = await loadOrGenerateSwarmSeed();
+  } catch (e) {
+    console.warn(
+      `[swarm] ⚠ failed to load/persist the swarm transport identity seed — falling back to an ` +
+        `EPHEMERAL random identity for this boot (no cross-restart reconnect): ${e instanceof Error ? e.message : e}`,
+    );
+  }
   // B-FED-DHT observability (2026-06-24, su-34db4): make the effective DHT visible at
   // construction. Without this, "did this process join the ISOLATED testnet or the PUBLIC
   // DHT?" required tcpdump archaeology — and the silent-fallback failure mode (env set but
@@ -2790,8 +2809,14 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
   _sharedSwarm = new Swarm({
     maxPeers: opts.maxPeers,
     ...(dht ? { dht } : opts.bootstrap ? { bootstrap: opts.bootstrap } : {}),
+    ...(swarmSeed ? { seed: swarmSeed } : {}),
     firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
   });
+  if (swarmSeed) {
+    console.info('[swarm] transport identity: persisted (stable across restarts)');
+  } else {
+    console.info('[swarm] transport identity: EPHEMERAL (random this boot — see warning above)');
+  }
   // P-005 (bg-host-freeze-eventloop-stall-2026-06-30): with 25+ harnesses each
   // adding ONE 'connection' listener (via joinHarnessSwarm) plus the hive-directory
   // gossip listener (createDirectoryGossip), the process-global shared swarm

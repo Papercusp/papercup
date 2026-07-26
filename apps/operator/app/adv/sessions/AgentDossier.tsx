@@ -211,9 +211,14 @@ export default function AgentDossier({
                       .filter(Boolean)
                       .join(' · ')
                   : 'not armed'
-                : detail
-                  ? 'no loop'
-                  : null
+                : // EI-18694403367371331: a THROWN read must read distinctly from a
+                  // genuine "never armed" — "no loop" invites a leader to (wrongly)
+                  // treat this agent as idle instead of re-checking.
+                  signals?.unavailableSignals.includes('loop')
+                  ? '⚠ unavailable (read failed)'
+                  : detail
+                    ? 'no loop'
+                    : null
             }
           />
           <MetaRow
@@ -221,9 +226,14 @@ export default function AgentDossier({
             value={
               signals?.currentClaim
                 ? `${signals.currentClaim.id}${signals.currentClaim.title ? ` — ${signals.currentClaim.title}` : ''}`
-                : detail
-                  ? 'none held'
-                  : null
+                : // EI-18694403367371331: the bug this fixed — a live agent holding a
+                  // real work-item rendered "none held" because the read threw, not
+                  // because it genuinely held nothing.
+                  signals?.unavailableSignals.includes('currentClaim')
+                  ? '⚠ unavailable (read failed)'
+                  : detail
+                    ? 'none held'
+                    : null
             }
           />
           {ctxPct != null ? (

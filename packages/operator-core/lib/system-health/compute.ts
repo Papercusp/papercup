@@ -557,6 +557,13 @@ export interface StalePausedRoutineInput {
   /** Fallback age anchor (the row's updated_at) for when pausedAtMs is absent —
    *  so an unattributed legacy pause still gets a reportable age instead of none. */
   updatedAtMs?: number | null;
+  /** EI-18694769501553335: the row's install_slug. green-checkpoint/release-trigger
+   *  are legitimately seeded PER-INSTALL (one per repo-backed hive, seedHiveReleaseRoutines),
+   *  so a paused one on a DIFFERENT install (a throwaway repro/verify harness, a sibling
+   *  hive) does not block THIS install's own deploy pipeline — only escalate to `critical`
+   *  when it matches `opts.currentInstallSlug`. Omit when unknown (falls back to
+   *  name-only matching, preserving pre-fix behavior for callers that don't have it yet). */
+  installSlug?: string | null;
 }
 
 export interface StalePausedRoutine {
@@ -584,18 +591,31 @@ export interface StalePausedRoutine {
  * of age — an unattributed pause is exactly the bug class. A routine WITH a
  * recorded reason is flagged only once it crosses its threshold; release/deploy-
  * critical routines get a much shorter one (see module-level constants).
+ *
+ * EI-18694769501553335: `critical` additionally requires the row's `installSlug` to
+ * match `opts.currentInstallSlug` (when both are known) — green-checkpoint/release-
+ * trigger are legitimately seeded ONE-PER-INSTALL (each repo-backed hive gets its own,
+ * seedHiveReleaseRoutines), so a paused one belonging to a DIFFERENT install (a
+ * throwaway repro/verify harness, a sibling hive) does not mean THIS install's deploy
+ * pipeline is stopped. Group (metadata.group_slug) is NOT a safe discriminator here: the
+ * one-time 617 backfill assigned every green-checkpoint/release-trigger row to the
+ * 'release' group by NAME across every install_slug ("deliberately install_slug-agnostic"
+ * per its own comment), and no ongoing path assigns group_slug to a freshly-seeded row —
+ * so a legitimate PRODUCTION install's row can equally read group:null.
  */
 export function computeStalePausedRoutines(
   rows: ReadonlyArray<StalePausedRoutineInput>,
   now: number,
-  opts: { generalMs?: number; criticalMs?: number; criticalNames?: ReadonlySet<string> } = {},
+  opts: { generalMs?: number; criticalMs?: number; criticalNames?: ReadonlySet<string>; currentInstallSlug?: string } = {},
 ): StalePausedRoutine[] {
   const generalMs = opts.generalMs ?? STALE_PAUSE_GENERAL_MS;
   const criticalMs = opts.criticalMs ?? STALE_PAUSE_CRITICAL_MS;
   const criticalNames = opts.criticalNames ?? RELEASE_CRITICAL_ROUTINE_NAMES;
   const out: StalePausedRoutine[] = [];
   for (const r of rows) {
-    const critical = criticalNames.has(r.name);
+    const installKnown = opts.currentInstallSlug != null && r.installSlug != null;
+    const installMatches = !installKnown || r.installSlug === opts.currentInstallSlug;
+    const critical = criticalNames.has(r.name) && installMatches;
     const reasonMissing = r.pausedAtMs == null || !r.pauseReason;
     const anchorMs = r.pausedAtMs ?? r.updatedAtMs ?? null;
     if (anchorMs == null) {
@@ -613,10 +633,14 @@ export function computeStalePausedRoutines(
 }
 
 /** DB-reading wrapper (thin — the logic lives in the pure split above). Mirrors
- *  readDeadRoutines's shape/placement but queries the COMPLEMENT (active=false). */
-export async function readStalePausedRoutines(sql: Sql): Promise<StalePausedRoutine[]> {
-  const rows = await sql<Array<{ name: string; metadata: Record<string, unknown> | null; updated_at: Date | null }>>`
-    SELECT name, metadata, updated_at FROM harness_shared.routines WHERE active = false`;
+ *  readDeadRoutines's shape/placement but queries the COMPLEMENT (active=false).
+ *  `currentInstallSlug` (EI-18694769501553335) is this health-check's OWN install
+ *  (e.g. `ctx.potSlug`) — passed through so `critical` only fires for a stale pause
+ *  on THIS install's own release routine, not any sibling hive's / throwaway repro
+ *  harness's paused copy of a same-named routine. */
+export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: string): Promise<StalePausedRoutine[]> {
+  const rows = await sql<Array<{ name: string; metadata: Record<string, unknown> | null; updated_at: Date | null; install_slug: string | null }>>`
+    SELECT name, metadata, updated_at, install_slug FROM harness_shared.routines WHERE active = false`;
   const inputs: StalePausedRoutineInput[] = rows.map((r) => {
     const pause = (r.metadata?.pause ?? null) as { reason?: unknown; pausedAtMs?: unknown } | null;
     const pausedAtMs = typeof pause?.pausedAtMs === 'number' ? pause.pausedAtMs : null;
@@ -626,9 +650,10 @@ export async function readStalePausedRoutines(sql: Sql): Promise<StalePausedRout
       pausedAtMs,
       pauseReason,
       updatedAtMs: r.updated_at ? new Date(r.updated_at).getTime() : null,
+      installSlug: r.install_slug,
     };
   });
-  return computeStalePausedRoutines(inputs, Date.now());
+  return computeStalePausedRoutines(inputs, Date.now(), { currentInstallSlug });
 }
 
 /** The minimal ScoredItem projection this split needs (pure/unit-testable). */

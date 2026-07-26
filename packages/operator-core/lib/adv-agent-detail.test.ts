@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type {
   ActiveLockRow,
   WaiterRow,
@@ -12,24 +12,41 @@ import type { CoordEnvelope } from '@papercusp/coordination/core';
 // (`.catch(() => <empty>)`) so no single broken source can crash the whole
 // dossier — mock every one of them so the tests below can force a throw on
 // exactly ONE leg and assert it renders as "unavailable", never the same
-// shape as a legitimate empty/none state.
+// shape as a legitimate empty/none state. `importOriginal` PARTIAL-mocks each
+// module (only the one function used by getAgentSignals is replaced) — these
+// modules are also imported transitively by unrelated code in this same test
+// process (e.g. presence.ts's PRESENCE_STALE_MS), so a blanket mock without
+// spreading the original exports breaks those importers with a confusing
+// "no export defined on the mock" error.
 const getLoopStatus = vi.fn();
-vi.mock('./harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
+vi.mock('./harness/routines/loop', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./harness/routines/loop')>()),
+  getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
+}));
 const readHeldWorkItems = vi.fn();
-vi.mock('./carry-brief', () => ({ readHeldWorkItems: (...a: unknown[]) => readHeldWorkItems(...a) }));
+vi.mock('./carry-brief', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./carry-brief')>()),
+  readHeldWorkItems: (...a: unknown[]) => readHeldWorkItems(...a),
+}));
 const getPresence = vi.fn();
-vi.mock('./agent-tools/coordination/presence', () => ({
+vi.mock('./agent-tools/coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/presence')>()),
   getPresence: (...a: unknown[]) => getPresence(...a),
 }));
 const fetchUnansweredDirected = vi.fn();
-vi.mock('./agent-tools/coordination/unanswered-directed', () => ({
+vi.mock('./agent-tools/coordination/unanswered-directed', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/unanswered-directed')>()),
   fetchUnansweredDirected: (...a: unknown[]) => fetchUnansweredDirected(...a),
 }));
 const lastToolCallAtByOwner = vi.fn();
-vi.mock('./fleet/assignments', () => ({
+vi.mock('./fleet/assignments', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./fleet/assignments')>()),
   lastToolCallAtByOwner: (...a: unknown[]) => lastToolCallAtByOwner(...a),
 }));
-vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
+vi.mock('./workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./workspace-registry')>()),
+  activeWorkspaceId: () => 'ws-1',
+}));
 
 const { deriveAgentLocks, deriveCoordState, getAgentSignals } = await import('./adv-agent-detail');
 
@@ -275,5 +292,82 @@ describe('deriveCoordState', () => {
     const out = deriveCoordState([], new Set(), [], escalations, 'su-1');
     expect(out.openEscalations).toHaveLength(1);
     expect(out.openEscalations[0]).toMatchObject({ msgId: 'e-1', severity: 'blocker' });
+  });
+});
+
+// EI-18694403367371331: a live agent (su-ae6cbc84) held WI-5993 but its
+// dossier rendered "CLAIM: none held" — the underlying readHeldWorkItems
+// threw and getAgentSignals silently collapsed that into the SAME shape as
+// "holds nothing", which a leader reads as "this agent is idle" — precisely
+// the wrong conclusion when deciding whether to reclaim work.
+describe('getAgentSignals', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLoopStatus.mockResolvedValue(null);
+    readHeldWorkItems.mockResolvedValue([]);
+    getPresence.mockResolvedValue(null);
+    fetchUnansweredDirected.mockResolvedValue(new Map());
+    lastToolCallAtByOwner.mockResolvedValue(new Map());
+    // getAgentSignals deliberately console.warns each signal that throws
+    // (EI-18694403367371331 — a swallowed failure must be VISIBLE in logs,
+    // not just in the returned DTO); spy + swallow it here so these
+    // intentional-failure tests don't trip vitest-fail-on-console.
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('a genuinely empty agent (every read resolves, nothing held) reports NO unavailable signals', async () => {
+    const out = await getAgentSignals('su-1');
+    expect(out.currentClaim).toBeNull();
+    expect(out.loop).toBeNull();
+    expect(out.unavailableSignals).toEqual([]);
+  });
+
+  it('readHeldWorkItems THROWING is distinguishable from genuinely holding nothing — the regression this item exists to prevent', async () => {
+    readHeldWorkItems.mockRejectedValue(new Error('workspace mismatch'));
+    const out = await getAgentSignals('su-ae6cbc84');
+    // Same null VALUE as the genuinely-empty case above...
+    expect(out.currentClaim).toBeNull();
+    // ...but the tri-state flag tells them apart, which is the whole fix.
+    expect(out.unavailableSignals).toEqual(['currentClaim']);
+    // A sibling signal (loop) that resolved fine is NOT marked unavailable —
+    // one broken leg must not taint the others.
+    expect(out.unavailableSignals).not.toContain('loop');
+  });
+
+  it('a real held claim + checkpoint still surfaces correctly (control — the fix must not break the happy path)', async () => {
+    readHeldWorkItems.mockResolvedValue([
+      { id: 'WI-5993', title: 'do the thing', harness: 'papercusp', checkpoint: 'in progress', checkpointUpdatedAtMs: NOW },
+    ]);
+    const out = await getAgentSignals('su-ae6cbc84');
+    expect(out.currentClaim).toEqual({ id: 'WI-5993', title: 'do the thing', harness: 'papercusp' });
+    expect(out.lastCheckpoint).toEqual({ text: 'in progress', updatedAtMs: NOW });
+    expect(out.unavailableSignals).toEqual([]);
+  });
+
+  it('getLoopStatus throwing marks ONLY `loop` unavailable, independent of the other five signals', async () => {
+    getLoopStatus.mockRejectedValue(new Error('routine lookup failed'));
+    readHeldWorkItems.mockResolvedValue([{ id: 'WI-1', title: 't', harness: 'papercusp', checkpoint: null, checkpointUpdatedAtMs: null }]);
+    const out = await getAgentSignals('su-1');
+    expect(out.loop).toBeNull();
+    expect(out.unavailableSignals).toEqual(['loop']);
+    expect(out.currentClaim).toEqual({ id: 'WI-1', title: 't', harness: 'papercusp' });
+  });
+
+  it('every one of the six signals can throw independently and all are reported, not just the first', async () => {
+    getLoopStatus.mockRejectedValue(new Error('a'));
+    readHeldWorkItems.mockRejectedValue(new Error('b'));
+    getPresence.mockRejectedValue(new Error('c'));
+    fetchUnansweredDirected.mockRejectedValue(new Error('d'));
+    lastToolCallAtByOwner.mockRejectedValue(new Error('e'));
+    const out = await getAgentSignals('su-1');
+    expect(new Set(out.unavailableSignals)).toEqual(
+      new Set(['loop', 'currentClaim', 'context', 'unanswered', 'lastToolCall']),
+    );
   });
 });

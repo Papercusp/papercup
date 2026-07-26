@@ -29,8 +29,10 @@ export default function ChunkReloadPrompt() {
       if (shown) return;
       shown = true;
       // Honest copy per shell (WI-2902): only a dev build shell actually has a
-      // "newer build" (the watcher rewrote dist). In the packaged app the
-      // dynamic import just transiently failed to load — say that instead.
+      // "newer build" (a rebuild replaced dist underneath the page — usually a
+      // one-shot rebuild, NOT `vite build --watch`, which retains old chunks;
+      // see EI-18694489428714850). In the packaged app the dynamic import just
+      // transiently failed to load — say that instead.
       const devShell = inDevBuildWatcherShell();
       const title = devShell ? 'A newer build is available' : 'A component failed to load';
       const description = devShell
