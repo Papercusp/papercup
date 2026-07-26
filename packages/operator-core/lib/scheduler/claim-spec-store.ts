@@ -527,7 +527,10 @@ export async function getNextForBee(args: {
           source: record.source,
           specId: result.claimedUnder.specId,
           revision: result.claimedUnder.revision,
-          fleetSlug: record.fleetSlug,
+          // `record` is `ClaimSpecRecord | { source: 'default'; spec: ClaimSpec }` (the
+          // narrower literal on the ignoreStoredSpec:true branch, which carries no
+          // fleetSlug) — narrow with an `in` check rather than widening the literal's type.
+          fleetSlug: 'fleetSlug' in record ? record.fleetSlug : undefined,
           // Coarse proxy for "which SQL tier admitted this row" — getNextWorkItem does not
           // return a first-class tier number, and threading one through would be a much
           // larger change than this detector-only ticket scopes for. issue-family rows are

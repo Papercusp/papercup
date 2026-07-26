@@ -1,8 +1,60 @@
 diff --git a/node_modules/hyperdht/lib/connect.js b/node_modules/hyperdht/lib/connect.js
-index 86afb4e..4f0cef0 100644
+index 86afb4e..e2a984e 100644
 --- a/node_modules/hyperdht/lib/connect.js
 +++ b/node_modules/hyperdht/lib/connect.js
-@@ -477,6 +477,18 @@ async function connectThroughNode(c, address, socket) {
+@@ -217,17 +217,51 @@ async function holepunch(c, opts) {
+ 
+   const relayed = diffAddress(serverAddress, relayAddress)
+ 
++  // WI-5980: record WHICH BRANCH resolved the data-path address, and what
++  // candidates it had to choose from.
++  //
++  // `serverAddress` is the OBSERVED source address of an inbound packet (set in
++  // firewall(), :139-140) — it is never a declared listener, so when
++  // getFirstRemoteAddress() falls through to it we dial an address the peer may
++  // not own. getFirstRemoteAddress skips every BOGON candidate, so on an
++  // all-private-subnet deployment (e.g. a 10.0.0.0/8 test overlay) EVERY entry in
++  // addresses4 is skipped and the fallback is not an edge case — it is the only
++  // path. None of that is visible downstream unless the candidates AND their
++  // per-entry bogon verdicts are recorded, which is what this does.
++  //
++  // Non-enumerable + configurable, exactly like the WI-5863 fields below, so this
++  // cannot perturb any existing JSON.stringify/deepEqual of the stream object.
++  const es = c.encryptedSocket
++  const mark = (k, v) => {
++    if (es) Object.defineProperty(es, k, { value: v, configurable: true })
++  }
++  const candidates = Array.isArray(payload.addresses4) ? payload.addresses4 : []
++  mark('udxAddresses4', candidates.map(a => ({ host: a.host, port: a.port, bogon: isBogon(a.host) })))
++  mark('udxAddresses4AllBogon', candidates.length > 0 && candidates.every(a => isBogon(a.host)))
++  mark('udxRemoteHolepunchable', remoteHolepunchable)
++  mark('udxFirewall', payload.firewall)
++
+   if (payload.firewall === FIREWALL.OPEN || (relayed && !remoteHolepunchable)) {
+     const addr = getFirstRemoteAddress(payload.addresses4, serverAddress)
+     if (addr) {
+       const socket = c.dht.socket
+       c.dht.stats.punches.open++
++      // The UNVERIFIED fast path: onsocket() fires below with no round-trip
++      // confirmation that `addr` is reachable. `addr === serverAddress` is an
++      // exact identity test for "fell through to the observed-source fallback"
++      // (getFirstRemoteAddress returns that very object), which distinguishes
++      // "used a real advertised address" from "guessed at the packet source".
++      mark('udxPunchPath', 'open')
++      mark('udxAddressFromFallback', addr === serverAddress)
++      mark('udxPunchStats', { ...c.dht.stats.punches })
+       c.onsocket(socket, addr.port, addr.host)
+       return
+     }
+     // TODO: check all addresses also obvs
+   }
+ 
++  mark('udxPunchPath', 'holepunch')
++
+   const onabort = () => {
+     c.session.destroy()
+     maybeDestroyEncryptedSocket(c, HOLEPUNCH_ABORTED())
+@@ -477,6 +511,18 @@ async function connectThroughNode(c, address, socket) {
      payload
    }
  

@@ -133,6 +133,16 @@ jobs:
       - name: Check BORROWABLE catalog is in sync
         run: npm run gen:borrowable:check
 
+      # The CLAUDE.md bash→tool routing table is GENERATED from the audited
+      # substitution pairs — the SAME artifact that seeds the registry both
+      # PreToolUse hooks enforce (bash-to-tool-substitution-2026-07-26 P-019). The
+      # point is prose that cannot drift from the gate: a table that advertises a
+      # routing the hook does not apply (or omits one it does) teaches a false map
+      # to every agent, since this file is spliced into every agent prompt. Pure
+      # fs/module reads, no PG → GATING. Regenerate with `npm run gen:tool-routing`.
+      - name: Check CLAUDE.md tool-routing table is in sync
+        run: npm run gen:tool-routing:check
+
       # Starlight projection pages (starlight-projection-generators-2026-06-05, Brief 29)
       # are GENERATED from code/registry/PG into apps/operator-docs/.../reference/. The
       # LOW-CHURN two (blueprint catalog / role registry) are pure fs/code reads of

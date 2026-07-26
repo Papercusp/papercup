@@ -372,6 +372,46 @@ Full guide (acceptable file uses, two-axes model, topology):
 `/internal/docs/system/storage-policy` +
 [repo-conventions § database topology](/internal/docs/system/repo-conventions).
 
+## Reaching for bash? These reads already have a tool
+
+Bash is still ~41% of all tool use here, and the cause is routing, not capability:
+`dev:pg_query` is the one tool that had a routing row in this file, and it is the one
+tool with real adoption (~85%, against ~1% for equally-capable tools nobody was
+pointed at). So the table below is the lever — and it is **generated from the same
+registry the PreToolUse gate enforces**, so the advice you read here and the advice
+the hook gives you cannot disagree.
+
+Each row was earned, not asserted: a frozen sample of real commands from this box was
+replayed against the tool's actual argument envelope, and only pairs where every
+sampled command has a faithful tool expression appear here. Where the tool genuinely
+could not do the job the **tool was widened** (that is where `capability:read`'s
+`tail:` and `dev:pg_query`'s `describe:` came from) — and where it still cannot, the
+row says so and bash remains correct.
+
+<!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->
+
+> Generated from the audited substitution pairs — run `npm run gen:tool-routing`.
+> Every row below is backed by an `equivalent` verdict computed from a frozen
+> sample of real commands (`packages/operator-core/lib/bash-substitution/`), and
+> the PreToolUse gate enforces the SAME registry. Do not hand-edit: the source is
+> `pairs/*.ts`, and `npm run gen:tool-routing:check` fails the build on drift.
+
+| you want | use | not |
+|---|---|---|
+| a line RANGE of one file | `capability:read { file_path, offset, limit }` | `sed -n 'N,Mp' FILE` (offset=N, limit=M-N+1) |
+| the WHOLE of one file (HAND EDITED) | `capability:read { file_path }` | `cat FILE` (a heredoc or redirect is a WRITE — not this) |
+| the FIRST N lines of a file | `capability:read { file_path, limit: N }` | `head -n N FILE` (a `… \| head` pipe filter is not this) |
+| the LAST N lines of a file (a build / gate log tail) | `capability:read { file_path, tail: N }` | `tail -n N FILE` (`tail -f` streaming has no tool form — keep using bash) |
+| a one-off SELECT against the OPERATOR database | `dev:pg_query { sql }` (read-only txn + row cap + statement_timeout) | `psql -d papercusp -c "SELECT …"`. ⚠ ONLY the operator DB — a `$VAR`/other-database connection has NO tool form, so keep using psql for those rather than risk querying the WRONG database |
+| a table's columns / indexes / constraints | `dev:pg_query { describe: "schema.table" }` (a `*` glob lists relations) | `psql -c "\d table"` (`\df`/`\dn`/`\du` are other object classes — no tool form) |
+
+<!-- END GENERATED gen:tool-routing -->
+
+The tool call is also cheaper than the shell round-trip it replaces: a structured
+result, no subprocess, and no output to re-parse. When a row's caveat applies (a
+`tail -f` follow, a non-operator database, a `\du`), the bash form is the right
+answer — the gate will not fight you on those.
+
 ## Feature flags + PostHog
 
 Single source of truth for keys/defaults: `libs/flags/src/types.ts`; flip flags
