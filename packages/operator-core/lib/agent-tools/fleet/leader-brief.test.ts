@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeBenchSuggestion,
+  computeSpecStarvedFleetAlert,
   computeStrandedFleetAlert,
   projectMember,
   reconcilePsuHostLiveness,
@@ -280,5 +281,26 @@ describe('computeStrandedFleetAlert (EI-15055 — the whole-fleet-asleep-on-avai
 
   it('does NOT fire when there is no known unowned-critical supply (a genuinely drained fleet resting is fine)', () => {
     expect(computeStrandedFleetAlert({ totalLoad: 0, parkedCount: 7, unownedCriticalCount: 0 })).toBeUndefined();
+  });
+});
+
+describe('computeSpecStarvedFleetAlert (EI-18655873409999215 — the spec-matches-zero blind spot computeStrandedFleetAlert cannot see)', () => {
+  it('fires on the exact incident shape: zero fleet-wide load, spec matches 0 of a nonempty pool', () => {
+    const alert = computeSpecStarvedFleetAlert({ totalLoad: 0, specMatched: 0, poolSize: 1224 });
+    expect(alert).toBeDefined();
+    expect(alert?.reason).toMatch(/fleet-wide wip is 0/);
+    expect(alert?.reason).toMatch(/0 of 1224 claimable/);
+  });
+
+  it('does NOT fire when the fleet still holds live work (totalLoad > 0) — a per-bee override spec may still be pulling', () => {
+    expect(computeSpecStarvedFleetAlert({ totalLoad: 1, specMatched: 0, poolSize: 1224 })).toBeUndefined();
+  });
+
+  it('does NOT fire when the pool itself is empty — a genuinely drained harness is fine, not a spec bug', () => {
+    expect(computeSpecStarvedFleetAlert({ totalLoad: 0, specMatched: 0, poolSize: 0 })).toBeUndefined();
+  });
+
+  it('does NOT fire when the spec matches at least one row — this is not the starved-spec shape', () => {
+    expect(computeSpecStarvedFleetAlert({ totalLoad: 0, specMatched: 3, poolSize: 1224 })).toBeUndefined();
   });
 });

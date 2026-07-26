@@ -157,7 +157,12 @@ describe('routines:set', () => {
 
   it('accepts the queen (operator-equivalent, EI-2204)', async () => {
     sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *' }, active: false, next_fire_at: null }]);
-    const b = body(await setTool.handler({ name: 'git-sync', active: false } as never, { role: 'mug' } as never));
+    const b = body(
+      await setTool.handler(
+        { name: 'git-sync', active: false, reason: 'test pause' } as never,
+        { role: 'mug' } as never,
+      ),
+    );
     expect(b).toMatchObject({ ok: true, applied: true });
   });
 
@@ -282,15 +287,70 @@ describe('routines:set', () => {
 
   it('pauses a routine (active:false) through the harness', async () => {
     sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *' }, active: false, next_fire_at: null }]);
-    const b = body(await setTool.handler({ name: 'git-sync', active: false } as never, { role: 'operator' } as never));
+    const b = body(
+      await setTool.handler(
+        { name: 'git-sync', active: false, reason: 'manual deploy surgery' } as never,
+        { role: 'operator' } as never,
+      ),
+    );
     expect(b).toMatchObject({ ok: true, applied: true, routine: 'home-harness/git-sync', verify: { ok: true } });
   });
 
   it('dryRun does not apply', async () => {
     sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *' }, active: false, next_fire_at: null }]);
     const b = body(
-      await setTool.handler({ name: 'git-sync', active: false, dryRun: true } as never, { role: 'operator' } as never),
+      await setTool.handler(
+        { name: 'git-sync', active: false, dryRun: true, reason: 'manual deploy surgery' } as never,
+        { role: 'operator' } as never,
+      ),
     );
     expect(b).toMatchObject({ dryRun: true, applied: false });
+  });
+
+  // EI-18654017982759582: a pause with no recorded reason/owner is exactly how release-trigger
+  // silently stayed off for days (twice) — require a reason up front.
+  it('rejects active:false with no reason', async () => {
+    await expect(
+      setTool.handler({ name: 'release-trigger', active: false } as never, { role: 'operator' } as never),
+    ).rejects.toThrow(/requires a `reason`/);
+  });
+
+  it('persists metadata.pause { reason, pausedBy, pausedAtMs } on pause, preserving other metadata keys', async () => {
+    sqlMock.mockResolvedValue([
+      { trigger_config: { cron: '0 */10 * * * *' }, active: true, next_fire_at: null, metadata: { gate_health: { lastGreenAt: 123 } } },
+    ]);
+    const b = body(
+      await setTool.handler(
+        { name: 'release-trigger', active: false, reason: 'pausing for incident triage' } as never,
+        { role: 'operator', ownerId: 'su-test-1' } as never,
+      ),
+    );
+    expect(b).toMatchObject({ ok: true, applied: true });
+    const wrote = sqlMock.mock.calls.flat().find((v) => typeof v === 'string' && v.includes('"pause"')) as string;
+    const written = JSON.parse(wrote);
+    expect(written.pause).toMatchObject({ reason: 'pausing for incident triage', pausedBy: 'su-test-1' });
+    expect(typeof written.pause.pausedAtMs).toBe('number');
+    // The concurrently-written gate_health key from another writer survives untouched.
+    expect(written.gate_health).toEqual({ lastGreenAt: 123 });
+  });
+
+  it('moves metadata.pause to lastPause on resume (active:true)', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        trigger_config: { cron: '0 */10 * * * *' },
+        active: false,
+        next_fire_at: null,
+        metadata: { pause: { reason: 'r', pausedBy: 'su-x', pausedAtMs: 1 } },
+      },
+    ]);
+    const b = body(
+      await setTool.handler({ name: 'release-trigger', active: true } as never, { role: 'operator' } as never),
+    );
+    expect(b).toMatchObject({ ok: true, applied: true });
+    const wrote = sqlMock.mock.calls.flat().find((v) => typeof v === 'string' && v.includes('lastPause')) as string;
+    const written = JSON.parse(wrote);
+    expect(written.pause).toBeUndefined();
+    expect(written.lastPause).toMatchObject({ reason: 'r', pausedBy: 'su-x' });
+    expect(typeof written.lastPause.resumedAtMs).toBe('number');
   });
 });

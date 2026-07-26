@@ -116,12 +116,25 @@ describe('wireOutboxForHarness (Stage 5)', () => {
   });
 
   describe('WI-1942: bounded retry on a BAILED backfill', () => {
-    // NOTE: these use REAL timers with a tiny injected `backfillRetryMs`, not
-    // `vi.useFakeTimers()`. `wireOutboxForHarness` also calls
-    // `buildHiveRekeyBootDeps` → `getFlag`, which bounds its own (real) network
-    // fallback with a real `setTimeout`-based guard — faking global timers here
-    // would fake THAT guard too and turn its bounded fallback into a genuine
-    // hang. A short real wait sidesteps the interaction entirely.
+    // NOTE: these use REAL timers with a tiny injected `backfillRetryMs`, not a
+    // bare `vi.useFakeTimers()`. The reason (EI-18121952237624498, corrected by
+    // experiment — an earlier version of this comment blamed `getFlag`, which is
+    // measurably NOT the cause): `wireOutboxForHarness` calls
+    // `buildHiveRekeyBootDeps` → `potHomeSlugForHarness` → `loadHarnessRegistry`
+    // → `readOperatorState`, i.e. a real PG read. Bare fake timers freeze the
+    // postgres driver's OWN internal timers, so that query loses its bound and
+    // never settles — a genuine unbounded hang, not a slow test.
+    //
+    // `getFlag` is innocent here: a unit-test process installs no PostHog client
+    // and no flag override store, so `getFlag` short-circuits to FLAG_DEFAULTS
+    // (measured: 0ms on a cold cache under fake timers) and never reaches its
+    // `setTimeout`-based backend guard at all.
+    //
+    // A short real wait sidesteps the interaction entirely. If you do need fake
+    // timers around a code path that touches PG, use
+    // `vi.useFakeTimers({ shouldAdvanceTime: true })` — it lets real I/O make
+    // progress while still honouring `vi.advanceTimersByTimeAsync`. See
+    // /internal/docs/agent-insights/fake-timers-freeze-real-io-bounds.
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
     it('arms a bounded retry timer on a bail, and it self-stops once a re-attempt stops bailing', async () => {

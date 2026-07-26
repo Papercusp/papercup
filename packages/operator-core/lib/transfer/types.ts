@@ -70,6 +70,8 @@ export interface TransferLesson {
   memoryId: string | null;
   packCandidateId: string | null;
   signalOrigin: SignalOrigin;
+  /** The pot the lesson belongs to (P-002 pot-scope-all-learnings); null = pre-pot legacy or context-less. */
+  potSlug: string | null;
   createdAt: string;
   updatedAt: string;
 }

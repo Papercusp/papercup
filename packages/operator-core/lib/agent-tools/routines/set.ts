@@ -21,6 +21,7 @@ interface RoutineSnap {
   active: boolean;
   nextFireAtIso: string | null;
   groupSlug: string | null;
+  metadata: Record<string, unknown>;
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -89,6 +90,14 @@ export default defineTool({
       .describe(
         'Assign this routine to a routine group (WI-5018 — metadata + management ONLY, never fires anything). Pass a slug (e.g. "health") to assign — the group is auto-created in harness_shared.routine_groups with blank metadata if it does not exist yet (fill it in via routines:group-set). Pass null to clear (ungroup).',
       ),
+    reason: z
+      .string()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'REQUIRED when pausing (active:false) — why. Persisted durably as metadata.pause { reason, pausedBy, pausedAtMs } (EI-18654017982759582: a routine paused during an incident with no reason/owner recorded has TWICE stayed silently paused for days — 2026-06-18, then ~4 days 2026-07-21→25 — because nothing durable said WHO paused it or WHY, so a responder could not tell a stuck bug from a deliberate hold). Ignored (but harmless) when resuming (active:true) or when active is unset.',
+      ),
     dryRun: z.boolean().optional(),
   }),
   async handler(args, ctx) {
@@ -108,14 +117,22 @@ export default defineTool({
     if (args.cron !== undefined && !computeNextFireAt(args.cron, new Date())) {
       throw new Error(`invalid cron expression: ${args.cron}`);
     }
+    // EI-18654017982759582: a pause with no recorded reason/owner is how this recurs — require
+    // one up front (a typo'd/omitted reason must not silently produce an unattributed freeze,
+    // same "validate before touching anything" discipline as the cron check above).
+    if (args.active === false && !args.reason) {
+      throw new Error(
+        'routines:set { active: false } (pausing) requires a `reason` — an unattributed pause is exactly the class of bug this guards against (a routine paused during an incident with no recorded reason/owner has silently stayed off for DAYS, twice). Pass a short reason (e.g. "pausing during manual deploy-checkout surgery").',
+      );
+    }
 
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
     const slug = args.installSlug ?? operatorHomeHarnessSlug();
 
     const readSnap = async (): Promise<RoutineSnap> => {
-      const rows = await sql<Array<{ trigger_config: Record<string, unknown> | null; payload_template: Record<string, unknown> | null; active: boolean; next_fire_at: Date | null; group_slug: string | null }>>`
-        SELECT trigger_config, payload_template, active, next_fire_at, group_slug
+      const rows = await sql<Array<{ trigger_config: Record<string, unknown> | null; payload_template: Record<string, unknown> | null; active: boolean; next_fire_at: Date | null; group_slug: string | null; metadata: Record<string, unknown> | null }>>`
+        SELECT trigger_config, payload_template, active, next_fire_at, group_slug, metadata
           FROM harness_shared.routines
          WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${args.name}
          LIMIT 1`;
@@ -128,6 +145,7 @@ export default defineTool({
         active: r.active,
         nextFireAtIso: nextIso,
         groupSlug: r.group_slug ?? null,
+        metadata: r.metadata ?? {},
       };
     };
 
@@ -148,6 +166,7 @@ export default defineTool({
                active = ${snap.active},
                next_fire_at = ${snap.nextFireAtIso}::timestamptz,
                group_slug = ${snap.groupSlug},
+               metadata = ${JSON.stringify(snap.metadata)}::text::jsonb,
                updated_at = now()
          WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${args.name}`;
     };
@@ -177,12 +196,30 @@ export default defineTool({
             args.payloadTemplate !== undefined
               ? deepMergePlain(prev.payloadTemplate, args.payloadTemplate)
               : prev.payloadTemplate;
+          // EI-18654017982759582: persist WHO/WHY/WHEN at pause time, and clear it on resume
+          // (moved to lastPause for audit history) — so a responder (or a watchdog) never has
+          // to reverse-engineer the pause from tool_invocations telemetry. Other metadata keys
+          // (e.g. gate_health, written by the green-checkpoint tick / stall watchdogs) are
+          // preserved untouched via the spread — only the `pause`/`lastPause` keys are patched.
+          const metadata = { ...prev.metadata };
+          const nextActive = args.active ?? prev.active;
+          if (args.active === false) {
+            metadata.pause = {
+              reason: args.reason,
+              pausedBy: ctx.ownerId ?? `role:${ctx.role}`,
+              pausedAtMs: Date.now(),
+            };
+          } else if (args.active === true && prev.metadata.pause) {
+            metadata.lastPause = { ...(prev.metadata.pause as Record<string, unknown>), resumedAtMs: Date.now() };
+            delete metadata.pause;
+          }
           const next: RoutineSnap = {
             triggerConfig,
             payloadTemplate,
-            active: args.active ?? prev.active,
+            active: nextActive,
             nextFireAtIso: nextIso,
             groupSlug: args.group !== undefined ? args.group : prev.groupSlug,
+            metadata,
           };
           await writeSnap(next);
           return next;

@@ -187,11 +187,36 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // `title` — WI-3268: keyword exclusion (glob/contains/!=) so a constrained fleet can
   // durably filter out a class of work (e.g. `*p2p*`) that carries no `tags` data.
   title: { col: (sql) => sql`title`, kind: 'scalar-text' },
-  plan: { col: (sql) => sql`source_plan_slug`, kind: 'scalar-text' },
+  // EI-18654360178824151: COALESCE the physical column with the SAME payload-derivation
+  // fallback `planSlugOfWorkItem()` (claim-spec-match.ts) uses for the issue-family JS
+  // evaluator — the two admission evaluators (this SQL compiler for feature-family items,
+  // the JS evaluator for everything else) must resolve `plan`/`tags` from the SAME logical
+  // source, or the SAME spec admits an item on one family's path and refuses it on the
+  // other's (confirmed live: WI-5781 — plan linkage lived only in `payload.plan_item.*`,
+  // the column was NULL, the JS-side issue-family path admitted it, the SQL-side
+  // feature-family path did not). Mirrors `planSlugOfWorkItem`'s precedence exactly:
+  // `payload.plan_item` (or `payload.planItem`) `.plan_slug`/`.slug`, then top-level
+  // `payload.source_plan_slug` — column first because it's indexed (hfc_source_plan_slug_idx)
+  // and authoritative whenever it's set; the payload legs are a fallback for items whose
+  // plan linkage was only ever written to payload.
+  plan: {
+    col: (sql) => sql`COALESCE(
+      source_plan_slug,
+      payload->'plan_item'->>'plan_slug',
+      payload->'plan_item'->>'slug',
+      payload->'planItem'->>'plan_slug',
+      payload->'planItem'->>'slug',
+      payload->>'source_plan_slug'
+    )`,
+    kind: 'scalar-text',
+  },
   plan_item: { col: (sql) => sql`source_plan_item_ids`, kind: 'text-array' },
   // Not first-class columns — projected out of payload jsonb (no schema change).
   risk_tier: { col: (sql) => sql`(payload->>'risk_tier')`, kind: 'scalar-text' },
-  tags: { col: (sql) => sql`tags`, kind: 'json-array' },
+  // EI-18654360178824151: same single-source fix as `plan` above — mirrors
+  // `staticTagsOfWorkItem()`'s `payload.tags` fallback so a tags-filtered spec agrees
+  // across both admission evaluators.
+  tags: { col: (sql) => sql`COALESCE(tags, payload->'tags')`, kind: 'json-array' },
   paths: { col: (sql) => sql`payload->'paths'`, kind: 'json-array' },
 };
 

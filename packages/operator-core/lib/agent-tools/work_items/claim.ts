@@ -27,6 +27,7 @@ import {
   notifyFleetScopeRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
+import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 interface ClaimItem {
@@ -162,6 +163,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
       workItemId: it.id,
       workspaceId: identity.workspaceId ?? undefined,
     }).catch(() => null);
+    // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
+    // itself cites a background job/task as evidence — rather than growing the EI-529 text
+    // above unconditionally (which would fire on every checkpointed claim, background job or
+    // not). See detectBgJobCheckpointClaim for why this can't be a live PID check here.
+    const bgJobWarning = hint ? detectBgJobCheckpointClaim(hint.checkpoint) : { detected: false };
     return hint
       ? {
           ok: true,
@@ -171,6 +177,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
           checkpointAgeMs: hint.checkpointAgeMs,
           checkpointWarning:
             'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
+          ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
         }
       : { ok: true, id: it.id, workItem, ...(terminalWarning ? { terminalWarning } : {}) };

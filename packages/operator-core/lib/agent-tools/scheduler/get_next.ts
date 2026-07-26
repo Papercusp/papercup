@@ -294,13 +294,13 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Self-select via your claim SPEC: atomically claim the next eligible work-item under global floors + spec.view.filter, ordered by spec.rank, SKIP LOCKED. Outside a fleet, no spec uses default ordering with a warning. A fleet MEMBER with no matching/inherited spec fails closed with windDown:true; it never falls through to generic backlog. Returns the claimed item + selecting spec revision, or a self-describing miss.',
+    'Self-select via your claim SPEC: atomically claims the next eligible item under global floors + spec.view.filter, ordered by spec.rank, SKIP LOCKED. Outside a fleet, no spec uses default ordering (warned). A fleet MEMBER with no matching/inherited spec fails closed (windDown:true) — never falls through to generic backlog. Returns the claimed item + selecting spec revision, or a self-describing miss.',
   guidance: {
-    when: 'You are a SELF-PULLING agent picking up your next item — a coding-pot cup (role="cup"), or an su fleet MEMBER pulling its lane (su-loop-capability-parity). Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your Mug\'s / fleet leader\'s judgment expressed as your claim spec; the pickup is yours. A claim-spec self-puller is a cup or an su fleet member, NOT a coding-factory pipeline role (see notWhen).',
+    when: 'You are a SELF-PULLING agent picking up your next item — a coding-pot cup (role="cup") or an su fleet MEMBER pulling its lane. Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your Mug\'s/leader\'s judgment via your claim spec; pickup is yours. A claim-spec self-puller is a cup or su fleet member, NOT a coding-factory pipeline role (see notWhen).',
     notWhen:
-      'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull. Claiming a SPECIFIC item by id → work_items:claim. Plain oldest-first self-select is only for non-fleet callers → work_items:claim_next.',
+      'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): PUSHED a FEATURE_ID by the orchestrator spine, you do NOT self-pull. Claiming a SPECIFIC item by id → work_items:claim. Plain oldest-first self-select (non-fleet only) → work_items:claim_next.',
     chaining:
-      'scheduler:get_next → work_items:set_state → work_items:release. Your leader re-steers via scheduler:set_claim_spec. A non-fleet MISS may park on one work-item:claimable event. A fleet scoped miss returns windDown:true: checkpoint/release, loop:end, and report to the leader; resume only after a spec revision or claimable event. windDown:false with excludedBreakdown.claimable>0 is a claim-path bug, NOT a drain — keep working via claim-by-id.',
+      'scheduler:get_next → work_items:set_state → work_items:release. Leader re-steers via scheduler:set_claim_spec. A non-fleet MISS may park on a work-item:claimable event. A fleet scoped miss returns windDown:true: checkpoint/release, loop:end, report to the leader; resume after a spec revision or claimable event. windDown:false + excludedBreakdown.claimable>0 is a claim-path bug, not a drain.',
     seeAlso: [
       'work_items:claimable (how many / which items are claimable, WITHOUT claiming — same oracle, no side-effect)',
       'work_items:claim_next (plain oldest-first self-select, no spec)',
@@ -484,6 +484,16 @@ export default defineTool({
         .then((m) => m.getClaimTimeCheckpointHint({ harness: wi.harness ?? null, workItemId: wi.id, workspaceId: ident.workspaceId ?? undefined }))
         .catch(() => null);
     }
+    // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
+    // itself cites a background job/task as evidence — rather than growing the EI-529
+    // checkpointWarning below unconditionally (which would fire on every checkpointed claim,
+    // background job or not). See checkpoint-bg-job-claim.ts for why this can't be a live PID
+    // check here (a claimant may be on a different host/process than the checkpoint's writer).
+    const bgJobWarning = checkpointHint
+      ? await import('../../checkpoint-bg-job-claim')
+          .then((m) => m.detectBgJobCheckpointClaim(checkpointHint!.checkpoint))
+          .catch(() => ({ detected: false as const }))
+      : { detected: false as const };
     // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
     // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
     // for claimable work are mutually exclusive, and a pre-claim await left armed (e.g. this claim
@@ -596,6 +606,7 @@ export default defineTool({
                         checkpointAgeMs: checkpointHint.checkpointAgeMs,
                         checkpointWarning:
                           'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
+                        ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
                       }
                     : {}),
                 }

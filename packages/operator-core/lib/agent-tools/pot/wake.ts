@@ -19,6 +19,19 @@ import {
 import { getPotStarted } from '../../pot/started';
 import { getOrgPg } from '@papercusp/db-org';
 import { softText, clampText, LIMITS } from '../limits';
+import { getOwnerSteering, isPausedNow } from '../../owner-steering';
+
+/**
+ * Placement-DEMAND trigger tools (EI-18654946296495054) — the subset of the
+ * always-armed default demand subscriptions (wake-defaults.ts) whose entire
+ * purpose is "wake the Mug so she can place new work". When the pot is
+ * STARTED but owner steering has `pauseNewWork` (or an un-expired
+ * `pausedUntil`), `pot/survey.ts`'s frontier is hard-emptied by design — so an
+ * event wake from one of these triggers is GUARANTEED to produce zero
+ * placements. `coord:escalate` is deliberately excluded: it wakes the Mug for
+ * human-attention, not placement, and must keep firing even while paused.
+ */
+const PLACEMENT_DEMAND_WAKE_TRIGGERS = new Set(['work_items:create', 'plans:start']);
 
 async function hasRecentOpenMugWake(workspaceId: string, installSlug: string, maxAgeMs = 10 * 60_000): Promise<boolean> {
   try {
@@ -59,6 +72,7 @@ export default defineTool({
   args: z.object({
     reason: softText(LIMITS.ANNOTATION).optional().describe('Why this wake fired — becomes the kickoff context. Auto-truncated to 2000 chars if longer.'),
     source: z.enum(['user', 'event', 'manual']).optional().describe("Provenance label (event-wake rules pass 'event')."),
+    trigger: z.string().max(200).optional().describe("The matched event-reaction trigger tool (e.g. 'work_items:create') when source:'event' — used to gate placement-demand wakes on owner steering (EI-18654946296495054). Omitted ⇒ no steering gate is applied (back-compat for a caller that doesn't know its trigger)."),
     harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
     force: z.boolean().optional().describe('Bypass the wake-floor debounce.'),
   }),
@@ -94,6 +108,35 @@ export default defineTool({
           },
         ],
       };
+    }
+
+    // EI-18654946296495054 — the started bit is not the only pause concept.
+    // A pot can be STARTED yet owner-steering-paused (`pauseNewWork` /
+    // un-expired `pausedUntil`), in which case survey.ts hard-empties the
+    // placement frontier: a placement-demand event wake (work_items:create,
+    // plans:start) is then structurally incapable of placing anything. Skip
+    // those specifically — with a DISTINCT `skipped` reason so it's never
+    // confused with `pot-paused` in telemetry — while every other event wake
+    // (pot:set-steering, coord:escalate, anything not in the demand set)
+    // keeps firing, same as an explicit user/manual wake. Reads the identical
+    // `isPausedNow` predicate the survey pause-enforcement uses, so the two
+    // gates cannot drift apart again.
+    if (
+      args.source === 'event' &&
+      args.trigger &&
+      PLACEMENT_DEMAND_WAKE_TRIGGERS.has(args.trigger)
+    ) {
+      const steering = await getOwnerSteering(workspaceId, installSlug).catch(() => null);
+      if (steering && isPausedNow(steering, Date.now())) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ ok: true, fired: false, skipped: 'steering-paused' }),
+            },
+          ],
+        };
+      }
     }
 
     // Owner cadence-floor (mug-steering-panel P-006): the event-burst debounce

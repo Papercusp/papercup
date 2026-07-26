@@ -71,6 +71,8 @@ export interface WhyChainResult extends RuntimeDiagnostic<
   /** One causal sentence per stage, joined into the full chain. */
   summary: string;
   recentFailingFiles: string[];
+  /** EI-17603: see `PipelineHealth.gateVerdictDisjointFromLedger` — same check, same meaning. */
+  gateVerdictDisjointFromLedger?: boolean;
 }
 
 /**
@@ -170,6 +172,106 @@ export function gateLabel(snap: GitPipelineSnapshot): GateLabel {
  */
 export function namedFailures(snap: GitPipelineSnapshot, recentFiles: string[]): string[] {
   return snap.gate.failingTests?.length ? snap.gate.failingTests : recentFiles;
+}
+
+/** A package/workspace name (`@papercusp/operator-core`) or a build/lint step sentinel
+ *  (`lint:tsc`, ...) — never a real test file, and must never be reported or dispatched
+ *  against as one (EI-17603: two of six names in a real misdirected verdict were exactly this). */
+function isStepShaped(entry: string): boolean {
+  return /^@[^/]+\/[^/]+$/.test(entry) || entry.startsWith('lint:');
+}
+
+/** EI-17603: split a gate's named failure signature into real file paths vs package/step
+ *  sentinels, so a package name can never masquerade as "the file to go fix" and so the
+ *  file-shaped subset alone can be checked against the ledger below. Pure, order-preserving. */
+export function splitFailingSignature(entries: string[]): { failingFiles: string[]; failingSteps: string[] } {
+  const failingFiles: string[] = [];
+  const failingSteps: string[] = [];
+  for (const e of entries) (isStepShaped(e) ? failingSteps : failingFiles).push(e);
+  return { failingFiles, failingSteps };
+}
+
+/** Distinct file(s) recorded fail/error in `harness_shared.test_runs` for the EXACT commit a
+ *  gate verdict was recorded against (`gate_health.observedCandidate`, a short/12-char sha).
+ *  Narrow and cheap (one indexed `commit_sha LIKE` query) — only ever called when the gate
+ *  already named something file-shaped, so this never adds IO to a green (or unattributed)
+ *  gate. Fail-soft: any error degrades to `[]` (unable to verify), never a throw. */
+export async function ledgerFilesForCandidate(candidateShort: string | null, deps: WhyChainDeps = {}): Promise<string[]> {
+  if (!candidateShort || candidateShort.length < 7) return [];
+  let sql: SqlLike;
+  try {
+    if (deps.sql) {
+      sql = deps.sql;
+    } else {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      sql = getOrgPg().sql as unknown as SqlLike;
+    }
+  } catch {
+    return [];
+  }
+  const harnessFilter = deps.harnessSlug ?? null;
+  const workspaceFilter = deps.harnessSlug ? null : deps.workspaceId ?? null;
+  try {
+    const rows = (await sql`
+      SELECT DISTINCT file_path
+        FROM harness_shared.test_runs
+       WHERE commit_sha LIKE ${candidateShort + '%'}
+         AND status IN ('fail', 'error')
+         AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
+         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+         AND (${workspaceFilter}::text IS NULL OR workspace_id = ${workspaceFilter})
+       LIMIT 50
+    `) as unknown as Array<{ file_path: string }>;
+    return rows.map((r) => r.file_path);
+  } catch {
+    return []; // best-effort — a query failure degrades to "unable to verify", not a throw.
+  }
+}
+
+/** Pure verdict: does the gate's own file-shaped `failingTests` hold up against first-hand
+ *  ledger evidence for the SAME commit? `unverifiable` (no ledger rows at all for that commit —
+ *  an old blob predating `observedCandidate`, a writer that never tagged commit_sha, or the run
+ *  simply hasn't landed in the ledger yet) deliberately leaves the gate's own record untouched:
+ *  absence of ledger evidence is not evidence the record is wrong. Only a genuine, non-empty
+ *  DISJOINT set (ledger has fail/error rows for this commit, and NONE match the gate's names) is
+ *  distrusted — that is the live-observed misdirection (EI-17603): the gate named 4 files that
+ *  all passed while 3 different files were the real, ledger-recorded reds for that same commit. */
+export function verifyGateFailingFiles(failingFiles: string[], ledgerFiles: string[]): 'confirmed' | 'disjoint' | 'unverifiable' {
+  if (failingFiles.length === 0) return 'confirmed';
+  if (ledgerFiles.length === 0) return 'unverifiable';
+  const ledgerSet = new Set(ledgerFiles);
+  return failingFiles.some((f) => ledgerSet.has(f)) ? 'confirmed' : 'disjoint';
+}
+
+/**
+ * EI-17603 (WI-4533 follow-up) — cross-check the gate's own named `failingTests` against the
+ * test-run ledger for the EXACT commit under verdict, before any consumer trusts it as "the
+ * tests to go fix". Observed live 2026-07-25: a real verdict named 6 "failures" (4 test files —
+ * all PASSING both standalone and per the ledger — plus 2 build-sentinel package names) while
+ * `harness_shared.test_runs` held 3 DIFFERENT actually-failing files for that exact commit, never
+ * named. The report had fully decoupled from the system it describes.
+ *
+ * When disjoint: clears `snap.gate.failingTests` on a shallow-cloned snapshot (never mutates the
+ * input) so `namedFailures`/`gateStage` naturally fall back to a proxy — the caller passes the
+ * already-fetched `ledgerFiles` for that purpose, which is both cheaper (no second query) and
+ * more precise (scoped to the exact commit) than the generic 2h scan. Skips the query entirely
+ * — zero added IO — unless the gate already named something file-shaped AND we know which commit
+ * it pertains to; a stale verdict (WI-4489) is out of scope here (it already names nobody).
+ */
+export async function verifyGateVerdict(
+  snap: GitPipelineSnapshot,
+  deps: WhyChainDeps = {},
+): Promise<{ snap: GitPipelineSnapshot; disjoint: boolean; ledgerFiles: string[] }> {
+  if (snap.gate.verdictStale) return { snap, disjoint: false, ledgerFiles: [] };
+  const { failingFiles } = splitFailingSignature(snap.gate.failingTests ?? []);
+  if (failingFiles.length === 0 || !snap.gate.observedCandidate) {
+    return { snap, disjoint: false, ledgerFiles: [] };
+  }
+  const ledgerFiles = await ledgerFilesForCandidate(snap.gate.observedCandidate, deps);
+  if (verifyGateFailingFiles(failingFiles, ledgerFiles) !== 'disjoint') {
+    return { snap, disjoint: false, ledgerFiles };
+  }
+  return { snap: { ...snap, gate: { ...snap.gate, failingTests: [] } }, disjoint: true, ledgerFiles };
 }
 
 function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainStage {
@@ -456,27 +558,46 @@ export interface PipelineHealth {
   /** Commits on the green pin not yet live on :3070. */
   deployedBehindGreenPin: number | null;
   recentFailingFiles: string[];
+  /** EI-17603: the gate's OWN `failingTests` (checked against the ledger for the exact commit
+   *  it was recorded against) was CONTRADICTED — none of its named files have a matching
+   *  fail/error row in `harness_shared.test_runs` for that commit. `recentFailingFiles` above is
+   *  then ledger-derived instead of the (distrusted) checkpoint record. Present only when true. */
+  gateVerdictDisjointFromLedger?: boolean;
   /** The upstream-most non-ok leg of THIS chain (gate, then deploy) — null when both are ok. */
   rootCause: WhyChainStage | null;
+}
+
+/** Appends the disjoint-verdict disclosure to a gate stage's reason. A post-hoc wrap (rather
+ *  than threading a flag through `gateStage` itself) so that function's signature and its
+ *  existing unit tests stay untouched by this EI-17603 addition. */
+function withDisjointNote(stage: WhyChainStage, disjoint: boolean): WhyChainStage {
+  if (!disjoint || stage.stage !== 'gate') return stage;
+  return {
+    ...stage,
+    reason:
+      `${stage.reason} [the checkpoint's OWN failingTests record for this commit was ` +
+      `CONTRADICTED by the test ledger (harness_shared.test_runs) — the file(s) named above are ` +
+      `ledger-derived, not the checkpoint's (wrong) list; see EI-17603]`,
+  };
 }
 
 export async function computePipelineHealth(
   deps: WhyChainDeps & { slug?: string } = {},
 ): Promise<PipelineHealth> {
   const loadSnapshot = deps.loadSnapshot ?? (() => gitPipelineSnapshot(deps.slug));
-  const snap = await loadSnapshot();
+  const rawSnap = await loadSnapshot();
   const now = Date.now();
 
   // No green-checkpoint routine for this harness ⇒ there IS no gate to report on. Say so; a
   // zero-red `gate_health` on a harness that never runs a checkpoint would otherwise render as a
   // confident "green" (the snapshot defaults consecutiveReds to 0).
-  if (!snap.routines.greenCheckpoint) {
+  if (!rawSnap.routines.greenCheckpoint) {
     const unknown: WhyChainStage = { stage: 'gate', status: 'degraded', reason: 'no green-checkpoint routine for this harness — gate state unknown' };
     return {
       generatedAtMs: now,
       known: false,
       gate: unknown,
-      deploy: deployStage(snap),
+      deploy: deployStage(rawSnap),
       gateLabel: 'green',
       consecutiveReds: 0,
       lastGreenAtMs: null,
@@ -488,6 +609,11 @@ export async function computePipelineHealth(
     };
   }
 
+  // EI-17603: cross-check the gate's own `failingTests` against the ledger for the EXACT commit
+  // it was recorded against, BEFORE anything below trusts it. Zero added IO unless the gate
+  // already named something file-shaped and we know which commit — see `verifyGateVerdict`.
+  const { snap, disjoint, ledgerFiles } = await verifyGateVerdict(rawSnap, deps);
+
   // The failing-files query is the only extra IO, and it is skipped TWICE over: a GREEN gate never
   // pays for it, and neither does a red gate that already NAMED its own failures (the common case
   // — see namedFailures). The proxy scan is the last resort, not the first read.
@@ -496,8 +622,10 @@ export async function computePipelineHealth(
   // UNDEFINED, and `undefined === 0` is false — which would have silently skipped the fallback
   // scan for exactly the old gates that most need it.
   const needsProxy = provisional.status !== 'ok' && (snap.gate.failingTests ?? []).length === 0;
-  const proxyFiles = needsProxy ? await recentFailingFiles(deps) : [];
-  const gate = proxyFiles.length ? gateStage(snap, proxyFiles) : provisional;
+  // Disjoint ⇒ we already have the precise, commit-scoped ledger files; reuse them instead of
+  // paying for a second (broader, less precise) 2h scan.
+  const proxyFiles = needsProxy ? (disjoint ? ledgerFiles : await recentFailingFiles(deps)) : [];
+  const gate = withDisjointNote(proxyFiles.length ? gateStage(snap, proxyFiles) : provisional, disjoint);
   const deploy = deployStage(snap);
   const failingFiles = namedFailures(snap, proxyFiles);
 
@@ -513,6 +641,7 @@ export async function computePipelineHealth(
     greenPinBehindStaging: snap.deploy.greenPinBehindStaging ?? null,
     deployedBehindGreenPin: snap.deploy.deployedBehindGreenPin ?? null,
     recentFailingFiles: failingFiles,
+    ...(disjoint ? { gateVerdictDisjointFromLedger: true } : {}),
     rootCause: [gate, deploy].find((s) => s.status !== 'ok') ?? null,
   };
 }
@@ -523,15 +652,20 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
   const loadAccounts = deps.loadAccounts ?? ((ws?: string) => accountStatus(ws));
   const loadAdmission = deps.loadAdmission ?? loadAdmissionDefault;
 
-  const [snap, accounts, admission, failingFiles] = await Promise.all([
+  const [rawSnap, accounts, admission, broadProxyFiles] = await Promise.all([
     loadSnapshot(),
     loadAccounts(deps.workspaceId).catch(() => [] as AccountStatusRow[]),
     loadAdmission().catch(() => null),
     recentFailingFiles(deps),
   ]);
 
+  // EI-17603: same cross-check as computePipelineHealth, applied here too so `dev:why` and
+  // `coord:orient` can never drift into disagreeing about which files are actually red.
+  const { snap, disjoint, ledgerFiles } = await verifyGateVerdict(rawSnap, deps);
+  const failingFiles = disjoint ? ledgerFiles : broadProxyFiles;
+
   const stages: WhyChainStage[] = [
-    gateStage(snap, failingFiles),
+    withDisjointNote(gateStage(snap, failingFiles), disjoint),
     deployStage(snap),
     admissionStage(admission),
     poolStage(accounts),
@@ -563,6 +697,7 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
     stages,
     summary,
     recentFailingFiles: failingFiles,
+    ...(disjoint ? { gateVerdictDisjointFromLedger: true } : {}),
     ...diagnostic,
   };
 }

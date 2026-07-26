@@ -212,6 +212,61 @@ export async function findConvertedWorkItemByStamp(
 }
 
 /**
+ * Find every work-item that COVERS this plan item via the `relates` coverage edge
+ * (written by work_items:create's `plan_item`/`targetPlanItem` — see
+ * _create-core.ts §"Forward edge") — i.e. any work-item that ADDRESSES this plan
+ * item, whether or not it is the primary conversion (`implements`) record. A plan
+ * item can accumulate several coverage edges over its life (the original
+ * conversion, plus any residual/follow-up split off later).
+ *
+ * Used by the residual-coverage guard (EI-18655063958515097 — "a residual split
+ * off a closing plan item silently leaves the lane"): before a plan item is
+ * allowed to read as `done`, check whether any linked coverage work-item is still
+ * non-terminal — if the parent closes anyway, the plan silently reads as fully
+ * satisfied while real, tracked work remains open. Order is newest-linked-first;
+ * callers typically only care whether ANY non-terminal item exists.
+ */
+export async function findCoverageWorkItems(planSlug: string, itemId: string): Promise<WorkItem[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ src_kind: string; src_ref: string }[]>`
+    SELECT src_kind, src_ref
+      FROM harness_shared.coord_links
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND rel = 'relates'
+       AND dst_kind = ${PLAN_ITEM_KIND}
+       AND dst_ref = ${planItemRef(planSlug, itemId)}
+     ORDER BY created_at DESC`;
+  const out: WorkItem[] = [];
+  for (const r of rows) {
+    if (r.src_kind === 'issue') {
+      const wi = await getWorkItem(r.src_ref);
+      if (wi) out.push(wi);
+    } else if (r.src_kind === 'feature') {
+      const i = r.src_ref.indexOf('#');
+      if (i > 0) {
+        const wi = await getWorkItem(r.src_ref.slice(i + 1), r.src_ref.slice(0, i));
+        if (wi) out.push(wi);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Heuristic (EI-18655063958515097): does this closing note/rationale text read like
+ * an unmet acceptance criterion was split off into a follow-up, rather than the item
+ * being genuinely fully done? Mirrors the same intentionally-permissive-false-positive
+ * design as `codeSmellsLikeCode` (work_items/create.ts) — a false positive here is
+ * harmless (an advisory nudge the closer can ignore); a false negative silently lets
+ * the exact bug this guards recur. Pure so it's unit-testable without the lock/PG path.
+ */
+export function looksLikeResidualClosure(text: string): boolean {
+  return /\b(split[- ]?off|carved[- ]?off|residual|deferred|not (?:fully |entirely )?met|partial(?:ly)? (?:done|complete|addressed)|left (?:open|unresolved|unmet)|unmet acceptance|acceptance (?:criteri\w*|ask)\b[^.]*(?:not met|unmet))\b/i.test(
+    text,
+  );
+}
+
+/**
  * Every plan-item ref ('<plan>#<item>') that has a work_item `implements` edge —
  * i.e. has been CONVERTED (picked up for execution). The decision↔execution
  * boundary's queryable truth (queen-autonomy-policy B-14 / P-104 · D-013): the

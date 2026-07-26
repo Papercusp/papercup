@@ -46,6 +46,7 @@ function mapLesson(r: Row): TransferLesson {
     memoryId: strOrNull(r.memory_id),
     packCandidateId: strOrNull(r.pack_candidate_id),
     signalOrigin: str(r.signal_origin) as SignalOrigin,
+    potSlug: strOrNull(r.pot_slug),
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
   };

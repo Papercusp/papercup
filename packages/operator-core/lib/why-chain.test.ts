@@ -3,6 +3,10 @@ import {
   computePipelineHealth,
   computeWhyChain,
   recentFailingFiles,
+  splitFailingSignature,
+  verifyGateFailingFiles,
+  ledgerFilesForCandidate,
+  verifyGateVerdict,
   type AdmissionSnapshotLite,
   type WhyChainDeps,
 } from './why-chain';
@@ -501,5 +505,222 @@ describe('WI-4533 — namedFailures: the gate\'s own verdict beats the time-wind
     const res = await computeWhyChain(deps({ snap: s }));
     expect(res.stages[0].reason).toContain('STALE');
     expect(res.stages[0].reason).not.toContain('innocent');
+  });
+});
+
+/**
+ * EI-17603 — the checkpoint's OWN `failingTests` can be disjoint from the ledger for the exact
+ * commit it was recorded against: named files that all pass, while the ledger's real reds for
+ * that same commit go unnamed. Observed live 2026-07-25 (see EI-18654828745839756).
+ */
+describe('EI-17603 — splitFailingSignature: a package/step name never masquerades as a file', () => {
+  it('separates package-scoped workspace names and lint: step sentinels from real file paths', () => {
+    const { failingFiles, failingSteps } = splitFailingSignature([
+      '@papercusp/operator-core',
+      '@papercusp/operator-vite',
+      'lib/harness/improvements/watchdog.test.ts',
+      'src/__tests__/typecheck-ratchet.test.ts',
+      'lint:tsc',
+      'lint:migrations',
+    ]);
+    expect(failingSteps.sort()).toEqual(['@papercusp/operator-core', '@papercusp/operator-vite', 'lint:migrations', 'lint:tsc'].sort());
+    expect(failingFiles.sort()).toEqual(['lib/harness/improvements/watchdog.test.ts', 'src/__tests__/typecheck-ratchet.test.ts'].sort());
+  });
+
+  it('an empty signature splits into two empty arrays', () => {
+    expect(splitFailingSignature([])).toEqual({ failingFiles: [], failingSteps: [] });
+  });
+});
+
+describe('EI-17603 — verifyGateFailingFiles: pure ledger cross-check verdict', () => {
+  it('confirmed: at least one named file has a matching ledger row', () => {
+    expect(verifyGateFailingFiles(['lib/a.test.ts', 'lib/b.test.ts'], ['lib/b.test.ts', 'lib/c.test.ts'])).toBe('confirmed');
+  });
+
+  it('disjoint: ledger has evidence for this commit, none of it matches the named files', () => {
+    expect(verifyGateFailingFiles(['lib/a.test.ts'], ['lib/totally-different.test.ts'])).toBe('disjoint');
+  });
+
+  it('unverifiable: no ledger rows at all for this commit — absence is not evidence of wrongness', () => {
+    expect(verifyGateFailingFiles(['lib/a.test.ts'], [])).toBe('unverifiable');
+  });
+
+  it('confirmed (trivially): nothing named means nothing to contradict', () => {
+    expect(verifyGateFailingFiles([], [])).toBe('confirmed');
+    expect(verifyGateFailingFiles([], ['lib/whatever.test.ts'])).toBe('confirmed');
+  });
+});
+
+describe('EI-17603 — ledgerFilesForCandidate: the commit-scoped ledger read', () => {
+  it('never queries for a null or too-short candidate sha', async () => {
+    let queried = 0;
+    const bump = (async () => {
+      queried++;
+      return [];
+    }) as unknown as WhyChainDeps['sql'];
+    expect(await ledgerFilesForCandidate(null, { sql: bump })).toEqual([]);
+    expect(await ledgerFilesForCandidate('abc123', { sql: bump })).toEqual([]); // < 7 chars
+    expect(queried).toBe(0);
+  });
+
+  it('queries commit_sha LIKE for a real candidate and returns distinct file paths', async () => {
+    const res = await ledgerFilesForCandidate('deadbee1234', {
+      sql: (async () => [{ file_path: 'lib/real.test.ts' }, { file_path: 'lib/real2.test.ts' }]) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.sort()).toEqual(['lib/real.test.ts', 'lib/real2.test.ts']);
+  });
+
+  it('degrades to [] on a query error instead of throwing', async () => {
+    const res = await ledgerFilesForCandidate('deadbee1234', {
+      sql: (async () => {
+        throw new Error('boom');
+      }) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res).toEqual([]);
+  });
+});
+
+describe('EI-17603 — verifyGateVerdict: distrust the gate\'s own record when the ledger contradicts it', () => {
+  const redWithFiles = (tests: string[], observedCandidate: string | null = 'deadbee1234') =>
+    snap({ gate: { consecutiveReds: 1, failingTests: tests, observedCandidate } as Partial<GitPipelineSnapshot['gate']> });
+
+  it('no observedCandidate ⇒ no query, no-op (cannot attribute the verdict to a commit)', async () => {
+    let queried = 0;
+    const res = await verifyGateVerdict(redWithFiles(['lib/a.test.ts'], null), {
+      sql: (async () => {
+        queried++;
+        return [];
+      }) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(false);
+    expect(queried).toBe(0);
+    expect(res.snap.gate.failingTests).toEqual(['lib/a.test.ts']);
+  });
+
+  it('nothing file-shaped named (only package/step sentinels) ⇒ no query, no-op', async () => {
+    let queried = 0;
+    const res = await verifyGateVerdict(redWithFiles(['@papercusp/operator-vite']), {
+      sql: (async () => {
+        queried++;
+        return [];
+      }) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(false);
+    expect(queried).toBe(0);
+  });
+
+  it('a STALE verdict is out of scope — skipped even with an observedCandidate present', async () => {
+    let queried = 0;
+    const s = redWithFiles(['lib/a.test.ts']);
+    s.gate.verdictStale = true;
+    const res = await verifyGateVerdict(s, {
+      sql: (async () => {
+        queried++;
+        return [];
+      }) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(false);
+    expect(queried).toBe(0);
+  });
+
+  it('unverifiable (no ledger rows for this commit) ⇒ leaves the gate\'s record untouched', async () => {
+    const res = await verifyGateVerdict(redWithFiles(['lib/a.test.ts']), {
+      sql: (async () => []) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(false);
+    expect(res.snap.gate.failingTests).toEqual(['lib/a.test.ts']);
+  });
+
+  it('confirmed (overlap with the ledger) ⇒ leaves the gate\'s record untouched', async () => {
+    const res = await verifyGateVerdict(redWithFiles(['lib/a.test.ts', 'lib/b.test.ts']), {
+      sql: (async () => [{ file_path: 'lib/b.test.ts' }]) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(false);
+    expect(res.snap.gate.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+  });
+
+  it('DISJOINT (the live-observed bug): clears failingTests and hands back the ledger files, WITHOUT mutating the input snapshot', async () => {
+    const input = redWithFiles(['@papercusp/operator-vite', 'lib/a.test.ts', 'lib/b.test.ts']);
+    const res = await verifyGateVerdict(input, {
+      sql: (async () => [{ file_path: 'lib/totally-different.test.ts' }]) as unknown as WhyChainDeps['sql'],
+    });
+    expect(res.disjoint).toBe(true);
+    expect(res.ledgerFiles).toEqual(['lib/totally-different.test.ts']);
+    expect(res.snap.gate.failingTests).toEqual([]);
+    // The input object itself must be untouched (pure function — no shared-reference surprises).
+    expect(input.gate.failingTests).toEqual(['@papercusp/operator-vite', 'lib/a.test.ts', 'lib/b.test.ts']);
+  });
+});
+
+describe('EI-17603 — computePipelineHealth end-to-end: the gate\'s own list gets overridden when the ledger disagrees', () => {
+  it('replaces the checkpoint\'s wrong failingTests with the ledger\'s real ones for that commit, and flags the disjoint verdict', async () => {
+    const s = withRoutines(
+      snap({
+        gate: {
+          consecutiveReds: 1,
+          failingTests: ['@papercusp/operator-core', '@papercusp/operator-vite', 'lib/passes-standalone.test.ts'],
+          observedCandidate: 'deadbee1234',
+        } as Partial<GitPipelineSnapshot['gate']>,
+      }),
+    );
+    const res = await computePipelineHealth(
+      deps({
+        snap: s,
+        sql: (async () => [{ file_path: 'lib/actually-broken.test.ts' }]) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.gateVerdictDisjointFromLedger).toBe(true);
+    expect(res.recentFailingFiles).toEqual(['lib/actually-broken.test.ts']);
+    expect(res.recentFailingFiles).not.toContain('lib/passes-standalone.test.ts');
+    expect(res.gate.reason).toContain('lib/actually-broken.test.ts');
+    expect(res.gate.reason).toContain('CONTRADICTED');
+  });
+
+  it('a CONFIRMED red still names the checkpoint\'s own files and never flags disjoint (no regression)', async () => {
+    const s = withRoutines(
+      snap({
+        gate: {
+          consecutiveReds: 1,
+          failingTests: ['lib/really-broken.test.ts'],
+          observedCandidate: 'deadbee1234',
+        } as Partial<GitPipelineSnapshot['gate']>,
+      }),
+    );
+    let queried = 0;
+    const res = await computePipelineHealth(
+      deps({
+        snap: s,
+        sql: (async () => {
+          queried++;
+          return [{ file_path: 'lib/really-broken.test.ts' }];
+        }) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.gateVerdictDisjointFromLedger).toBeUndefined();
+    expect(res.recentFailingFiles).toEqual(['lib/really-broken.test.ts']);
+    expect(queried).toBe(1); // the one candidate-scoped verification query — no second (broad) scan
+    expect(res.gate.reason).not.toContain('CONTRADICTED');
+  });
+});
+
+describe('EI-17603 — computeWhyChain end-to-end: same correction reaches dev:why', () => {
+  it('uses the ledger-derived files (not the checkpoint\'s disjoint list) in both the stage reason and recentFailingFiles', async () => {
+    const s = snap({
+      gate: {
+        consecutiveReds: 1,
+        failingTests: ['@papercusp/operator-vite', 'lib/passes-standalone.test.ts'],
+        observedCandidate: 'deadbee1234',
+      } as Partial<GitPipelineSnapshot['gate']>,
+    });
+    const res = await computeWhyChain(
+      deps({
+        snap: s,
+        sql: (async () => [{ file_path: 'lib/actually-broken.test.ts' }]) as unknown as WhyChainDeps['sql'],
+      }),
+    );
+    expect(res.gateVerdictDisjointFromLedger).toBe(true);
+    expect(res.recentFailingFiles).toEqual(['lib/actually-broken.test.ts']);
+    expect(res.stages[0].reason).toContain('lib/actually-broken.test.ts');
+    expect(res.stages[0].reason).not.toContain('passes-standalone');
   });
 });

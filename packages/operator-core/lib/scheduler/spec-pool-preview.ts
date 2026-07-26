@@ -31,6 +31,21 @@
  *
  * Fail-open: a preview/count error must NEVER block a spec write (the guard is a safety
  * net, not a new single point of failure) — callers report previewError instead.
+ *
+ * KNOWN GAP (EI-18655873409999215, 2026-07-25): this is a WRITE-TIME check only — it can
+ * be legitimately bypassed by design (the `isProvableSuperset` short-circuit above, and
+ * the `noDelta` exemption for a previously-authored spec that already matched 0), so a
+ * corrective widening write CAN silently land as a still-0-match no-op with nothing but a
+ * low-visibility `warning` field on that one tool-call response. Confirmed live: a
+ * `{any:[oldFilter, newClause]}` widening revision of an already-0-matching lane sat at 0
+ * for 4.5h, unrefused (both exemptions applied), with the fleet reading it as a clean
+ * scoped miss the whole time. The durable backstop for THIS shape is NOT here — it is the
+ * STANDING alert `computeSpecStarvedFleetAlert` in
+ * agent-tools/fleet/leader-brief.ts, which re-checks the fleet's live effective spec
+ * against the live pool on every leader-brief call instead of relying on catching a
+ * one-shot write-time warning. If you are tempted to make this write-time guard "smarter"
+ * to close the gap instead, consider whether the standing check is the more robust fix —
+ * a write-time-only guard can always be raced by the pool itself changing shape afterward.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';

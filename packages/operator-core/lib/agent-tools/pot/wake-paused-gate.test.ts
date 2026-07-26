@@ -50,9 +50,11 @@ vi.mock('../../pot/wake-frontier-guard', () => ({
   listUnplacedPotFrontier: async () => [],
   listNonTerminalPlacements: async () => [],
 }));
+const getOwnerSteering = vi.fn();
+const isPausedNow = vi.fn();
 vi.mock('../../owner-steering', () => ({
-  getOwnerSteering: async () => null,
-  isPausedNow: () => false,
+  getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...a),
+  isPausedNow: (...a: unknown[]) => isPausedNow(...a),
 }));
 
 const fakeSql = (): Promise<unknown[]> => Promise.resolve([]);
@@ -78,6 +80,8 @@ beforeEach(() => {
   setPotCarryNote.mockResolvedValue(null);
   claimPotWakeFire.mockResolvedValue({ fired: true });
   fireLaunchBlueprint.mockResolvedValue({ role: 'mug' });
+  getOwnerSteering.mockResolvedValue({ pauseNewWork: false, pausedUntil: null });
+  isPausedNow.mockReturnValue(false);
 });
 
 describe('pot:declare-wake paused gate (WI-2012)', () => {
@@ -122,5 +126,87 @@ describe('pot:wake paused gate (WI-2012)', () => {
     const out = await call(potWake as never, { harness: 'my-pot', source: 'event' });
     expect(out.ok).toBe(true);
     expect(out.fired).toBe(true);
+  });
+});
+
+describe('pot:wake steering-pause gate (EI-18654946296495054)', () => {
+  // The missing quadrant: started:true + steering pauseNewWork:true — the
+  // started-bit gate above does NOT catch this (the pot IS started), but
+  // survey.ts hard-empties the frontier for it anyway, so a placement-demand
+  // event wake here is structurally guaranteed to place nothing.
+  beforeEach(() => {
+    getPotStarted.mockResolvedValue(true);
+    getOwnerSteering.mockResolvedValue({ pauseNewWork: true, pausedUntil: null });
+    isPausedNow.mockReturnValue(true);
+  });
+
+  it("SKIPS a work_items:create-triggered event wake while started+steering-paused", async () => {
+    const out = await call(potWake as never, {
+      harness: 'my-pot',
+      source: 'event',
+      trigger: 'work_items:create',
+    });
+    expect(out.ok).toBe(true);
+    expect(out.fired).toBe(false);
+    expect(out.skipped).toBe('steering-paused');
+    expect(fireLaunchBlueprint).not.toHaveBeenCalled();
+  });
+
+  it("SKIPS a plans:start-triggered event wake while started+steering-paused", async () => {
+    const out = await call(potWake as never, {
+      harness: 'my-pot',
+      source: 'event',
+      trigger: 'plans:start',
+    });
+    expect(out.ok).toBe(true);
+    expect(out.fired).toBe(false);
+    expect(out.skipped).toBe('steering-paused');
+  });
+
+  it('still fires a pot:set-steering-triggered event wake while started+steering-paused (the unpause signal must land)', async () => {
+    const out = await call(potWake as never, {
+      harness: 'my-pot',
+      source: 'event',
+      trigger: 'pot:set-steering',
+    });
+    expect(out.ok).toBe(true);
+    expect(out.fired).toBe(true);
+    expect(out.skipped).toBeUndefined();
+    expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
+  });
+
+  it('still fires a coord:escalate-triggered event wake while started+steering-paused (human-attention, not placement)', async () => {
+    const out = await call(potWake as never, {
+      harness: 'my-pot',
+      source: 'event',
+      trigger: 'coord:escalate',
+    });
+    expect(out.ok).toBe(true);
+    expect(out.fired).toBe(true);
+  });
+
+  it('still fires an explicit user wake while started+steering-paused (deliberate human intent)', async () => {
+    const out = await call(potWake as never, { harness: 'my-pot', source: 'user' });
+    expect(out.ok).toBe(true);
+    expect(out.fired).toBe(true);
+  });
+
+  it('does NOT gate a placement-demand trigger when steering is not actually paused', async () => {
+    isPausedNow.mockReturnValue(false);
+    const out = await call(potWake as never, {
+      harness: 'my-pot',
+      source: 'event',
+      trigger: 'work_items:create',
+    });
+    expect(out.ok).toBe(true);
+    expect(out.fired).toBe(true);
+    expect(out.skipped).toBeUndefined();
+  });
+
+  it('does NOT gate an event wake with no `trigger` given (back-compat: unknown trigger never gates)', async () => {
+    const out = await call(potWake as never, { harness: 'my-pot', source: 'event' });
+    expect(out.ok).toBe(true);
+    expect(out.fired).toBe(true);
+    expect(getOwnerSteering).not.toHaveBeenCalled();
   });
 });

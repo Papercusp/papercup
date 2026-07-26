@@ -62,6 +62,27 @@ describe('resolveLearningPotSlug — the deliberate order', () => {
     expect(pot).toBeNull();
   });
 
+  it('a WORKSPACE-GLOBAL label (@singleton / the workspace id) homes to the platform pot when it exists', async () => {
+    const resolveHive = async (_ws: string, slug: string) => (slug === 'papercusp' ? 'papercusp' : null);
+    expect(
+      await resolveLearningPotSlug({ workspaceId: 'papercusp-workspace', harnessSlug: '@singleton', resolveHive }),
+    ).toBe('papercusp');
+    expect(
+      await resolveLearningPotSlug({
+        workspaceId: 'papercusp-workspace',
+        harnessSlug: 'papercusp-workspace',
+        resolveHive,
+      }),
+    ).toBe('papercusp');
+  });
+
+  it('a registry-unplaced harness homes to the platform pot rather than NULL (workspace has one)', async () => {
+    const resolveHive = async (_ws: string, slug: string) => (slug === 'papercusp' ? 'papercusp' : null);
+    expect(
+      await resolveLearningPotSlug({ workspaceId: 'w', harnessSlug: 'capacity-storm-abc123', resolveHive }),
+    ).toBe('papercusp');
+  });
+
   it('a THROWING registry read degrades to the env home pot (a write must never be lost to a scope lookup)', async () => {
     process.env[ENV_KEY] = 'home-pot';
     const pot = await resolveLearningPotSlug({

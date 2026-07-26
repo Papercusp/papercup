@@ -28,6 +28,7 @@ import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identi
 import { COORD_ROLES } from '../coordination/roles';
 import { hiveArg } from '../_hive-scope';
 import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
+import { looksLikeResidualClosure } from '../../plan-items/convert';
 import { TERMINAL_WORK_ITEM_STATES } from '../../work-items';
 import { LINK_RELS } from './link';
 import { runBulk, bulkContent } from '../_bulk';
@@ -345,12 +346,27 @@ export default defineTool({
                   'This looks like CODE work, but `task` is NON-CODE only (research / a decision / manual verification / ops). If it edits code, re-kind to `change` (or `feature` if pipeline-sized) via work_items:update.',
               }
             : {};
+        // EI-18655063958515097 non-blocking nudge: a title/summary that reads like an
+        // unmet-acceptance residual split off a plan item, created with no plan link
+        // (targetPlanItem/plan_item), is the exact "bare residual, no plan link, not
+        // claimable by the fleet working that plan" failure the bug describes. Advisory
+        // only — a false positive costs nothing; a missed link is how the work gets lost.
+        const residualLinkNudge =
+          !spec.targetPlanItem && looksLikeResidualClosure(`${spec.title} ${spec.summary ?? ''}`)
+            ? {
+                residualLinkNudge:
+                  'This reads like a residual split off a plan item, but no plan_item/targetPlanItem was set — ' +
+                  'pass plan_item: { slug, item } so this stays linked to (and claimable within) that plan\'s ' +
+                  'fleet lane instead of surfacing later as an orphaned, untracked item.',
+              }
+            : {};
         return {
           ok: true as const,
           id: res.workItem.id,
           title: spec.title,
           workItem: res.workItem,
           ...codeTaskWarning,
+          ...residualLinkNudge,
           // P-008 soft-band advisory: created fine, but these OPEN items are
           // semantically close — check them before splitting the work.
           ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),

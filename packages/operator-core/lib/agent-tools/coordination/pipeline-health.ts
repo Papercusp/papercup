@@ -75,6 +75,16 @@ export const PIPELINE_STALE_NOTE =
   'NOT go fix the tests it names (that phantom dispatch is WI-4489). Re-run the checkpoint for a ' +
   'real verdict.';
 
+/** EI-17603: the checkpoint's own failingTests record for this commit was CONTRADICTED by the
+ *  test-run ledger — `failingFiles` below is ledger-derived, not the checkpoint's own (wrong)
+ *  list. Told explicitly because the checkpoint blob is otherwise the FIRST-preferred source
+ *  (see why-chain.ts's namedFailures) — an agent who has seen that convention should know this
+ *  read overrode it. */
+export const PIPELINE_DISJOINT_NOTE =
+  "the release gate is NOT green, and its OWN recorded failing-tests list for this commit was " +
+  'CONTRADICTED by the test-run ledger — the file(s) below come from the ledger instead. Fix ' +
+  'those (never the checkpoint\'s original list, which does not reproduce). Full causal chain: dev:why.';
+
 /**
  * PURE: shape a PipelineHealth into the wake block. `null` ⇒ fold NOTHING (unknown gate).
  * Unit-testable with hand-built inputs — no PG, no git.
@@ -104,7 +114,13 @@ export function toOrientPipeline(health: PipelineHealth, nowMs: number = Date.no
   }
   if (health.rootCause) out.rootCause = `${health.rootCause.stage} — ${health.rootCause.reason}`;
   out.note =
-    gate === 'stale-verdict' ? PIPELINE_STALE_NOTE : gateOk ? PIPELINE_BEHIND_NOTE : PIPELINE_RED_NOTE;
+    gate === 'stale-verdict'
+      ? PIPELINE_STALE_NOTE
+      : gateOk
+        ? PIPELINE_BEHIND_NOTE
+        : health.gateVerdictDisjointFromLedger
+          ? PIPELINE_DISJOINT_NOTE
+          : PIPELINE_RED_NOTE;
   return out;
 }
 

@@ -341,10 +341,15 @@ export function syncPotWakeRules(workspaceId: string, subs: PotEventSubscription
       on: sub.on,
       when: sub.when,
       fire: 'pot:wake',
-      args: {
-        reason: `subscribed event (${Array.isArray(sub.on) ? sub.on.join(', ') : sub.on})${sub.note ? ` — ${sub.note}` : ''}`,
+      // EI-18654946296495054: `args` as a function sees the MATCHED event, so
+      // `e.tool` is the actual trigger that fired (not just "one of the
+      // subscription's `on` list") — pot:wake's steering-pause gate needs the
+      // real trigger to tell a placement-demand wake from a must-fire one.
+      args: (e) => ({
+        reason: `subscribed event (${e.tool})${sub.note ? ` — ${sub.note}` : ''}`,
         source: 'event',
-      },
+        trigger: e.tool,
+      }),
       // Durable would survive a restart, but a wake is cheap to lose and MUST
       // not retry-storm the pot — in-process fire-and-forget is right here.
       mode: 'sync',

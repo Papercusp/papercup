@@ -27,9 +27,16 @@
  *      minting fake pots out of the '@singleton' workspace-brain sentinel and
  *      ephemeral 'capacity-storm-*' drill installs. A slug the registry does not
  *      recognize as pot-owned is NOT a pot.
- *   3. The process's home pot env (`PAPERCUSP_POT_HOME_SLUG`) — set for pot-scoped
+ *   3. A WORKSPACE-GLOBAL label ('@singleton', 'operator', the workspace id — the
+ *      workspace-brain grain) homes to the workspace PLATFORM pot, mirroring
+ *      resolveWorkItemPot (pot-membership.ts): the owner's ratified model is that
+ *      operator-level provenance and the platform pot are the same product, so a
+ *      workspace-brain learning is a platform-pot learning, not a pot-less one.
+ *      Guarded by an existence check through the same registry step — a workspace
+ *      with no platform pot falls through (fail-open), never invents one.
+ *   4. The process's home pot env (`PAPERCUSP_POT_HOME_SLUG`) — set for pot-scoped
  *      hosts and agent subprocesses.
- *   4. `null` — and null is a REAL answer, not a failure to paper over.
+ *   5. `null` — and null is a REAL answer, not a failure to paper over.
  *
  * ## Why null is returned rather than a fallback slug
  *
@@ -42,6 +49,7 @@
  * not be misfiled into someone's pot.
  */
 import { potHomeSlugForHarness } from '../hive-federation';
+import { isWorkspaceGlobalLabel, PLATFORM_POT_SLUG } from '../pot-membership';
 
 export interface LearningPotScopeInput {
   workspaceId: string;
@@ -75,27 +83,36 @@ export async function resolveLearningPotSlug(input: LearningPotScopeInput): Prom
   const explicit = clean(input.potSlug);
   if (explicit) return explicit;
 
-  const harness = clean(input.harnessSlug);
-  if (harness) {
+  const resolveHive = async (workspaceId: string, slug: string): Promise<string | undefined> => {
     try {
-      const owner = clean(
+      return clean(
         input.resolveHive
-          ? await input.resolveHive(input.workspaceId, harness)
-          : await potHomeSlugForHarness(
-              input.workspaceId,
-              harness,
-              input.fresh ? { fresh: true } : undefined,
-            ),
+          ? await input.resolveHive(workspaceId, slug)
+          : await potHomeSlugForHarness(workspaceId, slug, input.fresh ? { fresh: true } : undefined),
       );
-      if (owner) return owner;
     } catch {
       // Registry unavailable (sidecar/test process with no org-PG) — fall through
-      // to the env home pot. A hive home passed here still resolves to itself in
+      // to the later steps. A hive home passed here still resolves to itself in
       // any process where the registry answers (potHomeSlugForHarness returns the
       // home for its own slug); degrading to env/null beats minting a fake pot
       // out of a sentinel or drill install (see the module doc's step 2).
+      return undefined;
     }
+  };
+
+  const harness = clean(input.harnessSlug);
+  if (harness && !isWorkspaceGlobalLabel(harness, input.workspaceId)) {
+    const owner = await resolveHive(input.workspaceId, harness);
+    if (owner) return owner;
   }
+
+  // Step 3: workspace-global provenance (the workspace-brain grain, or a harness
+  // the registry does not place in any pot) homes to the PLATFORM pot when that
+  // pot exists in this workspace — the resolveWorkItemPot model. The existence
+  // check rides the same (injectable) registry step: a platform pot's home slug
+  // resolves to itself.
+  const platform = await resolveHive(input.workspaceId, PLATFORM_POT_SLUG);
+  if (platform) return platform;
 
   return clean(process.env.PAPERCUSP_POT_HOME_SLUG) ?? null;
 }

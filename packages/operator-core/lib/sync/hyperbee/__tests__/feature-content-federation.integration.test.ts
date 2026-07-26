@@ -1475,6 +1475,258 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   );
 
   // ──────────────────────────────────────────────────────────────────────────
+  // EI-3417 (WI-259 STEP-2 follow-up) — the JOINER-side real-path sibling to WI-559/FED-1.
+  //
+  // WI-559/FED-1 (above) proved the OWNER (hive-home) harness applies a member's cross-member
+  // content via boot's REAL scopedApply. The WI-259 P-001+P-002 case (above) proves a JOINER
+  // (non-home member) applies a same-hive peer's cross-member content too — but ONLY through a
+  // STUBBED path: B boots with `applyOverride` hardcoding `potHomeSlug: HIVE_HOME` and stubbing
+  // `resolveAuthorDevice`, so boot's own `resolveHiveHomeProjectionSlug` (the `joinerPotHomeSlug`
+  // remote_hive-registry resolution) and its real `admittedIdentities → resolveAuthorDevice` map
+  // are NEVER exercised for a genuine joiner. That blind spot is exactly the class that let the
+  // FED-1 owner-side bug ship green — the equivalent gap on the joiner side was unproven, not
+  // fixed.
+  //
+  // This case closes it: B (the receiver) boots with NO `applyOverride` — the REAL
+  // `bootHarnessSubstrate` scopedApply — and the registry marks HIVE_HOME `remote_hive: true`
+  // (a JOINED, not owned, hive-home), which is what makes `joinerPotHomeSlug`
+  // (hive-federation.ts:155) resolve non-null for B and engages the real rebind
+  // `resolveHiveHomeProjectionSlug` (boot.ts:901) performs on a `hive`/`topic` swarm binding. B's
+  // own `admittedIdentities`/`resolveAuthorDevice` (populated by the REAL STEP-1 admit, not a
+  // test stub) then gate the P-002 apply. getOrgPg() is env-routed at the migrated org DB, so B's
+  // real projections (and the STEP-1 membership read) both hit it — the production single-PG
+  // shape, same as the FED-1 case.
+  // ──────────────────────────────────────────────────────────────────────────
+  it(
+    'EI-3417: the JOINER (remote_hive member, real rebind) applies a same-hive peer’s cross-member feature via the REAL boot scopedApply — no applyOverride, no resolveAuthorDevice stub',
+    async () => {
+      const HIVE_HOME = 'ei3417-hive-home'; // the JOINED (remote_hive) hive-home both members rebind to
+      const A_SLUG = 'ei3417-author-a'; // the author member's own slug (content origin)
+      const B_SLUG = 'ei3417-joiner-b'; // the RECEIVER — a genuine joiner, real rebind, real apply
+
+      // ── Env-route getOrgPg() at a migrated org DB: B's REAL scopedApply writes here
+      //    (getOrgPg = harness_admin, RLS-bypass) AND boot's STEP-1 + guard reads resolve here. ──
+      const orgDb: OrgTestDb = await createOrgTestDb();
+      const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
+      const prevAppUrl = process.env.HARNESS_DATABASE_URL;
+      const prevWs = process.env.PAPERCUSP_WORKSPACE_ID;
+      const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
+      process.env.HARNESS_ADMIN_DATABASE_URL = orgDb.adminDsn;
+      process.env.HARNESS_DATABASE_URL = orgDb.appDsn;
+      process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE_ID;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      // pgbouncer default-on on a server-class host rewrites the getOrgPg URL → :6432 (native PG),
+      // bypassing this throwaway testcontainer DB — force the documented kill-switch OFF.
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      await resetDbOrgPools();
+      _clearHiveMemberDeviceSetCacheForTest();
+      cleanups.push(async () => {
+        if (prevAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+        else process.env.HARNESS_ADMIN_DATABASE_URL = prevAdminUrl;
+        if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;
+        else process.env.HARNESS_DATABASE_URL = prevAppUrl;
+        if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+        else process.env.PAPERCUSP_WORKSPACE_ID = prevWs;
+        if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+        else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+        if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+        else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
+        _resetUrlCacheForTests();
+        _resetHarnessAdminUrlCacheForTests();
+        _clearHiveMemberDeviceSetCacheForTest();
+        await resetDbOrgPools();
+        await orgDb.cleanup();
+      });
+
+      const idA = makeIdentityOverride('alice', 42, 'kc-alice');
+      const idB = makeIdentityOverride('bob', 7, 'kc-bob');
+
+      // ── Seed the hive + A's membership in the org DB (same shape as the P-002/FED-1 cases). ──
+      const { publicKey: hivePub } = generateKeyPairSync('ed25519');
+      const hivePubkeyB64 = rawPubkeyBase64(hivePub);
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
+                'kc-ei3417-home', 'EI-3417 Hive Home', null, 1, 1)
+      `;
+      await orgDb.adminSql`
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username,
+           device_attestations, revoked_pubkeys, binding_status)
+        VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idA.userId}, 'alice',
+                ${JSON.stringify([
+                  {
+                    device_pubkey: idA.devicePubkey,
+                    gist_id: 'gist-alice',
+                    gist_url: 'https://gist.github.com/alice',
+                    device_label: 'alice-dev',
+                    created_at: 1,
+                    signature_by_device: 'sig',
+                  },
+                ])}::text::jsonb,
+                '{}'::text[], 'verified')
+      `;
+      // Registry: HIVE_HOME is `remote_hive: true` — a JOINED view, NOT owned — which is what
+      // makes `joinerPotHomeSlug` (hive-federation.ts:155) resolve non-null for B. Both members
+      // point their `hive_slug` at it, mirroring a real from-repo join.
+      await mutateHarnessRegistry(
+        (r) => ({
+          ...r,
+          projects: [
+            ...r.projects,
+            { slug: HIVE_HOME, path: '/tmp/ei3417-home', harness_kind: 'hive', remote_hive: true },
+            { slug: A_SLUG, path: '/tmp/ei3417-a', hive_slug: HIVE_HOME },
+            { slug: B_SLUG, path: '/tmp/ei3417-b', hive_slug: HIVE_HOME },
+          ],
+        }),
+        WORKSPACE_ID,
+      );
+
+      // ── Sanity: B's REAL rebind resolves — the exact chain boot.ts:901 drives at boot. ──
+      const { joinerPotHomeSlug } = await import('../../../hive-federation');
+      expect(await joinerPotHomeSlug(WORKSPACE_ID, B_SLUG, { fresh: true })).toBe(HIVE_HOME);
+      const { resolveHiveMemberDeviceSet } = await import('../hive-member-identity-set');
+      expect((await resolveHiveMemberDeviceSet(WORKSPACE_ID, HIVE_HOME)).has(idA.devicePubkey)).toBe(
+        true,
+      );
+      _clearHiveMemberDeviceSetCacheForTest();
+
+      // A's own per-peer DB (its content origin) — A still uses the applyOverride seam (this
+      // case is about proving B's real path, not A's).
+      const dbA: FreshPgDb = await createFreshPgDb('ei3417A');
+      cleanups.push(() => dbA.cleanup());
+      await setupPeerSchema(dbA.sql, A_SLUG);
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const swarmA = makeSwarm(testnet.bootstrap);
+      const swarmB = makeSwarm(testnet.bootstrap);
+      const rootA = makeWorkspaceRoot('ei3417-A-');
+      const rootB = makeWorkspaceRoot('ei3417-B-');
+
+      let handleA: BootedHarnessHandle | undefined;
+      let handleB: BootedHarnessHandle | undefined;
+      let applyA: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+
+      // ── Boot A: member slug A_SLUG; applyOverride → its own per-peer DB (content origin only —
+      //    NOT the thing under test). Same hive topic as B (shared hive_pubkey). ──
+      handleA = await bootHarnessSubstrate({
+        workspaceRoot: rootA,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: A_SLUG,
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
+        swarmOverride: swarmA,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idB.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          applyA ??= buildHarnessProjectionApply({
+            workspaceId: WORKSPACE_ID,
+            harnessSlug: A_SLUG,
+            potHomeSlug: HIVE_HOME,
+            sql: dbA.sql,
+            ownLogKeyHex: handleA!.ownLog.keyHex,
+          });
+          return applyA(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idA.override,
+      });
+      cleanups.push(async () => {
+        await handleA?.close();
+        await closeHarnessStore({ workspaceRoot: rootA, harnessSlug: A_SLUG });
+      });
+
+      // ── Boot B: the JOINER under test. NO applyOverride — boot's REAL scopedApply
+      //    (getOrgPg → orgDb), real hiveHomeProjectionSlug rebind, real resolveAuthorDevice. ──
+      handleB = await bootHarnessSubstrate({
+        workspaceRoot: rootB,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: B_SLUG,
+        swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
+        swarmOverride: swarmB,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idA.userId ? 'verified' : 'fail',
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idB.override,
+      });
+      cleanups.push(async () => {
+        await handleB?.close();
+        await closeHarnessStore({ workspaceRoot: rootB, harnessSlug: B_SLUG });
+      });
+
+      expect(handleA.swarm).not.toBeNull();
+      expect(handleB.swarm).not.toBeNull();
+      expect(handleA.swarm!.topicHex).toBe(handleB.swarm!.topicHex);
+
+      // ── A writes a member feature under its own slug → real trigger → outbox → drain → log. ──
+      await dbA.sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${A_SLUG}, 'F-ei3417', 'Joiner-received feature', 'from A', 'todo', 0, 'local', 6001, 6001, 6001)
+      `;
+      expect(await countOutbox(dbA.sql, 'harness_features_consolidated', 'F-ei3417')).toBe(1);
+      const drainedA = await drainOutboxOnce(handleA, dbA.sql);
+      expect(drainedA, "A's F-ei3417 was not drained to its log").toBeGreaterThanOrEqual(1);
+
+      // ── (1) B ADMITS A's log via REAL STEP-1 membership admission (no test stub involved). ──
+      const bAdmittedA =
+        (await pollUntil(
+          async () => {
+            await Promise.all([handleA!.mergeNow(), handleB!.mergeNow()]);
+            return handleB!.admitted.has(handleA!.ownLog.keyHex) ? true : undefined;
+          },
+          { timeoutMs: 20_000, intervalMs: 250 },
+        )) ?? false;
+      expect(
+        bAdmittedA,
+        "B did NOT admit A's same-hive cross-member log — STEP 1 membership-aware admission did " +
+          'not fire (check the seeded hives/pot_members/registry resolve under getOrgPg())',
+      ).toBe(true);
+
+      // ── (2) THE PROOF: A's cross-member feature LANDS in B's real PG (getOrgPg/orgDb) under
+      //    A's slug — B's REAL rebind (joinerPotHomeSlug) + REAL resolveAuthorDevice (populated
+      //    by the real STEP-1 admit) drove the P-002 guard end-to-end, no test seam involved. ──
+      const landed = await pollUntil(
+        async () => {
+          await Promise.all([handleA!.mergeNow(), handleB!.mergeNow()]);
+          return await readFeatureForSlug(orgDb.adminSql, A_SLUG, 'F-ei3417');
+        },
+        { timeoutMs: 20_000, intervalMs: 250 },
+      );
+      expect(
+        landed,
+        "A's feature never reached the JOINER's real PG — EI-3417: B's real rebind/apply chain " +
+          'dropped the admitted cross-member op',
+      ).toBeTruthy();
+      expect(landed).toMatchObject({
+        feature_id: 'F-ei3417',
+        title: 'Joiner-received feature',
+        status: 'todo',
+        origin: 'remote',
+      });
+      // Content stays addressable under A's member slug, not remapped to B or the home.
+      expect(await readFeatureForSlug(orgDb.adminSql, B_SLUG, 'F-ei3417')).toBeUndefined();
+      expect(await readFeatureForSlug(orgDb.adminSql, HIVE_HOME, 'F-ei3417')).toBeUndefined();
+    },
+    60_000,
+  );
+
+  // ──────────────────────────────────────────────────────────────────────────
   // WI-259 P-004 — CONTENT-BEFORE-MEMBERSHIP defer / replay (the capstone).
   //
   // A member A's content op and A's `pot_members` row federate as SEPARATE ops, and the merge

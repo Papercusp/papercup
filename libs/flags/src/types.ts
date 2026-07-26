@@ -2172,7 +2172,40 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter((entry) 
 // auto-edit + agent spawn) silently live pending a synchronous sign-off — disclosed via
 // coord:send + a durable fact rather than silently appended. Owner may reverse (drop back
 // to 22) once reviewed; nothing further should raise it again without an explicit ask.
-export const DARK_FLAGS_REVIEW_BY = '2026-07-24';
+// ─── REVIEW 2026-07-26 (su-e3b21216, WI-5835) — date moved ONLY because the review was
+// actually performed. Prior deadline 2026-07-24 had elapsed, red-ing the green gate fleet-wide.
+// Recording the outcome here so the next reviewer inherits findings, not a bare date:
+//
+// SCOPE: all 29 DARK_FLAGS entries examined against their stated case + reason.
+//   parked 7 · incomplete 6 · owner-authority 13 · cutover 3.
+//   NOTE the watermark counts ONLY parked+incomplete (7+6=13) — "safety cases remain outside
+//   this size budget" — so 29 entries vs a watermark of 13 is NOT a breach. Verify what the
+//   number measures before reading a mismatch as a defect.
+//
+// VERDICT: ZERO graduation candidates. No flag flipped. Per-flag basis:
+//   parked(7)      — deliberate V1 scope cuts; THE_HIVE / TEMPLATES_MARKETPLACE /
+//                    RUBRICS_MARKETPLACE are explicitly owner-directed v1-vs-v2 decisions.
+//   incomplete(6)  — EXTERNAL_BENCH (M2 modality unbuilt), CODEX_GATEWAY_OAUTH_PROXY
+//                    (reverse-engineered proprietary transport), ONBOARDING_PREVIEW_FEATURES
+//                    (backing features not ready), and CAPABILITY_EXEC_SANDBOX /
+//                    SUBSTRATE_LOG_SNAPSHOT / SUBSTRATE_SIDECAR — the EI-7230 class, each
+//                    restoring its OWN always-documented OFF default. SUBSTRATE_SIDECAR
+//                    crash-loops when ON, so it is unsafe, not merely unfinished.
+//   owner-authority(13) + cutover(3) — flipping any would be wrong ON THE MERITS, not merely
+//                    unratified: OPEN_SIGNUP, PSU_END_USER (an unauthenticated superuser shell
+//                    reachable by end users), AUTH_CONFIG_OVERRIDES, MUG_FULL_AUTONOMY,
+//                    RECLAIM_STALLED (evidenced live harm — EI-7685), OWN_LOG_FORK_AUTO_RECOVERY
+//                    (destructive store reset), MEM0_FEDERATION_EGRESS, and the three staged
+//                    cutover kill-switches.
+//
+// CRITICALLY: none of the 13 budget-counted flags is finished-work-parked-dark — which is the
+// specific abuse this tripwire exists to catch. The set sits AT capacity (13/13), so a new
+// parked/incomplete flag must GRADUATE one first rather than raise the watermark again.
+//
+// STANDING CAUTION for the next reviewer: bumping this date WITHOUT performing the review is
+// the one action that defeats the guard, and is exactly the silent-lingering it was built to
+// surface. If you are here only because the gate is red, stop and do the review instead.
+export const DARK_FLAGS_REVIEW_BY = '2026-08-09';
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //
 // WHY THIS GUARD KEEPS GETTING RAISED (22→24→25→26, every time for this same bug class,

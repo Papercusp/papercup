@@ -113,6 +113,14 @@ export interface GitPipelineSnapshot {
      *  Empty on a green gate — and NEVER to be trusted when `verdictStale` (WI-4489: those names
      *  are what a phantom dispatch chases). */
     failingTests: string[];
+    /** EI-17603 (follow-up to WI-4533): the short sha of the candidate THIS verdict's
+     *  `failingTests` pertains to (`gate_health.observedCandidate`, recorded alongside
+     *  `failingTests` since it was added but never surfaced here until now). Lets a
+     *  consumer cross-check the gate's own named failures against first-hand ledger
+     *  evidence (`harness_shared.test_runs`) for the EXACT commit under verdict, instead
+     *  of trusting the recorded list blind — see `verifyGateVerdict` in why-chain.ts.
+     *  Null on a blob predating this field, or when there is no candidate to attribute. */
+    observedCandidate: string | null;
     /** EI-13288: when THIS verdict's own stale-candidate re-triage already proved its named
      *  `failingTests` pass at a newer tip (auto-refire cap reached before a full suite could
      *  confirm that tip green), the short sha of that tip — feeds Rule 3 of
@@ -456,6 +464,10 @@ export async function gitPipelineSnapshot(
       // WI-4533: the gate's OWN verdict about what is failing (see the type's note) — never the
       // names behind a streak already proven reset (they'd misdirect a fixer at passing tests).
       failingTests: effectiveGate.failingTests,
+      // Not part of `RawGateCounters`/`pinProvenGateCorrection`: a proven pin-advance already
+      // wipes `failingTests` to `[]` above, which alone makes `verifyGateVerdict`'s file-shaped
+      // check a no-op — no separate reset needed for the candidate it was attributed to.
+      observedCandidate: typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
       retriageStaleTip,
       retriageDetail,
       flakyWorkspaces: Object.entries(flakeHistory)

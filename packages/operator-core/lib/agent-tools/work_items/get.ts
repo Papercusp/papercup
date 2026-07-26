@@ -17,6 +17,7 @@ import { mergeIds, runBulk, bulkContent } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta } from "../../work-item-checkpoint";
 import { computeCheckpointStaleness } from "../../checkpoint-staleness";
+import { detectBgJobCheckpointClaim } from "../../checkpoint-bg-job-claim";
 import { getPresence } from "../coordination/presence";
 import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
 import { looksLikeCitedProseEvidence } from "../../completion-audit";
@@ -50,7 +51,7 @@ export default defineTool({
   name: "work_items:get",
   profile: "engineer",
   description:
-    "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, auditProseEvidenceLikely?, error? }], counts } — correlate by id, not position. Conditional fields (present only when they apply): `planItemBlocked` = the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }) — check before unblocking; `checkpoint` = in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less); `checkpointStale` = the assignee kept working after that checkpoint; `auditProseEvidenceLikely` = structured completion evidence is empty but a `terminalCompletionRef` exists, so the real proof is likely PROSE in completion.summary — read it before reopening a close as bare.",
+    "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, auditProseEvidenceLikely?, error? }], counts } — correlate by id, not position. Conditional fields (present only when they apply): `planItemBlocked` = the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }) — check before unblocking; `checkpoint` = in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less); `checkpointStale` = the assignee kept working after that checkpoint; `checkpointBgJobWarning` = the checkpoint cites a background job/task as evidence — that bookkeeping can die silently across a process boundary, so verify the pid/completion-marker before trusting it; `auditProseEvidenceLikely` = structured completion evidence is empty but a `terminalCompletionRef` exists, so the real proof is likely PROSE in completion.summary — read it before reopening a close as bare.",
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     notWhen:
@@ -193,6 +194,13 @@ export default defineTool({
           !workItem.terminalCompletionEvidence && workItem.terminalCompletionRef
             ? looksLikeCitedProseEvidence(workItem.terminalCompletionRef)
             : undefined;
+        // EI-18654296679612119: the checkpoint may cite a background job/task as evidence of
+        // in-flight or completed work — that bookkeeping lives in the WRITER'S own process/shell
+        // and can die silently across a session teardown / loop-carry respawn / compaction with
+        // no trace left in the checkpoint text (EI-16611). Flag it here too: this is the surface
+        // a careful reader actually used to catch the live repro (reading the checkpoint directly
+        // via work_items:get, not just at claim time).
+        const checkpointBgJobWarning = checkpoint ? detectBgJobCheckpointClaim(checkpoint).reason : undefined;
         return {
           ok: true as const,
           id,
@@ -201,6 +209,7 @@ export default defineTool({
           checkpointAgeMs,
           checkpointUpdatedAtMs,
           ...(checkpointStale ? { checkpointStale } : {}),
+          ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),
           ...(planItemBlocked ? { planItemBlocked } : {}),
           ...(auditProseEvidenceLikely !== undefined ? { auditProseEvidenceLikely } : {}),
         };

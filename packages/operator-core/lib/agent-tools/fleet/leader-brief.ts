@@ -217,6 +217,46 @@ export function computeStrandedFleetAlert(input: {
   };
 }
 
+/**
+ * EI-18655873409999215: the SPEC-STARVED fleet alert — closes a blind spot in
+ * computeStrandedFleetAlert (EI-15055) above. That check only fires when unowned
+ * criticals THIS FLEET'S SPEC WOULD ADMIT are nonzero — but if the spec itself
+ * matches ZERO rows, it admits nothing BY DEFINITION, so unownedCriticalCount is
+ * always 0 too and the existing alert can never fire for exactly this shape.
+ * Confirmed live 2026-07-25: p2p-release-lane rev7 (an `any:[oldFilter, newClause]`
+ * widening revision, statically a superset of the incumbent filter) matched 0 of
+ * ~1200 claimable rows for 4.5h — every member reported a clean "nothing
+ * claimable, parking" (indistinguishable from a genuinely drained lane), and no
+ * surface ever emitted a line about it. The write-time pool-collapse guard
+ * (spec-pool-preview.ts) legitimately let this through: a provable-superset
+ * revision skips the narrowing/collapse refusal by design (EI-18653814284166347),
+ * and the fleet's OWN previous spec had already independently degraded to 0
+ * (the noDelta exemption), so no refusal ever fired — only a warning on a single
+ * tool-call response nobody was tailing live. This is the STANDING, always-checked
+ * half the ticket asked for: "if a fleet's spec had never matched a single row,
+ * would any surface emit one line? Today: no."
+ *
+ * Fires when the fleet holds no live work (mirrors the stranded-fleet shape above)
+ * AND its OWN effective claim spec (bee row → fleet row → default) matches 0 rows
+ * of a currently-nonempty claimable pool. PURE: exported for direct unit-testing.
+ */
+export function computeSpecStarvedFleetAlert(input: {
+  totalLoad: number;
+  specMatched: number;
+  poolSize: number;
+}): { reason: string } | undefined {
+  if (input.totalLoad > 0 || input.poolSize === 0 || input.specMatched > 0) return undefined;
+  return {
+    reason:
+      `fleet-wide wip is 0 and this fleet's effective claim spec matches 0 of ${input.poolSize} claimable ` +
+      'row(s) right now (EI-18655873409999215) — every member\'s scheduler:get_next will report a clean ' +
+      'scoped miss, indistinguishable from a genuinely drained lane. Check the spec\'s view.filter (a ' +
+      'not:/!= fence over a NULLABLE field, an "=" comparison against an array-typed field like `tags` ' +
+      '— use `contains` instead, or a scope that no longer matches any open row) via ' +
+      'scheduler:set_claim_spec — do not assume the lane is genuinely drained.',
+  };
+}
+
 export type DecoratedAgent = AgentAssignment & {
   sessionState?: SessionState | null;
   confirmLiveness?: boolean | null;
@@ -451,20 +491,46 @@ export default defineTool({
       // on (reclaim/reassign/nudge), not weather to wait out.
       unowned_criticals: unownedCriticals.length,
     };
+    const totalLoad = members.reduce((sum, m) => sum + m.load, 0);
     // EI-15055: loud fleet-wide zero-wip-with-supply alert — see computeStrandedFleetAlert.
     const strandedFleetAlert = computeStrandedFleetAlert({
-      totalLoad: members.reduce((sum, m) => sum + m.load, 0),
+      totalLoad,
       parkedCount: summary.parked,
       unownedCriticalCount: unownedCriticals.length,
     });
+    // EI-18655873409999215: the SPEC-STARVED alert — best-effort, fail-soft (a
+    // preview error or missing spec must never break the brief). Measures the
+    // fleet's OWN effective claim spec against the live claimable pool, the same
+    // compiled-filter count scheduler:set_claim_spec's write-time guard uses.
+    let specStarvedAlert: { reason: string } | undefined;
+    try {
+      const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
+      const { previewSpecPoolEffect } = await import('../../scheduler/spec-pool-preview');
+      const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleet), workspaceId });
+      if (rec.source !== 'default') {
+        const effect = await previewSpecPoolEffect(rec.spec, { workspaceId, harness: args.harness ?? null });
+        specStarvedAlert = computeSpecStarvedFleetAlert({
+          totalLoad,
+          specMatched: effect.matched,
+          poolSize: effect.pool,
+        });
+      }
+    } catch {
+      /* best-effort — never block the brief on a spec-effect preview failure */
+    }
     return {
       data: {
         ok: true,
         ...(self ? { self } : {}),
-        summary: { ...summary, strandedFleetAlert: strandedFleetAlert != null },
+        summary: {
+          ...summary,
+          strandedFleetAlert: strandedFleetAlert != null,
+          specStarvedAlert: specStarvedAlert != null,
+        },
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
         ...(strandedFleetAlert ? { strandedFleetAlertReason: strandedFleetAlert.reason } : {}),
+        ...(specStarvedAlert ? { specStarvedAlertReason: specStarvedAlert.reason } : {}),
       },
     };
   },

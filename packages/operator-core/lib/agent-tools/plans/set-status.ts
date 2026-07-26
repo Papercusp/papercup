@@ -34,7 +34,13 @@ import { resolveAgentIdentity, isEphemeralMcpCallIdentity, type AgentIdentity } 
 import { resolvePlanScope } from './source';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
 import { getClaim } from '../../plan-items/claims';
-import { convertPlanItem, findConvertedWorkItemByStamp, TERMINAL_WORK_ITEM_STATES } from '../../plan-items/convert';
+import {
+  convertPlanItem,
+  findConvertedWorkItemByStamp,
+  findCoverageWorkItems,
+  looksLikeResidualClosure,
+  TERMINAL_WORK_ITEM_STATES,
+} from '../../plan-items/convert';
 import { setWorkItemState } from '../../work-items';
 import { unassignItem } from '../../plan-items/assignments';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
@@ -736,6 +742,45 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     );
   }
 
+  // EI-18655063958515097 (residual-coverage guard): "a residual split off a closing
+  // plan item silently leaves the lane — no plan link, not claimable, parent reads
+  // done while its acceptance ask is unmet". Non-blocking (mirrors the
+  // duplicateOfWarning convention in work_items/complete.ts) — never refuses the
+  // flip, just surfaces the mismatch in the response the instant it happens instead
+  // of it surfacing later as an orphaned untracked item at release time. Two cases:
+  //   1. A work-item already COVERS this plan item (via plan_item/targetPlanItem's
+  //      `relates` edge) but is still non-terminal — closing anyway means the plan
+  //      will read as fully satisfied while that linked work remains open.
+  //   2. Nothing covers this plan item, but the closer's own note/rationale reads
+  //      like an unmet acceptance criterion was split off — the exact "bare residual,
+  //      no plan link" failure the bug describes.
+  // Best-effort: a lookup hiccup never fails the status flip.
+  let residualWarning: string | undefined;
+  if (isTerminalStatus(it.status) && result.value.oldStatus !== it.status) {
+    try {
+      const coverage = await findCoverageWorkItems(it.slug, it.itemId);
+      const openCoverage = coverage.filter((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state));
+      if (openCoverage.length > 0) {
+        residualWarning =
+          `${it.itemId} is closing (${it.status}) while ${openCoverage.length} linked coverage work-item(s) ` +
+          `(${openCoverage.map((w) => w.id).join(', ')}) remain non-terminal — the plan will read as fully ` +
+          `satisfied even though that work is still open. Confirm they're genuinely out of scope, or hold this ` +
+          `item open until they close.`;
+      } else if (looksLikeResidualClosure(`${it.note ?? ''} ${it.rationale ?? ''}`)) {
+        residualWarning =
+          `${it.itemId}'s note/rationale reads like an unmet acceptance criterion was split off, but no ` +
+          `linked work-item covers this plan item — file it via work_items:create { plan_item: { slug: ` +
+          `'${it.slug}', item: '${it.itemId}' } } (or targetPlanItem) so the residual stays claimable and ` +
+          `tracked instead of surfacing later as an orphaned, untracked item (EI-18655063958515097).`;
+      }
+    } catch (e) {
+      console.warn(
+        `[plans:set-status] residual-coverage check ${it.slug}#${it.itemId} failed:`,
+        (e as Error)?.message ?? e,
+      );
+    }
+  }
+
   // Terminal flip → release the caller's claim AND clear the item's durable
   // assignment (claim-discipline: done means nobody holds it; EI-2298: a
   // done/dropped item must also be assigned to no one — otherwise it sits
@@ -795,6 +840,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     ...(assignmentReleased ? { assignmentReleased } : {}),
     ...(workItemSynced ? { workItemSynced } : {}),
     ...(memory ? { memory } : {}),
+    ...(residualWarning ? { residualWarning } : {}),
     ...(noteTruncated
       ? {
           noteTruncated: true,
