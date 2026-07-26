@@ -28,6 +28,7 @@ import {
 } from './harness/git-sync/pipeline-events';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './release/gate-verdict-freshness';
+import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -98,6 +99,11 @@ export interface GitPipelineSnapshot {
     verdictObservedAtMs: number | null;
     verdictStale: boolean;
     verdictStaleReason: string | null;
+    /** EI-18669342433807110: WHICH freshness rule fired (see GateVerdictFreshness.reasonCode) —
+     *  lets a consumer distinguish `refire-in-flight` (a fresh verdict is imminent; do not even
+     *  re-run the checkpoint) from the other stale reasons (which DO want a fresh run fired).
+     *  Null whenever `verdictStale` is false. */
+    verdictStaleReasonCode: GateVerdictFreshness['reasonCode'];
     lastFixerStatus: string | null;
     lastFixerAtMs: number | null;
     lastFixerCandidate: string | null;
@@ -130,6 +136,11 @@ export interface GitPipelineSnapshot {
     /** Human-readable detail for `retriageStaleTip` (from the re-triage classifier), for a
      *  reader who wants the "why" without re-deriving it. Null alongside `retriageStaleTip`. */
     retriageDetail: string | null;
+    /** EI-18669342433807110: a stale-candidate auto-refire for THIS red is running RIGHT NOW
+     *  (`gate_health.inFlightRetriage`, already freshness-checked by `parseInFlightRetriage`).
+     *  Feeds Rule 4 of gate-verdict-freshness.ts. Null when no refire is in flight, or its
+     *  marker is missing/abandoned. */
+    inFlightRetriage: StoredInFlightRetriage | null;
   };
 
   /** A currently-OPEN merge conflict (resolver still working / unresolved), or null. */
@@ -381,6 +392,9 @@ export async function gitPipelineSnapshot(
   const verdictObservedAtMs = num(gateHealth.observedAt);
   const retriageStaleTip = typeof gateHealth.retriageStaleTip === 'string' ? gateHealth.retriageStaleTip : null;
   const retriageDetail = typeof gateHealth.retriageDetail === 'string' ? gateHealth.retriageDetail : null;
+  // EI-18669342433807110 — Rule 4: a stale-candidate auto-refire for the cached red running RIGHT
+  // NOW, already freshness-checked (missing/malformed/abandoned ⇒ null).
+  const inFlightRetriage = parseInFlightRetriage(gateHealth.inFlightRetriage);
   const rawConsecutiveReds = num(gateHealth.consecutiveReds) ?? 0;
   const {
     stale: gcVerdictStale,
@@ -395,6 +409,8 @@ export async function gitPipelineSnapshot(
     lastFiredAtMs: gcLastFiredMs,
     // EI-13288 — Rule 3: this verdict's own re-triage evidence, when it has any.
     retriageStaleTip,
+    // EI-18669342433807110 — Rule 4: an in-flight refire for this exact red, when one is running.
+    inFlightRetriage,
   });
   const effectiveGate = pinProvenGateCorrection(gcVerdictStaleReasonCode, {
     consecutiveReds: rawConsecutiveReds,
@@ -458,6 +474,7 @@ export async function gitPipelineSnapshot(
       verdictObservedAtMs,
       verdictStale: gcVerdictStale,
       verdictStaleReason: gcVerdictStaleReason,
+      verdictStaleReasonCode: gcVerdictStaleReasonCode,
       lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
       lastFixerAtMs: num(lastFixer?.at),
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,
@@ -470,6 +487,7 @@ export async function gitPipelineSnapshot(
       observedCandidate: typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
       retriageStaleTip,
       retriageDetail,
+      inFlightRetriage,
       flakyWorkspaces: Object.entries(flakeHistory)
         .filter(([, v]) => (v?.flakes ?? 0) >= 3)
         .map(([ws]) => ws),

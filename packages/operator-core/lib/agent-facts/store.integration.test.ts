@@ -246,3 +246,53 @@ describe('P-007 audience_scope + source_provenance (mig 574)', () => {
     expect(f.sourceProvenance).toBeNull();
   });
 });
+
+// ── owner-wall-ttl-lapse-hardening-2026-07-26 (EI-18669544162414270): the
+// wall-lapse read leg against the REAL table ──
+describe('listLapsedWallFacts', () => {
+  const base = { scope: 'harness' as const, scopeRef: 'papercusp', createdBy: 'su-int', workspaceId: WS };
+
+  /** Assert then backdate expires_at past `now` — assertFact only accepts a
+   *  positive ttlSec, so a lapsed fixture is built in two steps like a real
+   *  wall would arrive at lapse: asserted live, then its TTL elapses. */
+  async function assertLapsed(key: string, body: string, daysAgo: number) {
+    await assertFact({ ...base, key, body, ttlSec: 3600 }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - make_interval(days => ${daysAgo})
+                  WHERE workspace_id = ${WS} AND key = ${key}`;
+  }
+
+  it('finds an unretracted wall: fact past its expiry, oldest-lapsed first', async () => {
+    await assertLapsed('wall:newer-lapse', 'b1', 1);
+    await assertLapsed('wall:older-lapse', 'b2', 5);
+    const lapsed = await listLapsedWallFacts({}, db.sql);
+    expect(lapsed.map((f) => f.key)).toEqual(['wall:older-lapse', 'wall:newer-lapse']);
+    expect(lapsed[0]!.workspaceId).toBe(WS);
+    expect(lapsed[0]!.createdBy).toBe('su-int');
+  });
+
+  it('excludes a non-wall-prefixed fact even when it too has lapsed', async () => {
+    await assertLapsed('ordinary-lapsed', 'b', 1);
+    const lapsed = await listLapsedWallFacts({}, db.sql);
+    expect(lapsed.map((f) => f.key)).not.toContain('ordinary-lapsed');
+  });
+
+  it('excludes a wall fact that has NOT yet lapsed', async () => {
+    await assertFact({ ...base, key: 'wall:still-live', body: 'b', ttlSec: 3600 }, db.sql);
+    const lapsed = await listLapsedWallFacts({}, db.sql);
+    expect(lapsed.map((f) => f.key)).not.toContain('wall:still-live');
+  });
+
+  it('excludes a lapsed wall fact that was explicitly retracted', async () => {
+    await assertLapsed('wall:retracted', 'b', 1);
+    await retractFact({ scope: 'harness', scopeRef: 'papercusp', key: 'wall:retracted', workspaceId: WS }, db.sql);
+    const lapsed = await listLapsedWallFacts({}, db.sql);
+    expect(lapsed.map((f) => f.key)).not.toContain('wall:retracted');
+  });
+
+  it('a re-assert clears a wall from the lapsed set (fresh TTL, retracted_at reset)', async () => {
+    await assertLapsed('wall:renewed', 'stale body', 2);
+    expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).toContain('wall:renewed');
+    await assertFact({ ...base, key: 'wall:renewed', body: 'fresh body', ttlSec: 3600 }, db.sql);
+    expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).not.toContain('wall:renewed');
+  });
+});

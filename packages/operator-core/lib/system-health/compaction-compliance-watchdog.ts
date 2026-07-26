@@ -235,6 +235,13 @@ async function escalateContextDeath(ownerId: string, ownerLabel: string): Promis
           `The session's transcript ends in the window-overflow API error, so every subsequent wake fails silently while presence keeps beating. ` +
           `Relaunch it (fleet:launch-on-plan / psu) with less baseline context: --persona-tier=fleet, --context-size=trimmed, or a wider-window ([1m]) model. ` +
           `Its claims are reclaimable via the stale-claim lane. (context-trimming-tiers-2026-07-01 P-019)`,
+        // WI-5848 (sweep of EI-18668025239634541's class): the in-memory
+        // contextDeathEscalated Set is the only guard here, and it resets on a
+        // process restart — a stable conditionKey is durable defense-in-depth
+        // across restarts (this summary happens to already be restart-stable
+        // since it embeds no varying count, but the conditionKey removes any
+        // future risk if the summary is ever edited to add one).
+        meta: { subjectSignature: `compaction-watchdog:context-death:${ownerId}` },
       },
     );
   } catch (e) {
@@ -279,7 +286,19 @@ async function escalateBootConfig(
         workspaceId: null,
         userId: null,
       },
-      { severity: 'advisory', summary, body },
+      {
+        severity: 'advisory',
+        summary,
+        body,
+        // WI-5848 (sweep of EI-18668025239634541's class): `summary` embeds a
+        // LIVE streak/duration for the dark-telemetry kind (`${streak}
+        // watchdog sweeps (~Nmin)`), so it varies across occurrences for the
+        // SAME owner+kind exactly like the fixed lifecycle-death bug — the
+        // in-memory `bootConfigEscalated` guard is the only thing preventing a
+        // leak, and it resets on a process restart. `key` (already computed
+        // above for that guard) is stable across occurrences — reuse it.
+        meta: { subjectSignature: `compaction-watchdog:boot-config:${key}` },
+      },
     );
   } catch (e) {
     bootConfigEscalated.delete(key);
@@ -501,6 +520,12 @@ async function escalateCarryRespawnLoop(
           `(harness_shared.adv_sessions.session_id not re-anchored to the successor's fresh native id: a psu host launched before the WI-5075 fix, or a regression of that class). ` +
           `Each further cut only kills live work. The watchdog has STOPPED respawning this owner until it recovers. ` +
           `Fix: re-anchor the owner's adv_sessions.session_id to the live native session id (or relaunch the session so the post-fix launcher reports respawns), then verify the estimate drops. (WI-5075)`,
+        // WI-5848 (sweep of EI-18668025239634541's class): `summary` embeds the
+        // live `${streak}` count, so it varies across occurrences for the SAME
+        // owner exactly like the fixed lifecycle-death bug — the in-memory
+        // `carryRespawnLoopEscalated` guard is the only protection, and it
+        // resets on a process restart. Key on the stable owner identity.
+        meta: { subjectSignature: `compaction-watchdog:carry-respawn-loop:${ownerId}` },
       },
     );
   } catch (e) {
@@ -1326,6 +1351,12 @@ async function escalateStaleCutoverProcess(
           `(${cutoverIso}). ${note} Find this process (it is whichever long-lived host loaded ` +
           `compaction-compliance-watchdog.ts at that boot time — bg-host is the known repeat offender, EI-16190) ` +
           `and restart it so it runs current enforcement code. (EI-16190)`,
+        // WI-5848 (sweep of EI-18668025239634541's class): `summary` embeds
+        // `process.pid`, which varies across a process restart for the SAME
+        // cutoverId — the in-memory `staleCutoverEscalated` guard (keyed on
+        // cutoverId, not pid) is the only protection, and it resets on that
+        // same restart. Key on cutoverId (the guard's own key), not the pid.
+        meta: { subjectSignature: `compaction-watchdog:stale-cutover:${cutoverId}` },
       },
     );
   } catch (e) {

@@ -75,6 +75,16 @@ export const PIPELINE_STALE_NOTE =
   'NOT go fix the tests it names (that phantom dispatch is WI-4489). Re-run the checkpoint for a ' +
   'real verdict.';
 
+/** EI-18669342433807110: one stale reason — a stale-candidate auto-refire for this exact red
+ *  running RIGHT NOW (gate-verdict-freshness.ts Rule 4) — means "re-run the checkpoint" (the
+ *  generic PIPELINE_STALE_NOTE advice) is actively wrong: one is already running. Detected by its
+ *  reasonCode so the note can say so instead of sending an agent to fire a redundant re-run. */
+export const PIPELINE_REFIRE_IN_FLIGHT_NOTE =
+  'a stale-candidate auto-refire for this exact red is IN FLIGHT right now — the checkpoint already ' +
+  'proved (or is proving) these tests pass at a newer tip and is re-verifying the gate on it. Do ' +
+  'NOT go fix the tests it names, and do NOT fire another checkpoint run — a fresh verdict is ' +
+  'imminent; just wait for it.';
+
 /** EI-17603: the checkpoint's own failingTests record for this commit was CONTRADICTED by the
  *  test-run ledger — `failingFiles` below is ledger-derived, not the checkpoint's own (wrong)
  *  list. Told explicitly because the checkpoint blob is otherwise the FIRST-preferred source

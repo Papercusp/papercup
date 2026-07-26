@@ -41,6 +41,54 @@ const TURN_REF_LINE_RE = /\[turn:[0-9a-f]{4,36}@[0-9T:.+Z-]{10,40}\]/i;
  *  of this module. */
 const OWNER_TAG_RE = /\[owner:[^\]]+\]/i;
 
+/**
+ * EI-18672153930631150: `OWNER_TAG_RE` matches the literal token `[owner:` with
+ * no regard for whether the surrounding text is USING the tag (attributing a
+ * real directive) or MENTIONING it (documenting/comparing the convention's own
+ * syntax — exactly what a doc, a test fixture, or a checkpoint ABOUT this lint
+ * has to write). Two tiers of cheap, line-scoped anchors recover that
+ * distinction without touching the tag-detection regex itself (which must
+ * keep matching every real tag, including ones this module has never seen
+ * before):
+ *
+ *  DEFINITE quoting — a backtick-fenced `` `[owner:...]` `` — never flags at
+ *  all. This repo's actual convention is written BARE in prose (per root
+ *  CLAUDE.md's own worked example), never as inline code, so a backtick-
+ *  wrapped occurrence is how you quote a syntax you are talking ABOUT, not
+ *  how you invoke it. (Only same-line inline-code is handled; a multi-line
+ *  fenced ``` block is out of scope for this line-scoped scanner.)
+ *
+ *  AMBIGUOUS mention — downgraded to `possible-owner-tag-mention` (kept
+ *  VISIBLE, per the filed suggestion, but out of the loud `manual-owner-tag`
+ *  category so that category stays rare and keeps its meaning) — when either:
+ *   - PLACEHOLDER content: a real use always names an actual owner (e.g.
+ *     `[owner:Jane 2026-07-14]`); a mention illustrating the *form* almost
+ *     always uses a generic stand-in (`[owner:Name]`, `[owner:<name>]`,
+ *     `[owner:foo]`, `[owner:...]`), or
+ *   - MENTION-CONTEXT words within a short window before the tag (`form`,
+ *     `convention`, `pattern`, `syntax`, `example`, `e.g.`, `->`) — the
+ *     grammatical company a citation of the syntax keeps, per the filed
+ *     repro ("the detector matches the bracket form [owner:Name] ...").
+ *
+ * A tag naming a real owner with no such context — e.g.
+ * `[owner:jane 2026-07-10]` — is untouched and still flags `manual-owner-tag`
+ * exactly as before.
+ */
+const OWNER_TAG_PLACEHOLDER_RE = /\[owner:\s*(?:name|someone|tbd|foo|bar|x|<[^>]+>|\.{3}|…)\s*\]/i;
+const BACKTICK_WRAPPED_OWNER_TAG_RE = /`\[owner:[^\]]*\]`/i;
+const OWNER_TAG_MENTION_CONTEXT_RE =
+  /(?:\bforms?\b|\bconvention\b|\bpatterns?\b|\bsyntax\b|\bexamples?\b|\be\.g\.,?|->)[^[]{0,30}\[owner:/i;
+
+/** Definite quoting of the tag's syntax — never flag, not even as a mention. */
+function isOwnerTagQuotedForm(line: string): boolean {
+  return BACKTICK_WRAPPED_OWNER_TAG_RE.test(line);
+}
+
+/** Ambiguous — likely documenting/comparing the form, not attributing. */
+function isOwnerTagPossibleMention(line: string): boolean {
+  return OWNER_TAG_PLACEHOLDER_RE.test(line) || OWNER_TAG_MENTION_CONTEXT_RE.test(line);
+}
+
 /** Phrases that attribute a claim/imperative to the owner, or a bare "do not X
  *  until Y" gate/permission imperative — the two shapes EI-9091 found drifting
  *  (a block AND a permission can both be manufactured the same way). Kept to a
@@ -109,8 +157,20 @@ export interface ProvenanceLintMatch {
    *  by splicing/paraphrasing. This module's own sync scan cannot detect it
    *  (that needs the transcript read the stamp already does); it exists here
    *  purely so the mismatch shows up in the SAME `flagged`/`matches` shape a
-   *  consumer already checks, instead of a separate field nobody reads. */
-  kind: 'owner-attribution' | 'bare-gate-imperative' | 'manual-owner-tag' | 'quote-mismatch' | 'unverified-action-claim';
+   *  consumer already checks, instead of a separate field nobody reads.
+   *  'possible-owner-tag-mention' (EI-18672153930631150) is the DOWNGRADED
+   *  sibling of 'manual-owner-tag': a `[owner:...]`-shaped token that reads as
+   *  documentation/comparison of the tag convention itself (a placeholder name,
+   *  a backtick-quoted form, or "form"/"convention"/"e.g." nearby) rather than
+   *  an actual attribution — still surfaced (never silently dropped), but out
+   *  of the loud category so that category keeps its high-precision meaning. */
+  kind:
+    | 'owner-attribution'
+    | 'bare-gate-imperative'
+    | 'manual-owner-tag'
+    | 'possible-owner-tag-mention'
+    | 'quote-mismatch'
+    | 'unverified-action-claim';
 }
 
 export interface ProvenanceLintResult {
@@ -155,6 +215,14 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       if (matches.length >= MAX_MATCH_LINES) continue;
     }
     if (OWNER_TAG_RE.test(line)) {
+      // EI-18672153930631150: a `[owner:...]`-shaped token that reads as
+      // documentation of the convention (placeholder name / backtick-quoted /
+      // "form"/"convention"/"e.g." context) is a MENTION, not a USE — downgrade
+      // it rather than treating it as an asserted directive.
+      if (isOwnerTagMention(line)) {
+        matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'possible-owner-tag-mention' });
+        continue;
+      }
       // P-014: a bare [owner:…] tag no longer clears the line — it asserts an
       // owner directive without a verifiable anchor. Nudge for a [turn:…] ref.
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'manual-owner-tag' });

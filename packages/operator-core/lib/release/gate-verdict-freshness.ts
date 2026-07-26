@@ -52,9 +52,17 @@
  *      directly disproves its own failing-test names, at record time, without needing the pin to
  *      move or the routine to starve. See EI-13288 — a fresh, on-time, correctly-held gate can
  *      still name files its own retriage already knows don't reproduce.
+ *   4. REFIRE-IN-FLIGHT (EI-18669342433807110) — a stale-candidate auto-refire for THIS EXACT red
+ *      is running RIGHT NOW (green-checkpoint.ts already decided the red is stale and recursed
+ *      onto a newer tip, but that recursion can take minutes and writes nothing to `gate_health`
+ *      until it settles). Like rule 3 this is live first-hand evidence, not an inference — the run
+ *      that produced the cached red is, this moment, re-verifying it. Checked FIRST: it is the
+ *      most current of the four (rule 3 is about a run that already finished; this one hasn't).
  *
  * A verdict you cannot distinguish from a STALE verdict is not a verdict.
  */
+
+import type { StoredInFlightRetriage } from './in-flight-retriage';
 
 /** One green-checkpoint fire interval. The routine is hourly; the 1.5× slack below keeps a fire
  *  that lands a little late from reading as a starved writer. */
@@ -83,6 +91,10 @@ export interface GateVerdictFreshnessInput {
    *  it already checked. Null/absent when the run's retriage never found a stale-candidate (the
    *  common, genuinely-broken case) or ran on a blob predating this field. */
   retriageStaleTip?: string | null;
+  /** EI-18669342433807110 — Rule 4 input. The parsed `gate_health.inFlightRetriage` marker (already
+   *  freshness-checked by `parseInFlightRetriage`), when a stale-candidate auto-refire is currently
+   *  running. Null/absent when no refire is in flight, or its marker is missing/abandoned. */
+  inFlightRetriage?: StoredInFlightRetriage | null;
 }
 
 export interface GateVerdictFreshness {
@@ -98,9 +110,12 @@ export interface GateVerdictFreshness {
    *   - 'writer-starved'   — no new evidence either way; the true colour is genuinely unknown.
    *   - 'retriage-proven'  — this verdict's own named failures are proven not to reproduce at a
    *                          newer tip, but that is not a full-suite green proof.
+   *   - 'refire-in-flight' — a stale-candidate auto-refire for this exact red is running RIGHT
+   *                          NOW; a fresh verdict is imminent, so this cached red must not be
+   *                          acted on in the meantime.
    * `null` when `stale` is false.
    */
-  reasonCode: 'pin-advance' | 'writer-starved' | 'retriage-proven' | null;
+  reasonCode: 'pin-advance' | 'writer-starved' | 'retriage-proven' | 'refire-in-flight' | null;
 }
 
 const short = (sha: string): string => sha.slice(0, 12);
@@ -112,14 +127,38 @@ const short = (sha: string): string => sha.slice(0, 12);
  * green stale would only invent a second phantom pointing the other way.
  */
 export function evaluateGateVerdictFreshness(input: GateVerdictFreshnessInput): GateVerdictFreshness {
-  const { consecutiveReds, observedAtMs, observedFromPin, currentGreenPinSha, lastFiredAtMs, retriageStaleTip } =
-    input;
+  const {
+    consecutiveReds,
+    observedAtMs,
+    observedFromPin,
+    currentGreenPinSha,
+    lastFiredAtMs,
+    retriageStaleTip,
+    inFlightRetriage,
+  } = input;
   const intervalMs = input.intervalMs ?? GATE_FIRE_INTERVAL_MS;
 
   // Only a RED verdict can misdirect. A stale green is inert.
   if (consecutiveReds <= 0) return { stale: false, reason: null, reasonCode: null };
 
-  // Rule 3 — RETRIAGE-PROVEN (EI-13288). Checked first: this is the run's OWN evidence about
+  // Rule 4 — REFIRE-IN-FLIGHT (EI-18669342433807110). Checked FIRST — this is live, RIGHT-NOW
+  // evidence (a run is this moment re-verifying the exact red being read), more current than any
+  // of the other three rules. Only trusted when the marker names the SAME candidate this cached
+  // red was recorded against — a marker left over from an earlier, already-superseded red must
+  // never silence a genuinely new, unrelated one.
+  if (inFlightRetriage && observedFromPin && inFlightRetriage.fromCandidate === observedFromPin) {
+    return {
+      stale: true,
+      reason:
+        `a stale-candidate auto-refire for this exact red is IN FLIGHT right now (attempt ` +
+        `${inFlightRetriage.refireAttempt}/${inFlightRetriage.maxRefires}, re-verifying tip ` +
+        `${short(inFlightRetriage.refiringCandidate)}) — do NOT go fix the test(s) it names; a fresh ` +
+        `verdict is imminent`,
+      reasonCode: 'refire-in-flight',
+    };
+  }
+
+  // Rule 3 — RETRIAGE-PROVEN (EI-13288). Checked first of the post-hoc rules: this is the run's OWN evidence about
   // ITSELF (a real re-test it performed, not an inference from surrounding state), so it is the
   // most direct of the three rules. The gate held (correctly — the auto-refire cap bounds how
   // long we chase a moving tip), but the specific failing-test NAMES this verdict carries are
