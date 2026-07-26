@@ -557,7 +557,7 @@ export function gateStallEscalationBody(opts: {
       opts.heldHrs != null ? ` (~${opts.heldHrs}h since the last green)` : ''
     }; staging changes are NOT reaching the release.${
       tests.length ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.` : ''
-    }${opts.ownership ? '' : ''}`,
+    }${opts.ownership ? ` ${opts.ownership.label}` : ''}`,
   });
 }
 
