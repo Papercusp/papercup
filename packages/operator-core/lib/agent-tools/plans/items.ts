@@ -37,6 +37,7 @@ import {
 import {
   getAllPlanItemCoverage,
   compactCoverage,
+  isCoverageDivergent,
   type CompactCoverage,
   type PlanItemCoverage,
 } from "../../plan-item-coverage";
@@ -112,6 +113,12 @@ interface ItemRow {
    *  (plan-item-coverage). Present only when there's a signal (a link or a claim);
    *  absent ⇒ genuinely unworked (coverage 'none'). */
   coverage?: CompactCoverage;
+  /** EI-18679411140143743: every linked work-item is DONE (coverage 'complete')
+   *  but this item's own status is still non-terminal — a silent divergence
+   *  (completion never propagated, or propagated then the item reopened without
+   *  its work-item following). Present only when true, so a leader burn-down
+   *  read / monitor loop can flag it instead of silently under-counting. */
+  coverageDivergence?: true;
 }
 
 export default defineTool({
@@ -232,6 +239,9 @@ export default defineTool({
                 ? { blockedByIssues: blockingIssues[item.id] }
                 : {}),
               ...(cov ? { coverage: compactCoverage(cov) } : {}),
+              ...(cov && isCoverageDivergent(item.effectiveStatus, cov.level)
+                ? { coverageDivergence: true as const }
+                : {}),
             });
           }
         }

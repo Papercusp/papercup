@@ -74,8 +74,12 @@ export function requireLoopbackOr403(req: Request): Response | null {
   return Response.json(
     {
       error: 'loopback_only',
+      // Not "mutates durable state" any more: since 2026-07-26 the loopback
+      // tier also covers pure READS whose exposure is the concern rather than
+      // their effect (the whole sync surface, `GET /rest-query`). Describe the
+      // tier, not a guess at what the route does.
       detail:
-        'This route mutates durable state and is loopback-only. Reach it on 127.0.0.1 / localhost, or set PAPERCUSP_ALLOW_REMOTE_ADMIN=1 to opt into remote access.',
+        'This route is loopback-only. Reach it on 127.0.0.1 / localhost, or set PAPERCUSP_ALLOW_REMOTE_ADMIN=1 to opt into remote access.',
     },
     { status: 403 },
   );

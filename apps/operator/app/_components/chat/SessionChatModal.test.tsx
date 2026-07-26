@@ -466,6 +466,38 @@ describe('SessionChatModal', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  describe('P-008 chat:ask_choice card rendering (mcp-mangled tool names)', () => {
+    it('renders the AskChoiceCard (not a plain chip) for a raw mcp-mangled tool_use in the live transcript', async () => {
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+
+      act(() => {
+        captured!.handlers.backfill!(
+          JSON.stringify([
+            { kind: 'prompt', text: 'owner asks something' },
+            {
+              // What Claude's own tool_use block actually carries for an
+              // MCP-routed call — the client-mangled id, never the registry's
+              // canonical colon-form 'chat:ask_choice' (gui-chat-session-controls
+              // -2026-07-25 P-008: this is why the card silently never rendered).
+              kind: 'tool_use',
+              toolName: 'mcp__papercusp-su__chat_ask_choice',
+              toolInput: {
+                question: 'Which route?',
+                options: [{ id: 'a', label: 'Option A' }, { id: 'b', label: 'Option B' }],
+              },
+            },
+          ]),
+        );
+      });
+
+      await waitFor(() => expect(screen.getByText('Which route?')).toBeTruthy());
+      expect(screen.getByText('Option A')).toBeTruthy();
+      expect(screen.getByText('Option B')).toBeTruthy();
+    });
+  });
+
   describe('P-008 cards in the popup', () => {
     it('renders this owner\'s pending coord-escalation-with-options inline via the shared OtherDetail card', async () => {
       seedAttention([mkEscalation('esc-1')]);

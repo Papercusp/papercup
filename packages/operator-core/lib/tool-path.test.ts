@@ -4,7 +4,8 @@
  * /opt/homebrew/bin was missing from the operator's PATH).
  */
 import { describe, it, expect } from 'vitest';
-import { standardToolDirs, composeToolPath } from './tool-path';
+import { standardToolDirs, composeToolPath, vendoredGitEnv, GIT_VENDOR_DIRNAME } from './tool-path';
+import { join } from 'node:path';
 
 describe('standardToolDirs', () => {
   it('includes BOTH Homebrew prefixes (Apple-Silicon + Intel) on posix', () => {
@@ -58,5 +59,27 @@ describe('composeToolPath', () => {
     const out = composeToolPath({ currentPath: 'C:\\Windows', platform: 'win32' });
     expect(out).toBe('C:\\Windows');
     expect(out).not.toContain('/opt/homebrew/bin');
+  });
+});
+
+// EI-3620: the vendored macOS git bundle (GIT_EXEC_PATH/GIT_TEMPLATE_DIR
+// derivation). build-desktop-sidecar.sh lays out the vendor tree under
+// <sidecarBin>/.git-vendor/{bin,libexec/git-core,share/git-core/templates} —
+// this is the pure computation of the env vars a spawn needs to point there;
+// the existsSync-gated wiring into process.env lives in ensureToolPathEnv,
+// exercised by build-time / live-VM verification rather than a unit test.
+describe('vendoredGitEnv', () => {
+  it('derives GIT_EXEC_PATH under .git-vendor/libexec/git-core', () => {
+    const env = vendoredGitEnv('/Applications/Papercusp.app/bin');
+    expect(env.GIT_EXEC_PATH).toBe(
+      join('/Applications/Papercusp.app/bin', GIT_VENDOR_DIRNAME, 'libexec', 'git-core'),
+    );
+  });
+
+  it('derives GIT_TEMPLATE_DIR under .git-vendor/share/git-core/templates', () => {
+    const env = vendoredGitEnv('/Applications/Papercusp.app/bin');
+    expect(env.GIT_TEMPLATE_DIR).toBe(
+      join('/Applications/Papercusp.app/bin', GIT_VENDOR_DIRNAME, 'share', 'git-core', 'templates'),
+    );
   });
 });

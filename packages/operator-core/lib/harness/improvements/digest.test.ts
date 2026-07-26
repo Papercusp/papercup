@@ -84,6 +84,123 @@ describe('findLikelyDuplicates', () => {
     expect(member('nearA')).toEqual(['nearA', 'nearB']);
     expect(clusters.flatMap((c) => c.ids)).not.toContain('f0'); // distinct filler never clusters
   });
+  // WI-5820: the near-dup pass gained an inverted-token-index + size-band
+  // pre-filter after a live bg-host CPU profile attributed 842ms of self-time —
+  // the largest first-party cost in the sampled window — to jaccard() on this
+  // path. Both filter conditions are provably NECESSARY for jaccard >= threshold,
+  // so the clusters must be IDENTICAL to the brute-force all-pairs result. These
+  // tests are the equivalence proof; without them the optimization is a guess.
+  describe('WI-5820 pre-filter equivalence with brute-force all-pairs', () => {
+    const NEAR_DUP_JACCARD = 0.8;
+    /** The pre-optimization algorithm, verbatim in shape: exact-signature groups,
+     *  then an unfiltered O(n²) ascending scan claiming greedily. */
+    function bruteForce(candidates: ImprovementCandidate[]): { signature: string; ids: string[] }[] {
+      const bySig = new Map<string, string[]>();
+      const sigById = new Map<string, string>();
+      for (const c of candidates) {
+        const sig = dedupSignature(c.title);
+        sigById.set(c.id, sig);
+        if (!sig) continue;
+        const arr = bySig.get(sig) ?? [];
+        arr.push(c.id);
+        bySig.set(sig, arr);
+      }
+      const clusters: { signature: string; ids: string[] }[] = [];
+      const claimed = new Set<string>();
+      for (const [signature, ids] of bySig) {
+        if (ids.length > 1) {
+          clusters.push({ signature, ids });
+          ids.forEach((id) => claimed.add(id));
+        }
+      }
+      const remaining = candidates.filter((c) => !claimed.has(c.id));
+      const tok = (t: string) => new Set(dedupSignature(t).split(' ').filter(Boolean));
+      const jac = (a: Set<string>, b: Set<string>) => {
+        if (a.size === 0 && b.size === 0) return 1;
+        let inter = 0;
+        for (const t of a) if (b.has(t)) inter += 1;
+        const union = a.size + b.size - inter;
+        return union === 0 ? 0 : inter / union;
+      };
+      const sets = remaining.map((c) => tok(c.title));
+      for (let i = 0; i < remaining.length; i++) {
+        if (claimed.has(remaining[i].id)) continue;
+        const a = sets[i];
+        if (a.size === 0) continue;
+        const group = [remaining[i].id];
+        for (let j = i + 1; j < remaining.length; j++) {
+          if (claimed.has(remaining[j].id)) continue;
+          if (jac(a, sets[j]) >= NEAR_DUP_JACCARD) {
+            group.push(remaining[j].id);
+            claimed.add(remaining[j].id);
+          }
+        }
+        if (group.length > 1) {
+          claimed.add(remaining[i].id);
+          clusters.push({
+            signature: sigById.get(remaining[i].id) ?? dedupSignature(remaining[i].title),
+            ids: group,
+          });
+        }
+      }
+      return clusters;
+    }
+
+    // Deterministic PRNG so a failure is reproducible from the seed alone.
+    function rng(seed: number): () => number {
+      let s = seed >>> 0;
+      return () => {
+        s = (s * 1664525 + 1013904223) >>> 0;
+        return s / 0x100000000;
+      };
+    }
+
+    it.each([1, 2, 3, 4, 5])(
+      'matches brute-force exactly on a randomized corpus (seed %i) with heavy token reuse',
+      (seed) => {
+        const rand = rng(seed * 7919);
+        // A vocabulary small enough that near-dups, exact-signature collisions,
+        // partial overlaps and size-mismatched pairs all occur naturally.
+        const vocab = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet'];
+        const cands = Array.from({ length: 120 }, (_, i) => {
+          const len = 2 + Math.floor(rand() * 5);
+          const words = Array.from({ length: len }, () => vocab[Math.floor(rand() * vocab.length)]);
+          return cand({ id: `r${i}`, title: words.join(' ') });
+        });
+        const norm = (cs: { ids: string[] }[]) =>
+          cs
+            .map((c) => c.ids.slice().sort().join(','))
+            .sort()
+            .join(' | ');
+        expect(norm(findLikelyDuplicates(cands))).toBe(norm(bruteForce(cands)));
+      },
+    );
+
+    it('still clusters a pair that shares tokens but sits at the size-band edge', () => {
+      // 4 tokens vs 5 tokens, 4 shared → jaccard 4/5 = 0.8, exactly AT threshold.
+      // The size band (0.8) must not exclude it: 4/5 = 0.8 is within the band.
+      const clusters = findLikelyDuplicates([
+        cand({ id: 'p', title: 'alpha bravo charlie delta' }),
+        cand({ id: 'q', title: 'alpha bravo charlie delta echo' }),
+      ]);
+      expect(clusters.length).toBe(1);
+      expect(clusters[0].ids.sort()).toEqual(['p', 'q']);
+      // and it agrees with the reference
+      expect(bruteForce([
+        cand({ id: 'p', title: 'alpha bravo charlie delta' }),
+        cand({ id: 'q', title: 'alpha bravo charlie delta echo' }),
+      ]).length).toBe(1);
+    });
+
+    it('never clusters a pair sharing NO token (the inverted-index skip is sound)', () => {
+      const clusters = findLikelyDuplicates([
+        cand({ id: 'm', title: 'alpha bravo charlie' }),
+        cand({ id: 'n', title: 'xray yankee zulu' }),
+      ]);
+      expect(clusters).toEqual([]);
+    });
+  });
+
   it('skips the O(n²) near-dup pass above NEAR_DUP_MAX_CANDIDATES but keeps exact-signature clusters (round-4 P-001 bound)', () => {
     const filler = Array.from({ length: 4100 }, (_, i) => cand({ id: `g${i}`, title: `capfiller${i}` }));
     const clusters = findLikelyDuplicates([

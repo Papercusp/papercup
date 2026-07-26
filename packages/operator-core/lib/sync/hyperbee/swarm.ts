@@ -1319,10 +1319,37 @@ export async function joinHarnessSwarm(
       if (opts.hiveGitDial) {
         wireHiveGitDial(socket, opts.topic, opts.hiveGitDial.selfDevicePubkeyBase64, opts.hiveGitDial.sign);
       }
-    } catch {
-      // Replication failures shouldn't crash the swarm handler; the
-      // peer will reconnect if relevant. Diagnostic counters could
-      // be added here later.
+    } catch (e) {
+      // WI-5895: a throw here (store.replicate / openAnnounceChannel /
+      // wireHiveGitServe / wireHiveGitDial) means this socket completed the
+      // Noise handshake and LOOKS alive on every liveness check, but is
+      // incapable of ever ACKing/replicating a byte — a zombie connection.
+      // This used to be swallowed silently, so the only visible symptom was a
+      // ~13s UDX RTO-exhaustion timeout (UV_ETIMEDOUT) with nothing pointing
+      // at the cause (the WI-5863 diagnosis). Two durable fixes, not a
+      // diagnostic-log-only patch:
+      //   1. Fail LOUDLY, with enough context to diagnose immediately instead
+      //      of inferring it 13s later from a generic timeout.
+      //   2. Tear the half-wired connection down NOW instead of leaving it
+      //      looking alive for the full RTO-exhaustion window — the peer can
+      //      then fail fast + redial against a real error instead of quietly
+      //      waiting out a timeout that looks like network flakiness.
+      // The swarm handler itself must still never throw (a peer's connection
+      // failure can't crash every other peer's handling) — destroySocket is
+      // its own best-effort try/catch, and console.error never throws.
+      console.error(
+        '[swarm] replication wiring failed for peer — tearing connection down (never silently swallowed)',
+        {
+          topicHex: opts.topic.toString('hex'),
+          remotePublicKeyHex,
+          remoteIp,
+          error: e instanceof Error ? (e.stack ?? e.message) : String(e),
+        },
+      );
+      destroySocket(socket);
+      // Don't fire onPeerConnected / count this peer as live below — a
+      // connection whose wiring threw never actually replicated anything.
+      return;
     }
     if (opts.onPeerConnected) {
       try {

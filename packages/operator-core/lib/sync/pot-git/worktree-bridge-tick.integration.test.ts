@@ -181,9 +181,12 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
     const deadOpenDuplex = (): Promise<Socket> => Promise.reject(new Error('swarm unreachable'));
     const dialsBefore = dials;
     const priorWatermark = { epochSeq: { epoch: 1, seq: 3 }, stagingSha: s3 };
-    // Two more (never-published) advances the dead transport would need to fetch.
-    const a4 = await announce(1, 4, s3); // reuses s3's sha so it's a legal (no-op-content) advance if reached
-    const a5 = await announce(1, 5, s3);
+    // Two more (never-published) advances the dead transport would need to
+    // fetch. EI-14555: these MUST name shas absent from the local mirror —
+    // the fetch is now on-demand, so an advance reusing an already-local sha
+    // (s3, as this test previously did) never reaches the transport at all.
+    const a4 = await announce(1, 4, 'f4'.repeat(20));
+    const a5 = await announce(1, 5, 'f5'.repeat(20));
     const out = await runWorktreeBridgeTick({
       bareRepoPath: localMirror,
       worktreePath: wt,

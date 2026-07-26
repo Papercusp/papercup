@@ -246,13 +246,44 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
     expect(dials).toBe(dialsBefore);
   });
 
+  it('EI-14555: an announcement whose sha is ALREADY local does not dial at all (fetch is on-demand)', async () => {
+    // s3 was fetched into localMirror by the divergence test above, so a
+    // re-announcement of it needs no transport. The dial must be skipped
+    // rather than fired-and-wasted: on a self-announcing single-machine box
+    // an unconditional dial targets our OWN device pubkey, resolves no
+    // socket, and the resulting fetch-failed HOLDS the P-505 fed-event cursor
+    // — i.e. wiring openDuplex would wedge the bridge. Proven with a transport
+    // that would REJECT if it were ever called.
+    const dialsBefore = dials;
+    const res = await handleStagingAdvance(
+      {
+        ...cfg({ epochSeq: { epoch: 1, seq: 2 }, stagingSha: s2 }),
+        openDuplex: () => Promise.reject(new Error('must not dial — sha is already local')),
+      },
+      await announce(1, 3, s3),
+    );
+    expect(res.outcome).toBe('accepted');
+    expect(dials).toBe(dialsBefore);
+  });
+
   it('a dead transport is fetch-failed (retry next announce), never a throw', async () => {
+    // Must announce a sha that is genuinely ABSENT from localMirror, otherwise
+    // the on-demand skip above short-circuits before the transport is touched.
+    await writeFile(join(src, 'f.txt'), 'v4\n');
+    await git(['add', '.'], src);
+    await git(['commit', '-q', '-m', 'S4'], src);
+    const s4 = await git(['rev-parse', 'HEAD'], src);
+    await publishToPeer(s4, s3);
+    // NB: use the raw runner, not the `git()` helper — that helper asserts
+    // exit 0, and here a NONZERO exit is exactly what we're proving.
+    expect((await defaultRunGit(['rev-parse', '--verify', '-q', `${s4}^{commit}`], localMirror)).code).not.toBe(0);
+
     const res = await handleStagingAdvance(
       {
         ...cfg(watermark),
         openDuplex: () => Promise.reject(new Error('swarm unreachable')),
       },
-      await announce(1, 4, s3),
+      await announce(1, 4, s4),
     );
     expect(res.outcome).toBe('fetch-failed');
   });

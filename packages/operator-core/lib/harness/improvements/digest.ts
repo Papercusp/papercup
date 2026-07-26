@@ -246,12 +246,53 @@ export function findLikelyDuplicates(candidates: ImprovementCandidate[]): DupClu
   // a 775+ backlog (round-4 P-001, cpuprofile-attributed). The inner loop is now a
   // cheap set intersection over the prebuilt sets; results are unchanged.
   const tokenSets = remaining.map((c) => tokenSet(c.title));
+  // WI-5820: the inner loop still evaluated jaccard() for ALL ~n²/2 pairs, and a
+  // live bg-host CPU profile (2026-07-25, loop-saturation-1785037317587, p95 692ms)
+  // attributed 842ms of self-time — the single largest first-party cost in the
+  // sampled window — to jaccard() under findLikelyDuplicates <- buildDigest. The
+  // round-4 P-001 fix above removed the redundant tokenSet() work but left the
+  // quadratic pair count intact.
+  //
+  // Skip pairs that CANNOT reach the threshold, using two conditions that are
+  // provably necessary — so the returned clusters are byte-identical, this is a
+  // pure cost reduction and not a behaviour change:
+  //   (a) SHARED TOKEN. jaccard >= NEAR_DUP_JACCARD > 0 requires a non-empty
+  //       intersection, so a pair sharing no token can never qualify. An inverted
+  //       token index yields only the pairs that share at least one.
+  //   (b) SIZE BAND. |a∩b| <= min(|a|,|b|) and |a∪b| >= max(|a|,|b|), so
+  //       jaccard <= min/max. A pair whose sizes differ by more than the threshold
+  //       ratio therefore cannot qualify, whatever its overlap.
+  const postings = new Map<string, number[]>();
+  for (let i = 0; i < tokenSets.length; i++) {
+    for (const t of tokenSets[i]) {
+      const arr = postings.get(t);
+      if (arr) arr.push(i);
+      else postings.set(t, [i]);
+    }
+  }
   for (let i = 0; i < remaining.length; i++) {
     if (claimed.has(remaining[i].id)) continue;
     const a = tokenSets[i];
     if (a.size === 0) continue;
+    // Candidates j > i sharing >= 1 token with i, within the size band.
+    const minSize = a.size * NEAR_DUP_JACCARD;
+    const maxSize = a.size / NEAR_DUP_JACCARD;
+    const candidateJs = new Set<number>();
+    for (const t of a) {
+      const arr = postings.get(t);
+      if (!arr) continue;
+      for (const j of arr) {
+        if (j <= i) continue;
+        const size = tokenSets[j].size;
+        if (size < minSize || size > maxSize) continue;
+        candidateJs.add(j);
+      }
+    }
     const group = [remaining[i].id];
-    for (let j = i + 1; j < remaining.length; j++) {
+    // MUST stay ascending: the pass claims greedily, so visiting js out of order
+    // would change which cluster a contested candidate lands in. A Set iterates in
+    // insertion order (token order), not numeric order — hence the explicit sort.
+    for (const j of [...candidateJs].sort((x, y) => x - y)) {
       if (claimed.has(remaining[j].id)) continue;
       if (jaccard(a, tokenSets[j]) >= NEAR_DUP_JACCARD) {
         group.push(remaining[j].id);

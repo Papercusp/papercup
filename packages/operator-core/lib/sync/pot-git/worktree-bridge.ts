@@ -203,19 +203,43 @@ export async function handleStagingAdvance(
     const pure = acceptStagingAdvance(incoming, cfg.prior.epochSeq, cfg.accept);
     if (!pure.ok) return { outcome: 'rejected', reason: pure.reason, preFetch: true };
 
-    // 2) Mirror the integrator's namespace (objects + refs) over the duplex.
+    // 2) Mirror the integrator's namespace (objects + refs) over the duplex —
+    //    strictly ON DEMAND (EI-14555). The dial is skipped whenever the
+    //    announced sha is ALREADY a commit in the local mirror, which is the
+    //    common case: this machine IS the integrator, or P-202's ref-announce
+    //    fetch already synced the namespace. Making the fetch conditional (it
+    //    used to fire on every announcement whenever `openDuplex` was set) is
+    //    what lets git-sync-action wire this seam unconditionally:
+    //      - a SELF-announcement would otherwise dial our OWN device pubkey,
+    //        which resolves no socket -> `fetch-failed` -> the P-505 cursor
+    //        HOLDS -> the worktree bridge wedges. Skipping the dial when the
+    //        objects are local removes that whole failure mode.
+    //      - an already-current mirror no longer pays a swarm round-trip per
+    //        announcement.
+    //    This generalizes the old caller-level advice ("omit openDuplex when
+    //    the objects are already local") into a per-announcement decision the
+    //    bridge makes for itself.
     if (cfg.openDuplex) {
-      let duplex: Duplex;
-      try {
-        duplex = await cfg.openDuplex(incoming.device_pubkey);
-      } catch (e) {
-        return { outcome: 'fetch-failed', detail: `openDuplex failed: ${e instanceof Error ? e.message : String(e)}` };
-      }
-      const fetched = await fetchPeerNamespace(cfg.bareRepoPath, duplex, incoming.device_pubkey, {
-        timeoutMs: cfg.fetchTimeoutMs,
-      });
-      if (fetched.code !== 0) {
-        return { outcome: 'fetch-failed', detail: fetched.stderr.trim() || `fetch exited ${fetched.code}` };
+      const haveSha = await runGit(
+        ['rev-parse', '--verify', '-q', `${incoming.staging_sha}^{commit}`],
+        cfg.bareRepoPath,
+      );
+      if (haveSha.code !== 0) {
+        let duplex: Duplex;
+        try {
+          duplex = await cfg.openDuplex(incoming.device_pubkey);
+        } catch (e) {
+          return {
+            outcome: 'fetch-failed',
+            detail: `openDuplex failed: ${e instanceof Error ? e.message : String(e)}`,
+          };
+        }
+        const fetched = await fetchPeerNamespace(cfg.bareRepoPath, duplex, incoming.device_pubkey, {
+          timeoutMs: cfg.fetchTimeoutMs,
+        });
+        if (fetched.code !== 0) {
+          return { outcome: 'fetch-failed', detail: fetched.stderr.trim() || `fetch exited ${fetched.code}` };
+        }
       }
     }
 

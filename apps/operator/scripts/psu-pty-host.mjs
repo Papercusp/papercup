@@ -2426,6 +2426,36 @@ export function hostThroughPty(o) {
         }
         return { ok: true, reason: 'coalesced-into-pending-turn' };
       }
+      // EI-18679050054551625 (WI-5872 follow-up #2): everything from here down —
+      // mutex acquire, the human-idle + agent-busy GATES, the actual pty write,
+      // submit verification, and recycle/carry-respawn — can legitimately take
+      // anywhere from milliseconds (an idle agent) to the FULL busy-gate cap
+      // (production PAPERCUSP_PSU_PTY_BUSY_CAP_MS, or a multi-second recycle) to
+      // resolve. The very first version of the ACK protocol awaited all of this
+      // before acking, which meant injectIntoHost()'s default 2000ms client
+      // timeout fired on almost every gated delivery, incl. ones that landed
+      // perfectly (deferred-then-delivered, capped-then-dropped-but-durable,
+      // etc) — the original 9/10-red regression this work item tracks. A first
+      // pass fixed the two SLOWEST tails (verifySubmitted, recycleChild) to run
+      // in the background, which was necessary but not sufficient: the GATE
+      // WAIT itself (waitAtPrompt, up to the full busy cap) still blocked the
+      // ack, which a still-red subset of this same test file's assertions
+      // depend on NOT happening (each expects `ok` to resolve promptly —
+      // representing "accepted for processing" — checked BEFORE the busy
+      // window elapses, with the actual write/drop verified separately via the
+      // captured pty output on its own timeline).
+      //
+      // So: ack 'accepted' HERE, before any gate/mutex/write runs, for any
+      // message that reached this point (payload validated, correctly
+      // addressed, not a coalesce-duplicate) — mirroring the coalesce fast-path
+      // just above, which already returns immediately. Run the entire
+      // mutex+gate+delivery pipeline as a detached background continuation;
+      // every outcome it reaches (deferred/dropped/delivered/error) is already
+      // durably recorded via appendHostEvent()/process.stderr.write() calls
+      // inside it, exactly as a caller under the OLD bare-close-is-`true`
+      // protocol would have had to learn it — from the durable event log or
+      // the pty's own output, never from this ACK.
+      const runGatedDelivery = async () => {
       // EI-8822: hold the per-host inject mutex across the ENTIRE gated
       // critical section (gate wait → pty write → submit verify) so a wake
       // `turn` and a session:request-compaction `/compact` freed at the SAME
@@ -2774,6 +2804,22 @@ export function hostThroughPty(o) {
         // still covers the full "gate wait -> write/recycle -> verify" span.
         if (!deferMutexRelease && releaseInject) releaseInject();
       }
+      };
+      // Fire the gated pipeline and forget it (from the ACK's point of view) —
+      // its own try/catch/finally above already handles every expected outcome
+      // and durably records it; this outer .catch exists only so a genuinely
+      // unexpected throw can never surface as an unhandled promise rejection.
+      void runGatedDelivery().catch((err) => {
+        try {
+          process.stderr.write(
+            `psu-pty-host: gated delivery pipeline threw for ${ownerId}: ` +
+              `${String((err && err.message) || err).slice(0, 300)}\n`,
+          );
+        } catch {
+          /* diagnostic only */
+        }
+      });
+      return { ok: true, reason: 'accepted' };
       })().catch((err) => ({
         ok: false,
         reason: 'unhandled-error',

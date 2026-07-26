@@ -11,6 +11,7 @@ import {
   classifyCoverage,
   compactCoverage,
   coverageCollisions,
+  isCoverageDivergent,
   type CoverageWorkLink,
   type PlanItemCoverage,
 } from './plan-item-coverage';
@@ -92,6 +93,30 @@ describe('compactCoverage', () => {
   it('omits empty workers + links arrays to keep the payload small', () => {
     const lean: PlanItemCoverage = { ...base, links: [], workers: [], level: 'none' };
     expect(compactCoverage(lean)).toEqual({ level: 'none' });
+  });
+});
+
+describe('isCoverageDivergent (EI-18679411140143743)', () => {
+  it('flags the reported shape: every linked work-item done but the plan item is still todo', () => {
+    expect(isCoverageDivergent('todo', 'complete')).toBe(true);
+  });
+
+  it('flags wip / blocked / needs-human the same way — any non-terminal status', () => {
+    expect(isCoverageDivergent('wip', 'complete')).toBe(true);
+    expect(isCoverageDivergent('blocked', 'complete')).toBe(true);
+    expect(isCoverageDivergent('needs-human', 'complete')).toBe(true);
+  });
+
+  it('not diverged once the plan item itself lands done or dropped', () => {
+    expect(isCoverageDivergent('done', 'complete')).toBe(false);
+    expect(isCoverageDivergent('dropped', 'complete')).toBe(false);
+  });
+
+  it('not diverged for any non-complete coverage level, regardless of status', () => {
+    expect(isCoverageDivergent('todo', 'none')).toBe(false);
+    expect(isCoverageDivergent('todo', 'unclaimed')).toBe(false);
+    expect(isCoverageDivergent('todo', 'partial')).toBe(false);
+    expect(isCoverageDivergent('todo', 'full')).toBe(false);
   });
 });
 

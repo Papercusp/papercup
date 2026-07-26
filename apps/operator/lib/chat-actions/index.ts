@@ -24,6 +24,7 @@ export {
 } from './registry';
 export type { ChatAction, ChatActionContext, ChatActionConfirm } from './types';
 
-// Side-effect: registers concrete actions. P-005/P-006 each add
-// `import './FooAction';` here.
+// Side-effect: registers concrete actions.
 import './PostureActions';
+import './SessionActions';
+import './GradeAction';

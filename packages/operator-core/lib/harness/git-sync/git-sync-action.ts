@@ -2288,18 +2288,25 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
  * since a watermark" collection `ref-announce-tick.ts`'s header describes as
  * needed for P-202, scoped here to just the one `STAGING_ADVANCE_EVENT_KEY`.
  *
- * OPENDUPLEX GAP (known simplification, flagged like the integrator leg's
- * EPOCH NOTE above): this leg omits `worktree-bridge-tick.ts`'s `openDuplex`
- * seam — no live per-peer connection registry (device pubkey → swarm socket)
- * exists yet, only the dial primitive itself (`openHiveGitFetchDuplex`,
- * P-201). A pending announcement whose sha isn't already in the local mirror
- * is REJECTED `unknown-sha` (never a throw, never a wedge, never blocks the
- * rest of the tick) rather than fetched. Correct and safe on the integrator's
- * own machine (objects are always local there) and on any machine whose
- * mirror is already current via P-202's ref-announce fetch; a true cold
- * fetch-on-demand needs the registry — tracked for Phase 3 (P-301 live
- * drill). Because this leg never dials out, `fetch-failed` cannot occur
- * here, so the fed-event cursor always advances past every row it reads.
+ * FETCH-ON-DEMAND (EI-14555 — closes the former OPENDUPLEX GAP): this leg now
+ * wires `worktree-bridge-tick.ts`'s `openDuplex` seam through WI-3583's
+ * per-peer dial registry (device pubkey → live swarm socket), the same way the
+ * ref-announce leg wires its `openStream`. A pending announcement whose sha
+ * isn't in the local mirror is FETCHED from the announcing device instead of
+ * being rejected `unknown-sha` until the remote happens to re-announce.
+ *
+ * Two properties keep this safe on the machines where the old omission was
+ * already correct:
+ *   - the dial is PER-ANNOUNCEMENT CONDITIONAL (handleStagingAdvance skips it
+ *     whenever the sha is already a local commit), so the integrator's own
+ *     machine and any mirror kept current by P-202 never dial at all — and a
+ *     SELF-announcement can't dial our own pubkey and wedge the cursor;
+ *   - identity/topic resolution is best-effort, so a host with no gh identity
+ *     or no swarm join silently keeps the pre-EI-14555 local-mirror behaviour.
+ *
+ * Consequence for the cursor: `fetch-failed` IS now reachable here, so the
+ * P-505 cursor-hold below (retryable stop + age-bound TTL) is load-bearing
+ * rather than defensive — it was already implemented for exactly this.
  */
 async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<void> {
   try {
@@ -2396,6 +2403,31 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       ownIntegratorEpoch: rows[0]?.integrator?.epoch,
     });
 
+    // EI-14555: fetch-on-demand, closing the last leg of WI-3583. The dial
+    // registry (peer-dial-registry.ts) resolves device pubkey -> live swarm
+    // socket, so a machine whose mirror lacks the announced sha now FETCHES it
+    // instead of rejecting `unknown-sha` until the remote happens to re-announce.
+    // Wired exactly like the ref-announce leg's `openStream` above.
+    //
+    // Identity here is BEST-EFFORT, deliberately unlike the ref-announce leg:
+    // that leg must SIGN, so it returns early without an actor. This leg only
+    // VERIFIES, so a machine with no gh identity (or not yet joined to a swarm)
+    // must keep bridging exactly as before rather than lose the leg entirely —
+    // we simply omit `openDuplex` and serve from the local mirror. The dial is
+    // additionally per-announcement conditional inside handleStagingAdvance
+    // (it only fires when the sha is genuinely missing), which is what makes it
+    // safe to wire unconditionally on a self-announcing single-machine box.
+    const actor = await resolveUsageActor();
+    const topicHex = actor ? await resolveHiveGitTopicHex(workspaceId, potHomeSlug) : null;
+    const openDuplex =
+      actor && topicHex
+        ? (devicePubkeyBase64: string): Promise<Duplex> =>
+            openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), devicePubkeyBase64, {
+              repoKey,
+              peerGithubUserId: actor.githubUserId,
+            })
+        : undefined;
+
     const outcome = await runWorktreeBridgeTick({
       bareRepoPath: repoPath,
       worktreePath,
@@ -2405,7 +2437,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
         allowedDevices: memberDevicePubkeysBase64,
         ...(typeof maxGrantedEpoch === 'number' ? { maxGrantedEpoch } : {}),
       },
-      // openDuplex intentionally omitted — see the module doc above.
+      ...(openDuplex ? { openDuplex } : {}),
     });
 
     // P-505 cursor-hold (the WI-3497 drop-forever fix): a stop (fetch-failed or

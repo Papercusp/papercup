@@ -43,6 +43,7 @@ import { planItemRef, PLAN_ITEM_KIND } from './issue-blocks-merge';
 import { ISSUE_FAMILY_KINDS } from './work-items';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { TERMINAL_STATUSES as FEATURE_TERMINAL_STATUSES } from './dbos/frontier-readiness';
+import { isTerminalItemStatus } from './fleet-drained-events';
 import type { ItemActivity } from './item-activity';
 
 /** The link rels that count a work-item as ADDRESSING a plan item. `blocks` is NOT
@@ -75,6 +76,35 @@ const FEATURE_TERMINAL = FEATURE_TERMINAL_STATUSES;
 /** An activity that means a LIVE holder currently has the item (counts as covered). */
 function isLiveActivity(a: ItemActivity): boolean {
   return a === 'progressing' || a === 'alive';
+}
+
+/**
+ * EI-18679411140143743: is a plan item's own status STALE against its linked
+ * work-item(s)? True when coverage says every linked work-item is done
+ * (`level === 'complete'`) but the plan item's own status is still non-terminal
+ * — the exact silent divergence the ticket reports (burn-down undercounts,
+ * a leader re-chases work that already shipped).
+ *
+ * This is a DETECTOR, not an auto-heal: forward propagation already happens at
+ * completion time (work_items:complete's synchronizeFinishWork, for a
+ * `payload.plan_item`-stamped item) and the reverse direction has its own
+ * periodic sweep (reconcileOrphanedPlanItemWorkItems) — but neither catches a
+ * plan item left behind after a linked work-item finishes via a path that
+ * skips/loses the propagation (a `relates`-only coverage edge with no stamp,
+ * a transient finish-leg failure, a race). Auto-flipping here would risk
+ * fighting a DELIBERATE reopen (a leader re-opening a falsely-closed plan item
+ * while its stale work-item claim hasn't caught up yet) — surfacing the
+ * divergence is the safe, always-correct action; a human/leader decides
+ * whether to re-propagate or investigate.
+ *
+ * Pure — no I/O, unit-tested without PG. `effectiveStatus` is the item's own
+ * DERIVED status (not the coverage of a *different* item), so a plan item
+ * effectively `blocked` by an unrelated dependency while its own linked work
+ * is done still counts as diverged — that is precisely the case a leader
+ * burn-down needs surfaced.
+ */
+export function isCoverageDivergent(effectiveStatus: string, level: CoverageLevel): boolean {
+  return level === 'complete' && !isTerminalItemStatus(effectiveStatus);
 }
 
 /** The synthetic `rel` stamped on a coverage link discovered ONLY via the

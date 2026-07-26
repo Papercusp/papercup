@@ -65,15 +65,49 @@ export function registerCard<TArgs>(
 }
 
 /**
+ * MCP client tool-call ids are mangled (`mcp__<server>__<verb>`, every `:` in
+ * the canonical `group:verb` name replaced with `_` — same convention the su
+ * playbook documents for ToolSearch). Every card is registered under its
+ * CANONICAL colon-form name (`chat:ask_choice`), which is what the operator's
+ * OWN conversation turns already carry (server-side `defineTool` dispatch
+ * records the real name) — but a LIVE su/interactive session's transcript
+ * (SessionChatModal / session-timeline-parsers, gui-chat-session-controls-2026-07-25
+ * P-008) is fed straight from the model's raw `tool_use` blocks, so an
+ * MCP-routed `chat:ask_choice` call shows up there as
+ * `mcp__papercusp-su__chat_ask_choice` and a plain registry `Map.get` misses —
+ * the card silently falls through to the default chip (or renders nothing)
+ * even though a renderer for it exists.
+ */
+const MCP_TOOL_PREFIX_RE = /^mcp__[a-zA-Z0-9-]+__/;
+
+/**
+ * Reverse the MCP client mangling for a raw transcript tool name, matching it
+ * against the registry's own (small) key set — so this stays correct as cards
+ * are added/removed without a hardcoded tool list. Returns the canonical
+ * colon-form name when a registered card's mangled form matches, else `null`
+ * (not an MCP-shaped name, or no registered card matches it).
+ */
+function unmangleMcpToolName(rawName: string): string | null {
+  if (!MCP_TOOL_PREFIX_RE.test(rawName)) return null;
+  const suffix = rawName.replace(MCP_TOOL_PREFIX_RE, '');
+  for (const colonName of REGISTRY.keys()) {
+    if (colonName.replace(':', '_') === suffix) return colonName;
+  }
+  return null;
+}
+
+/**
  * Render the card for `toolName`, or `null` if nothing is registered
  * (or the renderer itself returned null — e.g. payload validation
- * failed inside the card).
+ * failed inside the card). Falls back to the un-mangled MCP form (see
+ * `unmangleMcpToolName`) when the raw name isn't a direct hit, so callers
+ * fed from a live agent-session transcript don't need to normalize first.
  */
 export function renderCard(
   toolName: string,
   props: CardRenderProps<unknown>,
 ): ReactNode | null {
-  const renderer = REGISTRY.get(toolName);
+  const renderer = REGISTRY.get(toolName) ?? REGISTRY.get(unmangleMcpToolName(toolName) ?? '');
   if (!renderer) return null;
   return renderer(props);
 }

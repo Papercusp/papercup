@@ -246,7 +246,34 @@ describe('joinHarnessSwarm — happy path', () => {
     expect(() => emit('connection', { pipe: vi.fn() })).not.toThrow();
   });
 
-  it('swallows replication throws (peer-side stream weirdness)', async () => {
+  it('WI-5895: never crashes the handler on a replication throw, but no longer swallows it silently — logs loudly + tears the socket down', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { swarm, emit } = fakeSwarm();
+    const badStore = {
+      replicate() {
+        throw new Error('local replicate failed');
+      },
+    } as unknown as Corestore;
+    const cb = vi.fn(); // onPeerConnected must NOT fire for a wiring failure
+    await joinHarnessSwarm({ store: badStore, topic: topic32(), swarm, onPeerConnected: cb });
+    const peer = { pipe: vi.fn(), destroy: vi.fn() };
+    expect(() => emit('connection', peer)).not.toThrow();
+
+    // 1. Logged loudly (never silently swallowed) with enough context to diagnose.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('replication wiring failed'),
+      expect.objectContaining({ error: expect.stringContaining('local replicate failed') }),
+    );
+    // 2. The half-wired connection is torn down immediately, not left looking alive.
+    expect(peer.destroy).toHaveBeenCalledTimes(1);
+    // A connection whose wiring threw never actually replicated — don't report it as connected.
+    expect(cb).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
+  });
+
+  it('WI-5895: a wiring-throw teardown never crashes even when the socket has no destroy() (best-effort)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { swarm, emit } = fakeSwarm();
     const badStore = {
       replicate() {
@@ -254,7 +281,9 @@ describe('joinHarnessSwarm — happy path', () => {
       },
     } as unknown as Corestore;
     await joinHarnessSwarm({ store: badStore, topic: topic32(), swarm });
+    // No `destroy` method on this fake — destroySocket's optional-chaining must not throw.
     expect(() => emit('connection', { pipe: vi.fn() })).not.toThrow();
+    errorSpy.mockRestore();
   });
 });
 

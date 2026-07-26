@@ -57,6 +57,10 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
       blockers: unresolved + issueBlocks,
       /** Coverage level ("is anyone working this") — full/partial/none-ish. */
       working: typeof coverage?.level === "string" ? coverage.level : null,
+      /** EI-18679411140143743: linked work is DONE but this item's own status
+       *  isn't — a silent burn-down divergence a leader must not miss even in
+       *  a trimmed/standard read. */
+      diverged: r.coverageDivergence === true,
     };
     if (tier === "trimmed") return base;
     return {

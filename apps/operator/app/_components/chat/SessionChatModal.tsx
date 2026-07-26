@@ -408,9 +408,37 @@ export default function SessionChatModal({
   // bar's context bag. Concrete actions (posture P-004, grade P-005, session
   // actions P-006, identity P-012) extend this via their own ctx fields —
   // this modal only owns the two fields every action can rely on.
+  // P-006 (session actions): the SAME advRoster.list query LiveSessionChat
+  // uses for the identity chip (P-012) — useSyncQuery shares its cache by
+  // {queryName, args}, so this is a second READER of the same cached data,
+  // not a second fetch. Needed here (not just in the child) because the
+  // action bar's ctx is built in THIS component's scope.
+  const actionRoster = useSyncQuery<RosterPayload>({
+    queryName: 'advRoster.list',
+    args: { workspaceId: null, endedLimit: 50 },
+  });
+  const actionRosterEntry = useMemo<HudRosterEntry | null>(() => {
+    const payload = actionRoster.data?.[0];
+    if (!payload) return null;
+    const entries = [...(payload.active ?? []), ...(payload.pending ?? [])];
+    return entries.find((e) => e.ownerId === sessionOwnerId) ?? null;
+  }, [actionRoster.data, sessionOwnerId]);
+
   const actionCtx: ChatActionContext | null = useMemo(
-    () => (sessionOwnerId ? { sessionOwnerId, ownerLabel } : null),
-    [sessionOwnerId, ownerLabel],
+    () =>
+      sessionOwnerId
+        ? {
+            sessionOwnerId,
+            ownerLabel,
+            // P-006 (session actions): the resolved Claude session id + the
+            // roster entry's agent/advSessionId/windowId.
+            agent: actionRosterEntry?.agent ?? null,
+            sessionId: resolved?.session_id ?? null,
+            advSessionId: actionRosterEntry?.advSessionId ?? null,
+            windowId: actionRosterEntry?.windowId ?? null,
+          }
+        : null,
+    [sessionOwnerId, ownerLabel, actionRosterEntry, resolved],
   );
 
   const agentName = ownerLabel || sessionOwnerId || 'agent session';

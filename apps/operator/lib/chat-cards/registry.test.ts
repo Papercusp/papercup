@@ -73,4 +73,36 @@ describe('chat-card registry', () => {
     expect(renderCard('chat:b', { args: {}, onAnswer: () => {} })).toBe('b');
     expect(renderCard('chat:c', { args: {}, onAnswer: () => {} })).toBeNull();
   });
+
+  describe('MCP-mangled tool names (gui-chat-session-controls-2026-07-25 P-008)', () => {
+    it('matches a mangled `mcp__<server>__<verb>` name against its registered colon-form card', () => {
+      const sentinel = { __kind: 'ask-choice' };
+      registerCard('chat:ask_choice', () => sentinel as unknown as null);
+      // What a live su/interactive session's raw tool_use block actually
+      // carries for an MCP-routed call — never the colon form directly.
+      const result = renderCard('mcp__papercusp-su__chat_ask_choice', { args: {}, onAnswer: () => {} });
+      expect(result).toBe(sentinel);
+    });
+
+    it('matches regardless of which MCP server prefix mangled it', () => {
+      const sentinel = { __kind: 'ask-choice' };
+      registerCard('chat:ask_choice', () => sentinel as unknown as null);
+      expect(renderCard('mcp__some-other-server__chat_ask_choice', { args: {}, onAnswer: () => {} })).toBe(sentinel);
+    });
+
+    it('still returns null for an mcp-shaped name with no matching registered card', () => {
+      registerCard('chat:ask_choice', () => ({}) as unknown as null);
+      expect(renderCard('mcp__papercusp-su__work_items_claim', { args: {}, onAnswer: () => {} })).toBeNull();
+    });
+
+    it('does not touch a plain (non-mcp-shaped) unregistered name', () => {
+      expect(renderCard('some_plain_tool', { args: {}, onAnswer: () => {} })).toBeNull();
+    });
+
+    it('a direct colon-form hit still wins without going through the mcp fallback', () => {
+      const direct = { __kind: 'direct' };
+      registerCard('chat:ask_choice', () => direct as unknown as null);
+      expect(renderCard('chat:ask_choice', { args: {}, onAnswer: () => {} })).toBe(direct);
+    });
+  });
 });

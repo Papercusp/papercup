@@ -19,8 +19,32 @@
  * detection and execution can never drift apart again.
  */
 
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+
+/**
+ * EI-3620: the vendored macOS git bundle, relative to the sidecar bin dir.
+ * build-desktop-sidecar.sh cross-vendors a relocatable git under
+ * `<sidecarBin>/.git-vendor/{bin,libexec/git-core,share/git-core/templates}`
+ * (mirroring WI-3314's postgres-client-tool vendoring — see the build script
+ * for the full mechanism). This bottle's `git` was not built with
+ * RUNTIME_PREFIX, so its compiled-in `--exec-path` is a hardcoded absolute
+ * Homebrew path that doesn't exist on a clean Mac — GIT_EXEC_PATH (and
+ * GIT_TEMPLATE_DIR, for `git init`/`git clone`'s default hooks/templates) must
+ * be set explicitly at spawn time regardless of how the dylibs were relocated.
+ */
+export const GIT_VENDOR_DIRNAME = '.git-vendor';
+
+/** Pure: compute the vendored-git env vars for a given sidecar bin dir. Callers
+ *  gate on the vendor tree actually existing there (see ensureToolPathEnv). */
+export function vendoredGitEnv(sidecarBin: string): { GIT_EXEC_PATH: string; GIT_TEMPLATE_DIR: string } {
+  const root = join(sidecarBin, GIT_VENDOR_DIRNAME);
+  return {
+    GIT_EXEC_PATH: join(root, 'libexec', 'git-core'),
+    GIT_TEMPLATE_DIR: join(root, 'share', 'git-core', 'templates'),
+  };
+}
 
 /**
  * Standard directories user CLI tools live in, in PATH-priority order. Includes
@@ -79,5 +103,21 @@ export function ensureToolPathEnv(): string {
     currentPath: process.env.PATH,
   });
   process.env.PATH = next;
+  // EI-3620: when the sidecar ships a vendored macOS git (bin/.git-vendor/…),
+  // point every spawned child at it via env — cheaper + safer than patching
+  // the ~80 individual `spawn('git', …)` call sites across the codebase, and
+  // every one of them already inherits process.env unless it explicitly
+  // overrides `env` with a fresh object (none currently drop GIT_* vars).
+  // Never clobbers an operator/power-user's own explicit GIT_EXEC_PATH.
+  if (
+    process.platform === 'darwin' &&
+    process.env.PAPERCUSP_SIDECAR_BIN &&
+    !process.env.GIT_EXEC_PATH &&
+    existsSync(join(process.env.PAPERCUSP_SIDECAR_BIN, GIT_VENDOR_DIRNAME, 'bin', 'git'))
+  ) {
+    const gitEnv = vendoredGitEnv(process.env.PAPERCUSP_SIDECAR_BIN);
+    process.env.GIT_EXEC_PATH = gitEnv.GIT_EXEC_PATH;
+    if (!process.env.GIT_TEMPLATE_DIR) process.env.GIT_TEMPLATE_DIR = gitEnv.GIT_TEMPLATE_DIR;
+  }
   return next;
 }
