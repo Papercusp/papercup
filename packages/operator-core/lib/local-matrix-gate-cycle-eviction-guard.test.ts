@@ -94,7 +94,9 @@ ${opts.createLock === false ? '' : `: >"$GATE_LOCK_PATH"
 printf '%s\\n' '2026-07-26T00:00:00 pid=4242 ci:live-federation-gate' >"$GATE_LOCK_PATH.holder"`}
 ${
   opts.hold
-    ? `flock -x "$GATE_LOCK_PATH" -c 'sleep 30' &
+    ? // stdio MUST be detached from our pipe: execFileSync waits for stdout EOF, and an
+      // inherited pipe in the (possibly orphaned) holder would hang the harness, not the probe.
+      `flock -x "$GATE_LOCK_PATH" -c 'sleep 10' >/dev/null 2>&1 </dev/null &
 HOLDER_PID=$!
 for _ in $(seq 1 100); do
   flock -n "$GATE_LOCK_PATH" -c true 2>/dev/null || break
@@ -107,7 +109,7 @@ RIG_EXCLUSIVE="\${PCUSP_RIG_EXCLUSIVE:-1}"
 ${ADVISORY}
 echo "RIG_EXCLUSIVE=$RIG_EXCLUSIVE"
 echo "HOLDER=$GATE_CYCLE_HOLDER"
-[ -n "$HOLDER_PID" ] && { kill "$HOLDER_PID" 2>/dev/null; wait "$HOLDER_PID" 2>/dev/null; }
+[ -n "$HOLDER_PID" ] && { pkill -P "$HOLDER_PID" 2>/dev/null; kill "$HOLDER_PID" 2>/dev/null; wait "$HOLDER_PID" 2>/dev/null; }
 exit 0
 `;
   return execFileSync('bash', ['-c', script], {
