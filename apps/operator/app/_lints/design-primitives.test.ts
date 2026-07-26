@@ -506,12 +506,11 @@ function unexpectedSmallButtonWithoutMinHeight(): string[] {
   const buttonClasses = collectButtonClassNames();
   const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
   const bareButtonRe = /(^|[\s>+~,])button(?=[\s.:#\[>+~,]|$)/;
-  // `(?<!min-)(?<!max-)width` isn't safe across older regex targets in this
-  // repo's ts-node/esbuild pipeline, so use a simple negative-lookbehind-free
-  // word-boundary match and reject on the captured prefix instead.
+  // Negative lookbehind excludes `min-width`/`max-width` (etc.) from matching
+  // as a bare `width` declaration — Node's regex engine supports this fine.
   const dimRe = (prop: 'width' | 'height') =>
-    new RegExp(`(^|[;{\\s])${prop}\\s*:\\s*([0-9.]+)px\\b`, 'g');
-  const minHeightRe = /(^|[;{\s])min-height\s*:/;
+    new RegExp(`(?<![a-z-])${prop}\\s*:\\s*([0-9.]+)px\\b`, 'g');
+  const minHeightRe = /(?<![a-z-])min-height\s*:/;
 
   for (const file of collectFiles()) {
     const content = readCode(file);
@@ -525,22 +524,16 @@ function unexpectedSmallButtonWithoutMinHeight(): string[] {
       }
       if (minHeightRe.test(decls)) continue;
 
-      const widthMatch = [...decls.matchAll(dimRe('width'))].find((m) => !/^(?:min|max)-$/.test(m[1] === ';' || m[1] === '{' || /\s/.test(m[1]) ? '' : m[1]));
-      const heightMatches = [...decls.matchAll(dimRe('height'))];
-      // Reject a match whose prop name was actually `min-width`/`max-width`
-      // (etc.) by checking the character immediately before the matched
-      // prefix boundary wasn't part of `min-`/`max-`.
-      const isBareDim = (m: RegExpMatchArray, prop: string): boolean => {
-        const idx = m.index ?? 0;
-        const before = decls.slice(Math.max(0, idx - 4), idx);
-        return !/min-$|max-$/.test(before + (m[1] === ';' || m[1] === '{' ? '' : m[1]));
-      };
-      const width = [...decls.matchAll(dimRe('width'))].find((m) => isBareDim(m, 'width'));
-      const height = [...decls.matchAll(dimRe('height'))].find((m) => isBareDim(m, 'height'));
-      void widthMatch;
-      void heightMatches;
+      const width = [...decls.matchAll(dimRe('width'))][0];
+      const height = [...decls.matchAll(dimRe('height'))][0];
       if (!width || !height) continue;
-      if (Number(width[2]) > 26 || Number(height[2]) > 26) continue;
+      // The hazard is specifically `height < 26px`: the zero-specificity
+      // `min-height: 26px` baseline only ever GROWS a shorter declared
+      // height. A height of exactly 26px collides harmlessly (min-height is
+      // a no-op — this is the WI-5989 workaround: 26x26 with no min-height,
+      // deliberately matching the floor instead of fighting it), and a
+      // height above 26px is never touched by the baseline at all.
+      if (Number(width[1]) > 26 || Number(height[1]) >= 26) continue;
 
       const selectors = selectorList.split(',').map((s) => s.trim()).filter(Boolean);
       for (const sel of selectors) {
@@ -551,7 +544,7 @@ function unexpectedSmallButtonWithoutMinHeight(): string[] {
         if (!hasBareButton && !hasButtonClass) continue;
         const before = content.slice(0, match.index! + whole.indexOf(selectorList));
         const line = before.split('\n').length;
-        offenders.push(`${rel(file)}:${line}: ${sel} (width:${width[2]}px height:${height[2]}px, no min-height)`);
+        offenders.push(`${rel(file)}:${line}: ${sel} (width:${width[1]}px height:${height[1]}px, no min-height)`);
       }
     }
   }
@@ -775,6 +768,36 @@ describe('design primitive lint', () => {
     expectNoUnexpected(
       'display:flex/grid on a <button> selector (HUD, enforced subset)',
       hudOffenders,
+    );
+  });
+
+  // NEW rule (EI-18690913356156250, 2026-07-26): globals.css's zero-specificity
+  // `:where(button, .pc-btn) { min-height: 26px; ... }` baseline silently wins
+  // over a declared height<26px, turning an intended NxN icon button into an
+  // off-by-a-few-px "egg". Nothing else catches this — typecheck, unit tests,
+  // and every other design-primitive lint stay green, because the defect
+  // exists only in computed layout (caught only by measuring a real WebKitGTK
+  // webview in WI-5989). WARN-ONLY per this file's own warn-first rollout
+  // convention: this brand-new selector-shape check found ~18 PRE-EXISTING
+  // sites already shipping the exact "egg" pattern (most are small enough —
+  // 6-16px icon glyphs inside a larger clickable button — that the visible
+  // distortion is minor, but at least one, left-sidebar.styles.ts's
+  // `.pclsb__collapse-btn` at 26x22, is a real ~4px egg), so flipping straight
+  // to enforce:true would red the whole fleet's gate over unaudited debt.
+  // Surfaces every offender loudly; migrate/allowlist each, then flip
+  // enforce:true so a NEW instance can never ship silently again.
+  it('flags a small button/.pc-btn rule that declares height<26px without also declaring min-height', () => {
+    warnOrFail(
+      'Small button rule missing min-height (globals.css baseline egg hazard)',
+      unexpectedSmallButtonWithoutMinHeight(),
+      {
+        enforce: false,
+        hint:
+          'globals.css\'s `:where(button, .pc-btn) { min-height: 26px }` baseline silently ' +
+          'wins over a declared height<26px (EI-18690913356156250) — either state ' +
+          'min-height explicitly (matching your intended height is fine, see WI-5989\'s ' +
+          'fix), or raise the declared height to >=26px.',
+      },
     );
   });
 });

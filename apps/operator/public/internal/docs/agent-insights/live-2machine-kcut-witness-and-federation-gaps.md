@@ -140,7 +140,12 @@ encryption on) the AEAD content read-cut.
 
 Two DEEPER transport-layer findings from the same fed-a/fed-b rig session, upstream of
 Gaps 1-2 (both fixed; captured here so the next agent hitting "peers connect but nothing
-merges" doesn't have to re-diagnose from scratch):
+merges" doesn't have to re-diagnose from scratch). If you're chasing this on a fresh rig
+session and instead hit `superuser_invalid_bearer` or `no_owner_identity` with no VM reset
+in between, that's the separate, upstream **D-007** operator-workspace-scoped-`HOME` gotcha
+(one session earlier in this same investigation) — see
+[federation-rig-restart-runbook §8](/internal/docs/agent-insights/federation-rig-restart-runbook#8-operator-workspace-scoped-home-silently-breaks-both-the-superuser-token-and-gh-auth-d-007),
+not a re-run of the bootstrap deadlock below.
 
 **WI-779 — substrate boot timeout under concurrent multi-harness load.** The swarm/DHT
 layer peers fine (`peer_connected` fires on the pot topic) but

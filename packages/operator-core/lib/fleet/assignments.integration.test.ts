@@ -18,6 +18,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseli
 import { listFleetAssignments, groupByAgent, orphanedClaims } from './assignments';
 import { recordedLiveOwnerIds } from '../adv-sessions';
 import { reorderWorkItem } from '../work-items';
+import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { onFleetAssignmentChange, _stopForTests, type FleetAssignmentChange } from '../fleet-assignment-bus';
 
 // getWorkItem (used by reorderWorkItem) scopes its feature lookup by activeWorkspaceId()
@@ -373,6 +374,38 @@ describe('fleet_assignment view + reader (P-001/P-002)', () => {
     expect(stale?.holderPresent).toBe(true); // running but heartbeat stale
     expect(stale?.holderAlive).toBe(false);
     expect(stale?.orphaned).toBe(true);
+  });
+
+  // EI-18690480039212432: fleet:assignments returned agents[].fleet = null for a
+  // LIVE fleet member fleet:status correctly reported as a member. Root cause: the
+  // view's claim legs joined the membership CTE on the CLAIM ROW's OWN workspace_id
+  // (often the plan-store DEFAULT_WORKSPACE_ID scope, EI-295) instead of the
+  // holder's REAL (presence) workspace where fleet_membership_events is actually
+  // appended — so a claim recorded under the plan-store scope missed the
+  // membership fact entirely. Repro: presence + the membership fact both live
+  // under the agent's real workspace (WS), but its plan-item CLAIM is recorded
+  // under DEFAULT_WORKSPACE_ID (a real, common split — EI-295's own comment).
+  it('EI-18690480039212432: fleetSlug resolves for a claim whose workspace_id differs from the holder\'s real (membership) workspace', async () => {
+    const owner = 'fa-test-ws-mismatch';
+    await seedPresence(owner, { intent: 'draining bugs' }); // real workspace: WS
+    await seedMembershipEvent(owner, 'gui-chat-controls', { workspaceId: WS, fleetRole: 'member' });
+    // The claim itself lives in the OTHER accepted bucket (plan-store scope) —
+    // listFleetAssignments' outer filter always includes it alongside WS/'*', so
+    // the row is never dropped outright; only its OWN fleet_slug join used to
+    // silently miss.
+    await seedPlanClaim(owner, { plan: 'plan-x', item: 'P-050', workspaceId: DEFAULT_WORKSPACE_ID });
+
+    const rows = await listFleetAssignments({ workspaceId: WS });
+    const claimRow = rows.find((r) => r.itemId === 'P-050');
+    expect(claimRow?.workspaceId).toBe(DEFAULT_WORKSPACE_ID);
+    expect(claimRow?.fleetSlug).toBe('gui-chat-controls');
+    expect(claimRow?.fleetRole).toBe('member');
+
+    // groupByAgent must not lose it either — the field a fleet-leader actually
+    // filters `agents[]` by.
+    const grouped = groupByAgent(rows);
+    const g = grouped.find((a) => a.agentId === owner);
+    expect(g?.fleetSlug).toBe('gui-chat-controls');
   });
 });
 

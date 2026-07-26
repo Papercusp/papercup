@@ -7,7 +7,7 @@
  * lock state, and renders the coord trail.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor, fireEvent } from '@testing-library/react';
+import { cleanup, render, waitFor, fireEvent, within } from '@testing-library/react';
 import AgentDossier, { type AgentDetail } from '../AgentDossier';
 import type { RosterEntry } from '../SessionsRosterView';
 
@@ -110,7 +110,7 @@ const DETAIL: AgentDetail = {
     currentClaim: { id: 'WI-9001', title: 'Fix the thing', harness: 'papercusp' },
     contextTokens: 40_000,
     compactionLimit: 200_000,
-    lastCheckpoint: { text: 'did the thing, left the other thing', updatedAtMs: Date.now() - 120_000 },
+    lastCheckpoint: { text: 'did the thing, left the other thing', updatedAtMs: Date.now() - 2 * 86_400_000 },
     unansweredDirectedCount: 2,
     lastToolCallAt: new Date(Date.now() - 30_000).toISOString(),
   },
@@ -318,6 +318,82 @@ describe('AgentDossier', () => {
     expect(getAllByText('019eeb2b-0742-72a0-85a4-5dc505cfe62d').length).toBeGreaterThan(0);
     expect(getByText('hooks-configured')).toBeTruthy();
     expect(getByText('not required')).toBeTruthy();
+  });
+
+  it('P-005: renders the Health signals — loop, claim, context, checkpoint, unanswered, last tool call', async () => {
+    const { findByText, container } = render(
+      <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+    );
+    expect(await findByText('Health')).toBeTruthy();
+    // Scoped to the Health section: "today" also appears in the Coord trail's
+    // own timestamp (both are freshly-timestamped in the fixture), so an
+    // unscoped getByText('today') would ambiguously match both.
+    const health = within(container.querySelector('#pc-dossier-signals')!);
+    expect(health.getByText('armed · every 60s · next 5m left')).toBeTruthy();
+    expect(health.getByText('WI-9001 — Fix the thing')).toBeTruthy();
+    expect(health.getByText('40,000 / 200,000 · 20%')).toBeTruthy();
+    expect(health.getByText('did the thing, left the other thing')).toBeTruthy();
+    expect(health.getByText('2d ago')).toBeTruthy(); // checkpoint write time
+    expect(health.getByText('2 peers waiting on a reply')).toBeTruthy();
+    expect(health.getByText('today')).toBeTruthy(); // last tool call, ~30s ago
+  });
+
+  it('P-005: an inactive loop renders "not armed", not the interval/next-fire fields', async () => {
+    syncState.detail = {
+      ...DETAIL,
+      signals: { ...DETAIL.signals, loop: { active: false, intervalSec: null, nextFireAt: null, parked: false, stalled: false } },
+    } satisfies AgentDetail;
+    const { findByText, queryByText } = render(
+      <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+    );
+    expect(await findByText('not armed')).toBeTruthy();
+    expect(queryByText(/every \d+s/)).toBeNull();
+  });
+
+  it('P-005: a stalled loop is called out explicitly', async () => {
+    syncState.detail = {
+      ...DETAIL,
+      signals: {
+        ...DETAIL.signals,
+        loop: { active: true, intervalSec: 60, nextFireAt: null, parked: true, stalled: true },
+      },
+    } satisfies AgentDetail;
+    const { findByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+    expect(await findByText('armed · every 60s · ⚠ stalled')).toBeTruthy();
+  });
+
+  it('P-005: holding no claim renders "none held" rather than hiding the row', async () => {
+    syncState.detail = {
+      ...DETAIL,
+      signals: { ...DETAIL.signals, currentClaim: null },
+    } satisfies AgentDetail;
+    const { findByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+    expect(await findByText('none held')).toBeTruthy();
+  });
+
+  it('P-005: no unanswered-directed messages hides the row (not "0 peers waiting")', async () => {
+    syncState.detail = {
+      ...DETAIL,
+      signals: { ...DETAIL.signals, unansweredDirectedCount: 0 },
+    } satisfies AgentDetail;
+    const { findByText, queryByText } = render(
+      <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+    );
+    expect(await findByText('Health')).toBeTruthy();
+    expect(queryByText(/waiting on a reply/)).toBeNull();
+  });
+
+  it('P-005: a long checkpoint note is truncated for the glance row', async () => {
+    const longNote = 'x'.repeat(500);
+    syncState.detail = {
+      ...DETAIL,
+      signals: { ...DETAIL.signals, lastCheckpoint: { text: longNote, updatedAtMs: Date.now() } },
+    } satisfies AgentDetail;
+    const { findByText, queryByText } = render(
+      <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+    );
+    expect(await findByText(`${'x'.repeat(220)}…`)).toBeTruthy();
+    expect(queryByText(longNote)).toBeNull();
   });
 
   it('cross-marks a held file with the L lock marker', async () => {

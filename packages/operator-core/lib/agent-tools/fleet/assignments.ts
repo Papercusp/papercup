@@ -284,7 +284,22 @@ export function deriveMemberVerdict(
   },
   nowMs: number = Date.now(),
 ): MemberVerdict {
-  if (a.sessionState === 'ended' || a.sessionState === 'suspect' || a.sessionState === 'draining' || !a.alive) return 'dead';
+  // EI-18690950786179315: a CONFIRMED terminal sessionState (ended/suspect/draining
+  // — the liveness oracle actually looked and found the session over) always wins:
+  // truly dead. But `!a.alive` ALONE is a much weaker signal — it fires whenever
+  // `reconcileWakeability` found NO wakeability row for this owner at all (e.g. its
+  // coord_presence row is missing/expired, plausibly around a compaction respawn
+  // that hasn't re-registered presence yet) — `sessionState` is then left unset,
+  // not confirmed-dead. Previously that bare heartbeat-staleness short-circuited to
+  // 'dead' unconditionally, even when a FRESH real tool call (the strongest
+  // liveness signal this function has — see `speaking` below) proved the agent was
+  // actively working: a leader saw a live, working agent's claims/state go
+  // completely blank ("dead") mid-task, unable to tell it apart from a genuinely
+  // gone holder. A fresh tool call now overrides a bare (unconfirmed) heartbeat-dead
+  // read, matching this function's own "speaking outranks stalled" precedent.
+  const speakingNow = a.lastToolCallAtMs != null && nowMs - a.lastToolCallAtMs <= VERDICT_SPEAKING_FRESH_MS;
+  if (a.sessionState === 'ended' || a.sessionState === 'suspect' || a.sessionState === 'draining') return 'dead';
+  if (!a.alive && !speakingNow) return 'dead';
   if (a.monitorState) return a.monitorState;
   // EI-15655 (fleet:leader-brief false-positive stalls): a member holding NO
   // claims that is deliberately parked on an events:await key is healthily
@@ -294,7 +309,7 @@ export function deriveMemberVerdict(
   // genuinely stalled claim is never masked by an unrelated park.
   if (a.load === 0 && (a.parkedOn?.length ?? 0) > 0) return 'parked-awaiting-capability';
   const last = a.lastToolCallAtMs;
-  if (last != null && nowMs - last <= VERDICT_SPEAKING_FRESH_MS) return 'speaking';
+  if (speakingNow) return 'speaking';
   // Member-level stall: not speaking AND (an item isn't advancing, or it holds work
   // and went quiet). `last == null` with load is NOT stalled — it has never taken a
   // turn, so it is still in the boot window (joined), not wedged mid-work.

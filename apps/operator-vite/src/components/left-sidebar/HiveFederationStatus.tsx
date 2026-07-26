@@ -17,9 +17,14 @@
  *   - A private hive shows "private — not announced" (it never announces), NOT
  *     "0 peers" (which would imply a failed reach).
  *   - The substrate line is install-wide local boot health, NOT a per-peer sync
- *     claim. There is NO "synced" badge — a per-hive content-sync peer count does
- *     not exist cleanly (shared swarm; see findings-M), and inventing one would be
- *     the exact dishonesty this surface exists to prevent.
+ *     claim.
+ *   - EI-1599 (composes onto Brief H/A-002): `contentPeers` / `lastContentSyncMs`
+ *     are the TRUE per-hive content-replication signal — peers whose
+ *     content-announce channel is open on THIS hive's own content topic right
+ *     now (contentSyncLabel below), distinct from "reach" (discovery only) and
+ *     from the install-wide substrate/drain lines. `contentPeers === undefined`
+ *     (an older payload shape) renders NOTHING for this line rather than
+ *     guessing — silence over a fabricated claim.
  */
 import { Radio } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
@@ -32,6 +37,14 @@ export interface FedHive {
   visibility: 'public' | 'invite' | 'private';
   memberCount: number;
   reachablePeers: number;
+  /** EI-1599: TRUE content-replication peer count on this hive's own content
+   *  topic (not discovery/reach). Optional so an older route response (or a
+   *  test fixture) without it still renders — the label fn treats `undefined`
+   *  as "not reported" and renders nothing, never a fabricated 0. */
+  contentPeers?: number;
+  /** EI-1599: ms-epoch of the last content-sync activity seen on this hive's
+   *  content topic, or `null` if none yet / no minted identity. */
+  lastContentSyncMs?: number | null;
 }
 /** Install-wide drain (SYNC) health — EI-1618/EI-1599. Optional so an older route
  *  response (or a test fixture) without it still renders. */
@@ -65,6 +78,38 @@ export function reachLabel(h: Pick<FedHive, 'visibility' | 'reachablePeers'>): s
   // Announced (public/invite) but nobody on the topic — the honest stranded state
   // (mirrors ShareHiveForm's 0-peer copy). NEVER "synced" / "0 peers connected".
   return 'no peers connected yet — broadcasting into the void';
+}
+
+/** `123s`/`45m`/`6h`/`3d` — mirrors the short age idiom used elsewhere in this
+ *  rail (e.g. GitClient.tsx); local so this file has no new shared dependency. */
+function ageShort(ms: number): string {
+  const d = Math.max(0, ms);
+  if (d < 60_000) return `${Math.round(d / 1000)}s`;
+  if (d < 3_600_000) return `${Math.round(d / 60_000)}m`;
+  if (d < 86_400_000) return `${Math.round(d / 3_600_000)}h`;
+  return `${Math.round(d / 86_400_000)}d`;
+}
+
+/**
+ * Honest per-hive content-REPLICATION line (EI-1599, composes onto Brief H/A-002).
+ * Distinct from `reachLabel` (discovery/announce reach) — this counts peers whose
+ * content-announce channel is open on THIS hive's own content topic right now,
+ * i.e. actually syncing hive content, not merely able to find it.
+ *
+ * Returns `null` (render nothing) when `contentPeers` is `undefined` — an older
+ * route/resolver payload without the field — rather than fabricating a 0; that
+ * silence is the honest choice, matching this surface's whole contract.
+ */
+export function contentSyncLabel(h: Pick<FedHive, 'contentPeers' | 'lastContentSyncMs'>): string | null {
+  if (h.contentPeers === undefined) return null;
+  const lastSuffix = h.lastContentSyncMs != null ? ` · last synced ${ageShort(Date.now() - h.lastContentSyncMs)} ago` : '';
+  if (h.contentPeers > 0) {
+    return `syncing content with ${h.contentPeers} peer${h.contentPeers === 1 ? '' : 's'}${lastSuffix}`;
+  }
+  // 0 live content peers right now — honest, NOT "synced"/"disconnected". A past
+  // lastContentSyncMs (peers come and go) is still worth showing; its absence
+  // means no content-sync peer has ever paired on this hive's topic.
+  return `no content-sync peers right now${lastSuffix}`;
 }
 
 /**
@@ -202,17 +247,25 @@ export default function HiveFederationStatus({ collapsible = false }: HiveFedera
                     <div className="pclsb-row__sub" data-testid={`fed-reach-${h.potId}`}>
                       {reachLabel(h)}
                     </div>
+                    {(() => {
+                      const syncMsg = contentSyncLabel(h);
+                      return syncMsg ? (
+                        <div className="pclsb-row__sub" data-testid={`fed-content-${h.potId}`} style={{ opacity: 0.85 }}>
+                          {syncMsg}
+                        </div>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
               );
             })
           )}
 
-          {/* Honest scope note — reach is discovery; sync-health is install-wide. */}
+          {/* Honest scope note — reach is discovery, content-sync is per-hive, sync-health is install-wide. */}
           <div className="pclsb-panel__empty" style={{ fontSize: 11, opacity: 0.7 }} data-testid="fed-scope-note">
-            Reach = peers who can discover this {t('pot', { lower: true })} on its announce topic. Sync-health
-            is install-wide (is local content draining to the federation log); per-{t('pot', { lower: true })}
-            content-sync peer counts are not yet surfaced.
+            Reach = peers who can discover this {t('pot', { lower: true })} on its announce topic. Content-sync (per-
+            {t('pot', { lower: true })}) = peers actively replicating its content right now. Sync-health below is
+            install-wide (is local content draining to the federation log).
           </div>
         </>
       )}

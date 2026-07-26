@@ -175,6 +175,20 @@ describe('deriveMemberVerdict (EI-8995)', () => {
     expect(deriveMemberVerdict(verdictInput({ alive: false, sessionState: null }), NOW)).toBe('dead');
   });
 
+  it('EI-18690950786179315: a FRESH tool call overrides a bare (unconfirmed) heartbeat-dead read — a missing/stale coord_presence row (e.g. around a compaction respawn) must not blank out a genuinely-working agent', () => {
+    const last = NOW - 60_000; // well within VERDICT_SPEAKING_FRESH_MS
+    expect(deriveMemberVerdict(verdictInput({ alive: false, sessionState: null, lastToolCallAtMs: last }), NOW)).toBe(
+      'speaking',
+    );
+  });
+
+  it('EI-18690950786179315: a CONFIRMED terminal sessionState still wins dead even with a fresh tool call (the oracle actually looked and found it over)', () => {
+    const last = NOW - 60_000;
+    expect(
+      deriveMemberVerdict(verdictInput({ alive: true, sessionState: 'ended', lastToolCallAtMs: last }), NOW),
+    ).toBe('dead');
+  });
+
   it('fresh tool call → speaking (really working right now)', () => {
     const last = NOW - VERDICT_SPEAKING_FRESH_MS + 1_000;
     expect(deriveMemberVerdict(verdictInput({ lastToolCallAtMs: last }), NOW)).toBe('speaking');

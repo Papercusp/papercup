@@ -37,7 +37,13 @@ vi.mock('@papercusp/sync', () => ({
 // The pure label fns (reachLabel/substrateLabel/drainLabel) carry no lexicon nouns.
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-import HiveFederationStatus, { reachLabel, substrateLabel, drainLabel, type FedStatus } from './HiveFederationStatus';
+import HiveFederationStatus, {
+  reachLabel,
+  substrateLabel,
+  drainLabel,
+  contentSyncLabel,
+  type FedStatus,
+} from './HiveFederationStatus';
 
 /** Push one FedStatus onto the panel's sync query (flat one-element array). */
 function mockSync(body: FedStatus | null, error: Error | null = null) {
@@ -76,6 +82,29 @@ describe('reachLabel (honesty core)', () => {
     const label = reachLabel({ visibility: 'private', reachablePeers: 0 });
     expect(label).toBe('private — not announced');
     expect(label).not.toMatch(/0 peer|void/i);
+  });
+});
+
+describe('contentSyncLabel (per-hive content-replication honesty — EI-1599)', () => {
+  it('undefined contentPeers (older payload shape) renders NOTHING — silence, not a fabricated 0', () => {
+    expect(contentSyncLabel({ contentPeers: undefined, lastContentSyncMs: null })).toBeNull();
+  });
+  it('0 live content peers → honest, never "synced"/"disconnected"', () => {
+    const label = contentSyncLabel({ contentPeers: 0, lastContentSyncMs: null });
+    expect(label).toBe('no content-sync peers right now');
+    expect(label).not.toMatch(/synced|connected/i);
+  });
+  it('0 live peers but a past sync → still shows the honest last-synced age', () => {
+    const label = contentSyncLabel({ contentPeers: 0, lastContentSyncMs: Date.now() - 65_000 });
+    expect(label).toBe('no content-sync peers right now · last synced 1m ago');
+  });
+  it('≥1 live content peer → the true per-hive sync claim, singular/plural + age', () => {
+    expect(contentSyncLabel({ contentPeers: 1, lastContentSyncMs: Date.now() - 5_000 })).toBe(
+      'syncing content with 1 peer · last synced 5s ago',
+    );
+    expect(contentSyncLabel({ contentPeers: 3, lastContentSyncMs: Date.now() - 3_600_000 })).toBe(
+      'syncing content with 3 peers · last synced 1h ago',
+    );
   });
 });
 
@@ -120,8 +149,44 @@ describe('<HiveFederationStatus>', () => {
     render(<HiveFederationStatus />);
     expect((await screen.findByTestId('fed-reach-h1')).textContent).toBe('discoverable to 4 peers');
     expect(screen.getByTestId('fed-substrate').textContent).toContain('2 harnesses booted');
-    // honest scope note always present
-    expect(screen.getByTestId('fed-scope-note').textContent).toMatch(/not yet surfaced/);
+    // honest scope note always present, now describing per-hive content-sync too (EI-1599)
+    expect(screen.getByTestId('fed-scope-note').textContent).toMatch(/Content-sync/);
+    // no contentPeers on this fixture (older payload shape) → no content-sync line rendered
+    expect(screen.queryByTestId('fed-content-h1')).toBeNull();
+  });
+
+  it('renders the honest per-hive content-sync line when contentPeers is reported (EI-1599)', async () => {
+    mockSync(
+      status({
+        hives: [
+          {
+            potId: 'h2',
+            title: 'Synced Hive',
+            visibility: 'public',
+            memberCount: 2,
+            reachablePeers: 4,
+            contentPeers: 2,
+            lastContentSyncMs: Date.now() - 10_000,
+          },
+        ],
+      }),
+    );
+    render(<HiveFederationStatus />);
+    const content = await screen.findByTestId('fed-content-h2');
+    expect(content.textContent).toBe('syncing content with 2 peers · last synced 10s ago');
+  });
+
+  it('renders the honest 0-content-peer line without claiming a stranded/down state on its own', async () => {
+    mockSync(
+      status({
+        hives: [
+          { potId: 'h3', title: 'Quiet Hive', visibility: 'public', memberCount: 1, reachablePeers: 2, contentPeers: 0, lastContentSyncMs: null },
+        ],
+      }),
+    );
+    render(<HiveFederationStatus />);
+    const content = await screen.findByTestId('fed-content-h3');
+    expect(content.textContent).toBe('no content-sync peers right now');
   });
 
   it('shows a 0-peer published hive as STRANDED (void copy + down dot), never "synced"', async () => {

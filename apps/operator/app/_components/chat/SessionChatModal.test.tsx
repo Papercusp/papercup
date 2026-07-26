@@ -750,7 +750,21 @@ describe('SessionChatModal', () => {
     // currentPlanSlug → mapped message planSlug → pill click → PlanPopupModal.
     it('a P- ref pill click opens PlanPopupModal, scoped to the roster entry\'s currentPlanSlug (WI-5997)', async () => {
       seedRoster([
-        { ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member', currentPlanSlug: 'gui-chat-session-controls-2026-07-25' },
+        {
+          ownerId: 'su-live-1',
+          fleetColor: null,
+          fleetRole: 'member',
+          // Real test-data gap found while re-running this suite for P-004:
+          // OperatorChat.tsx only mounts PlanPopupModal (alongside
+          // WorkItemPopupModal) when its OWN `harnessSlug` prop is truthy —
+          // PlanPopupModal needs it to scope the plan query, same as the
+          // work-item popup. Without it this test's click never reaches a
+          // PlanPopupModal to capture props from at all (silently asserting
+          // `undefined`, not a rendering failure) — harnessSlug is real
+          // roster data every live session actually carries.
+          harnessSlug: 'papercusp',
+          currentPlanSlug: 'gui-chat-session-controls-2026-07-25',
+        },
       ]);
       mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
       const { rerender } = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);

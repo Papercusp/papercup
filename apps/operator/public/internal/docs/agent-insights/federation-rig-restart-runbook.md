@@ -336,18 +336,103 @@ injects it for you (opt-in; off by default because blanket injection breaks
 READ tools whose schema rejects an unknown `workspace` key). The durable fix
 (superuser ctx resolving the concrete workspace) is tracked on **EI-3409**.
 
+## 8. Operator workspace-scoped HOME silently breaks BOTH the superuser token AND gh-auth (D-007)
+
+A peer can look healthy (API up, boots, serves requests) while `hive:membership_decide` fails
+`no_owner_identity` and `fed.sh <vm> mcp`/`api` fail `superuser_invalid_bearer` — **without
+any VM reset or gh-auth wipe (§6) having happened.** Root cause, isolated live on fed-a
+(2026-06-25, plan `shared-hive-public-release-2026-06-22` D-007): the VM's operator process
+was launched with a **workspace-scoped `HOME`**
+(`/home/tester/.papercusp-workspaces/default`), not the login user's real home
+(`/home/tester`). Two independent failures trace to the same single cause:
+
+1. **`superuser_invalid_bearer`** — the operator reads its own superuser token from
+   `$HOME/.papercusp/superuser-token` using **its own process `HOME`**, but `fed.sh`'s
+   `api`/`mcp` verbs SSH in and read `~/.papercusp/superuser-token`, which expands against the
+   **SSH login shell's** `HOME` (`/home/tester`). When the two differ, the script reads the
+   wrong file (or nothing) and the token never matches.
+2. **`hive:membership_decide` → `no_owner_identity`** — `resolveLocalGithubIdentity` shells
+   `gh auth token`, which reads `$HOME/.config/gh/hosts.yml` under the **operator's** `HOME`.
+   `gh auth login` run from an interactive SSH session authenticates the **login shell's**
+   `HOME` (`/home/tester/.config/gh`) — a different, workspace-UNSCOPED path — so the
+   operator's own `gh auth token` call sees "not authenticated" even though `ssh ... gh auth
+   status` reports logged in.
+
+Diagnose it by comparing the two:
+
+```sh
+# the operator process's ACTUAL HOME (what matters for both failures):
+ssh ... "tr '\0' '\n' < /proc/\$(pgrep -f serve.mjs)/environ | sed -n 's/^HOME=//p'"
+# the SSH login shell's HOME (what fed.sh's naive ~/... reads resolve against):
+ssh ... 'echo $HOME'
+```
+
+If they differ, that mismatch — not a dead peer, not a wiped gh-auth (§6) — is your cause.
+
+**Session fix that worked (2026-06-25, fed-a):** derive the token path from the operator's
+*real* `HOME` via `/proc/<pid>/environ` instead of trusting the login shell's `~`, and
+symlink the operator's `.config/gh` to wherever the login shell's `gh auth login` actually
+wrote it (`ln -s /home/tester/.config/gh
+/home/tester/.papercusp-workspaces/default/.config/gh`). Both are **session-local fixes,
+not code** — this doc's own fed.sh copy still reads the plain `~/.papercusp/superuser-token`
+(verified 2026-07-26; no `/proc/<pid>/environ` derivation is committed), so **if you hit
+either symptom again, re-apply the same two workarounds** (or land the durable fix: patch
+`api`/`mcp` in `papercusp-desktop/scripts/linux-test-vm/fed.sh` to resolve the token path off
+the operator's own `HOME`, not the login shell's).
+
+D-007 flagged this as worth verifying beyond the rig: if the **shipped desktop sidecar**
+ever launches its operator with a workspace-scoped `HOME` that lacks its own
+`~/.config/gh`, real users would hit the identical `no_owner_identity` on hive admit — not
+just this test VM. Unconfirmed either way as of this writing; check the desktop launcher's
+`HOME`/env wiring before assuming it can't happen off the rig.
+
+## 9. Fed-b substrate-boot saturation — a "clean restart" needs the safe reapers, not hand-killed PIDs (D-008/D-009, WI-779)
+
+A joiner VM that has accumulated many ad-hoc test hives/harnesses across repeated rig
+sessions can hit `[hyperbee-substrate] (<ws>::<slug>) failed: boot timeout after 30000ms`
+for **every** harness on its next boot — swarm peering looks fine (`peer_connected` fires),
+but nothing ever merges, because the substrate that would carry the roster/content never
+finishes coming up. Root-caused live on fed-b (D-008): `boot-all.ts` fanned out an
+**unbounded `Promise.all`** across every harness, so a joiner with many members saturates a
+shared boot resource and **every** substrate — not just the newest ones — misses the 30s
+window (witnessed: 11 concurrent harnesses → all fail; 2 → boots in \~5.5s). Fixed durably
+(WI-779, D-009): a bounded-concurrency mapper (default 4, override via
+`PAPERCUSP_SUBSTRATE_BOOT_CONCURRENCY`) plus a test asserting peak in-flight ≤ the cap
+(`boot-all.test.ts`).
+
+The code fix means a **fresh** join no longer self-saturates. But a VM that is *already*
+sitting on a large pile of accumulated cross-workspace test harnesses (the state D-008 hit)
+still boots slowly and is worth cleaning up before the next witness run — and that clean-up
+is exactly the situation this runbook's own §1/§4 danger box already warns about:
+
+* **Don't** `ssh <vm> 'pkill -f serve.mjs'` / hand-`kill` PIDs found via a loose `pgrep` to
+  force a "clean" fed-b. A hand-rolled kill-by-PID is fragile in precisely the way EI-1739
+  (§1) already documents for this rig: a stale or reused PID, a grep that also matches a
+  concurrent sibling run's process, or a kill that misses the embedded-PG/corestore child
+  and leaves a lock behind — any of which either kills the wrong thing or leaves debris that
+  makes the **next** boot slower still (compounding the exact saturation D-008 hit).
+* **Do** use the scoped tools this runbook already provides: `bin/reap-orphans.sh` (§1) to
+  clear dead-run debris, or `vmctl reset fed-b` (§4) for a genuinely clean overlay when you
+  want to shed the accumulated harness pile entirely — both are run-scoped and safe on a box
+  running other live rigs.
+* If you only need fewer *concurrent boots*, not a clean VM, `PAPERCUSP_SUBSTRATE_BOOT_CONCURRENCY`
+  (lower than the default 4) trades boot latency for headroom on an already-loaded joiner —
+  cheaper than a reset when you just need one more witness run to fit inside the 30s window.
+
 ## Quick reference
 
-| symptom                                                                 | do                                                                           |
-| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| drive a live fed VM (stale `/tmp/fed.sh` ports)                         | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754)      |
-| crashed/timed-out run left debris                                       | `bin/reap-orphans.sh` (§1)                                                   |
-| one known run's `$WORK` to clean                                        | `bin/cleanup-run.sh <WORK>` (§1)                                             |
-| "API never came up" / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                      |
-| stale `Xvfb` on a smoke display                                         | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                                    |
-| wedged Linux VM                                                         | `./vmctl reset` / `down` / `up <name>` (§4)                                  |
-| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                               |
-| re-run the scheduled gate                                               | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5)                |
-| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757)                  |
-| loopback smoke gets 0 peer dials, only on a fleet shell                 | check calling shell for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` (§6b) |
-| **anything**                                                            | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)                 |
+| symptom                                                                 | do                                                                                     |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| drive a live fed VM (stale `/tmp/fed.sh` ports)                         | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754)                |
+| crashed/timed-out run left debris                                       | `bin/reap-orphans.sh` (§1)                                                             |
+| one known run's `$WORK` to clean                                        | `bin/cleanup-run.sh <WORK>` (§1)                                                       |
+| "API never came up" / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                                |
+| stale `Xvfb` on a smoke display                                         | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                                              |
+| wedged Linux VM                                                         | `./vmctl reset` / `down` / `up <name>` (§4)                                            |
+| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                                         |
+| re-run the scheduled gate                                               | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5)                          |
+| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757)                            |
+| loopback smoke gets 0 peer dials, only on a fleet shell                 | check calling shell for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` (§6b)           |
+| `superuser_invalid_bearer` / `no_owner_identity` with no reset/gh-wipe  | compare operator's real `HOME` (`/proc/<pid>/environ`) vs SSH login `HOME` (§8, D-007) |
+| every harness hits substrate `boot timeout after 30000ms`               | `reap-orphans.sh` / `vmctl reset`, never hand-kill PIDs (§9, D-008/D-009, WI-779)      |
+| **anything**                                                            | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)                           |
