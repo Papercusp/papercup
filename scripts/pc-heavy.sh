@@ -35,6 +35,10 @@
 #   PC_HEAVY_IONICE       ionice spec: "best-effort N" | "idle" | "" to skip
 #                         (default "best-effort 7"; UNSET uses the default,
 #                         set-but-EMPTY skips ionice)
+#   PC_HEAVY_COALESCE     "1"(default)/"0" — coalesce genuinely-CONCURRENT
+#                         identical invocations (see below). off/false/no also
+#                         disable.
+#   PC_HEAVY_COALESCE_SEC coalescing window in seconds (default 90).
 #
 # Crash-safe: the slot is an flock held on an open fd for the child's whole
 # lifetime; the kernel releases it when this process exits for ANY reason
@@ -43,6 +47,29 @@
 # Fail-open: if the slot dir can't be made or no slot machinery is available,
 # the command still runs (unthrottled) — admission control must never be the
 # reason a legitimate build can't start.
+#
+# ── Coalescing (EI-18685262961418231) ───────────────────────────────────────
+# Slots stagger concurrency but do NOT stop a burst of agents each requesting
+# the EXACT SAME command (same cwd + argv — e.g. many agents each running
+# `npm run lint:tsc` to confirm the same gate) from each separately queueing
+# for and consuming a slot: N agents still pay for N full tsc/vitest runs of
+# what is very likely the same input, which is exactly how "~19 typecheck jobs
+# queued" became a fleet-wide chokepoint delaying a critical-path lane's green
+# confirmation. Coalescing fixes the WASTE, not the staggering: the first
+# caller for a given (cwd, argv) key becomes the leader and runs it for real
+# (through the normal slot machinery below, unchanged); any identical caller
+# that shows up while the leader is running, or shortly after it finished
+# (within PC_HEAVY_COALESCE_SEC), replays the leader's captured output +
+# exit code instead of spawning a second copy — never waiting for a slot at
+# all. This is deliberately SHORT-lived (default 90s, far shorter than the
+# ~10min git-sync auto-commit cadence) and keyed only on command identity, not
+# tree content: it is thundering-herd coalescing, not a content-addressed
+# result cache — we do NOT want a second, home-rolled version of the tsc
+# `--incremental` staleness bug EI-487 already burned this team on. A slow
+# leader is never blocked on by a follower forever: after the coalescing
+# window elapses with no fresh result, a follower gives up waiting and just
+# runs the command itself (uncached), so a wedged/crashed leader can never
+# starve the fleet. Kill-switch: PC_HEAVY_COALESCE=0.
 
 # NOTE: deliberately no `set -e` — a non-blocking flock miss returns non-zero by
 # design and must not abort the script.
@@ -74,6 +101,82 @@ _timeout="${PC_HEAVY_TIMEOUT_SEC:-900}"
 if ! mkdir -p "$_dir" 2>/dev/null || ! command -v flock >/dev/null 2>&1; then
   export PC_HEAVY_BYPASS=1
   exec "$@"
+fi
+
+# ── Coalescing (EI-18685262961418231) — see header note ─────────────────────
+# Fail-open by construction: any missing prerequisite (kill-switch, no
+# sha1sum, can't make the cache dir) just leaves _coalesce_enabled=0 and every
+# line below becomes a no-op — the script behaves EXACTLY as before.
+_coalesce_enabled=0
+_do_cache_write=0
+case "${PC_HEAVY_COALESCE:-1}" in
+  0|off|OFF|false|FALSE|no|NO) ;;
+  *)
+    _coalesce_dir="$_dir/coalesce"
+    if command -v sha1sum >/dev/null 2>&1 && mkdir -p "$_coalesce_dir" 2>/dev/null; then
+      _coalesce_enabled=1
+    fi
+    ;;
+esac
+
+if [ "$_coalesce_enabled" = 1 ]; then
+  _coalesce_ttl="${PC_HEAVY_COALESCE_SEC:-90}"
+  # Key on cwd + full argv, NUL-separated so args containing spaces can't
+  # collide two different commands into the same key.
+  _key=$({ printf '%s\0' "$PWD"; printf '%s\0' "$@"; } | sha1sum | cut -d' ' -f1)
+  _c_out="$_coalesce_dir/$_key.out"
+  _c_err="$_coalesce_dir/$_key.err"
+  _c_exit="$_coalesce_dir/$_key.exit"
+  _c_lockdir="$_coalesce_dir/$_key.lock"
+
+  # True when $_c_exit exists and is fresh enough to reuse.
+  _coalesce_fresh() {
+    [ -f "$_c_exit" ] || return 1
+    _mt=$(stat -c %Y "$_c_exit" 2>/dev/null) || return 1
+    _now=$(date +%s)
+    _age=$(( _now - _mt ))
+    [ "$_age" -ge 0 ] && [ "$_age" -le "$_coalesce_ttl" ]
+  }
+
+  # Replays the cached run's stdout/stderr/exit-code and NEVER RETURNS.
+  _coalesce_replay() {
+    echo "[pc-heavy] coalesced: reusing a ${_age}s-old identical run (same cwd+argv)" \
+         "instead of spawning another — see EI-18685262961418231." \
+         "Disable via PC_HEAVY_COALESCE=0." >&2
+    cat "$_c_out" 2>/dev/null
+    cat "$_c_err" >&2 2>/dev/null
+    exit "$(cat "$_c_exit" 2>/dev/null || echo 1)"
+  }
+
+  # Fast path: an already-fresh result sitting from a just-finished run —
+  # never even touch the slot machinery.
+  if _coalesce_fresh; then _coalesce_replay; fi
+
+  # Race for leadership; a loser polls for the leader's result up to the
+  # coalescing window, then gives up and runs uncached (never hangs forever).
+  _c_deadline=$(( $(date +%s) + _coalesce_ttl ))
+  while :; do
+    if mkdir "$_c_lockdir" 2>/dev/null; then
+      _do_cache_write=1
+      trap 'rm -rf "$_c_lockdir" 2>/dev/null' EXIT
+      break
+    fi
+    if _coalesce_fresh; then _coalesce_replay; fi
+    # Reclaim an ABANDONED lock. Unlike the flock slots above, a plain mkdir
+    # lock has no kernel-level auto-release — a leader that's SIGKILL'd (never
+    # trappable) leaves it stuck forever otherwise, taxing every future
+    # identical call with a full wait before it gives up. A lock older than
+    # the coalescing window is presumed dead; reclaim and retry immediately.
+    if [ -d "$_c_lockdir" ]; then
+      _lock_mt=$(stat -c %Y "$_c_lockdir" 2>/dev/null || echo 0)
+      if [ $(( $(date +%s) - _lock_mt )) -gt "$_coalesce_ttl" ]; then
+        rmdir "$_c_lockdir" 2>/dev/null || true
+        continue
+      fi
+    fi
+    [ "$(date +%s)" -ge "$_c_deadline" ] && break
+    sleep 0.3
+  done
 fi
 
 # Try each slot non-blocking; hold the first free one open on its own fd.
@@ -113,5 +216,19 @@ fi
 
 # Run holding the slot; the flock releases when this shell exits (normal, error,
 # or signal). We intentionally do NOT `exec` so the fd/lock stays with us.
+if [ "$_do_cache_write" = 1 ]; then
+  # Leader path: tee combined streams to the coalescing cache while keeping
+  # stdout/stderr genuinely separate for OUR OWN caller (process substitution
+  # runs the command in the foreground — $? below is the real command's exit
+  # status, not tee's).
+  "${_runner[@]}" "$@" > >(tee "$_c_out") 2> >(tee "$_c_err" >&2)
+  _rc=$?
+  wait 2>/dev/null || true   # let both tee subshells flush before we publish the result
+  echo "$_rc" > "$_c_exit" 2>/dev/null
+  rm -rf "$_c_lockdir" 2>/dev/null
+  trap - EXIT
+  exit "$_rc"
+fi
+
 "${_runner[@]}" "$@"
 exit $?

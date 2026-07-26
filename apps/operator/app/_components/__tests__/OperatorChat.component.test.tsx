@@ -15,6 +15,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test-ws:${k}`,
@@ -78,10 +79,20 @@ const props = () => ({
 
 const composer = () => screen.getByTestId<HTMLInputElement>('composer');
 
+// OperatorChat reads/writes two nuqs query params ('wpop', 'wppop') for its
+// work-item/plan popups — outside a NuqsAdapter, useQueryState throws
+// "nuqs requires an adapter to work with your framework" (NUQS-404).
+const renderChat = (p: ReturnType<typeof props>) =>
+  render(
+    <NuqsTestingAdapter>
+      <OperatorChat {...p} />
+    </NuqsTestingAdapter>,
+  );
+
 describe('<OperatorChat> composer draft (EI-13037 follow-up)', () => {
   it('consumes a staged inbox seed into the composer on mount', () => {
     seedOperatorChatDraft('About this inbox item …');
-    render(<OperatorChat {...props()} />);
+    renderChat(props());
     expect(composer().value).toBe('About this inbox item …');
     // Consume-once: the pending store is drained…
     expect(consumePendingChatSeed()).toBeNull();
@@ -90,25 +101,25 @@ describe('<OperatorChat> composer draft (EI-13037 follow-up)', () => {
   });
 
   it('typed text survives unmount → remount (the inbox/pot body swap)', () => {
-    const first = render(<OperatorChat {...props()} />);
+    const first = renderChat(props());
     fireEvent.change(composer(), { target: { value: 'half-typed thought' } });
     first.unmount();
-    render(<OperatorChat {...props()} />);
+    renderChat(props());
     expect(composer().value).toBe('half-typed thought');
   });
 
   it('a fresh seed wins over an older persisted draft', () => {
-    const first = render(<OperatorChat {...props()} />);
+    const first = renderChat(props());
     fireEvent.change(composer(), { target: { value: 'older draft' } });
     first.unmount();
     seedOperatorChatDraft('fresh Discuss seed');
-    render(<OperatorChat {...props()} />);
+    renderChat(props());
     expect(composer().value).toBe('fresh Discuss seed');
   });
 
   it('sending clears the composer AND the stored draft', () => {
     const p = props();
-    render(<OperatorChat {...p} />);
+    renderChat(p);
     fireEvent.change(composer(), { target: { value: 'ship it' } });
     expect(readChatDraft()).toBe('ship it');
     fireEvent.click(screen.getByTestId('send'));

@@ -81,11 +81,27 @@ async function seedPresence(
   ownerId: string,
   opts: { ageSeconds?: number; intent?: string; planSlug?: string | null; workspaceId?: string } = {},
 ): Promise<void> {
+  // EI-18683737202696167: coord_presence_pkey is PRIMARY KEY (owner_id) ONLY — globally
+  // unique across the ENTIRE table, not scoped by workspace_id. Short, common literal
+  // owner_ids ('su-a', 'su-b', …) are reused by many *.integration.test.ts files across
+  // the repo, all sharing this same reused baseline container under a heavily concurrent
+  // fleet — so a bare INSERT here can throw a duplicate-key error against a row some
+  // OTHER concurrent file/process seeded under the SAME literal (a different failure mode
+  // than the workspace-scoped read/cleanup pollution this fixture's WS-uniqueness change
+  // already fixes). Upsert so this test's own intended presence values always win,
+  // regardless of what a concurrent stranger's row happened to leave behind.
   await admin`
     INSERT INTO harness_shared.coord_presence
       (owner_id, owner_label, workspace_id, source, intent, current_plan_slug, heartbeat_at)
     VALUES (${ownerId}, ${ownerId}, ${opts.workspaceId ?? WS}, 'test', ${opts.intent ?? ''},
             ${opts.planSlug ?? null}, now() - ${`${opts.ageSeconds ?? 0} seconds`}::interval)
+    ON CONFLICT (owner_id) DO UPDATE SET
+      owner_label = EXCLUDED.owner_label,
+      workspace_id = EXCLUDED.workspace_id,
+      source = EXCLUDED.source,
+      intent = EXCLUDED.intent,
+      current_plan_slug = EXCLUDED.current_plan_slug,
+      heartbeat_at = EXCLUDED.heartbeat_at
   `;
 }
 

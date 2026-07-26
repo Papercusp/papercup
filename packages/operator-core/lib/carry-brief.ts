@@ -160,7 +160,16 @@ const INACTIVE_LOOP_NOTE_STALE_MS = 24 * 60 * 60_000;
  * demonstrable subsequent session activity (further transcript turns) by more
  * than this margin cannot be trusted at face value — flag it instead of rendering
  * it as current. The margin absorbs ordinary write/flush latency so a checkpoint
- * written moments before the final turn isn't flagged on clock noise alone. */
+ * written moments before the final turn isn't flagged on clock noise alone.
+ *
+ * Distinct from (complements, does not duplicate) `turn-end-tracking.ts`'s
+ * `isStaleHeldCheckpoint` (P-015): that one compares a checkpoint's age against
+ * an absolute now (45min) at turn-end to decide whether to WRITE a fresh
+ * mechanical checkpoint. This one compares a checkpoint's write-time against
+ * this SAME session's own later activity to decide whether to FLAG it at
+ * carry-doc READ time — it catches the incident case a 45min age threshold
+ * cannot: a checkpoint that is only seconds-to-minutes old but was already
+ * superseded by work later in the very same pre-cut session. */
 const HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS = 2 * 60_000;
 
 /** `HH:MM` (UTC) for the superseded-checkpoint flag — compact, sortable, and

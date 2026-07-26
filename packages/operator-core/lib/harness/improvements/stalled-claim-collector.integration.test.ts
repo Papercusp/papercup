@@ -45,9 +45,19 @@ async function truncateAll(): Promise<void> {
 }
 
 async function seedPresence(ownerId: string): Promise<void> {
+  // EI-18683737202696167: coord_presence_pkey is PRIMARY KEY (owner_id) ONLY — globally
+  // unique, not scoped by workspace_id — so a bare INSERT can collide with a same-named
+  // literal ('su-held-holder' et al.) seeded by another concurrent *.integration.test.ts
+  // process on this shared fixture. Upsert so this test's own values always win.
   await fx.admin`
     INSERT INTO harness_shared.coord_presence (owner_id, owner_label, workspace_id, source, intent, heartbeat_at)
-    VALUES (${ownerId}, ${ownerId}, ${WS}, 'test', '', now())`;
+    VALUES (${ownerId}, ${ownerId}, ${WS}, 'test', '', now())
+    ON CONFLICT (owner_id) DO UPDATE SET
+      owner_label = EXCLUDED.owner_label,
+      workspace_id = EXCLUDED.workspace_id,
+      source = EXCLUDED.source,
+      intent = EXCLUDED.intent,
+      heartbeat_at = EXCLUDED.heartbeat_at`;
 }
 
 /** Seed an issue-family (bug) work_items row, claimed a while ago with a stale
