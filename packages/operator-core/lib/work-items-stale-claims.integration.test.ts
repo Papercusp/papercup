@@ -9,6 +9,7 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims } from './work-items-stale-claims';
+import { SESSION_END_MARKER } from './agent-tools/activity/lifecycle-markers';
 
 const PRESENCE_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
@@ -34,6 +35,19 @@ const ENGINEER_ISSUES_DDL = `
     found_during text, linked_feature_id text, created_by text, signal_origin text,
     created_at timestamptz, updated_at timestamptz, origin text DEFAULT 'local',
     PRIMARY KEY (workspace_id, issue_id))`;
+// EI-18674157526367861: the cross-CLI worker activity bridge sink (migration 143) —
+// `activeTurnHolderFragment` reads owner_id/kind/summary/created_at only, so the test
+// DDL is a deliberately minimal projection of the real table (id/workspace_id/agent/
+// session_id/harness_slug/tool_name/phase/tool_use_id/status/detail/cwd are irrelevant
+// to the liveness fragment under test).
+const AGENT_ACTIVITY_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
+    id BIGSERIAL PRIMARY KEY,
+    owner_id text NOT NULL,
+    kind text NOT NULL,
+    summary text,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`;
 
 let db: FreshPgDb;
 let sql: postgres.Sql;
@@ -49,6 +63,7 @@ beforeAll(async () => {
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(ENGINEER_ISSUES_DDL);
+  await sql.unsafe(AGENT_ACTIVITY_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -56,7 +71,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents`;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity`;
 });
 
 async function seedIssue(
@@ -140,6 +155,24 @@ async function markKnown(alias: string): Promise<void> {
   await sql`
     INSERT INTO harness_shared.coord_presence VALUES (${alias}, now() - interval '1 hour')
     ON CONFLICT (owner_id) DO NOTHING`;
+}
+
+/**
+ * EI-18674157526367861: seed a `harness_shared.agent_activity` row — the
+ * native-CLI-tool-call liveness signal `activeTurnHolderFragment` reads (the SAME
+ * source `presence-wakeability.ts`'s `fetchWakeability` uses for its `liveTurn`
+ * signal). Defaults to a plain `tool`-kind row (an Edit/Read/Bash call); pass
+ * `kind:'lifecycle', summary: SESSION_END_MARKER` for the trailing end-marker case.
+ */
+async function seedActivity(
+  ownerId: string,
+  agoMin: number,
+  kind = 'tool',
+  summary: string | null = 'Edit',
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.agent_activity (owner_id, kind, summary, created_at)
+    VALUES (${ownerId}, ${kind}, ${summary}, now() - make_interval(mins => ${agoMin}))`;
 }
 
 async function statusOf(featureId: string): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {
@@ -638,5 +671,70 @@ describe('WI-1999 remote-holder guard', () => {
     const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((c) => c.issue_id)).toContain('EI-RH1');
     expect(await assigneeOf('EI-RH1')).toBeNull();
+  });
+});
+
+// ── EI-18674157526367861: activeTurnHolderFragment (native-CLI-tool liveTurn) ──
+// The incident: WI-5837's assignee/taken_at/last_progress_at all went NULL out
+// from under an alive, actively-progressing holder whose recent tool-call mix was
+// dominated by NATIVE CLI tools (Bash/Read monitoring a detached background run)
+// rather than papercusp-su MCP dispatch — so coord_presence.heartbeat_at (the ONLY
+// signal the DEAD leg checked pre-fix) went stale while the holder was demonstrably
+// still driving its turn. `activeTurnHolderFragment` closes that gap by unioning in
+// the SAME agent_activity-derived `liveTurn` signal `presence-wakeability.ts`'s
+// `fetchWakeability` already uses for leader-brief/fleet:assignments/coord:presence,
+// so a holder those surfaces call alive can never be reaped here as dead.
+describe('EI-18674157526367861: activeTurnHolderFragment (native-tool liveTurn liveness)', () => {
+  it('fresh-activity-keeps-claim: a holder with recent NATIVE agent_activity but NO coord_presence heartbeat is alive — claim kept', async () => {
+    await seedItem('F-AT1', 'su-native-active', 30); // past the 10-min live grace
+    // No coord_presence row at all, and no nursery row — only the pre-fix DEAD leg's
+    // signals would see this holder as dead. A recent tool-call activity row (no
+    // trailing session-end marker) must keep the claim alive regardless.
+    await seedActivity('su-native-active', 1, 'tool', 'Edit');
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect((await statusOf('F-AT1')).taken_by).toBe('su-native-active');
+  });
+
+  it('fresh-activity-keeps-claim: mirrors on the issue-family (bug/change) reaper too', async () => {
+    await seedIssue('EI-AT1', 'bug', 'su-native-active-issue', 30);
+    await seedActivity('su-native-active-issue', 1, 'tool', 'Read');
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect(await assigneeOf('EI-AT1')).toBe('su-native-active-issue');
+  });
+
+  it('end-marker-only-still-reaps: a holder whose ONLY recent activity is the trailing session-end marker is NOT live — claim still reclaimed', async () => {
+    await seedItem('F-AT2', 'su-ended-marker', 30);
+    await markKnown('su-ended-marker'); // no liveTurn ⇒ falls to the ordinary DEAD leg, which requires a known holder
+    // The lone recent activity row IS the '■ session ended' lifecycle marker — a
+    // cleanly-ended session, exactly the case activeTurnHolderFragment must NOT
+    // treat as live (mirrors deriveSessionState's liveTurn computation).
+    await seedActivity('su-ended-marker', 1, 'lifecycle', SESSION_END_MARKER);
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(1);
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'F-AT2',
+      former_taken_by: 'su-ended-marker',
+      reason: 'dead',
+    });
+    expect((await statusOf('F-AT2')).taken_by).toBeNull();
+  });
+
+  it('activity AFTER the end marker (a new turn started) is live again — claim kept', async () => {
+    await seedItem('F-AT3', 'su-resumed', 30);
+    await seedActivity('su-resumed', 5, 'lifecycle', SESSION_END_MARKER); // ended 5 min ago
+    await seedActivity('su-resumed', 1, 'tool', 'Bash'); // then a new turn started 1 min ago
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect((await statusOf('F-AT3')).taken_by).toBe('su-resumed');
+  });
+
+  it('agent_activity outside the grace window does not confer liveness — claim released', async () => {
+    await seedItem('F-AT4', 'su-stale-activity', 30);
+    await markKnown('su-stale-activity');
+    await seedActivity('su-stale-activity', 45, 'tool', 'Edit'); // 45 min ago — outside the 10-min window
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released.map((c) => c.feature_id)).toEqual(['F-AT4']);
   });
 });

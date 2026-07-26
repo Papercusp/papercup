@@ -51,6 +51,39 @@ import { probeHealth } from './health-probe';
 const DEPLOY_OWNER = `release-deploy:${process.pid}:${randomUUID()}`;
 const DEFAULT_DRAIN_SEC = 120;
 
+/**
+ * EI-18674647773291145: the inverse of the `${process.pid}` embedding above —
+ * extracts the pid back out of a `release-deploy:<pid>:<uuid>` owner string so a
+ * blocked acquire can check whether that holder is still alive on THIS host. Any
+ * other owner shape (a differently-labelled resource holder, a malformed/legacy
+ * row) returns null, which is a no-op for the reclaim path — same as omitting it.
+ */
+function parseDeployOwnerPid(owner: string): number | null {
+  const m = /^release-deploy:(\d+):/.exec(owner);
+  if (!m) return null;
+  const pid = Number(m[1]);
+  return Number.isFinite(pid) && pid > 0 ? pid : null;
+}
+
+/** Best-effort pipeline-history breadcrumb for a reclaim — never lets a telemetry
+ *  failure affect the deploy path (mirrors `recordEvent`'s lazy import below). */
+async function recordStaleLockReclaim(detail: string): Promise<void> {
+  try {
+    const { appendPipelineEvent } = await import(
+      '@papercusp/operator-core/lib/harness/git-sync/pipeline-events'
+    );
+    await appendPipelineEvent({
+      workspaceId: safeWorkspaceId() ?? '*',
+      installSlug: process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug(),
+      kind: 'deploy',
+      status: 'stale-lock-reclaimed',
+      detail,
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
 function deployIdentity(): AgentIdentity {
   return {
     ownerId: DEPLOY_OWNER,

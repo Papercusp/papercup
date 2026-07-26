@@ -45,6 +45,16 @@ export interface GuardSpec {
   maxDrainSec?: number;
   ttlSec?: number;
   reason?: string;
+  /**
+   * EI-18674647773291145: exclusive-only, no-wait (`maxDrainSec` unset/0) — see
+   * `ExclusiveWaitParams.hostLocalOwnerPid` for the full contract. Lets a caller
+   * whose ownerId embeds a host-local pid (e.g. deploy-cli's
+   * `release-deploy:<pid>:<uuid>`) self-heal a coalesce against a holder that has
+   * actually crashed, instead of blocking for the resource's full TTL.
+   */
+  hostLocalOwnerPid?: (owner: string) => number | null;
+  /** Fired once per stale holder reclaimed via `hostLocalOwnerPid` — log it loudly. */
+  onStaleHolderReclaimed?: (info: { holder: ResourceHolder; pid: number }) => void | Promise<void>;
 }
 
 export type GuardOutcome<T> =
@@ -111,6 +121,8 @@ export async function guardResource<T>(
       maxWaitSec: spec.maxDrainSec ?? 0,
       onDrainStart: (holders) =>
         broadcastResourceDrainStart({ source: coordIdentity, resource, holders, reason }),
+      hostLocalOwnerPid: spec.hostLocalOwnerPid,
+      onStaleHolderReclaimed: spec.onStaleHolderReclaimed,
     });
     if (r.ok) {
       if (r.status !== 'held') {

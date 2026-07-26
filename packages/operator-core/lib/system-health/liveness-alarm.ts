@@ -874,15 +874,14 @@ export interface AlarmDeps {
    *  `readGatewayBeeCapacity` (a live gateway fetch, fail-soft to unknown). Injected
    *  by tests to exercise the gate hermetically without real gateway I/O. */
   readBeeCapacity?: () => Promise<{ dispatchBudget: number | null; restartRecovering: boolean }>;
-  /** EI-15126: read the durable cross-worker flap-episode state (default =
-   *  `defaultReadFlapState`, a real PG read) — gated the same way as
-   *  `readBeeCapacity`: a caller that injects `readLast` (every existing
-   *  hermetic test) falls back to `hermeticFlapStateFallback` instead of
-   *  hitting real I/O. Injectable so a test can also exercise the durable
-   *  path (e.g. simulating two independent "workers" sharing one store). */
+  /** EI-15126 (superseded by EI-18673998482704275's `updateFlapState`, below,
+   *  for the production/hermetic defaults — kept as a BACKWARD-COMPAT injection
+   *  seam only): a caller that supplies either this or `writeFlapState` (and
+   *  not `updateFlapState` directly) gets a fallback that reads via this,
+   *  mutates, then writes via `writeFlapState` — no other tick I/O runs in
+   *  between, preserving pre-existing tests' exact sequential behavior. */
   readFlapState?: (ws: string) => Promise<FlapState>;
-  /** EI-15126: persist the (possibly mutated) flap-episode state for the next
-   *  tick — by any worker. Default = `defaultWriteFlapState`. */
+  /** EI-15126 (superseded — see `readFlapState`'s updated doc comment above). */
   writeFlapState?: (ws: string, state: FlapState) => Promise<void>;
   /** EI-18673998482704275: ATOMIC read-modify-write for the flap-decision step —
    *  see the doc comment on `defaultUpdateFlapState` above for why this must be

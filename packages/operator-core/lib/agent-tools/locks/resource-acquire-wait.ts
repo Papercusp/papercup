@@ -151,7 +151,19 @@ const elapsedSec = (since: number) => Math.floor((Date.now() - since) / 1000);
 export async function acquireResourceExclusiveWithWait(
   params: ExclusiveWaitParams,
 ): Promise<ExclusiveWaitResult> {
-  const { coordinationDomain: cd, owner, ownerLabel, resource, reason, ttlSec, maxWaitSec, onTick, onDrainStart } = params;
+  const {
+    coordinationDomain: cd,
+    owner,
+    ownerLabel,
+    resource,
+    reason,
+    ttlSec,
+    maxWaitSec,
+    onTick,
+    onDrainStart,
+    hostLocalOwnerPid,
+    onStaleHolderReclaimed,
+  } = params;
   const startedAt = Date.now();
 
   const doAcquire = () =>
@@ -169,7 +181,16 @@ export async function acquireResourceExclusiveWithWait(
 
   // No-wait path: acquire once and report whatever we get.
   if (maxWaitSec <= 0) {
-    const r = await doAcquire();
+    let r = await doAcquire();
+    // EI-18674647773291145: a coalesce blocked by another owner's exclusive is
+    // ALSO the shape a crashed holder's leaked lock takes — before accepting it,
+    // give the caller one chance to identify + reclaim a definitively-dead holder
+    // and retry, rather than silently returning `held_exclusive` for the resource's
+    // full TTL (the 20-minute deploy outage this closes).
+    if (!r.ok && r.reason === 'held_exclusive' && hostLocalOwnerPid) {
+      const reclaimed = await reclaimDeadExclusiveHolders(cd, owner, r.holders, hostLocalOwnerPid, onStaleHolderReclaimed);
+      if (reclaimed) r = await doAcquire();
+    }
     if (!r.ok) return { ok: false, reason: r.reason, holders: r.holders };
     if (r.status === 'held') {
       return { ok: true, status: 'held', lock_id: r.lock_id, waited_sec: 0, shared_holders_at_start: r.shared_holders, fence_seq: r.fence_seq };
