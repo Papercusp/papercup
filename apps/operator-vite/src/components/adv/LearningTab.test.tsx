@@ -21,6 +21,34 @@ import {
   within,
 } from "@testing-library/react";
 
+// P-009: this vitest env exposes Node's built-in localStorage (method-less
+// without --localstorage-file — see libs/test-config/src/index.ts's note), not
+// jsdom's. Install a real in-memory Storage so the orientation-banner
+// persistence path is actually exercised.
+const memStorage: Storage = (() => {
+  let bag: Record<string, string> = {};
+  return {
+    getItem: (k: string) => (k in bag ? bag[k] : null),
+    setItem: (k: string, v: string) => {
+      bag[k] = String(v);
+    },
+    removeItem: (k: string) => {
+      delete bag[k];
+    },
+    clear: () => {
+      bag = {};
+    },
+    key: () => null,
+    get length() {
+      return Object.keys(bag).length;
+    },
+  } as Storage;
+})();
+Object.defineProperty(window, "localStorage", {
+  value: memStorage,
+  configurable: true,
+});
+
 const nuqsState: Record<string, unknown> = {
   lview: "improvements",
   lane: "all",
@@ -43,8 +71,22 @@ vi.mock("nuqs", () => ({
     }));
     return [nuqsState[key], setter];
   },
+  // P-009: useOpenArming + the orientation banner write the LeftSidebar rail
+  // keys (`lsb`/`lst`) as ONE group — mirror useQueryState over the same
+  // nuqsState bag so a click's write is observable via nuqsState.
+  useQueryStates: (spec: Record<string, unknown>) => {
+    const setter = (nuqsSetters.__rail ??= vi.fn(
+      (patch: Record<string, unknown>) => {
+        Object.assign(nuqsState, patch);
+      },
+    ));
+    const value: Record<string, unknown> = {};
+    for (const key of Object.keys(spec)) value[key] = nuqsState[key] ?? null;
+    return [value, setter];
+  },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsString: { withDefault: () => ({}) },
+  parseAsBoolean: { withDefault: () => ({}) },
 }));
 
 vi.mock("@/app/_components/RubricsPanel", () => ({
@@ -512,6 +554,10 @@ beforeEach(() => {
   nuqsState.lretain = null;
   nuqsState.lhive = "";
   nuqsState.slug = null;
+  // P-009 rail keys (useOpenArming / the orientation banner write these).
+  nuqsState.lsb = null;
+  nuqsState.lst = null;
+  window.localStorage.removeItem("pc-learning-orientation-dismissed");
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   for (const k of Object.keys(seenArgs)) delete seenArgs[k];
   improvementsResult = {
@@ -800,6 +846,9 @@ describe("LearningTab — Gym view", () => {
     // WI-5809: the empty state NAMES the selected pot (lhive='' resolves to the
     // first list entry) rather than claiming to speak for the whole workspace.
     expect(screen.getByText("No gym activity for alpha-hive yet")).toBeTruthy();
+    // P-009 teaching empty: body copy + the arming action ride the same state.
+    expect(screen.getByText(/A\/B-refine their blueprints/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Arm the Gym" })).toBeTruthy();
   });
 
   // WI-5809 (owner report 2026-07-25): NO CROSS-TENANT FALLBACK. This used to
@@ -1202,7 +1251,12 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
       invalidate: vi.fn(),
     };
     render(<ScoutView />);
-    expect(screen.getByText("No routed ideas")).toBeTruthy();
+    // P-009 teaching empty: title + body + the one arming action.
+    expect(screen.getByText("No routed ideas yet")).toBeTruthy();
+    expect(screen.getByText(/routes surviving ideas here/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
+    expect(nuqsState.lsb).toBe(true);
+    expect(nuqsState.lst).toBe("blender");
     fireEvent.click(
       screen.getByRole("button", { name: /How the cycle engine is doing/ }),
     );
@@ -1692,5 +1746,37 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
       within(picker).getByRole("option", { name: "no pot yet" }),
     ).toBeTruthy();
     expect(seenArgs["learning.improvements"]).toEqual({});
+  });
+});
+
+// P-009 (learning-tab-first-run-ux-plan, owner-reviewed 2026-07-26): the
+// once-per-workspace orientation banner, its arming deep-link, and the visible
+// view gloss (strap).
+describe("LearningTab — P-009 first-run orientation", () => {
+  it("shows the banner on first run; dismissal persists (once per workspace)", () => {
+    render(<LearningTab />);
+    expect(screen.getByText(/learns as you work/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(/learns as you work/)).toBeNull();
+    expect(
+      window.localStorage.getItem("pc-learning-orientation-dismissed"),
+    ).toBe("1");
+    cleanup();
+    // A remount (same workspace) must NOT re-show it.
+    render(<LearningTab />);
+    expect(screen.queryByText(/learns as you work/)).toBeNull();
+  });
+
+  it("the banner's Open Arming deep-links the left rail to the Blender pane", () => {
+    render(<LearningTab />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
+    expect(nuqsState.lsb).toBe(true);
+    expect(nuqsState.lst).toBe("blender");
+  });
+
+  it("renders the visible view gloss for the active view (same source as the tab tooltips)", () => {
+    render(<LearningTab />);
+    const strap = document.querySelector(".pc-learning__strap");
+    expect(strap?.textContent).toContain("WORK queue");
   });
 });
