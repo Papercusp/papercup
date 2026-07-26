@@ -52,6 +52,29 @@ export const FACTS_FOLD_LIMIT = 12;
 export const DEAD_END_KEY_PREFIX = 'dead-end:';
 
 /**
+ * owner-wall-ttl-lapse-hardening-2026-07-26 (EI-18669544162414270) — the WALL
+ * fact slot. A standing fact expires on TTL whether or not the condition it
+ * describes resolved; when the fact encodes an OWNER-GATED WALL (e.g. "still
+ * LIVE = NOT rotated"), that turns a safety signal into a time bomb — absence
+ * of the fact becomes indistinguishable from "the wall cleared" (TTL decay
+ * always fails toward "clear", the wrong direction for an unremediated risk).
+ * `facts:assert { slot:'wall' }` (facts/assert.ts normalizeWallSlot) keys the
+ * fact under this prefix — machine-greppable (`key LIKE 'wall:%'`), same
+ * convention as {@link DEAD_END_KEY_PREFIX} — and defaults its TTL to
+ * {@link WALL_DEFAULT_TTL_SEC} instead of the ordinary 7-day default, so a
+ * routine decay window can't silently clear it. {@link listLapsedWallFacts}
+ * is the read leg the wall-lapse watchdog sweeps so an eventual lapse is LOUD
+ * (an escalation), never silent.
+ */
+export const WALL_KEY_PREFIX = 'wall:';
+/** Default TTL applied to a `slot:'wall'` assert when the caller omits
+ *  `ttlSec` — the schema's own max (90d, no schema change needed). Long
+ *  enough that ordinary 7d decay never silently clears an unremediated risk;
+ *  the wall-lapse watchdog is the loud backstop for when even 90d elapses
+ *  without a re-assert or an explicit retract. */
+export const WALL_DEFAULT_TTL_SEC = 90 * 24 * 3600;
+
+/**
  * P-007 (coord-authority-hardening): the platform-VERIFIED stamp for a TYPED
  * sourceRef (`msg:<id>` / `wi:<id>`/WI-/EI- / `owner-turn`), captured
  * server-side AT ASSERT TIME (H2-tier reuse — see
@@ -478,6 +501,61 @@ export async function foldDeadEndFacts(
   inject?: Sql,
 ): Promise<AgentFact[]> {
   return foldFacts(selectors, { ...opts, keyPrefix: DEAD_END_KEY_PREFIX }, inject);
+}
+
+/** A wall fact whose TTL has LAPSED (expired) but was never retracted — the
+ *  wall-lapse watchdog's candidate set. Cross-scope/cross-workspace by design
+ *  (a lapsed wall is a page regardless of who asserted it or where). */
+export interface LapsedWallFact {
+  workspaceId: string;
+  scope: FactScope;
+  scopeRef: string | null;
+  key: string;
+  body: string;
+  createdBy: string;
+  expiresAt: string;
+}
+
+/**
+ * Every WALL fact (`key LIKE 'wall:%'`) that has expired without being
+ * retracted — the read leg {@link WALL_KEY_PREFIX}'s callers sweep. Bounded +
+ * oldest-lapsed-first (the wall that has been silently "cleared" the longest
+ * is the most urgent). Distinct from {@link sweepExpiredFacts}, which only
+ * hard-deletes rows >30d past expiry/retraction — a lapsed wall is a page
+ * target from the MOMENT it lapses, long before that deletion sweep would
+ * ever touch it.
+ */
+export async function listLapsedWallFacts(
+  opts: { limit?: number } = {},
+  inject?: Sql,
+): Promise<LapsedWallFact[]> {
+  const sql = sqlOf(inject);
+  const limit = opts.limit ?? 200;
+  const rows = await sql<Array<{
+    workspace_id: string;
+    scope: FactScope;
+    scope_ref: string | null;
+    key: string;
+    body: string;
+    created_by: string;
+    expires_at: string;
+  }>>`
+    SELECT workspace_id, scope, scope_ref, key, body, created_by, expires_at::text
+      FROM harness_shared.agent_facts
+     WHERE key LIKE ${WALL_KEY_PREFIX + '%'}
+       AND retracted_at IS NULL
+       AND expires_at < now()
+     ORDER BY expires_at ASC
+     LIMIT ${limit}`;
+  return rows.map((r) => ({
+    workspaceId: r.workspace_id,
+    scope: r.scope,
+    scopeRef: r.scope_ref,
+    key: r.key,
+    body: r.body,
+    createdBy: r.created_by,
+    expiresAt: r.expires_at,
+  }));
 }
 
 /** List facts for one selector (the facts:list tool read; includes near-expiry).

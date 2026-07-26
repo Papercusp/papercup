@@ -21,7 +21,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
-import { assertFact, retractFact, foldFacts, FACTS_PER_SCOPE_CAP } from './store';
+import { assertFact, retractFact, foldFacts, FACTS_PER_SCOPE_CAP, listLapsedWallFacts } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');

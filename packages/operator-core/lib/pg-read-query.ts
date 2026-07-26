@@ -322,34 +322,74 @@ export async function buildTenantScopeAdvisory(
 ): Promise<string | null> {
   const stripped = stripSqlLiteralsAndComments(rawSql);
   if (!/\bwhere\b/i.test(stripped)) return null;
-  if (/\b(workspace_id|harness_slug)\b/i.test(stripped)) return null;
   const tables = extractReferencedTables(rawSql);
   if (!tables.length) return null;
-  const info = await readTenantScopeInfo(tables, opts.client);
-  const offenders: string[] = [];
-  for (const t of tables) {
-    const i = info.get(t);
-    if (!i || (!i.hasWorkspaceId && !i.hasHarnessSlug)) continue;
-    const cols = [i.hasWorkspaceId ? 'workspace_id' : null, i.hasHarnessSlug ? 'harness_slug' : null]
-      .filter(Boolean)
-      .join(' + ');
-    offenders.push(`${t} (keyed by ${cols})`);
-    if (offenders.length >= 3) break;
+
+  const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
+  const genericMentioned = mentions('workspace_id') || mentions('harness_slug');
+
+  // Tables with a hardcoded per-table override (a real tenancy key that
+  // differs from the generic workspace_id/harness_slug heuristic) get their
+  // OWN "already scoped" check — a query filtering agent_facts by scope_ref
+  // but not harness_slug must still be recognized as correctly scoped, and a
+  // query filtering agent_facts by harness_slug alone must still be flagged
+  // (that's the exact wrong-predicate footgun this override exists to catch).
+  const overrideTables = tables.filter((t) => TENANT_SCOPE_OVERRIDES[bareTableName(t)]);
+  const genericTables = tables.filter((t) => !TENANT_SCOPE_OVERRIDES[bareTableName(t)]);
+
+  const overrideOffenders: Array<{ table: string; override: TenantScopeOverride }> = [];
+  for (const t of overrideTables) {
+    const override = TENANT_SCOPE_OVERRIDES[bareTableName(t)]!;
+    if (override.requiredColumns.some(mentions)) continue; // already correctly scoped
+    overrideOffenders.push({ table: t, override });
   }
-  if (!offenders.length) return null;
-  const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-  const suggested: string[] = [];
-  if (opts.workspaceId) suggested.push(`workspace_id = ${quote(opts.workspaceId)}`);
-  if (opts.harnessSlug) suggested.push(`harness_slug = ${quote(opts.harnessSlug)}`);
-  const actionable = suggested.length
-    ? ` Add: ${suggested.join(' AND ')}.`
-    : ' Add the resolved workspace_id/harness_slug scope predicate(s).';
-  return (
-    `⚠ tenant scope: ${offenders.join(', ')} — multi-tenant, but this filtered query has no ` +
-    'workspace_id/harness_slug predicate — a bare slug/id filter can silently match ANOTHER ' +
-    `tenant's rows and read as stale/diverged state.${actionable} ` +
-    '(agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).'
-  );
+
+  const genericOffenders: string[] = [];
+  if (genericTables.length && !genericMentioned) {
+    const info = await readTenantScopeInfo(genericTables, opts.client);
+    for (const t of genericTables) {
+      const i = info.get(t);
+      if (!i || (!i.hasWorkspaceId && !i.hasHarnessSlug)) continue;
+      const cols = [i.hasWorkspaceId ? 'workspace_id' : null, i.hasHarnessSlug ? 'harness_slug' : null]
+        .filter(Boolean)
+        .join(' + ');
+      genericOffenders.push(`${t} (keyed by ${cols})`);
+      if (genericOffenders.length >= 3) break;
+    }
+  }
+
+  if (!overrideOffenders.length && !genericOffenders.length) return null;
+
+  const parts: string[] = [];
+
+  for (const { table, override } of overrideOffenders.slice(0, 3)) {
+    parts.push(
+      `⚠ tenant scope: ${table} (keyed by ${override.keyDescription}) — multi-tenant, but this ` +
+        `filtered query has no ${override.requiredColumns.join('/')} predicate — a bare slug/id ` +
+        "filter can silently match ANOTHER tenant's rows and read as a clean-looking " +
+        `empty/stale result rather than an error. Add: ${override.suggest(opts)}.` +
+        (override.preferredTool ? ` Or use ${override.preferredTool}.` : '') +
+        ' (agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope, EI-18669912007336072).',
+    );
+  }
+
+  if (genericOffenders.length) {
+    const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+    const suggested: string[] = [];
+    if (opts.workspaceId) suggested.push(`workspace_id = ${quote(opts.workspaceId)}`);
+    if (opts.harnessSlug) suggested.push(`harness_slug = ${quote(opts.harnessSlug)}`);
+    const actionable = suggested.length
+      ? ` Add: ${suggested.join(' AND ')}.`
+      : ' Add the resolved workspace_id/harness_slug scope predicate(s).';
+    parts.push(
+      `⚠ tenant scope: ${genericOffenders.join(', ')} — multi-tenant, but this filtered query has no ` +
+        'workspace_id/harness_slug predicate — a bare slug/id filter can silently match ANOTHER ' +
+        `tenant's rows and read as stale/diverged state.${actionable} ` +
+        '(agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).',
+    );
+  }
+
+  return parts.join(' ');
 }
 
 export const PG_READ_QUERY_DEFAULT_MAX_ROWS = 200;

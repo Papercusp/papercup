@@ -329,3 +329,81 @@ describe('buildTenantScopeAdvisory (P-005b — the wrong-tenant footgun)', () =>
     ).rejects.toThrow('pg down');
   });
 });
+
+// EI-18669912007336072: the generic workspace_id/harness_slug heuristic named
+// the WRONG columns for harness_shared.agent_facts (tenanted by scope +
+// scope_ref; harness_slug is NULL for ~99.6% of rows) — following its own
+// suggested predicate returned a clean-looking, confidence-inspiring empty
+// result instead of an error. A per-table override replaces the check (and
+// the suggested predicate) for known exceptions like this one.
+describe('buildTenantScopeAdvisory — per-table overrides (EI-18669912007336072)', () => {
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it('advises the real scope+scope_ref predicate for agent_facts instead of workspace_id/harness_slug — no schema read needed', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM harness_shared.agent_facts WHERE expires_at < now()',
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('agent_facts');
+    expect(advisory).toContain('scope + scope_ref');
+    expect(advisory).toContain("scope = 'harness'");
+    expect(advisory).toContain("scope_ref = 'papercusp'");
+    expect(advisory).toContain('facts:list');
+    expect(advisory).not.toContain('harness_slug =');
+    expect(calls).toHaveLength(0); // the override is hardcoded — no information_schema read
+  });
+
+  it('falls back to a placeholder predicate when harnessSlug is unresolved', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM agent_facts WHERE expires_at < now()',
+      { client: sql },
+    );
+    expect(advisory).toContain('scope_ref');
+    expect(advisory).not.toContain('scope_ref = \'\'');
+  });
+
+  it('is silent for agent_facts when the query already filters by scope + scope_ref', async () => {
+    const { sql } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory(
+        "SELECT * FROM harness_shared.agent_facts WHERE scope = 'harness' AND scope_ref = 'papercusp'",
+        { client: sql },
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent for agent_facts when scoped by scope_ref alone (either override column suffices)', async () => {
+    const { sql } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory("SELECT * FROM agent_facts WHERE scope_ref = 'papercusp'", {
+        client: sql,
+      }),
+    ).toBeNull();
+  });
+
+  it('still fires for agent_facts when filtered by harness_slug alone — the exact wrong-predicate footgun', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.agent_facts WHERE harness_slug = 'papercusp'",
+      { client: sql, harnessSlug: 'papercusp' },
+    );
+    expect(advisory).not.toBeNull();
+    expect(advisory).toContain('agent_facts');
+  });
+
+  it('still fires generically for a different table joined alongside agent_facts, while agent_facts itself is silenced', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'harness_slug' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.agent_facts f JOIN harness_shared.harness_plans p " +
+        "ON p.plan_slug = f.scope_ref WHERE f.scope_ref = 'x'",
+      { client: sql },
+    );
+    expect(advisory).toContain('harness_plans');
+    expect(advisory).not.toContain('agent_facts');
+  });
+});

@@ -13,7 +13,16 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS, DEAD_END_KEY_PREFIX, type FactSourceProvenance } from '../../agent-facts/store';
+import {
+  assertFact,
+  resolveFactScopeRef,
+  FACT_SCOPES,
+  FACT_BODY_MAX_CHARS,
+  DEAD_END_KEY_PREFIX,
+  WALL_KEY_PREFIX,
+  WALL_DEFAULT_TTL_SEC,
+  type FactSourceProvenance,
+} from '../../agent-facts/store';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 
@@ -83,6 +92,24 @@ export function normalizeDeadEndSlot(key: string, body: string): { key: string; 
   return { key: k, body: b };
 }
 
+/**
+ * owner-wall-ttl-lapse-hardening-2026-07-26 (EI-18669544162414270): the
+ * WALL fact slot — an owner-gated blocker recorded as a standing fact so it
+ * is machine-greppable (`key LIKE 'wall:%'`) and renders unmistakably (⚠) in
+ * every fold, instead of reading as an ordinary conclusion that quietly
+ * times out. Re-exported for the same reason DEAD_END_KEY_PREFIX is.
+ */
+export { WALL_KEY_PREFIX };
+export const WALL_BODY_PREFIX = '⚠ WALL (owner-gated) — absence ≠ resolved: ';
+
+/** PURE: normalize a slot:'wall' assert's key/body onto the slot encoding.
+ *  Idempotent, same shape as {@link normalizeDeadEndSlot}. */
+export function normalizeWallSlot(key: string, body: string): { key: string; body: string } {
+  const k = key.toLowerCase().startsWith(WALL_KEY_PREFIX) ? key : `${WALL_KEY_PREFIX}${key}`;
+  const b = body.startsWith(WALL_BODY_PREFIX) ? body : `${WALL_BODY_PREFIX}${body}`;
+  return { key: k, body: b };
+}
+
 export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
@@ -110,9 +137,27 @@ export default defineTool({
     // Transport ceiling 4000 ≫ the stored cap: the store TRUNCATES to FACT_BODY_MAX_CHARS
     // (code-run-self-state-adoption-2026-07-03 P-007 — the hard zod reject cost the WHOLE
     // write 7×/14d; truncate-not-reject preserves the fact, '…' makes it visible).
-    body: z.string().min(1).max(4000).describe(`The conclusion — stored truncated to ${FACT_BODY_MAX_CHARS} chars (write tight conclusions, not documents).`),
+    // EI-18670525043445474: the 4000 here is TRANSPORT headroom only (so a slightly-
+    // over-cap write is accepted-and-clipped instead of hard-rejected and lost whole —
+    // code-run-self-state-adoption-2026-07-03 P-007, after a hard reject cost 7 whole
+    // writes in 14d). The REAL cap a caller must size against is FACT_BODY_MAX_CHARS
+    // (500) — front-loaded below because a caller sizing off the bare `maxLength: 4000`
+    // in the schema (without reading the rest of the description) silently loses
+    // everything past 500, discovered only after the write via truncated.droppedTail.
+    body: z
+      .string()
+      .min(1)
+      .max(4000)
+      .describe(
+        `HARD-CLIPPED AT ${FACT_BODY_MAX_CHARS} CHARS — size your write to this, not the 4000 schema ceiling (that 4000 is transport headroom only, so an over-cap write is accepted-and-clipped rather than rejected-and-lost; anything past ${FACT_BODY_MAX_CHARS} is silently dropped and only visible after the fact via the response's truncated.droppedTail). Front-load the operative clause. The conclusion — write tight, ≤${FACT_BODY_MAX_CHARS}-char conclusions, not documents.`,
+      ),
     sourceRef: z.string().max(200).optional().describe('Anchor that proved it. A TYPED ref — msg:<id>, wi:<id>/WI-/EI- id, or "owner-turn" (the human turn you are answering) — is PLATFORM-VERIFIED at assert time and folds with the verified verbatim quote; anything else (plan slug, prose) stays a plain anchor.'),
-    slot: z.enum(['dead-end']).optional().describe("Typed slot (P-015). 'dead-end' = a tried-and-failed approach, recorded so successors never re-try it: the key is normalized under 'dead-end:' and the body rendered with the ⛔ DEAD END marker in every future fold. State the approach AND why it failed; pair with sourceRef to anchor the evidence."),
+    slot: z
+      .enum(['dead-end', 'wall'])
+      .optional()
+      .describe(
+        "Typed slot. 'dead-end' (P-015) = a tried-and-failed approach, recorded so successors never re-try it: the key is normalized under 'dead-end:' and the body rendered with the ⛔ DEAD END marker in every future fold. 'wall' (owner-wall-ttl-lapse-hardening) = an OWNER-GATED blocker whose absence must never be read as resolved: the key is normalized under 'wall:' and the body rendered with the ⚠ WALL marker; TTL defaults to 90d instead of the ordinary 7d (still overridable via ttlSec, capped at 90d) and an unretracted lapse is escalated LOUDLY by the wall-lapse watchdog rather than silently vanishing from folds. State the approach AND why it failed / the condition and what remediates it; pair with sourceRef to anchor the evidence.",
+      ),
     audienceScope: z.string().max(160).optional().describe('Restrict WHO receives this fact in folds (v1 grammar: "fleet:<slug>") — it then folds ONLY into orients of that fleet\'s members. Omit = every reader of the scope. Orthogonal to `scope` (what the fact is about). facts:list still shows it to everyone (delivery relevance, not secrecy).'),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
@@ -151,9 +196,19 @@ export default defineTool({
         sourceProvenance = null;
       }
     }
-    // P-015 dead-end slot: normalize key/body onto the slot encoding (idempotent).
+    // P-015 dead-end slot / owner-wall-ttl-lapse-hardening wall slot: normalize
+    // key/body onto the slot encoding (idempotent).
     const slotted =
-      args.slot === 'dead-end' ? normalizeDeadEndSlot(args.key, args.body) : { key: args.key, body: args.body };
+      args.slot === 'dead-end'
+        ? normalizeDeadEndSlot(args.key, args.body)
+        : args.slot === 'wall'
+          ? normalizeWallSlot(args.key, args.body)
+          : { key: args.key, body: args.body };
+    // A wall slot with no EXPLICIT ttlSec defaults to WALL_DEFAULT_TTL_SEC (90d)
+    // rather than the ordinary 7d default — the whole point of the slot is that
+    // routine decay must not silently clear an owner-gated blocker. An explicit
+    // ttlSec always wins (a caller who deliberately wants a shorter wall can).
+    const ttlSec = args.ttlSec ?? (args.slot === 'wall' ? WALL_DEFAULT_TTL_SEC : undefined);
     const fact = await assertFact({
       scope: args.scope,
       scopeRef: scopeRef ?? null,
@@ -162,7 +217,7 @@ export default defineTool({
       sourceRef: args.sourceRef ?? null,
       audienceScope: args.audienceScope ?? null,
       sourceProvenance,
-      ttlSec: args.ttlSec,
+      ttlSec,
       createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),

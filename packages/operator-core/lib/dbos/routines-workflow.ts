@@ -758,6 +758,27 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'agent-facts-expiry-sweep' },
   );
 
+  // owner-wall-ttl-lapse-hardening-2026-07-26 (EI-18669544162414270): an
+  // owner-gated WALL fact (facts:assert { slot:'wall' }) whose TTL expired
+  // without being retracted pages LOUDLY instead of silently vanishing from
+  // folds — TTL decay always fails toward "clear", the wrong direction for an
+  // unremediated risk. Fail-soft like every sweep here; debounced per-fact
+  // inside the sweep itself.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { wallLapseSweep } = await import('../wall-lapse-watchdog');
+        const results = await wallLapseSweep();
+        for (const r of results) {
+          if (r.outcome === 'error') console.warn(`[wall-fact-lapse] error: ${r.key} — ${r.reason}`);
+        }
+      } catch (e) {
+        console.warn(`[wall-fact-lapse] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'wall-fact-lapse-sweep' },
+  );
+
   // GYM-2 (gym-unwedge-scout-novelty-2026-07-02, generalized across roles by WI-4632):
   // the chronic-autoloop-failure escalator — a cycle red >= threshold consecutive fires
   // files ONE observation + requests an immediate overwatch wake, per 24h per (harness,

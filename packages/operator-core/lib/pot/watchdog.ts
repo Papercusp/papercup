@@ -270,7 +270,14 @@ export type WatchdogSource =
   // loop:arm loops), but a rate-limited-but-ALIVE owner never trips that guard.
   // Fires the FIRST time a wedge is observed for a given loop, debounced 6h —
   // see loop-turn-outcome.ts's `handleLoopResumeTurnExit`.
-  | 'loop-wedge-death';
+  | 'loop-wedge-death'
+  // owner-wall-ttl-lapse-hardening-2026-07-26 (EI-18669544162414270): a
+  // `facts:assert { slot:'wall' }` owner-gated blocker whose TTL expired
+  // WITHOUT being retracted — TTL decay always fails toward "clear", the
+  // wrong direction for an unremediated risk, so this pages instead of
+  // letting the fact silently vanish from folds. Debounced 24h per fact key
+  // (wall-lapse-watchdog.ts).
+  | 'wall-fact-lapse';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
