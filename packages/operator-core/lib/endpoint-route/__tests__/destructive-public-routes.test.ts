@@ -45,9 +45,19 @@ vi.mock('../../flag-audit', () => ({ recordFlagAudit: vi.fn(async () => {}) }));
 
 const setFlag = vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));
 const setFlagOverride = vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));
+// EI-18712738949489735: the pg-override success path now reads back via getFlag()
+// before reporting success — default it to echo the just-written value (the write
+// "took", as far as this process's own resolver is concerned) so the pre-existing
+// pg-override-success cases here are unaffected; tests targeting the readback guard
+// itself override this per-case.
+const getFlag = vi.fn(async (): Promise<boolean> => {
+  const last = setFlagOverride.mock.calls.at(-1) as [string, boolean | null] | undefined;
+  return last ? Boolean(last[1]) : true;
+});
 vi.mock('@papercusp/flags/server', () => ({
   setFlag: (...a: unknown[]) => setFlag(...(a as [])),
   setFlagOverride: (...a: unknown[]) => setFlagOverride(...(a as [])),
+  getFlag: (...a: unknown[]) => getFlag(...(a as [])),
   // The 'production' preset clears runtime overrides (preset.ts, 2026-06-18). The
   // handler awaits it; the mock must provide it or the production case 500s.
   clearAllFlagOverrides: () => Promise.resolve([]),

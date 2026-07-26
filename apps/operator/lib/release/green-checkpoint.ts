@@ -2394,6 +2394,288 @@ async function dispatchCiWorkflow(integrationRoot: string, ref: string, log: (s:
   }
 }
 
+/** WI-6053: one post-suite leg's TRI-STATE outcome.
+ *
+ *  Each leg used to be a plain `let xOk = true` that only ever got assigned when the leg
+ *  actually ran — so "never ran" and "ran and passed" were the SAME value, and nothing
+ *  downstream could tell them apart. Three states make the difference representable, which
+ *  is the whole point: a skipped leg can never again be counted as a pass. */
+type LegStatus = 'passed' | 'failed' | 'skipped';
+
+interface LegOutcome {
+  status: LegStatus;
+  /** Why a skipped leg was skipped — a subject hive without the script, or an earlier
+   *  leg having already failed (the chain short-circuits). Never an assertion of health. */
+  skipReason?: string;
+}
+
+interface PostSuiteLegs {
+  /** True when no leg FAILED. A skipped leg is neither a pass nor a fail: it is the
+   *  documented subject-hive opt-out, and it never contributes evidence of green. */
+  ok: boolean;
+  typecheck: LegOutcome;
+  lintMigrations: LegOutcome;
+  lintIdentity: LegOutcome;
+  lintDesignPrimitives: LegOutcome;
+  build: LegOutcome;
+  /** Concatenated failure detail, appended verbatim to the suite output. */
+  output: string;
+  /** P-012 signature fragments for whichever legs failed (`lint:tsc`, …). */
+  failingSignatures: string[];
+}
+
+/** The legs' state when the suite is NOT (yet) considered passing: every one skipped,
+ *  with the reason recorded. `ok` is true because nothing failed — but every individual
+ *  status is `skipped`, so no consumer can mistake this for five passes. */
+function legsNotRun(skipReason: string): PostSuiteLegs {
+  const skipped: LegOutcome = { status: 'skipped', skipReason };
+  return {
+    ok: true,
+    typecheck: skipped,
+    lintMigrations: skipped,
+    lintIdentity: skipped,
+    lintDesignPrimitives: skipped,
+    build: skipped,
+    output: '',
+    failingSignatures: [],
+  };
+}
+
+/**
+ * WI-6053: every check that stands between a passing SUITE and a green verdict, in one
+ * place, run as a unit.
+ *
+ * These five legs (typecheck · migrations lint · the 3 identity-leak lints ·
+ * design-primitives lint · SPA build) were previously five inline blocks in runGreen, each
+ * gated on `r.code === 0` — the raw SUITE exit code — while each `*Ok` flag defaulted to
+ * `true`. That coupling was invisible and wrong: when the suite went red the legs all
+ * skipped and kept their `true` defaults, and flake-absorption then set `green = true`
+ * without re-running or re-checking any of them. Every absorbed-green candidate was
+ * fast-forwarded to `main` with all five merely ASSUMED. That is how afdbda332b's
+ * operator-core type errors reached `main` on 2026-07-26 — the gate reported green having
+ * never typechecked, linted, or built the tree.
+ *
+ * Hoisting them here makes "the suite is considered passing" the single trigger, so the
+ * absorption path can pay the same price the native path pays. The chain still
+ * short-circuits (a failing leg skips the rest — a red is a red, and the remaining legs
+ * cost real gate minutes), and a subject hive without a script still opts out per-leg via
+ * hasNpmScript. The ORDER is deliberate and asserted by green-checkpoint-real-deps.test.ts:
+ * cheapest-and-most-diagnostic first, the expensive SPA build last.
+ */
+export async function runPostSuiteLegs(
+  treeDir: string,
+  env: NodeJS.ProcessEnv,
+  exec: CheckpointExec,
+  spaWorkspace: string,
+): Promise<PostSuiteLegs> {
+  const legs = legsNotRun('not reached');
+  const outputs: string[] = [];
+  const failingSignatures: string[] = [];
+  /** Short-circuit reason once a leg has failed — every later leg records THIS, so the
+   *  verdict says "not run because typecheck failed", never a bare skip. */
+  let haltedBy: string | undefined;
+
+  // WI-4493: `test:affected` is an esbuild/Vitest gate and does not typecheck
+  // operator-core. The Papercusp root's `lint:tsc` ratchet catches new per-file
+  // regressions, so run it in the same isolated candidate tree before allowing the
+  // candidate through the release gate. Subject hives without that script retain their
+  // existing gate semantics.
+  if (!hasNpmScript(treeDir, 'lint:tsc')) {
+    legs.typecheck = { status: 'skipped', skipReason: 'candidate provides no lint:tsc script' };
+  } else {
+    const typecheck = await exec('npm', ['run', 'lint:tsc'], { cwd: treeDir, env, allowNonZero: true });
+    legs.typecheck = { status: typecheck.code === 0 ? 'passed' : 'failed' };
+    if (typecheck.code !== 0) {
+      haltedBy = 'lint:tsc failed';
+      failingSignatures.push('lint:tsc');
+      outputs.push(
+        '\n\n=== TYPECHECK FAILED (npm run lint:tsc) — operator-core type regressions block the release ===\n' +
+          typecheck.stdout +
+          typecheck.stderr,
+      );
+    }
+  }
+
+  // EI-485: lint:migrations' PG-backed "unreserved migration number" check (a hand-picked
+  // NNN that skipped db:next-migration) was never wired into any automated gate — its 3
+  // pure-filesystem checks (dup-NNN, raw transaction control, unguarded RENAME CONSTRAINT)
+  // got wired into the vitest suite itself (lint-migrations.test.ts, EI-6843) and so
+  // already ran on every `test:affected`, but the PG-backed leg only ever ran on a manual
+  // `npm run lint:migrations` — which nobody ran, so real drift (16 already-applied numbers
+  // >= ENFORCED_FROM lacking a reservation row, backfilled in
+  // 620-backfill-migration-reservations-ei485.sql) reached green `main` undetected. Cheap
+  // (one fs scan + one PG query; gracefully skips the PG leg when unreachable, never a
+  // false red) and the checkpoint tree has a reachable PG, so gate it here like lint:tsc.
+  if (haltedBy) {
+    legs.lintMigrations = { status: 'skipped', skipReason: haltedBy };
+  } else if (!hasNpmScript(treeDir, 'lint:migrations')) {
+    legs.lintMigrations = { status: 'skipped', skipReason: 'candidate provides no lint:migrations script' };
+  } else {
+    const migrations = await exec('npm', ['run', 'lint:migrations'], { cwd: treeDir, env, allowNonZero: true });
+    legs.lintMigrations = { status: migrations.code === 0 ? 'passed' : 'failed' };
+    if (migrations.code !== 0) {
+      haltedBy = 'lint:migrations failed';
+      failingSignatures.push('lint:migrations');
+      outputs.push(
+        '\n\n=== MIGRATION LINT FAILED (npm run lint:migrations) — committed migration-file discipline / unreserved migration number ===\n' +
+          migrations.stdout +
+          migrations.stderr,
+      );
+    }
+  }
+
+  // EI-18147177863084708: the 3 identity-leak lints (check-no-owner-name-tags.mjs =
+  // `[owner:<name>]` provenance tags; check-no-box-identity.mjs = hardcoded `/home/<user>/`
+  // paths; check-no-identity-literals.mjs = bare box git-name/email/hostname/OS-user)
+  // previously ran ONLY inside release-local.sh's WI-4776 gate, at release-CUT time — so a
+  // leak an agent authors on `staging` (a `[owner:Jane …]` tag or a stray box-identity
+  // literal is CORRECT on a carry surface but a leak in shipped source) sat undetected
+  // through every green-checkpoint tick until a release attempt finally tripped over it,
+  // sometimes dozens of commits later: the 0.0.12 Windows Server cut (2026-07-20) hit 24
+  // accumulated leaks across 13 files, killing 2 cut attempts ~30min each. These are GLOBAL
+  // source scans, independent of the candidate diff — same rationale as
+  // lint:design-primitives below. Unlike release-local.sh's `&&`-chain (which only ever
+  // shows the FIRST failing lint's leaks, forcing whack-a-mole across multiple builds),
+  // every one of the three runs and every failure is reported together in one verdict.
+  if (haltedBy) {
+    legs.lintIdentity = { status: 'skipped', skipReason: haltedBy };
+  } else {
+    const identityLints: Array<{ script: string; label: string }> = [
+      { script: 'lint:no-owner-name-tags', label: 'OWNER-NAME TAG' },
+      { script: 'lint:no-box-identity', label: 'BOX-IDENTITY PATH' },
+      { script: 'lint:no-identity-literals', label: 'BOX IDENTITY LITERAL' },
+    ];
+    const identityFailures: string[] = [];
+    let identityRan = 0;
+    for (const { script, label } of identityLints) {
+      if (!hasNpmScript(treeDir, script)) continue;
+      identityRan++;
+      const out = await exec('npm', ['run', script], { cwd: treeDir, env, allowNonZero: true });
+      if (out.code !== 0) {
+        identityFailures.push(`\n\n=== ${label} LINT FAILED (npm run ${script}, WI-4776 class) ===\n` + out.stdout + out.stderr);
+      }
+    }
+    legs.lintIdentity = identityRan === 0
+      ? { status: 'skipped', skipReason: 'candidate provides none of the 3 identity-leak lint scripts' }
+      : { status: identityFailures.length === 0 ? 'passed' : 'failed' };
+    if (identityFailures.length) {
+      haltedBy = 'identity-leak lints failed';
+      failingSignatures.push('lint:identity-leak');
+      outputs.push(
+        '\n\n=== IDENTITY-LEAK LINTS FAILED (WI-4776 class — owner-name tag / box path / box identity literal committed to tracked source) ===' +
+          identityFailures.join(''),
+      );
+    }
+  }
+
+  // EI-18218408212070282: `test:affected` (the suite leg) only runs a workspace's suite when
+  // that workspace is in the CANDIDATE DIFF's affected set (scripts/affected-tests.mjs).
+  // design-primitives.test.ts and its siblings (css-tokens.test.ts, contrast.test.ts) are
+  // GLOBAL source-scanning lints — they scan the WHOLE apps/operator + operator-vite tree
+  // for token/primitive compliance, independent of what this candidate's diff touched. So a
+  // candidate whose diff doesn't happen to touch @papercusp/web (or anything
+  // reverse-depending on it) skipped them entirely, and a real, pre-existing violation
+  // elsewhere in the tree rode straight into the green pin: the gate flapped red<->green on
+  // the SAME uncorrected violation purely depending on each candidate's diff shape, not on
+  // whether the tree was actually clean. Run it here — never gated by the affected set — so
+  // "green" means the whole tree's design-primitive invariants hold, not just the diffed
+  // slice. `npm run test:file` (scripts/test-files.mjs) resolves each file to its owning
+  // Vitest config and hard-fails on a zero/partial match, so a future rename of any of the
+  // three files fails LOUDLY here instead of silently stopping being gated.
+  if (haltedBy) {
+    legs.lintDesignPrimitives = { status: 'skipped', skipReason: haltedBy };
+  } else if (!hasNpmScript(treeDir, 'lint:design-primitives')) {
+    legs.lintDesignPrimitives = { status: 'skipped', skipReason: 'candidate provides no lint:design-primitives script' };
+  } else {
+    const designPrimitives = await exec('npm', ['run', 'lint:design-primitives'], { cwd: treeDir, env, allowNonZero: true });
+    legs.lintDesignPrimitives = { status: designPrimitives.code === 0 ? 'passed' : 'failed' };
+    if (designPrimitives.code !== 0) {
+      haltedBy = 'lint:design-primitives failed';
+      failingSignatures.push('lint:design-primitives');
+      outputs.push(
+        '\n\n=== DESIGN PRIMITIVES LINT FAILED (npm run lint:design-primitives) — global token/primitive scan, independent of the affected set ===\n' +
+          designPrimitives.stdout +
+          designPrimitives.stderr,
+      );
+    }
+  }
+
+  // P-005: the SPA build is PART of "green". A build break (a bad import, a type error in a
+  // bundled module) passes the Vitest suite, then fails at the deploy's swap step
+  // (`--build-spa`) and rolls back — needlessly draining + restarting the live :3070
+  // (2026-06-09 13:31–14:00: three rolled-back deploys of the same broken green). Build it
+  // here, in the isolated checkpoint tree, so a broken build holds `main` like any other red
+  // — before it ever reaches a deploy.
+  //
+  // The SPA build is the platform operator SPA (@papercusp/operator-vite by default). A
+  // per-hive SUBJECT repo with no operator SPA sets cfg.spaBuildWorkspace='' (via
+  // PAPERCUSP_SPA_BUILD_WORKSPACE in its env overlay): there is nothing to build, so SKIP it
+  // and let the gate = the hive's test suite. Hardcoding the workspace here made
+  // `npm --workspace @papercusp/operator-vite run build` die with "No workspaces found" on
+  // every per-hive gate, holding that hive's `main` forever (oddsmith).
+  if (haltedBy) {
+    legs.build = { status: 'skipped', skipReason: haltedBy };
+  } else if (!spaWorkspace) {
+    legs.build = { status: 'skipped', skipReason: 'hive declares no SPA build workspace' };
+  } else {
+    // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a cryptic
+    // CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such markers in
+    // globals.css (a bad git-sync auto-merge — the live-merge resolver doesn't catch
+    // already-committed ones) froze the SPA/sidecar/WI-280-witness/green-checkpoint builds:
+    // the whole fleet deploy, on a stray word in CSS, with no named root. Catch markers
+    // HERE, before the expensive+cryptic build, so the held gate NAMES the file:line. git
+    // grep (not scripts/check-conflict-markers.mjs) keeps this robust for an older candidate
+    // tree predating that script. The ERE mirrors its CONFLICT_MARKER_ERE: 7 of `<`/`>`/`|`
+    // at line start — brackets every git conflict, zero false positives (the bare `=======`
+    // separator is excluded as FP-prone). git grep exit 0 = match found, 1 = clean.
+    const markers = await exec('git', ['grep', '-n', '-I', '-E', '^(<{7}|>{7}|\\|{7})([ \\t]|$)', '--', '.'], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+    });
+    if (markers.code === 0 && markers.stdout.trim()) {
+      // Treat exactly like a failed build (folds @papercusp/operator-vite into
+      // checkpointFailureSignature) and SKIP the build entirely — it would only die
+      // cryptically on the same markers.
+      legs.build = { status: 'failed' };
+      outputs.push(
+        '\n\n=== COMMITTED CONFLICT MARKERS (@papercusp/operator-vite, EI-1836) — would break the SPA build ===\n' + markers.stdout,
+      );
+    } else {
+      // PAPERCUSP_RETAIN_DIST_CHUNKS=1 — this build targets the LIVE WORKING TREE, which is
+      // exactly where desktop windows are open (:3170/:3270 serve this dist). A default
+      // one-shot build stages into dist.next/ and SWAPS it over dist/, deleting every old
+      // hashed chunk; any window opened before the swap then 404s the lazy chunk it is
+      // pinned to and dead-ends on "Importing a module script failed" (owner-reported
+      // 2026-07-26). Because this gate runs on a TIMER, it broke every open window on a
+      // schedule — and the error card blames "the dev build watcher", so it was never traced
+      // back to here. Retention is the documented cure (WI-1484): emptyOutDir:false +
+      // devDistPrunePlugin's age-prune, so old chunks survive long enough for an open webview
+      // and are still bounded.
+      // ⚠ This does NOT weaken the gate: index.html always points at the NEW chunks, so what
+      // is verified/deployed is unchanged — retained chunks are extra files, and on a fresh
+      // checkout (the release build) there are none to retain, which is why the release path
+      // is deliberately left alone.
+      const b = await exec('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
+        cwd: treeDir,
+        env: { ...env, PAPERCUSP_RETAIN_DIST_CHUNKS: '1' },
+        allowNonZero: true,
+      });
+      legs.build = { status: b.code === 0 ? 'passed' : 'failed' };
+      if (b.code !== 0) {
+        outputs.push('\n\n=== SPA BUILD FAILED (@papercusp/operator-vite) — would fail the deploy swap ===\n' + b.stdout + b.stderr);
+      }
+    }
+  }
+
+  legs.ok = ![legs.typecheck, legs.lintMigrations, legs.lintIdentity, legs.lintDesignPrimitives, legs.build].some(
+    (l) => l.status === 'failed',
+  );
+  legs.output = outputs.join('');
+  legs.failingSignatures = failingSignatures;
+  return legs;
+}
+
 export function realCheckpointDeps(
   cfg: ReleaseConfig,
   exec: CheckpointExec = runCmd,

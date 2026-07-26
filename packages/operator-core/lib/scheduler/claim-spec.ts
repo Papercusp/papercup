@@ -38,6 +38,10 @@ import { z } from 'zod';
 // (see scheduler/claim-states.ts's header for the full trace). Do NOT re-point this
 // import back at '../work-items'.
 import { CLAIM_STATES_ALLOWLIST } from './claim-states';
+// p2p-lane-fence.ts only imports `type { FilterNode }` from THIS module (erased at
+// compile time — no runtime dependency), so importing its runtime export here does not
+// reopen the cycle above. Safe, one-directional at runtime: claim-spec.ts -> p2p-lane-fence.ts.
+import { buildP2pLaneFence } from './p2p-lane-fence';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Vocabulary — the fixed primitive set the Queen composes a spec from.
@@ -215,8 +219,39 @@ export const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
 export const viewSchema = z
   .object({
     filter: z.record(z.string(), z.unknown()).optional(),
+    /**
+     * WI-6050: a named FENCE macro, expanded server-side into `filter` at
+     * validate/write time — see {@link CLAIM_SPEC_FENCE_MACROS}. Lets an author
+     * working in raw MCP JSON (who cannot `import buildP2pLaneFence()`) reference
+     * a shared exclusion-term source BY NAME instead of hand-retyping its terms,
+     * which is the exact drift that regressed the p2p-lane fence three times.
+     */
+    fence: z.string().min(1).optional(),
   })
   .strict();
+
+/**
+ * Named `view.fence` macros a spec may reference by name — each expands, at
+ * validate/write time, into a `FilterNode` ANDed onto `view.filter` (WI-6050).
+ *
+ * WHY a name instead of requiring the term list inline: a claim spec is authored
+ * over MCP as raw JSON (`scheduler:set_claim_spec`), a surface a human or agent
+ * leader works from directly — they cannot `import buildP2pLaneFence()` from
+ * TypeScript. Before this, the p2p/federation/rig exclusion could only ever be
+ * hand-retyped into the spec's `title`/`word` clauses, which is exactly the
+ * drift `p2p-lane-fence.ts` was created to stop and then regressed THREE times
+ * anyway (WI-5265/5272/WI-5639) because nothing forced a hand-edit through the
+ * shared source. Referencing `fence:'p2p-lane'` instead makes the shared source
+ * the path of least resistance: expansion always reads the CURRENT
+ * `P2P_LANE_EXCLUSION_TERMS`, so a future addition to that list benefits every
+ * spec re-authored with the macro without anyone hand-copying terms again.
+ *
+ * Add a new entry here (never a second ad hoc term list elsewhere) when another
+ * class of work needs the same "author can't import the builder" treatment.
+ */
+export const CLAIM_SPEC_FENCE_MACROS: Record<string, () => FilterNode> = {
+  'p2p-lane': buildP2pLaneFence,
+};
 
 const rankDirSchema = z.enum(['asc', 'desc']);
 
@@ -497,6 +532,28 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
     errors.push(
       `specVersion: unsupported spec version "${spec.specVersion}" (supported: ${SUPPORTED_SPEC_VERSIONS.join(', ')})`,
     );
+  }
+
+  // (2a) WI-6050: expand a named `view.fence` macro into `view.filter`, HERE, at
+  // validate time — which is also write time (setClaimSpec persists `v.spec`, this
+  // function's return value, never the caller's raw input) and read time (getClaimSpec
+  // re-validates the stored spec on every load). Expansion ANDs the macro's FilterNode
+  // onto any existing filter and then DELETES `fence` from the returned view, so
+  // re-validating an already-expanded stored spec is a no-op rather than compounding.
+  if (spec.view.fence !== undefined) {
+    const build = CLAIM_SPEC_FENCE_MACROS[spec.view.fence];
+    if (!build) {
+      errors.push(
+        `view.fence: unknown fence macro "${spec.view.fence}" (known: ${
+          Object.keys(CLAIM_SPEC_FENCE_MACROS).join(', ') || '(none)'
+        })`,
+      );
+    } else {
+      const fenceNode = build();
+      const existing = spec.view.filter as FilterNode | undefined;
+      spec.view.filter = (existing ? { all: [existing, fenceNode] } : fenceNode) as Record<string, unknown>;
+      delete (spec.view as { fence?: string }).fence;
+    }
   }
 
   // (3) Filter op/value coherence.

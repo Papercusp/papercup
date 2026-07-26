@@ -13,13 +13,21 @@
  *
  * This module is that shared source: `P2P_LANE_EXCLUSION_TERMS` names exactly
  * what a single-box fleet must exclude, and `buildP2pLaneFence()` composes it
- * into a `FilterNode` any caller — a leader hand-authoring a spec via
- * scheduler:set_claim_spec, or future spec-construction code — can splice into a
- * `view.filter` `all: [...]` list instead of re-typing per-term glob/word
- * clauses by hand. p2p-lane-fence.test.ts pins its CONTENT against
- * representative p2p/federation/rig-titled items, so a future edit that shrinks
- * or drops a term fails a test instead of silently leaking rig-only work to a
- * single-box fleet member who can't execute it (WI-5265's original incident).
+ * into a `FilterNode` any TypeScript caller can splice into a `view.filter`
+ * `all: [...]` list instead of re-typing per-term glob/word clauses by hand.
+ * p2p-lane-fence.test.ts pins its CONTENT against representative
+ * p2p/federation/rig-titled items, so a future edit that shrinks or drops a
+ * term fails a test instead of silently leaking rig-only work to a single-box
+ * fleet member who can't execute it (WI-5265's original incident).
+ *
+ * WI-6050: the ORIGINAL gap this history left open — a leader authoring a spec
+ * over MCP (raw JSON, `scheduler:set_claim_spec`) cannot `import
+ * buildP2pLaneFence()`, so the fence could still only ever be reached by
+ * hand-retyping its terms, which regressed a THIRD time (rev9 leaked WI-5639).
+ * `claim-spec.ts`'s `CLAIM_SPEC_FENCE_MACROS` registry now closes that: a spec
+ * author sets `view:{ fence:"p2p-lane" }` and `validateClaimSpec` expands it
+ * from THIS module's current `P2P_LANE_EXCLUSION_TERMS` at write time — a name
+ * that cannot drift, instead of terms that could.
  *
  * Uses the `word` filter op (EI-18690730909662985), not `glob`: a whole-word
  * match avoids `glob`'s bare-substring false positive (e.g. a `*p2p*` glob

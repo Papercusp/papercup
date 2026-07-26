@@ -130,11 +130,14 @@ export function rescueBody(): string {
  */
 export async function readHaltCandidates(): Promise<HaltCandidate[]> {
   const rows = await listPresence();
-  return rows.map((r: { ownerId: string; workspaceId?: string | null; heartbeatAt?: string | null }) => ({
-    agentId: r.ownerId,
-    workspaceId: r.workspaceId ?? null,
-    heartbeatMs: r.heartbeatAt ? Date.parse(r.heartbeatAt) : null,
-  }));
+  return rows.map((r) => {
+    const ms = r.heartbeatAt ? Date.parse(r.heartbeatAt) : NaN;
+    return {
+      agentId: r.ownerId,
+      workspaceId: r.workspaceId ?? null,
+      heartbeatMs: Number.isFinite(ms) ? ms : null,
+    };
+  });
 }
 
 registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
@@ -152,8 +155,8 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
   const recent = await readOutbox(HALT_RESCUE_OWNER, { since_ts: since }).catch(() => []);
   const recentlyRescued = new Set(
     recent
-      .filter((e: { summary?: unknown }) => typeof e.summary === 'string' && e.summary.startsWith(RESCUE_PREFIX))
-      .flatMap((e: { to: string[] }) => e.to),
+      .filter((e) => typeof e.summary === 'string' && e.summary.startsWith(RESCUE_PREFIX))
+      .flatMap((e) => e.to),
   );
 
   const candidates = selectSweepCandidates(await readHaltCandidates(), recentlyRescued, nowMs);

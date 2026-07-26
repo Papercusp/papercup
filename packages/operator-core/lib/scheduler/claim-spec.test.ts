@@ -439,6 +439,90 @@ describe('claim-spec vocabulary — `title` keyword exclusion (WI-3268)', () => 
   });
 });
 
+describe('claim-spec `view.fence` macro — server-side expansion (WI-6050)', () => {
+  it('expands `fence:"p2p-lane"` into a `not:{any:[...]}` title-word filter, stripping `fence`', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'fenced-only',
+      revision: 1,
+      view: { fence: 'p2p-lane' },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+    // `fence` must not survive into the stored/returned spec — otherwise re-validating
+    // an already-expanded spec (every getClaimSpec read does exactly this) would AND the
+    // fence node on again every time.
+    expect(r.spec?.view).not.toHaveProperty('fence');
+    const filter = r.spec?.view.filter as { not?: { any?: unknown[] } } | undefined;
+    expect(filter?.not?.any).toBeDefined();
+    expect((filter?.not?.any ?? []).length).toBeGreaterThanOrEqual(10); // P2P_LANE_EXCLUSION_TERMS' current size
+  });
+
+  it('ANDs the fence onto an existing filter rather than replacing it', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'fenced-plus-kind',
+      revision: 1,
+      view: {
+        filter: { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+        fence: 'p2p-lane',
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    expect(r.ok).toBe(true);
+    const filter = r.spec?.view.filter as { all?: unknown[] } | undefined;
+    expect(filter?.all).toHaveLength(2);
+    expect(filter?.all?.[0]).toMatchObject({ field: 'kind' });
+  });
+
+  it('rejects an unknown fence name with a clear, named error', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'bad-fence',
+      revision: 1,
+      view: { fence: 'not-a-real-fence' },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes('view.fence') && e.includes('not-a-real-fence'))).toBe(true);
+  });
+
+  it('re-validating an already-expanded (fence-stripped) spec is idempotent, not double-applied', () => {
+    const once = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'fenced-roundtrip',
+      revision: 1,
+      view: { fence: 'p2p-lane' },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    expect(once.ok).toBe(true);
+    // Simulates what getClaimSpec does: re-validate the STORED (already-expanded) spec.
+    const twice = validateClaimSpec(once.spec);
+    expect(twice.ok).toBe(true);
+    expect(twice.spec?.view.filter).toEqual(once.spec?.view.filter);
+  });
+
+  it('actually excludes a p2p-titled item (matches buildP2pLaneFence\'s own semantics)', () => {
+    const r = validateClaimSpec({
+      specVersion: '1.0',
+      specId: 'fenced-semantics',
+      revision: 1,
+      view: { fence: 'p2p-lane' },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    expect(r.ok).toBe(true);
+    const filter = r.spec?.view.filter as { not: { any: { field: string; op: string; value: string }[] } };
+    const words = filter.not.any.map((leaf) => leaf.value);
+    expect(words).toContain('p2p');
+    expect(words).toContain('replication'); // WI-5639's leaked term — the single highest-value entry
+    filter.not.any.forEach((leaf) => {
+      expect(leaf.field).toBe('title');
+      expect(leaf.op).toBe('word');
+    });
+  });
+});
+
 describe('isIdOnlySelector — the id-pin tripwire', () => {
   const spec = (filter: unknown) => ({ view: filter === undefined ? {} : { filter } });
   it('true when the filter selects on `id` ALONE', () => {

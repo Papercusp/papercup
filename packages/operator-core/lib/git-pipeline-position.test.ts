@@ -233,6 +233,100 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.notes.join(' ')).toMatch(/submodule/i);
   });
 
+  /**
+   * EI-18715870370005934 — the SUBMODULE-BOUNDARY false negative.
+   *
+   * The bug is not that a check is hard; it is that the wrong check returns a
+   * confident, safe-sounding EMPTY. `git show <superSha>:<submodulePath>` and
+   * `git status --porcelain <submodulePath>` both yield nothing across the
+   * boundary, which reads as "my change is absent" / "the tree is clean" instead
+   * of "you asked the superproject about content it does not store". A near-miss
+   * on that reading nearly aborted a good ~30min decisive gate run.
+   *
+   * The whole point of the guard is that the naive form and the resolver must
+   * DISAGREE — so these assert the disagreement directly.
+   */
+  describe('superproject sha + submodule path (EI-18715870370005934)', () => {
+    const SUPER = 'super8b339f8780aaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const PINNED = '151cfdb3357a4ae03d34e8a32b89b8355656c356';
+    const pinGit = () =>
+      fakeGit({
+        submodules: ['papercusp-desktop'],
+        submodulePin: { superSha: SUPER, pinnedSha: PINNED, path: 'papercusp-desktop' },
+        contains: { HEAD: [PINNED], 'origin/HEAD': [PINNED] },
+      });
+
+    it('resolves the gitlink instead of reporting the sha as absent', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'papercusp-desktop/bin/lib/scenarios/b3-revocation.sh', sha: SUPER },
+        { git: pinGit(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+
+      // THE REGRESSION: before the fix this was null + "did not resolve" — a bare
+      // absence, from the tool agents are pointed at for "is my edit live".
+      expect(res.targetSha).toBe(PINNED);
+      expect(res.submodulePin).toEqual({ superprojectSha: SUPER, submoduleSha: PINNED });
+      expect(res.notes.join(' ')).not.toMatch(/did not resolve/);
+      expect(res.positions.committedLocal).toBe(true);
+    });
+
+    it('never substitutes one sha for another silently — the summary names both', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'papercusp-desktop/bin/vm-federation.sh', sha: SUPER },
+        { git: pinGit(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.summary).toContain(SUPER.slice(0, 9));
+      expect(res.summary).toContain(PINNED.slice(0, 9));
+      expect(res.summary).toMatch(/PINS/);
+      // The note must redirect the reader off the hand-rolled form.
+      expect(res.notes.join(' ')).toMatch(/git -C papercusp-desktop show/);
+    });
+
+    it('the naive cross-boundary probe DISAGREES with the resolver (the whole point)', async () => {
+      const git = pinGit();
+      // Naive: what an agent hand-composes. Empty — indistinguishable from absent.
+      const naiveShow = await git('/repo', ['show', `${SUPER}:papercusp-desktop/bin/vm-federation.sh`]);
+      const naiveStatus = await git('/repo', ['ls-tree', SUPER, 'papercusp-desktop/bin/vm-federation.sh']);
+      expect(naiveShow).toBeNull();
+      expect(naiveStatus).toBeNull(); // a FILE path, not the submodule root — no gitlink
+
+      // The PRE-FIX code path, asserted explicitly so this stays a real guard: the
+      // only thing the old implementation did was rev-parse the sha INSIDE the
+      // submodule, and that returns null for a superproject sha. So without the
+      // gitlink resolution `targetSha` is necessarily null — i.e. reverting the fix
+      // makes the expectations below fail, rather than passing for another reason.
+      expect(await git('/repo/papercusp-desktop', ['rev-parse', '--verify', `${SUPER}^{commit}`])).toBeNull();
+
+      // Resolver: the same question, asked correctly.
+      const res = await gitPipelinePosition(
+        { path: 'papercusp-desktop/bin/vm-federation.sh', sha: SUPER },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.targetSha).toBe(PINNED);
+      expect(res.targetSha).not.toBe(naiveShow);
+    });
+
+    it('a sha that genuinely does not resolve still reports absent (no false pin)', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'papercusp-desktop/bin/vm-federation.sh', sha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' },
+        { git: pinGit(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      // rev-parse succeeds for any non-superproject sha in the fake, so the guard
+      // that matters here is that NO pin was fabricated for an unrelated sha.
+      expect(res.submodulePin).toBeNull();
+    });
+
+    it('a superproject sha with a NON-submodule path is untouched by the resolver', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'packages/operator-core/lib/x.ts', sha: SUPER },
+        { git: pinGit(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.submodule).toBeNull();
+      expect(res.submodulePin).toBeNull();
+      expect(res.targetSha).toBe(SUPER);
+    });
+  });
+
   it('a newly-created uncommitted file reports no commit + the dirty flag', async () => {
     const git = fakeGit({ pathCommit: null, dirty: true });
     const res = await gitPipelinePosition(
