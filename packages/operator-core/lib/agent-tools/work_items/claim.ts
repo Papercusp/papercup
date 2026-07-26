@@ -282,17 +282,16 @@ export default defineTool({
   name: 'work_items:claim',
   profile: 'engineer',
   description:
-    'Claim one OR many work-items (assign to yourself, or to `assignee`). A target that is a fleet MEMBER may only receive an item matching its per-member/inherited fleet claim spec; out-of-scope named claims are refused before mutation and alert its leader. Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Returns per-item outcomes; one refusal/conflict never fails the rest. A `payload._claimHold` item (work_items:hold_open / release{claimHold:true} — a deliberate, durable exclusion, sometimes an owner-gated D-003 policy hold) refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override` for a policy-tier reason) unless `force`/`ownerOverride` clear it (WI-5946) — the hold itself stays in place either way.',
+    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec; out-of-scope named claims are refused before mutation and alert its leader. A `_claimHold` item (hold_open / release{claimHold:true}) refuses with `claim_hold_blocked` — or `policy_gate_requires_owner_override` for a policy-tier hold — unless `force`/`ownerOverride` (WI-5946); the hold stays either way.',
   guidance: {
-    when: 'You are starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, but never fleet scope.',
-    notWhen: 'A per-item `claim_conflict` means a LIVE peer holds it — coordinate with the `holder` (coord:send) or pick another item; do not blind-retry. (If the holder is dead, the stale-claim reclaim lane frees it.) A per-item `claim_hold_blocked`/`policy_gate_requires_owner_override` means the item is DELIBERATELY parked (WI-2797 / D-003) — coordinate with the named holder before passing `force`/`ownerOverride`; do not reflexively force past it.',
+    when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.',
+    notWhen: 'A `claim_conflict` means a LIVE peer holds it — coordinate with `holder` (coord:send) or pick another; do not blind-retry (a dead holder is freed by the stale-claim lane). `claim_hold_blocked`/`policy_gate_requires_owner_override` means it is DELIBERATELY parked (WI-2797 / D-003) — coordinate with the holder before `force`/`ownerOverride`.',
     chaining:
-      'work_items:list → work_items:claim → work_items:set_state → work_items:release/close. There is no separate work_items:heartbeat — ANY papercusp-su tool call already refreshes your liveness (dispatch-heartbeat beats coord_presence on every settled dispatch), which is what the stale-claim reaper checks before reclaiming a held item. The gap is a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest with zero papercusp-su calls) during a >10-15min single-claim investigation (EI-6772) — call work_items:checkpoint { id, checkpoint } partway through (it doubles as your progress note AND a liveness pulse) rather than going silent on the platform for the whole investigation.',
+      'work_items:list → claim → set_state → release/close. There is no work_items:heartbeat — ANY papercusp-su call already refreshes your liveness, which is what the stale-claim reaper checks. The gap is a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest, zero platform calls) during a >10-15min claim (EI-6772): call work_items:checkpoint partway — it is both a progress note and a liveness pulse.',
     seeAlso: [
       'work_items:claim_next (self-select the next claimable item instead of naming an id)',
       'work_items:observe (check claimability before taking)',
       'work_items:release (drop the claim if you stop working it)',
-      'work_items:checkpoint (periodic progress note + liveness pulse during a long claim)',
     ],
   },
   capability: 'work_items:write',

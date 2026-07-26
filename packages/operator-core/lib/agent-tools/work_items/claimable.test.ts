@@ -1,19 +1,21 @@
 /**
  * claimable.test.ts — the work_items:claimable HANDLER (P-001,
- * claimable-read-tool-and-sql-encapsulation-audit-2026-07-21). The scheduler oracle
- * (aggregateIssueClaimExclusions), the row-lister (listIssueClaimableRows), the fleet
- * claim-spec resolver, and the caller-identity resolver are mocked; this pins the HANDLER's
- * own logic — filter assembly (spec ∧ kind), state/limit/spec threading, the returned
- * payload shape, breakdownOnly, and that it is READ-ONLY (never claims).
+ * claimable-read-tool-and-sql-encapsulation-audit-2026-07-21). The single-snapshot
+ * claimability read (readIssueClaimability), the fleet claim-spec resolver, and the
+ * caller-identity resolver are mocked; this pins the HANDLER's own logic — filter assembly
+ * (spec ∧ kind), state/limit/spec threading, the returned payload shape, breakdownOnly, and
+ * that it is READ-ONLY (never claims).
+ *
+ * WI-5947: the handler used to issue THREE independent reads (counts, rows, sample) and
+ * present them as one verdict. It now makes exactly ONE call to readIssueClaimability,
+ * which reads all three inside one REPEATABLE READ snapshot — pinned below.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/work_items/claimable.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../scheduler/get-next', () => ({
-  aggregateIssueClaimExclusions: vi.fn(),
-  listIssueClaimableRows: vi.fn(),
-  sampleIssueClaimExclusions: vi.fn(),
+  readIssueClaimability: vi.fn(),
 }));
 vi.mock('../../scheduler/claim-spec-store', () => ({
   resolveFleetClaimSpec: vi.fn(),
@@ -24,16 +26,10 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'probe' }),
 }));
 
-import {
-  aggregateIssueClaimExclusions,
-  listIssueClaimableRows,
-  sampleIssueClaimExclusions,
-} from '../../scheduler/get-next';
+import { readIssueClaimability } from '../../scheduler/get-next';
 import { resolveFleetClaimSpec, listFleetClaimSpecCandidates } from '../../scheduler/claim-spec-store';
 
-const aggM = vi.mocked(aggregateIssueClaimExclusions);
-const listM = vi.mocked(listIssueClaimableRows);
-const sampleM = vi.mocked(sampleIssueClaimExclusions);
+const readM = vi.mocked(readIssueClaimability);
 const recM = vi.mocked(resolveFleetClaimSpec);
 const candM = vi.mocked(listFleetClaimSpecCandidates);
 
@@ -70,11 +66,33 @@ const run = async (args: unknown) => {
   return JSON.parse(res.content[0]!.text);
 };
 
+const EMPTY_SAMPLE = {
+  taken: [],
+  claimHold: [],
+  needsHuman: [],
+  observationLane: [],
+  externalBlocker: [],
+  planLaneReserved: [],
+  federationDetector: [],
+  loopNoise: [],
+  alreadyCompleted: [],
+  crossMachineRig: [],
+  blockedDep: [],
+  cooldown: [],
+};
+/** What the mocked snapshot read reports as its per-floor sample (a test may override). */
+let sampleValue: Record<string, string[]> = EMPTY_SAMPLE;
+
 beforeEach(() => {
   vi.clearAllMocks();
-  aggM.mockResolvedValue(BREAKDOWN as never);
-  listM.mockResolvedValue(ROWS as never);
-  sampleM.mockResolvedValue({} as never);
+  sampleValue = EMPTY_SAMPLE;
+  // Stands in for the ONE snapshot read: honours breakdownOnly/sampleLimit exactly as the
+  // real readIssueClaimability does, so the handler's payload assembly is what's under test.
+  readM.mockImplementation((async (_filter: unknown, _opts: unknown, readOpts: { breakdownOnly?: boolean; sampleLimit?: number }) => ({
+    breakdown: BREAKDOWN,
+    rows: readOpts.breakdownOnly ? [] : ROWS,
+    ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
+  })) as never);
   recM.mockResolvedValue(null as never);
   candM.mockResolvedValue([] as never);
 });
@@ -82,9 +100,12 @@ beforeEach(() => {
 describe('work_items:claimable handler', () => {
   it('no spec/kind: reads the whole lane; claimableCount === oracle survivors; rows from the lister; default provenance', async () => {
     const out = await run({ harness: 'papercup' });
-    // the oracle + lister were called with an EMPTY filter (whole issue-family lane), caller identity threaded.
-    expect(aggM).toHaveBeenCalledWith(undefined, expect.objectContaining({ harness: 'papercup', assignee: 'probe' }));
-    expect(listM).toHaveBeenCalledWith(undefined, expect.objectContaining({ harness: 'papercup', assignee: 'probe' }), 20);
+    // the snapshot read was called with an EMPTY filter (whole issue-family lane), caller identity threaded.
+    expect(readM).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({ harness: 'papercup', assignee: 'probe' }),
+      expect.objectContaining({ limit: 20 }),
+    );
     expect(out.claimableCount).toBe(3); // === breakdown.claimable (the authoritative number)
     expect(out.matchedByFilter).toBe(9);
     expect(out.returned).toBe(3);
@@ -97,13 +118,12 @@ describe('work_items:claimable handler', () => {
 
   it('a single kind narrows the filter to a `= kind` leaf', async () => {
     await run({ harness: 'papercup', kind: 'bug' });
-    expect(aggM.mock.calls[0]![0]).toEqual({ field: 'kind', op: '=', value: 'bug' });
-    expect(listM.mock.calls[0]![0]).toEqual({ field: 'kind', op: '=', value: 'bug' });
+    expect(readM.mock.calls[0]![0]).toEqual({ field: 'kind', op: '=', value: 'bug' });
   });
 
   it('multiple kinds narrow the filter to an `in [kinds]` leaf', async () => {
     await run({ harness: 'papercup', kind: ['bug', 'task'] });
-    expect(aggM.mock.calls[0]![0]).toEqual({ field: 'kind', op: 'in', value: ['bug', 'task'] });
+    expect(readM.mock.calls[0]![0]).toEqual({ field: 'kind', op: 'in', value: ['bug', 'task'] });
   });
 
   it('a fleet spec (by SLUG) scopes the lane by its filter/states/rank + reports its provenance', async () => {
@@ -124,10 +144,9 @@ describe('work_items:claimable handler', () => {
     // resolved via the shared fleet/specId resolver under the caller's claim-spec workspace.
     expect(recM).toHaveBeenCalledWith({ spec: 'myfleet', workspaceId: 'ws-1' });
     // the spec's own filter scopes the oracle + lister; the spec + its states ride through.
-    expect(aggM.mock.calls[0]![0]).toEqual({ field: 'plan', op: '=', value: 'x' });
-    expect(aggM.mock.calls[0]![1]).toEqual(expect.objectContaining({ states: ['open'] }));
-    expect(listM.mock.calls[0]![1]).toEqual(
-      expect.objectContaining({ spec: expect.objectContaining({ specId: 'bug-drain' }) }),
+    expect(readM.mock.calls[0]![0]).toEqual({ field: 'plan', op: '=', value: 'x' });
+    expect(readM.mock.calls[0]![1]).toEqual(
+      expect.objectContaining({ states: ['open'], spec: expect.objectContaining({ specId: 'bug-drain' }) }),
     );
     expect(out.spec).toEqual({
       specId: 'bug-drain',
@@ -154,7 +173,7 @@ describe('work_items:claimable handler', () => {
     } as never);
     const out = await run({ harness: 'papercup', spec: 'p2p-release-lane' });
     expect(recM).toHaveBeenCalledWith({ spec: 'p2p-release-lane', workspaceId: 'ws-1' });
-    expect(aggM.mock.calls[0]![0]).toEqual({ field: 'plan', op: '=', value: 'y' });
+    expect(readM.mock.calls[0]![0]).toEqual({ field: 'plan', op: '=', value: 'y' });
     expect(out.spec).toEqual({
       specId: 'p2p-release-lane',
       revision: 12,
@@ -171,9 +190,8 @@ describe('work_items:claimable handler', () => {
     expect(out.ok).toBe(false);
     expect(out.error).toMatch(/no fleet or claim-spec named 'bogus-spec'/);
     expect(out.candidates).toEqual([{ fleetSlug: 'p2p-release', specId: 'p2p-release-lane', revision: 12 }]);
-    // never widened to the unfiltered lane — the oracle/lister were never even called.
-    expect(aggM).not.toHaveBeenCalled();
-    expect(listM).not.toHaveBeenCalled();
+    // never widened to the unfiltered lane — the snapshot read was never even issued.
+    expect(readM).not.toHaveBeenCalled();
   });
 
   it('spec ∧ kind AND-combine into one filter tree', async () => {
@@ -191,7 +209,7 @@ describe('work_items:claimable handler', () => {
       },
     } as never);
     await run({ harness: 'papercup', spec: 'f', kind: 'bug' });
-    expect(aggM.mock.calls[0]![0]).toEqual({
+    expect(readM.mock.calls[0]![0]).toEqual({
       all: [
         { field: 'plan', op: '=', value: 'x' },
         { field: 'kind', op: '=', value: 'bug' },
@@ -201,7 +219,7 @@ describe('work_items:claimable handler', () => {
 
   it('breakdownOnly skips the row lister entirely and returns an empty list + the count', async () => {
     const out = await run({ harness: 'papercup', breakdownOnly: true });
-    expect(listM).not.toHaveBeenCalled();
+    expect(readM.mock.calls[0]![2]).toEqual(expect.objectContaining({ breakdownOnly: true }));
     expect(out.claimable).toEqual([]);
     expect(out.returned).toBe(0);
     expect(out.claimableCount).toBe(3); // the count still comes from the oracle
@@ -209,14 +227,13 @@ describe('work_items:claimable handler', () => {
 
   it('threads explicit states + limit through to both primitives', async () => {
     await run({ harness: 'papercup', states: ['open', 'failing'], limit: 5 });
-    expect(aggM.mock.calls[0]![1]).toEqual(expect.objectContaining({ states: ['open', 'failing'] }));
-    expect(listM.mock.calls[0]![1]).toEqual(expect.objectContaining({ states: ['open', 'failing'] }));
-    expect(listM.mock.calls[0]![2]).toBe(5);
+    expect(readM.mock.calls[0]![1]).toEqual(expect.objectContaining({ states: ['open', 'failing'] }));
+    expect(readM.mock.calls[0]![2]).toEqual(expect.objectContaining({ limit: 5 }));
   });
 
   it('omitting sampleExcluded skips the sampler entirely and omits excludedSample from the payload', async () => {
     const out = await run({ harness: 'papercup' });
-    expect(sampleM).not.toHaveBeenCalled();
+    expect(readM.mock.calls[0]![2]!.sampleLimit).toBeUndefined();
     expect(out.excludedSample).toBeUndefined();
   });
 

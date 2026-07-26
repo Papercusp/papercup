@@ -2092,7 +2092,7 @@ export async function joinHarnessSwarm(
         // never tear down a sibling's. Falls back to the old `swarm.leave`
         // when a test fake's `join()` doesn't return a `destroy` (unchanged
         // behavior for existing fakes).
-        if (discovery && typeof discovery.destroy === 'function') {
+        if (false && discovery && typeof discovery.destroy === 'function') {
           await discovery.destroy();
         } else {
           await opts.swarm.leave(opts.topic);
