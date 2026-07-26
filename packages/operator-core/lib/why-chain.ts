@@ -553,6 +553,10 @@ export interface PipelineHealth {
   lastGreenAtMs: number | null;
   /** WI-4489: the recorded red is superseded/unverified — its colour is UNKNOWN, not red. */
   verdictStale: boolean;
+  /** EI-18669342433807110: which freshness rule fired (see GateVerdictFreshness.reasonCode) —
+   *  `refire-in-flight` means a fresh verdict is imminent (do not even re-fire the checkpoint);
+   *  null whenever `verdictStale` is false. */
+  verdictStaleReasonCode?: GitPipelineSnapshot['gate']['verdictStaleReasonCode'];
   /** Commits on `main` not yet promoted to the green pin (`ready`). */
   greenPinBehindStaging: number | null;
   /** Commits on the green pin not yet live on :3070. */
@@ -602,6 +606,7 @@ export async function computePipelineHealth(
       consecutiveReds: 0,
       lastGreenAtMs: null,
       verdictStale: false,
+      verdictStaleReasonCode: null,
       greenPinBehindStaging: null,
       deployedBehindGreenPin: null,
       recentFailingFiles: [],
@@ -638,6 +643,7 @@ export async function computePipelineHealth(
     consecutiveReds: snap.gate.consecutiveReds,
     lastGreenAtMs: snap.gate.lastGreenAtMs,
     verdictStale: snap.gate.verdictStale,
+    verdictStaleReasonCode: snap.gate.verdictStaleReasonCode,
     greenPinBehindStaging: snap.deploy.greenPinBehindStaging ?? null,
     deployedBehindGreenPin: snap.deploy.deployedBehindGreenPin ?? null,
     recentFailingFiles: failingFiles,

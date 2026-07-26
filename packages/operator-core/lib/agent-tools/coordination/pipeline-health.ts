@@ -125,7 +125,12 @@ export function toOrientPipeline(health: PipelineHealth, nowMs: number = Date.no
   if (health.rootCause) out.rootCause = `${health.rootCause.stage} — ${health.rootCause.reason}`;
   out.note =
     gate === 'stale-verdict'
-      ? PIPELINE_STALE_NOTE
+      ? // EI-18669342433807110: a refire-in-flight stale reason gets its OWN note — the generic
+        // PIPELINE_STALE_NOTE says "re-run the checkpoint for a real verdict", which is actively
+        // wrong advice while one is already running.
+        health.verdictStaleReasonCode === 'refire-in-flight'
+        ? PIPELINE_REFIRE_IN_FLIGHT_NOTE
+        : PIPELINE_STALE_NOTE
       : gateOk
         ? PIPELINE_BEHIND_NOTE
         : health.gateVerdictDisjointFromLedger

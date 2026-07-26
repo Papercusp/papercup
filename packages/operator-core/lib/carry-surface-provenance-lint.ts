@@ -216,10 +216,10 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
     }
     if (OWNER_TAG_RE.test(line)) {
       // EI-18672153930631150: a `[owner:...]`-shaped token that reads as
-      // documentation of the convention (placeholder name / backtick-quoted /
-      // "form"/"convention"/"e.g." context) is a MENTION, not a USE — downgrade
-      // it rather than treating it as an asserted directive.
-      if (isOwnerTagMention(line)) {
+      // documentation of the convention, not an attribution, should not be
+      // treated as an asserted directive.
+      if (isOwnerTagQuotedForm(line)) continue; // definite quoting — never flag
+      if (isOwnerTagPossibleMention(line)) {
         matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'possible-owner-tag-mention' });
         continue;
       }

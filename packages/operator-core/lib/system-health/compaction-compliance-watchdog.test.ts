@@ -854,12 +854,16 @@ describe('context-death detector (context-trimming-tiers P-019)', () => {
     expect(openEscalationMock).toHaveBeenCalledTimes(1);
     const [identity, input] = openEscalationMock.mock.calls[0] as unknown as [
       { ownerId: string },
-      { severity: string; summary: string },
+      { severity: string; summary: string; meta?: { subjectSignature?: string } },
     ];
     expect(identity.ownerId).toBe('compaction-watchdog');
     expect(input.severity).toBe('blocker');
     expect(input.summary).toContain('Prompt is too long');
     expect(input.summary).toContain('dead');
+    // WI-5848: stable conditionKey, keyed only on the owner identity — never on
+    // anything that could vary across occurrences (defense-in-depth alongside
+    // EI-18668025239634541's fix).
+    expect(input.meta?.subjectSignature).toBe('compaction-watchdog:context-death:dead');
     // Second pass: still dead, but already escalated — no duplicate.
     const again = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(again.contextDeaths).toEqual(['dead']);
@@ -925,12 +929,18 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(openEscalationMock).toHaveBeenCalledTimes(1);
     const [identity, input] = openEscalationMock.mock.calls[0] as unknown as [
       { ownerId: string },
-      { severity: string; summary: string },
+      { severity: string; summary: string; meta?: { subjectSignature?: string } },
     ];
     expect(identity.ownerId).toBe('compaction-watchdog');
     expect(input.severity).toBe('advisory'); // self-clearing band, not a blocker
     expect(input.summary).toContain('DARK context telemetry');
     expect(input.summary).toContain('blind');
+    // WI-5848: stable conditionKey keyed on owner+kind ONLY — the summary above embeds
+    // a live streak/duration (`~Nmin`) that backs off across occurrences exactly like
+    // EI-18668025239634541's fixed bug, so the dedup key must NOT vary with it (the
+    // in-memory bootConfigEscalated guard is the only OTHER protection, and it resets
+    // on a process restart — this is the durable defense-in-depth).
+    expect(input.meta?.subjectSignature).toBe('compaction-watchdog:boot-config:blind:dark-telemetry');
     // Sweep 4 still dark, but already escalated ⇒ alert still surfaced, escalation deduped.
     const p4 = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(p4.bootConfigAlerts).toEqual([{ owner: 'blind', kind: 'dark-telemetry', detail: '4 null sweeps' }]);
@@ -1106,11 +1116,15 @@ describe('WI-5075 carry-respawn kill-loop breaker (rapid-refire guard)', () => {
       // WI-5217: openEscalationMock is declared as a 0-arg vi.fn() (see line ~41), so
       // `.mock.calls[0]` is a `[]` tuple with no index 1 — cast through `unknown` first,
       // matching the pattern already used elsewhere in this file (e.g. line ~786).
-      const escPayload = (openEscalationMock.mock.calls[0] as unknown as [unknown, { severity?: string; summary?: string }])?.[1] as
-        | { severity?: string; summary?: string }
+      const escPayload = (openEscalationMock.mock.calls[0] as unknown as [unknown, { severity?: string; summary?: string; meta?: { subjectSignature?: string } }])?.[1] as
+        | { severity?: string; summary?: string; meta?: { subjectSignature?: string } }
         | undefined;
       expect(escPayload?.severity).toBe('blocker');
       expect(escPayload?.summary).toContain('carry-respawn LOOP');
+      // WI-5848: stable conditionKey keyed on owner ONLY — the summary above embeds a
+      // live `${streak}` count that changes across occurrences exactly like
+      // EI-18668025239634541's fixed bug, so the dedup key must NOT vary with it.
+      expect(escPayload?.meta?.subjectSignature).toBe('compaction-watchdog:carry-respawn-loop:hot');
 
       // Sweep 5: still suppressed, escalation NOT duplicated.
       vi.setSystemTime(Date.now() + 7 * 60_000);
@@ -1199,10 +1213,20 @@ describe('EI-16190 pre-cutover-process self-check', () => {
         expect(openEscalationMock).toHaveBeenCalled();
       });
       const escPayload = (
-        openEscalationMock.mock.calls[0] as unknown as [unknown, { severity?: string; summary?: string }]
+        openEscalationMock.mock.calls[0] as unknown as [
+          unknown,
+          { severity?: string; summary?: string; meta?: { subjectSignature?: string } },
+        ]
       )?.[1];
       expect(escPayload?.severity).toBe('advisory');
       expect(escPayload?.summary).toContain('pre-cutover process');
+      // WI-5848: stable conditionKey keyed on cutoverId ONLY — the summary above embeds
+      // `process.pid`, which would differ across a process restart for the SAME
+      // cutoverId exactly like EI-18668025239634541's fixed bug, so the dedup key must
+      // key on cutoverId (the in-memory guard's own key), never on the pid.
+      expect(escPayload?.meta?.subjectSignature).toBe(
+        'compaction-watchdog:stale-cutover:P-022-native-compact-retirement',
+      );
 
       // A second start() call within the same process must NOT re-escalate
       // the same cutover (dedup).

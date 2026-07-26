@@ -17,6 +17,7 @@ import {
   PIPELINE_BEHIND_NOTE,
   PIPELINE_RED_NOTE,
   PIPELINE_STALE_NOTE,
+  PIPELINE_REFIRE_IN_FLIGHT_NOTE,
 } from './pipeline-health';
 import type { PipelineHealth } from '../../why-chain';
 
@@ -95,6 +96,40 @@ describe('toOrientPipeline — what a waking agent is told', () => {
     expect(out.failingFiles).toBeUndefined();
     expect(out.note).toBe(PIPELINE_STALE_NOTE);
     expect(JSON.stringify(out)).not.toContain('innocent.test.ts');
+  });
+
+  it('⭐ EI-18669342433807110: a REFIRE-IN-FLIGHT stale reason gets its OWN note — "re-run the checkpoint" is wrong when one is already running', () => {
+    const out = toOrientPipeline(
+      health({
+        gateLabel: 'stale-verdict',
+        consecutiveReds: 1,
+        verdictStale: true,
+        verdictStaleReasonCode: 'refire-in-flight',
+        recentFailingFiles: ['lib/innocent.test.ts'],
+        gate: { stage: 'gate', status: 'degraded', reason: 'gate verdict is STALE (a refire is IN FLIGHT) — UNKNOWN' },
+        rootCause: { stage: 'gate', status: 'degraded', reason: 'gate verdict is STALE (a refire is IN FLIGHT) — UNKNOWN' },
+      }),
+      NOW,
+    )!;
+    expect(out.gate).toBe('stale-verdict');
+    expect(out.failingFiles).toBeUndefined(); // still names nobody, same as any stale-verdict
+    expect(out.note).toBe(PIPELINE_REFIRE_IN_FLIGHT_NOTE);
+    expect(out.note).not.toBe(PIPELINE_STALE_NOTE);
+  });
+
+  it('a stale-verdict WITHOUT the refire-in-flight reasonCode still gets the generic note (the other 3 rules)', () => {
+    const out = toOrientPipeline(
+      health({
+        gateLabel: 'stale-verdict',
+        consecutiveReds: 4,
+        verdictStale: true,
+        verdictStaleReasonCode: 'writer-starved',
+        gate: { stage: 'gate', status: 'degraded', reason: "gate verdict is STALE (…) — the gate's colour is UNKNOWN" },
+        rootCause: { stage: 'gate', status: 'degraded', reason: "gate verdict is STALE (…) — the gate's colour is UNKNOWN" },
+      }),
+      NOW,
+    )!;
+    expect(out.note).toBe(PIPELINE_STALE_NOTE);
   });
 
   it('a GREEN gate with an unpromoted tip is still "not shipped" — and says so without crying red', () => {

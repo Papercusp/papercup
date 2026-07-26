@@ -158,4 +158,71 @@ describe('evaluateGateVerdictFreshness', () => {
       expect(v.reason).toMatch(/re-triage/); // rule 3's reason, not rule 2's
     });
   });
+
+  /** EI-18669342433807110: a stale-candidate auto-refire for the EXACT cached red is running RIGHT
+   *  NOW — green-checkpoint.ts recursed onto a newer tip but that recursion can take minutes and
+   *  writes nothing to gate_health until it settles, so a concurrent reader must be told "a fresh
+   *  verdict is imminent" instead of "fix these tests" or even "go fire a fresh checkpoint run". */
+  describe('Rule 4 — REFIRE-IN-FLIGHT (EI-18669342433807110)', () => {
+    const inFlight = (overrides: Partial<NonNullable<Parameters<typeof evaluateGateVerdictFreshness>[0]['inFlightRetriage']>> = {}) => ({
+      fromCandidate: LIVE_INCIDENT.observedFromPin,
+      refiringCandidate: '221dc407abcd',
+      refireAttempt: 1,
+      maxRefires: 2,
+      failingFiles: ['a.test.ts', 'b.test.ts'],
+      observedAtMs: Date.now(),
+      ...overrides,
+    });
+
+    it('⭐ flags a fresh, on-time, pin-unmoved red whose refire marker names THIS candidate', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: LAST_FIRE - 60_000, // fresh — not starved
+        inFlightRetriage: inFlight(),
+      });
+      expect(v.stale).toBe(true);
+      expect(v.reason).toMatch(/IN FLIGHT/);
+      expect(v.reason).toMatch(/attempt 1\/2/);
+      expect(v.reason).toMatch(/221dc407abcd/);
+      expect(v.reasonCode).toBe('refire-in-flight');
+    });
+
+    it('does not flag a red when the marker names a DIFFERENT candidate (an earlier, superseded red)', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: LAST_FIRE - 60_000,
+        inFlightRetriage: inFlight({ fromCandidate: 'some0therSha1' }),
+      });
+      expect(v.stale).toBe(false);
+    });
+
+    it('is inert on a green (0-red) verdict, same as every other rule', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        consecutiveReds: 0,
+        observedAtMs: LAST_FIRE - 60_000,
+        inFlightRetriage: inFlight(),
+      });
+      expect(v.stale).toBe(false);
+    });
+
+    it('takes priority over rule 3 — checked first, live evidence beats a completed run\'s', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: LAST_FIRE - 60_000,
+        retriageStaleTip: 'deadbeef0000', // rule 3 would also fire
+        inFlightRetriage: inFlight(),
+      });
+      expect(v.reasonCode).toBe('refire-in-flight'); // rule 4's, not rule 3's
+    });
+
+    it('ignores a null/absent marker (the common case — no refire running)', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: LAST_FIRE - 60_000,
+        inFlightRetriage: null,
+      });
+      expect(v.stale).toBe(false);
+    });
+  });
 });

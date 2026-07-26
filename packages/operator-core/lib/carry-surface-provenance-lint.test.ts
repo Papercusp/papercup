@@ -79,6 +79,52 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(r.matches[0].kind).toBe('manual-owner-tag');
   });
 
+  // EI-18672153930631150: the lint could not tell a MENTION of the `[owner:…]`
+  // convention (documenting/comparing its syntax) from a real USE of it.
+  describe('EI-18672153930631150: mention vs use of the [owner:…] tag convention', () => {
+    it('downgrades a placeholder-name tag to possible-owner-tag-mention (the filed repro)', () => {
+      const r = lintCarrySurfaceProvenance(
+        'the detector matches the bracket form [owner:Name] and the parenthetical form',
+      );
+      expect(r.flagged).toBe(true);
+      expect(r.matches).toHaveLength(1);
+      expect(r.matches[0].kind).toBe('possible-owner-tag-mention');
+    });
+
+    it('never flags a backtick-quoted tag at all (definite quoting, not a use)', () => {
+      const r = lintCarrySurfaceProvenance(
+        '   `[owner:Name]` + parenthetical `OWNER MANDATE (Name, date)`), imported by BOTH consumers',
+      );
+      expect(r.flagged).toBe(false);
+      expect(r.matches).toEqual([]);
+    });
+
+    it('downgrades other placeholder stand-ins: <name>, foo, ...', () => {
+      expect(
+        lintCarrySurfaceProvenance('the tag looks like [owner:<name>]').matches[0]?.kind,
+      ).toBe('possible-owner-tag-mention');
+      expect(
+        lintCarrySurfaceProvenance('a fixture asserting [owner:foo] gets scrubbed').matches[0]?.kind,
+      ).toBe('possible-owner-tag-mention');
+      expect(
+        lintCarrySurfaceProvenance('write it as [owner:...] with a real name and date').matches[0]?.kind,
+      ).toBe('possible-owner-tag-mention');
+    });
+
+    it('downgrades on nearby mention-context words even with a name-shaped placeholder', () => {
+      const r = lintCarrySurfaceProvenance('e.g. [owner:Name] is the bracket convention');
+      expect(r.matches[0]?.kind).toBe('possible-owner-tag-mention');
+    });
+
+    it('still flags manual-owner-tag for a REAL name with no quoting/placeholder/context', () => {
+      const r = lintCarrySurfaceProvenance('[owner:jane 2026-07-10] the owner said to hold off until Friday');
+      // two matches expected: the tag itself, plus the "the owner said" phrase on the same line
+      // is suppressed by SOURCE_TAG_RE continuing past it — assert on the tag-kind specifically.
+      expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(true);
+      expect(r.matches.some((m) => m.kind === 'possible-owner-tag-mention')).toBe(false);
+    });
+  });
+
   it('P-014: a [turn:<session>@<ts>] ref clears the line — with or without an owner tag', () => {
     expect(
       lintCarrySurfaceProvenance(

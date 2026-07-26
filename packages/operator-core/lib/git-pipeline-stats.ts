@@ -103,7 +103,7 @@ export interface GitPipelineSnapshot {
      *  lets a consumer distinguish `refire-in-flight` (a fresh verdict is imminent; do not even
      *  re-run the checkpoint) from the other stale reasons (which DO want a fresh run fired).
      *  Null whenever `verdictStale` is false. */
-    verdictStaleReasonCode: GateVerdictFreshness['reasonCode'];
+    verdictStaleReasonCode?: GateVerdictFreshness['reasonCode'];
     lastFixerStatus: string | null;
     lastFixerAtMs: number | null;
     lastFixerCandidate: string | null;
@@ -140,7 +140,7 @@ export interface GitPipelineSnapshot {
      *  (`gate_health.inFlightRetriage`, already freshness-checked by `parseInFlightRetriage`).
      *  Feeds Rule 4 of gate-verdict-freshness.ts. Null when no refire is in flight, or its
      *  marker is missing/abandoned. */
-    inFlightRetriage: StoredInFlightRetriage | null;
+    inFlightRetriage?: StoredInFlightRetriage | null;
   };
 
   /** A currently-OPEN merge conflict (resolver still working / unresolved), or null. */
