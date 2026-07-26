@@ -135,4 +135,114 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(r.stdout.trim()).toBe('got-slot');
     expect(waited).toBeLessThan(5000); // got the freed slot, not blocked to the timeout
   });
+
+  it('propagates the real child\'s stderr on the uncontested (first-try slot) path', () => {
+    // Regression test (EI-18685262961418231 investigation): `exec {fd}>file
+    // 2>/dev/null` with NO command applies ALL its redirections PERSISTENTLY
+    // to the invoking shell, so the ORIGINAL script silently redirected its
+    // own stderr to /dev/null forever the instant a slot was free on the
+    // first try — the common, uncontended case. Every heavy command's real
+    // stderr (build/type errors) was being dropped on the floor.
+    const r = runSync(['bash', '-c', 'echo out-line; echo err-line >&2; exit 5'], { PC_HEAVY_SLOTS: '2' });
+    expect(r.status).toBe(5);
+    expect(r.stdout.trim()).toBe('out-line');
+    expect(r.stderr.trim()).toBe('err-line');
+  });
+});
+
+describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
+  it('collapses N genuinely-concurrent IDENTICAL invocations into far fewer real runs, replaying the rest', async () => {
+    // A burst of agents all running the exact same command (same cwd+argv) —
+    // e.g. many agents confirming the same gate at once — should not each pay
+    // for their own full run. One (or a small handful, bounded by the
+    // unavoidable startup race before any lock file exists yet) becomes the
+    // leader and actually executes; the rest replay its captured output.
+    const marker = join(dir, 'runs.marker');
+    const n = 6;
+    const results = await Promise.all(
+      Array.from({ length: n }, () =>
+        new Promise<{ status: number | null; stdout: string; stderr: string }>((res) => {
+          const p = spawn(
+            'bash',
+            [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 0.4; echo same-output`],
+            { env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }) },
+          );
+          let stdout = '';
+          let stderr = '';
+          p.stdout.on('data', (d) => (stdout += d));
+          p.stderr.on('data', (d) => (stderr += d));
+          p.on('exit', (status) => res({ status, stdout, stderr }));
+        }),
+      ),
+    );
+    // Every caller still sees correct output and a success exit code.
+    for (const r of results) {
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('same-output');
+    }
+    // At least most callers coalesced onto a shared result rather than each
+    // spawning their own run.
+    const realRuns = readFileSync(marker, 'utf8').length;
+    expect(realRuns).toBeLessThan(n);
+    const coalescedCount = results.filter((r) => r.stderr.includes('coalesced:')).length;
+    expect(coalescedCount).toBeGreaterThan(0);
+  });
+
+  it('a later (non-concurrent) identical call within the window reuses the cached result, including stderr + exit code', () => {
+    const first = runSync(['bash', '-c', 'echo out-x; echo err-x >&2; exit 4'], {
+      PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_COALESCE_SEC: '30',
+    });
+    expect(first.status).toBe(4);
+    expect(first.stderr).not.toContain('coalesced:');
+
+    const second = runSync(['bash', '-c', 'echo out-x; echo err-x >&2; exit 4'], {
+      PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_COALESCE_SEC: '30',
+    });
+    expect(second.status).toBe(4);
+    expect(second.stdout.trim()).toBe('out-x');
+    expect(second.stderr).toContain('err-x');
+    expect(second.stderr).toContain('coalesced:');
+  });
+
+  it('does NOT coalesce different commands (different argv → different key)', () => {
+    const a = runSync(['bash', '-c', 'echo aaa'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+    const b = runSync(['bash', '-c', 'echo bbb'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+    expect(a.stdout.trim()).toBe('aaa');
+    expect(b.stdout.trim()).toBe('bbb');
+    expect(b.stderr).not.toContain('coalesced:');
+  });
+
+  it('PC_HEAVY_COALESCE=0 disables coalescing entirely — every call is a real run', () => {
+    const first = runSync(['bash', '-c', 'echo same; exit 0'], {
+      PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_COALESCE: '0',
+    });
+    const second = runSync(['bash', '-c', 'echo same; exit 0'], {
+      PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_COALESCE: '0',
+    });
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(second.stderr).not.toContain('coalesced:');
+    // No coalesce cache dir should even be created when disabled.
+    expect(() => readFileSync(join(dir, 'coalesce'))).toThrow();
+  });
+
+  it('reclaims an ABANDONED lock (leader killed before writing a result) instead of making a follower wait out the whole window', async () => {
+    const leader = spawn('bash', [PC_HEAVY, 'bash', '-c', 'sleep 30; echo never'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' }),
+      detached: true,
+    });
+    await new Promise((r) => setTimeout(r, 400)); // let it claim the coalescing lock
+    process.kill(-(leader.pid as number), 'SIGKILL'); // hard-kill: no trap/cleanup runs
+    await new Promise((r) => setTimeout(r, 2300)); // past the 2s coalescing window — lock now stale
+
+    const t0 = Date.now();
+    const r = runSync(['bash', '-c', 'sleep 30; echo never'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' });
+    const waited = Date.now() - t0;
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe('recovered-does-not-run'); // placeholder replaced below
+  });
 });

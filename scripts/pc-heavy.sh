@@ -180,9 +180,22 @@ if [ "$_coalesce_enabled" = 1 ]; then
 fi
 
 # Try each slot non-blocking; hold the first free one open on its own fd.
+#
+# NOTE: `exec` with NO command applies ALL of its own redirections PERSISTENTLY
+# to the invoking shell (that's how it keeps `{_fd}` open past this statement)
+# — so a bare `exec {_fd}>file 2>/dev/null` doesn't just silence THIS open
+# attempt, it permanently redirects the whole script's stderr to /dev/null for
+# the rest of its life the moment the open succeeds (found while adding the
+# coalescing feature below: EI-18685262961418231 investigation). Wrapping the
+# `exec` in a `{ …; }` group scopes the `2>/dev/null` to just that group —
+# bash restores the real fd 2 once the group exits — while the group still
+# runs in the CURRENT shell (unlike `( … )`), so `{_fd}` still persists as
+# intended. This silently ate every heavy command's stderr whenever a slot was
+# free on the first try (the common, uncontended case) — real errors from
+# tsc/vitest/build runs were being dropped on the floor.
 _held=""
 for _i in $(seq 0 $(( _slots - 1 ))); do
-  if exec {_fd}>"$_dir/slot.$_i" 2>/dev/null; then
+  if { exec {_fd}>"$_dir/slot.$_i"; } 2>/dev/null; then
     if flock -n "$_fd"; then _held=1; break; fi
     eval "exec ${_fd}>&-" 2>/dev/null || true   # not ours — close it
   fi
@@ -191,7 +204,7 @@ done
 # All slots busy → block on slot 0 with a timeout; run anyway if it elapses so a
 # stuck holder can't wedge the fleet (its slot frees on death regardless).
 if [ -z "$_held" ]; then
-  if exec {_fd}>"$_dir/slot.0" 2>/dev/null && flock -w "$_timeout" "$_fd"; then
+  if { exec {_fd}>"$_dir/slot.0"; } 2>/dev/null && flock -w "$_timeout" "$_fd"; then
     _held=1
   fi
 fi

@@ -15,8 +15,9 @@ import {
   budgetViolations,
   formatViolations,
   type NamedToolWeight,
+  type BudgetViolation,
 } from './tool-guidance-budget';
-import { runToolWeightSelfCheck } from './tool-weight-selfcheck';
+import { runToolWeightSelfCheck, reportViolations } from './tool-weight-selfcheck';
 
 describe('promptWeight (EI-10966 — matches the assembled-prompt string weight)', () => {
   it('sums description + every guidance field, including per-role', () => {
@@ -92,6 +93,75 @@ describe('runToolWeightSelfCheck — SILENT under vitest (the anti-blast-radius 
     try {
       runToolWeightSelfCheck();
       expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('reportViolations (EI-18685386548651513 — tiered: budget=log-only, hard-cap=also escalated)', () => {
+  const budgetOnly: BudgetViolation = { name: 'budget-only-tool', weight: BUDGET + 44, hardCap: false, grandfathered: false, cutAtLeast: 44 };
+  const overCap: BudgetViolation = { name: 'over-cap-tool', weight: HARD_CAP + 106, hardCap: true, grandfathered: false, cutAtLeast: 106 };
+
+  it('no violations: neither warns nor escalates', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const escalate = vi.fn().mockResolvedValue(undefined);
+    try {
+      reportViolations([], escalate);
+      expect(warn).not.toHaveBeenCalled();
+      expect(escalate).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a BUDGET-only breach warns but does NOT escalate — log-only, matches pre-existing behavior', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const escalate = vi.fn().mockResolvedValue(undefined);
+    try {
+      reportViolations([budgetOnly], escalate);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain('budget-only-tool');
+      expect(escalate).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a HARD-CAP breach BOTH warns and escalates into the work queue', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const escalate = vi.fn().mockResolvedValue(undefined);
+    try {
+      reportViolations([overCap], escalate);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(escalate).toHaveBeenCalledTimes(1);
+      expect(escalate).toHaveBeenCalledWith(overCap);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a mixed batch escalates ONLY the hard-cap violator, not the budget-only one', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const escalate = vi.fn().mockResolvedValue(undefined);
+    try {
+      reportViolations([budgetOnly, overCap], escalate);
+      expect(escalate).toHaveBeenCalledTimes(1);
+      expect(escalate).toHaveBeenCalledWith(overCap);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a rejecting escalate is caught (fail-soft) — never throws out of reportViolations', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const escalate = vi.fn().mockRejectedValue(new Error('capture failed'));
+    try {
+      expect(() => reportViolations([overCap], escalate)).not.toThrow();
+      // let the fire-and-forget rejection's .catch handler run
+      await new Promise((r) => setTimeout(r, 0));
+      expect(warn).toHaveBeenCalledTimes(2); // the summary warn + the escalation-failure warn
+      expect(warn.mock.calls[1][0]).toContain('escalation capture failed');
     } finally {
       warn.mockRestore();
     }
