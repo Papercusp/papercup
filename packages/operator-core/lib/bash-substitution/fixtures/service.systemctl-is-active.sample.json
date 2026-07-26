@@ -1,0 +1,128 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair service.systemctl-is-active",
+  "extractedAt": "2026-07-26T01:23:00Z",
+  "totalAtoms": 93,
+  "totalSessions": 16,
+  "sample": [
+    {
+      "sid": "su-f11bc5d5-bd86-42c6-a1b2-706aac7dd1cc",
+      "ts": "2026-07-25T23:36:26.962Z",
+      "atom": "systemctl --user is-active papercup-bg-host.service"
+    },
+    {
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-21T00:21:03.569Z",
+      "atom": "systemctl --user is-active papercup-bg-host.service 2>&1"
+    },
+    {
+      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
+      "ts": "2026-07-25T21:43:16.764Z",
+      "atom": "systemctl --user is-active papercup-bg-host.service 2>/dev/null"
+    },
+    {
+      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
+      "ts": "2026-07-25T22:12:58.391Z",
+      "atom": "systemctl --user is-active papercup-bg-host.service >/dev/null 2>&1"
+    },
+    {
+      "sid": "su-5f583f64-915f-4596-b5ec-0c6af8620dec",
+      "ts": "2026-07-17T05:09:54.198Z",
+      "atom": "systemctl --user is-active papercup-dev-api.service 2>&1"
+    },
+    {
+      "sid": "su-cfeca4f2-6e46-41d3-89f3-ae8916b0cc95",
+      "ts": "2026-07-26T00:59:52.914Z",
+      "atom": "systemctl --user is-active papercup-green-checkpoint-manual-1fxzuva 2>&1"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T04:10:01.286Z",
+      "atom": "systemctl --user is-active papercup-green-checkpoint-manual-1fxzuva.service"
+    },
+    {
+      "sid": "su-cfeca4f2-6e46-41d3-89f3-ae8916b0cc95",
+      "ts": "2026-07-26T01:03:36.357Z",
+      "atom": "systemctl --user is-active papercup-green-checkpoint-manual-1fxzuva.service 2>&1"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T04:02:37.343Z",
+      "atom": "systemctl --user is-active papercup-green-checkpoint-manual-1fxzuva.service 2>/dev/null"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T05:05:56.823Z",
+      "atom": "systemctl --user is-active papercup-live-federation-gate.service"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T05:16:43.686Z",
+      "atom": "systemctl --user is-active papercup-live-federation-gate.service 2>&1"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T05:35:48.309Z",
+      "atom": "systemctl --user is-active papercup-live-federation-gate.service 2>/dev/null"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-20T10:43:44.622Z",
+      "atom": "systemctl --user is-active papercup-live-federation-gate.timer 2>&1"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T04:22:30.422Z",
+      "atom": "systemctl --user is-active papercup-oddsmith-sidecar"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T04:03:45.292Z",
+      "atom": "systemctl --user is-active papercup-oddsmith-sidecar 2>/dev/null"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T00:48:45.269Z",
+      "atom": "systemctl --user is-active papercup-oddsmith-sidecar.service"
+    },
+    {
+      "sid": "su-3dfbc0fd-e642-46b0-b81e-abed2ae62eea",
+      "ts": "2026-07-20T06:21:45.395Z",
+      "atom": "systemctl --user is-active papercup-staging-api.service 2>&1"
+    },
+    {
+      "sid": "su-f11bc5d5-bd86-42c6-a1b2-706aac7dd1cc",
+      "ts": "2026-07-25T23:37:47.530Z",
+      "atom": "systemctl --user is-active papercup-staging-api.service 2>/dev/null"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T04:08:37.614Z",
+      "atom": "systemctl --user is-active papercusp-db-backup.service"
+    },
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T04:14:49.763Z",
+      "atom": "systemctl --user is-active papercusp-db-backup.service 2>&1"
+    },
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T04:14:49.763Z",
+      "atom": "systemctl --user is-failed papercusp-db-backup.service 2>&1"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T04:05:49.492Z",
+      "atom": "systemctl --user is-failed papercusp-db-backup.service 2>/dev/null"
+    },
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T04:12:35.168Z",
+      "atom": "systemctl is-active auditd 2>&1"
+    },
+    {
+      "sid": "su-6f7850f2-2112-4e72-bb09-e8983af3f851",
+      "ts": "2026-07-20T01:06:27.437Z",
+      "atom": "systemctl is-active fail2ban crowdsec 2>/dev/null"
+    }
+  ]
+}

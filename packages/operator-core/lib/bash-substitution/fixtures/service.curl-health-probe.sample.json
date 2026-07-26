@@ -1,0 +1,128 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair service.curl-health-probe",
+  "extractedAt": "2026-07-26T01:23:00Z",
+  "totalAtoms": 118,
+  "totalSessions": 27,
+  "sample": [
+    {
+      "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
+      "ts": "2026-07-26T03:18:38.462Z",
+      "atom": "curl -s --max-time 10 http://127.0.0.1:3070/api/health"
+    },
+    {
+      "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
+      "ts": "2026-07-26T03:18:19.167Z",
+      "atom": "curl -s --max-time 10 http://127.0.0.1:3070/api/version 2>&1"
+    },
+    {
+      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
+      "ts": "2026-07-19T18:41:33.666Z",
+      "atom": "curl -s --max-time 5 http://127.0.0.1:3070/api/health 2>/dev/null"
+    },
+    {
+      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
+      "ts": "2026-07-26T03:27:16.332Z",
+      "atom": "curl -s --max-time 6 http://127.0.0.1:3070/api/health 2>/dev/null"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-25T19:59:43.966Z",
+      "atom": "curl -s -m 10 http://127.0.0.1:8788/health -H 'authorization: Bearer papercusp-gateway' 2>&1"
+    },
+    {
+      "sid": "su-5f583f64-915f-4596-b5ec-0c6af8620dec",
+      "ts": "2026-07-17T05:09:54.198Z",
+      "atom": "curl -s -m 3 http://127.0.0.1:3070/api/health 2>&1"
+    },
+    {
+      "sid": "su-3dfbc0fd-e642-46b0-b81e-abed2ae62eea",
+      "ts": "2026-07-20T06:21:45.395Z",
+      "atom": "curl -s -m 5 -o /dev/null -w \"HTTP %{http_code} in %{time_total}s\\n\" http://127.0.0.1:3170/api/health 2>&1"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T03:36:56.096Z",
+      "atom": "curl -s -m 5 -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3070/api/health"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T18:08:41.276Z",
+      "atom": "curl -s -m 5 http://127.0.0.1:3070/api/health 2>&1"
+    },
+    {
+      "sid": "su-92783ced-cee1-4c2b-856c-c7b253016962",
+      "ts": "2026-07-20T06:49:27.396Z",
+      "atom": "curl -s -m 5 http://127.0.0.1:3170/api/health 2>&1"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-25T20:46:25.658Z",
+      "atom": "curl -s -m 5 http://127.0.0.1:46229/api/health 2>/dev/null"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-25T19:36:55.521Z",
+      "atom": "curl -s -o /dev/null -w \"  /api/health           -> %{http_code}\\n\" --max-time 5 http://127.0.0.1:46229/api/health"
+    },
+    {
+      "sid": "su-69929b22-87fa-47cb-bf39-92682dfb5337",
+      "ts": "2026-07-26T00:20:33.428Z",
+      "atom": "curl -s -o /dev/null -w \"%{http_code}\\n\" --max-time 5 http://127.0.0.1:3070/api/health 2>/dev/null"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T02:55:31.905Z",
+      "atom": "curl -s -o /dev/null -w \"%{http_code}\\n\" http://127.0.0.1:3070/api/health 2>/dev/null"
+    },
+    {
+      "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
+      "ts": "2026-07-20T05:24:14.007Z",
+      "atom": "curl -s -o /dev/null -w \"%{http_code}\\n\" http://127.0.0.1:3270/api/health 2>/dev/null"
+    },
+    {
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-20T09:42:11.742Z",
+      "atom": "curl -s -o /dev/null -w \"3070:%{http_code}\\n\" --max-time 5 http://127.0.0.1:3070/api/health 2>&1"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-20T20:56:49.244Z",
+      "atom": "curl -s -o /dev/null -w \"B sidecar: %{http_code}\\n\" http://127.0.0.1:18072/health 2>&1"
+    },
+    {
+      "sid": "su-92bacd98-b714-4f44-a4fc-08e73ea7ca39",
+      "ts": "2026-07-25T23:53:07.617Z",
+      "atom": "curl -s -o /dev/null -w \"staging :3170 -> %{http_code}\\n\" http://127.0.0.1:3170/api/health --max-time 5"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T04:27:30.301Z",
+      "atom": "curl -s -o /dev/null -w 'health HTTP %{http_code}\\n' --max-time 10 http://127.0.0.1:3070/api/health"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T20:38:27.208Z",
+      "atom": "curl -s http://127.0.0.1:17701/api/health"
+    },
+    {
+      "sid": "su-268f0a03-5efa-4246-aaeb-1fbd52ab0c91",
+      "ts": "2026-07-17T06:11:37.374Z",
+      "atom": "curl -s http://127.0.0.1:3070/api/health 2>&1"
+    },
+    {
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-21T00:53:31.861Z",
+      "atom": "curl -s http://127.0.0.1:3070/api/version 2>/dev/null"
+    },
+    {
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-20T05:59:57.932Z",
+      "atom": "curl -s http://127.0.0.1:3170/api/version 2>&1"
+    },
+    {
+      "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
+      "ts": "2026-07-26T02:30:44.658Z",
+      "atom": "curl -s http://localhost:3070/api/health 2>&1"
+    }
+  ]
+}

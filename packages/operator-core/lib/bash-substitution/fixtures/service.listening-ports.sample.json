@@ -1,0 +1,128 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair service.listening-ports",
+  "extractedAt": "2026-07-26T01:23:00Z",
+  "totalAtoms": 125,
+  "totalSessions": 23,
+  "sample": [
+    {
+      "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
+      "ts": "2026-07-20T05:25:32.840Z",
+      "atom": "lsof -i :3270 2>/dev/null"
+    },
+    {
+      "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
+      "ts": "2026-07-20T08:19:36.424Z",
+      "atom": "lsof -iTCP:3070 -sTCP:LISTEN -P -n 2>/dev/null"
+    },
+    {
+      "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
+      "ts": "2026-07-20T08:19:36.424Z",
+      "atom": "lsof -iTCP:3170 -sTCP:LISTEN -P -n 2>/dev/null"
+    },
+    {
+      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
+      "ts": "2026-07-19T20:47:39.910Z",
+      "atom": "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T20:36:43.996Z",
+      "atom": "lsof -nP -iTCP:$p -sTCP:LISTEN 2>/dev/null"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T18:07:49.621Z",
+      "atom": "lsof -nP -iTCP:15070 -iTCP:15071 2>&1"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T17:58:27.754Z",
+      "atom": "lsof -nP -iTCP:18213 2>&1"
+    },
+    {
+      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
+      "ts": "2026-07-19T18:54:49.900Z",
+      "atom": "lsof -nP -iTCP:23706 -sTCP:LISTEN 2>/dev/null"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T18:06:00.078Z",
+      "atom": "lsof -nP -iTCP:3070 -iTCP:19045 -iTCP:3170 2>&1"
+    },
+    {
+      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
+      "ts": "2026-07-19T20:39:17.086Z",
+      "atom": "lsof -nP -iTCP:3070 -sTCP:LISTEN 2>/dev/null"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T17:33:23.015Z",
+      "atom": "lsof -nP -iTCP:8044 2>&1"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T17:35:00.482Z",
+      "atom": "lsof -nP -p \"$APPID\" -a -iTCP -sTCP:LISTEN 2>&1"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T17:58:48.693Z",
+      "atom": "netstat -an -p tcp 2>/dev/null"
+    },
+    {
+      "sid": "su-e7df908e-b996-4da8-967c-0d655e68c8c8",
+      "ts": "2026-07-20T10:40:28.545Z",
+      "atom": "netstat -tlnp 2>/dev/null"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-25T20:00:03.310Z",
+      "atom": "ss -lptn 2>/dev/null"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T06:12:50.362Z",
+      "atom": "ss -ltn 2>&1"
+    },
+    {
+      "sid": "su-6f7850f2-2112-4e72-bb09-e8983af3f851",
+      "ts": "2026-07-20T01:57:12.836Z",
+      "atom": "ss -ltn 2>/dev/null"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T02:28:24.256Z",
+      "atom": "ss -ltnp 2>/dev/null"
+    },
+    {
+      "sid": "su-772cf615-c6a4-488e-8491-b553ced6b4ac",
+      "ts": "2026-07-20T18:46:23.752Z",
+      "atom": "ss -tin dst 140.82.113.3 2>/dev/null"
+    },
+    {
+      "sid": "su-772cf615-c6a4-488e-8491-b553ced6b4ac",
+      "ts": "2026-07-20T18:42:51.864Z",
+      "atom": "ss -tinp 2>/dev/null"
+    },
+    {
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-21T00:25:23.023Z",
+      "atom": "ss -tlnH \"sport = :3270\" 2>/dev/null"
+    },
+    {
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-21T02:18:28.031Z",
+      "atom": "ss -tlnp 2>/dev/null"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-19T10:58:57.348Z",
+      "atom": "ss -tlnp 2>/dev/null'"
+    },
+    {
+      "sid": "su-1c841b25-410f-45ef-b0ed-c0e22034a0c9",
+      "ts": "2026-07-21T01:07:17.094Z",
+      "atom": "ss -tn 2>/dev/null"
+    }
+  ]
+}

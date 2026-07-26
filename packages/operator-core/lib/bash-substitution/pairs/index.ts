@@ -11,8 +11,9 @@ import type { SubstitutionPair } from '../types';
 import { FILE_READ_PAIRS } from './file-read';
 import { POSTGRES_PAIRS } from './postgres';
 import { PROCESS_PAIRS } from './process';
+import { SERVICE_PAIRS } from './service';
 
-export { FILE_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS };
+export { FILE_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS, SERVICE_PAIRS };
 
 /**
  * Every audited pair, in registry order.
@@ -23,4 +24,9 @@ export { FILE_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS };
  * re-derived on every test run; the routing generator filters it out of
  * CLAUDE.md, and the DB's `tier_requires_equivalence` keeps it at `observe`.
  */
-export const ALL_PAIRS: SubstitutionPair[] = [...FILE_READ_PAIRS, ...POSTGRES_PAIRS, ...PROCESS_PAIRS];
+export const ALL_PAIRS: SubstitutionPair[] = [
+  ...FILE_READ_PAIRS,
+  ...POSTGRES_PAIRS,
+  ...PROCESS_PAIRS,
+  ...SERVICE_PAIRS,
+];
