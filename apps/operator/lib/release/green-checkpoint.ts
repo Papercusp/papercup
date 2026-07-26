@@ -2022,7 +2022,7 @@ export async function runGreenCheckpoint(
             refiringCandidate: tip,
             refireAttempt: (opts.refireAttempts ?? 0) + 1,
             maxRefires: autoRefireCapFromEnv(),
-            failingFiles,
+            failingFiles: failingFiles.map((f) => f.file),
           })
           .catch(() => {});
         return runGreenCheckpoint(cfg, deps, {

@@ -1485,6 +1485,9 @@ function ThreadsView({
     args: { id: sel ?? '' },
     enabled: !!sel,
     staleTime: 30_000,
+    // WI-5851: click-triggered detail read — a human is waiting, so it takes
+    // the interactive batch lane instead of queueing behind the poll wave.
+    priority: 'interactive',
   });
   const list = listQuery.data ?? [];
   // usePollingQuery sets `placeholderData: keepPreviousData` on every
@@ -1779,6 +1782,9 @@ function DeliberationsView({
     args: { id: sel ?? '' },
     enabled: !!sel,
     staleTime: 30_000,
+    // WI-5851: click-triggered detail read — a human is waiting, so it takes
+    // the interactive batch lane instead of queueing behind the poll wave.
+    priority: 'interactive',
   });
   const list = listQuery.data ?? [];
   const total = readListTotal(list);
@@ -1962,6 +1968,9 @@ function AgentChatsView({
     args: { id: sel ?? '' },
     enabled: !!sel,
     staleTime: 30_000,
+    // WI-5851: click-triggered detail read — a human is waiting, so it takes
+    // the interactive batch lane instead of queueing behind the poll wave.
+    priority: 'interactive',
   });
   const list = listQuery.data ?? [];
   const total = readListTotal(list);
@@ -2192,6 +2201,9 @@ function MessagesView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
     args: { id: open ?? '' },
     enabled: !!open,
     staleTime: 30_000,
+    // WI-5851: click-triggered detail read — a human is waiting, so it takes
+    // the interactive batch lane instead of queueing behind the poll wave.
+    priority: 'interactive',
   });
   const list = listQuery.data ?? [];
   const total = readListTotal(list);

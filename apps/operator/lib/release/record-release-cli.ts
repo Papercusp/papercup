@@ -492,6 +492,18 @@ export function scanArtifacts(
       if (!fs.existsSync(dir)) continue;
       for (const name of fs.readdirSync(dir)) {
         if (!name.includes(version)) continue;
+        // AppleDouble sidecars. Copying a mac bundle over a non-HFS transport (the
+        // rsync back from the mac VM, an SMB/exFAT hop) leaves a 245-byte
+        // `._Papercusp GUI_0.0.12_universal-apple-darwin.dmg` beside the real one —
+        // same name but for the `._`, so classifyArtifact happily calls it a
+        // universal DMG. Found live on 2026-07-26: the real 0.0.12 dmgs had since
+        // been cleaned off the box and ONLY the sidecars remained, so the next
+        // re-record (the runbook says to re-run this after each leg uploads, and it
+        // is idempotent per version) would have REPLACED two correct 1.3 GB mac
+        // entries with 245-byte ones — a Mac tester downloading resource-fork
+        // metadata. Same rule as isSpannedInstaller: a download that cannot install
+        // is worse than an absent one, because the page looks complete.
+        if (name.startsWith('.__MUTATION__')) continue;
         const kind = classifyArtifact(name);
         if (!kind) continue;
         const full = path.join(dir, name);

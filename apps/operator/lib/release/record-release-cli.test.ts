@@ -525,3 +525,83 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
     expect(opts.mobileRoot).toBe('/x');
   });
 });
+
+/**
+ * EI-18103803991060000 — the PRODUCER/CONSUMER contract for the linux bundle root.
+ *
+ * bin/build-linux-local.sh MOVES the finished linux artifacts out of cargo's real
+ * target dir into `src-tauri/target/release/bundle`. The recorder scanned only the
+ * dir they were moved OUT of, so it recorded ZERO linux artifacts — and exited 0,
+ * because a missing scan root is deliberately not an error and the completeness
+ * alert is deliberately non-fatal. Nothing anywhere compared the producer's
+ * destination against the consumers' source, so the divergence was invisible.
+ *
+ * These read the OTHER SIDE OF THE CONTRACT OUT OF ITS OWN FILE, so moving the
+ * artifacts again without updating the consumers reds HERE instead of silently
+ * publishing a release page with no linux download on it.
+ */
+describe('linux bundle root — producer/consumer contract (EI-18103803991060000)', () => {
+  const desktopDir = path.resolve(__dirname, '../../../../papercusp-desktop');
+  const readScript = (rel: string) => fs.readFileSync(path.join(desktopDir, 'bin', rel), 'utf8');
+
+  it('scans where build-linux-local.sh COLLECTS to, not just where cargo builds', () => {
+    const script = readScript('build-linux-local.sh');
+    const dest = /^DEST_BUNDLE="([^"]+)"/m.exec(script)?.[1];
+    // Guard the guard: if the variable is renamed this must fail, not vacuously pass.
+    expect(dest, 'DEST_BUNDLE not found in build-linux-local.sh').toBeTruthy();
+
+    const desktopRoot = '/repo/papercusp-desktop';
+    const resolvedDest = dest!.replace('$ROOT', desktopRoot);
+    expect(resolvedDest).toBe(collectedLinuxBundleRoot(desktopRoot));
+    expect(releaseBundleRoots('/some/explicit/--bundle', desktopRoot)).toContain(resolvedDest);
+  });
+
+  it('still scans cargo’s real target dir, so a raw `tauri build` is found too', () => {
+    const prev = process.env.CARGO_TARGET_DIR;
+    process.env.CARGO_TARGET_DIR = '/cargo-target';
+    try {
+      expect(releaseBundleRoots('/x', '/repo/papercusp-desktop')).toContain(
+        '/cargo-target/release/bundle',
+      );
+    } finally {
+      if (prev === undefined) delete process.env.CARGO_TARGET_DIR;
+      else process.env.CARGO_TARGET_DIR = prev;
+    }
+  });
+
+  it('never records an AppleDouble `._` sidecar as the real installer', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'appledouble-'));
+    const dmg = path.join(dir, 'dmg');
+    fs.mkdirSync(dmg);
+    // The 245-byte sidecar rsync leaves beside a mac bundle, and the real thing.
+    fs.writeFileSync(path.join(dmg, '._Papercusp GUI_0.0.12_universal-apple-darwin.dmg'), 'x');
+    fs.writeFileSync(path.join(dmg, 'Papercusp GUI_0.0.12_universal-apple-darwin.dmg'), 'real');
+
+    const found = scanArtifacts([dir], '0.0.12', 'v0.0.12-alpha');
+    expect(found.map((a) => a.name)).toEqual(['Papercusp GUI_0.0.12_universal-apple-darwin.dmg']);
+
+    // And the sidecar must not be recorded even when it is the ONLY file left —
+    // the live 2026-07-26 state, where recording it would publish a 245-byte "DMG".
+    fs.rmSync(path.join(dmg, 'Papercusp GUI_0.0.12_universal-apple-darwin.dmg'));
+    expect(scanArtifacts([dir], '0.0.12', 'v0.0.12-alpha')).toEqual([]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('lists each root once, so an overlapping checkout cannot double-scan', () => {
+    const desktopRoot = '/repo/papercusp-desktop';
+    const roots = releaseBundleRoots(collectedLinuxBundleRoot(desktopRoot), desktopRoot);
+    expect(roots.length).toBe(new Set(roots).size);
+  });
+
+  it('publish-release-history.sh uploads the site record-release-cli generates', () => {
+    // record's default --out is <bundleDir>/release-history; publish's default
+    // SITE_DIR is ${BUNDLE}/release-history. The two BUNDLE defaults must agree, or
+    // publish silently uploads a different (stale) index than the one just written.
+    const publish = readScript('publish-release-history.sh');
+    const bundleLine = /^BUNDLE="\$\{PAPERCUSP_BUNDLE_DIR:-([^}]+)\}"/m.exec(publish)?.[1];
+    expect(bundleLine, 'BUNDLE default not found in publish-release-history.sh').toBeTruthy();
+    expect(bundleLine!.replace('$DESKTOP_ROOT', '/repo/papercusp-desktop')).toBe(
+      collectedLinuxBundleRoot('/repo/papercusp-desktop'),
+    );
+  });
+});

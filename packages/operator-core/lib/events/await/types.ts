@@ -152,10 +152,19 @@ export type WakeChannel =
   | 'fresh-context-warm-inject'
   | 'plan-run-resume'
   | 'inbox'
-  | 'coalesced';
+  | 'coalesced'
+  // EI-18673058981655804 (redundant-inbox-wake-suppression): an always-armed
+  // inbox-wake (`coord:inbox-wake:<owner>`) whose triggering message(s) all
+  // predate the subscriber's own last coord:inbox/coord:orient read — the mail
+  // was already surfaced by the subscriber's own polling, so firing a turn for
+  // it would provably discover nothing new. Settled without ever calling
+  // executeWake (no liveness ladder, no spawn). Does NOT burn a turn, same as
+  // 'inbox'/'coalesced'.
+  | 'suppressed-redundant';
 
 /** The wake channels that actually burn a turn (re-invoke the agent) — used to derive a
- *  subscriber's `last_woken_at` for the floor. 'inbox'/'coalesced' do NOT burn a turn. */
+ *  subscriber's `last_woken_at` for the floor. 'inbox'/'coalesced'/'suppressed-redundant'
+ *  do NOT burn a turn. */
 export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'pty-inject',
   'psu-socket-inject',

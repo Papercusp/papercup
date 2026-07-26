@@ -145,6 +145,9 @@ function useAgentDetail(ownerId: string | null): { detail: AgentDetail | null; e
     queryName: 'agentDetail.byOwner',
     args: ownerId ? { ownerId } : undefined,
     enabled: !!ownerId,
+    // WI-5851: click-triggered detail read — a human is waiting, so it takes
+    // the interactive batch lane instead of queueing behind the poll wave.
+    priority: 'interactive',
   });
   return {
     detail: query.data?.[0] ?? null,

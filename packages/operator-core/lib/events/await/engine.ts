@@ -62,6 +62,7 @@ import {
 import { composedWakeSummary } from './compose-spec';
 import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
+import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
 import type { AwaitRow, DeliveryWork } from './types';
 import {
   recordTimeoutFires,
@@ -558,6 +559,53 @@ export interface PumpStats {
   deferred: number;
   /** Deliveries folded into another wake for the same subscriber (no turn spent). */
   coalesced: number;
+  /** EI-18673058981655804: inbox-wake deliveries settled WITHOUT spending a turn because
+   *  every message they would have quoted already predates the subscriber's own last
+   *  coord:inbox/coord:orient read (channel='suppressed-redundant'). Also counted in
+   *  `delivered` (it IS a settled delivery) — this is the observability breakout. */
+  suppressed: number;
+}
+
+/** The per-agent inbox-wake key prefix. Duplicated (not imported) from
+ *  agent-tools/coordination/inbox-wake.ts to avoid the inbox-wake → engine →
+ *  inbox-wake import cycle (inbox-wake.ts imports emitAwaitedEvent FROM this
+ *  module) — same "two owners, one string, in lockstep" pattern documented in
+ *  wake-executor.ts's own copy of this constant. */
+const COORD_INBOX_WAKE_PREFIX = 'coord:inbox-wake:';
+
+/**
+ * EI-18673058981655804 (redundant-inbox-wake-suppression): is this GROUP of due
+ * deliveries entirely redundant against the subscriber's OWN inbox reads?
+ *
+ * MEASURED (not hypothetical): a busy agent's own `coord:inbox`/`coord:orient`
+ * polling routinely surfaces + acts on a message BEFORE the always-armed
+ * inbox-wake for that same message is ever consumed — four consecutive empty
+ * wakes were observed in one session, each re-quoting mail the agent had
+ * already read and answered. The platform already tracks the watermark this
+ * needs (`lastInboxReadAtBatch`, built for coord-deafness detection) — this
+ * consults it instead of unconditionally spending a turn.
+ *
+ * True ONLY when EVERY delivery in the group is a non-urgent inbox-wake
+ * delivery (`coord:inbox-wake:<owner>`) whose `createdAt` is at or before the
+ * subscriber's last observed read. Fail-OPEN on every uncertain case — a
+ * mixed group (a genuine non-inbox-wake await coalesced alongside it), an
+ * urgent delivery, or no read on record at all is NEVER suppressed, so the
+ * worst case of getting this wrong is identical to today's status quo (an
+ * extra turn), never a dropped wake.
+ */
+export function isInboxWakeGroupRedundant(
+  group: readonly Pick<DeliveryWork, 'eventKey' | 'createdAt' | 'urgent'>[],
+  lastReadAtIso: string | null | undefined,
+): boolean {
+  if (!lastReadAtIso || group.length === 0) return false;
+  const readMs = Date.parse(lastReadAtIso);
+  if (Number.isNaN(readMs)) return false;
+  return group.every((d) => {
+    if (d.urgent) return false;
+    if (!d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)) return false;
+    const createdMs = Date.parse(d.createdAt);
+    return !Number.isNaN(createdMs) && createdMs <= readMs;
+  });
 }
 
 /**
@@ -594,7 +642,16 @@ export function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
  * bypass the floor. Resume-spawns are still capped per tick across subscribers (D-007).
  */
 export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWakeDeps = {}): Promise<PumpStats> {
-  const stats: PumpStats = { claimed: 0, delivered: 0, parked: 0, dropped: 0, failed: 0, deferred: 0, coalesced: 0 };
+  const stats: PumpStats = {
+    claimed: 0,
+    delivered: 0,
+    parked: 0,
+    dropped: 0,
+    failed: 0,
+    deferred: 0,
+    coalesced: 0,
+    suppressed: 0,
+  };
   const ws = workspaceId ?? activeWorkspaceId();
   if (pumpsInFlight.has(ws)) return stats;
   pumpsInFlight.add(ws);
@@ -655,6 +712,34 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
 
       const headline = group[group.length - 1];
       const siblings = group.slice(0, -1);
+
+      // EI-18673058981655804: before spending resume-cap/governor budget or a whole
+      // turn on this group, check whether it is PROVABLY redundant — every delivery
+      // an inbox-wake for mail the subscriber's own coord:inbox/coord:orient polling
+      // already surfaced. Cheap pre-check (no DB read) gates the actual watermark
+      // lookup to just the common always-armed-standing-wake case.
+      const allInboxWakeNoUrgent = group.every(
+        (d) => !d.urgent && d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX),
+      );
+      if (allInboxWakeNoUrgent) {
+        const lastRead = await lastInboxReadAtBatch([subscriberId]);
+        const lastReadAt = lastRead.get(subscriberId) ?? null;
+        if (isInboxWakeGroupRedundant(group, lastReadAt)) {
+          await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
+          stats.delivered++;
+          stats.suppressed++;
+          if (siblings.length > 0) {
+            await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+            stats.coalesced += siblings.length;
+          }
+          log(
+            `wake for ${subscriberId} SUPPRESSED (${group.length} inbox-wake event(s) already ` +
+              `covered by its own coord:inbox read at ${lastReadAt})`,
+          );
+          continue;
+        }
+      }
+
       const needsSpawnLikely = headline.wakeHandle != null;
 
       // Resume cap: pace mass-unblocks across subscribers (the rest re-admit next tick).
