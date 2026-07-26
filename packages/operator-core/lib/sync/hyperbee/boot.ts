@@ -4182,7 +4182,38 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             `${info.liveConnections}/${info.maxPeers} swarm peer connections` +
               (info.atCap
                 ? ' — AT CAP: new peers are being silently refused; raise PAPERCUSP_SWARM_MAX_PEERS or scale the box'
-                : ' — approaching the peer cap'),
+                : ' — approaching the peer cap') +
+              // WI-6063: record WHICH topics hold the budget, biggest first. At
+              // the cap the actionable question is never "how full" but "full of
+              // what" — a total alone sends the reader back to the logs.
+              (info.topics && info.topics.length > 0
+                ? ` · per-topic: ${[...info.topics]
+                    .sort((a, b) => b.peers - a.peers)
+                    .map(
+                      (t) =>
+                        `${t.topicHex.slice(0, 8)}…=${t.peers}` +
+                        (t.fairShare !== null ? `/${t.fairShare}` : '') +
+                        (t.dialPaused ? '(paused)' : ''),
+                    )
+                    .join(' ')}`
+                : ''),
+          );
+        },
+        // WI-6063: durable, edge-triggered record of this topic's dial throttling.
+        // The fairness bound's failure mode is SILENT starvation — visually
+        // identical to the bug it fixes — so a queryable transition history is
+        // what makes it verifiable instead of merely asserted.
+        onTopicDialThrottle: (info) => {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'peer_dial_throttled',
+            info.paused
+              ? `outbound dialling PAUSED — topic holds ${info.peers} peers vs a fair share of ` +
+                  `${info.fairShare} (${info.liveConnections}/${info.maxPeers} live across ` +
+                  `${info.topicCount} topics); still announcing + accepting inbound`
+              : `outbound dialling RESUMED — topic back within its share ` +
+                  `(${info.peers}/${info.fairShare}, ${info.liveConnections}/${info.maxPeers} live)`,
           );
         },
       });

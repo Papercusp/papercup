@@ -56,6 +56,7 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   peer_rejected: true,
   peer_rate_limited: true,
   peer_cap_near: true,
+  peer_dial_throttled: true,
   peer_capped: true,
   peer_revoked: true,
   peer_unrevoked: true,

@@ -112,6 +112,13 @@ export type BootHistoryKind =
   // to make approaching/hitting 256 VISIBLE. Distinct from 'peer_capped' below (an admitted
   // peer's LOG exceeded the per-author op cap, not a connection-count signal).
   | 'peer_cap_near'
+  // WI-6063: the per-topic fairness evaluator paused or resumed THIS topic's
+  // outbound dialling because it held more (or no longer holds more) than its
+  // share of the process-global peer budget. Edge-triggered — one row per
+  // transition, not per evaluation. Distinct from 'peer_cap_near' (a
+  // process-global total) : this names WHICH topic was held back and why, which
+  // is the only way to tell a working fairness bound from a silent starvation.
+  | 'peer_dial_throttled'
   | 'peer_capped'
   | 'peer_revoked'
   | 'peer_unrevoked'

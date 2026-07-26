@@ -1283,7 +1283,21 @@ export function reportPeerCapPressure(
   if (peerCapNearState.get(key)) return null; // already warned for this approach
   peerCapNearState.set(key, true);
   const atCap = live >= maxPeers;
-  const info: PeerCapInfo = { liveConnections: live, maxPeers, atCap };
+  // WI-6063: attach the per-topic breakdown. Reporting "245/256" alone names the
+  // pressure but withholds the diagnosis — the actionable question at the cap is
+  // always WHICH topic is holding the budget.
+  let topics: readonly TopicPeerShare[] = [];
+  try {
+    topics = swarmFairnessSnapshot(swarm);
+  } catch {
+    // diagnostic enrichment only — never let it suppress the cap signal itself
+  }
+  const info: PeerCapInfo = {
+    liveConnections: live,
+    maxPeers,
+    atCap,
+    ...(topics.length > 0 ? { topics } : {}),
+  };
   // console.warn (a genuine defect/pressure signal — never fires in clean tests,
   // which stay well below 90% of maxPeers; same convention as the DHT-bootstrap
   // misconfig warn above).
@@ -1293,7 +1307,21 @@ export function reportPeerCapPressure(
       (atCap
         ? 'AT CAP — Hyperswarm will SILENTLY refuse further peers until a slot frees.'
         : 'Approaching cap — further peers will be silently refused once full.') +
-      ' Raise PAPERCUSP_SWARM_MAX_PEERS or run on a larger host to grow the budget.',
+      ' Raise PAPERCUSP_SWARM_MAX_PEERS or run on a larger host to grow the budget.' +
+      // WI-6063: name the topics holding the budget, biggest first.
+      (topics.length > 0
+        ? ' Per-topic: ' +
+          [...topics]
+            .sort((a, b) => b.peers - a.peers)
+            .map(
+              (t) =>
+                `${t.topicHex.slice(0, 8)}…=${t.peers}` +
+                (t.fairShare !== null ? `/${t.fairShare}` : '') +
+                (t.dialPaused ? ' (dial paused)' : ''),
+            )
+            .join(' ') +
+          '.'
+        : ''),
   );
   fireNearCapSafely(onNearPeerCap, info);
   return info;
@@ -2575,6 +2603,8 @@ export async function joinHarnessSwarm(
   // setMaxListeners(0) hiding the count. Undo the listener (+ any shared-refresh
   // registration) on any setup failure so a failed join leaks nothing.
   let releaseRefresh: (() => void) | null = null;
+  /** WI-6063: this topic's slot in the swarm-wide peer-budget fairness registry. */
+  let releaseFairness: (() => void) | null = null;
   // Hoisted above the try block (was `let discovery = ...` scoped to the try
   // block) so `forceRejoinNow` — defined once, below, and called both by the
   // escalation ladder tick and by `handle.forceRejoin()` — can reassign it.
@@ -2721,6 +2751,17 @@ export async function joinHarnessSwarm(
     // a never-successfully-joined instance is never registered to receive a
     // sibling's rejoin callback).
     topicRejoinCoordinator.register(rejoinParticipantToken, { evictOwnSockets, rejoinOwnSession });
+    // WI-6063: enrol this topic in the shared swarm's peer-budget fairness
+    // registry now that it genuinely holds a discovery session. `session` is a
+    // GETTER, not the session value: `rejoinOwnSession` reassigns `discovery` on
+    // a forced rejoin, and a captured reference would leave the evaluator
+    // toggling a destroyed session while the live one dialled on unthrottled.
+    releaseFairness = registerTopicFairness(opts.swarm, {
+      topicHex,
+      session: () => discovery,
+      paused: false,
+      onThrottle: opts.onTopicDialThrottle,
+    });
     // Best-effort flush — some Hyperswarm builds expose this, some
     // don't. Either way, returning before flush is fine because peers
     // can connect any time after the join call returns.
@@ -2963,6 +3004,12 @@ export async function joinHarnessSwarm(
       try { releaseRefresh(); } catch { /* no-op */ }
       releaseRefresh = null;
     }
+    // WI-6063: and its fairness-registry slot — a half-built join must not leave
+    // a topic entry behind holding a session it never finished setting up.
+    if (releaseFairness) {
+      try { releaseFairness(); } catch { /* no-op */ }
+      releaseFairness = null;
+    }
     try {
       opts.swarm.off?.('connection', handler);
     } catch {
@@ -3025,6 +3072,14 @@ export async function joinHarnessSwarm(
       if (releaseRefresh) {
         releaseRefresh();
         releaseRefresh = null;
+      }
+      // WI-6063: leave the peer-budget fairness registry too. The release
+      // RESUMES this topic's dialling first, so closing while throttled can
+      // never leave the underlying discovery session latched client-off for a
+      // sibling harness that shares the topic.
+      if (releaseFairness) {
+        releaseFairness();
+        releaseFairness = null;
       }
       // WI-5923: unregister from the shared topic-wide rejoin coordinator
       // BEFORE tearing this instance down — an in-flight coordinated rejoin
@@ -3342,9 +3397,54 @@ export function _resetDhtUniverseAssertionForTests(): void {
  * `defaultMaxPeers` to inject the host-derived value (keeps the function pure
  * for unit tests); omitted, it reads the real resource profile.
  */
+/**
+ * WI-6063: how much of the peer budget is held back for INBOUND peers, as a
+ * fraction of `maxPeers`.
+ *
+ * Hyperswarm's `maxClientConnections` defaults to `Infinity`, so outbound
+ * dialling alone can consume 100% of `maxPeers` — and once it has, EVERY topic's
+ * inbound peers are silently refused, including topics with no outbound peers at
+ * all. That is a starvation axis the per-topic fairness gate cannot reach: it
+ * arbitrates BETWEEN topics, while this reserves capacity for a direction.
+ *
+ * Deliberately small, and clamped: it must only bind deep at scale, never in the
+ * small-N topologies the tests and a single-box fleet actually run. At the ≥256
+ * floor this reserves 32 slots, so dialling is unaffected until 224 outbound
+ * connections exist.
+ */
+export const INBOUND_PEER_RESERVE_RATIO = 0.125;
+const INBOUND_PEER_RESERVE_MIN = 8;
+const INBOUND_PEER_RESERVE_MAX = 64;
+
+/**
+ * The outbound-dial ceiling to construct the swarm with — `maxPeers` minus the
+ * inbound reserve. Exported (and pure) so the reserve is unit-testable without
+ * constructing a real swarm. `PAPERCUSP_SWARM_INBOUND_RESERVE` overrides the
+ * computed reserve; `0` disables it (restoring hyperswarm's unbounded default).
+ */
+export function resolveMaxClientConnections(maxPeers: number): number {
+  const override = Number.parseInt(process.env.PAPERCUSP_SWARM_INBOUND_RESERVE ?? '', 10);
+  const reserve = Number.isFinite(override)
+    ? Math.max(0, override)
+    : Math.min(
+        INBOUND_PEER_RESERVE_MAX,
+        Math.max(INBOUND_PEER_RESERVE_MIN, Math.floor(maxPeers * INBOUND_PEER_RESERVE_RATIO)),
+      );
+  // Never let the reserve swallow the whole budget: a tiny/overridden maxPeers
+  // must still be able to dial out, or the "fix" is a total outbound blackout.
+  // Floor of 1 rather than 0 — `maxClientConnections: 0` would mean this node can
+  // NEVER dial, which is indistinguishable from a broken swarm.
+  return Math.max(1, maxPeers - reserve);
+}
+
 export function swarmConstructorOpts(args?: {
   defaultMaxPeers?: number;
-}): { maxPeers: number; bootstrap?: DhtBootstrapNode[]; dhtHost?: string } {
+}): {
+  maxPeers: number;
+  maxClientConnections: number;
+  bootstrap?: DhtBootstrapNode[];
+  dhtHost?: string;
+} {
   const raw = Number.parseInt(process.env.PAPERCUSP_SWARM_MAX_PEERS ?? '', 10);
   const fallback = args?.defaultMaxPeers ?? resolveDefaultMaxPeers();
   const maxPeers = Number.isFinite(raw) && raw > 0 ? raw : fallback;
@@ -3356,6 +3456,7 @@ export function swarmConstructorOpts(args?: {
   const dhtHost = parseDhtHost(process.env.PAPERCUSP_DHT_HOST);
   return {
     maxPeers,
+    maxClientConnections: resolveMaxClientConnections(maxPeers),
     ...(bootstrap ? { bootstrap } : {}),
     ...(dhtHost ? { dhtHost } : {}),
   };
@@ -3376,6 +3477,10 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
     mod as {
       default: new (opts?: {
         maxPeers?: number;
+        /** WI-6063: outbound-dial ceiling — the inbound reserve (see
+         *  {@link resolveMaxClientConnections}). Hyperswarm defaults it to
+         *  Infinity, which lets dialling consume the entire `maxPeers` budget. */
+        maxClientConnections?: number;
         bootstrap?: DhtBootstrapNode[];
         dht?: unknown;
         firewall?: (remotePublicKey: Buffer) => boolean;
@@ -3453,10 +3558,19 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
   // connection handler instead.
   _sharedSwarm = new Swarm({
     maxPeers: opts.maxPeers,
+    maxClientConnections: opts.maxClientConnections,
     ...(dht ? { dht } : opts.bootstrap ? { bootstrap: opts.bootstrap } : {}),
     ...(swarmSeed ? { seed: swarmSeed } : {}),
     firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
   });
+  // WI-6063: make the budget split VISIBLE at construction. The reserve only
+  // binds deep at scale, so without this line a dial refusal at 224/256 would
+  // look like an unexplained connectivity failure rather than a deliberate bound.
+  console.info(
+    `[swarm] peer budget: maxPeers=${opts.maxPeers} maxClientConnections=${opts.maxClientConnections} ` +
+      `(${opts.maxPeers - opts.maxClientConnections} slots reserved for INBOUND peers; ` +
+      `override with PAPERCUSP_SWARM_INBOUND_RESERVE)`,
+  );
   if (swarmSeed) {
     console.info('[swarm] transport identity: persisted (stable across restarts)');
   } else {
