@@ -19,7 +19,7 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, setWorkItemState, type WorkItem, type WorkItemKind } from '../../work-items';
+import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, setWorkItemState, ensureClaimHoldAttribution, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
@@ -270,6 +270,17 @@ export async function createOneWorkItem(
             return derived.length > 0 ? { ...(payloadWithHint ?? {}), paths: derived } : payloadWithHint;
           })()
         : payloadWithHint;
+    // EI-18698328828208444: a caller-supplied `payload._claimHold:true` bypasses
+    // setWorkItemClaimHold entirely (this create path never calls it), so it would
+    // otherwise land with NO claim_hold_by/held_open_by attribution — unreviewable and
+    // unexpirable (see ensureClaimHoldAttribution's doc comment). Stamp it at the source
+    // instead of letting an anonymous hold enter the system.
+    const payloadFinal = ensureClaimHoldAttribution(
+      payloadWithPaths,
+      ctx.ownerId,
+      'auto-attributed at create (EI-18698328828208444): payload._claimHold was set directly ' +
+        'in work_items:create\'s payload arg with no claim_hold_by/held_open_by — stamped to the creator.',
+    );
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
@@ -279,7 +290,7 @@ export async function createOneWorkItem(
       severity: args.severity,
       parent: args.parent,
       topics: args.topics,
-      payload: payloadWithPaths,
+      payload: payloadFinal,
       createdBy: ctx.ownerId,
       urgent: args.urgent,
       // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`

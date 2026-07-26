@@ -318,6 +318,80 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
   });
 });
 
+/**
+ * EI-18699443874201617: an inner call a code:run script makes used to silently
+ * inherit the OUTER session's `ctx.contextTier` (e.g. a trimmed/standard MCP
+ * session), so a large nested field on an intermediate result (rubrics:get's
+ * `criteria[]`) got shaped/truncated by applyPayloadTier with no error signal —
+ * indistinguishable from a genuinely small result to the script's own `.length` /
+ * `.filter()` read. bindInnerDispatch now strips `contextTier` off every inner
+ * call's ctx so it defaults to 'full' (a script can still opt into a narrower
+ * tier for one call via that call's own `payloadTier` arg — resolved
+ * independently downstream, unaffected by this ctx-level default).
+ */
+describe('code:run → inner calls default to full payload tier (EI-18699443874201617)', () => {
+  const readTool = { effect: 'read', expose: { mcp: { name: 'fleet:assignments' } } } as never;
+  const crossWorkspaceTool = {
+    effect: 'read',
+    crossWorkspace: true,
+    expose: { mcp: { name: 'papercusp:list_workspaces' } },
+  } as never;
+  const echoNext = async (callCtx: unknown) => callCtx;
+
+  beforeEach(() => {
+    withWorkspaceMock.mockClear();
+    synthesizeDispatchPrincipalMock.mockClear();
+    runWithWorkspaceIfConcreteMock.mockClear();
+  });
+
+  it('fast path: strips a trimmed outer contextTier before dispatching the inner call', async () => {
+    const outerCtx = {
+      workspaceId: 'ws-bee',
+      role: 'cup',
+      isSuperuser: false,
+      tx: 'OUTER_TX',
+      principal: 'OUTER_PRINCIPAL',
+      contextTier: 'trimmed',
+    };
+    const result = (await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext)) as {
+      contextTier?: string;
+    };
+    expect(result).not.toBe(outerCtx); // a new ctx object — the tier was overridden
+    expect(result.contextTier).toBeUndefined();
+  });
+
+  it('fast path: a ctx with no contextTier at all is still reused verbatim (no needless rebind)', async () => {
+    const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false };
+    const result = await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext);
+    expect(result).toBe(outerCtx);
+  });
+
+  it('EI-30 hop: strips contextTier on the rebound ctx too', async () => {
+    const outerCtx = { workspaceId: '*', role: 'su', isSuperuser: true, contextTier: 'standard' };
+    const result = (await bindInnerDispatch(
+      readTool,
+      'fleet:assignments',
+      { workspace: 'ws-target' },
+      outerCtx as never,
+      echoNext,
+    )) as { contextTier?: string; workspaceId: string };
+    expect(result.workspaceId).toBe('ws-target');
+    expect(result.contextTier).toBeUndefined();
+  });
+
+  it('crossWorkspace path: strips contextTier on the admin-tx ctx too', async () => {
+    const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false, contextTier: 'trimmed' };
+    const result = (await bindInnerDispatch(
+      crossWorkspaceTool,
+      'papercusp:list_workspaces',
+      {},
+      outerCtx as never,
+      echoNext,
+    )) as { contextTier?: string };
+    expect(result.contextTier).toBeUndefined();
+  });
+});
+
 describe('code:run → mutation echo shaping (WI-1377)', () => {
   const base = { ok: true as const, summary: { done: true }, logs: [] as string[] };
 

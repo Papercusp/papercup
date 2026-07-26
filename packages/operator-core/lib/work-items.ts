@@ -3164,6 +3164,42 @@ export function readWorkItemClaimHoldProvenance(payload: unknown): {
 }
 
 /**
+ * EI-18698328828208444: `payload._claimHold` can enter a work-item at CREATE time via the
+ * caller-supplied `payload: z.record(...)` on `work_items:create` (`_create-core.ts`) — a
+ * path that never goes through {@link setWorkItemClaimHold}, so its attribution stamps
+ * (`claim_hold_by`/`claim_hold_reason`/`claim_hold_at` or `held_open_by`) never get written.
+ * The result is an ANONYMOUS hold: UNREVIEWABLE (no basis for anyone to judge whether it's
+ * safe to unpark) and UNEXPIRABLE (every hold-age/audit sweep keys on `claim_hold_at`, which
+ * is null here, so the row is invisible to them — excluded from the claim pool forever by
+ * default, indistinguishable from a silent delete). Confirmed live: 30 papercusp items this
+ * way, oldest untouched ~9 days, every one of them carrying its REAL reason only in a
+ * sibling field (`ideaLifecycle.triageReason`, `plan_item`) the claim-hold provenance readers
+ * never look at.
+ *
+ * Call this on any payload about to be PERSISTED where `_claimHold` may have been set by the
+ * caller directly rather than through {@link setWorkItemClaimHold}: if the payload sets
+ * `_claimHold` truthy and {@link readWorkItemClaimHoldProvenance} finds NEITHER provenance
+ * convention, stamp a durable park (`claim_hold_by`/`claim_hold_reason`/`claim_hold_at`) using
+ * the acting identity — so a hold can never enter the system anonymous at the source, closing
+ * the gap regardless of which caller/lever set the raw flag. A no-op (returns `payload`
+ * unchanged, by reference) when `_claimHold` isn't set or is already attributed.
+ */
+export function ensureClaimHoldAttribution(
+  payload: Record<string, unknown> | undefined,
+  actorOwnerId: string,
+  originNote: string,
+): Record<string, unknown> | undefined {
+  if (!payload || String(payload._claimHold) !== 'true') return payload;
+  if (readWorkItemClaimHoldProvenance(payload).attributed) return payload;
+  return {
+    ...payload,
+    claim_hold_by: actorOwnerId,
+    claim_hold_reason: originNote,
+    claim_hold_at: new Date().toISOString(),
+  };
+}
+
+/**
  * EI-18672701535825889 / WI-5946: a claim-hold reason naming a deliberate policy-tier human
  * gate (a `D-NNN` decision id, the triage gate's own `triageDecision:"gate"` marker, or the
  * literal phrase "policy-tier") must not be bypassable by a bare `force:true` — that is the

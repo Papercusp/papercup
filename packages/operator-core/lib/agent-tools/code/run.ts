@@ -300,10 +300,25 @@ export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx
   };
   const effectiveWs = effectiveDispatchWorkspace(spawnCtxLike, args);
 
+  // EI-18699443874201617: force FULL payload tier for every inner call a code:run
+  // script makes. Only the script's own RETURNED value re-enters the caller's
+  // context (per code:run's own contract) — an intermediate call exists purely
+  // for the SCRIPT's control flow (`.length`, `.filter()`, a completeness check
+  // over a nested field), so it must see the tool's true full data. Without this,
+  // an inner call silently inherited the OUTER session's `ctx.contextTier` (e.g. a
+  // trimmed session), so a large nested field (rubrics:get's `criteria[]`) got
+  // shaped/truncated by applyPayloadTier with no error — indistinguishable from a
+  // correct small result to the script's own `.length` read. A script can still
+  // request a narrower tier for one specific call by passing `payloadTier` in
+  // that call's own args — extracted independently downstream (define-tool.ts's
+  // `extractPayloadTier`) and takes precedence over this ctx-level default.
+  const baseCtx: UnifiedToolContext =
+    ctx.contextTier !== undefined ? { ...ctx, contextTier: undefined } : ctx;
+
   if (tool.crossWorkspace === true) {
     const { sql: adminTx } = getOrgPg();
     const callCtx: UnifiedToolContext = {
-      ...ctx,
+      ...baseCtx,
       workspaceId: effectiveWs,
       tx: adminTx,
       principal: await synthesizeDispatchPrincipal(adminTx, { ...spawnCtxLike, workspaceId: effectiveWs }),
@@ -312,8 +327,9 @@ export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx
   }
 
   if (effectiveWs === spawnCtxLike.workspaceId) {
-    // Already correctly bound by the outer code:run dispatch — reuse ctx as-is.
-    return next(ctx);
+    // Already correctly bound by the outer code:run dispatch (module workspace/tx/
+    // principal unchanged) — reuse baseCtx as-is (contextTier already forced above).
+    return next(baseCtx);
   }
 
   // EI-30 hop fired: an unscoped superuser passed a concrete per-call
@@ -321,12 +337,12 @@ export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx
   // THIS call exactly as a direct (non-batch) MCP call would.
   const callSpawnCtx = { ...spawnCtxLike, workspaceId: effectiveWs };
   if (!dispatchNeedsTx(callSpawnCtx)) {
-    return runWithWorkspaceIfConcrete(effectiveWs, () => next({ ...ctx, workspaceId: effectiveWs }));
+    return runWithWorkspaceIfConcrete(effectiveWs, () => next({ ...baseCtx, workspaceId: effectiveWs }));
   }
   return runWithWorkspaceIfConcrete(effectiveWs, () =>
     withWorkspace(effectiveWs, async (tx) => {
       const callCtx: UnifiedToolContext = {
-        ...ctx,
+        ...baseCtx,
         workspaceId: effectiveWs,
         tx,
         principal: await synthesizeDispatchPrincipal(tx, callSpawnCtx),

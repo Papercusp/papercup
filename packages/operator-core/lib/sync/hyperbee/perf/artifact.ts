@@ -16,6 +16,7 @@
  *     the headline gate, and `sloPassed` records the verdict per artifact.
  */
 
+import { createHash } from 'node:crypto';
 import { hostname, cpus } from 'node:os';
 
 /** Distribution summary for one measured series. All latencies in ms. */
@@ -85,9 +86,31 @@ export interface ScenarioHostInfo {
   node: string;
 }
 
+/**
+ * A stable but NON-IDENTIFYING tag for the machine that produced an artifact.
+ *
+ * Baselines under `baselines/` are COMMITTED to tracked source and ship inside
+ * the release bundle, so a raw `os.hostname()` here leaks this box's identity —
+ * `lint:no-identity-literals` fails the build on it, and the release cut's
+ * box-identity audit (bin/audit-release-bundle.py) fails later and more
+ * expensively. A committed baseline carrying the raw hostname red-pinned the
+ * green-checkpoint gate on 2026-07-26.
+ *
+ * A hash keeps the ONLY property the field is actually read for — telling
+ * whether two artifacts came from the same machine, so a baseline captured
+ * elsewhere is not silently compared against local numbers. Nothing branches on
+ * the value (report.ts prints it; compare.ts carries it through), so the digest
+ * costs no behaviour.
+ */
+export function hostTag(rawHostname: string = hostname()): string {
+  return `host-${createHash('sha256').update(rawHostname).digest('hex').slice(0, 8)}`;
+}
+
 export function currentHostInfo(): ScenarioHostInfo {
   return {
-    hostname: hostname(),
+    // NEVER the raw hostname — see hostTag(). This file is the single writer of
+    // the field, so redacting here covers every artifact and every baseline.
+    hostname: hostTag(),
     platform: process.platform,
     arch: process.arch,
     cpus: cpus().length,

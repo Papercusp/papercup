@@ -576,12 +576,14 @@ describe('P-021: re-verify is round-robin batched (bounded GitHub call rate)', (
     'a throwing verify still advances the cursor — one unreachable peer cannot pin the sweep',
     async () => {
       let calls: string[] = [];
+      // p1 becomes unreachable only AFTER admission (throwing during admission
+      // would reject the peer and there would be nothing to sweep).
+      let phase: 'admit' | 'sweep' = 'admit';
       const verifyBindingOverride = async (
         _dpk: string, login: string, _uid: number,
       ): Promise<'verified' | 'pending' | 'fail'> => {
         calls.push(login);
-        // p1 is permanently unreachable.
-        if (login === 'p1') throw new Error('GitHub API timeout');
+        if (phase === 'sweep' && login === 'p1') throw new Error('GitHub API timeout');
         return 'verified';
       };
 
@@ -600,6 +602,7 @@ describe('P-021: re-verify is round-robin batched (bounded GitHub call rate)', (
 
       await admitPeers(handle, 3);
       calls = [];
+      phase = 'sweep';
 
       // p1 throws — the cursor must still move past it.
       await handle.reverifyAdmitted();

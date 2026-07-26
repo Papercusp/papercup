@@ -41,6 +41,21 @@ import { fileURLToPath } from 'node:url';
 import { createFreshTestDb } from '@papercusp/test-config';
 // eslint-disable-next-line import/no-relative-packages -- run the real boot-path migration runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
+// EI-18698602043482898: mirror the canonical getOrgPg()/getHarnessPg() client
+// shape (bigint-as-number types + the raw Date/jsonb serializer restorers) so
+// this fixture's raw `sql` writes bind parameters the SAME way production
+// does — without those, a raw jsonb/bigint/Date write here can pass or fail
+// in the OPPOSITE direction from the live code path (see connection.ts's
+// `restoreRawJsonbSerializer` doc). Deliberately imported from the
+// dependency-free `raw-serializers` module (not `@papercusp/db-org`'s
+// `connection.ts`/barrel), which drags in `drizzle-orm/postgres-js` — see the
+// module docstring above for why that throws under this package's vitest.
+// eslint-disable-next-line import/no-relative-packages -- mirror the canonical client's postgres-js options without pulling in drizzle-orm
+import {
+  PG_BIGINT_AS_NUMBER_TYPES,
+  restoreRawDateSerializers,
+  restoreRawJsonbSerializer,
+} from '../../../libs/papercusp/libs/db/src/raw-serializers';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -88,7 +103,22 @@ const clientOpts = {
   onnotice: () => {},
   prepare: false,
   connection: { search_path: 'harness_shared, public' },
-} as const;
+  // EI-9265: mirror the canonical client's bigint-as-number parsing so a raw
+  // bigserial read (e.g. an `id` PK) comes back as a JS number here exactly
+  // like it does through getOrgPg()/getHarnessPg(), not a string.
+  types: PG_BIGINT_AS_NUMBER_TYPES,
+};
+
+/** Apply the same hybrid Date/jsonb serializer restoration `buildClient` (in
+ *  the canonical `@papercusp/db-org` connection layer) installs on every
+ *  production client — see `raw-serializers.ts`'s docs. Without this, a raw
+ *  `sql` write of a Date or jsonb column through THIS fixture's clients binds
+ *  parameters differently than production does (EI-18698602043482898). */
+function applyRawSerializerFixes(client: postgres.Sql): postgres.Sql {
+  restoreRawDateSerializers(client);
+  restoreRawJsonbSerializer(client);
+  return client;
+}
 
 let _migKey: string | null = null;
 /** Content hash of the migration set — the template key. Changes whenever any migration
@@ -133,8 +163,8 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
   const port = u.port;
   const appDsn = `postgresql://harness_app:harness_app_pwd@${host}:${port}/${dbName}`;
   const adminDsn = `postgresql://harness_admin:harness_admin_pwd@${host}:${port}/${dbName}`;
-  const appSql = postgres(appDsn, clientOpts);
-  const adminSql = postgres(adminDsn, clientOpts);
+  const appSql = applyRawSerializerFixes(postgres(appDsn, clientOpts));
+  const adminSql = applyRawSerializerFixes(postgres(adminDsn, clientOpts));
 
   const cleanup = async () => {
     await appSql.end({ timeout: 5 }).catch(() => {});
