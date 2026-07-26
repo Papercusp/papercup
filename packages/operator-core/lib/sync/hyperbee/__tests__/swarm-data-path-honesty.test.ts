@@ -503,6 +503,53 @@ describe('EI-18682571591024156 — a data path that never came up is reported LO
     expect(dead).toHaveLength(0);
     expect(warn).not.toHaveBeenCalled();
   });
+
+  /**
+   * WI-5863 gate (p2p-release plan, 2026-07-26): "confirm the landed udx*
+   * fields actually REACH the rig-side close blocks." WI-5943's `remoteHost`/
+   * `remotePort` — the address the UDX stream is ACTUALLY pointed at, read
+   * straight off `rawStream` (no hyperdht patch required) — is the field the
+   * plan's sharpened question hinges on. It was readable via
+   * `extractConnectionPath` but had NO assertion proving it survives all the
+   * way to `onDataPathNeverUp`'s `path` (the callback boot-history + the loud
+   * console.warn both consume) rather than being dropped somewhere in
+   * `closePath`/`flattenPathDiagnostics`. Pin it end-to-end so a future refactor
+   * that drops it fails HERE, not on a live 2-machine rig run.
+   */
+  it('carries remoteHost/remotePort (WI-5943 — what address the UDX stream is actually pointed at) through to the callback AND the warn payload', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { swarm, emit } = fakeSwarm();
+    const dead: DataPathNeverUpInfo[] = [];
+    await joinHarnessSwarm({
+      store: fakeStore(),
+      topic: topic32(),
+      swarm,
+      refreshMs: 0,
+      onDataPathNeverUp: (info) => dead.push(info),
+    });
+
+    const { socket, close } = fakeSocket({
+      wire: NEVER_CAME_UP,
+      udx: PUNCHED_UDX,
+      remoteHost: '10.99.0.12',
+    });
+    // fakeSocket only sets rawStream.remoteHost; remotePort needs its own prop.
+    (socket as { rawStream: Record<string, unknown> }).rawStream.remotePort = 49737;
+    emit(socket, undefined);
+    close();
+
+    expect(dead).toHaveLength(1);
+    expect(dead[0]!.path.remoteHost).toBe('10.99.0.12');
+    expect(dead[0]!.path.remotePort).toBe(49737);
+
+    // The warn payload is what triage greps on a live rig run — the field must
+    // reach it too, not just the typed callback.
+    expect(warn).toHaveBeenCalled();
+    const warnedWith = warn.mock.calls[0]![1] as Record<string, unknown>;
+    const warnedPath = warnedWith.path as Record<string, unknown>;
+    expect(warnedPath.remoteHost).toBe('10.99.0.12');
+    expect(warnedPath.remotePort).toBe(49737);
+  });
 });
 
 describe('EI-18682571591024156 — dataPathSnapshot is what a UI/health check should read', () => {
