@@ -53,6 +53,16 @@
  *   - Dedup is keyed by MACHINE (the workspace root), never globally, for the
  *     same reason: two workspace roots in one process are two machines.
  *
+ * LIFETIME. The shared core physically lives in the HOST harness's store
+ * directory, so removing that harness takes its blocks with it. That is handled
+ * rather than prevented: `closeHarnessStore` calls `forgetStore` BEFORE the
+ * close, so the next `openRemoteLog` for one of those keys re-homes it onto a
+ * live store (re-downloading from the peer, exactly as a first admission does).
+ * A sibling holding a session across that close sees its handle die, which is
+ * the same shape as any replica loss — boot.ts's stall detector re-opens
+ * through `openRemoteLog`, which re-homes it. Sessions are refcounted by
+ * Corestore, so an ordinary per-harness `close()` never disturbs a sibling.
+ *
  * NOT fixed here: the distinct-key `protomux.pair()` wildcard clobber (WI-6076)
  * — a SECOND store's `replicate()` on one socket overwrites the first's
  * `hypercore/alpha` notify slot, which strands cores that are on disk but NOT

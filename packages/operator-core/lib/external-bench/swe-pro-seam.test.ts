@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { makeSweProCloneGradeSeam, SWE_PRO_FRAMEWORK_ARMS, sweProSolverBlueprint } from './swe-pro-seam';
 import type { BenchTask, TaskCheckout } from './types';
+import { loadBuiltinBlueprint, blueprintRetirement, describeBlueprintRetirement } from '@papercusp/orchestrator/blueprint';
 
 function task(id = 't1'): BenchTask {
   return {
@@ -97,6 +98,34 @@ describe('makeSweProCloneGradeSeam', () => {
     // the bare floor — NEVER the su system
     for (const arm of ['vanilla', 'mini-swe', 'mini-swe-agent', 'baseline', 'coding-solo']) {
       expect(sweProSolverBlueprint(arm)).toBe('coding-solo');
+    }
+  });
+
+  // EI-18729473218123334: `sweProSolverBlueprint` above only ever asserts the STRING id it
+  // returns — it never resolves that id and checks whether the blueprint it names is still
+  // launchable. `external-bench` now carries a `retired:` block (WI-5646, 2026-07-26), and the
+  // no-retirement-launch-guard (WI-5645) exists precisely to refuse spending against a retired
+  // blueprint — so the study's mandatory constant solver for EVERY su-system arm currently names
+  // a blueprint the launch path is designed to reject. That only surfaces at spend time today
+  // (FLAGS.EXTERNAL_BENCH is dark, so nothing launches this path yet) — maximally inconvenient,
+  // for whoever revives the study. This pins it LOUDLY at build/test time instead.
+  //
+  // `it.fails`, not `it`: the fairness redesign this needs (re-deriving what the study should
+  // hold constant against the pot/Mug architecture, or retiring the study alongside its arm —
+  // see the item for the full analysis) is a real product decision, deliberately out of THIS
+  // item's scope ("do not repoint the solver id silently"). So this assertion is the CORRECT
+  // one to make and is currently EXPECTED to fail — `it.fails` keeps the suite green while that
+  // failure stays true, and will itself start failing the moment someone silently "fixes" the
+  // coupling without addressing the underlying fairness question, forcing them to look at this
+  // test and either flip it to a plain `it` (if the redesign genuinely landed) or reconsider.
+  it.fails('DESIRED: the per-task solver blueprint held constant across every su-system arm must not be retired', () => {
+    const solverId = sweProSolverBlueprint('su-independent'); // any su-system arm — they all resolve identically
+    const { blueprint } = loadBuiltinBlueprint(solverId);
+    const retirement = blueprintRetirement(blueprint);
+    if (retirement) {
+      throw new Error(
+        `swe-pro topology study's constant solver is retired: ${describeBlueprintRetirement(retirement, blueprint.id)}`,
+      );
     }
   });
 });
