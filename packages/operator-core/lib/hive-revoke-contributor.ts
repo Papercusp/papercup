@@ -37,6 +37,12 @@ export type RevokeHiveContributorResult =
       /** True when a booted Hive handle applied the revoke live; false when only
        *  the PG row write happened (effective on the next admission union load). */
       live: boolean;
+      /** WI-6043: the epoch the boundary advanced TO, when live:true. Propagated purely so
+       *  the rekey_boundary_applied boot event (below) can name it — callers that don't care
+       *  about the boot-event trail can ignore this field. */
+      newEpoch?: number;
+      /** WI-6043: # of remaining members the new epoch key was wrapped + persisted to. */
+      distributed?: number;
     }
   | { ok: false; code: 'bad_target' | 'not_owner' | 'no_owner_identity' | 'no_target' | 'no_owner_row' | 'revoke_failed'; detail?: string };
 
@@ -61,7 +67,7 @@ export interface RevokeHiveContributorSeams {
     potHomeSlug: string,
     ownerGithubUserId: number,
     pubkeys: string[],
-  ) => Promise<{ live: boolean }>;
+  ) => Promise<{ live: boolean; newEpoch?: number; distributed?: number }>;
 }
 
 /**
@@ -70,6 +76,12 @@ export interface RevokeHiveContributorSeams {
  * advanceEpochOnHiveBoundary is never reached, OR the advance itself no-op'd (live:false) — records
  * a queryable `rekey_boundary_skipped` boot event naming WHY. So a K2 revoke that doesn't advance
  * NAMES itself instead of a silent 0→0 (the witness's K2 no_target cost a manual trace to :98).
+ *
+ * WI-6043 (2026-07-26 reopen): the SUCCESS path (live:true) was the one case that recorded NO
+ * event at all — indistinguishable, from any banked serve.log, from advanceEpochOnHiveBoundary
+ * never having been reached in the first place. Records the symmetric `rekey_boundary_applied`
+ * event naming the resulting newEpoch/distributed count so that ambiguity can't recur.
+ *
  * Best-effort: the boot-event write must NEVER change the revoke result.
  */
 export async function revokeHiveContributor(
@@ -78,19 +90,28 @@ export async function revokeHiveContributor(
 ): Promise<RevokeHiveContributorResult> {
   const result = await revokeHiveContributorInner(input, seams);
   try {
-    const reason = !result.ok
-      ? result.code
-      : result.live
-        ? null
-        : 'advance-not-applied'; // ok, but the boundary advance no-op'd (flag off / no-author / no fresh)
-    if (reason) {
-      const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
+    const { recordBootEvent } = await import('./sync/hyperbee/boot-history');
+    if (!result.ok) {
       recordBootEvent(
         input.workspaceId,
         input.potHomeSlug,
         'rekey_boundary_skipped',
-        `revoke boundary advance skipped for gh=${input.githubUserId}: ${reason}` +
-          (!result.ok && result.detail ? ` (${result.detail})` : ''),
+        `revoke boundary advance skipped for gh=${input.githubUserId}: ${result.code}` +
+          (result.detail ? ` (${result.detail})` : ''),
+      );
+    } else if (!result.live) {
+      recordBootEvent(
+        input.workspaceId,
+        input.potHomeSlug,
+        'rekey_boundary_skipped',
+        `revoke boundary advance skipped for gh=${input.githubUserId}: advance-not-applied`,
+      );
+    } else {
+      recordBootEvent(
+        input.workspaceId,
+        input.potHomeSlug,
+        'rekey_boundary_applied',
+        `revoke boundary advanced for gh=${input.githubUserId}: newEpoch=${result.newEpoch ?? '?'} distributed=${result.distributed ?? '?'}`,
       );
     }
   } catch {
@@ -134,13 +155,13 @@ async function revokeHiveContributorInner(
 
   // 4. Publish: add to the owner's own row (federates via the Hive peer-log, P-004).
   try {
-    const { live } = await publishRevocation(
+    const { live, newEpoch, distributed } = await publishRevocation(
       input.workspaceId,
       input.potHomeSlug,
       ownerGithubUserId,
       pubkeys,
     );
-    return { ok: true, revokedPubkeys: pubkeys, live };
+    return { ok: true, revokedPubkeys: pubkeys, live, newEpoch, distributed };
   } catch (err: unknown) {
     const detail = err instanceof Error ? err.message : String(err);
     if (/no.*row/i.test(detail)) return { ok: false, code: 'no_owner_row', detail };
@@ -161,7 +182,7 @@ async function realPublishRevocation(
   potHomeSlug: string,
   ownerGithubUserId: number,
   pubkeys: string[],
-): Promise<{ live: boolean }> {
+): Promise<{ live: boolean; newEpoch?: number; distributed?: number }> {
   const row = await addRevokedHivePubkeys(workspaceId, potHomeSlug, ownerGithubUserId, pubkeys);
   if (!row) {
     throw new Error('owner has no hive_members row — join the Hive before revoking');
@@ -173,11 +194,11 @@ async function realPublishRevocation(
   // revoked member replicates post-boundary ciphertext it can never decrypt = the C-001
   // READ cut. Flag-gated (papercusp-hive-rekey): OFF ⇒ no-op, today's PG-only behavior →
   // `live:false`. ON ⇒ the removal is a live read-cut → `live:true`.
-  const { applied } = await advanceEpochOnHiveBoundary({
+  const { applied, newEpoch, distributed } = await advanceEpochOnHiveBoundary({
     workspaceId,
     potHomeSlug,
     enabled: await isHiveRekeyEnabled(),
     cutOffPubkeys: pubkeys,
   });
-  return { live: applied };
+  return { live: applied, newEpoch, distributed };
 }

@@ -25,6 +25,10 @@ function skips() {
   return listBootHistory({ workspaceId: WS, harnessSlug: HIVE, kinds: ['rekey_boundary_skipped'], limit: 5 });
 }
 
+function applieds() {
+  return listBootHistory({ workspaceId: WS, harnessSlug: HIVE, kinds: ['rekey_boundary_applied'], limit: 5 });
+}
+
 describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAMED, not silent', () => {
   it('records rekey_boundary_skipped(no_target) when the revoke target has no devices (the witness K2 root)', async () => {
     const result = await revokeHiveContributor(
@@ -57,17 +61,22 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
     expect(events[0].message).toContain('advance-not-applied');
   });
 
-  it('does NOT record a skip on the happy path (revoke live, boundary advanced)', async () => {
+  it('does NOT record a skip on the happy path (revoke live, boundary advanced) — records rekey_boundary_applied instead (WI-6043)', async () => {
     const result = await revokeHiveContributor(
       { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
         isOwningSwarm: async () => true,
         resolveOwnerGithubUserId: async () => 1,
         loadTargetPubkeys: async () => ['pk-b'],
-        publishRevocation: async () => ({ live: true }), // advance applied → live:true
+        // advance applied → live:true, epoch advanced to 1, wrapped to 2 remaining members
+        publishRevocation: async () => ({ live: true, newEpoch: 1, distributed: 2 }),
       },
     );
-    expect(result).toEqual({ ok: true, revokedPubkeys: ['pk-b'], live: true });
+    expect(result).toEqual({ ok: true, revokedPubkeys: ['pk-b'], live: true, newEpoch: 1, distributed: 2 });
     expect(skips().length, 'no skip event on the happy path').toBe(0);
+    const events = applieds();
+    expect(events.length, 'rekey_boundary_applied recorded — the success path is no longer silent').toBe(1);
+    expect(events[0].message).toContain('newEpoch=1');
+    expect(events[0].message).toContain('distributed=2');
   });
 });

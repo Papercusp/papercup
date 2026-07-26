@@ -61,9 +61,12 @@ describe('K-1 (static): Hive-scope revoke NOW wires the P-004 re-key (the gap is
   });
 
   it('computes `live` from the re-key (no hardcoded live:false no-op marker)', () => {
-    // Was `return { live: false }` (the K-1 no-op). Now `return { live: applied }` — the
+    // Was `return { live: false }` (the K-1 no-op). Now `return { live: applied, ... }` — the
     // removal is live (a read cut) exactly when the flag is on + the re-key distributed.
-    expect(/return\s*\{\s*live:\s*applied\s*\}/.test(realPublishCode)).toBe(true);
+    // WI-6043: the return also propagates newEpoch/distributed (for the rekey_boundary_applied
+    // boot event) — match `live: applied` as a leading field, not the whole object shape, so
+    // that addition doesn't make this static regression guard brittle.
+    expect(/return\s*\{\s*live:\s*applied\s*,/.test(realPublishCode)).toBe(true);
     expect(/return\s*\{\s*live:\s*false\s*\}/.test(realPublishCode)).toBe(false);
   });
 });
