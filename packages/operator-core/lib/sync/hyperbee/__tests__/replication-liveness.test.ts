@@ -793,6 +793,31 @@ describe('connected_never_replicated axis (WI-183 zombie connections, rig run m1
     expect(view.logs[0]!.verdict).toBe('no_replicator');
   });
 
+  // EI-18726252562537043 REGRESSION GUARD. The old wording ("this log has
+  // NEVER attached a replicator") named a LOCAL cause the observation does
+  // not establish — peersCount==0 is equally consistent with the REMOTE never
+  // opening/serving the core. That phrasing sent a real investigation
+  // (WI-5673) down a dead end. The stable grep tokens (`kind`, the bracketed
+  // `[never_attached]` sub-case) must NOT change — only the human-facing
+  // sentence, which must name both hypotheses instead of asserting one.
+  it('EI-18726252562537043: the never_attached message states the observation, not a local-fault verdict', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    sampleWith(on, now, { peers: 0, swarm: 2 });
+    now += GRACE;
+    sampleWith(on, now, { peers: 0, swarm: 2 });
+    expect(episodes).toHaveLength(1);
+    const { detail } = episodes[0]!;
+    // Stable grep tokens unchanged.
+    expect(detail).toContain('[never_attached]');
+    // No longer asserts a local-only cause.
+    expect(detail).not.toContain('NEVER attached a replicator');
+    expect(detail).not.toMatch(/this log has NEVER attached/);
+    // Names the remote-side hypothesis explicitly.
+    expect(detail.toLowerCase()).toContain('remote');
+    expect(detail.toLowerCase()).toContain('either');
+  });
+
   it('NEVER alarms with zero swarm connections (offline churn) or when the axis is unfed', () => {
     const { episodes, on } = collect();
     let now = 1_000_000;
