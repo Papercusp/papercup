@@ -40,6 +40,20 @@
  *   owner-steering:model-tiers       — SESSION model-tier MENU override (D-006).
  *   owner-steering:tier-ceilings     — SESSION per-role tier CEILINGS override
  *                                      (D-006; e.g. {bee:'opus:xhigh'} pins bees).
+ *   owner-steering:create-wake-suppress-plans — string[] of plan slugs (EI-13608).
+ *                                      An UNASSIGNED `work_items:create` whose
+ *                                      `plan_item.slug` is in this list does NOT
+ *                                      fire the Mug's default work_items:create
+ *                                      demand-wake — for a KNOWN cup-forbidden
+ *                                      plan (e.g. gated on a live 2-machine rig
+ *                                      or an owner decision) that re-homes items
+ *                                      unassigned and would otherwise burn a
+ *                                      no-op survey+decide cycle per create.
+ *                                      Empty/absent ⇒ NO suppression (today's
+ *                                      behaviour). Does NOT affect eligibility or
+ *                                      placement — only whether the CREATE event
+ *                                      itself wakes the Mug; a su/owner still
+ *                                      claims the item normally.
  *
  * Defaults (a missing/cleared key) reproduce today's pre-steering behaviour, so the
  * feature is purely additive — an un-steered Hive reads `DEFAULT_OWNER_STEERING`.
@@ -75,6 +89,9 @@ export const OWNER_STEERING_KEYS = {
   // queen-steering-panel P-009 (decomposition-aggressiveness hint): ADVISORY —
   // surfaced in the wake brief, no hard seam (the Queen self-governs decomposition).
   decomposition: 'owner-steering:decomposition',
+  // EI-13608: plan slugs whose UNASSIGNED work_items:create should not fire the
+  // default demand-wake (a known cup-forbidden plan re-homing items unassigned).
+  createWakeSuppressPlans: 'owner-steering:create-wake-suppress-plans',
   federatedPriming: 'owner-steering:federated-priming',
   // model-override-sidebar-2026-06-23: SESSION-NOW per-role MODEL overrides for the
   // FRONT-DOOR agents that launch OUTSIDE the cup:spawn tier path — `sentinel`
@@ -153,6 +170,10 @@ export interface OwnerSteering {
   /** SESSION federated Scout priming override — nearby foreign elites plus
    *  crowded/empty niche-map counts. null ⇒ blueprint default. */
   federatedPriming?: Partial<FederatedPrimingConfig> | null;
+  /** EI-13608: plan slugs whose UNASSIGNED work_items:create should NOT fire the
+   *  default work_items:create demand-wake (a known cup-forbidden plan). Empty ⇒
+   *  no suppression (today's behaviour) — every unassigned create wakes the Queen. */
+  createWakeSuppressPlans: string[];
 }
 
 export const DEFAULT_OWNER_STEERING: OwnerSteering = {
@@ -171,6 +192,7 @@ export const DEFAULT_OWNER_STEERING: OwnerSteering = {
   decomposition: null,
   modelOverrides: null,
   federatedPriming: null,
+  createWakeSuppressPlans: [],
 };
 
 function asStringArray(v: unknown): string[] {
@@ -297,6 +319,7 @@ export async function getOwnerSteering(
     decomposition: asDecomposition(byKey.get(OWNER_STEERING_KEYS.decomposition)),
     modelOverrides: asModelOverrides(byKey.get(OWNER_STEERING_KEYS.modelOverrides)),
     federatedPriming: asFederatedPriming(byKey.get(OWNER_STEERING_KEYS.federatedPriming)),
+    createWakeSuppressPlans: asStringArray(byKey.get(OWNER_STEERING_KEYS.createWakeSuppressPlans)),
   };
 }
 
@@ -328,6 +351,9 @@ export interface OwnerSteeringPatch {
   modelOverrides?: Record<string, string> | null;
   /** Session federated Scout priming override; null / {} clears it. */
   federatedPriming?: Partial<FederatedPrimingConfig> | null;
+  /** EI-13608: plan slugs to suppress the work_items:create demand-wake for;
+   *  [] clears it (⇒ no suppression). */
+  createWakeSuppressPlans?: string[];
   /** Wipe ALL steering keys back to {@link DEFAULT_OWNER_STEERING}. */
   clear?: boolean;
 }
@@ -390,6 +416,9 @@ export async function setOwnerSteering(
   }
   if (patch.federatedPriming !== undefined) {
     writes.push([OWNER_STEERING_KEYS.federatedPriming, asFederatedPriming(patch.federatedPriming)]);
+  }
+  if (patch.createWakeSuppressPlans !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.createWakeSuppressPlans, asStringArray(patch.createWakeSuppressPlans)]);
   }
   // EI-8277 root cause: a bare pause write (`pot:set-steering { pauseNewWork:true }`,
   // e.g. from the operator palette/Queen tab) used to preserve a prior directive

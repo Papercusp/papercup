@@ -103,7 +103,7 @@ export default defineTool({
     await setPotStarted(workspaceId, installSlug, true);
     // ENSURE (not replace): the Mug's runtime-tuned subscriptions survive a
     // Pause→Start cycle; only uncovered defaults are added (P-002 / D-001).
-    const subs = await armDefaultPotWakeSubscriptions(workspaceId, { mode: 'ensure' });
+    const subs = await armDefaultPotWakeSubscriptions(workspaceId, { mode: 'ensure', installSlug });
     await setDefaultWakeMode('auto');
     const wake = await requestUrgentPotWake({
       reason: clampText(args.kickoff, LIMITS.ANNOTATION) ?? 'Start Pot — the user started the pot; survey and get the fleet moving',

@@ -21,6 +21,7 @@ import { ALL_PAIRS } from './pairs';
 import { catFileRead, headFileRead, sedRangeRead, tailFileRead, FILE_READ_PAIRS } from './pairs/file-read';
 import { psqlDescribe, psqlSelectRead } from './pairs/postgres';
 import { psProcessQuery } from './pairs/process';
+import { curlHealthProbe, listeningPorts, systemctlIsActive } from './pairs/service';
 import type { CorpusFixture } from './corpus';
 import type { SampledCommand } from './types';
 
@@ -280,5 +281,170 @@ describe('process pattern boundaries (a not-a-substitute verdict)', () => {
   it('is never promotable past observe', () => {
     expect(psProcessQuery.expectedVerdict).toBe('not-a-substitute');
     expect(maxTierFor(psProcessQuery.expectedVerdict)).toBe('observe');
+  });
+});
+
+/**
+ * The SERVICE family (P-009). Three pairs, drawn on intent boundaries, and the
+ * boundaries are the whole finding: `dev:service_health` takes no arguments, so
+ * what it can answer is fixed by which services something PROBES — not by which
+ * units are in the supervision registry, and not by which port you care about.
+ */
+describe('service pattern boundaries', () => {
+  const claims = (pair: typeof systemctlIsActive, atom: string) =>
+    matchingAtoms(pair, [{ sid: 's', ts: 't', atom }]).length === 1;
+
+  describe('systemctl unit liveness (needs-widening)', () => {
+    it('claims the boolean-liveness verbs', () => {
+      expect(claims(systemctlIsActive, 'systemctl --user is-active papercup-bg-host.service')).toBe(true);
+      expect(claims(systemctlIsActive, 'systemctl --user is-failed papercusp-db-backup.service 2>&1')).toBe(true);
+      expect(claims(systemctlIsActive, 'systemctl is-active auditd 2>&1')).toBe(true);
+    });
+
+    /**
+     * `status` is EXCLUDED deliberately: it returns the unit's journal tail as
+     * well as its state (21 distinct corpus shapes pass `-n <N>` asking for
+     * exactly those lines), and `dev:service_health` returns no journal at all.
+     * `show`/`cat`/`list-timers` ask about CONFIG and SCHEDULE, which it also
+     * cannot produce. Enforcing a liveness advisory over any of them would
+     * answer a question the agent did not ask.
+     */
+    it('excludes status, show, cat and the list verbs — different questions', () => {
+      expect(claims(systemctlIsActive, 'systemctl --user status papercup-bg-host.service --no-pager -n 20')).toBe(false);
+      expect(claims(systemctlIsActive, 'systemctl --user show papercup-bg-host.service -p NRestarts')).toBe(false);
+      expect(claims(systemctlIsActive, 'systemctl --user cat papercup-dev-api.service')).toBe(false);
+      expect(claims(systemctlIsActive, 'systemctl --user list-timers papercup-live-federation-gate.timer')).toBe(false);
+      expect(claims(systemctlIsActive, 'systemctl --user restart papercup-bg-host.service')).toBe(false);
+    });
+
+    /** The genuine overlap, and the tripwire: these three units ARE probed, so a
+     *  rigged envelope that covered nothing would fail here. */
+    it('covers exactly the units something probes', () => {
+      for (const [unit, probe] of [
+        ['papercup-dev-api.service', 'operator'],
+        ['papercup-bg-host.service', 'bg-host-ticker'],
+        ['papercup-embed-sidecar.service', 'embed-sidecar'],
+      ] as const) {
+        const result = systemctlIsActive.cover(`systemctl --user is-active ${unit}`);
+        expect(result.covered, `${unit} should be answerable`).toBe(true);
+        expect(result.expression).toContain(probe);
+      }
+    });
+
+    /**
+     * The finding, as an assertion. Being in `SUPERVISED_PROCESSES` is NOT the
+     * same as being answerable: a supervision row carries flap/restart counters
+     * and no up-or-down field, and a stopped unit is indistinguishable from a
+     * failed probe (both leave `secondsSinceStart` undefined). The two failure
+     * reasons stay distinct because the remedy differs — these need a PROBE
+     * (P-013), the others need registration first.
+     */
+    it('does not cover a supervised-but-unprobed unit, and says why', () => {
+      const result = systemctlIsActive.cover('systemctl --user is-active papercup-staging-api.service');
+      expect(result.covered).toBe(false);
+      expect(result.reason).toContain('SUPERVISED_PROCESSES');
+      expect(result.reason).toContain('no up/down field');
+    });
+
+    it('does not cover a unit outside the registry entirely', () => {
+      const result = systemctlIsActive.cover('systemctl --user is-active papercup-oddsmith-sidecar.service');
+      expect(result.covered).toBe(false);
+      expect(result.reason).toContain('outside the supervision registry');
+    });
+  });
+
+  describe('curl health probe (needs-widening)', () => {
+    it('claims a loopback health or version probe', () => {
+      expect(claims(curlHealthProbe, 'curl -s http://127.0.0.1:3070/api/health')).toBe(true);
+      expect(claims(curlHealthProbe, 'curl -s http://localhost:3170/api/health 2>&1')).toBe(true);
+      expect(claims(curlHealthProbe, 'curl -s -m 10 http://127.0.0.1:8788/health')).toBe(true);
+    });
+
+    it('excludes remote hosts and non-health routes', () => {
+      expect(claims(curlHealthProbe, 'curl -s https://papercusp.com/api/health')).toBe(false);
+      expect(claims(curlHealthProbe, 'curl -s http://127.0.0.1:3070/api/mcp')).toBe(false);
+    });
+
+    /** The tripwire: a probed port, body discarded, is genuinely answered. */
+    it('covers a liveness-only probe of a port it actually probes', () => {
+      const result = curlHealthProbe.cover(
+        'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:3070/api/health',
+      );
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('operator');
+    });
+
+    /**
+     * The sharpest single finding in this family. `CLAUDE.md` tells every agent
+     * to verify a staging edit by restarting `:3170` and probing it — and
+     * `:3170` is not in `HEALTH_ENDPOINTS`, so the documented workflow has no
+     * tool form. 80 curl atoms went to bash because there was nowhere else.
+     */
+    it('cannot answer for :3170, the staging operator the docs tell agents to probe', () => {
+      const result = curlHealthProbe.cover(
+        'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:3170/api/health',
+      );
+      expect(result.covered).toBe(false);
+      expect(result.reason).toContain(':3170');
+    });
+
+    it('cannot answer when the response BODY is what is wanted', () => {
+      const result = curlHealthProbe.cover('curl -s http://127.0.0.1:3070/api/health');
+      expect(result.covered).toBe(false);
+      expect(result.reason).toContain('BODY');
+    });
+  });
+
+  describe('listening sockets (a not-a-substitute verdict)', () => {
+    it('claims the socket-query tools', () => {
+      expect(claims(listeningPorts, 'ss -ltnp 2>/dev/null')).toBe(true);
+      expect(claims(listeningPorts, 'netstat -tlnp 2>/dev/null')).toBe(true);
+      expect(claims(listeningPorts, 'lsof -nP -iTCP:3070 -sTCP:LISTEN')).toBe(true);
+    });
+
+    /**
+     * A real regression, caught by the harness the first time this pattern ran:
+     * `^ss\b` claimed JavaScript heredocs (`ss._blocked = true`,
+     * `ss = makeStore()`) as if they were socket queries. A pattern that claims
+     * a language's variable names is not claiming an intent.
+     */
+    it('does not claim JavaScript that merely starts with the letters ss', () => {
+      expect(claims(listeningPorts, 'ss._blocked = true')).toBe(false);
+      expect(claims(listeningPorts, 'ss = makeStore()')).toBe(false);
+    });
+
+    it('does not claim lsof against a FILE, which is a lock query', () => {
+      expect(claims(listeningPorts, 'lsof src-tauri/sidecar.lock 2>/dev/null')).toBe(false);
+    });
+
+    it('covers none of the real shapes — there is no socket table in the payload', () => {
+      for (const atom of ['ss -ltnp 2>/dev/null', 'ss -ltn', 'lsof -nP -iTCP:3070 -sTCP:LISTEN', 'netstat -tlnp']) {
+        const result = listeningPorts.cover(atom);
+        expect(result.covered, `${atom} should have no dev:service_health expression`).toBe(false);
+        expect(result.reason).toBeTruthy();
+      }
+    });
+
+    /**
+     * The tripwire, and where P-013's coverage will first appear: asking only
+     * whether a PROBED port has a listener (no process-ownership flag) IS
+     * answered by that port's probe succeeding.
+     */
+    it('still scores a probed-port listener check as covered, so a rigged envelope is loud', () => {
+      const result = listeningPorts.cover('ss -ltn "sport = :3070"');
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('operator');
+    });
+
+    it('is never promotable past observe', () => {
+      expect(listeningPorts.expectedVerdict).toBe('not-a-substitute');
+      expect(maxTierFor(listeningPorts.expectedVerdict)).toBe('observe');
+    });
+  });
+
+  it('the three pairs do not reach across into each other', () => {
+    expect(claims(systemctlIsActive, 'curl -s http://127.0.0.1:3070/api/health')).toBe(false);
+    expect(claims(curlHealthProbe, 'systemctl --user is-active papercup-bg-host.service')).toBe(false);
+    expect(claims(listeningPorts, 'systemctl --user is-active papercup-bg-host.service')).toBe(false);
   });
 });

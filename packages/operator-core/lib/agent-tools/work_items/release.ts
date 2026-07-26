@@ -157,6 +157,22 @@ export default defineTool({
               hint: `Held by ${holder}, not you (${ident.ownerId}) — release refused so a live peer's claim isn't silently cleared. Coordinate with the holder (coord:send), or pass force:true (leader/reaper override only) to release it anyway.`,
             };
           }
+          // WI-6031: a federated (origin='remote') issue-family row's UPDATE is intentionally
+          // no-op'd by the harness_shared.engineer_issues_view_dml INSTEAD-OF trigger (EI-7833)
+          // — the row is owned by its authoring peer's core (the hyperbee->PG projector writes
+          // the base table directly under LWW) and this operator's local view writes must never
+          // clobber it. That guard is correct; what was undiagnosable was the caller-facing
+          // signal: every OTHER visible predicate here looks fully eligible (ids match, no live
+          // holder), so a bare `release_failed` gave no hint that origin was the actual cause.
+          if (current.family === 'issue' && current.origin === 'remote') {
+            return {
+              ok: false as const,
+              id: it.id,
+              error: 'release_blocked_remote_origin',
+              workItem: current,
+              hint: `'${it.id}' is a federated (origin='remote') issue — it is owned by its authoring peer's core and cannot be released/parked from this operator. It resolves locally when its author node resolves it upstream.`,
+            };
+          }
           return { ok: false as const, id: it.id, error: 'release_failed', workItem: current };
         }
         if (forced) {

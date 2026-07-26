@@ -1337,7 +1337,13 @@ _SUBST_ENV_RE = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+')
 # than by memory: bash-resource-gate.test.ts replays every atom in the committed
 # equivalence FIXTURES through this script and asserts each one reaches the
 # operator, so adding a pair without adding its verb here fails that test.
-_SUBSTITUTION_HEADS = frozenset(('sed', 'cat', 'head', 'tail', 'psql'))
+#
+# P-009 adds 'systemctl' and 'curl' (the service family). `systemctl` is ALSO
+# matched by the resource regex below, so it reaches the operator either way
+# today — it is listed here regardless, because the two pre-filters answer
+# different questions and a future edit to the resource token list must not
+# silently disable the substitution rules that depend on this verb.
+_SUBSTITUTION_HEADS = frozenset(('sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl'))
 
 
 def _substitution_prefilter_hit(cmd):

@@ -33,7 +33,11 @@ import {
   listUnplacedPotFrontier,
   listNonTerminalPlacements,
 } from '../../pot/wake-frontier-guard';
-import { withDefaultPotWakeSubscriptions } from '../../pot/wake-defaults';
+import {
+  withDefaultPotWakeSubscriptions,
+  defaultPotEventSubscriptions,
+  readCreateWakeSuppressPlans,
+} from '../../pot/wake-defaults';
 import { getPotStarted } from '../../pot/started';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 import { softText, clampText, LIMITS } from '../limits';

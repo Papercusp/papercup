@@ -40,8 +40,20 @@ export function blueprintWakeSubscriptions(
   return subs.map((s) => ({ on: s.on, ...(s.note ? { note: s.note } : {}) }));
 }
 
+/** Options for {@link defaultPotEventSubscriptions} — currently just the EI-13608
+ *  plan-scoped create-wake suppression list. */
+export interface DefaultPotEventSubscriptionsOpts {
+  /** Plan slugs (owner-steering `createWakeSuppressPlans`) whose UNASSIGNED
+   *  work_items:create should NOT fire the demand wake (EI-13608). Empty/omitted
+   *  ⇒ no suppression (byte-identical to before this option existed). */
+  suppressCreateWakePlans?: string[];
+}
+
 /** The three default demand subscriptions (fresh array each call — callers may mutate). */
-export function defaultPotEventSubscriptions(): PotEventSubscription[] {
+export function defaultPotEventSubscriptions(
+  opts: DefaultPotEventSubscriptionsOpts = {},
+): PotEventSubscription[] {
+  const suppressPlans = opts.suppressCreateWakePlans?.filter((s) => s.trim().length > 0) ?? [];
   return [
     {
       on: 'plans:start',
@@ -58,11 +70,23 @@ export function defaultPotEventSubscriptions(): PotEventSubscription[] {
       // operator → `$eq null`, matching assignee null/unset = unassigned. The handler still
       // reports in-band failures as { ok:false } inside a successful tool result, so the ok
       // gate stays (onlyOnSuccess alone is not enough).
+      //
+      // EI-13608: when the owner has named cup-forbidden plans via owner-steering
+      // `createWakeSuppressPlans`, also require the create's `plan_item.slug` (present
+      // on the synthetic per-item event's `args` — perItemArgs in events/engine.ts
+      // carries the caller's own create args, including a top-level or per-item
+      // `plan_item`) to be OUTSIDE that list. `notIn` on a MISSING field (no
+      // plan_item passed) evaluates true (mingo/$nin semantics — "does not contain
+      // a value in the array"), so an ordinary create with no plan linkage is
+      // UNAFFECTED; only a create explicitly linked to a named forbidden plan is
+      // suppressed. Empty suppression list ⇒ this clause is omitted entirely
+      // (byte-identical to pre-EI-13608 behaviour).
       when: {
         'result.data.ok': true,
         'result.data.workItem.assignee': { exists: false },
+        ...(suppressPlans.length > 0 ? { 'args.plan_item.slug': { notIn: suppressPlans } } : {}),
       },
-      note: 'default demand wake: an UNPLACED (unassigned) work item was created (start-pot-wake P-002; a pre-assigned create skips — EI-1850)',
+      note: 'default demand wake: an UNPLACED (unassigned) work item was created (start-pot-wake P-002; a pre-assigned create skips — EI-1850; a named cup-forbidden plan skips — EI-13608)',
     },
     {
       on: 'coord:escalate',
@@ -70,6 +94,23 @@ export function defaultPotEventSubscriptions(): PotEventSubscription[] {
       note: 'default demand wake: an escalation was raised (start-pot-wake P-002)',
     },
   ];
+}
+
+/**
+ * Fail-soft read of the owner-steering `createWakeSuppressPlans` list (EI-13608).
+ * Dynamic import (owner-steering.ts is a leaf module with no edge back to this
+ * file) — never throws; an unreadable/missing steering store resolves to `[]`
+ * (no suppression), the same fail-soft posture every other owner-steering reader
+ * in this codebase uses.
+ */
+export async function readCreateWakeSuppressPlans(workspaceId: string, installSlug: string): Promise<string[]> {
+  try {
+    const { getOwnerSteering } = await import('../owner-steering');
+    const s = await getOwnerSteering(workspaceId, installSlug);
+    return s.createWakeSuppressPlans;
+  } catch {
+    return [];
+  }
 }
 
 const onKeys = (on: string | string[]): string[] => (Array.isArray(on) ? on : [on]);
@@ -115,15 +156,27 @@ export function withDefaultPotWakeSubscriptions(
  */
 export async function armDefaultPotWakeSubscriptions(
   workspaceId: string,
-  opts: { mode: 'replace' | 'ensure'; subscriptions?: PotEventSubscription[] },
+  opts: {
+    mode: 'replace' | 'ensure';
+    subscriptions?: PotEventSubscription[];
+    /** Home pot/harness slug — resolves owner-steering `createWakeSuppressPlans`
+     *  (EI-13608) into the built-in work_items:create default. Omitted ⇒ no
+     *  suppression lookup (byte-identical to before this option existed). Ignored
+     *  when `subscriptions` (a blueprint's own declared wake) is supplied — a
+     *  blueprint-declared wake is the caller's own policy, not the built-in three. */
+    installSlug?: string;
+  },
 ): Promise<{ rules: number; added: number }> {
   // P-013: the blueprint's declared wake.subscriptions WIN over the built-in
   // universal three; a pot that declares none (the coding pot + generic-pot
   // today) falls back to the defaults, so behavior is unchanged.
+  const usingBuiltins = !opts.subscriptions || opts.subscriptions.length === 0;
+  const suppressCreateWakePlans =
+    usingBuiltins && opts.installSlug ? await readCreateWakeSuppressPlans(workspaceId, opts.installSlug) : [];
   const defaults =
     opts.subscriptions && opts.subscriptions.length > 0
       ? opts.subscriptions
-      : defaultPotEventSubscriptions();
+      : defaultPotEventSubscriptions({ suppressCreateWakePlans });
   if (opts.mode === 'replace') {
     const rules = await setPotEventSubscriptions(workspaceId, defaults);
     return { rules, added: defaults.length };

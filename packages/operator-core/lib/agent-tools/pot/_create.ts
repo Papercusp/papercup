@@ -385,6 +385,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
       await armDefaultPotWakeSubscriptions(ws, {
         mode: 'replace',
         subscriptions: blueprintWakeSubscriptions(validation.blueprint.wake),
+        installSlug: opts.slug,
       });
     } catch (e) {
       console.warn(
