@@ -107,6 +107,18 @@ export default defineTool({
   },
   capability: 'operator:write',
   requirePrincipal: false,
+  // EI-18733783500981433: `trigger`/`force` await fireGitSyncNow + readDeployStatus (git-sync
+  // fire-and-refresh can itself take tens of seconds) before launching the detached deploy, and
+  // never read ctx.tx (only ctx.role / ctx.principal-derived identity). Without this, the host's
+  // ambient workspace transaction sits idle for that whole stretch and gets killed by Postgres's
+  // idle_in_transaction_session_timeout (60s) — surfacing as a bare
+  // "write CONNECTION_CLOSED 127.0.0.1:6432" transport error even though the deploy itself
+  // launched successfully (this is exactly the false-negative EI-18724155280048738 had to work
+  // around with the deployInFlight in-flight check). Confirmed live: 100% of
+  // tools:invoke→release:deploy CONNECTION_CLOSED failures in the trailing 12h clustered at
+  // ~60s duration. Same fix as capability:bash (EI-18666279107998059) — see
+  // ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   // Broad invoke allowlist (status is the read every role reaches for); the WRITE ops self-gate
   // inside the handler (trigger needs confirm; force needs operator-config-write role).
   agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],

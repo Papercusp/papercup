@@ -15,8 +15,11 @@ import { createFileRoute, redirect } from '@tanstack/react-router';
  * must stay `HUD.tsx` for the requested `/adv/HUD` URL to keep resolving.
  *
  * Search params carry through so a deep link like `/adv/HUD?hudcol=blocked`
- * lands on the board with the column focus intact (the HUD's nuqs keys are
- * `hudcol` / `hudfleet` / `hudall` / `hudsession`).
+ * lands on the board with the column focus intact. The HUD's nuqs keys:
+ * `hudcol` / `hudfleet` / `hudplan` / `hudall` / `hudsession` (sessions board)
+ * and `hudtab` / `hudecol` / `hudq` (the tab axis + the entity boards). This
+ * list is spread, not enumerated, in `beforeLoad` — a new key needs no change
+ * here beyond keeping this comment honest.
  */
 export const Route = createFileRoute('/adv/HUD')({
   beforeLoad: ({ search }) => {

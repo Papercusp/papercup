@@ -121,6 +121,17 @@ describe('release:deploy — status', () => {
   });
 });
 
+describe('release:deploy — skipWorkspaceTx (EI-18733783500981433)', () => {
+  it('opts out of the ambient workspace tx — trigger/force await fireGitSyncNow + ' +
+    'readDeployStatus (tens of seconds) before launching, and never read ctx.tx, so holding ' +
+    'one open the whole time hits Postgres\'s idle_in_transaction_session_timeout (60s) and ' +
+    'surfaces as a bare CONNECTION_CLOSED even though the deploy itself launched (the exact ' +
+    'false-negative EI-18724155280048738 had to work around with the deployInFlight check). ' +
+    'Same fix as capability:bash (EI-18666279107998059).', () => {
+    expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 describe('release:deploy — trigger', () => {
   it('refuses when the gate is red (no green pin to ship)', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));

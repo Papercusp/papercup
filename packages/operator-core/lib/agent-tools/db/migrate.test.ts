@@ -111,6 +111,15 @@ describe('db:migrate — dry run', () => {
   });
 });
 
+describe('db:migrate — skipWorkspaceTx (EI-18733783500981433)', () => {
+  it('opts out of the ambient workspace tx — the handler drains + shells out to psql for up ' +
+    'to minutes and never reads ctx.tx, so holding one open the whole time hits Postgres\'s ' +
+    'idle_in_transaction_session_timeout (60s) and surfaces as a bare CONNECTION_CLOSED even ' +
+    'though the migration completed. Same fix as capability:bash (EI-18666279107998059).', () => {
+    expect((migrateTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 describe('db:migrate — withheld (PAPERCUSP_ALLOW_DB_MIGRATE unset)', () => {
   it('drains but withholds the apply, and the fallback command still records schema_migrations by hand', async () => {
     const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));

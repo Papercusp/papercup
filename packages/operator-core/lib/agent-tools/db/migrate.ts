@@ -217,6 +217,16 @@ export default defineTool({
   // EI-9417: + budget for the lock-timeout retry loop's worst case (5 attempts
   // x MIGRATION_LOCK_TIMEOUT_SQL, plus backoff between them — see above).
   timeoutSec: MAX_DRAIN_SEC + 60 + 120,
+  // EI-18733783500981433: this handler drains (up to MAX_DRAIN_SEC) then shells
+  // out to psql — up to several minutes — and never reads ctx.tx. Without this,
+  // the host's ambient workspace transaction sits idle for the whole drain+apply
+  // and gets killed by Postgres's idle_in_transaction_session_timeout (60s),
+  // surfacing to the caller as a bare "write CONNECTION_CLOSED 127.0.0.1:6432"
+  // even though the migration itself completed. Confirmed live: 100% of
+  // tools:invoke→db:migrate CONNECTION_CLOSED failures in the trailing 12h
+  // clustered at ~60-62s duration. Same fix as capability:bash (EI-18666279107998059)
+  // — see ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
