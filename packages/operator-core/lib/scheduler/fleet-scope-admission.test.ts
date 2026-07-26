@@ -147,6 +147,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       terminalOwner: null,
       terminalCompletionRef: null,
       terminalCompletionEvidence: null,
+      completionAuthority: null,
       createdAt: '2026-07-13T00:00:00.000Z',
       updatedAt: '2026-07-13T00:00:00.000Z',
     });

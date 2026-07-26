@@ -24,6 +24,8 @@ const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
   terminalOwner: null,
   terminalCompletionRef: null,
   terminalCompletionEvidence: null,
+  // agent-protocol-authority-semantics-2026-07-26 P-004: also required on WorkItem.
+  completionAuthority: null,
   severity: null,
   parent: null,
   payload: null,

@@ -72,6 +72,47 @@ export function findTerminalOrderViolations(
   return { banOrder: ban.order, violations };
 }
 
+/**
+ * The SECOND ordering ceiling (2026-07-26). `attestation_unattested_device` holds an
+ * ANTI-MONOTONE precondition: it empties one member's `device_attestations` and needs that
+ * emptiness to survive its own ~155s window. Both writers of that column put an announced
+ * device straight back —
+ *   · the projection (sync/hyperbee/projections/hive-members.ts) REPLACES the column from a
+ *     remote op, and
+ *   · the admission path (hive-membership-store.ts `upsertHiveMember`) UNION-merges it with
+ *     NO clock guard at all (WI-1585, merge-never-replace),
+ * — and a swarm reconnect is what makes a member re-announce. So running this leg after the
+ * churn band (restart / reconnect / replication-soak, 80-89) had its precondition undone
+ * mid-flight, and the leg reported PRECONDITION UNHOLDABLE on a product that was fine.
+ * No timeout can fix an undone precondition; only ordering can — hence a static guard.
+ */
+export const ANTI_MONOTONE_PRECONDITION_SCENARIOS = ['attestation_unattested_device'] as const;
+export const CHURN_SCENARIOS = [
+  'restart_durability',
+  'restart_settle_barrier',
+  'reconnect_catchup',
+  'replication_soak',
+] as const;
+
+/**
+ * Returns anti-monotone legs registered at/after the FIRST churn leg. Empty ⇒ invariant holds.
+ * A churn leg that is not registered at all is simply skipped, so this never fails on a rig
+ * that drops a scenario.
+ */
+export function findChurnOrderViolations(
+  scenarios: RegisteredScenario[],
+  antiMonotoneIds: readonly string[] = ANTI_MONOTONE_PRECONDITION_SCENARIOS,
+  churnIds: readonly string[] = CHURN_SCENARIOS,
+): { firstChurnOrder: number | null; violations: RegisteredScenario[] } {
+  const churnOrders = scenarios.filter((s) => churnIds.includes(s.id)).map((s) => s.order);
+  if (churnOrders.length === 0) return { firstChurnOrder: null, violations: [] };
+  const firstChurnOrder = Math.min(...churnOrders);
+  const violations = scenarios.filter(
+    (s) => antiMonotoneIds.includes(s.id) && s.order >= firstChurnOrder,
+  );
+  return { firstChurnOrder, violations };
+}
+
 function loadScenarioSources(): Array<{ file: string; text: string }> {
   return readdirSync(SCENARIO_DIR)
     .filter((f) => f.endsWith('.sh'))
@@ -147,5 +188,54 @@ describe('live-federation matrix — terminal-band ordering invariant (WI-5064)'
       },
     ]);
     expect(findTerminalOrderViolations(fixed).violations).toEqual([]);
+  });
+});
+
+describe('live-federation matrix — anti-monotone legs run BEFORE the churn band', () => {
+  it('registers every anti-monotone-precondition leg below the first churn leg', () => {
+    const scenarios = parseRegistrations(loadScenarioSources());
+    const { firstChurnOrder, violations } = findChurnOrderViolations(scenarios);
+    expect(firstChurnOrder, 'no churn scenario parsed — the guard would be vacuous').not.toBeNull();
+    expect(
+      violations,
+      `Anti-monotone leg(s) are registered at/after the first churn leg (order ${firstChurnOrder}). ` +
+        `Those legs remove a value locally and need it to STAY removed; the churn legs reconnect the ` +
+        `swarm, every reconnect makes the member re-announce, and an announce restores the value via ` +
+        `either writer (projection REPLACE from a newer op, or the admission path's UNION merge with ` +
+        `no clock guard). The leg then fails PRECONDITION UNHOLDABLE and reads as a product defect. ` +
+        `Move these strictly below ${firstChurnOrder}: ` +
+        violations.map((v) => `${v.id}(${v.order}) in ${v.file}`).join(', '),
+    ).toEqual([]);
+  });
+
+  // SELF-PROOF — the configuration that actually failed the gate must be DETECTED.
+  it('DETECTS the historical configuration (attestation at 89, after replication_soak at 87)', () => {
+    const historical = parseRegistrations([
+      {
+        file: 'b8-replication-soak.sh',
+        text: 'matrix_register replication_soak 87 "replication soak" scn_replication_soak',
+      },
+      {
+        file: 'b9-attestation.sh',
+        text: 'matrix_register attestation_unattested_device 89 "unattested-device refused-op witness" scn_attestation_unattested_device',
+      },
+    ]);
+    expect(findChurnOrderViolations(historical).violations.map((v) => v.id)).toEqual([
+      'attestation_unattested_device',
+    ]);
+  });
+
+  it('does not flag the fixed configuration (attestation at 79, churn from 80)', () => {
+    const fixed = parseRegistrations([
+      {
+        file: 'b5-restart.sh',
+        text: 'matrix_register restart_durability 80 "restart durability" scn_restart_durability',
+      },
+      {
+        file: 'b9-attestation.sh',
+        text: 'matrix_register attestation_unattested_device 79 "unattested-device refused-op witness" scn_attestation_unattested_device',
+      },
+    ]);
+    expect(findChurnOrderViolations(fixed).violations).toEqual([]);
   });
 });

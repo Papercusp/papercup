@@ -36,11 +36,27 @@ vi.mock('../harness/git-sync/hive-git-mode', () => ({
 vi.mock('../sync/pot-git/repo-identity', () => ({ canonicalRepoKey: () => 'repo-key' }));
 vi.mock('../sync/pot-git/github-ingress', () => ({ githubOriginDevicePubkey: () => 'pubkey' }));
 vi.mock('../sync/pot-git/github-bridge-tick', () => ({ BRIDGE_CANONICAL_REF: 'refs/hive/staging' }));
-vi.mock('../sync/pot-git/storage', () => ({
-  hiveGitRepoPath: (potHome: string) => `/fake/${potHome}`,
-  readNamespaceRef: async () => null,
-  defaultRunGit: async () => ({ code: 0, stdout: '', stderr: '' }),
-}));
+/* Stub set derived from the REAL export list, so adding an export to storage.ts
+ * cannot silently break this file — see EI-18748959711888135, where an absent
+ * export threw inside a caller's try/catch, became a console.warn, and
+ * vitest-fail-on-console red-pinned the fleet gate. Inert stubs resolve a promise
+ * (storage's exports are mostly async and are often fire-and-forget); the explicit
+ * stubs below win, including the SYNC hiveGitRepoPath this file needs. */
+vi.mock('../sync/pot-git/storage', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const inert = Object.fromEntries(
+    Object.entries(actual).map(([k, v]) => [
+      k,
+      typeof v === 'function' ? vi.fn(async () => undefined) : v,
+    ]),
+  );
+  return {
+    ...inert,
+    hiveGitRepoPath: (potHome: string) => `/fake/${potHome}`,
+    readNamespaceRef: async () => null,
+    defaultRunGit: async () => ({ code: 0, stdout: '', stderr: '' }),
+  };
+});
 // vitest 4 infers a vi.fn mock's Parameters from its initial implementation —
 // a zero-arg arrow made `.mock.calls[N]` the empty tuple `[]`, so indexing
 // `[0]` below (the event-payload assertions) failed to typecheck (TS2493)

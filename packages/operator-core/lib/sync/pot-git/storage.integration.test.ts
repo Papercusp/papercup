@@ -25,7 +25,11 @@ import {
   listNamespaceRefs,
   pathExists,
   sweepStalePackTmpFiles,
+  FETCH_CEILING_MS_MIRROR,
+  STALE_PACK_TMP_MAX_AGE_MS,
+  STALE_SHALLOW_LOCK_MAX_AGE_MS,
 } from './storage';
+import { DEFAULT_FETCH_TIMEOUT_MS } from './fetch-transport';
 
 /** A raw-32 Ed25519 pubkey as base64 (the wire form). */
 function devicePubkey(): string {
@@ -255,6 +259,72 @@ describe('sweepStalePackTmpFiles (EI-18745600910177355: leaked partial packs)', 
     expect(held.removed).not.toContain('shallow.lock');
     expect(await pathExists(lockPath)).toBe(true);
     await rm(lockPath, { force: true });
+  });
+
+  /**
+   * The two leaks MUST NOT share an age gate — pinning the exact live failure.
+   *
+   * On the rig 2026-07-26 a rung was SIGKILLed at 22:51Z and stranded the lock;
+   * the 22:56Z tick then died instantly on `Unable to create shallow.lock`. Under
+   * the packs' 15-min gate the store stays wedged until 23:06Z — ~3 ticks lost
+   * per killed rung, on a link that kills rungs constantly. The previous test
+   * passes under EITHER gate (1 h and 5 s sit outside both), so it could not have
+   * caught this; this one fails the moment the lock is put back on the packs'
+   * gate.
+   */
+  it('sweeps a stranded shallow.lock LONG before a same-age temp pack (separate gates)', async () => {
+    // Between the two gates: past the fetch ceiling (so no live fetch can hold
+    // the lock) but well inside the packs' 15 min. This is the 22:51→22:56 case.
+    const betweenMs = (STALE_SHALLOW_LOCK_MAX_AGE_MS + STALE_PACK_TMP_MAX_AGE_MS) / 2;
+    expect(STALE_SHALLOW_LOCK_MAX_AGE_MS).toBeLessThan(STALE_PACK_TMP_MAX_AGE_MS);
+
+    const lockPath = join(repo, 'shallow.lock');
+    const tmpPack = join(repo, 'objects', 'pack', 'tmp_pack_BetwEn');
+    const when = new Date(Date.now() - betweenMs);
+    await writeFile(lockPath, 'deadbeef\n');
+    await writeFile(tmpPack, Buffer.alloc(64));
+    await utimes(lockPath, when, when);
+    await utimes(tmpPack, when, when);
+
+    const res = await sweepStalePackTmpFiles(repo);
+
+    // The wedging lock goes NOW…
+    expect(res.removed).toContain('shallow.lock');
+    expect(await pathExists(lockPath)).toBe(false);
+    // …while the merely-wasteful temp pack is still left alone.
+    expect(res.removed).not.toContain('tmp_pack_BetwEn');
+    expect(await pathExists(tmpPack)).toBe(true);
+    await rm(tmpPack, { force: true });
+  });
+
+  /**
+   * `bootstrapFromPeer` derives `shallowLockMaxAgeMs` from ITS OWN fetch ceiling
+   * rather than taking the default, so a caller running a non-default timeout
+   * still gets a correct-by-construction gate. Two things must hold for that to
+   * be safe, and neither is self-evident from reading one file.
+   */
+  it('derives the shallow.lock gate from the caller fetch ceiling, and mirrors it without drift', async () => {
+    // (1) The mirrored ceiling cannot drift from the real one. storage.ts spells
+    // the value out literally instead of importing it (fetch-transport already
+    // imports storage, so importing back would close a module cycle) and its
+    // comment promises THIS test as the drift guard.
+    expect(FETCH_CEILING_MS_MIRROR).toBe(DEFAULT_FETCH_TIMEOUT_MS);
+
+    // (2) An explicit override is actually honoured — a caller with a 10-min
+    // ceiling must NOT have a 9-min-old lock (still plausibly live) pulled out
+    // from under its in-flight fetch.
+    const lockPath = join(repo, 'shallow.lock');
+    const nineMin = new Date(Date.now() - 9 * 60_000);
+    await writeFile(lockPath, 'deadbeef\n');
+    await utimes(lockPath, nineMin, nineMin);
+
+    const wide = await sweepStalePackTmpFiles(repo, { shallowLockMaxAgeMs: 10 * 60_000 });
+    expect(wide.removed).not.toContain('shallow.lock');
+    expect(await pathExists(lockPath)).toBe(true);
+
+    const tight = await sweepStalePackTmpFiles(repo, { shallowLockMaxAgeMs: 60_000 });
+    expect(tight.removed).toContain('shallow.lock');
+    expect(await pathExists(lockPath)).toBe(false);
   });
 
   it('is a no-op — never a throw — on a repo with no pack directory at all', async () => {

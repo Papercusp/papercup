@@ -55,6 +55,7 @@ function item(overrides: Partial<WorkItem>): WorkItem {
     terminalOwner: null,
     terminalCompletionRef: null,
     terminalCompletionEvidence: null,
+    completionAuthority: null,
     createdAt: '2026-07-05T20:00:00.000Z',
     updatedAt: '2026-07-05T20:00:00.000Z',
     ...overrides,

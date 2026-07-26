@@ -9316,6 +9316,97 @@ Newly-drifted docs dispatch ONE **doc-steward** agent (gate: `papercusp-doc-stew
 * `symbol` anchors get file-level fallback on rename/removal; expect occasional over-flagging there, by design.
 * Docs under submodule paths are only correct because of the explicit submodule routing in drift.ts — don’t “simplify” it away.
 
+# Does this routine spend money? Ask target_role, never the name
+
+> Routine spend classification derives from target_role, not a name regex — the regex was wrong six ways. Plus the two traps beside it: a cadence is not a readable clock, and `controllable:false` meant four different things.
+
+## The question
+
+[Section titled “The question”](#the-question)
+
+“Can this routine cost the owner tokens when it fires?” — the question the left rail’s Agents/System split, the `tokens` flag, and every “pause the expensive things” flow all rest on.
+
+## The answer: `target_role`
+
+[Section titled “The answer: target\_role”](#the-answer-target_role)
+
+A routine row carries `target_role`, the handler the routines engine dispatches to. That is the only field that knows whether a model runs. The mapping lives in `lib/automation/routine-classification.ts`:
+
+```ts
+spendForTargetRole('system:blueprint-run')   // 'llm'
+spendForTargetRole('system:git-sync')        // 'none'
+spendForTargetRole('system:brand-new-thing') // 'unknown'  ← never defaults to 'none'
+```
+
+`unknown` is a third value on purpose. A new system action nobody classified must not be able to present itself as free; the pane surfaces it, and `routine-classification.registry.test.ts` fails the build until someone says.
+
+## Why not the name — it was wrong six ways
+
+[Section titled “Why not the name — it was wrong six ways”](#why-not-the-name--it-was-wrong-six-ways)
+
+The predecessor was `AGENT_SPAWNING_PATTERNS`, a list of regexes over the routine’s NAME. A name is a label; it cannot see the handler. Measured on 2026-07-26:
+
+| routine                          | regex said | truth                                                           |
+| -------------------------------- | ---------- | --------------------------------------------------------------- |
+| `wake-brain`                     | spends     | handler is `async (ctx) => { void ctx; }` — a retired tombstone |
+| `improvement-triage`             | spends     | ”never dispatches — only records routing metadata”              |
+| `improvement-watchdog`           | spends     | a SQL pass that files work items                                |
+| `improvement-human-digest`       | spends     | ranks the queue and sends it                                    |
+| `improvement-invalid-args-miner` | spends     | mines `tool_invocations` in SQL                                 |
+| `template-gym`                   | spends     | **no handler is registered at all** (EI-18741229858124453)      |
+
+Five false positives and one routine that turned out to be firing into a void. The tests pinning that behaviour asserted the guess faithfully — `catalog.test.ts` had `template-gym` and `wake-brain` listed under “observed firing and billing tokens”.
+
+## Trap 1 — the registry has more than one import root
+
+[Section titled “Trap 1 — the registry has more than one import root”](#trap-1--the-registry-has-more-than-one-import-root)
+
+`listSystemActions()` after `import './register-system-actions'` is the enumeration you want, but be aware:
+
+* some actions register from a **constant**, not a literal, so `grep -oP "registerSystemAction\(\s*'\K[a-z-]+"` misses them (`wake-brain`, `p2p-work-intake`, `overwatch-launch`, …);
+* some register inside a **function** that must be called at boot — and `registerScoutCycleAction()` is exported and never called (EI-18741240128927188);
+* `system:loop-wake` is a **sentinel** `target_role` with no handler at all: the DBOS fire recognises a loop by `reschedule_interval_sec` + `target_owner_id` and delivers a wake instead of running an action.
+
+So enumerate at runtime in a test, not statically, and keep an explicit sentinel list.
+
+## Trap 2 — a cadence is not a readable clock
+
+[Section titled “Trap 2 — a cadence is not a readable clock”](#trap-2--a-cadence-is-not-a-readable-clock)
+
+`collectScheduleInventory()` returns rows from five sources. Only `routines` rows are backed by a scheduler that writes `next_fire_at`. A DBOS workflow, a managed timer, an in-process sweep and an external-process timer all report a human **cadence** (“every 30s”) while having **no next fire to report**.
+
+Deriving “is this row late?” from `nextFire || cadence` therefore marks every one of them stalled. Shipped exactly that; the System pane opened announcing that 17 healthy sweeps needed the owner’s attention. Every unit test was green, because the defect was in what the caller computed. `isClockDriven()` now owns the rule and is tested:
+
+```ts
+isClockDriven({ source: 'routines', kind, cron, rescheduleIntervalSec }) // cron or interval
+isClockDriven({ source: 'other',    kind, nextFireAt })                  // next fire ALONE
+```
+
+**The lesson worth carrying:** a derivation living as an inline expression in a data mapper is untestable, and this one was wrong in production while 87 tests passed. Extract it.
+
+## Trap 3 — `controllable: false` meant four different things
+
+[Section titled “Trap 3 — controllable: false meant four different things”](#trap-3--controllable-false-meant-four-different-things)
+
+The old pane rendered a padlock for every non-`routines` row, with the tooltip “runs as an in-process schedule”. That single marker covered:
+
+1. a DBOS scheduled workflow,
+2. a `managedSetInterval` timer,
+3. a **git-sync event hook** (`doc-freshness-sweep`) — not a schedule at all,
+4. a row whose switch **is a feature flag** (`doc-steward-dispatch` → `papercusp-doc-steward`) — a real, throwable control the pane was refusing to offer.
+
+`control: 'routine' | 'flag' | 'none'` replaces it. A `flag` row toggles via `flags:set`; a `none` row says *why* in its tooltip; and `kind: 'triggered'` gives an event hook a name for its trigger instead of a fake cadence.
+
+## If you are adding a system action
+
+[Section titled “If you are adding a system action”](#if-you-are-adding-a-system-action)
+
+1. `registerSystemAction('your-action', …)` as usual.
+2. Add `'system:your-action'` to `TARGET_ROLE_SPEND` with `{ spend, why }`. The `why` is the row’s tooltip, so write it for the owner, not for yourself.
+3. `spend: 'llm'` means a fire can DIRECTLY bill model turns — it spawns an agent, launches or **wakes** a session (a wake costs a turn), or dispatches queued work. Filing a work-item someone may later pick up is not `llm`. The test the owner is really asking is *“if I pause this, does spending stop?”*.
+
+The registry cross-check will fail the build if you skip step 2 — which is the point.
+
 # How the papercusp-workspace + papercup-self-registration boot path works
 
 > Two fire-and-forget bootstrap helpers run on every operator boot to make Papercusp dogfood itself — papercup workspace ensure + papercup repo auto-register. Idempotent + non-disruptive to existing installs.
@@ -12100,6 +12191,122 @@ Verified 4/4 green after the fix (was 6/6 red before).
 * **A hand-rolled “minimal, prod-faithful” DDL fixture drifts silently as real migrations land** — there is no compile-time or lint-time check tying a test’s inline `CREATE TABLE` to the real migration history. `grep -rl "CREATE TABLE IF NOT EXISTS harness_shared.harness_plans" .` found **5 other test files** with the same hand-rolled `harness_plans` DDL; only the ones that actually exercise `buildHarnessPlansProjection`’s write path (this one, plus `federation-content-matrix.repro.integration.test.ts`, which currently still passes because its scenario doesn’t hit the same code path) are at risk. Worth a follow-up: a lint/test rule that diffs a hand-rolled fixture schema against `information_schema.columns` for the real table, or — better — a shared test helper that creates these tables FROM a real migration subset instead of re-declaring them.
 * **A best-effort `catch {}` around a re-apply/retry path is correct for production resilience but actively hides root causes in tests.** When diagnosing a “flaky” count-mismatch assertion inside code with a swallowed catch, add temporary instrumentation INSIDE the catch before spending time reasoning about the surrounding async/crypto logic — the actual defect is very often several layers away from where the crypto/business logic looks suspicious.
 * **“Keeps flaking” reported across widely-separated dates can mean “keeps breaking in different ways as the code around it changes,”** not a single racy root cause. Always re-run the CURRENTLY-red test fresh (`dev:pg_query` on `test_runs`, then `vitest run` several times) before trusting historical engineer\_issues prose — most of the historically-filed “joiner roster empty” issues in this area (WI-1378/1379/1380/1422/ 1460/1519/1534/1544/1585) are unrelated, already-resolved, LIVE 2-machine-rig incidents, not this hermetic unit-test’s bug.
+
+# A cross-machine merge probe that reads 0 is usually YOUR write, not a dead wire
+
+> A federation probe INSERTs on frame A and polls frame B. When it reads 0 the reflex is to debug the transport — holepunch, DHT, sockets. But the pot is named LOCALLY on each machine: pots.public_key is identical across frames while (workspace_id, pot_home_slug) is not. Resolve a workspace_id on one frame, write it on the other, and the row lands in a tuple nothing publishes — silently, because the pot-membership trigger FAILS OPEN for an unknown workspace. harness_shared.substrate_outbox.drained_at is the one-query discriminator: undrained = your write was mis-targeted; drained-but-unarrived = a real replication failure. Also: a 90s poll window can expire before a HEALTHY link delivers.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+A two-machine federation probe writes a row on frame A, polls frame B, and reports:
+
+```plaintext
+=== VERDICT forward=1 reverse=0 ===
+```
+
+One direction works, the other reads 0. That asymmetry looks exactly like a half-open data path, so the investigation goes to the transport layer: holepunch, DHT universe, relayed-vs-direct paths, socket churn.
+
+On WI-6209 that reflex was **right once and wrong twice**. There genuinely was a transport bug (two VMs running different bundles — one lacked the `samePrivateIPv4Subnet24` holepunch fix, so the leg *it* dialled never came up). But after that was fixed and verified — `never_came_up=0` on both frames, direct non-relayed paths, channels open — the reverse leg *still* read 0. That surviving 0 was not a second defect. It was the probe writing to a tuple that publishes nothing.
+
+## Why the write goes nowhere, silently
+
+[Section titled “Why the write goes nowhere, silently”](#why-the-write-goes-nowhere-silently)
+
+**A pot has one identity but two local names.** `harness_shared.pots.public_key` is byte-identical on every frame in the pot. `(workspace_id, pot_home_slug)` is **local to each machine**:
+
+| frame | workspace\_id        | pot\_home\_slug       |
+| ----- | -------------------- | --------------------- |
+| fed-a | `workspace-319be5e5` | `spoon-knife-pot`     |
+| fed-b | `workspace-b31a7a01` | `octocat-spoon-knife` |
+
+So a probe that resolves the workspace on one frame and reuses it on the other —
+
+```bash
+# WRONG: WS is resolved on fed-a…
+WS="$(sql a "SELECT workspace_id FROM harness_shared.pot_members
+             WHERE coalesce(origin,'local')='local' ORDER BY joined_at LIMIT 1;")"
+# …then written on BOTH frames
+write_row a "$WS" "$FWD"   # fine, it is A's own workspace
+write_row b "$WS" "$REV"   # lands in a tuple fed-b has never booted
+```
+
+— writes the reverse row into `workspace-319be5e5/spoon-knife` **on fed-b**, a `(workspace_id, harness_slug)` fed-b does not have booted. No substrate binding owns it, so nothing ever drains it. The row sits in the table forever as `origin='local'` and the poll on A reads a clean, confident `0`.
+
+**And it does not even error.** `assert_work_item_pot_membership` rejects a made-up harness slug — but only after this guard:
+
+```sql
+-- Fail OPEN for a workspace with no platform Pot (isolated fixtures / un-potted tenant).
+v_platform := harness_shared.workspace_platform_pot(NEW.workspace_id);
+IF v_platform IS NULL THEN RETURN NEW; END IF;
+```
+
+An unknown workspace has no platform pot, so the trigger **fails open** and accepts the row. The one case that most needs rejecting is the one waved through. (Write the same bogus slug under a workspace that *does* have a platform pot and you get a loud rejection — which is how the trap was finally noticed.)
+
+## The discriminator: `substrate_outbox.drained_at`
+
+[Section titled “The discriminator: substrate\_outbox.drained\_at”](#the-discriminator-substrate_outboxdrained_at)
+
+A local write destined to federate is captured into `harness_shared.substrate_outbox` and later drained to a peer log. One query separates the two causes:
+
+```sql
+SELECT workspace_id, harness_slug,
+       (drained_at     IS NOT NULL) AS drained,
+       (quarantined_at IS NOT NULL) AS quarantined
+FROM harness_shared.substrate_outbox
+WHERE key = '<the feature_id you wrote>';
+```
+
+Measured on the live rig, this cleanly split the probes:
+
+| probe              | tuple written                             | drained | reality                          |
+| ------------------ | ----------------------------------------- | ------- | -------------------------------- |
+| `F-6209-REV-…`     | `workspace-319be5e5/spoon-knife` on **B** | `f`     | mis-targeted — never publishable |
+| `F-6209-REVTRUE-…` | `workspace-b31a7a01/octocat-spoon-knife`  | `t`     | arrived on A in **6s**           |
+| `F-6209-SK-REV-…`  | `workspace-b31a7a01/spoon-knife`          | `t`     | arrived on A, but **after 90s**  |
+
+Read it as:
+
+* **no outbox row** → the capture trigger never fired; the INSERT targeted something not federated at all.
+* **row, `drained_at IS NULL`** → your write is mis-targeted. No booted binding owns that `(workspace_id, harness_slug)` on that frame. **A test bug, not a replication failure.**
+* **row, `drained_at` set, still unarrived** → a genuine replication/transport failure *or* a poll window that expired too early.
+* **`quarantined_at` set** → the substrate refused to publish it.
+
+## The second false negative: a poll window shorter than a healthy delivery
+
+[Section titled “The second false negative: a poll window shorter than a healthy delivery”](#the-second-false-negative-a-poll-window-shorter-than-a-healthy-delivery)
+
+`fed_merge_assert` defaults to `tries=30` at 3s — exactly 90 seconds. On the repaired rig one legitimate reverse write landed **after** that window closed: the probe reported `0`, and the row was sitting on the destination `origin='remote'` minutes later. A healthy link can exceed 90s. Treat a bare timeout as “not yet observed”, never as “did not replicate” — check `drained_at` before concluding anything.
+
+## Do this instead
+
+[Section titled “Do this instead”](#do-this-instead)
+
+1. **Resolve each frame’s own scope.** Pair frames by `harness_shared.pots.public_key`; never copy a `workspace_id` or a `pot_home_slug` across machines. Resolve the write target on the frame you are about to write to.
+2. **Poll destination-side slug-agnostically.** Federation may remap `harness_slug` across peers, so match on `feature_id AND origin='remote'` rather than pinning the source slug (`fed_hive_merge_probe` already does).
+3. **On a negative, diagnose before you blame the wire.** `fed_diagnose_unmerged <frame> <key>` in `bin/lib/federation-asserts.sh` runs the query above and prints which class it is. It is wired into the failure path of `fed_merge_assert` and `fed_hive_merge_probe`, so a bare `0` no longer reaches a human undiagnosed.
+
+## A trap inside the trap
+
+[Section titled “A trap inside the trap”](#a-trap-inside-the-trap)
+
+The first cut of `fed_diagnose_unmerged` built its verdict from `(drained_at IS NOT NULL)` concatenated into a text column and compared the result against `'t'`. That is wrong: `boolean || text` casts through `boolean::text`, which renders **`true`/`false`** — psql’s `t`/`f` is a *display* convention of the table formatter, not the value. The guard therefore misclassified every row.
+
+The fixture test did not catch it, because the fixtures had been hand-written with the same wrong assumption (`…|t|f`) and passed happily. Only running the guard against the live database exposed it. The fix was to stop depending on boolean rendering at all:
+
+```sql
+CASE WHEN drained_at IS NOT NULL THEN 'Y' ELSE 'N' END
+```
+
+**A fixture you authored from your own mental model tests your model, not the system.** When a guard parses real output, pin at least one assertion to bytes the real source produced.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `replication-liveness.ts` — the in-process detector ladder (`no_replicator` / `frozen` / `connected_never_replicated` / `expected_never_admitted`). It watches the *substrate*; the outbox check above watches whether your write ever entered it. Different questions — a probe can fail while every liveness axis is correctly green.
+* [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope) — the same multi-tenant hazard on the read side.
 
 # Decompose federation "X never crossed" reds in ONE query — group substrate_outbox by scope × drained-state
 
@@ -29580,6 +29787,159 @@ The legend the model reads, the read encoder’s column order, and the write shi
 
 The write side hinges on an empirical question unit tests can’t answer: does the model reliably emit a correct positional row? That’s measured by the LLM-scenario gate (`llm-testing/scenarios/su/S07-positional-write.ts` + `S08-compact-read.ts`). **No tool is flipped to `write:'positional'` on the live fleet until it passes** — the registry config keeps such candidates at `write:'off'` with a `→positional after P-013` note. The read side (CSV) is safe to default (a misread is recoverable; TOON already ships fleet-wide).
 
+# The prompt–harness boundary audit — we enforce what touches FILES and exhort what touches PROCESS
+
+> An audit of every behavioural imperative in the su persona and the three CLAUDE.md layers, classified by whether the harness ENFORCES it (a blocking hook, a lint, a schema constraint, a CI gate) or merely asserts it in prose. The finding is a clean split along one axis: rules protecting FILES are enforced almost without exception (22 hooks, 54 lint scripts); rules governing PROCESS — hold a work-item before editing, declare intent, plan first, capture the workaround, evidence on completion — are almost entirely prose-only. Prose-only rules measurably drift: completion-evidence compliance ran 47.1% then 59.1% then 34.9% bare across three consecutive weeks, the non-monotonic signature of a rule carried by exhortation rather than structure.
+
+Produced for P-001 of the plan `agent-protocol-authority-semantics-2026-07-26`.
+
+## Why this audit exists
+
+[Section titled “Why this audit exists”](#why-this-audit-exists)
+
+XFlow (arXiv:2606.14790) frames the “prompt–harness boundary” as a design object: *which workflow commitments should stay as actor-interpreted instructions, and which should become harness structure that can be checked, preserved, and enforced?* Their empirical result is that moving commitments into structure buys **process compliance** rather than task success — on τ³-bench task success barely moved (sometimes dropped) while constraint compliance rose 96.5%→100%, 91.8%→100%, and in one case 63.7%→100%.
+
+We already had in-house evidence for that claim. We had simply never looked at it deliberately.
+
+## Method
+
+[Section titled “Method”](#method)
+
+Sources walked: the su persona blueprint (base + overlay), `/home/marsh-office/CLAUDE.md`, `~/.claude/CLAUDE.md`, `papercusp/CLAUDE.md`, and the tool `guidance` catalog.
+
+For each imperative (MUST / NEVER / ALWAYS / required / forbidden), the enforcement mechanism was located **and read** — not assumed. That mattered: several rules that look enforced because a hook exists turned out to be advisory once the hook was opened.
+
+* **ENFORCED** — a mechanism refuses the violating action (`permissionDecision: "deny"`, a failing lint, a schema rejection, a red CI gate).
+* **NUDGE** — a mechanism observes and emits a message; the action proceeds.
+* **PROSE** — no mechanism; compliance depends on the agent having read and remembered.
+
+## The enforcement surface is larger than most agents assume
+
+[Section titled “The enforcement surface is larger than most agents assume”](#the-enforcement-surface-is-larger-than-most-agents-assume)
+
+**22 configured hooks** (`~/.claude/settings.json`): 9 PreToolUse, 4 PostToolUse, 1 SessionStart, 2 SessionEnd, 3 Stop, 2 UserPromptSubmit, 1 Notification.
+
+**54 `lint:*` scripts** in the root `package.json` — `no-raw-setinterval`, `no-retired`, `env-feature-gates`, `generic-first`, `migrations`, `no-sql-json`, `no-workspace-default`, `scope-defaults`, `no-identity-literals`, `assert-integrity`, `insight-citations`, `tsc`, and more.
+
+The instinct that “papercusp runs on prose” is wrong. It runs on a large enforcement surface with a specific, systematic hole.
+
+## ENFORCED — file and code safety
+
+[Section titled “ENFORCED — file and code safety”](#enforced--file-and-code-safety)
+
+| Imperative                                           | Mechanism                                                                                              |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Claim a file lock before editing                     | `pretooluse-locks-acquire.sh` — verified `permissionDecision: "deny"`                                  |
+| Release the lock after editing                       | `posttooluse-locks-release.sh`                                                                         |
+| Edit only the canonical staging tree                 | worktree guard (PreToolUse)                                                                            |
+| Never open `:3055`/`:3070` in a browser              | `guard-operator-desktop.mjs`                                                                           |
+| No secrets into tree files                           | `pretooluse-secrets-guard.mjs`                                                                         |
+| No identity leaks in content                         | `pretooluse-content-lint.mjs` + `lint:no-identity-literals` / `no-owner-name-tags` / `no-box-identity` |
+| Bash resource ceilings                               | `pretooluse-bash-resource-gate.sh`                                                                     |
+| Prefer tools over bash for known reads               | PreToolUse routing gate, registry-generated                                                            |
+| No bare `setInterval`                                | `lint:no-raw-setinterval` (empty baseline) + `lint:timer-classification`                               |
+| No imports from retired surfaces                     | `lint:no-retired`, `lint:no-retired-style`                                                             |
+| Feature toggles are FLAGS entries, not `process.env` | `lint:env-feature-gates`                                                                               |
+| New flags default ON; dark flags rationed            | `production-defaults.test.ts` + `DARK_FLAGS_HIGH_WATERMARK` / `DARK_FLAGS_PARKING_COUNT`               |
+| Migration hygiene                                    | `lint:migrations`, `lint:drizzle-drift`, `lint:no-sql-json`                                            |
+| Tenant scoping on raw SQL                            | `lint:no-workspace-default`, `lint:scope-defaults`, runtime advisory on `dev:pg_query`                 |
+| npm only, never pnpm/yarn                            | `only-allow npm` in root `preinstall`                                                                  |
+| Tool guidance within prompt-weight budget            | `tools-md-sync` + registration-time re-check                                                           |
+| New tests in one of four frameworks                  | `lint:tests` + CI lint P-038                                                                           |
+| Content/dialog delivery separation                   | `ask-gate-mirror.sh`                                                                                   |
+| Turn provenance stamping                             | `userpromptsubmit-provenance.sh`                                                                       |
+| No desktop notifications                             | no-op shim at `~/.papercusp/bin/notify-send`                                                           |
+| No tree-wide destructive git ops                     | Bash guard                                                                                             |
+
+## NUDGE — observed but not prevented
+
+[Section titled “NUDGE — observed but not prevented”](#nudge--observed-but-not-prevented)
+
+| Imperative                                                | Mechanism                                               | Why it is only a nudge                                                                                                               |
+| --------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Hold a work-item before editing; verify before completing | `workitem-verify-nudge.sh`                              | **`exit 0` only — no `permissionDecision`, no deny path.** Fires PostToolUse / Stop / SessionEnd, i.e. *after* the edit.             |
+| Completion carries verification evidence                  | completion gate in `setWorkItemState` / `setIssueState` | Binds on `terminal_completion_ref`, which `work_items:complete` **auto-fills from `completion.summary`** — non-null by construction. |
+
+## PROSE — no mechanism at all
+
+[Section titled “PROSE — no mechanism at all”](#prose--no-mechanism-at-all)
+
+Declare intent and claim your lane · Plan before non-trivial work; confirm the route · Register mode changes (`mode:set`) · Reuse-first, extend don’t fork · Start a new app from a template · The papercusp-way routing gate · File what you discover the moment you work around it · A mitigation is not a fix · Never blame “high load” without a mechanism · A red gate is yours to green · A cross-lane ruling is a plan Decision · Read design docs before design work · Read `/internal/docs/performance` first · Use Context7 for library APIs · Apply migrations via the runner not `psql -f` · Use `npm run install:safe` · **Edit sources, never rendered outputs** · State goes in nuqs · Sync goes through `@papercusp/sync`
+
+## The finding
+
+[Section titled “The finding”](#the-finding)
+
+**The split is an axis, not noise.**
+
+> Rules that protect a **file** are enforced. Rules that govern a **process** are exhorted.
+
+Every ENFORCED row is ultimately about tree contents: don’t clobber a peer’s file, don’t leak a secret, don’t import a retired module, don’t write a bare timer. Violations are detectable *at the moment of the write*, so a `PreToolUse` hook or a lint can sit exactly there.
+
+Every PROSE row is about the *shape of the work*: whether it was planned, claimed, verified, captured. Those violations are not detectable at any single tool call — only in the relationship *between* calls, or between a claim and its evidence. No hook sits there, so nothing enforces them.
+
+### The proof that prose does not hold
+
+[Section titled “The proof that prose does not hold”](#the-proof-that-prose-does-not-hold)
+
+Completion-evidence compliance, measured live 2026-07-26 (issue family, weekly):
+
+| week       | terminal rows | % with **no** structured evidence |
+| ---------- | ------------- | --------------------------------- |
+| 2026-06-22 | 696           | 100.0%                            |
+| 2026-06-29 | 3,511         | 91.8%                             |
+| 2026-07-06 | 1,225         | 47.1%                             |
+| 2026-07-13 | 5,268         | 59.1%                             |
+| 2026-07-20 | 1,428         | 34.9%                             |
+
+All-time, both families: **65.6% of 14,663 terminal rows carry no structured verification evidence.**
+
+The trend is **non-monotonic**: 47.1 → 59.1 → 34.9. A structurally-enforced rule does not regress like that; it steps to \~0 and stays. A prose rule drifts with whatever else competes for attention that week. That shape *is* the diagnosis.
+
+### Why the completion gate does not count as enforcement
+
+[Section titled “Why the completion gate does not count as enforcement”](#why-the-completion-gate-does-not-count-as-enforcement)
+
+The most instructive row, because it looks enforced and is not.
+
+`setWorkItemState` / `setIssueState` genuinely reject a terminal transition without a completion ref. But every field on `CompletionVerificationEvidenceSchema` is `.optional()`, and `completionEvidenceFromRecord` returns `undefined` when none are supplied — while `terminal_completion_ref` is auto-filled from `completion.summary`.
+
+The gate binds on a column that is **non-null by construction**. The in-repo comment states it exactly: it was *“auditing ‘did a completion record exist’, not ‘was this actually verified’.”*
+
+> **Generalizable lesson: a gate that binds on a field the system auto-fills is not a gate.** It is a ritual producing the appearance of compliance. When adding an enforcement point, check what happens when the agent supplies *nothing* — if the write still succeeds, the constraint is decorative.
+
+### A live demonstration, collected while writing this audit
+
+[Section titled “A live demonstration, collected while writing this audit”](#a-live-demonstration-collected-while-writing-this-audit)
+
+Writing this document, the author wrote it first to `apps/operator/public/internal/docs/agent-insights/*.md` — the **generated output** — rather than `apps/operator-docs/src/content/docs/agent-insights/*.mdx`, the source. That is prose rule “edit sources, never rendered outputs”, violated by the very agent enumerating it, within minutes of enumerating it.
+
+The trap is structural: the generated directory is **git-tracked** (not ignored), holds 1,221 files, and is a plausible-looking home for the doc. Nothing blocks the write. It was caught only because `lint:insight-citations` happens to scan the source tree, so the new file’s absence from the lint’s view was a tell — an accident, not a guard.
+
+This is the audit’s thesis reproducing itself in real time, and it belongs in the promotion shortlist below.
+
+## What follows
+
+[Section titled “What follows”](#what-follows)
+
+1. **Promoting a prose rule into the harness is the highest-leverage reliability work available.**
+2. **Do not add a rule to the persona and consider it done.** The persona is where a rule goes to be *understood*; the harness is where it goes to be *kept*. A rule that matters needs both.
+3. **Do not layer an audit over a prose rule either.** An after-the-fact audit is the bandaid form of enforcement — it detects the violation once the wrong state already exists. Restructure so the wrong state is unrepresentable.
+
+## Ranked promotion shortlist
+
+[Section titled “Ranked promotion shortlist”](#ranked-promotion-shortlist)
+
+By blast radius when violated:
+
+1. **Completion carries verification evidence** — defeated by auto-fill; 65.6% non-compliant. Make evidence required for the committed state.
+2. **Hold a work-item before editing** — nudge only, and it fires *after* the edit. A PreToolUse gate matching the lock hook’s shape.
+3. **Writes to generated//`dist`/`public` doc + prompt trees** — no guard, git-tracked, actively trapped an agent (above). A PreToolUse deny mirroring the worktree guard.
+4. **File what you discover at the moment you work around it** — the friction evaporates into transcript prose within the same turn. A Stop-hook detecting retry-with-changed-args / tool-fallback.
+5. **Register mode changes** — an unregistered mode is invisible to peers and dies at compaction. Gate the behaviours on the registry rather than on transcript memory.
+
+Items 1–2 are in flight under `agent-protocol-authority-semantics-2026-07-26`. Items 3–5 are candidates, not commitments.
+
 # Agent prompts — canonical sources vs projections (edit the source, never a copy)
 
 > Where each agent prompt's CANONICAL source lives and which copies are projections (DB override, desktop sidecar bundle, ~/.claude/AGENTS.md, rendered launch outputs). Edit the source; re-seed/rebuild the projection.
@@ -34213,7 +34573,7 @@ s.split("\n").forEach((l,i)=>{ if(l.indexOf(NUL)>=0) console.log((i+1)+": "+JSON
 ' path/to/file.tsx
 ```
 
-`JSON.stringify` is the point — it prints the byte as a visible `�`. (`cat -v` also shows it, as `^@`.)
+`JSON.stringify` is the point — it prints the byte as a visible `\x00`. (`cat -v` also shows it, as `^@`.)
 
 Quick count without node: `tr -dc '\000' < file | wc -c`.
 
@@ -34244,7 +34604,18 @@ fireEvent.click(screen.getByRole('button', { name: /all fleets/ }));
 expect(props.onToggleFleet).toHaveBeenCalledWith(ALL_FLEETS);
 ```
 
-**2. Guard the class.** `apps/operator/app/_lints/no-nul-bytes.test.ts` fails if any text source under `apps/operator/app` or `apps/operator-vite/src` contains a raw NUL. The next corrupted file reds a test instead of shipping a dead code path.
+**2. Guard the class.** `apps/operator/app/_lints/no-nul-bytes.test.ts` fails if any tracked text source contains a raw NUL. The next corrupted file reds a test instead of shipping a dead code path.
+
+> **Scope was widened 2026-07-26 (EI-18744004858454166), and the reason is the lesson.** The lint originally walked two hand-listed directories — `apps/operator/app` and `apps/operator-vite/src` — the dirs the HUD incident happened in. Four more instances then landed *outside* that scope (three in `packages/operator-core/lib/**`, and one in **this very file**), and the guard stayed green through all of them. A class guard scoped to the site of the last incident only ever catches the last incident. It now enumerates via `git ls-files` — the same definition of “our source” that review and CI use, which cannot drift out of date the way a hand-maintained list did.
+
+**Repairing one is not obvious — the normal editing path cannot do it.** An agent’s Read tool renders a NUL as a **space**, so there is no exact text to match and an `Edit` fails `String to replace not found`. (Worse: the rendering makes correct `\x00`-handling code look like it has a stray space, so you may “fix” something that was already right.) Repair mechanically instead:
+
+```bash
+node scripts/check-no-nul-in-source.mjs        # report: file + line of every NUL
+node scripts/check-no-nul-in-source.mjs --fix  # rewrite raw NUL → \x00 escape
+```
+
+The `--fix` is byte-surgical (latin1 round-trip), so nothing but the NUL moves.
 
 ## Generalising
 
@@ -34256,11 +34627,30 @@ Any **invisible-character sentinel** — leading/trailing space, non-breaking sp
 * say in a comment *why* it is invisible-but-deliberate, so the next reader does not “tidy” it away;
 * prefer a **visible** sentinel (`'__all__'`, or better a typed `null` / discriminated union) when the design allows. An invisible sentinel is a correctness hazard, not a clever trick.
 
+## A second vector — deliberate intent, wrong encoding (confirmed 2026-07-26)
+
+[Section titled “A second vector — deliberate intent, wrong encoding (confirmed 2026-07-26)”](#a-second-vector--deliberate-intent-wrong-encoding-confirmed-2026-07-26)
+
+The framing above (“a NUL is *always* corruption, never intent”) holds for the HUD case but is **not** the whole story, and the other vector is now confirmed — it accounts for all four instances found in EI-18744004858454166:
+
+An author genuinely **wants** a NUL, as a composite-`Map`-key delimiter that cannot occur in the data — a legitimate, common idiom:
+
+```ts
+const key = `${row.port}\x00${row.address}`;   // ✅ escape — greppable
+const key = `${row.port}<raw 0x00>${row.address}`;  // ❌ raw byte — poisons the file
+```
+
+Both produce the **identical string at runtime**. Only the escape leaves the file as text. So here the *intent* is right and only the *encoding* is wrong — meaning the fix is to re-spell the delimiter, **not** to remove it. Four different agents wrote the raw form independently, which says the idiom is attractive and the failure mode is invisible: you cannot see the difference in your own editor, in review, or in a Read.
+
+**Why it is so easy to emit accidentally:** a raw NUL survives round-tripping through tools that render it as a space, so an author who copies a rendered line back into a write silently converts an escape into a raw byte. The guard script for this class shipped with a raw NUL *in its own first draft* for exactly that reason.
+
+> **Rule: verify NUL-adjacent work with BYTES, never by reading.** `file <path>` reporting `data` for a text source, or a NUL count, is the only trustworthy check — the rendered text will lie to you.
+
 ## Still open
 
 [Section titled “Still open”](#still-open)
 
-How the NUL was *written* is unproven. The leading candidate is shell-append (`cat >>`) edits that bypass the file-lock hook, where a truncated or interleaved concurrent write can emit a stray NUL. The lint catches the next occurrence; it does not stop the writer. If you confirm the vector, link it and fix the writer.
+How the NUL is written in the *corruption* case (the HUD one) remains unproven. The leading candidate is shell-append (`cat >>`) edits that bypass the file-lock hook, where a truncated or interleaved concurrent write can emit a stray NUL. The lint catches the next occurrence; it does not stop the writer. If you confirm that vector, link it and fix the writer.
 
 # Spawn-ceiling jam: why a never-streamed orphan debit needs a /proc second signal
 
@@ -81421,6 +81811,12 @@ Some code is **retired but deliberately kept** in the tree for reference — not
 | Chat sidebar’s human Inbox face (`InboxPane.tsx` + test + `inbox-pane.css`, `?opcv=inbox`)                                                                                                                                                                                                                                                                                                                                                 | `_retired/inbox-pane/`                                                                                                                             | Retired 2026-07-26 (`hud-consolidation-2026-07-26` D-001, owner directive: *“remove the inbox pane from the left-hand toolbar and re-wire everything that opened the inbox to open the conversation in the HUD tab”*). Gated on P-002 first proving the HUD board covers every ask the Inbox covered, including attention items with no `ownerAgentId` (`HudBoard.tsx`’s `.hud__unattributed` lane). P-004 rewired the curator-card drill-in from `opcv=inbox` to `router.push('/adv?tab=hud&hudsession=<ownerAgentId>')` — the SAME `SessionChatModal` open-path `HudView.tsx` already uses. **Stays live:** the data layer (`use-inbox-pending.ts` — `useInboxAttention`/`useInboxPendingCount`/`usePlansNeedingYouCount`/`scopeInboxItems`), which the HUD board consumes directly, and `chat-seed.ts` (shared with `OperatorChat.tsx`’s composer). | `_retired/inbox-pane/RESTORE.md`                                                                                                 |
 
 **Convention for retiring-but-keeping a surface:** (0) FIRST, scan for the surface’s live references — **don’t grep a bare word.** WI-6097 (retiring the work-item-mail surface) grepped `messages` and got 68-113 files back that read as catastrophic residue, because the word also matched the live `coord:*` plane (`coord/messages.ts`, `coord_event_log`, `coord-inbox-bus`); even the full identifier `messages:send` matched an unrelated Google FCM endpoint URL in `device-push-dispatcher.ts`. Use **`npm run scan:retirement-surface -- --surface <config.json>`** (`node scripts/scan-retirement-surface.mjs`) instead: write a small JSON surface config naming the exact identifiers being retired (tool names, table/view names, op-codes — see the header comment in the script for the shape and `scripts/retirement-surfaces/work-item-mail-2026-07-26.json` for a worked example), run it, and triage every hit — a genuine reference to re-point/remove, or a false positive you add to the config’s `allowlist` (with a reason) so a re-run doesn’t re-flag it. This also gives the sweep a durable, re-runnable completion check instead of a one-off manual grep. Then: (1) move it under `_retired/` — this drops it from the `apps/*` / `packages/*` workspace globs so npm, the affected-test runner, knip, and nx stop treating it as live (the structural signal that fools agents, not a prose note); (2) remove its root `package.json` scripts and banner any deploy config — **preserve, don’t delete**; (3) add a `RESTORE.md` in the moved directory with the exact re-wiring steps + the last-active commit, and cut a `git tag <name>-retired-<date>` restore point; (4) add a row to the table above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the RESTORE.md steps.
+
+⚠ **When the retired surface is (or is reached through) an agent-facing TOOL/verb, code removal alone is not “done” — DECLARATION and PROMPT surfaces must be swept too, or the retirement is silent-broken instead of clean.** Removing the implementation leaves two classes of dangling reference that step (0)‘s scan config must also name as identifiers: a **blueprint `dependencies.tools` list** that still declares the retired verb hard-reds `blueprint-deps-catalog.test.ts` (`packages/operator-core/lib/__tests__/`) at commit time — loud, at least; a **prompt** (`<role>.md` / `<role>.persona.md` / `<role>.tools.md`, or a blueprint’s own `prompts/*.md`) that still *instructs* an agent to call it fails silently, only when some spawned agent actually reaches that step mid-procedure. WI-6097 (retiring work-item-mail) is the reason this line exists — its code sweep was clean but never checked these two surfaces. Before calling a tool/verb retirement done:
+
+* **Include `libs/papercusp/packages/harness/blueprints/**/*.{yaml,md}` and `apps/operator/prompts/**/*.md` in the step (0) scan config** alongside the code paths — both the `dependencies.tools` declarations and prose telling an agent to call the retired verb. Triage every hit the same way: a same-shaped but genuinely unrelated `capability`/permission-tier vocabulary string (e.g. a generic `<namespace>:read`/`<namespace>:write` tier label that isn’t actually a callable tool name) is a false positive, not a fix target — allowlist it, don’t “correct” it into something wrong.
+* **Re-run `blueprint-deps-catalog.test.ts`** — it validates every built-in blueprint’s `dependencies.tools` against the live static tool catalog and will hard-red a dangling declaration.
+* **Don’t stop at the bundled/packaged sidecar copies** (`apps/operator/dist-sidecar/`, `papercusp-desktop/src-tauri/{sidecar,env-sidecars}/`) — they are generated, gitignored build output mirroring the canonical `libs/papercusp/packages/harness/blueprints` / `apps/operator/prompts` sources, so hand-editing them is pointless (the next build overwrites them), but a *stale, unregenerated* copy can still ship a dead verb to a packaged desktop agent between builds. Fix the canonical source, then rebuild (`papercusp-desktop/bin/build-desktop-sidecar.sh`) before treating the retirement as verified end-to-end on desktop.
 
 ⚠ **`libs/zero-harness` and `libs/papercusp-db` have NOT had step (1) applied.** Unlike the `_retired/`-moved surfaces, both are still members of the root `package.json` `workspaces` glob verbatim — so npm, knip, nx, and the affected-test runner all still treat them as **live** workspaces. They are migrate-off targets, not yet *structurally* retired; the “drop from the workspace glob” step is still pending for them.
 

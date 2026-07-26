@@ -420,6 +420,186 @@ describe('EI-7422 — reopen-a-terminally-completed-item guard', () => {
   });
 });
 
+// EI-18736669939338784 — the SAME harm as EI-7422 above by a SHORTER path. That guard
+// stops a peer DISCARDING a completion by reopening it; its condition carries
+// `!isSettledWorkItemState(state)`, so a terminal→terminal RE-CLOSE sailed straight past
+// it and destroyed the stored record instead.
+//
+// Proven live on WI-6112 (harness_shared.tool_invocations, ORDER BY invoked_at ASC):
+//   15:30:03.446  su-055aef7f  state='resolved'  completion=OBJECT  <- rich, FIRST
+//   15:30:05.343  su-63f9b336  state='done'      completion=STRING  <- thin, 1.9s LATER
+// The surviving row credited su-63f9b336 with verifiedHow:'unit', no summary, no testsRun.
+// LAST-closer-wins: the second, WEAKER close overwrote the first, richer one — and both
+// callers were told ok:true. 107 cross-owner overwrites in the preceding 30 days, 28 with
+// that exact signature.
+//
+// Why "last wins" is the dangerous direction: completion-integrity audits read whatever
+// closed LAST, so a bare assertion arriving after a verification ERASES the verification.
+// These tests pin the inverse property the audits actually rest on — a second terminal
+// write must not silently destroy the first.
+describe('EI-18736669939338784 — second-terminal-close must not clobber the first', () => {
+  const RICH = { verifiedHow: 'integration' as const, testsRun: 'vitest work-items.integration.test.ts', testResult: '7/7 green' };
+  // The WI-6112 shape exactly: an evidence object that is PRESENT but insufficient
+  // (verifiedHow with nothing behind it — see isSufficientEvidence).
+  const THIN = { verifiedHow: 'unit' as const };
+
+  const attestations = async (table: 'engineer_issues' | 'harness_features_consolidated', idCol: string, id: string) => {
+    const [row] = await db.sql<{ a: unknown }[]>`
+      SELECT payload->'_completionAttestations' AS a
+        FROM harness_shared.${db.sql.unsafe(table)}
+       WHERE ${db.sql.unsafe(idCol)} = ${id}`;
+    return (row?.a ?? null) as Array<Record<string, unknown>> | null;
+  };
+
+  it('a THIN second close by another agent does NOT overwrite the RICH stored record — it is filed as an attestation, and the caller is TOLD', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.claimWorkItem(bug.id, 'agA');
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'fixed in PR #42, guard test added, live-restarted',
+      completionEvidence: RICH,
+    });
+
+    const conflicts: Array<{ outcome: string; existingOwner: string | null }> = [];
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agB',
+      completionRef: 'SELF-RESOLVED by a peer before I picked it up',
+      completionEvidence: THIN,
+      onTerminalConflict: (info) => conflicts.push({ outcome: info.outcome, existingOwner: info.existingOwner }),
+    });
+
+    // The stored record STANDS — this is the whole property.
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionEvidence).toEqual(RICH);
+    expect(after?.terminalCompletionRef).toMatch(/PR #42/);
+    // ...and it stands in the DB, not merely in the returned object.
+    const refetched = await wi.getWorkItem(bug.id);
+    expect(refetched?.terminalOwner).toBe('agA');
+    expect(refetched?.terminalCompletionEvidence).toEqual(RICH);
+
+    // agB's close is not DROPPED either — it is recorded, just not as the authority.
+    const att = await attestations('engineer_issues', 'issue_id', bug.id);
+    expect(att).toHaveLength(1);
+    expect(att![0]).toMatchObject({ by: 'agB', outcome: 'attested' });
+    expect(att![0].evidence).toEqual(THIN);
+
+    // The SILENCE is the bug: agB must learn its record did not become authoritative.
+    expect(conflicts).toEqual([{ outcome: 'attested', existingOwner: 'agA' }]);
+  });
+
+  it('does NOT downgrade the terminal STATE either — the second silent loss on WI-6112', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'done properly', completionEvidence: RICH });
+    // agB closes it as 'closed' (→ the unified 'dropped'), a DIFFERENT terminal meaning.
+    await wi.setWorkItemState(bug.id, 'closed', { by: 'agB', completionRef: 'stale, closing', completionEvidence: THIN });
+    const after = await wi.getWorkItem(bug.id);
+    expect(after?.state).toBe('done'); // NOT flipped to 'dropped' behind agA's back
+    expect(after?.terminalOwner).toBe('agA');
+  });
+
+  it('a STRICTLY RICHER second close DOES become authoritative — and archives the record it replaced rather than deleting it', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'closed as stale', completionEvidence: THIN });
+
+    const conflicts: string[] = [];
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agB',
+      completionRef: 'actually fixed it, here is the proof',
+      completionEvidence: RICH,
+      onTerminalConflict: (info) => conflicts.push(info.outcome),
+    });
+
+    expect(after?.terminalOwner).toBe('agB');
+    expect(after?.terminalCompletionEvidence).toEqual(RICH);
+    expect(conflicts).toEqual(['upgraded']);
+    // The upgrade is not a deletion — agA's record survives as an attestation.
+    const att = await attestations('engineer_issues', 'issue_id', bug.id);
+    expect(att).toHaveLength(1);
+    expect(att![0]).toMatchObject({ by: 'agA', outcome: 'superseded' });
+    expect(att![0].evidence).toEqual(THIN);
+  });
+
+  it('two closes with EQUALLY sufficient evidence: the FIRST still stands (a tie is not a licence to overwrite)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'A', completionEvidence: RICH });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agB',
+      completionRef: 'B',
+      completionEvidence: { verifiedHow: 'unit' as const, testResult: '3/3 green' },
+    });
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionRef).toBe('A');
+  });
+
+  it('the SAME owner re-closing is untouched — an idempotent retry / self-correction overwrites its own record and files no attestation', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'first pass', completionEvidence: THIN });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'corrected, with the real evidence',
+      completionEvidence: RICH,
+    });
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionEvidence).toEqual(RICH);
+    expect(await attestations('engineer_issues', 'issue_id', bug.id)).toBeNull();
+  });
+
+  it('{ force: true } still overwrites — a deliberate correction of someone else\'s wrong completion', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'A', completionEvidence: RICH });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agB',
+      completionRef: 'agA closed the wrong item; this is the real record',
+      completionEvidence: THIN,
+      force: true,
+    });
+    expect(after?.terminalOwner).toBe('agB');
+  });
+
+  it('the guard is family-agnostic — a feature is protected identically', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(feat.id, 'passed', {
+      harness: 'papercup', by: 'agA', completionRef: 'shipped', completionEvidence: RICH,
+    });
+    const after = await wi.setWorkItemState(feat.id, 'passed', {
+      harness: 'papercup', by: 'agB', completionRef: 'also done', completionEvidence: THIN,
+    });
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionEvidence).toEqual(RICH);
+    const att = await attestations('harness_features_consolidated', 'feature_id', feat.id);
+    expect(att![0]).toMatchObject({ by: 'agB', outcome: 'attested' });
+  });
+
+  it('the FIRST terminal close is never an attestation — the guard must not fire on a normal completion', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    const conflicts: string[] = [];
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'fixed',
+      completionEvidence: RICH,
+      onTerminalConflict: (info) => conflicts.push(info.outcome),
+    });
+    expect(after?.terminalOwner).toBe('agA');
+    expect(conflicts).toEqual([]);
+    expect(await attestations('engineer_issues', 'issue_id', bug.id)).toBeNull();
+  });
+
+  // DELIBERATELY EXEMPT, and pinned so the exemption is a decision rather than an
+  // oversight: skipCompletionGate is the trusted internal restore / system-sweep bypass
+  // ("not completions at all"), and reshaping those writes into attestations would change
+  // behaviour on paths this change has not audited. Note what that leaves standing: a
+  // watchdog auto-close still stamps terminal_owner over a real completion's owner (the
+  // terminal UPDATE writes `terminal_owner = by` unconditionally on the gate-skip path
+  // too). That is a SEPARATE, smaller hole than the one under test here — a system sweep
+  // is not a rival closer racing for credit — and is filed rather than widened into.
+  it('a system close (skipCompletionGate) is NOT reshaped into an attestation — the trusted-bypass paths keep their existing behaviour', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'A', completionEvidence: RICH });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'watchdog-auto-close', skipCompletionGate: true });
+    expect(after?.terminalOwner).toBe('watchdog-auto-close');
+  });
+});
+
 // EI-13715: blockedness has TWO sources of truth for a plan-linked work-item — the
 // item's own `state` column, and its linked plan-item's `effectiveStatus` (WI-3503
 // incident: a work-item was unblocked off `externalBlockers: null` while its plan

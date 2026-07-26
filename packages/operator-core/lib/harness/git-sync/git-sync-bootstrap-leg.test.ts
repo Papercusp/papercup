@@ -114,14 +114,38 @@ const {
 
 vi.mock('../../harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
 vi.mock('../../hive-membership-store', () => ({ listHiveMembers: listHiveMembersMock }));
-vi.mock('../../sync/pot-git/storage', () => ({
-  hiveGitRepoPath: hiveGitRepoPathMock,
-  listNamespaces: listNamespacesMock,
-  ensurePotGitRepo: ensurePotGitRepoMock,
-  // Deterministic base64→hex, mirroring the real mapping's shape without the
-  // raw-32 length check (the fixture pubkeys are readable strings, not real keys).
-  deviceNamespaceKey: (b64: string) => Buffer.from(b64, 'base64').toString('hex'),
-}));
+/* Storage is fully stubbed (no real git/fs from a unit test), but the stub set is
+ * derived from the REAL export list so a new export in storage.ts cannot silently
+ * break this file. An ABSENT export throws inside runBootstrapLeg, whose catch
+ * swallows it into a console.warn — vitest-fail-on-console then reds this file with
+ * a cascade of misleading "called 0 times" assertions (the leg aborted before
+ * dialing), and the green gate with it. That is EI-18748959711888135: adding
+ * `sweepStalePackTmpFiles` to storage.ts red-pinned the fleet gate.
+ * Every export the test does not care about becomes an inert vi.fn(); non-function
+ * exports (timeouts, thresholds) keep their real values; the explicit stubs below
+ * override the generated ones. */
+vi.mock('../../sync/pot-git/storage', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  // Inert stubs resolve a promise rather than returning undefined: storage's exports
+  // are overwhelmingly `async`, and callers fire-and-forget them
+  // (`sweepStalePackTmpFiles(...).catch(...)`), which throws on a bare vi.fn().
+  // A test that needs a SYNC return value stubs that export explicitly, below.
+  const inert = Object.fromEntries(
+    Object.entries(actual).map(([k, v]) => [
+      k,
+      typeof v === 'function' ? vi.fn(async () => undefined) : v,
+    ]),
+  );
+  return {
+    ...inert,
+    hiveGitRepoPath: hiveGitRepoPathMock,
+    listNamespaces: listNamespacesMock,
+    ensurePotGitRepo: ensurePotGitRepoMock,
+    // Deterministic base64→hex, mirroring the real mapping's shape without the
+    // raw-32 length check (the fixture pubkeys are readable strings, not real keys).
+    deviceNamespaceKey: (b64: string) => Buffer.from(b64, 'base64').toString('hex'),
+  };
+});
 vi.mock('../../sync/pot-git/bootstrap', () => ({ bootstrapFromPeer: bootstrapFromPeerMock }));
 vi.mock('../usage-actor', () => ({ resolveUsageActor: resolveUsageActorMock }));
 vi.mock('../../sync/hyperbee/boot-all', () => ({
@@ -205,6 +229,27 @@ beforeEach(() => {
 });
 
 describe('runBootstrapLeg', () => {
+  /* Recurrence guard for EI-18748959711888135 — asserts the CLASS, not the instance.
+   * `sweepStalePackTmpFiles` was added to storage.ts while this file's mock was a
+   * literal object; the absent export threw inside runBootstrapLeg's catch, surfaced
+   * only as a console.warn, and vitest-fail-on-console turned it into 28 failures
+   * here (mostly misleading "called 0 times" — the leg aborted before dialing) plus
+   * a red fleet gate. The factory is now derived from the real export list; this
+   * fails if anyone reverts it to a hand-listed object and misses an export. */
+  it('EI-18748959711888135: the storage stub exposes every real storage export', async () => {
+    const real = await vi.importActual<Record<string, unknown>>('../../sync/pot-git/storage');
+    const stub = (await import('../../sync/pot-git/storage')) as unknown as Record<string, unknown>;
+    const missingFrom = (m: Record<string, unknown>) => Object.keys(real).filter((k) => !(k in m));
+    expect(missingFrom(stub)).toEqual([]);
+    // Exercise the detection itself against a deliberately incomplete stub, so this
+    // guard cannot silently stop detecting (a guard whose failure path never runs is
+    // indistinguishable from no guard).
+    const probeKey = Object.keys(real)[0]!;
+    const incomplete = { ...stub };
+    delete incomplete[probeKey];
+    expect(missingFrom(incomplete)).toEqual([probeKey]);
+  });
+
   it('self-gates as a no-op when the local repo already has a peer MEMBER namespace (warm repo)', async () => {
     // Warm = the namespace of an attested member device other than self —
     // the mocked deviceNamespaceKey is base64→hex, so PEER_DEVICE's hex it is.

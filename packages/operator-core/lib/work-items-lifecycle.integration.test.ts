@@ -243,6 +243,93 @@ describe('work_item change fan-out — notify_kind mapping + actor exclusion', (
   });
 });
 
+// ── P-004: the completion-AUTHORITY axis, against real Postgres ────────────────────────
+// agent-protocol-authority-semantics-2026-07-26 P-004.
+//
+// Why these are INTEGRATION tests and not more unit tests: the unit suite mocks the state
+// writer, so it can only prove complete.ts *asks* for an authority. Everything that can
+// actually go wrong lives below this line and is invisible to a mock —
+// `harness_shared.work_items` is the one real table and BOTH families are auto-updatable
+// VIEWS over it, so "does `SET authority = …` through the view reach the base row, and does
+// it read back through the other family's view" is a question only a real database answers.
+describe('P-004 — completion authority round-trips through both family views', () => {
+  const authorityOf = async (id: string): Promise<string | null> => {
+    const rows = await h.sql<{ authority: string | null }[]>`
+      SELECT authority FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    return rows[0]?.authority ?? null;
+  };
+
+  it('a close carrying completionAuthority persists it AND reads back on the WorkItem', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'auth', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionAuthority: 'committed' });
+    expect(await authorityOf(bug.id)).toBe('committed');
+    const read = await wi.getWorkItem(bug.id, 'papercup');
+    expect(read?.completionAuthority).toBe('committed');
+  });
+
+  it('the same round-trip holds for the FEATURE family (one column, two views — it cannot drift)', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'auth-f', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(feat.id, 'passed', { by: 'agA', completionAuthority: 'proposed' });
+    expect(await authorityOf(feat.id)).toBe('proposed');
+    const read = await wi.getWorkItem(feat.id, 'papercup');
+    expect(read?.completionAuthority).toBe('proposed');
+  });
+
+  // The gate rebind. Before P-004 this call would have been REJECTED: a terminal transition
+  // required a non-empty completionRef, and work_items:complete only ever satisfied that by
+  // auto-filling completion.summary. An authority judgement now satisfies it in the ref's place.
+  it('an authority judgement satisfies the completion-integrity gate with NO completionRef', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'gate', harness: 'papercup', createdBy: 'agA' });
+    await expect(
+      wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionAuthority: 'proposed' }),
+    ).resolves.toBeTruthy();
+    expect(await authorityOf(bug.id)).toBe('proposed');
+  });
+
+  it('a terminal transition carrying NEITHER a ref NOR an authority is still rejected', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'bare', harness: 'papercup', createdBy: 'agA' });
+    await expect(wi.setWorkItemState(bug.id, 'resolved', { by: 'agA' })).rejects.toThrow(
+      /completion-integrity/,
+    );
+  });
+
+  // The EI-7422 reopen guard used to require terminal_completion_ref, which complete.ts
+  // auto-filled on every close. With that auto-fill deleted, a guard keyed on the ref alone
+  // would have stopped firing for every new completion — silently re-opening the hole.
+  it('a peer cannot silently reopen a close that carries ONLY an authority (no ref)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'guard', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionAuthority: 'committed' });
+    await expect(wi.setWorkItemState(bug.id, 'open', { by: 'agD' })).rejects.toThrow(
+      /already terminally completed/,
+    );
+  });
+
+  // D-005/D-008 enforced structurally rather than as a policy someone has to remember.
+  it('reopening a CONTRACT close contradicts it to `invalid` — never back to null', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'reopen', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionAuthority: 'committed' });
+    await wi.setWorkItemState(bug.id, 'open', { by: 'agA' }); // own close → not force-gated
+    // NOT null: null on a terminal row means "legacy close" and is exempt from nagging, so a
+    // live path that could write it would manufacture that exemption on demand.
+    expect(await authorityOf(bug.id)).toBe('invalid');
+  });
+
+  it('reopening a LEGACY close leaves it null — a good-faith pre-contract close is never reclassified', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'legacy', harness: 'papercup', createdBy: 'agA' });
+    // A pre-P-004-shaped close: a ref, no authority. This is what all ~27k stored rows look like.
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'closed the old way' });
+    expect(await authorityOf(bug.id)).toBeNull();
+    await wi.setWorkItemState(bug.id, 'open', { by: 'agA' });
+    expect(await authorityOf(bug.id)).toBeNull();
+  });
+
+  it('a close with no authority supplied stays null — D-008, no writer invents a judgement', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'noauth', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'ref only' });
+    expect(await authorityOf(bug.id)).toBeNull();
+  });
+});
+
 // P-006 (fleet-deltas-leader-primitives-2026-07-10, EI-8993): an item HELD OPEN
 // (payload.held_open_by via setWorkItemClaimHold { by }) refuses a TERMINAL
 // transition by anyone but the holder — the dup-close guard for leader-gated items.

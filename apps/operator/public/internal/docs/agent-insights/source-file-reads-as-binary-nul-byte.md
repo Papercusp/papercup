@@ -47,7 +47,7 @@ s.split("\n").forEach((l,i)=>{ if(l.indexOf(NUL)>=0) console.log((i+1)+": "+JSON
 ' path/to/file.tsx
 ```
 
-`JSON.stringify` is the point — it prints the byte as a visible `�`.
+`JSON.stringify` is the point — it prints the byte as a visible `\x00`.
 (`cat -v` also shows it, as `^@`.)
 
 Quick count without node: `tr -dc '\000' < file | wc -c`.
@@ -86,8 +86,30 @@ expect(props.onToggleFleet).toHaveBeenCalledWith(ALL_FLEETS);
 ```
 
 **2. Guard the class.** `apps/operator/app/_lints/no-nul-bytes.test.ts` fails if any
-text source under `apps/operator/app` or `apps/operator-vite/src` contains a raw NUL.
-The next corrupted file reds a test instead of shipping a dead code path.
+tracked text source contains a raw NUL. The next corrupted file reds a test instead of
+shipping a dead code path.
+
+> **Scope was widened 2026-07-26 (EI-18744004858454166), and the reason is the lesson.**
+> The lint originally walked two hand-listed directories — `apps/operator/app` and
+> `apps/operator-vite/src` — the dirs the HUD incident happened in. Four more instances
+> then landed *outside* that scope (three in `packages/operator-core/lib/**`, and one in
+> **this very file**), and the guard stayed green through all of them. A class guard
+> scoped to the site of the last incident only ever catches the last incident. It now
+> enumerates via `git ls-files` — the same definition of "our source" that review and CI
+> use, which cannot drift out of date the way a hand-maintained list did.
+
+**Repairing one is not obvious — the normal editing path cannot do it.** An agent's Read
+tool renders a NUL as a **space**, so there is no exact text to match and an `Edit` fails
+`String to replace not found`. (Worse: the rendering makes correct `\x00`-handling code
+look like it has a stray space, so you may "fix" something that was already right.) Repair
+mechanically instead:
+
+```bash
+node scripts/check-no-nul-in-source.mjs        # report: file + line of every NUL
+node scripts/check-no-nul-in-source.mjs --fix  # rewrite raw NUL → \x00 escape
+```
+
+The `--fix` is byte-surgical (latin1 round-trip), so nothing but the NUL moves.
 
 ## Generalising
 
@@ -101,9 +123,39 @@ zero-width joiner — carries this risk. If you need one:
   `null` / discriminated union) when the design allows. An invisible sentinel is a
   correctness hazard, not a clever trick.
 
+## A second vector — deliberate intent, wrong encoding (confirmed 2026-07-26)
+
+The framing above ("a NUL is *always* corruption, never intent") holds for the HUD case
+but is **not** the whole story, and the other vector is now confirmed — it accounts for
+all four instances found in EI-18744004858454166:
+
+An author genuinely **wants** a NUL, as a composite-`Map`-key delimiter that cannot occur
+in the data — a legitimate, common idiom:
+
+```ts
+const key = `${row.port}\x00${row.address}`;   // ✅ escape — greppable
+const key = `${row.port}<raw 0x00>${row.address}`;  // ❌ raw byte — poisons the file
+```
+
+Both produce the **identical string at runtime**. Only the escape leaves the file as text.
+So here the *intent* is right and only the *encoding* is wrong — meaning the fix is to
+re-spell the delimiter, **not** to remove it. Four different agents wrote the raw form
+independently, which says the idiom is attractive and the failure mode is invisible: you
+cannot see the difference in your own editor, in review, or in a Read.
+
+**Why it is so easy to emit accidentally:** a raw NUL survives round-tripping through
+tools that render it as a space, so an author who copies a rendered line back into a write
+silently converts an escape into a raw byte. The guard script for this class shipped with
+a raw NUL *in its own first draft* for exactly that reason.
+
+> **Rule: verify NUL-adjacent work with BYTES, never by reading.** `file <path>` reporting
+> `data` for a text source, or a NUL count, is the only trustworthy check — the rendered
+> text will lie to you.
+
 ## Still open
 
-How the NUL was *written* is unproven. The leading candidate is shell-append (`cat >>`)
-edits that bypass the file-lock hook, where a truncated or interleaved concurrent write
-can emit a stray NUL. The lint catches the next occurrence; it does not stop the writer.
-If you confirm the vector, link it and fix the writer.
+How the NUL is written in the *corruption* case (the HUD one) remains unproven. The
+leading candidate is shell-append (`cat >>`) edits that bypass the file-lock hook, where a
+truncated or interleaved concurrent write can emit a stray NUL. The lint catches the next
+occurrence; it does not stop the writer. If you confirm that vector, link it and fix the
+writer.

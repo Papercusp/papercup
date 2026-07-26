@@ -41,6 +41,7 @@ function item(overrides: Partial<WorkItem> = {}): WorkItem {
     terminalOwner: null,
     terminalCompletionRef: null,
     terminalCompletionEvidence: null,
+    completionAuthority: null,
     createdAt: new Date(NOW - 8 * 3_600_000).toISOString(), // 8h old by default
     updatedAt: new Date(NOW - 8 * 3_600_000).toISOString(),
     ...overrides,

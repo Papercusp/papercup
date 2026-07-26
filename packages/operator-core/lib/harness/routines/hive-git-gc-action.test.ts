@@ -23,9 +23,22 @@ vi.mock('../../sync/pot-git/gc', () => ({
   gcHiveGitRepo: gcMock,
 }));
 
-vi.mock('../../sync/pot-git/storage', () => ({
-  hiveGitRepoPath: hiveGitRepoPathMock,
-}));
+/* Stub set derived from the REAL export list, so adding an export to storage.ts
+ * cannot silently break this file — see EI-18748959711888135, where an absent
+ * export threw inside a caller's try/catch, became a console.warn, and
+ * vitest-fail-on-console red-pinned the fleet gate. Inert stubs resolve a promise
+ * (storage's exports are mostly async and are often fire-and-forget); explicit
+ * stubs below win. */
+vi.mock('../../sync/pot-git/storage', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const inert = Object.fromEntries(
+    Object.entries(actual).map(([k, v]) => [
+      k,
+      typeof v === 'function' ? vi.fn(async () => undefined) : v,
+    ]),
+  );
+  return { ...inert, hiveGitRepoPath: hiveGitRepoPathMock };
+});
 
 vi.mock('../git-sync/hive-git-mode', () => ({
   getPotGitMode: getHiveGitModeMock,

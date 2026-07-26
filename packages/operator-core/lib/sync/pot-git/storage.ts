@@ -229,6 +229,37 @@ export async function pathExists(p: string): Promise<boolean> {
 export const STALE_PACK_TMP_MAX_AGE_MS = 15 * 60_000;
 
 /**
+ * How long `shallow.lock` must be untouched before it is treated as stranded.
+ * MUCH tighter than {@link STALE_PACK_TMP_MAX_AGE_MS}, and deliberately so —
+ * the two leaks have opposite cost profiles and must not share a gate.
+ *
+ * A stale temp pack only wastes disk, so waiting 15 min to be sure costs
+ * nothing. A stale `shallow.lock` WEDGES the ladder: git holds it for the whole
+ * `index-pack` (`git --shallow-file …/shallow.lock index-pack --stdin`), so
+ * while it exists EVERY shallow fetch dies instantly with
+ * `fatal: Unable to create '…/shallow.lock': File exists` and the joiner makes
+ * zero progress. Live-caught on the rig 2026-07-26: a rung SIGKILLed at 22:51Z
+ * stranded the lock, and the 22:56Z tick failed on it instantly — with a 15-min
+ * gate the store would have sat wedged until 23:06Z, ~3 wasted ticks.
+ *
+ * The right bound is not a guess, it is the fetch ceiling. We SIGKILL any fetch
+ * at `timeoutMs`, so no live fetch can hold this lock longer than that; a lock
+ * older than the ceiling plus a margin is stranded BY CONSTRUCTION, and removing
+ * it cannot race a healthy fetch. Callers running a non-default ceiling should
+ * pass `shallowLockMaxAgeMs` derived from their own (bootstrap does).
+ *
+ * ⚠ The ceiling is spelled out literally rather than imported: `fetch-transport`
+ * already imports THIS module, so importing `DEFAULT_FETCH_TIMEOUT_MS` back
+ * would close a module cycle. `storage.integration.test.ts` asserts the two stay
+ * equal, so the duplication cannot drift silently.
+ */
+export const STALE_SHALLOW_LOCK_MARGIN_MS = 60_000;
+/** Must equal `fetch-transport`'s `DEFAULT_FETCH_TIMEOUT_MS` — test-enforced. */
+export const FETCH_CEILING_MS_MIRROR = 120_000;
+export const STALE_SHALLOW_LOCK_MAX_AGE_MS =
+  FETCH_CEILING_MS_MIRROR + STALE_SHALLOW_LOCK_MARGIN_MS;
+
+/**
  * EI-18745600910177355: reclaim orphaned `index-pack` temp files.
  *
  * `git index-pack` (inside `git fetch`) streams an incoming pack to
@@ -249,9 +280,10 @@ export const STALE_PACK_TMP_MAX_AGE_MS = 15 * 60_000;
  */
 export async function sweepStalePackTmpFiles(
   repoPath: string,
-  opts: { maxAgeMs?: number; now?: number } = {},
+  opts: { maxAgeMs?: number; shallowLockMaxAgeMs?: number; now?: number } = {},
 ): Promise<{ removed: string[]; bytesReclaimed: number }> {
   const maxAgeMs = opts.maxAgeMs ?? STALE_PACK_TMP_MAX_AGE_MS;
+  const shallowLockMaxAgeMs = opts.shallowLockMaxAgeMs ?? STALE_SHALLOW_LOCK_MAX_AGE_MS;
   const now = opts.now ?? Date.now();
   const removed: string[] = [];
   let bytesReclaimed = 0;
@@ -267,13 +299,19 @@ export async function sweepStalePackTmpFiles(
   // resumes, on any tick, forever. On a link that drops channels 23–36x/min
   // that outcome is not a corner case, it is the expected one — the ladder
   // would have self-wedged in production while every test stayed green.
-  // Age-gated exactly like the packs, so a genuinely in-flight fetch's lock is
-  // never yanked out from under it.
+  //
+  // Gated on its OWN, much tighter age (see STALE_SHALLOW_LOCK_MAX_AGE_MS) — NOT
+  // the packs' 15 min. Sharing the packs' gate was itself live-caught as a bug:
+  // on 2026-07-26 a rung SIGKILLed at 22:51Z stranded the lock and the 22:56Z
+  // tick died on it instantly, with the store due to stay wedged until 23:06Z.
+  // A stale lock is not merely wasted disk like a stale pack, it is total
+  // stoppage, so the gate must be as tight as correctness allows: one fetch
+  // ceiling plus a margin, past which no live fetch can still hold it.
   for (const lock of ['shallow.lock']) {
     const p = join(repoPath, lock);
     try {
       const st = await stat(p);
-      if (now - st.mtimeMs >= maxAgeMs) {
+      if (now - st.mtimeMs >= shallowLockMaxAgeMs) {
         await unlink(p);
         removed.push(lock);
         bytesReclaimed += st.size;

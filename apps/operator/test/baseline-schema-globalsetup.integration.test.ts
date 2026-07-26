@@ -84,6 +84,40 @@ describe('integration globalSetup — full schema from migrations alone', () => 
     expect(capture).toBeGreaterThanOrEqual(3); // features + issues + contributor_usage_events
   });
 
+  // EI-18748424931934157 — the globalSetup seeds a per-harness DEPENDENT VIEW before
+  // replaying migrations, so a migration that drops or incompatibly redefines a
+  // depended-on view fails HERE instead of at a real operator's boot. Migration 678
+  // passed every existing test and then crash-looped the operator with "cannot drop view
+  // harness_shared.harness_features_consolidated because other objects depend on it" —
+  // a fresh testcontainer was the one environment where it was safe, and the only one we
+  // tested in.
+  //
+  // Pinned because the guard is otherwise INVISIBLE when it is working: it only ever
+  // announces itself by failing. Without this assertion the probe could be dropped, or
+  // silently stop being created, and every test would still pass — restoring exactly the
+  // blind spot it was added to close.
+  it('carries the per-harness dependent-view probe, so migrations are replayed against a realistic schema graph', async () => {
+    const [{ probe }] = await sql.unsafe(
+      `SELECT to_regclass('harness_migration_probe.harness_features') IS NOT NULL AS probe`,
+    );
+    expect(probe).toBe(true);
+    // It must be a REAL dependency, not a decoy — asserted through pg_depend rather than
+    // by attempting the drop. Deliberately NOT `expect(DROP ...).rejects`: this DB is a
+    // REUSED container shared by every integration process on the box, so if the guard
+    // were ever broken that drop would SUCCEED and take out the consolidated view for
+    // everyone — a test that corrupts shared infrastructure precisely when it finds the
+    // bug it was written to find.
+    const [{ deps }] = await sql.unsafe(
+      `SELECT count(*)::int AS deps
+         FROM pg_depend d
+         JOIN pg_rewrite r ON r.oid = d.objid
+         JOIN pg_class dependent ON dependent.oid = r.ev_class
+        WHERE d.refobjid = 'harness_shared.harness_features_consolidated'::regclass
+          AND dependent.relnamespace = 'harness_migration_probe'::regnamespace`,
+    );
+    expect(deps).toBeGreaterThan(0);
+  });
+
   it('the harness_shared schema is fully built (≥184 base tables)', async () => {
     const [{ n }] = await sql.unsafe(
       `SELECT count(*)::int AS n FROM information_schema.tables

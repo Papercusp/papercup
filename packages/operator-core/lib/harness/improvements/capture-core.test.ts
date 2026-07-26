@@ -26,6 +26,7 @@ function existing(p: Partial<EngineerIssue> & { id: string; title: string }): En
     origin: 'local',
     terminalOwner: null,
     terminalCompletionRef: null,
+    completionAuthority: null,
     featureOrder: null,
     createdAt: '2026-06-04T00:00:00Z',
     updatedAt: '2026-06-04T00:00:00Z',

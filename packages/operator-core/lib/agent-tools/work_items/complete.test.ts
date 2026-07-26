@@ -538,7 +538,12 @@ describe('work_items:complete (keyed-array)', () => {
       'F-12',
       'passed',
       expect.objectContaining({
-        completionRef: 'shipped',
+        // P-004: this used to assert `completionRef: 'shipped'` — the auto-fill from
+        // completion.summary. That auto-fill is DELETED (it made the completion-integrity
+        // gate unfailable by construction for this tool), and the state writer is handed
+        // the AUTHORITY JUDGEMENT instead. This evidence is sufficient (verifiedHow plus
+        // testsRun/testResult), so it lands `committed`.
+        completionAuthority: 'committed',
         completionEvidence: {
           filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
           testsRun: 'pnpm vitest complete.test.ts --run',
@@ -548,6 +553,7 @@ describe('work_items:complete (keyed-array)', () => {
         },
       }),
     );
+    expect(setWorkItemStateWithAliasInfo.mock.calls[0][2]).not.toHaveProperty('completionRef');
   });
 
   it('fills completion.workItem from the id when the caller omits it (DRY)', async () => {
@@ -1622,6 +1628,117 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(json.properties).toHaveProperty('id');
       expect(json.properties).toHaveProperty('completion');
       expect(json.properties).toHaveProperty('items');
+    });
+  });
+
+  // ── P-004: completion AUTHORITY ────────────────────────────────────────────────────
+  // agent-protocol-authority-semantics-2026-07-26 P-004. Two things are pinned here, and
+  // the second is the one that will rot first:
+  //
+  //  1. The JUDGEMENT — evidence decides `committed` vs `proposed`, and only `committed`
+  //     counts toward burn-down.
+  //  2. The DELETED AUTO-FILL — complete.ts must NOT pass `completionRef`. It used to pass
+  //     `it.completion.summary`, and because `summary` is a required non-empty field that
+  //     made the completion-integrity gate's "requires a completionRef" check unfailable BY
+  //     CONSTRUCTION for every caller of this tool. Re-adding it would silently restore a
+  //     gate that cannot reject, so the absence is asserted explicitly rather than implied.
+  describe('completion authority (P-004)', () => {
+    beforeEach(() => {
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-1', state: 'open', family: 'issue' });
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) =>
+        okState({ ...item, id: 'WI-1', family: 'issue', state }),
+      );
+    });
+
+    /** The opts object complete.ts handed the state writer. */
+    const stateOpts = () => setWorkItemStateWithAliasInfo.mock.calls[0]?.[2] as Record<string, unknown>;
+
+    it('a summary-only completion lands `proposed` and does NOT count toward burn-down', async () => {
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it' } });
+      expect(stateOpts().completionAuthority).toBe('proposed');
+      expect(r.completionAuthority).toBe('proposed');
+      expect(r.countsTowardBurnDown).toBe(false);
+    });
+
+    it('a summary-only completion TELLS the caller it landed proposed, and names the fields that fix it', async () => {
+      // The change is worthless if it is silent: an agent must learn from the response to
+      // the call that did it, not from a leader asking why burn-down did not move.
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it' } });
+      expect(r.authorityWarning).toMatch(/authority:'proposed'/);
+      expect(r.authorityWarning).toMatch(/NOT counted toward burn-down/);
+      expect(r.authorityWarning).toMatch(/verifiedHow/);
+      expect(r.authorityWarning).toMatch(/testsRun/);
+    });
+
+    it('verifiedHow + testResult lands `committed` and DOES count toward burn-down', async () => {
+      const r = await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', verifiedHow: 'unit', testResult: '26/26 green' },
+      });
+      expect(stateOpts().completionAuthority).toBe('committed');
+      expect(r.completionAuthority).toBe('committed');
+      expect(r.countsTowardBurnDown).toBe(true);
+      expect(r.authorityWarning).toBeUndefined();
+    });
+
+    it('verifiedHow + testsRun also lands `committed` (either half of the test pair qualifies)', async () => {
+      await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', verifiedHow: 'integration', testsRun: 'npm run test:file -- x.test.ts' },
+      });
+      expect(stateOpts().completionAuthority).toBe('committed');
+    });
+
+    // P-002 measured this exact shape on the live store: 4.2% of evidence-bearing rows
+    // carry a `_completionEvidence` object with NO `verifiedHow`. An "is the object
+    // present?" check passes every one of them, which is why the partial case is rejected
+    // explicitly instead of being assumed away.
+    it('a PARTIAL evidence object (no verifiedHow) lands `proposed`, not committed', async () => {
+      await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', testResult: 'all green', filesChanged: ['a.ts'], addedTests: true },
+      });
+      expect(stateOpts().completionAuthority).toBe('proposed');
+    });
+
+    it('verifiedHow ALONE lands `proposed` — a label is not a verification', async () => {
+      await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', verifiedHow: 'unit' } });
+      expect(stateOpts().completionAuthority).toBe('proposed');
+    });
+
+    it('filesChanged + addedTests alone land `proposed` — both say what changed, neither that anything was checked', async () => {
+      await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', filesChanged: ['a.ts', 'b.ts'], addedTests: true },
+      });
+      expect(stateOpts().completionAuthority).toBe('proposed');
+    });
+
+    it('REGRESSION GUARD: complete.ts no longer auto-fills completionRef from completion.summary', async () => {
+      await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it' } });
+      const opts = stateOpts();
+      expect(opts.completionRef).toBeUndefined();
+      // and specifically not the summary, which is what it used to be
+      expect(opts.completionRef).not.toBe('fixed it');
+    });
+
+    it('stamps NO authority when no terminal state was requested — nothing was closed to judge', async () => {
+      const r = await one({ id: 'WI-1', completion: { summary: 'progress note', verifiedHow: 'unit', testResult: 'ok' } });
+      expect(r.completionAuthority).toBeUndefined();
+      expect(r.countsTowardBurnDown).toBeUndefined();
+      expect(r.authorityWarning).toBeUndefined();
+    });
+
+    it('claims NO authority when the state write was REJECTED — a failed close was never graded', async () => {
+      setWorkItemStateWithAliasInfo.mockRejectedValue(new Error('nope'));
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it' } });
+      expect(r.stateError).toBeTruthy();
+      expect(r.completionAuthority).toBeUndefined();
+      expect(r.authorityWarning).toBeUndefined();
     });
   });
 });

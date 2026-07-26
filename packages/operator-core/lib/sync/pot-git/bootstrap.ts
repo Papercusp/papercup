@@ -78,6 +78,7 @@ import type { Duplex } from 'node:stream';
 import { DEFAULT_FETCH_TIMEOUT_MS, type TransportResult, fetchOverDuplex } from './fetch-transport';
 import {
   type RunGit,
+  STALE_SHALLOW_LOCK_MARGIN_MS,
   defaultRunGit,
   deviceNamespaceKey,
   listNamespaces,
@@ -311,7 +312,13 @@ export async function bootstrapFromPeer(
   // EI-18745600910177355: reclaim partial packs SIGKILLed fetches leaked
   // (21 GB observed on the rig). Runs before the ladder so a long-running
   // joiner reclaims disk on every tick, not only on a gc pass.
-  await sweepStalePackTmpFiles(localRepoPath).catch(() => ({ removed: [], bytesReclaimed: 0 }));
+  // The `shallow.lock` half of the sweep is gated on THIS call's fetch ceiling,
+  // not the packs' 15-min gate: no fetch of ours can outlive `timeoutMs` (we
+  // SIGKILL it), so a lock older than that is stranded by construction — and a
+  // stranded one wedges every subsequent rung, so it must be cleared fast.
+  await sweepStalePackTmpFiles(localRepoPath, {
+    shallowLockMaxAgeMs: (opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS) + STALE_SHALLOW_LOCK_MARGIN_MS,
+  }).catch(() => ({ removed: [], bytesReclaimed: 0 }));
 
   const preExisting = new Set(await listNamespaces(localRepoPath, runGit));
   const maxSteps = Math.max(1, opts.maxSteps ?? DEFAULT_MAX_STEPS);
