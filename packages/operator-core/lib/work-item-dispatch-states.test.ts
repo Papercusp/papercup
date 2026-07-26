@@ -7,10 +7,55 @@ import {
   FEATURE_NON_REQUEUE_STATES,
   FEATURE_FAMILY_STATES,
   DEFAULT_STALE_RECLAIM_REQUEUE_CAP,
+  TERMINAL_INPUT_STATES,
+  NON_TERMINAL_INPUT_STATES,
+  isTerminalStateInput,
   isRequeueableFeatureState,
   normalizeFeatureStateInput,
   staleReclaimRequeueCap,
 } from './work-item-dispatch-states';
+
+describe('terminal/non-terminal input partition (P-005 — the set_state evidence gate)', () => {
+  it('partitions every accepted spelling exactly once (total + disjoint)', () => {
+    const overlap = TERMINAL_INPUT_STATES.filter((s) => NON_TERMINAL_INPUT_STATES.includes(s));
+    expect(overlap).toEqual([]);
+    // Every spelling the runtime writer accepts must be classifiable — otherwise the
+    // schema gate would reject a write the writer would have happily performed.
+    for (const s of FEATURE_FAMILY_STATES) {
+      expect([...TERMINAL_INPUT_STATES, ...NON_TERMINAL_INPUT_STATES]).toContain(s);
+    }
+  });
+
+  it('classifies BOTH families\' legacy terminals as terminal, not just the unified pair', () => {
+    // The whole point: `passed`/`resolved`/`closed`/`deprecated` are terminal only
+    // AFTER aliasing, so a gate keyed on ANY_FAMILY_TERMINAL_STATES membership of the
+    // RAW input would wave these through without evidence.
+    for (const s of ['done', 'dropped', 'passed', 'deprecated', 'resolved', 'closed']) {
+      expect(isTerminalStateInput(s)).toBe(true);
+    }
+  });
+
+  it('does NOT treat a mid-flight or parked state as terminal', () => {
+    // `todo` is live in the census (49 rows) yet absent from the tool description's
+    // enum — a gate built from that prose would have rejected legitimate writes.
+    for (const s of ['open', 'todo', 'wip', 'in_progress', 'validating', 'failing', 'blocked', 'needs-human']) {
+      expect(isTerminalStateInput(s)).toBe(false);
+    }
+  });
+
+  it('folds case + separator drift the same way normalizeFeatureStateInput does', () => {
+    expect(isTerminalStateInput('DONE')).toBe(true);
+    expect(isTerminalStateInput('  Passed  ')).toBe(true);
+    expect(isTerminalStateInput('In_Progress')).toBe(false);
+    expect(isTerminalStateInput('needs_human')).toBe(false);
+  });
+
+  it('stays derived — a terminal added upstream cannot drift out of the gate', () => {
+    // Guards the hand-copy drift class that caused EI-18653071581558556: every
+    // ANY_FAMILY_TERMINAL_STATES entry must be gated as terminal, by construction.
+    for (const s of ANY_FAMILY_TERMINAL_STATES) expect(TERMINAL_INPUT_STATES).toContain(s);
+  });
+});
 
 describe('cross-family terminal union (EI-18653071581558556)', () => {
   it('covers BOTH kind-family terminal dialects', () => {

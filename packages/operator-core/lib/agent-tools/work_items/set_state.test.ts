@@ -165,3 +165,61 @@ describe('work_items:set_state — aliased/requestedState/appliedState on every 
     expect(b.results[0].appliedState).not.toBe(b.results[0].requestedState);
   });
 });
+
+/**
+ * P-005 / D-006 — the terminal-state evidence requirement is STRUCTURAL.
+ *
+ * These assert the SCHEMA (tool.args), not the handler: the point of the change is
+ * that an evidence-less terminal write is unrepresentable at the boundary, so it
+ * never reaches the handler at all. Before this, `state` was a bare string and
+ * `completionRef` was `.optional()` with the rule living in its .describe() — the
+ * IFEval-FC failure mode (models miss rules embedded in schema descriptions).
+ */
+describe('terminal writes structurally require completion evidence (P-005)', () => {
+  const parse = (args: unknown) => (tool.args as { safeParse: (v: unknown) => { success: boolean } }).safeParse(args);
+  const accepts = (args: unknown) => expect(parse(args).success).toBe(true);
+  const rejects = (args: unknown) => expect(parse(args).success).toBe(false);
+
+  it('rejects an evidence-less terminal write in ALL THREE call shapes', () => {
+    // Fixing only itemSpec would MOVE the bypass to the shorthand rather than close it.
+    rejects({ id: 'WI-1', state: 'done' });
+    rejects({ ids: ['WI-1', 'WI-2'], state: 'dropped' });
+    rejects({ items: [{ id: 'WI-1', state: 'done' }] });
+  });
+
+  it('accepts a terminal write that carries evidence, in all three shapes', () => {
+    accepts({ id: 'WI-1', state: 'done', completionRef: 'landed in abc123' });
+    accepts({ ids: ['WI-1'], state: 'dropped', completionRef: 'superseded by WI-9' });
+    accepts({ items: [{ id: 'WI-1', state: 'done', completionRef: 'ref' }] });
+  });
+
+  it('enforces the rule on LEGACY terminal spellings too, not just done/dropped', () => {
+    // These are terminal only after aliasing — a gate keyed on the raw unified pair
+    // would let `passed`/`resolved` close an item with no evidence at all.
+    rejects({ id: 'WI-1', state: 'passed' });
+    rejects({ id: 'WI-1', state: 'resolved' });
+    rejects({ id: 'WI-1', state: 'closed' });
+    rejects({ id: 'WI-1', state: 'deprecated' });
+  });
+
+  it('leaves non-terminal writes alone — no evidence required', () => {
+    for (const state of ['wip', 'blocked', 'needs-human', 'open', 'todo']) {
+      accepts({ id: 'WI-1', state });
+    }
+  });
+
+  it('still folds case drift, and enforces the gate on the folded value', () => {
+    // Acceptance must not narrow: `DONE`/`WIP` worked before and still do — but
+    // `DONE` is now correctly recognized as terminal rather than slipping the gate.
+    rejects({ id: 'WI-1', state: 'DONE' });
+    accepts({ id: 'WI-1', state: 'DONE', completionRef: 'ref' });
+    accepts({ id: 'WI-1', state: 'WIP' });
+  });
+
+  it('rejects an unknown state instead of parking it in limbo (GAP-5)', () => {
+    // `state` used to be z.string().max(40), so a typo was accepted and landed the
+    // row in a non-dispatchable state no queue would ever offer again.
+    rejects({ id: 'WI-1', state: 'donee' });
+    rejects({ items: [{ id: 'WI-1', state: 'complete' }] });
+  });
+});

@@ -1414,11 +1414,29 @@ export async function setIssueState(
         UPDATE harness_shared.engineer_issues
            SET state = ${state}, origin = 'local', updated_at = now(),
                assignee = NULL, assigned_at = NULL,
-               terminal_owner = ${by ?? null}, terminal_completion_ref = ${completionRef ?? null},
+               -- WI-6218: PRESERVE an existing completion record on a skipCompletionGate
+               -- write. Those paths (watchdog auto-close, system sweep, restore) are
+               -- documented as "not completions at all" and are deliberately exempt from the
+               -- second-terminal-close guard in work-items.ts — but they still reached this
+               -- UPDATE and stamped terminal_owner/ref/authority unconditionally, so a sweep
+               -- re-closing an already-completed issue took CREDIT for a real agent's
+               -- completion and NULLED its ref + authority (these callers pass neither).
+               -- A write that is "not a completion" has no business claiming completion
+               -- credit — the same reasoning that already forbids it writing a
+               -- terminal_completion_ref (WI-1404). Preserve-when-present, so a fresh row
+               -- keeps today's behaviour and no restore/sweep caller changes.
+               terminal_owner = CASE WHEN ${Boolean(opts.skipCompletionGate)}
+                                       THEN COALESCE(NULLIF(terminal_owner, ''), ${by ?? null})
+                                     ELSE ${by ?? null} END,
+               terminal_completion_ref = CASE WHEN ${Boolean(opts.skipCompletionGate)}
+                                                THEN COALESCE(NULLIF(terminal_completion_ref, ''), ${completionRef ?? null})
+                                              ELSE ${completionRef ?? null} END,
                -- P-004: the authority judgement for THIS close. Left NULL when the caller
                -- supplied none — a legacy-shaped close (D-008), which is exactly right for
                -- the skipCompletionGate system paths and for any writer not yet migrated.
-               authority = ${opts.completionAuthority ?? null},
+               authority = CASE WHEN ${Boolean(opts.skipCompletionGate)}
+                                  THEN COALESCE(authority, ${opts.completionAuthority ?? null})
+                                ELSE ${opts.completionAuthority ?? null} END,
                payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                               THEN payload
                               ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)

@@ -378,6 +378,56 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
     // BOTH, so this must NOT read back as a genuine completion.
     expect(after?.terminalCompletionRef).toBeNull();
   });
+
+  // WI-6218 — the same reasoning, applied to a row that ALREADY carries a completion.
+  // The test above only proves a bypass flip writes no ref on a FRESH row; nothing
+  // stopped it OVERWRITING a real agent's completion. Because these callers pass no
+  // ref/authority, the unconditional stamp also NULLED both while reassigning credit.
+  // Measured before the fix: 0 damaged rows in 30 days, so this closes a LATENT hole.
+  it('WI-6218: a skipCompletionGate re-close must NOT take credit for an existing completion — issue arm', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.claimWorkItem(bug.id, 'agA');
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'fixed in PR #42' });
+    const genuine = await wi.getWorkItem(bug.id);
+    expect(genuine?.terminalOwner).toBe('agA');
+
+    // A system sweep re-closes the already-terminal row, passing neither ref nor authority.
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'watchdog-auto-close', skipCompletionGate: true });
+
+    const after = await wi.getWorkItem(bug.id);
+    expect(after?.state).toBe('done');
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionRef).toBe('fixed in PR #42');
+    expect(after?.completionAuthority ?? null).toBe(genuine?.completionAuthority ?? null);
+  });
+
+  it('WI-6218: a skipCompletionGate re-close must NOT take credit for an existing completion — feature arm', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(feat.id, 'passed', { harness: 'papercup', by: 'agA', completionRef: 'shipped' });
+
+    await wi.setWorkItemState(feat.id, 'passed', {
+      harness: 'papercup',
+      by: 'system:plan-item-reconcile',
+      skipCompletionGate: true,
+    });
+
+    const after = await wi.getWorkItem(feat.id, 'papercup');
+    expect(after?.state).toBe('done');
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionRef).toBe('shipped');
+  });
+
+  // CONTROL — preserve-when-present, NOT never-stamp. A bypass close of a row with no
+  // prior completion keeps stamping its own owner, so restore/sweep callers that rely on
+  // the stamp are unaffected. Without this, the fix above could pass by simply never
+  // writing terminal_owner at all, which would be a different (and unaudited) change.
+  it('WI-6218 CONTROL: a skipCompletionGate close of a row with NO prior completion still records its own owner', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'watchdog-auto-close', skipCompletionGate: true });
+    const after = await wi.getWorkItem(bug.id);
+    expect(after?.terminalOwner).toBe('watchdog-auto-close');
+    expect(after?.terminalCompletionRef).toBeNull();
+  });
 });
 
 // EI-7422 — a terminally-completed item (terminalOwner + terminalCompletionRef
@@ -601,11 +651,24 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
   // terminal UPDATE writes `terminal_owner = by` unconditionally on the gate-skip path
   // too). That is a SEPARATE, smaller hole than the one under test here — a system sweep
   // is not a rival closer racing for credit — and is filed rather than widened into.
-  it('a system close (skipCompletionGate) is NOT reshaped into an attestation — the trusted-bypass paths keep their existing behaviour', async () => {
+  // NARROWED BY WI-6218. This case still pins the exemption it was written for: a
+  // trusted-bypass close is NOT routed through the second-close machinery — it does not
+  // throw, it does not file an attestation, and the flip lands. What it USED to also pin,
+  // by asserting terminalOwner became 'watchdog-auto-close', was the separate defect
+  // WI-6218 was filed to fix: a write documented as "not a completion at all" claiming
+  // completion CREDIT, and (since these callers pass neither) NULLing the ref and
+  // authority alongside it. The exemption is about the ATTESTATION mechanism; it was
+  // never a decision that a sweep should own an agent's completion.
+  it('a system close (skipCompletionGate) is NOT reshaped into an attestation — but (WI-6218) it does not take the first closer\'s credit either', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'A', completionEvidence: RICH });
     const after = await wi.setWorkItemState(bug.id, 'resolved', { by: 'watchdog-auto-close', skipCompletionGate: true });
-    expect(after?.terminalOwner).toBe('watchdog-auto-close');
+    // Unchanged: outside the second-close machinery, so no attestation is filed.
+    expect(after?.state).toBe('done');
+    expect(await attestations('engineer_issues', 'issue_id', bug.id)).toBeNull();
+    // WI-6218: the authoritative completion record is left standing.
+    expect(after?.terminalOwner).toBe('agA');
+    expect(after?.terminalCompletionRef).toBe('A');
   });
 });
 
