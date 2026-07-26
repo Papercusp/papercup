@@ -1321,7 +1321,20 @@ export const SUBST_ENV_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
  * is missing here enforces it nowhere on the OMP path — the fixture-replay test
  * fails if that happens.
  */
-export const SUBSTITUTION_PREFILTER_HEADS = new Set(['sed', 'cat', 'head', 'tail', 'psql']);
+export const SUBSTITUTION_PREFILTER_HEADS = new Set([
+  'sed',
+  'cat',
+  'head',
+  'tail',
+  'psql',
+  // P-009 (service family). `systemctl` is ALSO matched by RESOURCE_PREFILTER_RE
+  // below, so it reaches the operator either way today — it is listed here
+  // regardless, because the two pre-filters answer different questions and a
+  // future edit to the resource token list must not silently disable the
+  // substitution rules that depend on this verb.
+  'systemctl',
+  'curl',
+]);
 
 /** Resource-registry pre-filter — mirrors the shell hook's `_needs_check` regex.
  *  Exported for the same reason as the three atomizer regexes above: so the
