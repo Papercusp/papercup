@@ -206,16 +206,36 @@ export function LearningEvidenceRail({
 export function LearningVisualEmpty({
   icon: Icon,
   title,
+  body,
+  action,
 }: {
   icon: LucideIcon;
   title: string;
+  /** P-009 teaching copy: what this view shows → what makes data appear. ≤2 sentences. */
+  body?: string;
+  /** The ONE action that makes data appear (e.g. open the Blender pane's Arming section). */
+  action?: { label: string; onClick: () => void };
 }) {
+  const teach = Boolean(body || action);
   return (
-    <div className="pc-learning-visual__empty" role="status">
+    <div
+      className={`pc-learning-visual__empty${teach ? " pc-learning-visual__empty--teach" : ""}`}
+      role="status"
+    >
       <span className="pc-learning-visual__emptyicon" aria-hidden>
         <Icon size={14} />
       </span>
       <strong>{title}</strong>
+      {body ? <p className="pc-learning-visual__emptybody">{body}</p> : null}
+      {action ? (
+        <button
+          type="button"
+          className="pc-learning-visual__emptyaction"
+          onClick={action.onClick}
+        >
+          {action.label}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -362,6 +382,13 @@ export function LearningVisualStyles() {
       .pc-learning-visual__empty { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px dashed color-mix(in srgb, var(--border) 72%, transparent); border-radius: 8px; color: var(--fg-mute); }
       .pc-learning-visual__emptyicon { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 1px solid var(--border); border-radius: 50%; color: var(--fg-mute); background: var(--bg-2); }
       .pc-learning-visual__empty strong { color: var(--fg-dim); font-size: 11px; font-weight: 650; }
+      /* P-009 teaching variant: body copy + one action turn the row into a small centered card. */
+      .pc-learning-visual__empty--teach { flex-direction: column; justify-content: center; gap: 6px; padding: 18px 16px; text-align: center; }
+      .pc-learning-visual__empty--teach strong { font-size: 12px; }
+      .pc-learning-visual__emptybody { margin: 0; max-width: 46ch; color: var(--fg-mute); font-size: 11px; line-height: 1.5; }
+      .pc-learning-visual__emptyaction { display: inline-flex; align-items: center; min-height: 26px; margin-top: 2px; padding: 4px 12px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); color: var(--accent); cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; }
+      .pc-learning-visual__emptyaction:hover { background: color-mix(in srgb, var(--accent) 20%, var(--bg-2)); }
+      .pc-learning-visual__emptyaction:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       .pc-learning-visual__error { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid color-mix(in srgb, #fb7185 30%, var(--border)); border-radius: 8px; color: #fb7185; background: color-mix(in srgb, #fb7185 4%, transparent); }
       .pc-learning-visual__error strong { color: var(--fg-dim); font-size: 11px; font-weight: 650; }
       .pc-learning-visual__error button { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; min-height: 25px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-2); color: var(--fg); cursor: pointer; font: inherit; font-size: 10px; font-weight: 650; }

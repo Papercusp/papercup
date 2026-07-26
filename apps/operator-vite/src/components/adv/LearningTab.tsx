@@ -4,7 +4,13 @@
  * canonical deep-link state and `?lhive=` scopes the hive-aware views.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQueryState, parseAsStringEnum, parseAsString } from "nuqs";
+import {
+  useQueryState,
+  useQueryStates,
+  parseAsStringEnum,
+  parseAsString,
+  parseAsBoolean,
+} from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
@@ -308,6 +314,77 @@ const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
   "throughput",
 ]);
 
+/** P-009: the one deep-link the teaching empty states and the orientation
+ *  banner share — opens the left rail on the Blender pane, whose Arming section
+ *  is the switchboard every "make data appear here" action points at. Writes
+ *  the SAME nuqs keys LeftSidebar owns (`lsb`/`lst`; tab ids are frozen). */
+function useOpenArming(): () => void {
+  const [, setRail] = useQueryStates({
+    lsb: parseAsBoolean,
+    lst: parseAsString,
+  });
+  return useCallback(() => void setRail({ lsb: true, lst: "blender" }), [setRail]);
+}
+
+/** P-009 first-run orientation banner — ONCE PER WORKSPACE (owner decision
+ *  2026-07-26): dismissal persists in localStorage (UI state, not a feature
+ *  flag; the desktop app is one workspace per install). */
+const ORIENTATION_DISMISS_KEY = "pc-learning-orientation-dismissed";
+
+function LearningOrientationBanner() {
+  const t = useLexicon();
+  const openArming = useOpenArming();
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(ORIENTATION_DISMISS_KEY) === "1";
+    } catch {
+      return true; // storage unavailable ⇒ fail quiet, never re-nag each render
+    }
+  });
+  if (dismissed) return null;
+  const dismiss = () => {
+    setDismissed(true);
+    try {
+      window.localStorage.setItem(ORIENTATION_DISMISS_KEY, "1");
+    } catch {
+      /* best effort */
+    }
+  };
+  const pot = t("pot", { lower: true });
+  return (
+    <div
+      className="pc-learning__orient"
+      role="note"
+      aria-label="How learning works"
+    >
+      <div className="pc-learning__orientbody">
+        <strong>Your {pot} learns as you work</strong>
+        <p>
+          Agents capture friction the moment they hit it, the Gym A/B-refines
+          your playbooks under a budget you set, and the {t("scout")} explores
+          new ideas from this {pot}&apos;s own history — everything it learns is
+          scoped to this {pot}.
+        </p>
+        <button
+          type="button"
+          className="pc-learning__orientaction"
+          onClick={openArming}
+        >
+          Open Arming
+        </button>
+      </div>
+      <button
+        type="button"
+        className="pc-learning__orientdismiss"
+        onClick={dismiss}
+        aria-label="Dismiss"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
 export default function LearningTab() {
   const t = useLexicon();
   const viewDesc = viewDescriptions(t);
@@ -605,6 +682,13 @@ export default function LearningTab() {
           </Tooltip>
         ) : null}
       </div>
+
+      {/* P-009 lexicon gloss: the active view's one-liner, VISIBLE — a
+          title-attr tooltip is undiscoverable for exactly the first-run user
+          it serves. Same source as the tab tooltips (viewDescriptions). */}
+      <p className="pc-learning__strap">{viewDesc[view]}</p>
+
+      <LearningOrientationBanner />
 
       {stageForView(view) === "verify" ? <ReleaseReadinessStrip /> : null}
 
@@ -1662,6 +1746,7 @@ function GymView({
   hiveReady: boolean;
   onStatus?: (status: LearningViewStatus) => void;
 }) {
+  const openArming = useOpenArming();
   // P-042: scope the gym rollup to one hive's gym harness; '' ⇒ the whole
   // workspace (every gym harness). Gated on hiveReady (WI-5412) so the first
   // click never pays a wrong-lens fetch + refetch.
@@ -1810,6 +1895,8 @@ function GymView({
               ? `No gym activity for ${hive} yet`
               : "No gym activity in this workspace yet"
           }
+          body={`Armed ${t("pot", { plural: true, lower: true })} A/B-refine their blueprints under a budget you set — completed cycles land here with their verdicts.`}
+          action={{ label: "Arm the Gym", onClick: openArming }}
         />
       ) : (
         <>
@@ -3376,6 +3463,7 @@ export function ScoutView({
 } = {}) {
   const t = useLexicon();
   const RAIL_META = railMeta(t);
+  const openArming = useOpenArming();
   const sync = useSyncQuery<ScoutSnapshot>({
     queryName: "learning.scout",
     args: hive ? { hive } : {},
@@ -4231,7 +4319,12 @@ export function ScoutView({
           onRetry={() => sync.invalidate()}
         />
       ) : filteredRecent.length === 0 ? (
-        <LearningVisualEmpty icon={Radar} title={`No routed ideas`} />
+        <LearningVisualEmpty
+          icon={Radar}
+          title="No routed ideas yet"
+          body={`The ${t("scout")} reads this ${t("pot", { lower: true })}'s history on a cadence and routes surviving ideas here — cycles usually appear within the hour once armed.`}
+          action={{ label: "Open Arming", onClick: openArming }}
+        />
       ) : (
         <>
           {gradeError ? (
@@ -5581,6 +5674,17 @@ export function LearningStyles() {
       .pc-learning__lensbar { width: 44px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
       .pc-learning__lensbar span { display: block; height: 100%; border-radius: 2px; background: #a78bfa; }
 
+      /* P-009 first-run: the visible view gloss + the once-per-workspace orientation banner. */
+      .pc-learning__strap { margin: 2px 0 0; color: var(--fg-mute, #7f9bb4); font-size: 11px; line-height: 1.4; }
+      .pc-learning__orient { display: flex; align-items: flex-start; gap: 10px; margin-top: 8px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+      .pc-learning__orientbody { display: flex; flex-direction: column; gap: 4px; }
+      .pc-learning__orientbody strong { color: var(--fg-dim, #b9d4e8); font-size: 12px; }
+      .pc-learning__orientbody p { margin: 0; max-width: 72ch; color: var(--fg-mute, #7f9bb4); font-size: 11px; line-height: 1.5; }
+      .pc-learning__orientaction { align-self: flex-start; margin-top: 4px; display: inline-flex; align-items: center; min-height: 25px; padding: 3px 11px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); color: var(--accent); cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; }
+      .pc-learning__orientaction:hover { background: color-mix(in srgb, var(--accent) 20%, var(--bg-2)); }
+      .pc-learning__orientaction:focus-visible, .pc-learning__orientdismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .pc-learning__orientdismiss { margin-left: auto; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-mute, #7f9bb4); cursor: pointer; font-size: 12px; }
+      .pc-learning__orientdismiss:hover { color: var(--fg, #e6f1fa); background: var(--bg-2); }
       .pc-learning__empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 16px 12px; color: var(--fg-mute, #7f9bb4); font-size: 12px; }
       .pc-learning__empty--card { border: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); border-radius: 12px; }
       .pc-learning__empty strong { color: var(--fg-dim, #b9d4e8); font-size: 13px; }
