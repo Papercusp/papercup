@@ -260,7 +260,7 @@ built-in surface (581 tools as of this writing) plus the plugin tools
 are exposed via `?superuser=1`:
 
 * **Read workspace state**: `harness:status`, `tasks:list`,
-  `features:get`, `goals:list`, `issues:list`, `messages:inbox`.
+  `features:get`, `goals:list`, `issues:list`, `work_items:list`.
 * **Operator surface**: `operator:audit`, `operator:nudge`.
 * **Cross-workspace**: `papercusp:list_workspaces`, then any tool
   with `?workspace=<slug>`.

@@ -148,55 +148,55 @@ also `deploy:pot` / `deploy:teardown_hive`; `system.backup` also
 `backup:snapshot_create` / `backup:promote`). The canonical full verb set per row
 lives in `action-surface.ts`.
 
-| Action                                        | Category            | Rev.      | Authority | Mug verb(s)                                   | Coverage |
-| --------------------------------------------- | ------------------- | --------- | --------- | --------------------------------------------- | -------- |
-| Tier / downgrade an inbox item                | inbox-triage        | rev       | system    | `inbox:triage`                                | covered  |
-| Dismiss / resolve an inbox message            | inbox-triage        | rev       | system    | `messages:dismiss`                            | covered  |
-| Resolve an escalation                         | escalations         | rev       | system    | `coord:resolve`                               | covered  |
-| Answer an agent question                      | escalations         | rev       | system    | `conversations:answer`                        | covered  |
-| Answer a `ctx.askUser` card                   | escalations         | rev       | owner     | `coord:resolve`, `coord:escalations`          | covered  |
-| Ask another pot / request work                | escalations         | rev       | system    | `pot:ask`, `pot:request_work`                 | covered  |
-| Ratify a `needs-human` plan item              | plan-governance     | rev       | owner     | `plans:set-status`                            | covered  |
-| Ratify a `D-NNN` decision                     | plan-governance     | rev       | owner     | `plans:add-decision`, `plans:ratify-decision` | covered  |
-| Set plan status / Now / priority              | plan-governance     | rev       | system    | `plans:set-plan-status`, `plans:set-now`      | covered  |
-| Promote plan → features / waves               | plan-governance     | rev       | system    | `plans:promote`                               | covered  |
-| Convert plan item → work-item                 | plan-governance     | rev       | system    | `plan_items:convert`                          | covered  |
-| Set work-item priority / importance           | work-prioritization | rev       | system    | `work_items:set_priority`                     | covered  |
-| Reorder the backlog                           | work-prioritization | rev       | system    | `work_items:reorder`                          | covered  |
-| Set / steer work-item state                   | work-prioritization | rev       | system    | `work_items:set_state`                        | covered  |
-| Grade a Scout idea                            | ideation-intake     | rev       | system    | `scout:grade-idea`                            | covered  |
-| Triage / resolve an improvement               | ideation-intake     | rev       | system    | `improvements:triage`                         | covered  |
-| Triage / promote an issue                     | ideation-intake     | rev       | system    | `issues:promote`                              | covered  |
-| Promote a conversation → tracked work         | ideation-intake     | rev       | system    | `conversations:promote`                       | covered  |
-| Approve / dispatch auto-implement             | implementation      | rev       | system    | `improvements:set-auto-policy`                | covered  |
-| Judge a gym candidate                         | review-merge        | rev       | system    | `gym:judge`                                   | covered  |
-| Record a design reviewer verdict              | review-merge        | rev       | system    | `design-phase:record_review`                  | covered  |
-| Approve a code review / merge                 | review-merge        | rev       | system    | `review:approve`, `merge:approve`             | covered  |
-| Approve / run a deploy                        | release-deploy      | **irrev** | owner     | `deploy:harness`                              | covered  |
-| Tear down a deploy target                     | release-deploy      | **irrev** | owner     | `deploy:teardown`                             | covered  |
-| Promote staging → green                       | release-deploy      | **irrev** | owner     | — (automation)                                | partial  |
-| Approve spend / set a budget                  | spend-budget        | **irrev** | owner     | `operator:budget`                             | covered  |
-| Scale out accounts                            | spend-budget        | **irrev** | owner     | `accounts:scale_out`                          | covered  |
-| Spawn an agent                                | agent-lifecycle     | rev       | system    | `cup:spawn`                                   | covered  |
-| Cancel / drain an agent                       | agent-lifecycle     | rev       | system    | `fleet:cancel`, `fleet:drain`                 | covered  |
-| Admit / supervise / govern the fleet          | agent-lifecycle     | rev       | system    | `fleet:admit`, `fleet:governor`               | covered  |
-| Create / start / pause / dissolve a pot       | agent-lifecycle     | rev       | system    | `pot:create`, `pot:start`                     | covered  |
-| Approve a new subagent                        | agent-lifecycle     | rev       | system    | `new_subagent:approve`                        | covered  |
-| Choose the model tier for a spawn             | agent-lifecycle     | rev       | system    | `cup:spawn` (param)                           | partial  |
-| Register / remove a credential account        | credentials-auth    | **irrev** | owner     | `accounts:register`                           | covered  |
-| Grant cross-pot authorization                 | credentials-auth    | rev       | owner     | `pot:cross_grant`                             | covered  |
-| Flip an auth-affecting flag                   | credentials-auth    | rev       | owner     | `flags:set`                                   | partial  |
-| Trust / un-trust a GitHub author for auto-run | credentials-auth    | rev       | owner     | `trust:add`, `trust:remove`                   | covered  |
-| Approve / forget / update a memory            | knowledge-curation  | rev       | system    | `memory:remember`, `memory:forget`            | covered  |
-| Publish / install a knowledge pack            | knowledge-curation  | rev       | system    | `knowledge_packs:publish`                     | covered  |
-| Author / extend a blueprint                   | knowledge-curation  | rev       | system    | `blueprint:create`, `blueprint:extend`        | covered  |
-| Publish documentation                         | knowledge-curation  | rev       | system    | `docs:write`                                  | covered  |
-| Arm / disarm a scheduled plan                 | schedule-arm        | rev       | system    | `plans:arm-schedule`, `plans:disarm-schedule` | covered  |
-| Arm / disarm the loop                         | system-control      | rev       | owner     | `autoloop:control`                            | covered  |
-| Flip a feature flag                           | system-control      | rev       | owner     | `flags:set`                                   | covered  |
-| Activate / pause a routine                    | system-control      | rev       | owner     | `routines:write`                              | covered  |
-| Snapshot / restore / rollback state           | system-control      | **irrev** | owner     | `backup:restore`, `backup:rollback`           | covered  |
-| Kill a runaway process                        | system-control      | **irrev** | owner     | `processes:kill`                              | covered  |
+| Action                                        | Category            | Rev.      | Authority | Mug verb(s)                                        | Coverage      |
+| --------------------------------------------- | ------------------- | --------- | --------- | -------------------------------------------------- | ------------- |
+| Tier / downgrade an inbox item                | inbox-triage        | rev       | system    | `inbox:triage`                                     | covered       |
+| Dismiss / resolve an inbox message            | inbox-triage        | rev       | system    | — (`messages:dismiss` retired 2026-07-26, WI-6097) | **uncovered** |
+| Resolve an escalation                         | escalations         | rev       | system    | `coord:resolve`                                    | covered       |
+| Answer an agent question                      | escalations         | rev       | system    | `conversations:answer`                             | covered       |
+| Answer a `ctx.askUser` card                   | escalations         | rev       | owner     | `coord:resolve`, `coord:escalations`               | covered       |
+| Ask another pot / request work                | escalations         | rev       | system    | `pot:ask`, `pot:request_work`                      | covered       |
+| Ratify a `needs-human` plan item              | plan-governance     | rev       | owner     | `plans:set-status`                                 | covered       |
+| Ratify a `D-NNN` decision                     | plan-governance     | rev       | owner     | `plans:add-decision`, `plans:ratify-decision`      | covered       |
+| Set plan status / Now / priority              | plan-governance     | rev       | system    | `plans:set-plan-status`, `plans:set-now`           | covered       |
+| Promote plan → features / waves               | plan-governance     | rev       | system    | `plans:promote`                                    | covered       |
+| Convert plan item → work-item                 | plan-governance     | rev       | system    | `plan_items:convert`                               | covered       |
+| Set work-item priority / importance           | work-prioritization | rev       | system    | `work_items:set_priority`                          | covered       |
+| Reorder the backlog                           | work-prioritization | rev       | system    | `work_items:reorder`                               | covered       |
+| Set / steer work-item state                   | work-prioritization | rev       | system    | `work_items:set_state`                             | covered       |
+| Grade a Scout idea                            | ideation-intake     | rev       | system    | `scout:grade-idea`                                 | covered       |
+| Triage / resolve an improvement               | ideation-intake     | rev       | system    | `improvements:triage`                              | covered       |
+| Triage / promote an issue                     | ideation-intake     | rev       | system    | `issues:promote`                                   | covered       |
+| Promote a conversation → tracked work         | ideation-intake     | rev       | system    | `conversations:promote`                            | covered       |
+| Approve / dispatch auto-implement             | implementation      | rev       | system    | `improvements:set-auto-policy`                     | covered       |
+| Judge a gym candidate                         | review-merge        | rev       | system    | `gym:judge`                                        | covered       |
+| Record a design reviewer verdict              | review-merge        | rev       | system    | `design-phase:record_review`                       | covered       |
+| Approve a code review / merge                 | review-merge        | rev       | system    | `review:approve`, `merge:approve`                  | covered       |
+| Approve / run a deploy                        | release-deploy      | **irrev** | owner     | `deploy:harness`                                   | covered       |
+| Tear down a deploy target                     | release-deploy      | **irrev** | owner     | `deploy:teardown`                                  | covered       |
+| Promote staging → green                       | release-deploy      | **irrev** | owner     | — (automation)                                     | partial       |
+| Approve spend / set a budget                  | spend-budget        | **irrev** | owner     | `operator:budget`                                  | covered       |
+| Scale out accounts                            | spend-budget        | **irrev** | owner     | `accounts:scale_out`                               | covered       |
+| Spawn an agent                                | agent-lifecycle     | rev       | system    | `cup:spawn`                                        | covered       |
+| Cancel / drain an agent                       | agent-lifecycle     | rev       | system    | `fleet:cancel`, `fleet:drain`                      | covered       |
+| Admit / supervise / govern the fleet          | agent-lifecycle     | rev       | system    | `fleet:admit`, `fleet:governor`                    | covered       |
+| Create / start / pause / dissolve a pot       | agent-lifecycle     | rev       | system    | `pot:create`, `pot:start`                          | covered       |
+| Approve a new subagent                        | agent-lifecycle     | rev       | system    | `new_subagent:approve`                             | covered       |
+| Choose the model tier for a spawn             | agent-lifecycle     | rev       | system    | `cup:spawn` (param)                                | partial       |
+| Register / remove a credential account        | credentials-auth    | **irrev** | owner     | `accounts:register`                                | covered       |
+| Grant cross-pot authorization                 | credentials-auth    | rev       | owner     | `pot:cross_grant`                                  | covered       |
+| Flip an auth-affecting flag                   | credentials-auth    | rev       | owner     | `flags:set`                                        | partial       |
+| Trust / un-trust a GitHub author for auto-run | credentials-auth    | rev       | owner     | `trust:add`, `trust:remove`                        | covered       |
+| Approve / forget / update a memory            | knowledge-curation  | rev       | system    | `memory:remember`, `memory:forget`                 | covered       |
+| Publish / install a knowledge pack            | knowledge-curation  | rev       | system    | `knowledge_packs:publish`                          | covered       |
+| Author / extend a blueprint                   | knowledge-curation  | rev       | system    | `blueprint:create`, `blueprint:extend`             | covered       |
+| Publish documentation                         | knowledge-curation  | rev       | system    | `docs:write`                                       | covered       |
+| Arm / disarm a scheduled plan                 | schedule-arm        | rev       | system    | `plans:arm-schedule`, `plans:disarm-schedule`      | covered       |
+| Arm / disarm the loop                         | system-control      | rev       | owner     | `autoloop:control`                                 | covered       |
+| Flip a feature flag                           | system-control      | rev       | owner     | `flags:set`                                        | covered       |
+| Activate / pause a routine                    | system-control      | rev       | owner     | `routines:write`                                   | covered       |
+| Snapshot / restore / rollback state           | system-control      | **irrev** | owner     | `backup:restore`, `backup:rollback`                | covered       |
+| Kill a runaway process                        | system-control      | **irrev** | owner     | `processes:kill`                                   | covered       |
 
 ## Coverage gaps (P-016)
 
