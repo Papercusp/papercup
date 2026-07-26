@@ -14,6 +14,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
+import { createNuqsMock } from '@papercusp/test-config/nuqs-mock';
+
+// chat-ref-pills-2026-07-26 P-008: OperatorChat (rendered by SessionChatModal
+// via LiveSessionChat) now owns `useQueryState` calls for the ref-pill popup
+// routing below — every suite rendering it needs a nuqs mock.
+vi.mock('nuqs', () => createNuqsMock());
+// The two popup DESTINATIONS (→ PlanDetail / DetailPanel) are heavy — mocked
+// the SAME way PlansPane.test.tsx mocks PlanPopupModal away, to a tiny probe
+// asserting only what THIS file cares about: which id/harness reached them.
+let lastWorkItemPopupProps: Record<string, any> = {};
+vi.mock('../work-items/WorkItemPopupModal', () => ({
+  default: (props: Record<string, any>) => {
+    lastWorkItemPopupProps = props;
+    return null;
+  },
+}));
+vi.mock('../plans/PlanPopupModal', () => ({
+  default: () => null,
+}));
 
 // jsdom-vs-virtualization seam (same as ChatConversation.test.tsx): the real
 // @tanstack/react-virtual renders nothing without real layout, and the
@@ -132,6 +151,7 @@ beforeEach(() => {
   });
   H.results = {};
   attentionInvalidate.mockClear();
+  lastWorkItemPopupProps = {};
 });
 afterEach(() => {
   cleanup();
@@ -559,6 +579,52 @@ describe('SessionChatModal', () => {
       seedAttention([mkEscalation('esc-1')]);
       render(<SessionChatModal sessionOwnerId={null} onClose={vi.fn()} />);
       expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
+    });
+  });
+
+  describe('P-008 ref-pill popup routing (chat-ref-pills-2026-07-26, D-002 seam)', () => {
+    function seedRoster(entries: Array<Record<string, unknown>>) {
+      H.results['advRoster.list'] = {
+        data: [{ active: entries, pending: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    it('scopes a WI- ref pill click to the roster entry\'s harnessSlug', async () => {
+      seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member', harnessSlug: 'papercusp' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'see WI-1234 for detail' }]));
+      });
+
+      const pill = await waitFor(() => screen.getByLabelText('WI-1234'));
+      fireEvent.click(pill);
+
+      expect(lastWorkItemPopupProps.id).toBe('WI-1234');
+      expect(lastWorkItemPopupProps.harnessSlug).toBe('papercusp');
+    });
+
+    it('renders a static (non-clickable) pill when the roster entry has no harnessSlug', async () => {
+      seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member', harnessSlug: null }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'see WI-1234 for detail' }]));
+      });
+
+      const pill = await waitFor(() => screen.getByLabelText('WI-1234'));
+      // No harnessSlug ⇒ OperatorChat's handleWorkRefActivate no-ops rather
+      // than opening a popup pointed at no harness — but ChatConversation
+      // still WIRES onWorkRefActivate (renders an interactive <button>); the
+      // click itself is the thing that safely does nothing.
+      fireEvent.click(pill);
+      expect(lastWorkItemPopupProps.id ?? null).toBeNull();
     });
   });
 });

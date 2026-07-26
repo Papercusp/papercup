@@ -178,6 +178,26 @@ function directionFor(from: string, owner: string): 'inbound' | 'outbound' {
 }
 
 /**
+ * Recipients of an envelope, defensively.
+ *
+ * `getAgentCoordState` reads the append-only coord log and CASTS the raw lines
+ * to `CoordEnvelope[]` — an unchecked assertion over a historical file that
+ * spans format changes and several writers, so `to` is not guaranteed to be the
+ * array the type promises. It only has to be missing on ONE row: every call
+ * site below is inside a `.filter`, the throw escapes to getAgentCoordState's
+ * try/catch, and the whole Coord section collapses to an error string for EVERY
+ * agent (owner-reported 2026-07-26: "Cannot read properties of undefined
+ * (reading 'includes')" rendered in place of the panel's coord state).
+ *
+ * Coercing here — rather than `?? []` at each of the four call sites — keeps the
+ * fix in one place and makes the degradation proportionate: a malformed row
+ * simply matches no owner, instead of blinding the panel.
+ */
+function recipientsOf(env: { to?: unknown }): string[] {
+  return Array.isArray(env.to) ? (env.to as string[]) : [];
+}
+
+/**
  * Shape one agent's coord state from the raw message log + handoff/escalation
  * folds. Pure → unit-tested. `messages` is the full `messages` surface;
  * `acked` is the set the owner has acknowledged; `handoffs`/`escalations` are
@@ -194,7 +214,7 @@ export function deriveCoordState(
   // Pure '*' broadcasts where the agent isn't explicitly listed are excluded:
   // they aren't really "this agent's" message.
   const involving = messages
-    .filter((m) => m.from === owner || m.to.includes(owner))
+    .filter((m) => m.from === owner || recipientsOf(m).includes(owner))
     .sort(byTs);
   const last = involving.length > 0 ? involving[involving.length - 1] : null;
   const lastMessage: CoordMessageSummary | null = last
@@ -215,12 +235,12 @@ export function deriveCoordState(
     (m) =>
       m.kind === 'message' &&
       m.from !== owner &&
-      (m.to.includes(owner) || m.to.includes('*')) &&
+      (recipientsOf(m).includes(owner) || recipientsOf(m).includes('*')) &&
       !acked.has(m.msg_id),
   ).length;
 
   const openHandoffs: CoordHandoffSummary[] = handoffs
-    .filter((h) => h.record.from === owner || h.record.to.includes(owner))
+    .filter((h) => h.record.from === owner || recipientsOf(h.record).includes(owner))
     .map((h) => ({
       msgId: h.record.msg_id,
       from: h.record.from,

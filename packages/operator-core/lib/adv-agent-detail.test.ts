@@ -109,6 +109,28 @@ describe('deriveCoordState', () => {
     expect(out.lastMessage?.summary).toBe('newest outbound');
   });
 
+  // Owner-reported regression 2026-07-26: the dossier's whole Coord section
+  // rendered "Cannot read properties of undefined (reading 'includes')".
+  // getAgentCoordState CASTS raw append-only log lines to CoordEnvelope[], so a
+  // single historical row with no `to` threw inside these filters, escaped to
+  // that function's try/catch, and blanked the section for EVERY agent. The
+  // degradation must be proportionate: skip the bad row, keep the panel.
+  it('survives a malformed row with no recipients instead of blanking the whole section', () => {
+    const messages = [
+      msg({ msg_id: 'm-1', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'], summary: 'real inbound' }),
+      // The shape the log can actually hold, which the type promises it cannot:
+      { ...msg({ msg_id: 'm-bad', ts: isoMs(NOW - 2_000), from: 'su-9' }), to: undefined },
+      { ...msg({ msg_id: 'm-null', ts: isoMs(NOW - 1_500), from: 'su-9' }), to: null },
+    ] as unknown as CoordEnvelope[];
+
+    const out = deriveCoordState(messages, new Set(), [], [], 'su-1');
+
+    // No throw, and the good row still resolves — the malformed rows simply
+    // match no owner rather than taking the panel down with them.
+    expect(out.lastMessage?.msgId).toBe('m-1');
+    expect(out.unreadCount).toBe(1);
+  });
+
   it('excludes pure broadcasts the agent is not explicitly named in from lastMessage', () => {
     const messages: CoordEnvelope[] = [
       msg({ msg_id: 'm-1', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'], summary: 'to me' }),
