@@ -18,6 +18,7 @@ import {
   type ClaimSpecSubject,
 } from './claim-spec-match';
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
+import { formatSpecRef } from './claim-spec';
 
 export interface FleetScopeContext {
   ownerId: string;
@@ -203,7 +204,7 @@ export async function admitWorkItemForFleetTarget(args: {
     code: 'fleet_scope_violation',
     scope,
     reason:
-      `work-item ${item.id} does not match ${scope.record.spec.specId}@${scope.record.spec.revision} ` +
+      `work-item ${item.id} does not match ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
       `for fleet '${scope.fleetSlug}'`,
   };
 }
@@ -228,7 +229,7 @@ export async function admitSubjectForFleetTarget(args: {
     code: 'fleet_scope_violation',
     scope,
     reason:
-      `assignment does not match ${scope.record.spec.specId}@${scope.record.spec.revision} ` +
+      `assignment does not match ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
       `for fleet '${scope.fleetSlug}'`,
   };
 }
@@ -258,7 +259,7 @@ export function fleetScopeLeaderRemedy(
     );
   }
   const spec = admission.scope.record?.spec;
-  const specRef = spec?.specId ? `${spec.specId}@${spec.revision}` : 'the fleet lane (no authored spec yet — default)';
+  const specRef = spec?.specId ? formatSpecRef(spec.specId, spec.revision) : 'the fleet lane (no authored spec yet — default)';
   return (
     `To let this member self-claim it, WIDEN the fleet lane in ONE call: ` +
     `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
@@ -317,7 +318,7 @@ export async function reconcileFleetScopeClaims(args: {
       summary: `quarantined ${quarantinedIds.length} out-of-scope fleet claim(s)`,
       body:
         `Released in one reconciliation sweep from ${scope.ownerId}: ${quarantinedIds.join(', ')}. ` +
-        `Authoritative scope is ${scope.record.spec.specId}@${scope.record.spec.revision}; re-steer or reassign deliberately.`,
+        `Authoritative scope is ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}; re-steer or reassign deliberately.`,
       category: 'fleet-scope-admission',
     }).catch(() => undefined);
   }
@@ -620,21 +621,21 @@ export function fleetScopedMiss(
       : divergent
         ? `CLAIM-PATH/READ-PATH DIVERGENCE: the claim path selected nothing, but the shared claimability oracle reports ` +
           `${breakdown!.claimable} of ${breakdown!.matchedByFilter} in-spec issue-family row(s) passing spec_match AND every claim floor ` +
-          `for fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision}. Your lane is NOT drained and NOT floor-gated — ` +
+          `for fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}. Your lane is NOT drained and NOT floor-gated — ` +
           'this is an internal inconsistency in the claim path\'s own spec narrowing (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class). ' +
           'windDown is deliberately NOT set: do not stand down.'
         : specEmpty
-          ? `SPEC MATCHES NOTHING (EI-18663622382734446): claim spec ${scope.record.spec.specId}@${scope.record.spec.revision}'s ` +
+          ? `SPEC MATCHES NOTHING (EI-18663622382734446): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
             'view.filter matches 0 issue-family row(s) in this harness/workspace at all — this is a SPEC-AUTHORING problem ' +
             '(a stale id allowlist, an over-narrow plan/kind/tag scope, or a typo), NOT a genuinely drained or floor-gated queue. ' +
             'ESCALATE to your fleet leader NOW quoting this spec id/revision; do not silently treat this as a normal drain — a ' +
             'zero-match spec never self-heals the way a drained pool eventually does.'
         : cooldown
-        ? `${cooldown.cooldownExcluded} in-spec row(s) matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision} ` +
+        ? `${cooldown.cooldownExcluded} in-spec row(s) matched fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
           `but ${cooldown.cooldownExcluded === 1 ? 'is' : 'are'} excluded ONLY by YOUR OWN release-cooldown floor` +
           (cooldownExpirySec != null ? ` (earliest expiry in ~${cooldownExpirySec}s)` : '') +
           '; this is NOT a scope/spec mismatch — do not re-author the claim spec for this miss.'
-        : `no claimable work-item matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision}; ` +
+        : `no claimable work-item matched fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}; ` +
           'the member was NOT allowed to fall through to the generic backlog',
     fleetScope: {
       fleet: scope.fleetSlug,

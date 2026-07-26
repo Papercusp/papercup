@@ -31,6 +31,7 @@ import {
   aggregateIssueClaimExclusions,
   type IssueClaimExclusionBreakdown,
 } from '../../scheduler/get-next';
+import { formatSpecRef } from '../../scheduler/claim-spec';
 
 export interface FleetDrainStamp {
   /** The harness the breakdown was computed against (the fleet's lane). */
@@ -87,7 +88,7 @@ export async function buildFleetDrainStamp(args: {
     const top = Object.entries(breakdown.excluded)
       .filter(([, n]) => (n as number) > 0)
       .sort((a, b) => (b[1] as number) - (a[1] as number));
-    const specLabel = rec?.spec ? `${rec.spec.specId}@${rec.spec.revision}` : 'default';
+    const specLabel = rec?.spec ? formatSpecRef(rec.spec.specId, rec.spec.revision) : 'default';
     const summary =
       `[auto-drain-stamp ${new Date().toISOString()} · spec ${specLabel}] ` +
       `${breakdown.matchedByFilter} in-lane issue-family row(s) matched the fleet spec's filter` +

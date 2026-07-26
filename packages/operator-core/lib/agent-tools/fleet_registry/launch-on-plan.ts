@@ -49,7 +49,7 @@ import {
   getFleetScheme,
   releaseFleetLaunchSlot,
 } from '../../agent-fleets-store';
-import { DEFAULT_CLAIM_SPEC, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
 import {
   fleetSpecBeeKey,
@@ -1244,14 +1244,14 @@ export default defineTool({
           specToApply = mergeKindIntoClaimSpec(existingSpec, args.claimKinds);
           applyWarning =
             `EI-10409: merged kind∈[${args.claimKinds.join(',')}] into pre-existing leader-authored ` +
-            `claim spec '${existingSpec.specId}'@${existingSpec.revision} rather than overwriting it`;
+            `claim spec ${formatSpecRef(existingSpec.specId, existingSpec.revision)} rather than overwriting it`;
         } else {
           claimSpecApplied = {
             ok: true,
             revision: existingSpec.revision,
             warning:
-              `EI-10409: preserved pre-existing leader-authored claim spec '${existingSpec.specId}'` +
-              `@${existingSpec.revision} — not overwritten`,
+              `EI-10409: preserved pre-existing leader-authored claim spec ` +
+              `${formatSpecRef(existingSpec.specId, existingSpec.revision)} — not overwritten`,
           };
         }
       } else {

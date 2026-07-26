@@ -41,6 +41,7 @@ import { hardText, softText, clampText, LIMITS } from '../limits';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { resolvePlanScope } from '../plans/source';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
+import { formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-workspace';
 import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
 
@@ -620,7 +621,7 @@ export default defineTool({
                   auto_scoped_payload_filter: true,
                   payload_filter: effectivePayloadFilter,
                   payload_filter_source: autoScopedFrom,
-                  auto_scoped_payload_filter_advice: `EI-13846: no payload_filter was passed, so this "work-item:claimable" await was AUTOMATICALLY narrowed to your own ${autoScopedFrom.source} claim spec (${autoScopedFrom.specId}@${autoScopedFrom.revision}) — it will fire only on claimable items your spec could actually admit, not on every hive-wide release. Pass an explicit payload_filter to override.`,
+                  auto_scoped_payload_filter_advice: `EI-13846: no payload_filter was passed, so this "work-item:claimable" await was AUTOMATICALLY narrowed to your own ${autoScopedFrom.source} claim spec (${formatSpecRef(autoScopedFrom.specId, autoScopedFrom.revision)}) — it will fire only on claimable items your spec could actually admit, not on every hive-wide release. Pass an explicit payload_filter to override.`,
                 }
               : {}),
             ...(unscopedClaimableWarning

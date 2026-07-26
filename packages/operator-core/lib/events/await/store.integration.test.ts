@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey, probeKeyFireEvidence, keyFireEvidencePrefix } =
   await import('./store');
 
 let rootSql: postgres.Sql;
@@ -389,5 +389,58 @@ describe('recordKeyFire / getKeyFireLatch / inspectEventKey.fireLatch (PG)', () 
     const history = await inspectEventKey('k:no-latch');
     expect(history.waiters).toHaveLength(1);
     expect(history.fireLatch).toBeNull();
+  });
+});
+
+describe('probeKeyFireEvidence (PG) — EI-18676056143796303, the emitter evidence behind the orphan guard', () => {
+  it('keyFireEvidencePrefix takes the family (first two segments), and a short key probes itself', () => {
+    expect(keyFireEvidencePrefix('coord:inbox-wake:su-abc-123')).toBe('coord:inbox-wake');
+    expect(keyFireEvidencePrefix('plan-item:done:my-plan:P-004')).toBe('plan-item:done');
+    expect(keyFireEvidencePrefix('work-item:claimable')).toBe('work-item:claimable');
+    expect(keyFireEvidencePrefix('single')).toBe('single');
+  });
+
+  it('reports NO evidence for a key whose family has never fired — the genuine-orphan case still warns', async () => {
+    const ev = await probeKeyFireEvidence('overwatch:surface-landed');
+    expect(ev).toMatchObject({ prefix: 'overwatch:surface-landed', exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null });
+  });
+
+  it('reports EXACT evidence when this very key has fired', async () => {
+    await recordKeyFire({ eventKey: 'evidence:exact', firedBy: 'src' });
+    await recordKeyFire({ eventKey: 'evidence:exact', firedBy: 'src' });
+    const ev = await probeKeyFireEvidence('evidence:exact');
+    expect(ev.exact).toBe(true);
+    expect(ev.fires).toBe(2);
+    expect(ev.distinctKeys).toBe(1);
+    expect(ev.lastFiredAt).toBeTruthy();
+  });
+
+  it('reports SIBLING evidence for a never-before-seen key whose FAMILY fires — the coord:inbox-wake case', async () => {
+    // A fresh agent's own inbox-wake key has no latch row of its own, but 118
+    // sibling owner keys have fired thousands of times. That is what proves an
+    // emitter exists, and what the orphan warning claimed did not.
+    await recordKeyFire({ eventKey: 'coord:inbox-wake:su-one' });
+    await recordKeyFire({ eventKey: 'coord:inbox-wake:su-two' });
+    await recordKeyFire({ eventKey: 'coord:inbox-wake:su-two' });
+    const ev = await probeKeyFireEvidence('coord:inbox-wake:su-brand-new');
+    expect(ev.exact).toBe(false);
+    expect(ev.distinctKeys).toBe(2);
+    expect(ev.fires).toBe(3);
+    expect(ev.prefix).toBe('coord:inbox-wake');
+  });
+
+  it('does NOT leak across families — a neighbouring prefix is not evidence', async () => {
+    await recordKeyFire({ eventKey: 'neighbour:alpha:1' });
+    // `neighbour:beta` must not be credited with `neighbour:alpha`'s fires…
+    expect((await probeKeyFireEvidence('neighbour:beta:1')).fires).toBe(0);
+    // …and a prefix must match on a ':' boundary, not a bare startsWith.
+    await recordKeyFire({ eventKey: 'neigh:alphabet' });
+    expect((await probeKeyFireEvidence('neigh:alpha:9')).fires).toBe(0);
+  });
+
+  it('treats LIKE wildcards in a key as literals (a `%` key cannot widen the scan)', async () => {
+    await recordKeyFire({ eventKey: 'wild:other:x' });
+    expect((await probeKeyFireEvidence('wild:%:y')).fires).toBe(0);
+    expect((await probeKeyFireEvidence('wild:_ther:y')).fires).toBe(0);
   });
 });

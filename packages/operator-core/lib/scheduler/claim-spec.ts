@@ -131,6 +131,22 @@ export const CURRENT_SPEC_VERSION = '1.0' as const;
 /** Schema versions this validator understands. Bump + branch when the shape changes. */
 export const SUPPORTED_SPEC_VERSIONS = ['1.0'] as const;
 
+/**
+ * Unambiguous human-readable "which spec, which revision" label
+ * (work-item-claimability-clarity-2026-07-20 / EI-18676258006299036).
+ *
+ * The bare `"<specId>@<revision>"` form used to be interpolated all over the scheduler's
+ * diagnostic/refusal messages. `"<name>@<number>"` overwhelmingly reads as a size/replica
+ * annotation in ops tooling — a fleet member misread `nonp2p-bug-drain-0725@5` as "5 live
+ * members" against a real roster of 10, escalated a false "duplicate session" anomaly to
+ * the leader, and it will recur in the opposite direction too (revision > member count
+ * reads as "sessions are missing"). Every scheduler/fleet message that names a spec+revision
+ * MUST go through this helper instead of hand-rolling the `@` form.
+ */
+export function formatSpecRef(specId: string, revision: number | null | undefined): string {
+  return revision == null ? `${specId} (spec rev unknown)` : `${specId} (spec rev ${revision})`;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Zod schema — the wire/persisted shape of a claim spec.
 // ────────────────────────────────────────────────────────────────────────────
