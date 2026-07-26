@@ -328,7 +328,8 @@ export async function readPotWakeState(workspaceId?: string): Promise<PotWakeSta
  * Project a workspace's persisted subscriptions into LIVE reaction rules.
  * Idempotent: removes every `pot-wake:<ws>#*` rule first, then registers the
  * current set. Each rule fires the `pot:wake` tool (the floor-debounce lives
- * there) with static args carrying the subscription's provenance.
+ * there) with args carrying the subscription's provenance plus the actual
+ * matched trigger tool (`trigger: e.tool` — EI-18654946296495054).
  */
 export function syncPotWakeRules(workspaceId: string, subs: PotEventSubscription[]): number {
   for (const r of listReactionRules()) {

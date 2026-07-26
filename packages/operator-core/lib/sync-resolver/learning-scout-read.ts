@@ -30,6 +30,7 @@
  */
 import { term } from '@papercusp/lexicon';
 import type { Sql } from 'postgres';
+import { PLATFORM_POT_SLUG } from '../pot-membership';
 
 export interface ScoutRailCount {
   /** The routing rail: 'plan' | 'gym' | 'wi' (open set — render what arrives). */
@@ -583,12 +584,36 @@ export async function readScoutDraftIterations({
 export async function readScoutSnapshot(
   sql: Sql,
   workspaceId: string,
-  opts: { selectedCycleId?: string | null } = {},
+  opts: {
+    selectedCycleId?: string | null;
+    /** Pot lens (pot-scope-all-learnings P-005): scopes the routed-ideas legs to
+     *  the pot's member harnesses and the tick leg to `pot_slug`. The digest /
+     *  cadence / lens-weight legs stay workspace-global — they are loop
+     *  machinery state with no per-pot identity. */
+    hive?: string | null;
+    /** The pot's member harness slugs, resolved by the caller via the registry
+     *  (the learning.improvements hiveMemberHarnessScopes pattern). Falls back
+     *  to just the pot home slug when omitted. */
+    hiveMemberSlugs?: string[] | null;
+  } = {},
 ): Promise<ScoutSnapshot> {
+  const hive = typeof opts.hive === 'string' && opts.hive.trim() ? opts.hive.trim() : null;
+  const memberSlugs = hive ? (opts.hiveMemberSlugs?.length ? opts.hiveMemberSlugs : [hive]) : null;
+  // scout_routed_ideas has harness_slug but NO pot column — a row's pot is its
+  // harness's registry pot (the write-side resolveLearningPotSlug model, P-005).
+  // Rows with NULL harness_slug home to the PLATFORM pot, mirroring step 3 of
+  // that resolution; under any other pot lens they are excluded (D-002 — never
+  // misfile unattributable rows into a pot).
+  const routedPotFilter = memberSlugs
+    ? hive === PLATFORM_POT_SLUG
+      ? sql`AND (harness_slug IN ${sql(memberSlugs)} OR harness_slug IS NULL)`
+      : sql`AND harness_slug IN ${sql(memberSlugs)}`
+    : sql``;
   const rails = (await sql`
     SELECT rail, count(*)::int AS count
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${workspaceId}
+       ${routedPotFilter}
      GROUP BY rail
      ORDER BY count DESC, rail ASC
   `) as Array<Record<string, unknown>>;
@@ -607,6 +632,7 @@ export async function readScoutSnapshot(
            addresses_pattern_refs, harness_slug
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${workspaceId}
+       ${routedPotFilter}
      ORDER BY routed_at DESC
      LIMIT 50
   `) as Array<Record<string, unknown>>;
@@ -676,6 +702,7 @@ export async function readScoutSnapshot(
       SELECT * FROM harness_shared.scout_ticks
        WHERE workspace_id = ${workspaceId}
          AND origin = 'scout'
+         ${hive ? sql`AND pot_slug = ${hive}` : sql``}
        ORDER BY tick_at DESC
        LIMIT 12
     `) as Array<Record<string, unknown>>;
