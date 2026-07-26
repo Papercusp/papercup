@@ -20,6 +20,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import { gitPipelineSnapshot } from './git-pipeline-stats';
@@ -47,11 +48,158 @@ export function tsxBin(root: string): string {
   return path.join(root, 'node_modules/.bin/tsx');
 }
 
+// ─── In-flight detection (EI-18724155280048738) ───────────────────────────────
+
+/**
+ * Is a deploy RUNNING right now? The signal that was missing, and the reason a caller
+ * could not tell "the trigger did nothing" from "the trigger started a deploy".
+ *
+ * EI-18724155280048738: `release:deploy{op:trigger}` can return a transport error
+ * (`CONNECTION_CLOSED` against PgBouncer :6432) even though the handler ran to completion and
+ * the deploy launched — the audit_log for the 2026-07-26 16:09Z incident records
+ * `launched:true` for the trigger whose caller saw only the error. The sanctioned recovery was
+ * "don't retry blind, check with `ps`" — but `ps` RACES the spawn: `systemd-run` returns as
+ * soon as the unit is STARTED, while the `bash`→`tsx`→deploy-cli child tree takes ~20s more to
+ * become visible. Every signal available in that window (`ps`, `op:status`'s
+ * `green-deployable`, the operator journal) reads exactly like "nothing happened", which is
+ * precisely the reading that invites a second trigger against the shared release checkout.
+ *
+ * systemd is the race-free authority BY CONSTRUCTION: `systemd-run --unit=` only exits 0 once
+ * the unit exists, so the unit is queryable strictly BEFORE the child is `ps`-visible — it
+ * covers the whole window `ps` misses. (The unit is also what already enforces one-deploy-at-
+ * a-time; see DEPLOY_UNIT. This just reads the state that guard was relying on implicitly.)
+ *
+ * The log mtime (the filer's suggested discriminator) is kept as CORROBORATION only: the log
+ * is `>`-truncated per run, so it is a decent freshness tell but it cannot distinguish a
+ * running deploy from one that just exited, and it is absent entirely before the first write.
+ */
+export interface DeployInFlight {
+  /** True iff the transient deploy unit is currently activating/active/deactivating. */
+  active: boolean;
+  unit: string;
+  /** systemd `ActiveState` (inactive | activating | active | deactivating | failed), null if unreadable. */
+  activeState: string | null;
+  /** systemd `SubState` (e.g. running, exited), null if unreadable. */
+  subState: string | null;
+  /** Wall-clock start of the deploy process, when systemd's timestamp could be parsed. */
+  startedAtMs: number | null;
+  /** Where the running deploy writes — the file to tail for `__DEPLOY_PLAN__` / progress. */
+  logPath: string;
+  /** Corroboration only (see above); null when the log does not exist. */
+  logMtimeMs: number | null;
+  /** How `active` was decided — 'systemd-unavailable' means treat `active:false` as UNKNOWN. */
+  source: 'systemd' | 'systemd-unavailable';
+}
+
+/** ActiveState values that mean the unit still has work in flight. `deactivating` counts:
+ *  the deploy's own :3070 restart happens late, so the deploy is not settled until inactive. */
+const IN_FLIGHT_ACTIVE_STATES = new Set(['activating', 'active', 'deactivating']);
+
+/** Pure: parse `systemctl show`'s `Key=Value` lines into a lookup. Exported for testing. */
+export function parseSystemctlShow(stdout: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of stdout.split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+/**
+ * Pure: derive the in-flight verdict from systemctl's properties + the log's mtime.
+ * Exported so the decision is unit-testable without a systemd on the box.
+ *
+ * `ExecMainStartTimestamp` is systemd's human format ("Sun 2026-07-26 12:09:43 EDT"). V8 parses
+ * the common US zone abbreviations but not every zone a host might run in, so an unparseable
+ * timestamp degrades to null rather than to a wrong instant — `active` never depends on it.
+ */
+export function computeDeployInFlight(args: {
+  props: Record<string, string> | null;
+  logPath: string;
+  logMtimeMs: number | null;
+}): DeployInFlight {
+  const { props, logPath, logMtimeMs } = args;
+  if (!props) {
+    return {
+      active: false,
+      unit: DEPLOY_UNIT,
+      activeState: null,
+      subState: null,
+      startedAtMs: null,
+      logPath,
+      logMtimeMs,
+      source: 'systemd-unavailable',
+    };
+  }
+  const activeState = props.ActiveState ?? null;
+  const parsed = Date.parse(props.ExecMainStartTimestamp ?? '');
+  return {
+    active: !!activeState && IN_FLIGHT_ACTIVE_STATES.has(activeState),
+    unit: DEPLOY_UNIT,
+    activeState,
+    subState: props.SubState ?? null,
+    startedAtMs: Number.isFinite(parsed) ? parsed : null,
+    logPath,
+    logMtimeMs,
+    source: 'systemd',
+  };
+}
+
+export interface ReadDeployInFlightDeps {
+  spawnFn?: SpawnLike;
+  /** Injectable stat seam (default: fs.statSync mtime, or null when absent). */
+  logMtimeMs?: () => number | null;
+}
+
+/** Read whether a deploy is running right now. Never throws — an unreadable systemd degrades
+ *  to `source:'systemd-unavailable'`, which a caller must read as UNKNOWN, not as "idle". */
+export function readDeployInFlight(deps: ReadDeployInFlightDeps = {}): Promise<DeployInFlight> {
+  const logPath = `/tmp/${DEPLOY_UNIT}.log`;
+  const spawnFn = deps.spawnFn ?? spawn;
+  const readMtime =
+    deps.logMtimeMs ??
+    (() => {
+      try {
+        return fs.statSync(logPath).mtimeMs;
+      } catch {
+        return null;
+      }
+    });
+  const logMtimeMs = readMtime();
+
+  return new Promise<DeployInFlight>((resolve) => {
+    let stdout = '';
+    let settled = false;
+    const done = (props: Record<string, string> | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(computeDeployInFlight({ props, logPath, logMtimeMs }));
+    };
+    try {
+      const child = spawnFn('systemctl', [
+        '--user',
+        'show',
+        DEPLOY_UNIT,
+        '--property=ActiveState',
+        '--property=SubState',
+        '--property=ExecMainStartTimestamp',
+      ]);
+      child.stdout?.on('data', (d: unknown) => (stdout += String(d)));
+      child.on('error', () => done(null));
+      child.on('close', (code: number | null) => done(code === 0 ? parseSystemctlShow(stdout) : null));
+    } catch {
+      done(null);
+    }
+  });
+}
+
 // ─── Status / recommendation (pure) ───────────────────────────────────────────
 
 /** Where the live :3070 stands relative to the green pin + why a deploy is/ isn't possible. */
 export type DeployStateKind =
   | 'up-to-date' // live :3070 is at the green pin; nothing to deploy
+  | 'deploy-in-flight' // EI-18724155280048738: a deploy is RUNNING right now — do not trigger another
   | 'green-deployable' // green code is ahead + deployable but not yet live (the trigger case)
   | 'gate-red' // the gate is RED — the green pin can't advance until the reds are fixed
   | 'gate-verdict-stale' // WI-4489: the blob says red, but the verdict is superseded/unverified — colour UNKNOWN, not red
@@ -111,6 +259,12 @@ export interface DeployStatus {
     greenPinAtStagingHead: boolean | null;
     deployedAtMs: number | null;
   };
+  /** EI-18724155280048738: is a deploy RUNNING right now? The queryable state between "not
+   *  started" and "deployedSha moved" — without it the whole early window of a live deploy is
+   *  indistinguishable from a trigger that did nothing. Null only when the status was computed
+   *  WITHOUT probing (the pure `computeDeployStatus(snap)` path, e.g. the staleness watchdog);
+   *  `readDeployStatus()` always populates it. */
+  deployInFlight: DeployInFlight | null;
   /** True iff `trigger` would do something safe + useful: there is green code ahead of the
    *  live deploy AND the gate is not currently red/wedged. */
   canTriggerGreen: boolean;
@@ -129,7 +283,7 @@ export interface DeployStatus {
  * Pure: derive the deploy status + the decision-tree recommendation from a pipeline snapshot.
  * Exported for unit testing — no I/O.
  */
-export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
+export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployInFlight | null = null): DeployStatus {
   const g = snap.gate;
   const d = snap.deploy;
   // EI-10902: the most recent green_checkpoint pipeline event (snap.recent is newest-first) —
@@ -172,7 +326,11 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
   // main ahead of the release checkout" regardless of current gate color. Coupling this to
   // gateGreen wedged op:trigger in exactly the 'green-deployable' state whose own recommendation
   // tells you to run it (deploy-trigger-and-gate-unblock-2026-06-21 follow-up).
-  const canTriggerGreen = hasGreenAhead;
+  // EI-18724155280048738: a deploy already RUNNING is not a triggerable one. Refusing here (with
+  // a definite reason) is strictly better than letting the caller fire and rely on systemd-run
+  // exiting 1 on the duplicate unit — that path reports the hedged "a deploy MAY already be in
+  // flight", which is the same can't-tell-two-states-apart defect one layer down.
+  const canTriggerGreen = hasGreenAhead && !inFlight?.active;
 
   // WI-4489: a RED is only authoritative if its verdict is CURRENT. `gate_health` is a cache that a
   // starved writer freezes: a `skipped-locked` fire is a no-op that leaves the blob untouched while
@@ -184,7 +342,20 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
 
   let state: DeployStateKind;
   let recommendation: string;
-  if (hasGreenAhead) {
+  if (inFlight?.active) {
+    // FIRST in the chain on purpose: every other state below describes where the pipeline is
+    // PARKED, and each of them (green-deployable most of all) reads as "nothing is happening"
+    // while a deploy is in fact mid-run. A running deploy is the answer to "why isn't my change
+    // live yet", so it must win over the parked-state descriptions.
+    state = 'deploy-in-flight';
+    const startedAgo =
+      typeof inFlight.startedAtMs === 'number' ? ` (started ${new Date(inFlight.startedAtMs).toISOString()})` : '';
+    recommendation =
+      `A deploy is RUNNING right now — systemd unit ${inFlight.unit} is ${inFlight.activeState}${startedAgo}. ` +
+      `Do NOT trigger another: the manual lever and the auto-serve share one transient unit, so a second trigger is refused, and a genuine concurrent deploy against the shared release checkout is what that guard exists to prevent. ` +
+      `Watch it with \`tail -f ${inFlight.logPath}\` (the \`__DEPLOY_PLAN__\` line marks the plan; the process tree only becomes \`ps\`-visible ~20s in), or await the release:deployed / deploy-failed events. ` +
+      `Re-check this status once it finishes to confirm the live sha moved.`;
+  } else if (hasGreenAhead) {
     // There IS green, deployable code that hasn't reached :3070 — the expedite case.
     state = 'green-deployable';
     recommendation =
@@ -248,6 +419,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
       greenPinAtStagingHead: d.greenPinAtStagingHead,
       deployedAtMs: d.deployedAtMs,
     },
+    deployInFlight: inFlight,
     canTriggerGreen,
     nothingToDeploy,
     state,
@@ -259,13 +431,21 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
 
 export interface ReadDeployStatusDeps {
   loadSnapshot?: () => Promise<GitPipelineSnapshot>;
+  /** Injectable in-flight probe (default: the real systemd read). */
+  loadInFlight?: () => Promise<DeployInFlight>;
 }
 
-/** Read the current deploy status (the snapshot + the pure computation). READ-ONLY. */
+/** Read the current deploy status (the snapshot + the in-flight probe + the pure computation).
+ *  READ-ONLY. The in-flight probe is best-effort: if it throws, the status still returns (with
+ *  `deployInFlight:null`) rather than failing the whole read. */
 export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise<DeployStatus> {
   const load = deps.loadSnapshot ?? (() => gitPipelineSnapshot());
-  const snap = await load();
-  return computeDeployStatus(snap);
+  const loadInFlight = deps.loadInFlight ?? (() => readDeployInFlight());
+  const [snap, inFlight] = await Promise.all([
+    load(),
+    loadInFlight().catch(() => null),
+  ]);
+  return computeDeployStatus(snap, inFlight);
 }
 
 // ─── Detached deploy launch ───────────────────────────────────────────────────

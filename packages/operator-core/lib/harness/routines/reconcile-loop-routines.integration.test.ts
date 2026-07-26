@@ -45,6 +45,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.agent_activity WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.session_turn_journal WHERE workspace_id = ${WS}`;
 });
 
 /**
@@ -86,6 +87,18 @@ async function seedLifecycle(ownerId: string, summary: string, atMs: number): Pr
     VALUES (${WS}, ${ownerId}, 'lifecycle', ${summary}, ${new Date(atMs)})`;
 }
 
+/** Seed a per-turn Stop-hook journal write (session_turn_journal, P-012, WI-6069) — the
+ *  signal that actually fires at the end of EVERY ordinary turn (unlike the lifecycle
+ *  'ended' marker, which only fires at a genuine session restart). session_id must be
+ *  unique per row (part of the UNIQUE index with turn_ts) — rtSeq keeps it distinct. */
+async function seedTurnJournal(ownerId: string, atMs: number): Promise<void> {
+  const sessionId = 'sess-' + ++rtSeq;
+  await sql`
+    INSERT INTO harness_shared.session_turn_journal
+      (workspace_id, owner_id, session_id, turn_ts, note, source, created_at)
+    VALUES (${WS}, ${ownerId}, ${sessionId}, ${new Date(atMs)}, 'test turn', 'mechanical', ${new Date(atMs)})`;
+}
+
 /** Seed/refresh the session's genuine-activity timestamp (presence-v2 last_active_at).
  *  WI-5964: coord_presence_pkey is PRIMARY KEY(owner_id) ONLY — globally unique,
  *  not scoped by workspace_id — so a bare INSERT can collide with a same-named
@@ -120,6 +133,20 @@ describe('reconcileLoopRoutines — pure loop completion-rebase', () => {
     const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0]).toMatchObject({ id, via: 'lifecycle' });
+    const fire = await readFire(id);
+    expect(fire.parked).toBe(false);
+    expect(fire.nextFireMs).toBe(T0 + 5_000 + 60_000); // completed_at + interval
+  });
+
+  it("re-arms via the per-turn journal signal when NO lifecycle marker exists (WI-6069 — the case a session driven entirely by push wakes never produces)", async () => {
+    const { id, ownerId } = await seedLoop({ ownerId: 'o-1b', intervalSec: 60, lastFiredAtMs: T0, parked: true });
+    // No seedLifecycle call at all — mirrors a warm session whose Stop hook never wires the
+    // lifecycle 'ended' marker (only SessionStart/SessionEnd do). The Stop hook's OTHER
+    // per-turn write (session_turn_journal, P-012) is what must settle this loop instead.
+    await seedTurnJournal(ownerId, T0 + 5_000);
+    const res = await reconcile({ sql, nowMs: T0 + 6_000 }); // only 1s of quiet — presence-quiescence could not have fired
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id, via: 'turn-journal' });
     const fire = await readFire(id);
     expect(fire.parked).toBe(false);
     expect(fire.nextFireMs).toBe(T0 + 5_000 + 60_000); // completed_at + interval

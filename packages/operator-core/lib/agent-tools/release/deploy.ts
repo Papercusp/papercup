@@ -78,6 +78,10 @@ function statusBrief(s: DeployStatus) {
       lastVerdict: s.gate.lastVerdict,
     },
     deployedBehindGreenPin: s.deploy.deployedBehindGreenPin,
+    // EI-18724155280048738: rides in EVERY reply (status, refusal, dry-run, fire) because the
+    // question it answers — "is a deploy already running?" — is exactly the one a caller who got
+    // a transport error instead of a result comes back to ask.
+    deployInFlight: s.deployInFlight,
     canTriggerGreen: s.canTriggerGreen,
     recommendation: s.recommendation,
   };
@@ -163,11 +167,15 @@ export default defineTool({
           op: 'trigger',
           refused: true,
           reason:
-            status.state === 'gate-red'
-              ? 'gate_red — there is no green pin ahead of the live deploy to ship. Fix the reds first (release:deploy{op:status} for detail); trigger can only expedite GREEN code.'
-              : status.nothingToDeploy
-                ? 'nothing_to_deploy — the live :3070 is already at the green pin.'
-                : `not_green_deployable (${status.state}) — ${status.recommendation}`,
+            // EI-18724155280048738: checked FIRST — a caller landing here after a trigger that
+            // returned a transport error needs "your deploy IS running", not a gate lecture.
+            status.deployInFlight?.active
+              ? `deploy_in_flight — a deploy is ALREADY RUNNING (unit ${status.deployInFlight.unit} is ${status.deployInFlight.activeState}${status.deployInFlight.startedAtMs ? `, started ${new Date(status.deployInFlight.startedAtMs).toISOString()}` : ''}). This is NOT a failed trigger: if your last trigger returned a transport error, it very likely still launched THIS deploy. Do not re-trigger — watch ${status.deployInFlight.logPath} or await release:deployed / deploy-failed.`
+              : status.state === 'gate-red'
+                ? 'gate_red — there is no green pin ahead of the live deploy to ship. Fix the reds first (release:deploy{op:status} for detail); trigger can only expedite GREEN code.'
+                : status.nothingToDeploy
+                  ? 'nothing_to_deploy — the live :3070 is already at the green pin.'
+                  : `not_green_deployable (${status.state}) — ${status.recommendation}`,
           status: statusBrief(status),
         });
       }
@@ -197,9 +205,12 @@ export default defineTool({
         unit: launch.unit,
         logPath: launch.logPath,
         ...(launch.reason ? { reason: launch.reason } : {}),
+        // EI-18724155280048738: both notes name the ONE authoritative re-check. The failure note
+        // no longer hedges ("likely") — a duplicate-unit refusal IS the in-flight guard firing,
+        // and op:status now proves it instead of leaving the caller to guess with `ps`.
         note: launch.launched
-          ? 'Green deploy started (detached). Watch /admin/git or await release:deployed / deploy-failed — this connection survives (the deploy restarts :3070, not this tool).'
-          : 'Deploy NOT launched — likely a deploy is already in flight (the manual + auto-serve share one transient unit). Re-check release:deploy{op:status} shortly.',
+          ? 'Green deploy started (detached). Watch /admin/git or await release:deployed / deploy-failed — this connection survives (the deploy restarts :3070, not this tool). IF THIS CALL RETURNED A TRANSPORT ERROR INSTEAD OF THIS RESULT: the deploy still launched. Do NOT re-trigger — confirm with release:deploy{op:status}, whose `deployInFlight.active` reads the systemd unit and is authoritative from the moment of launch. A `ps` check is NOT a valid discriminator: the deploy-cli process tree only becomes visible ~20s in, so an immediate `ps` false-negatives.'
+          : 'Deploy NOT launched — a deploy is already in flight (the manual lever + auto-serve share one transient unit, so one deploy runs at a time; this refusal IS that guard working, not a fault). Confirm and watch it via release:deploy{op:status} → `deployInFlight`.',
       });
     }
 

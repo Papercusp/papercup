@@ -73,6 +73,7 @@ function deploy(over: Partial<DeployStatus> = {}): DeployStatus {
       greenPinAtStagingHead: true,
       deployedAtMs: 1,
     },
+    deployInFlight: null,
     canTriggerGreen: false,
     nothingToDeploy: true,
     state: 'up-to-date',
