@@ -1629,6 +1629,23 @@ export async function joinHarnessSwarm(
   // `forceRejoinNow` sweeps this (filtered through the cross-harness
   // `swarmJoinSocketTopics` registry) before every leave()+join().
   const mySockets = new Set<unknown>();
+  /**
+   * EI-18687938054040755: sockets whose data path has ALREADY been reported as
+   * proven, so the positive is logged exactly once per socket.
+   *
+   * Why this latch exists at all: until now the swarm logged the NEGATIVE
+   * ("data path never came up", ~:1712) and logged the CONNECT as
+   * `peer_connected(signalling-only) (data path NOT yet demonstrated)`, but
+   * NEVER logged success — `dataPathProven` was computed at four call sites and
+   * the `true` case was always discarded. That absence is not cosmetic: the
+   * federation rig's load-bearing gate (`_fed_disc_probe` strict, in
+   * bin/lib/federation-asserts.sh) greps `\[swarm\] peer_connected` with no
+   * terminator, which MATCHES the signalling-only line — so "✓ holepunch
+   * succeeded" / "✓ peers discovered" could pass on a connection that never
+   * received a byte. There was no correct marker for it to gate on. This emits
+   * one.
+   */
+  const dataPathProvenReported = new WeakSet<object>();
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
     liveConnectionCount++;
@@ -2089,6 +2106,38 @@ export async function joinHarnessSwarm(
     if (refreshMs > 0) {
       refreshTimer = managedSetInterval('hyperbee-swarm-refresh', refreshMs, () => {
         const now = Date.now();
+
+        // ── EI-18687938054040755: emit the POSITIVE data-path signal ──
+        // Rides this existing managed tick deliberately — no new timer (repo
+        // rule: no bare setInterval / no second scheduler), and `readWireStats`
+        // is a pure read, so this cannot perturb the replication stream. (A
+        // 'data'/'readable' listener would have switched the socket to flowing
+        // mode and could CONSUME replication bytes — never do that here.)
+        // Fires at most once per socket; the WeakSet lets closed sockets be GC'd.
+        for (const socket of mySockets) {
+          if (typeof socket !== 'object' || socket === null) continue;
+          if (dataPathProvenReported.has(socket)) continue;
+          const wire = readWireStats(socket);
+          if (dataPathProven(wire) !== true) continue;
+          dataPathProvenReported.add(socket);
+          if (process.env.VITEST) continue;
+          try {
+            const path = extractConnectionPath(socket);
+            const peerHex = extractPublicKeyHex({
+              publicKey: (socket as { remotePublicKey?: unknown }).remotePublicKey,
+            });
+            console.info(
+              `[swarm] peer_data_path_up topic=${topicHex.slice(0, 16)}…` +
+                (peerHex ? ` peer=${peerHex.slice(0, 12)}…` : '') +
+                ` bytesReceived=${wire.bytesReceived ?? '?'}` +
+                ` packetsReceived=${wire.packetsReceived ?? '?'}` +
+                (path.relayed !== undefined ? ` relayed=${path.relayed}` : '') +
+                (path.remoteHost ? ` remoteHost=${path.remoteHost}` : ''),
+            );
+          } catch {
+            // Diagnostic-only; never let logging break the refresh tick.
+          }
+        }
 
         // ── EI-13317 escalation ladder ──
         // Evaluated on EVERY tick, independent of the refresh cadence below

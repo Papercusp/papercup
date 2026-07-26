@@ -169,6 +169,21 @@ function freshCodexHome(codexHome: string): string {
   return codexHome;
 }
 
+/** EI-11366: the sid `writeSuCodexHome` last stamped at this codexHome path
+ *  (its `.owner-sid` sentinel), or null when absent/unreadable — an old home
+ *  written before this guard existed, a `writeRoleCodexHome` home (no
+ *  sentinel), or a path that doesn't exist yet. Pure fs read, never throws. */
+function existingCodexHomeOwnerSid(codexHome: string): string | null {
+  try {
+    const p = join(codexHome, '.owner-sid');
+    if (!existsSync(p)) return null;
+    const v = readFileSync(p, 'utf8').trim();
+    return v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Move an already-materialized isolated Codex home from a temporary launch
  * key to the durable adv-session id used by every native resume path.
@@ -834,8 +849,40 @@ export function writeSuCodexHome(opts: {
   /** Canonical launch-time mode/route/scope state for the machine-readable
    * instruction precedence trace carried by the exact AGENTS.md lint. */
   instructionRuntime?: InstructionRuntimeContext;
+  /** EI-11366 identity-split guard: liveness check for a PRIOR occupant of this
+   *  sessionKey's home directory. Injected (not statically imported) so this
+   *  module stays dependency-free/pure for its unit tests — the real production
+   *  check is `findLiveHost` (psu-pty-discovery), wired by bootstrap-su.ts.
+   *  Omitted ⇒ the collision check is skipped entirely (byte-identical to the
+   *  pre-guard behavior — safe default for every existing caller/test). */
+  isOwnerLive?: (sid: string) => boolean;
 }): SuCodexHome {
-  const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
+  const targetHome = codexHomeForSessionKey(opts.sessionKey);
+  // EI-11366: a live Codex psu host was once found split across two identities
+  // — the physical host process/PAPERCUSP_SID/socket stayed with its ORIGINAL
+  // sid while CODEX_HOME/hooks.json on disk had been silently regenerated for a
+  // DIFFERENT sid. `freshCodexHome` below unconditionally rm -rf's + rebuilds
+  // whatever is at `targetHome` (intentional — see the "rebuilds fresh" test —
+  // for the ordinary case of re-preparing the SAME logical session). The gap is
+  // that nothing ever checked whether the directory it is about to destroy is
+  // still the ACTIVE home of a DIFFERENT, currently-live session. If a future
+  // caller (a retry path, a sessionKey computed by different code, an operator
+  // debug script) ever passes a sessionKey that collides with a still-live
+  // OTHER sid's home, this converts a silent identity-split into a loud,
+  // diagnosable refusal instead. Fails OPEN (proceeds, current behavior) unless
+  // BOTH a differing prior owner AND a caller-supplied liveness check confirm
+  // it is still live — never blocks a normal fresh/re-prepare launch.
+  const priorSid = existingCodexHomeOwnerSid(targetHome);
+  if (priorSid && priorSid !== opts.sid && opts.isOwnerLive?.(priorSid)) {
+    throw new Error(
+      `writeSuCodexHome: refusing to rebuild ${targetHome} — it is the LIVE Codex home of a ` +
+        `different session (owner ${priorSid}); overwriting it would silently split that ` +
+        `session's identity between its still-running process and a rewritten CODEX_HOME ` +
+        `(EI-11366). Pass the SAME sid to re-prepare that session, or a sessionKey that does ` +
+        `not collide with a live session's home.`,
+    );
+  }
+  const codexHome = freshCodexHome(targetHome);
   const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
@@ -883,6 +930,14 @@ export function writeSuCodexHome(opts: {
     lockOwnerSid: opts.sid,
     lockRuntime,
   });
+  // EI-11366: stamp the sentinel the collision guard above reads on the NEXT
+  // write to this sessionKey's home. Best-effort — a write failure here must
+  // never fail the launch (mirrors every other diagnostics write in this fn).
+  try {
+    writeFileSync(join(codexHome, '.owner-sid'), opts.sid, { mode: 0o600 });
+  } catch {
+    /* non-fatal: the collision guard simply skips on the next write */
+  }
 
   return { codexHome, agentsPath, configPath, instructionLint };
 }

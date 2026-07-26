@@ -627,6 +627,9 @@ export default defineTool({
     });
     const agents: (AgentAssignment & {
       sessionState?: SessionState | null;
+      /** Stamped by decorateMemberVerdicts — the holder's last GENUINE work signal
+       *  (WI-5975 reads it to tell a quiet-but-working holder from an absent one). */
+      lastToolCallAt?: string | null;
       contextPressure?: ContextPressureBucket | null;
       unanswered?: UnansweredDirectedSummary;
       parkedOn?: string[];

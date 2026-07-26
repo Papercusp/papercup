@@ -52,7 +52,15 @@ export default defineTool({
     sql: z
       .string()
       .min(1)
+      .optional()
       .describe('A single read-only SELECT or WITH…SELECT statement. No `;`-separated statements.'),
+    describe: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Instead of running SQL, describe a relation: columns, indexes and constraints — the psql `\\d schema.table` equivalent. Accepts a bare table name, or a `*`/glob pattern to LIST matching relations.',
+      ),
     maxRows: z
       .number()
       .int()

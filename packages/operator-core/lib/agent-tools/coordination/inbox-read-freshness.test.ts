@@ -118,9 +118,44 @@ describe('coordDeafBudgetMs', () => {
 });
 
 describe('COORD_READ_TOOL_NAMES', () => {
-  it('carries both colon and underscore spellings of inbox + orient', () => {
+  it('carries both colon and underscore spellings of inbox + orient + the activity:report fold path', () => {
     expect([...COORD_READ_TOOL_NAMES].sort()).toEqual(
-      ['coord:inbox', 'coord:orient', 'coord_inbox', 'coord_orient'].sort(),
+      [
+        'coord:inbox',
+        'coord:orient',
+        'coord_inbox',
+        'coord_orient',
+        'activity:report',
+        'activity_report',
+      ].sort(),
     );
+  });
+
+  // WI-5972 regression: fleet:leader-brief's coord_deaf was derived from
+  // classifyCoordDeafness, which in turn reads lastInboxReadAtBatch —
+  // querying tool_invocations for tool_name IN COORD_READ_TOOL_NAMES. Since
+  // EI-11405 folded the native-hook coordination pull into `activity:report`
+  // (buildActivityHookBundle calls the inbox handler in-process, telemetered
+  // under `activity:report`, never `coord:inbox`/`coord:orient`), a live
+  // session that only ever receives mail through that fold — i.e. every
+  // ordinary psu Claude session — had NO qualifying row and was flagged
+  // 'missing'/'stale' despite demonstrably being reachable (coord:send
+  // wake:'required' returning woken:1 to it in the same window). This proves
+  // the fix directly: an `activity:report` invocation now counts as a read,
+  // so a session pumping activity:report on every tool call is never flagged
+  // deaf purely for not calling coord:inbox/orient by name.
+  it("WI-5972: an 'activity:report' read (the folded hook-bundle pull path) counts as reading coord mail — a session using ONLY that path is never falsely flagged deaf", () => {
+    // Never explicitly read coord:inbox/orient, but its activity:report fold
+    // ran 2 minutes ago (well within budget) — must NOT be deaf.
+    expect(
+      classifyCoordDeafness({ ...liveRow, lastReadAt: iso(2 * 60_000) }, NOW, BUDGET),
+    ).toBeNull();
+
+    // A genuinely unreachable session (no injection leg — so NEITHER
+    // coord:inbox/orient NOR activity:report ever ran) is still correctly
+    // flagged: crediting activity:report never introduces a false negative.
+    expect(
+      classifyCoordDeafness({ ...liveRow, lastReadAt: null }, NOW, BUDGET),
+    ).toEqual({ state: 'missing', lastReadAgoSec: null });
   });
 });

@@ -150,6 +150,12 @@ export function computeBenchSuggestion(
     // a false trigger.
     load?: number;
     queued?: readonly unknown[];
+    // WI-5973: the fleet LEADER running its monitor loop, correctly (per the
+    // documented leader contract) held NO work-item claim — optional so
+    // pre-existing call sites keep compiling unchanged; absent reads as "not
+    // the leader's own monitor row", never a false suppression.
+    fleetRole?: string | null;
+    loopMode?: 'work' | 'monitor' | null;
   },
   /**
    * EI-18681259560385029: the fleet's LIVE authoritative claimable count (the same
@@ -195,6 +201,21 @@ export function computeBenchSuggestion(
       };
     }
   }
+  // WI-5973: a fleet LEADER running its monitor loop (fleetRole:'leader',
+  // loopMode:'monitor') is SUPPOSED to hold zero work-item claims — that IS
+  // the documented leader contract (monitor each wake: burn-down delta,
+  // member liveness, completion-integrity audit, reclaim orphans; the leader
+  // itself never pulls from the claim spec). The EI-13846 laneless-idle
+  // heuristic below was written for MEMBERS pulling from a claim spec whose
+  // lane may have drained — it does not apply to the leader's own row, whose
+  // correct steady state IS "no claim, nothing queued". Observed live
+  // 2026-07-26: the leader's own row carried this suggestion twice, and
+  // FOLLOWING it (benching the leader onto a scoped event) is precisely the
+  // failure the leader contract exists to prevent — the one agent responsible
+  // for detecting member death would go to sleep. This does NOT suppress the
+  // stalled-no-mcp branch above: a leader that DID take on work (load>0) and
+  // looks wedged is still a genuine, reportable fault regardless of role.
+  if (a.fleetRole === 'leader' && a.loopMode === 'monitor') return undefined;
   // EI-13846: LANELESS-IDLE. `stalled` requires load>0 (a held claim not advancing), so
   // it is structurally blind to a member holding NO claim at all — and `deriveMemberVerdict`
   // returns the loop's `monitorState` (monitoring|waiting|parked-awaiting-capability) BEFORE

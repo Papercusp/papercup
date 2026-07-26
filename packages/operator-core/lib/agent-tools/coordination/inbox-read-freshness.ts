@@ -30,12 +30,35 @@ import { getOrgPg } from '@papercusp/db-org';
  *  source of truth — `lastInboxReadAt` (loop/checkpoint.ts continuation gate)
  *  and the deafness derivation must never drift apart on this list.
  *  Both colon and underscore spellings appear in tool_invocations depending
- *  on the transport that recorded them. */
+ *  on the transport that recorded them.
+ *
+ *  `activity:report` / `activity_report` (WI-5972 fix): since the
+ *  coordination-hook-rpc-fanout-collapse-2026-07-16 refactor (EI-11405), a
+ *  native hook's PER-TOOL-CALL coordination pull is no longer a separate
+ *  `coord:inbox` MCP round trip — it is FOLDED into `activity:report`'s
+ *  `hook_bundle` cursor (see hook-bundle.ts + posttooluse-activity-report.sh,
+ *  which explicitly replaced the now-deleted posttooluse-coord-inbox.sh).
+ *  `buildActivityHookBundle` calls the inbox tool's handler DIRECTLY
+ *  in-process, so that read is telemetered under `tool_name:'activity:report'`
+ *  — never under `coord:inbox`/`coord:orient`. Every psu Claude session has
+ *  this fold ON by default (PAPERCUSP_COORD_FOLD defaults to "1"), so for the
+ *  overwhelming majority of live, actively-working sessions `activity:report`
+ *  IS how coord mail actually gets read — omitting it here made every such
+ *  session look "deaf" despite demonstrably receiving pushed wakes
+ *  (fleet:leader-brief's coord_deaf falsely flagged live, actively-speaking
+ *  members whose only "staleness" was never calling coord:inbox/orient BY
+ *  NAME). Fail-open by symmetry with the rest of this module: crediting one
+ *  extra tool name as "a read" can only REDUCE false-deaf flags, never
+ *  introduce a false "not deaf" for a session that is genuinely unreachable
+ *  (one with no injection leg at all issues no activity:report fold either,
+ *  since the hook itself is what calls it). */
 export const COORD_READ_TOOL_NAMES = [
   'coord:inbox',
   'coord:orient',
   'coord_inbox',
   'coord_orient',
+  'activity:report',
+  'activity_report',
 ] as const;
 
 /** Default deafness budget: a live, active session with no inbox read for

@@ -11,13 +11,17 @@ import {
   deriveActivity,
   downgradeEndedHolders,
   groupByAgent,
+  isReclaimCandidate,
   orphanedClaims,
   reclaimableClaims,
   stalledClaims,
+  summarizeOrphan,
   upgradeRecordedLiveHolders,
   type FleetAssignmentRow,
+  type HolderActivity,
 } from './assignments';
 import { classifyItemActivity, isReclaimable, type ItemActivity } from '../item-activity';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 const base: FleetAssignmentRow = {
   source: 'presence',

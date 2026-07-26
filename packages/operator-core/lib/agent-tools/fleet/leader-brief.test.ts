@@ -280,6 +280,109 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
   });
 });
 
+// WI-5973: a fleet leader running its monitor loop is SUPPOSED to hold zero
+// claims — that IS the documented leader contract (monitor each wake: burn-down
+// delta, member liveness, completion-integrity audit, reclaim orphans). Before
+// this fix, the leader's OWN row (fleetRole:'leader', loopMode:'monitor',
+// verdict:'monitoring', isSelf:true) still tripped the EI-13846 laneless-idle
+// heuristic written for MEMBERS pulling from a claim spec — and its paired
+// remedy (fleet:bench the leader onto a scoped event) is the exact failure the
+// leader contract exists to prevent: the one agent watching for member death
+// goes to sleep. Observed live 2026-07-26 on nonp2p-bug-drain-0725 (twice).
+describe('computeBenchSuggestion — the LEADER\'s own monitor row is never idle-cycling (WI-5973)', () => {
+  it('does NOT flag a leader with fleetRole:"leader" + loopMode:"monitor", zero claims, not parked', () => {
+    const s = computeBenchSuggestion({
+      stalled: false,
+      verdict: 'monitoring',
+      parkedOn: [],
+      doing: null,
+      load: 0,
+      queued: [],
+      fleetRole: 'leader',
+      loopMode: 'monitor',
+    });
+    expect(s).toBeUndefined();
+  });
+
+  it('does NOT flag the leader even when claimable work exists (the idle-with-claimable branch is ALSO leader-exempt)', () => {
+    const s = computeBenchSuggestion(
+      {
+        stalled: false,
+        verdict: 'monitoring',
+        parkedOn: [],
+        doing: null,
+        load: 0,
+        queued: [],
+        fleetRole: 'leader',
+        loopMode: 'monitor',
+      },
+      5, // claimableCount > 0 — would fire 'idle-with-claimable' for an ordinary member
+    );
+    expect(s).toBeUndefined();
+  });
+
+  it('STILL flags a member with fleetRole:"leader" but loopMode:"work" (a leader that also pulls work is not exempt)', () => {
+    const s = computeBenchSuggestion({
+      stalled: false,
+      verdict: 'monitoring',
+      parkedOn: [],
+      doing: null,
+      load: 0,
+      queued: [],
+      fleetRole: 'leader',
+      loopMode: 'work',
+    });
+    expect(s).toBeDefined();
+  });
+
+  it('STILL flags an ordinary member ("member"/null fleetRole) with loopMode:"monitor" — the exemption is leader-specific', () => {
+    for (const fleetRole of ['member', null, undefined] as const) {
+      const s = computeBenchSuggestion({
+        stalled: false,
+        verdict: 'monitoring',
+        parkedOn: [],
+        doing: null,
+        load: 0,
+        queued: [],
+        fleetRole,
+        loopMode: 'monitor',
+      });
+      expect(s).toBeDefined();
+    }
+  });
+
+  it('does NOT suppress the stalled-no-mcp branch for a leader that DID take on work and looks wedged — still a genuine fault', () => {
+    const held = {
+      id: 'WI-1',
+      itemKind: 'bug',
+      title: 'in progress',
+      status: 'open',
+      rank: 0,
+      rankWriter: null,
+      activity: 'alive' as const,
+    };
+    const s = computeBenchSuggestion({
+      stalled: true,
+      verdict: 'speaking',
+      parkedOn: [],
+      doing: held,
+      load: 1,
+      queued: [],
+      fleetRole: 'leader',
+      loopMode: 'monitor',
+    });
+    expect(s?.kind).toBe('stalled-no-mcp');
+  });
+
+  it('projectMember never surfaces benchSuggestion for the leader\'s own monitoring row end-to-end', () => {
+    const m = projectMember(
+      baseAgent({ fleetRole: 'leader', loopMode: 'monitor', verdict: 'monitoring', monitorState: 'monitoring' }),
+      NOW,
+    );
+    expect(m.benchSuggestion).toBeUndefined();
+  });
+});
+
 // EI-18681259560385029 — the live incident: five members carried the laneless-idle line
 // ("likely idle-cycling a drained or scoped-out lane") while claimableCount was 2, and the
 // leader read it, concluded the lane was drained, and stood the fleet down. The wording

@@ -581,3 +581,166 @@ export async function explainReadQuery(
     return { ok: false, error: extractPgErrorInfo(err) };
   }
 }
+
+/**
+ * A relation's shape — the `\d` answer, as data.
+ *
+ * WHY THIS EXISTS (plan bash-to-tool-substitution-2026-07-26, P-011): `\d` is a
+ * psql CLIENT meta-command, not SQL, so it cannot be passed through
+ * `dev:pg_query`'s statement path at all. The 2026-07-26 bash audit measured 88
+ * `psql -c "\d …"` atoms with NO tool form — the single largest psql residue —
+ * so an agent inspecting a table's columns, indexes or constraints had to shell
+ * out no matter how well-routed it was.
+ */
+export interface RelationDescription {
+  /** Resolved `schema.name`. */
+  relation: string;
+  /** table | view | materialized view | index | sequence … */
+  kind: string;
+  columns: Array<{ name: string; type: string; nullable: boolean; default: string | null }>;
+  indexes: Array<{ name: string; definition: string }>;
+  constraints: Array<{ name: string; type: string; definition: string }>;
+}
+
+const RELATION_KIND: Record<string, string> = {
+  r: 'table',
+  v: 'view',
+  m: 'materialized view',
+  i: 'index',
+  S: 'sequence',
+  p: 'partitioned table',
+  f: 'foreign table',
+  c: 'composite type',
+  t: 'TOAST table',
+};
+
+const CONSTRAINT_TYPE: Record<string, string> = {
+  p: 'PRIMARY KEY',
+  f: 'FOREIGN KEY',
+  u: 'UNIQUE',
+  c: 'CHECK',
+  x: 'EXCLUDE',
+  t: 'TRIGGER',
+};
+
+interface RelationRow {
+  schema: string;
+  name: string;
+  relkind: string;
+}
+
+/**
+ * Resolve a possibly-bare relation reference to exactly one relation, using the
+ * SAME schema preference as the query column-hint path — so `describe:
+ * "work_items"` and a query mentioning `work_items` can never disagree about
+ * which table they mean.
+ */
+async function resolveRelation(ref: string, client?: OrgSql): Promise<RelationRow | null> {
+  const sql = client ?? getOrgPg().sql;
+  const lower = ref.toLowerCase();
+  const dot = lower.indexOf('.');
+  const schemaPart = dot === -1 ? null : lower.slice(0, dot);
+  const namePart = dot === -1 ? lower : lower.slice(dot + 1);
+
+  const rows = (await sql`
+    SELECT n.nspname AS schema, c.relname AS name, c.relkind::text AS relkind
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND lower(c.relname) = ${namePart}
+       AND (${schemaPart}::text IS NULL OR lower(n.nspname) = ${schemaPart}::text)
+     ORDER BY n.nspname
+  `) as unknown as RelationRow[];
+
+  if (rows.length === 0) return null;
+  return rows.slice().sort((a, b) => preferSchema(a.schema, b.schema))[0];
+}
+
+/**
+ * Describe one relation: columns, indexes and constraints in one shape.
+ * Returns null when the relation does not exist, so the caller can say so
+ * plainly instead of returning a confusingly empty description.
+ */
+export async function describeRelation(
+  ref: string,
+  opts: { client?: OrgSql } = {},
+): Promise<RelationDescription | null> {
+  const sql = opts.client ?? getOrgPg().sql;
+  const relation = await resolveRelation(ref, opts.client);
+  if (!relation) return null;
+
+  const columnRows = (await sql`
+    SELECT column_name, data_type, is_nullable, column_default
+      FROM information_schema.columns
+     WHERE table_schema = ${relation.schema} AND table_name = ${relation.name}
+     ORDER BY ordinal_position
+  `) as unknown as Array<{
+    column_name: string;
+    data_type: string;
+    is_nullable: string;
+    column_default: string | null;
+  }>;
+
+  const indexRows = (await sql`
+    SELECT indexname, indexdef
+      FROM pg_indexes
+     WHERE schemaname = ${relation.schema} AND tablename = ${relation.name}
+     ORDER BY indexname
+  `) as unknown as Array<{ indexname: string; indexdef: string }>;
+
+  const constraintRows = (await sql`
+    SELECT con.conname AS name, con.contype::text AS contype, pg_get_constraintdef(con.oid) AS definition
+      FROM pg_constraint con
+      JOIN pg_class c ON c.oid = con.conrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = ${relation.schema} AND c.relname = ${relation.name}
+     ORDER BY con.conname
+  `) as unknown as Array<{ name: string; contype: string; definition: string }>;
+
+  return {
+    relation: `${relation.schema}.${relation.name}`,
+    kind: RELATION_KIND[relation.relkind] ?? relation.relkind,
+    columns: columnRows.map((r) => ({
+      name: r.column_name,
+      type: r.data_type || 'unknown',
+      nullable: r.is_nullable === 'YES',
+      default: r.column_default,
+    })),
+    indexes: indexRows.map((r) => ({ name: r.indexname, definition: r.indexdef })),
+    constraints: constraintRows.map((r) => ({
+      name: r.name,
+      type: CONSTRAINT_TYPE[r.contype] ?? r.contype,
+      definition: r.definition,
+    })),
+  };
+}
+
+/**
+ * List relations matching a pattern — the bare `\d` / `\dt` answer.
+ * `*` (or an empty pattern) lists everything outside the system schemas.
+ */
+export async function listRelations(
+  pattern: string,
+  opts: { client?: OrgSql; limit?: number } = {},
+): Promise<Array<{ relation: string; kind: string }>> {
+  const sql = opts.client ?? getOrgPg().sql;
+  const limit = Math.max(1, Math.min(2000, opts.limit ?? 500));
+  // Translate the psql glob (`*`, `?`) into a SQL LIKE pattern.
+  const like = pattern === '' || pattern === '*' ? '%' : pattern.toLowerCase().replace(/\*/g, '%').replace(/\?/g, '_');
+
+  const rows = (await sql`
+    SELECT n.nspname AS schema, c.relname AS name, c.relkind::text AS relkind
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND c.relkind IN ('r', 'v', 'm', 'p', 'f')
+       AND (lower(n.nspname || '.' || c.relname) LIKE ${like} OR lower(c.relname) LIKE ${like})
+     ORDER BY n.nspname, c.relname
+     LIMIT ${limit}
+  `) as unknown as RelationRow[];
+
+  return rows.map((r) => ({
+    relation: `${r.schema}.${r.name}`,
+    kind: RELATION_KIND[r.relkind] ?? r.relkind,
+  }));
+}
