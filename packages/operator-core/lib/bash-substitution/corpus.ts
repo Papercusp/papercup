@@ -107,6 +107,54 @@ export function sampleDistinct(atoms: SampledCommand[], size: number): SampledCo
   return picked;
 }
 
+/** Home dirs that name a ROLE or a shared install rather than a PERSON. Mirrors
+ *  the non-personal entries of `GENERIC_USERS` in
+ *  `scripts/check-no-box-identity.mjs` — these are already anonymous, so
+ *  rewriting them would churn fixtures without removing any identity. */
+const GENERIC_HOME_USERS = new Set([
+  'dev', 'linuxbrew', 'runner', 'user', 'ubuntu', 'root', 'node', 'builder',
+  'vscode', 'codespace', 'shared', 'ci', 'agent', 'pcusp', 'papercusp', 'test',
+]);
+
+/** What a personal home path is rewritten to. `dev` names nobody, is in the
+ *  box-identity lint's own generic set, and is already the placeholder the
+ *  sibling fixtures use — so scrubbed output matches the existing convention. */
+const PLACEHOLDER_HOME_USER = 'dev';
+
+/**
+ * Strip this box's identity out of a sampled command (WI-4776 class).
+ *
+ * WHY THIS IS HERE AND NOT LEFT TO THE AUTHOR: the corpus is a verbatim extract
+ * of real commands, so it is FULL of the extracting box's own home paths — and
+ * `buildFixture` commits its output to tracked source, which ships to users
+ * inside the release bundle. Scrubbing by hand after each regeneration is a step
+ * that WILL eventually be skipped: it already was. `git-read.passthrough`
+ * shipped `/home/<owner>/.papercusp/pot-git/…` while its three siblings had been
+ * hand-sanitised, which held `main` red on the green-checkpoint gate until it was
+ * caught by `lint:no-box-identity` — the most expensive place to learn it.
+ * Scrubbing at BUILD time makes every future fixture clean by construction.
+ *
+ * Rewrites the `/home/<user>/…` and `/Users/<user>/…` form, which is the class
+ * that actually appears in shell commands. The slash-munged form
+ * (`-home-<user>-…`, how Claude names a project dir) is NOT rewritten here —
+ * a username may span several dash segments, so a rewrite could only guess where
+ * it ends and would silently mangle the evidence a verdict cites. That form is
+ * caught instead by the fixture guard in `corpus.test.ts`, which fails loudly
+ * in-package and tells the author to scrub, rather than committing mangled
+ * evidence.
+ */
+export function scrubIdentity(text: string): string {
+  return text.replace(/\/(home|Users)\/([A-Za-z0-9._-]+)/g, (whole, root: string, user: string) => {
+    // A home dir never ENDS in a dot, so trailing dots are sentence punctuation
+    // that the greedy class swallowed — preserve them (same reasoning as the
+    // lint's own `stripTrailingDots`).
+    const trailingDots = /\.+$/.exec(user)?.[0] ?? '';
+    const name = trailingDots ? user.slice(0, -trailingDots.length) : user;
+    if (!name || GENERIC_HOME_USERS.has(name)) return whole;
+    return `/${root}/${PLACEHOLDER_HOME_USER}${trailingDots}`;
+  });
+}
+
 /**
  * Build a fixture for one pattern from the raw corpus.
  *
@@ -129,6 +177,12 @@ export function buildFixture(opts: {
     extractedAt: opts.extractedAt,
     totalAtoms: matching.length,
     totalSessions: new Set(matching.map((entry) => entry.sid)).size,
-    sample: sampleDistinct(matching, opts.size),
+    // Scrub AFTER sampling: selection stays a pure function of the raw corpus, so
+    // the documented "a fixture diff means the CORPUS changed, not the sampler"
+    // property survives — the scrub only rewrites the bytes that get committed.
+    sample: sampleDistinct(matching, opts.size).map((entry) => ({
+      ...entry,
+      atom: scrubIdentity(entry.atom),
+    })),
   };
 }

@@ -7,7 +7,7 @@
     {
       "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
       "ts": "2026-07-25T21:52:35.291Z",
-      "atom": "git --git-dir=/home/marsh-office/.papercusp/pot-git/papercusp/gh-1223568103.git for-each-ref 'refs/hive/*' 'refs/namespaces/*/refs/heads/staging' --format='%(refname) %(objectname:short=12)' 2>/dev/null"
+      "atom": "git --git-dir=/home/dev/.papercusp/pot-git/papercusp/gh-1223568103.git for-each-ref 'refs/hive/*' 'refs/namespaces/*/refs/heads/staging' --format='%(refname) %(objectname:short=12)' 2>/dev/null"
     },
     {
       "sid": "su-e044d888-c238-4311-8eb0-aef7896b3e92",
