@@ -11,10 +11,12 @@
 // the pure exports (buildHarnessSelectOptions, visibleAdvTabs, ADV_TABS shape,
 // the D-001 primary/secondary split, recent-tabs helpers) are pinned in
 // __tests__/adv-shell-logic.test.ts. Asserts:
-//   - D-001 (owner decision 2026-07-26, option C): ONLY Overview + HUD render
-//     as real strip tabs, in every scope (single-pot AND All Pots); every
-//     other tab — including an all-mode-pinned per-pot tab — is reachable
-//     only via the "More" menu, whose trigger reflects an active secondary tab,
+//   - D-001 (owner decision 2026-07-26, option C): ONLY the PRIMARY_ADV_TAB_IDS
+//     set renders as real strip tabs, in every scope (single-pot AND All Pots)
+//     — Overview + HUD, plus Work (id 'harnesses') and Learning, promoted out
+//     of the More menu by later owner asks the same day; every other tab —
+//     including an all-mode-pinned per-pot tab — is reachable only via the
+//     "More" menu, whose trigger reflects an active secondary tab,
 //   - the More menu itself: grouped headings, type-to-filter search, selecting
 //     an item writes ?tab= and closes the menu, and the last-visited secondary
 //     tabs pin under "Recent" (most-recent first, capped at 3),
@@ -287,13 +289,14 @@ afterEach(() => {
 });
 
 describe('AdvShell — strip + header', () => {
-  it('renders the title, kicker, and ONLY Overview + HUD as real strip tabs (D-001 option C)', async () => {
+  it('renders the title, kicker, and ONLY the promoted tabs as real strip tabs (D-001 option C)', async () => {
     await renderShell();
     expect(screen.getByRole('heading', { name: 'Advanced' })).toBeTruthy();
     expect(screen.getByText('Advanced orchestration')).toBeTruthy();
-    // D-001 (owner decision, 2026-07-26): only Overview + HUD render as real
-    // Tabs.Trigger elements — the other 13 move behind the "More" menu.
-    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    // D-001 (owner decision, 2026-07-26): only the PRIMARY_ADV_TAB_IDS set
+    // renders as real Tabs.Trigger elements — Overview + HUD, plus Work and
+    // Learning promoted out of the More menu by later owner asks the same day.
+    expect(screen.getAllByRole('tab')).toHaveLength(4);
     expect(screen.queryByRole('tab', { name: 'overwatch' })).toBeNull();
     // Tab-strip overflow affordance (owner ask 2026-06-15 #1): the scroll
     // chevrons are wired into the strip (CSS reveals them only when clipped, so
@@ -302,20 +305,25 @@ describe('AdvShell — strip + header', () => {
     expect(document.querySelector('button.pc-advshell__tabnav--right')).toBeTruthy();
     // labels render lowercased in the trigger span
     expect(screen.getByRole('tab', { name: 'hud' })).toBeTruthy();
-    // 'working' (harnesses) is now a secondary tab — reachable via More, not a
-    // strip tab; the More menu's own behavior is covered below.
+    // 'harnesses' is the Work tab and sits right of HUD on the strip (owner ask
+    // 2026-07-26); its old "working" label is gone.
+    expect(screen.getByRole('tab', { name: 'work' })).toBeTruthy();
     expect(screen.queryByRole('tab', { name: 'working' })).toBeNull();
+    // …while e.g. Docs stays behind the More menu.
+    expect(screen.queryByRole('tab', { name: 'docs' })).toBeNull();
     expect(screen.getByRole('button', { name: 'More sections' })).toBeTruthy();
     expect(screen.getByText('sub-pots')).toBeTruthy();
     // single-slug widgets get the active slug
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('pot-a');
   });
 
-  it('collapses to Overview + HUD on the strip under All Pots too, and blanks single-pot widgets', async () => {
+  it('keeps only the promoted tabs on the strip under All Pots too, and blanks single-pot widgets', async () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
-    expect(tabs).toEqual(['overview', 'hud']);
+    // Work + Learning are workspace-level (WORKSPACE_TAB_IDS), so they survive
+    // the All-Pots filter alongside Overview + HUD.
+    expect(tabs).toEqual(['overview', 'hud', 'work', 'learning']);
     expect(screen.queryByText('sub-pots')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');
@@ -356,11 +364,18 @@ describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, rece
     fireEvent.click(screen.getByRole('button', { name: 'More sections' }));
     await screen.findByText('Git'); // wait for the menu to mount
     const headings = Array.from(document.querySelectorAll('[cmdk-group-heading]')).map((el) => el.textContent);
-    expect(headings).toEqual(['Build', 'Work', 'Insights', 'System']);
+    // "Work" the group became "Activity" when the Work tab (harnesses) was
+    // promoted to the strip — two things called "Work" in one nav is the thing
+    // the relabel avoids (owner ask 2026-07-26).
+    expect(headings).toEqual(['Build', 'Activity', 'Insights', 'System']);
     const items = Array.from(document.querySelectorAll('[cmdk-item]')).map((el) => el.textContent?.trim());
     expect(items).toEqual(
-      expect.arrayContaining(['Create', 'Git', 'Tests', 'Docs', 'Working', 'Conversations', 'Calendar', 'Insights', 'Learning', 'Evaluation', 'Health', 'Frames', 'Settings']),
+      expect.arrayContaining(['Create', 'Git', 'Tests', 'Docs', 'Conversations', 'Calendar', 'Insights', 'Evaluation', 'Health', 'Frames', 'Settings']),
     );
+    // Promoted tabs are strip tabs, NOT More-menu items.
+    expect(items).not.toContain('Work');
+    expect(items).not.toContain('Working');
+    expect(items).not.toContain('Learning');
   });
 
   it('is type-to-filter searchable: typing narrows to matching sections', async () => {

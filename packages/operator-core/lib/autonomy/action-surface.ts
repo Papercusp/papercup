@@ -207,7 +207,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     reversibility: 'reversible',
     authority: 'system',
     queenVerbs: ['work_items:set_priority'],
-    humanSurface: 'Working tab / backlog — priority control',
+    humanSurface: 'Work tab / backlog — priority control',
     coverage: 'covered',
   },
   {
@@ -217,7 +217,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     reversibility: 'reversible',
     authority: 'system',
     queenVerbs: ['work_items:reorder'],
-    humanSurface: 'Working tab — drag-reorder',
+    humanSurface: 'Work tab — drag-reorder',
     coverage: 'covered',
   },
   {
@@ -227,7 +227,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     reversibility: 'reversible',
     authority: 'system',
     queenVerbs: ['work_items:set_state', 'work_items:promote'],
-    humanSurface: 'Working tab — state controls',
+    humanSurface: 'Work tab — state controls',
     coverage: 'covered',
   },
 

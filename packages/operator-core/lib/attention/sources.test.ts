@@ -96,7 +96,7 @@ describe('dropConvertedPlanItems — decision↔execution dedup guard (P-104 / D
   const SLUG = 't-2026-05-31';
   // P-002 todo (activity), P-003 needs-human (decision), P-004 blocked (alert).
 
-  it('drops an executing (converted) plan-item — it lives in the Working tab now', () => {
+  it('drops an executing (converted) plan-item — it lives in the Work tab now', () => {
     const kept = dropConvertedPlanItems(planItems, new Set([planItemRef(SLUG, 'P-002')]));
     expect(kept.map((i) => i.itemRef).sort()).toEqual(['P-003', 'P-004']);
   });

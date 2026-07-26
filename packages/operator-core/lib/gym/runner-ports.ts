@@ -45,36 +45,61 @@ const SAFE_SLUG = /^[a-z0-9]+$/;
  */
 export const GYM_PIPELINE_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = {
   // The implementation agent — edits + runs tests in its throwaway clone, and must
-  // be able to escalate / file an improvement when it cannot (its only failure channel).
+  // be able to escalate / file an improvement when it cannot (its only failure
+  // channel). code-inspect (capability:inspect = typecheck/test) and
+  // artifacts:write (durable PG notes) come from the worker's own denial table
+  // in the 2026-07-26 escalation transcripts.
   worker: [
     'capability:fs-read',
     'capability:fs-write',
     'capability:bash',
     'capability:git',
+    'capability:code-inspect',
+    'artifacts:write',
     'coord:read',
     'coord:write',
     'locks:read',
     'locks:write',
   ],
   // Runs the repo's own tests against the worker's change — execute + read, no fs-write.
-  validator: ['capability:fs-read', 'capability:bash', 'capability:git', 'coord:read', 'coord:write'],
+  validator: [
+    'capability:fs-read',
+    'capability:bash',
+    'capability:git',
+    'capability:code-inspect',
+    'coord:read',
+    'coord:write',
+  ],
   // Reads the clone to plan chunks (native reads suffice today); coord for escalation parity.
   scoper: ['capability:fs-read', 'coord:read', 'coord:write'],
 };
 
 /**
  * Idempotently seed the gym pipeline-role principals into the gym PG so the
- * ephemeral operator's `loadRoleCapabilities` resolves them. bearer_hash is a
- * random unmatchable value — pipeline roles authenticate via signed role URLs,
- * never bearers. Capabilities reconcile to the code set on conflict (the gym DB
- * is per-cycle; conflict only occurs on same-stack replays).
+ * ephemeral operator resolves them. bearer_hash is a random unmatchable value —
+ * pipeline roles authenticate via signed role URLs, never bearers. Capabilities
+ * reconcile to the code set on conflict (the gym DB is per-cycle; conflict only
+ * occurs on same-stack replays).
+ *
+ * SEEDED UNDER EVERY PLAUSIBLE WORKSPACE ID, not just the ephemeral one: the
+ * first fix seeded only cfg.workspaceId ('gym-loop-ws') and the workers STILL
+ * dispatched with empty caps — their agent_tools:list saw the caps (catalog
+ * resolves via the pinned request workspace) while the dispatch principal,
+ * synthesized from the spawn URL's BAKED workspace claim, resolved a different
+ * workspace_id and found nothing (2026-07-26 cycle a6a9cd21, all runs
+ * escalated). The gym DB is throwaway, so blanket-seeding the handful of ids
+ * the stack can bake (ephemeral + durable + the host's 'default' home) is
+ * zero-blast-radius and robust to which one the claim carries.
  */
-export async function ensureGymPipelinePrincipals(sql: Sql, workspaceId: string): Promise<void> {
-  for (const [name, caps] of Object.entries(GYM_PIPELINE_ROLE_CAPS)) {
-    await sql`
-      INSERT INTO harness_shared.system_principals (workspace_id, name, bearer_hash, capabilities)
-      VALUES (${workspaceId}, ${name}, ${randomBytes(32).toString('hex')}, ${JSON.stringify(caps)}::jsonb)
-      ON CONFLICT (workspace_id, name) DO UPDATE SET capabilities = EXCLUDED.capabilities`;
+export async function ensureGymPipelinePrincipals(sql: Sql, workspaceIds: readonly string[]): Promise<void> {
+  const ids = [...new Set(workspaceIds.filter((w) => w.length > 0))];
+  for (const workspaceId of ids) {
+    for (const [name, caps] of Object.entries(GYM_PIPELINE_ROLE_CAPS)) {
+      await sql`
+        INSERT INTO harness_shared.system_principals (workspace_id, name, bearer_hash, capabilities)
+        VALUES (${workspaceId}, ${name}, ${randomBytes(32).toString('hex')}, ${JSON.stringify(caps)}::jsonb)
+        ON CONFLICT (workspace_id, name) DO UPDATE SET capabilities = EXCLUDED.capabilities`;
+    }
   }
 }
 
@@ -87,6 +112,9 @@ export interface GymRunnerPortsConfig {
   superuserToken: string;
   /** The gym operator's pinned workspace (used to scope filed features). */
   workspaceId: string;
+  /** Extra workspace ids to seed the pipeline-role principals under (the durable
+   *  workspace + 'default'), on top of workspaceId — see ensureGymPipelinePrincipals. */
+  principalSeedWorkspaceIds?: readonly string[];
   fetchFn?: typeof fetch;
   exec?: (cmd: string, args: string[]) => Promise<void>;
   rm?: (path: string) => Promise<void>;
@@ -107,8 +135,13 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
     async registerThrowawayHarness({ slug, clonePath }) {
       // Every gym entrypoint registers its throwaway harness through this port, so
       // seeding here (cheap idempotent upsert) fixes the zero-capability worker for
-      // ALL gym paths — see GYM_PIPELINE_ROLE_CAPS above for why the seed exists.
-      await ensureGymPipelinePrincipals(sql, cfg.workspaceId);
+      // ALL gym paths — see GYM_PIPELINE_ROLE_CAPS above for why the seed exists
+      // and why it spans multiple workspace ids.
+      await ensureGymPipelinePrincipals(sql, [
+        cfg.workspaceId,
+        ...(cfg.principalSeedWorkspaceIds ?? []),
+        'default',
+      ]);
       const res = await doFetch(`${cfg.operatorBaseUrl}/api/harness/projects`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

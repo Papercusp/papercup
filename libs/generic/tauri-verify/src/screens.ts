@@ -22,7 +22,9 @@ export const SCREENS = {
   }),
   WORKING: defineScreen({
     id: 'working',
-    name: 'Working',
+    // Screen NAME follows the UI label (renamed Working → Work, owner ask
+    // 2026-07-26); the screen id stays 'working' — callers key off it.
+    name: 'Work',
     href: '/adv?tab=harnesses',
     route: { pathname: '/adv', query: { tab: 'harnesses' } },
     requiredElements: ['.pc-advshell', '.pc-advshell__tab--harnesses[data-state="active"]'],

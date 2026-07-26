@@ -55,7 +55,7 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
   },
   {
     id: 'harnesses',
-    label: 'Working',
+    label: 'Work',
     blurb:
       'The live work view: work items, the agents holding them, and runs in flight for the selected project. This is where you watch progress happen.',
   },

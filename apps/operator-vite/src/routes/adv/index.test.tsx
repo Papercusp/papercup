@@ -68,7 +68,8 @@ describe('/adv tab router', () => {
     { tab: 'hud', t: 'HUD', child: 'tab-hud' },
     { tab: 'conversations', t: 'Conversations', child: 'tab-conversations' },
     { tab: 'learning', t: 'Learning', child: 'tab-learning' },
-    { tab: 'harnesses', t: 'Working', child: 'tab-harnesses' },
+    // Label renamed Working → Work (owner ask 2026-07-26); id stays 'harnesses'.
+    { tab: 'harnesses', t: 'Work', child: 'tab-harnesses' },
     { tab: 'health', t: 'Health', child: 'tab-health' },
     { tab: 'frames', t: 'Frames', child: 'tab-frames' },
     { tab: 'evals', t: 'Evaluation', child: 'tab-evals' },

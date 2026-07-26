@@ -438,7 +438,16 @@ export async function runOneAutoloopCycle(
     // 5. Ports + loop deps.
     const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
     const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
-    const ports = createGymRunnerPorts({ operatorBaseUrl: `http://127.0.0.1:${PORT}`, gymSql, superuserToken: suToken, workspaceId: EPHEMERAL_WS });
+    const ports = createGymRunnerPorts({
+      operatorBaseUrl: `http://127.0.0.1:${PORT}`,
+      gymSql,
+      superuserToken: suToken,
+      workspaceId: EPHEMERAL_WS,
+      // The spawn URL's baked workspace claim can carry the DURABLE axis (or the
+      // host 'default' home) rather than the ephemeral one — seed the pipeline
+      // principals under all of them (see ensureGymPipelinePrincipals).
+      principalSeedWorkspaceIds: [DURABLE_WS],
+    });
     // F1-6/P-014 (D-005 hole 3): resolve THIS peer's announce device key as the elite-outcome
     // signer, so an accepted champion federates with a device-signed outcome proof
     // (outcome-VERIFIED on receivers that resolve our device — anti-lift parity) rather than

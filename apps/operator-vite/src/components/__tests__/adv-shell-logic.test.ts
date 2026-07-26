@@ -241,11 +241,21 @@ describe('harness route panel → tab mapping contract', () => {
 
 // ─── D-001 More-menu split (hud-first-nav-and-dossier-2026-07-26 P-002) ─────
 describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', () => {
-  it('exactly Overview + HUD + Learning are primary (Learning promoted, owner ask 2026-07-26)', () => {
+  it('exactly Overview + HUD + Work + Learning are primary (Work/Learning promoted, owner asks 2026-07-26)', () => {
     expect(PRIMARY_ADV_TAB_IDS.has('overview')).toBe(true);
     expect(PRIMARY_ADV_TAB_IDS.has('hud')).toBe(true);
+    // 'harnesses' is the Work tab (label renamed 2026-07-26; the id stays
+    // 'harnesses' because it's URL-serialized).
+    expect(PRIMARY_ADV_TAB_IDS.has('harnesses')).toBe(true);
     expect(PRIMARY_ADV_TAB_IDS.has('learning')).toBe(true);
-    expect(PRIMARY_ADV_TAB_IDS.size).toBe(3);
+    expect(PRIMARY_ADV_TAB_IDS.size).toBe(4);
+  });
+
+  it('Work sits immediately right of HUD on the strip (owner ask 2026-07-26)', () => {
+    const { primary } = splitPrimarySecondary(ADV_TABS);
+    const ids = primary.map((t) => t.id);
+    expect(ids.indexOf('harnesses')).toBe(ids.indexOf('hud') + 1);
+    expect(ADV_TABS.find((t) => t.id === 'harnesses')?.label).toBe('Work');
   });
 
   it('every non-primary ADV_TABS id appears in exactly one More-menu group (nothing goes unreachable)', () => {
@@ -257,7 +267,7 @@ describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', (
 
   it('splits a tab list into primary (strip) and secondary (More menu)', () => {
     const { primary, secondary } = splitPrimarySecondary(ADV_TABS);
-    expect(primary.map((t) => t.id)).toEqual(['overview', 'hud', 'learning']);
+    expect(primary.map((t) => t.id)).toEqual(['overview', 'hud', 'harnesses', 'learning']);
     expect(secondary.map((t) => t.id)).toEqual(
       ADV_TABS.map((t) => t.id).filter((id) => !PRIMARY_ADV_TAB_IDS.has(id)),
     );
@@ -265,7 +275,7 @@ describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', (
 
   it('under All Pots, secondary only contains the workspace-level subset', () => {
     const { secondary } = splitPrimarySecondary(visibleAdvTabs(true));
-    expect(secondary.map((t) => t.id)).toEqual(['plans', 'calendar', 'harnesses', 'health', 'frames', 'conversations', 'evals']);
+    expect(secondary.map((t) => t.id)).toEqual(['plans', 'calendar', 'health', 'frames', 'conversations', 'evals']);
   });
 });
 

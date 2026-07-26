@@ -98,7 +98,7 @@ export const ADV_TABS: ReadonlyArray<{
   // renaming the id would break all of them.
   { id: 'harnesses', label: 'Work', icon: Boxes, accent: CATEGORICAL.violet400.hex, accentRgb: CATEGORICAL.violet400.rgb },
   // Health — the read-only at-a-glance system dashboard (system-health-tab-2026-06-15),
-  // beside Working. Workspace-scoped (it aggregates the whole running system, not one
+  // beside Work. Workspace-scoped (it aggregates the whole running system, not one
   // pot), so it also lives in WORKSPACE_TAB_IDS. Flag-gated (SYSTEM_HEALTH_TAB).
   { id: 'health', label: 'Health', icon: HeartPulse, accent: CATEGORICAL.rose500.hex, accentRgb: CATEGORICAL.rose500.rgb },
   // (The Overwatch surface moved to the left sidebar next to Queen — its
@@ -501,7 +501,7 @@ export default function AdvShell({
   const [moreOpen, setMoreOpen] = useState(false);
 
   // Mitigation (b): pin the last few visited secondary tabs at the top of the
-  // More menu so a heavy Git/Tests/Working user doesn't pay a hunt every time.
+  // More menu so a heavy Git/Tests/Docs user doesn't pay a hunt every time.
   const [recentSecondaryTabs, setRecentSecondaryTabs] = useState<AdvTabId[]>(() =>
     typeof window === 'undefined' ? [] : parseRecentSecondaryTabs(window.localStorage.getItem(recentSecondaryTabsKey())),
   );

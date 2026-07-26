@@ -409,7 +409,7 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
         ? 'no Mug-placed cups running (does not measure the broader SU/agent fleet, which may still be busy)'
         : `${running} bee(s), ${alive} alive${stale > 0 ? `, ${stale} stale` : ''}${op.cursed > 0 ? `, ${op.cursed} cursed` : ''}${invalidModelFailures > 0 ? `, ${invalidModelFailures} invalid-model failure(s)` : ''}`,
       data,
-      link: { label: 'Working', href: '/adv?tab=harnesses' },
+      link: { label: 'Work', href: '/adv?tab=harnesses' },
       metrics: [
         m('running', running),
         m('alive', alive),
@@ -461,7 +461,7 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
       status,
       summary: `${data.total} items — ${data.todo} todo, ${inProgress} in-flight, ${data.blocked} blocked${data.needsHuman > 0 ? `, ${data.needsHuman} need human` : ''}${stuckTotal > 0 ? `, ${stuckTotal} stuck` : ''}${reaperWedged ? ' — REAPER WEDGED' : ''}`,
       data,
-      link: { label: 'Working', href: '/adv?tab=harnesses' },
+      link: { label: 'Work', href: '/adv?tab=harnesses' },
       metrics: [
         m('todo', data.todo),
         m('in-flight', inProgress),
@@ -907,7 +907,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
           ? `STALE PAUSE on release-critical routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')} — deploy pipeline may be silently stopped`
           : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}${stalePaused.length > 0 ? `, ${stalePaused.length} stale-paused routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')}` : ''}`,
       data,
-      link: { label: 'Working', href: '/adv?tab=harnesses' },
+      link: { label: 'Work', href: '/adv?tab=harnesses' },
       metrics: [
         m('frontier', frontier),
         m('stuck', frontierStuck),
@@ -1618,7 +1618,7 @@ async function collectSuFleet(ctx: HealthCtx): Promise<HealthPanel<SuFleetHealth
       status: 'ok',
       summary: `${presence.length} present, ${live} live`,
       data,
-      link: { label: 'Working', href: '/adv?tab=harnesses' },
+      link: { label: 'Work', href: '/adv?tab=harnesses' },
       metrics: [
         m('present', presence.length),
         m('live', live),
@@ -1673,7 +1673,7 @@ async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
           ? `${data.overdue}/${data.armed} armed loop(s) OVERDUE (${data.overdueNames.slice(0, 2).join(', ')})`
           : `${data.armed} armed, last fire ${agoMin(data.lastFireAt, ctx.now)}${data.failureStreaks > 0 ? `, ${data.failureStreaks} failure-streak` : ''}`,
       data,
-      link: { label: 'Working', href: '/adv?tab=harnesses' },
+      link: { label: 'Work', href: '/adv?tab=harnesses' },
       metrics: [
         m('armed', data.armed),
         m('overdue', data.overdue, data.overdue > 0 ? 'warn' : undefined),

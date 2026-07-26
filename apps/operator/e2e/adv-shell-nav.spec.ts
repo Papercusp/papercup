@@ -67,9 +67,10 @@ const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'brainstorm', label: 'Brainstorm' },
   { id: 'plans', label: 'Create' },
-  // Label renamed Harnesses → Progress → Working (owner asks, 2026-06-10/11);
-  // the tab ID stays 'harnesses' — it's URL-serialized (?tab=harnesses deep links).
-  { id: 'harnesses', label: 'Working' },
+  // Label renamed Harnesses → Progress → Working → Work (owner asks, 2026-06-10/11
+  // and 2026-07-26); the tab ID stays 'harnesses' — it's URL-serialized
+  // (?tab=harnesses deep links).
+  { id: 'harnesses', label: 'Work' },
   { id: 'frames', label: 'Frames' },
   { id: 'git', label: 'Git' },
   { id: 'testing', label: 'Tests' },
