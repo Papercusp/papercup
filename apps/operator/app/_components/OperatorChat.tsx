@@ -395,18 +395,35 @@ export function OperatorChat({
           popups are mounted here — the ONE place both OperatorChatSidebar and
           SessionChatModal render through — so every ChatConversation caller
           gets working ref-pill destinations for free, without each having to
-          wire its own. */}
-      <WorkItemPopupModal
-        id={openWorkItemId}
-        harnessSlug={openWorkItemHarness}
-        onSelect={(id) => void setOpenWorkItem(openWorkItemHarness ? `${openWorkItemHarness}::${id}` : null)}
-        onClose={() => void setOpenWorkItem(null)}
-      />
-      <PlanPopupModal
-        planSlug={openChatPlan}
-        harnessSlug={harnessSlug ?? null}
-        onClose={() => void setOpenChatPlan(null)}
-      />
+          wire its own.
+
+          `wpop`/`wppop` are GLOBAL nuqs state, and OperatorChatSidebar's own
+          instance (persistent chrome, ChromeShell.tsx) can be mounted at the
+          same time as a harness-scoped instance (e.g. SessionChatModal's, via
+          HudView) — so gate the actual RENDER on this instance's own
+          `harnessSlug` prop, not just the shared open-id state. The sidebar's
+          instance never receives one (cross-harness surface, no safe scope),
+          so it never mounts these even if a sibling instance's click set the
+          shared state — avoiding a duplicate stacked popup for the common
+          "sidebar + a harness-scoped modal" overlap. (A rarer overlap — two
+          harness-scoped instances open at once with the SAME harness — can
+          still double-render; accepted as a cosmetic edge case rather than a
+          full singleton-mount refactor.) */}
+      {harnessSlug ? (
+        <>
+          <WorkItemPopupModal
+            id={openWorkItemId}
+            harnessSlug={openWorkItemHarness}
+            onSelect={(id) => void setOpenWorkItem(openWorkItemHarness ? `${openWorkItemHarness}::${id}` : null)}
+            onClose={() => void setOpenWorkItem(null)}
+          />
+          <PlanPopupModal
+            planSlug={openChatPlan}
+            harnessSlug={harnessSlug}
+            onClose={() => void setOpenChatPlan(null)}
+          />
+        </>
+      ) : null}
     </>
   );
 }

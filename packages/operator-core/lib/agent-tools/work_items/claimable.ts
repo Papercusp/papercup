@@ -45,7 +45,18 @@ export default defineTool({
   name: 'work_items:claimable',
   profile: 'engineer',
   description:
-    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses (not `status='open'`, which overcounts ~13×). READ-ONLY. Returns { ok, harness, claimableCount, matchedByFilter, returned, claimable:[{ id, kind, title, status, severity, plan, featureOrder, createdTs }], excludedBreakdown, spec }. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP, so they do not sum. `sampleExcluded` (1-10) adds `excludedSample`: that many ids PER FLOOR — stale-hold triage with no raw SQL (a query on the legacy `kind` column, not `item_kind`, matches ZERO rows and reads as drained). An unrecognized `spec` returns { ok:false, error, candidates }, never a silent whole-backlog fallback.",
+    // PROMPT-WEIGHT (EI-10966): was 1805 — 205 over the 1600 HARD CAP, redding the green gate
+    // and freezing deploys fleet-wide. Trimmed; the detail moved here:
+    //   · The full row shape is { id, kind, title, status, severity, plan, featureOrder, createdTs }.
+    //   · `status='open'` alone overcounts ~13× — it is not claimability.
+    //   · excludedBreakdown buckets OVERLAP, so they never sum to matched − claimable.
+    //   · sampleExcluded (1-10) → excludedSample, N ids PER FLOOR, for stale-hold triage without
+    //     raw SQL. Raw SQL is the trap it replaces: harness_shared.work_items carries BOTH a
+    //     legacy `kind` column and the real discriminator `item_kind`, so a hand-written
+    //     kind='bug' filter matches ZERO rows and reads exactly like a drained queue.
+    //   · An unrecognized `spec` returns { ok:false, error, candidates } — never a silent
+    //     whole-backlog fallback, which would look like a suddenly-huge lane.
+    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP so they do not sum; `sampleExcluded` (1-10) adds `excludedSample` — ids per floor for stale-hold triage without raw SQL.",
   guidance: {
     when: "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. SSOT, not raw SQL or the claimable view.",
     notWhen:

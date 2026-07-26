@@ -9,6 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 const h = vi.hoisted(() => ({
   planListData: { plans: [] as Array<Record<string, unknown>>, loading: false },
