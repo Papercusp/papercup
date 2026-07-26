@@ -28,6 +28,7 @@ import {
   listFleetAssignments,
   isReclaimCandidate,
   orphanedClaims,
+  reconcileOrphanedWithVerdicts,
   stalledClaims,
   summarizeOrphan,
   type AgentAssignment,
@@ -684,14 +685,26 @@ export default defineTool({
     // P-007 (fleet-reliability-verification-2026-07-10): stamp `unanswered` —
     // directed messages with no reply/ack yet. Best-effort, own batch query.
     await decorateUnansweredDirected(agents).catch(() => {});
-    const orphans = orphanedClaims(rows);
+    // EI-18698865231464142: `orphaned`/`stalled` below read straight off `rows`,
+    // whose `.orphaned` was set by the DATA layer's endedRecordedOwnerIds-keyed
+    // downgrade — which has no key for a non-session (role-string) holder like
+    // 'improvement-runner'. `reconcileWakeability` above just settled the FULLER
+    // wakeability-oracle `sessionState` for every agent, independent of whether it
+    // has an adv_sessions row; propagate its confirmed-ended verdicts onto any
+    // claim row that downgrade never reached, so a holder this tool itself reports
+    // `sessionState:'ended'` for can never again vanish from BOTH reclaim lists.
+    const oracleEndedOwners = new Set(
+      agents.filter((a) => a.sessionState === 'ended').map((a) => a.agentId),
+    );
+    const reconciledRows = reconcileOrphanedWithVerdicts(rows, oracleEndedOwners);
+    const orphans = orphanedClaims(reconciledRows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
     // no reader concludes "someone's on it" from a claim that isn't advancing.
     const healthyLoopOwners = new Set(
       agents.filter((a) => a.monitorState != null).map((a) => a.agentId),
     );
-    const stalled = stalledClaims(rows).filter(
+    const stalled = stalledClaims(reconciledRows).filter(
       (row) => !row.agentId || !healthyLoopOwners.has(row.agentId),
     );
     // WI-5975: the holder-liveness map every reclaim-candidate row is summarized

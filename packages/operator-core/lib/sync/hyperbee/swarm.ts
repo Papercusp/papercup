@@ -1829,20 +1829,25 @@ export async function joinHarnessSwarm(
       const closeAgeMs = Date.now() - churnOpenedAtMs;
       const closeWire = readWireStats(socket);
       const closePath = extractConnectionPath(socket);
-      churnDbg('close', {
-        topic: topicHex.slice(0, 8),
-        ageMs: closeAgeMs,
-        precededByError: churnSawError,
-        // EI-18682571591024156: the close log now carries hyperdht's signalling
-        // outcome + the UDX counters. `bytesReceived: 0` with a nonzero
-        // `bytesTransmitted` IS the never-came-up signature (WI-5863), and it was
-        // previously unavailable at every layer.
-        path: closePath,
-        // WI-5980: which branch resolved the address, flattened to depth 1 so
-        // util.inspect cannot swallow it (see flattenPathDiagnostics).
-        ...flattenPathDiagnostics(closePath),
-        wire: closeWire,
-      });
+      // EI-18694945517907886: printed once per socket (see the latch doc
+      // above) — every other joined harness reaches this same close event but
+      // stays silent here.
+      if (!alreadyLoggedSocket) {
+        churnDbg('close', {
+          topic: topicHex.slice(0, 8),
+          ageMs: closeAgeMs,
+          precededByError: churnSawError,
+          // EI-18682571591024156: the close log now carries hyperdht's signalling
+          // outcome + the UDX counters. `bytesReceived: 0` with a nonzero
+          // `bytesTransmitted` IS the never-came-up signature (WI-5863), and it was
+          // previously unavailable at every layer.
+          path: closePath,
+          // WI-5980: which branch resolved the address, flattened to depth 1 so
+          // util.inspect cannot swallow it (see flattenPathDiagnostics).
+          ...flattenPathDiagnostics(closePath),
+          wire: closeWire,
+        });
+      }
       // EI-18684689702957309: hyperswarm itself destroys a socket with this
       // exact message (`ERR_DUPLICATE` in node_modules/hyperswarm/index.js)
       // the instant it detects two live connections to the same peer — by
@@ -1863,26 +1868,34 @@ export async function joinHarnessSwarm(
       // exactly what redirected WI-5863's investigation to the wrong layer
       // for hours.
       if (dataPathProven(closeWire) === false && !isDuplicateConnectionTeardown) {
-        console.warn(
-          '[swarm] ⚠ data path NEVER came up for a peer that reported connected — ' +
-            'the Noise handshake completed as a DHT RPC (signalling success) but zero bytes ' +
-            'were ever received on the UDX stream. `peer_connected` for this peer was a ' +
-            'false success report, not a working connection.',
-          {
-            topicHex,
-            remotePublicKeyHex,
-            remoteIp,
-            ageMs: closeAgeMs,
-            precededByError: churnSawError,
-            path: closePath,
-            // WI-5980: the branch that chose this (unreachable) address, flattened
-            // to depth 1 so util.inspect cannot swallow it. On this record in
-            // particular `addrFromFallback` + `addrs4AllBogon` say whether the
-            // address was a real advertisement or a guess at the packet source.
-            ...flattenPathDiagnostics(closePath),
-            wire: closeWire,
-          },
-        );
+        // EI-18694945517907886: the PRINTED warning is deduped per socket
+        // (same latch as above — this text is what the WI-5980 corpus parses
+        // and was measured 2-26x inflated). `onDataPathNeverUp` below is left
+        // UNGATED: it still fires for every joined harness, unchanged — that
+        // callback is a per-harness functional signal into boot-history, not
+        // the log-text corpus this fix targets (see the latch doc above).
+        if (!alreadyLoggedSocket) {
+          console.warn(
+            '[swarm] ⚠ data path NEVER came up for a peer that reported connected — ' +
+              'the Noise handshake completed as a DHT RPC (signalling success) but zero bytes ' +
+              'were ever received on the UDX stream. `peer_connected` for this peer was a ' +
+              'false success report, not a working connection.',
+            {
+              topicHex,
+              remotePublicKeyHex,
+              remoteIp,
+              ageMs: closeAgeMs,
+              precededByError: churnSawError,
+              path: closePath,
+              // WI-5980: the branch that chose this (unreachable) address, flattened
+              // to depth 1 so util.inspect cannot swallow it. On this record in
+              // particular `addrFromFallback` + `addrs4AllBogon` say whether the
+              // address was a real advertisement or a guess at the packet source.
+              ...flattenPathDiagnostics(closePath),
+              wire: closeWire,
+            },
+          );
+        }
         try {
           opts.onDataPathNeverUp?.({
             topicHex,

@@ -518,15 +518,40 @@ export interface BootHarnessOpts {
    * the merge lock so a large admitted set can't freeze read-merge convergence.
    *
    * Channel-2 reads hit the GitHub API; keep this cadence slow (default
-   * 15 min). With small dogfood peer counts this is negligible load; at scale
-   * consider staggering per-peer calls (a comment by `reverifyAdmitted` notes
-   * this).
+   * 15 min). The per-pass call COUNT is bounded independently of membership by
+   * `reverifyBatchSize` (P-021), so this interval sets the API rate on its own:
+   * `reverifyBatchSize` calls per `reverifyIntervalMs`.
    *
    * Set to `0` to disable the automatic throttle-in-mergeNow kick-off entirely
    * (tests drive `reverifyAdmitted()` + `mergeNow()` by hand via the handle).
    * Default 15 min.
    */
   reverifyIntervalMs?: number;
+  /**
+   * Max admitted peers whose channel-2 binding is re-verified in ONE
+   * `reverifyAdmitted()` pass (P-021). Peers are swept ROUND-ROBIN across passes
+   * from a persistent cursor, so the GitHub API call RATE is O(1) in membership
+   * instead of O(N):
+   *
+   *   calls/hour    = reverifyBatchSize × (3_600_000 / reverifyIntervalMs)
+   *   full-sweep    = ceil(N / reverifyBatchSize) × reverifyIntervalMs
+   *
+   * Why this is not optional at scale: `verifyBinding` passes `skipCache: true`
+   * (revocation must not be masked by the 24h success cache), so EVERY peer in a
+   * pass is a real API request. Unbounded, a 15-min cadence spends 4N calls/hour
+   * and blows GitHub's 5,000/hr limit at ~1,250 admitted members — and because a
+   * rate-limited check returns `'pending'`, fail-open (D-004) converts that into
+   * "revocation is silently never detected", not a loud failure.
+   *
+   * The default (256) is the documented per-hive peer ceiling
+   * (`harden-shared-hive-to-256-peers`), so at or below the supported scale a
+   * pass still sweeps every peer and behaviour is UNCHANGED; past it the rate
+   * stays pinned at 1,024 calls/hour (~20% of the GitHub budget) and the
+   * full-sweep period stretches instead. Non-finite / non-positive values fall
+   * back to the default — there is deliberately no "unbounded" setting, since
+   * that is the bug this bounds.
+   */
+  reverifyBatchSize?: number;
   /**
    * Telemetry sink for conclusive admission rejections (P-004). Defaults to
    * enqueuing a `substrate_admission_rejected` diagnostic report via
@@ -1490,14 +1515,33 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // revoke() (which adds to `revoked` so a re-announce is permanently refused)
   // and is intentional: let normal admission re-verify rather than blocklisting.
   //
-  // Scaling note: with N admitted peers each `reverifyAdmitted()` pass makes N
-  // GitHub API calls. They now run OFF the lock so they no longer freeze merge,
-  // but they are still SERIAL — at larger scale consider staggering calls across
-  // passes (e.g. pick one peer per pass in round-robin) to spread the API load.
-  // That optimisation is deferred to a later component.
+  // Scaling (shared-hive-cross-machine-scale-10k P-021): a pass verifies at most
+  // `reverifyBatchSize` peers, walked ROUND-ROBIN from `reverifyCursor`, so the
+  // GitHub call rate is O(1) in membership rather than O(N). Off-lock (P-002)
+  // fixed the CONVERGENCE half of the problem — the merge lock is no longer held
+  // across the sweep — but the calls themselves stayed O(N) per pass, which at
+  // the 15-min cadence is 4N calls/hour and exceeds GitHub's 5,000/hr limit
+  // around ~1,250 members. That failure is SILENT rather than loud: a
+  // rate-limited check comes back `'pending'`, and fail-open (D-004) keeps the
+  // peer — so past the limit revocation simply stops being detected. Bounding
+  // the batch trades sweep LATENCY (every peer still gets checked, just after
+  // ceil(N/batch) passes) for a rate that cannot run away.
+  //
+  // Peers are ordered by logKey so the walk is deterministic and stable under
+  // concurrent admits/drops: the cursor is a KEY, not an index, so an insertion
+  // or removal elsewhere in the ring cannot make the sweep skip or re-visit a
+  // peer. Wrap-around resumes at the smallest key.
 
   /** Timestamp of the last `reverifyAdmitted` KICK-OFF (ms). 0 = never. */
   let lastReverifyAt = 0;
+
+  /**
+   * P-021 round-robin cursor: the logKey most recently re-verified. The next
+   * pass resumes at the smallest admitted logKey STRICTLY GREATER than this,
+   * wrapping to the smallest key overall when the tail is exhausted. `null`
+   * (never swept) starts at the smallest key.
+   */
+  let reverifyCursor: string | null = null;
 
   // P-002: logKeys whose channel-2 binding came back a conclusive `'fail'` from
   // the LOCKLESS `reverifyAdmitted()` producer. Drained + applied UNDER the merge
@@ -1511,6 +1555,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     ? (opts.reverifyIntervalMs as number)
     : DEFAULT_REVERIFY_INTERVAL_MS;
 
+  // P-021: max peers re-verified per pass. Default = the documented 256-peer
+  // per-hive ceiling, so at or below the supported scale a pass still sweeps
+  // everyone (unchanged behaviour) while larger hives are rate-bounded. A
+  // non-finite / non-positive value is NOT "unbounded" — it falls back to the
+  // default, because unbounded is precisely the bug being fixed.
+  const DEFAULT_REVERIFY_BATCH_SIZE = 256;
+  const reverifyBatchSize =
+    Number.isFinite(opts.reverifyBatchSize as number) && (opts.reverifyBatchSize as number) > 0
+      ? Math.floor(opts.reverifyBatchSize as number)
+      : DEFAULT_REVERIFY_BATCH_SIZE;
+
   // The `verifyBinding` function used for re-verification: the same one wired
   // into the admission decider (verifyBindingOverride in tests; real adapter in
   // production). Captured here as a stable reference.
@@ -1518,7 +1573,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   /**
    * LOCKLESS channel-2 re-verify PRODUCER (P-002). Snapshots `admittedIdentities`
-   * and makes the SERIAL GitHub `verifyBinding` calls OFF the merge lock. It does
+   * and makes the SERIAL GitHub `verifyBinding` calls OFF the merge lock — at most
+   * `reverifyBatchSize` of them per pass, walked round-robin from `reverifyCursor`
+   * so the API rate is bounded independently of membership (P-021). It does
    * NOT mutate `admitted` / `admittedIdentities` / `pubkeyToLogKey`; instead it
    * ENQUEUES each peer whose binding returns a conclusive `'fail'` into
    * `reverifyDropQueue`, which `drainReverifyDropQueue()` applies UNDER the merge
@@ -1538,12 +1595,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // Snapshot identities up front so the off-lock awaits below iterate a stable
     // set even if a concurrent merge pass mutates the live maps. (Only admitted
     // PEERS have an identity entry — the own log is absent, so it is never
-    // re-verified or enqueued.)
-    const snapshot = [...admittedIdentities.entries()];
-    for (const [logKey, identity] of snapshot) {
-      // Never re-verify the own log (can't revoke yourself via GitHub-side removal).
-      if (logKey === ownLog.keyHex) continue;
+    // re-verified or enqueued.) Own-log and identity-less entries are dropped
+    // HERE rather than skipped in the loop so they cannot consume a batch slot.
+    const snapshot = [...admittedIdentities.entries()]
+      .filter(([logKey, identity]) => logKey !== ownLog.keyHex && !!identity)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    if (snapshot.length === 0) return;
+
+    // P-021: resume the round-robin at the first key strictly after the cursor;
+    // wrap to the smallest key when the cursor is unset or past the tail. Since
+    // the cursor is a KEY (not an index) this stays correct across concurrent
+    // admits/drops — a peer added behind the cursor is simply picked up on the
+    // next wrap, and a removed peer costs nothing.
+    let startIdx = 0;
+    if (reverifyCursor !== null) {
+      const found = snapshot.findIndex(([logKey]) => logKey > reverifyCursor!);
+      startIdx = found === -1 ? 0 : found;
+    }
+
+    // Never verify more than the whole ring in one pass, even if the batch size
+    // exceeds membership (which is the ≤256-peer case: one pass = a full sweep).
+    const take = Math.min(reverifyBatchSize, snapshot.length);
+
+    for (let i = 0; i < take; i++) {
+      const [logKey, identity] = snapshot[(startIdx + i) % snapshot.length]!;
       if (!identity) continue;
+      // Advance the cursor as each peer is SELECTED, not on success, so a
+      // thrown/transient verify still makes forward progress instead of pinning
+      // the sweep on one unreachable peer forever.
+      reverifyCursor = logKey;
 
       let result: 'verified' | 'pending' | 'fail';
       try {

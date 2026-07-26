@@ -494,3 +494,91 @@ describe('EI-18682571591024156 — dataPathSnapshot is what a UI/health check sh
     expect(snap.find((e) => e.proven === true)?.path.relayed).toBe(true);
   });
 });
+
+describe('EI-18694945517907886 — churn diagnostics print once per socket, not once per joined harness', () => {
+  /**
+   * THE BUG. `joinHarnessSwarm`'s connection handler is registered once PER
+   * JOINED HARNESS on the SAME process-global shared swarm (25+ harnesses in
+   * production, `setMaxListeners(0)` near the bottom of swarm.ts documents
+   * it). A single physical peer connection therefore invokes every joined
+   * harness's handler for the SAME socket, and the churn diagnostics
+   * (`[swarm-churn] open/error/close`, `[swarm] ⚠ data path NEVER came up`)
+   * were printed unconditionally in each — i.e. (joined harnesses + 1)x per
+   * real connection/close. That silently inflated every log-derived
+   * connection metric and corrupted the WI-5980 corpus analysis, which counts
+   * these printed lines directly (measured live: 78 close records / 39
+   * distinct sockets == 2 harnesses joined).
+   */
+  it('prints "data path NEVER came up" once for two harnesses sharing one connection, but still fires onDataPathNeverUp per harness', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { swarm, emit } = fakeSwarm();
+    const deadA: DataPathNeverUpInfo[] = [];
+    const deadB: DataPathNeverUpInfo[] = [];
+
+    // Two harnesses joined on the SAME shared swarm — the real deployment
+    // shape (one process-global swarm, N per-harness listeners).
+    await joinHarnessSwarm({
+      store: fakeStore(),
+      topic: topic32(),
+      swarm,
+      refreshMs: 0,
+      onDataPathNeverUp: (info) => deadA.push(info),
+    });
+    await joinHarnessSwarm({
+      store: fakeStore(),
+      topic: topic32(),
+      swarm,
+      refreshMs: 0,
+      onDataPathNeverUp: (info) => deadB.push(info),
+    });
+
+    const { socket, close } = fakeSocket({ wire: NEVER_CAME_UP, udx: PUNCHED_UDX });
+    // ONE physical connection — the shared swarm broadcasts it to BOTH
+    // harnesses' listeners, exactly like a real hyperswarm 'connection' event.
+    emit(socket, undefined);
+    close();
+
+    // The printed diagnostic is the log-derived corpus WI-5980 counted — it
+    // must appear exactly once per socket, never once per joined harness.
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toMatch(/data path NEVER came up/i);
+
+    // Each harness's OWN functional callback still fires exactly as before —
+    // a separate per-harness signal into boot-history, unaffected by the
+    // log-print dedup (symmetric with the unconditional per-harness
+    // `onPeerConnected`).
+    expect(deadA).toHaveLength(1);
+    expect(deadB).toHaveLength(1);
+  });
+
+  it('the churn-debug open/close text lines are also printed once per socket across harnesses', async () => {
+    const prevDebug = process.env.PAPERCUSP_SWARM_CHURN_DEBUG;
+    process.env.PAPERCUSP_SWARM_CHURN_DEBUG = '1';
+    try {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { swarm, emit } = fakeSwarm();
+
+      // Three harnesses joined on the same shared swarm.
+      await joinHarnessSwarm({ store: fakeStore(), topic: topic32(), swarm, refreshMs: 0 });
+      await joinHarnessSwarm({ store: fakeStore(), topic: topic32(), swarm, refreshMs: 0 });
+      await joinHarnessSwarm({ store: fakeStore(), topic: topic32(), swarm, refreshMs: 0 });
+
+      const { socket, close } = fakeSocket({
+        wire: { bytesTransmitted: 512, bytesReceived: 2048 },
+      });
+      emit(socket, undefined);
+      close();
+
+      const opens = errSpy.mock.calls.filter((c) => c[1] === 'open').length;
+      const closes = errSpy.mock.calls.filter((c) => c[1] === 'close').length;
+      // Before the fix this would be 3 opens / 3 closes for one physical
+      // socket (one per joined harness); it must now be 1 / 1.
+      expect(opens).toBe(1);
+      expect(closes).toBe(1);
+    } finally {
+      if (prevDebug === undefined) delete process.env.PAPERCUSP_SWARM_CHURN_DEBUG;
+      else process.env.PAPERCUSP_SWARM_CHURN_DEBUG = prevDebug;
+    }
+  });
+});

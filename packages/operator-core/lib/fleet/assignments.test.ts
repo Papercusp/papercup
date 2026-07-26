@@ -14,6 +14,7 @@ import {
   isReclaimCandidate,
   orphanedClaims,
   reclaimableClaims,
+  reconcileOrphanedWithVerdicts,
   stalledClaims,
   summarizeOrphan,
   upgradeRecordedLiveHolders,
@@ -608,5 +609,81 @@ describe('upgradeRecordedLiveHolders — recorded-live bootstrap liveness drift 
   it('is a no-op when the recorded-live set is empty', () => {
     const rows = [workClaim({ agentId: 's-bootstrap', workItemId: 'WI-8107', orphaned: true })];
     expect(upgradeRecordedLiveHolders(rows, new Set())).toBe(rows);
+  });
+});
+
+describe('reconcileOrphanedWithVerdicts — the EI-18698865231464142 blind spot', () => {
+  it('a non-session (role-string) holder confirmed dead by an out-of-band oracle, invisible to BOTH orphaned and stalled, is reconciled into orphaned', () => {
+    // The exact bug: 'improvement-runner' carries no adv_sessions row, so
+    // downgradeEndedHolders (keyed by endedRecordedOwnerIds) never fires for it —
+    // the row stays orphaned:false/stalled:null even though a richer oracle
+    // (fleet:assignments' own sessionState, via reconcileWakeability) independently
+    // confirms the holder is `ended`.
+    const rows = [
+      workClaim({
+        agentId: 'improvement-runner',
+        workItemId: 'EI-18694945517907886',
+        holderAlive: true,
+        orphaned: false,
+        stalled: null,
+      }),
+    ];
+    // Pre-fix: invisible to both reclaim lists.
+    expect(orphanedClaims(rows)).toHaveLength(0);
+    expect(stalledClaims(rows)).toHaveLength(0);
+
+    const fixed = reconcileOrphanedWithVerdicts(rows, new Set(['improvement-runner']));
+    expect(fixed[0]).not.toBe(rows[0]);
+    expect(fixed[0].orphaned).toBe(true);
+    expect(fixed[0].holderAlive).toBe(false);
+    expect(orphanedClaims(fixed)).toHaveLength(1);
+    expect(deriveActivity(fixed[0])).toBe('dead');
+  });
+
+  it('never overrides an already-stalled row (the progress-based leg keeps precedence)', () => {
+    const rows = [
+      workClaim({ agentId: 'su-quiet', workItemId: 'WI-1', holderAlive: true, orphaned: false, stalled: true }),
+    ];
+    const fixed = reconcileOrphanedWithVerdicts(rows, new Set(['su-quiet']));
+    expect(fixed[0]).toBe(rows[0]); // untouched — already accounted for by stalledClaims
+    expect(fixed[0].orphaned).toBe(false);
+  });
+
+  it('never touches an already-orphaned row, a lapsed claim, a presence row, or a holder outside the set', () => {
+    const rows = [
+      workClaim({ agentId: 'su-a', workItemId: 'WI-2', orphaned: true }), // already orphaned
+      workClaim({ agentId: 'su-b', workItemId: 'WI-3', claimActive: false }), // lapsed
+      presence({ agentId: 'su-c' }), // presence, not a claim
+      workClaim({ agentId: 'su-d', workItemId: 'WI-4' }), // not in the dead set
+    ];
+    const fixed = reconcileOrphanedWithVerdicts(rows, new Set(['su-a', 'su-b', 'su-c']));
+    expect(fixed).toEqual(rows); // no row content changed
+  });
+
+  it('is a no-op (identity-preserving) when the dead-owner set is empty', () => {
+    const rows = [workClaim({ agentId: 'su-x', workItemId: 'WI-5' })];
+    expect(reconcileOrphanedWithVerdicts(rows, new Set())).toBe(rows);
+  });
+
+  // The RECURRENCE GUARD (per the incident's own "every incident is a detector
+  // failure" callout): assert the INVARIANT, not the mechanism — any active claim
+  // whose holder is in the caller's confirmed-dead set MUST appear in orphanedClaims
+  // (or already be in stalledClaims), covering a non-session/role-string holder id
+  // explicitly, so this can never again pass through neither reclaim list.
+  it('INVARIANT: every active claim held by a confirmed-dead owner appears in orphaned or stalled', () => {
+    const deadOwners = new Set(['improvement-runner', 'su-ended-session']);
+    const rows = [
+      workClaim({ agentId: 'improvement-runner', workItemId: 'WI-role-string', orphaned: false, stalled: null }),
+      workClaim({ agentId: 'su-ended-session', workItemId: 'WI-session', orphaned: true, stalled: null }),
+      workClaim({ agentId: 'su-live', workItemId: 'WI-live', orphaned: false, stalled: null }),
+    ];
+    const fixed = reconcileOrphanedWithVerdicts(rows, deadOwners);
+    for (const r of fixed) {
+      if (!r.agentId || !deadOwners.has(r.agentId)) continue;
+      const reclaimable = orphanedClaims(fixed).includes(r) || stalledClaims(fixed).includes(r);
+      expect(reclaimable).toBe(true);
+    }
+    // The live holder's claim is untouched and correctly NOT reclaimable.
+    expect(orphanedClaims(fixed).some((r) => r.agentId === 'su-live')).toBe(false);
   });
 });

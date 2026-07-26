@@ -458,3 +458,160 @@ describe('channel-2 re-verify for admitted peers (rev-v2 Component A)', () => {
     },
   );
 });
+
+/**
+ * P-021 (shared-hive-cross-machine-scale-10k): the re-verify sweep is
+ * ROUND-ROBIN BATCHED, so the GitHub API call rate is O(1) in membership.
+ *
+ * Before this, every pass verified all N admitted peers — 4N calls/hour at the
+ * 15-min cadence, which exceeds GitHub's 5,000/hr limit around ~1,250 members.
+ * The failure mode is silent, not loud: a rate-limited check returns 'pending'
+ * and fail-open (D-004) keeps the peer, so revocation just stops being detected.
+ *
+ * These tests pin the three properties that make the bound trustworthy:
+ *   1. a pass verifies AT MOST `reverifyBatchSize` peers (the rate bound), and
+ *   2. successive passes still cover EVERY peer and WRAP (no peer is starved),
+ *   3. a throwing verify still advances the cursor (one unreachable peer cannot
+ *      pin the sweep in place forever).
+ */
+describe('P-021: re-verify is round-robin batched (bounded GitHub call rate)', () => {
+  /** Admit `count` peers with deterministic logKeys ('11'*32, '22'*32, ...). */
+  async function admitPeers(
+    handle: Awaited<ReturnType<typeof bootHarnessSubstrate>>,
+    count: number,
+  ): Promise<string[]> {
+    const logKeys: string[] = [];
+    for (let i = 1; i <= count; i++) {
+      const device = makeDevice();
+      const logCoreKey = String(i).repeat(2).repeat(32); // '11'*32, '22'*32, ...
+      const frame = await makeAnnounce(device, logCoreKey, `p${i}`, 5000 + i);
+      const decision = await handle.onAnnounce(frame);
+      expect(decision.admit).toBe(true);
+      logKeys.push(logCoreKey);
+    }
+    return logKeys;
+  }
+
+  it(
+    'a pass verifies at most reverifyBatchSize peers, and successive passes round-robin over all of them (wrapping)',
+    async () => {
+      // Record which peer each verifyBinding call was for, by github login.
+      let calls: string[] = [];
+      const verifyBindingOverride = async (
+        _dpk: string, login: string, _uid: number,
+      ): Promise<'verified' | 'pending' | 'fail'> => {
+        calls.push(login);
+        return 'verified';
+      };
+
+      const handle = await bootHarnessSubstrate({
+        workspaceRoot: tmpDir('mb-rv2-batch-'),
+        workspaceId: 'ws-rv2-batch',
+        harnessSlug: 'rv2-batch-1',
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        reverifyIntervalMs: 0, // drive reverifyAdmitted() by hand
+        reverifyBatchSize: 2,
+        loadRevokedOverride: async () => new Set(),
+        verifyBindingOverride,
+      });
+      cleanups.push(() => handle.close());
+
+      await admitPeers(handle, 5);
+      calls = []; // discard the admission-path calls; count only the sweep
+
+      // Pass 1: the two SMALLEST logKeys — NOT all five. This is the rate bound.
+      await handle.reverifyAdmitted();
+      expect(calls).toEqual(['p1', 'p2']);
+
+      // Pass 2: resumes strictly after the cursor — no re-verify of p1/p2.
+      calls = [];
+      await handle.reverifyAdmitted();
+      expect(calls).toEqual(['p3', 'p4']);
+
+      // Pass 3: takes the tail then WRAPS to the smallest key. Every peer has
+      // now been swept exactly once within ceil(5/2) = 3 passes.
+      calls = [];
+      await handle.reverifyAdmitted();
+      expect(calls).toEqual(['p5', 'p1']);
+    },
+  );
+
+  it(
+    'batchSize >= membership sweeps every peer in one pass (unchanged behaviour at or below the 256-peer ceiling)',
+    async () => {
+      let calls: string[] = [];
+      const verifyBindingOverride = async (
+        _dpk: string, login: string, _uid: number,
+      ): Promise<'verified' | 'pending' | 'fail'> => {
+        calls.push(login);
+        return 'verified';
+      };
+
+      const handle = await bootHarnessSubstrate({
+        workspaceRoot: tmpDir('mb-rv2-batch-full-'),
+        workspaceId: 'ws-rv2-batch-full',
+        harnessSlug: 'rv2-batch-full-1',
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        reverifyIntervalMs: 0,
+        // Default batch (256) — not passed, to prove the DEFAULT preserves the
+        // full-sweep behaviour a small hive had before P-021.
+        loadRevokedOverride: async () => new Set(),
+        verifyBindingOverride,
+      });
+      cleanups.push(() => handle.close());
+
+      await admitPeers(handle, 3);
+      calls = [];
+
+      await handle.reverifyAdmitted();
+      expect(calls.sort()).toEqual(['p1', 'p2', 'p3']);
+      // The own log is still never verified (batching must not resurrect it).
+      expect(calls).toHaveLength(3);
+    },
+  );
+
+  it(
+    'a throwing verify still advances the cursor — one unreachable peer cannot pin the sweep',
+    async () => {
+      let calls: string[] = [];
+      const verifyBindingOverride = async (
+        _dpk: string, login: string, _uid: number,
+      ): Promise<'verified' | 'pending' | 'fail'> => {
+        calls.push(login);
+        // p1 is permanently unreachable.
+        if (login === 'p1') throw new Error('GitHub API timeout');
+        return 'verified';
+      };
+
+      const handle = await bootHarnessSubstrate({
+        workspaceRoot: tmpDir('mb-rv2-batch-throw-'),
+        workspaceId: 'ws-rv2-batch-throw',
+        harnessSlug: 'rv2-batch-throw-1',
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        reverifyIntervalMs: 0,
+        reverifyBatchSize: 1,
+        loadRevokedOverride: async () => new Set(),
+        verifyBindingOverride,
+      });
+      cleanups.push(() => handle.close());
+
+      await admitPeers(handle, 3);
+      calls = [];
+
+      // p1 throws — the cursor must still move past it.
+      await handle.reverifyAdmitted();
+      expect(calls).toEqual(['p1']);
+
+      calls = [];
+      await handle.reverifyAdmitted();
+      expect(calls).toEqual(['p2']); // NOT 'p1' again
+
+      calls = [];
+      await handle.reverifyAdmitted();
+      expect(calls).toEqual(['p3']);
+    },
+  );
+});

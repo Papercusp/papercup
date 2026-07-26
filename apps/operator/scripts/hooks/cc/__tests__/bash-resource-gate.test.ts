@@ -1242,6 +1242,46 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
       expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
     }
   });
+
+  /**
+   * WI-6026 (EI-18664655909328670, 3rd instance) — a trailing REDIRECT used
+   * to silence output (`cmd ... 2>/dev/null`, `cmd ... > out.log`) defeats
+   * the same naive `.split()` as the substitution-fragment bug above, but in
+   * the opposite direction: instead of a stray fragment reading as an
+   * in-tree target, the redirect token ITSELF gets treated as the
+   * `cp`/`tee`/`sed -i`/`perl -i` destination. Repro'd live 2026-07-26:
+   *
+   *   cp file-read.cat-file.sample.json /tmp/.../fx-backup-catfile.json 2>/dev/null
+   *
+   * was denied, naming `2>/dev/null` itself as the "target ... inside the
+   * shared staging tree" — the give-away that the guard's own parse was
+   * wrong, since the real destination was an absolute `/tmp` path nowhere
+   * near the tree. `cmd ... 2>/dev/null` is an extremely common idiom, so
+   * this denied a broad class of legitimate out-of-tree writes.
+   */
+  it.each([
+    ['`cp` with a combined stderr-silencing redirect (the filed repro)', 'cp file.json /tmp/x/out.json 2>/dev/null'],
+    ['`cp` with both streams silenced (combined + fd-dup forms)', 'cp file.json /tmp/x/out.json >/dev/null 2>&1'],
+    ['`cp` with a split-token redirect (`> FILE` as two tokens)', 'cp file.json /tmp/x/out.json > /tmp/x/log.txt'],
+    ['`tee` with a trailing stderr redirect', 'echo hi | tee /tmp/x/out.txt 2>/dev/null'],
+    ["`sed -i` with a trailing stderr redirect", "sed -i 's/a/b/' /tmp/x/foo.ts 2>/dev/null"],
+    ['`perl -i` with a trailing stderr redirect', "perl -i -pe 's/a/b/' /tmp/x/foo.ts 2>/dev/null"],
+  ])('allows %s (the redirect token is not the destination)', (_label, command) => {
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('the redirect strip is scoped to the redirect — a LITERAL tree target alongside a silenced redirect still denies (masking control)', () => {
+    // Load-bearing per the same discipline as the substitution-fragment fix:
+    // stripping a token before positional analysis must not hide a genuine
+    // in-tree destination sitting right next to it.
+    for (const command of [
+      'cp /tmp/a.txt in-tree.txt 2>/dev/null',
+      "sed -i 's/a/b/' in-tree.txt 2>/dev/null",
+      'echo hi | tee in-tree.txt 2>/dev/null',
+    ]) {
+      expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    }
+  });
 });
 
 /**

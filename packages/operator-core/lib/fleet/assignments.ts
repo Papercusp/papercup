@@ -170,6 +170,56 @@ export function upgradeRecordedLiveHolders(
   });
 }
 
+/**
+ * Reconcile the view's `orphaned` flag against an ALREADY-confirmed liveness
+ * verdict from an out-of-band oracle, for holders {@link downgradeEndedHolders}
+ * can never key on.
+ *
+ * `downgradeEndedHolders` only fires for owners in `endedRecordedOwnerIds` —
+ * `harness_shared.adv_sessions`, which is keyed by `coord_owner_id` (a psu/su
+ * `su-<uuid>` SESSION). A non-session, ROLE-STRING principal (e.g.
+ * 'improvement-runner') never gets an `adv_sessions` row at all, so that
+ * producer has no key to match even when it is genuinely gone — and the view's
+ * OWN `holder_alive`/`orphaned` come from heartbeat freshness alone, which can
+ * stay warm well past process death. The result: a confirmed-dead holder's
+ * active claim can pass through neither `orphaned` (this reconciler) nor
+ * `stalled` (the progress-based leg), invisible to every reclaim reader
+ * (EI-18698865231464142 — `fleet:assignments` itself reported
+ * `verdict:'dead'`/`sessionState:'ended'` for such a holder while
+ * `summary.orphaned_claims:0` and `orphaned:[]`).
+ *
+ * The caller (fleet:assignments) already resolves the FULLER wakeability-based
+ * oracle verdict (`sessionState`, via `deriveVerdict`/`reconcileWakeability`) for
+ * every agent, independent of whether it has an adv_sessions row. Passing that
+ * settled confirmed-dead set here closes the gap: this function does no
+ * liveness derivation of its own — it only propagates a verdict the caller
+ * already trusts onto any active claim row that verdict never reached.
+ *
+ * PURE (rows + set in → rows out) so it unit-tests without PG. A no-op when the
+ * set is empty. Only flips `orphaned` true on an active, non-presence claim row
+ * that is not ALREADY orphaned or stalled — it never revives a row, never
+ * touches a holder outside the set, and never overrides the stall detector.
+ */
+export function reconcileOrphanedWithVerdicts(
+  rows: FleetAssignmentRow[],
+  deadOwnerIds: ReadonlySet<string>,
+): FleetAssignmentRow[] {
+  if (deadOwnerIds.size === 0) return rows;
+  return rows.map((r) => {
+    if (
+      !r.agentId ||
+      r.source === 'presence' ||
+      r.claimActive === false ||
+      r.orphaned ||
+      r.stalled ||
+      !deadOwnerIds.has(r.agentId)
+    ) {
+      return r;
+    }
+    return { ...r, orphaned: true, holderAlive: false };
+  });
+}
+
 export interface ListFleetAssignmentsOpts {
   /** Scope to a workspace (+ the '*' global rows). null/undefined = all. */
   workspaceId?: string | null;
