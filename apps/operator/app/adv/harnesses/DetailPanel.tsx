@@ -203,9 +203,6 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     queryName: 'featuresConsolidated.detail',
     args: { harnessSlug: slug, featureId: selectedId, workspaceId: featureDetailWorkspaceId },
     enabled: Boolean(slug) && kind === 'feature' && Boolean(selectedId),
-    // WI-5851: click-triggered detail read — a human is waiting, so it takes
-    // the interactive batch lane instead of queueing behind the poll wave.
-    priority: 'interactive',
   });
   const featureDetailSummary =
     !featureDetailQuery.loading && featureDetailQuery.data?.[0]?.featureId === selectedId
@@ -250,9 +247,6 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     queryName: 'workItems.detail',
     args: { harnessSlug: slug, id: selectedId },
     enabled: Boolean(slug) && kind === 'workItem' && Boolean(selectedId),
-    // WI-5851: click-triggered detail read — a human is waiting, so it takes
-    // the interactive batch lane instead of queueing behind the poll wave.
-    priority: 'interactive',
   });
   const workItemDetailRow = workItemDetailQuery.loading ? null : (workItemDetailQuery.data?.[0] ?? null);
   const workItem = useMemo(

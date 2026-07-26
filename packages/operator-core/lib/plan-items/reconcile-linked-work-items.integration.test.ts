@@ -249,8 +249,9 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
 
     await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-P22' });
 
-    const call = setWorkItemState.mock.calls.find((c) => c[0] === 'WI-unattributed');
-    expect(call?.[2]).toEqual(
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'WI-unattributed',
+      'resolved',
       expect.objectContaining({ completionRef: expect.not.stringContaining('flipped by') }),
     );
   });

@@ -143,6 +143,12 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
     expect(screen.queryByLabelText('Generate ideas')).toBeNull();
   });
 
+  it('forwards footer straight through to ChatConversation (gui-chat-session-controls-2026-07-25 P-007)', () => {
+    const footer = <div data-testid="session-footer">status</div>;
+    render(<OperatorChat {...baseProps({ footer })} />);
+    expect(lastProps.footer).toBe(footer);
+  });
+
   it('renders the PendingCardsBar only when both conversationId and workspaceId are set', () => {
     const { rerender } = render(<OperatorChat {...baseProps({ conversationId: 'c1' })} />);
     expect(screen.queryByTestId('pending-cards')).toBeNull(); // workspaceId missing

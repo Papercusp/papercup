@@ -188,6 +188,21 @@ describe('ChatConversation', () => {
     expect(document.querySelectorAll('.oracle-msg-avatar').length).toBe(1);
   });
 
+  it('renders footer under the composer form (gui-chat-session-controls-2026-07-25 P-007)', () => {
+    renderChat({ footer: <div data-testid="session-footer">status</div> });
+    const footer = screen.getByTestId('session-footer');
+    const form = document.querySelector('form.oracle-form');
+    expect(footer).toBeTruthy();
+    // "under the composer" — the footer node must follow the form in the DOM.
+    expect(form).toBeTruthy();
+    expect(form!.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('renders nothing extra when footer is omitted', () => {
+    renderChat();
+    expect(screen.queryByTestId('session-footer')).toBeNull();
+  });
+
   it('renders a banner above the transcript', () => {
     renderChat({ banner: <div data-testid="banner" /> });
     expect(screen.getByTestId('banner')).toBeTruthy();

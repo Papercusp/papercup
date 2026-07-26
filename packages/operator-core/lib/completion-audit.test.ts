@@ -174,6 +174,115 @@ describe('completion-audit predicates (EI-10867)', () => {
       expect(f.text.trim().length).toBeGreaterThan(0);
     }
   });
+
+  // WI-5891 — the P-014/WI-5874 audit follow-up: a layout-bearing filesChanged closed
+  // with verifiedHow 'unit'/absent never had its pixels looked at.
+  describe("'geometry-unverified' (WI-5891)", () => {
+    it('checks filesChanged for a layout-bearing extension via jsonb_array_elements_text', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'geometry-unverified'));
+      expect(f.text).toContain('jsonb_array_elements_text');
+      expect(f.text).toContain('filesChanged');
+      expect(f.text).toContain('css|tsx|jsx');
+    });
+
+    it('checks verifiedHow is NOT one of the genuinely-verified values', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'geometry-unverified'));
+      expect(f.text).toContain('verifiedHow');
+      expect(f.text).toContain('NOT');
+      expect(f.params).toContainEqual(['integration', 'live-drove-ui', 'manual', 'already-passing']);
+    });
+
+    it('the aliased form matches its unaliased twin', () => {
+      const plain = frag(auditPredicateSql(recordingSql(), 'geometry-unverified'));
+      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'geometry-unverified', 'ei'));
+      expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+    });
+  });
+});
+
+// WI-5891 — pure heuristics feeding both the `geometry-unverified` audit bucket and the
+// `isBackedLiveDroveUiClaim` completion-boundary gate.
+describe('touchesLayoutBearingFiles (WI-5891)', () => {
+  it('flags a .css file', () => {
+    expect(touchesLayoutBearingFiles(['apps/operator/app/globals.css'])).toBe(true);
+  });
+  it('flags a .tsx file', () => {
+    expect(touchesLayoutBearingFiles(['apps/operator/app/adv/hud/HudView.tsx'])).toBe(true);
+  });
+  it('flags a .jsx file', () => {
+    expect(touchesLayoutBearingFiles(['some/Component.jsx'])).toBe(true);
+  });
+  it('does NOT flag a non-layout file (e.g. a .ts backend module)', () => {
+    expect(touchesLayoutBearingFiles(['packages/operator-core/lib/work-items.ts'])).toBe(false);
+  });
+  it('does NOT flag an empty or missing list', () => {
+    expect(touchesLayoutBearingFiles([])).toBe(false);
+    expect(touchesLayoutBearingFiles(null)).toBe(false);
+    expect(touchesLayoutBearingFiles(undefined)).toBe(false);
+  });
+});
+
+describe('citesScreenshotArtifact (WI-5891)', () => {
+  it('flags an image artifact path', () => {
+    expect(citesScreenshotArtifact('saved to /tmp/hud-card-fix.png')).toBe(true);
+  });
+  it('flags a tauri-agent-tools capture/screenshot/check invocation', () => {
+    expect(citesScreenshotArtifact('ran tauri-agent-tools capture --out /tmp/shot.png')).toBe(true);
+    expect(citesScreenshotArtifact('tauri-agent-tools check hud-card-flex')).toBe(true);
+  });
+  it('does NOT flag bare prose with no artifact', () => {
+    expect(citesScreenshotArtifact('drove the UI and it looked fine')).toBe(false);
+    expect(citesScreenshotArtifact('2 vitest runs green')).toBe(false);
+    expect(citesScreenshotArtifact(null)).toBe(false);
+    expect(citesScreenshotArtifact(undefined)).toBe(false);
+    expect(citesScreenshotArtifact('')).toBe(false);
+  });
+});
+
+// WI-5891 — the completion-boundary hard gate itself: the exact WI-5874/P-001 shape
+// (verifiedHow:'live-drove-ui' citing only vitest runs) must fail this check.
+describe('isBackedLiveDroveUiClaim (WI-5891)', () => {
+  it("the WI-5874/P-001 shape — verifiedHow:'live-drove-ui' backed by nothing but vitest runs — is UNBACKED", () => {
+    expect(
+      isBackedLiveDroveUiClaim({
+        verifiedHow: 'live-drove-ui',
+        testsRun: 'npm run test:file -- hud.test.ts',
+        testResult: '2/2 vitest runs green',
+      }),
+    ).toBe(false);
+  });
+
+  it("is UNBACKED when verifiedHow:'live-drove-ui' cites nothing at all", () => {
+    expect(isBackedLiveDroveUiClaim({ verifiedHow: 'live-drove-ui' })).toBe(false);
+  });
+
+  it('is BACKED when testResult cites a screenshot artifact path', () => {
+    expect(
+      isBackedLiveDroveUiClaim({
+        verifiedHow: 'live-drove-ui',
+        testResult: 'confirmed via tauri-agent-tools capture, saved /tmp/hud-fix.png',
+      }),
+    ).toBe(true);
+  });
+
+  it('is BACKED when filesChanged itself carries the screenshot path', () => {
+    expect(
+      isBackedLiveDroveUiClaim({
+        verifiedHow: 'live-drove-ui',
+        filesChanged: ['apps/operator/app/globals.css', '/tmp/verification/hud-fix.png'],
+      }),
+    ).toBe(true);
+  });
+
+  it('is a no-op (returns true / nothing to enforce) for every OTHER verifiedHow, including absent', () => {
+    expect(isBackedLiveDroveUiClaim({ verifiedHow: 'unit' })).toBe(true);
+    expect(isBackedLiveDroveUiClaim({ verifiedHow: 'manual' })).toBe(true);
+    expect(isBackedLiveDroveUiClaim({ verifiedHow: 'integration' })).toBe(true);
+    expect(isBackedLiveDroveUiClaim({ verifiedHow: 'already-passing' })).toBe(true);
+    expect(isBackedLiveDroveUiClaim({})).toBe(true);
+    expect(isBackedLiveDroveUiClaim(null)).toBe(true);
+    expect(isBackedLiveDroveUiClaim(undefined)).toBe(true);
+  });
 });
 
 // EI-13424 — the audit's own false-positive rate: a `no-evidence` hit whose prose

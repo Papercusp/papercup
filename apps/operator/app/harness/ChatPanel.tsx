@@ -107,9 +107,6 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
     args: { id: chatId, workspaceId },
     enabled: !!chatId,
     staleTime: 30_000,
-    // WI-5851: click-triggered detail read — a human is waiting, so it takes
-    // the interactive batch lane instead of queueing behind the poll wave.
-    priority: 'interactive',
   });
 
   const loadChat = useCallback(async () => {

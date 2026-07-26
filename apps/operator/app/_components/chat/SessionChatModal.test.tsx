@@ -12,7 +12,7 @@
  * item is selected + hosted).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
 
 // jsdom-vs-virtualization seam (same as ChatConversation.test.tsx): the real
@@ -261,8 +261,13 @@ describe('SessionChatModal', () => {
       });
 
       await waitFor(() => expect(screen.getByText('Here is my answer.')).toBeTruthy());
-      expect(screen.getByText('su-live-1')).toBeTruthy();
-      expect(screen.getByText('LEAD')).toBeTruthy();
+      // Scoped to the identity-chip avatar specifically: P-007's footer (below
+      // the composer) also renders the handle now, so a page-wide getByText
+      // would ambiguously match both.
+      const chip = document.querySelector('.oracle-msg-avatar--identity') as HTMLElement;
+      expect(chip).toBeTruthy();
+      expect(within(chip).getByText('su-live-1')).toBeTruthy();
+      expect(within(chip).getByText('LEAD')).toBeTruthy();
     });
 
     it('omits the LEAD marker for a non-leader member, and falls back to the default icon avatar when the owner has no roster row', async () => {
@@ -275,8 +280,10 @@ describe('SessionChatModal', () => {
       });
 
       await waitFor(() => expect(screen.getByText('member reply')).toBeTruthy());
-      expect(screen.getByText('su-live-1')).toBeTruthy();
-      expect(screen.queryByText('LEAD')).toBeNull();
+      const chip = document.querySelector('.oracle-msg-avatar--identity') as HTMLElement;
+      expect(chip).toBeTruthy();
+      expect(within(chip).getByText('su-live-1')).toBeTruthy();
+      expect(within(chip).queryByText('LEAD')).toBeNull();
     });
 
     it('falls back to the default icon avatar when the roster has no matching entry', async () => {
@@ -290,6 +297,117 @@ describe('SessionChatModal', () => {
 
       await waitFor(() => expect(screen.getByText('no roster row')).toBeTruthy());
       expect(screen.queryByText('su-live-1')).toBeNull();
+    });
+  });
+
+  describe('P-007 session footer', () => {
+    function seedRoster(entries: Array<Record<string, unknown>>) {
+      H.results['advRoster.list'] = {
+        data: [{ active: entries, pending: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    it('renders fleet/plan/context/claims/objective from the SAME roster entry the identity chip reads', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          fleetSlug: 'gui-chat-controls',
+          fleetColor: '#86efac',
+          fleetRole: 'leader',
+          currentPlanSlug: 'gui-chat-session-controls-2026-07-25',
+          contextTokens: 40_000,
+          compactionLimit: 200_000,
+          modes: [],
+          claims: [{ id: 'WI-1', status: 'done' }, { id: 'WI-2', status: 'wip' }],
+          currentFiles: [],
+          intent: 'Building the session footer',
+          openAwait: null,
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const footer = await waitFor(() => screen.getByTestId('session-chat-footer'));
+      expect(footer.textContent).toContain('gui-chat-controls');
+      expect(footer.textContent).toContain('LEAD');
+      expect(footer.textContent).toContain('gui-chat-session-controls-2026-07-25');
+      expect(footer.textContent).toContain('ctx 20%');
+      expect(footer.textContent).toContain('1/2');
+      expect(footer.textContent).toContain('Building the session footer');
+    });
+
+    it('never renders the always-armed inbox-wake as a blocked-on gate (isInfrastructureAwait)', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: {
+            eventKey: 'coord:inbox-wake:su-live-1',
+            note: null,
+            sinceIso: new Date().toISOString(),
+            expiresIso: null,
+          },
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const footer = await waitFor(() => screen.getByTestId('session-chat-footer'));
+      expect(footer.textContent).not.toContain('Waiting on');
+      expect(footer.textContent).not.toContain('coord:inbox-wake');
+    });
+
+    it('renders a real open-await note as the blocked-on line', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: {
+            eventKey: 'some:real:gate',
+            note: 'waiting for review',
+            sinceIso: new Date().toISOString(),
+            expiresIso: null,
+          },
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const footer = await waitFor(() => screen.getByTestId('session-chat-footer'));
+      expect(footer.textContent).toContain('waiting for review');
+    });
+
+    it('omits the footer entirely when there is no matching roster row (same fallback as the identity chip)', async () => {
+      seedRoster([{ ownerId: 'su-someone-else' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      await waitFor(() => expect(screen.getByText('hi')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-footer')).toBeNull();
     });
   });
 

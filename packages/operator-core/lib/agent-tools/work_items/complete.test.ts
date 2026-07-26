@@ -419,6 +419,106 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  // ── WI-5891 (leader audit follow-up to WI-5874/P-001) ────────────────────────────────────
+  // A completion that claims `verifiedHow:'live-drove-ui'` to CLOSE the item must cite a real
+  // artifact — the exact gap that let WI-5874/P-001 close on this label citing only two vitest
+  // runs, with no screenshot anywhere on the host. Unlike every other check in this file (EI-24
+  // record-and-warn), this ONE claim is a genuine hard reject: it must FAIL on a synthetic
+  // unbacked close, not just pass on a well-evidenced one.
+  describe("completion-boundary screenshot guard — unbacked verifiedHow:'live-drove-ui' REJECTS the close (WI-5891)", () => {
+    it('SYNTHETIC UNBACKED CLOSE FAILS — citing only vitest runs (the exact WI-5874/P-001 shape)', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the layout bug',
+          testsRun: 'npm run test:file -- hud.test.ts',
+          testResult: '2/2 vitest green',
+          verifiedHow: 'live-drove-ui',
+          filesChanged: ['apps/operator/app/adv/hud/hud.css'],
+        },
+      });
+      expect(r.ok).toBe(false); // ← the whole point: an unbacked claim must not close
+      expect(r.error).toMatch(/REJECTED/);
+      expect(r.error).toMatch(/live-drove-ui/);
+      expect(r.stateError).toMatch(/REJECTED/);
+      // The state write must never even be attempted — nothing to roll back.
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      // EI-24 preserved: the completion record itself is never lost.
+      expect(r.completion).toMatchObject({ summary: 'fixed the layout bug' });
+    });
+
+    it('a claim citing NOTHING at all (no testsRun/testResult/filesChanged) also FAILS', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'looked fine', verifiedHow: 'live-drove-ui' },
+      });
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/REJECTED/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('a BACKED claim (screenshot path cited in testResult) closes normally', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the layout bug',
+          testResult: 'confirmed via tauri-agent-tools capture, saved /tmp/hud-fix.png',
+          verifiedHow: 'live-drove-ui',
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+      expect(r.workItem.state).toBe('passed');
+    });
+
+    it('a BACKED claim (screenshot path in filesChanged) closes normally', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the layout bug',
+          verifiedHow: 'live-drove-ui',
+          filesChanged: ['apps/operator/app/adv/hud/hud.css', '/tmp/verification/hud-fix.png'],
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it("does NOT touch a close whose verifiedHow is 'unit' (the gate is scoped to 'live-drove-ui' only)", async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'fixed', testResult: '5/5 green', verifiedHow: 'unit' },
+      });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it('does NOT fire on a record-only completion (no `state` — nothing is being closed)', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        completion: { summary: 'progress note', verifiedHow: 'live-drove-ui' },
+      });
+      expect(r.ok).toBe(true); // record-only stays legitimate regardless of this gate
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+  });
+
   it('passes structured verification evidence to the terminal state writer', async () => {
     getWorkItem.mockResolvedValue(item);
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));

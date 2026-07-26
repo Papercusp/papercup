@@ -172,11 +172,19 @@ function SessionFooter({ entry }: { entry: HudRosterEntry }) {
   const pct = contextPct(entry.contextTokens, entry.compactionLimit);
   // deriveBadges' own ctx chip is threshold-gated (only once it's getting
   // full); the footer shows the number unconditionally below, so drop the
-  // derived duplicate rather than double-render it.
-  const badges = useMemo(
-    () => deriveBadges(entry, { nowMs, thresholds: HUD_DEFAULT_THRESHOLDS }).filter((b) => b.id !== 'ctx'),
-    [entry, nowMs],
-  );
+  // derived duplicate rather than double-render it. deriveBadges assumes
+  // modes/claims/currentFiles are always arrays (true for a real roster
+  // payload) — default them defensively so a partial/stale entry can't
+  // throw mid-render (`e.claims.length` etc. on undefined).
+  const badges = useMemo(() => {
+    const normalized: HudRosterEntry = {
+      ...entry,
+      modes: entry.modes ?? [],
+      claims: entry.claims ?? [],
+      currentFiles: entry.currentFiles ?? [],
+    };
+    return deriveBadges(normalized, { nowMs, thresholds: HUD_DEFAULT_THRESHOLDS }).filter((b) => b.id !== 'ctx');
+  }, [entry, nowMs]);
   const awaitText =
     entry.openAwait && !isInfrastructureAwait(entry.openAwait)
       ? entry.openAwait.note?.trim() || `Waiting on ${entry.openAwait.eventKey}`

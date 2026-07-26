@@ -1,6 +1,20 @@
 /**
  * POST /api/zero-harness/rest-query-batch — batch of named queries.
  *
+ * @deprecated NO CLIENT CALLS THIS as of 2026-07-26. The sync transport now
+ * issues one `GET /rest-query` per query through a client-side concurrency gate
+ * (drop-sync-batcher-2026-07-25). The bundle lost on its own terms: measured
+ * against :3070, one batch of 95 queries took 2676ms with nothing painting
+ * until the slowest member returned, versus 1126ms wall / 9.4ms p50 for the
+ * same 95 sent individually at concurrency 6. It is slower BECAUSE it fires
+ * every resolver at once through `Promise.all`, saturating the PG pool and the
+ * event loop, and then withholds every result until the worst one lands.
+ *
+ * Kept for one release as a rollback path only. DO NOT wire new callers to it,
+ * and do not "optimise" it — the replacement is not a better batch, it is no
+ * batch. Delete this route once a release has shipped with no client
+ * referencing it (P-005 follow-up).
+ *
  * Positional results. Single failure yields { error } in its slot.
  *
  * Ported from app/api/zero-harness/rest-query-batch/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
