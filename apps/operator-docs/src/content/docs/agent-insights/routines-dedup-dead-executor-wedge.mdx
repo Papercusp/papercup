@@ -132,10 +132,13 @@ restart loop on git-sync specifically, because git-sync's real first-step work
   AND older than its own, separate, tunable window (`DEFAULT_STALE_ROUTINE_FIRE_ORPHAN_MS`,
   default 10 min; env `PAPERCUSP_DBOS_REAPER_FIRE_ORPHAN_MS`). A `PENDING` (i.e.
   executing) no-output fire is no longer eligible for the fast path at all — it falls
-  back to the longer no-first-output window, now **60 minutes**
-  (`DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS`), retuned above green-checkpoint's suite
-  runtime (grew to ~55m; see the constant's own header comment for the tuning
-  invariant chain against `GREEN_CHECKPOINT_SUITE_TIMEOUT_MS` and `CHECKPOINT_LOCK_STALE_MS`).
+  back to the longer no-first-output window (`DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS`),
+  which must stay above green-checkpoint's whole run. ⚠ That window is a **wall-clock cap
+  from workflow creation**, not a since-last-output silence timer — the name misleads, and
+  the value has now inverted against the suite budget twice. Do not read a number for it
+  from this page: the live value, the reasoning, and the full 4-link chain are on the
+  constant's own header comment, and the ordering is enforced by
+  `apps/operator/lib/release/release-timing-invariants.test.ts` (WI-6112).
 - `routineFireImpl` (`routines-workflow.ts`) now runs a **multi-step** system action like
   git-sync's internal steps as individual `DBOS.runStep` sub-steps of the workflow
   (`entry.ownSteps`, WI-1416 / `bg-host-freeze-eventloop-stall` P-006) instead of one

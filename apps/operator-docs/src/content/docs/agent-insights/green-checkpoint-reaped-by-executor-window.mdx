@@ -1,13 +1,15 @@
 ---
 title: Green-checkpoint reaped at 25m — the executor-reaper no-output window must exceed the suite runtime
 description: >-
-  The DBOS executor-reaper cancels any routineFire with no operation_output for DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS. The green-checkpoint runs its ~55-min suite as a single opaque `await runScript()` with no intermediate DBOS checkpoint, so when that window was 25m (tuned for Scout's 20m cycle) every checkpoint over 25m was cancelled mid-suite — never producing a verdict. The gate showed 87 consecutive "reds" / skipped-locked and froze `main` (every fleet deploy) for ~64h. Fix: raise the window above the suite runtime (60m), keeping suite(55m) < window(60m) < lock-stale(65m).
+  The DBOS executor-reaper cancels any routineFire that has recorded no operation_output within DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS of its CREATION — a wall-clock cap, not a silence timer. The green-checkpoint runs its whole suite as one opaque `await runScript()` with no intermediate DBOS checkpoint, so whenever that window falls below the suite's runtime every long checkpoint is cancelled mid-suite and never produces a verdict, freezing `main` (every fleet deploy) for days. It has now happened twice — window 25m vs a 55m suite (2026-06-29, ~64h), then window 60m vs a 120m suite (WI-6112, 2026-07-26). The chain must stay monotonic: suite(120m) < self-watchdog(180m) < window(185m) < lock-stale(190m), now enforced by a test.
 discovered: 2026-06-29
-tags: [green-checkpoint, dbos, executor-reaper, release-pipeline, deploy, idle-session-reaper-window, main-frozen, skipped-locked]
+tags: [green-checkpoint, dbos, executor-reaper, release-pipeline, deploy, idle-session-reaper-window, main-frozen, skipped-locked, timing-invariant]
 status: active
 documents:
   - packages/operator-core/lib/dbos/dbos-executor-reaper.ts
   - packages/operator-core/lib/harness/routines/release-actions.ts
+  - apps/operator/lib/release/green-checkpoint.ts
+  - apps/operator/lib/release/release-timing-invariants.test.ts
 ---
 
 ## Symptom
@@ -52,14 +54,57 @@ cross-file invariant (the constants live in separate files because operator-core
 import the apps/operator tier — same convention as the result MARKERs):
 
 ```
-GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (55m, release-actions.ts)
-  <  DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS (60m, dbos-executor-reaper.ts)
-  <  CHECKPOINT_LOCK_STALE_MS (65m, green-checkpoint.ts)
+GREEN_CHECKPOINT_SUITE_TIMEOUT_MS          (120m, release-actions.ts)
+  <  SELF_WATCHDOG_MS                      (180m, green-checkpoint.ts)
+  <  DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS (185m, dbos-executor-reaper.ts)
+  <  CHECKPOINT_LOCK_STALE_MS              (190m, green-checkpoint.ts)
 ```
 
-The fast orphan path (no live `workflow_queue` row → reaped in ~90s) and the dead-executor
-path (5-min liveness) are unchanged, so this longer window only delays the rare
-has-a-queue-row-but-no-output case — never the common wedge classes.
+The fast orphan path and the dead-executor path (5-min liveness) are unchanged, so this
+longer window only delays the rare live-executor-with-no-output case — never the common
+wedge classes.
+
+## It happened AGAIN — the recurrence, and the two traps behind it (WI-6112, 2026-07-26)
+
+The 2026-06-29 fix was correct and still silently inverted. When the suite budget was
+raised **55m → 120m** (EI-7553, because full-fleet load pushed real runs to 60–90m), the
+reaper window stayed at **60m** — so the reaper became the *tightest* link and resumed
+cancelling healthy runs, now with a 60m guillotine on a 120m-budgeted suite. Two traps
+made that invisible, and both are worth knowing before you retune anything here:
+
+**Trap 1 — the constant's NAME lies about what it measures.** `NO_OUTPUT` reads like a
+*silence* timer ("reaps a fire that has gone quiet for 60m"), which invites the plausible,
+comforting, and **false** conclusion that a chatty run can never trip it. The predicate is
+a **wall-clock cap from workflow CREATION**:
+
+```sql
+created_at < ${staleRoutineFireNoOutputAt}   -- NOT started_at, NOT updated_at
+AND NOT EXISTS (SELECT 1 FROM dbos.operation_outputs op
+                 WHERE op.workflow_uuid = … AND op.function_id > 0)
+```
+
+`created_at` is deliberate (DBOS recovery refreshes `started_at`/`updated_at` on a row it
+has still not checkpointed, and that heartbeat must not keep a wedged dedup pin alive).
+And the "output" is a **DBOS step checkpoint**, not stdout: green-checkpoint writes to its
+log file continuously for the whole run and records *nothing* here until its single step
+returns. So the real invariant is **the run's TOTAL runtime must fit inside the window** —
+continuous logging buys you nothing. When a claim hinges on what a mechanism measures, read
+the comparison operator, not the constant name (or the prose next to it).
+
+**Trap 2 — a cross-file "whoever retunes one must retune the other" comment is not a
+guard.** Three files in two workspaces each carried that note (operator-core cannot import
+from apps/operator, so the constants must live apart), and every one of them was obeyed
+right up until someone edited a *fourth* place. The self-watchdog was also missing from the
+chain the notes described.
+
+**The durable fix** is therefore not the new number — it is
+`apps/operator/lib/release/release-timing-invariants.test.ts`, which imports all four
+constants (apps/operator *can* import operator-core) and asserts the chain is strictly
+monotonic, with enough margin above the reaper's 2-min sweep that the ordering cannot hold
+on paper and invert in practice. It also feeds its own inversion detector the historical
+broken configuration, so an always-green detector fails loudly instead of quietly ceasing
+to protect the gate. Retune any link and the test tells you, at edit time, which others
+must move.
 
 ## Activating the fix
 

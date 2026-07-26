@@ -269,6 +269,19 @@ export function statusToneColor(status: string, fallback: ToneKey = 'neutral'): 
   return TONE[fallback];
 }
 
+// Issue severity → chip ToneKey (design-simplification P-005). Distinct from
+// the SEVERITY StatusMeta table above (which drives the full-style
+// <SeverityPill>): this feeds semantic <HudBadge> chips, which key a CSS
+// class off the tone NAME rather than a raw color value. Extend HERE for a
+// new severity-driven chip surface instead of a component-local map — that
+// is exactly what the status-map lint (design-primitives.test.ts) blocks.
+export const SEVERITY_TONE: Record<IssueSeverityKey, ToneKey> = {
+  critical: 'bad',
+  major: 'warn',
+  minor: 'neutral',
+  nit: 'neutral',
+};
+
 // Coordination-feed kinds are categorical identities, even when a semantic
 // token is the right source for a particular kind.
 export const FEED_KIND_COLOR: Record<string, string> = {

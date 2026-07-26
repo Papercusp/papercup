@@ -905,10 +905,7 @@ export async function listPlanIndexRows(
       // preserves item order, which the pot/survey plan-item DAG walk depends on; and a
       // NULL items column still yields [] so `row.items.length` stays safe. The heavy
       // fragment emits typed NULLs so the row shape (and rowFromDb) is identical either way.
-      const itemsCol = opts.itemText
-        ? tx`items`
-        : tx`(SELECT COALESCE(jsonb_agg(e.value - 'text' ORDER BY e.ord), '[]'::jsonb)
-                FROM jsonb_array_elements(COALESCE(items, '[]'::jsonb)) WITH ORDINALITY e(value, ord)) AS items`;
+      const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
         ? tx`now_state, template_data,`
         : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
@@ -1044,10 +1041,7 @@ export async function listPlanIndexRowsForWorkspace(
             : tx`ORDER BY harness_slug ASC, plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
       // P-006 payload projection — identical to listPlanIndexRows above; see its docstring.
-      const itemsCol = opts.itemText
-        ? tx`items`
-        : tx`(SELECT COALESCE(jsonb_agg(e.value - 'text' ORDER BY e.ord), '[]'::jsonb)
-                FROM jsonb_array_elements(COALESCE(items, '[]'::jsonb)) WITH ORDINALITY e(value, ord)) AS items`;
+      const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
         ? tx`now_state, template_data,`
         : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;

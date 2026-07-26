@@ -468,8 +468,45 @@ export async function composeOrient(
    *  stays IO-free + unit-testable — the same contract as ownerPresent / roleFolds. Undefined ⇒
    *  the leg is absent. */
   pipelineFold?: () => Promise<OrientPipeline | null>,
+  /** EI-18731216945970087: cross-checks `harness_shared.agent_fleets.leader_owner_id`
+   *  (the durable, single-leader-invariant registry fact) for a caller whose presence-
+   *  derived `fleetMembership` resolved to NO fleet at all — the exact shape that used
+   *  to silently drop `leaderBrief` on a monitor tick for a caller who genuinely IS a
+   *  registered leader (presence/registry disagreement, not "not a leader"). Resolves
+   *  to the led fleet's slug, or null when the registry agrees the caller leads
+   *  nothing. Injected so composeOrient stays IO-free + unit-testable — the same
+   *  contract as pipelineFold / roleFolds. Undefined ⇒ the check never runs. */
+  presenceDriftCheck?: () => Promise<string | null>,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
+  // EI-18731216945970087: only exercised when presence itself found no fleet at all,
+  // in monitor mode (the failure's exact shape) — a correctly-labeled member/leader's
+  // tick never pays this extra lookup. A caught drift is treated as authoritative
+  // 'leader' for the REST of this call (the leaderBrief gate + the fleet-scoped legs
+  // below), and reported LOUDLY via `result.presenceDrift` rather than silently fixed.
+  let effectiveFleetMembership = fleetMembership;
+  let presenceDrift: OrientResult['presenceDrift'];
+  if (monitor && !fleetMembership?.fleetSlug && presenceDriftCheck) {
+    try {
+      const ledFleet = await presenceDriftCheck();
+      if (ledFleet) {
+        effectiveFleetMembership = { fleetSlug: ledFleet, fleetRole: 'leader' };
+        presenceDrift = {
+          fleet: ledFleet,
+          note:
+            `PRESENCE DRIFT: the registry (agent_fleets.leader_owner_id) says you LEAD fleet ` +
+            `'${ledFleet}', but your presence row (coord_presence.fleet_slug/fleet_role) showed no ` +
+            `fleet at all — the exact shape that used to silently drop \`leaderBrief\` and read as ` +
+            `"my whole fleet is gone". Recovered from the registry for THIS call; leaderBrief below ` +
+            `is real. If this repeats, your presence row is not settling after fleet:take-leadership ` +
+            `— do not relaunch live members on the strength of a bare orient read alone; corroborate ` +
+            `with fleet:assignments { fleet } / fleet:status first.`,
+        };
+      }
+    } catch {
+      /* best-effort — never break orientation over a drift cross-check */
+    }
+  }
   // WI-3818: unconditional in BOTH modes (monitor's one fleet-related read) — a
   // hang here used to block the whole orient call. Degrades to a minimal
   // empty-roster shape (never throws) so downstream folds — already
@@ -1471,7 +1508,7 @@ export default defineTool({
     // row first so a newly-installed leader gets the WHOLE fleet brief and a caller
     // that left a fleet does not resurrect stale membership. Only a failed presence
     // read may fall back to launch context.
-    let fleetMembership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
+    const fleetMembership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
     // EI-18731216945970087: a resolvable FLEET LEADER on a monitor tick was seeing
     // `agents:1` (agents:'me' is BY DESIGN caller-scoped — see OrientResult.me) with
     // `leaderBrief` silently ABSENT — byte-indistinguishable from "all quiet" — because
@@ -1482,35 +1519,20 @@ export default defineTool({
     // take-leadership-core.ts step 1) already named them leader. Ground-truthed
     // (fleet:assignments{fleet:<slug>} showed the same caller as live leader in the
     // same window) — a presence/registry disagreement, not a "not a leader" verdict.
-    // Cross-check the registry — cheap (one indexed lookup on a tiny table) and
-    // deliberately narrow: only when presence resolved to NO fleet at all (the exact
-    // failure shape reported), so every correctly-labeled member's monitor tick (the
-    // overwhelmingly common case) pays no extra round-trip.
-    let presenceDrift: { fleet: string; note: string } | undefined;
-    if (args.mode === 'monitor' && ownerId && !fleetMembership?.fleetSlug) {
-      try {
-        const { listFleetsLedBy } = await import('../../../agent-fleets-store');
-        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-        const led = await listFleetsLedBy(ws, ownerId);
-        if (led.length > 0) {
-          const fleet = led[0]!.fleetSlug;
-          fleetMembership = { fleetSlug: fleet, fleetRole: 'leader' };
-          presenceDrift = {
-            fleet,
-            note:
-              `PRESENCE DRIFT (EI-18731216945970087): the registry (agent_fleets.leader_owner_id) says ` +
-              `you LEAD fleet '${fleet}', but your presence row (coord_presence.fleet_slug/fleet_role) ` +
-              `showed no fleet at all — the exact shape that used to silently drop \`leaderBrief\` and ` +
-              `read as "my whole fleet is gone". Recovered from the registry for THIS call; leaderBrief ` +
-              `below is real. If this repeats, your presence row is not settling after ` +
-              `fleet:take-leadership — do not relaunch live members on the strength of a bare orient ` +
-              `read alone; corroborate with fleet:assignments { fleet } / fleet:status first.`,
-          };
+    // composeOrient cross-checks the registry via this INJECTED closure (IO stays out
+    // of composeOrient, the established pattern for every other fold) — cheap (one
+    // indexed lookup on a tiny table) and only actually queried by composeOrient when
+    // presence resolved to NO fleet at all in monitor mode (the exact failure shape
+    // reported), so every correctly-labeled member's monitor tick (the overwhelmingly
+    // common case) pays no extra round-trip.
+    const presenceDriftCheck = ownerId
+      ? async () => {
+          const { listFleetsLedBy } = await import('../../../agent-fleets-store');
+          const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+          const led = await listFleetsLedBy(ws, ownerId);
+          return led[0]?.fleetSlug ?? null;
         }
-      } catch {
-        /* best-effort — never break orientation over a drift cross-check */
-      }
-    }
+      : undefined;
     // ── role-specific pane folds (voice-public-release-readiness-2026-07-12 P-016):
     // the papercup FAST pane orients with the SAME live-system digest block the
     // converse brain walks in with (papercup-context.ts — one identity, one
@@ -1596,6 +1618,7 @@ export default defineTool({
       fleetMembership,
       roleFolds,
       () => pipelinePromise,
+      presenceDriftCheck,
     );
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
@@ -1847,7 +1870,7 @@ export default defineTool({
     const out = assembleOrientOutput({
       self,
       recovery,
-      presenceDrift,
+      presenceDrift: result.presenceDrift,
       ownerDirectives,
       modes,
       instructionPrecedence,

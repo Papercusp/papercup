@@ -32,6 +32,7 @@
 
 import type { HudAsk, HudBadge } from './hud-board-model';
 import { HUD_ASK_KIND_LABEL } from './hud-board-model';
+import { SEVERITY_TONE } from '../../harness/theme';
 
 /* ── tabs ────────────────────────────────────────────────────────────────── */
 
@@ -376,13 +377,6 @@ export function buildPlanBoard(plans: HudPlanInput[], opts: HudEntityBuildOption
 
 /* ── work items ──────────────────────────────────────────────────────────── */
 
-const SEVERITY_TONE: Record<string, HudBadge['tone']> = {
-  critical: 'bad',
-  major: 'warn',
-  minor: 'neutral',
-  nit: 'neutral',
-};
-
 export function toWorkItemCard(item: HudWorkItemInput, nowMs: number): HudEntityCard {
   const column = workItemColumn(item.state);
   const badges: HudBadge[] = [
@@ -392,7 +386,7 @@ export function toWorkItemCard(item: HudWorkItemInput, nowMs: number): HudEntity
     badges.push({
       id: `${item.id}:sev`,
       label: item.severity,
-      tone: SEVERITY_TONE[item.severity.toLowerCase()] ?? 'neutral',
+      tone: SEVERITY_TONE[item.severity.toLowerCase() as keyof typeof SEVERITY_TONE] ?? 'neutral',
     });
   }
   if (item.assignee) {
