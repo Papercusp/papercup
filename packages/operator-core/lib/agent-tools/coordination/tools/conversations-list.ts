@@ -33,6 +33,18 @@ export default defineTool({
     state: z.enum(['open', 'resolved', 'closed']).optional(),
     harness: z.string().optional().describe('Restrict to a harness-scoped conversation set.'),
     topic: z.string().optional().describe('Restrict to conversations tagged with this topic slug.'),
+    unansweredOnly: z
+      .boolean()
+      .optional()
+      .describe(
+        'Only conversations with ZERO replies — the set that is still waiting on someone. Pair with kind:"question", state:"open" for "what can I answer right now".',
+      ),
+    includeUnscoped: z
+      .boolean()
+      .optional()
+      .describe(
+        'With `harness`: ALSO include workspace-wide (operator-scope, harness-less) conversations instead of only that harness\'s. Most open questions here are workspace-wide, so a strict harness filter hides them.',
+      ),
     limit: z.number().int().min(1).max(200).optional(),
   }),
   async handler(args, ctx) {
@@ -50,8 +62,14 @@ export default defineTool({
       {
         kind: args.kind,
         state: args.state,
-        scope: args.harness ? 'harness' : undefined,
+        // `includeUnscoped` deliberately DROPS the scope pin: the widening is
+        // "this harness OR workspace-wide", and workspace-wide rows are
+        // scope='operator', so pinning scope='harness' would filter out exactly
+        // what the caller asked to include.
+        scope: args.harness && !args.includeUnscoped ? 'harness' : undefined,
         harness_slug: args.harness,
+        includeUnscoped: args.includeUnscoped,
+        unansweredOnly: args.unansweredOnly,
         topic: args.topic,
         limit: args.limit,
       },

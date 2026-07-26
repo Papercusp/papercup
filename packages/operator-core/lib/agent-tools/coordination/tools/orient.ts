@@ -36,6 +36,11 @@ import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
 import { withBoundedTimeout } from '../../../bounded-timeout';
 import { shapeOrient } from './orient-shape';
+import {
+  shapeOpenQuestions,
+  type OpenQuestionRow,
+  type OpenQuestionsFold,
+} from './orient-open-questions';
 import type { OrientPipeline } from '../pipeline-health';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
@@ -79,6 +84,11 @@ const FLEET_CATCHUP_CAP = 25;
 const RECIPES_DEFAULT = 3;
 const RECIPES_CAP = 5;
 const RECIPE_TITLE_CAP = 120;
+/** WI-5807 (P-007): how many open-question rows to PAGE before the in-memory
+ *  self/age filter narrows them to OPEN_QUESTIONS_CAP. Wider than the cap on
+ *  purpose — a page of only self-asked rows would otherwise read as "no open
+ *  questions" and silently re-hide the very set this fold exists to surface. */
+const OPEN_QUESTIONS_PAGE = 25;
 /** WI-3818: fleet:assignments (`me`) and coord:glance (`fleetHealth`) fan out to
  *  presence/assignments/Tier-1 reads with no internal budget — during the
  *  2026-07-10 host-load storm either could hang orient until the 55s MCP
@@ -287,6 +297,13 @@ export interface OrientResult {
     by: string | null;
     since: number | null;
   };
+  /** WI-5807 (P-007): OPEN questions nobody has answered — the PULL half of Q&A,
+   *  since coord:ask's topic push measurably reaches nobody (zero topic subscribers
+   *  workspace-wide ⇒ a 100% zero-reply rate, even on correctly-tagged questions).
+   *  Excludes the caller's own questions and anything older than 30 days; carries the
+   *  honest total in `count` alongside the capped `questions`. ABSENT (not empty)
+   *  when nothing qualifies, and on a monitor tick. See orient-open-questions.ts. */
+  openQuestions?: OpenQuestionsFold;
   /** EI-9270: declared-but-unfired ANNOUNCED gate events visible to this caller's
    *  fleet/plan/harness (+ global) — "what should I events:await", with zero leader
    *  messages. Absent when none are visible (or on a monitor tick). */
@@ -1131,6 +1148,37 @@ export async function composeOrient(
       }));
     } catch {
       result.recipes = null;
+    }
+  }
+
+  // ── open UNANSWERED questions (WI-5807 / P-007) — the PULL half of Q&A.
+  // coord:ask pushes to TOPIC subscribers and there are ZERO topic subscribers in
+  // this workspace, so every one of the 39 open questions had zero replies (measured
+  // 2026-07-25; the 13 that were correctly topic-tagged did no better). Rather than
+  // stand up a second opt-in mechanism to inherit the same zero uptake, questions get
+  // surfaced on the read every agent already makes at wake. Same leg conventions as
+  // the folds above: FULL mode only (a monitor tick doesn't answer questions),
+  // capped tiny, and fail-soft — a failed read drops the fold, never the orientation.
+  // Absent (not empty) when nothing qualifies, so a healthy workspace pays nothing.
+  if (!monitor) {
+    try {
+      const conv = (await call('conversations:list', {
+        kind: 'question',
+        state: 'open',
+        unansweredOnly: true,
+        // Widen past the harness pin: 32 of the 39 open questions are workspace-wide
+        // (scope='operator', harness_slug NULL), so a strict harness filter would hide
+        // ~85% of what a harness-scoped agent could answer.
+        ...(args.harness ? { harness: args.harness, includeUnscoped: true } : {}),
+        // Page wider than the cap: the caller's own questions and out-of-window ones
+        // are filtered in-memory by shapeOpenQuestions, so a tight page could return
+        // nothing but self-asked rows and read as "no open questions".
+        limit: OPEN_QUESTIONS_PAGE,
+      })) as { conversations?: OpenQuestionRow[] } | undefined;
+      const fold = shapeOpenQuestions(conv?.conversations ?? [], { selfOwnerId: ownerId });
+      if (fold) result.openQuestions = fold;
+    } catch {
+      /* best-effort — never break orientation */
     }
   }
 

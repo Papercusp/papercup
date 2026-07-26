@@ -63,6 +63,22 @@ export interface ListConversationsOpts {
   harness_slug?: string;
   state?: ConversationState;
   limit?: number;
+  /** WI-5807 (P-007): only conversations with ZERO replies — the "nobody has
+   *  answered this yet" set. Derived from the Threadable timeline, NOT a
+   *  denormalized column on the conversation: a LEFT JOIN on coord_threads
+   *  (parent_kind='conversation', parent_ref = the BARE conversation id) with
+   *  COALESCE(post_count,0)=0, so a conversation that never grew a thread row
+   *  counts as unanswered rather than dropping out of the result. The opening
+   *  body is a conversation column (not a post), so post_count 0 really does
+   *  mean "no reply", not "no content". */
+  unansweredOnly?: boolean;
+  /** WI-5807 (P-007): widen `harness_slug` from `= X` to `(= X OR IS NULL)`.
+   *  MEASURED reason (2026-07-25): of the 39 open+unanswered questions in this
+   *  workspace, 32 are scope='operator' with harness_slug NULL and only 6 carry
+   *  a harness — so a strict harness filter hides ~85% of the very set a
+   *  harness-scoped agent should be able to answer. Ignored when no
+   *  `harness_slug` is given (nothing to widen). */
+  includeUnscoped?: boolean;
 }
 
 export interface ConversationStoreOptions {
@@ -130,6 +146,16 @@ function toRow(r: ConversationRowDb): ConversationRow {
 const SELECT_COLS = `id, kind, scope, harness_slug, asker_id, title, body, state,
   accepted_answer, accepted_post_id, capture_target, promoted_issue_id, created_at, updated_at, resolved_at`;
 
+/** The same column list QUALIFIED to the `c` alias, for the list query's LEFT JOIN
+ *  against coord_threads. Required, not cosmetic: coord_threads also has `title`,
+ *  `created_at` and `workspace_id`, so an unqualified list would be an ambiguous
+ *  -column error the moment the join is present. Derived from SELECT_COLS (split on
+ *  the comma, then trim — the constant is multi-line, so splitting on ', ' would
+ *  silently leave the post-newline columns unqualified). */
+const SELECT_COLS_C = SELECT_COLS.split(',')
+  .map((c) => `c.${c.trim()}`)
+  .join(', ');
+
 export class PgConversationStore {
   constructor(private readonly opts: ConversationStoreOptions) {}
   /** Dynamic scope: the per-call getWorkspaceId thunk wins, else the
@@ -170,14 +196,25 @@ export class PgConversationStore {
     const sql = this.opts.getSql();
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
     const rows = await sql<ConversationRowDb[]>`
-      SELECT ${sql.unsafe(SELECT_COLS)}
-        FROM harness_shared.coord_conversations
-       WHERE workspace_id = ${this.ws}
-         AND ${opts.kind ? sql`kind = ${opts.kind}` : sql`TRUE`}
-         AND ${opts.scope ? sql`scope = ${opts.scope}` : sql`TRUE`}
-         AND ${opts.harness_slug ? sql`harness_slug = ${opts.harness_slug}` : sql`TRUE`}
-         AND ${opts.state ? sql`state = ${opts.state}` : sql`TRUE`}
-       ORDER BY created_at DESC
+      SELECT ${sql.unsafe(SELECT_COLS_C)}
+        FROM harness_shared.coord_conversations c
+        LEFT JOIN harness_shared.coord_threads t
+               ON t.workspace_id = c.workspace_id
+              AND t.parent_kind = 'conversation'
+              AND t.parent_ref = c.id
+       WHERE c.workspace_id = ${this.ws}
+         AND ${opts.kind ? sql`c.kind = ${opts.kind}` : sql`TRUE`}
+         AND ${opts.scope ? sql`c.scope = ${opts.scope}` : sql`TRUE`}
+         AND ${
+           opts.harness_slug
+             ? opts.includeUnscoped
+               ? sql`(c.harness_slug = ${opts.harness_slug} OR c.harness_slug IS NULL)`
+               : sql`c.harness_slug = ${opts.harness_slug}`
+             : sql`TRUE`
+         }
+         AND ${opts.state ? sql`c.state = ${opts.state}` : sql`TRUE`}
+         AND ${opts.unansweredOnly ? sql`COALESCE(t.post_count, 0) = 0` : sql`TRUE`}
+       ORDER BY c.created_at DESC
        LIMIT ${limit}`;
     return rows.map(toRow);
   }
