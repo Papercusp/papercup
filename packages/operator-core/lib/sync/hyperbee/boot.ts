@@ -2577,13 +2577,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // getHivePolicyCached's doc comment). The policy is scoped to the Hive home
       // (hiveHomeProjectionSlug rebinds on the joiner re-key; the owner's home harness is
       // its own slug). null ⇒ no policy ⇒ no enforcement.
+      const policyScopeSlug = hiveHomeProjectionSlug ?? opts.harnessSlug;
       const ownerPolicy: HivePolicy | null =
         (
-          await getHivePolicyCached(
-            opts.workspaceId,
-            hiveHomeProjectionSlug ?? opts.harnessSlug,
-          ).catch(() => null)
+          await getHivePolicyCached(opts.workspaceId, policyScopeSlug).catch(() => null)
         )?.policy ?? null;
+      // WI-5783 diagnostic (temporary, env-gated — remove once the AK-ban member-vs-home
+      // scope hypothesis is confirmed/ruled out): the enforcement seam falls back to
+      // `opts.harnessSlug` when `hiveHomeProjectionSlug` is undefined (the OWNER boot
+      // path). If the boot process actually merging a peer's op runs under a DIFFERENT
+      // harness slug than the one `pot:ban_member`'s `potHomeSlug` was written under
+      // (e.g. a from-repo owner's MEMBER-scoped boot vs its POT/home-scoped policy row),
+      // `getHivePolicyCached` silently misses (null) and enforcement no-ops. This makes
+      // that scope mismatch (or its absence) a one-read live fact instead of a guess.
+      if (process.env.PAPERCUSP_EN4_TRACE === '1') {
+
+        console.error(
+          `[EN-4-TRACE] ${new Date().toISOString()} harnessSlug=${opts.harnessSlug} hiveHomeProjectionSlug=${hiveHomeProjectionSlug ?? '<none>'} policyScopeSlug=${policyScopeSlug} ownerPolicyNull=${ownerPolicy === null} bannedGithubIds=${JSON.stringify(ownerPolicy?.moderation?.bannedGithubIds ?? [])}`,
+        );
+      }
       // Compose the single enforcement decorator EXACTLY as policy-admission.ts documents:
       // EN-2 rate (inner) wrapped by EN-4 ban → allowlist → takedown → content (outer),
       // over the CURRENT scopedApply (which `rekey` may have rebound). With no policy this

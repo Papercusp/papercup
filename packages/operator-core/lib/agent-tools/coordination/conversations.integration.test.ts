@@ -202,6 +202,48 @@ describe('conversation lifecycle (real PG)', () => {
     expect(res.direct_to).toEqual([]);
   });
 
+  // Regression for the total routing failure found on 2026-07-25. `unrouted`
+  // used to mean "the asker supplied no topics and no recipient", so tagging ANY
+  // topic reported unrouted:false — success — even when that topic had zero
+  // subscribers and the question therefore reached nobody at all. That is not a
+  // hypothetical: the workspace had ZERO live topic subscriptions across the 30
+  // distinct topics open questions were tagged with, and all 13 correctly-tagged
+  // open questions sat at exactly one subscriber (the asker) with no reply ever.
+  // Each of those askers was told their question had been routed.
+  //
+  // `unrouted` is now measured from actual delivery, so a topic nobody follows
+  // is correctly reported as reaching no one — which is what lets the caller
+  // re-ask with an explicit recipient instead of waiting forever.
+  it('a question tagged with a topic that has NO subscribers is unrouted, not a false success', async () => {
+    const res = await openConversationCore(deps, ident('agA'), {
+      kind: 'question',
+      body: 'anyone know why the gate is red?',
+      topics: ['a-topic-nobody-follows'],
+    });
+
+    // The asker did everything right — the tag is recorded...
+    expect(res.topics).toEqual(['a-topic-nobody-follows']);
+    // ...but nobody was reached, and the result must say so.
+    expect(res.delivered).toBe(0);
+    expect(res.unrouted).toBe(true);
+    // Nobody was notified — least of all the asker, about their own question.
+    expect(sinkBox.inbox.agA).toBeUndefined();
+    expect(sinkBox.inbox.agB).toBeUndefined();
+  });
+
+  // The other half of the same guarantee: delivery, not tagging, is what makes
+  // a question routed. No topics at all is fine if a real agent was reached.
+  it('a question with no topics but a reached recipient is NOT unrouted', async () => {
+    const res = await openConversationCore(deps, ident('agA'), {
+      kind: 'question',
+      body: 'direct, untagged',
+      direct_to: ['agB'],
+    });
+    expect(res.topics).toEqual([]);
+    expect(res.delivered).toBe(1);
+    expect(res.unrouted).toBe(false);
+  });
+
   it('answer → asker notified, answerer excluded + auto-joined', async () => {
     const opened = await openConversationCore(deps, ident('agA'), { kind: 'question', body: 'q?', topics: ['t'] });
     sinkBox.clear();

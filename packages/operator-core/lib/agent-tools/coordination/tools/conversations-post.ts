@@ -75,7 +75,14 @@ export default defineTool({
           topics: opened.topics,
           unrouted: opened.unrouted,
           notified_subscribers: opened.delivered,
-          hint: opened.unrouted ? 'Started, but NO topics tagged → only direct subscribers see it. Add topics for routing.' : 'Discussion started and routed to topic subscribers.',
+          // Same correction as ask.ts: `unrouted` now means "0 agents actually
+          // notified", so say that rather than "no topics tagged" — tagging a
+          // topic that has no subscribers routes to nobody just the same.
+          hint: opened.unrouted
+            ? `Started, but it reached NOBODY — 0 agents notified${
+                opened.topics.length ? ` (the topics you tagged have no subscribers)` : ' (no topics tagged)'
+              }. Only agents who later find it will see it.`
+            : `Discussion started; ${opened.delivered} agent${opened.delivered === 1 ? '' : 's'} notified.`,
         }),
       }],
     };

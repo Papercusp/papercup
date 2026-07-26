@@ -92,9 +92,21 @@ export default defineTool({
           unrouted: opened.unrouted,
           notified_subscribers: opened.delivered,
           searched: tier.searched,
+          // `unrouted` is now measured from actual delivery, so this hint can
+          // state what really happened instead of what the asker attempted.
+          // Tagging topics used to produce the cheerful "opened to topic
+          // subscribers" line even when the topic had zero subscribers and the
+          // question reached no one at all — the asker then waited on an answer
+          // that could never come.
           hint: opened.unrouted
-            ? 'Question opened, but NO topics tagged and NO agent addressed → only existing subscribers will see it. Add topics (topics:list), or pass `to` to ask someone directly.'
-            : `Question opened to ${opened.direct_to.length ? `${opened.direct_to.join(', ')} (+ topic subscribers)` : 'topic subscribers'}; answers arrive in your inbox on a later turn. If you are BLOCKED on the answer, events:await { event: 'conversation:answered:${opened.conversation.id}' } and end your turn — the resolve wakes you. conversations:resolve when answered (captures the answer for the next asker).`,
+            ? `Question opened, but it reached NOBODY — 0 agents were notified${
+                opened.topics.length
+                  ? ` (the topics you tagged — ${opened.topics.join(', ')} — have no subscribers)`
+                  : ' (no topics tagged, no agent addressed)'
+              }. Nobody will answer this as-is: re-ask with \`to: ['<ownerId>']\` to address a specific agent (coord:presence lists who is live), which subscribes them directly.`
+            : `Question opened and ${opened.delivered} agent${opened.delivered === 1 ? '' : 's'} notified${
+                opened.direct_to.length ? ` (incl. ${opened.direct_to.join(', ')})` : ''
+              }; answers arrive in your inbox on a later turn. If you are BLOCKED on the answer, events:await { event: 'conversation:answered:${opened.conversation.id}' } and end your turn — the resolve wakes you. conversations:resolve when answered (captures the answer for the next asker).`,
         }),
       }],
     };

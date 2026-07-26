@@ -1369,6 +1369,119 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
   });
 
+  // ── EI-18661904412177717: the BATCH form must honour the top-level `state` ───────────────
+  // The batch path defaulted `harness` from the top level but SILENTLY DROPPED `state`, so
+  // `{ state:'resolved', items:[…] }` recorded every completion, returned ok:true, and left
+  // every item `wip`/claimable — while each stateWarning instructed the caller to "pass
+  // top-level `state`", the exact thing they had just passed (so the natural next move is to
+  // re-send the identical call and get the identical result; the reporter did, twice). The
+  // real cost is not the wasted round-trips: an agent that trusts ok:true and does not re-read
+  // `state` believes a batch is closed when it is all still claimable, and the auto-loop
+  // re-places finished work — a silent correctness failure in the completion-integrity path.
+  //
+  // Asserted on the RE-READ state (what actually landed), never on `ok` — the whole failure
+  // mode was ok:true over unclosed items, so `ok` is precisely the signal that could not
+  // detect it.
+  describe('EI-18661904412177717 — batch items:[…] honours the top-level `state`', () => {
+    const issue = { kind: 'bug', family: 'issue', state: 'wip', harness: 'papercup' };
+
+    beforeEach(() => {
+      getWorkItem.mockImplementation(async (id: string) => ({ ...issue, id }));
+      // Mirrors the real issue-family alias layer: resolved → the unified terminal 'done'.
+      setWorkItemStateWithAliasInfo.mockImplementation(async (id: string, state: string) => ({
+        workItem: { ...issue, id, state: state === 'resolved' ? 'done' : state },
+        aliased: state === 'resolved',
+        requestedState: state,
+        appliedState: state === 'resolved' ? 'done' : state,
+      }));
+    });
+
+    it('applies the top-level terminal `state` to EVERY item that omits its own — items land terminal, not wip', async () => {
+      const out = await env({
+        harness: 'papercup',
+        state: 'resolved',
+        items: [
+          { id: 'WI-5794', completion: { summary: 'a', tests: '3 green' } },
+          { id: 'WI-5795', completion: { summary: 'b', tests: '3 green' } },
+          { id: 'WI-5796', completion: { summary: 'c', tests: '3 green' } },
+        ],
+      });
+
+      // The state write actually ran for each item, with the top-level state.
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(3);
+      for (const id of ['WI-5794', 'WI-5795', 'WI-5796']) {
+        expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(id, 'resolved', expect.objectContaining({ by: expect.any(String) }));
+      }
+      // THE ASSERTION THAT MATTERS: the re-read state of every item is terminal.
+      expect(out.results.map((r: { workItem: { state: string } }) => r.workItem.state)).toEqual(['done', 'done', 'done']);
+      // …and no item is left telling the caller to pass the state they already passed.
+      expect(out.results.map((r: { stateWarning?: string }) => r.stateWarning)).toEqual([undefined, undefined, undefined]);
+      expect(out.counts).toEqual({ ok: 3, failed: 0 });
+    });
+
+    it('a per-item `state` still WINS over the top-level default (the default never clobbers an explicit choice)', async () => {
+      const out = await env({
+        harness: 'papercup',
+        state: 'resolved',
+        items: [
+          { id: 'WI-1', completion: { summary: 'a', tests: 'x' } },
+          { id: 'WI-2', state: 'closed', completion: { summary: 'b', tests: 'x' } },
+        ],
+      });
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenNthCalledWith(1, 'WI-1', 'resolved', expect.anything());
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenNthCalledWith(2, 'WI-2', 'closed', expect.anything());
+      expect(out.results.map((r: { workItem: { state: string } }) => r.workItem.state)).toEqual(['done', 'closed']);
+    });
+
+    it('a batch with NO state anywhere still records-only (unchanged) — the default is opt-in, not an auto-close', async () => {
+      const out = await env({
+        harness: 'papercup',
+        items: [{ id: 'WI-1', completion: { summary: 'progress note' } }],
+      });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(out.results[0].workItem.state).toBe('wip');
+      expect(out.results[0].stateWarning).toMatch(/No top-level `state` was passed/);
+    });
+  });
+
+  // ── EI-18661904412177717 (second half): the warning must distinguish "you passed no state"
+  // from "your state was not applied". A warning that prescribes the action the caller ALREADY
+  // took routes them into a re-send loop instead of at the real cause.
+  describe('EI-18661904412177717 — stateWarning distinguishes no-state from state-not-applied', () => {
+    const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+
+    it('NO state passed: says so explicitly and tells the caller to pass one', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const r = await one({ id: 'WI-1', completion: { summary: 'note' } });
+      expect(r.stateWarning).toMatch(/No top-level `state` was passed/);
+      expect(r.stateWarning).toMatch(/Pass top-level `state`/);
+    });
+
+    it('state passed but landed NON-TERMINAL: says it was received, and does NOT tell the caller to re-send it', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => ({
+        workItem: { ...issue, state: 'open' },
+        aliased: true,
+        requestedState: state,
+        appliedState: 'open',
+        aliasNote: `requested state '${state}' aliased to 'open'.`,
+      }));
+      const r = await one({ id: 'WI-1', state: 'needs_human', completion: { summary: 'needs an owner call' } });
+      expect(r.stateWarning).toMatch(/Your state 'needs_human' WAS received and applied as 'open'/);
+      expect(r.stateWarning).toMatch(/Do NOT re-send the same value/);
+      expect(r.stateWarning).not.toMatch(/No top-level `state` was passed/);
+    });
+
+    it('state passed but the write THREW: names the rejection instead of asking for the same state again', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(new Error("cannot take state 'bogus'"));
+      const r = await one({ id: 'WI-1', state: 'bogus', completion: { summary: 'landed; bad vocab' } });
+      expect(r.stateWarning).toMatch(/was REJECTED by the state write: cannot take state 'bogus'/);
+      expect(r.stateWarning).toMatch(/Re-sending the same state will fail the same way/);
+      expect(r.stateWarning).not.toMatch(/No top-level `state` was passed/);
+    });
+  });
+
   describe('published JSON schema (tools/list projection) is unchanged by the preprocess wrappers', () => {
     it('still advertises id / completion / items as object properties', () => {
       const json = z.toJSONSchema(complete.args as never) as {

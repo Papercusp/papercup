@@ -46,7 +46,7 @@ describe('conversations:post reply path', () => {
 });
 
 describe('conversations:post new-discussion path', () => {
-  it('starts a routed discussion and reports topics + a routed hint', async () => {
+  it('starts a routed discussion and reports topics + how many agents it actually reached', async () => {
     openM.mockResolvedValue({ conversation: { id: 'c9' }, topics: ['arch'], unrouted: false, delivered: 2 } as never);
     const b = body(await call({ title: 'how to X', topics: ['arch'] }));
     expect(openM).toHaveBeenCalledTimes(1);
@@ -54,7 +54,14 @@ describe('conversations:post new-discussion path', () => {
       ok: true, conversation_id: 'c9', kind: 'discussion', topics: ['arch'],
       unrouted: false, notified_subscribers: 2,
     });
-    expect(String(b.hint)).toMatch(/routed/i);
+    // Was `toMatch(/routed/i)`. "Routed" is precisely the word that lied for
+    // weeks: it described what the caller ATTEMPTED (topics were tagged), not
+    // what happened, and stayed cheerful while questions reached zero agents
+    // because no topic in this workspace had a subscriber. The hint now carries
+    // the real delivery count, so assert THAT — a hint claiming success has to
+    // name how many agents it actually reached.
+    expect(String(b.hint)).toMatch(/\b2\b/);
+    expect(String(b.hint)).toMatch(/notified/i);
   });
 
   it('warns when a new discussion is unrouted (no topics → direct subscribers only)', async () => {
