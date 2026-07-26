@@ -77,7 +77,7 @@ import type { CoverageResult, SubstitutionPair } from '../types';
  * Deliberately a closed list rather than "anything that is not a write": a new
  * git subcommand should have to be looked at before the registry claims it.
  */
-const READ_SUBCOMMANDS = [
+export const READ_SUBCOMMANDS = [
   'status',
   'log',
   'diff',

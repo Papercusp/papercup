@@ -18,7 +18,15 @@ import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 import { buildCapabilitySandboxCommand, capabilityExecSandboxEnabled, scrubExecEnv } from './exec-sandbox';
 
-const REFUSED_SUBCOMMANDS = new Set(['push']);
+/**
+ * Exported so the bash-substitution audit can PIN its model to it
+ * (`pairs/model-drift.test.ts`, WI-6157/D-015): `pairs/git-read.ts` claims a
+ * closed list of read subcommands as substitutable, and every one of them must
+ * be a subcommand this tool actually accepts. Refusing a new subcommand here
+ * without removing it there would make the registry advise a substitution that
+ * returns `refused`.
+ */
+export const REFUSED_SUBCOMMANDS = new Set(['push']);
 
 export default defineTool({
   name: 'capability:git',

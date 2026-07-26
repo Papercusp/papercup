@@ -12,7 +12,15 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCapabilityBaseDir } from './base-dir';
 
-const DEFAULT_LIMIT = 2000;
+/**
+ * Exported so the bash-substitution audit can PIN its model to it
+ * (`pairs/model-drift.test.ts`, WI-6157/D-015). `pairs/file-read.ts` scores
+ * `head`/`cat` coverage against a hand-copied `READ_DEFAULT_LIMIT`; if this
+ * default changes and the copy does not, the audit emits `capability:read`
+ * expressions that silently read a different number of lines than the bash
+ * they claim to replace.
+ */
+export const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse absurd reads outright
 

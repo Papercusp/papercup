@@ -12,6 +12,12 @@
 #
 # Fail-safe by construction:
 #   - HEAD-moved gate: no move → no rebuild, no restart (cheap no-op).
+#   - relevance gate (WI-5710): the branch moving is NOT the same thing as the
+#     RUNNING process's code changing — skip the restart when every changed
+#     path is provably not server code.
+#   - live-session deferral (WI-5710): don't cut a live :3170 session's legs
+#     out from under it just because the timer ticked; wait for it to go idle,
+#     bounded by a staleness ceiling.
 #   - flock: never overlaps itself or a manual run.
 #   - setup-release-checkout.sh aborts NON-ZERO (workspace-resolution gate /
 #     SPA-build failure) BEFORE any restart, so a bad staging commit can never
@@ -33,7 +39,98 @@ UNIT="${PAPERCUSP_STAGING_UNIT:-papercup-staging-api.service}"
 HEALTH_URL="${PAPERCUSP_STAGING_HEALTH_URL:-http://127.0.0.1:3170/api/health}"
 BRANCH="${PAPERCUSP_INTEGRATION_BRANCH:-staging}"
 
+# WI-5710. The port we watch for live client connections — derived from
+# HEALTH_URL so the two can never disagree, overridable for tests.
+STAGING_PORT="${PAPERCUSP_STAGING_PORT:-$(printf '%s' "$HEALTH_URL" | sed -n 's#.*://[^:/]*:\([0-9]\{1,\}\).*#\1#p')}"
+[ -n "$STAGING_PORT" ] || STAGING_PORT=3170
+# How stale the code :3170 serves may get while we wait for a live session to
+# finish. Past this, the restart lands even with clients attached — a deferral
+# is a courtesy, never an indefinite freeze.
+MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
+
 log() { echo "[staging-sync] $(date -Is) $*"; }
+
+# --- WI-5710 gate 1: is a process restart actually REQUIRED? ----------------
+#
+# The original script gated everything on `target != current`, i.e. it used
+# "the branch moved" as a proxy for "the code the running process holds
+# changed". Under a fleet where git-sync auto-commits the whole tree every few
+# minutes, that proxy decoupled from what it proxies.
+#
+# The SPA needs no restart at all: apps/operator/bin/host-spa.ts serves the
+# dist FROM DISK PER REQUEST (existsSync + serveFile per asset; index.html read
+# per request with cache-control:no-store), so once setup-release-checkout.sh
+# --build-spa has run, the new SPA is already live. Restarting for an SPA-only
+# commit is pure downtime.
+#
+# FAIL-SAFE DIRECTION, and never invert it: a restart is required UNLESS
+# *every* changed path matches the conservative allowlist below. An unknown or
+# newly-introduced path shape falls through to a restart — today's behaviour.
+# The inverse ("skip unless known-server") would mean a new server directory
+# silently stops being picked up, which is a far worse failure than an extra
+# restart.
+path_needs_no_restart() {
+  case "$1" in
+    # SPA sources. apps/operator/app/** is compiled INTO the Vite bundle via
+    # vite.config.ts's `@` → operator-root alias; verified tree-wide that no
+    # server module imports from it.
+    apps/operator-vite/src/*) return 0 ;;
+    apps/operator/app/*) return 0 ;;
+    # The Tauri desktop shell submodule. It EMBEDS the operator as a sidecar;
+    # the :3170 server loads nothing from it, so its pointer bumps are inert here.
+    papercusp-desktop) return 0 ;;
+    # Prose: docs, plans, insights. Served from disk; never executed.
+    *.md|*.mdx) return 0 ;;
+    docs/*|*/docs/*) return 0 ;;
+    # Tests never run inside the operator process.
+    *.test.ts|*.test.tsx|*.spec.ts|*.spec.tsx) return 0 ;;
+    */e2e/*|*/__tests__/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Reads newline-separated changed paths on stdin.
+# Exit 0 = a restart IS required (the fail-safe default, matching
+# need_node_modules()'s "0 means the work is needed" convention in the sibling
+# setup-release-checkout.sh). Exit 1 = every path is provably restart-exempt.
+paths_require_restart() {
+  local p seen=0
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    seen=1
+    path_needs_no_restart "$p" || return 0
+  done
+  # An EMPTY path list means we could not establish what changed (a failed or
+  # unavailable diff), not "nothing changed" — the caller no-ops on an
+  # unmoved HEAD long before this. Fail safe: restart.
+  [ "$seen" = 1 ] || return 0
+  return 1
+}
+
+# --- WI-5710 gate 2: is anyone actually USING :3170 right now? --------------
+#
+# Long-lived SSE/sync connections from a live operator window show as
+# ESTABLISHED inbound sockets on the staging port. Best-effort by design: any
+# probe failure (no `ss`, no permission) reports 0 and falls through to the
+# normal restart, matching this script's fail-soft contract everywhere else.
+staging_live_client_count() {
+  local port="${1:-$STAGING_PORT}" n
+  n="$(ss -tn state established "( sport = :$port )" 2>/dev/null | tail -n +2 | grep -c . || true)"
+  [ -n "$n" ] || n=0
+  echo "$n"
+}
+
+# Seconds since the commit the staging checkout is CURRENTLY serving. Bounds
+# the deferral: we only ever defer while the served code is still reasonably
+# fresh. An unresolvable sha reports a huge age ⇒ forces the restart.
+current_commit_age_sec() {
+  local sha="$1" ct now
+  [ -n "$sha" ] && [ "$sha" != none ] || { echo 999999; return 0; }
+  ct="$(git -C "$INTEGRATION_ROOT" show -s --format=%ct "$sha" 2>/dev/null || echo '')"
+  [ -n "$ct" ] || { echo 999999; return 0; }
+  now="$(date +%s)"
+  echo $(( now - ct ))
+}
 
 # Single-flight: a second timer tick (or a manual run) waits/skips rather than
 # racing two setups on the same checkout.
@@ -53,10 +150,51 @@ if [ "$target" = "$current" ]; then
   exit 0
 fi
 
-log "advancing staging checkout ${current:0:8} → ${target:0:8}"
+# WI-5710 gate 1 — decide BEFORE doing any work whether the running process
+# actually needs to be replaced, or only the on-disk SPA refreshed.
+changed_count=0
+restart_required=1
+if [ "$current" = none ]; then
+  log "fresh staging checkout — full sync + restart"
+else
+  changed_count="$(git -C "$INTEGRATION_ROOT" diff --name-only "$current" "$target" 2>/dev/null | grep -c . || true)"
+  [ -n "$changed_count" ] || changed_count=0
+  if git -C "$INTEGRATION_ROOT" diff --name-only "$current" "$target" 2>/dev/null | paths_require_restart; then
+    restart_required=1
+  else
+    restart_required=0
+  fi
+fi
+
+# WI-5710 gate 2 — a restart IS required, but someone is using :3170 right now.
+# Defer the ENTIRE sync (not just the restart): advancing the checkout while
+# holding the old process would serve a NEW SPA against an OLD server, and that
+# skew is worse than a few minutes of staleness. Keeping the whole checkout
+# pinned leaves the live session on a fully consistent build until it goes idle.
+if [ "$restart_required" = 1 ]; then
+  live_clients="$(staging_live_client_count "$STAGING_PORT")"
+  if [ "$live_clients" -gt 0 ] 2>/dev/null; then
+    age="$(current_commit_age_sec "$current")"
+    if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
+      log "deferring sync — $live_clients live client connection(s) on :$STAGING_PORT and the served build is only ${age}s old (< ${MAX_STALE_SEC}s ceiling); staying on ${current:0:8} so the live session keeps a consistent build. Will advance to ${target:0:8} once idle, or at the ceiling."
+      exit 0
+    fi
+    log "staleness ceiling reached (${age}s ≥ ${MAX_STALE_SEC}s) — advancing despite $live_clients live client connection(s) on :$STAGING_PORT"
+  fi
+fi
+
+log "advancing staging checkout ${current:0:8} → ${target:0:8} (${changed_count} changed path(s), restart_required=${restart_required})"
 PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_ROOT" \
   bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
     --ref "$BRANCH" --release "$STAGING_ROOT" --node-modules auto --build-spa
+
+# WI-5710 — SPA-only advance: the dist is now refreshed on disk and host-spa.ts
+# serves it per request, so :3170 is ALREADY current. Restarting here would be
+# a ~10-13s outage for zero freshness gain.
+if [ "$restart_required" = 0 ]; then
+  log "✅ skipping restart — all ${changed_count} changed path(s) are restart-exempt (SPA/docs/tests); the rebuilt SPA is already live on :$STAGING_PORT at ${target:0:8}"
+  exit 0
+fi
 
 # EI-13221: skip a REDUNDANT restart when $UNIT's current MainPID already came
 # up within the last RECENT_RESTART_GRACE_SEC — most likely a peer's `dev:restart`

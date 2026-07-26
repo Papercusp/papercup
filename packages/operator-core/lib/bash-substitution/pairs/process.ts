@@ -77,7 +77,7 @@ import type { CoverageResult, SubstitutionPair } from '../types';
  * rather than silently tracking a shared constant. The `expectedVerdict` latch
  * is what surfaces that divergence.
  */
-const DEV_PROCESSES_KINDS = ['run.sh', 'omp', 'claude', 'paperclip', 'pty', 'next'] as const;
+export const DEV_PROCESSES_KINDS = ['run.sh', 'omp', 'claude', 'paperclip', 'pty', 'next'] as const;
 
 /** Selects one or more explicit pids: `-p 123`, `-p $PID`, `-p $(…)`, `--pid`. */
 const PID_SELECTOR = /(?:^|\s)(?:-p\s*=?\s*(?:\d|\$)|--pid\b|-q\s)/;

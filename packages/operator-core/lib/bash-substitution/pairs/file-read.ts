@@ -36,8 +36,12 @@
 
 import type { CoverageResult, SubstitutionPair } from '../types';
 
-/** `capability:read`'s default page size, mirrored from the tool definition. */
-const READ_DEFAULT_LIMIT = 2000;
+/**
+ * `capability:read`'s default page size, mirrored from the tool definition.
+ * Exported so `pairs/model-drift.test.ts` can pin it to the tool's real
+ * `DEFAULT_LIMIT` (WI-6157/D-015) — the mirror is deliberate, the DRIFT is not.
+ */
+export const READ_DEFAULT_LIMIT = 2000;
 
 /**
  * Tokens that make an operand unresolvable to a literal path: shell variable

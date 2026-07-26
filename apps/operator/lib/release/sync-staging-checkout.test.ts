@@ -1,0 +1,359 @@
+/**
+ * Regression coverage for sync-staging-checkout.sh's WI-5710 restart gates.
+ *
+ * THE BUG: the script gated its `systemctl restart papercup-staging-api` on
+ * `target != current` alone — i.e. it used "the `staging` branch moved" as a
+ * proxy for "the code the running :3170 process holds changed". Under a fleet
+ * where git-sync auto-commits the whole tree every ~3min, that proxy decoupled
+ * from the thing it proxied: :3170 restarted every ~6min forever (measured
+ * 2026-07-26: restarts at 15:38 / 15:44 / 15:50 / 15:56 / 16:02 / 16:08, 42
+ * Started|Stopping journal entries in 90min), each a ~10-13s hard-down window
+ * that drops every live SSE/sync session.
+ *
+ * TWO gates now stand between "the branch moved" and "kill the process":
+ *
+ *  1. paths_require_restart() — relevance. The SPA needs no restart at all
+ *     (host-spa.ts serves dist FROM DISK PER REQUEST), so an SPA/docs/tests-only
+ *     advance rebuilds and skips the restart entirely.
+ *  2. current_commit_age_sec() + staging_live_client_count() — deferral. A
+ *     restart that IS required waits while someone is actually connected to
+ *     :3170, bounded by a staleness ceiling so it can never freeze forever.
+ *
+ * The FAIL-SAFE DIRECTION of gate 1 is the load-bearing property and the thing
+ * most likely to be silently inverted by a future edit: a restart is required
+ * UNLESS *every* changed path is provably inert. An unknown/new path shape must
+ * fall through to a restart. The inverse ("skip unless known-server") would mean
+ * a newly-added server directory silently stops being picked up — a far worse
+ * failure than one extra restart. Several tests below exist only to pin that
+ * direction.
+ *
+ * Same isolation pattern as the sibling setup-release-checkout-deps.test.ts: we
+ * sed-extract ONLY the named function out of the REAL script (so these track the
+ * shipped logic, never a copy) and drive it under controlled inputs.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync, execFileSync } from 'node:child_process';
+import { createServer, connect, type Server, type Socket } from 'node:net';
+
+// apps/operator/lib/release → apps/operator/bin/release/sync-staging-checkout.sh
+const SCRIPT_PATH = join(__dirname, '../../bin/release/sync-staging-checkout.sh');
+
+/** Extract one function (plus any it depends on) from the live script and run it. */
+function runFn(
+  fns: string[],
+  call: string,
+  opts: { env?: Record<string, string>; input?: string } = {},
+): { status: number | null; stdout: string; stderr: string } {
+  const sourced = fns
+    .map((f) => `source <(sed -n "/^${f}()/,/^}/p" "$SYNC_SCRIPT")`)
+    .join('\n');
+  const wrapper = ['set -uo pipefail', sourced, call].join('\n');
+  const r = spawnSync('bash', ['-c', wrapper], {
+    env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, ...(opts.env ?? {}) },
+    input: opts.input,
+    encoding: 'utf8',
+  });
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
+/**
+ * Run the real paths_require_restart() over `paths`.
+ * Returns true when a process restart IS required (the script's exit-0 contract).
+ */
+function requiresRestart(paths: string[]): boolean {
+  const r = runFn(['path_needs_no_restart', 'paths_require_restart'], 'paths_require_restart', {
+    input: paths.join('\n') + (paths.length ? '\n' : ''),
+  });
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`paths_require_restart exited unexpectedly (${r.status}): ${r.stderr || r.stdout}`);
+  }
+  return r.status === 0;
+}
+
+describe('sync-staging-checkout.sh paths_require_restart() — restart relevance gate (WI-5710)', () => {
+  describe('restart-EXEMPT advances (the whole point: no process kill)', () => {
+    it('SPA source under apps/operator-vite/src only', () => {
+      expect(requiresRestart(['apps/operator-vite/src/main.tsx'])).toBe(false);
+    });
+
+    it('SPA components under apps/operator/app only (compiled in via vite `@` alias)', () => {
+      // Verified tree-wide that no server module imports from apps/operator/app.
+      expect(
+        requiresRestart(['apps/operator/app/adv/hud/HudBoard.tsx', 'apps/operator/app/adv/hud/hud.css']),
+      ).toBe(false);
+    });
+
+    it('prose only — .md / .mdx / docs trees', () => {
+      expect(
+        requiresRestart([
+          'docs/plans/some-plan.md',
+          'apps/operator/public/internal/docs/agent-insights/x.md',
+          'apps/operator-docs/src/content/docs/system/y.mdx',
+        ]),
+      ).toBe(false);
+    });
+
+    it('tests only — they never run inside the operator process', () => {
+      expect(
+        requiresRestart([
+          'packages/operator-core/lib/a.test.ts',
+          'apps/operator/app/adv/hud/HudBoard.test.tsx',
+          'apps/operator/e2e/b.spec.ts',
+          'packages/operator-core/lib/__tests__/c.ts',
+        ]),
+      ).toBe(false);
+    });
+
+    it('the papercusp-desktop submodule pointer (the Tauri shell embeds the operator, never the reverse)', () => {
+      expect(requiresRestart(['papercusp-desktop'])).toBe(false);
+    });
+
+    it('a realistic mixed SPA + docs + tests commit', () => {
+      expect(
+        requiresRestart([
+          'apps/operator/app/adv/hud/HudView.tsx',
+          'apps/operator/app/adv/hud/HudBoard.test.tsx',
+          'docs/plans/hud.md',
+          'papercusp-desktop',
+        ]),
+      ).toBe(false);
+    });
+  });
+
+  describe('restart-REQUIRED advances', () => {
+    it('server code under packages/operator-core', () => {
+      expect(requiresRestart(['packages/operator-core/lib/agent-tools/index.ts'])).toBe(true);
+    });
+
+    it('server code under apps/operator/lib (NOT apps/operator/app — the one-word difference that flips it)', () => {
+      expect(requiresRestart(['apps/operator/lib/release/green-checkpoint.ts'])).toBe(true);
+    });
+
+    it('the libs/papercusp submodule pointer (harness/db/blueprints — real server code)', () => {
+      expect(requiresRestart(['libs/papercusp'])).toBe(true);
+    });
+
+    it('ONE server path poisons an otherwise-exempt set (all-or-nothing, not majority-vote)', () => {
+      expect(
+        requiresRestart([
+          'apps/operator-vite/src/main.tsx',
+          'docs/plans/x.md',
+          'packages/operator-core/lib/sync-sse.ts', // the only non-exempt entry
+        ]),
+      ).toBe(true);
+    });
+
+    it('flags / lockfiles / CI config are not exempt', () => {
+      expect(requiresRestart(['libs/flags/src/types.ts'])).toBe(true);
+      expect(requiresRestart(['package.json'])).toBe(true);
+    });
+  });
+
+  describe('FAIL-SAFE DIRECTION — the property a future edit must never invert', () => {
+    it('an UNKNOWN/new path shape falls through to a restart (never silently skipped)', () => {
+      expect(requiresRestart(['some/brand/new/server-dir/thing.ts'])).toBe(true);
+    });
+
+    it('an EMPTY path list means "could not establish what changed" ⇒ restart, not "nothing changed" ⇒ skip', () => {
+      // The caller no-ops on an unmoved HEAD long before this, so reaching here
+      // with no paths means the diff failed — the dangerous case to get wrong.
+      expect(requiresRestart([])).toBe(true);
+    });
+
+    it('a .ts file that merely LIVES beside exempt files is still a restart', () => {
+      expect(requiresRestart(['apps/operator-vite/vite.config.ts'])).toBe(true);
+    });
+
+    it('a docs-LOOKING path that is actually code is still a restart', () => {
+      expect(requiresRestart(['packages/operator-core/lib/docs-tool.ts'])).toBe(true);
+    });
+  });
+});
+
+describe('sync-staging-checkout.sh current_commit_age_sec() — deferral staleness ceiling (WI-5710)', () => {
+  let repo: string;
+  let sha: string;
+
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      encoding: 'utf8',
+    }).trim();
+
+  /** Commit with a controlled COMMITTER date — the script reads %ct, not %at. */
+  const gitCommitAt = (epoch: number, msg: string) =>
+    execFileSync(
+      'git',
+      ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', msg],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_COMMITTER_DATE: `@${epoch} +0000`,
+          GIT_AUTHOR_DATE: `@${epoch} +0000`,
+        },
+      },
+    );
+
+  beforeEach(() => {
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'sync-age-')));
+    git('init', '-q');
+    writeFileSync(join(repo, 'f.txt'), 'v1');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'c1');
+    sha = git('rev-parse', 'HEAD');
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  function age(shaArg: string): number {
+    const r = runFn(['current_commit_age_sec'], `current_commit_age_sec "${shaArg}"`, {
+      env: { INTEGRATION_ROOT: repo },
+    });
+    expect(r.status).toBe(0);
+    return Number(r.stdout.trim());
+  }
+
+  it('a just-made commit reports a near-zero age (so a live session IS deferred for)', () => {
+    const a = age(sha);
+    expect(a).toBeGreaterThanOrEqual(0);
+    expect(a).toBeLessThan(120);
+  });
+
+  it('an OLD commit reports a large age (so the ceiling fires and the restart lands)', () => {
+    const oldEpoch = Math.floor(Date.now() / 1000) - 7200; // 2h ago
+    writeFileSync(join(repo, 'f.txt'), 'v2');
+    git('add', '-A');
+    gitCommitAt(oldEpoch, 'old');
+    const oldSha = git('rev-parse', 'HEAD');
+    expect(age(oldSha)).toBeGreaterThan(3600);
+  });
+
+  it('the literal "none" (a fresh checkout) reports a huge age — never defers a first sync', () => {
+    expect(age('none')).toBeGreaterThan(100000);
+  });
+
+  it('an UNRESOLVABLE sha reports a huge age (fail-safe: forces the restart, never an infinite defer)', () => {
+    expect(age('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef')).toBeGreaterThan(100000);
+  });
+});
+
+describe('sync-staging-checkout.sh staging_live_client_count() — live-session probe (WI-5710)', () => {
+  let server: Server | undefined;
+  let sockets: Socket[] = [];
+
+  afterEach(async () => {
+    for (const s of sockets) s.destroy();
+    sockets = [];
+    await new Promise<void>((res) => (server ? server.close(() => res()) : res()));
+    server = undefined;
+  });
+
+  function count(port: number): number {
+    const r = runFn(['staging_live_client_count'], `staging_live_client_count ${port}`, {
+      env: { STAGING_PORT: String(port) },
+    });
+    expect(r.status).toBe(0);
+    return Number(r.stdout.trim());
+  }
+
+  const haveSs = spawnSync('ss', ['-V'], { encoding: 'utf8' }).status === 0;
+
+  it('reports 0 for a port nobody is connected to', () => {
+    if (!haveSs) return; // no iproute2 (CI container) — the function fail-softs to 0 anyway
+    // A port with no listener at all: no ESTABLISHED sockets can exist on it.
+    expect(count(59_431)).toBe(0);
+  });
+
+  it('reports >0 while a client holds an ESTABLISHED connection (the SSE-session signal)', async () => {
+    if (!haveSs) return;
+    const port = await new Promise<number>((res) => {
+      server = createServer((s) => {
+        sockets.push(s);
+      });
+      server.listen(0, '127.0.0.1', () => {
+        res((server!.address() as { port: number }).port);
+      });
+    });
+    // Hold two long-lived connections open, like two live operator windows.
+    await Promise.all(
+      [0, 1].map(
+        () =>
+          new Promise<void>((res) => {
+            const c = connect(port, '127.0.0.1', () => res());
+            sockets.push(c);
+          }),
+      ),
+    );
+    expect(count(port)).toBeGreaterThan(0);
+  });
+
+  it('drops back to 0 once the clients disconnect (so an idle :3170 restarts promptly)', async () => {
+    if (!haveSs) return;
+    const port = await new Promise<number>((res) => {
+      server = createServer((s) => {
+        sockets.push(s);
+      });
+      server.listen(0, '127.0.0.1', () => {
+        res((server!.address() as { port: number }).port);
+      });
+    });
+    await new Promise<void>((res) => {
+      const c = connect(port, '127.0.0.1', () => res());
+      sockets.push(c);
+    });
+    expect(count(port)).toBeGreaterThan(0);
+    for (const s of sockets) s.destroy();
+    sockets = [];
+    await new Promise((r) => setTimeout(r, 250));
+    expect(count(port)).toBe(0);
+  });
+});
+
+/**
+ * Structural guards. The gates above are only worth anything if the shipped
+ * script actually consults them on the path to the restart — an edit that
+ * extracts the functions but stops calling them would leave every unit test
+ * above green while :3170 flapped exactly as before.
+ */
+describe('sync-staging-checkout.sh — the shipped script actually wires the gates (WI-5710)', () => {
+  const script = readFileSync(SCRIPT_PATH, 'utf8');
+
+  it('consults paths_require_restart() before restarting', () => {
+    expect(script).toMatch(/paths_require_restart/);
+    expect(script).toMatch(/restart_required=0/);
+  });
+
+  it('the SPA-only path skips the restart but still runs the rebuild', () => {
+    // The skip must come AFTER setup-release-checkout.sh (dist refreshed on
+    // disk), not instead of it — otherwise :3170 serves a stale SPA forever.
+    const buildIdx = script.indexOf('setup-release-checkout.sh');
+    const skipIdx = script.indexOf('skipping restart — all');
+    expect(buildIdx).toBeGreaterThan(-1);
+    expect(skipIdx).toBeGreaterThan(buildIdx);
+  });
+
+  it('the live-session deferral happens BEFORE the checkout advances (SPA/server lockstep)', () => {
+    // Advancing the checkout while keeping the old process would serve a NEW
+    // SPA against an OLD server. The defer must therefore precede the build.
+    const deferIdx = script.indexOf('deferring sync —');
+    const buildIdx = script.indexOf('setup-release-checkout.sh --ref');
+    expect(deferIdx).toBeGreaterThan(-1);
+    expect(script.indexOf('staging_live_client_count "$STAGING_PORT"')).toBeGreaterThan(-1);
+    if (buildIdx > -1) expect(deferIdx).toBeLessThan(buildIdx);
+  });
+
+  it('the deferral is bounded by a staleness ceiling (never an indefinite freeze)', () => {
+    expect(script).toMatch(/MAX_STALE_SEC/);
+    expect(script).toMatch(/staleness ceiling reached/);
+  });
+
+  it('keeps the EI-13221 recent-restart grace and the health probe intact', () => {
+    expect(script).toMatch(/RECENT_RESTART_GRACE_SEC/);
+    expect(script).toMatch(/did not return 200 within/);
+  });
+});
