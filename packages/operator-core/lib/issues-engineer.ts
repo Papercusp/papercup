@@ -47,6 +47,7 @@ import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, auditPredicateSqlFor, type CompletionAudit } from './completion-audit';
+import { dedupSignature } from './harness/improvements/digest';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
@@ -1633,6 +1634,31 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
 }
 
 /**
+ * EI-18713447977097831: `websearch_to_tsquery` combines bare (unquoted) terms
+ * with the implicit AND operator — verified live: `websearch_to_tsquery('english',
+ * '<full title A>')` against `to_tsvector('<full title B>')` returned FALSE for
+ * two real captures sharing a 47-char verbatim substring + 3 distinctive tokens,
+ * while the same tokens OR-joined returned TRUE. capture-core.ts's search-first
+ * dedup pass calls `searchIssuesForDedup(input.title, …)` with a full, often
+ * multi-clause, natural-language TITLE (not a short query) — ANDing every one
+ * of its tokens requires a candidate to contain literally every word of the new
+ * capture, which only a near-verbatim duplicate title satisfies. The whole point
+ * of this search is to produce a *candidate pool* that titleSimilarity's Jaccard
+ * score then filters precisely (capture-core.ts) — so OR the significant tokens
+ * instead of ANDing them. Reuses `dedupSignature`'s tokenizer (digest.ts) so
+ * "found by this search" and "scored similar by titleSimilarity" agree on what
+ * counts as a token.
+ */
+function dedupSearchQuery(title: string): string {
+  const tokens = dedupSignature(title).split(' ').filter(Boolean);
+  // Cap token count: an unbounded OR clause from a pathologically long title
+  // (e.g. a body accidentally passed as title) would be a needlessly expensive
+  // tsquery. Falls back to the raw title when tokenization yields nothing (all
+  // tokens ≤2 chars, or an empty title) rather than passing an empty query.
+  return tokens.slice(0, 32).join(' or ') || title;
+}
+
+/**
  * WI-4308 interim mitigation: the SAME lexical search as `searchIssues`, widened
  * to ALSO match rows still sitting under the legacy DEFAULT_COORD_WORKSPACE
  * (see `dedupScopeWorkspaces`'s doc). For DEDUP READS ONLY — wired into
@@ -1640,15 +1666,19 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
  * to re-duplicate) a still-open pre-flip twin. Deliberately a SEPARATE function
  * rather than widening `searchIssues` in place: `searchIssues` also backs the
  * general, caller-visible `work_items:search` tool (via work-items.ts), which
- * must NOT start surfacing the pre-flip backlog to ordinary listing/search.
+ * takes short natural-language queries where implicit-AND is the expected
+ * search-engine behavior and must NOT start surfacing the pre-flip backlog to
+ * ordinary listing/search — only the dedup path's OR-token widening (above)
+ * belongs here.
  */
 export async function searchIssuesForDedup(query: string, limit = 50): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
+  const tsQuerySource = dedupSearchQuery(query);
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
      WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
-       AND _search @@ websearch_to_tsquery('english', ${query})
-     ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
+       AND _search @@ websearch_to_tsquery('english', ${tsQuerySource})
+     ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${tsQuerySource})) DESC
      LIMIT ${Math.min(limit, 200)}`;
   return rows.map(toIssue);
 }

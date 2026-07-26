@@ -321,6 +321,34 @@ describe('engineer issues surface (real PG)', () => {
     expect((await issues.searchIssues('beta')).map((i) => i.title)).toEqual(['beta nit']);
   });
 
+  // EI-18713447977097831: `searchIssuesForDedup` used to pass the new capture's
+  // full title straight to `websearch_to_tsquery`, which ANDs every bare term —
+  // so it required a candidate to contain literally every word of the new
+  // title, and two real differently-worded captures of the SAME incident (one
+  // sharing a 47-char verbatim substring + 3 distinctive tokens with the other)
+  // came back with zero hits. `searchIssues` (the general, caller-visible
+  // search used by short natural-language queries) keeps the old AND behavior
+  // on purpose; only the dedup-specific path was fixed to OR the significant
+  // tokens, surfacing a broad candidate pool for titleSimilarity to score.
+  it('searchIssuesForDedup finds a differently-worded title sharing significant tokens (OR, not AND)', async () => {
+    await issues.createIssue({
+      title:
+        'live-federation-gate revocation_kcut: post-ban content LEAK — F-RV-POST reached banned member B after the ban (cut-off failed)',
+      createdBy: 'agA',
+    });
+    const hits = await issues.searchIssuesForDedup(
+      'Revocation cut-off FAILS: a banned member still receives content after the ban — live-federation-gate revocation_kcut LEAK',
+    );
+    expect(hits.map((i) => i.title)).toEqual([
+      'live-federation-gate revocation_kcut: post-ban content LEAK — F-RV-POST reached banned member B after the ban (cut-off failed)',
+    ]);
+    // The general search tool is untouched — an unrelated short query still
+    // behaves like a normal AND'd search-engine query, not an OR-token blast.
+    await issues.createIssue({ title: 'alpha bug', createdBy: 'agA' });
+    await issues.createIssue({ title: 'beta nit', createdBy: 'agA' });
+    expect((await issues.searchIssues('beta')).map((i) => i.title)).toEqual(['beta nit']);
+  });
+
   it('counts a topic through the indexed tag-edge join with the same state filters as listIssues', async () => {
     await topicStore.create({ slug: 'observations', description: 'learning signals', created_ts: NOW });
     await issues.createIssue({ title: 'open observation', topics: ['observations'], createdBy: 'agA' });

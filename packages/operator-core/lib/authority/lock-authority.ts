@@ -255,6 +255,13 @@ export async function queryPresenceRows(
   // WI-6032 (P-005): `workspaceId` OPTIONAL — omitted preserves today's harness-only
   // scope byte-identically; passed, it also makes `shared_presence_recent_idx`
   // (workspace_id, harness_slug, last_seen_at DESC) usable. See LockAuthorityDeps.workspaceId.
+  // EI-18714245790501659: build the predicate CONDITIONALLY instead of parameterizing
+  // the NULL check — a `($1 IS NULL OR workspace_id = $1)` OR-form cannot be constant-folded
+  // under a postgres.js GENERIC plan (unknown param), which leaves the leading index column
+  // (workspace_id) with no usable equality predicate and degrades to a scan at scale. Omitting
+  // the clause entirely when workspaceId is absent is index-usable under both custom AND
+  // generic plans, with identical optionality/call-site semantics.
+  const workspaceFilter = workspaceId ? sql`AND workspace_id = ${workspaceId}` : sql``;
   const rows = (await sql`
     SELECT device_pubkey,
            github_user_id,
@@ -262,7 +269,7 @@ export async function queryPresenceRows(
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
     WHERE harness_slug = ${harnessSlug}
-      AND (${workspaceId ?? null}::text IS NULL OR workspace_id = ${workspaceId ?? null})
+      ${workspaceFilter}
       AND device_pubkey <> ''
       AND last_seen_at >= now() - make_interval(secs => ${looseWindowSecs})
   `) as Array<{

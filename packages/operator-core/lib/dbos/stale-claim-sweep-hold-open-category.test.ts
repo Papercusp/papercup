@@ -52,12 +52,18 @@ vi.mock('../coord-liveness-config', () => ({
   }),
 }));
 
-vi.mock('../work-items-stale-claims', () => ({
+// PARTIAL mock (importOriginal) — stale-claim-sweep's tick() DESTRUCTURES every export
+// it uses in ONE statement, up front, OUTSIDE the per-reaper try/catch. So a factory that
+// omits an export production later adds doesn't just skip that leg — it throws
+// "No <x> export is defined on the mock" and fails the WHOLE tick, in a test that has
+// nothing to do with the new export (EI-18715782165335169: WI-6039 added
+// reconcileStrandedWipWorkItems and this factory went stale). Spreading the real module
+// keeps that drift from recurring; the three async DB-touching exports are still stubbed
+// explicitly below. Every remaining export is a constant or a pure SQL-fragment builder.
+vi.mock('../work-items-stale-claims', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../work-items-stale-claims')>()),
   reclaimStaleWorkItemClaims: async () => ({ released: [] }),
   reclaimStaleIssueClaims: async () => ({ released: [], orphanLeasesCleared: 0 }),
-  // WI-6039's stranded-wip backstop. tick() DESTRUCTURES all three exports up front
-  // (in-process-periodic.ts), outside the per-reaper try/catch — so a missing entry
-  // here fails the whole tick, not just this leg.
   reconcileStrandedWipWorkItems: async () => [],
 }));
 
