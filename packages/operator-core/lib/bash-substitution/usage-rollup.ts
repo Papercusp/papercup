@@ -44,6 +44,7 @@
  */
 
 import { atomHead, atomize } from './atomize';
+import { atomsOf, matchAtomsToSubstitutions, type SubstitutionRow } from './match';
 
 /**
  * The grain a rollup row is keyed at.
@@ -63,6 +64,19 @@ export interface UsageKey {
   toolName: string;
   /** Command verb for a Bash atom (`sed`, `psql`); null on the per-call row. */
   verb: string | null;
+  /**
+   * Registry intent bucket (`file-range-read`) for a matched Bash atom; null on
+   * every other row.
+   *
+   * Stored rather than derived at read time (migration 674, superseding 672's
+   * plan to map verb→bucket on read) because a registry `bash_pattern` is an
+   * ANCHORED regex over a FULL atom and the bare verb `sed` cannot match it.
+   * The read-time mapping degrades to "verbs this pattern could start with",
+   * measured 2026-07-26 at 34.2% precision overall and 1.1% for `head` — whose
+   * atoms are overwhelmingly `| head -20` pipe filters, not file reads. The
+   * bucket is matched HERE, where the command text still exists.
+   */
+  intentLabel: string | null;
 }
 
 /** Accumulated measures for one {@link UsageKey}. */
@@ -75,7 +89,7 @@ export interface UsageCounts {
   resultBytes: number;
 }
 
-/** A rollup keyed by `day\ttoolName\tverb`. */
+/** A rollup keyed by `day\ttoolName\tverb\tintentLabel`. */
 export type UsageRollup = Map<string, UsageKey & UsageCounts>;
 
 /**
@@ -90,9 +104,9 @@ export type UsageRollup = Map<string, UsageKey & UsageCounts>;
  */
 export const BYTES_PER_TOKEN = 4;
 
-/** Compose the map key. Tab-joined: none of the three parts can contain a tab. */
+/** Compose the map key. Tab-joined: none of the four parts can contain a tab. */
 export function usageKeyOf(key: UsageKey): string {
-  return `${key.day}\t${key.toolName}\t${key.verb ?? ''}`;
+  return `${key.day}\t${key.toolName}\t${key.verb ?? ''}\t${key.intentLabel ?? ''}`;
 }
 
 /**
@@ -105,6 +119,16 @@ export function usageKeyOf(key: UsageKey): string {
 export interface ToolUseObservation {
   toolName: string;
   verbs: string[];
+  /**
+   * The raw shell command for a Bash call (null for every other tool).
+   *
+   * Carried alongside `verbs` — rather than replacing them — because the two
+   * feed different measures: `verbs` is the re-classifiable "what is the shell
+   * used for" row, while the command is what the registry's anchored patterns
+   * must be matched against to attribute an INTENT BUCKET (migration 674). A
+   * verb cannot stand in for the command there; see {@link UsageKey.intentLabel}.
+   */
+  command: string | null;
   /** ISO timestamp of the owning record, or null when the line carries none. */
   ts: string | null;
 }
@@ -196,9 +220,12 @@ export function extractLineUsage(line: string): LineUsage {
     if (!part || typeof part !== 'object') continue;
     const block = part as { type?: string; name?: string; input?: { command?: unknown }; content?: unknown };
     if (block.type === 'tool_use' && typeof block.name === 'string' && block.name) {
+      const isShell = block.name === SHELL_TOOL_NAME;
+      const command = isShell && typeof block.input?.command === 'string' ? block.input.command : null;
       toolUses.push({
         toolName: block.name,
-        verbs: block.name === SHELL_TOOL_NAME ? commandVerbs(block.input?.command) : [],
+        verbs: isShell ? commandVerbs(command) : [],
+        command,
         ts,
       });
       continue;
@@ -259,22 +286,44 @@ function measureContentBytes(content: unknown): number {
 }
 
 /** Fold one observation into a rollup, in place. */
-export function addToolUse(rollup: UsageRollup, obs: ToolUseObservation, fallbackDay: string | null): void {
+export function addToolUse(
+  rollup: UsageRollup,
+  obs: ToolUseObservation,
+  fallbackDay: string | null,
+  substitutionRows: SubstitutionRow[] = [],
+): void {
   const day = dayOf(obs.ts) ?? fallbackDay;
   // A call we cannot date cannot be windowed, and silently filing it under
   // "today" would inflate whichever window happens to be running. Drop it.
   if (!day) return;
 
-  bump(rollup, { day, toolName: obs.toolName, verb: null }, { calls: 1, atoms: 0, resultBytes: 0 });
+  bump(rollup, { day, toolName: obs.toolName, verb: null, intentLabel: null }, { calls: 1, atoms: 0, resultBytes: 0 });
   for (const verb of obs.verbs) {
-    bump(rollup, { day, toolName: obs.toolName, verb }, { calls: 0, atoms: 1, resultBytes: 0 });
+    bump(rollup, { day, toolName: obs.toolName, verb, intentLabel: null }, { calls: 0, atoms: 1, resultBytes: 0 });
+  }
+
+  // Intent buckets (P-002 / migration 674). Counted at ATOM grain via the
+  // shared enforcement matcher, so the metric and the PreToolUse gate can never
+  // disagree about what a bucket IS — and so this stays comparable with the
+  // frozen fixtures' `totalAtoms`, which were also per-atom.
+  if (obs.command === null || substitutionRows.length === 0) return;
+  for (const match of matchAtomsToSubstitutions(atomsOf(obs.command), substitutionRows)) {
+    bump(
+      rollup,
+      { day, toolName: obs.toolName, verb: null, intentLabel: match.intentLabel },
+      { calls: 0, atoms: 1, resultBytes: 0 },
+    );
   }
 }
 
 /** Fold result-payload bytes into a rollup, in place. */
 export function addResultBytes(rollup: UsageRollup, bytes: number, day: string | null): void {
   if (bytes <= 0 || !day) return;
-  bump(rollup, { day, toolName: RESULT_BYTES_TOOL, verb: null }, { calls: 0, atoms: 0, resultBytes: bytes });
+  bump(
+    rollup,
+    { day, toolName: RESULT_BYTES_TOOL, verb: null, intentLabel: null },
+    { calls: 0, atoms: 0, resultBytes: bytes },
+  );
 }
 
 /**
@@ -306,9 +355,14 @@ function bump(rollup: UsageRollup, key: UsageKey, delta: UsageCounts): void {
  * `fallbackDay` dates a record that carries no usable timestamp of its own —
  * pass the owning file's last known day, or null to drop such lines.
  */
-export function ingestLine(rollup: UsageRollup, line: string, fallbackDay: string | null): void {
+export function ingestLine(
+  rollup: UsageRollup,
+  line: string,
+  fallbackDay: string | null,
+  substitutionRows: SubstitutionRow[] = [],
+): void {
   const usage = extractLineUsage(line);
-  for (const obs of usage.toolUses) addToolUse(rollup, obs, fallbackDay);
+  for (const obs of usage.toolUses) addToolUse(rollup, obs, fallbackDay, substitutionRows);
   // Date the result bytes from the RECORD's own timestamp, exactly like a call.
   // Passing the caller's fallback here regardless was a real bug: tool_result
   // records do carry a timestamp, and dropping it filed every byte under
@@ -320,7 +374,7 @@ export function ingestLine(rollup: UsageRollup, line: string, fallbackDay: strin
 /** Merge `src` into `dst`, in place. */
 export function mergeRollup(dst: UsageRollup, src: UsageRollup): void {
   for (const row of src.values()) {
-    bump(dst, { day: row.day, toolName: row.toolName, verb: row.verb }, row);
+    bump(dst, { day: row.day, toolName: row.toolName, verb: row.verb, intentLabel: row.intentLabel }, row);
   }
 }
 
@@ -333,6 +387,8 @@ export function rollupRows(rollup: UsageRollup): Array<UsageKey & UsageCounts> {
           : a.toolName > b.toolName ? 1
             : (a.verb ?? '') < (b.verb ?? '') ? -1
               : (a.verb ?? '') > (b.verb ?? '') ? 1
-                : 0,
+                : (a.intentLabel ?? '') < (b.intentLabel ?? '') ? -1
+                  : (a.intentLabel ?? '') > (b.intentLabel ?? '') ? 1
+                    : 0,
   );
 }

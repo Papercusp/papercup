@@ -118,30 +118,77 @@ export function matchCommandToSubstitutions(
   command: string,
   rows: SubstitutionRow[],
 ): SubstitutionMatch[] {
-  if (!command.trim() || rows.length === 0) return [];
+  const out: SubstitutionMatch[] = [];
+  // First matching atom wins: one row speaks about one intent, so a command
+  // reading two files should produce ONE `file-whole-read` advisory, not two
+  // copies of the same sentence. That dedup is an ADVISORY concern — see
+  // matchAtomsToSubstitutions for why COUNTING must not inherit it.
+  const seen = new Set<string>();
+  for (const m of matchAtomsToSubstitutions(atomsOf(command), rows)) {
+    if (seen.has(m.intentLabel)) continue;
+    seen.add(m.intentLabel);
+    out.push(m);
+  }
+  return out;
+}
 
-  const atoms = atomize(command).filter((a) => a.length <= MAX_MATCHABLE_ATOM_LENGTH);
-  if (atoms.length === 0) return [];
+/**
+ * The matchable atoms of a raw command — `atomize` plus the length cap.
+ *
+ * Factored out so the advisory path and the counting path can never disagree
+ * about what "the atoms of this command" are, including which oversized ones
+ * get dropped (MAX_MATCHABLE_ATOM_LENGTH).
+ */
+export function atomsOf(command: string): string[] {
+  if (!command.trim()) return [];
+  return atomize(command).filter((a) => a.length <= MAX_MATCHABLE_ATOM_LENGTH);
+}
+
+/**
+ * EVERY (row, atom) match across the given atoms — no per-row dedup.
+ *
+ * This is the COUNTING entry point (P-002), and its difference from
+ * {@link matchCommandToSubstitutions} is deliberate. That function answers
+ * "what should I tell this agent", so it collapses a command reading three
+ * files into one advisory. This one answers "how much of that intent
+ * happened", where three reads are three reads.
+ *
+ * Atom grain is also what makes the P-029 before/after a real comparison: the
+ * frozen `fixtures/*.sample.json` baselines recorded `totalAtoms` as
+ * `corpusAtoms.filter(pattern.test).length` — every matching atom — so a
+ * command-deduped metric would be measuring a different quantity than the
+ * number it is compared against.
+ *
+ * Everything else — pattern compilation, stateful-flag stripping, the
+ * `not-a-substitute` skip — is shared with the advisory path by construction,
+ * because that path now runs through this function.
+ */
+export function matchAtomsToSubstitutions(
+  atoms: string[],
+  rows: SubstitutionRow[],
+): SubstitutionMatch[] {
+  if (atoms.length === 0 || rows.length === 0) return [];
 
   const out: SubstitutionMatch[] = [];
   for (const row of rows) {
+    // Per D-007 these record a pattern whose tool answers a DIFFERENT question
+    // (the ~5,100 Grep/Glob calls agents were correctly told to make). They are
+    // documented negatives, not substitutions — counting them as substitutable
+    // demand would overstate the number this plan is trying to move.
     if (row.equivalenceVerdict === 'not-a-substitute') continue;
     const pattern = compileRegistryPattern(row.bashPattern, row.bashPatternFlags ?? '');
     if (!pattern) continue;
 
-    // First matching atom wins: one row speaks about one intent, so a command
-    // reading two files should produce ONE `file-whole-read` advisory, not two
-    // copies of the same sentence.
-    const atom = atoms.find((a) => pattern.test(a));
-    if (atom === undefined) continue;
-
-    out.push({
-      intentLabel: row.intentLabel,
-      toolName: row.toolName,
-      tier: row.tier,
-      advisoryText: row.advisoryText,
-      atom,
-    });
+    for (const atom of atoms) {
+      if (!pattern.test(atom)) continue;
+      out.push({
+        intentLabel: row.intentLabel,
+        toolName: row.toolName,
+        tier: row.tier,
+        advisoryText: row.advisoryText,
+        atom,
+      });
+    }
   }
 
   return out;

@@ -2479,7 +2479,7 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
  */
 export function mergeHealthPanels(
   snap: SystemHealth,
-  updates: Partial<SystemHealthPanels>,
+  updates: Partial<Record<PanelKey, HealthPanel<unknown>>>,
   now: number,
 ): SystemHealth {
   Object.assign(snap.panels, updates);
@@ -2520,7 +2520,7 @@ export async function refreshHealthPanel(
     const fresh = panel === 'observations' ? await collectObservations(ctx)
       : panel === 'improvements' ? await collectImprovements(ctx)
       : await collectAutonomy(ctx);
-    const merged = mergeHealthPanels(prev, { [panel]: fresh } as Partial<SystemHealthPanels>, now);
+    const merged = mergeHealthPanels(prev, { [panel]: fresh }, now);
     cache.set(ws, merged);
     if (await precomputeSharedHealthEnabled()) {
       void writeSharedSnapshot(SYSTEM_HEALTH_SNAPSHOT_KEY, ws, merged, SYSTEM_HEALTH_SNAPSHOT_VERSION).catch(() => {});

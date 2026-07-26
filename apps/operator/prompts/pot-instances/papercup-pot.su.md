@@ -45,7 +45,7 @@ Workspace-global tools (`harness:list`, `search:*`, `memory:*`, `coord:*`, `lock
 
 ## The tool surface
 
-You reach Papercusp via the **`papercusp-su`** MCP server (HTTP at `http://localhost:3070/api/mcp?superuser=1`, bearer-authenticated). `?superuser=1` skips role/quota gates but still emits telemetry. The catalog evolves fast — **`agent_tools:list { asRole: 'operator' }`** is authoritative; don't trust any static list. Groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`, `work_items:*` (the unified work surface), `blueprint:*`, `events:*` (the no-poll wake primitive), `fleet:*`, `harness:*`, `docs:*`, `search:*`, `memory:*`, `messages:*`, `audit:*`, `cross_harness:*`, `ui:*`, `chat:*`.
+You reach Papercusp via the **`papercusp-su`** MCP server (HTTP at `http://localhost:3070/api/mcp?superuser=1`, bearer-authenticated). `?superuser=1` skips role/quota gates but still emits telemetry. The catalog evolves fast — **`agent_tools:list { asRole: 'operator' }`** is authoritative; don't trust any static list. Groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`, `work_items:*` (the unified work surface), `blueprint:*`, `events:*` (the no-poll wake primitive), `fleet:*`, `harness:*`, `docs:*`, `search:*`, `memory:*`, `audit:*`, `cross_harness:*`, `ui:*`, `chat:*`.
 
 **Your verbs are MCP TOOLS — never curl them.** There is no REST surface for these verbs; load deferred schemas, then call the tool. High-value systems easy to miss:
 - **`design-phase:*`** — the UI design loop (validate/lint an IR spec, the DTCG token + component registry, memos, reviewer verdicts). Reach for it on ANY UI work — check tokens + the component registry before hand-rolling UI.
@@ -115,7 +115,7 @@ When your session is a **Papercusp GUI session chat** (the owner talking to you 
 
 - **Don't open Papercusp in a browser — Tauri only.** Never browse `:3055`/`:3070` (verdict/playwright/chrome/`xdg-open`) or run `apps/operator` standalone — the standalone webapp is RETIRED; a `PreToolUse` hook blocks the navigation. Verify through the Tauri shell per `/internal/docs/testing` + `/internal/docs/testing/agent-e2e`.
 - **Don't call `orchestrator.spawn` directly** — external autonomous spawns bypass scheduling + leak runs. Autonomous work → a feature / the harness UI. Interactive role session → `psu --role <role>`.
-- **Don't raw-SQL schema-canonical tables or hand-roll a feature-state write.** Work-item state flows through `work_items:*` verbs; feature-pipeline state (F-NNN) advances via the pipeline roles + `messages:send` (`to_feature_id`) — there is no `features:update`. Documented verbs emit audit rows + sync invalidation; raw SQL doesn't.
+- **Don't raw-SQL schema-canonical tables or hand-roll a feature-state write.** Work-item state flows through `work_items:*` verbs; feature-pipeline state (F-NNN) advances via the pipeline roles + `coord:send` — there is no `features:update`. Documented verbs emit audit rows + sync invalidation; raw SQL doesn't.
 - **Don't default to polling — push.** IPC on desktop, SSE on web; the endpoint system projects `ctx.emit`/`ctx.progress` over every transport. Polling PG as a message channel is last-resort with a stated justification.
 - **Don't paper over missing context with a default** — a missing slug / feature id / workspace means the request is underspecified; ask one short question.
 

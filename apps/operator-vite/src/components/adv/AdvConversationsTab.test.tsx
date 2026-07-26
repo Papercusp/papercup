@@ -240,12 +240,12 @@ beforeEach(() => {
       promoted_issue_id: null, created_ts: new Date(Date.now() - 120_000).toISOString(),
       updated_ts: new Date(Date.now() - 120_000).toISOString(),
     }]),
-    'conversations.deliberationList': ready([{
-      thread_id: 'th-mail-thread', parent_kind: 'handoff', parent_ref: 'F-042', title: 'pick up the UI work',
-      created_by: 'architect', harness_slug: 'papercusp', created_at: new Date(Date.now() - 60_000).toISOString(),
-      last_post_at: new Date(Date.now() - 60_000).toISOString(), post_count: 1,
+    'conversations.deliberationList': ready(),
+    'conversations.agentChatList': ready([{
+      id: 'chat-mail-thread', harness_slug: 'papercusp', role: 'worker', feature_id: 'F-042', title: 'pick up the UI work',
+      created_at: Date.now() - 60_000, updated_at: Date.now() - 60_000, archived_at: Date.now() - 60_000,
+      total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 1,
     }]),
-    'conversations.agentChatList': ready(),
   };
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ conversations: [] }) })));
 });
@@ -283,29 +283,27 @@ describe('AdvConversationsTab — Create-style shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open pick up the UI work' }));
     expect(setQueryStates).toHaveBeenCalledTimes(1);
     expect(setQueryStates).toHaveBeenCalledWith({
-      conv: 'deliberations',
+      conv: 'agentchats',
       conversation: null,
-      thread: 'th-mail-thread',
-      chat: null,
+      thread: null,
+      chat: 'chat-mail-thread',
       fmsg: null,
     });
   });
 
   it('keeps the same conversation list DOM mounted while the selected detail changes', async () => {
-    syncResults[syncKey('conversations.deliberationDetail', { id: 'th-mail-thread' })] = ready([{
-      thread: {
-        thread_id: 'th-mail-thread', parent_kind: 'handoff', parent_ref: 'F-042', title: 'pick up the UI work',
-        created_by: 'architect', harness_slug: 'papercusp', created_at: new Date().toISOString(),
-        last_post_at: new Date().toISOString(), post_count: 1,
-      },
-      posts: [],
+    syncResults[syncKey('conversations.agentChatDetail', { id: 'chat-mail-thread' })] = ready([{
+      id: 'chat-mail-thread', harness_slug: 'papercusp', role: 'worker', feature_id: 'F-042', title: 'pick up the UI work',
+      created_at: Date.now() - 60_000, archived_at: Date.now() - 60_000,
+      total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 1,
+      transcript: [],
     }]);
     const { rerender } = render(<AdvConversationsTab />);
     const listBefore = screen.getByRole('region', { name: 'Conversation list' });
     const rowBefore = screen.getByRole('button', { name: 'Open pick up the UI work' });
 
-    nuqsState.conv = 'deliberations';
-    nuqsState.thread = 'th-mail-thread';
+    nuqsState.conv = 'agentchats';
+    nuqsState.chat = 'chat-mail-thread';
     rerender(<AdvConversationsTab />);
 
     expect(screen.getByRole('region', { name: 'Conversation list' })).toBe(listBefore);
@@ -978,40 +976,10 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.getAllByText('#infra').length).toBeGreaterThan(0);
   });
 
-  it('Messages view lists work-item agent messages', async () => {
-    nuqsState.conv = 'messages';
-    stubComms({
-      '/comms/messages/list': {
-        items: [
-          {
-            id: 'msg-1',
-            harness_slug: 'papercup',
-            from_slug: 'architect',
-            to_slug: 'worker',
-            to_role: null,
-            kind: 'handoff',
-            subject: 'pick up the UI work',
-            body: 'the scoping is done, your turn',
-            status: 'delivered',
-            created_at: new Date().toISOString(),
-            from_feature_id: 'F-042',
-            to_feature_id: 'F-042',
-          },
-        ],
-      },
-    });
-    render(<AdvConversationsTab />);
-    expect(await screen.findByText('pick up the UI work')).toBeTruthy();
-    // 'architect' shows as the row sender (and now also as a Sender facet chip).
-    expect(screen.getAllByText('architect').length).toBeGreaterThan(0);
-    expect(screen.getByText('→ worker')).toBeTruthy();
-  });
-
   it('the unified view degrades to one empty state with no data', () => {
     syncResults['conversations.questionsList'] = ready();
     syncResults['conversations.deliberationList'] = ready();
     syncResults['conversations.agentChatList'] = ready();
-    syncResults['conversations.messageList'] = ready();
     render(<AdvConversationsTab />);
     expect(screen.getByText('No conversations')).toBeTruthy();
   });
@@ -1023,7 +991,6 @@ describe('AdvConversationsTab — unified communication views', () => {
       error: new Error('HTTP 500'),
     };
     syncResults['conversations.agentChatList'] = ready();
-    syncResults['conversations.messageList'] = ready();
     render(<AdvConversationsTab />);
     expect(screen.getByText(/Couldn't load/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Retry/i })).toBeTruthy();
@@ -1046,13 +1013,13 @@ describe('AdvConversationsTab — P-008 stress regressions', () => {
       thread_id: 'th-static', parent_kind: 'issue', parent_ref: 'WI-1', title: 'static deliberation',
       created_by: 'architect', harness_slug: 'papercusp', created_at: TS(10), last_post_at: TS(10), post_count: 1,
     };
-    const message = {
-      id: 'msg-static', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
-      kind: 'handoff', subject: 'static message', body: 'unchanged', status: 'delivered',
-      created_at: TS(5), from_feature_id: null, to_feature_id: null,
+    const chat = {
+      id: 'chat-static', harness_slug: 'papercusp', role: 'worker', feature_id: null, title: 'static agent chat',
+      created_at: TS(5), updated_at: TS(5), archived_at: null, total_input_tokens: 0, total_output_tokens: 0,
+      total_cost_usd_cents: 0, turns: 1,
     };
     // A newly-arriving question is always the most recent row (TS(1)), so the
-    // unrelated pair's relative order — message (TS5) ahead of deliberation
+    // unrelated pair's relative order — agent chat (TS5) ahead of deliberation
     // (TS10) — is the only thing under test across every recompute below.
     for (let i = 0; i < 20; i += 1) {
       const questions = [{
@@ -1061,8 +1028,8 @@ describe('AdvConversationsTab — P-008 stress regressions', () => {
         created_ts: TS(1), updated_ts: TS(1),
       }];
       // A brand-new array reference each pass, as a real background refetch hands back.
-      const rows = composeUnifiedConversationRows(questions, [deliberation], [], [message], 50);
-      expect(rows.map((row) => row.id)).toEqual(['threads:' + `q-${i}`, 'messages:msg-static', 'deliberations:th-static']);
+      const rows = composeUnifiedConversationRows(questions, [deliberation], [chat], 50);
+      expect(rows.map((row) => row.id)).toEqual(['threads:' + `q-${i}`, 'agentchats:chat-static', 'deliberations:th-static']);
     }
   });
 
@@ -1071,14 +1038,14 @@ describe('AdvConversationsTab — P-008 stress regressions', () => {
     const middle = { thread_id: 'th-b', parent_kind: null, parent_ref: null, title: 'b', created_by: 'architect', harness_slug: 'papercusp', created_at: TS(20), last_post_at: TS(20), post_count: 1 };
     const newest = { thread_id: 'th-c', parent_kind: null, parent_ref: null, title: 'c', created_by: 'architect', harness_slug: 'papercusp', created_at: TS(10), last_post_at: TS(10), post_count: 1 };
 
-    const before = composeUnifiedConversationRows([], [oldest, middle, newest], [], [], 50);
+    const before = composeUnifiedConversationRows([], [oldest, middle, newest], [], 50);
     expect(before.map((row) => row.sourceId)).toEqual(['th-c', 'th-b', 'th-a']);
 
     // th-a gets a fresh reply and jumps to the front; th-b/th-c are untouched
     // and must keep their relative order (b before c) even though the array
     // position shifted underneath them.
     const afterOldestUpdated = { ...oldest, last_post_at: TS(0.1) };
-    const after = composeUnifiedConversationRows([], [afterOldestUpdated, middle, newest], [], [], 50);
+    const after = composeUnifiedConversationRows([], [afterOldestUpdated, middle, newest], [], 50);
     expect(after.map((row) => row.sourceId)).toEqual(['th-a', 'th-c', 'th-b']);
   });
 
@@ -1140,9 +1107,9 @@ describe('AdvConversationsTab — P-008 stress regressions', () => {
 
   it('a rapid selection burst never triggers a list refetch on any source (no request storm)', () => {
     const invalidateQuestions = vi.fn();
-    const invalidateMessages = vi.fn();
+    const invalidateDeliberations = vi.fn();
     syncResults['conversations.questionsList'] = { ...(syncResults['conversations.questionsList'] as Record<string, unknown>), invalidate: invalidateQuestions };
-    syncResults['conversations.messageList'] = { ...(syncResults['conversations.messageList'] as Record<string, unknown>), invalidate: invalidateMessages };
+    syncResults['conversations.deliberationList'] = { ...(syncResults['conversations.deliberationList'] as Record<string, unknown>), invalidate: invalidateDeliberations };
 
     const { rerender } = render(<AdvConversationsTab />);
     for (let i = 0; i < 10; i += 1) {
@@ -1151,7 +1118,7 @@ describe('AdvConversationsTab — P-008 stress regressions', () => {
     }
 
     expect(invalidateQuestions).not.toHaveBeenCalled();
-    expect(invalidateMessages).not.toHaveBeenCalled();
+    expect(invalidateDeliberations).not.toHaveBeenCalled();
   });
 });
 

@@ -774,9 +774,9 @@ export default defineTool({
     'current claims (doing/workItemIds/queuedCount/load), loop state (monitoring|waiting|' +
     'parked-awaiting-capability)+nextFireAt, stalled flag, unanswered msgs ' +
     '(count/oldestAgeMs/newest), contextPressure ' +
-    '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing or idle ' +
-    '— check `kind` before acting), `dormant` flag, ' +
-    'and unownedCriticals (aged criticals the spec admits) + orphanedInFlight ' +
+    '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing/idle ' +
+    '— check `kind`), `dormant` flag, ' +
+    'unownedCriticals (aged criticals the spec admits) + orphanedInFlight ' +
     '(released mid-progress, assignee NULL). Scoped to ONE fleet ' +
     '(yours by default), not fleet:assignments\' whole roster. ' +
     'Replaces the manual presence+assignments+inbox scan each monitor wake.',
@@ -790,8 +790,8 @@ export default defineTool({
       'or full message history for one member (coord:inbox { agent }).',
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
-      '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on; `dormant:true` → wake, never bench. ' +
+      '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
+      'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
       'Nonzero `unownedCriticals`/`orphanedInFlight` → claim it. ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },

@@ -36,7 +36,7 @@ payload into your artifacts.
 
 ### Hit a blocker
 
-1. `coord:send` with a "Blocker" prefix and the specific question, addressed to the orchestrator (`wake:true`).
+1. `coord:send` with a "Blocker" prefix and the specific question, addressed to the orchestrator, with `wake` set so they're woken immediately.
 2. The orchestrator routes to the right next role (debugger, architect, etc.).
 
 ### Where new tests go
