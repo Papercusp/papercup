@@ -41,6 +41,7 @@ import {
 } from './claims';
 import { workGroupExists, isWorkGroupMember } from './work-group';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
 
 // ── 1. Liveness mode (shared-ness) ──────────────────────────────────────────────
 
@@ -140,6 +141,65 @@ async function sessionStateForOwner(ownerId: string): Promise<SessionState | nul
   }
 }
 
+/**
+ * P-006 (agent-trap-guards-2026-07-26): notify the holder of a work-item that
+ * IMPLEMENTS this plan item when the plan item is claimed by someone else —
+ * the "notify" half of closing "holding the linked work-item is not holding
+ * the plan item" (the passive readback half lives in
+ * scheduler/plan-item-claim-collision.ts, read at `work_items:get`).
+ *
+ * Fires on EVERY successful claim, but is a no-op in the overwhelming common
+ * case (an unconverted item has no implementing work-item yet, or the
+ * claimant IS the work-item's own assignee re-claiming). It DOES also fire on
+ * a legitimate convert-at-pickup resume of a lapsed peer's claim (convert.ts
+ * §2) — that is intentional, not a false positive: it is exactly the same
+ * advisory shape as `priorHolderWarning` above (a heads-up to a possibly-still
+ * -alive prior holder), and is the earliest possible point to warn them,
+ * instead of only at close time via a `conflict` (the incident this closes).
+ *
+ * Best-effort: a lookup/send failure never blocks or fails the claim. Uses a
+ * dynamic import of `./convert` to avoid the module cycle (convert.ts
+ * statically imports `claimPlanItem` from this file).
+ */
+export async function notifyImplementingWorkItemHolderOfCollision(opts: ClaimPlanItemOpts): Promise<void> {
+  try {
+    const [{ findImplementingWorkItem, TERMINAL_WORK_ITEM_STATES }, { sendMessage }] = await Promise.all([
+      import('./convert'),
+      import('../agent-tools/coordination/messages'),
+    ]);
+    const wi = await findImplementingWorkItem(opts.planSlug, opts.itemId);
+    if (!wi || !wi.assignee || wi.assignee === opts.owner) return;
+    if (TERMINAL_WORK_ITEM_STATES.has(wi.state)) return; // no one is actively executing a closed record
+    const identity: AgentIdentity = {
+      ownerId: 'system:plan-item-claim-collision',
+      ownerLabel: 'system:plan-item-claim-collision',
+      source: 'static-client' as const,
+      workspaceId: opts.workspaceId,
+      userId: null,
+    };
+    await sendMessage(identity, {
+      to: [wi.assignee],
+      summary:
+        `Plan item ${opts.planSlug}#${opts.itemId} — your work-item ${wi.id} implements it — was just claimed by ` +
+        `${opts.ownerLabel ?? opts.owner}. Holding the linked work-item is not holding the plan item: you may be ` +
+        `mid-execution on an item that is no longer (solely) yours. Coordinate with them before continuing to ` +
+        `avoid duplicated work.`,
+      category: 'plan-item-claim-collision',
+      harnessSlug: opts.harnessSlug,
+      extra: {
+        auto: true,
+        lifecycle: 'plan-item-claim-collision',
+        plan_slug: opts.planSlug,
+        item_id: opts.itemId,
+        work_item_id: wi.id,
+        claimed_by: opts.owner,
+      },
+    });
+  } catch {
+    /* best-effort — never blocks the claim */
+  }
+}
+
 export type ClaimPlanItemResult =
   | { status: 'claimed'; claim: PlanItemClaim; mode: LivenessMode; viaAssignment: boolean; priorHolderWarning?: PriorHolderWarning }
   | { status: 'conflict'; conflict: PlanItemClaim }
@@ -225,7 +285,10 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
     livenessMode: mode,
     ttlSec: opts.ttlSec,
   });
-  if (res.ok) return { status: 'claimed', claim: res.claim, mode, viaAssignment, priorHolderWarning };
+  if (res.ok) {
+    await notifyImplementingWorkItemHolderOfCollision(opts);
+    return { status: 'claimed', claim: res.claim, mode, viaAssignment, priorHolderWarning };
+  }
   return { status: 'conflict', conflict: res.conflict };
 }
 

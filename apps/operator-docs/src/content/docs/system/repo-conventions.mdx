@@ -119,15 +119,30 @@ write tests for it, wire new code to it, or "revive" it without an explicit ask.
 | Mug/Kettle left-rail tabs (`MugTab` queen steering panel + `OverwatchTab` kettle supervisor panel + their private sub-components `MugHeartbeat`/`ModelTiersOverride`/`ThrottleSection`/`AutonomySurfacing`/`HiveSteeringTree`/`hive-steering-tree.ts`, with tests) | `_retired/mug-kettle-rail-tabs/` | Retired 2026-07-14 (WI-4778, owner decision: *"I don't like there being a kettle and mug chat at all"* — Papercup is the ONE persona). Their decision-INPUT reads render in the chat sidebar's full-height **Pot Health view** (`PotHealthPane`, 🫖 header toggle / `?opcv=pot`); the steering WRITE controls they carried have no other GUI — the owner steers by talking to Papercup (`pot:set-steering` / `kettle:start`/`kettle:pause` tools). **Stays live:** `ModelOverride` + `useModelOverride` (PapercupTab uses them), `resolveHomeHive` (extracted to `left-sidebar/resolve-home-hive.ts`), and the interleaved `pc-queen__*` style primitives PapercupTab consumes. | `_retired/mug-kettle-rail-tabs/RESTORE.md` |
 | Chat sidebar's human Inbox face (`InboxPane.tsx` + test + `inbox-pane.css`, `?opcv=inbox`) | `_retired/inbox-pane/` | Retired 2026-07-26 (`hud-consolidation-2026-07-26` D-001, owner directive: *"remove the inbox pane from the left-hand toolbar and re-wire everything that opened the inbox to open the conversation in the HUD tab"*). Gated on P-002 first proving the HUD board covers every ask the Inbox covered, including attention items with no `ownerAgentId` (`HudBoard.tsx`'s `.hud__unattributed` lane). P-004 rewired the curator-card drill-in from `opcv=inbox` to `router.push('/adv?tab=hud&hudsession=<ownerAgentId>')` — the SAME `SessionChatModal` open-path `HudView.tsx` already uses. **Stays live:** the data layer (`use-inbox-pending.ts` — `useInboxAttention`/`useInboxPendingCount`/`usePlansNeedingYouCount`/`scopeInboxItems`), which the HUD board consumes directly, and `chat-seed.ts` (shared with `OperatorChat.tsx`'s composer). | `_retired/inbox-pane/RESTORE.md` |
 
-**Convention for retiring-but-keeping a surface:** (1) move it under `_retired/`
-— this drops it from the `apps/*` / `packages/*` workspace globs so npm, the
-affected-test runner, knip, and nx stop treating it as live (the structural
-signal that fools agents, not a prose note); (2) remove its root `package.json`
-scripts and banner any deploy config — **preserve, don't delete**; (3) add a
-`RESTORE.md` in the moved directory with the exact re-wiring steps + the
-last-active commit, and cut a `git tag <name>-retired-<date>` restore point;
-(4) add a row to the table above. Restoration is then `git mv _retired/<x>
-<orig>` + re-apply the RESTORE.md steps.
+**Convention for retiring-but-keeping a surface:** (0) FIRST, scan for the
+surface's live references — **don't grep a bare word.** WI-6097 (retiring the
+work-item-mail surface) grepped `messages` and got 68-113 files back that read
+as catastrophic residue, because the word also matched the live `coord:*`
+plane (`coord/messages.ts`, `coord_event_log`, `coord-inbox-bus`); even the
+full identifier `messages:send` matched an unrelated Google FCM endpoint URL
+in `device-push-dispatcher.ts`. Use
+**`node scripts/scan-retirement-surface.mjs`** instead: write a small JSON
+surface config naming the exact identifiers being retired (tool names,
+table/view names, op-codes — see the header comment in the script for the
+shape and `scripts/retirement-surfaces/work-item-mail-2026-07-26.json` for a
+worked example), run it, and triage every hit — a genuine reference to
+re-point/remove, or a false positive you add to the config's `allowlist` (with
+a reason) so a re-run doesn't re-flag it. This also gives the sweep a durable,
+re-runnable completion check instead of a one-off manual grep. Then: (1) move
+it under `_retired/` — this drops it from the `apps/*` / `packages/*`
+workspace globs so npm, the affected-test runner, knip, and nx stop treating
+it as live (the structural signal that fools agents, not a prose note); (2)
+remove its root `package.json` scripts and banner any deploy config —
+**preserve, don't delete**; (3) add a `RESTORE.md` in the moved directory with
+the exact re-wiring steps + the last-active commit, and cut a
+`git tag <name>-retired-<date>` restore point; (4) add a row to the table
+above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the
+RESTORE.md steps.
 
 ⚠ **`libs/zero-harness` and `libs/papercusp-db` have NOT had step (1) applied.**
 Unlike the `_retired/`-moved surfaces, both are still members of the root

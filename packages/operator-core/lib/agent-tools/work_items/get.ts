@@ -20,6 +20,7 @@ import { computeCheckpointStaleness } from "../../checkpoint-staleness";
 import { detectBgJobCheckpointClaim } from "../../checkpoint-bg-job-claim";
 import { getPresence } from "../coordination/presence";
 import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
+import { planItemClaimCollision } from "../../scheduler/plan-item-claim-collision";
 import { looksLikeCitedProseEvidence } from "../../completion-audit";
 
 /**
@@ -51,7 +52,7 @@ export default defineTool({
   name: "work_items:get",
   profile: "engineer",
   description:
-    "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, auditProseEvidenceLikely?, error? }], counts } — correlate by id, not position. Conditional fields (present only when they apply): `planItemBlocked` = the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }) — check before unblocking; `checkpoint` = in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less); `checkpointStale` = the assignee kept working after that checkpoint; `checkpointBgJobWarning` = the checkpoint cites a background job/task as evidence — that bookkeeping can die silently across a process boundary, so verify the pid/completion-marker before trusting it; `auditProseEvidenceLikely` = structured completion evidence is empty but a `terminalCompletionRef` exists, so the real proof is likely PROSE in completion.summary — read it before reopening a close as bare.",
+    "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, auditProseEvidenceLikely?, error? }], counts } — correlate by id, not position. Conditional fields (present only when they apply): `planItemBlocked` = the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }) — check before unblocking; `planItemClaimCollision` = holding this work-item is NOT holding its linked plan item — someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }) — coordinate with them before continuing, you may be duplicating work; `checkpoint` = in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less); `checkpointStale` = the assignee kept working after that checkpoint; `checkpointBgJobWarning` = the checkpoint cites a background job/task as evidence — that bookkeeping can die silently across a process boundary, so verify the pid/completion-marker before trusting it; `auditProseEvidenceLikely` = structured completion evidence is empty but a `terminalCompletionRef` exists, so the real proof is likely PROSE in completion.summary — read it before reopening a close as bare.",
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     notWhen:
@@ -177,6 +178,13 @@ export default defineTool({
         // fails open (null on no back-pointer, lookup error, or a clear lane), cheap
         // (one plan-row read, only when the item actually carries the back-pointer).
         const planItemBlocked = await planItemLaneBlockReason(workItem).catch(() => null);
+        // P-006 (agent-trap-guards-2026-07-26): "holding the linked work-item is not
+        // holding the plan item" — surface it when the linked plan item's live claim
+        // has diverged from this work-item's own assignee, so an agent mid-execution
+        // can see the item is no longer (solely) theirs instead of discovering it only
+        // at close time via a plan-item claim conflict. Fails open (undefined) on any
+        // lookup error or when there is no divergence.
+        const claimCollision = await planItemClaimCollision(workItem).catch(() => null);
         // EI-13845: completion evidence lives on TWO surfaces — the STRUCTURED
         // `terminalCompletionEvidence` (testsRun/testResult/verifiedHow/…, populated only
         // when the closer filled those specific fields) and the PROSE `terminalCompletionRef`
@@ -211,6 +219,7 @@ export default defineTool({
           ...(checkpointStale ? { checkpointStale } : {}),
           ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),
           ...(planItemBlocked ? { planItemBlocked } : {}),
+          ...(claimCollision ? { planItemClaimCollision: claimCollision } : {}),
           ...(auditProseEvidenceLikely !== undefined ? { auditProseEvidenceLikely } : {}),
         };
       },

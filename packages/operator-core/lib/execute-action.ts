@@ -19,6 +19,14 @@
  * rest of the `harness_<slug>.messages` surface. coord:send absorbed the job at
  * ~400x the volume. The rows are preserved; only the code path is gone. Do NOT
  * reintroduce a message verb here — see _retired/work-item-mail/RESTORE.md.
+ *
+ * ADDED 2026-07-26 (agent-trap-guards-2026-07-26 P-001, EI-18740258166031188):
+ * `send_directive` fills the gap the retirement above left open — the
+ * operator panel's directive-dispatch cards ("Accept" on a suggestion) still
+ * POST `op:'send_message'` to this dispatcher, which no longer implements it,
+ * so every accepted directive card hard-failed. `send_directive` performs the
+ * equivalent of `coord:send` (a durable, harness-scoped coordination message)
+ * instead of reintroducing the retired per-harness mailbox.
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
@@ -30,6 +38,8 @@ import { join } from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { scaffoldHarnessSchema } from './scaffold-harness-schema';
 import { operatorApiBase } from './operator-api-base';
+import { sendMessage } from './agent-tools/coordination/messages';
+import type { AgentIdentity } from './agent-tools/coordination/identity';
 
 const execFileP = promisify(execFile);
 
@@ -61,7 +71,20 @@ export type ExecuteAction =
   | PauseProjectAction
   | ResumeProjectAction
   | AddDirectiveSummaryAction
-  | CreateFeatureAction;
+  | CreateFeatureAction
+  | SendDirectiveAction;
+
+export interface SendDirectiveAction {
+  op: 'send_directive';
+  /** coord:send-shaped recipients — mirrors OperatorPanel's `[card.target_harness]`. */
+  to: string[];
+  /** Directive category surfaced to the recipient. Default 'Directive'. */
+  kind?: 'Directive' | 'Decision' | 'Priority';
+  subject?: string;
+  body?: string;
+  /** Audit string — why this directive is being dispatched. */
+  reason?: string;
+}
 
 export interface CreateFeatureAction {
   op: 'create_feature';
@@ -293,6 +316,7 @@ function extractTargetSlug(action: ExecuteAction): string | null {
     case 'create_feature': return action.harness_slug ?? null;
     case 'spinup_project': return null;
     case 'scaffold_harness': return action.projectSlug ?? null;
+    case 'send_directive': return action.to?.[0] ?? null;
     default: return null;
   }
 }
@@ -633,6 +657,63 @@ async function doAddDirectiveSummary(
   };
 }
 
+/** Stable sender identity for operator-dispatched directives (the OperatorPanel
+ *  "Accept" click on a suggestion card) — mirrors severe-event-broadcast's
+ *  SEVERE_EVENT_IDENTITY pattern for a server-side, non-agent sender. Not a
+ *  live agent session, so it carries no workspaceId-scoped presence — the
+ *  dispatch is attributable (the operator itself), never anonymous. */
+const SEND_DIRECTIVE_IDENTITY: AgentIdentity = {
+  ownerId: 'system:operator-directive',
+  ownerLabel: 'operator · directive',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+async function doSendDirective(
+  _callerSlug: string,
+  action: SendDirectiveAction,
+): Promise<ExecuteActionResult> {
+  const to = Array.isArray(action.to)
+    ? action.to.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    : [];
+  if (to.length === 0) {
+    return { ok: false, actionId: '', error: 'validation_error', detail: 'send_directive: to (non-empty string[]) required' };
+  }
+  const kind = action.kind ?? 'Directive';
+  const subject = typeof action.subject === 'string' ? action.subject.trim() : '';
+  const body = typeof action.body === 'string' ? action.body.trim() : '';
+  if (!subject && !body) {
+    return { ok: false, actionId: '', error: 'validation_error', detail: 'send_directive: subject or body required' };
+  }
+  const summary = subject ? `[${kind}] ${subject}` : `[${kind}]`;
+
+  let env;
+  try {
+    env = await sendMessage(SEND_DIRECTIVE_IDENTITY, {
+      to,
+      summary,
+      body: body || undefined,
+      category: 'operator-directive',
+      extra: {
+        directiveKind: kind,
+        ...(subject ? { directiveSubject: subject } : {}),
+        ...(action.reason ? { reason: action.reason } : {}),
+      },
+    });
+  } catch (e: any) {
+    return { ok: false, actionId: '', error: 'internal', detail: `coord send failed: ${String(e?.message ?? e).slice(0, 500)}` };
+  }
+
+  return {
+    ok: true,
+    actionId: '',
+    // `msg_id` is the stable id the panel now reads in place of the retired
+    // mail surface's `messageId`.
+    result: { msg_id: env.msg_id, to: env.to, ts: env.ts },
+  };
+}
+
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 
 async function doCreateFeature(
@@ -819,6 +900,18 @@ function validateActionShape(action: ExecuteAction): ExecuteActionResult | null 
       break;
     }
 
+    case 'send_directive': {
+      if (!Array.isArray(a.to) || a.to.length === 0 || !a.to.every((t: unknown) => typeof t === 'string' && t.trim())) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_directive: to (non-empty string[]) required' };
+      }
+      const hasSubject = typeof a.subject === 'string' && a.subject.trim().length > 0;
+      const hasBody = typeof a.body === 'string' && a.body.trim().length > 0;
+      if (!hasSubject && !hasBody) {
+        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_directive: subject or body required' };
+      }
+      break;
+    }
+
     default:
       // Unknown op — will be caught by dispatchAction
       break;
@@ -838,6 +931,7 @@ export async function dispatchAction(
     case 'pause_project': return doPauseProject(callerSlug, action);
     case 'resume_project': return doResumeProject(callerSlug, action);
     case 'add_directive_summary': return doAddDirectiveSummary(callerSlug, action);
+    case 'send_directive': return doSendDirective(callerSlug, action);
     default: return { ok: false, actionId: '', error: 'validation_error', detail: `unknown op: ${(action as any).op}` };
   }
 }

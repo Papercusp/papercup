@@ -89,6 +89,16 @@ vi.mock("nuqs", () => ({
   parseAsBoolean: { withDefault: () => ({}) },
 }));
 
+// The pot lens is INHERITED from the top-bar selector via useAdvScope (owner
+// directive 2026-07-26 — the tab's own ?lhive= picker is gone). Tests drive the
+// lens by mutating this bag; beforeEach resets it to the alpha-hive default the
+// old first-list-entry fallback used, so scoping expectations read the same.
+const advScopeState = { allMode: false, slug: "alpha-hive" as string | null, hive: "alpha-hive", ready: true };
+vi.mock("./AdvShell", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("./AdvShell")>();
+  return { ...orig, useAdvScope: () => ({ ...advScopeState }) };
+});
+
 vi.mock("@/app/_components/RubricsPanel", () => ({
   default: ({ onSelect }: { onSelect?: (id: string) => void }) => (
     <button data-testid="rubrics-panel" onClick={() => onSelect?.("rubric-1")}>
@@ -552,8 +562,11 @@ beforeEach(() => {
   nuqsState.itrace = null;
   nuqsState.rrubric = null;
   nuqsState.lretain = null;
-  nuqsState.lhive = "";
   nuqsState.slug = null;
+  advScopeState.allMode = false;
+  advScopeState.slug = "alpha-hive";
+  advScopeState.hive = "alpha-hive";
+  advScopeState.ready = true;
   // P-009 rail keys (useOpenArming / the orientation banner write these).
   nuqsState.lsb = null;
   nuqsState.lst = null;
@@ -859,7 +872,8 @@ describe("LearningTab — Gym view", () => {
   // own data, or an honest empty state naming it.
   it("does NOT fall back to the workspace-wide rollup when the pot-scoped read is empty (WI-5809 — no cross-tenant leak)", () => {
     nuqsState.lview = "gym";
-    nuqsState.lhive = "papercusp";
+    advScopeState.slug = "papercusp";
+    advScopeState.hive = "papercusp";
     // The `papercusp` pot: 1 autoloop config, 0 proposals, 0 archiveSeeds.
     gymResult = {
       data: [
@@ -1516,87 +1530,68 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
   });
 });
 
-describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-042)", () => {
-  it("renders the tab-level hive picker on hive-aware views (Improvements) with the hiveList options", () => {
+describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-042's per-tab picker)", () => {
+  const badge = () => document.querySelector(".pc-learning__hivepick");
+
+  it("shows the inherited-pot badge on hive-aware views (Improvements), named via hiveHomeLabel", () => {
     render(<LearningTab />); // default view = improvements (hive-aware)
-    const picker = screen.getByLabelText("pot lens") as HTMLSelectElement;
-    expect(picker).toBeTruthy();
-    // Labels are the friendly hive name — hiveHomeLabel strips the `-hive` home
-    // suffix for display (workspace-hive-ui-2026-06-17) — while the option VALUE
-    // stays the raw slug for backend calls.
-    const alpha = within(picker).getByRole("option", {
-      name: "alpha",
-    }) as HTMLOptionElement;
-    expect(alpha.value).toBe("alpha-hive");
-    // remote hives are badged "(joined)".
-    const beta = within(picker).getByRole("option", {
-      name: "beta (joined)",
-    }) as HTMLOptionElement;
-    expect(beta.value).toBe("beta-hive");
+    // hiveHomeLabel strips the `-hive` home suffix for display
+    // (workspace-hive-ui-2026-06-17); the badge is read-only — the selection
+    // lives in the top-bar pot selector, not here.
+    expect(badge()?.textContent).toContain("alpha");
+    expect(document.querySelector("select[aria-label='pot lens']")).toBeNull();
   });
 
-  it("shows the picker on the Gym and Learnings views too", () => {
+  it("shows the badge on the Gym and Learnings views too", () => {
     nuqsState.lview = "gym";
-    const { rerender } = render(<LearningTab />);
-    expect(screen.getByLabelText("pot lens")).toBeTruthy();
+    render(<LearningTab />);
+    expect(badge()).toBeTruthy();
     cleanup();
     nuqsState.lview = "learnings";
     render(<LearningTab />);
-    expect(screen.getByLabelText("pot lens")).toBeTruthy();
+    expect(badge()).toBeTruthy();
   });
 
-  it("HIDES the picker on workspace-global views", () => {
+  it("HIDES the badge on workspace-global views", () => {
     // P-005 (pot-scope-all-learnings): ideas/frontier/throughput joined the
     // hive-aware set — only views whose tables carry no pot identity stay here.
     for (const v of ["observations", "rubrics", "benchmark", "signals"]) {
       cleanup();
       nuqsState.lview = v;
       render(<LearningTab />);
-      expect(screen.queryByLabelText("pot lens")).toBeNull();
+      expect(badge()).toBeNull();
     }
   });
 
-  it("SHOWS the picker on the P-005 pot-scoped views (ideas / frontier / throughput)", () => {
+  it("shows the badge on the P-005 pot-scoped views (ideas / frontier / throughput)", () => {
     for (const v of ["ideas", "frontier", "throughput"]) {
       cleanup();
       nuqsState.lview = v;
       render(<LearningTab />);
-      expect(screen.getByLabelText("pot lens")).toBeTruthy();
+      expect(badge()).toBeTruthy();
     }
   });
 
-  it("defaults the selection to the first hive and scopes the feed to it (consistent per-Hive lens)", () => {
-    // lhive='' → the resolved hive falls back to the first list entry, and EVERY
-    // hive-aware view scopes to that concrete hive (matches what the Learnings
-    // view already did). The picker value + the threaded arg agree, so the lens
-    // is never silently workspace-wide while showing a specific hive selected.
+  it("scopes the feed to the inherited pot — badge and threaded arg agree", () => {
     render(<LearningTab />);
-    const picker = screen.getByLabelText("pot lens") as HTMLSelectElement;
-    expect(picker.value).toBe("alpha-hive"); // first hive shown as the selection
+    expect(badge()?.textContent).toContain("alpha");
     expect(seenArgs["learning.improvements"]).toEqual({ hive: "alpha-hive" });
   });
 
-  it("defaults to the current harness when it is a selectable pot", () => {
-    nuqsState.slug = "beta-hive";
-    render(<LearningTab />);
-    expect((screen.getByLabelText("pot lens") as HTMLSelectElement).value).toBe(
-      "beta-hive",
-    );
-    expect(seenArgs["learning.improvements"]).toEqual({ hive: "beta-hive" });
-  });
-
-  it("threads the chosen hive into the Improvements query args", () => {
-    nuqsState.lhive = "beta-hive";
+  // The lens is inherited from the top-bar pot selection (useAdvScope, owner
+  // directive 2026-07-26) — the tab-level picker is gone, so the threading
+  // tests drive the SCOPE, exactly as AdvShell resolves it from ?slug=.
+  it("threads the inherited pot into the Improvements query args", () => {
+    advScopeState.slug = "beta-hive";
+    advScopeState.hive = "beta-hive";
     render(<LearningTab />);
     expect(seenArgs["learning.improvements"]).toEqual({ hive: "beta-hive" });
   });
 
-  it("threads the chosen hive into the Gym query args", () => {
+  it("threads the inherited pot into the Gym query args", () => {
     nuqsState.lview = "gym";
-    nuqsState.lhive = "beta-hive";
-    // A hive WITH experiments doesn't trip the workspace-wide client fallback
-    // (which would otherwise fire a second `{}` gym read) — so the recorded args
-    // stay the scoped ones under test.
+    advScopeState.slug = "beta-hive";
+    advScopeState.hive = "beta-hive";
     gymResult = {
       data: [{ proposals: [{ id: "p1", status: "pending" }], autoloops: [] }],
       loading: false,
@@ -1608,11 +1603,20 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     expect(seenArgs["learning.gym"]).toEqual({ hive: "beta-hive" });
   });
 
-  it("threads the chosen hive into the Learnings (learning.hive) query args", () => {
+  it("threads the inherited pot into the Learnings (learning.hive) query args", () => {
     nuqsState.lview = "learnings";
-    nuqsState.lhive = "beta-hive";
+    advScopeState.slug = "beta-hive";
+    advScopeState.hive = "beta-hive";
     render(<LearningTab />);
     expect(seenArgs["learning.hive"]).toEqual({ hive: "beta-hive" });
+  });
+
+  it("All Pots (hive '') scopes every hive-aware query workspace-wide", () => {
+    advScopeState.allMode = true;
+    advScopeState.slug = null;
+    advScopeState.hive = "";
+    render(<LearningTab />);
+    expect(seenArgs["learning.improvements"]).toEqual({});
   });
 
   it("turns retained prose into a headline preview with typed provenance", () => {
@@ -1723,29 +1727,12 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     expect(screen.queryByText("Alpha memory.")).toBeNull();
   });
 
-  it("writes ?lhive when the picker changes", () => {
+  it("gates hive-aware queries until the inherited scope is resolved (WI-5412 first-fetch perf)", () => {
+    // scope not ready (projects list still loading) → the heavy improvements
+    // read must not fire with a half-resolved lens.
+    advScopeState.ready = false;
     render(<LearningTab />);
-    fireEvent.change(screen.getByLabelText("pot lens"), {
-      target: { value: "beta-hive" },
-    });
-    expect(nuqsSetters.lhive).toHaveBeenCalledWith("beta-hive");
-  });
-
-  it("disables the picker (no hives yet) and queries improvements workspace-wide", () => {
-    hiveListResult = {
-      data: [],
-      loading: false,
-      fetching: false,
-      error: null,
-      invalidate: vi.fn(),
-    };
-    render(<LearningTab />);
-    const picker = screen.getByLabelText("pot lens") as HTMLSelectElement;
-    expect(picker.disabled).toBe(true);
-    expect(
-      within(picker).getByRole("option", { name: "no pot yet" }),
-    ).toBeTruthy();
-    expect(seenArgs["learning.improvements"]).toEqual({});
+    expect(seenArgs["learning.improvements"]).toBeUndefined();
   });
 });
 

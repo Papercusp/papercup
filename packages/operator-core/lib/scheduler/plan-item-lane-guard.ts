@@ -167,7 +167,7 @@ function findNowOwnerGateMarker(nowText: string, itemId: string, allItemIds: rea
   return mentionsAnotherItem ? null : findOwnerGateMarker(nowText);
 }
 
-interface PlanItemStamp {
+export interface PlanItemStamp {
   plan_slug: string;
   /** One or more plan-item ids this work-item implements (source_plan_item_ids
    *  can carry several; the payload.plan_item back-pointer always carries one). */
@@ -222,7 +222,10 @@ async function resolvePlanItemStampFromColumns(
  *  doc's "THE TWO LINKAGE MECHANISMS" section) — payload back-pointer first
  *  (cheap, no I/O), falling back to the DB-column linkage. Fails OPEN (null) on
  *  any lookup error, same contract as the caller `planItemLaneBlockReason`. */
-async function resolvePlanItemStamp(
+/** Exported for plan-item-claim-collision.ts (P-006, agent-trap-guards-2026-07-26)
+ *  — the collision check needs the SAME plan-item linkage resolution (either
+ *  mechanism) this guard already does; duplicating it would let the two drift. */
+export async function resolvePlanItemStamp(
   workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
 ): Promise<PlanItemStamp | null> {
   const fromPayload = extractPlanItemStampFromPayload(workItem.payload);

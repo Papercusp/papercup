@@ -1197,7 +1197,7 @@ export function OperatorPanel(): ReactElement | null {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           actionId: `${card.id}:dispatch`,
-          op: 'send_message',
+          op: 'send_directive',
           to: [card.target_harness],
           kind: card.directive_kind ?? 'Directive',
           subject: card.directive_subject,
@@ -1210,17 +1210,17 @@ export function OperatorPanel(): ReactElement | null {
         recordFailure(text || `HTTP ${r.status}`);
         return;
       }
-      // Hard-fail when 200 but no messageId — without it we'd lose
+      // Hard-fail when 200 but no msg_id — without it we'd lose
       // traceability for any future per-card lookups.
       let messageId: string | undefined;
       try {
         const data = await r.clone().json();
-        messageId = data?.result?.inserted?.[0]?.messageId;
+        messageId = data?.result?.msg_id;
       } catch {
         /* response wasn't JSON */
       }
       if (!messageId) {
-        recordFailure('dispatch returned 200 but no message_id');
+        recordFailure('dispatch returned 200 but no msg_id');
         return;
       }
       recordSuccess({ messageId });
