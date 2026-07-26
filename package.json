@@ -184,6 +184,8 @@
     "lint:rubric-method-ref-parity": "node scripts/check-rubric-method-ref-parity.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
+    "lint:explicit-presence": "node scripts/check-explicit-presence.mjs",
+    "lint:explicit-presence:all": "node scripts/check-explicit-presence.mjs --all",
     "lint:env-feature-gates": "node scripts/check-env-feature-gates.mjs",
     "lint:env-feature-gates:strict": "node scripts/check-env-feature-gates.mjs --strict",
     "lint:scope-defaults": "node scripts/check-scope-defaults.mjs",

@@ -417,6 +417,22 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(drift[0].source).toBe('migration-drift');
     expect(drift[0].severity).toBe('critical');
     expect(drift[0].body).toContain('205-foo.sql');
+    // sqlDir is optional — a check that omits it must not emit a dangling "Scanned sql dir:".
+    expect(drift[0].body).not.toContain('Scanned sql dir');
+  });
+
+  it('migration-drift: names the SCANNED sql dir, so staging-ahead-of-release drift is distinguishable', async () => {
+    // resolveSqlDir() is cwd-relative but the org DB is shared, so the staging operator and
+    // the green operator disagree about the SAME database. Without the dir the filed bug is
+    // ambiguous between real drift and the normal not-yet-deployed window (EI-18700750726210390).
+    const [signal] = await collectMigrationDriftSignals(async () => ({
+      missing: ['670-add-facts-confidence.sql'],
+      sqlDir: '/home/dev/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql',
+    }));
+    expect(signal.body).toContain('670-add-facts-confidence.sql');
+    expect(signal.body).toContain(
+      'Scanned sql dir: /home/dev/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql',
+    );
   });
 
   it('migration-drift: a thrown check degrades to no signal (never aborts the tick)', async () => {

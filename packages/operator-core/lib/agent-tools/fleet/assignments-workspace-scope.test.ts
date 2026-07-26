@@ -68,7 +68,11 @@ vi.mock('../coordination/inbox-read-freshness', () => ({
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatuses: vi.fn(async () => new Map()) }));
 
 let capturedWorkspaceId: unknown;
-vi.mock('../../fleet/assignments', () => ({
+// PARTIAL mock (importOriginal) — see WI-6035. A closed factory silently reds
+// this file whenever fleet/assignments.ts gains an export it does not list; the
+// spread makes any un-stubbed export fall through to the real implementation.
+vi.mock('../../fleet/assignments', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/assignments')>()),
   listFleetAssignments: vi.fn(async (opts: { workspaceId?: unknown }) => {
     capturedWorkspaceId = opts.workspaceId;
     // One live claim row for the caller itself — mirrors the incident: the

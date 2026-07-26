@@ -1363,11 +1363,19 @@ export async function serviceDownCollectorResult(opts: {
  * (injectable for tests).
  */
 export async function collectMigrationDriftSignals(
-  check: () => Promise<{ missing: string[] }> = checkMigrationDrift,
+  check: () => Promise<{ missing: string[]; sqlDir?: string | null }> = checkMigrationDrift,
 ): Promise<WatchdogSignal[]> {
-  let drift: { missing: string[] };
+  let drift: { missing: string[]; sqlDir?: string | null };
   try { drift = await check(); } catch { return []; }
   if (!drift.missing?.length) return [];
+  // `resolveSqlDir()` is cwd-RELATIVE while the org DB is SHARED, so this answer is
+  // per-tree: the staging operator (cwd = the staging checkout) and the green operator
+  // (cwd = papercup-release) legitimately disagree, and a migration that has landed on
+  // staging but not yet deployed reads as drift to the former only. Naming the scanned
+  // dir is what makes the resulting bug actionable — without it the reader cannot tell a
+  // genuine un-applied migration from the normal staging-ahead-of-release window, and
+  // has to re-derive the tree by hand (EI-18700750726210390).
+  const scanned = drift.sqlDir ? `\n\nScanned sql dir: ${drift.sqlDir}` : '';
   return [{
     source: 'migration-drift',
     key: 'migration-drift',
@@ -1375,7 +1383,7 @@ export async function collectMigrationDriftSignals(
     body:
       `Watchdog signal (migration-drift): ${drift.missing.length} migration file(s) exist on disk but are NOT ` +
       `applied to the live database — runtime code expecting those columns/tables will fail until the operator ` +
-      `restarts (boot-apply).\n\nUnapplied: ${drift.missing.slice(0, 20).join(', ')}`,
+      `restarts (boot-apply).\n\nUnapplied: ${drift.missing.slice(0, 20).join(', ')}${scanned}`,
     severity: 'critical',
     kind: 'bug',
     paths: ['libs/papercusp/libs/db/sql'],

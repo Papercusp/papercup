@@ -66,7 +66,11 @@ vi.mock('../plans/source', () => ({
     planSlugsForHarnessMock(workspaceId, harnessSlug),
 }));
 
-vi.mock('../../fleet/assignments', () => ({
+// PARTIAL mock (importOriginal) — see WI-6035. A closed factory silently reds
+// this file whenever fleet/assignments.ts gains an export it does not list; the
+// spread makes any un-stubbed export fall through to the real implementation.
+vi.mock('../../fleet/assignments', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/assignments')>()),
   listFleetAssignments: vi.fn(async () => []),
   groupByAgent: vi.fn(() => []),
   lastToolCallAtByOwner: vi.fn(async () => new Map()),

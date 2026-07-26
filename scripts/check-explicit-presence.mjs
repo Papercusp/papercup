@@ -20,12 +20,17 @@
  *
  * SCOPE (a heuristic, like check-generic-first.mjs — advisory, not a type checker):
  * flag a `??`/`||` defaulted-to-a-zero-value read (`?? false`, `?? 0`, `?? ''`, `?? []`,
- * `?? {}` and the `||` spellings) that appears in a file which ALSO shows a recognizable
- * PARSE/DESERIALIZE-BOUNDARY marker — JSON.parse(...), a Postgres/pg row read, or an
- * IPC/event-payload handler. Both signals are required (mirrors check-generic-first's
- * "structural decoupling alone is too noisy" lesson): a bare `x ?? false` is extremely
- * common and mostly fine — it's only suspicious paired with a boundary where the RHS
- * could be genuinely absent rather than deliberately falsy/zero.
+ * `?? {}` and the `||` spellings) whose LHS is LOCALLY traceable to a parse/deserialize
+ * boundary: a direct `JSON.parse(...).field` chain; a member access on a variable this
+ * same file visibly assigned from `JSON.parse(...)` or a `sql`-tagged query within the
+ * last ~40 lines; or a `payload.field` / `event.data.field` read in a file with an IPC/
+ * `.on('message')` handler. LOCALITY is the precision filter (mirrors check-generic-
+ * first's "structural decoupling alone is too noisy" lesson) — a whole-FILE gate
+ * ("this file mentions JSON.parse somewhere") was tried first and measured 1264 hits on
+ * this tree, mostly unrelated `opts.foo ?? 0` reads hundreds of lines from the nearest
+ * JSON.parse call. A bare `x.foo ?? false` for an untracked `x` is extremely common and
+ * mostly fine — it's only suspicious when the read is actually reachable to a boundary
+ * where the RHS could be genuinely absent rather than deliberately falsy/zero.
  *
  * KNOWN LIMITATION (v1): only the `??`/`||` operator form is checked. A destructuring
  * default (`const { foo = false } = JSON.parse(x)`) is the same anti-pattern but isn't
@@ -57,56 +62,117 @@ const SCAN_ROOTS = ['packages/operator-core/lib/', 'apps/operator/lib/', 'libs/p
  */
 const ALLOW = new Set([]);
 
-/** File-level boundary signals — a file must show at least one to be scanned for the
- *  risky line pattern at all (the precision filter; see header). */
-const BOUNDARY_FILE_RE = new RegExp(
-  [
-    'JSON\\.parse\\(',                                    // parsed wire/log/payload text
-    "from\\s+['\"](?:postgres|pg|@electric-sql/pglite)['\"]", // a DB row read
-    "ipcRenderer\\.on\\(|ipcMain\\.on\\(",                // Electron/Tauri IPC payload
-    "\\.on\\(\\s*['\"]message['\"]",                      // generic event/message payload
-    'JSON\\.parse',                                       // (redundant with above; kept for readability of match groups)
-  ].join('|'),
+// v1 (whole-file "does this file mention JSON.parse anywhere" gate) was tried first and
+// measured 1264 hits on this tree — cry-wolf, the exact failure check-generic-first.mjs's
+// own header warns about ("structural decoupling alone is far too noisy... require BOTH").
+// A 1000-line file that happens to JSON.parse a config once does not make every unrelated
+// `opts.foo ?? 0` on line 900 a boundary read. Precision comes from LOCALITY instead of
+// file-wide presence: the risky access must be either a DIRECT chain off JSON.parse(...),
+// or a member access on a variable this same file visibly assigned FROM JSON.parse(...) /
+// a `sql` tagged-template result within a nearby lookback window (still in the same
+// function-ish vicinity, not merely "somewhere earlier in a 1000-line file).
+
+const ZERO = "(false|0|''|\"\"|\\[\\]|\\{\\})";
+const OP = '(\\?\\?|\\|\\|)';
+/** How many preceding lines a tracked-variable assignment stays "in scope" for — generous
+ *  enough to span a function body, narrow enough not to bleed across unrelated code. */
+const LOOKBACK_LINES = 40;
+
+/** `const/let/var x = JSON.parse(...)` — tracks x as a parsed-boundary variable. */
+const ASSIGN_FROM_JSON_PARSE_RE = /\b(?:const|let|var)\s+(\w+)\s*=\s*(?:await\s+)?JSON\.parse\(/;
+/** `const/let/var x = [await] sql<...>\`...\`` / `sql\`...\`` — this codebase's postgres.js
+ *  tagged-template convention (see agent-facts/store.ts) — tracks x as a DB-row variable. */
+const ASSIGN_FROM_SQL_ROW_RE = /\b(?:const|let|var)\s+(\w+)\s*=\s*(?:await\s+)?sql\s*[<`]/;
+
+/** Direct chain: `JSON.parse(<balanced-ish args>).field ?? zero` on one line — the exact
+ *  udxRelayed/bytesReceived incident shape. Handles one level of nested parens in the args
+ *  (covers the common `JSON.parse(x.toString())` shape) without a full parser. */
+const DIRECT_JSON_PARSE_CHAIN_RE = new RegExp(
+  `JSON\\.parse\\((?:[^()]|\\([^()]*\\))*\\)\\s*\\.\\s*\\w+\\s*${OP}\\s*${ZERO}`,
 );
 
-/**
- * The risky LINE pattern: a member/property access immediately defaulted via `??`/`||`
- * to a zero value. Captures the zero-value literal for the reported reason.
- * Deliberately requires a `.identifier` (or `['key']`) on the LHS — a bare local
- * variable defaulted (`x ?? false`) is far too common/generic to be a boundary read.
- */
-const RISKY_DEFAULT_RE = /(?:\.\w+|\[['"][^'"]+['"]\])\s*(\?\?|\|\|)\s*(false|0|''|""|\[\]|\{\})(?!\s*[)\]}]?\s*=)/;
+/** A member access on a bare identifier (optionally `name[0]`/`name['k']`), defaulted via
+ *  `??`/`||` to a zero value — checked against the tracked-variable maps below, never used
+ *  standalone (a bare `x.foo ?? false` for an UNtracked `x` is far too generic to flag). */
+const TRACKED_MEMBER_RISKY_RE = new RegExp(
+  `\\b(\\w+)(?:\\[(?:\\d+|['"][^'"]+['"])\\])?\\s*\\.\\s*\\w+\\s*${OP}\\s*${ZERO}`,
+);
 
-/** Skip an obvious non-boundary use even inside a boundary file: a `??`/`||` default
- *  whose LHS clearly isn't reading a possibly-absent field (a function call result
- *  guard, a boolean flag negation, etc.) is out of scope for a line-regex lint — kept
- *  narrow deliberately (false negatives here are fine; false positives are the cost
- *  that erodes trust in an advisory lint). */
+/** IPC/event-payload marker — kept file-level (rarer + lower-noise than JSON.parse/sql, so
+ *  the whole-file gate the other two boundaries dropped is still an acceptable signal here). */
+const IPC_MARKER_RE = /ipcRenderer\.on\(|ipcMain\.on\(|\.on\(\s*['"]message['"]/;
+/** `payload.field ?? zero` / `event.data.field ?? zero` — the two conventional payload names. */
+const IPC_PAYLOAD_RISKY_RE = new RegExp(`\\b(?:payload|event\\.data)\\s*\\.\\s*\\w+\\s*${OP}\\s*${ZERO}`);
+
 function lineIsExcluded(line) {
   return /^\s*\/\//.test(line) || /^\s*\*/.test(line); // comments
 }
 
 /**
  * Analyze one file's text. Returns an array of { line, snippet, reason } candidates.
- * PURE — no IO, unit-tested inline via selfTest().
+ * Single forward pass, tracking parsed/row variables as it goes (a variable's tracked
+ * scope is the LOOKBACK_LINES window following its assignment — reassignment to something
+ * else simply overwrites the tracked line, which is what we want). PURE — no IO,
+ * unit-tested inline via selfTest().
  */
 export function analyzeForExplicitPresence({ path, text }) {
   if (/\.(test|integration\.test|spec)\.ts$/.test(path)) return [];
   if (path.endsWith('.d.ts')) return [];
-  if (!BOUNDARY_FILE_RE.test(text)) return [];
 
   const lines = text.split('\n');
+  const hasIpcMarker = IPC_MARKER_RE.test(text);
+  const parsedVars = new Map(); // name -> assignment line index
+  const sqlRowVars = new Map();
   const hits = [];
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    let m = ASSIGN_FROM_JSON_PARSE_RE.exec(line);
+    if (m) parsedVars.set(m[1], i);
+    m = ASSIGN_FROM_SQL_ROW_RE.exec(line);
+    if (m) sqlRowVars.set(m[1], i);
+
     if (lineIsExcluded(line)) continue;
-    const m = RISKY_DEFAULT_RE.exec(line);
-    if (!m) continue;
-    hits.push({
-      line: i + 1,
-      snippet: line.trim().slice(0, 160),
-      reason: `defaults a field read to the zero value '${m[2]}' via '${m[1]}' in a file that also shows a parse/deserialize-boundary marker (JSON.parse / DB row / IPC payload) — absence and a genuine zero/false/empty measurement read identically here`,
-    });
+
+    if (DIRECT_JSON_PARSE_CHAIN_RE.test(line)) {
+      hits.push({
+        line: i + 1,
+        snippet: line.trim().slice(0, 160),
+        reason: 'defaults a field read directly off JSON.parse(...) to a zero value — the udxRelayed/bytesReceived incident shape (WI-5977): absence and a genuine zero/false/empty measurement read identically here.',
+      });
+      continue;
+    }
+
+    m = TRACKED_MEMBER_RISKY_RE.exec(line);
+    if (m) {
+      const varName = m[1];
+      const parsedAt = parsedVars.get(varName);
+      const sqlAt = sqlRowVars.get(varName);
+      if (parsedAt !== undefined && i - parsedAt <= LOOKBACK_LINES) {
+        hits.push({
+          line: i + 1,
+          snippet: line.trim().slice(0, 160),
+          reason: `defaults a field read on \`${varName}\` (assigned from JSON.parse at line ${parsedAt + 1}) to a zero value — absence and a genuine zero/false/empty measurement read identically here.`,
+        });
+        continue;
+      }
+      if (sqlAt !== undefined && i - sqlAt <= LOOKBACK_LINES) {
+        hits.push({
+          line: i + 1,
+          snippet: line.trim().slice(0, 160),
+          reason: `defaults a field read on \`${varName}\` (a DB row, assigned from a sql-tagged query at line ${sqlAt + 1}) to a zero value — a NULL column and a genuine zero/false/empty value read identically here.`,
+        });
+        continue;
+      }
+    }
+
+    if (hasIpcMarker && IPC_PAYLOAD_RISKY_RE.test(line)) {
+      hits.push({
+        line: i + 1,
+        snippet: line.trim().slice(0, 160),
+        reason: 'defaults an IPC/event payload field read to a zero value — a field the sender never set and a genuine zero/false/empty value read identically here.',
+      });
+    }
   }
   return hits;
 }
@@ -128,10 +194,22 @@ function selfTest() {
       text: "const bytesReceived = JSON.parse(logLine).bytesReceived ?? 0;\n",
     },
     {
-      name: 'DB row read (postgres import) + ?? false → flagged',
+      name: 'DB row (sql-tagged query result) + ?? false → flagged',
       expect: 1,
       path: 'packages/operator-core/lib/x/c.ts',
-      text: "import postgres from 'postgres';\nconst active = row.active ?? false;\n",
+      text: "const rows = await sql`select active from t`;\nconst active = rows[0].active ?? false;\n",
+    },
+    {
+      name: 'DB row var reused many lines later, still within the lookback window → flagged',
+      expect: 1,
+      path: 'packages/operator-core/lib/x/c2.ts',
+      text: "const row = await sql`select status from t`;\n" + '// pad\n'.repeat(10) + 'const status = row.status ?? false;\n',
+    },
+    {
+      name: 'DB row var reused far outside the lookback window → not flagged (unrelated to a boundary read that far away)',
+      expect: 0,
+      path: 'packages/operator-core/lib/x/c3.ts',
+      text: "const row = await sql`select status from t`;\n" + '// pad\n'.repeat(60) + 'const status = row.status ?? false;\n',
     },
     {
       name: 'IPC payload handler + || 0 → flagged',

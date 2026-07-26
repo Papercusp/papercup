@@ -69,7 +69,15 @@ vi.mock('../../plan-item-coverage', () => ({
 // type or hit a rest parameter). A rest param keeps the mock body identical
 // while accepting the wrapper's forwarded args.
 const listFleetAssignmentsMock = vi.fn(async (..._args: unknown[]) => []);
-vi.mock('../../fleet/assignments', () => ({
+// PARTIAL mock (importOriginal), not a closed factory: anything this file does
+// not deliberately stub falls through to the REAL module. A closed factory has
+// to be hand-edited every time fleet/assignments.ts gains an export, and when it
+// isn't, unrelated tests red with "No <export> is defined on the mock" — which is
+// exactly how reconcileOrphanedWithVerdicts red-pinned this file and its two
+// siblings without anyone touching them (WI-6035). The explicit stubs below still
+// override precisely what they name, so the behaviour under test is unchanged.
+vi.mock('../../fleet/assignments', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/assignments')>()),
   listFleetAssignments: (...a: unknown[]) => listFleetAssignmentsMock(...a),
   groupByAgent: vi.fn(() => []),
   lastToolCallAtByOwner: vi.fn(async () => new Map()),
