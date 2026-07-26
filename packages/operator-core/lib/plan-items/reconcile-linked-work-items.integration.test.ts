@@ -83,9 +83,13 @@ const h3 = vi.hoisted(() => ({
 }));
 vi.mock('../agent-tools/plans/source', () => ({ getPlanRow: h3.getPlanRow }));
 
-const { reconcileLinkedWorkItemsForPlanItem, reconcileOrphanedPlanItemWorkItems, planLaneBlockerRef } = await import(
-  './reconcile-linked-work-items'
-);
+const {
+  reconcileLinkedWorkItemsForPlanItem,
+  reconcileOrphanedPlanItemWorkItems,
+  resyncPlanItemLaneNow,
+  planLaneBlockerRef,
+} = await import('./reconcile-linked-work-items');
+const { updateExternalBlockerHistory } = await import('../external-blockers');
 
 const WS = DEFAULT_COORD_WORKSPACE;
 let rootSql: postgres.Sql;

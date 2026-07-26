@@ -19,10 +19,16 @@ import {
   resolveComposedParkedOn,
   selectLeaderBriefMembers,
   topExcludedFloors,
+  type ComposedParkEntry,
   type DecoratedAgent,
 } from './leader-brief';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+/** decorateComposedParkedOn mutates its input in place, adding an optional
+ *  `parkedOnResolved` — test fixtures declare it explicitly so the mutated
+ *  field is visible to tsc after the call, not just at runtime. */
+type ComposedTestAgent = { agentId: string; parkedOn: string[]; parkedOnResolved?: Array<string | ComposedParkEntry> };
 
 function baseAgent(overrides: Partial<DecoratedAgent> = {}): DecoratedAgent {
   return {
@@ -913,7 +919,7 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
   it('resolves parkedOnResolved for an agent whose parkedOn holds a composed-root sentinel', async () => {
     const listActiveComposedRoots = vi.fn(async () => [node()]);
     const loadTreeLeaves = vi.fn(async () => [leaf('work-item:status:WI-6088', 1), leaf('work-item:status:WI-6095', 2)]);
-    const agents = [
+    const agents: ComposedTestAgent[] = [
       { agentId: 'su-1', parkedOn: ['work-item:status:WI-6088', 'work-item:status:WI-6095', 'composed-root:96'] },
     ];
     await decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: loadTreeLeaves as never });
@@ -935,7 +941,7 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
 
   it('skips the read entirely for an agent with no composed sentinel (no extra cost on the common case)', async () => {
     const listActiveComposedRoots = vi.fn(async () => [node()]);
-    const agents = [{ agentId: 'su-1', parkedOn: ['lock:grant:t1'] }, { agentId: 'su-2', parkedOn: [] }];
+    const agents: ComposedTestAgent[] = [{ agentId: 'su-1', parkedOn: ['lock:grant:t1'] }, { agentId: 'su-2', parkedOn: [] }];
     await decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: vi.fn() as never });
     expect(listActiveComposedRoots).not.toHaveBeenCalled();
     expect(agents[0].parkedOnResolved).toBeUndefined();
@@ -946,7 +952,7 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
     const listActiveComposedRoots = vi.fn(async () => {
       throw new Error('pg down');
     });
-    const agents = [{ agentId: 'su-1', parkedOn: ['composed-root:96'] }];
+    const agents: ComposedTestAgent[] = [{ agentId: 'su-1', parkedOn: ['composed-root:96'] }];
     await expect(
       decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: vi.fn() as never }),
     ).resolves.toBeDefined();

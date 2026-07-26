@@ -41,6 +41,26 @@ export const ALL_FLEETS = ' all';
 /** Grouping key for sessions belonging to no fleet. Same rule: one definition. */
 export const SOLO_FLEET_KEY = ' solo';
 
+/**
+ * Sentinel for the "All plans" row of the plan filter (P-004) — the plan-axis
+ * twin of ALL_FLEETS, and same rule: ONE definition, never re-spelled inline
+ * (see ALL_FLEETS' docblock for the NUL-byte drift that rule is paying for).
+ * A leading space keeps it out of slug space.
+ */
+export const ALL_PLANS = ' all-plans';
+
+/**
+ * The plan filter's token for "sessions bound to no plan at all".
+ *
+ * Unlike the fleet strip — which carries SOLO_FLEET_KEY as its grouping key and
+ * then spells `'solo'` again as the URL token in HudView — this is ONE constant
+ * doing both jobs: it is the Combobox option value AND the value that lands in
+ * the `hudplan` query param. Two spellings of one concept is exactly what
+ * ALL_FLEETS' comment is a monument to; a plain token needs no %20 in the URL,
+ * so there is no reason to have a second form.
+ */
+export const NO_PLAN_TOKEN = 'none';
+
 /** One standing mode as the roster delivers it (adv-roster's AdvRosterMode). */
 export interface HudMode {
   mode: string;
@@ -254,9 +274,36 @@ export interface HudFleetRollup {
   warning: string | null;
 }
 
+/**
+ * One row of the plan filter (P-004) — the plan-axis twin of HudFleetRollup.
+ *
+ * Deliberately the same SHAPE as a fleet rollup rather than a bare
+ * `{ slug, count }`: the plan filter "works like the existing fleet filter"
+ * (P-004), and the per-column breakdown is what lets a plan row carry the same
+ * one-line health note a fleet chip does — "3 needs you, 1 stalled" reads the
+ * same whether the group is a fleet or a plan.
+ */
+export interface HudPlanRollup {
+  /** `null` = sessions bound to no plan. Rendered from NO_PLAN_TOKEN. */
+  planSlug: string | null;
+  label: string;
+  total: number;
+  byColumn: Record<HudColumnId, number>;
+  /** Present only when something needs a human — an absent warning is itself
+   *  information, exactly as on HudFleetRollup. */
+  warning: string | null;
+}
+
 export interface HudBoard {
   columns: Array<{ id: HudColumnId; label: string; empty: string; sessions: HudSession[] }>;
   fleets: HudFleetRollup[];
+  /**
+   * The plan filter's option list, derived from the sessions the FLEET filter
+   * left in view but BEFORE the plan filter narrows them (P-004: "driven by the
+   * fleets currently in view"). See buildHudBoard for why that ordering is
+   * load-bearing rather than incidental.
+   */
+  plans: HudPlanRollup[];
   counts: Record<HudColumnId, number>;
   total: number;
   /** Needs-human asks with no owning agent — see `unattributedAsks`. Kept
@@ -295,6 +342,10 @@ export interface HudBuildOptions {
   /** Show only these fleets (empty/omitted = all). `null` selects the no-fleet
    *  (solo) group, so it can be filtered like any other. */
   fleets?: Array<string | null>;
+  /** Show only sessions on these plans (empty/omitted = all). `null` selects
+   *  the no-plan group, so it filters like any other — same contract as
+   *  `fleets`, on purpose (P-004). Applied AFTER `fleets`. */
+  plans?: Array<string | null>;
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -670,6 +721,50 @@ export function deriveFleetRollups(sessions: HudSession[]): HudFleetRollup[] {
   });
 }
 
+/** The plan filter's rows + their health notes — the plan-axis twin of
+ *  `deriveFleetRollups`, down to the ordering rule (the group needing the most
+ *  attention first, the "no plan" group last). Kept as its own function rather
+ *  than a generic groupBy over a key selector: the two differ in their label
+ *  and warning rules (a fleet with no leader is broken; a plan with no leader
+ *  is normal), and collapsing them would mean a config object per call site to
+ *  express three lines of difference. */
+export function derivePlanRollups(sessions: HudSession[]): HudPlanRollup[] {
+  const groups = new Map<string, HudPlanRollup>();
+  for (const s of sessions) {
+    const key = s.planSlug ?? NO_PLAN_TOKEN;
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        planSlug: s.planSlug,
+        label: s.planSlug ?? 'no plan',
+        total: 0,
+        byColumn: { 'needs-you': 0, working: 0, blocked: 0, stalled: 0, parked: 0 },
+        warning: null,
+      };
+      groups.set(key, g);
+    }
+    g.total += 1;
+    g.byColumn[s.column] += 1;
+  }
+  for (const g of groups.values()) {
+    const parts: string[] = [];
+    if (g.byColumn['needs-you']) parts.push(`${g.byColumn['needs-you']} needs you`);
+    if (g.byColumn.blocked) parts.push(`${g.byColumn.blocked} blocked`);
+    if (g.byColumn.stalled) parts.push(`${g.byColumn.stalled} stalled`);
+    // No "no leader" rule here: a plan does not have a leader, and inventing
+    // one would be the chrome-that-lies failure P-009's docblock warns about.
+    g.warning = parts.length ? parts.join(', ') : null;
+  }
+  return [...groups.values()].sort((a, b) => {
+    // The unbound group last; otherwise the plan needing the most attention first.
+    if ((a.planSlug == null) !== (b.planSlug == null)) return a.planSlug == null ? 1 : -1;
+    const aw = a.byColumn['needs-you'] + a.byColumn.blocked + a.byColumn.stalled;
+    const bw = b.byColumn['needs-you'] + b.byColumn.blocked + b.byColumn.stalled;
+    if (aw !== bw) return bw - aw;
+    return a.label.localeCompare(b.label);
+  });
+}
+
 /** Build the whole board from a roster snapshot + the attention feed. */
 export function buildHudBoard(
   roster: HudRosterEntry[],
@@ -686,7 +781,28 @@ export function buildHudBoard(
     entries = entries.filter((e) => want.has(e.fleetSlug));
   }
 
-  const sessions = entries.map((e) => toHudSession(e, byOwner.get(e.ownerId), { nowMs, thresholds }));
+  const inView = entries.map((e) => toHudSession(e, byOwner.get(e.ownerId), { nowMs, thresholds }));
+
+  /* The plan filter's options are derived HERE — after the fleet filter, before
+     the plan filter — and that ordering is the whole of P-004's "driven by the
+     fleets currently in view":
+
+       - AFTER `fleets`, so picking a fleet narrows the plan list to the plans
+         that fleet is actually on. That is the feature.
+       - BEFORE the plan filter, so the picker does not eat its own options. A
+         single-select control whose list collapses to the one row already
+         selected can only be changed by first clearing it — two steps to do
+         one thing. (The fleet strip derives its chips from the post-filter set
+         and has exactly that wrinkle; it gets away with it because its "all
+         fleets" chip is always visible on screen. A closed combobox has no
+         such affordance, so the plan axis does not inherit the wrinkle.) */
+  const plans = derivePlanRollups(inView);
+
+  let sessions = inView;
+  if (options.plans && options.plans.length > 0) {
+    const wantPlans = new Set(options.plans);
+    sessions = inView.filter((s) => wantPlans.has(s.planSlug));
+  }
 
   const counts: Record<HudColumnId, number> = {
     'needs-you': 0, working: 0, blocked: 0, stalled: 0, parked: 0,
@@ -705,6 +821,7 @@ export function buildHudBoard(
   return {
     columns,
     fleets: deriveFleetRollups(sessions),
+    plans,
     counts,
     total: sessions.length,
     unattributed: unattributedAsks(asks),

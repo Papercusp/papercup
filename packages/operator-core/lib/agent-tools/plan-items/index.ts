@@ -28,6 +28,11 @@ import '../../plan-items/reflect-rules';
 // Reconcile rule (EI-5925): the reverse mirror — plan-item → done reconciles
 // any OTHER linked work-item still non-terminal. Importing registers it.
 import '../../plan-items/reconcile-rule';
+// Lane-sync rule (EI-18732669095544832): plans:set-item-blocked-by changing a
+// blocked-by edge re-syncs the item's effective lane onto linked work-items
+// RIGHT NOW instead of waiting up to 15 min for the periodic sweep. Importing
+// registers it.
+import '../../plan-items/lane-sync-rule';
 import { installSwarmClaimAuthority } from '../../plan-items/claim-authority-swarm';
 import { registerPlanItemClaimAuthorityOps } from '../../plan-items/plan-item-claim-authority-ops';
 

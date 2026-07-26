@@ -522,6 +522,47 @@ function classifyPlanLane(
   return 'actionable';
 }
 
+/**
+ * EI-18732669095544832: resync ONE plan item's lane status onto its linked
+ * work-items RIGHT NOW — the inline counterpart to the periodic orphan sweep's
+ * non-terminal leg above (EI-14699). Before this, the ONLY thing that ever ran
+ * `syncLinkedWorkItemsToPlanLane` for a non-terminal item was the 15-minute
+ * `plan-item-orphan-reconcile` cron sweep — so a tool call that changes an item's
+ * EFFECTIVE lane WITHOUT going through `plans:set-status` itself (chiefly
+ * `plans:set-item-blocked-by` adding/clearing a `blocked-by` edge) reported
+ * `ok:true` while the linked work-item silently stayed parked/unparked for up to
+ * 15 minutes — indistinguishable from a no-op to the caller (`plan-item-lane-
+ * sync:blocked-by-changed` in `lane-sync-rule.ts` fires this off exactly that
+ * tool, the same reaction-rule pattern `reconcile-rule.ts` uses for the terminal
+ * leg — see that file's header for why this is a rule, not a hardcoded call
+ * inside `plans/set-item-blocked-by.ts`).
+ *
+ * Re-reads the plan row FRESH (never trusts a caller-supplied snapshot) and
+ * classifies the item's CURRENT effective lane the same blocked-by-graph-aware
+ * way the periodic sweep does — so this is correct even when several edges
+ * changed since the triggering call. Fail-closed + never throws: a plan/item
+ * that can't be resolved, or a lane-classify hiccup, is a silent no-op — the
+ * periodic sweep remains the backstop for anything this misses.
+ */
+export async function resyncPlanItemLaneNow(
+  planSlug: string,
+  itemId: string,
+  harnessSlug?: string | null,
+): Promise<PlanLaneSyncResult | null> {
+  try {
+    const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined }).catch(() => null);
+    if (!row) return null;
+    const laneStatus = classifyPlanLane(row, itemId);
+    if (!laneStatus) return null;
+    return await syncLinkedWorkItemsToPlanLane(
+      { planSlug, itemId, harnessSlug: harnessSlug ?? null },
+      laneStatus,
+    );
+  } catch {
+    return null;
+  }
+}
+
 interface OrphanCandidate {
   planSlug: string;
   itemId: string;

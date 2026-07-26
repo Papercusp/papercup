@@ -22,6 +22,7 @@ import { getOperatorCache } from "../cache/instance";
 import { coalescedInvalidateByTags } from "../cache/debounced-invalidate";
 import {
   reconcileLinkedWorkItemsForCompletedPlanItems,
+  resyncPlanItemLaneNow,
   type CompletedPlanItem,
 } from "../plan-items/reconcile-linked-work-items";
 
@@ -33,10 +34,17 @@ export const CACHE_BUMP_TAGS_ACTION = "cache.bumpTags";
  *  still pointing at them (the reverse mirror of reflect-rules.ts). */
 export const PLAN_ITEM_RECONCILE_ACTION = "plan-item.reconcileLinkedWorkItems";
 
+/** EI-18732669095544832: the action name plan-items/lane-sync-rule.ts fires when a
+ *  plan item's `blocked-by:` edge changes (`plans:set-item-blocked-by`), to resync
+ *  that item's CURRENT effective lane (blocked/needs-human/actionable) onto its
+ *  linked work-items RIGHT NOW, instead of waiting for the 15-min periodic sweep. */
+export const PLAN_ITEM_LANE_RESYNC_ACTION = "plan-item.resyncLane";
+
 /** The closed set of recognised built-in (non-tool) reaction action names. */
 export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([
   CACHE_BUMP_TAGS_ACTION,
   PLAN_ITEM_RECONCILE_ACTION,
+  PLAN_ITEM_LANE_RESYNC_ACTION,
 ]);
 
 /** Whether `fire` names a built-in in-process action (vs a projected tool). */
@@ -82,6 +90,33 @@ function toCompletedPlanItems(value: unknown): CompletedPlanItem[] {
   return out;
 }
 
+/** One { planSlug, itemId, harnessSlug } target for `plan-item.resyncLane`. */
+interface LaneResyncItem {
+  planSlug: string;
+  itemId: string;
+  harnessSlug: string | null;
+}
+
+/** Coerce an args value to a clean LaneResyncItem[] (drop malformed entries). */
+function toLaneResyncItems(value: unknown): LaneResyncItem[] {
+  if (!Array.isArray(value)) return [];
+  const out: LaneResyncItem[] = [];
+  for (const v of value) {
+    if (
+      v &&
+      typeof v === "object" &&
+      typeof (v as { planSlug?: unknown }).planSlug === "string" &&
+      typeof (v as { itemId?: unknown }).itemId === "string"
+    ) {
+      const harnessSlug = typeof (v as { harnessSlug?: unknown }).harnessSlug === "string"
+        ? (v as { harnessSlug: string }).harnessSlug
+        : null;
+      out.push({ planSlug: (v as { planSlug: string }).planSlug, itemId: (v as { itemId: string }).itemId, harnessSlug });
+    }
+  }
+  return out;
+}
+
 /**
  * Run a built-in reaction action in-process. Never throws — returns
  * `{ ok:false, error }` on a bad/unknown action so the engine can log it.
@@ -101,6 +136,14 @@ function toCompletedPlanItems(value: unknown): CompletedPlanItem[] {
  * work-item still linked to it (no independent in-flight progress). See
  * plan-items/reconcile-linked-work-items.ts. Always `{ok:true}` (the sweep is
  * internally fail-safe per item) unless the args are entirely malformed.
+ *
+ * `plan-item.resyncLane { items: {planSlug,itemId,harnessSlug}[] }`
+ * (EI-18732669095544832) — for each item, re-classify its CURRENT effective
+ * lane (blocked-by-graph aware) and sync it onto every linked work-item RIGHT
+ * NOW, instead of waiting for the 15-min `plan-item-orphan-reconcile` sweep.
+ * See plan-items/reconcile-linked-work-items.ts's `resyncPlanItemLaneNow`.
+ * Always `{ok:true}` (fail-safe per item) unless the args are entirely
+ * malformed.
  */
 export async function fireBuiltinReactionAction(
   fire: string,
@@ -129,6 +172,16 @@ export async function fireBuiltinReactionAction(
       const items = toCompletedPlanItems(args.completedItems);
       if (items.length === 0) return { ok: true };
       await reconcileLinkedWorkItemsForCompletedPlanItems(items);
+      return { ok: true };
+    }
+    case PLAN_ITEM_LANE_RESYNC_ACTION: {
+      const items = toLaneResyncItems(args.items);
+      if (items.length === 0) return { ok: true };
+      // Per-item best-effort — resyncPlanItemLaneNow itself never throws, but keep
+      // the loop resilient to a stray rejection either way.
+      for (const it of items) {
+        await resyncPlanItemLaneNow(it.planSlug, it.itemId, it.harnessSlug).catch(() => null);
+      }
       return { ok: true };
     }
     default:

@@ -16,11 +16,14 @@
  * nothing more.
  */
 
-import { memo, type ReactNode } from 'react';
+import { memo, useMemo, type ReactNode } from 'react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { Combobox, type ComboboxOption } from '@/app/harness/Combobox';
 import FleetRoleGlyph from '@/app/_components/FleetRoleGlyph';
 import {
   ALL_FLEETS,
+  ALL_PLANS,
+  NO_PLAN_TOKEN,
   SOLO_FLEET_KEY,
   formatAge,
   type HudBoard as HudBoardData,
@@ -64,6 +67,18 @@ export interface HudBoardProps {
   /** Fleet slugs currently selected (empty = all). `null` = the solo group. */
   selectedFleets: Array<string | null>;
   onToggleFleet: (slug: string | null) => void;
+  /**
+   * Plans currently selected (empty = all). `null` = the no-plan group — the
+   * same array contract `selectedFleets` uses, so the two filters compose in
+   * the model without either knowing about the other. The CONTROL is
+   * single-select (see the plan filter below), so this holds 0 or 1 entries
+   * today; the array shape is what keeps `hudplan` a superset of `hudfleet`'s
+   * URL contract rather than a second, differently-shaped one.
+   */
+  selectedPlans: Array<string | null>;
+  /** `ALL_PLANS` clears the filter; `null` selects the no-plan group. Mirrors
+   *  `onToggleFleet`'s sentinel contract exactly. */
+  onSelectPlan: (slug: string | null) => void;
   /** Column filter — when set, only this column is shown expanded. */
   focusColumn: HudColumnId | null;
   onFocusColumn: (id: HudColumnId | null) => void;
