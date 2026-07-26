@@ -6,7 +6,12 @@
  * (the incident actor was an su pane leading its OWN fleet).
  */
 import { describe, expect, it } from 'vitest';
-import { assessForceRelease, forceRefusalHint, type ForceReleaseDeps } from './release-force-guard';
+import {
+  assessForceRelease,
+  forceRefusalHint,
+  WARM_IDLE_ACTIVITY_STALE_MS,
+  type ForceReleaseDeps,
+} from './release-force-guard';
 
 const NOW = Date.parse('2026-07-11T20:00:00Z');
 const min = (n: number) => 60_000 * n;
@@ -81,6 +86,50 @@ describe('assessForceRelease — liveness leg (a)', () => {
     );
     expect(v.holderLiveness.live).toBe(true);
   });
+
+  it('EI-18712366018708650: fresh heartbeat ALONE with hours-stale real activity → warm-idle, force allowed', async () => {
+    // The concrete evidence shape: heartbeat 44s old, lastActiveAt ~2h51m old,
+    // itemLastProgressAt ~3h old — a bare max-of-three used to certify "live".
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: iso(min(180)) },
+      deps({ holder: { heartbeatAt: iso(44_000), lastActiveAt: iso(min(171)), agentRole: 'su' } }),
+    );
+    expect(v).toMatchObject({ allowed: true, basis: 'holder-warm-idle' });
+    expect(v.holderLiveness).toMatchObject({ live: false, warmIdle: true });
+    // freshestAgeMs still reports the heartbeat's true age — the divergence is visible,
+    // not hidden, even though the verdict is no longer "live".
+    expect(v.holderLiveness.freshestAgeMs).toBe(44_000);
+  });
+
+  it('warm-idle threshold is exclusive on the near side: just under WARM_IDLE_ACTIVITY_STALE_MS stays live', async () => {
+    const justUnder = WARM_IDLE_ACTIVITY_STALE_MS - 1_000;
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: iso(justUnder) },
+      deps({ holder: { heartbeatAt: iso(0), lastActiveAt: iso(justUnder), agentRole: 'su' } }),
+    );
+    expect(v.holderLiveness).toMatchObject({ live: true, warmIdle: false });
+    expect(v.allowed).toBe(false); // still a live claim, no authority over it
+  });
+
+  it('fresh heartbeat + ONLY ONE stale activity signal (the other missing) never demotes to warm-idle', async () => {
+    // lastActiveAt is null (never inferred as stale from missing data) even though
+    // itemLastProgressAt is ancient — must NOT warm-idle on partial evidence.
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: iso(min(180)) },
+      deps({ holder: { heartbeatAt: iso(0), lastActiveAt: null, agentRole: 'su' } }),
+    );
+    expect(v.holderLiveness).toMatchObject({ live: true, warmIdle: false });
+    expect(v.allowed).toBe(false);
+  });
+
+  it('warm-idle demotion never fires when the heartbeat itself is already stale (existing reaper path unaffected)', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: iso(min(200)) },
+      deps({ holder: { heartbeatAt: iso(min(11)), lastActiveAt: iso(min(200)), agentRole: 'su' } }),
+    );
+    expect(v).toMatchObject({ allowed: true, basis: 'holder-not-live' });
+    expect(v.holderLiveness.warmIdle).toBe(false); // demoted via plain staleness, not the warm-idle path
+  });
 });
 
 describe('assessForceRelease — authority legs (b)/(c) over a LIVE holder', () => {
@@ -138,6 +187,7 @@ describe('forceRefusalHint', () => {
   it('names all three authorizing legs so the caller coordinates instead of retrying', () => {
     const h = forceRefusalHint('su-holder');
     expect(h).toMatch(/stale/i);
+    expect(h).toMatch(/warm-idle/i);
     expect(h).toMatch(/queen/i);
     expect(h).toMatch(/fleet/i);
     expect(h).toMatch(/coord:send/);

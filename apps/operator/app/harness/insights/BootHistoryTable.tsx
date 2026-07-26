@@ -133,6 +133,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   rekey_boundary_skipped: '⤳',
   rekey_boundary_applied: '🔑',
   epoch_gate_built: '🔐',
+  epoch_gate_skipped: '🔐✗',
   epoch_gate_seen: '👁',
   epoch_defer: '⏸',
   epoch_decrypt_fail: '🔓',
@@ -141,6 +142,9 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   dht_universe_mismatch: '🌐⚠',
   replication_repair: '🔧',
   replication_repair_failed: '🔧✗',
+  replication_repair_exhausted: '🔧⛔',
+  replication_repair_rejoin_failed: '🔧⚠',
+  replication_repair_confirmation_failed: '🔧⏸',
 };
 
 const EMPTY: CSSProperties = {

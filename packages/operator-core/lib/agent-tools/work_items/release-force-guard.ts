@@ -28,7 +28,23 @@
  */
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 
-export type ForceReleaseBasis = 'holder-not-live' | 'queen' | 'leads-holder-fleet';
+export type ForceReleaseBasis = 'holder-not-live' | 'holder-warm-idle' | 'queen' | 'leads-holder-fleet';
+
+/**
+ * EI-18712366018708650: a fresh heartbeat is process keepalive, NOT evidence of real
+ * work — a session can certify `live` via heartbeatAt alone while both REAL-activity
+ * signals (lastActiveAt, itemLastProgressAt) have sat unmoved for hours (hit live:
+ * heartbeat 44s old, lastActiveAt ~2h51m old, itemLastProgressAt ~3h old — all three
+ * were fed into a bare `Math.max`, so the freshest one alone certified "live" and
+ * blocked a force-release of an abandoned claim). This bounds how long BOTH activity
+ * signals may go stale before a fresh-heartbeat-only holder is reclassified from
+ * "live" to "warm-idle" (the reaper case, WI-4198 leg (a)) — deliberately generous
+ * (3x PRESENCE_STALE_MS = 30min) so a holder genuinely mid-way through one long
+ * operation is never misclassified: a working agent's own tool calls bump
+ * lastActiveAt on a cadence far tighter than this, and a held item's own checkpoint
+ * activity bumps itemLastProgressAt at least as often as its own turn cadence.
+ */
+export const WARM_IDLE_ACTIVITY_STALE_MS = 3 * PRESENCE_STALE_MS;
 
 export interface HolderLiveness {
   presenceFound: boolean;
@@ -39,6 +55,11 @@ export interface HolderLiveness {
   itemLastProgressAt: string | null;
   /** ms since the FRESHEST of the three signals; null when none parses. */
   freshestAgeMs: number | null;
+  /** heartbeat looked fresh, but BOTH lastActiveAt and itemLastProgressAt were
+   *  present and provably stale beyond WARM_IDLE_ACTIVITY_STALE_MS — a
+   *  process-keepalive-only signal, never inferred from missing data (EI-18712366018708650).
+   *  When true, `live` is false (warm-idle counts as the reaper case). */
+  warmIdle: boolean;
   live: boolean;
 }
 
@@ -98,16 +119,30 @@ export async function assessForceRelease(
   ]);
   const recordedEnded = endedOwners.has(input.holderOwnerId);
 
-  const signals = [
-    holderPres ? parseTs(holderPres.heartbeatAt) : NaN,
-    holderPres ? parseTs(holderPres.lastActiveAt) : NaN,
-    parseTs(input.itemLastProgressAt),
-  ].filter((t) => Number.isFinite(t));
+  const heartbeatTs = holderPres ? parseTs(holderPres.heartbeatAt) : NaN;
+  const lastActiveTs = holderPres ? parseTs(holderPres.lastActiveAt) : NaN;
+  const itemProgressTs = parseTs(input.itemLastProgressAt);
+
+  const signals = [heartbeatTs, lastActiveTs, itemProgressTs].filter((t) => Number.isFinite(t));
   const freshest = signals.length ? Math.max(...signals) : null;
   // An ended newest adv-session row is authoritative over the warm presence row
   // that intentionally lingers for a short TTL after teardown. A resumed session
   // clears ended_at / creates a newer live row, so it naturally becomes live again.
-  const live = !recordedEnded && freshest != null && now - freshest < PRESENCE_STALE_MS;
+  const presenceLive = !recordedEnded && freshest != null && now - freshest < PRESENCE_STALE_MS;
+
+  // EI-18712366018708650: demote the specific "heartbeat is the only fresh signal"
+  // shape to warm-idle. Both activity signals must be PRESENT (never inferred from
+  // missing data — a null lastActiveAt/itemLastProgressAt proves nothing) and both
+  // provably stale beyond the generous WARM_IDLE_ACTIVITY_STALE_MS window.
+  const heartbeatFresh = Number.isFinite(heartbeatTs) && now - heartbeatTs < PRESENCE_STALE_MS;
+  const bothActivitySignalsStale =
+    Number.isFinite(lastActiveTs) &&
+    Number.isFinite(itemProgressTs) &&
+    now - lastActiveTs >= WARM_IDLE_ACTIVITY_STALE_MS &&
+    now - itemProgressTs >= WARM_IDLE_ACTIVITY_STALE_MS;
+  const warmIdle = presenceLive && heartbeatFresh && bothActivitySignalsStale;
+  const live = presenceLive && !warmIdle;
+
   const holderLiveness: HolderLiveness = {
     presenceFound: holderPres != null,
     recordedEnded,
@@ -115,11 +150,14 @@ export async function assessForceRelease(
     lastActiveAt: holderPres?.lastActiveAt ?? null,
     itemLastProgressAt: input.itemLastProgressAt == null ? null : String(input.itemLastProgressAt),
     freshestAgeMs: freshest == null ? null : now - freshest,
+    warmIdle,
     live,
   };
 
   // (a) reaper case: no live session and no recent progress — the claim is abandoned.
-  if (!live) return { allowed: true, basis: 'holder-not-live', holderLiveness };
+  // A warm-idle holder (fresh heartbeat, hours-stale real activity) counts as the
+  // same case, just distinguished in `basis` for a clearer audit trail + notification.
+  if (!live) return { allowed: true, basis: warmIdle ? 'holder-warm-idle' : 'holder-not-live', holderLiveness };
 
   // Holder is LIVE — authority required. Classify the caller against the
   // HOLDER's fleet (control-core's classifier, per coord-authority-hardening).
@@ -159,7 +197,7 @@ export async function assessForceRelease(
 export function forceRefusalHint(holder: string): string {
   return (
     `${holder} holds a LIVE claim (fresh presence/progress) and you have no authority over it — force refused (WI-4198). ` +
-    `What authorizes a force here: the holder's session going stale (reaper case), queen/hive authority, or leading ${holder}'s OWN fleet. ` +
+    `What authorizes a force here: the holder's session going stale OR warm-idle — a fresh heartbeat with no real lastActiveAt/item-progress movement for ${Math.round(WARM_IDLE_ACTIVITY_STALE_MS / 60_000)}+ min (both reaper cases), queen/hive authority, or leading ${holder}'s OWN fleet. ` +
     `Otherwise coordinate with the holder (coord:send) — or with their fleet leader — instead of forcing.`
   );
 }

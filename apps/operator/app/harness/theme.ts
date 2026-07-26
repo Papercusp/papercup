@@ -372,6 +372,7 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   rekey_boundary_skipped: 'var(--warn)',
   rekey_boundary_applied: 'var(--good)',
   epoch_gate_built: 'var(--accent)',
+  epoch_gate_skipped: 'var(--warn)',
   epoch_gate_seen: 'var(--accent)',
   epoch_defer: 'var(--warn)',
   epoch_decrypt_fail: 'var(--bad)',
@@ -382,6 +383,9 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   // WI-3684: repair-on-detect re-attach outcome.
   replication_repair: 'var(--good)',
   replication_repair_failed: 'var(--bad)',
+  replication_repair_exhausted: 'var(--bad)',
+  replication_repair_rejoin_failed: 'var(--bad)',
+  replication_repair_confirmation_failed: 'var(--warn)',
 };
 export const BOOT_HISTORY_KIND_FALLBACK = 'var(--fg-dim)';
 

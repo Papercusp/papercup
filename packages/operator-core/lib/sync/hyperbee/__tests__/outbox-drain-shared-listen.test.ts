@@ -24,7 +24,12 @@ import type { BootedHarnessHandle } from '../boot';
  */
 function fakePg() {
   const unlisten = vi.fn(async () => {});
-  const listen = vi.fn(async () => ({ unlisten }));
+  // Params are declared explicitly so `mock.calls[0][0]` stays typed — a bare
+  // `vi.fn(async () => ...)` types calls as the empty tuple `[]` and indexing it
+  // is a compile error (TS2493), even though the runtime call passes both args.
+  const listen = vi.fn(async (_channel: string, _cb: (payload: string) => void) => ({
+    unlisten,
+  }));
   const query = vi.fn(() => Promise.resolve([]));
   const sql = Object.assign(query, {
     listen,

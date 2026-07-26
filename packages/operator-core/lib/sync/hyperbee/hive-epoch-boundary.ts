@@ -20,7 +20,7 @@
  */
 import type { Sql } from 'postgres';
 import type { HiveEpochCrypto } from './hive-epoch-crypto';
-import { advanceHiveEpoch } from './hive-epoch-state';
+import { getHiveEpoch, setHiveEpoch } from './hive-epoch-state';
 
 /** One per-member wrapped epoch key, to be persisted as a `hive_epoch_keys` row (P-005). */
 export interface WrappedEpochKeyRow {
@@ -66,7 +66,17 @@ export async function advanceEpochAndWrap(
   remainingMemberPubkeys: readonly string[],
   sql?: Sql,
 ): Promise<AdvanceEpochResult> {
-  const newEpoch = await advanceHiveEpoch(ctx.workspaceId, ctx.potHomeSlug, sql);
+  // EI-18714731283071702: compute the PROSPECTIVE epoch and do all the wrapping FIRST; the
+  // advance is PERSISTED at the bottom, only once we know at least one member device wrapped.
+  // This used to call advanceHiveEpoch() right here, which COMMITS immediately (setHiveEpoch ->
+  // setHiveSetting is a bare upsert, and `sql` is undefined all the way down from
+  // hive-revoke-contributor.ts:197, so there is no caller transaction to abort). The
+  // all-unwrappable `throw` below therefore rolled back NOTHING: it left the epoch advanced
+  // with zero wrapped keys — precisely the "persist a new epoch that NOBODY holds a key for and
+  // lock the entire pot out of its own content" state its own message claims to be refusing,
+  // AND it consumed an epoch number, so the next healthy boundary skipped to N+2 leaving a gap
+  // epoch nobody ever held a key for. A throw that says "refusing to persist" must not persist.
+  const newEpoch = (await getHiveEpoch(ctx.workspaceId, ctx.potHomeSlug, sql)) + 1;
   const key = await crypto.deriveEpochKey(ctx.potId, newEpoch);
 
   const seen = new Set<string>();
@@ -97,16 +107,21 @@ export async function advanceEpochAndWrap(
     }
   }
   // Deliberately FAIL LOUD when EVERY candidate was unwrappable, rather than mirroring the
-  // grant path's soft {applied:false}. advanceHiveEpoch above has ALREADY advanced the epoch, so
-  // returning an empty wrapped[] here would persist a new epoch that NOBODY holds a key for and
-  // lock the entire pot out of its own content — strictly worse than the pre-guard behaviour.
-  // Throwing is also what happened before this guard existed for this case, so total failure is
-  // no more disruptive than today; the improvement is purely that a PARTIAL failure now degrades
-  // instead of aborting.
+  // grant path's soft {applied:false}. Returning an empty wrapped[] would leave a new epoch that
+  // NOBODY holds a key for and lock the entire pot out of its own content — strictly worse than
+  // the pre-guard behaviour. Throwing is also what happened before this guard existed for this
+  // case, so total failure is no more disruptive than today; the improvement is purely that a
+  // PARTIAL failure now degrades instead of aborting.
+  // EI-18714731283071702: this throw is BEFORE the persist below, so it now genuinely refuses —
+  // the hive stays at its current epoch and the number is not consumed.
   if (seen.size > 0 && skipped.length === seen.size) {
     throw new Error(
       `[pot-epoch-boundary] advanceEpochAndWrap: all ${seen.size} remaining member device(s) were unwrappable at epoch ${newEpoch} (WI-6044) — refusing to persist an epoch no member can read; check harness_shared.pot_members.device_attestations for malformed device_pubkey values (expect base64 length 43/44)`,
     );
   }
+  // Commit the advance LAST — every failure path above leaves the hive on its current epoch.
+  // (An empty `remaining` set still advances, as before: a go-private with no members left is a
+  // legitimate boundary, and `seen.size > 0` above deliberately does not catch it.)
+  await setHiveEpoch(ctx.workspaceId, ctx.potHomeSlug, newEpoch, sql);
   return { newEpoch, wrapped, ...(skipped.length > 0 ? { skippedDevicePubkeys: skipped } : {}) };
 }

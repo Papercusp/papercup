@@ -963,6 +963,17 @@ export default defineTool({
       fleetPaused: fleetPause.paused,
     });
     let specStarvedAlert: { reason: string } | undefined;
+    // WI-5937 acceptance #3: "leader-brief returns spec filter + both counts + per-member
+    // doing in one read" — the fleet's OWN active view.filter (so a leader reads WHAT is
+    // scoped without a separate scheduler:get_claim_spec round-trip) plus BOTH claimable
+    // counts side by side: the harness-WIDE pool (what work_items:claimable{harness} would
+    // show, pre-spec-narrowing) and the spec-scoped matched count (pre-floor) — the exact
+    // pair whose conflation (1037 harness-wide vs 0 spec-scoped) produced the false
+    // spec-starved ruling this item's own root-cause section documents. Best-effort/optional:
+    // a preview failure must never block the rest of the brief.
+    let specFilter: unknown;
+    let harnessWidePool: number | undefined;
+    let specMatched: number | undefined;
     try {
       const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
       const { previewSpecPoolEffect } = await import('../../scheduler/spec-pool-preview');
@@ -974,6 +985,9 @@ export default defineTool({
           specMatched: effect.matched,
           poolSize: effect.pool,
         });
+        specFilter = rec.spec.view?.filter ?? null;
+        harnessWidePool = effect.pool;
+        specMatched = effect.matched;
       }
     } catch {
       /* best-effort — never block the brief on a spec-effect preview failure */
@@ -1003,6 +1017,13 @@ export default defineTool({
         ...(fleetPause.paused && fleetPause.reason
           ? { fleetPausedReason: fleetPause.reason }
           : {}),
+        // WI-5937 acceptance #3 — see the comment above the preview call: the fleet's own
+        // active claim-spec filter, plus both claimable counts (harness-wide pool vs
+        // spec-scoped matched) side by side, so a leader never has to compare member prose
+        // against a summary count without the two authoritative reads one call away.
+        ...(specFilter !== undefined ? { specFilter } : {}),
+        ...(harnessWidePool !== undefined ? { harnessWidePool } : {}),
+        ...(specMatched !== undefined ? { specMatched } : {}),
       },
     };
   },

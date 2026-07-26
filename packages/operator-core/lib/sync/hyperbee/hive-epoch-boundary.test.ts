@@ -120,6 +120,23 @@ describe('advanceEpochAndWrap — WI-6044 malformed-device guard (WI-3927 parity
     // Degenerate case: skipping all of them would return wrapped:[] for an ALREADY-advanced
     // epoch, locking the whole pot out of its own content — strictly worse than failing.
     await expect(advanceEpochAndWrap(c, CTX, [MALFORMED, 'also-bad'])).rejects.toThrow(/WI-6044/);
+
+    // EI-18714731283071702: this test's NAME has always claimed "rather than persisting", but
+    // NOTHING asserted it — and the implementation advanced + COMMITTED the epoch on its first
+    // line, before any wrap was attempted. The throw rolled back nothing (sql is undefined all
+    // the way down from hive-revoke-contributor.ts:197, so setHiveSetting autocommits), leaving
+    // exactly the pot-locked-out state the comment above calls "strictly worse than failing".
+    // A throw that says "refusing to persist" must actually refuse to persist.
+    expect(settings.get(sk(CTX.workspaceId, CTX.potHomeSlug, 'epoch'))).toBeUndefined();
+  });
+
+  it('does not CONSUME an epoch on the all-unwrappable throw — the next healthy boundary still gets 1', async () => {
+    const c = createHiveEpochCrypto();
+    const b = await makeDevice('dev-guard-nonconsuming');
+    await expect(advanceEpochAndWrap(c, CTX, [MALFORMED, 'also-bad'])).rejects.toThrow(/WI-6044/);
+    // If the failed boundary had burned epoch 1, this would come back 2 and every member's
+    // key set would be off-by-one against a gap epoch nobody ever held a key for.
+    expect((await advanceEpochAndWrap(c, CTX, [b.pubkeyBase64])).newEpoch).toBe(1);
   });
 
   it('still dedupes and ignores empty pubkeys while guarding', async () => {
