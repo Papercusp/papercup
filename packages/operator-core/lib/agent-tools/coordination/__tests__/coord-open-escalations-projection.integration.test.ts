@@ -24,7 +24,7 @@ import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { configureCoordLog, resetCoordLog } from '../log';
-import { listEscalations } from '../escalations';
+import { listEscalations, listEscalationsPaginated } from '../escalations';
 
 // Minimal coord_event_log shape (the migration references the table; the prod
 // table has more columns but the trigger only reads surface/workspace_id/msg_id/
@@ -174,5 +174,63 @@ describe('coord_open_escalations projection trigger (migration 355)', () => {
 
     const got = await listEscalations({ status: 'open' });
     expect(got.map((e) => e.msg_id)).toEqual(['projection-a', 'projection-b']);
+  });
+
+  // EI-18712273081050373 — listEscalationsPaginated({status:'open'}) used to serve
+  // its PAGE from a recency-windowed raw-event-log fold that never even looked at
+  // this projection, so an old escalation buried under newer, fast-resolving churn
+  // was unreachable no matter how large maxRecords got (live: trueOpenTotal:359,
+  // page returning 0-1 rows). The fix serves the page straight from the projection
+  // (which already IS the exact open set) and pages it with `offset` — this pins
+  // that the WHOLE backlog is now reachable: sum of pages == trueOpenTotal.
+  it('listEscalationsPaginated(status=open) is FULLY pageable via offset — sum of pages == trueOpenTotal (EI-18712273081050373)', async () => {
+    configureCoordLog(new PgCoordLog({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' }));
+    setFlagOverridesForTest({ [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: true });
+
+    // Seed 7 open rows directly into the projection (mirrors the trigger's own
+    // shape) with an explicit ts order so slicing is deterministic.
+    const n = 7;
+    for (let i = 1; i <= n; i++) {
+      const msgId = `open-${String(i).padStart(2, '0')}`;
+      const row = {
+        ts: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+        msg_id: msgId,
+        from: 'A',
+        to: ['human'],
+        kind: 'escalation',
+        severity: 'question',
+        summary: `escalation ${i}`,
+        resolved: null,
+      };
+      await db.sql`
+        INSERT INTO harness_shared.coord_open_escalations (workspace_id, msg_id, ts, body)
+        VALUES ('default', ${msgId}, ${row.ts}, ${db.sql.json(row)})`;
+    }
+
+    // A small page size — the exact shape that used to return near-zero rows.
+    const pageSize = 3;
+    const seen: string[] = [];
+    let offset = 0;
+    let guard = 0;
+    for (;;) {
+      const page = await listEscalationsPaginated({ status: 'open', maxRecords: pageSize, offset });
+      expect(page.trueOpenTotal).toBe(n);
+      seen.push(...page.escalations.map((e) => e.msg_id));
+      offset += page.escalations.length;
+      if (!page.truncated) break;
+      guard += 1;
+      expect(guard).toBeLessThan(10); // fail loudly instead of looping forever
+    }
+
+    // Every one of the 7 seeded opens was reached — the backlog is FULLY pageable,
+    // not just the first (near-empty, in the old bug's repro) window.
+    expect(seen.sort()).toEqual(Array.from({ length: n }, (_, i) => `open-${String(i + 1).padStart(2, '0')}`).sort());
+
+    // The final page's own numbers must be internally consistent (no more of the
+    // "trueOpenTotal:359 / page:0" contradiction the ticket reported).
+    const firstPage = await listEscalationsPaginated({ status: 'open', maxRecords: pageSize, offset: 0 });
+    expect(firstPage.escalations).toHaveLength(pageSize);
+    expect(firstPage.truncated).toBe(true);
+    expect(firstPage.offset).toBe(0);
   });
 });

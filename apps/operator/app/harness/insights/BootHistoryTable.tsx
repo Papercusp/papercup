@@ -59,6 +59,10 @@ export type BootHistoryKind =
   | 'rekey_grant_failed'
   | 'rekey_grant_skipped'
   | 'rekey_boundary_skipped'
+  // WI-6043 (2026-07-26): the success-path twin of rekey_boundary_skipped — see
+  // boot-history.ts for the full rationale (the boundary advance was previously silent
+  // on success, indistinguishable-from-never-reached in a banked serve.log).
+  | 'rekey_boundary_applied'
   | 'epoch_gate_built'
   | 'epoch_gate_seen'
   | 'epoch_defer'
@@ -114,6 +118,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   rekey_grant_failed: '✗',
   rekey_grant_skipped: '⤼',
   rekey_boundary_skipped: '⤳',
+  rekey_boundary_applied: '🔑',
   epoch_gate_built: '🔐',
   epoch_gate_seen: '👁',
   epoch_defer: '⏸',

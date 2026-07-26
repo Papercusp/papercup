@@ -147,6 +147,18 @@ export type BootHistoryKind =
   // for the grant path: names the silent boundary 0→0 so a K2 revoke that doesn't advance NAMES why
   // (instead of a manual trace to the revoke early-return).
   | 'rekey_boundary_skipped'
+  // WI-6043 (2026-07-26 reopen): the SUCCESS-path twin of rekey_boundary_skipped above.
+  // advanceEpochOnHiveBoundary logs NOTHING when it actually applies — the boundary trigger
+  // core (advanceEpochAndWrap) has no stdout output on its healthy path either — so a passing
+  // boundary advance and a boundary that was simply never REACHED are indistinguishable from
+  // any banked serve.log: both read as "rekey_boundary_skipped never fired". The WI-6043 reopen
+  // investigation had to fall back to a live psql probe against the (soon torn-down) rig
+  // containers to read the epoch column directly, which is exactly the "inferred from silence"
+  // failure WI-5781 fixed for admission events and WI-280 fixed for the boundary SKIP case, but
+  // missed for the boundary APPLY case. Fired from revokeHiveContributor right after a
+  // successful (live:true) publishRevocation, naming the resulting newEpoch/distributed count so
+  // the next rig run answers "was it invoked, and did it advance" directly from the banked log.
+  | 'rekey_boundary_applied'
   // WI-808 (content-federation drop diagnosis): the apply-side epoch decrypt-gate's
   // per-op verdict. Both failure verdicts were previously SILENT (`return false`), so a
   // federated content op that never landed on a joiner left NO signal — indistinguishable
@@ -318,6 +330,7 @@ const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
   // once-per-lifecycle-event (a revoke call, a member grant, a gate install) — same sparse
   // profile as the admission/join/peer kinds above, never the hot per-op decrypt trace.
   'rekey_boundary_skipped',
+  'rekey_boundary_applied',
   'rekey_grant_skipped',
   'epoch_gate_built',
   'epoch_gate_skipped',

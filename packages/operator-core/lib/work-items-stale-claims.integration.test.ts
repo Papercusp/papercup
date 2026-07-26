@@ -834,3 +834,50 @@ describe('EI-18674157526367861: activeTurnHolderFragment (native-tool liveTurn l
     expect(r.released.map((c) => c.feature_id)).toEqual(['F-AT4']);
   });
 });
+
+describe('WI-6039 — reconcileStrandedWipWorkItems (the general already-stranded-wip backstop)', () => {
+  it('reopens a wip row with taken_by NULL back to open', async () => {
+    await seedTaskItem('WI-STRAND-1', null, 0, 'wip');
+    const rows = await reconcileStrandedWipWorkItems(sql);
+    expect(rows.map((r) => r.feature_id)).toContain('WI-STRAND-1');
+    expect(await workItemStatusOf('WI-STRAND-1')).toMatchObject({ status: 'open' });
+  });
+
+  it('reopens a wip row with taken_by the empty string too', async () => {
+    await seedTaskItem('WI-STRAND-2', null, 0, 'wip');
+    await sql`UPDATE harness_shared.work_items SET taken_by = '' WHERE feature_id = 'WI-STRAND-2'`;
+    const rows = await reconcileStrandedWipWorkItems(sql);
+    expect(rows.map((r) => r.feature_id)).toContain('WI-STRAND-2');
+  });
+
+  it('does NOT touch a wip row that DOES have a holder — that is reclaimStaleWorkItemClaims\'s job, not this one', async () => {
+    await seedTaskItem('WI-STRAND-3', 'su-live-holder', 1, 'wip');
+    await markKnown('su-live-holder');
+    const rows = await reconcileStrandedWipWorkItems(sql);
+    expect(rows.map((r) => r.feature_id)).not.toContain('WI-STRAND-3');
+    expect(await workItemStatusOf('WI-STRAND-3')).toMatchObject({ status: 'wip', taken_by: 'su-live-holder' });
+  });
+
+  it('does NOT touch a non-wip row (open/blocked/terminal all left alone)', async () => {
+    await seedTaskItem('WI-STRAND-4', null, 0, 'open');
+    await seedTaskItem('WI-STRAND-5', null, 0, 'blocked');
+    await seedTaskItem('WI-STRAND-6', null, 0, 'done');
+    const rows = await reconcileStrandedWipWorkItems(sql);
+    const ids = rows.map((r) => r.feature_id);
+    expect(ids).not.toContain('WI-STRAND-4');
+    expect(ids).not.toContain('WI-STRAND-5');
+    expect(ids).not.toContain('WI-STRAND-6');
+  });
+
+  it('is idempotent — a second run finds nothing left to fix', async () => {
+    await seedTaskItem('WI-STRAND-7', null, 0, 'wip');
+    await reconcileStrandedWipWorkItems(sql);
+    const second = await reconcileStrandedWipWorkItems(sql);
+    expect(second.map((r) => r.feature_id)).not.toContain('WI-STRAND-7');
+  });
+
+  it('is a no-op (empty array, no throw) when nothing is stranded', async () => {
+    const rows = await reconcileStrandedWipWorkItems(sql);
+    expect(rows).toEqual([]);
+  });
+});
