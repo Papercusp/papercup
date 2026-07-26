@@ -146,8 +146,12 @@ export interface ImprovementDigest {
   autoEligible: ScoredItem[];
   /** Open + human-tier, highest score first. */
   humanQueue: ScoredItem[];
-  /** Groups of likely-duplicate candidates (open + resolved) for cheap merge. */
-  likelyDuplicates: DupCluster[];
+  /** Groups of likely-duplicate candidates (open + resolved) for cheap merge.
+   *  `null` means the pass was SKIPPED (`nearDuplicates: false` — D-002); `[]`
+   *  means it ran and found none. Never conflate the two — a caller that only
+   *  wants the scalar rollups should treat `null` as "not computed", not as
+   *  "no duplicates". */
+  likelyDuplicates: DupCluster[] | null;
   /**
    * Recurring friction signatures (P-003) — every signature seen more than once,
    * recurrence + decay attached. The Queen reads this to weight a *recurring*
@@ -170,6 +174,16 @@ export interface BuildDigestOptions {
    * defaults off (today's classification). Display surfaces that omit it render the baseline.
    */
   ownerFullAutonomy?: boolean;
+  /**
+   * Whether to run the near-dup / exact-signature clustering pass at all
+   * (default true — unchanged behavior). Pass `false` when the caller only
+   * reads scalar rollups (`open`, `autoEligible.length`, `humanQueue.length`,
+   * `byKind`, `bySeverity`) and never touches `likelyDuplicates` — the O(n²)
+   * `findLikelyDuplicates` pass is not called at all, and `likelyDuplicates`
+   * comes back `null` rather than `[]` (D-001/D-002: the health tick was
+   * paying ~840ms/cycle for a dedup clustering it discarded outright).
+   */
+  nearDuplicates?: boolean;
 }
 
 /** Normalize a title into a dedup signature: strip a leading `[kind]`, lowercase,
@@ -470,7 +484,12 @@ export function buildDigest(
   autoEligible.sort(byScore);
   humanQueue.sort(byScore);
 
-  const likelyDuplicates = findLikelyDuplicates(candidates);
+  // P-001/D-001: skip the O(n²) near-dup pass entirely when the caller only
+  // reads scalar rollups and never touches likelyDuplicates (the health tick
+  // was paying ~840ms/cycle for a clustering it discarded outright). `null`
+  // (not `[]`) marks "did not run" so a reader can never mistake skipped for
+  // "ran, found none" (D-002).
+  const likelyDuplicates = opts.nearDuplicates === false ? null : findLikelyDuplicates(candidates);
   // Recurrence-decay on the stable signature (P-003) — only the signatures that
   // actually recurred (count > 1) are interesting for triage.
   const recurringSignatures = signatureRecurrence(candidates, { nowMs }).filter((s) => s.count > 1);
@@ -478,7 +497,7 @@ export function buildDigest(
   const headline =
     `papercusp-improvement digest: ${candidates.length} captured (${open} open) — ` +
     `${autoEligible.length} auto-eligible, ${humanQueue.length} need a human` +
-    (likelyDuplicates.length ? `, ${likelyDuplicates.length} likely-dup cluster(s)` : '') +
+    (likelyDuplicates && likelyDuplicates.length ? `, ${likelyDuplicates.length} likely-dup cluster(s)` : '') +
     (recurringSignatures.length ? `, ${recurringSignatures.length} recurring signature(s)` : '');
 
   return {

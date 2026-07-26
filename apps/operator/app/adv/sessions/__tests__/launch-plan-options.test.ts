@@ -73,13 +73,32 @@ describe('buildLaunchPlanOptions', () => {
     expect(group.options.map((o) => o.value)).toEqual(['newest', 'middle', 'old']);
   });
 
-  it('appends "updated Nd ago" to each option label', () => {
+  // P-007 (owner ask 2026-07-26: "display the full time details not just
+  // 'today'"). This assertion previously required the relative stamp to be
+  // APPENDED TO THE LABEL ("Recent plan · updated yesterday"). That single-line
+  // shape is what the owner asked to change: the label is now the title alone
+  // and the timestamp moved to the option's `detail` line, where the Combobox
+  // renders it as a dimmer second row — carrying the absolute time the
+  // relative form was hiding.
+  it('puts the title alone on the label and the full timestamp on the detail line', () => {
     const plans = [
       plan({ slug: 'recent', harness: 'papercup', title: 'Recent plan', updated: '2026-05-24T08:00:00Z' }),
     ];
     const opts = buildLaunchPlanOptions(plans, null, false);
-    const group = opts[1] as { options: Array<{ label: string }> };
-    expect(group.options[0].label).toBe('Recent plan · updated yesterday');
+    const group = opts[1] as { options: Array<{ label: string; detail?: string }> };
+    expect(group.options[0].label).toBe('Recent plan');
+    // Absolute first (the information that was missing), relative alongside it
+    // as the at-a-glance cue. Asserted loosely on the absolute part because it
+    // renders in the runner's local timezone.
+    expect(group.options[0].detail).toMatch(/^updated \d{1,2} May 2026, \d{2}:\d{2} · yesterday$/);
+  });
+
+  it('makes the slug searchable via keywords without rendering it', () => {
+    const plans = [plan({ slug: 'recent-slug', harness: 'papercup', title: 'Recent plan' })];
+    const opts = buildLaunchPlanOptions(plans, null, false);
+    const group = opts[1] as { options: Array<{ label: string; keywords?: string[] }> };
+    expect(group.options[0].label).toBe('Recent plan');
+    expect(group.options[0].keywords).toEqual(['recent-slug', 'papercup']);
   });
 
   it('puts the active harness group first, others alphabetical, no-harness last', () => {
@@ -101,10 +120,11 @@ describe('buildLaunchPlanOptions', () => {
     expect(labels).toEqual(['alpha']);
   });
 
-  it('omits "updated …" when the plan has no updated field', () => {
+  it('omits the detail line entirely when the plan has no updated field', () => {
     const plans = [plan({ slug: 's', harness: 'papercup', title: 'No date', updated: null })];
     const opts = buildLaunchPlanOptions(plans, null, false);
-    const group = opts[1] as { options: Array<{ label: string }> };
+    const group = opts[1] as { options: Array<{ label: string; detail?: string }> };
     expect(group.options[0].label).toBe('No date');
+    expect(group.options[0].detail).toBeUndefined();
   });
 });

@@ -887,7 +887,10 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       const { readImprovementItems } = await import('../harness/improvements/read-items');
       const { buildDigest } = await import('../harness/improvements/digest');
       const items = await readImprovementItems({ state: 'open', limit: 1000 });
-      const digest = buildDigest(items, { nowMs: ctx.now });
+      // P-001/P-003: this panel reads only digest.autoEligible (a scalar rollup) —
+      // it never touches likelyDuplicates, so skip the O(n²) near-dup pass the
+      // health tick was paying for and discarding outright (D-001).
+      const digest = buildDigest(items, { nowMs: ctx.now, nearDuplicates: false });
       ({ autoEligibleStuck, keylessHumanReviewBacklog } = splitAutoEligibleStuck(digest.autoEligible));
     } catch { /* improvements unreadable — leave 0s (the dead-routine signal still computes) */ }
     const data: WorkFeedHealth = {
@@ -1410,7 +1413,11 @@ async function collectImprovements(ctx: HealthCtx): Promise<HealthPanel<Improvem
     // The OWNER FULL-AUTONOMY grant (Phase 2): keep the auto/human rollup counts honest —
     // when the grant is on, protected-surface bugs move into the auto lane.
     const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ctx.ws);
-    const digest = buildDigest(items, { nowMs: ctx.now, ownerFullAutonomy });
+    // P-001/P-003: this panel reads only scalar rollups (open, autoEligible.length,
+    // humanQueue.length, byKind, bySeverity) — it never touches likelyDuplicates, so
+    // skip the O(n²) near-dup pass the health tick was paying for and discarding
+    // outright (D-001).
+    const digest = buildDigest(items, { nowMs: ctx.now, ownerFullAutonomy, nearDuplicates: false });
     const data: ImprovementsHealth = {
       open: digest.open,
       autoEligible: digest.autoEligible.length,

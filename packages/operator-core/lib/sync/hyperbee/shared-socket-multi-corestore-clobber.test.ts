@@ -50,6 +50,7 @@ import net from 'node:net';
 // connection hands to `store.replicate(socket)`, so the probe must use it.
 import NoiseSecretStream from '@hyperswarm/secret-stream';
 import { openOwnLog, openRemoteLog } from './peer-log';
+import { __resetRemoteCoreHostsForTest, registerStoreMachine } from './remote-core-host';
 
 const cleanups: Array<() => void> = [];
 
@@ -349,7 +350,8 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
    * (harness B's view), with repair-on-detect reporting "re-attached" and the
    * log stalling again seconds later.
    */
-  it('SAME KEY IN TWO CORESTORES on one socket (the rig’s real shape): both sessions cannot hold a replicator', async () => {
+  it('SAME KEY IN TWO CORESTORES that are NOT declared same-machine: only one can hold a replicator (upstream invariant — two simulated machines in one process)', async () => {
+    __resetRemoteCoreHostsForTest();
     const serveStore = makeStore('ssc-samekey-serve-');
     await serveStore.ready();
     const keyHex = await seedLog(serveStore, 'SAMEKEY-1');
@@ -379,21 +381,84 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
         `harnessB=${bAttached} (peers=${viaB.peersCount?.() ?? 0})`,
     );
 
-    // OBSERVED: exactly ONE of the two stores gets a replicator; the other sits
-    // at peersCount 0 indefinitely. Asserted as "exactly one" rather than
-    // "A wins" so the guard does not depend on registration order.
+    // Exactly ONE of the two stores gets a replicator; the other sits at
+    // peersCount 0 indefinitely. Asserted as "exactly one" rather than "A wins"
+    // so the guard does not depend on registration order.
     //
-    // This is the production failure: the losing harness's detector reports the
-    // key as connected_never_replicated, repair-on-detect "re-attaches" a
-    // session that still cannot win the single slot, and the log stalls again
-    // seconds later — the exact never_attached/replicator_lost churn in the
-    // preserved bundle.
+    // ⚠ THIS IS NOT A PAPERCUSP BUG TO FIX — it is an UPSTREAM INVARIANT, and
+    // this case pins it so nobody re-litigates it. A Protomux carries at most
+    // ONE hypercore/alpha channel per discovery key: hypercore's replicator
+    // `_makePeer()` bails on `protomux.opened({ protocol, id: discoveryKey })`
+    // and `protomux.createChannel` is `unique` by default (index.js:437). Two
+    // INDEPENDENT replicas of one key can therefore never both replicate over
+    // one socket.
     //
-    // ⚠ CHARACTERIZATION OF A LIVE DEFECT (WI-6076). WHEN FIXED, INVERT to
-    // `expect(attachedCount).toBe(2)` — both harnesses must be able to
-    // replicate the same key over one connection.
+    // The papercusp defect (WI-5673) was CREATING two replicas of one key on one
+    // machine — sibling harnesses in the same Hive admit the same keys but each
+    // held its own Corestore. The fix removes the duplicate rather than trying
+    // to win an unwinnable second slot; see the next test, and remote-core-host.ts.
+    // These stores are deliberately NOT declared same-machine here (that models
+    // two machines simulated in one process), so the dedup correctly does not
+    // apply and the upstream invariant shows through.
     const attachedCount = (aAttached ? 1 : 0) + (bAttached ? 1 : 0);
     expect(attachedCount).toBe(1);
+  }, 30_000);
+
+  /**
+   * THE FIX (WI-5673): the rig's real shape — two SIBLING harness stores on the
+   * SAME machine, both admitting the same peer log, over one shared socket.
+   *
+   * `remote-core-host.ts` opens that log in exactly ONE store per machine and
+   * hands the sibling a SESSION on it, so there is one core, one channel, and
+   * both harnesses see live replication. Before the fix this was the production
+   * failure: the losing harness reported the key as connected_never_replicated,
+   * repair-on-detect "re-attached" a session that still could not win the single
+   * slot, and repair-exhaustion escalated to a forced topic rejoin that tore
+   * down the shared socket for the healthy co-tenants too.
+   */
+  it('SAME KEY, TWO SIBLING STORES ON ONE MACHINE: deduped to a single core, so BOTH harnesses replicate (WI-5673 fix)', async () => {
+    __resetRemoteCoreHostsForTest();
+    const serveStore = makeStore('ssc-dedup-serve-');
+    await serveStore.ready();
+    const keyHex = await seedLog(serveStore, 'DEDUP-1');
+
+    const fetchHarnessA = makeStore('ssc-dedup-fa-');
+    await fetchHarnessA.ready();
+    const fetchHarnessB = makeStore('ssc-dedup-fb-');
+    await fetchHarnessB.ready();
+
+    // What the corestore factory declares for two harnesses of one workspace:
+    // same machine ⇒ their admitted remote logs must share one core.
+    registerStoreMachine(fetchHarnessA, '/machine-one');
+    registerStoreMachine(fetchHarnessB, '/machine-one');
+
+    const [sockFetch, sockServe] = await noiseStreamPair();
+    serveStore.replicate(sockServe);
+    fetchHarnessA.replicate(sockFetch);
+    fetchHarnessB.replicate(sockFetch); // second store on the SAME socket
+    await waitFor(() => false, 250);
+
+    const viaA = await openRemoteLog(fetchHarnessA, keyHex);
+    const viaB = await openRemoteLog(fetchHarnessB, keyHex);
+
+    const aAttached = await waitFor(() => (viaA.peersCount?.() ?? 0) > 0, 4_000);
+    const bAttached = await waitFor(() => (viaB.peersCount?.() ?? 0) > 0, 4_000);
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[WI-5673 dedup probe] harnessA=${aAttached} (peers=${viaA.peersCount?.() ?? 0}) ` +
+        `harnessB=${bAttached} (peers=${viaB.peersCount?.() ?? 0})`,
+    );
+
+    expect((aAttached ? 1 : 0) + (bAttached ? 1 : 0)).toBe(2);
+
+    // …and the shared core actually carries data to BOTH harnesses: the whole
+    // point is that the sibling is not merely "attached" but genuinely reading.
+    await viaA.update();
+    await viaB.update();
+    expect(viaA.length).toBeGreaterThan(0);
+    expect(viaB.length).toBe(viaA.length);
+    expect(await viaB.get(0)).toMatchObject({ hbKey: 'DEDUP-1' });
   }, 30_000);
 
   /**

@@ -307,9 +307,14 @@ function bump(rollup: UsageRollup, key: UsageKey, delta: UsageCounts): void {
  * pass the owning file's last known day, or null to drop such lines.
  */
 export function ingestLine(rollup: UsageRollup, line: string, fallbackDay: string | null): void {
-  for (const obs of extractToolUses(line)) addToolUse(rollup, obs, fallbackDay);
-  const bytes = extractToolResultBytes(line);
-  if (bytes > 0) addResultBytes(rollup, bytes, fallbackDay);
+  const usage = extractLineUsage(line);
+  for (const obs of usage.toolUses) addToolUse(rollup, obs, fallbackDay);
+  // Date the result bytes from the RECORD's own timestamp, exactly like a call.
+  // Passing the caller's fallback here regardless was a real bug: tool_result
+  // records do carry a timestamp, and dropping it filed every byte under
+  // `null` — which addResultBytes then discards, silently reporting a total
+  // cost of zero against a corpus full of results.
+  if (usage.resultBytes > 0) addResultBytes(rollup, usage.resultBytes, dayOf(usage.ts) ?? fallbackDay);
 }
 
 /** Merge `src` into `dst`, in place. */

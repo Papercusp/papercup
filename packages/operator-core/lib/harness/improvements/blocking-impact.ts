@@ -174,7 +174,10 @@ export function buildImpactItemContext(
     for (const id of rec.ids) recurrenceById.set(id, rec);
   }
   const dupClusterSizeById = new Map<string, number>();
-  for (const cluster of digest.likelyDuplicates) {
+  // digest.likelyDuplicates is null when the caller opted out of the near-dup
+  // pass (nearDuplicates: false, D-002) — treat "did not run" as "no context
+  // to add", same as an empty array would, never as a crash.
+  for (const cluster of digest.likelyDuplicates ?? []) {
     for (const id of cluster.ids) dupClusterSizeById.set(id, cluster.ids.length);
   }
   return { recurrenceById, dupClusterSizeById };

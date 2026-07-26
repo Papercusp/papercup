@@ -134,4 +134,15 @@ describe('rankHumanQueueByImpact', () => {
     const ranked = rankHumanQueueByImpact(digest);
     expect(ranked.map((r) => r.id)).toEqual(['EI-20', 'EI-21']);
   });
+
+  it('tolerates likelyDuplicates: null (nearDuplicates: false, D-002) — no crash, no dup context', () => {
+    const digest = {
+      humanQueue: [item({ id: 'EI-30', score: 5 })],
+      recurringSignatures: [],
+      likelyDuplicates: null,
+    };
+    const ranked = rankHumanQueueByImpact(digest);
+    expect(ranked.map((r) => r.id)).toEqual(['EI-30']);
+    expect(ranked[0].impact.dupPeers).toBe(0);
+  });
 });

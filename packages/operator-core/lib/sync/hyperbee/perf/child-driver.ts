@@ -93,7 +93,7 @@ export class PeerChildHandle {
     });
   }
 
-  send(line: 'go' | 'stop' | 'ping'): void {
+  send(line: 'go' | 'stop' | 'ping' | 'wait-snapshot'): void {
     try {
       this.proc.stdin!.write(line + '\n');
     } catch {

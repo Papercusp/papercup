@@ -308,6 +308,43 @@ describe('buildDigest', () => {
     expect(d.recurringSignatures[0].ids.sort()).toEqual(['r1', 'r2']);
     expect(d.headline).toMatch(/recurring signature/);
   });
+
+  describe('nearDuplicates: false opt-out (P-001/D-001/D-002)', () => {
+    // Duplicates the shape findLikelyDuplicates would normally cluster, so a
+    // non-null result here would prove the pass actually ran.
+    const dupItems: ImprovementCandidate[] = [
+      cand({ id: 'D1', title: 'presence dumps stale rows', createdAt: daysAgo(1) }),
+      cand({ id: 'D2', title: 'stale rows dumps presence', createdAt: daysAgo(1) }), // exact-signature dup of D1
+    ];
+
+    it('defaults to running the pass — likelyDuplicates is an array, never null', () => {
+      const d = buildDigest(dupItems, { nowMs: NOW });
+      expect(d.likelyDuplicates).not.toBeNull();
+      expect(d.likelyDuplicates).toHaveLength(1);
+    });
+
+    it('nearDuplicates: false skips the pass entirely — likelyDuplicates is null, not []', () => {
+      const d = buildDigest(dupItems, { nowMs: NOW });
+      const skipped = buildDigest(dupItems, { nowMs: NOW, nearDuplicates: false });
+      expect(skipped.likelyDuplicates).toBeNull();
+      // "skipped" must never be confused with "ran, found none" (D-002) — the
+      // running pass on the SAME input finds a cluster, proving null != [].
+      expect(d.likelyDuplicates?.length).toBeGreaterThan(0);
+    });
+
+    it('nearDuplicates: false does not change any other field (scalar rollups untouched)', () => {
+      const withPass = buildDigest(dupItems, { nowMs: NOW });
+      const withoutPass = buildDigest(dupItems, { nowMs: NOW, nearDuplicates: false });
+      const { likelyDuplicates: _a, headline: _h1, ...restWith } = withPass;
+      const { likelyDuplicates: _b, headline: _h2, ...restWithout } = withoutPass;
+      expect(restWithout).toEqual(restWith);
+    });
+
+    it('nearDuplicates: false omits the likely-dup clause from the headline', () => {
+      const d = buildDigest(dupItems, { nowMs: NOW, nearDuplicates: false });
+      expect(d.headline).not.toMatch(/likely-dup cluster/);
+    });
+  });
 });
 
 /**

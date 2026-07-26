@@ -19,12 +19,15 @@
  *   {evt:'caught-up', t, appliedKeys}    — reader reached expectedWinners
  *   {evt:'result', …}                    — final per-process measurements
  *   {evt:'error', message}               — fatal; child exits 1
- * Parent stdin → child: single lines `go` (writer starts load) and `stop`
+ *   {evt:'snapshot-ready', index, ownLength} — answer to `wait-snapshot`
+ * Parent stdin → child: single lines `go` (writer starts load), `wait-snapshot`
+ * (block until the own log carries a `__snapshot__`, then answer) and `stop`
  * (finalize + emit result + exit).
  */
 
 import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
 import { closeHarnessStore } from '../corestore';
+import { findLatestSnapshotIndex } from '../read-merge';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
 import type { SwarmBinding } from '../derive-swarm-topic';
@@ -72,6 +75,10 @@ export interface PeerChildConfig {
   expectedWinners?: number;
   /** Reader: stop waiting after this long even if not caught up. */
   catchUpTimeoutMs?: number;
+  /** `wait-snapshot` bound: give up polling the own log for a `__snapshot__`
+   *  after this long and answer `index: null` (so the parent gets a definitive
+   *  answer instead of hanging to its own deadline). Default 120s. */
+  snapshotWaitMs?: number;
 }
 
 /** Swarm/DHT network observations over the scenario window (Tier-3 P-011:
@@ -118,6 +125,10 @@ export interface PeerChildResult {
    */
   admittedStats?: Array<{ keyHex: string; length: number; has0: boolean; hasLast: boolean; contiguousLength: number }>;
 }
+
+/** `wait-snapshot` backward-scan window over the OWN log. The producer appends
+ *  its snapshot set at the tail, so this only has to cover one set. */
+const SNAPSHOT_TAIL_LOOKBACK = 512;
 
 function out(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + '\n');
@@ -290,6 +301,29 @@ async function main(): Promise<void> {
         // over the ALREADY-OPEN channel (min-RTT sample wins), so cross-machine
         // sentAt→applied latencies can be skew-corrected/sanity-checked.
         out({ evt: 'pong', tRemote: Date.now() });
+        continue;
+      }
+      if (line === 'wait-snapshot') {
+        // COMPACTION BARRIER (EI-18724820303729937). The producer appends its
+        // `__snapshot__` ASYNCHRONOUSLY — inside a merge pass, on the merge-poll
+        // cadence — NOT as part of `append()`. So `writer-done` does NOT imply
+        // "compacted", and a parent that spawns a fresh joiner right after it is
+        // racing that append: a joiner booting first finds no snapshot, seeds its
+        // cursor at 0, and replays the WHOLE history (no byte-skip). Whether the
+        // writer wins is pure scheduling luck, which is why the race surfaced as a
+        // load-sensitive flake. Poll the OWN log (all-local reads) so the parent
+        // gets a real happens-before edge instead of a fixed sleep.
+        const deadline = Date.now() + (cfg.snapshotWaitMs ?? 120_000);
+        let index: number | null = null;
+        for (;;) {
+          // Small lookback ON PURPOSE: the producer appends its snapshot set at
+          // the tail, so a short window finds it — while a full-history scan on
+          // every poll would burn CPU and slow the very merge pass being awaited.
+          index = await findLatestSnapshotIndex(handle.ownLog, SNAPSHOT_TAIL_LOOKBACK).catch(() => null);
+          if (index !== null || Date.now() >= deadline) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        out({ evt: 'snapshot-ready', index, ownLength: handle.ownLog.length });
         continue;
       }
       if (line === 'go' && cfg.role === 'writer') {

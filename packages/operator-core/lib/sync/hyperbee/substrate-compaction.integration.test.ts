@@ -101,11 +101,29 @@ describe('substrate compaction under live replication — $0 local parity (multi
         // mid-stream snapshot op — stream not broken, no ops lost.
         expect(await reader.waitFor('caught-up', TEN_MIN)).toBeTruthy();
 
+        // COMPACTION BARRIER (EI-18724820303729937) — the happens-before this test
+        // used to ASSUME. The writer appends its `__snapshot__` asynchronously, in a
+        // merge pass on the merge-poll cadence; `writer-done` only means the APPENDS
+        // finished. Boot the fresh joiner before that op lands and it finds no
+        // snapshot, seeds its cursor at 0, and replays the whole history — proof 3
+        // then fails with `contiguousLength == full length` (observed: 4601 vs a
+        // 2300.5 bound). Which side wins is scheduling luck, so it read as a
+        // load-sensitive flake: it fails exactly when the box is busiest, i.e. during
+        // a full green-checkpoint run. Wait for the snapshot to EXIST — a bounded
+        // poll-until, never a fixed sleep — so the joiner phase is deterministic.
+        writer.send('wait-snapshot');
+        const snap = await writer.waitFor('snapshot-ready', TEN_MIN);
+        expect(snap, 'writer should answer wait-snapshot').toBeTruthy();
+        expect(
+          (snap as unknown as { index: number | null }).index,
+          'the writer must have appended its __snapshot__ BEFORE the fresh joiner boots — with no snapshot to seed from there is nothing to skip and the byte-skip proof below is vacuous',
+        ).toBeGreaterThan(0);
+
         // ── Fresh joiner (slot 2): boots AFTER the writer compacted → with the flag on it
         //    seeds its cursor at the writer's snapshot index and folds forward. ──
         const joiner = spawnPeerChild(
           cfg({ role: 'reader', peerIndex: 2, root: root('j'), expectedWinners: COUNT, mergePollMs: 500, catchUpTimeoutMs: TEN_MIN }),
-          (l) => console.log(l),
+          () => {},
         );
         handles.push(joiner);
         expect(await joiner.waitFor('ready', TEN_MIN)).toBeTruthy();

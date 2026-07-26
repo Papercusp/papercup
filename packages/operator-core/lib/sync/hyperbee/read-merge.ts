@@ -478,17 +478,11 @@ export async function findLatestCompleteSnapshot(
   let i = len - 1;
   while (i >= floor) {
     const op = await readOpBounded(log, i, getTimeoutMs);
-    if (!op) {
-      if (process.env.P2P_SEED_DEBUG)
-        console.error(`[seed-dbg] scan-abort key=${log.keyHex.slice(0, 8)} len=${len} floor=${floor} i=${i}`);
-      return null; // unavailable/withholding tail → give up, fold from 0 (safe)
-    }
+    if (!op) return null; // unavailable/withholding tail → give up, fold from 0 (safe)
     if (isSnapshotOp(op)) {
       const p = op.value as SnapshotPayload | undefined;
       const coversUpTo = p?.coversUpTo ?? 0;
       const chunkCount = p?.chunkCount ?? 1;
-      if (process.env.P2P_SEED_DEBUG)
-        console.error(`[seed-dbg] snap-found i=${i} coversUpTo=${coversUpTo} chunkCount=${chunkCount} len=${len}`);
       if (await verifySnapshotSet(log, coversUpTo, chunkCount, getTimeoutMs)) {
         return { seedIndex: coversUpTo, coversUpTo, chunkCount };
       }
@@ -540,20 +534,12 @@ export async function seedCursorFromSnapshots(
   opts?: { maxLookback?: number; getTimeoutMs?: number },
 ): Promise<void> {
   for (const log of logs) {
-    if (cursor.positions.has(log.keyHex)) {
-      if (process.env.P2P_SEED_DEBUG)
-        console.error(
-          `[seed-dbg] skip-has-pos key=${log.keyHex.slice(0, 8)} pos=${cursor.positions.get(log.keyHex)} len=${log.length}`,
-        );
-      continue; // already folding — don't rewind
-    }
+    if (cursor.positions.has(log.keyHex)) continue; // already folding — don't rewind
     const idx = await findLatestSnapshotIndex(
       log,
       opts?.maxLookback ?? SNAPSHOT_SCAN_LOOKBACK,
       opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS,
     );
-    if (process.env.P2P_SEED_DEBUG)
-      console.error(`[seed-dbg] seed key=${log.keyHex.slice(0, 8)} len=${log.length} idx=${idx}`);
     if (idx !== null && idx > 0) cursor.positions.set(log.keyHex, idx);
   }
 }

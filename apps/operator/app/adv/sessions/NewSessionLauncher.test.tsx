@@ -33,8 +33,15 @@ vi.mock('@papercusp/operator-core/lib/launch-agent', () => ({
 vi.mock('@/app/admin/plans/plans-api', () => ({
   usePlanList: () => ({ data: { plans: h.planListData.plans }, loading: h.planListData.loading }),
 }));
-vi.mock('@/app/harness/Select', () => ({
-  Select: ({
+// The pickers became searchable Comboboxes under
+// `hud-session-launcher-and-board-tabs-2026-07-26` P-003. Stubbed to a native
+// <select> (which also reports role="combobox") so these tests keep exercising
+// LAUNCHER logic — which plan/model/effort reaches launchAgent — rather than
+// re-testing the combobox. The combobox's own behaviour (full list on focus,
+// filter as you type, scroll container, detail rows) is covered for real in
+// app/harness/__tests__/Combobox.test.tsx.
+vi.mock('@/app/harness/Combobox', () => ({
+  Combobox: ({
     value,
     onChange,
     options,
@@ -68,7 +75,10 @@ vi.mock('@/app/harness/Select', () => ({
   },
 }));
 
-import NewSessionLauncher, { PLAN_SELECT_PLACEHOLDER } from './NewSessionLauncher';
+import NewSessionLauncher, {
+  composeModelSpec,
+  PLAN_SELECT_PLACEHOLDER,
+} from './NewSessionLauncher';
 
 function plan(slug: string, over: Partial<Record<string, unknown>> = {}) {
   return {
@@ -192,6 +202,42 @@ describe('NewSessionLauncher', () => {
     await waitFor(() => expect(h.toastError).toHaveBeenCalled());
     expect(h.toastError.mock.calls[0][0]).toContain('boom');
     expect(onLaunched).not.toHaveBeenCalled();
+  });
+
+  // P-008 (owner ask 2026-07-26): "add another box with search/filter/dropdown
+  // behavior … to select the effort level."
+  it('renders an effort picker and folds the choice into the model spec', async () => {
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Model for new session' }), {
+      target: { value: 'opus' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Effort level for new session' }), {
+      target: { value: 'high' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+    expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ model: 'opus:high' }));
+  });
+
+  it('drops a bare effort when no model is chosen (never sends ":high")', async () => {
+    // Effort is meaningless without an explicit model — the default model's
+    // effort is the backend's to choose, so a lone effort must not synthesise
+    // a malformed spec.
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Effort level for new session' }), {
+      target: { value: 'high' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+    expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ model: null }));
+  });
+
+  it('composeModelSpec joins model and effort, and degrades cleanly', () => {
+    expect(composeModelSpec('sonnet', 'high')).toBe('sonnet:high');
+    expect(composeModelSpec('sonnet', '')).toBe('sonnet');
+    expect(composeModelSpec('', 'high')).toBe(null);
+    expect(composeModelSpec('', '')).toBe(null);
+    expect(composeModelSpec('  sonnet  ', '  high  ')).toBe('sonnet:high');
   });
 
   it('the plan picker default value is the placeholder sentinel with no selection', () => {

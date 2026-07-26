@@ -191,12 +191,17 @@ export function Combobox({
         </button>
       }
     >
-      <CmdK label={ariaLabel} loop className="h-combobox__cmd">
+      {/* cmdk renders `label` as a visually-hidden <label> for its input and
+          hardcodes aria-labelledby onto that input AFTER spreading props — so
+          an aria-label passed to CmdK.Input is silently overridden and the
+          input's accessible name comes from HERE. Naming it "Search <x>"
+          rather than "<x>" also keeps it distinct from the trigger button,
+          which carries the plain ariaLabel. */}
+      <CmdK label={`Search ${ariaLabel}`} loop className="h-combobox__cmd">
         <CmdK.Input
           value={query}
           onValueChange={setQuery}
           placeholder={searchPlaceholder}
-          aria-label={`Search ${ariaLabel}`}
           className="h-combobox__input"
         />
         <CmdK.List className="h-combobox__list">
