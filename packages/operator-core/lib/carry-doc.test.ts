@@ -244,6 +244,50 @@ describe('renderCarryDoc (pure)', () => {
     expect(text.indexOf('## Verbatim tail')).toBeLessThan(text.indexOf('## Self-recall'));
   });
 
+  it('EI-18684357744098956: a held checkpoint written well before the latest tail turn renders SUPERSEDED', () => {
+    // The verified incident's shape: a checkpoint written, then real session
+    // activity continued past it (here, the tail's latest turn is 10 minutes
+    // later) without the checkpoint being refreshed — the carry doc must not
+    // hand that stale claim over with the same authority as a current one.
+    const checkpointUpdatedAtMs = Date.parse('2026-07-14T09:50:00Z');
+    const text = renderCarryDoc(
+      doc({
+        brief: brief({
+          heldItems: [
+            {
+              id: 'WI-5943',
+              title: 'hyperdht instrumentation',
+              body: null,
+              harness: 'papercusp',
+              checkpoint: 'ZERO CODE HAS BEEN WRITTEN. No file is edited. Nothing is half-done.',
+              checkpointUpdatedAtMs,
+            },
+          ],
+        }),
+        // tail's latest turn is 2026-07-14T10:00:05Z — 10m+ after the checkpoint.
+      }),
+      NOW,
+    );
+    expect(text).toContain('⚠ SUPERSEDED');
+    expect(text).toContain('ZERO CODE HAS BEEN WRITTEN'); // never dropped, just flagged
+  });
+
+  it('a checkpoint written AT/after the latest tail turn renders as plain fact (not superseded)', () => {
+    const checkpointUpdatedAtMs = Date.parse('2026-07-14T10:00:04Z'); // 1s before the last turn
+    const text = renderCarryDoc(
+      doc({
+        brief: brief({
+          heldItems: [
+            { id: 'WI-1', title: null, body: null, harness: 'papercusp', checkpoint: 'landed and verified', checkpointUpdatedAtMs },
+          ],
+        }),
+      }),
+      NOW,
+    );
+    expect(text).not.toContain('SUPERSEDED');
+    expect(text).toContain('checkpoint: landed and verified');
+  });
+
   it('omits empty optional sections but always keeps banner/identity/mode/self-recall', () => {
     const text = renderCarryDoc(doc({ planItems: [], asks: [], tail: [] }), NOW);
     expect(text).not.toContain('## Plan state');

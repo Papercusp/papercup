@@ -89,8 +89,16 @@ beforeEach(async () => {
 
 describe('collectStalledClaimSignals — claim-hold exclusion (WI-3669 recurrence)', () => {
   it('flags a genuinely stalled claim (alive holder, stale progress, NOT claim-held)', async () => {
+    // EI-18683737202696167 (pre-existing, unrelated to the file's cross-pollution bug):
+    // seedBug's default `status: 'blocked'` is itself EXCLUDED by
+    // collectStalledClaimSignals's `fa.status IS DISTINCT FROM 'blocked'` filter (a
+    // blocked status IS one of the two "deliberately parked" shapes the query defends
+    // against — see the SQL comment in watchdog.ts). A "genuinely stalled, actively
+    // claimed" item must use a non-blocked status (e.g. 'wip') or this seed can never
+    // match the query regardless of holder/progress-age, silently asserting on an
+    // always-empty result.
     await seedPresence('su-stalled-holder');
-    await seedBug('SCT-TEST-001', 'su-stalled-holder', 60);
+    await seedBug('SCT-TEST-001', 'su-stalled-holder', 60, { status: 'wip' });
     const sigs = await collect();
     expect(sigs).toHaveLength(1);
     expect(sigs[0]!.source).toBe('stalled-claim');
@@ -106,7 +114,7 @@ describe('collectStalledClaimSignals — claim-hold exclusion (WI-3669 recurrenc
   it('a mixed set flags only the non-held stalled claim', async () => {
     await seedPresence('su-stalled-holder');
     await seedPresence('su-held-holder');
-    await seedBug('SCT-TEST-003', 'su-stalled-holder', 60);
+    await seedBug('SCT-TEST-003', 'su-stalled-holder', 60, { status: 'wip' });
     await seedBug('SCT-TEST-004', 'su-held-holder', 60, { claimHold: true });
     const sigs = await collect();
     expect(sigs).toHaveLength(1);

@@ -1,0 +1,360 @@
+<title>HUD-first navigation — tab hierarchy options</title>
+<style>
+  :root{
+    --ground:#0b0f14; --panel:#121a23; --raised:#18222d; --sunken:#0d141b;
+    --border:#243141; --border-soft:#1b2531;
+    --fg:#c9d6e2; --fg-strong:#e8f0f7; --fg-mute:#7a8c9e; --fg-dim:#4e5f70;
+    --accent:#5eead4; --accent-ink:#0b0f14;
+    --good:#22c55e; --warn:#f59e0b; --bad:#f43f5e;
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 8px 24px -12px rgba(0,0,0,.6);
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --ui:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --ground:#f4f7fa; --panel:#ffffff; --raised:#ffffff; --sunken:#eef3f7;
+      --border:#d5e0e9; --border-soft:#e5ecf2;
+      --fg:#1b2733; --fg-strong:#0c151e; --fg-mute:#5d6f80; --fg-dim:#93a3b2;
+      --accent:#0f766e; --accent-ink:#ffffff;
+      --shadow:0 1px 2px rgba(16,32,48,.06), 0 8px 24px -16px rgba(16,32,48,.25);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0b0f14; --panel:#121a23; --raised:#18222d; --sunken:#0d141b;
+    --border:#243141; --border-soft:#1b2531;
+    --fg:#c9d6e2; --fg-strong:#e8f0f7; --fg-mute:#7a8c9e; --fg-dim:#4e5f70;
+    --accent:#5eead4; --accent-ink:#0b0f14;
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+  :root[data-theme="light"]{
+    --ground:#f4f7fa; --panel:#ffffff; --raised:#ffffff; --sunken:#eef3f7;
+    --border:#d5e0e9; --border-soft:#e5ecf2;
+    --fg:#1b2733; --fg-strong:#0c151e; --fg-mute:#5d6f80; --fg-dim:#93a3b2;
+    --accent:#0f766e; --accent-ink:#ffffff;
+    --shadow:0 1px 2px rgba(16,32,48,.06), 0 8px 24px -16px rgba(16,32,48,.25);
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--fg);font-family:var(--ui);
+       font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:56px 24px 96px;display:flex;flex-direction:column;gap:44px}
+  .prose{max-width:68ch}
+  h1{font-size:clamp(26px,3.4vw,36px);line-height:1.15;letter-spacing:-.02em;margin:0 0 10px;
+     color:var(--fg-strong);text-wrap:balance;font-weight:650}
+  h2{font-size:20px;letter-spacing:-.01em;margin:0 0 6px;color:var(--fg-strong);font-weight:620;text-wrap:balance}
+  h3{font-size:15px;margin:0 0 4px;color:var(--fg-strong);font-weight:600}
+  p{margin:0 0 12px}
+  .lede{font-size:16.5px;color:var(--fg-mute)}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+           color:var(--fg-dim);margin:0 0 14px}
+  code{font-family:var(--mono);font-size:.88em;background:var(--sunken);border:1px solid var(--border-soft);
+       border-radius:4px;padding:1px 5px;color:var(--fg)}
+  strong{color:var(--fg-strong);font-weight:620}
+  hr{border:0;border-top:1px solid var(--border-soft);margin:0}
+
+  /* ── specimen frame: a mock of the operator chrome ───────────────── */
+  .option{display:flex;flex-direction:column;gap:14px}
+  .option-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .tag{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+       color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);
+       border-radius:999px;padding:2px 9px}
+  .tag--rec{background:color-mix(in srgb,var(--accent) 14%,transparent)}
+
+  .screen{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+          box-shadow:var(--shadow);overflow:hidden}
+  .screen-bar{display:flex;align-items:center;gap:7px;padding:8px 12px;border-bottom:1px solid var(--border-soft);
+              background:var(--sunken)}
+  .dotrow{display:flex;gap:5px}
+  .dotrow i{width:8px;height:8px;border-radius:50%;background:var(--border);display:block}
+  .screen-title{font-family:var(--mono);font-size:11px;color:var(--fg-dim)}
+  .strip-scroll{overflow-x:auto}
+  .strip{display:flex;align-items:center;gap:2px;padding:7px 10px;min-width:max-content}
+
+  .tab{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border-radius:6px;
+       font-size:13px;color:var(--fg-mute);white-space:nowrap;border:1px solid transparent;cursor:default}
+  .tab i{width:8px;height:8px;border-radius:2px;background:var(--sw,var(--fg-dim));flex:0 0 auto}
+  .tab.on{color:var(--fg-strong);background:color-mix(in srgb,var(--sw) 14%,transparent);
+          border-color:color-mix(in srgb,var(--sw) 42%,transparent)}
+  /* de-emphasised secondary treatment */
+  .tab.dim{color:var(--fg-dim);font-size:12.5px}
+  .tab.dim i{background:var(--fg-dim);opacity:.5;width:6px;height:6px}
+  .tab.ghost{color:var(--fg-dim);font-size:12.5px}
+  .tab.ghost i{display:none}
+  .sep{width:1px;align-self:stretch;background:var(--border);margin:2px 9px;flex:0 0 auto}
+  .more{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:6px;font-size:13px;
+        color:var(--fg-mute);border:1px dashed var(--border);white-space:nowrap}
+  .primary-group{display:inline-flex;gap:3px;padding:3px;border-radius:8px;background:var(--sunken);
+                 border:1px solid var(--border)}
+  .tier2{display:flex;gap:14px;padding:6px 14px 9px;border-top:1px solid var(--border-soft);
+         min-width:max-content;align-items:center}
+  .tier2 a{font-size:12.5px;color:var(--fg-dim);text-decoration:none;white-space:nowrap}
+  .tier2 .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+              color:var(--fg-dim);opacity:.7;margin-right:2px}
+
+  /* ── gains / costs ─────────────────────────────────────────────── */
+  .tradeoff{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:660px){.tradeoff{grid-template-columns:1fr}}
+  .cell{background:var(--panel);border:1px solid var(--border-soft);border-radius:7px;padding:12px 14px}
+  .cell h4{margin:0 0 6px;font-size:11px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;
+           font-weight:500}
+  .cell--good h4{color:var(--good)} .cell--cost h4{color:var(--warn)}
+  .cell ul{margin:0;padding-left:16px} .cell li{margin:0 0 4px;font-size:13.5px;color:var(--fg-mute)}
+  .cell li::marker{color:var(--fg-dim)}
+
+  .note{border-left:2px solid var(--accent);padding:2px 0 2px 14px;color:var(--fg-mute);font-size:14px}
+
+  /* ── panel split table ─────────────────────────────────────────── */
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:760px){.split{grid-template-columns:1fr}}
+  .col{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .col-h{padding:10px 14px;border-bottom:1px solid var(--border-soft);background:var(--sunken);
+         display:flex;align-items:baseline;gap:8px}
+  .col-h b{font-size:13.5px;color:var(--fg-strong);font-weight:620}
+  .col-h span{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-dim)}
+  .col ul{margin:0;padding:10px 14px 12px 30px}
+  .col li{font-size:13.5px;margin:0 0 5px;color:var(--fg-mute)}
+  .col li b{color:var(--fg);font-weight:600}
+  .why{padding:0 14px 12px;font-size:13px;color:var(--fg-dim)}
+
+  .addlist{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:10px}
+  .add{background:var(--panel);border:1px solid var(--border-soft);border-radius:7px;padding:11px 13px}
+  .add b{display:block;font-size:13.5px;color:var(--fg-strong);margin-bottom:3px}
+  .add p{margin:0;font-size:12.5px;color:var(--fg-mute);line-height:1.5}
+  .rank{font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.1em}
+</style>
+
+<div class="wrap">
+
+  <header class="prose">
+    <p class="eyebrow">Operator · /adv navigation</p>
+    <h1>Pointing people at two tabs</h1>
+    <p class="lede">Four ways to make <strong>Overview</strong> and <strong>HUD</strong> read as the places you go, while the other thirteen stay one click away.</p>
+    <p class="note">The strip has <strong>15 tabs, and every one carries its own accent colour</strong> — indigo, teal, amber, violet, rose, green, lime, blue, pink, emerald, yellow, orange. Colour is currently decoration, not hierarchy: when everything is highlighted, nothing is. That single fact is the cheapest lever available, and three of the four options below pull it.</p>
+  </header>
+
+  <hr>
+
+  <!-- BASELINE -->
+  <section class="option">
+    <div class="option-head"><h2>Today</h2><span class="tag">baseline</span></div>
+    <p class="prose" style="margin:0;color:var(--fg-mute);font-size:14px">Fifteen peers. Nothing tells you where to start.</p>
+    <div class="screen">
+      <div class="screen-bar"><div class="dotrow"><i></i><i></i><i></i></div><span class="screen-title">papercusp operator — /adv</span></div>
+      <div class="strip-scroll"><div class="strip">
+        <span class="tab" style="--sw:#818cf8"><i></i>Overview</span>
+        <span class="tab on" style="--sw:#5eead4"><i></i>HUD</span>
+        <span class="tab" style="--sw:#f59e0b"><i></i>Create</span>
+        <span class="tab" style="--sw:#2dd4bf"><i></i>Calendar</span>
+        <span class="tab" style="--sw:#a78bfa"><i></i>Working</span>
+        <span class="tab" style="--sw:#f43f5e"><i></i>Health</span>
+        <span class="tab" style="--sw:#38bdf8"><i></i>Frames</span>
+        <span class="tab" style="--sw:#22c55e"><i></i>Git</span>
+        <span class="tab" style="--sw:#84cc16"><i></i>Tests</span>
+        <span class="tab" style="--sw:#60a5fa"><i></i>Docs</span>
+        <span class="tab" style="--sw:#14b8a6"><i></i>Insights</span>
+        <span class="tab" style="--sw:#ec4899"><i></i>Conversations</span>
+        <span class="tab" style="--sw:#34d399"><i></i>Learning</span>
+        <span class="tab" style="--sw:#eab308"><i></i>Evaluation</span>
+        <span class="tab" style="--sw:#f97316"><i></i>Settings</span>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- A -->
+  <section class="option">
+    <div class="option-head"><h2>A · Colour becomes the hierarchy</h2><span class="tag">smallest change</span></div>
+    <p class="prose" style="margin:0;color:var(--fg-mute);font-size:14px">Only Overview and HUD keep their accent. The other thirteen drop to neutral — same position, same order, same click. Nothing moves; the eye just stops being pulled fifteen ways.</p>
+    <div class="screen">
+      <div class="screen-bar"><div class="dotrow"><i></i><i></i><i></i></div><span class="screen-title">A — desaturate secondary</span></div>
+      <div class="strip-scroll"><div class="strip">
+        <span class="tab" style="--sw:#818cf8"><i></i>Overview</span>
+        <span class="tab on" style="--sw:#5eead4"><i></i>HUD</span>
+        <span class="tab dim"><i></i>Create</span>
+        <span class="tab dim"><i></i>Calendar</span>
+        <span class="tab dim"><i></i>Working</span>
+        <span class="tab dim"><i></i>Health</span>
+        <span class="tab dim"><i></i>Frames</span>
+        <span class="tab dim"><i></i>Git</span>
+        <span class="tab dim"><i></i>Tests</span>
+        <span class="tab dim"><i></i>Docs</span>
+        <span class="tab dim"><i></i>Insights</span>
+        <span class="tab dim"><i></i>Conversations</span>
+        <span class="tab dim"><i></i>Learning</span>
+        <span class="tab dim"><i></i>Evaluation</span>
+        <span class="tab dim"><i></i>Settings</span>
+      </div></div>
+    </div>
+    <div class="tradeoff">
+      <div class="cell cell--good"><h4>Gains</h4><ul>
+        <li>Zero navigation loss — every tab stays exactly where muscle memory expects</li>
+        <li>Reversible in one commit; it is a styling change, not a structural one</li>
+        <li>Keeps each tab's accent available for its <em>active</em> state, so colour still means something</li>
+      </ul></div>
+      <div class="cell cell--cost"><h4>Costs</h4><ul>
+        <li>Weakest guidance of the four — a determined wanderer still sees fifteen doors</li>
+        <li>Thirteen tabs of low-contrast text needs a careful floor, or it fails accessibility</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- B -->
+  <section class="option">
+    <div class="option-head"><h2>B · Two, a rule, then the rest</h2><span class="tag tag--rec">recommended</span></div>
+    <p class="prose" style="margin:0;color:var(--fg-mute);font-size:14px">Overview and HUD sit in a raised group, separated by a hairline. Everything after the rule reads as the drawer you go to on purpose. Combines with A — the secondary set is also neutral.</p>
+    <div class="screen">
+      <div class="screen-bar"><div class="dotrow"><i></i><i></i><i></i></div><span class="screen-title">B — primary group + divider</span></div>
+      <div class="strip-scroll"><div class="strip">
+        <span class="primary-group">
+          <span class="tab" style="--sw:#818cf8"><i></i>Overview</span>
+          <span class="tab on" style="--sw:#5eead4"><i></i>HUD</span>
+        </span>
+        <span class="sep"></span>
+        <span class="tab ghost">Create</span>
+        <span class="tab ghost">Calendar</span>
+        <span class="tab ghost">Working</span>
+        <span class="tab ghost">Health</span>
+        <span class="tab ghost">Frames</span>
+        <span class="tab ghost">Git</span>
+        <span class="tab ghost">Tests</span>
+        <span class="tab ghost">Docs</span>
+        <span class="tab ghost">Insights</span>
+        <span class="tab ghost">Conversations</span>
+        <span class="tab ghost">Learning</span>
+        <span class="tab ghost">Evaluation</span>
+        <span class="tab ghost">Settings</span>
+      </div></div>
+    </div>
+    <div class="tradeoff">
+      <div class="cell cell--good"><h4>Gains</h4><ul>
+        <li>States the hierarchy structurally, not just tonally — the rule is a claim about importance</li>
+        <li>Still zero clicks lost; nothing is hidden from a new user or from <code>ui:dispatch</code></li>
+        <li>Dropping the swatches from the secondary set buys back real horizontal room</li>
+      </ul></div>
+      <div class="cell cell--cost"><h4>Costs</h4><ul>
+        <li>The strip is still long, and on a narrow window it still scrolls</li>
+        <li>Two visual treatments in one strip needs care not to look like a bug</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- C -->
+  <section class="option">
+    <div class="option-head"><h2>C · Two tabs and a More menu</h2><span class="tag">strongest guidance</span></div>
+    <p class="prose" style="margin:0;color:var(--fg-mute);font-size:14px">Only the two destinations are on the bar. The other thirteen live behind <strong>More</strong>, grouped and searchable.</p>
+    <div class="screen">
+      <div class="screen-bar"><div class="dotrow"><i></i><i></i><i></i></div><span class="screen-title">C — overflow menu</span></div>
+      <div class="strip-scroll"><div class="strip">
+        <span class="tab" style="--sw:#818cf8"><i></i>Overview</span>
+        <span class="tab on" style="--sw:#5eead4"><i></i>HUD</span>
+        <span class="sep"></span>
+        <span class="more">More <span style="color:var(--fg-dim)">▾</span></span>
+        <span style="font-size:12px;color:var(--fg-dim);margin-left:8px">13 more</span>
+      </div></div>
+    </div>
+    <div class="tradeoff">
+      <div class="cell cell--good"><h4>Gains</h4><ul>
+        <li>Unambiguous — there are two places to be, and the interface says so</li>
+        <li>Reclaims the entire strip; no horizontal scroll at any width</li>
+        <li>A menu can group and label ("Build", "Inspect", "System") in a way a flat strip cannot</li>
+      </ul></div>
+      <div class="cell cell--cost"><h4>Costs</h4><ul>
+        <li>Every secondary tab costs a click and a hunt — worst option for a power user who lives in Git or Tests</li>
+        <li>Hidden means undiscoverable: a new user may never learn Learning or Evaluation exist</li>
+        <li>Most build work, and the least reversible if it turns out to annoy you daily</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- D -->
+  <section class="option">
+    <div class="option-head"><h2>D · Two tiers</h2><span class="tag">best for wide windows</span></div>
+    <p class="prose" style="margin:0;color:var(--fg-mute);font-size:14px">The two destinations get a real tab bar. The rest becomes a quieter utility row beneath it — present, scannable, clearly subordinate.</p>
+    <div class="screen">
+      <div class="screen-bar"><div class="dotrow"><i></i><i></i><i></i></div><span class="screen-title">D — primary bar + utility row</span></div>
+      <div class="strip-scroll"><div class="strip">
+        <span class="tab" style="--sw:#818cf8;font-size:14px;padding:8px 16px"><i></i>Overview</span>
+        <span class="tab on" style="--sw:#5eead4;font-size:14px;padding:8px 16px"><i></i>HUD</span>
+      </div>
+      <div class="tier2">
+        <span class="lbl">also</span>
+        <a href="#">Create</a><a href="#">Calendar</a><a href="#">Working</a><a href="#">Health</a>
+        <a href="#">Frames</a><a href="#">Git</a><a href="#">Tests</a><a href="#">Docs</a>
+        <a href="#">Insights</a><a href="#">Conversations</a><a href="#">Learning</a>
+        <a href="#">Evaluation</a><a href="#">Settings</a>
+      </div></div>
+    </div>
+    <div class="tradeoff">
+      <div class="cell cell--good"><h4>Gains</h4><ul>
+        <li>Strong hierarchy with <em>no</em> hiding — everything stays one click, always visible</li>
+        <li>The two primaries can afford to be physically larger, which reads as importance faster than colour</li>
+      </ul></div>
+      <div class="cell cell--cost"><h4>Costs</h4><ul>
+        <li>Spends a row of vertical space on every screen, forever — costly on a dense board like the HUD</li>
+        <li>Thirteen text links can read as a footer rather than navigation if the spacing is off</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <hr>
+
+  <section class="prose">
+    <h2>What I'd ship</h2>
+    <p><strong>B, with A folded into it</strong> — primary group, hairline, and a desaturated secondary set. It is the only option that states the hierarchy structurally while costing nobody a click, and it is a styling-and-grouping change to one array in <code>AdvShell.tsx</code>, so it is cheap to try and cheap to undo.</p>
+    <p>I'd avoid C as a first move. Hiding thirteen tabs is easy to build and hard to walk back — and you are the heaviest user of Git, Tests and Working, so you would feel that click every day. If B proves too weak after living with it, C is the escalation.</p>
+    <p class="note">Whichever we pick, the tab <em>ids</em> stay as they are. They are serialised into <code>?tab=</code> URLs, deep links, and the agent <code>ui:dispatch</code> surface — the code comment on <code>harnesses</code>/"Working" already warns that renaming an id breaks all three. This is a presentation change only.</p>
+  </section>
+
+  <hr>
+
+  <!-- ASK 4 -->
+  <section>
+    <div class="prose">
+      <h2>Where the session detail should live</h2>
+      <p style="color:var(--fg-mute)">Not "move it all" or "keep it all" — split by <strong>how often you look</strong>. The bottom strip is in your reading path, so it should carry only what changes while you watch and what you'd act on. The side panel is a lookup surface you consult on purpose.</p>
+    </div>
+    <div class="split">
+      <div class="col">
+        <div class="col-h"><b>Keep at the bottom</b><span>glanceable · changes live</span></div>
+        <ul>
+          <li><b>Liveness</b> — the dot, and how long since it spoke</li>
+          <li><b>Context %</b> — is it about to compact mid-thought</li>
+          <li><b>Current claim</b> — the work item it holds right now</li>
+          <li><b>Mode chips</b> — AUTO / IDEATE / DRAIN</li>
+          <li><b>Awaiting</b> — the gate it is parked on</li>
+        </ul>
+        <p class="why">These answer "is this still true?" while you read the transcript. Moving them costs a glance you take constantly.</p>
+      </div>
+      <div class="col">
+        <div class="col-h"><b>Move to the panel</b><span>reference · rarely changes</span></div>
+        <ul>
+          <li><b>Host, PID, CWD</b> — identity you look up once</li>
+          <li><b>Resume command</b> — you copy it, you don't watch it</li>
+          <li><b>Native session ids</b> — debugging detail</li>
+          <li><b>Locks</b> — a list, not a glance</li>
+          <li><b>Coord history</b> — a list, not a glance</li>
+        </ul>
+        <p class="why">Long-lived facts and multi-row lists. They make the footer noisy and they never change while you read.</p>
+      </div>
+    </div>
+    <p class="prose" style="margin-top:14px;color:var(--fg-mute);font-size:14px">One exception worth keeping in both places: a compact <code>⚠ 2 locks · 3 unread</code> summary chip stays in the footer and scrolls the panel to that section. The glance stays where you read; the detail moves where there's room.</p>
+  </section>
+
+  <hr>
+
+  <!-- ASK 3 -->
+  <section>
+    <div class="prose">
+      <h2>What else the panel should carry</h2>
+      <p style="color:var(--fg-mute)">Ordered by how often it answers the question you actually opened the panel to ask — <em>is this agent healthy, and will it keep going?</em></p>
+    </div>
+    <div class="addlist">
+      <div class="add"><span class="rank">01</span><b>Loop status</b><p>Armed? At what interval? When does it next fire? This is the difference between "quiet" and "never waking again" — and nothing in the UI shows it today.</p></div>
+      <div class="add"><span class="rank">02</span><b>Current claim</b><p>The panel shows PLAN but not the work item. The claim is what the agent is actually doing.</p></div>
+      <div class="add"><span class="rank">03</span><b>Context pressure</b><p>Used / limit with a bar. The HUD already derives it; the dossier doesn't show it.</p></div>
+      <div class="add"><span class="rank">04</span><b>Last checkpoint</b><p>The carry note it would resume from. Tells you what a restart actually costs.</p></div>
+      <div class="add"><span class="rank">05</span><b>Unanswered directed</b><p>How many peers are blocked waiting on this agent to reply.</p></div>
+      <div class="add"><span class="rank">06</span><b>Last tool call</b><p>Real activity, not heartbeat — a warm-dead session looks alive by heartbeat alone.</p></div>
+    </div>
+  </section>
+
+</div>
