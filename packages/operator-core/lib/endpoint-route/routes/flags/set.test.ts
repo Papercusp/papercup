@@ -15,12 +15,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('@papercusp/flags/server', () => ({
   setFlag: vi.fn(),
   setFlagOverride: vi.fn(),
+  getFlag: vi.fn(),
 }));
 vi.mock('../../../flag-bus', () => ({ publishFlagChange: vi.fn() }));
 vi.mock('../../../flag-audit', () => ({ recordFlagAudit: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('@papercusp/flags', () => ({ ALL_FLAG_KEYS: ['papercusp-the-hive', 'papercusp-accept-delegated-seats'] }));
 
-import { setFlag, setFlagOverride } from '@papercusp/flags/server';
+import { setFlag, setFlagOverride, getFlag } from '@papercusp/flags/server';
 import route from './set';
 
 function ctxFor(key: string, enabled: boolean) {
@@ -35,6 +36,16 @@ async function callRoute(key: string, enabled: boolean) {
 beforeEach(() => {
   vi.mocked(setFlag).mockReset();
   vi.mocked(setFlagOverride).mockReset();
+  vi.mocked(getFlag).mockReset();
+  // Default: the readback echoes back whatever the most recent setFlagOverride call
+  // wrote — i.e. the write "took" as far as this process's own resolver is concerned.
+  // Tests targeting the readback GUARD itself override this per-case to simulate a
+  // write/read mismatch.
+  vi.mocked(getFlag).mockImplementation(async () => {
+    const calls = vi.mocked(setFlagOverride).mock.calls;
+    const last = calls[calls.length - 1];
+    return last ? (last[1] as boolean) : true;
+  });
 });
 
 describe('POST /api/flags/set — PG-override fallback', () => {
@@ -105,5 +116,45 @@ describe('POST /api/flags/set — PG-override fallback', () => {
     expect(status).toBe(400);
     expect(body.ok).toBe(false);
     expect(setFlag).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/flags/set — read-back guard (EI-18712738949489735)', () => {
+  it('reports ok:true, applied:true on the pg-override path when the readback confirms the flip', async () => {
+    vi.mocked(setFlag).mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
+    vi.mocked(setFlagOverride).mockResolvedValue({ ok: true });
+    vi.mocked(getFlag).mockResolvedValue(true);
+
+    const { status, body } = await callRoute('papercusp-the-hive', true);
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ ok: true, applied: true, backend: 'pg-override' });
+  });
+
+  it('FALSE-TEST-SETUP CLASS BUG: returns ok:false, applied:false, 502 (not a bare 200) when the pg-override write "succeeds" but this process\'s own getFlag() still resolves the OLD value', async () => {
+    vi.mocked(setFlag).mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
+    vi.mocked(setFlagOverride).mockResolvedValue({ ok: true });
+    // The write reports success, but readback disagrees — e.g. a resolving process
+    // with no propagated override-store view (the exact silent-no-op this bug is about).
+    vi.mocked(getFlag).mockResolvedValue(false);
+
+    const { status, body } = await callRoute('papercusp-the-hive', true);
+
+    expect(status).toBe(502);
+    expect(body).toMatchObject({ ok: false, applied: false, key: 'papercusp-the-hive', backend: 'pg-override' });
+    expect(body.error).toContain('not observably applied');
+  });
+
+  it('does not run the readback (or fail on its account) on the posthog-success path', async () => {
+    vi.mocked(setFlag).mockResolvedValue({ ok: true });
+    vi.mocked(setFlagOverride).mockResolvedValue({ ok: true });
+    // If the route wrongly ran a readback here, this "wrong" resolution would fail it.
+    vi.mocked(getFlag).mockResolvedValue(false);
+
+    const { status, body } = await callRoute('papercusp-the-hive', true);
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ ok: true, applied: true, backend: 'posthog' });
+    expect(getFlag).not.toHaveBeenCalled();
   });
 });

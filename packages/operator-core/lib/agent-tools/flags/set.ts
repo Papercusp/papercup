@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
 import { ALL_FLAG_KEYS, type FlagKey } from '@papercusp/flags';
-import { setFlag, setFlagOverride } from '@papercusp/flags/server';
+import { setFlag, setFlagOverride, getFlag } from '@papercusp/flags/server';
 import { publishFlagChange } from '../../flag-bus';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import './_register-backend';
@@ -98,6 +98,19 @@ export default defineTool({
         if (result.reason === 'flag-backend-not-configured') {
           const override = await setFlagOverride(key, enabled);
           if (override.ok) {
+            // EI-18712738949489735 (FALSE-TEST-SETUP CLASS BUG): a successful
+            // pg-override WRITE does not by itself prove the flip is observable —
+            // read back in-process before reporting success, so a caller (an agent
+            // or a rig script) is never told `ok:true` for a flip its own resolving
+            // process doesn't actually see (e.g. no override store propagated here).
+            const verified = await getFlag(key, 'system');
+            if (verified !== enabled) {
+              return {
+                ok: false as const,
+                key,
+                error: `pg-override write reported success but this process's own getFlag() still resolves ${verified} (expected ${enabled}) — not observably applied here`,
+              };
+            }
             publishFlagChange(key);
             const { recordFlagAudit } = await import('../../flag-audit');
             await recordFlagAudit(key, enabled, actor, { reason: args.reason, backend: 'pg-override' });

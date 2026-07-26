@@ -13,7 +13,7 @@
 import { z } from 'zod';
 
 import { ALL_FLAG_KEYS, type FlagKey } from '@papercusp/flags';
-import { setFlag, setFlagOverride } from '@papercusp/flags/server';
+import { setFlag, setFlagOverride, getFlag } from '@papercusp/flags/server';
 import { publishFlagChange } from '../../../flag-bus';
 import '../../../flag-bus';
 import { recordFlagAudit } from '../../../flag-audit';
@@ -40,7 +40,7 @@ export default defineTool({
       await setFlagOverride(key, null);
       publishFlagChange(key);
       await recordFlagAudit(key, enabled, ctx.principal?.slug ?? 'operator', { backend: 'posthog' });
-      return Response.json({ ok: true, key, enabled, backend: 'posthog' });
+      return Response.json({ ok: true, applied: true, key, enabled, backend: 'posthog' });
     }
     // EI-7088: fall back to the PG override store for ANY setFlag failure, not
     // just 'flag-backend-not-configured'. PostHog CONFIGURED-but-unreachable
@@ -54,11 +54,37 @@ export default defineTool({
     const override = await setFlagOverride(key, enabled);
     if (override.ok) {
       publishFlagChange(key);
+      // EI-18712738949489735 (FALSE-TEST-SETUP CLASS BUG): a successful pg-override
+      // WRITE does not by itself prove the flip is OBSERVABLE — a stale per-scope
+      // read cache, a workspace-scope mismatch between the writer and a later reader,
+      // or (the historical codex-gateway-chatgpt-live case) a resolving process that
+      // never installed the override store at all can all make this same process's
+      // OWN getFlag() keep serving the old value even though the write "succeeded".
+      // Read back in-process, right now, before claiming success — a caller (a rig
+      // script arming a flag before relying on it) must never be told `ok:true` for a
+      // flip its own resolver doesn't yet see. Scoped to the pg-override path only:
+      // the posthog path already round-trips through the SAME client this process
+      // reads with, and posthog's own local-eval poll interval would make a readback
+      // here a source of flaky false negatives, not a real signal.
+      const verified = await getFlag(key, 'system');
+      if (verified !== enabled) {
+        return Response.json(
+          {
+            ok: false,
+            applied: false,
+            key,
+            enabled,
+            backend: 'pg-override',
+            error: `pg-override write reported success but this process's own getFlag() still resolves ${verified} (expected ${enabled}) — the write is not observably applied here; treat as NOT armed`,
+          },
+          { status: 502 },
+        );
+      }
       await recordFlagAudit(key, enabled, ctx.principal?.slug ?? 'operator', {
         backend: 'pg-override',
         posthogFailureReason: result.reason,
       });
-      return Response.json({ ok: true, key, enabled, backend: 'pg-override', posthogFailureReason: result.reason });
+      return Response.json({ ok: true, applied: true, key, enabled, backend: 'pg-override', posthogFailureReason: result.reason });
     }
     return Response.json(
       { ok: false, error: `posthog: ${result.reason}; pg-override fallback also failed: ${override.reason}`, key },

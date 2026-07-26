@@ -1383,6 +1383,42 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
     const command = "python3 -c \"open('notes.txt', 'w').write('x')\"";
     expectAllow(runGate(bashCmd(command, { cwd: '/tmp/outside-canonical' }), CANON_ENV));
   });
+
+  /**
+   * EI-18700825865251498 — the literal-path scan mismatched quote TYPES:
+   * `['"]([^'"\n]+)['"]` happily pairs a `'` with a `"` (or vice versa), so
+   * an apostrophe inside one double-quoted string literal (e.g. `"it's
+   * differs"`) closes that "string" early, and the NEXT quote character
+   * anywhere later on the same line then closes a bogus "string" whose
+   * content is actual CODE TEXT — never a literal at all. Repro'd live
+   * 2026-07-26: a heredoc python for-loop line containing
+   * `if "it's differs" in ln: ln = ln.replace("differs", "diffs")` produced
+   * the garbage "path" ` in ln: ln = ln.replace(` — which contains a `.`
+   * (from `ln.replace`), so `_resolve_write_target` resolved it against a
+   * cwd inside the canonical tree and DENIED a script whose real `open(...)`
+   * targets were both absolute `/tmp` paths nowhere near the tree (exactly
+   * the "genuinely a scratch file? write it to /tmp" case the guard's own
+   * remedy text endorses).
+   */
+  it('allows the exact repro: a heredoc /tmp write whose CODE contains a mismatched-quote-type line (an apostrophe inside a "double-quoted" string)', () => {
+    const command =
+      "python3 - <<'EOF'\n" +
+      "with open('/tmp/wi5980-live/fixture-source.log') as f:\n" +
+      "    lines = f.readlines()\n" +
+      "out = []\n" +
+      "for ln in lines:\n" +
+      "    if \"it's differs\" in ln: ln = ln.replace(\"differs\", \"diffs\")\n" +
+      "    out.append(ln)\n" +
+      "with open('/tmp/wi5980-live/fixture-differs.log', 'w') as f:\n" +
+      "    f.writelines(out)\n" +
+      'EOF';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('the quote-type fix is scoped to the mismatch — a LITERAL in-tree write sharing a line with a stray apostrophe still denies (masking control)', () => {
+    const command = `python3 -c "open('apps/operator/generated.ts', 'w').write('x')  # it's fine"`;
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
 });
 
 /**

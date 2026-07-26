@@ -149,12 +149,25 @@ describe('flags:set (bulk keyed-array, P-006)', () => {
   it('on flag-backend-not-configured: falls back to pg-override → {ok:true, backend:pg-override}', async () => {
     setFlag.mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
     setFlagOverride.mockResolvedValue({ ok: true });
+    getFlag.mockResolvedValue(true); // readback confirms the write took
     const { default: tool } = await import('../set');
     const b = parseEnvelope(await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX()) as never);
     expect(setFlag).toHaveBeenCalledWith(KEY, true);
     expect(setFlagOverride).toHaveBeenCalledWith(KEY, true);
     expect(publishFlagChange).toHaveBeenCalledWith(KEY);
     expect(b.results[0]).toEqual({ ok: true, key: KEY, enabled: true, backend: 'pg-override' });
+  });
+
+  it('EI-18712738949489735: pg-override write "succeeds" but readback disagrees → the item fails, does NOT publish', async () => {
+    setFlag.mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
+    setFlagOverride.mockResolvedValue({ ok: true });
+    getFlag.mockResolvedValue(false); // resolving process still sees the OLD value
+    const { default: tool } = await import('../set');
+    const b = parseEnvelope(await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX()) as never);
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, key: KEY });
+    expect(b.results[0].error).toMatch(/not observably applied/);
+    expect(publishFlagChange).not.toHaveBeenCalled();
   });
 
   it('on other backend failure: the item fails ({ ok:false, key, error }) and does NOT publish; batch ok:true', async () => {
