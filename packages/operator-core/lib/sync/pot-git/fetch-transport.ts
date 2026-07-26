@@ -179,11 +179,30 @@ export function serveUploadPack(
  * that socket. Resolves with the exit result; never throws. Cleans up the socket
  * + temp dir on completion.
  */
+export interface FetchOverDuplexOptions {
+  timeoutMs?: number;
+  /** WI-6189 resumable cold-join: `--depth=<n>` — request a SHALLOW fetch
+   *  truncated to `n` commits per tip. The ladder's first rung: for the
+   *  papercusp pot-home store this is a 78 MB transfer against 2.5 GB for the
+   *  full history. Mutually exclusive with {@link deepen}. */
+  depth?: number;
+  /** WI-6189: `--deepen=<n>` — extend an ALREADY-shallow repo by `n` more
+   *  commits per tip. Each successful deepen is durably committed to the local
+   *  ODB + refs, so an interrupted ladder resumes from where it stopped
+   *  instead of restarting. Mutually exclusive with {@link depth}. */
+  deepen?: number;
+  /** Suppress git's automatic tag-following. The bootstrap ladder sets this:
+   *  auto-followed tags land OUTSIDE the requested refspec (in `refs/tags/*`),
+   *  dragging in history nobody asked for and making a shallow rung's transfer
+   *  size unpredictable. */
+  noTags?: boolean;
+}
+
 export function fetchOverDuplex(
   localRepoPath: string,
   duplex: Duplex,
   refspecs: string[],
-  opts: { timeoutMs?: number } = {},
+  opts: FetchOverDuplexOptions = {},
 ): Promise<TransportResult> {
   return new Promise((resolve) => {
     let stderr = '';
@@ -355,6 +374,13 @@ export function fetchOverDuplex(
         const cleanEnv = { ...process.env } as Record<string, string | undefined>;
         delete cleanEnv.NODE_OPTIONS;
         delete cleanEnv.TSX_TSCONFIG_PATH;
+        // WI-6189: the shallow-ladder knobs. `--depth` and `--deepen` are
+        // mutually exclusive in git; depth wins if a caller passes both
+        // (bootstrap.ts never does — its phase machine picks exactly one).
+        const ladderArgs: string[] = [];
+        if (opts.noTags) ladderArgs.push('--no-tags');
+        if (opts.depth !== undefined) ladderArgs.push(`--depth=${opts.depth}`);
+        else if (opts.deepen !== undefined) ladderArgs.push(`--deepen=${opts.deepen}`);
         child = spawn(
           'git',
           [
@@ -364,6 +390,7 @@ export function fetchOverDuplex(
             'protocol.version=2',
             'fetch',
             '--no-write-fetch-head',
+            ...ladderArgs,
             url,
             ...refspecs,
           ],

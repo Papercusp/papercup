@@ -29,7 +29,7 @@
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdir, access, rm } from 'node:fs/promises';
+import { mkdir, access, readdir, rm, stat, unlink } from 'node:fs/promises';
 
 /** Per-call override for {@link defaultRunGit}'s kill-timeout. */
 export interface RunGitOptions {
@@ -219,6 +219,65 @@ export async function pathExists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** How long an `objects/pack/tmp_*` file must be untouched before
+ *  {@link sweepStalePackTmpFiles} reclaims it. Comfortably past
+ *  `DEFAULT_FETCH_TIMEOUT_MS` (120 s), so a fetch that is genuinely still in
+ *  flight — ours or another leg's — never has its temp pack pulled out from
+ *  under it. */
+export const STALE_PACK_TMP_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * EI-18745600910177355: reclaim orphaned `index-pack` temp files.
+ *
+ * `git index-pack` (inside `git fetch`) streams an incoming pack to
+ * `objects/pack/tmp_pack_XXXXXX` and only renames it to its final
+ * `pack-<sha>.pack` once the pack is fully received AND delta-resolved. It
+ * unlinks the temp file on a clean error exit — but BOTH pot-git failure
+ * paths kill it with an uncatchable **SIGKILL** (`fetchOverDuplex`'s timeout
+ * ceiling, and the duplex-error path when a pot-git channel closes mid-pack),
+ * so that cleanup never runs. Nothing else sweeps them: `git gc` only prunes
+ * temp names it wrote itself.
+ *
+ * Live cost, measured on the P-302 rig VM: **13 orphans totalling 21 GB** in a
+ * store holding 0 refs and 64 MB of real objects — one leaked partial pack per
+ * interrupted cold-join, up to the full repo size each, on a ~5-minute tick.
+ *
+ * Best-effort and never throws: a missing pack dir, a racing unlink, or an
+ * unreadable entry is skipped. Returns what it actually reclaimed.
+ */
+export async function sweepStalePackTmpFiles(
+  repoPath: string,
+  opts: { maxAgeMs?: number; now?: number } = {},
+): Promise<{ removed: string[]; bytesReclaimed: number }> {
+  const maxAgeMs = opts.maxAgeMs ?? STALE_PACK_TMP_MAX_AGE_MS;
+  const now = opts.now ?? Date.now();
+  const packDir = join(repoPath, 'objects', 'pack');
+  const removed: string[] = [];
+  let bytesReclaimed = 0;
+  let entries: string[];
+  try {
+    entries = await readdir(packDir);
+  } catch {
+    return { removed, bytesReclaimed }; // no pack dir yet — nothing to sweep
+  }
+  for (const name of entries) {
+    // index-pack's own temp names. Anchored so a real `pack-*.pack`/`.idx`
+    // (or anything else git owns) can never match.
+    if (!/^tmp_(pack|idx)_/.test(name)) continue;
+    const full = join(packDir, name);
+    try {
+      const st = await stat(full);
+      if (now - st.mtimeMs < maxAgeMs) continue; // possibly still in flight
+      await unlink(full);
+      removed.push(name);
+      bytesReclaimed += st.size;
+    } catch {
+      // vanished under us, or unreadable — either way not ours to worry about
+    }
+  }
+  return { removed, bytesReclaimed };
 }
 
 /**
