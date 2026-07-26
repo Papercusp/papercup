@@ -120,8 +120,8 @@ export function shapeOpenQuestions(
     count: entries.length,
     questions: entries.slice(0, cap),
     hint:
-      `${entries.length} open question${entries.length === 1 ? '' : 's'} in this workspace ` +
-      'has gone UNANSWERED (nobody replied). Topic push reaches nobody — there are no topic ' +
+      `${entries.length} open question${entries.length === 1 ? ' in this workspace has' : 's in this workspace have'} ` +
+      'gone UNANSWERED (nobody replied). Topic push reaches nobody — there are no topic ' +
       'subscribers — so these only get answered if someone pulls them here. If you know an ' +
       'answer, conversations:answer { id, body } — it costs you a minute and unblocks the asker. ' +
       'conversations:list { kind:"question", state:"open", unansweredOnly:true } for the rest.',

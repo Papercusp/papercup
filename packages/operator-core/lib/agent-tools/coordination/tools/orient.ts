@@ -1257,6 +1257,7 @@ export function assembleOrientOutput(legs: {
   taskToolSchemaPack?: unknown;
   result: object;
 }): Record<string, unknown> {
+  const { openQuestions: hoistedOpenQuestions } = legs.result as { openQuestions?: unknown };
   return {
     ...(legs.self ? { self: legs.self } : {}),
     ...(legs.recovery ? { recovery: legs.recovery } : {}),
@@ -1268,6 +1269,18 @@ export function assembleOrientOutput(legs: {
     ...(legs.configIntegrity ? { configIntegrity: legs.configIntegrity } : {}),
     ...(legs.codexLocks ? { codexLocks: legs.codexLocks } : {}),
     ...(legs.taskToolSchemaPack ? { taskToolSchemaPack: legs.taskToolSchemaPack } : {}),
+    // WI-5807 (P-007): HOIST the open-questions fold out of `result` so it outranks
+    // that whole re-fetchable tail. composeOrient sets it last (it is the last leg to
+    // run), which would put it at the very end of the serialized JSON — i.e. first
+    // over the door's cut line on any real orient, since a live orient routinely
+    // serializes several times the per-result budget. A nudge that is reliably
+    // truncated away is a nudge that ships dead, which is the exact failure this
+    // whole work-item exists to fix. Hoisted here rather than duplicated at the call
+    // site so `result.openQuestions` stays the single source (OrientResult keeps the
+    // typed field; the rest spread below still carries everything else, unreordered).
+    // (A duplicate key in a later spread keeps its FIRST insertion position, so the
+    // `...legs.result` below re-supplies the identical value without moving it back.)
+    ...(hoistedOpenQuestions ? { openQuestions: hoistedOpenQuestions } : {}),
     ...legs.result,
   };
 }
