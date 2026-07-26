@@ -108,25 +108,29 @@ export const DEFAULT_MODEL_TIERS: readonly ModelTier[] = [
   { name: 'quick', spec: 'haiku', when: 'trivial / mechanical work (renames, single-file fixes, mechanical sweeps)' },
   { name: 'standard', spec: 'sonnet[1m]', when: 'spec-bounded normal features and bugs — the usual pick; omitting tier is equivalent' },
   { name: 'deep', spec: 'opus[1m]:high', when: 'ambiguous or architectural work, cross-cutting changes, repeat failures on a lower tier' },
-  // The committed floor for the autonomous-loop/gym judgment roles (mug/cup/kettle/
-  // queen/bee/overwatch/sentinel/papercup/blender/judge/scanner — role-models.ts
-  // ROLE_MODEL_DEFAULTS, autonomous-loop-prod-audit-2026-07-02 P-020). A DIFFERENT
-  // backend (codex) from every other row here, so it must carry its own menu entry
-  // for `tierRankOfSpec`/`roleHomeTier` to find it at all — omitting it left every
-  // migrated role's floor UNRANKED (tierRankOfSpec → -1), which silently dropped the
-  // never-downgrade floor-clamp for the whole loop (a ceiling/tier pick could fall
-  // all the way to `quick`/haiku with no clamp — the EI-7/EI-286 class of bug this
-  // menu exists to prevent). Ranked ABOVE `deep`: gpt-5.6 Luna at `high` effort is
-  // the fleet's committed floor for autonomous JUDGMENT (place/execute/validate
-  // decisions with real blast radius), not a bounded execution task — stronger than
-  // the sonnet/opus-high execution tiers below it, but below `max` (opus:xhigh),
-  // which stays reserved for the rarer fleet-blast-radius deciders (release-manager /
-  // merge-resolver / release-fixer) that are unaffected by this migration and keep
-  // their own opus:xhigh floor. Bare `gpt-5.6-luna:high` (no `[1m]` marker) — that
-  // marker is a Claude/CC auto-compact-window signal (`modelWindowForSpec`) with no
-  // meaning on the codex backend this tier runs; ROLE_MODEL_DEFAULTS uses the same
-  // bare form.
-  { name: 'luna', spec: 'gpt-5.6-luna:high', backend: 'codex', when: 'the autonomous-loop/gym committed floor (mug/cup/kettle/queen/bee/judge/…) — do not pick this for a pipeline execution role' },
+  // ⚠ HISTORICAL, NOT the current floor (WI-4495-adjacent staleness caught while
+  // resolving WI-4334, 2026-07-26): this tier was ADDED as the committed floor for
+  // the autonomous-loop/gym judgment roles (mug/cup/kettle/queen/bee/overwatch/
+  // sentinel/papercup/blender/judge/scanner — autonomous-loop-prod-audit-2026-07-02
+  // P-020, WI-4640). That migration was REVERTED per owner decision WI-4623
+  // (2026-07-16): those roles' committed floor in role-models.ts ROLE_MODEL_DEFAULTS
+  // is now the bare `sonnet[1m]:high` (Claude, via the gateway), NOT this tier — the
+  // luna floor broke production at runtime (a claude-CLI-backed role handed
+  // `--model gpt-5.6-luna` hard-downed; kettle@papercusp 2026-07-16). See
+  // role-models.ts's own history comment for the full account.
+  //
+  // The `luna` entry is kept in this MENU (not deleted) only so it stays a valid,
+  // rankable `tierCeilings`/`modelOverrides` OPTION for anyone who deliberately opts
+  // a role back onto it — deleting it would silently drop `tierRankOfSpec`/
+  // `roleHomeTier` ranking for any live override still pointing at it (the
+  // EI-7/EI-286 class of bug this menu exists to prevent: an unranked spec's
+  // never-downgrade floor-clamp disappears, letting a pick fall all the way to
+  // `quick`/haiku with no clamp). Do NOT read its presence here as "gpt-5.6 Luna is
+  // the active judgment floor" — it isn't, unless a role's OWN committed default
+  // (role-models.ts) or a live override says so. Bare `gpt-5.6-luna:high` (no `[1m]`
+  // marker) — that marker is a Claude/CC auto-compact-window signal
+  // (`modelWindowForSpec`) with no meaning on the codex backend this tier runs.
+  { name: 'luna', spec: 'gpt-5.6-luna:high', backend: 'codex', when: 'NOT the current autonomous-loop floor (reverted WI-4623) — an available opt-BACK-in option only; do not pick this for a pipeline execution role' },
   { name: 'max', spec: 'opus[1m]:xhigh', when: 'security-sensitive, migration, or deploy-adjacent work where a mistake is expensive' },
 ] as const;
 

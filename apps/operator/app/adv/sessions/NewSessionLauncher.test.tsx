@@ -20,9 +20,12 @@ const h = vi.hoisted(() => ({
   launchAgent: vi.fn(async (_opts: unknown) => ({ ok: true as const })),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  toastWarning: vi.fn(),
 }));
 
-vi.mock('sonner', () => ({ toast: { success: h.toastSuccess, error: h.toastError } }));
+vi.mock('sonner', () => ({
+  toast: { success: h.toastSuccess, error: h.toastError, warning: h.toastWarning },
+}));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 vi.mock('@papercusp/operator-core/lib/launch-agent', () => ({
   launchAgent: (opts: unknown) => h.launchAgent(opts),
@@ -88,6 +91,7 @@ beforeEach(() => {
   h.launchAgent.mockReset().mockResolvedValue({ ok: true });
   h.toastSuccess.mockReset();
   h.toastError.mockReset();
+  h.toastWarning.mockReset();
 });
 afterEach(() => cleanup());
 
@@ -135,6 +139,25 @@ describe('NewSessionLauncher', () => {
     expect(h.launchAgent).toHaveBeenCalledWith(
       expect.objectContaining({ planSlug: 'alpha-plan', model: 'opus' }),
     );
+  });
+
+  // EI-18696184925888288: launch-su can report ok:true with a `warning` when
+  // the spawned terminal process exited almost immediately (a likely silent
+  // no-op) — the UI must say so rather than a flat success toast.
+  it('toasts a warning (not success) when launchAgent reports ok:true with a warning', async () => {
+    h.launchAgent.mockResolvedValueOnce({ ok: true, warning: 'the spawned terminal process exited almost immediately' });
+    const onLaunched = vi.fn();
+    render(<NewSessionLauncher onLaunched={onLaunched} />, { wrapper: withNuqsTestingAdapter() });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Plan for new session' }), {
+      target: { value: 'alpha-plan' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    await waitFor(() => expect(h.toastWarning).toHaveBeenCalledTimes(1));
+    expect(h.toastSuccess).not.toHaveBeenCalled();
+    expect(h.toastError).not.toHaveBeenCalled();
+    // onLaunched still fires — the session row genuinely may exist; the
+    // warning is advisory, not a hard failure.
+    expect(onLaunched).toHaveBeenCalledTimes(1);
   });
 
   it('toasts an error and does not call onLaunched when launchAgent fails', async () => {

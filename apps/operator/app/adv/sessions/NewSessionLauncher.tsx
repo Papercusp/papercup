@@ -180,7 +180,16 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         label,
         model: chosenModel || null,
       });
-      if (result.ok) {
+      if (result.ok && result.warning) {
+        // EI-18696184925888288: launch-su's spawn call succeeded but the
+        // terminal process exited almost immediately — a likely silent
+        // no-op. Say so instead of a flat success toast.
+        toast.warning(
+          `Agent launch for ${label}${chosenModel ? ` (${chosenModel})` : ''} may not have opened a window.`,
+          { description: result.warning, duration: 8000 },
+        );
+        onLaunched?.();
+      } else if (result.ok) {
         toast.success(
           `Agent launched for ${label}${chosenModel ? ` (${chosenModel})` : ''}.`,
           { duration: 3000 },

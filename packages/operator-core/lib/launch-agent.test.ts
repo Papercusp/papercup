@@ -87,4 +87,26 @@ describe('launchAgent', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toBe('boom');
   });
+
+  // EI-18696184925888288: launch-su can report ok:true with a `warning` when
+  // its spawned terminal process exited almost immediately (a likely silent
+  // launch failure) — launchAgent must pass that through, not drop it.
+  it('surfaces a warning on an otherwise-ok response', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ status: 'ok', terminal: 'gnome-terminal', pid: 123, warning: 'exited almost immediately' }),
+          { status: 200 },
+        ),
+    );
+    const r = await launchAgent({ agent: 'claude', slug: 'papercup' });
+    expect(r.ok).toBe(true);
+    expect(r.warning).toBe('exited almost immediately');
+  });
+
+  it('an ok response with no warning field leaves r.warning undefined', async () => {
+    const r = await launchAgent({ agent: 'claude', slug: 'papercup' });
+    expect(r.ok).toBe(true);
+    expect(r.warning).toBeUndefined();
+  });
 });

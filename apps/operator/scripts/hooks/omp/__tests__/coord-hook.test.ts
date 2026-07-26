@@ -612,6 +612,17 @@ describe('onToolCall systemd exit/kill guard (EI-13135, UNCONDITIONAL — no age
     });
     expect(r.block).toBeUndefined();
   });
+
+  it('covers the `shell` tool-name spelling too, not just `bash` (EI-18695939815676668)', async () => {
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'shell',
+      toolCallId: 'exit-4',
+      input: { command: 'systemctl --user exit' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('EI-13135');
+  });
 });
 
 describe('onToolCall destructive-git guard (agent sessions only)', () => {
@@ -2476,6 +2487,18 @@ describe('onToolCall native-scheduler guard (agent sessions only)', () => {
       input: { command: 'crontab -l' },
     });
     expect(r.block).toBeUndefined();
+  });
+
+  it('covers the `shell` tool-name spelling too, not just `bash` (EI-18695939815676668)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'shell',
+      toolCallId: 'sched-5',
+      input: { command: 'cd /tmp && crontab evil-tab' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('pot:declare-wake');
   });
 });
 

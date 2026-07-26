@@ -6,15 +6,23 @@
  *     returns ok + terminal + pid;
  *   - `pui` not installed → 200 status:error code:pui_not_installed, no spawn;
  *   - no terminal emulator on PATH → 500 status:error, no spawn;
- *   - non-linux host → 501.
+ *   - non-linux host → 501;
+ *   - silent launch failure (EI-18696184925888288) → ok:true + a `warning`
+ *     when the spawned process exits almost immediately.
+ *
+ * spawnInTerminal (terminal-spawn.ts) now does a short post-spawn liveness
+ * re-check — fake timers drive it deterministically (advanced in `callPost`)
+ * and `process.kill` is mocked alive-by-default so the pre-existing
+ * assertions see the same shape as before.
  *
  * Plan: desktop-pui-launch-button-2026-06-05 (Brief 26).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
 const existsSyncMock = vi.fn((_p: string): boolean => true);
+const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as unknown as boolean);
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
@@ -45,7 +53,11 @@ async function callPost(): Promise<Response> {
     headers: { 'content-type': 'application/json' },
     body: '{}',
   });
-  return route.handler(req, CTX);
+  const resPromise = route.handler(req, CTX);
+  // Flush spawnInTerminal's post-spawn liveness-check delay (default 400ms,
+  // EI-18696184925888288) if this call took the live-spawn path.
+  await vi.advanceTimersByTimeAsync(500);
+  return resPromise;
 }
 
 /** The bash oneliner is the last arg passed to spawn (`… bash -lc <oneliner>`). */
@@ -56,9 +68,16 @@ function lastOneliner(): string {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.clearAllMocks();
   existsSyncMock.mockReturnValue(true);
   delete process.env.TERMINAL;
+  // Default: the spawned pid stays alive past the liveness-check beat.
+  killSpy.mockReturnValue(true as unknown as boolean);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('launch-pui', () => {
@@ -106,5 +125,28 @@ describe('launch-pui', () => {
     } finally {
       Object.defineProperty(process, 'platform', { value: orig, configurable: true });
     }
+  });
+
+  // EI-18696184925888288: the spawn syscall not throwing is not proof a
+  // window actually opened — see terminal-spawn.ts's liveness re-check.
+  it('silent launch failure: still ok:true, but adds a warning when the process exits almost immediately', async () => {
+    killSpy.mockImplementation(() => {
+      throw new Error('ESRCH');
+    });
+    const res = await callPost();
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.terminal).toBe('gnome-terminal');
+    expect(json.pid).toBe(4242);
+    expect(typeof json.warning).toBe('string');
+    expect(json.warning).toMatch(/exited almost immediately/);
+  });
+
+  it('the happy path (pid stays alive) carries no warning field', async () => {
+    const res = await callPost();
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.warning).toBeUndefined();
   });
 });

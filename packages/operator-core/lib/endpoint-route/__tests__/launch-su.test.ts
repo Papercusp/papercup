@@ -3,11 +3,20 @@
  * psu oneliner construction + the agent/slug rejections (the
  * shell-injection-sensitive bits). spawn / fs / os are mocked so no
  * terminal is actually opened.
+ *
+ * spawnInTerminal (terminal-spawn.ts) now does a short post-spawn liveness
+ * re-check (EI-18696184925888288) — fake timers drive it deterministically
+ * (advanced past its delay in `callPost`) and `process.kill` is mocked to
+ * report the spawned pid as alive by default, so existing assertions in this
+ * file see the same `status:'ok'`, no-`warning` shape as before. The
+ * dedicated "silent launch failure" describe block below flips that mock to
+ * exercise the new `warning` field.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
+const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as unknown as boolean);
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
@@ -79,7 +88,12 @@ async function callPost(body: unknown): Promise<Response> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return route.handler(req, CTX);
+  const resPromise = route.handler(req, CTX);
+  // Flush spawnInTerminal's post-spawn liveness-check delay (default 400ms,
+  // EI-18696184925888288) if this call took the live-spawn path — a no-op for
+  // paths that never spawn (validation rejections, defer_spawn).
+  await vi.advanceTimersByTimeAsync(500);
+  return resPromise;
 }
 
 /** The bash oneliner is the last arg passed to spawn (`… bash -lc <oneliner>`). */
@@ -90,7 +104,16 @@ function lastOneliner(): string {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.clearAllMocks();
+  // Default: the spawned pid stays alive past the liveness-check beat, i.e.
+  // the "normal" success path — no `warning` on the response. Individual
+  // tests in the "silent launch failure" block override this.
+  killSpy.mockReturnValue(true as unknown as boolean);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('launch-su', () => {
@@ -247,5 +270,43 @@ describe('launch-su', () => {
     expect(spawnMock).not.toHaveBeenCalled();
     // No row recorded → nothing to pane → no roster wake.
     expect(notifySyncInvalidateMock).not.toHaveBeenCalled();
+  });
+
+  // EI-18696184925888288: launch-su reported {status:'ok', terminal, pid} even
+  // when the spawned terminal never actually materialized (a headless/offscreen
+  // display) — the OS spawn call not throwing is not proof a window opened.
+  describe('silent launch failure (spawned process exits almost immediately)', () => {
+    it('still returns status:ok (the syscall genuinely succeeded) but adds a warning', async () => {
+      killSpy.mockImplementation(() => {
+        throw new Error('ESRCH');
+      });
+      const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.status).toBe('ok');
+      expect(json.terminal).toBe('gnome-terminal');
+      expect(json.pid).toBe(4242);
+      expect(typeof json.warning).toBe('string');
+      expect(json.warning).toMatch(/exited almost immediately/);
+    });
+
+    it('the happy path (pid stays alive) carries no warning field', async () => {
+      const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
+      const json = await res.json();
+      expect(json.status).toBe('ok');
+      expect(json.warning).toBeUndefined();
+    });
+
+    it('the deferred (workbench) path never spawns, so it is unaffected (no warning possible)', async () => {
+      killSpy.mockImplementation(() => {
+        throw new Error('ESRCH');
+      });
+      const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan', defer_spawn: true });
+      const json = await res.json();
+      expect(json.status).toBe('ok');
+      expect(json.deferred).toBe(true);
+      expect(json.warning).toBeUndefined();
+      expect(spawnMock).not.toHaveBeenCalled();
+    });
   });
 });

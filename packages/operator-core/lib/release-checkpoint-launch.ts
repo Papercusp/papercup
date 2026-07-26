@@ -362,6 +362,32 @@ function checkRunLockHeld(
 }
 
 /**
+ * WI-4310: a CHEAP (no subprocess) "is a green-checkpoint run active right now" probe —
+ * just `checkRunLockHeld` with real defaults wired in. Unlike `checkActiveCheckpointRun`
+ * below (which forks `systemctl show` for the manual-unit ActiveState check), this reads
+ * only the file-based run-lock's `owner.json`, so it is cheap enough for a HOT health-panel
+ * read path (git-pipeline-stats.ts's `includeActiveRun` gate exists precisely because the
+ * systemctl fork is NOT cheap enough for that — see its doc comment) — e.g. the workFeed
+ * dead-routine window (system-health/compute.ts), which needs "is the checkpoint's known,
+ * self-recovering resource footprint active right now" on every computation, not just an
+ * opt-in background snapshot.
+ *
+ * Deliberately narrower than `checkActiveCheckpointRun`: it misses a manual-unit run that
+ * hasn't (yet) raced for the shared run-lock, but every run — manual or cron — holds the
+ * SAME lock for the run's whole duration (`acquireCheckpointRunLock` in green-checkpoint.ts),
+ * so in practice this sees every genuinely in-flight suite. Fail-soft: `defaultReadLockOwner`
+ * never throws (a missing/unreadable lock file just reads as "not held").
+ */
+export function isCheckpointRunLockHeldCheap(
+  root: string,
+  pidAlive: (pid: number) => boolean = defaultPidAlive,
+  readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null = defaultReadLockOwner,
+): { held: boolean; elapsedSec: number | null } {
+  const r = checkRunLockHeld(root, pidAlive, readLockOwner);
+  return { held: r.held, elapsedSec: r.elapsed_sec ?? null };
+}
+
+/**
  * Detect whether a manual checkpoint run for `root` is CURRENTLY ACTIVE, before we'd try to
  * launch a new one (WI-1562). Reads systemd's live unit state directly — rather than firing
  * `systemd-run` and parsing its refusal — so the caller gets a STRUCTURED answer (unit,

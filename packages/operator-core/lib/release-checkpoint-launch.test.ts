@@ -22,6 +22,7 @@ import {
   checkpointLatestLogPath,
   launchDetachedCheckpoint,
   checkActiveCheckpointRun,
+  isCheckpointRunLockHeldCheap,
   stopActiveCheckpointUnit,
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
@@ -325,6 +326,41 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date().toISOString() }));
     const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive, readLockOwner);
     expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+  });
+
+  describe('isCheckpointRunLockHeldCheap (WI-4310: the no-subprocess sibling for hot health-panel reads)', () => {
+    it('reports held:true + elapsedSec when a live process holds the run-lock', () => {
+      const startedAt = new Date(Date.now() - 90_000).toISOString();
+      const pidAlive = vi.fn(() => true);
+      const readLockOwner = vi.fn(() => ({ pid: 4242, startedAt }));
+
+      const r = isCheckpointRunLockHeldCheap('/tree', pidAlive, readLockOwner);
+
+      expect(r.held).toBe(true);
+      expect(r.elapsedSec).toBeGreaterThanOrEqual(89);
+      expect(pidAlive).toHaveBeenCalledWith(4242);
+    });
+
+    it('reports held:false when the lock file is missing/unreadable (no systemctl fork involved)', () => {
+      const readLockOwner = vi.fn(() => null);
+      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => true), readLockOwner);
+      expect(r).toEqual({ held: false, elapsedSec: null });
+    });
+
+    it('reports held:false when the lock owner pid is dead (crashed holder, unreclaimed file)', () => {
+      const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date().toISOString() }));
+      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => false), readLockOwner);
+      expect(r).toEqual({ held: false, elapsedSec: null });
+    });
+
+    it('never shells out — no execFn/systemctl seam exists on this probe at all', () => {
+      // Type-level assertion as much as a runtime one: the whole point of this sibling is that
+      // it takes no execFn, unlike checkActiveCheckpointRun. Calling it with only fs-level fakes
+      // and getting a sane result IS the proof it stayed subprocess-free.
+      const readLockOwner = vi.fn(() => ({ pid: process.pid, startedAt: new Date().toISOString() }));
+      const r = isCheckpointRunLockHeldCheap('/tree', undefined, readLockOwner);
+      expect(r.held).toBe(true);
+    });
   });
 
   // End-to-end through the REAL fs + REAL default pidAlive (launchDetachedCheckpoint doesn't

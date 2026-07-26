@@ -14,7 +14,7 @@
  * spawn / fs / os are mocked (no terminal opens); buildKickoffPromptFile is
  * mocked so no /dev/shm file is written and we can force the failure path.
  */
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
@@ -56,6 +56,13 @@ async function callPost(body: unknown): Promise<Response> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+  // Real timers here (this is an integration suite touching real infra via
+  // the unmocked interactive-safety-floor check — fake timers stalled it
+  // indefinitely against that real async path, EI-18696184925888288). This
+  // file's own concern (kickoff/model/resume passthrough) is orthogonal to
+  // spawnInTerminal's liveness-check delay, which is covered directly by
+  // terminal-spawn.test.ts + the sibling unit test files — just pay the real
+  // (short, default) delay here rather than fighting the clock.
   return route.handler(req, CTX);
 }
 
@@ -79,8 +86,16 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.clearAllMocks();
   buildKickoffPromptFileMock.mockResolvedValue('/dev/shm/papercusp-kickoff-xyz/new-plan.md');
+  // Spawned pid stays alive past the liveness-check beat (the "normal"
+  // success path) — see terminal-spawn.ts / EI-18696184925888288.
+  vi.spyOn(process, 'kill').mockReturnValue(true as unknown as boolean);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('launch-su kickoff passthrough', () => {

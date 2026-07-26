@@ -211,6 +211,18 @@ export function describeGateRedOwnership(input: GateRedOwnershipInput): GateRedO
       (unknown
         ? ' (liveness unknowable: durable fire with no spawn id — treated as covered).'
         : ' and is alive.') +
-      ' Do NOT start a parallel diagnosis; coordinate with the owner instead.',
+      // EI-18696737036975615: the old text said "coordinate with the owner instead" — but a
+      // release-fixer is a blueprint-launched spawn with NO coordination-roster identity
+      // (confirmed: harness_shared.spawned_agents.session_owner/session_id are null even for
+      // a LIVE fixer spawn, not just a finished one), so coord:send addressed at spawnId always
+      // comes back unknown_recipient. That left a reader with two instructions — "don't
+      // diagnose" and "coordinate instead" — where the second was never actually possible,
+      // which is worse than no instruction: it invites either silently dropping real evidence
+      // or doing the forbidden parallel diagnosis anyway. Say what IS true and actionable.
+      ' Do NOT start a parallel diagnosis: release-fixer spawns have no coordination-roster ' +
+      'identity, so coord:send to this spawnId will fail (unknown_recipient) — "coordinate ' +
+      "with the owner\" is not literally possible here. If you already have relevant evidence, " +
+      'file it (improvements:capture or a work-item comment) referencing this failure signature ' +
+      'so it is not lost, then stand down and wait for the fresh verdict via checkpoint:await.',
   };
 }

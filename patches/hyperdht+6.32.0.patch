@@ -1,22 +1,47 @@
 diff --git a/node_modules/hyperdht/lib/connect.js b/node_modules/hyperdht/lib/connect.js
-index 86afb4e..e2a984e 100644
+index 86afb4e..5421459 100644
 --- a/node_modules/hyperdht/lib/connect.js
 +++ b/node_modules/hyperdht/lib/connect.js
-@@ -217,17 +217,51 @@ async function holepunch(c, opts) {
+@@ -217,17 +217,81 @@ async function holepunch(c, opts) {
  
    const relayed = diffAddress(serverAddress, relayAddress)
  
 +  // WI-5980: record WHICH BRANCH resolved the data-path address, and what
 +  // candidates it had to choose from.
 +  //
-+  // `serverAddress` is the OBSERVED source address of an inbound packet (set in
-+  // firewall(), :139-140) — it is never a declared listener, so when
-+  // getFirstRemoteAddress() falls through to it we dial an address the peer may
-+  // not own. getFirstRemoteAddress skips every BOGON candidate, so on an
++  // WHAT `serverAddress` IS — trace the binding, not the name. This local comes
++  // from `c.connect`, i.e. the value destructured from the router.peerHandshake
++  // REPLY (:444, stamped at :489). It is NOT `c.serverAddress`, the inbound-packet
++  // observation set in firewall() at :139-140 — two different variables sharing a
++  // name, and c.serverAddress is read at exactly one place (:535) and never
++  // reaches this path. Getting that wrong once already produced a published-then-
++  // retracted root cause; check the assignment before citing this field.
++  //
++  // Per router.js:75-76 (`serverAddress: hs.peerAddress || to`) it has two very
++  // different meanings depending on the branch:
++  //   relayed=false (hs.peerAddress === null, i.e. we queried the server itself,
++  //     router.js:104-105): serverAddress = `to` = the server's own announced DHT
++  //     address, which dht-rpc/index.js:201-214 reads off the BOUND serverSocket
++  //     behind an equality guard that refuses to publish unless the NAT-observed
++  //     reflexive port equals the bound port. That is a guarded DECLARATION of a
++  //     real listener — dialing it is legitimate.
++  //   relayed=true (hs.peerAddress set): serverAddress = the value a RELAY node
++  //     stamped at router.js:165 as `peerAddress: req.from` — the server's source
++  //     address as observed BY THAT RELAY. Under a symmetric NAT the server's
++  //     external mapping is per-destination, so the port the relay saw is not a
++  //     port our packets can reach. THIS is the branch that dials an address the
++  //     peer does not own.
++  //
++  // Layered on top: getFirstRemoteAddress skips every BOGON candidate, so on an
 +  // all-private-subnet deployment (e.g. a 10.0.0.0/8 test overlay) EVERY entry in
 +  // addresses4 is skipped and the fallback is not an edge case — it is the only
-+  // path. None of that is visible downstream unless the candidates AND their
-+  // per-entry bogon verdicts are recorded, which is what this does.
++  // path. Note also that a symmetric-NAT server is firewalled, so remoteAddress()
++  // returns null (:455-456) and it publishes NO public addresses4 at all — an
++  // EMPTY candidates array is the strongest form of "the fallback was forced",
++  // even though udxAddresses4AllBogon is false for it by construction (it
++  // requires length > 0). Read udxAddresses4's length alongside that flag.
++  // None of this is visible downstream unless the candidates AND their per-entry
++  // bogon verdicts are recorded, which is what this does.
 +  //
 +  // Non-enumerable + configurable, exactly like the WI-5863 fields below, so this
 +  // cannot perturb any existing JSON.stringify/deepEqual of the stream object.
@@ -37,9 +62,14 @@ index 86afb4e..e2a984e 100644
        c.dht.stats.punches.open++
 +      // The UNVERIFIED fast path: onsocket() fires below with no round-trip
 +      // confirmation that `addr` is reachable. `addr === serverAddress` is an
-+      // exact identity test for "fell through to the observed-source fallback"
++      // exact identity test for "fell through to the router-reply address"
 +      // (getFirstRemoteAddress returns that very object), which distinguishes
-+      // "used a real advertised address" from "guessed at the packet source".
++      // "used a real advertised address" from "used the peerHandshake reply".
++      // Combined with udxRelayed it separates the two failure modes: fallback +
++      // relayed=true means we dialed a RELAY-OBSERVED source port (router.js:165
++      // `req.from`), which a symmetric NAT makes unreachable from our address;
++      // fallback + relayed=false means we dialed the server's guarded bound-port
++      // declaration, where a failure indicates staleness, not misresolution.
 +      mark('udxPunchPath', 'open')
 +      mark('udxAddressFromFallback', addr === serverAddress)
 +      mark('udxPunchStats', { ...c.dht.stats.punches })
@@ -54,7 +84,7 @@ index 86afb4e..e2a984e 100644
    const onabort = () => {
      c.session.destroy()
      maybeDestroyEncryptedSocket(c, HOLEPUNCH_ABORTED())
-@@ -477,6 +511,18 @@ async function connectThroughNode(c, address, socket) {
+@@ -477,6 +541,18 @@ async function connectThroughNode(c, address, socket) {
      payload
    }
  

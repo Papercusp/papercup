@@ -60,6 +60,12 @@ describe('describeGateRedOwnership — surfacing the owner the dispatcher alread
     expect(o.label).toContain('spawn-77');
     expect(o.label).toContain('20m ago');
     expect(o.label).toMatch(/Do NOT start a parallel diagnosis/);
+    // EI-18696737036975615: the label must NOT tell the reader to "coordinate with the
+    // owner" — a release-fixer spawn has no coordination-roster identity, so coord:send
+    // to its spawnId always fails (unknown_recipient); that instruction was unactionable.
+    expect(o.label).not.toMatch(/coordinate with the owner instead/);
+    expect(o.label).toMatch(/unknown_recipient/);
+    expect(o.label).toMatch(/checkpoint:await/);
   });
 
   it('treats unknowable liveness as covered — matching decideReleaseFixerDispatch, which must not disagree', () => {

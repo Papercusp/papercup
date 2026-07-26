@@ -96,6 +96,25 @@ import {
 
 const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
 const DEAD_ROUTINE_OVERDUE_MS = 10 * 60_000;
+/** WI-4310: the WIDENED dead-routine overdue threshold used only while a green-checkpoint
+ *  run's known, self-recovering resource footprint (GREEN_CHECKPOINT_MAX_FORKS forked vitest
+ *  workers sharing this box's PG pool + CPU with routinesTick) is active or just finished —
+ *  see {@link deadRoutineOverdueMsForCiWindow}'s doc comment for the incident this addresses.
+ *  Env-tunable to match this codebase's threshold convention (pool-pressure.ts,
+ *  tick-load-shed.ts). Default 20min = 2x the base 10min: individual tick durations under
+ *  checkpoint load were observed at 5-45s (historically up to 93s) against a 30s cadence —
+ *  nowhere near even the BASE threshold on their own, so 2x leaves ample margin before a
+ *  genuine engine freeze (which would blow well past either threshold) goes undetected. */
+const DEAD_ROUTINE_OVERDUE_WIDENED_MS = Math.max(
+  DEAD_ROUTINE_OVERDUE_MS,
+  Number(process.env.PAPERCUSP_DEAD_ROUTINE_OVERDUE_WIDENED_MS) || 20 * 60_000,
+);
+/** WI-4310: trailing grace after the most recent `green_checkpoint` pipeline_event — the
+ *  observed alarm lag ("a not-green checkpoint run landed ~2min before an infra-liveness
+ *  dead-routines fire") means the residual contention can still be draining for a couple
+ *  minutes AFTER the suite itself exits (freed forks, GC, git ops). 5min covers that with
+ *  headroom without leaving the widened threshold in effect for long once the run is done. */
+const DEAD_ROUTINE_CI_GRACE_MS = Math.max(0, Number(process.env.PAPERCUSP_DEAD_ROUTINE_CI_GRACE_MS) || 5 * 60_000);
 const PLAN_STALE_MS = 24 * 60 * 60_000;
 // WI-5839 / EI-18654017982759582 items 2+3: a paused (active:false) routine is
 // invisible to readDeadRoutines (active=true only), no matter how long it stays
@@ -543,6 +562,69 @@ export async function readDeadRoutines(sql: Sql, overdueMs: number): Promise<str
   return rows.map((r) => r.name);
 }
 
+/**
+ * WI-4310 (green-checkpoint-vs-routinesTick residual contention, post EI-9935): PURE decision
+ * for which `readDeadRoutines` overdue threshold to use THIS computation.
+ *
+ * EI-9935 already fixed the SEVERE failure (concurrent-tick pileup, repeat_count up to 63).
+ * A much milder residual remained: green-checkpoint's own forked-vitest run shares this box's
+ * PG pool + CPU with routinesTick, so individual tick durations elevate under its load
+ * (5-45s vs the 30s cadence, historically up to 93s) — and at least twice, a not-green
+ * checkpoint run landed ~2min before the workFeed's dead-routine (engine-starvation) alarm
+ * fired. green-checkpoint.ts's own GREEN_CHECKPOINT_MAX_FORKS comment names the fix directly:
+ * "a memory-aware gate-defer, not fewer forks" — this is that defer, applied to the ALARM
+ * rather than the checkpoint run itself (option (a)/(c) of the item; NOT resource-isolating
+ * the checkpoint's PG connections from the routine engine's pool (b), which is a genuine
+ * capacity/topology change out of scope for a single item).
+ *
+ * Widened ONLY for a bounded, KNOWN window (the run itself + a short trailing grace) — every
+ * other computation keeps the tight base threshold, so a GENUINE engine freeze is caught just
+ * as fast as before. Exported for a fast pure unit test (no DB / no fs).
+ */
+export function deadRoutineOverdueMsForCiWindow(
+  input: { checkpointActive: boolean; recentCheckpointEventAgeMs: number | null },
+  opts: { baseMs?: number; widenedMs?: number; graceMs?: number } = {},
+): number {
+  const baseMs = opts.baseMs ?? DEAD_ROUTINE_OVERDUE_MS;
+  const widenedMs = opts.widenedMs ?? DEAD_ROUTINE_OVERDUE_WIDENED_MS;
+  const graceMs = opts.graceMs ?? DEAD_ROUTINE_CI_GRACE_MS;
+  if (input.checkpointActive) return widenedMs;
+  if (input.recentCheckpointEventAgeMs != null && input.recentCheckpointEventAgeMs <= graceMs) return widenedMs;
+  return baseMs;
+}
+
+/**
+ * DB-reading wrapper around {@link deadRoutineOverdueMsForCiWindow}: resolves BOTH probes
+ * (the cheap file-based run-lock check + the most recent `green_checkpoint` pipeline_event)
+ * and folds them into the threshold `readDeadRoutines` should use right now.
+ *
+ * FULLY FAIL-SOFT (mirrors poolPressure()/pool-pressure.ts's contract): any probe error —
+ * an unreadable lock file, a missing `release-checkpoint-launch`/`release-deploy-launch`
+ * module in a stripped test bundle, a failed query — falls back to the tight BASE threshold,
+ * never the widened one. Absence of a clean "checkpoint is active" signal must never SUPPRESS
+ * the dead-routine alarm; it can only fail to widen it.
+ */
+async function resolveDeadRoutineOverdueMs(sql: Sql, potSlug: string | null, now: number): Promise<number> {
+  try {
+    const [{ integrationRoot }, { isCheckpointRunLockHeldCheap }] = await Promise.all([
+      import('../release-deploy-launch'),
+      import('../release-checkpoint-launch'),
+    ]);
+    const lock = isCheckpointRunLockHeldCheap(integrationRoot());
+    let recentCheckpointEventAgeMs: number | null = null;
+    if (!lock.held && potSlug) {
+      const rows = await sql<Array<{ created_at: Date }>>`
+        SELECT created_at FROM harness_shared.pipeline_events
+         WHERE kind = 'green_checkpoint' AND install_slug = ${potSlug}
+         ORDER BY created_at DESC LIMIT 1`;
+      if (rows[0]) recentCheckpointEventAgeMs = Math.max(0, now - new Date(rows[0].created_at).getTime());
+    }
+    return deadRoutineOverdueMsForCiWindow({ checkpointActive: lock.held, recentCheckpointEventAgeMs });
+  } catch {
+    return DEAD_ROUTINE_OVERDUE_MS;
+  }
+}
+
 /** Minimal per-routine shape {@link computeStalePausedRoutines} needs — the pure
  *  split from its DB read below, so the threshold/attribution logic is directly
  *  unit-testable with plain fixtures (no PG). */
@@ -727,7 +809,11 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // a healthy running fleet loop legitimately sits briefly overdue and must not
     // mis-fire the engine-starvation crit + fleet blocker page.
     const { sql } = getOrgPg();
-    const deadRoutineNames = await readDeadRoutines(sql, DEAD_ROUTINE_OVERDUE_MS);
+    // WI-4310: widen the overdue window while a green-checkpoint run's known, self-recovering
+    // resource footprint is active or just finished — see resolveDeadRoutineOverdueMs's doc
+    // comment. Fail-soft: any probe error keeps the tight base threshold (never suppresses).
+    const deadRoutineOverdueMs = await resolveDeadRoutineOverdueMs(sql, potSlug, ctx.now);
+    const deadRoutineNames = await readDeadRoutines(sql, deadRoutineOverdueMs);
     // WI-5839 / EI-18654017982759582 items 2+3: stale/unexplained PAUSED routines —
     // the complement readDeadRoutines can never see (it only looks at active=true).
     // Best-effort/fail-soft: never let a metadata-shape surprise sink the whole panel.

@@ -3464,7 +3464,14 @@ export async function onToolCall(
   // verification, i.e. the ones most likely to drive the wrong webview. The resource
   // being protected is the OWNER'S LIVE APP (not a tree, not a schedule), and the
   // deny is satisfiable with one flag, so it applies to every session this hook sees.
-  if (event.toolName.toLowerCase().startsWith('bash')) {
+  // EI-18695939815676668: isShellTool (bash* OR `shell`), not the narrower
+  // startsWith('bash') — OMP's shell tool is reachable under both spellings,
+  // and these two guards protect genuinely shared state (the owner's live
+  // app; the whole host's service plane), so a spelling-shaped hole would
+  // silently defeat them for a `shell`-named call. No false-positive risk: a
+  // `shell` call with no `command` string leaves bashCmd empty and both
+  // denial checks no-op.
+  if (isShellTool(event.toolName)) {
     const bashCmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
     const tauriDenial = tauriTargetDenial(bashCmd);
     if (tauriDenial) return { block: true, reason: tauriDenial };
@@ -3486,9 +3493,12 @@ export async function onToolCall(
   // ;&|/newline / sudo) so prose args ("look at this") never false-positive.
   // Gated on the agent-session marker env: the owner's own sessions never set
   // it (D-003) and stay fully unrestricted. Local decision, no operator call.
+  // EI-18695939815676668: isShellTool, not startsWith('bash') — same
+  // spelling-hole rationale as the tauri/systemd guard above; this block also
+  // gates the git/mcp-curl/mcp-tool-via-bash guards nested below it.
   if (
     isAgentSession() &&
-    event.toolName.toLowerCase().startsWith('bash')
+    isShellTool(event.toolName)
   ) {
     const cmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
     if (isOsSchedulerCommand(cmd)) {

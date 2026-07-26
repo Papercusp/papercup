@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -344,6 +344,44 @@ describe('computeStalePausedRoutines — stale/unexplained routine pause detecto
       expect(r).toHaveLength(1);
       expect(r[0]).toMatchObject({ name: 'scout-cycle', critical: false });
     });
+  });
+});
+
+describe('deadRoutineOverdueMsForCiWindow — dead-routine alarm vs green-checkpoint residual contention (WI-4310)', () => {
+  it('widens when a checkpoint run is currently active', () => {
+    const ms = deadRoutineOverdueMsForCiWindow({ checkpointActive: true, recentCheckpointEventAgeMs: null });
+    expect(ms).toBe(20 * 60_000);
+  });
+
+  it('widens within the trailing grace after the most recent checkpoint event, even though the run is no longer active', () => {
+    const ms = deadRoutineOverdueMsForCiWindow({ checkpointActive: false, recentCheckpointEventAgeMs: 2 * 60_000 });
+    expect(ms).toBe(20 * 60_000);
+  });
+
+  it('stays at the tight base threshold once the grace window has elapsed', () => {
+    const ms = deadRoutineOverdueMsForCiWindow({ checkpointActive: false, recentCheckpointEventAgeMs: 5 * 60_000 + 1 });
+    expect(ms).toBe(10 * 60_000);
+  });
+
+  it('stays at the tight base threshold with no checkpoint signal at all (the common case)', () => {
+    const ms = deadRoutineOverdueMsForCiWindow({ checkpointActive: false, recentCheckpointEventAgeMs: null });
+    expect(ms).toBe(10 * 60_000);
+  });
+
+  it('respects injected opts over the module defaults', () => {
+    const ms = deadRoutineOverdueMsForCiWindow(
+      { checkpointActive: true, recentCheckpointEventAgeMs: null },
+      { baseMs: 1000, widenedMs: 5000, graceMs: 500 },
+    );
+    expect(ms).toBe(5000);
+  });
+
+  it('the grace boundary is inclusive (age exactly equal to graceMs still widens)', () => {
+    const ms = deadRoutineOverdueMsForCiWindow(
+      { checkpointActive: false, recentCheckpointEventAgeMs: 500 },
+      { graceMs: 500 },
+    );
+    expect(ms).toBe(20 * 60_000);
   });
 });
 
