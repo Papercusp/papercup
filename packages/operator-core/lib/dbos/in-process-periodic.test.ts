@@ -153,6 +153,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'stale-claim-sweep',
         'steering-churn-sweep',
         'system-health',
+        'timer-registration-scan',
       ].sort(),
     );
   });

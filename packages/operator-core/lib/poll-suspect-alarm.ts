@@ -162,3 +162,165 @@ export async function runPollSuspectScanOnce(
   }
   return { checked: suspects.length, alerted: fresh };
 }
+
+// ── Timer-registration scan (P-010: stop-discarded-dedup-and-audit-server-
+// polling-2026-07-26) — the SAME "alarm on something new" shape as the
+// agent-tool-call detector above, applied to server-side timers instead.
+//
+// This plan's own audit (Lanes C1-C4, WI-6089) hand-classified every timer
+// that existed as of 2026-07-26 into must-sample / timeout-reaper / violation
+// per D-004, and found exactly one violation (system-health, already being
+// fixed under a separate lane). That classification is a SNAPSHOT — it goes
+// stale the moment a new `managedSetInterval`/`PeriodicCheck` lands without
+// anyone re-running the manual audit. P-011 will add a REQUIRED declared
+// classification at registration time (turning this from a detector into a
+// hard gate); until that lands, the best available signal is "has this exact
+// timer NAME ever been seen before" — the identical shape `pickNewAlerts`
+// already uses for tool_name, just keyed on timer name instead of a rate
+// threshold (a timer's "rate" is its fixed interval, known at registration,
+// not something that needs a statistical threshold the way agent-driven tool
+// calls do).
+
+/** One timer/managedSetInterval registration, as read from the schedule inventory. */
+export interface TimerRegistration {
+  name: string;
+  /** schedule-inventory `source`: 'in-process' | 'managed' | 'external-process'. */
+  source: string;
+}
+
+/**
+ * Pure: which of `current` have a `name` NOT in `knownNames`. Order-preserving,
+ * name is the sole identity (schedule-inventory names are process-global and
+ * unique — verified across all 104 timers audited for this plan).
+ */
+export function pickNewTimerRegistrations(
+  current: TimerRegistration[],
+  knownNames: ReadonlySet<string>,
+): TimerRegistration[] {
+  return current.filter((t) => !knownNames.has(t.name));
+}
+
+/** Build the toast body for newly-seen timer registrations. Pure. */
+export function formatTimerRegistrationToast(newOnes: TimerRegistration[]): {
+  level: string;
+  message: string;
+  description: string;
+} {
+  const lines = newOnes.map((t) => `• ${t.name} (source: ${t.source})`).join('\n');
+  return {
+    level: 'warning',
+    message: `New server-side timer(s) — ${newOnes.length} unclassified`,
+    description:
+      `These timers were never present in a prior scan and have not been classified per D-004 ` +
+      `(must-sample / timeout-reaper / violation — stop-discarded-dedup-and-audit-server-polling-2026-07-26):\n` +
+      `${lines}\n\n` +
+      `A VIOLATION recomputes derived state from a store that already emits change events, on a clock, ` +
+      `regardless of whether anyone is consuming it — everything else (no publisher exists, or the passage ` +
+      `of time IS the trigger) is legitimate. Review in /dev → Telemetry, or via schedule:inventory.`,
+  };
+}
+
+export interface TimerRegistrationScanDeps {
+  /** Injectable for tests — defaults to collectScheduleInventory() filtered to the
+   *  operator-scoped ephemeral-timer sources ('in-process' | 'managed' | 'external-process').
+   *  'dbos' and 'routines' (the DURABLE tier) are deliberately excluded — C4's audit (WI-6094)
+   *  found that tier is architecturally declared scheduled work, not a poll-shaped surface, and
+   *  recommended it stay out of this audit's scope rather than be treated as unaudited residue. */
+  loadCurrentTimers?: () => Promise<TimerRegistration[]>;
+  /** Injectable for tests — defaults to a SELECT over known_timer_registrations. */
+  loadKnownNames?: () => Promise<Set<string>>;
+  /** Injectable for tests — defaults to an upsert into known_timer_registrations (also used
+   *  for the first-run seed, so a seed and a real "mark now known" share one code path). */
+  persistKnownNames?: (rows: TimerRegistration[]) => Promise<void>;
+  /** Injectable for tests — defaults to a toast_log row + sync invalidate (same sink as
+   *  the poll-suspect scan above). */
+  emitToast?: (t: { level: string; message: string; description: string }) => Promise<void>;
+}
+
+async function defaultLoadCurrentTimers(): Promise<TimerRegistration[]> {
+  const { collectScheduleInventory } = await import('./schedule-inventory');
+  const rows = await collectScheduleInventory();
+  return rows
+    .filter((r) => r.source === 'in-process' || r.source === 'managed' || r.source === 'external-process')
+    .map((r) => ({ name: r.name, source: r.source }));
+}
+
+async function defaultLoadKnownNames(): Promise<Set<string>> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = await sql<{ name: string }[]>`SELECT name FROM harness_shared.known_timer_registrations`;
+  return new Set(rows.map((r) => r.name));
+}
+
+async function defaultPersistKnownNames(rows: TimerRegistration[]): Promise<void> {
+  if (rows.length === 0) return;
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  // Row-at-a-time ON CONFLICT DO NOTHING — this table only ever gains a handful of
+  // rows per scan (a brand-new timer name is rare by construction), so a bulk
+  // multi-row VALUES clause would be premature complexity here.
+  for (const r of rows) {
+    await sql`
+      INSERT INTO harness_shared.known_timer_registrations (name, source)
+      VALUES (${r.name}, ${r.source})
+      ON CONFLICT (name) DO NOTHING`;
+  }
+}
+
+/**
+ * One scan pass: diff the LIVE timer-registration set against the durable
+ * known-name set. An EMPTY known set means this is the first run ever (or a
+ * fresh install) — seed it silently with everything currently present (this
+ * plan's own 104-timer audit already classified all of it; a mass "new timer"
+ * toast storm on first boot would just be noise). Afterward, any name not in
+ * the known set is genuinely new since the last scan and gets toasted +
+ * folded into the known set (so it alerts exactly once, never on every tick —
+ * same "alert once, not every tick" contract as the sibling poll-suspect scan,
+ * except permanent rather than time-deduped: a timer, once classified by a
+ * human reading the toast, does not need to re-alert unless renamed). Never
+ * throws — best-effort, mirroring every other periodic monitor in this file.
+ */
+export async function runTimerRegistrationScanOnce(
+  deps: TimerRegistrationScanDeps = {},
+): Promise<{ checked: number; alerted: TimerRegistration[]; seeded: boolean }> {
+  const loadCurrentTimers = deps.loadCurrentTimers ?? defaultLoadCurrentTimers;
+  const loadKnownNames = deps.loadKnownNames ?? defaultLoadKnownNames;
+  const persistKnownNames = deps.persistKnownNames ?? defaultPersistKnownNames;
+  const emitToast = deps.emitToast ?? defaultEmitToast;
+
+  let current: TimerRegistration[] = [];
+  let known: Set<string>;
+  try {
+    [current, known] = await Promise.all([loadCurrentTimers(), loadKnownNames()]);
+  } catch (err) {
+    console.warn(
+      `[timer-registration-scan] scan skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { checked: 0, alerted: [], seeded: false };
+  }
+
+  if (known.size === 0) {
+    // First run ever (or table truncated) — seed silently, no alarm.
+    try {
+      await persistKnownNames(current);
+    } catch (err) {
+      console.warn(
+        `[timer-registration-scan] seed write failed (non-fatal, retries next tick): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { checked: current.length, alerted: [], seeded: true };
+  }
+
+  const fresh = pickNewTimerRegistrations(current, known);
+  if (fresh.length > 0) {
+    try {
+      await emitToast(formatTimerRegistrationToast(fresh));
+      await persistKnownNames(fresh);
+    } catch (err) {
+      console.warn(
+        `[timer-registration-scan] toast/persist failed (non-fatal, retries next tick): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return { checked: current.length, alerted: fresh, seeded: false };
+}

@@ -3,7 +3,12 @@
  * (fleet-deltas-leader-primitives-2026-07-10 P-007).
  */
 import { describe, it, expect } from 'vitest';
-import { deriveContextPressure, fetchContextPressure, type ContextPressureBucket } from './context-pressure';
+import {
+  deriveContextPressure,
+  fetchContextPressure,
+  CONTEXT_ESTIMATE_STALE_MS,
+  type ContextPressureBucket,
+} from './context-pressure';
 import { CONTEXT_GAUGE_LOUD_PCT, CONTEXT_GAUGE_CRITICAL_PCT } from './tools/inbox-context-usage';
 
 describe('deriveContextPressure (pure)', () => {
@@ -42,6 +47,50 @@ describe('deriveContextPressure (pure)', () => {
       const b = deriveContextPressure(tokens, limit);
       expect(b === null || b === 'ok' || b === 'high' || b === 'critical').toBe(true);
     }
+  });
+});
+
+// EI-18729596985129261: a cached (contextTokens, compactionLimit) reading can be
+// arbitrarily older than the watchdog's own 2-minute sweep cadence under host
+// load (a delayed/skipped sweep) — asserting a bucket from a badly-stale
+// snapshot is worse than reporting no signal at all, since a caller (a leader
+// benching a member, an agent's own self-compaction judgment) may act on it.
+describe('deriveContextPressure — staleness (EI-18729596985129261)', () => {
+  const NOW = 1_800_000_000_000; // fixed instant for deterministic tests
+
+  it('no estimatedAt provided ⇒ unchanged behavior (no staleness check at all)', () => {
+    // A caller that never threads the timestamp through gets today's behavior —
+    // the whole point of the param being optional.
+    expect(deriveContextPressure(CONTEXT_GAUGE_CRITICAL_PCT * 1000, 100_000)).toBe('critical');
+  });
+
+  it('a FRESH estimate (well within the staleness window) still asserts its real bucket', () => {
+    const estimatedAt = NOW - 30_000; // 30s old
+    expect(deriveContextPressure(CONTEXT_GAUGE_CRITICAL_PCT * 1000, 100_000, estimatedAt, NOW)).toBe('critical');
+    expect(deriveContextPressure(50_000, 100_000, new Date(estimatedAt), NOW)).toBe('ok');
+  });
+
+  it('an estimate right at the staleness boundary still counts as fresh (strictly greater-than expires it)', () => {
+    const estimatedAt = NOW - CONTEXT_ESTIMATE_STALE_MS;
+    expect(deriveContextPressure(CONTEXT_GAUGE_CRITICAL_PCT * 1000, 100_000, estimatedAt, NOW)).toBe('critical');
+  });
+
+  it('a STALE estimate (older than CONTEXT_ESTIMATE_STALE_MS) degrades to null — even a "critical" reading', () => {
+    const estimatedAt = NOW - CONTEXT_ESTIMATE_STALE_MS - 1;
+    // This is the exact live symptom: usage genuinely low (or unknowable), but a
+    // stale cached snapshot would otherwise report "critical" with full confidence.
+    expect(deriveContextPressure(CONTEXT_GAUGE_CRITICAL_PCT * 1000, 100_000, estimatedAt, NOW)).toBeNull();
+    expect(deriveContextPressure(50_000, 100_000, estimatedAt, NOW)).toBeNull(); // even an 'ok'-shaped stale reading is discarded
+  });
+
+  it('an unparseable estimatedAt is treated as untrustworthy, not silently ignored', () => {
+    expect(deriveContextPressure(CONTEXT_GAUGE_CRITICAL_PCT * 1000, 100_000, 'not-a-date', NOW)).toBeNull();
+  });
+
+  it('staleness never overrides the existing "no data at all" null (contextTokens/compactionLimit missing)', () => {
+    const estimatedAt = NOW - 30_000; // fresh, but there is nothing to derive a pct from
+    expect(deriveContextPressure(null, null, estimatedAt, NOW)).toBeNull();
+    expect(deriveContextPressure(1000, null, estimatedAt, NOW)).toBeNull();
   });
 });
 

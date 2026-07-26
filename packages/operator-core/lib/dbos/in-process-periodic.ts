@@ -938,6 +938,33 @@ const pollSuspectScanCheck: PeriodicCheck = {
   },
 };
 
+// Every 10min: timer-REGISTRATION scan (P-010 — stop-discarded-dedup-and-audit-
+// server-polling-2026-07-26). The sibling of pollSuspectScanCheck above, but for
+// server-side timers instead of agent tool calls: alerts (via the same toast sink)
+// on any `managedSetInterval`/in-process/external-process timer NAME never seen in
+// a prior scan — a proxy for "never classified per D-004" until P-011 lands a hard
+// declared-classification requirement at registration. fireOnArm so a fresh install
+// seeds its known-set immediately rather than waiting 10min (mirrors
+// hiveEpochKeyReconcileCheck's fireOnArm rationale). LIGHT (one schedule-inventory
+// read + a Set diff) → not shed.
+const timerRegistrationScanCheck: PeriodicCheck = {
+  name: 'timer-registration-scan',
+  intervalMs: 600_000,
+  fireOnArm: true,
+  tick: async () => {
+    const { runTimerRegistrationScanOnce } = await import('../poll-suspect-alarm');
+    const { alerted, seeded } = await runTimerRegistrationScanOnce();
+    if (seeded) {
+      console.log(`[timer-registration-scan] seeded the known-timer set (first run)`);
+    } else if (alerted.length > 0) {
+      console.warn(
+        `[timer-registration-scan] ${alerted.length} new unclassified timer(s): ` +
+          alerted.map((t) => `${t.name} (${t.source})`).join(', '),
+      );
+    }
+  },
+};
+
 /** The converted ex-DBOS-workflow set. */
 export function buildDefaultChecks(): PeriodicCheck[] {
   return [
@@ -956,6 +983,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     sharedPresenceReaperCheck,
     scorecardEmissionPulseCheck,
     pollSuspectScanCheck,
+    timerRegistrationScanCheck,
   ];
 }
 

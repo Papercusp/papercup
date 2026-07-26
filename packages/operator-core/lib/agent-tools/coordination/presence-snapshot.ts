@@ -454,13 +454,16 @@ export async function assemblePresenceSnapshot(
     isFederated(r) ? r : { ...r, viewerAttached: viewerAttachedOwners.has(r.ownerId) };
 
   /** P-007: attach the coarse context-pressure bucket, derived live from the row's
-   *  own (contextTokens, compactionLimit) — no extra query, these already ride
-   *  PresenceRecord (watchdog-cached). A federated row carries no local estimate →
-   *  leave it null/unknown, like onDesktop/viewerAttached. */
+   *  own (contextTokens, compactionLimit, contextEstimatedAt) — no extra query,
+   *  these already ride PresenceRecord (watchdog-cached). The estimate's own age
+   *  degrades a badly-stale reading to null (EI-18729596985129261) rather than
+   *  asserting a bucket the watchdog cached up to a sweep-delay ago. A federated
+   *  row carries no local estimate → leave it null/unknown, like
+   *  onDesktop/viewerAttached. */
   const withContextPressure = (r: RosterRow): RosterRow =>
     isFederated(r)
       ? r
-      : { ...r, contextPressure: deriveContextPressure(r.contextTokens, r.compactionLimit) };
+      : { ...r, contextPressure: deriveContextPressure(r.contextTokens, r.compactionLimit, r.contextEstimatedAt) };
 
   /** Attach the P-005 named-fleet membership. An agent in no fleet (or a federated
    *  row with no local coord_presence) has no entry → fleetSlug/fleetRole stay absent

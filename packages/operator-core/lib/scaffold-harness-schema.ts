@@ -125,13 +125,6 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
     ALTER VIEW ${schema}.directive_summaries ALTER COLUMN summary SET DEFAULT '';
     ALTER VIEW ${schema}.directive_summaries ALTER COLUMN created_at SET DEFAULT (extract(epoch FROM now()) * 1000)::bigint;
 
-    CREATE OR REPLACE VIEW ${schema}.messages AS
-      SELECT * FROM harness_shared.messages_consolidated
-      WHERE harness_slug = '${slug.replace(/'/g, "''")}'
-      WITH CHECK OPTION;
-
-    ALTER VIEW ${schema}.messages ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
-
     CREATE OR REPLACE VIEW ${schema}.executed_actions AS
       SELECT * FROM harness_shared.executed_actions_consolidated
       WHERE harness_slug = '${slug.replace(/'/g, "''")}'

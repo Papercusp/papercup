@@ -11,6 +11,10 @@ import {
   runPollSuspectScanOnce,
   POLL_SUSPECT_ALERT_DEDUPE_MS,
   POLL_SUSPECT_SCAN_WINDOW_HOURS,
+  pickNewTimerRegistrations,
+  formatTimerRegistrationToast,
+  runTimerRegistrationScanOnce,
+  type TimerRegistration,
 } from './poll-suspect-alarm';
 import type { PollSuspect } from './dev-data';
 
@@ -178,5 +182,136 @@ describe('runPollSuspectScanOnce', () => {
     // are what the module exports (regression guard against silently narrowing scope).
     expect(POLL_SUSPECT_SCAN_WINDOW_HOURS).toBe(3);
     expect(POLL_SUSPECT_ALERT_DEDUPE_MS).toBe(24 * 3600_000);
+  });
+});
+
+function timer(overrides: Partial<TimerRegistration>): TimerRegistration {
+  return { name: 'system-health', source: 'in-process', ...overrides };
+}
+
+describe('pickNewTimerRegistrations', () => {
+  it('flags a timer name not in the known set', () => {
+    const t = timer({ name: 'brand-new-timer' });
+    expect(pickNewTimerRegistrations([t], new Set())).toEqual([t]);
+  });
+
+  it('suppresses a timer name already known', () => {
+    const t = timer({ name: 'system-health' });
+    expect(pickNewTimerRegistrations([t], new Set(['system-health']))).toEqual([]);
+  });
+
+  it('is independent per timer, preserving order', () => {
+    const known = timer({ name: 'known-one' });
+    const fresh = timer({ name: 'fresh-one' });
+    expect(pickNewTimerRegistrations([known, fresh], new Set(['known-one']))).toEqual([fresh]);
+  });
+});
+
+describe('formatTimerRegistrationToast', () => {
+  it('names each new timer with its source and cites D-004', () => {
+    const out = formatTimerRegistrationToast([timer({ name: 'mystery-tick', source: 'managed' })]);
+    expect(out.level).toBe('warning');
+    expect(out.message).toContain('1 unclassified');
+    expect(out.description).toContain('mystery-tick');
+    expect(out.description).toContain('managed');
+    expect(out.description).toContain('D-004');
+  });
+
+  it('lists multiple new timers, one per line', () => {
+    const out = formatTimerRegistrationToast([
+      timer({ name: 'a-timer' }),
+      timer({ name: 'b-timer' }),
+    ]);
+    expect(out.message).toContain('2 unclassified');
+    expect(out.description).toContain('a-timer');
+    expect(out.description).toContain('b-timer');
+  });
+});
+
+describe('runTimerRegistrationScanOnce', () => {
+  it('seeds silently (no toast) on an empty known-set — first run ever', async () => {
+    const t = timer({ name: 'system-health' });
+    const emitToast = vi.fn(async () => {});
+    const persistKnownNames = vi.fn(async () => {});
+    const result = await runTimerRegistrationScanOnce({
+      loadCurrentTimers: async () => [t],
+      loadKnownNames: async () => new Set(),
+      persistKnownNames,
+      emitToast,
+    });
+    expect(result).toEqual({ checked: 1, alerted: [], seeded: true });
+    expect(emitToast).not.toHaveBeenCalled();
+    expect(persistKnownNames).toHaveBeenCalledWith([t]);
+  });
+
+  it('toasts + persists a genuinely new timer once the known-set is non-empty', async () => {
+    const known = timer({ name: 'system-health' });
+    const fresh = timer({ name: 'brand-new-timer', source: 'managed' });
+    const emitToast = vi.fn(async () => {});
+    const persistKnownNames = vi.fn(async () => {});
+    const result = await runTimerRegistrationScanOnce({
+      loadCurrentTimers: async () => [known, fresh],
+      loadKnownNames: async () => new Set(['system-health']),
+      persistKnownNames,
+      emitToast,
+    });
+    expect(result.checked).toBe(2);
+    expect(result.alerted).toEqual([fresh]);
+    expect(result.seeded).toBe(false);
+    expect(emitToast).toHaveBeenCalledTimes(1);
+    expect(emitToast.mock.calls[0][0].description).toContain('brand-new-timer');
+    expect(persistKnownNames).toHaveBeenCalledWith([fresh]);
+  });
+
+  it('does NOT toast when every current timer is already known', async () => {
+    const t = timer({ name: 'system-health' });
+    const emitToast = vi.fn(async () => {});
+    const persistKnownNames = vi.fn(async () => {});
+    const result = await runTimerRegistrationScanOnce({
+      loadCurrentTimers: async () => [t],
+      loadKnownNames: async () => new Set(['system-health']),
+      persistKnownNames,
+      emitToast,
+    });
+    expect(result).toEqual({ checked: 1, alerted: [], seeded: false });
+    expect(emitToast).not.toHaveBeenCalled();
+    expect(persistKnownNames).not.toHaveBeenCalled();
+  });
+
+  it('fails open (never throws) when the load itself fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emitToast = vi.fn(async () => {});
+    const result = await runTimerRegistrationScanOnce({
+      loadCurrentTimers: async () => {
+        throw new Error('inventory boom');
+      },
+      loadKnownNames: async () => new Set(),
+      emitToast,
+    });
+    expect(result).toEqual({ checked: 0, alerted: [], seeded: false });
+    expect(emitToast).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scan skipped (non-fatal)'));
+    warn.mockRestore();
+  });
+
+  it('still reports alerted+seeded=false even when the toast emit fails, but persists nothing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fresh = timer({ name: 'brand-new-timer' });
+    const persistKnownNames = vi.fn(async () => {});
+    const result = await runTimerRegistrationScanOnce({
+      loadCurrentTimers: async () => [fresh],
+      loadKnownNames: async () => new Set(['system-health']),
+      persistKnownNames,
+      emitToast: async () => {
+        throw new Error('toast db write failed');
+      },
+    });
+    expect(result.checked).toBe(1);
+    expect(result.alerted).toEqual([fresh]);
+    // The toast throwing means the `try` block bails before persistKnownNames runs —
+    // the new timer is NOT marked known, so it correctly retries (toast + persist) next tick.
+    expect(persistKnownNames).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('toast/persist failed'));
+    warn.mockRestore();
   });
 });

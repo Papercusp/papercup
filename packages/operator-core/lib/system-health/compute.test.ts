@@ -6,10 +6,11 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
-import { PANEL_LABELS } from './types';
+import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
+import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPanels } from './types';
 
 describe('splitAutoEligibleStuck — keyed dispatcher-stuck vs keyless human-review backlog (EI-14223)', () => {
   it('counts only KEYED, attempts:0 items as autoEligibleStuck', () => {
@@ -700,5 +701,69 @@ describe('computeAccountsAvailable — starvation-watchdog false-positive fix (E
 
   it('a null gateway snapshot (gateway unreachable) never throws — edge-throttle just reads as unknown/false', () => {
     expect(() => computeAccountsAvailable([account('a1')], null, NOW)).not.toThrow();
+  });
+});
+
+describe('mergeHealthPanels — push-on-write merge for the health-tab cache (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013)', () => {
+  function fixturePanel(key: PanelKey, status: PanelStatus): HealthPanel<unknown> {
+    return { key, label: PANEL_LABELS[key], status, summary: `${key}:${status}`, metrics: [], data: null };
+  }
+
+  /** A full 20-panel snapshot, every panel 'ok' unless overridden. */
+  function fixtureSnapshot(overrides: Partial<Record<PanelKey, PanelStatus>> = {}): SystemHealth {
+    const panels = {} as SystemHealthPanels;
+    for (const key of PANEL_ORDER) {
+      (panels as Record<PanelKey, HealthPanel<unknown>>)[key] = fixturePanel(key, overrides[key] ?? 'ok');
+    }
+    return {
+      workspaceId: 'ws-test',
+      evaluatedAt: 0,
+      overall: 'ok',
+      crossMonitor: { queenAlive: false, overwatchAlive: null },
+      panels,
+    };
+  }
+
+  it('replaces only the named panel(s), leaving every other panel byte-identical', () => {
+    const snap = fixtureSnapshot();
+    const freshObservations = fixturePanel('observations', 'warn');
+    mergeHealthPanels(snap, { observations: freshObservations }, 123);
+    expect(snap.panels.observations).toBe(freshObservations);
+    expect(snap.panels.autonomy.status).toBe('ok');
+    expect(snap.panels.improvements.status).toBe('ok');
+  });
+
+  it('re-derives `overall` as the worst status across ALL panels, not just the merged one', () => {
+    // infra is pre-existing crit; merging a mere 'warn' into observations must
+    // not downgrade overall away from that crit (the P-013 bug this guards:
+    // partial-panel merges must never blind the aggregator to an untouched
+    // panel's worse status).
+    const snap = fixtureSnapshot({ infra: 'crit' });
+    mergeHealthPanels(snap, { observations: fixturePanel('observations', 'warn') }, 999);
+    expect(snap.overall).toBe('crit');
+  });
+
+  it('a merged panel recovering to ok brings `overall` back down when nothing else is worse', () => {
+    const snap = fixtureSnapshot({ improvements: 'crit' });
+    mergeHealthPanels(snap, { improvements: fixturePanel('improvements', 'ok') }, 111);
+    expect(snap.overall).toBe('ok');
+  });
+
+  it('a merged panel escalating to crit raises `overall` even though it started ok', () => {
+    const snap = fixtureSnapshot();
+    mergeHealthPanels(snap, { autonomy: fixturePanel('autonomy', 'crit') }, 222);
+    expect(snap.overall).toBe('crit');
+  });
+
+  it('stamps `evaluatedAt` to the merge time so the tab treats the snapshot as fresh', () => {
+    const snap = fixtureSnapshot();
+    mergeHealthPanels(snap, { autonomy: fixturePanel('autonomy', 'ok') }, 42424);
+    expect(snap.evaluatedAt).toBe(42424);
+  });
+
+  it('mutates the snapshot in place AND returns it (same reference)', () => {
+    const snap = fixtureSnapshot();
+    const returned = mergeHealthPanels(snap, { autonomy: fixturePanel('autonomy', 'warn') }, 1);
+    expect(returned).toBe(snap);
   });
 });
