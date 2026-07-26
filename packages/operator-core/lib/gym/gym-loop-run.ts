@@ -38,7 +38,26 @@ process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
 
 import { runOneAutoloopCycle, maskDsn } from './autoloop-cycle';
 
-const SLUG = process.env.GYM_LOOP_HARNESS ?? 'gymloopharness';
+/**
+ * WI-5811 [owner:Avi 2026-07-25]: "ALL LEARNINGS SHOULD BE SCOPED TO A POT."
+ *
+ * This used to default to the literal 'gymloopharness' — a slug that is NOT a
+ * registered pot and belongs to NO hive. Every CLI gym run therefore wrote its
+ * runs, proposals and QD archive into an orphan bucket that no pot's Learning
+ * lens could ever resolve, which is why the gym tab read empty under every pot
+ * while the gym was demonstrably running. (The old WI-5420 read-side "fallback"
+ * papered over this by showing another pot's data instead — removed in WI-5809.)
+ *
+ * Default is now the operator's HOME pot, so a gym run is attributed to the pot
+ * it was actually run for. `GYM_LOOP_HARNESS` still overrides for a deliberate
+ * throwaway/bench run. The legacy bucket remains only as the last-resort fallback
+ * when no home pot resolves (a bare CI/e2e context with no registry).
+ */
+const SLUG =
+  process.env.GYM_LOOP_HARNESS ??
+  process.env.PAPERCUSP_POT_HOME_SLUG ??
+  process.env.PAPERCUSP_HOME_HARNESS ??
+  'gymloopharness';
 
 async function main(): Promise<void> {
   // CLI semantics preserved: env-driven options + the autoloop-row writes
