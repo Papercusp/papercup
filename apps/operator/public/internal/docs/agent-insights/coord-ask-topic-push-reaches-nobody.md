@@ -1,5 +1,9 @@
 # `coord:ask` topic push reaches nobody — and the ref-format traps that hide it
 
+URL: /internal/docs/agent-insights/coord-ask-topic-push-reaches-nobody
+
+Topic-routed questions reach zero agents (there are no topic subscribers), so answer questions by PULLING them from coord:orient / conversations:list and ask by naming agents in `to:`. Also: the coord_* ref-format mismatches that make a broken join look like a finding.
+
 **TL;DR** — Asking a question via `coord:ask` with topics tagged does **not** mean
 anyone was notified. There are effectively **zero topic subscribers** in this
 workspace, so a topic-routed question reaches nobody, and until WI-5807 the tool

@@ -1106,6 +1106,19 @@ export async function getNextWorkItem(
     // nothing left to additionally exclude), but thread both regardless — the query
     // ANDs them, so an empty excludeIds is simply a no-op.
     const excludeIds = negativeIdExclusions(spec.view.filter);
+    // Compile the FULL filter tree (correct `any`/`not` semantics, paths/plan/title/tags —
+    // everything the id/kind extraction above structurally cannot express) and hand it to
+    // the claim query, so tier 3 atomically claims a SPEC-MATCHING row on the first attempt
+    // instead of claiming a violator and depending on claim-spec-store.ts's post-claim
+    // release-and-retry to bounce it. That retry shares MAX_PLAN_LANE_ATTEMPTS (5) with the
+    // plan-lane-blocked path; for a narrow lane (measured: 26 spec-matching of 1073
+    // lane-wide claimable on p2p-release-lane@9 = 2.4%) five draws almost never land a
+    // match, so get_next reported a FALSE drain on ~88% of pulls while
+    // work_items:claimable — which already compiles this same filter via
+    // issueClaimCandidateSubquery — correctly reported 26 claimable. This is the line that
+    // re-unifies the CLAIM path with the READ path. The post-claim re-check remains as
+    // defense-in-depth (and still covers topicTags, which is not a SQL-side field).
+    const specFilterSql = compileFilter(sql, spec.view.filter);
     claimed = await claimNextIssueWorkItem(
       {
         harness: opts.harness,
@@ -1116,7 +1129,12 @@ export async function getNextWorkItem(
         rigAvailable: opts.rigAvailable,
       },
       ws,
-      { issueKinds, ids: idValues, excludeIds: excludeIds.length ? excludeIds : undefined },
+      {
+        issueKinds,
+        ids: idValues,
+        excludeIds: excludeIds.length ? excludeIds : undefined,
+        specFilterSql,
+      },
     );
   }
 

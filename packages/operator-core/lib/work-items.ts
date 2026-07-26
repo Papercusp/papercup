@@ -3581,6 +3581,31 @@ export async function claimNextIssueWorkItem(
      *  way to see it, so the very ids a spec meant to skip came right back through the
      *  fallback. Undefined/empty ⇒ no exclusion, unchanged behavior. */
     excludeIds?: readonly string[];
+    /** The caller's FULL claim-spec filter, already compiled to a SQL fragment by
+     *  get-next.ts's `compileFilter` (passed DOWN rather than imported, so this module
+     *  keeps its existing get-next → work-items import direction and no cycle forms).
+     *
+     *  Why this exists: `issueKinds`/`ids`/`excludeIds` above can only express the kind
+     *  and id legs of a spec. Every OTHER leg — `paths` globs, `plan`, `title`, `tags`,
+     *  and any `any`/`not` combination of them — used to be invisible to this claim
+     *  query, so tier 3 would atomically claim a row the spec never admitted and rely on
+     *  claim-spec-store.ts's post-claim `matchesWorkItemClaimSpec` re-check to release it
+     *  and retry. That retry shares MAX_PLAN_LANE_ATTEMPTS (5), a budget whose own comment
+     *  sizes it for a DIFFERENT failure mode (consecutive plan-lane-BLOCKED candidates).
+     *  For a narrow fleet lane that budget is nowhere near enough: measured on
+     *  p2p-release-lane@9, 26 of 1073 lane-wide claimable rows matched the spec (2.4%), so
+     *  P(>=1 match in 5 draws) ~ 11.6% — i.e. ~88% of scheduler:get_next pulls returned a
+     *  FALSE "no claimable work", indistinguishable from a genuinely drained lane. Three
+     *  separate fleet members independently misreported that as "floor-gated" while
+     *  work_items:claimable (which DOES compile the full filter, via
+     *  issueClaimCandidateSubquery) correctly reported 26 claimable.
+     *
+     *  Threading the compiled filter here makes the claim path select a SPEC-MATCHING row
+     *  atomically on the first attempt, which re-unifies claim with read and removes the
+     *  quarantine claim-then-release round-trip for ALL spec shapes (that dance also caused
+     *  the EI-15019 / EI-14837 spurious-wake incidents). The post-claim re-check stays as
+     *  defense-in-depth. Undefined ⇒ unrestricted, exactly the previous behavior. */
+    specFilterSql?: unknown;
   } = {},
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
@@ -3626,6 +3651,14 @@ export async function claimNextIssueWorkItem(
   const idFilter = opts.ids?.length ? [...opts.ids] : undefined;
   // WI-5258: the negative counterpart of idFilter — ids the spec explicitly excludes.
   const excludeIdFilter = opts.excludeIds?.length ? [...opts.excludeIds] : undefined;
+  // The caller's full compiled claim-spec filter (see `specFilterSql` on opts for the
+  // measured rationale). `compileFilter` emits UNQUALIFIED column references (feature_id,
+  // source_plan_slug, payload->'paths', …) which resolve against `wi` — the only table in
+  // the inner SELECT's scope — so the fragment drops in as one more AND leg alongside the
+  // id/kind narrowings. Undefined ⇒ TRUE ⇒ unrestricted, the pre-existing behavior.
+  const specFilterSql = (opts.specFilterSql ?? undefined) as
+    | ReturnType<OrgSql>
+    | undefined;
   // Mig 499: the SAME release-cooldown floor claimFloorsWhereSql applies for the
   // feature family (mig 485/EI-6956) — without it, an agent that releases an
   // issue-family item immediately re-claims that EXACT row on its very next
@@ -3644,6 +3677,12 @@ export async function claimNextIssueWorkItem(
           AND ${idFilter ? sql`wi.feature_id = ANY(${idFilter}::text[])` : sql`TRUE`}
           -- WI-5258: exclude ids the spec negatively excludes (a not-wrapped id leaf).
           AND ${excludeIdFilter ? sql`NOT (wi.feature_id = ANY(${excludeIdFilter}::text[]))` : sql`TRUE`}
+          -- The FULL compiled claim-spec filter: the paths/plan/title/tag legs (and any
+          -- any/not combination) that the kind/id narrowings above structurally cannot
+          -- express. Without this the claim path served spec-violating rows and leaned on a
+          -- 5-attempt post-claim release-and-retry, which false-reported a narrow lane as
+          -- drained ~88% of the time. See opts.specFilterSql.
+          AND ${specFilterSql ?? sql`TRUE`}
           AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
           AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
           AND wi.status = ANY(${[...states]}::text[])

@@ -1585,9 +1585,6 @@ export async function joinHarnessSwarm(
             pairing && pairing.firstAttemptMs !== null ? now - pairing.firstAttemptMs : 0;
           if (
             pairing &&
-            liveConnectionCount > 0 &&
-            !pairing.everPaired &&
-            pairing.attempts >= MIN_UNPAIRED_ATTEMPTS &&
             unpairedMs >= unpairedEscalationMs &&
             now - lastUnpairedEscalationMs >= unpairedEscalationMs
           ) {
