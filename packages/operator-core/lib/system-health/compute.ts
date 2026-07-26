@@ -613,9 +613,14 @@ export function computeStalePausedRoutines(
   const criticalNames = opts.criticalNames ?? RELEASE_CRITICAL_ROUTINE_NAMES;
   const out: StalePausedRoutine[] = [];
   for (const r of rows) {
+    // isReleaseCriticalNamed drives the THRESHOLD (a release routine deserves the
+    // shorter fuse regardless of whose install it's on); `critical` (the field that
+    // escalates liveness-alarm severity to `blocker`) additionally requires the
+    // install to match — see the doc comment above.
+    const isReleaseCriticalNamed = criticalNames.has(r.name);
     const installKnown = opts.currentInstallSlug != null && r.installSlug != null;
     const installMatches = !installKnown || r.installSlug === opts.currentInstallSlug;
-    const critical = criticalNames.has(r.name) && installMatches;
+    const critical = isReleaseCriticalNamed && installMatches;
     const reasonMissing = r.pausedAtMs == null || !r.pauseReason;
     const anchorMs = r.pausedAtMs ?? r.updatedAtMs ?? null;
     if (anchorMs == null) {
@@ -623,7 +628,7 @@ export function computeStalePausedRoutines(
       continue;
     }
     const ageMs = Math.max(0, now - anchorMs);
-    const threshold = critical ? criticalMs : generalMs;
+    const threshold = isReleaseCriticalNamed ? criticalMs : generalMs;
     if (reasonMissing || ageMs >= threshold) {
       out.push({ name: r.name, ageMs, reasonMissing, critical });
     }
@@ -728,7 +733,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // Best-effort/fail-soft: never let a metadata-shape surprise sink the whole panel.
     let stalePaused: StalePausedRoutine[] = [];
     try {
-      stalePaused = await readStalePausedRoutines(sql);
+      stalePaused = await readStalePausedRoutines(sql, potSlug);
     } catch { /* leave empty — the dead-routine signal above still computes */ }
     const stalePausedRoutineNames = stalePaused.map((r) => r.name);
     const stalePausedCriticalRoutines = stalePaused.filter((r) => r.critical).length;

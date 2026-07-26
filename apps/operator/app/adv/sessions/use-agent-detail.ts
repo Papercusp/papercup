@@ -123,6 +123,11 @@ export interface AgentDossierCheckpoint {
   text: string;
   updatedAtMs: number | null;
 }
+// EI-18694403367371331: keys whose underlying read THREW this call rather
+// than returning genuinely empty data — see the server-side AgentSignals
+// docstring (adv-agent-detail.ts) for the full rationale.
+export type AgentSignalKey = 'loop' | 'currentClaim' | 'context' | 'unanswered' | 'lastToolCall';
+
 export interface AgentSignals {
   loop: AgentDossierLoopStatus | null;
   currentClaim: AgentDossierClaim | null;
@@ -131,6 +136,7 @@ export interface AgentSignals {
   lastCheckpoint: AgentDossierCheckpoint | null;
   unansweredDirectedCount: number;
   lastToolCallAt: string | null;
+  unavailableSignals: AgentSignalKey[];
 }
 
 export interface AgentDetail {

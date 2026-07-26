@@ -1296,13 +1296,23 @@ export function systemdExitDenyReason(op: string): string {
  * the same anti-drift test the shell hook has.
  */
 
+/*
+ * The three atomizer regexes below are duplicated in the shell hook (as Python
+ * `re` patterns with textually identical sources) because each hook must be able
+ * to run its pre-filter with no imports. That duplication is the one piece of
+ * D-005's "fix one, fix both" tax the registry does NOT remove — widen the
+ * runner set on one path only and a command behind the new wrapper reaches the
+ * operator on that path while silently skipping the round-trip on the other.
+ * So they are EXPORTED purely so coord-hook.test.ts can assert their sources
+ * still match the shell hook's byte-for-byte; nothing else reads them.
+ */
 /** Compound-command separators — `atomize.ts` SEPARATORS. */
-const SUBST_SPLIT_RE = /\|\||&&|\||;|\n/;
+export const SUBST_SPLIT_RE = /\|\||&&|\||;|\n/;
 /** Leading runner wrappers — `atomize.ts` RUNNER_PREFIX. */
-const SUBST_RUNNER_RE =
+export const SUBST_RUNNER_RE =
   /^(?:sudo\s+(?:-n\s+)?|nohup\s+|timeout\s+\S+\s+|time\s+|env\s+|command\s+|exec\s+)+/;
 /** Leading `FOO=bar` env assignments — `atomize.ts` ENV_PREFIX. */
-const SUBST_ENV_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
+export const SUBST_ENV_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
 
 /**
  * Atom heads any enabled registry row can claim. A SET (not a regex
@@ -3544,7 +3554,15 @@ export async function onToolCall(
   // restart/migration RIGHT NOW (a live collision), whereas a substitution is a
   // lasting suggestion about tool choice — surfacing the lesson would bury the
   // emergency. Same precedence, and the same reason, as the shell hook.
-  if (event.toolName.toLowerCase().startsWith('bash')) {
+  //
+  // `isShellTool` (bash* OR `shell`), not the `startsWith('bash')` the older
+  // guards above use: OMP's shell tool is reachable under both spellings — the
+  // loop-breaker and the per-turn shell budget both accept `shell` — and a gate
+  // that misses a spelling is enforced NOWHERE for it, silently. Widening costs
+  // nothing: a `shell` call that carries no `command` string leaves `cmd` empty
+  // and the whole block no-ops. (The narrower gate on the guards above is
+  // pre-existing and shares this hazard — filed separately, not changed here.)
+  if (isShellTool(event.toolName)) {
     const cmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
     const agent = isAgentSession();
     if (cmd && (resourcePrefilterHit(cmd) || (agent && substitutionPrefilterHit(cmd)))) {

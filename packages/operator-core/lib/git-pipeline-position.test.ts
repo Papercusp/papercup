@@ -18,6 +18,11 @@ function fakeGit(opts: {
   subject?: string;
   /** ref → set of shas that ref's history contains (ancestor-or-equal). */
   contains?: Record<string, string[]>;
+  /** EI-18694888339365359: the AUTHORITATIVE remote tip `git ls-remote origin
+   *  refs/heads/staging` would report — deliberately independent of `contains`
+   *  so a test can simulate a stale LOCAL origin/staging ref (contains says
+   *  not-present) disagreeing with the true remote tip. */
+  remoteStagingTip?: string;
 }): GitRunner {
   return async (_repo, args) => {
     if (args[0] === 'config' && args.includes('.gitmodules')) {
@@ -32,6 +37,9 @@ function fakeGit(opts: {
       const [ref, sha] = args[2].split('..');
       const set = new Set(opts.contains?.[ref] ?? []);
       return set.has(sha) ? '0' : '3';
+    }
+    if (args[0] === 'ls-remote' && args[1] === 'origin' && args[2] === 'refs/heads/staging') {
+      return opts.remoteStagingTip ? `${opts.remoteStagingTip}\trefs/heads/staging` : null;
     }
     return null;
   };
@@ -83,6 +91,48 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.positions).toEqual({ committedLocal: true, onStaging: true, inMain: true, deployed: true });
     expect(res.submodule).toBeNull();
     expect(res.summary).toContain('(live)');
+  });
+
+  // EI-18694888339365359: the local origin/staging remote-tracking ref lagged
+  // one commit behind (git-sync had not yet fetched this push) — refContains
+  // against it said "not present", which would otherwise emit a false BLOCKING
+  // "not-on-origin-staging" release:trace constraint and park an agent on
+  // git-sync:await for a push event that already fired.
+  it('EI-18694888339365359: a STALE local origin/staging ref is corrected via ls-remote when the target IS the exact remote tip', async () => {
+    const git = fakeGit({
+      pathCommit: 'newtip1234',
+      contains: {
+        HEAD: ['newtip1234'],
+        'origin/staging': [], // stale local ref: does NOT (yet) contain the target
+        'origin/main': [],
+        deployedsha0: [],
+      },
+      remoteStagingTip: 'newtip1234', // but the true remote tip IS the target
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/w.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(res.positions.onStaging).toBe(true);
+    expect(res.notes.some((n) => n.includes('ls-remote'))).toBe(true);
+  });
+
+  it('EI-18694888339365359: a GENUINELY unpushed commit still reads onStaging false (ls-remote tip does not match, no false positive)', async () => {
+    const git = fakeGit({
+      pathCommit: 'notpushed12',
+      contains: {
+        HEAD: ['notpushed12'],
+        'origin/staging': [],
+        'origin/main': [],
+        deployedsha0: [],
+      },
+      remoteStagingTip: 'someothersha', // remote is at a different commit entirely
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/v.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(res.positions.onStaging).toBe(false);
   });
 
   it('a change stuck at staging behind a STALLED gate reads main ✗ + surfaces the stall', async () => {

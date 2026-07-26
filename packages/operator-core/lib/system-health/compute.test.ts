@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -283,6 +283,67 @@ describe('computeStalePausedRoutines — stale/unexplained routine pause detecto
 
   it('a healthy, unpaused fleet (no rows) → empty', () => {
     expect(computeStalePausedRoutines([], now)).toEqual([]);
+  });
+
+  describe('EI-18694769501553335 — critical severity is scoped to the CURRENT install, not any row sharing the name', () => {
+    it('does NOT escalate to critical a same-named release routine paused on a DIFFERENT install (the false-positive repro)', () => {
+      const criticalMs = 4 * 60 * 60_000;
+      const rows: StalePausedRoutineInput[] = [
+        {
+          name: 'green-checkpoint',
+          pausedAtMs: now - criticalMs - 1,
+          pauseReason: 'disposable verify harness, paused on purpose',
+          installSlug: 'ei665-verify-x1',
+        },
+      ];
+      const r = computeStalePausedRoutines(rows, now, { currentInstallSlug: 'papercusp' });
+      expect(r).toHaveLength(1);
+      // Still reported (a real, if unimportant, stale pause) but NOT upgraded to critical —
+      // it belongs to a different install and cannot block THIS install's deploy pipeline.
+      expect(r[0]).toMatchObject({ name: 'green-checkpoint', critical: false });
+    });
+
+    it('DOES escalate to critical when the paused release routine belongs to the CURRENT install', () => {
+      const criticalMs = 4 * 60 * 60_000;
+      const rows: StalePausedRoutineInput[] = [
+        {
+          name: 'green-checkpoint',
+          pausedAtMs: now - criticalMs - 1,
+          pauseReason: 'incident mitigation',
+          installSlug: 'papercusp',
+        },
+      ];
+      const r = computeStalePausedRoutines(rows, now, { currentInstallSlug: 'papercusp' });
+      expect(r).toHaveLength(1);
+      expect(r[0]).toMatchObject({ name: 'green-checkpoint', critical: true });
+    });
+
+    it('falls back to name-only matching (pre-fix behavior) when installSlug/currentInstallSlug is unknown — no false negative for callers not yet passing it', () => {
+      const criticalMs = 4 * 60 * 60_000;
+      // No installSlug on the row, no currentInstallSlug in opts.
+      const r1 = computeStalePausedRoutines(
+        [{ name: 'release-trigger', pausedAtMs: now - criticalMs - 1, pauseReason: 'incident' }],
+        now,
+      );
+      expect(r1[0]).toMatchObject({ critical: true });
+
+      // installSlug known on the row but currentInstallSlug NOT passed by the caller.
+      const r2 = computeStalePausedRoutines(
+        [{ name: 'release-trigger', pausedAtMs: now - criticalMs - 1, pauseReason: 'incident', installSlug: 'some-hive' }],
+        now,
+      );
+      expect(r2[0]).toMatchObject({ critical: true });
+    });
+
+    it('a NON-critical-named routine paused on a different install is unaffected (still just advisory-eligible by name)', () => {
+      const generalMs = 24 * 60 * 60_000;
+      const rows: StalePausedRoutineInput[] = [
+        { name: 'scout-cycle', updatedAtMs: now - generalMs - 1, installSlug: 'ei665-verify-x1' },
+      ];
+      const r = computeStalePausedRoutines(rows, now, { currentInstallSlug: 'papercusp' });
+      expect(r).toHaveLength(1);
+      expect(r[0]).toMatchObject({ name: 'scout-cycle', critical: false });
+    });
   });
 });
 

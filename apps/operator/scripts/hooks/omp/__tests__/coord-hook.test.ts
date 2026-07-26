@@ -5,9 +5,17 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { promises as fs, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  promises as fs,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   buildActivityArgs,
@@ -132,6 +140,19 @@ import {
   looksLikeUnstructuredOwnerAsk,
   reportTurnAskIngest,
   _resetOpenAskGatesForTests,
+  SUBSTITUTION_PREFILTER_HEADS,
+  SUBST_SPLIT_RE,
+  SUBST_RUNNER_RE,
+  SUBST_ENV_RE,
+  substitutionPrefilterHit,
+  resourcePrefilterHit,
+  checkCommandVerdict,
+  formatSubstitutionLines,
+  substitutionDenyReason,
+  substitutionAdvisoryText,
+  resourceBlockReason,
+  stageSubstitutionAdvisory,
+  drainSubstitutionAdvisory,
   type InboxEntry,
 } from '../coord-hook';
 

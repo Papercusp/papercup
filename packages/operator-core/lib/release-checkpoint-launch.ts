@@ -133,8 +133,12 @@ export interface LaunchCheckpointResult {
 export interface ActiveCheckpointCheck {
   active: boolean;
   unit: string;
-  /** Best-effort candidate sha the live run is judging (parsed from its log's first
-   *  "checkpointing candidate <sha>" line) — null if the log isn't readable yet/at all. */
+  /** Best-effort candidate sha the live run is judging. For the manual-unit case, parsed
+   *  from its log's first "checkpointing candidate <sha>" line (null if the log isn't
+   *  readable yet/at all). For the `held_externally` case (see below), resolved instead
+   *  from the isolated checkpoint checkout's own HEAD — null only if THAT tree doesn't
+   *  exist or isn't readable. Either way: the sha this field reports IS what the live run
+   *  is judging, never a hypothetical "if launched now" value (see `current_candidate`). */
   candidate?: string | null;
   /** Current integration checkout HEAD at status-read time. */
   current_head?: string | null;
@@ -159,12 +163,16 @@ export interface ActiveCheckpointCheck {
   replace_refused_young?: boolean;
   /** WI-5685: true when this active run was detected via the shared file-based RUN LOCK, not
    *  the manual systemd unit — almost certainly the hourly cron tick (or another out-of-band
-   *  invocation). `candidate`/`candidate_stale` are unknown in this case (the holder's own log
-   *  path isn't known), and `force`/`replaceStale` CANNOT free this slot — there is no manual
-   *  unit to stop or replace, so a `force:true` launch would just spawn a second process that
-   *  loses the exact same lock race and produces no verdict either. The only remedy is to wait
-   *  for it (checkpoint:await, no candidateSha — its outcome covers your commit too as long as
-   *  your commit is an ancestor of whatever it judges). */
+   *  invocation). The holder's own log path isn't known, so `candidate` is instead resolved
+   *  from the checkpoint checkout's own HEAD (best-effort — see `candidate`'s doc comment);
+   *  `candidate_stale` is HARD-CODED false regardless of what that resolves to (EI-11667/
+   *  EI-18695275971973546 safety: even a genuinely-stale externally-held run must never be
+   *  reported replaceable — there is no manual unit here to stop, so `force`/`replaceStale`
+   *  CANNOT free this slot; either would just spawn a second process that loses the exact
+   *  same lock race a moment later and produces no verdict either). The only remedy is to
+   *  wait for it (checkpoint:await, no candidateSha — its outcome covers your commit too as
+   *  long as your commit is an ancestor of whatever it judges). `current_candidate`/
+   *  `candidate_stale` describe a HYPOTHETICAL fresh launch, never this in-flight run. */
   held_externally?: boolean;
 }
 
@@ -298,6 +306,21 @@ function checkpointLogDirFromEnv(): string {
   return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? path.join(homedir(), '.papercusp', 'checkpoint-logs');
 }
 
+/** Mirrors release-config.ts's `checkpointRoot` derivation (env override, else
+ *  `<parent-of-root>/<basename(root)>-checkpoint`) — same duplication rationale as the
+ *  log-dir/lock-dir mirrors above (operator-core must not depend on apps/operator).
+ *
+ * EI-18695275971973546: used ONLY to resolve the ACTUAL in-flight candidate when a run is
+ * `held_externally` (the hourly cron tick holds the run-lock, not our manual unit, so we have
+ * no log to parse a candidate from). The isolated checkpoint checkout is pinned to its judged
+ * candidate for the run's WHOLE duration (green-checkpoint.ts's setupTree checks it out once,
+ * up front, before the suite runs) — so reading that tree's HEAD *is* reading the true judged
+ * candidate, not a guess. Best-effort: a missing/mid-checkout tree just means `candidate` stays
+ * null, same as before this fix. */
+function checkpointRootMirror(root: string): string {
+  return process.env.PAPERCUSP_CHECKPOINT_ROOT ?? path.join(path.dirname(root), `${path.basename(root)}-checkpoint`);
+}
+
 /** Default reader for the run-lock's `owner.json` — real fs; injectable for tests. Never
  *  throws: a missing/unreadable/malformed lock file just means "not held" (the common case —
  *  most of the time nothing is running). */
@@ -384,12 +407,22 @@ export function checkActiveCheckpointRun(
     const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner);
     if (lockHeld.held) {
       const current = currentCheckpointCandidate(root, execFn);
+      // EI-18695275971973546: resolve the REAL in-flight candidate from the isolated
+      // checkpoint checkout's own HEAD (see checkpointRootMirror's doc comment) instead of
+      // reporting `candidate: null` — a null here was being misread as "this run's candidate
+      // is unknowable", pushing callers toward `current_candidate` (a HYPOTHETICAL fresh-launch
+      // value) as if it described the running suite, which cost a wrong "this can go green"
+      // broadcast to the whole fleet. Best-effort: stays null if the checkpoint tree can't be read.
+      const externalCandidate = gitOutput(checkpointRootMirror(root), ['rev-parse', 'HEAD'], execFn);
       return {
         active: true,
         unit: `${unit} (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)`,
-        candidate: null, // unknown: we don't know the holder's own log path
+        candidate: externalCandidate,
         ...current,
-        candidate_stale: false, // never treat an external holder as replaceable-stale (EI-11667 safety)
+        // Deliberately NOT derived from externalCandidate vs current_candidate — see the
+        // held_externally doc comment (EI-11667 safety): even a genuinely-stale externally-held
+        // run must never be reported replaceable.
+        candidate_stale: false,
         started_at: lockHeld.started_at ?? null,
         elapsed_sec: lockHeld.elapsed_sec ?? null,
         eta_sec: lockHeld.elapsed_sec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - lockHeld.elapsed_sec) : null,

@@ -50,6 +50,35 @@ async function refContains(git: GitRunner, repo: string, ref: string, sha: strin
   return contained === '0';
 }
 
+/**
+ * EI-18694888339365359: the LOCAL `origin/staging` remote-tracking ref can lag
+ * arbitrarily behind the true remote tip — this module deliberately never runs
+ * `git fetch` (see the module doc), so it depends on git-sync's own periodic
+ * fetch to keep that ref fresh, and a read between ticks sees a stale ref.
+ * Confirmed live: `refContains` against the local ref said the target commit
+ * was NOT on origin/staging while `git ls-remote origin refs/heads/staging`
+ * showed the target WAS the exact remote tip — release:trace then emitted a
+ * BLOCKING "not-on-origin-staging" constraint and told the agent to
+ * `git-sync:await` a push that had already happened, parking it forever on an
+ * already-satisfied condition.
+ *
+ * `git ls-remote` queries the remote's ref advertisement over the network
+ * WITHOUT fetching any objects or touching a single local ref — it stays
+ * exactly as read-only/non-perturbing as the rest of this module while giving
+ * an authoritative, always-current answer for the one case it CAN answer
+ * without local objects: "is the target commit exactly the remote tip right
+ * now?" (It cannot establish ancestry for a target that is an OLDER,
+ * non-tip commit on a remote that has since moved past the local ref's
+ * knowledge — that needs the actual commit graph, i.e. a fetch, which this
+ * module intentionally does not perform.)
+ */
+async function isExactRemoteTip(git: GitRunner, repo: string, remoteRef: string, sha: string): Promise<boolean> {
+  const out = await git(repo, ['ls-remote', 'origin', remoteRef]);
+  if (!out) return false;
+  const tip = out.split(/\s+/)[0]?.toLowerCase();
+  return !!tip && tip === sha.toLowerCase();
+}
+
 export interface PipelinePositionInput {
   path?: string;
   sha?: string;
@@ -548,6 +577,20 @@ export async function gitPipelinePosition(
       positions.onStaging = await refContains(git, gitDir, 'origin/HEAD', targetSha);
     } else {
       positions.onStaging = await refContains(git, root, 'origin/staging', targetSha);
+      // EI-18694888339365359: the local ref said "not present" — before believing
+      // that (and letting a caller block/park on it), check the actual remote tip
+      // via ls-remote (no fetch, no local mutation). If the target IS the current
+      // remote tip, the local ref was simply stale; correct the verdict rather
+      // than emitting a false block that sends an agent to await a push event
+      // that already fired.
+      if (!positions.onStaging && (await isExactRemoteTip(git, root, 'refs/heads/staging', targetSha))) {
+        positions.onStaging = true;
+        notes.push(
+          'The local origin/staging ref was stale (git-sync had not yet fetched this push); ' +
+            'confirmed via `git ls-remote` (no local mutation) that the target commit IS the ' +
+            'current remote tip, so onStaging was corrected to true.',
+        );
+      }
       positions.inMain = await refContains(git, root, 'origin/main', targetSha);
       positions.deployed = deployedSha ? await refContains(git, root, deployedSha, targetSha) : false;
     }
