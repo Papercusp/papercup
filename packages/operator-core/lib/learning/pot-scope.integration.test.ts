@@ -1,7 +1,7 @@
 /**
  * pot-scope.integration.test.ts — the P-006 GUARD (pot-scope-all-learnings-2026-07-26).
  *
- * [owner:Avi 2026-07-25 interactive] "THERE SHOULD BE NO WORKSPACE SCOPED
+ * [owner 2026-07-25 interactive] "THERE SHOULD BE NO WORKSPACE SCOPED
  * LEARNINGS. ALL LEARNINGS SHOULD BE SCOPED TO A POT." This suite is the tripwire
  * that keeps that true structurally:
  *

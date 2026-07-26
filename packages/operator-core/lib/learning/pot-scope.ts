@@ -2,7 +2,7 @@
  * pot-scope.ts — the ONE way a learning writer resolves the pot its row belongs to.
  *
  * Plan `pot-scope-all-learnings-2026-07-26`, P-002.
- * [owner:Avi 2026-07-25 interactive, verbatim] "THERE SHOULD BE NO WORKSPACE
+ * [owner 2026-07-25 interactive, verbatim] "THERE SHOULD BE NO WORKSPACE
  * SCOPED LEARNINGS. FIX THAT. ALL LEARNINGS SHOULD BE SCOPED TO A POT."
  *
  * ## Why this exists as a shared seam rather than inline in each store

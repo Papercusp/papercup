@@ -37,9 +37,10 @@
 process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
 
 import { runOneAutoloopCycle, maskDsn } from './autoloop-cycle';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /**
- * WI-5811 [owner:Avi 2026-07-25]: "ALL LEARNINGS SHOULD BE SCOPED TO A POT."
+ * WI-5811 [owner 2026-07-25]: "ALL LEARNINGS SHOULD BE SCOPED TO A POT."
  *
  * This used to default to the literal 'gymloopharness' — a slug that is NOT a
  * registered pot and belongs to NO hive. Every CLI gym run therefore wrote its
@@ -48,16 +49,19 @@ import { runOneAutoloopCycle, maskDsn } from './autoloop-cycle';
  * while the gym was demonstrably running. (The old WI-5420 read-side "fallback"
  * papered over this by showing another pot's data instead — removed in WI-5809.)
  *
- * Default is now the operator's HOME pot, so a gym run is attributed to the pot
- * it was actually run for. `GYM_LOOP_HARNESS` still overrides for a deliberate
- * throwaway/bench run. The legacy bucket remains only as the last-resort fallback
- * when no home pot resolves (a bare CI/e2e context with no registry).
+ * Default is now the operator's HOME pot, resolved through the SAME single
+ * source of truth every other home-hive call site uses
+ * (`operatorHomeHarnessSlug()` — `PAPERCUSP_POT_HOME_SLUG`, else the
+ * `papercusp` legacy default; see operator-home-harness.ts). This used to
+ * hand-roll its own fallback chain ending in the literal 'gymloopharness' —
+ * a duplicate, DIVERGENT copy of the canonical resolver (its second rung,
+ * `PAPERCUSP_HOME_HARNESS`, isn't even a real env pointer anywhere else in
+ * the codebase) that reintroduced the orphan bucket as a "last resort" for
+ * exactly the bare-env case `operatorHomeHarnessSlug()` already handles by
+ * resolving to a REAL registered hive instead. `GYM_LOOP_HARNESS` still
+ * overrides for a deliberate throwaway/bench run.
  */
-const SLUG =
-  process.env.GYM_LOOP_HARNESS ??
-  process.env.PAPERCUSP_POT_HOME_SLUG ??
-  process.env.PAPERCUSP_HOME_HARNESS ??
-  'gymloopharness';
+const SLUG = process.env.GYM_LOOP_HARNESS ?? operatorHomeHarnessSlug();
 
 async function main(): Promise<void> {
   // CLI semantics preserved: env-driven options + the autoloop-row writes

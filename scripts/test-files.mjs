@@ -190,6 +190,33 @@ export function looksLikeSilentCollectionFailure(output) {
   return zeroTestFiles >= 2;
 }
 
+/**
+ * EI-18662389554660036: a concurrent `npm install` on this shared tree rewrites
+ * `node_modules` out from under every other agent's test run — `vitest`'s own
+ * bin can vanish mid-install, or an overlapping second install can leave a
+ * package half-written (e.g. `@vitest/mocker`'s `dist/` with only `.d.ts`
+ * files, zero `.js`). Neither failure mode names its actual cause: the shell
+ * reports a bare "command not found", and Node reports a bare
+ * ERR_MODULE_NOT_FOUND stack into node_modules — both read exactly like a
+ * real dependency/build problem. Detect the signature so the caller can print
+ * an actionable hint (check for a concurrent installer) instead of leaving the
+ * agent to chase a phantom bug.
+ *
+ * @param {string} output combined stdout+stderr of a `vitest list`/`vitest run` invocation
+ * @returns {boolean} true when the output looks like node_modules was being rewritten concurrently
+ */
+export function looksLikeMidInstallCorruption(output) {
+  if (/\bvitest:\s*not found\b/i.test(output)) return true;
+  if (/ERR_MODULE_NOT_FOUND/.test(output) && /node_modules/.test(output)) return true;
+  return false;
+}
+
+const MID_INSTALL_HINT =
+  'TEST_FILE_MID_INSTALL_SUSPECTED node_modules looks mid-install or corrupt (a peer agent may be running ' +
+  '`npm install` on this shared tree right now — see EI-18662389554660036). Check `ps aux | grep "npm install"` ' +
+  'and locks:list, then retry once it finishes. Prefer `npm run install:safe` for any future install on this tree ' +
+  'so it serializes instead of racing concurrent test runs.';
+
 export function aggregateGroupResults(groupResults) {
   const requested = groupResults.reduce((sum, g) => sum + g.requested, 0);
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
@@ -252,8 +279,12 @@ export function main(argv = process.argv.slice(2)) {
       cwd: group.cwd,
       env: process.env,
     });
+    const listedOutput = `${listed.stdout ?? ''}\n${listed.stderr ?? ''}${listed.error ? listed.error.message : ''}`;
     if (listed.error) {
       console.error(`TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) could not launch Vitest: ${listed.error.message}`);
+      if (looksLikeMidInstallCorruption(listedOutput)) {
+        console.error(MID_INSTALL_HINT);
+      }
       groupResults.push({
         requested: group.routes.length,
         matched: 0,
@@ -273,6 +304,9 @@ export function main(argv = process.argv.slice(2)) {
       console.error(
         `TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) requested=${verdict.requested} matched=${verdict.matched}; refusing a false-green zero/partial-match run for this group`,
       );
+      if (looksLikeMidInstallCorruption(listedOutput)) {
+        console.error(MID_INSTALL_HINT);
+      }
       groupResults.push({
         requested: verdict.requested,
         matched: verdict.matched,
@@ -310,6 +344,9 @@ export function main(argv = process.argv.slice(2)) {
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) {
       console.error(`TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`);
+      if (looksLikeMidInstallCorruption(result.error.message)) {
+        console.error(MID_INSTALL_HINT);
+      }
       groupResults.push({
         requested: verdict.requested,
         matched: verdict.matched,
@@ -323,6 +360,9 @@ export function main(argv = process.argv.slice(2)) {
     const groupFailed = result.status !== 0;
     if (groupFailed) {
       console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`);
+      if (looksLikeMidInstallCorruption(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
+        console.error(MID_INSTALL_HINT);
+      }
       // EI-18099113673609528: >=2 files + zero per-suite detail is Vitest 4's silent
       // simultaneous-collection-failure reporter gap — re-run each file alone (where the same
       // failure DOES print in full) so the caller isn't left with an undiagnosable "N failed / no

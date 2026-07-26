@@ -108,6 +108,10 @@ if [ "$ACTIVE_S_AGO" -lt "$DHT_BOOT_GRACE_SEC" ] 2>/dev/null; then
 fi
 
 # ── run the real probe. ──
+run_probe() {
+  cd "$REPO_ROOT" && timeout $(( (DHT_PROBE_TIMEOUT_MS / 1000) + 20 )) node "$PROBE" --host "$DHT_HOST" --port "$DHT_PORT" --timeout-ms "$DHT_PROBE_TIMEOUT_MS" 2>&1
+}
+
 log "probing bootstrap $DHT_HOST:$DHT_PORT (timeout ${DHT_PROBE_TIMEOUT_MS}ms) …"
 # WI-4077: the probe itself now bounds ALL of its work (announce/flush AND
 # connection-wait, not just the latter) to DHT_PROBE_TIMEOUT_MS, plus its own
@@ -117,7 +121,7 @@ log "probing bootstrap $DHT_HOST:$DHT_PORT (timeout ${DHT_PROBE_TIMEOUT_MS}ms) �
 # diagnostic output the way the tighter +10s margin once did (empty
 # "Probe output:" body on the WI-4077 incident, root-caused as the probe
 # hanging past this wrapper's kill before reaching its own FAIL branch).
-PROBE_OUT="$(cd "$REPO_ROOT" && timeout $(( (DHT_PROBE_TIMEOUT_MS / 1000) + 20 )) node "$PROBE" --host "$DHT_HOST" --port "$DHT_PORT" --timeout-ms "$DHT_PROBE_TIMEOUT_MS" 2>&1)"
+PROBE_OUT="$(run_probe)"
 PROBE_EXIT=$?
 log "$PROBE_OUT"
 
@@ -125,6 +129,41 @@ if [ "$PROBE_EXIT" -eq 0 ]; then
   echo "$(now_s)" >"$STATE_DIR/last-ok"; rm -f "$STATE_DIR/red-ei-filed"
   log "HEALTHY — bootstrap $DHT_HOST:$DHT_PORT connected within ${DHT_PROBE_TIMEOUT_MS}ms."
   exit 0
+fi
+
+# WI-5804 root cause: a FAIL is not always evidence the DHT is wedged — the
+# probe's OWN node process can crash on a fatal signal (observed 2026-07-25
+# 19:46 EDT: SIGBUS inside udx-native's prebuilt native addon, `timeout`'s
+# "the monitored command dumped core" diagnostic), which is a probe-runtime
+# fault unrelated to bootstrap health. GNU `timeout` reports a coredump this
+# way only when the child actually died on a signal (not a plain non-zero
+# exit), so this check can't misclassify a genuine "no connection" FAIL as a
+# crash. Filing the alarming "bootstrap … unreachable/wedged" title for a
+# one-off native-addon crash is a FALSE ALARM that sends the next responder
+# hunting a wedge that never existed (the DHT was healthy on the very next
+# tick 5min later). A crash is transient by nature, so retry ONCE immediately
+# before deciding anything — if the retry is healthy, the DHT was never the
+# problem; log + record it distinctly and skip the wedge EI entirely.
+PROBE_CRASHED=0
+case "$PROBE_OUT" in
+  *"dumped core"*) PROBE_CRASHED=1 ;;
+esac
+if [ "$PROBE_CRASHED" -eq 1 ]; then
+  log "PROBE CRASHED (native-addon signal, not a DHT signal) — retrying once immediately before judging bootstrap health: $PROBE_OUT"
+  RETRY_OUT="$(run_probe)"
+  RETRY_EXIT=$?
+  log "$RETRY_OUT"
+  if [ "$RETRY_EXIT" -eq 0 ]; then
+    echo "$(now_s)" >"$STATE_DIR/last-ok"; rm -f "$STATE_DIR/red-ei-filed"
+    log "HEALTHY on retry — bootstrap $DHT_HOST:$DHT_PORT connected within ${DHT_PROBE_TIMEOUT_MS}ms. Prior failure was a one-off probe-process crash (native addon signal), not a wedged DHT — no wedge EI filed."
+    if [ "$DHT_NO_FILE" != 1 ]; then
+      file_ei "papercup-isolated-dht liveness probe process crashed (native addon signal) — DHT itself confirmed healthy on immediate retry" \
+        "The probe's node process died on a fatal signal (not a timeout/no-connection FAIL) before it could report bootstrap health: $PROBE_OUT An immediate retry against the SAME bootstrap $DHT_HOST:$DHT_PORT succeeded ($RETRY_OUT), confirming the DHT was never wedged — this is probe-runtime flakiness (a native addon, e.g. udx-native, crashing), tracked separately from the wedge-detection EI so it never sends a responder hunting a wedge that didn't exist. Low severity / informational; investigate only if this recurs."
+    fi
+    exit 0
+  fi
+  log "Retry ALSO failed — treating as a genuine possible wedge (not just a one-off crash); proceeding to the normal FAIL/escalation path."
+  PROBE_OUT="$RETRY_OUT"
 fi
 
 # ── FAIL: dedup-file an EI (RED_REFILE_H window), never auto-restart. ──

@@ -655,10 +655,11 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(optsArg?.states).toEqual(['open']);
     });
 
-    it('returns null (a genuine scope/spec-empty miss, not a floor story) when the filter matches zero issue-family rows', async () => {
-      admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue({ matchedByFilter: 0, claimable: 0, excluded: floorGatedBreakdown.excluded });
+    it('EI-18663622382734446: returns the breakdown (NOT null) when the filter matches zero issue-family rows — the spec-empty case must be distinguishable from a diagnosis failure', async () => {
+      const zeroMatch = { matchedByFilter: 0, claimable: 0, excluded: floorGatedBreakdown.excluded };
+      admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue(zeroMatch);
       const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
-      expect(diag).toBeNull();
+      expect(diag).toEqual(zeroMatch);
     });
 
     it('FAILS SOFT: a query error degrades to null, never throws (annotation only, like diagnoseFleetScopeCooldownMiss)', async () => {

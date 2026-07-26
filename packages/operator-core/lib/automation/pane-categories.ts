@@ -9,7 +9,7 @@
  * client into the browser bundle. Types were fine (erased at compile time);
  * values are not. Keep this file free of runtime imports.
  *
- * OWNER MANDATE (Avi, 2026-07-25, verbatim): "WE NEED ALL ROUTINES SURFACED TO
+ * OWNER MANDATE (owner, 2026-07-25, verbatim): "WE NEED ALL ROUTINES SURFACED TO
  * THE USER IN ONE OF THE PANES IN THE LEFT HAND SIDEBAR THERE CAN BE NO
  * ROUTINES THAT DONT GET SURFACED THERE."
  *

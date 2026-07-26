@@ -7,6 +7,7 @@ import {
   evaluateMatch,
   groupRoutes,
   listedFiles,
+  looksLikeMidInstallCorruption,
   looksLikeSilentCollectionFailure,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
@@ -241,5 +242,42 @@ Error: Transform failed with 1 error:
       Tests  3 passed (3)
 `;
     expect(looksLikeSilentCollectionFailure(oneCollectionFailureAmongPasses)).toBe(false);
+  });
+});
+
+// EI-18662389554660036: a concurrent `npm install` on the shared tree rewrites node_modules
+// out from under every other agent's test run — vitest's own bin can vanish mid-install
+// (a bare shell "command not found"), or Node throws ERR_MODULE_NOT_FOUND into node_modules
+// for a package left half-written by an overlapping install. Neither error names its real
+// cause; this detector recognizes both real-world signatures reported in the EI.
+describe('looksLikeMidInstallCorruption (EI-18662389554660036)', () => {
+  it('flags the shell "vitest: not found" signature (node_modules/.bin/vitest missing mid-install)', () => {
+    expect(looksLikeMidInstallCorruption('sh: 1: vitest: not found\n')).toBe(true);
+  });
+
+  it('flags an ERR_MODULE_NOT_FOUND stack that points into node_modules (a half-written package)', () => {
+    const stack = `node:internal/modules/esm/resolve:something
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/node_modules/vitest/node_modules/@vitest/mocker/dist/node.js'
+    at new NodeError (node:internal/errors:405:5)`;
+    expect(looksLikeMidInstallCorruption(stack)).toBe(true);
+  });
+
+  it('does NOT flag an unrelated MODULE_NOT_FOUND with no node_modules path (a real missing-file bug)', () => {
+    expect(looksLikeMidInstallCorruption('Error [ERR_MODULE_NOT_FOUND]: Cannot find module ./foo.ts')).toBe(false);
+  });
+
+  it('does NOT flag a normal passing run', () => {
+    expect(looksLikeMidInstallCorruption(' Test Files  2 passed (2)\n      Tests  5 passed (5)\n')).toBe(false);
+  });
+
+  it('does NOT flag a normal per-test assertion failure', () => {
+    const withAssertionDetail = `
+ ❯ lib/a.test.ts (1 test | 1 failed) 14ms
+     × fails on purpose 12ms
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+`;
+    expect(looksLikeMidInstallCorruption(withAssertionDetail)).toBe(false);
   });
 });

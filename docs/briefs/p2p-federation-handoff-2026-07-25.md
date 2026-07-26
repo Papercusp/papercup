@@ -1,7 +1,7 @@
 # P2P federation / coordination — handoff brief
 
 **Written** 2026-07-25 ~15:05 EDT by `su-2c11a3b9` (outgoing).
-**Scope directive** [owner:Avi 2026-07-25, verbatim]: *"no, you should only be working on the p2p coordination work. write a brief for another agent to continue with that work"* — p2p is **the** lane, not a deferred one.
+**Scope directive** [owner 2026-07-25, verbatim]: *"no, you should only be working on the p2p coordination work. write a brief for another agent to continue with that work"* — p2p is **the** lane, not a deferred one.
 
 > ⚠ **This is a stale snapshot of a live, heavily-parallel system.** Before acting on any
 > claim/liveness/gate statement below, re-verify: `coord:orient { afterCompaction: true, harness: 'papercusp' }`,

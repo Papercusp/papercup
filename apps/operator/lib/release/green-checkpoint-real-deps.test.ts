@@ -244,8 +244,8 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     // in one verdict instead of whack-a-mole across builds.
     const { exec, calls } = makeExec([
       { code: 0 },
-      { code: 1, stdout: 'FOUND: [owner:Avi 2026-07-20] in packages/operator-core/lib/foo.ts' },
-      { code: 1, stdout: 'FOUND: /home/marsh-office/ in some.service' },
+      { code: 1, stdout: 'FOUND: [owner:Jane 2026-07-20] in packages/operator-core/lib/foo.ts' },
+      { code: 1, stdout: 'FOUND: /home/jdoe/ in some.service' },
       { code: 0 },
     ]);
     const r = await realCheckpointDeps(cfg, exec).runGreen(identityLintTree, null);

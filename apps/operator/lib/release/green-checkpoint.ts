@@ -2420,7 +2420,7 @@ export function realCheckpointDeps(
       // `[owner:<name>]` provenance tags; check-no-box-identity.mjs = hardcoded
       // `/home/<user>/` paths; check-no-identity-literals.mjs = bare box git-name/email/
       // hostname/OS-user) previously ran ONLY inside release-local.sh's WI-4776 gate, at
-      // release-CUT time — so a leak an agent authors on `staging` (a `[owner:Avi …]` tag
+      // release-CUT time — so a leak an agent authors on `staging` (a `[owner:Jane …]` tag
       // or a stray box-identity literal is CORRECT on a carry surface but a leak in shipped
       // source) sits undetected through every green-checkpoint tick until a release attempt
       // finally trips over it, sometimes dozens of commits later: the 0.0.12 Windows Server

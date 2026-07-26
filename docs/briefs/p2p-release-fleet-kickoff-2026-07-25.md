@@ -2,7 +2,7 @@
 
 Leader: `su-e3b21`. Plan: `p2p-public-release-remaining-lanes-2026-07-16` (harness `papercusp`).
 
-[owner:Avi 2026-07-25] *"you're in charge of getting all our p2p coordination ready for a public
+[owner 2026-07-25] *"you're in charge of getting all our p2p coordination ready for a public
 release, another agent su-a8ea9 is working on the GIT features and another agent su-055ae is
 working on everything else."*
 

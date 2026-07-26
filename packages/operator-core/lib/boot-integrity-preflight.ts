@@ -314,28 +314,51 @@ export const BOOT_INTEGRITY_EXIT_CODE = 78;
 /**
  * Run the preflight and, if the build is broken, log ONE loud actionable line and
  * exit fast — call this as early as possible in boot (before the cluster forks and
- * before the heavy import graph evaluates). Injectable `log` / `exit` for tests.
- * Returns the result on success so callers may continue / assert.
+ * before the heavy import graph evaluates). Injectable `log` / `exit` / `driftCheck`
+ * for tests. Returns the sentinel-check result on success so callers may continue /
+ * assert (unchanged shape — `checkLockTreeDrift`'s result is folded into the
+ * refuse-boot decision and logging below, not into this return value).
+ *
+ * TWO SIGNALS, ONE VERDICT (EI-18666996942859193): the hand-maintained
+ * `CRITICAL_BOOT_MODULES` sentinel check stays — it's cheap and already proven — but
+ * the list-free lock⇄tree drift diff is now the PRIMARY signal, since it catches any
+ * missing required package, not just the ones on the list. Either one failing refuses
+ * boot. An extraneous (on-disk-but-unlisted) package never refuses boot — it's a future
+ * `npm install` prune, not a present breakage — it's only logged as a warning.
  */
 export function runBootIntegrityGuardOrExit(opts?: {
   modules?: readonly string[];
   resolve?: ModuleResolver;
   log?: (line: string) => void;
   exit?: (code: number) => never;
+  driftCheck?: () => LockTreeDriftCheck;
 }): PreflightResult {
   const log = opts?.log ?? ((l) => console.error(l));
   const exit = opts?.exit ?? ((c) => process.exit(c) as never);
   const result = preflightCriticalModules({ modules: opts?.modules, resolve: opts?.resolve });
-  if (!result.ok) {
-    const names = result.missing.map((m) => m.id).join(', ');
+  const drift = (opts?.driftCheck ?? checkLockTreeDrift)();
+
+  if (!drift.skipped && drift.extraneous.length > 0) {
+    log(
+      `[boot-integrity] tree-drift: ${drift.extraneous.length} node_modules director${drift.extraneous.length === 1 ? 'y is' : 'ies are'} ` +
+        `not in package-lock.json and will be pruned by the next \`npm install\` (not fatal): ${drift.extraneous.join(', ')}`,
+    );
+  }
+  if (drift.skipped && drift.error) {
+    log(`[boot-integrity] tree-drift check skipped (${drift.error}) — falling back to the sentinel check alone`);
+  }
+
+  const driftMissing = drift.skipped ? [] : drift.missing;
+  if (!result.ok || driftMissing.length > 0) {
+    const allMissing = [...new Set([...result.missing.map((m) => m.id), ...driftMissing])];
     log(
       `[boot-integrity] FATAL: this release checkout is INCONSISTENT — ` +
-        `${result.missing.length}/${result.checked.length} critical module(s) cannot be resolved: ` +
-        `${names}. node_modules does not match the source (a partial/half-installed deploy or an ` +
+        `${allMissing.length} required package(s) cannot be resolved / are absent from node_modules: ` +
+        `${allMissing.join(', ')}. node_modules does not match the source (a partial/half-installed deploy or an ` +
         `interrupted rollback). Refusing to start so the host fails fast (exit ${BOOT_INTEGRITY_EXIT_CODE}) ` +
         `instead of crash-looping every worker on MODULE_NOT_FOUND. Fix: \`npm ci\` in this checkout ` +
         `(or roll back to the last consistent release), then restart. First error: ` +
-        `${result.missing[0]?.error ?? 'n/a'}`,
+        `${result.missing[0]?.error ?? (driftMissing[0] ? `Cannot find module '${driftMissing[0]}'` : 'n/a')}`,
     );
     exit(BOOT_INTEGRITY_EXIT_CODE);
   }

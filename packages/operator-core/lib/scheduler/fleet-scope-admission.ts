@@ -455,8 +455,21 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
  * observation-lane), not a scope/spec mismatch. Reuses the SAME `aggregateIssueClaimExclusions`
  * the non-fleet path already relies on — one source of truth, never a second implementation.
  * FAILS SOFT (same philosophy as `diagnoseFleetScopeCooldownMiss` / `buildMissDiagnosis`): any
- * error, or a spec whose filter matches ZERO issue-family rows at all (a genuine spec problem,
- * not a floor story), returns null and the miss degrades to the pre-existing bare message.
+ * error, or an unresolvable workspace, returns null and the miss degrades to the pre-existing
+ * bare message.
+ *
+ * EI-18663622382734446: a `matchedByFilter === 0` result (the spec's OWN filter admits zero
+ * rows, e.g. a stale `id in [...]` allowlist or an over-narrow plan/kind scope) used to be
+ * folded into the SAME null return as "diagnosis unavailable" — collapsing "genuinely
+ * floor-gated pool" and "the spec itself matches nothing" into one indistinguishable bare
+ * miss. That is precisely the failure this ticket documents: `scheduler:set_claim_spec`'s own
+ * `previousMatched` report already computes this number at WRITE time, but it was silently
+ * absent at PULL time, where the fleet member actually stands. `matchedByFilter === 0` is now
+ * returned (not swallowed) so `fleetScopedMiss` can name the case loudly — a member confidently
+ * self-diagnosing "no work available, not a spec bug" while its spec matches literally nothing
+ * of a nonempty pool is the exact starvation observed live (2026-07-25, fleet p2p-release,
+ * spec `p2p-release-lane@8` matched 0 of 1250 rows for 4.5h while two members separately ruled
+ * out a spec bug in good faith).
  */
 export async function diagnoseFleetScopeIssueFloorMiss(args: {
   scope: FleetScopeContext;
@@ -476,8 +489,9 @@ export async function diagnoseFleetScopeIssueFloorMiss(args: {
       assignee: args.scope.ownerId,
       rigAvailable: args.rigAvailable,
     });
-    if (!agg || agg.matchedByFilter === 0) return null;
-    return agg;
+    // EI-18663622382734446: matchedByFilter === 0 is returned, not swallowed — see the
+    // doc comment above. Only a genuinely missing/errored aggregate degrades to null.
+    return agg ?? null;
   } catch {
     return null;
   }
@@ -543,6 +557,13 @@ export function fleetScopedMiss(
   // to certify a drain — no windDown, no stand-down advice — and instead name the divergence
   // loudly enough that the NEXT recurrence is a one-line report instead of an investigation.
   const divergent = breakdown != null && breakdown.claimable > 0;
+  // EI-18663622382734446: the spec's OWN view.filter matches zero issue-family rows at all —
+  // a SPEC-AUTHORING problem (stale id allowlist, over-narrow plan/kind scope, a typo), not a
+  // drained or floor-gated pool. Distinct from `divergent` (which requires matchedByFilter > 0
+  // survivors) — the two are mutually exclusive by construction. Must be named LOUDLY: this is
+  // the exact shape that let a starved fleet confidently self-diagnose "not a spec bug" for
+  // 4.5h (see diagnoseFleetScopeIssueFloorMiss's doc comment).
+  const specEmpty = !paused && breakdown != null && breakdown.matchedByFilter === 0;
   // EI-15185: derive the ready-made `payload_filter` for a `work-item:claimable`
   // idle-park await from the member's OWN claim-spec view — the missing "how do I
   // scope this await" answer that led members to register an UNSCOPED await and
@@ -571,6 +592,12 @@ export function fleetScopedMiss(
           `for fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision}. Your lane is NOT drained and NOT floor-gated — ` +
           'this is an internal inconsistency in the claim path\'s own spec narrowing (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class). ' +
           'windDown is deliberately NOT set: do not stand down.'
+        : specEmpty
+          ? `SPEC MATCHES NOTHING (EI-18663622382734446): claim spec ${scope.record.spec.specId}@${scope.record.spec.revision}'s ` +
+            'view.filter matches 0 issue-family row(s) in this harness/workspace at all — this is a SPEC-AUTHORING problem ' +
+            '(a stale id allowlist, an over-narrow plan/kind/tag scope, or a typo), NOT a genuinely drained or floor-gated queue. ' +
+            'ESCALATE to your fleet leader NOW quoting this spec id/revision; do not silently treat this as a normal drain — a ' +
+            'zero-match spec never self-heals the way a drained pool eventually does.'
         : cooldown
         ? `${cooldown.cooldownExcluded} in-spec row(s) matched fleet scope ${scope.record.spec.specId}@${scope.record.spec.revision} ` +
           `but ${cooldown.cooldownExcluded === 1 ? 'is' : 'are'} excluded ONLY by YOUR OWN release-cooldown floor` +
@@ -600,14 +627,20 @@ export function fleetScopedMiss(
     // compliant release was actually retired, not merely refused-if-it-fires.
     ...(paused ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
     ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec, cooldownExpiryAt, cooldownEarliestRowId: cooldown.earliestRowId } : {}),
-    // WI-5561: the issue-family floor breakdown — present whenever the diagnosis ran and found
-    // the spec's filter matches ≥1 issue-family row (a genuine scope/spec-empty miss keeps this
-    // absent, same as the non-fleet buildMissDiagnosis breakdown it mirrors).
+    // EI-18663622382734446: named, top-level reason so a caller (or a leader reading a
+    // relayed report) can branch on this WITHOUT digging into excludedBreakdown.matchedByFilter.
+    // Absent for every other miss shape — this is deliberately the loud, rare case.
+    ...(specEmpty ? { reason: 'spec_matches_nothing' as const } : {}),
+    // WI-5561: the issue-family floor breakdown — present whenever the diagnosis ran (including
+    // the EI-18663622382734446 zero-match case: a genuine query/workspace-resolution failure is
+    // the only thing that keeps this absent now, not a `matchedByFilter === 0` result).
     ...(breakdown
       ? {
           excludedBreakdown: breakdown,
-          excludedBreakdownSummary:
-            `Your spec's filter matches ${breakdown.matchedByFilter} issue-family row(s); stranded by: ` +
+          excludedBreakdownSummary: specEmpty
+            ? "Your spec's filter matches 0 issue-family row(s) at all — there is nothing for any floor to exclude. " +
+              'The SPEC ITSELF is the problem (an over-narrow filter, a stale id allowlist, wrong plan/kind scoping), not the pool.'
+            : `Your spec's filter matches ${breakdown.matchedByFilter} issue-family row(s); stranded by: ` +
             Object.entries(breakdown.excluded)
               .filter(([, n]) => (n as number) > 0)
               .sort((a, b) => (b[1] as number) - (a[1] as number))
@@ -632,6 +665,13 @@ export function fleetScopedMiss(
           'Then report this verdict to your fleet leader as a CLAIM-PATH BUG (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class), ' +
           'quoting excludedBreakdown.claimable — it is the reproduction. If a fix for that class is already committed, the most ' +
           'likely cause is that it has not DEPLOYED yet: the operator you are calling may still run the pre-fix release checkout.'
+        : specEmpty
+          ? 'ESCALATE to your fleet leader NOW (EI-18663622382734446) — this is a leader-alert-worthy spec-authoring bug, not a ' +
+            'normal drain: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision. ' +
+            'The leader\'s remedy is scheduler:set_claim_spec { fleet, spec: <a revision whose view.filter actually admits work> } — ' +
+            'see fleetScopeLeaderRemedy for the exact one-call widen. You may checkpoint any atomic progress, release remaining lane ' +
+            'resources, and call loop:end while you wait — but do NOT quietly treat this as "the queue is drained"; unlike a genuine ' +
+            'drain, a zero-match spec never clears on its own no matter how long you wait.'
         : cooldown
         ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. ' +
           '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'

@@ -1,0 +1,156 @@
+// EI-18662389554660036 — a filesystem-local mutex for shared-tree-wide mutations
+// that plain repo tooling (no MCP/Papercusp credentials, just `node`) needs to
+// serialize across concurrent agent processes on the same host.
+//
+// This is the SAME proven algorithm as `withTestcontainerStartLock`
+// (libs/test-config/src/testcontainer-start-lock.ts): an atomic `mkdir` as the
+// lock primitive (POSIX mkdir either creates the dir or fails EEXIST — no
+// separate compare-and-swap needed), an owner.json recording {pid, host,
+// startedAt} for diagnostics, and a two-layer reclaim so a crashed holder can
+// never wedge every future caller forever:
+//   1. age-based staleness (`staleMs`) — a purely time-based fallback;
+//   2. positive dead-owner confirmation (same host + ESRCH on `kill(pid, 0)`) —
+//      reclaims immediately instead of waiting out the FULL stale window,
+//      closing the gap EI-7818 found in the pure age-based check alone.
+// Deliberately duplicated here rather than importing from `@papercusp/test-config`:
+// that package is TS or vitest-testcontainer-shaped, but the caller (a bare
+// `node scripts/npm-install-safe.mjs`, run from `preinstall`/CI/any agent's raw
+// shell, no build step) must stay plain-JS-executable with zero devDependency on
+// the test toolchain. If a THIRD consumer shows up, promote both to one shared
+// `libs/generic/fs-mutex` package instead of a third copy.
+import { hostname, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+
+const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_STALE_MS = 10 * 60_000;
+const DEFAULT_RETRY_MS = 250;
+
+function intEnv(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+function lockRoot() {
+  return resolve(process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? join(tmpdir(), 'pcv', 'fs-mutex-locks'));
+}
+
+function safeName(name) {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+async function readOwner(lockDir) {
+  try {
+    return await readFile(join(lockDir, 'owner.json'), 'utf8');
+  } catch {
+    return '(owner unknown)';
+  }
+}
+
+/**
+ * True only when we can POSITIVELY confirm the lock's recorded owner process is
+ * dead: same host (a cross-host pid means nothing) AND `process.kill(pid, 0)`
+ * reports ESRCH (no such process). Any other outcome (different host,
+ * unparseable owner.json, EPERM/alive, or any other error) returns false — this
+ * must never produce a false "dead" that reclaims a live holder's lock.
+ */
+async function isOwnerProcessConfirmedDead(lockDir) {
+  let raw;
+  try {
+    raw = await readFile(join(lockDir, 'owner.json'), 'utf8');
+  } catch {
+    return false;
+  }
+  let owner;
+  try {
+    owner = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (typeof owner.pid !== 'number' || typeof owner.host !== 'string') return false;
+  if (owner.host !== hostname()) return false;
+  try {
+    process.kill(owner.pid, 0);
+    return false; // no throw ⇒ signal delivered ⇒ process exists (or we lack permission ⇒ assume alive)
+  } catch (error) {
+    return error && error.code === 'ESRCH';
+  }
+}
+
+/**
+ * Run `fn` while holding an exclusive, cross-process, filesystem-local mutex
+ * named `name`. Blocks (retrying every `retryMs`) until acquired, a stale/dead
+ * holder is reclaimed, or `timeoutMs` elapses (throws). Always releases in a
+ * `finally`, even if `fn` throws.
+ *
+ * @template T
+ * @param {string} name
+ * @param {() => Promise<T>} fn
+ * @param {{ timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void }} [opts]
+ * @returns {Promise<T>}
+ */
+export async function withFsMutex(name, fn, opts = {}) {
+  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === '1') {
+    return fn();
+  }
+
+  const root = lockRoot();
+  const lockDir = join(root, `${safeName(name)}.lock`);
+  const timeoutMs = opts.timeoutMs ?? intEnv('PAPERCUSP_FS_MUTEX_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
+  const staleMs = opts.staleMs ?? intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
+  const retryMs = opts.retryMs ?? intEnv('PAPERCUSP_FS_MUTEX_RETRY_MS', DEFAULT_RETRY_MS);
+  const startedAt = Date.now();
+  const owner = {
+    pid: process.pid,
+    host: hostname(),
+    startedAt: new Date(startedAt).toISOString(),
+    name,
+  };
+
+  await mkdir(root, { recursive: true });
+
+  let announcedWaiting = false;
+  for (;;) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(join(lockDir, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+
+      const elapsed = Date.now() - startedAt;
+      if (!announcedWaiting && opts.onWaiting) {
+        announcedWaiting = true;
+        opts.onWaiting({ owner: await readOwner(lockDir), elapsedMs: elapsed });
+      }
+      const lockAgeMs = await stat(lockDir)
+        .then((s) => Date.now() - s.mtimeMs)
+        .catch(() => 0);
+      if (lockAgeMs > staleMs) {
+        await rm(lockDir, { recursive: true, force: true });
+        continue;
+      }
+      if (await isOwnerProcessConfirmedDead(lockDir)) {
+        await rm(lockDir, { recursive: true, force: true });
+        continue;
+      }
+      if (elapsed > timeoutMs) {
+        const currentOwner = await readOwner(lockDir);
+        throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`);
+      }
+      await sleep(retryMs);
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    await rm(lockDir, { recursive: true, force: true });
+  }
+}

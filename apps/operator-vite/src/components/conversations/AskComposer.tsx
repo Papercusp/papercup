@@ -1,7 +1,7 @@
 /**
  * AskComposer — asking the fleet a question, in the two chromes that need it.
  *
- * OWNER RULE (Avi, 2026-07-25): "in the ask fleet section, you should be
+ * OWNER RULE (owner, 2026-07-25): "in the ask fleet section, you should be
  * required to select a specific agent." Before this, an ask was routed purely by
  * TOPIC — which meant an untagged question reached only whoever happened to
  * subscribe, and an ask could land nowhere at all while still reporting success.
