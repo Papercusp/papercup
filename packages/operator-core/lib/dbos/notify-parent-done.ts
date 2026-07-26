@@ -17,10 +17,12 @@
  *     non-terminal feature remains (terminal = passed/deprecated). Same
  *     semantics as the bash builtin, which ran when the run-loop's queue
  *     emptied — and it avoids spamming the parent once per feature.
- *   - the message rides the execute-action path (`dispatchAction` →
- *     `doSendMessage`) with the child as the caller, exactly like the bash
- *     builtin's bearer-authenticated POST: kind=`Completion`, addressed to the
- *     parent's inbox (`messages:inbox` surfaces it to the parent agent).
+ *   - the message rides the coordination plane directly (`sendMessage`, the
+ *     same primitive `coord:send` uses), addressed to the parent's coord inbox.
+ *     (retire-work-item-mail-surface-2026-07-26 P-006: the old `messages:send`
+ *     / `dispatchAction({op:'send_message'})` path this rode on was retired —
+ *     `coord:send` is the ~400x-more-used surface it lost to; see
+ *     `_retired/work-item-mail/RESTORE.md`.)
  *
  * A per-harness `hooks/afterDone.sh` still OVERRIDES this builtin entirely
  * (parity with the run.sh resolver) — the caller (orchestrator-runner's
@@ -30,11 +32,22 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { dispatchAction } from '../execute-action';
+import { sendMessage } from '../agent-tools/coordination/messages';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { activeWorkspaceId } from '../workspace-registry';
 
 /** The org-PG tagged-template client type — for the optional test seam below. */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
+/** Static system identity this builtin sends as (parallel to service-health's
+ *  HEALTH_IDENTITY — a non-agent, in-process emitter). */
+const AFTER_DONE_IDENTITY: AgentIdentity = {
+  ownerId: 'harness-afterdone',
+  ownerLabel: 'harness afterDone builtin',
+  source: 'static-client',
+  workspaceId: null,
+  userId: null,
+};
 
 export interface NotifyParentResult {
   notified: boolean;
@@ -53,17 +66,17 @@ export async function notifyParentOnDone(opts: {
   featureId?: string;
   log?: (m: string) => void;
   /**
-   * Test seam (DI): inject the org-PG client + the action dispatcher. Both
+   * Test seam (DI): inject the org-PG client + the coord send function. Both
    * default to the real ones — production callers (orchestrator-runner's
    * afterDone step) pass neither. Lets the full branch matrix (no_parent /
    * queue_not_drained / drained→notify / send_failed / lookup_failed) be
    * unit-tested without PG or a global vi.mock.
    */
-  deps?: { sql?: OrgSql; dispatch?: typeof dispatchAction };
+  deps?: { sql?: OrgSql; send?: typeof sendMessage };
 }): Promise<NotifyParentResult> {
   const log = opts.log ?? (() => {});
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const dispatch = opts.deps?.dispatch ?? dispatchAction;
+  const send = opts.deps?.send ?? sendMessage;
 
   let parent: string | null = null;
   try {
@@ -96,21 +109,19 @@ export async function notifyParentOnDone(opts: {
   }
 
   try {
-    const r = await dispatch(opts.harnessSlug, {
-      op: 'send_message',
-      to: [parent],
-      kind: 'Completion',
-      subject: `mission DONE: ${opts.harnessSlug}`,
-      body:
-        `Harness ${opts.harnessSlug} finished its queue` +
-        (opts.featureId ? ` (last feature: ${opts.featureId})` : '') +
-        '. All features are terminal (passed/deprecated).',
-      reason: 'afterDone builtin: notifying parent harness of mission completion',
-    });
-    if (!r.ok) {
-      log(`[afterDone] Completion send to ${parent} failed: ${r.error}${r.detail ? `: ${r.detail}` : ''}`);
-      return { notified: false, parent, reason: 'send_failed' };
-    }
+    await send(
+      { ...AFTER_DONE_IDENTITY, ownerId: `harness-afterdone:${opts.harnessSlug}` },
+      {
+        to: [parent],
+        summary: `mission DONE: ${opts.harnessSlug}`,
+        body:
+          `Harness ${opts.harnessSlug} finished its queue` +
+          (opts.featureId ? ` (last feature: ${opts.featureId})` : '') +
+          '. All features are terminal (passed/deprecated).',
+        harnessSlug: opts.harnessSlug,
+        category: 'harness-lifecycle',
+      },
+    );
     log(`[afterDone] notified parent ${parent}: mission DONE (${opts.harnessSlug})`);
     return { notified: true, parent };
   } catch (e) {

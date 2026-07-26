@@ -48,8 +48,6 @@ const CONCRETE_HARNESS_TOOLS: Array<{
   { name: 'harness:phase_path', importTool: () => import('../harness/phase_path'), args: { phase: 'staging' } },
   { name: 'autoloop:status', importTool: () => import('../autoloop/status'), args: {} },
   { name: 'autoloop:control', importTool: () => import('../autoloop/control'), args: { op: 'pause' } },
-  { name: 'cross_harness:inbox', importTool: () => import('../cross_harness/inbox'), args: {} },
-  { name: 'cross_harness:outbox', importTool: () => import('../cross_harness/outbox'), args: {} },
   { name: 'cross_harness:supervisor_notes', importTool: () => import('../cross_harness/supervisor_notes'), args: {} },
   { name: 'projects:list', importTool: () => import('../projects/list'), args: {} },
   { name: 'projects:get', importTool: () => import('../projects/get'), args: { id: 'P-1' } },

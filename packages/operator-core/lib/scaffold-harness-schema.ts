@@ -6,9 +6,12 @@
  * per-harness tables (harness-state-storage-unification-2026-06-01, D-007).
  * Views: harness_features, harness_issues, agent_runs, harness_snapshots
  * (migration 032), agent_chats (116), feature_audit (118), supervisor_notes +
- * directive_summaries (119), messages + executed_actions (120). Retired:
+ * directive_summaries (119), executed_actions (120). Retired:
  * config_token (token_index is authoritative), harness_proposals
- * (harness_proposals_shared is authoritative).
+ * (harness_proposals_shared is authoritative). `messages` (120) is no longer
+ * minted for NEW harnesses (retire-work-item-mail-surface-2026-07-26,
+ * P-003) — existing per-harness `messages` views are left in place, this
+ * scaffolder just stops creating new ones.
  *
  * Idempotent. Called from add-project flow and onboard-action flow so a
  * new harness install needs no out-of-process bash.
@@ -140,7 +143,6 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
       ${schema}.agent_chats,
       ${schema}.supervisor_notes,
       ${schema}.directive_summaries,
-      ${schema}.messages,
       ${schema}.executed_actions
       TO harness_app, harness_admin;
   `);
@@ -154,7 +156,6 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
         ${schema}.agent_chats,
         ${schema}.supervisor_notes,
         ${schema}.directive_summaries,
-        ${schema}.messages,
         ${schema}.executed_actions
         TO harness_zero;
     `);

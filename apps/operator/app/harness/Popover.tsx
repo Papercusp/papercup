@@ -2,7 +2,7 @@
 
 import * as RP from '@radix-ui/react-popover';
 import * as RT from '@radix-ui/react-tooltip';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, ReactNode, RefObject } from 'react';
 
 /**
  * Popover — the canonical replacement for hand-rolled "anchored dropdown"
@@ -42,6 +42,8 @@ export function Popover({
   open,
   onOpenChange,
   trigger,
+  anchor,
+  keepOpenWithin,
   tooltipLabel,
   children,
   side = 'bottom',
@@ -58,7 +60,25 @@ export function Popover({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  trigger: ReactNode;
+  trigger?: ReactNode;
+  /**
+   * Positioning-only anchor, rendered via `Popover.Anchor` instead of
+   * `Popover.Trigger`. Use when the anchoring element must NOT toggle the
+   * panel on click — the case that matters is a combobox whose anchor is its
+   * own text input: a Trigger would close the list every time the user clicked
+   * to reposition their cursor. With an anchor, open state is entirely the
+   * caller's to drive (focus, typing, selection).
+   *
+   * Mutually exclusive with `trigger`; `trigger` wins if somehow both are set.
+   */
+  anchor?: ReactNode;
+  /**
+   * Pointer/focus events landing inside this element do NOT count as
+   * "outside", so they can't dismiss the panel. Radix grants a Trigger that
+   * exemption automatically but an Anchor gets none — without this, clicking
+   * the very input the panel belongs to would dismiss it.
+   */
+  keepOpenWithin?: RefObject<HTMLElement | null>;
   /** Optional hover/focus tooltip on the trigger. When set, the wrapper
    * composes `Popover.Trigger asChild` *outside* `Tooltip.Trigger asChild`
    * around the same button — both Slots compose refs/props onto the DOM
@@ -84,6 +104,14 @@ export function Popover({
     zIndex: zIndex ?? 90,
     ...contentStyle,
   };
+  /** True when the event came from inside the caller's keep-open element. */
+  const isExempt = (target: EventTarget | null) =>
+    !!keepOpenWithin?.current && target instanceof Node && keepOpenWithin.current.contains(target);
+
+  const guardOutside = (e: { target: EventTarget | null; preventDefault: () => void }) => {
+    if (!closeOnOutsideClick || isExempt(e.target)) e.preventDefault();
+  };
+
   const popoverContent = (
     <RP.Portal>
       <RP.Content
@@ -96,8 +124,9 @@ export function Popover({
         data-anim="pop"
         onOpenAutoFocus={autoFocusOnOpen ? undefined : (e) => e.preventDefault()}
         onEscapeKeyDown={closeOnEscape ? undefined : (e) => e.preventDefault()}
-        onPointerDownOutside={closeOnOutsideClick ? undefined : (e) => e.preventDefault()}
-        onInteractOutside={closeOnOutsideClick ? undefined : (e) => e.preventDefault()}
+        onPointerDownOutside={guardOutside}
+        onFocusOutside={guardOutside}
+        onInteractOutside={guardOutside}
         className={contentClassName}
         style={baseStyle}
       >
@@ -105,6 +134,12 @@ export function Popover({
       </RP.Content>
     </RP.Portal>
   );
+
+  const anchorNode = trigger ? (
+    <RP.Trigger asChild>{trigger}</RP.Trigger>
+  ) : anchor ? (
+    <RP.Anchor asChild>{anchor}</RP.Anchor>
+  ) : null;
 
   if (tooltipLabel) {
     return (

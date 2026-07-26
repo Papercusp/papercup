@@ -1,6 +1,8 @@
 /**
- * cross_harness:* tools — inbox, outbox, supervisor_notes,
- * recent_activity.
+ * cross_harness:* tools — supervisor_notes, recent_activity.
+ *
+ * (inbox/outbox retired as part of the work-item mail surface retirement —
+ * plan retire-work-item-mail-surface-2026-07-26 P-002.)
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,71 +28,17 @@ afterEach(() => {
   vi.doUnmock('../../../cross-harness-data');
 });
 
-// inbox/outbox/supervisor_notes/recent_activity all return the canonical { data } shape
+// supervisor_notes/recent_activity both return the canonical { data } shape
 // (definetool-token-optimization P-003 migration, WI-5170) — a direct .handler() call
 // (bypassing the wire-encoding path) gets the raw { data } object, not a { content } envelope.
 function parseEnvelope(result: { data: unknown }): Record<string, unknown> {
   return result.data as Record<string, unknown>;
 }
 
-describe('cross_harness:inbox', () => {
-  it('forwards slug + status + role + limit to readInbox', async () => {
-    const readInbox = vi.fn(async () => [{ id: 'm1' }]);
-    vi.doMock('../../../cross-harness-data', () => ({
-      readInbox,
-      readOutbox: vi.fn(),
-      readSupervisorNotes: vi.fn(),
-      readRecentActivity: vi.fn(),
-    }));
-    const { default: tool } = await import('../inbox');
-    const result = await tool.handler(
-      { slug: 'sheets', status: 'all', role: 'worker', limit: 50 },
-      MAKE_CTX(),
-    );
-    expect(readInbox).toHaveBeenCalledWith('sheets', {
-      status: 'all',
-      role: 'worker',
-      limit: 50,
-    });
-    const payload = parseEnvelope(result as never);
-    expect(payload.messages).toEqual([{ id: 'm1' }]);
-  });
-
-  it('falls back to ctx.harnessSlug', async () => {
-    const readInbox = vi.fn(async () => []);
-    vi.doMock('../../../cross-harness-data', () => ({
-      readInbox,
-      readOutbox: vi.fn(),
-      readSupervisorNotes: vi.fn(),
-      readRecentActivity: vi.fn(),
-    }));
-    const { default: tool } = await import('../inbox');
-    await tool.handler({}, MAKE_CTX({ harnessSlug: 'fallback' }));
-    expect(readInbox).toHaveBeenCalledWith('fallback', expect.any(Object));
-  });
-});
-
-describe('cross_harness:outbox', () => {
-  it('forwards slug + limit to readOutbox', async () => {
-    const readOutbox = vi.fn(async () => []);
-    vi.doMock('../../../cross-harness-data', () => ({
-      readInbox: vi.fn(),
-      readOutbox,
-      readSupervisorNotes: vi.fn(),
-      readRecentActivity: vi.fn(),
-    }));
-    const { default: tool } = await import('../outbox');
-    await tool.handler({ slug: 'sheets', limit: 10 }, MAKE_CTX());
-    expect(readOutbox).toHaveBeenCalledWith('sheets', 10);
-  });
-});
-
 describe('cross_harness:supervisor_notes', () => {
   it('forwards slug + limit to readSupervisorNotes', async () => {
     const readSupervisorNotes = vi.fn(async () => [{ id: 1, body: 'note' }]);
     vi.doMock('../../../cross-harness-data', () => ({
-      readInbox: vi.fn(),
-      readOutbox: vi.fn(),
       readSupervisorNotes,
       readRecentActivity: vi.fn(),
     }));
@@ -106,8 +54,6 @@ describe('cross_harness:recent_activity', () => {
   it('forwards limit to readRecentActivity', async () => {
     const readRecentActivity = vi.fn(async () => [{ ts: '2026-05-10T00:00:00Z' }]);
     vi.doMock('../../../cross-harness-data', () => ({
-      readInbox: vi.fn(),
-      readOutbox: vi.fn(),
       readSupervisorNotes: vi.fn(),
       readRecentActivity,
     }));
@@ -121,8 +67,6 @@ describe('cross_harness:recent_activity', () => {
   it('default limit is undefined (lib applies its own default)', async () => {
     const readRecentActivity = vi.fn(async () => []);
     vi.doMock('../../../cross-harness-data', () => ({
-      readInbox: vi.fn(),
-      readOutbox: vi.fn(),
       readSupervisorNotes: vi.fn(),
       readRecentActivity,
     }));

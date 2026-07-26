@@ -1,12 +1,14 @@
 /**
- * Cross-harness inbox/outbox/supervisor-notes/recent-activity readers.
+ * Cross-harness supervisor-notes/recent-activity readers.
  *
  * Used by both the legacy /api/_hono/cross-harness routes and the
  * cross_harness:* MCP tools so they share one implementation.
  *
- * Per-harness messages live in `harness_<slug>.messages`; supervisor
- * notes live in `harness_<slug>.supervisor_notes`; cross-workspace
+ * Supervisor notes live in `harness_<slug>.supervisor_notes`; cross-workspace
  * audit rows live in `harness_shared.audit_log` (workspace-scoped).
+ *
+ * (The former readInbox/readOutbox/MessageRow/ReadInboxOpts mail readers were
+ * retired — plan retire-work-item-mail-surface-2026-07-26 P-002.)
  */
 
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
@@ -32,20 +34,6 @@ export function slugToSchema(slug: string): string {
     throw new Error(`invalid harness slug ${JSON.stringify(slug)}`);
   }
   return 'harness_' + slug.replace(/-/g, '_').toLowerCase();
-}
-
-export interface MessageRow {
-  id: string;
-  from_slug: string;
-  to_slug: string;
-  to_role: string | null;
-  kind: string;
-  subject: string;
-  body: string;
-  parent_message_id: string | null;
-  status: string;
-  created_at: string;
-  acknowledged_at: string | null;
 }
 
 export interface SupervisorNoteRow {

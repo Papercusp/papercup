@@ -66,29 +66,9 @@ async function expectSlugPrecondition(opts: {
 describe('cross_harness:* harness-slug requires: preconditions', () => {
   const mockCrossHarnessData = () =>
     vi.doMock('../../cross-harness-data', () => ({
-      readInbox: vi.fn(async () => []),
-      readOutbox: vi.fn(async () => []),
       readSupervisorNotes: vi.fn(async () => []),
       readRecentActivity: vi.fn(async () => []),
     }));
-
-  it('cross_harness:inbox rejects precondition_failed without a slug; ctx slug passes', async () => {
-    mockCrossHarnessData();
-    await expectSlugPrecondition({
-      importTool: () => import('../cross_harness/inbox'),
-      mcpName: 'cross_harness:inbox',
-      args: {},
-    });
-  });
-
-  it('cross_harness:outbox rejects precondition_failed without a slug; ctx slug passes', async () => {
-    mockCrossHarnessData();
-    await expectSlugPrecondition({
-      importTool: () => import('../cross_harness/outbox'),
-      mcpName: 'cross_harness:outbox',
-      args: {},
-    });
-  });
 
   it('cross_harness:supervisor_notes rejects precondition_failed without a slug; ctx slug passes', async () => {
     mockCrossHarnessData();

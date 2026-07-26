@@ -33,6 +33,10 @@ recorded as plan decision **D-004**. Generalizable trap: **check
 | `send.ts` | `packages/operator-core/lib/agent-tools/messages/send.ts` (`messages:send`) |
 | `dismiss.ts` | `packages/operator-core/lib/agent-tools/messages/dismiss.ts` (`messages:dismiss`) |
 | `messages-tools.test.ts` | `packages/operator-core/lib/agent-tools/__tests__/messages-tools.test.ts` |
+| `inbox.ts` | `packages/agent-mcp/src/tools/messages/inbox.ts` (`messages:inbox`) — retired plan P-001, `retire-work-item-mail-surface-2026-07-26` |
+| `outbox.ts` | `packages/agent-mcp/src/tools/messages/outbox.ts` (`messages:outbox`) — same lane |
+| `inbox.test.ts` | `packages/agent-mcp/src/tools/messages/inbox.test.ts` |
+| `outbox.test.ts` | `packages/agent-mcp/src/tools/messages/outbox.test.ts` |
 
 Import paths inside these files are **left exactly as they were** per the repo's
 retiring convention — `_retired/` is excluded from the workspace
@@ -47,6 +51,12 @@ peers, so deleting rows here could propagate. Keep it code-only.
 
 **Un-wired at retirement (restore = re-apply these):**
 
+0. `packages/agent-mcp/src/bootstrap.ts` — re-add
+   `import './tools/messages/inbox';` and `import './tools/messages/outbox';`
+   (move `inbox.ts`/`outbox.ts`/their `.test.ts` back to
+   `packages/agent-mcp/src/tools/messages/` first). `role-config.ts` did not
+   name either tool at retirement time — check it again for drift before
+   assuming no re-wiring is needed there.
 1. `packages/operator-core/lib/agent-tools/index.ts` — re-add
    `import './messages/send';` and `import './messages/dismiss';` after
    `./tasks/create` (move the two tool files back first).

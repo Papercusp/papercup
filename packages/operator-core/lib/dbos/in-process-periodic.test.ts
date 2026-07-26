@@ -174,6 +174,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('shared-presence-reaper')!.intervalMs).toBe(300_000);
     expect(byName.get('scorecard-emission-pulse')!.intervalMs).toBe(600_000);
     expect(byName.get('poll-suspect-scan')!.intervalMs).toBe(3600_000);
+    expect(byName.get('timer-registration-scan')!.intervalMs).toBe(600_000);
   });
 
   it('only the heavy ticks shed under load (parity with shouldShedHeavyTick)', () => {

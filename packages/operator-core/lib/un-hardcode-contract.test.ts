@@ -87,12 +87,15 @@ describe('un-hardcode contract', () => {
     // item #6 (writes go directly to harness_shared.feature_audit_consolidated).
     // config_token + harness_proposals were retired from per-schema scaffolding
     // (migration 121 retire-per-harness-config-token-and-proposals), so they are
-    // no longer among the scaffolded names.
+    // no longer among the scaffolded names. `messages` was retired from NEW
+    // scaffolds by retire-work-item-mail-surface-2026-07-26 P-003 — the
+    // scaffolder no longer mints it, so it's no longer expected here either.
     expect(names).toEqual(expect.arrayContaining([
       'agent_chats', 'directive_summaries', 'executed_actions',
-      'messages', 'supervisor_notes',
+      'supervisor_notes',
     ]));
     expect(names).not.toContain('feature_audit');
+    expect(names).not.toContain('messages');
     expect(views).toEqual(expect.arrayContaining([
       'agent_runs', 'harness_features', 'harness_issues', 'harness_snapshots',
     ]));

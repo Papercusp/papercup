@@ -347,8 +347,6 @@ import './projects/get';
 import './projects/spec_revisions';
 import './projects/spec_revision';
 import './operator/notes';
-import './cross_harness/inbox';
-import './cross_harness/outbox';
 import './cross_harness/supervisor_notes';
 import './cross_harness/recent_activity';
 import './plugins/runtime_status';

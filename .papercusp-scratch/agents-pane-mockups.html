@@ -1,0 +1,539 @@
+<title>Agents pane — LLM / deterministic split</title>
+<style>
+  :root {
+    --ground:#f5f8fa; --surface:#ffffff; --raise:#eef3f7;
+    --ink:#132030; --ink-2:#3c556b; --ink-mute:#69829a;
+    --line:#d9e3ec; --line-soft:#e8eff5;
+    --accent:#0d8ba8; --llm:#7c5cf0; --det:#5c7387;
+    --warn:#a8600c; --good:#166534; --bad:#a52222;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:#080f16; --surface:#0e1822; --raise:#13212e;
+      --ink:#e6f2fa; --ink-2:#a9c1d4; --ink-mute:#7d97ad;
+      --line:#1c2c3a; --line-soft:#152330;
+      --accent:#38bdf8; --llm:#c084fc; --det:#8fa6b8;
+      --warn:#fbbf24; --good:#4ade80; --bad:#f87171;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#080f16; --surface:#0e1822; --raise:#13212e;
+    --ink:#e6f2fa; --ink-2:#a9c1d4; --ink-mute:#7d97ad;
+    --line:#1c2c3a; --line-soft:#152330;
+    --accent:#38bdf8; --llm:#c084fc; --det:#8fa6b8;
+    --warn:#fbbf24; --good:#4ade80; --bad:#f87171;
+  }
+  :root[data-theme="light"] {
+    --ground:#f5f8fa; --surface:#ffffff; --raise:#eef3f7;
+    --ink:#132030; --ink-2:#3c556b; --ink-mute:#69829a;
+    --line:#d9e3ec; --line-soft:#e8eff5;
+    --accent:#0d8ba8; --llm:#7c5cf0; --det:#5c7387;
+    --warn:#a8600c; --good:#166534; --bad:#a52222;
+  }
+
+  /* The rail mockups are screenshots of a dark app surface — deliberately
+     single-theme, with their own token set that never swaps. */
+  .rail {
+    --r-ground:#0a1219; --r-panel:#0e1a24; --r-row:#13202c; --r-row-on:#16283a;
+    --r-fg:#e7f7ff; --r-mute:#7f9bb4; --r-dim:#5c7285;
+    --r-line:#1d2d3c; --r-accent:#38bdf8; --r-llm:#c084fc;
+    --r-good:#4ade80; --r-warn:#fbbf24; --r-bad:#f87171;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size:16px; line-height:1.6;
+  }
+  .mono, code, .rail {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+
+  .wrap { max-width: 1180px; margin:0 auto; padding: clamp(28px,5vw,72px) clamp(18px,4vw,40px) 96px; }
+
+  /* ── type ─────────────────────────────────────────────── */
+  h1 {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: clamp(26px,4.2vw,40px); line-height:1.12; letter-spacing:-0.03em;
+    font-weight:600; margin:0 0 14px; text-wrap:balance;
+  }
+  h2 {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: clamp(18px,2.4vw,23px); letter-spacing:-0.02em; font-weight:600;
+    margin:0 0 6px; text-wrap:balance;
+  }
+  h3 { font-size:15px; font-weight:650; margin:0 0 6px; letter-spacing:-0.01em; }
+  p { margin:0 0 14px; max-width:66ch; color:var(--ink-2); }
+  a { color:var(--accent); }
+  strong { color:var(--ink); font-weight:650; }
+  code {
+    font-size:0.88em; background:var(--raise); border:1px solid var(--line-soft);
+    border-radius:4px; padding:1px 5px; color:var(--ink);
+  }
+  .eyebrow {
+    font-family: ui-monospace, Menlo, monospace; font-size:11px; font-weight:600;
+    letter-spacing:0.16em; text-transform:uppercase; color:var(--ink-mute);
+    margin:0 0 10px;
+  }
+  .lede { font-size:18px; line-height:1.55; color:var(--ink-2); max-width:64ch; }
+  .lede strong { color:var(--ink); }
+
+  section { margin-top: clamp(48px,7vw,84px); }
+  .rule { height:1px; background:var(--line); border:0; margin:0 0 26px; }
+
+  /* ── verdict banner ───────────────────────────────────── */
+  .verdict {
+    display:grid; grid-template-columns:auto 1fr; gap:16px; align-items:start;
+    background:var(--surface); border:1px solid var(--line);
+    border-left:3px solid var(--llm); border-radius:8px;
+    padding:18px 20px; margin:26px 0 0;
+  }
+  .verdict .no {
+    font-family: ui-monospace, Menlo, monospace; font-size:30px; font-weight:700;
+    line-height:1; color:var(--llm); letter-spacing:-0.04em;
+  }
+  .verdict p { margin:0; }
+
+  /* ── split stat ───────────────────────────────────────── */
+  .split { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); margin:22px 0 8px; }
+  .stat {
+    background:var(--surface); border:1px solid var(--line); border-radius:8px;
+    padding:16px 18px; display:flex; flex-direction:column; gap:3px;
+  }
+  .stat .k {
+    font-family:ui-monospace,Menlo,monospace; font-size:11px; letter-spacing:0.14em;
+    text-transform:uppercase; color:var(--ink-mute); font-weight:600;
+  }
+  .stat .v {
+    font-family:ui-monospace,Menlo,monospace; font-size:29px; font-weight:600;
+    letter-spacing:-0.03em; font-variant-numeric:tabular-nums; line-height:1.1;
+  }
+  .stat .s { font-size:13px; color:var(--ink-mute); }
+  .stat.llm { border-left:3px solid var(--llm); } .stat.llm .v { color:var(--llm); }
+  .stat.det { border-left:3px solid var(--det); } .stat.det .v { color:var(--det); }
+
+  /* ── tables ───────────────────────────────────────────── */
+  .tscroll { overflow-x:auto; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
+  table { border-collapse:collapse; width:100%; min-width:560px; font-size:13.5px; }
+  th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line-soft); vertical-align:top; }
+  th {
+    font-family:ui-monospace,Menlo,monospace; font-size:10.5px; font-weight:650;
+    letter-spacing:0.13em; text-transform:uppercase; color:var(--ink-mute);
+    border-bottom:1px solid var(--line); white-space:nowrap;
+  }
+  tbody tr:last-child td { border-bottom:0; }
+  td.num { font-family:ui-monospace,Menlo,monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+  td.name { font-family:ui-monospace,Menlo,monospace; font-size:12.5px; white-space:nowrap; }
+  .tag {
+    display:inline-block; font-family:ui-monospace,Menlo,monospace; font-size:10px;
+    font-weight:650; letter-spacing:0.08em; text-transform:uppercase;
+    padding:2px 7px; border-radius:99px; white-space:nowrap;
+  }
+  .tag.llm { color:var(--llm); background:color-mix(in oklab,var(--llm),transparent 88%); }
+  .tag.det { color:var(--det); background:color-mix(in oklab,var(--det),transparent 86%); }
+  .tag.trig { color:var(--warn); background:color-mix(in oklab,var(--warn),transparent 88%); }
+
+  /* ── naming options ───────────────────────────────────── */
+  .names { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); margin-top:20px; }
+  .name {
+    background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:15px 17px;
+  }
+  .name.pick { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .name h3 { font-family:ui-monospace,Menlo,monospace; font-size:17px; letter-spacing:-0.01em; margin-bottom:5px; }
+  .name p { font-size:13.5px; margin:0; color:var(--ink-mute); }
+  .name .badge {
+    float:right; font-family:ui-monospace,Menlo,monospace; font-size:9.5px; font-weight:700;
+    letter-spacing:0.1em; text-transform:uppercase; color:var(--accent);
+  }
+
+  /* ── mockup layout ────────────────────────────────────── */
+  .mock { display:grid; gap:clamp(20px,3vw,36px); grid-template-columns:1fr; margin-top:24px; }
+  @media (min-width:900px) { .mock { grid-template-columns: 320px 1fr; align-items:start; } }
+  .mock-notes h3 { font-size:14px; margin-top:18px; }
+  .mock-notes h3:first-child { margin-top:0; }
+  .mock-notes ul { margin:0 0 14px; padding-left:18px; color:var(--ink-2); font-size:14.5px; }
+  .mock-notes li { margin-bottom:5px; }
+  .verd {
+    display:flex; gap:8px; align-items:baseline; font-size:13.5px;
+    padding:10px 13px; border-radius:6px; border:1px solid var(--line);
+    background:var(--surface); margin-bottom:12px;
+  }
+  .verd b {
+    font-family:ui-monospace,Menlo,monospace; font-size:10px; letter-spacing:0.12em;
+    text-transform:uppercase; flex:0 0 auto;
+  }
+  .verd.plus b { color:var(--good); } .verd.minus b { color:var(--bad); }
+  .verd span { color:var(--ink-2); }
+
+  /* ── the rail mockup itself ───────────────────────────── */
+  .rail {
+    background:var(--r-ground); border:1px solid var(--r-line); border-radius:9px;
+    overflow:hidden; color:var(--r-fg); font-size:11.5px; line-height:1.45;
+    box-shadow:0 10px 30px -18px rgba(0,0,0,.7);
+    position:sticky; top:20px;
+  }
+  @media (max-width:899px) { .rail { position:static; max-width:340px; } }
+
+  .rail-tabs { display:flex; border-bottom:1px solid var(--r-line); background:#0d1822; }
+  .rail-tab {
+    flex:1; text-align:center; padding:8px 4px 7px; font-size:10.5px; font-weight:650;
+    letter-spacing:0.06em; color:var(--r-dim); border-bottom:2px solid transparent;
+  }
+  .rail-tab.on { color:var(--r-fg); border-bottom-color:var(--r-accent); background:#101f2c; }
+  .rail-tab .g { display:block; font-size:12px; margin-bottom:1px; }
+
+  .rail-bar {
+    display:flex; align-items:center; gap:7px; padding:9px 11px;
+    border-bottom:1px solid var(--r-line); background:var(--r-panel);
+  }
+  .rail-bar .ttl { font-weight:650; font-size:12px; }
+  .rail-bar .sub { color:var(--r-dim); font-size:10px; }
+  .rail-bar .spend {
+    margin-left:auto; font-size:10px; font-weight:650; color:var(--r-llm);
+    background:color-mix(in oklab,var(--r-llm),transparent 86%);
+    padding:2px 7px; border-radius:99px; white-space:nowrap;
+  }
+
+  .rail-lanes { display:flex; gap:4px; padding:8px 9px; border-bottom:1px solid var(--r-line); }
+  .lane {
+    flex:1; border:1px solid var(--r-line); border-radius:5px; padding:5px 6px;
+    background:#0f1c27; min-width:0;
+  }
+  .lane.on { border-color:var(--r-accent); background:color-mix(in oklab,var(--r-accent),transparent 88%); }
+  .lane .l { font-size:9.5px; font-weight:650; letter-spacing:0.04em; color:var(--r-fg); display:block;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lane .v { font-size:9px; color:var(--r-mute); display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lane.on .l { color:var(--r-accent); }
+
+  .rail-body { padding:4px 0 8px; max-height:none; }
+
+  .grp {
+    display:flex; align-items:center; gap:6px; padding:8px 11px 5px;
+    font-size:9.5px; font-weight:700; letter-spacing:0.13em; text-transform:uppercase;
+    color:var(--r-mute);
+  }
+  .grp .c { margin-left:auto; letter-spacing:0.04em; font-weight:600; text-transform:none; font-size:9.5px; }
+  .grp.attn { color:var(--r-warn); }
+  .grp.spend { color:var(--r-llm); }
+
+  .row {
+    display:flex; align-items:center; gap:8px; padding:5px 11px;
+    border-left:2px solid transparent;
+  }
+  .row.on { border-left-color:var(--r-good); background:#101d29; }
+  .row.warn { border-left-color:var(--r-warn); background:color-mix(in oklab,var(--r-warn),transparent 94%); }
+  .row.off { opacity:.62; }
+  .row .main { min-width:0; flex:1; }
+  .row .n { display:block; font-size:11px; color:var(--r-fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row .m { display:block; font-size:9.5px; color:var(--r-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row .m em { font-style:normal; color:var(--r-warn); }
+  .row .m i { font-style:normal; color:var(--r-llm); }
+  .row .btn {
+    flex:0 0 auto; width:19px; height:19px; border-radius:4px; border:1px solid var(--r-line);
+    background:#152532; color:var(--r-mute); font-size:8px; display:flex;
+    align-items:center; justify-content:center;
+  }
+  .row .btn.go { color:var(--r-good); border-color:color-mix(in oklab,var(--r-good),transparent 60%); }
+  .row .btn.lock { color:var(--r-dim); }
+  .pill {
+    flex:0 0 auto; font-size:8.5px; font-weight:700; letter-spacing:0.06em;
+    padding:1px 5px; border-radius:99px; text-transform:uppercase;
+  }
+  .pill.x { color:var(--r-llm); background:color-mix(in oklab,var(--r-llm),transparent 84%); }
+  .pill.n { color:var(--r-good); background:color-mix(in oklab,var(--r-good),transparent 84%); }
+  .pill.t { color:var(--r-warn); background:color-mix(in oklab,var(--r-warn),transparent 84%); }
+  .pill.f { color:var(--r-dim); background:#16242f; }
+
+  .more {
+    padding:5px 11px 6px 13px; font-size:9.5px; color:var(--r-dim);
+  }
+  .fold {
+    display:flex; align-items:center; gap:7px; padding:7px 11px; margin:2px 0;
+    font-size:10px; color:var(--r-mute); border-top:1px solid var(--r-line);
+    border-bottom:1px solid var(--r-line); background:#0d1822;
+  }
+  .fold .c { margin-left:auto; color:var(--r-dim); font-size:9.5px; }
+  .fold.good { color:var(--r-good); }
+
+  .caption {
+    font-size:11.5px; color:var(--ink-mute); margin-top:9px; text-align:center;
+    font-family:ui-monospace,Menlo,monospace; letter-spacing:0.02em;
+  }
+
+  .foot {
+    margin-top:56px; padding-top:22px; border-top:1px solid var(--line);
+    font-size:13.5px; color:var(--ink-mute);
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">Left rail · Agents pane</p>
+  <h1>No — most of that tab isn't an LLM.</h1>
+  <p class="lede">The pane groups by <strong>who owns the code</strong> (supervision, health, infra), which is invisible to you. Split it by <strong>what actually runs</strong> — a model, or a deterministic sweep — and the list stops being a wall.</p>
+
+  <div class="verdict">
+    <div class="no">55</div>
+    <div>
+      <p><strong>of the 140 non-loop schedules spawn a model.</strong> The other 85 are git commits, garbage collection, canary probes and outbox drains — free, deterministic, and only interesting when they break. They're sitting in a tab named "Agents" with equal visual weight.</p>
+    </div>
+  </div>
+
+  <section>
+    <p class="eyebrow">The evidence</p>
+    <h2>The database already knows which is which</h2>
+    <hr class="rule" />
+    <p>Every routine carries a <code>target_role</code> — the handler it dispatches to. <code>system:blueprint-run</code>, <code>system:scout-cycle</code>, <code>system:overwatch-launch</code>, <code>system:wake-brain</code> and <code>system:loop-wake</code> all spawn a model-backed agent. <code>system:git-sync</code>, <code>system:hive-git-gc</code>, <code>system:telemetry-retention</code> and friends never call one.</p>
+    <p>Today the pane doesn't use that. It uses <code>AGENT_SPAWNING_PATTERNS</code> — a list of regexes matched against the routine's <em>name</em>. That guess is wrong in both directions, and it is why the current "tokens" flag can't be trusted.</p>
+
+    <div class="split">
+      <div class="stat llm">
+        <span class="k">Spawns a model</span>
+        <span class="v">55</span>
+        <span class="s">+ 770 loop rows · $1,186 / 7d across all roles</span>
+      </div>
+      <div class="stat det">
+        <span class="k">Deterministic</span>
+        <span class="v">85</span>
+        <span class="s">≈30 distinct names, fanned out across pots</span>
+      </div>
+      <div class="stat">
+        <span class="k">Rows in one flat list today</span>
+        <span class="v">877</span>
+        <span class="s">to find the ~90 that are actually running</span>
+      </div>
+    </div>
+
+    <h3 style="margin-top:26px">Where the fix belongs</h3>
+    <p>Not another regex. <code>registerSystemAction()</code> already takes an options object — add <code>spends: 'llm' | 'none'</code> there, declared by whoever writes the handler and knows the answer, with a test that fails if any registered action leaves it undeclared. The split then becomes a fact the code asserts rather than a pattern it infers.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Classification</p>
+    <h2>Every family, sorted</h2>
+    <hr class="rule" />
+    <p>Blender and Docs dissolve into this split — their routines are not a third thing, they're LLM work and deterministic work that happened to be grouped by subject matter.</p>
+
+    <div class="tscroll">
+      <table>
+        <thead>
+          <tr><th>Family</th><th>Rows</th><th>Kind</th><th>Goes to</th><th>Why</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="name">loop-su-*</td><td class="num">770</td><td><span class="tag llm">LLM</span></td><td>Agents · Loops</td><td>Wakes an su session for a turn</td></tr>
+          <tr><td class="name">hive-wake / pot-wake</td><td class="num">18</td><td><span class="tag llm">LLM</span></td><td>Agents · Wake</td><td><code>system:blueprint-run</code></td></tr>
+          <tr><td class="name">bp-singleton-*</td><td class="num">15</td><td><span class="tag llm">LLM</span></td><td>Agents · Learning</td><td>was Blender</td></tr>
+          <tr><td class="name">improvement-*</td><td class="num">5</td><td><span class="tag llm">LLM</span></td><td>Agents · Learning</td><td>was Blender</td></tr>
+          <tr><td class="name">overwatch-wake</td><td class="num">4</td><td><span class="tag llm">LLM</span></td><td>Agents · Wake</td><td><code>system:overwatch-launch</code></td></tr>
+          <tr><td class="name">scout-cycle</td><td class="num">4</td><td><span class="tag llm">LLM</span></td><td>Agents · Learning</td><td>was Blender</td></tr>
+          <tr><td class="name">gym-cycle / template-gym</td><td class="num">2</td><td><span class="tag llm">LLM</span></td><td>Agents · Learning</td><td>was Blender</td></tr>
+          <tr><td class="name">wake-brain</td><td class="num">1</td><td><span class="tag llm">LLM</span></td><td>Agents · Wake</td><td>the Mug's cadence</td></tr>
+          <tr><td class="name">doc-steward-dispatch</td><td class="num">1</td><td><span class="tag trig">Triggered</span></td><td>Agents · Docs</td><td>git-sync hook; switch is a flag</td></tr>
+          <tr><td class="name">git-sync</td><td class="num">19</td><td><span class="tag det">System</span></td><td>System · Git &amp; release</td><td>one per pot</td></tr>
+          <tr><td class="name">green-checkpoint</td><td class="num">14</td><td><span class="tag det">System</span></td><td>System · Git &amp; release</td><td>one per pot</td></tr>
+          <tr><td class="name">cross-hive-outbox-drain</td><td class="num">13</td><td><span class="tag det">System</span></td><td>System · Federation</td><td>one per pot</td></tr>
+          <tr><td class="name">hive-git-gc</td><td class="num">3</td><td><span class="tag det">System</span></td><td>System · Cleanup</td><td>&nbsp;</td></tr>
+          <tr><td class="name">p2p-* / hive-canary</td><td class="num">6</td><td><span class="tag det">System</span></td><td>System · Health</td><td>benches + probes</td></tr>
+          <tr><td class="name">knowledge-pack-*</td><td class="num">2</td><td><span class="tag det">System</span></td><td>System · Cleanup</td><td>was Docs — it's packaging</td></tr>
+          <tr><td class="name">doc-freshness-sweep</td><td class="num">1</td><td><span class="tag trig">Triggered</span></td><td>System · Git &amp; release</td><td>sha compare after git-sync, free</td></tr>
+          <tr><td class="name">gc / reaper / retention</td><td class="num">6</td><td><span class="tag det">System</span></td><td>System · Cleanup</td><td>&nbsp;</td></tr>
+          <tr><td class="name">claim / coord / plan sweeps</td><td class="num">8</td><td><span class="tag det">System</span></td><td>System · Health</td><td>&nbsp;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:12px;font-size:13.5px;color:var(--ink-mute)">Four rows are genuinely ambiguous today — <code>improvement-watchdog</code>, <code>claim-discipline-watch</code>, <code>hive-canary</code>, <code>autonomy-trust-scan</code>. The regex guesses; the handler knows. That's the argument for declaring it at registration.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Naming</p>
+    <h2>What to call the deterministic tab</h2>
+    <hr class="rule" />
+    <div class="names">
+      <div class="name pick">
+        <span class="badge">Pick</span>
+        <h3>System</h3>
+        <p>Reads instantly against "Agents", and it's literally true — every one of these dispatches a <code>system:</code> handler. Zero learning curve, no cleverness to decode.</p>
+      </div>
+      <div class="name">
+        <h3>Machinery</h3>
+        <p>Says "moving parts, no judgment" in one word. Warmer than System, and it pairs nicely with a rail full of kitchen nouns.</p>
+      </div>
+      <div class="name">
+        <h3>Chores</h3>
+        <p>Honest about the register: unglamorous upkeep you only look at when it stops. Slightly undersells the release pipeline.</p>
+      </div>
+      <div class="name">
+        <h3>Clockwork</h3>
+        <p>Deterministic <em>and</em> scheduled in a single word. The most characterful, the least literal — costs a beat to parse the first time.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Mockup A</p>
+    <h2>Sub-tabs per family</h2>
+    <hr class="rule" />
+    <div class="mock">
+      <div>
+        <div class="rail">
+          <div class="rail-tabs">
+            <div class="rail-tab on"><span class="g">◍</span>Agents</div>
+            <div class="rail-tab"><span class="g">⚙</span>System</div>
+            <div class="rail-tab"><span class="g">◷</span>Pots</div>
+            <div class="rail-tab"><span class="g">☰</span>Chat</div>
+          </div>
+          <div class="rail-bar">
+            <span>◍</span>
+            <span class="ttl">Agents</span>
+            <span class="sub">runs a model</span>
+            <span class="spend">$1,186 / 7d</span>
+          </div>
+          <div class="rail-lanes">
+            <div class="lane on"><span class="l">Loops</span><span class="v">5 running</span></div>
+            <div class="lane"><span class="l">Wake</span><span class="v">1 of 23</span></div>
+            <div class="lane"><span class="l">Learn</span><span class="v">22 running</span></div>
+            <div class="lane"><span class="l">Live</span><span class="v">75 now</span></div>
+          </div>
+          <div class="rail-body">
+            <div class="grp">Running<span class="c">5</span></div>
+            <div class="row on"><div class="main"><span class="n">su-29fe4 · papercusp</span><span class="m">every 5m · next 13:25</span></div><span class="btn">❚❚</span></div>
+            <div class="row on"><div class="main"><span class="n">su-709bb · papercusp</span><span class="m">every 10m · next 13:27</span></div><span class="btn">❚❚</span></div>
+            <div class="row on"><div class="main"><span class="n">su-e3b21 · papercusp</span><span class="m">every 12m · next 13:27</span></div><span class="btn">❚❚</span></div>
+            <div class="more">+2 more</div>
+            <div class="grp attn">Stalled<span class="c">15</span></div>
+            <div class="row warn"><div class="main"><span class="n">su-d93ac · papercusp</span><span class="m"><em>armed, no next fire · last 5d ago</em></span></div><span class="btn">✕</span></div>
+            <div class="row warn"><div class="main"><span class="n">su-bce40 · papercusp</span><span class="m"><em>armed, no next fire · last 5d ago</em></span></div><span class="btn">✕</span></div>
+            <div class="more">+13 more</div>
+            <div class="fold">💤 Dormant<span class="c">750 · show</span></div>
+          </div>
+        </div>
+        <p class="caption">A · Agents ▸ Loops</p>
+      </div>
+      <div class="mock-notes">
+        <h3>The shape</h3>
+        <ul>
+          <li>Two top-level tabs: <strong>Agents</strong> (spends money) and <strong>System</strong> (free). Blender and Docs disappear as tabs — their rows become <em>Learning</em> and <em>Docs</em> lanes here.</li>
+          <li>Inside each tab, one lane per family. System's lanes: <em>Git &amp; release · Cleanup · Health · Federation</em>.</li>
+          <li>Spend lives in the header, quoted per tab — never per row, because usage is recorded by role with no link back to the routine that spawned it.</li>
+        </ul>
+        <div class="verd plus"><b>Keeps</b><span>The closest to what's there now — same lane strip, same muscle memory, minimum rebuild.</span></div>
+        <div class="verd minus"><b>Costs</b><span>Eight lanes across two tabs. You still have to know which lane a thing lives in before you can find it, which is most of today's problem carried forward.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Mockup B</p>
+    <h2>One scroll, families collapse</h2>
+    <hr class="rule" />
+    <div class="mock">
+      <div>
+        <div class="rail">
+          <div class="rail-tabs">
+            <div class="rail-tab on"><span class="g">◍</span>Agents</div>
+            <div class="rail-tab"><span class="g">⚙</span>System</div>
+            <div class="rail-tab"><span class="g">◷</span>Pots</div>
+            <div class="rail-tab"><span class="g">☰</span>Chat</div>
+          </div>
+          <div class="rail-bar">
+            <span>◍</span>
+            <span class="ttl">Agents</span>
+            <span class="sub">28 scheduled · 5 live</span>
+            <span class="spend">$1,186 / 7d</span>
+          </div>
+          <div class="rail-body">
+            <div class="grp">▾ Loops<span class="c">5 running · 15 stalled</span></div>
+            <div class="row warn"><div class="main"><span class="n">su-d93ac · papercusp</span><span class="m"><em>stalled 5d</em></span></div><span class="btn">✕</span></div>
+            <div class="row on"><div class="main"><span class="n">su-29fe4 · papercusp</span><span class="m">every 5m</span></div><span class="btn">❚❚</span></div>
+            <div class="more">+18 · 750 dormant</div>
+
+            <div class="grp">▸ Wake<span class="c">1 of 23 running</span></div>
+            <div class="grp">▾ Learning<span class="c">22 running</span></div>
+            <div class="row on"><div class="main"><span class="n">bp-singleton-scout</span><span class="m">every 6h</span></div><span class="pill x">$</span><span class="btn">❚❚</span></div>
+            <div class="row on"><div class="main"><span class="n">improvement-triage</span><span class="m">every 15m</span></div><span class="pill x">$</span><span class="btn">❚❚</span></div>
+            <div class="more">+20 more</div>
+
+            <div class="grp">▾ Docs<span class="c">1 of 2</span></div>
+            <div class="row warn"><div class="main"><span class="n">doc-steward-dispatch</span><span class="m"><em>repair OFF</em> · after git-sync</span></div><span class="pill t">flag</span><span class="btn go">▶</span></div>
+            <div class="row off"><div class="main"><span class="n">doc-freshness-sweep</span><span class="m">after git-sync · always on, free</span></div><span class="pill f">free</span></div>
+          </div>
+        </div>
+        <p class="caption">B · Agents, families inline</p>
+      </div>
+      <div class="mock-notes">
+        <h3>The shape</h3>
+        <ul>
+          <li>Same two tabs, but <strong>no lane strip at all</strong>. Each tab is one scroll with collapsible family headers carrying their own counts.</li>
+          <li>Your last expand/collapse state persists per family, so the pane settles into whatever you actually watch.</li>
+          <li>The three row kinds get distinct pills: <span class="tag llm">$</span> spends, <span class="tag trig">flag</span> switch is a feature flag, <span class="tag det">free</span> deterministic. The padlock retires — it currently means four different things.</li>
+        </ul>
+        <div class="verd plus"><b>Keeps</b><span>Nothing is one click away instead of two — you see every family and its state without navigating. Counts on collapsed headers mean a folded family still reports.</span></div>
+        <div class="verd minus"><b>Costs</b><span>Expand everything and it's a long scroll. Needs the collapse state to be genuinely sticky or it's worse than A.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Mockup C</p>
+    <h2>Sorted by what needs you</h2>
+    <hr class="rule" />
+    <div class="mock">
+      <div>
+        <div class="rail">
+          <div class="rail-tabs">
+            <div class="rail-tab on"><span class="g">◍</span>Agents</div>
+            <div class="rail-tab"><span class="g">⚙</span>System</div>
+            <div class="rail-tab"><span class="g">◷</span>Pots</div>
+            <div class="rail-tab"><span class="g">☰</span>Chat</div>
+          </div>
+          <div class="rail-bar">
+            <span>◍</span>
+            <span class="ttl">Agents</span>
+            <span class="sub">3 need you</span>
+            <span class="spend">$1,186 / 7d</span>
+          </div>
+          <div class="rail-body">
+            <div class="grp attn">⚠ Needs you<span class="c">3</span></div>
+            <div class="row warn"><div class="main"><span class="n">loop · su-d93ac</span><span class="m"><em>armed 5d, never fires</em> — owner gone</span></div><span class="btn">✕</span></div>
+            <div class="row warn"><div class="main"><span class="n">hive-wake</span><span class="m"><em>16 pots paused</em> since June</span></div><span class="btn go">▶</span></div>
+            <div class="row warn"><div class="main"><span class="n">doc repair</span><span class="m"><em>OFF</em> — drift found, not fixed</span></div><span class="pill t">flag</span><span class="btn go">▶</span></div>
+
+            <div class="grp spend">Spending now<span class="c">22</span></div>
+            <div class="row on"><div class="main"><span class="n">bp-singleton-scout</span><span class="m">every 6h · learning</span></div><span class="btn">❚❚</span></div>
+            <div class="row on"><div class="main"><span class="n">improvement-triage</span><span class="m">every 15m · learning</span></div><span class="btn">❚❚</span></div>
+            <div class="row on"><div class="main"><span class="n">su-29fe4 loop</span><span class="m">every 5m · papercusp</span></div><span class="btn">❚❚</span></div>
+            <div class="more">+19 · browse by family ▸</div>
+
+            <div class="fold good">✓ Everything else healthy<span class="c">31 · show</span></div>
+            <div class="fold">💤 Dormant<span class="c">750 · show</span></div>
+          </div>
+        </div>
+        <p class="caption">C · Agents, attention-ordered</p>
+      </div>
+      <div class="mock-notes">
+        <h3>The shape</h3>
+        <ul>
+          <li>No taxonomy at the top level. Every row sorts into <strong>Needs you</strong>, <strong>Spending now</strong>, <strong>Healthy</strong> (one folded line) or <strong>Dormant</strong> (one folded line).</li>
+          <li>The <strong>System</strong> tab collapses almost entirely: 31 deterministic routines become the single line <em>"✓ 31 running, last sweep 2m ago"</em> until one fails, at which point it promotes itself into <em>Needs you</em>.</li>
+          <li>Family is still there — as a secondary <em>browse by family</em> view, not the default.</li>
+        </ul>
+        <div class="verd plus"><b>Keeps</b><span>Answers the only two questions you actually open this pane with: is anything broken, and what is spending money. 877 rows become about eight.</span></div>
+        <div class="verd minus"><b>Costs</b><span>You can't browse to a specific routine by memory — finding <code>hive-git-gc</code> means expanding Healthy or searching. Needs a filter box to be livable.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Recommendation</p>
+    <h2>C for the default, B underneath it</h2>
+    <hr class="rule" />
+    <p><strong>C is the honest answer to "simple to understand"</strong> — it's the only one where the deterministic half stops consuming attention proportional to its row count. Thirty-one healthy system routines are worth exactly one line until one of them fails, and that's the whole reason a separate System tab is worth building: not to give the plumbing its own room, but to give it a room you never have to enter.</p>
+    <p>Ship <strong>C as the default view</strong> with <strong>B's family grouping as the second view</strong> behind a toggle in the header — the same <em>Working / Runs</em> pattern the /adv Agents panel already uses. That keeps browse-by-family for when you want it without paying for it on every open.</p>
+    <p>All three share the same foundation, so the read-model work is identical either way: classify by <code>target_role</code>, derive <code>running / stalled / dormant</code> from <code>next_fire_at</code> instead of trusting <code>active</code>, collapse per-pot fan-out into one row per name, and name loops by their owning session rather than a UUID.</p>
+  </section>
+
+  <p class="foot">Rendered from live data · <span class="mono">papercusp-workspace</span> · 910 routine rows, 2026-07-26. Spend is by agent role over 7d; it is not attributable per routine, and no mockup above pretends otherwise.</p>
+</div>
