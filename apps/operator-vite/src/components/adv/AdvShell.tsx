@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
+import { Command as CmdK } from 'cmdk';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
   BookOpen,
   Boxes,
   CalendarClock,
   Check,
+  ChevronDown,
   FlaskConical,
   Gauge,
   GitBranch,
@@ -26,6 +28,7 @@ import {
 } from 'lucide-react';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select, type SelectEntry, type SelectOption } from '@/app/harness/Select';
+import { Popover } from '@/app/harness/Popover';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
 import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import { hiveHomeLabel } from '@/lib/hive-label';
@@ -153,6 +156,68 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
 /** The tab strip for a scope: full strip for a single pot, workspace-level subset under "All Pots". */
 export function visibleAdvTabs(allMode: boolean): typeof ADV_TABS {
   return allMode ? ADV_TABS.filter((t) => WORKSPACE_TAB_IDS.has(t.id)) : ADV_TABS;
+}
+
+/**
+ * hud-first-nav-and-dossier-2026-07-26 D-001/P-002 (owner decision, option C
+ * from four rendered mockups): only Overview + HUD stay on the visible strip;
+ * every other tab moves behind a searchable "More" menu. Presentation only —
+ * tab IDs (ADV_TAB_IDS) are unchanged, since they're serialised into ?tab=
+ * URLs, deep links, and the agent ui:dispatch surface.
+ */
+export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>(['overview', 'hud']);
+
+/**
+ * Groups for the More menu (mitigation (a): "hidden" must not become
+ * "undiscoverable"). Every non-primary ADV_TABS id must appear in exactly one
+ * group — the dev-mode assertion below catches a newly-added tab that would
+ * otherwise silently vanish (no strip entry, no More-menu entry).
+ */
+export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; tabIds: readonly AdvTabId[] }> = [
+  { id: 'build', label: 'Build', tabIds: ['plans', 'git', 'testing', 'docs'] },
+  { id: 'work', label: 'Work', tabIds: ['harnesses', 'conversations', 'calendar'] },
+  { id: 'insights', label: 'Insights', tabIds: ['insights', 'learning', 'evals', 'health'] },
+  { id: 'system', label: 'System', tabIds: ['frames', 'settings'] },
+];
+
+if (process.env.NODE_ENV !== 'production') {
+  const grouped = new Set(SECONDARY_TAB_GROUPS.flatMap((g) => g.tabIds));
+  const missing = ADV_TAB_IDS.filter((id) => !PRIMARY_ADV_TAB_IDS.has(id) && !grouped.has(id));
+  if (missing.length > 0) {
+    // eslint-disable-next-line no-console
+    console.error(`AdvShell: SECONDARY_TAB_GROUPS is missing tab id(s): ${missing.join(', ')} — they would be unreachable (no strip entry, no More-menu entry).`);
+  }
+}
+
+/** Split a tab list (already scope-filtered by visibleAdvTabs/allMode) into the
+ * always-visible strip entries and the ones that move into the More menu. */
+export function splitPrimarySecondary<T extends { id: AdvTabId }>(tabs: readonly T[]): { primary: T[]; secondary: T[] } {
+  const primary: T[] = [];
+  const secondary: T[] = [];
+  for (const tab of tabs) {
+    (PRIMARY_ADV_TAB_IDS.has(tab.id) ? primary : secondary).push(tab);
+  }
+  return { primary, secondary };
+}
+
+const RECENT_SECONDARY_TABS_MAX = 3;
+const recentSecondaryTabsKey = () => wsLocalKey('adv.recentSecondaryTabs');
+
+/** Parse+validate the persisted recent-secondary-tabs list (pure, unit-tested). */
+export function parseRecentSecondaryTabs(raw: string | null): AdvTabId[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is AdvTabId => typeof id === 'string' && (ADV_TAB_IDS as readonly string[]).includes(id) && !PRIMARY_ADV_TAB_IDS.has(id as AdvTabId));
+  } catch {
+    return [];
+  }
+}
+
+/** Move `id` to the front, dedupe, cap at RECENT_SECONDARY_TABS_MAX (pure, unit-tested). */
+export function pushRecentSecondaryTab(recents: readonly AdvTabId[], id: AdvTabId): AdvTabId[] {
+  return [id, ...recents.filter((r) => r !== id)].slice(0, RECENT_SECONDARY_TABS_MAX);
 }
 
 type HarnessProjectLite = {
@@ -409,6 +474,29 @@ export default function AdvShell({
       ? [...baseVisibleTabs, activeTabDef]
       : baseVisibleTabs;
 
+  // D-001 (owner decision, option C): only Overview + HUD render as real strip
+  // tabs; everything else lives behind the More menu (moreOpen).
+  const { primary: primaryTabs, secondary: secondaryTabs } = splitPrimarySecondary(visibleTabs);
+  const isSecondaryTabActive = secondaryTabs.some((tab) => tab.id === activeTab);
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  // Mitigation (b): pin the last few visited secondary tabs at the top of the
+  // More menu so a heavy Git/Tests/Working user doesn't pay a hunt every time.
+  const [recentSecondaryTabs, setRecentSecondaryTabs] = useState<AdvTabId[]>(() =>
+    typeof window === 'undefined' ? [] : parseRecentSecondaryTabs(window.localStorage.getItem(recentSecondaryTabsKey())),
+  );
+  useEffect(() => {
+    if (PRIMARY_ADV_TAB_IDS.has(activeTab)) return;
+    setRecentSecondaryTabs((prev) => {
+      if (prev[0] === activeTab) return prev;
+      const next = pushRecentSecondaryTab(prev, activeTab);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(recentSecondaryTabsKey(), JSON.stringify(next));
+      }
+      return next;
+    });
+  }, [activeTab]);
+
   // ── Discord-parity keyboard handlers (discord-shortcuts 2026-06-06) ──────
   // Alt+↑/↓ cycles the visible tab strip (Discord's prev/next channel);
   // Mod+Alt+←/→ cycles harnesses (Discord's server switcher); Mod+I jumps to
@@ -609,7 +697,7 @@ export default function AdvShell({
             ‹
           </button>
           <Tabs.List ref={tablistRef} className="pc-advshell__tablist" aria-label="Adv sections">
-            {visibleTabs.map((t) => {
+            {primaryTabs.map((t) => {
               const Icon = t.icon;
               return (
                 <Tabs.Trigger
@@ -627,6 +715,38 @@ export default function AdvShell({
               );
             })}
           </Tabs.List>
+          {secondaryTabs.length > 0 && (
+            <Popover
+              open={moreOpen}
+              onOpenChange={setMoreOpen}
+              trigger={
+                <button
+                  type="button"
+                  className={`pc-advshell__more-trigger${isSecondaryTabActive ? ' pc-advshell__more-trigger--active' : ''}`}
+                  aria-label="More sections"
+                >
+                  <span>More</span>
+                  <ChevronDown size={12} aria-hidden />
+                </button>
+              }
+              ariaLabel="More sections"
+              side="bottom"
+              align="start"
+              autoFocusOnOpen
+              contentClassName="pc-advshell__more-panel"
+            >
+              <AdvMoreMenu
+                groups={SECONDARY_TAB_GROUPS}
+                tabs={secondaryTabs}
+                recentIds={recentSecondaryTabs}
+                activeTab={activeTab}
+                onSelect={(id) => {
+                  void setActiveTab(id);
+                  setMoreOpen(false);
+                }}
+              />
+            </Popover>
+          )}
           <button
             type="button"
             className="pc-advshell__tabnav pc-advshell__tabnav--right"
@@ -1005,6 +1125,92 @@ export default function AdvShell({
           background: linear-gradient(90deg, var(--h-main-tab-accent), color-mix(in oklab, var(--h-main-tab-accent), white 28%));
           box-shadow: 0 0 14px color-mix(in oklab, var(--h-main-tab-accent), transparent 54%);
         }
+        /* ── "More" menu (D-001): trigger button + searchable/grouped popover ── */
+        .pc-advshell__more-trigger {
+          position: relative;
+          flex: 0 0 auto;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          min-height: 34px;
+          margin-bottom: -1px;
+          margin-left: 2px;
+          padding: 9px 12px 10px;
+          border: 1px solid rgba(125, 211, 252, 0.28);
+          border-radius: 10px 10px 0 0;
+          background: linear-gradient(180deg, rgba(125, 211, 252, 0.06), rgba(3, 10, 20, 0.98));
+          color: var(--fg-dim, #b9d4e8);
+          font-size: 11.5px;
+          font-weight: 600;
+          letter-spacing: 0;
+          text-transform: uppercase;
+          cursor: pointer;
+        }
+        .pc-advshell__more-trigger:hover,
+        .pc-advshell__more-trigger:focus-visible {
+          color: var(--fg, #e7f7ff);
+          outline: none;
+        }
+        .pc-advshell__more-trigger--active {
+          color: var(--fg, #e7f7ff);
+          background: rgba(125, 211, 252, 0.18);
+          border-color: rgba(125, 211, 252, 0.55);
+        }
+        .pc-advshell__more-panel {
+          width: min(280px, 92vw);
+          max-height: min(420px, 70vh);
+          display: flex;
+          border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+          border-radius: 10px;
+          background: var(--bg-popover, #0d1829);
+          box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+          overflow: hidden;
+        }
+        .pc-advshell__more-cmd { display: flex; flex-direction: column; width: 100%; min-height: 0; }
+        .pc-advshell__more-input {
+          margin: 8px;
+          padding: 7px 10px;
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.22));
+          border-radius: 8px;
+          background: var(--bg, #07101d);
+          color: var(--fg, #e7f7ff);
+          font-size: 12.5px;
+          outline: none;
+        }
+        .pc-advshell__more-input:focus { border-color: var(--accent, #38bdf8); }
+        .pc-advshell__more-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 6px; }
+        .pc-advshell__more-empty {
+          padding: 10px 12px;
+          color: var(--fg-mute, #7f9bb4);
+          font-size: 12px;
+        }
+        .pc-advshell__more-group [cmdk-group-heading] {
+          padding: 8px 8px 4px;
+          color: var(--fg-mute, #7f9bb4);
+          font-size: 10px;
+          font-weight: 760;
+          letter-spacing: 0.02em;
+          text-transform: uppercase;
+        }
+        .pc-advshell__more-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 8px;
+          border-radius: 7px;
+          color: var(--fg-dim, #b9d4e8);
+          font-size: 12.5px;
+          font-weight: 550;
+          cursor: pointer;
+        }
+        .pc-advshell__more-item svg:first-child { color: var(--h-main-tab-accent); }
+        .pc-advshell__more-item[data-selected='true'] {
+          background: rgba(125, 211, 252, 0.14);
+          color: var(--fg, #e7f7ff);
+        }
+        .pc-advshell__more-item[data-active] { color: var(--fg, #e7f7ff); font-weight: 650; }
+        .pc-advshell__more-item-check { margin-left: auto; color: var(--accent, #38bdf8); }
+
         /* Fallback scroller: tabs that lay out their own internal overflow
            panes (Plans, Sessions) scroll there; tabs that don't (e.g.
            Insights) scroll here instead of growing the shell + window. */
@@ -1025,6 +1231,90 @@ export default function AdvShell({
         }
       `}</style>
     </div>
+  );
+}
+
+type AdvTabDef = (typeof ADV_TABS)[number];
+
+/**
+ * The "More" menu body (D-001 mitigation (a)/(b)): a searchable, grouped list
+ * of the secondary tabs, with the last few visited pinned under "Recent".
+ * cmdk (already a dependency — apps/operator/app/_components/CommandPalette.tsx)
+ * gives type-to-filter + full keyboard nav (↑↓/Enter) for free.
+ */
+function AdvMoreMenu({
+  groups,
+  tabs,
+  recentIds,
+  activeTab,
+  onSelect,
+}: {
+  groups: typeof SECONDARY_TAB_GROUPS;
+  tabs: AdvTabDef[];
+  recentIds: AdvTabId[];
+  activeTab: AdvTabId;
+  onSelect: (id: AdvTabId) => void;
+}) {
+  const byId = useMemo(() => new Map(tabs.map((t) => [t.id, t])), [tabs]);
+  const recentTabs = recentIds.map((id) => byId.get(id)).filter((t): t is AdvTabDef => !!t);
+
+  return (
+    <CmdK label="More sections" loop shouldFilter className="pc-advshell__more-cmd">
+      <CmdK.Input
+        autoFocus
+        className="pc-advshell__more-input"
+        placeholder="Find a section…"
+        aria-label="Filter sections"
+      />
+      <CmdK.List className="pc-advshell__more-list">
+        <CmdK.Empty className="pc-advshell__more-empty">No matching section</CmdK.Empty>
+        {recentTabs.length > 0 && (
+          <CmdK.Group heading="Recent" className="pc-advshell__more-group">
+            {recentTabs.map((t) => (
+              <AdvMoreMenuItem key={`recent-${t.id}`} tab={t} active={t.id === activeTab} onSelect={onSelect} />
+            ))}
+          </CmdK.Group>
+        )}
+        {groups.map((group) => {
+          const groupTabs = group.tabIds.map((id) => byId.get(id)).filter((t): t is AdvTabDef => !!t);
+          if (groupTabs.length === 0) return null;
+          return (
+            <CmdK.Group key={group.id} heading={group.label} className="pc-advshell__more-group">
+              {groupTabs.map((t) => (
+                <AdvMoreMenuItem key={t.id} tab={t} active={t.id === activeTab} onSelect={onSelect} />
+              ))}
+            </CmdK.Group>
+          );
+        })}
+      </CmdK.List>
+    </CmdK>
+  );
+}
+
+function AdvMoreMenuItem({
+  tab,
+  active,
+  onSelect,
+}: {
+  tab: AdvTabDef;
+  active: boolean;
+  onSelect: (id: AdvTabId) => void;
+}) {
+  const Icon = tab.icon;
+  return (
+    <CmdK.Item
+      // cmdk filters/sorts on `value` — the tab's own label is enough (short,
+      // unambiguous list; no need to also thread keywords).
+      value={tab.label}
+      onSelect={() => onSelect(tab.id)}
+      className="pc-advshell__more-item"
+      data-active={active ? '' : undefined}
+      style={{ '--h-main-tab-accent': tab.accent } as CSSProperties}
+    >
+      <Icon size={13} aria-hidden />
+      <span>{tab.label}</span>
+      {active && <Check size={12} aria-hidden className="pc-advshell__more-item-check" />}
+    </CmdK.Item>
   );
 }
 

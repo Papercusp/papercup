@@ -20,6 +20,11 @@ import {
   buildHarnessSelectOptions,
   visibleAdvTabs,
   tabOverflowState,
+  PRIMARY_ADV_TAB_IDS,
+  SECONDARY_TAB_GROUPS,
+  splitPrimarySecondary,
+  parseRecentSecondaryTabs,
+  pushRecentSecondaryTab,
 } from '../adv/AdvShell';
 import type { SelectEntry, SelectGroup, SelectOption } from '@/app/harness/Select';
 
@@ -231,6 +236,57 @@ describe('harness route panel → tab mapping contract', () => {
     // Config tab retired → its legacy panel now lands on Settings.
     expect(EXPECTED_MAPPING.config).toBe('settings');
     expect(EXPECTED_MAPPING.docs).toBe('docs');
+  });
+});
+
+// ─── D-001 More-menu split (hud-first-nav-and-dossier-2026-07-26 P-002) ─────
+describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', () => {
+  it('exactly Overview + HUD are primary', () => {
+    expect(PRIMARY_ADV_TAB_IDS.has('overview')).toBe(true);
+    expect(PRIMARY_ADV_TAB_IDS.has('hud')).toBe(true);
+    expect(PRIMARY_ADV_TAB_IDS.size).toBe(2);
+  });
+
+  it('every non-primary ADV_TABS id appears in exactly one More-menu group (nothing goes unreachable)', () => {
+    const nonPrimaryIds = ADV_TABS.map((t) => t.id).filter((id) => !PRIMARY_ADV_TAB_IDS.has(id));
+    const grouped = SECONDARY_TAB_GROUPS.flatMap((g) => g.tabIds);
+    expect(new Set(grouped).size).toBe(grouped.length); // no id duplicated across groups
+    expect([...grouped].sort()).toEqual([...nonPrimaryIds].sort());
+  });
+
+  it('splits a tab list into primary (strip) and secondary (More menu)', () => {
+    const { primary, secondary } = splitPrimarySecondary(ADV_TABS);
+    expect(primary.map((t) => t.id)).toEqual(['overview', 'hud']);
+    expect(secondary.map((t) => t.id)).toEqual(
+      ADV_TABS.map((t) => t.id).filter((id) => id !== 'overview' && id !== 'hud'),
+    );
+  });
+
+  it('under All Pots, secondary only contains the workspace-level subset', () => {
+    const { secondary } = splitPrimarySecondary(visibleAdvTabs(true));
+    expect(secondary.map((t) => t.id)).toEqual(['plans', 'calendar', 'harnesses', 'health', 'frames', 'conversations', 'learning', 'evals']);
+  });
+});
+
+describe('parseRecentSecondaryTabs / pushRecentSecondaryTab', () => {
+  it('parses a valid persisted list', () => {
+    expect(parseRecentSecondaryTabs(JSON.stringify(['git', 'docs']))).toEqual(['git', 'docs']);
+  });
+
+  it('returns [] for null, malformed JSON, or a non-array', () => {
+    expect(parseRecentSecondaryTabs(null)).toEqual([]);
+    expect(parseRecentSecondaryTabs('not json')).toEqual([]);
+    expect(parseRecentSecondaryTabs(JSON.stringify({ not: 'an array' }))).toEqual([]);
+  });
+
+  it('drops unknown ids and primary ids (overview/hud can never be "recent secondary")', () => {
+    expect(parseRecentSecondaryTabs(JSON.stringify(['git', 'bogus-id', 'overview', 'hud', 'docs']))).toEqual(['git', 'docs']);
+  });
+
+  it('pushRecentSecondaryTab moves an id to the front, dedupes, and caps at 3', () => {
+    expect(pushRecentSecondaryTab([], 'git')).toEqual(['git']);
+    expect(pushRecentSecondaryTab(['git', 'docs'], 'docs')).toEqual(['docs', 'git']);
+    expect(pushRecentSecondaryTab(['git', 'docs', 'testing'], 'insights')).toEqual(['insights', 'git', 'docs']);
   });
 });
 

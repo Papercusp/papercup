@@ -211,6 +211,72 @@ WEBKIT_REAPER_DESKTOP_STALE=3600 systemctl --user start papercup-webkit-reaper.s
 
 ---
 
+# Orphaned-vitest-worker reaper — installation (EI-18686031108193522)
+
+`papercup-vitest-orphan-reaper.{service,timer}` reaps orphaned vitest fork-pool
+worker processes (`node_modules/vitest/dist/workers/{forks,vmForks}.js`) left
+behind when the vitest CLI process that owns them is SIGKILLed — a
+harness/heavy-command timeout, an admission-guard abort, a `run_in_background`
+task reaped, or an agent session ending mid-suite. SIGKILL can't be trapped, so
+the parent gets no chance to tear its worker pool down; the workers are
+reparented to this host's subreaper (`systemd --user`, confirmed via /proc —
+not always PID 1) and simply sit there, forever. Measured 2026-07-26: 8 such
+workers alive 24h+, up to 6.7 days, ~600MB combined RSS, each reading 0.0% CPU
+— a pure memory/process-table leak, NOT a load contributor (see the filed
+issue for why that distinction matters).
+
+**Safety:** a worker is a reap candidate only if its cmdline names a
+`forks.js`/`vmForks.js` entrypoint. Its real PPID is read from `/proc`, and if
+that parent is alive AND its own cmdline mentions `vitest` (a legitimately
+still-running suite), the worker is left alone regardless of age — this is
+mirrored from `reap-leaked-webviews.sh`'s live-parent check, not a bare
+`ppid==1` test. Only orphans older than the age threshold (default 5 min) are
+reaped, TERM first then KILL after a grace period.
+
+**Detection + reaping only** — this does not (and cannot) patch vitest's own
+worker entrypoints to self-exit on parent death (`PR_SET_PDEATHSIG`): those
+files live in `node_modules` and are overwritten by every `npm install`, so
+any patch would be silently lost. A sweeper is the durable side of this fix,
+mirroring the webkit reaper's own precedent of reaping rather than patching a
+vendored dependency's internals.
+
+## Install (one-time)
+
+```bash
+cd /home/dev/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+ln -sf "$(pwd)/papercup-vitest-orphan-reaper.service" ~/.config/systemd/user/
+ln -sf "$(pwd)/papercup-vitest-orphan-reaper.timer"   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-vitest-orphan-reaper.timer
+```
+
+## Verify
+
+```bash
+systemctl --user list-timers papercup-vitest-orphan-reaper.timer
+systemctl --user status papercup-vitest-orphan-reaper.service
+```
+
+## Manual run / dry-run
+
+```bash
+# Dry run (logs what it would kill without touching anything):
+VITEST_REAPER_DRY_RUN=1 /home/dev/papercupai-workspace/papercusp/bin/reap-orphaned-vitest-workers.sh
+
+# Live run:
+systemctl --user start papercup-vitest-orphan-reaper.service
+journalctl --user -u papercup-vitest-orphan-reaper.service --since "1 min ago"
+```
+
+## Tune thresholds
+
+```bash
+# Reap orphans older than 60s (default 300s = 5 min):
+VITEST_REAPER_ORPHAN_THRESHOLD=60 ./bin/reap-orphaned-vitest-workers.sh
+```
+
+---
+
 # Isolated-DHT liveness probe — installation (EI-8892)
 
 `papercup-isolated-dht-liveness.{service,timer}` runs a REAL 2-swarm hyperswarm

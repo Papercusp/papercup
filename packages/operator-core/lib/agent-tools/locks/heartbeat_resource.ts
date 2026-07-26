@@ -13,8 +13,35 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryHeartbeatResource } from './su-lock-store';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { candidateResourceLockDomains } from './coordination-domain';
-
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
+
+/**
+ * WI-5960: heartbeat only ever gets a bare `lock_id` (the resource name — and
+ * therefore its domain — isn't known here, mirroring locks:release_resource's
+ * lock_id-only path). Before this fix this file resolved every heartbeat via
+ * the caller's OWN tree-scoped `readIdentity(ctx).coordinationDomain` only —
+ * so heartbeating a `git-sync:<slug>` (or any host-global) lease, which was
+ * correctly ACQUIRED under a different domain (see coordination-domain.ts),
+ * silently found nothing to extend (`extended:false`) and the lease expired
+ * on schedule regardless of how often the holder heartbeat it. Try the
+ * caller's domain first (zero extra cost on the common, ordinary-resource
+ * path), then the special-domain families, stopping at the first hit.
+ */
+async function heartbeatAcrossDomains(
+  ownerId: string,
+  callerDomain: string,
+  lockId: string,
+  ttlSec: number,
+): Promise<Awaited<ReturnType<typeof tryHeartbeatResource>>> {
+  const domains = [callerDomain, ...candidateResourceLockDomains().filter((d) => d !== callerDomain)];
+  let last: Awaited<ReturnType<typeof tryHeartbeatResource>> | null = null;
+  for (const domain of domains) {
+    const r = await inWorkspaceTxn(domain, ownerId, (tx) => tryHeartbeatResource(tx, domain, ownerId, lockId, ttlSec));
+    if (r.extended) return r;
+    last = r;
+  }
+  return last!;
+}
 
 export default defineTool({
   name: 'locks:heartbeat_resource',
@@ -44,9 +71,7 @@ export default defineTool({
     const env = await runBulk(
       lockIds,
       async (lockId) => {
-        const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-          tryHeartbeatResource(tx, coordinationDomain, ownerId, lockId, ttlSec),
-        );
+        const r = await heartbeatAcrossDomains(ownerId, coordinationDomain, lockId, ttlSec);
         return {
           ok: r.extended,
           lock_id: lockId,

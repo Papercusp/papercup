@@ -1,0 +1,128 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.sed-range",
+  "extractedAt": "2026-07-26T01:23:00Z",
+  "totalAtoms": 2720,
+  "totalSessions": 76,
+  "sample": [
+    {
+      "sid": "su-1379bec1-b544-4cb3-ac82-3ea8d280ad33",
+      "ts": "2026-07-17T11:14:20.444Z",
+      "atom": "sed -n '1,100p' apps/operator/app/_components/inbox/InboxPane.tsx"
+    },
+    {
+      "sid": "su-63f9b336-5b17-461a-b12e-a8421de9a09b",
+      "ts": "2026-07-26T02:09:23.408Z",
+      "atom": "sed -n '1,140p' libs/papercusp/libs/db/sql/517-fix-stamp-local-federated-write-mask.sql"
+    },
+    {
+      "sid": "su-cb3bc755-1485-4d3a-89c8-6bd43cf0af7e",
+      "ts": "2026-07-20T05:47:49.008Z",
+      "atom": "sed -n '1,230p' packages/operator-core/lib/llm-testing/targets/operator.ts"
+    },
+    {
+      "sid": "su-39274e17-029f-409c-b058-970c9cc5bfdc",
+      "ts": "2026-07-26T04:52:49.483Z",
+      "atom": "sed -n '1,40p' apps/operator/lib/psu-pty-host.test.ts"
+    },
+    {
+      "sid": "su-1379bec1-b544-4cb3-ac82-3ea8d280ad33",
+      "ts": "2026-07-17T13:18:39.545Z",
+      "atom": "sed -n '1,50p' apps/operator-docs/src/content/docs/agent-insights/attention-importance-system.mdx"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T22:13:47.493Z",
+      "atom": "sed -n '1,60p' node_modules/hyperswarm/index.js"
+    },
+    {
+      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
+      "ts": "2026-07-17T04:41:14.776Z",
+      "atom": "sed -n '1,60p' vm-smoke-windows.sh"
+    },
+    {
+      "sid": "su-1c841b25-410f-45ef-b0ed-c0e22034a0c9",
+      "ts": "2026-07-21T02:37:38.906Z",
+      "atom": "sed -n '1,80p' packages/operator-core/lib/host-recycle.ts"
+    },
+    {
+      "sid": "su-a28a5f3c-4f45-465e-af05-e1e6e05668a9",
+      "ts": "2026-07-25T21:28:54.492Z",
+      "atom": "sed -n '100,150p' packages/operator-core/lib/sync/hyperbee/in-process-status.ts"
+    },
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T01:37:03.479Z",
+      "atom": "sed -n '120,150p' papercusp-desktop/bin/deb-hetzner-revocation.sh"
+    },
+    {
+      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
+      "ts": "2026-07-19T16:05:58.480Z",
+      "atom": "sed -n '142,185p' packages/operator-core/lib/agent-tools/release/cut.ts"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-26T04:00:31.066Z",
+      "atom": "sed -n '1735,1758p' packages/operator-core/lib/sync/hyperbee/swarm.ts"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-21T00:24:16.382Z",
+      "atom": "sed -n '19570,19700p' /home/marsh-office/.papercusp/live-fed-gate/triage/serve-a-202043.log"
+    },
+    {
+      "sid": "su-3dfbc0fd-e642-46b0-b81e-abed2ae62eea",
+      "ts": "2026-07-19T14:13:52.168Z",
+      "atom": "sed -n '2175,2230p' packages/operator-core/lib/sync-resolver/index.ts"
+    },
+    {
+      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
+      "ts": "2026-07-26T02:10:18.367Z",
+      "atom": "sed -n '25,40p' apps/operator/app/adv/hud/hud-board-model.ts"
+    },
+    {
+      "sid": "su-a7d08fd3-ba65-45d3-a07f-a335b9004454",
+      "ts": "2026-07-20T18:17:36.582Z",
+      "atom": "sed -n '2800,2840p' apps/operator/lib/release/green-checkpoint.ts"
+    },
+    {
+      "sid": "su-ea8d3491-fd1c-441b-bef7-ffb820450f53",
+      "ts": "2026-07-26T02:45:13.564Z",
+      "atom": "sed -n '34,60p' packages/operator-core/lib/agent-tools/work_items/claimable.ts"
+    },
+    {
+      "sid": "su-1c841b25-410f-45ef-b0ed-c0e22034a0c9",
+      "ts": "2026-07-20T03:55:27.677Z",
+      "atom": "sed -n '40,100p' packages/operator-core/lib/harness/improvements/policy.ts"
+    },
+    {
+      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
+      "ts": "2026-07-26T01:00:13.048Z",
+      "atom": "sed -n '47,75p' apps/operator/app/_lints/css-tokens.test.ts"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T20:49:00.099Z",
+      "atom": "sed -n '555,640p' papercusp-desktop/bin/live-federation-gate.sh"
+    },
+    {
+      "sid": "su-73565638-a17a-4be4-adfd-86a6750ac1c1",
+      "ts": "2026-07-26T02:14:45.761Z",
+      "atom": "sed -n '618,660p' libs/generic/tooldef/src/define-tool.ts"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-25T21:19:54.696Z",
+      "atom": "sed -n '75,95p' data/shadow-analytics.test.ts"
+    },
+    {
+      "sid": "su-e044d888-c238-4311-8eb0-aef7896b3e92",
+      "ts": "2026-07-19T23:46:38.838Z",
+      "atom": "sed -n '86,135p' packages/operator-core/lib/endpoint-route/routes/user/memory.ts"
+    },
+    {
+      "sid": "su-143b12bd-edcc-4af5-b983-3ec8f258b992",
+      "ts": "2026-07-20T07:29:34.611Z",
+      "atom": "sed -n 1,27p packages/operator-core/lib/work-item-blocking.ts"
+    }
+  ]
+}

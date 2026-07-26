@@ -1,0 +1,309 @@
+/**
+ * Equivalence pairs — the FILE-READ family (plan
+ * `bash-to-tool-substitution-2026-07-26`, P-005).
+ *
+ * Population: `sed -n 'N,Mp'`, `cat FILE`, `head`/`tail` against a path.
+ * Proposed replacement: `capability:read` (3 uses in the 7d window, against
+ * ~3,920 bash file reads — the single worst adoption gap in the audit).
+ *
+ * ── What sampling the real corpus changed about this item ────────────────────
+ * The plan assumed one "file-read family" verdict. The corpus says that would
+ * have been wrong in both directions:
+ *
+ *  1. `head`/`tail` are dominated by PIPE FILTERS, not file reads — 11,381
+ *     `head` atoms but only 408 distinct, because the overwhelming form is
+ *     `… | head -20` with no file operand at all. Those are stream shaping, and
+ *     no file-read tool replaces them. They must be excluded by the PATTERN,
+ *     not merely rejected by the envelope.
+ *  2. `cat` includes heredoc WRITES (`cat > /tmp/x << 'EOF'`), which are the
+ *     opposite of a read and must never attract a "use capability:read" nudge.
+ *
+ * So this family is four narrow patterns, not one broad one — per D-008, the
+ * pattern is the unit of enforcement, so a pattern is narrowed until every
+ * command it claims has a faithful tool expression.
+ *
+ * ── The envelope, read from the tool, not assumed ────────────────────────────
+ * `capability:read` (packages/operator-core/lib/agent-tools/capability/read.ts)
+ * takes `{ file_path, offset?, limit? }` where `offset` is a 1-based line to
+ * start from and `limit` a max line count (default 2000). Notably:
+ *  • An ABSOLUTE path bypasses the capability base dir entirely, so /tmp and
+ *    /var/log — a large share of real targets — ARE readable. The plan flagged
+ *    this as a risk; it is not one.
+ *  • Windowing is line-based and anchored at the START of the file. There is no
+ *    from-the-end read, which is exactly what `tail` is for.
+ *  • One `file_path` per call; `-c`/byte windows have no expression.
+ */
+
+import type { CoverageResult, SubstitutionPair } from '../types';
+
+/** `capability:read`'s default page size, mirrored from the tool definition. */
+const READ_DEFAULT_LIMIT = 2000;
+
+/**
+ * Tokens that make an operand unresolvable to a literal path: shell variable
+ * expansion, command substitution, or a glob. `capability:read` takes a literal
+ * string, so an agent would have to resolve these in a shell first — meaning
+ * bash is genuinely the right tool and the pattern must not claim them.
+ */
+const DYNAMIC_OPERAND = /[$`*?]/;
+
+/**
+ * A redirect token, captured as `(fd)(operator)`.
+ *
+ * The fd matters. `2>/dev/null` and `2>&1` are stderr plumbing that appear on a
+ * large share of real read commands and change nothing about the read — the
+ * tool simply returns a structured error instead. Only an stdout redirect
+ * (`>`, `1>`, `>>`) means the atom WRITES and is therefore not a read at all.
+ * Treating every `>` as a write mis-scored a third of the `cat` sample on the
+ * harness's first run.
+ */
+const REDIRECT_TOKEN = /^(\d*)(>>|>|<)/;
+
+/** Flags that consume the following token as their argument (`-n 40`). */
+const FLAGS_WITH_ARG = new Set(['-n', '-c', '--lines', '--bytes']);
+
+interface ParsedAtom {
+  verb: string;
+  flags: string[];
+  /** Resolved flag arguments, e.g. `-n` → `40` (from `-n 40`, `-n40`, or `-40`). */
+  flagArgs: Map<string, string>;
+  operands: string[];
+  /** An stdout redirect is present: this atom WRITES, so it is not a read. */
+  writes: boolean;
+}
+
+/** Whitespace tokeniser that keeps simple quoted spans intact. */
+function tokenize(atom: string): string[] {
+  return atom.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+}
+
+function unquote(token: string): string {
+  if (token.length >= 2 && (token[0] === '"' || token[0] === "'") && token[token.length - 1] === token[0]) {
+    return token.slice(1, -1);
+  }
+  return token;
+}
+
+function parseAtom(atom: string): ParsedAtom {
+  const [verbToken, ...rest] = tokenize(atom);
+  const flags: string[] = [];
+  const flagArgs = new Map<string, string>();
+  const operands: string[] = [];
+  let writes = false;
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i];
+
+    const redirect = REDIRECT_TOKEN.exec(token);
+    if (redirect) {
+      const [, fd, op] = redirect;
+      if (op !== '<' && (fd === '' || fd === '1')) writes = true;
+      // A bare `2> file` spends the next token on the target filename.
+      if (/^\d*(?:>>|>|<)$/.test(token)) i += 1;
+      continue;
+    }
+
+    if (token.startsWith('-') && token !== '-') {
+      // `-40` / `-n40` / `-c1200`: the count rides on the flag itself.
+      const inline = /^-(?:([nc])\s*)?(\d+)$/.exec(token);
+      if (inline) {
+        flags.push(inline[1] ? `-${inline[1]}` : '-n');
+        flagArgs.set(inline[1] ? `-${inline[1]}` : '-n', inline[2]);
+        continue;
+      }
+      flags.push(token);
+      // `-n 40`: the count is the NEXT token and must not be mistaken for a file.
+      if (FLAGS_WITH_ARG.has(token) && i + 1 < rest.length && /^\d+$/.test(rest[i + 1])) {
+        flagArgs.set(token, rest[i + 1]);
+        i += 1;
+      }
+      continue;
+    }
+
+    operands.push(unquote(token));
+  }
+
+  return { verb: unquote(verbToken ?? ''), flags, flagArgs, operands, writes };
+}
+
+/**
+ * Pattern fragment excluding atoms this family must never claim:
+ *  • `$` / backtick — shell expansion the tool cannot resolve to a literal path
+ *  • `{}` — a `find -exec` placeholder, not a real path
+ *  • an stdout redirect — a write, not a read
+ * Per D-008 these are excluded by the PATTERN rather than merely failed by the
+ * envelope, because a pattern that claims them would nudge agents toward a tool
+ * that genuinely cannot serve them.
+ */
+const EXCLUDE_UNEXPRESSIBLE = String.raw`(?![^\n]*[$\`])(?![^\n]*\{\})(?![^\n]*(?:^|\s)1?>)`;
+
+/** Compose a family pattern with the shared exclusions applied. */
+function readPattern(body: string): RegExp {
+  return new RegExp(`^${EXCLUDE_UNEXPRESSIBLE}${body}`);
+}
+
+/**
+ * Coverage checks shared by every member of the family: exactly one operand,
+ * and that operand a literal path `capability:read` can be handed as-is.
+ */
+function checkSingleLiteralFile(parsed: ParsedAtom): CoverageResult | null {
+  if (parsed.writes) {
+    return { covered: false, reason: 'redirects output — this is a write, not a file read' };
+  }
+  if (parsed.operands.length === 0) {
+    return { covered: false, reason: 'no file operand (reads stdin from a pipe); capability:read requires a file_path' };
+  }
+  if (parsed.operands.length > 1) {
+    return {
+      covered: false,
+      reason: `reads ${parsed.operands.length} files in one call; capability:read takes a single file_path`,
+    };
+  }
+  if (DYNAMIC_OPERAND.test(parsed.operands[0])) {
+    return {
+      covered: false,
+      reason: `operand "${parsed.operands[0]}" is a shell expansion or glob, not a literal path`,
+    };
+  }
+  return null;
+}
+
+/** `-c`/`--bytes` windows are byte-based; capability:read windows lines only. */
+function checkByteWindow(parsed: ParsedAtom): CoverageResult | null {
+  if (parsed.flags.some((f) => f === '-c' || f.startsWith('--bytes'))) {
+    return { covered: false, reason: 'byte-count window (-c); capability:read windows by LINE only' };
+  }
+  return null;
+}
+
+/**
+ * P-005a — `sed -n 'N,Mp' FILE`: an explicit line range against a real file.
+ * The cleanest substitution in the audit: it maps exactly onto offset+limit.
+ * The pattern requires a trailing operand so the piped `… | sed -n '1,200p'`
+ * stdin-filter form (which has no tool expression) falls outside it.
+ */
+export const sedRangeRead: SubstitutionPair = {
+  id: 'file-read.sed-range',
+  intentLabel: 'file-range-read',
+  bashPattern: readPattern(String.raw`sed\s+-n\s+['"]?\s*\d+\s*,\s*\d+\s*p['"]?\s+\S`),
+  toolName: 'capability:read',
+  advisoryText:
+    "capability:read { file_path, offset, limit } reads a line range directly — `sed -n 'N,Mp' FILE` is offset=N, limit=M-N+1.",
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    const parsed = parseAtom(atom);
+    // Drop the sed script itself (`-n` is a flag; `'1,80p'` parses as an operand).
+    const range = parsed.operands.find((op) => /^\s*\d+\s*,\s*\d+\s*p\s*$/.test(op));
+    const files = parsed.operands.filter((op) => op !== range);
+    const shared = checkSingleLiteralFile({ ...parsed, operands: files });
+    if (shared) return shared;
+
+    const match = /(\d+)\s*,\s*(\d+)/.exec(range ?? '');
+    if (!match) return { covered: false, reason: 'line range not parseable' };
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    if (end < start) return { covered: false, reason: `inverted range ${start},${end}` };
+
+    return {
+      covered: true,
+      expression: `capability:read { file_path: "${files[0]}", offset: ${start}, limit: ${end - start + 1} }`,
+    };
+  },
+};
+
+/**
+ * P-005b — `cat FILE`: whole-file read of one literal path. The pattern
+ * excludes heredocs and redirects (writes), and `cat -` (stdin).
+ */
+export const catFileRead: SubstitutionPair = {
+  id: 'file-read.cat-file',
+  intentLabel: 'file-whole-read',
+  bashPattern: readPattern(String.raw`cat\s+(?!<)(?!-\s)[^<>|]*\S`),
+  toolName: 'capability:read',
+  advisoryText:
+    'capability:read { file_path } returns the file with line numbers, paged at 2000 lines — no shell round-trip.',
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    const parsed = parseAtom(atom);
+    if (/<<|<</.test(atom)) return { covered: false, reason: 'heredoc — this is a write, not a read' };
+    const shared = checkSingleLiteralFile(parsed);
+    if (shared) return shared;
+    return {
+      covered: true,
+      expression: `capability:read { file_path: "${parsed.operands[0]}" }` +
+        ` // paged at ${READ_DEFAULT_LIMIT} lines; re-read with offset for more`,
+    };
+  },
+};
+
+/**
+ * P-005c — `head -n N FILE`: the first N lines of a real file. Maps onto
+ * `limit`. The pattern requires a file operand so the dominant `… | head -20`
+ * pipe-filter form is excluded.
+ */
+export const headFileRead: SubstitutionPair = {
+  id: 'file-read.head',
+  intentLabel: 'file-head-read',
+  bashPattern: readPattern(String.raw`head\s+(?:-n\s*\d+\s+|-\d+\s+)?[^\s-][^\s]*\/`),
+  toolName: 'capability:read',
+  advisoryText: 'capability:read { file_path, limit: N } returns the first N lines — the `head -n N FILE` equivalent.',
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    const parsed = parseAtom(atom);
+    const byteWindow = checkByteWindow(parsed);
+    if (byteWindow) return byteWindow;
+    const shared = checkSingleLiteralFile(parsed);
+    if (shared) return shared;
+
+    const limit = parsed.flagArgs.get('-n') ?? String(READ_DEFAULT_LIMIT);
+    return {
+      covered: true,
+      expression: `capability:read { file_path: "${parsed.operands[0]}", limit: ${limit} }`,
+    };
+  },
+};
+
+/**
+ * P-005d — `tail -n N FILE`: the LAST N lines of a real file.
+ *
+ * This was the family's genuine gap, and finding it is what this audit was for.
+ * `capability:read` originally windowed forward from line 1 only, so the single
+ * most common real file read on this box — checking the end of a build or gate
+ * log, 1,752 atoms across 63 sessions — had NO tool expression at all. Naive
+ * enforcement would have nudged every one of those agents toward a tool that
+ * could not do the job, which is precisely the failure D-001 exists to prevent.
+ *
+ * Closed by widening the tool rather than by lowering the bar: `capability:read`
+ * now takes `tail: N`. Streaming (`tail -f`) and byte windows (`-c`) remain
+ * outside the pattern — they are different intents, not missing coverage.
+ */
+export const tailFileRead: SubstitutionPair = {
+  id: 'file-read.tail',
+  intentLabel: 'file-tail-read',
+  // `-f`/`--follow` and `-c` are excluded by the pattern: a stream follow and a
+  // byte window are different intents, so per D-008 they fall outside rather
+  // than dragging the verdict down.
+  bashPattern: readPattern(String.raw`tail\s+(?!-f\b)(?!--follow\b)(?!-c\b)(?:-n\s*\d+\s+|-\d+\s+)?[^\s-][^\s]*\/`),
+  toolName: 'capability:read',
+  advisoryText: 'capability:read { file_path, tail: N } returns the last N lines — the `tail -n N FILE` equivalent.',
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    const parsed = parseAtom(atom);
+    if (parsed.flags.includes('-f') || parsed.flags.includes('--follow') || /--pid=/.test(atom)) {
+      return { covered: false, reason: 'follow mode (tail -f) — capability:read has no streaming form' };
+    }
+    const byteWindow = checkByteWindow(parsed);
+    if (byteWindow) return byteWindow;
+    const shared = checkSingleLiteralFile(parsed);
+    if (shared) return shared;
+
+    const tail = parsed.flagArgs.get('-n') ?? '10'; // POSIX tail defaults to 10 lines
+    return {
+      covered: true,
+      expression: `capability:read { file_path: "${parsed.operands[0]}", tail: ${tail} }`,
+    };
+  },
+};
+
+/** Every pair in the file-read family, in registry order. */
+export const FILE_READ_PAIRS: SubstitutionPair[] = [sedRangeRead, catFileRead, headFileRead, tailFileRead];

@@ -43,13 +43,20 @@ describe('locks:release_resource handler', () => {
   });
 
   it('wraps a single lock_id release through the keyed bulk envelope and does NOT broadcast for shared holds', async () => {
-    releaseM.mockResolvedValue({ released: ['L1'], releasedModes: ['shared'], exclusiveResources: [], waiters: {} } as never);
+    // WI-5960: a lock_id-only release now tries each candidate domain in turn
+    // (see coordination-domain.ts's candidateResourceLockDomains) and stops at
+    // the first that actually released something — `released` is the real
+    // store's NUMBER-of-rows-deleted shape (resource-lock-store.ts), not an
+    // array of freed ids; a mock returning the wrong shape makes the `> 0`
+    // domain-search check always false, so every domain gets tried and the
+    // handler falls through to the "nothing released" default.
+    releaseM.mockResolvedValue({ released: 1, releasedModes: ['shared'], exclusiveResources: [], waiters: {} } as never);
     const b = body(await call({ lock_id: '11111111-1111-1111-1111-111111111111' }));
     expect(b).toMatchObject({
       ok: true,
       counts: { ok: 1, failed: 0 },
       results: [
-        { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: ['L1'], released_modes: ['shared'], exclusive_resources: [] },
+        { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: 1, released_modes: ['shared'], exclusive_resources: [] },
       ],
     });
     expect(backUpM).not.toHaveBeenCalled();
@@ -72,8 +79,10 @@ describe('locks:release_resource handler', () => {
   });
 
   it('releases selected resource lock_ids as a keyed bulk envelope', async () => {
-    releaseM.mockImplementation(async (_tx, spec) => ({
-      released: [spec.lockId],
+    // WI-5960: `released` is the real store's NUMBER-of-rows-deleted shape —
+    // see the note in the single-lock_id test above.
+    releaseM.mockImplementation(async () => ({
+      released: 1,
       releasedModes: ['shared'],
       exclusiveResources: [],
       waiters: {},
@@ -88,8 +97,8 @@ describe('locks:release_resource handler', () => {
       ok: true,
       counts: { ok: 2, failed: 0 },
       results: [
-        { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: ['11111111-1111-1111-1111-111111111111'], released_modes: ['shared'] },
-        { ok: true, lock_id: '22222222-2222-2222-2222-222222222222', released: ['22222222-2222-2222-2222-222222222222'], released_modes: ['shared'] },
+        { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: 1, released_modes: ['shared'] },
+        { ok: true, lock_id: '22222222-2222-2222-2222-222222222222', released: 1, released_modes: ['shared'] },
       ],
     });
   });

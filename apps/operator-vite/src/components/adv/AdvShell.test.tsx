@@ -8,9 +8,16 @@
 // the project count would re-fire forever with per-render vi.fn() identities;
 // otherwise the pinned sibling pattern, see AdvNowRunning.test.tsx). Children with their own suites
 // (AdvNowRunning, Select, CreateHarnessPicker, PublishHiveCard) are stubbed;
-// the pure exports (buildHarnessSelectOptions, visibleAdvTabs, ADV_TABS shape)
-// are pinned in __tests__/adv-shell-logic.test.ts. Asserts:
-//   - the full vs workspace-level tab strip + the all-mode pinned-tab behavior,
+// the pure exports (buildHarnessSelectOptions, visibleAdvTabs, ADV_TABS shape,
+// the D-001 primary/secondary split, recent-tabs helpers) are pinned in
+// __tests__/adv-shell-logic.test.ts. Asserts:
+//   - D-001 (owner decision 2026-07-26, option C): ONLY Overview + HUD render
+//     as real strip tabs, in every scope (single-pot AND All Pots); every
+//     other tab — including an all-mode-pinned per-pot tab — is reachable
+//     only via the "More" menu, whose trigger reflects an active secondary tab,
+//   - the More menu itself: grouped headings, type-to-filter search, selecting
+//     an item writes ?tab= and closes the menu, and the last-visited secondary
+//     tabs pin under "Recent" (most-recent first, capped at 3),
 //   - the persisted-selection restore precedence (URL slug > persisted >
 //     All), written SEQUENTIALLY (slug then scope),
 //   - selector changes: concrete pick persists + exits all-mode first; the
@@ -188,7 +195,15 @@ vi.mock('@/lib/hotkeys', () => ({
   },
 }));
 
-import AdvShell, { ADV_TABS, buildHarnessSelectOptions } from './AdvShell';
+// cmdk (the "More" menu, D-001) scrolls the active item into view, which
+// jsdom does not implement (CommandPalette.test.tsx carries the same shim).
+beforeAll(() => {
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = vi.fn();
+  }
+});
+
+import AdvShell, { buildHarnessSelectOptions } from './AdvShell';
 
 const LS_KEY = () => wsLocalKey('harness.activeProject');
 
@@ -264,15 +279,13 @@ afterEach(() => {
 });
 
 describe('AdvShell — strip + header', () => {
-  it('renders the title, kicker, and the full tab strip for a single pot', async () => {
+  it('renders the title, kicker, and ONLY Overview + HUD as real strip tabs (D-001 option C)', async () => {
     await renderShell();
     expect(screen.getByRole('heading', { name: 'Advanced' })).toBeTruthy();
     expect(screen.getByText('Advanced orchestration')).toBeTruthy();
-    // The full ADV strip renders: Health is flag-gated but defaults ON (real
-    // useFlag → FLAG_DEFAULTS), so every ADV_TABS entry shows. Overwatch is NOT
-    // an /adv tab anymore — it moved to the left sidebar next to Queen
-    // (system-health-tab P-008, 2026-06-15), so the strip must never carry it.
-    expect(screen.getAllByRole('tab')).toHaveLength(ADV_TABS.length);
+    // D-001 (owner decision, 2026-07-26): only Overview + HUD render as real
+    // Tabs.Trigger elements — the other 13 move behind the "More" menu.
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
     expect(screen.queryByRole('tab', { name: 'overwatch' })).toBeNull();
     // Tab-strip overflow affordance (owner ask 2026-06-15 #1): the scroll
     // chevrons are wired into the strip (CSS reveals them only when clipped, so
@@ -280,37 +293,91 @@ describe('AdvShell — strip + header', () => {
     expect(document.querySelector('button.pc-advshell__tabnav--left')).toBeTruthy();
     expect(document.querySelector('button.pc-advshell__tabnav--right')).toBeTruthy();
     // labels render lowercased in the trigger span
-    expect(screen.getByRole('tab', { name: 'working' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'hud' })).toBeTruthy();
+    // 'working' (harnesses) is now a secondary tab — reachable via More, not a
+    // strip tab; the More menu's own behavior is covered below.
+    expect(screen.queryByRole('tab', { name: 'working' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'More sections' })).toBeTruthy();
     expect(screen.getByText('sub-pots')).toBeTruthy();
     // single-slug widgets get the active slug
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('pot-a');
   });
 
-  it('collapses to the workspace-level tabs under All Pots and blanks single-pot widgets', async () => {
+  it('collapses to Overview + HUD on the strip under All Pots too, and blanks single-pot widgets', async () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
-    expect(tabs).toEqual(['overview', 'hud', 'create', 'calendar', 'working', 'health', 'frames', 'conversations', 'learning', 'evaluation']);
+    expect(tabs).toEqual(['overview', 'hud']);
     expect(screen.queryByText('sub-pots')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');
   });
 
-  it('keeps a per-pot tab pinned (no snap to Overview) under All scope so it can prompt to pick a hive', async () => {
+  it('keeps a per-pot tab pinned (no snap to Overview) under All scope — reachable via More, and the trigger reads active', async () => {
     nuqsState.scope = 'all';
     nuqsState.tab = 'docs';
     await renderShell();
     // No snap-back: the active per-pot tab is NOT rewritten to Overview…
     expect(nuqsSetters.tab).not.toHaveBeenCalledWith('overview');
-    // …and it stays pinned + visible in the strip (its body shows the pick-a-hive prompt).
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'docs' })).toBeTruthy());
+    // …it's a secondary tab now, so it does NOT get its own strip Tabs.Trigger…
+    expect(screen.queryByRole('tab', { name: 'docs' })).toBeNull();
+    // …but the More trigger reflects the active secondary tab and the item is
+    // reachable inside the menu (its body still shows the pick-a-hive prompt).
+    const moreTrigger = screen.getByRole('button', { name: 'More sections' });
+    expect(moreTrigger.className).toContain('pc-advshell__more-trigger--active');
+    fireEvent.click(moreTrigger);
+    expect(await screen.findByText('Docs')).toBeTruthy();
   });
 
-  it('selecting a tab trigger writes the tab to the URL', async () => {
+  it('selecting a tab from the More menu writes the tab to the URL and closes the menu', async () => {
     await renderShell();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'git' }));
-    fireEvent.click(screen.getByRole('tab', { name: 'git' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More sections' }));
+    const gitItem = await screen.findByText('Git');
+    fireEvent.click(gitItem);
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('git'));
+    await waitFor(() => expect(screen.queryByText('Git')).toBeNull()); // popover closed
+  });
+});
+
+describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, recents)', () => {
+  it('groups the secondary tabs under labelled headings', async () => {
+    await renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'More sections' }));
+    expect(await screen.findByText('Build')).toBeTruthy();
+    expect(screen.getByText('Work')).toBeTruthy();
+    expect(screen.getByText('Insights')).toBeTruthy();
+    expect(screen.getByText('System')).toBeTruthy();
+    expect(screen.getByText('Git')).toBeTruthy();
+    expect(screen.getByText('Settings')).toBeTruthy();
+  });
+
+  it('is type-to-filter searchable: typing narrows to matching sections', async () => {
+    await renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'More sections' }));
+    const input = await screen.findByLabelText('Filter sections');
+    fireEvent.change(input, { target: { value: 'git' } });
+    await waitFor(() => expect(screen.getByText('Git')).toBeTruthy());
+    expect(screen.queryByText('Settings')).toBeNull();
+  });
+
+  it('pins the last visited secondary tabs under Recent, most-recent first, capped at 3', async () => {
+    // Recents persist to localStorage (shared across mounts); simulate visiting
+    // git, then docs, then testing across separate mount/unmount cycles — each
+    // renderShell() picks up the prior localStorage state on mount, then its
+    // own activeTab push runs.
+    nuqsState.tab = 'git';
+    await renderShell();
+    cleanup();
+    nuqsState.tab = 'docs';
+    await renderShell();
+    cleanup();
+    nuqsState.tab = 'testing';
+    await renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'More sections' }));
+    const recentHeading = await screen.findByText('Recent');
+    const recentGroup = recentHeading.closest('[cmdk-group]') as HTMLElement;
+    const recentLabels = Array.from(recentGroup.querySelectorAll('[cmdk-item]')).map((el) => el.textContent);
+    expect(recentLabels).toEqual(['Tests', 'Docs', 'Git']);
   });
 });
 

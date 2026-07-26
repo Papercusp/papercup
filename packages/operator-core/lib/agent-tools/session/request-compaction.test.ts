@@ -195,6 +195,34 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     const b = body(await call({ focus: 'x' }));
     expect(b).toMatchObject({ ok: false, requested: false, respawn: false });
   });
+
+  // EI-18686525818431054: the default injectIntoHost socket timeout (2000ms) is
+  // sized for an ordinary wake turn, not a carry-respawn — the host's busy-gate
+  // wait behind the ack can legitimately run far longer (up to the doubled
+  // busy-gate cap), and a host predating the ack-early fix awaits the WHOLE
+  // gated pipeline before acking at all. A carry-respawn call must use a much
+  // longer client-side timeout so it doesn't false-negative exactly when the
+  // sanctioned context-shedding path is needed most.
+  it('carry-respawn passes a socket timeout FAR longer than injectIntoHost\'s 2000ms default (EI-18686525818431054)', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    await call({ focus: 'x' });
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+    const timeoutArg = injectIntoHost.mock.calls[0]![2] as number;
+    expect(timeoutArg).toBeGreaterThanOrEqual(5 * 60_000); // safely past the 2x180s busy-gate cap
+  });
+
+  // EI-18686525818431054 ask #3: the failure note must name the socket path
+  // tried (+ host pid) so the next diagnosis doesn't have to reverse-engineer
+  // it from `ps`/`find` (this filing's own investigation cost ~6 tool calls).
+  it('a failed socket write names the socket path + host pid in the failure note and body', async () => {
+    findLiveHost.mockReturnValue({ ...carryHost, pid: 4242 });
+    injectIntoHost.mockResolvedValue(false);
+    const b = body(await call({ focus: 'x' })) as { note: string; hostSock?: string; hostPid?: number };
+    expect(b.hostSock).toBe('/tmp/sock');
+    expect(b.hostPid).toBe(4242);
+    expect(b.note).toContain('/tmp/sock');
+    expect(b.note).toContain('4242');
+  });
 });
 
 /**

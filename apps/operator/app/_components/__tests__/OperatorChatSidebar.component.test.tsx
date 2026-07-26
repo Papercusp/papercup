@@ -71,7 +71,16 @@ vi.mock('../OperatorConversationProvider', () => ({
 }));
 
 vi.mock('../OperatorChat', () => ({
-  OperatorChat: () => <div data-testid="operator-chat">Operator chat</div>,
+  // hud-consolidation-2026-07-26 P-004: exposes onDrillIn so tests can fire a
+  // curator card's drill-in and assert the HUD navigation it now produces.
+  OperatorChat: ({ onDrillIn }: { onDrillIn?: (ref: string) => void }) => (
+    <div data-testid="operator-chat">
+      Operator chat
+      {onDrillIn ? (
+        <button type="button" data-testid="drill-in-trigger" onClick={() => onDrillIn('wi:WI-1')} />
+      ) : null}
+    </div>
+  ),
 }));
 
 vi.mock('../chat/LocalCardHost', () => ({
@@ -130,12 +139,11 @@ vi.mock('../inbox/use-inbox-pending', () => ({
 vi.mock('../plans/PlansPane', () => ({
   default: () => <div data-testid="plans-pane-stub" />,
 }));
-vi.mock('../inbox/InboxPane', () => ({
-  default: ({ onDiscussInChat }: { onDiscussInChat: () => void }) => (
-    <div data-testid="inbox-pane">
-      <button type="button" data-testid="inbox-pane-discuss" onClick={onDiscussInChat} />
-    </div>
-  ),
+// hud-consolidation-2026-07-26 P-004: a curator card's drill-in now navigates
+// (router.push) to the HUD tab instead of opening the retired Inbox pane.
+const routerPushSpy = vi.fn();
+vi.mock('@/lib/router-compat/navigation', () => ({
+  useRouter: () => ({ push: routerPushSpy }),
 }));
 
 const localStorageState = new Map<string, string>();
@@ -144,6 +152,7 @@ beforeEach(() => {
   voiceModeState.muted = false;
   inboxState.pending = 0;
   setVoiceOutputMutedSpy.mockReset();
+  routerPushSpy.mockReset();
   localStorageState.clear();
   Object.defineProperty(window, 'localStorage', {
     configurable: true,
@@ -468,39 +477,37 @@ describe('OperatorChatSidebar collapse behavior', () => {
     expect(document.body.classList.contains('op-chat-collapsed')).toBe(false);
   });
 });
-describe('Inbox face (EI-13037, owner placement 2026-07-16)', () => {
-  it('renders the Inbox toggle LEFT of (before) the Papercup button', () => {
+describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2026-07-26 P-003/P-004)', () => {
+  it('no longer renders an Inbox toggle', () => {
     render(<OperatorChatSidebar />);
-    const inbox = screen.getByTestId('op-chat-inbox-toggle');
-    const papercup = document.querySelector('.op-chat-papercup-toggle');
-    expect(papercup).toBeTruthy();
-    // Inbox must PRECEDE Papercup in the header's DOM order.
-    expect(inbox.compareDocumentPosition(papercup!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId('op-chat-inbox-toggle')).toBeNull();
   });
 
-  it('shows the live pending badge (99+ cap) on the toggle and the collapsed rail', () => {
+  it('still shows the live "needs you" badge (99+ cap) on the collapsed rail — the data layer keeps working', () => {
     inboxState.pending = 132;
     render(<OperatorChatSidebar />);
-    expect(screen.getByTestId('op-chat-inbox-badge').textContent).toBe('99+');
     expect(screen.getByLabelText('132 inbox items need you').textContent).toBe('99+');
   });
 
-  it('renders no badge at zero pending', () => {
+  it('a drill-in whose matched item HAS an owning agent navigates to that agent\'s HUD conversation', () => {
+    inboxState.items = [{ id: 'wi-1', itemRef: 'WI-1', planSlug: null, ownerAgentId: 'su-abc123' }];
     render(<OperatorChatSidebar />);
-    expect(screen.queryByTestId('op-chat-inbox-badge')).toBeNull();
+    fireEvent.click(screen.getByTestId('drill-in-trigger'));
+    expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud&hudsession=su-abc123');
   });
 
-  it('toggling Inbox swaps the body to the inbox pane; its Discuss flips back to the chat', async () => {
+  it('a drill-in whose matched item has NO owning agent (P-002 unattributed ask) still lands on the HUD board, with no session param', () => {
+    inboxState.items = [{ id: 'wi-1', itemRef: 'WI-1', planSlug: null, ownerAgentId: null }];
     render(<OperatorChatSidebar />);
-    expect(screen.getByTestId('operator-chat')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('op-chat-inbox-toggle'));
-    expect(await screen.findByTestId('inbox-pane')).toBeTruthy();
-    expect(screen.queryByTestId('operator-chat')).toBeNull();
-    // The pane's Discuss action (chat seed staged inside the pane) returns
-    // the view to the chat, where the composer consumes the seed.
-    fireEvent.click(screen.getByTestId('inbox-pane-discuss'));
-    await waitFor(() => expect(screen.getByTestId('operator-chat')).toBeTruthy());
-    expect(screen.queryByTestId('inbox-pane')).toBeNull();
+    fireEvent.click(screen.getByTestId('drill-in-trigger'));
+    expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud');
+  });
+
+  it('a drill-in with no live match at all (e.g. health:<panelId>) still lands on the HUD board', () => {
+    inboxState.items = [];
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByTestId('drill-in-trigger'));
+    expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud');
   });
 
   // WI-5162 (owner ask 2026-07-17): the Fleet + Peers panes moved out of the
@@ -539,8 +546,8 @@ describe('Inbox face (EI-13037, owner placement 2026-07-16)', () => {
       // Fleet then Peers, and both after the kettle toggle.
       expect(peers).toBe(fleet + 1);
       expect(fleet).toBeGreaterThan(kettle);
-      // …and the Inbox + Papercup faces still lead the row.
-      expect(pills.indexOf('op-chat-inbox-toggle')).toBeLessThan(fleet);
+      // …and the Plans + Papercup faces still lead the row (Inbox retired).
+      expect(pills.indexOf('op-chat-plans-toggle')).toBeLessThan(fleet);
     });
 
     it('a face swaps the body for its pane and toggles back to the chat', async () => {

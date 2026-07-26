@@ -20,6 +20,12 @@ vi.mock('./identity', () => ({
 vi.mock('./coordination-domain', () => ({
   hostGlobalLockDomain: vi.fn(() => 'papercusp-host-global'),
   HOST_GLOBAL_RESOURCES: new Set(['release-deploy']),
+  // WI-5960: a `git-sync:<slug>` (or any workspace-scoped) resource's system-side
+  // acquirer keys itself by workspace, not by the caller's tree — a distinct
+  // domain from BOTH the caller domain and hostGlobalLockDomain so the merge/
+  // routing tests below can tell the three apart.
+  isWorkspaceScopedResource: vi.fn((r: string) => r.startsWith('git-sync:')),
+  workspaceScopedLockDomain: vi.fn(() => 'ws-scoped-domain'),
 }));
 vi.mock('./su-lock-store', () => ({
   getTxPool: vi.fn(() => ({})),
@@ -66,7 +72,7 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
     expect(b.data.holders).toHaveLength(1);
   });
 
-  it('scoped to an ordinary (non-host-global) resource: queries only the caller domain', async () => {
+  it('scoped to an ordinary (non-host-global, non-workspace-scoped) resource: queries only the caller domain', async () => {
     getResourceM.mockResolvedValue({ resource: 'dev-server', description: '', rule_text: '', enforcement: 'enforced' } as never);
     queueM.mockResolvedValue({ holders: [], draining: false });
 
@@ -79,18 +85,37 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
     });
   });
 
-  it('unscoped listing merges BOTH the caller domain and the host-global domain, OR-ing draining', async () => {
+  // WI-5960: the exact live incident — an agent held `exclusive(git-sync:papercusp)`
+  // (correctly landing in workspaceScopedLockDomain()) and `locks:list` reported
+  // it as unheld because it only ever queried the caller's tree-scoped domain.
+  it('scoped to a workspace-scoped resource (git-sync:<slug>): queries workspaceScopedLockDomain, NOT the caller domain', async () => {
+    getResourceM.mockResolvedValue({ resource: 'git-sync:papercusp', description: '', rule_text: '', enforcement: 'advisory' } as never);
+    queueM.mockResolvedValue({ holders: [holder('system:git-sync')], draining: false });
+
+    const b = await call({ resource: 'git-sync:papercusp' });
+
+    expect(queueM).toHaveBeenCalledTimes(1);
+    expect(queueM).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: 'ws-scoped-domain',
+      resource: 'git-sync:papercusp',
+    });
+    expect(b.data.holders).toHaveLength(1);
+  });
+
+  it('unscoped listing merges the caller domain, host-global domain, AND workspace-scoped domain, OR-ing draining', async () => {
     listResourcesM.mockResolvedValue([]);
     queueM
       .mockResolvedValueOnce({ holders: [holder('caller-owner')], draining: false })
-      .mockResolvedValueOnce({ holders: [holder('release-deploy:999:uuid')], draining: true });
+      .mockResolvedValueOnce({ holders: [holder('release-deploy:999:uuid')], draining: true })
+      .mockResolvedValueOnce({ holders: [holder('system:git-sync')], draining: false });
 
     const b = await call({});
 
-    expect(queueM).toHaveBeenCalledTimes(2);
+    expect(queueM).toHaveBeenCalledTimes(3);
     expect(queueM).toHaveBeenNthCalledWith(1, expect.anything(), { coordinationDomain: '/caller/tree', resource: undefined });
     expect(queueM).toHaveBeenNthCalledWith(2, expect.anything(), { coordinationDomain: 'papercusp-host-global', resource: undefined });
-    expect(b.data.holders).toHaveLength(2);
+    expect(queueM).toHaveBeenNthCalledWith(3, expect.anything(), { coordinationDomain: 'ws-scoped-domain', resource: undefined });
+    expect(b.data.holders).toHaveLength(3);
     expect(b.data.draining).toBe(true);
   });
 });

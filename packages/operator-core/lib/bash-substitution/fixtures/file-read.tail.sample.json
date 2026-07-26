@@ -1,0 +1,128 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.tail",
+  "extractedAt": "2026-07-26T01:23:00Z",
+  "totalAtoms": 1546,
+  "totalSessions": 61,
+  "sample": [
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T14:12:10.462Z",
+      "atom": "tail -1 /tmp/b_hits.txt"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-21T12:50:24.354Z",
+      "atom": "tail -100 /tmp/live-fed-gate-20260721-084539/local-matrix.out 2>/dev/null"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T04:02:37.343Z",
+      "atom": "tail -12 /tmp/papercup-green-checkpoint-manual-1fxzuva.log 2>/dev/null"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-25T19:26:40.696Z",
+      "atom": "tail -15 /tmp/wi5715-verify.log 2>/dev/null"
+    },
+    {
+      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
+      "ts": "2026-07-25T23:14:44.541Z",
+      "atom": "tail -2 /tmp/bank-frames-183831.out"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-21T06:24:02.442Z",
+      "atom": "tail -20 /tmp/live-fed-gate-20260721-013922/build.log"
+    },
+    {
+      "sid": "su-1379bec1-b544-4cb3-ac82-3ea8d280ad33",
+      "ts": "2026-07-17T13:22:00.120Z",
+      "atom": "tail -20 apps/operator-docs/src/content/docs/agent-insights/attention-importance-system.mdx"
+    },
+    {
+      "sid": "su-4ca244e4-540e-4acc-bb67-9335192fc85f",
+      "ts": "2026-07-25T20:39:29.018Z",
+      "atom": "tail -25 /tmp/su4ca24-wd-tests.log 2>/dev/null"
+    },
+    {
+      "sid": "su-3dfbc0fd-e642-46b0-b81e-abed2ae62eea",
+      "ts": "2026-07-20T05:25:40.009Z",
+      "atom": "tail -3 /tmp/p006-tsc.log 2>/dev/null"
+    },
+    {
+      "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",
+      "ts": "2026-07-25T21:21:48.875Z",
+      "atom": "tail -30 /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/a3faa5fd-e682-46a9-bd5f-25d6693a52d6/tasks/bxio82d2n.output"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-20T15:17:14.814Z",
+      "atom": "tail -30 /tmp/manual-repro-104133.out 2>&1"
+    },
+    {
+      "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
+      "ts": "2026-07-25T18:28:10.988Z",
+      "atom": "tail -30 packages/operator-core/lib/agent-tools/routines/group-set.ts"
+    },
+    {
+      "sid": "su-9d726f46-c7bc-4986-8700-62340b58689d",
+      "ts": "2026-07-26T04:52:27.658Z",
+      "atom": "tail -40 /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/b67e9147-c035-480e-b8bf-6ae6bf2ff32e/tasks/b9jrqfg4g.output 2>&1"
+    },
+    {
+      "sid": "su-a8557b00-55fb-4438-a7bd-f269a7a3bf6c",
+      "ts": "2026-07-26T05:06:20.381Z",
+      "atom": "tail -40 /tmp/test_affected_out.txt"
+    },
+    {
+      "sid": "su-3dfbc0fd-e642-46b0-b81e-abed2ae62eea",
+      "ts": "2026-07-19T06:58:00.646Z",
+      "atom": "tail -5 /tmp/clean-vite-build.log"
+    },
+    {
+      "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",
+      "ts": "2026-07-25T23:45:32.178Z",
+      "atom": "tail -5 /tmp/wi5769/local-clean-repro.log"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-20T06:22:33.194Z",
+      "atom": "tail -50 ~/.papercusp/live-fed-gate/triage/load-021906.txt 2>/dev/null"
+    },
+    {
+      "sid": "su-a28a5f3c-4f45-465e-af05-e1e6e05668a9",
+      "ts": "2026-07-26T02:08:23.770Z",
+      "atom": "tail -60 /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/7665ed51-afb7-4b65-b402-abc7cd44232a/tasks/b961049kj.output"
+    },
+    {
+      "sid": "su-73565638-a17a-4be4-adfd-86a6750ac1c1",
+      "ts": "2026-07-26T00:50:37.125Z",
+      "atom": "tail -60 /tmp/live-fed-gate-20260725-194023/local-matrix.out 2>/dev/null"
+    },
+    {
+      "sid": "su-9d23464a-a46e-4be8-80d1-50be8f4d0dc4",
+      "ts": "2026-07-19T16:12:53.249Z",
+      "atom": "tail -8 /tmp/linux-cut-0.0.12.log 2>/dev/null"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T05:10:14.814Z",
+      "atom": "tail -80 /tmp/live-fed-gate-20260721-004051/local-matrix.out 2>&1"
+    },
+    {
+      "sid": "su-cfeca4f2-6e46-41d3-89f3-ae8916b0cc95",
+      "ts": "2026-07-26T00:42:50.321Z",
+      "atom": "tail -n 100 /tmp/papercup-green-checkpoint-manual-1fxzuva-2026-07-26T00-41-50-213Z.log 2>&1"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T13:42:25.476Z",
+      "atom": "tail -n 25 /tmp/live-fed-gate-20260719-085904/content-matrix.out 2>/dev/null"
+    },
+    {
+      "sid": "su-10aa1083-b92f-46c9-b340-ccf4455f801d",
+      "ts": "2026-07-17T09:26:24.382Z",
+      "atom": "tail -n 40 apps/operator/scripts/hooks/omp/__tests__/coord-hook.test.ts"
+    }
+  ]
+}

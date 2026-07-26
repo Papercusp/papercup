@@ -154,14 +154,37 @@ if [ "$_coalesce_enabled" = 1 ]; then
 
   # Race for leadership; a loser polls for the leader's result up to the
   # coalescing window, then gives up and runs uncached (never hangs forever).
+  #
+  # ── Second-leader race (EI-18685262961418231 follow-up) ────────────────────
+  # A follower must check freshness BEFORE attempting mkdir, not only after a
+  # FAILED mkdir. The original ordering (mkdir first, freshness check only on
+  # miss) let a follower become a genuine SECOND leader whenever its loop
+  # iteration landed in the narrow gap after the first leader wrote its result
+  # and removed its lock dir but before that follower's next freshness check:
+  # mkdir on the now-empty dir SUCCEEDS, so the follower re-runs the command
+  # for real instead of replaying the fresh cache that already exists —
+  # defeating coalescing for exactly the latecomers it exists to help, and
+  # reproducibly so (not a rare flake): 6 concurrent callers reliably produced
+  # 2 real leaders. Checking freshness at the TOP of every iteration closes
+  # the common case; re-checking immediately AFTER winning the lock closes the
+  # remaining microsecond TOCTOU window between that check and the mkdir call
+  # itself (the previous leader can finish + free the lock in that gap too).
   _c_deadline=$(( $(date +%s) + _coalesce_ttl ))
   while :; do
+    if _coalesce_fresh; then _coalesce_replay; fi
     if mkdir "$_c_lockdir" 2>/dev/null; then
+      # Re-check: a fresh result may have appeared between the freshness
+      # check just above and winning the lock (e.g. the prior leader finished
+      # and removed its lock in that exact gap). Defer to it instead of
+      # redundantly re-running.
+      if _coalesce_fresh; then
+        rmdir "$_c_lockdir" 2>/dev/null || true
+        _coalesce_replay
+      fi
       _do_cache_write=1
       trap 'rm -rf "$_c_lockdir" 2>/dev/null' EXIT
       break
     fi
-    if _coalesce_fresh; then _coalesce_replay; fi
     # Reclaim an ABANDONED lock. Unlike the flock slots above, a plain mkdir
     # lock has no kernel-level auto-release — a leader that's SIGKILL'd (never
     # trappable) leaves it stuck forever otherwise, taxing every future

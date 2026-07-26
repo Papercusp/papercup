@@ -20,6 +20,7 @@
  * a reconciliation pass on a value that can go stale).
  */
 import { useMemo } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import {
   usePlanAttention,
   type AttentionItem,
@@ -115,24 +116,52 @@ export function useInboxAttention(enabled = true): InboxAttention {
   return { items, loading: q.loading, error: q.error, refresh: q.refresh };
 }
 
+/**
+ * The badge aggregate — `plans.attentionCounts` (WI-5955).
+ *
+ * Both badges below are mounted on EVERY app start, and both used to derive
+ * their integer by pulling the whole unscoped `plans.attention` feed (~1MB
+ * after the P-003 projection) into the client. They now read a ~100-byte
+ * aggregate instead; the feed itself is fetched only by surfaces that actually
+ * render items (InboxPane, SessionChatModal, the Overview tiles).
+ *
+ * The counts are derived SERVER-side from the same grouped feed, with the same
+ * dedupe-by-id and the same `effectiveTier` fallback used here — see
+ * packages/operator-core/lib/sync-resolver/attention-counts.ts, and
+ * attention-counts-parity.test.ts which pins the two derivations together so
+ * the badge can never disagree with the list the user then opens.
+ */
+interface AttentionCountsRow {
+  decisionItems: number;
+  decisionPlans: number;
+  alerts: number;
+  total: number;
+}
+
+/** Stable identity — a fresh {} each render would churn the sync query key. */
+const NO_ARGS: Record<string, unknown> = {};
+
+function useAttentionCounts(): AttentionCountsRow {
+  const q = useSyncQuery<AttentionCountsRow>({ queryName: 'plans.attentionCounts', args: NO_ARGS });
+  const row = q.data?.[0];
+  return {
+    decisionItems: row?.decisionItems ?? 0,
+    decisionPlans: row?.decisionPlans ?? 0,
+    alerts: row?.alerts ?? 0,
+    total: row?.total ?? 0,
+  };
+}
+
 /** Live count of decision-tier ("needs you") items — drives the header badge. */
 export function useInboxPendingCount(): number {
-  const { items } = useInboxAttention();
-  return useMemo(() => items.filter((i) => effectiveTier(i) === 'decision').length, [items]);
+  return useAttentionCounts().decisionItems;
 }
 
 /** Live count of distinct PLANS with ≥1 decision-tier ("needs you") item —
  *  drives the Plans-face badge (owner-plans-single-pane-2026-07-17 P-001). This
  *  differs from useInboxPendingCount (which counts ITEMS): the Plans tab answers
- *  "how many plans need me", not "how many decisions are open". Same shared
- *  `plans.attention` cache entry, so mounting it adds no new query. */
+ *  "how many plans need me", not "how many decisions are open". Shares the one
+ *  counts query, so mounting both adds no second request. */
 export function usePlansNeedingYouCount(): number {
-  const { items } = useInboxAttention();
-  return useMemo(() => {
-    const plans = new Set<string>();
-    for (const i of items) {
-      if (i.planSlug && effectiveTier(i) === 'decision') plans.add(i.planSlug);
-    }
-    return plans.size;
-  }, [items]);
+  return useAttentionCounts().decisionPlans;
 }

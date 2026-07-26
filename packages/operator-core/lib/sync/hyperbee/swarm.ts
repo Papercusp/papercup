@@ -1690,13 +1690,26 @@ export async function joinHarnessSwarm(
         path: closePath,
         wire: closeWire,
       });
+      // EI-18684689702957309: hyperswarm itself destroys a socket with this
+      // exact message (`ERR_DUPLICATE` in node_modules/hyperswarm/index.js)
+      // the instant it detects two live connections to the same peer — by
+      // construction that socket never carries a byte, so it is NOT the
+      // WI-5863 "never came up" defect. Confirmed false-positive source:
+      // swarm-chaos.test.ts red 13x in a row, 23/23 loud warns fired with
+      // precededByError:'Duplicate connection' and ageMs in [1,19] — a
+      // near-instant teardown, nothing like WI-5863's measured 13000ms+
+      // deaths on the live rig. Left unguarded this also fed
+      // `onDataPathNeverUp` → boot-history `replication_stalled` events,
+      // inflating any stall count taken from that log under reconnect churn.
+      const isDuplicateConnectionTeardown = churnSawError === 'Duplicate connection';
       // EI-18682571591024156: a socket that signalled successfully and closed
       // WITHOUT ever receiving a byte never had a data path — the failure that
       // `peer_connected` actively mis-reported as success. Loud + unconditional
-      // (not behind the churn-debug env gate): this is a genuine defect signal,
-      // it is rare on a healthy link, and its absence is exactly what redirected
-      // WI-5863's investigation to the wrong layer for hours.
-      if (dataPathProven(closeWire) === false) {
+      // otherwise (not behind the churn-debug env gate): this is a genuine
+      // defect signal, it is rare on a healthy link, and its absence is
+      // exactly what redirected WI-5863's investigation to the wrong layer
+      // for hours.
+      if (dataPathProven(closeWire) === false && !isDuplicateConnectionTeardown) {
         console.warn(
           '[swarm] ⚠ data path NEVER came up for a peer that reported connected — ' +
             'the Noise handshake completed as a DHT RPC (signalling success) but zero bytes ' +
@@ -2005,6 +2018,24 @@ export async function joinHarnessSwarm(
    */
   const evictOwnSockets = (): void => {
     for (const socket of mySockets) {
+      // WI-5971: WI-5923 made this function fire for EVERY sibling registered
+      // on the same (swarm,topic) whenever ANY ONE participant's own link
+      // escalates to a forced rejoin — not just the escalating instance
+      // itself. That broke this function's original premise ("reaching a
+      // forced rejoin means THIS topic's link is already proven dead"),
+      // which only held when it ran solely for the instance whose own
+      // detector fired. A sibling's socket can have a fully live,
+      // actively-replicating data path (proven via readWireStats/
+      // dataPathProven — real bytesReceived across many packets) purely
+      // because a CO-TENANT topic on the same swarm died. Destroying it
+      // anyway is a false-positive zombie eviction (ratified via live rig
+      // evidence: 8/8 closed sockets in one frame carried 7472-8589 bytes
+      // received across 87-146 packets). Skip — never touch — any socket
+      // with a DEMONSTRATED live data path; only a genuinely
+      // dead-or-unproven one still gets evicted below.
+      if (dataPathProven(readWireStats(socket)) === true) {
+        continue;
+      }
       swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
       // Diagnostic-only: note when we are breaking the shared-socket deadlock
       // (destroying a socket another topic still claims). Never let a throwing
@@ -2022,8 +2053,8 @@ export async function joinHarnessSwarm(
         }
       }
       evictIdleZombieSocket(socket);
+      mySockets.delete(socket);
     }
-    mySockets.clear();
   };
   const rejoinOwnSession = (): void => {
     discovery = opts.swarm.join(opts.topic, { server: true, client: true });

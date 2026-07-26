@@ -171,15 +171,42 @@ describe('useInboxPendingCount', () => {
   function Probe() {
     return <output data-testid="count">{useInboxPendingCount()}</output>;
   }
-  it('counts decision-tier items only', () => {
-    seedAttention([
-      mkItem('d1'),
-      mkItem('d2', { tier: undefined as never, needsHuman: true }),
-      mkItem('a1', { tier: 'alert', needsHuman: false }),
-      mkItem('h1', { tier: 'handled', needsHuman: false }),
-    ]);
+
+  /** Seed the ~100-byte badge aggregate (WI-5955). */
+  function seedCounts(row: Partial<{ decisionItems: number; decisionPlans: number; alerts: number; total: number }>) {
+    H.results['plans.attentionCounts'] = {
+      data: [{ decisionItems: 0, decisionPlans: 0, alerts: 0, total: 0, ...row }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+  }
+
+  it('reads the decision count from the counts aggregate', () => {
+    seedCounts({ decisionItems: 2, decisionPlans: 1, total: 4 });
     render(<Probe />);
     expect(screen.getByTestId('count').textContent).toBe('2');
+  });
+
+  it('does NOT read the full attention feed (WI-5955: the badge is mounted on every app start)', () => {
+    // The whole point of the change: a seeded FEED with 3 decisions must not
+    // move the badge — only the aggregate does. If someone reverts the badge to
+    // deriving from `plans.attention`, this reds instead of silently restoring
+    // a ~1MB fetch to every session.
+    seedAttention([
+      mkItem('d1'),
+      mkItem('d2'),
+      mkItem('d3', { tier: undefined as never, needsHuman: true }),
+    ]);
+    seedCounts({ decisionItems: 0, total: 0 });
+    render(<Probe />);
+    expect(screen.getByTestId('count').textContent).toBe('0');
+  });
+
+  it('degrades to 0 while the aggregate is still loading', () => {
+    render(<Probe />);
+    expect(screen.getByTestId('count').textContent).toBe('0');
   });
 });
 

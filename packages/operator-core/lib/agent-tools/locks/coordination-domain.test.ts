@@ -8,6 +8,9 @@ import {
   hostGlobalLockDomain,
   HOST_GLOBAL_RESOURCES,
   resourceLockDomain,
+  isWorkspaceScopedResource,
+  workspaceScopedLockDomain,
+  candidateResourceLockDomains,
   __resetLockCoordinationDomain,
 } from './coordination-domain';
 
@@ -171,5 +174,58 @@ describe('resourceLockDomain', () => {
     // host-global resource through the tree-scoped path in a future edit.
     expect(resourceLockDomain('dev-server')).toBe(resourceLockDomain('dev-server'));
     expect(resourceLockDomain('dev-server').startsWith('/')).toBe(false);
+  });
+});
+
+// WI-5960: a `git-sync:<slug>` resource is a family whose SYSTEM-SIDE acquirer
+// (git-sync-action.ts's handleGitSync) keys itself by `ctx.workspaceId || '*'`,
+// NOT by the caller-tree-scoped `lockCoordinationDomain()` every OTHER
+// resource acquirer defaults to. Before this fix, an agent calling
+// `locks:acquire_resource { resource: 'git-sync:<slug>' }` (the su playbook's
+// documented "pause sync to safely mutate the tree" mechanism) landed under
+// `lockCoordinationDomain()` — a domain git-sync's own conflict check never
+// looks at — so a live, un-expired exclusive hold was completely invisible to
+// git-sync, which committed straight through it (observed live 2026-07-26: 6
+// commits landed during the held hold). These pin the fix's the two halves:
+// (1) a `git-sync:` name is recognized as workspace-scoped, and (2) it
+// resolves through the SAME domain function git-sync-action.ts uses
+// (`ctx.workspaceId || '*'`, mirrored here as `activeWorkspaceId() || '*'`).
+describe('isWorkspaceScopedResource / workspaceScopedLockDomain (WI-5960)', () => {
+  const SAVED_WS = process.env.PAPERCUSP_WORKSPACE_ID;
+  beforeEach(() => {
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+  });
+  afterEach(() => {
+    if (SAVED_WS === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+    else process.env.PAPERCUSP_WORKSPACE_ID = SAVED_WS;
+  });
+
+  it('recognizes any git-sync:<slug> name by prefix, regardless of the slug', () => {
+    expect(isWorkspaceScopedResource('git-sync:papercusp')).toBe(true);
+    expect(isWorkspaceScopedResource('git-sync:some-other-harness')).toBe(true);
+    expect(isWorkspaceScopedResource('git-sync:')).toBe(true);
+  });
+
+  it('does not misclassify an unrelated or merely-similar-looking resource', () => {
+    expect(isWorkspaceScopedResource('release-deploy')).toBe(false);
+    expect(isWorkspaceScopedResource('dev-server')).toBe(false);
+    expect(isWorkspaceScopedResource('gitsync:papercusp')).toBe(false); // no colon-hyphen match
+    expect(isWorkspaceScopedResource('some-git-sync:papercusp')).toBe(false); // prefix, not substring
+  });
+
+  it('resourceLockDomain routes a git-sync:<slug> resource to workspaceScopedLockDomain(), NOT lockCoordinationDomain()', () => {
+    process.env.PAPERCUSP_WORKSPACE_ID = 'papercusp-workspace';
+    expect(resourceLockDomain('git-sync:papercusp')).toBe(workspaceScopedLockDomain());
+    expect(resourceLockDomain('git-sync:papercusp')).toBe('papercusp-workspace');
+    // The exact defect: these must NOT coincide, or the domain split silently
+    // reintroduces the invisible-hold bug this fix closes.
+    expect(resourceLockDomain('git-sync:papercusp')).not.toBe(lockCoordinationDomain());
+  });
+
+  it('candidateResourceLockDomains includes the workspace-scoped domain (so a lock_id-only release/heartbeat can still find a git-sync:* lease)', () => {
+    process.env.PAPERCUSP_WORKSPACE_ID = 'papercusp-workspace';
+    expect(candidateResourceLockDomains()).toContain('papercusp-workspace');
+    expect(candidateResourceLockDomains()).toContain(hostGlobalLockDomain());
+    expect(candidateResourceLockDomains()).toContain(lockCoordinationDomain());
   });
 });

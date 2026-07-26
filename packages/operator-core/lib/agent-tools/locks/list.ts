@@ -11,7 +11,12 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
-import { hostGlobalLockDomain, HOST_GLOBAL_RESOURCES } from './coordination-domain';
+import {
+  hostGlobalLockDomain,
+  HOST_GLOBAL_RESOURCES,
+  isWorkspaceScopedResource,
+  workspaceScopedLockDomain,
+} from './coordination-domain';
 import {
   getTxPool,
   getResource,
@@ -78,20 +83,31 @@ export default defineTool({
       ? [await getResource(pool, args.resource)].filter((r): r is ResourceRegistryRow => r !== null)
       : await listResources(pool);
 
-    // EI-18674647773291145 Defect 2: a host-global resource (e.g. 'release-deploy')
-    // is acquired under hostGlobalLockDomain(), NOT the caller-tree-scoped domain
-    // readIdentity resolves — querying only the caller's domain here is exactly what
-    // produced a false `holders: []` for a lock provably held elsewhere. When the
-    // caller scoped the query to one such resource, follow it into its real domain;
-    // when unscoped (listing everything), query BOTH domains and merge so an
-    // unscoped `locks:list` can never silently omit a host-global resource's
-    // holders just because the caller happens to be running from a different tree.
+    // EI-18674647773291145 Defect 2 / WI-5960: a special-domain resource (a
+    // host-global one like 'release-deploy', OR a workspace-scoped one like
+    // `git-sync:<slug>`) is acquired under a DIFFERENT domain than the
+    // caller-tree-scoped one readIdentity resolves — querying only the
+    // caller's domain here is exactly what produced a false `holders: []`
+    // for a lock provably held elsewhere (observed live for both families:
+    // 'release-deploy' under EI-18674647773291145, `git-sync:<slug>` under
+    // WI-5960 — an su that had genuinely acquired the tree-pause lock saw
+    // `locks:list` report it as unheld). When the caller scoped the query to
+    // one such resource, follow it into its real domain; when unscoped
+    // (listing everything), query every domain that's actually in play and
+    // merge, so an unscoped `locks:list` can never silently omit a
+    // special-domain resource's holders just because the caller happens to
+    // be running from a different tree / a different workspace.
     const hgDomain = hostGlobalLockDomain();
+    const wsDomain = workspaceScopedLockDomain();
     const domains = args.resource
-      ? [HOST_GLOBAL_RESOURCES.has(args.resource) ? hgDomain : callerDomain]
-      : callerDomain === hgDomain
-        ? [callerDomain]
-        : [callerDomain, hgDomain];
+      ? [
+          HOST_GLOBAL_RESOURCES.has(args.resource)
+            ? hgDomain
+            : isWorkspaceScopedResource(args.resource)
+              ? wsDomain
+              : callerDomain,
+        ]
+      : [...new Set([callerDomain, hgDomain, wsDomain])];
 
     const queues = await Promise.all(
       domains.map((coordinationDomain) => readResourceQueue(pool, { coordinationDomain, resource: args.resource })),

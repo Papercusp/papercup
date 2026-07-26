@@ -306,37 +306,39 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   );
   const [view, setView] = useQueryState('opcv', viewParser);
   const potOpen = view === 'pot';
-  const inboxOpen = view === 'inbox';
   const plansOpen = view === 'plans';
-  // deterministic-status-cards-2026-07-17 P-003: a curator status card's
-  // drill-in opens the inbox (opcv=inbox), switches to the 'all' filter, and
-  // selects the referenced item (opcis) — ALL THREE in ONE atomic write via
-  // useQueryStates (the codebase's required pattern for multi-key nav; three
-  // separate same-tick setters is the CreateHarnessPicker footgun — see
-  // nuqs-two-write-race.router-integration.test). The 'all' filter is REQUIRED:
-  // the inbox defaults to 'needs' (decision-tier only), so an operational/alert
-  // escalation — the dominant curator signal — has the right id but is filtered
-  // OUT of the visible list, so the selection lands on no row (the owner's "just
-  // opens the inbox page" bug).
-  const [, setDrillNav] = useQueryStates({
-    opcv: parseAsString,
-    opci: parseAsString,
-    opcis: parseAsString,
-  });
   // The live attention items, so a drill-in can RESOLVE its ref against a real
-  // inbox item and actually select it (WI-5342). Same shared plans.attention
-  // cache the badge hooks read — no extra query. Held in a ref so
-  // handleCardDrillIn stays identity-stable (it's memo-keyed into OperatorChat's
-  // renderers) while still reading the freshest items at click time.
+  // attention item and read its owning agent (WI-5342). Same shared
+  // plans.attention cache the badge hooks read — no extra query. Held in a ref
+  // so handleCardDrillIn stays identity-stable (it's memo-keyed into
+  // OperatorChat's renderers) while still reading the freshest items at click
+  // time.
   const { items: inboxItems } = useInboxAttention();
   const inboxItemsRef = useRef(inboxItems);
   inboxItemsRef.current = inboxItems;
+  // hud-consolidation-2026-07-26 P-004: a curator status card's drill-in used
+  // to open the retired Inbox pane (opcv=inbox); it now opens the agent's
+  // conversation on the HUD tab instead — the SAME destination the HUD board
+  // itself opens a session with (HudView's `?hudsession=`), never a second
+  // chat renderer. `resolveInboxDrillIn` still does the RESOLUTION half
+  // (ref -> which live attention item, unchanged, P-002 gate already proved
+  // it covers ownerless asks too); only the navigation destination changed.
+  // An ownerless ask (or a ref with no live match, e.g. `health:<panelId>`)
+  // has no agent conversation to open — it still lands on the HUD board,
+  // where the P-002 unattributed lane already renders it, so there is
+  // nothing further to select.
+  const router = useRouter();
   const handleCardDrillIn = useCallback(
     (ref: string) => {
-      const { selId, filter } = resolveInboxDrillIn(ref, inboxItemsRef.current);
-      void setDrillNav({ opcv: 'inbox', opci: filter, opcis: selId });
+      const { selId } = resolveInboxDrillIn(ref, inboxItemsRef.current);
+      const ownerAgentId = selId
+        ? (inboxItemsRef.current.find((i) => i.id === selId)?.ownerAgentId ?? null)
+        : null;
+      const params = new URLSearchParams({ tab: 'hud' });
+      if (ownerAgentId) params.set('hudsession', ownerAgentId);
+      router.push(`/adv?${params.toString()}`);
     },
-    [setDrillNav],
+    [router],
   );
   // The lit extra face, if any — drives both the pill state and the body swap.
   const activeFace = extraFaces.find((f) => f.id === view) ?? null;
@@ -397,9 +399,11 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                 the pot view (the symmetric dual of the 🫖 toggle). The old
                 raised, glowing 38px orb is gone. */}
             {/* owner-plans-single-pane-2026-07-17 + owner ask 2026-07-17: the
-                Plans face sits LEFT of the Inbox face — [📋 Plans] [📥 Inbox]
-                [🥤 Papercup] [🫖 Pot Health]. Simplified plan tracking; badge =
-                plans that need YOU. */}
+                Plans face sits LEFT of Papercup — [📋 Plans] [🥤 Papercup]
+                [🫖 Pot Health]. Simplified plan tracking; badge = plans that
+                need YOU. (The Inbox face that used to sit here retired —
+                hud-consolidation-2026-07-26 P-003 — asks now surface on the
+                HUD board instead.) */}
             <Tooltip label={plansOpen ? 'Back to chat' : 'Plans — track active plans, open one in a popup, view its agent sessions'}>
               <button
                 type="button"
@@ -414,27 +418,6 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                 {plansNeedingYou > 0 ? (
                   <span className="op-chat-inbox-badge" data-testid="op-chat-plans-badge">
                     {plansBadge}
-                  </span>
-                ) : null}
-              </button>
-            </Tooltip>
-            {/* EI-13037 (owner ask 2026-07-16): the Inbox face sits LEFT of
-                the Papercup button; Plans sits left of Inbox (owner ask
-                2026-07-17). Badge = live "needs you" count. */}
-            <Tooltip label={inboxOpen ? 'Back to chat' : 'Inbox — decisions, escalations & messages that need YOU'}>
-              <button
-                type="button"
-                className={`op-chat-inbox-toggle${inboxOpen ? ' is-on' : ''}`}
-                onClick={() => void setView(inboxOpen ? 'chat' : 'inbox')}
-                aria-pressed={inboxOpen}
-                aria-label={inboxOpen ? 'Back to chat' : 'Show inbox'}
-                data-testid="op-chat-inbox-toggle"
-              >
-                <InboxIcon className="op-chat-inbox-icon" aria-hidden="true" />
-                <span className="op-chat-inbox-toggle-label">Inbox</span>
-                {inboxPending > 0 ? (
-                  <span className="op-chat-inbox-badge" data-testid="op-chat-inbox-badge">
-                    {inboxBadge}
                   </span>
                 ) : null}
               </button>
@@ -542,7 +525,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
         </div>
         {activeFace ? (
           /* WI-5162: a Fleet/Peers face is lit — its pane replaces the chat
-             body, same as 🫖/📥 do. The pane is rendered lazily by the
+             body, same as 🫖 does. The pane is rendered lazily by the
              provider (operator-vite), so nothing mounts until it is picked. */
           <Suspense fallback={<div className="op-chat-view-loading">Loading {activeFace.label.toLowerCase()}…</div>}>
             {activeFace.render()}
@@ -551,13 +534,6 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
           /* WI-4778: 🫖 on — the full-height Pot Health view replaces the
              chat body (strip + messages + composer), same pane, one scroll. */
           <PotHealthPane />
-        ) : inboxOpen ? (
-          /* EI-13037: 📥 on — the human Inbox replaces the chat body. Its
-             Discuss action stages a chat seed and flips back to the chat
-             view, where the composer consumes it (chat-seed.ts). */
-          <Suspense fallback={<div className="op-chat-view-loading">Loading inbox…</div>}>
-            <InboxPane onDiscussInChat={() => void setView('chat')} />
-          </Suspense>
         ) : plansOpen ? (
           /* owner-plans-single-pane-2026-07-17: 📋 on — the simplified Plans
              tracker replaces the chat body. Rows open the plan in a popup

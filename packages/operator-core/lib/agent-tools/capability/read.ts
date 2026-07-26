@@ -6,6 +6,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -18,9 +19,9 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse absurd reads outright
 export default defineTool({
   name: 'capability:read',
   description:
-    'Read a file (text) with line numbers, like the native Read tool. offset/limit window large files; long lines are truncated. Path is absolute or relative to the project dir.',
+    'Read a file (text) with line numbers, like the native Read tool. offset/limit window large files, tail:N reads the last N lines; long lines are truncated. Path is absolute, ~/-relative, or relative to the project dir.',
   guidance: {
-    when: 'Read a source/text file before editing it, or to inspect content. Use offset+limit to page through a large file.',
+    when: 'Read a source/text file before editing it, or to inspect content. Use offset+limit to page through a large file, and tail:N to check the end of a log — it replaces `sed -n N,Mp FILE`, `cat FILE`, `head -n N FILE` and `tail -n N FILE`.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
     chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
     seeAlso: [
@@ -33,13 +34,19 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    file_path: z.string().min(1).describe('Absolute path, or relative to the project dir.'),
+    file_path: z.string().min(1).describe('Absolute path, ~/-relative, or relative to the project dir.'),
     offset: z.number().int().nonnegative().optional().describe('1-based line to start from.'),
     limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}).`),
+    tail: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('Read the LAST N lines instead of reading forward — the `tail -n N` equivalent. Ignores offset.'),
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
-    const abs = isAbsolute(args.file_path) ? args.file_path : resolve(baseDir, args.file_path);
+    const abs = resolveReadPath(args.file_path, baseDir);
 
     let raw: string;
     try {
@@ -56,9 +63,17 @@ export default defineTool({
     // A trailing newline yields a final empty element; drop it so line counts match the file.
     if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
 
-    const start = args.offset && args.offset > 0 ? args.offset - 1 : 0;
     const limit = args.limit ?? DEFAULT_LIMIT;
-    const slice = allLines.slice(start, start + limit);
+    // `tail` addresses the END of the file, which offset (anchored at line 1)
+    // cannot reach without first knowing the line count. The 2026-07-26 bash
+    // audit found this was the single largest un-substitutable file read:
+    // 1,752 `tail -n N FILE` atoms across 63 sessions had no tool form at all.
+    const start = args.tail
+      ? Math.max(0, allLines.length - args.tail)
+      : args.offset && args.offset > 0
+        ? args.offset - 1
+        : 0;
+    const slice = allLines.slice(start, start + (args.tail ? Math.min(args.tail, limit) : limit));
 
     const numbered = slice
       .map((line, i) => {
@@ -79,6 +94,22 @@ export default defineTool({
     };
   },
 });
+
+/**
+ * Resolve a caller-supplied path to an absolute one.
+ *
+ * `~/…` must be expanded explicitly: it is a SHELL feature, so Node sees it as
+ * a relative path and `resolve(baseDir, '~/x')` silently yields
+ * `<projectDir>/~/x` — a file that does not exist, reported as a confusing
+ * read_failed rather than as the home-relative read the caller meant. The
+ * 2026-07-26 bash audit caught this against real commands (`cat ~/.papercusp/…`,
+ * `head -40 ~/mac-verify-build-waiter.sh`).
+ */
+export function resolveReadPath(filePath: string, baseDir: string): string {
+  if (filePath === '~') return homedir();
+  if (filePath.startsWith('~/')) return resolve(homedir(), filePath.slice(2));
+  return isAbsolute(filePath) ? filePath : resolve(baseDir, filePath);
+}
 
 function err(reason: string, message: string) {
   return {

@@ -56,6 +56,34 @@ const DEFAULT_FOCUS =
 const FALLBACK_EFFECTIVE_WINDOW_TOKENS = 200_000;
 
 /**
+ * EI-18686525818431054: `injectIntoHost`'s DEFAULT client-side socket timeout
+ * (2000ms) is sized for an ordinary wake `turn` — the psu-pty-host acks
+ * 'accepted' immediately after early validation (payload/ownerId/coalesce
+ * checks), before ever entering the human-idle + agent-busy GATES, which can
+ * legitimately run up to `TURN_INJECT_BUSY_CAP_MS` (production default 180s)
+ * — doubled for a carry-respawn's one re-arm retry (psu-pty-host.mjs
+ * `makeCarryRearmController`) — before the actual write/recycle proceeds as a
+ * detached background continuation. A HOST RUNNING CODE FROM BEFORE THAT
+ * ack-early fix landed (WI-5872 follow-up #2, EI-18679050054551625) instead
+ * awaits the FULL gated pipeline before writing anything back — and since a
+ * psu-pty-host process is never restarted by a carry-respawn (only its CHILD
+ * CLI is; the host persists for the life of the psu session), a session whose
+ * host predates that fix hits the 2000ms client timeout on every single
+ * `session:request-compaction` call: "Failed to reach the session TUI host
+ * socket" — the ONE sanctioned context-shedding path, failing exactly when a
+ * long-running session needs it most (this is literally that filing's
+ * reproduction). A carry-respawn is inherently latency-INSENSITIVE from the
+ * caller's point of view — the agent is ending its turn regardless — so
+ * there is no cost to waiting substantially longer here: on a FIXED host the
+ * ack still returns in milliseconds; on a STALE pre-fix host (or one merely
+ * scheduling-delayed on a loaded box) this gives the full gated pipeline room
+ * to actually complete and report truthfully instead of timing out on a
+ * false negative. Sized comfortably past the doubled busy-gate cap
+ * (2 * 180_000 = 360_000ms) with wide margin for host scheduling jitter.
+ */
+const CARRY_RESPAWN_SOCKET_TIMEOUT_MS = 15 * 60_000;
+
+/**
  * compaction-continuity-hardening-2026-07-07 P-003 + EI-8987: ONE best-effort
  * carry-brief build, shared by the default-focus derivation AND the stale-
  * checkpoint warning below (was two separate buildCarryBrief calls — wasteful,
@@ -304,12 +332,18 @@ export default defineTool({
           return note; // provenance must never break a boundary
         }
       })();
-    const ok = await injectIntoHost(host.sock, {
-      mode: 'carry-respawn',
-      data: firstPrompt,
-      systemPromptAddendum: spec.systemPromptAddendum,
-      ownerId: identity.ownerId,
-    });
+    const ok = await injectIntoHost(
+      host.sock,
+      {
+        mode: 'carry-respawn',
+        data: firstPrompt,
+        systemPromptAddendum: spec.systemPromptAddendum,
+        ownerId: identity.ownerId,
+      },
+      // EI-18686525818431054: NOT the 2000ms default — see
+      // CARRY_RESPAWN_SOCKET_TIMEOUT_MS's doc comment above.
+      CARRY_RESPAWN_SOCKET_TIMEOUT_MS,
+    );
     // EI-18676518990229124 (session-death-claim-release-2026-07-11 P-002 false
     // positive): the cut we just queued will end THIS process under the SAME
     // ownerId and relaunch it in seconds — the killed child's ordinary
@@ -375,9 +409,19 @@ export default defineTool({
               ? { mechanicalFallback: gate.fallback }
               : {}),
             ...provenanceFields,
+            ...(!ok ? { hostSock: host.sock, hostPid: host.pid } : {}),
             note:
               (!ok
-                ? 'Failed to reach the session TUI host socket; try again.'
+                ? // EI-18686525818431054 ask #3: name the socket path + host pid tried,
+                  // so the next diagnosis doesn't have to reverse-engineer it from `ps`
+                  // + `find` (this filing's own investigation cost ~6 tool calls on that
+                  // alone). `identity.ownerId` is already on the caller's side to compare.
+                  `Failed to reach the session TUI host socket (${host.sock}, host pid ${host.pid}) ` +
+                  `even after waiting up to ${CARRY_RESPAWN_SOCKET_TIMEOUT_MS}ms; try again. If this ` +
+                  'recurs, the host process may predate the ack-early carry-respawn fix (WI-5872 ' +
+                  'follow-up #2) — it never restarts on its own (only its child CLI does via ' +
+                  'carry-respawn), so a genuinely stale host requires ending this session and ' +
+                  'relaunching to pick up a current one.'
                 : 'Carry-respawn queued — when this turn ends the host cuts this process at the clean boundary and respawns your successor with the deterministic carry document as launch context; it resumes automatically. Wrap up now and stop.') +
               staleNote +
               openQuestionNote,
