@@ -247,6 +247,64 @@ describe('P-007 audience_scope + source_provenance (mig 574)', () => {
   });
 });
 
+// WI-6052 (EI-18681964809855890 follow-up, mig 671): `confidence` reached the
+// AgentFact contract + write-side TTL/lint behaviour but was never persisted —
+// the INSERT/RETURNING/SELECT all omitted it, so it round-tripped as `null` on
+// EVERY assert regardless of what the caller passed. This describe block is
+// the regression: before mig 671 + the matching store.ts change, the first
+// test here failed (`f.confidence` was `null`, not `'verified'`).
+describe('confidence (evidence-strength tier, mig 671 / WI-6052)', () => {
+  const SEL = [{ scope: 'harness' as const, scopeRef: 'papercusp' }];
+  const base = {
+    scope: 'harness' as const,
+    scopeRef: 'papercusp',
+    body: 'a conclusion',
+    createdBy: 'su-int',
+    workspaceId: WS,
+  };
+
+  it('confidence round-trips through assert → fold', async () => {
+    await assertFact({ ...base, key: 'conf-rt', confidence: 'verified' }, db.sql);
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(f.confidence).toBe('verified');
+  });
+
+  it('each of the 3 tiers round-trips distinctly', async () => {
+    await assertFact({ ...base, key: 'conf-verified', confidence: 'verified' }, db.sql);
+    await assertFact({ ...base, key: 'conf-provisional', confidence: 'provisional' }, db.sql);
+    await assertFact({ ...base, key: 'conf-suspected', confidence: 'suspected' }, db.sql);
+    const facts = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    const byKey = Object.fromEntries(facts.map((f) => [f.key, f.confidence]));
+    expect(byKey['conf-verified']).toBe('verified');
+    expect(byKey['conf-provisional']).toBe('provisional');
+    expect(byKey['conf-suspected']).toBe('suspected');
+  });
+
+  it('omitted confidence stays null (legacy/unset shape, unaffected by mig 671)', async () => {
+    await assertFact({ ...base, key: 'conf-unset' }, db.sql);
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(f.confidence).toBeNull();
+  });
+
+  it('a re-assert REPLACES confidence (omitting it clears — fresh assert wins, same semantics as audienceScope/sourceProvenance)', async () => {
+    await assertFact({ ...base, key: 'conf-swap', confidence: 'suspected' }, db.sql);
+    await assertFact({ ...base, key: 'conf-swap', body: 'now unset' }, db.sql);
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(f.key).toBe('conf-swap');
+    expect(f.confidence).toBeNull();
+  });
+
+  it('a forged/unrecognized stored value reads back as null (defensive parse, same style as sourceProvenance)', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
+      VALUES (${WS}, 'harness', 'papercusp', 'conf-forged', 'b', 'peer', now() + interval '1 day', 'omniscient')`;
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(f.key).toBe('conf-forged');
+    expect(f.confidence).toBeNull();
+  });
+});
+
 // ── owner-wall-ttl-lapse-hardening-2026-07-26 (EI-18669544162414270): the
 // wall-lapse read leg against the REAL table ──
 describe('listLapsedWallFacts', () => {
