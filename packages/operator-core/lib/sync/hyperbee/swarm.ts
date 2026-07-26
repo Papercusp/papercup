@@ -1109,6 +1109,24 @@ export interface PeerConnectionPath {
   /** Relay host/port on the relayed ACCEPT path (server.js half of the patch). */
   relayHost?: string;
   relayPort?: number;
+  /**
+   * WI-5943 — the address the UDX stream is ACTUALLY pointed at, read straight
+   * off `rawStream` (plain `udx-native` instance props, so unlike the `udx*`
+   * fields above these need no patch to be readable).
+   *
+   * This is the INDEPENDENT ground truth for {@link PeerConnectionPath.relayed},
+   * and it exists because `relayed` on its own is not always evidence:
+   *  - on the DIRECT ACCEPT path the patch sets `relayed: false` BY CONSTRUCTION
+   *    (from which code path ran, not from a measurement), so a `false` there is
+   *    a tautology that says nothing about whether the data path came up;
+   *  - on a small isolated test DHT there may be no relay available at all, which
+   *    FORCES `relayed: false` by topology rather than by a successful punch.
+   * The address discriminates in both cases: a genuinely punched connection points
+   * at the PEER's own address, a relayed one at the relay's. Read these ALONGSIDE
+   * `relayed` — a `relayed: false` on its own is not proof of a punch.
+   */
+  remoteHost?: string;
+  remotePort?: number;
 }
 
 function formatUdxAddress(value: unknown): string | undefined {
@@ -1160,6 +1178,21 @@ export function extractConnectionPath(socket: unknown): PeerConnectionPath {
   if (typeof s.udxRelayPort === 'number') {
     out.relayPort = s.udxRelayPort;
     out.present = true;
+  }
+  // WI-5943: the raw stream's own remote address — the independent check on
+  // `relayed` (see PeerConnectionPath.remoteHost). Read defensively off
+  // `rawStream`: same explicit-presence rule as everything above, so an
+  // unreadable stream yields nothing rather than a fabricated address.
+  const raw = (socket as { rawStream?: Record<string, unknown> } | null | undefined)?.rawStream;
+  if (raw && typeof raw === 'object') {
+    if (typeof raw.remoteHost === 'string' && raw.remoteHost.length > 0) {
+      out.remoteHost = raw.remoteHost;
+      out.present = true;
+    }
+    if (typeof raw.remotePort === 'number' && Number.isFinite(raw.remotePort)) {
+      out.remotePort = raw.remotePort;
+      out.present = true;
+    }
   }
   return out;
 }
@@ -2092,7 +2125,7 @@ export async function joinHarnessSwarm(
         // never tear down a sibling's. Falls back to the old `swarm.leave`
         // when a test fake's `join()` doesn't return a `destroy` (unchanged
         // behavior for existing fakes).
-        if (false && discovery && typeof discovery.destroy === 'function') {
+        if (discovery && typeof discovery.destroy === 'function') {
           await discovery.destroy();
         } else {
           await opts.swarm.leave(opts.topic);

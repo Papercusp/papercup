@@ -11,6 +11,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Table, type TableColumn } from '../harness/Table';
 import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '../harness/agent-display';
+import FleetRoleGlyph from './FleetRoleGlyph';
 
 interface FleetStatusRow {
   ownerId: string;
@@ -83,7 +84,18 @@ function columnsFor(lex: ReturnType<typeof useLexicon>): TableColumn<FleetStatus
   {
     key: 'fleet',
     header: 'Fleet',
-    render: (row) => (row.fleetSlug ? `${row.fleetSlug}${row.fleetRole ? ` (${row.fleetRole})` : ''}` : '—'),
+    // Role reads as the SHARED 👑/👤 glyph, not "(leader)"/"(member)" text —
+    // the same iconography the terminal title/statusline already uses, so one
+    // agent looks identical in both places (owner directive 2026-07-26).
+    render: (row) =>
+      row.fleetSlug ? (
+        <>
+          {row.fleetSlug}
+          {row.fleetRole ? <FleetRoleGlyph role={row.fleetRole} /> : null}
+        </>
+      ) : (
+        '—'
+      ),
   },
   { key: 'claim', header: 'Current claim', render: (row) => row.planSlug ?? row.intent ?? '—' },
   { key: 'state', header: 'State', render: (row) => row.sessionState ?? '—' },

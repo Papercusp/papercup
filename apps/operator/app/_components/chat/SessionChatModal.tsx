@@ -47,6 +47,7 @@ import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import { isEscalationWithOptions } from '@/app/admin/plans/attention-card';
 import { ChatActionBar } from './ChatActionBar';
+import FleetRoleGlyph from '../FleetRoleGlyph';
 import { LocalCardHost } from './LocalCardHost';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 import type { ChatMessage } from './ChatConversation';
@@ -194,7 +195,7 @@ function SessionFooter({ entry }: { entry: HudRosterEntry }) {
     <div className="oracle-session-footer" data-testid="session-chat-footer">
       <div className="oracle-session-footer-row">
         <span className="hud__handle">{shortHandle(entry.ownerId)}</span>
-        {entry.fleetRole === 'leader' ? <span className="hud__chip hud__chip--accent">LEAD</span> : null}
+        {entry.fleetRole === 'leader' ? <FleetRoleGlyph role="leader" className="hud__role" /> : null}
         {entry.fleetSlug ? (
           <span
             className="hud__chip"
@@ -288,7 +289,7 @@ function LiveSessionChat({
         >
           <span className="hud__handle">{shortHandle(rosterEntry.ownerId)}</span>
           {rosterEntry.fleetRole === 'leader' ? (
-            <span className="hud__chip hud__chip--accent">LEAD</span>
+            <FleetRoleGlyph role="leader" className="hud__role" />
           ) : null}
         </span>
       );

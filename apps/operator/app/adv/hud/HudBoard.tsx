@@ -18,6 +18,7 @@
 
 import { memo } from 'react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import FleetRoleGlyph from '@/app/_components/FleetRoleGlyph';
 import {
   ALL_FLEETS,
   SOLO_FLEET_KEY,
@@ -103,7 +104,7 @@ function SessionCard({
           <span className="hud__card-h">
             <span className={`hud__dot hud__dot--${session.column}`} aria-hidden="true" />
             <span className="hud__handle">{session.handle}</span>
-            {session.isLeader ? <span className="hud__chip hud__chip--accent">LEAD</span> : null}
+            {session.isLeader ? <FleetRoleGlyph role="leader" className="hud__role" /> : null}
             <span className="hud__age">{formatAge(session.sinceSec)}</span>
           </span>
 

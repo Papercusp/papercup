@@ -134,7 +134,10 @@ describe('HudBoard', () => {
   it('marks the fleet leader on the card', () => {
     renderBoard([entry({ fleetSlug: 'atlas', fleetRole: 'leader' })]);
     const card = screen.getByRole('button', { name: /su-aaaaaaaa/ });
-    expect(within(card).getByText('LEAD')).toBeTruthy();
+    // Asserted via the ACCESSIBLE NAME, not the 👑 glyph: the label is the part
+    // that must not regress (swapping text for an emoji is exactly how a role
+    // silently drops out of the accessible tree).
+    expect(within(card).getByLabelText('Fleet leader')).toBeTruthy();
   });
 
   it('reports the clicked column back for focus, and toggles it off when re-clicked', () => {

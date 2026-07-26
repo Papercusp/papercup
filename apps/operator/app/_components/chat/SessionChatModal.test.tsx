@@ -267,7 +267,7 @@ describe('SessionChatModal', () => {
       const chip = document.querySelector('.oracle-msg-avatar--identity') as HTMLElement;
       expect(chip).toBeTruthy();
       expect(within(chip).getByText('su-live-1')).toBeTruthy();
-      expect(within(chip).getByText('LEAD')).toBeTruthy();
+      expect(within(chip).getByLabelText('Fleet leader')).toBeTruthy();
     });
 
     it('omits the LEAD marker for a non-leader member, and falls back to the default icon avatar when the owner has no roster row', async () => {
@@ -283,7 +283,7 @@ describe('SessionChatModal', () => {
       const chip = document.querySelector('.oracle-msg-avatar--identity') as HTMLElement;
       expect(chip).toBeTruthy();
       expect(within(chip).getByText('su-live-1')).toBeTruthy();
-      expect(within(chip).queryByText('LEAD')).toBeNull();
+      expect(within(chip).queryByLabelText('Fleet leader')).toBeNull();
     });
 
     it('falls back to the default icon avatar when the roster has no matching entry', async () => {
@@ -337,7 +337,7 @@ describe('SessionChatModal', () => {
 
       const footer = await waitFor(() => screen.getByTestId('session-chat-footer'));
       expect(footer.textContent).toContain('gui-chat-controls');
-      expect(footer.textContent).toContain('LEAD');
+      expect(footer.textContent).toContain('👑');
       expect(footer.textContent).toContain('gui-chat-session-controls-2026-07-25');
       expect(footer.textContent).toContain('ctx 20%');
       expect(footer.textContent).toContain('1/2');

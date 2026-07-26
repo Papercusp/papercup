@@ -329,6 +329,16 @@
   white-space: nowrap;
 }
 
+/* Fleet role icon (👑/👤) where the "LEAD" text chip used to sit. No chip
+   border/background — an emoji inside a pill reads as a badge-on-a-badge; the
+   glyph IS the badge. Sized against the handle so it aligns on the card header
+   row rather than inheriting the emoji's default line box. */
+.hud__role {
+  font-size: 11px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
 .hud__chip--accent {
   color: var(--accent);
   border-color: rgb(from var(--accent) r g b / 0.4);
