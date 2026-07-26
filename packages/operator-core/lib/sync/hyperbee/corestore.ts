@@ -18,6 +18,7 @@ import Corestore from 'corestore';
 import { mkdir, open, readFile, rename, unlink, type FileHandle } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { forgetStore, registerStoreMachine } from './remote-core-host';
 
 const stores = new Map<string, Promise<Corestore>>();
 const storeLocks = new Map<string, HarnessStoreLock>();
@@ -211,6 +212,13 @@ export async function getHarnessStore(opts: HarnessStoreOpts): Promise<Corestore
     try {
       const store = new Corestore(path, { cache: resolveCacheBlocks() });
       await store.ready();
+      // WI-5673: declare which MACHINE this store belongs to so remote peer
+      // logs are opened in exactly ONE store per machine. Sibling harnesses in
+      // the same Hive admit the same keys, and a Protomux carries at most one
+      // hypercore/alpha channel per discovery key — two local replicas of one
+      // key on a shared peer socket means one of them replicates and the other
+      // starves forever. See remote-core-host.ts.
+      registerStoreMachine(store, opts.workspaceRoot);
       return store;
     } catch (error) {
       storeLocks.delete(key);
@@ -228,6 +236,10 @@ export async function closeHarnessStore(opts: HarnessStoreOpts): Promise<void> {
   if (!cached) return;
   stores.delete(key);
   const store = await cached;
+  // WI-5673: stop hosting this store's admitted remote logs BEFORE the close,
+  // so a sibling that opens one of those keys next re-homes it onto a live
+  // store instead of getting a session on a dead one.
+  forgetStore(store);
   try {
     await store.close();
   } finally {

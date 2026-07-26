@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { parseAsArrayOf, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
+import { Combobox } from '@/app/harness/Combobox';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
@@ -775,19 +776,28 @@ export default function AdvSessionsClient() {
             <strong>Start from plan context</strong>
           </div>
           <div className="pc-adv-sessions__head-actions">
-            <Select
+            {/* Combobox, not Select, since P-003: `buildLaunchPlanOptions` now
+                carries the "updated …" stamp on each option's `detail` line
+                rather than baked into its label, and Select has no second
+                line to render it on — leaving this as a Select would have
+                silently dropped the timestamp from this picker. */}
+            <Combobox
               triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--plan"
               value={launchPlanSlug ?? PLAN_SELECT_PLACEHOLDER}
               onChange={(value) => void setLaunchPlanSlug(value === PLAN_SELECT_PLACEHOLDER ? null : value)}
               disabled={planList.loading}
               ariaLabel="Plan for new session"
+              searchPlaceholder="Search plans…"
+              emptyLabel="No plans match"
               options={launchPlanOptions}
             />
-            <Select
+            <Combobox
               triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--model"
               value={launchModel || MODEL_SELECT_DEFAULT}
               onChange={(value) => void setLaunchModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
               ariaLabel="Model for new session"
+              searchPlaceholder="Search models…"
+              emptyLabel="No models match"
               options={OMP_MODEL_OPTIONS}
             />
             <Button

@@ -35,6 +35,7 @@ import type Corestore from 'corestore';
 // defined explicitly so this module doesn't depend on the (retiring) Autobase;
 // `OpEnvelope` now lives in its own types module (Stage 4d).
 import type { OpEnvelope } from './op-envelope-types';
+import { resolveRemoteCoreHost } from './remote-core-host';
 
 /**
  * A single-writer op envelope. This is the `OpEnvelope` shape MINUS the
@@ -273,7 +274,20 @@ export async function openOwnLog(
  * `get(i, { wait: true })` block on the (Stage-4-wired) replication stream.
  */
 export async function openRemoteLog(store: Corestore, keyHex: string): Promise<RemoteLog> {
-  const core = getCore(store, { key: Buffer.from(keyHex, 'hex') });
+  // WI-5673: open this remote log in exactly ONE Corestore per machine. Sibling
+  // harnesses in the same Hive admit the SAME peer-log keys but hold separate
+  // per-harness stores, and a Protomux carries at most one hypercore/alpha
+  // channel per discovery key (hypercore replicator `_makePeer` bails on
+  // `protomux.opened(...)`; `createChannel` is `unique` by default) — so two
+  // local replicas of one key over the shared peer socket means one replicates
+  // and the other sits at peersCount 0 forever, which then escalates into a
+  // forced topic rejoin that tears down the socket for the healthy co-tenants
+  // too. Sharing the core keeps ONE channel and feeds every sibling. Each caller
+  // still gets its own Corestore SESSION here, so close()/refcount semantics are
+  // unchanged; an unregistered store (test fake) resolves to itself. See
+  // remote-core-host.ts.
+  const host = resolveRemoteCoreHost(store, keyHex);
+  const core = getCore(host, { key: Buffer.from(keyHex, 'hex') });
   await core.ready();
 
   return {

@@ -2235,7 +2235,7 @@ export function buildObjectiveTitleOsc(
  * than throw. We deliberately do NOT walk /proc ancestry to find a tty — ancestry crosses
  * ownership boundaries and would let a headless bee retitle a window it does not own.
  */
-export function ttyCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+export function ttyCandidates(env: Partial<NodeJS.ProcessEnv> = process.env): string[] {
   const out: string[] = [];
   for (const name of ['PAPERCUSP_OBJECTIVE_TTY', 'PAPERCUSP_TTY']) {
     const val = (env[name] ?? '').trim();
@@ -2247,7 +2247,7 @@ export function ttyCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
 
 /** The directory holding one claim marker per terminal device — the TS twin of
  *  pc_tty.py's `_tty_claims_dir` / psu-launcher.mjs's `TTY_CLAIMS_DIR`. */
-function ttyClaimsDir(env: NodeJS.ProcessEnv): string {
+function ttyClaimsDir(env: Partial<NodeJS.ProcessEnv>): string {
   return (env.PAPERCUSP_TTY_CLAIMS_DIR ?? '').trim() || join(homedir(), '.papercusp', 'tty-claims');
 }
 
@@ -2264,7 +2264,7 @@ function ttyClaimFilename(ttyPath: string): string {
  * unrelated session now owns that recycled path). No sid, or no claim on record, ⇒ true
  * (fail open) — a title is cosmetic and a missing claim must never hard-fail a write.
  */
-async function ttyOwnedByUs(path: string, sid: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+async function ttyOwnedByUs(path: string, sid: string, env: Partial<NodeJS.ProcessEnv>): Promise<boolean> {
   if (!sid) return true;
   try {
     const claimedBy = (await fsp.readFile(join(ttyClaimsDir(env), ttyClaimFilename(path)), 'utf8')).trim();
@@ -2283,7 +2283,7 @@ async function ttyOwnedByUs(path: string, sid: string, env: NodeJS.ProcessEnv): 
  * EI-10377: the PAPERCUSP_TTY candidate specifically is skipped when its claim now names a
  * different session — see ttyOwnedByUs.
  */
-export async function writeOscTitle(osc: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+export async function writeOscTitle(osc: string, env: Partial<NodeJS.ProcessEnv> = process.env): Promise<boolean> {
   if (osc.length === 0) return false;
   const sid = (env.PAPERCUSP_SID ?? '').trim();
   const ownedPath = (env.PAPERCUSP_TTY ?? '').trim();

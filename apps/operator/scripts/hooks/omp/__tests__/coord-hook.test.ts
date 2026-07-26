@@ -4605,16 +4605,16 @@ describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () 
 describe('ttyCandidates + writeOscTitle — the OMP twin of pc_tty.py (WI-3665)', () => {
   it('orders candidates test-seam → PAPERCUSP_TTY (owned) → /dev/tty (controlling)', () => {
     expect(
-      ttyCandidates({ PAPERCUSP_OBJECTIVE_TTY: '/tmp/seam', PAPERCUSP_TTY: '/dev/pts/24' } as NodeJS.ProcessEnv),
+      ttyCandidates({ PAPERCUSP_OBJECTIVE_TTY: '/tmp/seam', PAPERCUSP_TTY: '/dev/pts/24' }),
     ).toEqual(['/tmp/seam', '/dev/pts/24', '/dev/tty']);
   });
 
   it('falls back to /dev/tty alone when nothing is exported (a plain non-psu omp run)', () => {
-    expect(ttyCandidates({} as NodeJS.ProcessEnv)).toEqual(['/dev/tty']);
+    expect(ttyCandidates({})).toEqual(['/dev/tty']);
   });
 
   it('ignores blank/whitespace env values rather than trying to open them', () => {
-    expect(ttyCandidates({ PAPERCUSP_TTY: '   ' } as NodeJS.ProcessEnv)).toEqual(['/dev/tty']);
+    expect(ttyCandidates({ PAPERCUSP_TTY: '   ' })).toEqual(['/dev/tty']);
   });
 
   it('writes the escape to the OWNED terminal when the controlling one is gone (the bug)', async () => {
@@ -4623,7 +4623,7 @@ describe('ttyCandidates + writeOscTitle — the OMP twin of pc_tty.py (WI-3665)'
     const owned = join(dir, 'owned.tty');
     await fs.writeFile(owned, '');
     const osc = buildDisplayTitleOsc('👑 windows-parity 🟦 · su-9859e');
-    await expect(writeOscTitle(osc, { PAPERCUSP_TTY: owned } as NodeJS.ProcessEnv)).resolves.toBe(true);
+    await expect(writeOscTitle(osc, { PAPERCUSP_TTY: owned })).resolves.toBe(true);
     expect(await fs.readFile(owned, 'utf8')).toBe(osc);
     await fs.rm(dir, { recursive: true, force: true });
   });
@@ -4638,7 +4638,7 @@ describe('ttyCandidates + writeOscTitle — the OMP twin of pc_tty.py (WI-3665)'
       writeOscTitle(osc, {
         PAPERCUSP_OBJECTIVE_TTY: join(dir, 'no-such-dir', 'x.tty'),
         PAPERCUSP_TTY: owned,
-      } as NodeJS.ProcessEnv),
+      }),
     ).resolves.toBe(true);
     expect(await fs.readFile(owned, 'utf8')).toBe(osc);
     await fs.rm(dir, { recursive: true, force: true });
@@ -4646,12 +4646,12 @@ describe('ttyCandidates + writeOscTitle — the OMP twin of pc_tty.py (WI-3665)'
 
   it('resolves false — never throws — when no terminal accepts the write (headless bee)', async () => {
     await expect(
-      writeOscTitle('\x1b]0;x\x07', { PAPERCUSP_TTY: '/nonexistent/x.tty' } as NodeJS.ProcessEnv),
+      writeOscTitle('\x1b]0;x\x07', { PAPERCUSP_TTY: '/nonexistent/x.tty' }),
     ).resolves.toBe(false);
   });
 
   it('an empty escape writes nothing at all (no title ⇒ no syscall)', async () => {
-    await expect(writeOscTitle('', { PAPERCUSP_TTY: '/nonexistent/x' } as NodeJS.ProcessEnv)).resolves.toBe(false);
+    await expect(writeOscTitle('', { PAPERCUSP_TTY: '/nonexistent/x' })).resolves.toBe(false);
   });
 });
 
@@ -4675,7 +4675,7 @@ describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling
       PAPERCUSP_TTY: owned,
       PAPERCUSP_SID: 'su-9859ea5e-926d-4c65-b8fb-4d7c25a21353',
       PAPERCUSP_TTY_CLAIMS_DIR: claimsDir,
-    } as NodeJS.ProcessEnv);
+    });
     // The load-bearing assertion: the recycled path itself was never touched — whether
     // writeOscTitle then fell through to this test process's OWN /dev/tty (environment-
     // dependent; harmless here) is not what this guards against.
@@ -4696,7 +4696,7 @@ describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling
       PAPERCUSP_TTY: owned,
       PAPERCUSP_SID: sid,
       PAPERCUSP_TTY_CLAIMS_DIR: claimsDir,
-    } as NodeJS.ProcessEnv);
+    });
     expect(wrote).toBe(true);
     expect(await fs.readFile(owned, 'utf8')).toBe(osc);
     await fs.rm(dir, { recursive: true, force: true });
@@ -4711,7 +4711,7 @@ describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling
       PAPERCUSP_TTY: owned,
       PAPERCUSP_SID: 'su-9859ea5e-926d-4c65-b8fb-4d7c25a21353',
       PAPERCUSP_TTY_CLAIMS_DIR: join(dir, 'no-such-claims-dir'),
-    } as NodeJS.ProcessEnv);
+    });
     expect(wrote).toBe(true);
     expect(await fs.readFile(owned, 'utf8')).toBe(osc);
     await fs.rm(dir, { recursive: true, force: true });
@@ -4728,7 +4728,7 @@ describe('writeOscTitle — the EI-10377 claim check (pty minor-number recycling
     const wrote = await writeOscTitle(osc, {
       PAPERCUSP_TTY: owned,
       PAPERCUSP_TTY_CLAIMS_DIR: claimsDir,
-    } as NodeJS.ProcessEnv);
+    });
     expect(wrote).toBe(true);
     await fs.rm(dir, { recursive: true, force: true });
   });

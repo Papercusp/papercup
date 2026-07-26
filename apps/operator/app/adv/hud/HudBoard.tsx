@@ -270,8 +270,6 @@ export default function HudBoard({
           })}
         </div>
 
-        <span className="hud__spacer" />
-
         {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
 
         <Tooltip
@@ -290,6 +288,13 @@ export default function HudBoard({
             <span className="hud__count-row">{suOnly ? 'su sessions' : 'all agents'}</span>
           </button>
         </Tooltip>
+
+        {/* P-002 (owner ask 2026-07-26: "left align these buttons instead of
+            right align"). The spacer used to sit BEFORE the header action,
+            which is what pushed the launcher cluster + the su-sessions toggle
+            to the far right. Trailing it instead left-aligns the whole row and
+            lets the slack fall on the right. */}
+        <span className="hud__spacer" />
       </div>
 
       {board.fleets.length > 0 ? (

@@ -90,8 +90,10 @@
 /* ── header action slot ("+ New session") ────────────────────────────────── */
 /* hud-consolidation-2026-07-26 P-001: the launch control lives in
    NewSessionLauncher.tsx (shared with AdvSessionsClient's own picker); this
-   file only lays out the slot + the two Selects + Button it renders. No new
-   colours — Select/Button already carry their own DTCG-token styling. */
+   file only lays out the slot + the three Comboboxes + Button it renders. No
+   new colours — Combobox/Button already carry their own DTCG-token styling.
+   The pickers became searchable Comboboxes under
+   hud-session-launcher-and-board-tabs-2026-07-26 P-003/P-008. */
 
 .hud__header-action {
   display: flex;
@@ -104,12 +106,20 @@
   gap: 6px;
 }
 
+/* Widths are a CEILING, not a fixed size — the trigger label ellipsizes
+   inside them (.h-combobox__trigger-label), while the dropdown panel sizes
+   itself independently, so a long plan title stays fully readable in the
+   list even though the closed control is narrow. */
 .pc-new-session-launcher__select--plan {
   max-width: 220px;
 }
 
 .pc-new-session-launcher__select--model {
   max-width: 140px;
+}
+
+.pc-new-session-launcher__select--effort {
+  max-width: 130px;
 }
 
 /* ── fleet filter strip ───────────────────────────────────────────────────── */
