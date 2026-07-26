@@ -452,10 +452,12 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       -- issue-family feature_order; the column only needs to EXIST for the SELECT.
       ADD COLUMN IF NOT EXISTS feature_order integer,
       -- Same EI-10579 drift class, next instance: agent-protocol-authority-semantics
-      -- -2026-07-26 P-004/D-009 added the bare `authority` column and ISSUE_COLS
+      -- -2026-07-26 P-004/D-009 added the bare "authority" column and ISSUE_COLS
       -- (issues-engineer.ts) now selects it unconditionally, so the rig's REAL
       -- engineer_issues table 42703'd on every getWorkItem issue-family probe.
-      -- Real column is `text` NULL; the rig never writes it, it only must EXIST.
+      -- Real column is text NULL; the rig never writes it, it only must EXIST.
+      -- NOTE: no backticks in this comment on purpose — this SQL lives inside a TS
+      -- template literal, so a backtick here terminates it (EI-18748484115079154).
       ADD COLUMN IF NOT EXISTS authority text;
   `);
 

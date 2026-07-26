@@ -26,7 +26,7 @@
  */
 import { spawn } from 'node:child_process';
 import { type RunGit, defaultRunGit } from './storage';
-import { type SecretFinding, scanForSecrets } from './secrets-guard';
+import { type SecretFinding, describeSecretFindings, scanForSecrets } from './secrets-guard';
 import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
 
 /** Default per-blob cap — matches GitHub's hard limit posture and
@@ -426,7 +426,17 @@ export function describePublishRefusal(res: PublishGuardResult): string {
     case 'object-flood':
       return `refusing to publish — ${res.newObjectCount} new objects exceeds the object-count cap`;
     case 'secrets':
-      return `refusing to publish — ${res.secretFindings.length} secret(s) found in new content`;
+      // EI-18751879785723304: name the PATHS, not just a count. This refusal is
+      // fail-closed-forever (the guard baseline never advances past a refused
+      // range) and its documented remedy — pot_git:secrets_exemptions
+      // { action:'add', path } — needs the exact path. Emitting only a count
+      // forced the operator to hand-reproduce the scan over the whole stranded
+      // range to recover the one input the fix requires (EI-18750935999066024:
+      // 1,736 files re-scanned by hand during a 3h fleet-wide egress freeze).
+      // describeSecretFindings already renders path:line [rule] excerpt with the
+      // excerpt MASKED at detection, so this discloses where to look, never the
+      // material — the same reason `blob-over-cap` above already names paths.
+      return describeSecretFindings(res.secretFindings);
     default:
       return `refusing to publish — ${res.errors.join('; ') || 'unknown error'}`;
   }
