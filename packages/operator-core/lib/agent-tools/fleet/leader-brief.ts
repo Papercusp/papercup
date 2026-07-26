@@ -775,8 +775,7 @@ export default defineTool({
     'parked-awaiting-capability)+nextFireAt, stalled flag, unanswered msgs ' +
     '(count/oldestAgeMs/newest), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing or idle ' +
-    '— check `kind` before acting), `dormant` (zero self-wake mechanism — no loop, no ' +
-    'park, no claim — wake it NOW, do not wait), ' +
+    '— check `kind` before acting), `dormant` (no self-wake mechanism), ' +
     'and unownedCriticals (aged criticals the spec admits) + orphanedInFlight ' +
     '(released mid-progress, assignee NULL). Scoped to ONE fleet ' +
     '(yours by default), not fleet:assignments\' whole roster. ' +
@@ -792,8 +791,8 @@ export default defineTool({
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on. `dormant:true` → coord:send ' +
-      '{ wake:"required" } it now; never bench (there is no loop/park to bench onto — that would do nothing). ' +
+      'fleet:bench it onto the gate it is actually blocked on. `dormant:true` → wake it ' +
+      '(coord:send wake:required); never bench — nothing to bench onto. ' +
       'Nonzero `unownedCriticals`/`orphanedInFlight` → claim it. ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },

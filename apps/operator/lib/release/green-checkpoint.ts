@@ -2286,7 +2286,15 @@ export async function runGreenCheckpoint(
 export type CheckpointExec = (
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; env?: NodeJS.ProcessEnv; allowNonZero?: boolean; timeoutMs?: number },
+  opts?: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    allowNonZero?: boolean;
+    timeoutMs?: number;
+    /** EI-78: run under scripts/pc-heavy.sh (nice/ionice + slot semaphore). Optional so
+     *  every injected test fake keeps compiling untouched — a fake simply ignores it. */
+    heavy?: boolean;
+  },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** load-flake-isolation-2026-06-23: hard cap for ONE isolated single-file re-run.
@@ -2536,7 +2544,7 @@ export async function runPostSuiteLegs(
   } else if (lintTscCheck === 'absent') {
     legs.typecheck = { status: 'skipped', skipReason: 'candidate provides no lint:tsc script' };
   } else {
-    const typecheck = await exec('npm', ['run', 'lint:tsc'], { cwd: treeDir, env, allowNonZero: true });
+    const typecheck = await exec('npm', ['run', 'lint:tsc'], { cwd: treeDir, env, allowNonZero: true, heavy: true });
     legs.typecheck = { status: typecheck.code === 0 ? 'passed' : 'failed' };
     if (typecheck.code !== 0) {
       haltedBy = 'lint:tsc failed';
@@ -2744,6 +2752,7 @@ export async function runPostSuiteLegs(
         cwd: treeDir,
         env: { ...env, PAPERCUSP_RETAIN_DIST_CHUNKS: '1' },
         allowNonZero: true,
+        heavy: true, // EI-78: a full SPA bundle build — CPU-heavy enough to starve the operator.
       });
       legs.build = { status: b.code === 0 ? 'passed' : 'failed' };
       if (b.code !== 0) {
@@ -2912,7 +2921,9 @@ export function realCheckpointDeps(
       // last green, caps vitest parallelism + retries once to absorb load-flakes, and
       // marks GREEN_CHECKPOINT=1 (its doc records the incidents behind each rule).
       const env = buildGreenCheckpointEnv(base);
-      const r = await exec(cmd, args, { cwd: treeDir, env, allowNonZero: true });
+      // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
+      // (measured 274s-2773s per run over 19 runs on 2026-07-26).
+      const r = await exec(cmd, args, { cwd: treeDir, env, allowNonZero: true, heavy: true });
 
       // WI-6053: the five post-suite legs (typecheck · migrations lint · identity lints ·
       // design-primitives lint · SPA build) live in ONE function now, and run whenever the
@@ -3373,13 +3384,92 @@ function pruneOldLogs(dir: string, days: number): void {
   } catch { /* dir gone — nothing to prune */ }
 }
 
+/** EI-78: how long a heavy gate leg waits for a pc-heavy slot before running ANYWAY.
+ *  pc-heavy's own default is 900s (15m) — far too generous here: the gate is the highest-
+ *  priority heavy job on the box, and 15m of *queueing* per heavy leg (x3 legs) would eat
+ *  the run budget without doing any work. 120s is enough to stagger off a peer's in-flight
+ *  vitest (the actual goal — avoid two suites landing on the same cores at once) while
+ *  capping worst-case added wall-clock at ~6m across all three wrapped legs. pc-heavy
+ *  fails OPEN when the wait elapses (runs unthrottled), so this can never wedge the gate. */
+export const HEAVY_SLOT_WAIT_SEC = 120;
+
+/** EI-78: absolute path to scripts/pc-heavy.sh, or null when it can't be found.
+ *
+ *  Resolved from THIS module's location (the tree the gate is EXECUTING from), never from
+ *  the candidate tree being tested: a candidate that predates pc-heavy.sh — or one whose
+ *  scripts/ is mid-edit — must not silently disable the throttle or, worse, run an
+ *  arbitrary older revision of the wrapper. Cached after the first probe; null means every
+ *  caller runs unwrapped, exactly as before this change (fail-open by contract, matching
+ *  pc-heavy.sh's own internal fail-open paths — a throttling nicety must never be able to
+ *  affect a gate verdict). */
+let heavyWrapperCache: { path: string | null } | undefined;
+function resolveHeavyWrapper(): string | null {
+  if (heavyWrapperCache) return heavyWrapperCache.path;
+  let resolved: string | null = null;
+  try {
+    // apps/operator/lib/release/green-checkpoint.ts -> repo root
+    const p = path.resolve(__dirname, '..', '..', '..', '..', 'scripts', 'pc-heavy.sh');
+    if (existsSync(p)) resolved = p;
+  } catch {
+    resolved = null;
+  }
+  heavyWrapperCache = { path: resolved };
+  return resolved;
+}
+
 function runCmd(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; allowNonZero?: boolean; timeoutMs?: number } = {},
+  opts: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    allowNonZero?: boolean;
+    timeoutMs?: number;
+    /** EI-78: route this command through scripts/pc-heavy.sh (nice + ionice + a host-wide
+     *  flock counting semaphore). Opt-IN per call site, never blanket: runCmd is the exec
+     *  seam for ~30 invocations, most of them trivial `git rev-parse`/`git log` calls that
+     *  must not queue behind another agent's vitest run. Set it only on the genuinely heavy
+     *  legs (the green suite, lint:tsc, the SPA build). */
+    heavy?: boolean;
+  } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env });
+    let cmdToRun = cmd;
+    let argsToRun = args;
+    let env = opts.env ?? process.env;
+
+    // EI-78: de-prioritise the heavy legs so an hourly gate run stops competing head-on with
+    // the live operator + the running fleet on the shared box.
+    //
+    // ⚠ DELIBERATELY SKIPPED when `timeoutMs` is set, and that is a CORRECTNESS constraint,
+    // not a preference. pc-heavy.sh intentionally does NOT `exec` its command ("so the fd/lock
+    // stays with us" — it must outlive the child to hold the flock), so wrapping inserts a real
+    // shell process: gate -> sh(pc-heavy) -> nice -> npm -> vitest. The timeout path below does
+    // `child.kill('SIGKILL')`, which signals ONLY the direct child — it would kill the wrapper
+    // shell and ORPHAN the vitest workers it was supposed to stop. (The process-GROUP kill at
+    // the top of this file is unaffected: pc-heavy never setsid/detaches, so every wrapped
+    // descendant still inherits this process's pgid and `kill(-pid)` reaches all of them.)
+    // The two timeoutMs callers are the isolation + workspace re-runs, which are single-file /
+    // single-fork by construction — light enough that leaving them unthrottled costs nothing.
+    const wrapper = opts.heavy && !opts.timeoutMs ? resolveHeavyWrapper() : null;
+    if (wrapper) {
+      argsToRun = [cmdToRun, ...argsToRun];
+      cmdToRun = wrapper;
+      env = {
+        ...env,
+        // A gate verdict must NEVER be a replay. pc-heavy coalesces concurrent identical
+        // runs (same cwd+argv+tree-state) and replays the leader's cached output — but its
+        // key does NOT include the ENVIRONMENT, and the gate varies AFFECTED_BASE via env
+        // alone. Two runs at the same HEAD with different bases would collide, handing one
+        // of them a verdict computed for a different delta — precisely the "stale red is
+        // byte-indistinguishable from a fresh verdict" failure this file's logging already
+        // fights. Cheap to disable; catastrophic to get wrong.
+        PC_HEAVY_COALESCE: '0',
+        PC_HEAVY_TIMEOUT_SEC: String(HEAVY_SLOT_WAIT_SEC),
+      };
+    }
+
+    const child = spawn(cmdToRun, argsToRun, { cwd: opts.cwd, env });
     let stdout = '';
     let stderr = '';
     let settled = false;

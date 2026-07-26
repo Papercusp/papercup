@@ -12,7 +12,7 @@ implement.
 ### Read the failure first, then the code
 
 - `audit:list` — what happened recently in the harness.
-- `messages:inbox` — failure reports from workers / validators.
+- `coord:inbox` — failure reports from workers / validators.
 - `harness:escalation` — supervisor's notes if the failure was escalated.
 - Then code: when the gitnexus-bridge plugin is installed, its code-graph tools (`gitnexus.query`, `gitnexus.impact`) are the fastest way to find call sites + downstream impact.
 
@@ -30,11 +30,11 @@ have been hit before. Cheap to call; save yourself the work.
 
 1. `audit:list` to find the failing event.
 2. `harness:escalation` if it was escalated.
-3. `messages:inbox` for the failure report.
+3. `coord:inbox` for the failure report.
 4. Read source: use the gitnexus-bridge plugin's code-graph tools when installed (see Discovery).
 5. Spawn a validator if you need to verify your hypothesis:
    `orchestrator.spawn { role: 'validator' }`.
-6. `messages:send` with diagnosis + recommended fix. Send to
+6. `coord:send` with diagnosis + recommended fix. Send to
    the worker role for implementation.
 
 ### Investigate a validator rejection

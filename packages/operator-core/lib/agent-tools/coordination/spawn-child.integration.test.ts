@@ -320,28 +320,26 @@ describe('executeSpawnChild against real PG (scratch workspace)', () => {
     await db.sql`
       INSERT INTO harness_shared.projects (slug, parent_slug) VALUES (${CHILD_SLUG}, 'papercup')
       ON CONFLICT (slug) DO UPDATE SET parent_slug = EXCLUDED.parent_slug`;
-    // The send rides dispatchAction → doSendMessage: the PARENT's inbox view +
-    // the CHILD's executed_actions (rate-limit window) — per-harness surfaces
-    // scaffoldHarnessSchema normally provisions; plain tables suffice here.
-    await db.sql.unsafe(`
-      CREATE SCHEMA IF NOT EXISTS harness_papercup;
-      CREATE TABLE IF NOT EXISTS harness_papercup.messages (
-        id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-        from_slug text, to_slug text, to_role text, from_feature_id text, to_feature_id text,
-        kind text, subject text, body text, parent_message_id text, status text,
-        acknowledged_at timestamptz, created_at timestamptz DEFAULT now());
-      CREATE TABLE IF NOT EXISTS harness_scratch_child.executed_actions (
-        op text, executed_at timestamptz DEFAULT now())`);
+    // retire-work-item-mail-surface-2026-07-26 P-006: the send used to ride
+    // dispatchAction → doSendMessage (a per-harness `messages` table write) —
+    // that verb was retired; the builtin now calls `sendMessage` (the same
+    // primitive `coord:send` uses) directly. This scratch DB doesn't provision
+    // the full coord plane (coord_event_log etc.), so inject a stub `send` via
+    // the DI seam and assert on ITS captured call, same as notify-parent-done's
+    // own unit test.
+    const send = vi.fn(async () => ({}) as never);
 
     // Queue NOT drained (a sibling feature is still todo) → no message.
     const early = await notifyParentOnDone({
       harnessSlug: CHILD_SLUG,
       workspaceId: WS,
       featureId: 'F-SCRATCH-CHILD-SEED-001',
+      deps: { send },
     });
     expect(early).toMatchObject({ notified: false, parent: 'papercup', reason: 'queue_not_drained' });
+    expect(send).not.toHaveBeenCalled();
 
-    // Drain the queue → the Completion lands in the parent's inbox.
+    // Drain the queue → the Completion is sent to the parent via sendMessage.
     await db.sql`
       UPDATE harness_shared.harness_features_consolidated
          SET status = 'passed'
@@ -350,19 +348,19 @@ describe('executeSpawnChild against real PG (scratch workspace)', () => {
       harnessSlug: CHILD_SLUG,
       workspaceId: WS,
       featureId: 'F-SCRATCH-CHILD-SEED-002',
+      deps: { send },
     });
     expect(done).toEqual({ notified: true, parent: 'papercup' });
 
-    const msgs = await db.sql<{ from_slug: string; to_slug: string; kind: string; subject: string }[]>`
-      SELECT from_slug, to_slug, kind, subject FROM harness_papercup.messages
-    `;
-    expect(msgs).toHaveLength(1);
-    expect(msgs[0]).toMatchObject({
-      from_slug: CHILD_SLUG,
-      to_slug: 'papercup',
-      kind: 'Completion',
-      subject: `mission DONE: ${CHILD_SLUG}`,
-    });
+    expect(send).toHaveBeenCalledTimes(1);
+    const [identity, options] = send.mock.calls[0] as [
+      { ownerId: string },
+      { to: string[]; summary: string; body: string },
+    ];
+    expect(identity.ownerId).toBe(`harness-afterdone:${CHILD_SLUG}`);
+    expect(options).toMatchObject({ to: ['papercup'] });
+    expect(options.summary).toBe(`mission DONE: ${CHILD_SLUG}`);
+    expect(options.body).toContain('F-SCRATCH-CHILD-SEED-002');
   });
 
   it('P-004: a harness with no sealed parent notifies no one', async () => {

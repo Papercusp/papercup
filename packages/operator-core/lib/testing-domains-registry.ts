@@ -371,7 +371,6 @@ defineTestDomain({
         'packages/operator-core/lib/agent-tools/harness_docs/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/hooks/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/memory/**/*.test.ts',
-        'packages/operator-core/lib/agent-tools/messages/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/omp/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/operator/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/oracle/**/*.test.ts',

@@ -105,57 +105,56 @@ afterEach(() => {
 });
 
 describe('ConversationsTab — the unified stream', () => {
-  it('merges all four sources into one stream, newest first', () => {
-    seedAllFour();
+  it('merges all three sources into one stream, newest first', () => {
+    seedAllThree();
     render(<ConversationsTab active />);
     const rows = screen.getAllByTestId(/^conversation-row-/);
-    expect(rows).toHaveLength(4);
-    // deliberation (20:14) > mail (18:00) > agent chat (epoch 1_753_100_000_000
-    // = 2025) > question (2026-07-20)… ordering is by updatedAt descending.
+    expect(rows).toHaveLength(3);
+    // deliberation (2026-07-25 20:14) is the most recently updated of the three.
     expect(rows[0].getAttribute('data-testid')).toBe('conversation-row-deliberations:thr-1');
-    expect(screen.getByTestId('conversations-count').textContent).toBe('4');
+    expect(screen.getByTestId('conversations-count').textContent).toBe('3');
   });
 
   // An inactive tab must not fetch: the rail mounts only the active pane, and a
-  // background pane paying for four list queries is exactly what `enabled`
+  // background pane paying for three list queries is exactly what `enabled`
   // exists to prevent.
   it('renders nothing while the tab is inactive', () => {
-    seedAllFour();
+    seedAllThree();
     const { container } = render(<ConversationsTab active={false} />);
     expect(container.firstChild).toBeNull();
   });
 
   it('filters by source chip, and counts each source', () => {
-    seedAllFour();
+    seedAllThree();
     render(<ConversationsTab active />);
     // Every chip carries its own count, so the owner can see what is there
     // without switching to it.
     expect(screen.getByTestId('conversations-filter-threads').textContent).toContain('1');
-    fireEvent.click(screen.getByTestId('conversations-filter-messages'));
-    expect(nuqsSetters.lscs).toHaveBeenCalledWith('messages');
+    fireEvent.click(screen.getByTestId('conversations-filter-agentchats'));
+    expect(nuqsSetters.lscs).toHaveBeenCalledWith('agentchats');
   });
 
   it('applies the source filter from the URL', () => {
-    seedAllFour();
-    nuqsState.lscs = 'messages';
+    seedAllThree();
+    nuqsState.lscs = 'agentchats';
     render(<ConversationsTab active />);
     const rows = screen.getAllByTestId(/^conversation-row-/);
     expect(rows).toHaveLength(1);
-    expect(rows[0].getAttribute('data-testid')).toBe('conversation-row-messages:msg-1');
-    expect(screen.getByTestId('conversations-count').textContent).toBe('1 of 4');
+    expect(rows[0].getAttribute('data-testid')).toBe('conversation-row-agentchats:chat-1');
+    expect(screen.getByTestId('conversations-count').textContent).toBe('1 of 3');
   });
 
   it('searches across every displayed field, not just the title', () => {
-    seedAllFour();
-    nuqsState.lscq = 'su-4ca244e4'; // a RECIPIENT, which is not in any title
+    seedAllThree();
+    nuqsState.lscq = 'WI-5404'; // a RELATED WORK ref, which is not in any title
     render(<ConversationsTab active />);
     const rows = screen.getAllByTestId(/^conversation-row-/);
     expect(rows).toHaveLength(1);
-    expect(rows[0].getAttribute('data-testid')).toBe('conversation-row-messages:msg-1');
+    expect(rows[0].getAttribute('data-testid')).toBe('conversation-row-agentchats:chat-1');
   });
 
   it('drills in on a row click by writing the compound selection', () => {
-    seedAllFour();
+    seedAllThree();
     render(<ConversationsTab active />);
     fireEvent.click(screen.getByTestId('conversation-row-threads:conv-1'));
     expect(nuqsSetters.lsc).toHaveBeenCalledWith('threads:conv-1');
@@ -185,7 +184,7 @@ describe('ConversationsTab — detail mode', () => {
   };
 
   function openQuestion() {
-    seedAllFour();
+    seedAllThree();
     nuqsState.lsc = 'threads:conv-1';
     H.results['conversations.questionDetail'] = { ...blank(), data: [DETAIL] };
     render(<ConversationsTab active />);
@@ -227,7 +226,7 @@ describe('ConversationsTab — detail mode', () => {
   // refuses a post to a resolved conversation server-side, and the rail must not
   // offer a control whose only outcome is that refusal.
   it('offers no composer on a resolved question', () => {
-    seedAllFour();
+    seedAllThree();
     nuqsState.lsc = 'threads:conv-1';
     H.results['conversations.questionDetail'] = { ...blank(), data: [{ ...DETAIL, state: 'resolved', accepted_answer: 'Left out-of-lane.' }] };
     render(<ConversationsTab active />);
@@ -239,7 +238,7 @@ describe('ConversationsTab — detail mode', () => {
   // Rendering it under the new title would attribute one conversation's content
   // to another — the guard must fall through to the loading state instead.
   it('never renders another conversation’s detail while the selected one loads', () => {
-    seedAllFour();
+    seedAllThree();
     nuqsState.lsc = 'threads:conv-1';
     H.results['conversations.questionDetail'] = { ...blank(), data: [{ ...DETAIL, id: 'conv-STALE', body: 'stale body' }] };
     render(<ConversationsTab active />);
@@ -248,7 +247,7 @@ describe('ConversationsTab — detail mode', () => {
   });
 
   it('renders a deliberation read-only, with what it is attached to', () => {
-    seedAllFour();
+    seedAllThree();
     nuqsState.lsc = 'deliberations:thr-1';
     H.results['conversations.deliberationDetail'] = {
       ...blank(),
@@ -262,7 +261,7 @@ describe('ConversationsTab — detail mode', () => {
   });
 
   it('flattens agent-chat transcript turns', () => {
-    seedAllFour();
+    seedAllThree();
     nuqsState.lsc = 'agentchats:chat-1';
     H.results['conversations.agentChatDetail'] = {
       ...blank(),
@@ -270,17 +269,6 @@ describe('ConversationsTab — detail mode', () => {
     };
     render(<ConversationsTab active />);
     expect(screen.getByText('Widen the offer query.')).toBeTruthy();
-  });
-
-  it('renders work-item mail with its routing and related work', () => {
-    seedAllFour();
-    nuqsState.lsc = 'messages:msg-1';
-    H.results['conversations.messageDetail'] = { ...blank(), data: [MESSAGE] };
-    render(<ConversationsTab active />);
-    expect(screen.getByText('mug → su-4ca244e4')).toBeTruthy();
-    // The related-work callout, specifically — the id also appears in the row
-    // behind it, so scope the assertion to the callout body.
-    expect(screen.getByText('Related work').parentElement?.textContent).toContain('WI-5727');
   });
 });
 
@@ -290,7 +278,7 @@ describe('ConversationsTab — placement', () => {
   // compose control here, the rail would offer two places to ask — which is the
   // exact duplication this pin exists to catch.
   it('carries no compose control — asking lives in the Agents tab', () => {
-    seedAllFour();
+    seedAllThree();
     render(<ConversationsTab active />);
     expect(screen.queryByText(/^Ask/)).toBeNull();
     expect(screen.queryByTestId('ask-agent-pane')).toBeNull();

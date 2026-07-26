@@ -2468,6 +2468,70 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
 }
 
 /**
+ * Merge freshly-recomputed panel(s) into a cached snapshot IN PLACE (P-013 /
+ * D-007, stop-discarded-dedup-and-audit-server-polling-2026-07-26) — the
+ * push-on-write counterpart to the whole-snapshot `computeSystemHealth`.
+ * Re-derives `overall` from the FULL merged panel set (never just the updated
+ * ones), so a partial merge can't blind the aggregator to a worse, untouched
+ * panel's status. Stamps `evaluatedAt` to `now` so the tab treats the snapshot
+ * as fresh. Mutates AND returns `snap` (same reference) — exported for the
+ * unit test + for `refreshHealthPanel` below.
+ */
+export function mergeHealthPanels(
+  snap: SystemHealth,
+  updates: Partial<SystemHealthPanels>,
+  now: number,
+): SystemHealth {
+  Object.assign(snap.panels, updates);
+  snap.overall = worstStatus(Object.values(snap.panels).map((p) => p.status));
+  snap.evaluatedAt = now;
+  return snap;
+}
+
+/**
+ * Push-on-write refresh for ONE panel (P-013 / D-007): recompute a single
+ * collector and merge its result into the cached snapshot immediately, instead
+ * of waiting up to 30s for the next whole-snapshot tick to notice the write.
+ * Called fire-and-forget from the write path — capture-core/decay/triage-core/
+ * hygiene for observations+improvements, autonomy policy-store/tripwire-store
+ * for autonomy — never throws (a write must never fail because the health
+ * cache couldn't be refreshed). A cold cache (no tick has run yet for this
+ * workspace) is a safe no-op: the first `getSystemHealth` call / periodic tick
+ * populates it from scratch, evaluating every panel including this one fresh.
+ */
+export async function refreshHealthPanel(
+  panel: 'observations' | 'improvements' | 'autonomy',
+  workspaceId?: string,
+): Promise<void> {
+  try {
+    if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return;
+    const ws = workspaceId ?? activeWorkspaceId();
+    const prev = cache.get(ws);
+    if (!prev) return; // nothing to merge into yet — the next full tick seeds the cache
+    const now = Date.now();
+    // A minimal ctx: none of these three collectors read potSlug/started/
+    // openPlacements/gatewayEnabled/gatewayReachable/overwatchAlive — those
+    // exist only for the OTHER ~17 collectors this single-panel refresh
+    // deliberately skips (the whole point is avoiding their cost).
+    const ctx: HealthCtx = {
+      ws, now, potSlug: null, started: false, openPlacements: null,
+      gatewayEnabled: false, gatewayReachable: null, overwatchAlive: null,
+    };
+    const fresh = panel === 'observations' ? await collectObservations(ctx)
+      : panel === 'improvements' ? await collectImprovements(ctx)
+      : await collectAutonomy(ctx);
+    const merged = mergeHealthPanels(prev, { [panel]: fresh } as Partial<SystemHealthPanels>, now);
+    cache.set(ws, merged);
+    if (await precomputeSharedHealthEnabled()) {
+      void writeSharedSnapshot(SYSTEM_HEALTH_SNAPSHOT_KEY, ws, merged, SYSTEM_HEALTH_SNAPSHOT_VERSION).catch(() => {});
+    }
+    await notifySyncInvalidate('health.snapshot', undefined).catch(() => {});
+  } catch {
+    /* fire-and-forget from a write path — never throw */
+  }
+}
+
+/**
  * Pre-warm the per-workspace cache once at boot — the cold-cache perf fix
  * (system-health-tab-2026-06-15 P-003 follow-up). The in-process periodic tick
  * keeps the cache warm in steady state, but for the ~30s after a boot/deploy the

@@ -22,7 +22,7 @@ payload into your artifacts.
 
 - Before writing an artifact, `artifacts:load` to see prior content if the path exists.
 - Before creating a feature link, `features:list_related` to avoid duplicates.
-- Before sending a message, `messages:inbox` to see if you already replied.
+- Before sending a message, `coord:inbox` to see if you already replied.
 
 ## Named workflows
 
@@ -32,13 +32,12 @@ payload into your artifacts.
 2. `harness:phase_path` for the on-disk workspace if you need to read source.
 3. Do the work — write files, edit code.
 4. `artifacts:save` for any auxiliary docs your work produced (decision notes, output summaries).
-5. `messages:send` to report what changed, addressed to the orchestrator + reviewer.
+5. `coord:send` to report what changed, addressed to the orchestrator + reviewer.
 
 ### Hit a blocker
 
-1. Don't escalate via chat — workers can't chat directly. Use the messaging surface.
-2. `messages:send` with kind="Blocker" and the specific question.
-3. The orchestrator routes to the right next role (debugger, architect, etc.).
+1. `coord:send` with a "Blocker" prefix and the specific question, addressed to the orchestrator (`wake:true`).
+2. The orchestrator routes to the right next role (debugger, architect, etc.).
 
 ### Where new tests go
 
