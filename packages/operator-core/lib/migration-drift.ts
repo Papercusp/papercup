@@ -186,6 +186,20 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
   // templates/manual files that were never runner-eligible on disk.
   const extra = applied.filter((f) => !onDiskSet.has(f) && isRunnerMigration(f));
 
+  const deployedSqlDir = resolveDeployedSqlDir(sqlDir);
+  let deployedOnDisk: string[] | null = null;
+  if (deployedSqlDir) {
+    try {
+      deployedOnDisk = fs.readdirSync(deployedSqlDir).filter(isRunnerMigration);
+    } catch {
+      deployedOnDisk = null; // unreadable → fail toward reporting, same as unresolved
+    }
+  }
+  const { missingDeployed, missingPendingDeploy } = classifyMissingByDeployedTree(
+    missing,
+    deployedOnDisk,
+  );
+
   return {
     sqlDir,
     onDisk,
@@ -199,5 +213,8 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
     // (infra round-3 F14).
     inSync: missing.length === 0,
     schemaAhead: computeSchemaAhead(onDisk, applied),
+    deployedSqlDir,
+    missingDeployed,
+    missingPendingDeploy,
   };
 }

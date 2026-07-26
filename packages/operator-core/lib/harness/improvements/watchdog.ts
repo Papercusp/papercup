@@ -1361,29 +1361,46 @@ export async function serviceDownCollectorResult(opts: {
  * expects those columns/tables fails until the operator restarts (boot-apply). Rare +
  * catastrophic → critical, any drift fires. Wires the existing `checkMigrationDrift`
  * (injectable for tests).
+ *
+ * WI-6037: `missing` alone over-fires. `resolveSqlDir()` is cwd-RELATIVE while the org
+ * DB is SHARED, so the staging operator (cwd = the staging checkout, legitimately AHEAD
+ * of release) and the green operator (cwd = papercup-release) disagree about the SAME
+ * database — every migration that lands on staging reads as `missing` (and fired
+ * `critical`) to the staging operator for the entire normal staging→deploy window, up to
+ * an hour+, consuming fleet claim capacity on noise. `missingDeployed` (present on disk
+ * in the DEPLOYED/release tree, per checkMigrationDrift's own classification) is the
+ * genuinely actionable subset — this collector now keys firing on THAT, not on the raw
+ * `missing`. `missingPendingDeploy` (missing here, absent from the deployed tree) is
+ * always self-healing on the next deploy and never fires — not even at a lower severity —
+ * so it stops consuming claim capacity entirely, per the filed bug's complaint.
  */
 export async function collectMigrationDriftSignals(
-  check: () => Promise<{ missing: string[]; sqlDir?: string | null }> = checkMigrationDrift,
+  check: () => Promise<{
+    missing: string[];
+    sqlDir?: string | null;
+    /** Present on disk in the deployed/release tree — the actionable subset.
+     *  Omitted (older/simpler injected checks) falls back to the raw `missing`,
+     *  preserving today's fire-on-any-missing behavior for those callers. */
+    missingDeployed?: string[];
+  }> = checkMigrationDrift,
 ): Promise<WatchdogSignal[]> {
-  let drift: { missing: string[]; sqlDir?: string | null };
+  let drift: { missing: string[]; sqlDir?: string | null; missingDeployed?: string[] };
   try { drift = await check(); } catch { return []; }
-  if (!drift.missing?.length) return [];
-  // `resolveSqlDir()` is cwd-RELATIVE while the org DB is SHARED, so this answer is
-  // per-tree: the staging operator (cwd = the staging checkout) and the green operator
-  // (cwd = papercup-release) legitimately disagree, and a migration that has landed on
-  // staging but not yet deployed reads as drift to the former only. Naming the scanned
-  // dir is what makes the resulting bug actionable — without it the reader cannot tell a
-  // genuine un-applied migration from the normal staging-ahead-of-release window, and
-  // has to re-derive the tree by hand (EI-18700750726210390).
+  const missingDeployed = drift.missingDeployed ?? drift.missing;
+  if (!missingDeployed?.length) return [];
+  // Naming the scanned dir is what makes the resulting bug actionable — without it the
+  // reader cannot tell a genuine un-applied migration from the normal
+  // staging-ahead-of-release window, and has to re-derive the tree by hand
+  // (EI-18700750726210390).
   const scanned = drift.sqlDir ? `\n\nScanned sql dir: ${drift.sqlDir}` : '';
   return [{
     source: 'migration-drift',
     key: 'migration-drift',
     title: 'Schema drift: migrations on disk are not applied to the live DB',
     body:
-      `Watchdog signal (migration-drift): ${drift.missing.length} migration file(s) exist on disk but are NOT ` +
-      `applied to the live database — runtime code expecting those columns/tables will fail until the operator ` +
-      `restarts (boot-apply).\n\nUnapplied: ${drift.missing.slice(0, 20).join(', ')}${scanned}`,
+      `Watchdog signal (migration-drift): ${missingDeployed.length} migration file(s) exist on disk in the ` +
+      `DEPLOYED tree but are NOT applied to the live database — runtime code expecting those columns/tables ` +
+      `will fail until the operator restarts (boot-apply).\n\nUnapplied: ${missingDeployed.slice(0, 20).join(', ')}${scanned}`,
     severity: 'critical',
     kind: 'bug',
     paths: ['libs/papercusp/libs/db/sql'],

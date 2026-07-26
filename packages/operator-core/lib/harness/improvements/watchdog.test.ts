@@ -439,6 +439,34 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(await collectMigrationDriftSignals(async () => { throw new Error('pg down'); })).toEqual([]);
   });
 
+  // WI-6037: `missing` alone over-fires during the normal staging→deploy window — the
+  // staging tree is legitimately ahead of release, so every migration that lands there
+  // reads as `missing` (and used to fire `critical`) until the scheduled deploy carries
+  // it across. `missingDeployed` (present on disk in the release tree) is the
+  // genuinely-actionable subset this collector must key on instead.
+  it('migration-drift: staging-ahead-of-release noise (missingDeployed empty) does NOT fire critical', async () => {
+    const signals = await collectMigrationDriftSignals(async () => ({
+      missing: ['671-add-agent-facts-confidence.sql'],
+      missingDeployed: [], // landed on staging only; release tree doesn't have the file yet
+      sqlDir: '/home/dev/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql',
+    }));
+    expect(signals).toEqual([]);
+  });
+
+  // Masking control for the fix above: a migration present in the DEPLOYED tree and
+  // still unapplied is a REAL hazard and must still fire critical — proving the
+  // staging-ahead scoping change didn't blind the genuine case.
+  it('migration-drift: a migration unapplied in the DEPLOYED tree still fires critical', async () => {
+    const drift = await collectMigrationDriftSignals(async () => ({
+      missing: ['670-add-facts-confidence.sql', '671-add-agent-facts-confidence.sql'],
+      missingDeployed: ['670-add-facts-confidence.sql'], // only this one exists in release
+    }));
+    expect(drift).toHaveLength(1);
+    expect(drift[0].severity).toBe('critical');
+    expect(drift[0].body).toContain('670-add-facts-confidence.sql');
+    expect(drift[0].body).not.toContain('671-add-agent-facts-confidence.sql');
+  });
+
   it('routine-failure: only routines with a non-empty last_error become signals (e.g. a wedged git-sync)', () => {
     const signals = routineFailureSignalsFromRows([
       { name: 'git-sync', last_error: 'push rejected: oversized blob' },
