@@ -84,6 +84,18 @@ export const TURN_ORIGIN_BASES = [
   'fleet-kickoff',
   'session-port',
   'watchdog',
+  // EI-18680056073436345: the Claude-CLI-NATIVE ScheduleWakeup tool fires its
+  // `prompt` as a UserPromptSubmit turn from INSIDE the CLI process itself —
+  // there is no papercusp injector on that path to prefix an envelope before
+  // typing (D-002 enrollment normally requires exactly that). The PreToolUse
+  // hook `pretooluse-schedule-wakeup-provenance.mjs` is the best-effort
+  // enrollment substitute: it observes the ScheduleWakeup CALL (which DOES
+  // pass through papercusp's own hook chain) and writes a hash-only ledger
+  // row — enrolled here, matched later via classify()'s no-envelope
+  // hash-match branch — with a per-row ttlMs sized to the scheduled delay
+  // instead of the global ledger TTL (a wake can fire up to 3600s later,
+  // far past the 10-minute default).
+  'cli-schedule-wakeup',
 ] as const;
 export type TurnOriginBase = (typeof TURN_ORIGIN_BASES)[number];
 export type TurnOrigin = TurnOriginBase | `coord-inject:${string}`;
@@ -145,6 +157,15 @@ export interface LedgerRow {
   origin: string;
   sha256: string;
   ts: number;
+  /** Optional PER-ROW liveness override (ms), used instead of the global
+   *  `ledgerTtlMs()` when checking whether this row is still live. Needed
+   *  for injectors whose delivery delay can exceed the 10-minute default
+   *  (e.g. `cli-schedule-wakeup`, up to 3600s) — without it, a legitimately
+   *  scheduled row expires before it can ever be matched, and the delivered
+   *  turn falls through to the affirmative OWNER default (the exact
+   *  false-owner-stamp bug class this ledger exists to prevent). Absent for
+   *  every other origin; they keep using the global TTL unchanged. */
+  ttlMs?: number;
 }
 
 /** Same lossy mapping as psu-pty-discovery.sanitizeKey — keep in lockstep. */
@@ -193,7 +214,7 @@ export function appendLedgerRow(
     mkdirSync(dir, { recursive: true });
     const p = ledgerPathForSid(row.sid, dir);
     if (existsSync(p) && statSync(p).size > LEDGER_COMPACT_BYTES) {
-      const live = parseRows(readFileSync(p, 'utf8')).filter((r) => nowMs - r.ts <= ttlMs);
+      const live = parseRows(readFileSync(p, 'utf8')).filter((r) => nowMs - r.ts <= (r.ttlMs ?? ttlMs));
       writeFileSync(p, live.map((r) => JSON.stringify(r)).join('\n') + (live.length ? '\n' : ''));
     }
     appendFileSync(p, JSON.stringify(row) + '\n');
@@ -218,7 +239,7 @@ export function readLedgerRows(
   const ttlMs = opts.ttlMs ?? ledgerTtlMs();
   try {
     const rows = parseRows(readFileSync(ledgerPathForSid(sid, dir), 'utf8'));
-    return opts.includeExpired ? rows : rows.filter((r) => nowMs - r.ts <= ttlMs);
+    return opts.includeExpired ? rows : rows.filter((r) => nowMs - r.ts <= (r.ttlMs ?? ttlMs));
   } catch {
     return [];
   }
@@ -246,7 +267,7 @@ export function gcLedgerDir(
     const p = join(dir, f);
     try {
       const rows = parseRows(readFileSync(p, 'utf8'));
-      const live = rows.filter((r) => nowMs - r.ts <= ttlMs);
+      const live = rows.filter((r) => nowMs - r.ts <= (r.ttlMs ?? ttlMs));
       rowsDropped += rows.length - live.length;
       if (live.length === 0) {
         unlinkSync(p);
@@ -388,7 +409,7 @@ export function classify(
 ): ClassifyResult {
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? ledgerTtlMs();
-  const isLive = (r: LedgerRow) => nowMs - r.ts <= ttlMs;
+  const isLive = (r: LedgerRow) => nowMs - r.ts <= (r.ttlMs ?? ttlMs);
   const env = parseEnvelope(promptText);
 
   if (env) {
