@@ -98,9 +98,14 @@ fi
 # ionice 7, EI-78) — so this exempts it from ADMISSION, never from PRIORITY. The cap still
 # does its job: it bounds the AGENT sweeps that are the actual load source (measured load
 # 165 on a 128-core box, 2026-07-26), which is what was starving this gate.
-# GREEN_CHECKPOINT=1 is set by buildGreenCheckpointEnv (green-checkpoint.ts) and inherited
-# by the whole child tree, so this covers the main suite AND its isolation re-runs.
-if [ "${GREEN_CHECKPOINT:-}" = "1" ]; then
+# PC_HEAVY_RELEASE_GATE=1 is set by buildGreenCheckpointEnv (green-checkpoint.ts) and
+# inherited by the whole child tree, so this covers the main suite AND its isolation re-runs.
+# ⚠ It is a DEDICATED key, deliberately NOT the GREEN_CHECKPOINT marker: that one is
+# double-duty (it also drives describe.skipIf in load-/network-sensitive tests), so agents
+# legitimately export it by hand to reproduce the gate's skip-set — and keying admission off
+# it meant `GREEN_CHECKPOINT=1 npm run test:affected` bypassed this semaphore at nice 0,
+# re-opening the very hole this wrapper closes. Do not "simplify" these back into one var.
+if [ "${PC_HEAVY_RELEASE_GATE:-}" = "1" ]; then
   export PC_HEAVY_BYPASS=1
   exec "$@"
 fi

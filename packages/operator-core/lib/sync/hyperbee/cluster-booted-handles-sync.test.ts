@@ -33,9 +33,18 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
     try {
       const sent: unknown[] = [];
       H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'a' }];
-      const h = startBootedHandlesBroadcaster({ intervalMs: 5_000, broadcast: (m) => sent.push(m) });
+      const h = startBootedHandlesBroadcaster({
+        intervalMs: 5_000,
+        ownsSubstrate: true,
+        broadcast: (m) => sent.push(m),
+      });
       expect(sent).toEqual([
-        { type: BOOTED_HANDLES_SNAPSHOT_TYPE, handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }], sentAt: expect.any(Number) },
+        {
+          type: BOOTED_HANDLES_SNAPSHOT_TYPE,
+          handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
+          sentAt: expect.any(Number),
+          ownsSubstrate: true,
+        },
       ]);
       H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'a' }, { workspaceId: 'ws1', harnessSlug: 'b' }];
       vi.advanceTimersByTime(5_000);
@@ -55,6 +64,7 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
       let calls = 0;
       const h = startBootedHandlesBroadcaster({
         intervalMs: 1_000,
+        ownsSubstrate: true,
         broadcast: () => {
           calls += 1;
           throw new Error('channel closed');
@@ -62,6 +72,56 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
       });
       expect(() => vi.advanceTimersByTime(3_000)).not.toThrow();
       expect(calls).toBeGreaterThan(1);
+      h.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * EI-18735338283879820 recurrence guard. A NON-OWNER process (e.g. the request-only
+   * :3070 host under the dedicated bg-host topology) has an unconditionally empty
+   * listBootedHandles(). If it broadcasts, the receiver caches a FRESH empty snapshot and
+   * renders `reachedSubstrateOwner:true, bootedCount:0` — a confident false zero
+   * indistinguishable from a genuinely dead substrate, which is what sent WI-4070 chasing
+   * a phantom network fault for 15 days while bg-host had 51 harnesses booted.
+   *
+   * Silence is the correct behaviour: no snapshot ⇒ the cache stays null ⇒ the read side
+   * reports an honest `reachedSubstrateOwner:false` blind spot.
+   */
+  it('does NOT broadcast at all when this process does not own the substrate', () => {
+    vi.useFakeTimers();
+    try {
+      const sent: unknown[] = [];
+      H.state.booted = []; // a non-owner's local map is ALWAYS empty — that's the trap
+      const h = startBootedHandlesBroadcaster({
+        intervalMs: 5_000,
+        ownsSubstrate: false,
+        broadcast: (m) => sent.push(m),
+      });
+      expect(sent).toEqual([]); // not even the immediate start-up beat
+      vi.advanceTimersByTime(60_000);
+      expect(sent).toEqual([]); // and never on any later beat
+      h.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stamps ownsSubstrate:true so the receiver can verify provenance', () => {
+    vi.useFakeTimers();
+    try {
+      const sent: Array<{ ownsSubstrate?: boolean }> = [];
+      H.state.booted = [];
+      const h = startBootedHandlesBroadcaster({
+        intervalMs: 5_000,
+        ownsSubstrate: true,
+        broadcast: (m) => sent.push(m),
+      });
+      // An EMPTY snapshot from the real owner is legitimate data (an idle substrate) —
+      // it must still be sent, and marked as owner-sourced.
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.ownsSubstrate).toBe(true);
       h.stop();
     } finally {
       vi.useRealTimers();
@@ -97,11 +157,36 @@ describe('startWorkerBootedHandlesCache + getCachedRemoteBootedHandles (WORKER s
       type: BOOTED_HANDLES_SNAPSHOT_TYPE,
       handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
       sentAt: 999,
+      ownsSubstrate: true,
     });
     expect(getCachedRemoteBootedHandles()).toEqual({
       handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
       receivedAt: 1_000,
     });
+    cache.stop();
+  });
+
+  /**
+   * EI-18735338283879820, belt-and-braces half. Even if some future call site forgets the
+   * send-side gate, an unowned snapshot must never reach the cache — because a fresh
+   * EMPTY one is precisely what fabricates `reachedSubstrateOwner:true, bootedCount:0`.
+   * A missing `ownsSubstrate` (an older process mid-rolling-deploy) is untrusted for the
+   * same reason: degrade to an honest blind spot, never to a confident false zero.
+   */
+  it('REJECTS a snapshot that does not affirmatively claim substrate ownership', () => {
+    const ch = fakeWorkerChannel();
+    const cache = startWorkerBootedHandlesCache({ now: () => 1_000, on: ch.on, off: ch.off });
+    ch.deliver({ type: BOOTED_HANDLES_SNAPSHOT_TYPE, handles: [], ownsSubstrate: false });
+    expect(getCachedRemoteBootedHandles()).toBeNull();
+    ch.deliver({ type: BOOTED_HANDLES_SNAPSHOT_TYPE, handles: [] }); // legacy: field absent
+    expect(getCachedRemoteBootedHandles()).toBeNull();
+    // A non-empty payload from a non-owner is rejected too — provenance decides, not size.
+    ch.deliver({
+      type: BOOTED_HANDLES_SNAPSHOT_TYPE,
+      handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
+      ownsSubstrate: false,
+    });
+    expect(getCachedRemoteBootedHandles()).toBeNull();
     cache.stop();
   });
 
@@ -119,9 +204,13 @@ describe('startWorkerBootedHandlesCache + getCachedRemoteBootedHandles (WORKER s
     let now = 1_000;
     const ch = fakeWorkerChannel();
     const cache = startWorkerBootedHandlesCache({ now: () => now, on: ch.on, off: ch.off });
-    ch.deliver({ type: BOOTED_HANDLES_SNAPSHOT_TYPE, handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }] });
+    ch.deliver({
+      type: BOOTED_HANDLES_SNAPSHOT_TYPE,
+      handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
+      ownsSubstrate: true,
+    });
     now = 2_000;
-    ch.deliver({ type: BOOTED_HANDLES_SNAPSHOT_TYPE, handles: [] });
+    ch.deliver({ type: BOOTED_HANDLES_SNAPSHOT_TYPE, handles: [], ownsSubstrate: true });
     expect(getCachedRemoteBootedHandles()).toEqual({ handles: [], receivedAt: 2_000 });
     cache.stop();
   });
@@ -131,7 +220,11 @@ describe('startWorkerBootedHandlesCache + getCachedRemoteBootedHandles (WORKER s
     const cache = startWorkerBootedHandlesCache({ now: () => 1_000, on: ch.on, off: ch.off });
     cache.stop();
     expect(ch.hasListener()).toBe(false);
-    ch.deliver({ type: BOOTED_HANDLES_SNAPSHOT_TYPE, handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }] });
+    ch.deliver({
+      type: BOOTED_HANDLES_SNAPSHOT_TYPE,
+      handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
+      ownsSubstrate: true,
+    });
     expect(getCachedRemoteBootedHandles()).toBeNull();
   });
 

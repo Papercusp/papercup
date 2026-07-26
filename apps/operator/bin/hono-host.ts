@@ -597,6 +597,13 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   // substrate-status reads aren't a silent blind spot. ALWAYS-ON (not gated behind an
   // arm flag like the lag watchdog above) — this closes a correctness bug, not an
   // opt-in perf feature.
+  //
+  // EI-18735338283879820: "always-on" means always-WIRED, not always-SENDING. The
+  // broadcaster self-gates per beat on isSubstrateOwnerProcess(), so a request-only
+  // primary (:3070/:3270 under the dedicated bg-host topology, which never boots the
+  // substrate) stays SILENT instead of broadcasting its empty handle map — a fresh empty
+  // snapshot is what fabricated `reachedSubstrateOwner:true, bootedCount:0`. The gate
+  // lives in the library, not here, so no call site can reintroduce the false zero.
   const bootedHandlesBroadcaster = clusterHandle.broadcast
     ? startBootedHandlesBroadcaster({ broadcast: clusterHandle.broadcast })
     : undefined;

@@ -20,8 +20,7 @@
  * existing `_setHandleForTests` / `_setNowForTests` seams.
  */
 
-import nodeCluster from 'node:cluster';
-import { requestOnlyHost } from '../../background-workers';
+import { isSubstrateOwnerProcess } from '../../background-workers';
 import { listBootedHandles, type BootedHandleSummary } from './boot-all';
 import type { RemoteBootedHandlesSnapshot } from './cluster-booted-handles-sync';
 import { listBootstrapProgress } from './bootstrap-progress';

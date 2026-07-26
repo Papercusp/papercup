@@ -1539,6 +1539,19 @@ export function buildGreenCheckpointEnv(
   // (8 × 128 GiB → no GC → ENOMEM under fleet load). Pin a sane per-fork heap.
   env.NODE_OPTIONS = sanitizeForkNodeOptions(env.NODE_OPTIONS);
   env.GREEN_CHECKPOINT = '1';
+  // WI-6140: the release gate's exemption from the pc-heavy admission semaphore.
+  // DELIBERATELY NOT keyed off GREEN_CHECKPOINT — that marker is DOUBLE-DUTY (it also
+  // makes load-/network-sensitive tests self-exclude via describe.skipIf, see above),
+  // so agents have a legitimate reason to export it by hand to reproduce the gate's
+  // skip-set. Keying admission off it would mean `GREEN_CHECKPOINT=1 npm run
+  // test:affected` ALSO bypassed the 4-slot semaphore at nice 0 — re-opening the exact
+  // unadmitted-sweep hole WI-6140 closed, with a legitimate-looking reason. The converse
+  // bit too: needing the gate to RUN those tests would have silently revoked its
+  // admission grant. A dedicated key lets the skip-marker and the admission grant move
+  // independently, and nothing but the gate has a reason to set this one.
+  // (Caught in review by su-055aef7f — the hole is behavioural, so no test can catch a
+  // caller choosing to export the marker; the fix is to not overload it.)
+  env.PC_HEAVY_RELEASE_GATE = '1';
   // AFFECTED_BASE comes ONLY from the `base` argument — never a host-leaked value.
   // The gate runs the suite with AFFECTED_BASE set, so a child runGreen(tree, null)
   // would otherwise inherit that base and silently NARROW a "full" affected run —

@@ -65,7 +65,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
   // it races a 60-min wall-clock reaper measured from workflow CREATION, so a slot wait
   // (up to PC_HEAVY_TIMEOUT_SEC=900s) comes straight off that budget and resurfaces as a
   // "stale routine" reap that reads as an infra flake.
-  it('exempts the release gate (GREEN_CHECKPOINT=1) from the semaphore entirely', () => {
+  it('exempts the release gate (PC_HEAVY_RELEASE_GATE=1) from the semaphore entirely', () => {
     // A slot dir path that does NOT exist yet but IS creatable: a non-exempt run would
     // mkdir it and take a slot, so "never created" proves we exec'd before the slot
     // machinery — and distinguishes this from the fail-open path below, which only
@@ -73,7 +73,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     const slots = join(dir, 'never-created');
     const r = spawnSync('bash', [PC_HEAVY, 'bash', '-c', 'printf %s "$PC_HEAVY_BYPASS"'], {
       encoding: 'utf8',
-      env: { PATH: process.env.PATH ?? '', PC_HEAVY_DIR: slots, GREEN_CHECKPOINT: '1' },
+      env: { PATH: process.env.PATH ?? '', PC_HEAVY_DIR: slots, PC_HEAVY_RELEASE_GATE: '1' },
       cwd: dir,
       timeout: 30_000,
     });
@@ -81,6 +81,31 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     // still marked bypassed, so nested heavy children don't re-queue either
     expect(r.stdout).toBe('1');
     expect(existsSync(slots)).toBe(false);
+  });
+
+  // WI-6140 hole (caught in review by su-055aef7f): GREEN_CHECKPOINT is DOUBLE-DUTY — it
+  // also drives describe.skipIf in load-/network-sensitive tests, so agents legitimately
+  // export it by hand to reproduce the gate's skip-set. If it ALSO granted admission,
+  // `GREEN_CHECKPOINT=1 npm run test:affected` would bypass the semaphore at nice 0 and
+  // re-open the unadmitted-sweep hole this wrapper exists to close. Keep the two keys
+  // separate; this test fails if anyone merges them back.
+  it('does NOT exempt on the double-duty GREEN_CHECKPOINT marker — only the dedicated key', () => {
+    const slots = join(dir, 'made-despite-green-checkpoint');
+    const r = spawnSync('bash', [PC_HEAVY, 'bash', '-c', 'echo ok'], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH ?? '',
+        PC_HEAVY_DIR: slots,
+        PC_HEAVY_IONICE: '',
+        PC_HEAVY_SLOTS: '2',
+        GREEN_CHECKPOINT: '1', // the skip-marker alone must NOT buy admission
+      },
+      cwd: dir,
+      timeout: 30_000,
+    });
+    expect(r.status).toBe(0);
+    // it went through the slot machinery like any other sweep
+    expect(existsSync(slots)).toBe(true);
   });
 
   it('still throttles an ordinary sweep when GREEN_CHECKPOINT is unset', () => {

@@ -569,6 +569,34 @@ export async function liveSettledProbe(
 }
 
 /**
+ * The SELF-AWAIT guard's probe (EI-18731480441007330 — the WI-6095 unbreakable
+ * self-deadlock incident): an agent can hold a work-item as its own assignee
+ * AND register an `events:await` on that same item's `work-item:status:<id>` /
+ * `work-item:done:<id>` key — but that key can only fire when the awaiter
+ * itself acts on the item (completes / transitions it), so the wait is
+ * unsatisfiable by construction: a permanent self-deadlock that no fleet
+ * health check surfaces (the resulting verdict looks identical to a
+ * legitimate wait on a peer's work). Mirrors `liveSettledProbe`'s settledness
+ * check (a settled item is never a deadlock risk — its key already fired or
+ * never will) and additionally surfaces the current assignee so the caller
+ * can compare it against its own identity. 'unknown' (unreadable / ambiguous
+ * id) must never block a registration.
+ */
+export async function liveAssigneeProbe(
+  id: string,
+  deps: Pick<SettledEventsDeps, 'getItem'> = {},
+): Promise<{ verdict: 'settled' | 'live' | 'unknown'; assignee?: string | null }> {
+  const getItem = deps.getItem ?? getWorkItem;
+  try {
+    const item = await getItem(id, undefined).catch(() => null);
+    if (!item) return { verdict: 'unknown' };
+    return { verdict: isSettledWorkItem(item) ? 'settled' : 'live', assignee: item.assignee ?? null };
+  } catch {
+    return { verdict: 'unknown' };
+  }
+}
+
+/**
  * WI-4034 DEFECT 1 (the unlink gap): `unlinkWorkItem` deleted a `blocks` edge
  * and returned — nothing ever re-checked whether that removal was the
  * dependent's LAST live blocker, so an `events:await('work-item:unblocked:<dep>')`

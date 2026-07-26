@@ -37,7 +37,7 @@ import { ComposedSpecError, type ComposedSpec } from '../../events/await/compose
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
-import { liveBlockedState, liveSettledProbe } from '../../work-items-events';
+import { liveBlockedState, liveSettledProbe, liveAssigneeProbe } from '../../work-items-events';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { resolvePlanScope } from '../plans/source';
@@ -510,6 +510,52 @@ export default defineTool({
                   probe.value === 'settled'
                     ? `${unblockedTarget} is already SETTLED — "${eventKey}" will never fire. Do not wait on it.`
                     : `${unblockedTarget} has NO live blocker right now — it is ALREADY unblocked, so "${eventKey}" will not fire (it fires only on a future blocked→unblocked edge). Proceed with the blocked work now instead of waiting.`,
+              }),
+            },
+          ],
+        };
+      }
+    }
+
+    // ── EI-18731480441007330 (the WI-6095 unbreakable self-deadlock incident):
+    // the SELF-AWAIT guard. An agent can hold a work-item as its own assignee
+    // AND register an events:await on that SAME item's `work-item:status:<id>`
+    // / `work-item:done:<id>` key — but that key can only fire when the
+    // awaiter itself acts (completes / transitions the item), so the wait is
+    // unsatisfiable by construction: a permanent self-deadlock that no fleet
+    // health check surfaces (the resulting verdict — `parked-awaiting-
+    // capability` — looks identical to a legitimate wait on a PEER's work).
+    // We actively teach members to "park on the event that unblocks you"
+    // (correct advice in general — see EI-18730414627683753's opposite
+    // failure, dormant members that never park at all), and a member holding
+    // the very item that blocks it will naturally derive this exact wrong
+    // key. REFUSE the await outright (preferred fix, per the filed report)
+    // rather than let it register and silently strand: this is a pure
+    // precondition check against state the caller already has in hand (its
+    // own ownerId vs. the item's assignee field), not a probe that can go
+    // stale. Skipped for a pattern await (no single id to check) and for an
+    // already-settled item (liveAssigneeProbe returns 'settled' — no
+    // deadlock risk; the doneTarget latch above already short-circuits that
+    // case for `work-item:done:<id>` before we even get here).
+    const selfAwaitTarget = patternAwait ? undefined : /^work-item:(?:status|done):([^:]+)$/.exec(eventKey)?.[1];
+    if (selfAwaitTarget) {
+      const probe = await withBoundedTimeout(liveAssigneeProbe(selfAwaitTarget), {
+        fallback: { verdict: 'unknown' as const },
+        timeoutMs: 1_500,
+        label: 'events-await:selfAwaitGuard',
+      });
+      if (probe.value.verdict === 'live' && probe.value.assignee === identity.ownerId) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'self_await_deadlock',
+                event: eventKey,
+                work_item_id: selfAwaitTarget,
+                advice:
+                  `You are the CURRENT ASSIGNEE of ${selfAwaitTarget} — awaiting "${eventKey}" would wait on YOUR OWN completion of it, which is unsatisfiable by construction (this key only fires when you yourself act on the item). Nothing was registered. Do the work and settle the item (work_items:complete / work_items:set_state) instead of awaiting it; if you meant to wait on a DIFFERENT item that actually blocks you, double-check the id.`,
               }),
             },
           ],

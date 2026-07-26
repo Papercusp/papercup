@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, liveBlockedState, liveSettledProbe, workItemIdFromRef } from './work-items-events';
+import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, liveAssigneeProbe, liveBlockedState, liveSettledProbe, workItemIdFromRef } from './work-items-events';
 import type { WorkItem } from './work-items';
 
 const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
@@ -799,6 +799,50 @@ describe('liveSettledProbe (EI-13095 done-key latch probe)', () => {
   it('reads ONLY the item row — no edge reads (lean by design)', async () => {
     const getItem = vi.fn(async () => wi({ id: 'WI-1', state: 'open' }));
     await liveSettledProbe('WI-1', { getItem: getItem as never });
+    expect(getItem).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('liveAssigneeProbe (EI-18731480441007330 self-await deadlock guard probe)', () => {
+  it("returns 'live' + the current assignee for a non-terminal item", async () => {
+    await expect(
+      liveAssigneeProbe('WI-6095', { getItem: vi.fn(async () => wi({ id: 'WI-6095', state: 'wip', assignee: 'su-b106122a' })) as never }),
+    ).resolves.toEqual({ verdict: 'live', assignee: 'su-b106122a' });
+  });
+
+  it("returns 'live' + null assignee for an unclaimed item", async () => {
+    await expect(
+      liveAssigneeProbe('WI-7', { getItem: vi.fn(async () => wi({ id: 'WI-7', state: 'open', assignee: null })) as never }),
+    ).resolves.toEqual({ verdict: 'live', assignee: null });
+  });
+
+  it("returns 'settled' + the assignee for an already-settled item (issue AND feature families)", async () => {
+    await expect(
+      liveAssigneeProbe('WI-5075', { getItem: vi.fn(async () => wi({ id: 'WI-5075', state: 'resolved', assignee: 'su-x' })) as never }),
+    ).resolves.toEqual({ verdict: 'settled', assignee: 'su-x' });
+    await expect(
+      liveAssigneeProbe('F-9', {
+        getItem: vi.fn(async () => wi({ id: 'F-9', family: 'feature', kind: 'feature', state: 'passed', assignee: 'su-x' })) as never,
+      }),
+    ).resolves.toEqual({ verdict: 'settled', assignee: 'su-x' });
+  });
+
+  it("returns 'unknown' (never throws) for a missing or unreadable item — registration must proceed", async () => {
+    await expect(
+      liveAssigneeProbe('WI-GONE', { getItem: vi.fn(async () => null) as never }),
+    ).resolves.toEqual({ verdict: 'unknown' });
+    await expect(
+      liveAssigneeProbe('WI-ERR', {
+        getItem: vi.fn(async () => {
+          throw new Error('pg down');
+        }) as never,
+      }),
+    ).resolves.toEqual({ verdict: 'unknown' });
+  });
+
+  it('reads ONLY the item row — no edge reads (lean by design)', async () => {
+    const getItem = vi.fn(async () => wi({ id: 'WI-1', state: 'open' }));
+    await liveAssigneeProbe('WI-1', { getItem: getItem as never });
     expect(getItem).toHaveBeenCalledTimes(1);
   });
 });

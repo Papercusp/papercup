@@ -57,6 +57,11 @@ vi.mock('../../events/await/installed-events', () => ({
 vi.mock('../../work-items-events', () => ({
   liveSettledProbe: vi.fn(async () => ({ verdict: 'live' as const, itemState: 'wip' })),
   liveBlockedState: vi.fn(async () => 'blocked' as const),
+  // EI-18731480441007330: the self-await deadlock guard's probe. Defaults to
+  // 'live' with no assignee (never equal to the caller's own ownerId,
+  // 'su-awaiter'), so every PRE-EXISTING test above still registers exactly
+  // as before; overridden per-test below to exercise the refusal path.
+  liveAssigneeProbe: vi.fn(async () => ({ verdict: 'live' as const, assignee: null as string | null })),
 }));
 // EI-383: the claim-lease-extension side-call also pulls db-org (via claims.ts +
 // resolvePlanScope) — mocked so the rig stays hermetic, same reasoning as the
@@ -81,7 +86,7 @@ import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
-import { liveSettledProbe } from '../../work-items-events';
+import { liveSettledProbe, liveAssigneeProbe } from '../../work-items-events';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 
@@ -558,6 +563,58 @@ describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-awa
   it('non-done keys never probe (no per-registration tax on unrelated awaits)', async () => {
     await call({ event: 'lock:grant:t9' });
     expect(liveSettledProbe).not.toHaveBeenCalled();
+  });
+});
+
+describe('the SELF-AWAIT guard (EI-18731480441007330 — the WI-6095 unbreakable self-deadlock incident)', () => {
+  it('REFUSES a work-item:status:<id> await when the caller is the item\'s own current assignee', async () => {
+    vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'live', assignee: 'su-awaiter' });
+    const out = await call({ event: 'work-item:status:WI-6095' });
+    expect(out).toMatchObject({ ok: false, error: 'self_await_deadlock', event: 'work-item:status:WI-6095', work_item_id: 'WI-6095' });
+    expect(out.advice).toContain('CURRENT ASSIGNEE');
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(liveAssigneeProbe).toHaveBeenCalledWith('WI-6095');
+  });
+
+  it('REFUSES a work-item:done:<id> await when the caller is the item\'s own current assignee', async () => {
+    vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'live', assignee: 'su-awaiter' });
+    const out = await call({ event: 'work-item:done:WI-6095' });
+    expect(out).toMatchObject({ ok: false, error: 'self_await_deadlock', event: 'work-item:done:WI-6095', work_item_id: 'WI-6095' });
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('a DIFFERENT assignee (a legitimate wait on a peer\'s work) registers exactly as before', async () => {
+    vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'live', assignee: 'su-someone-else' });
+    const out = await call({ event: 'work-item:status:WI-6095' });
+    expect(out.error).toBeUndefined();
+    expect(out.await_id).toBe(99);
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('work-item:status:WI-6095');
+  });
+
+  it('an already-SETTLED item never refuses (no deadlock risk — the key already fired or never will)', async () => {
+    vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'settled', assignee: 'su-awaiter' });
+    const out = await call({ event: 'work-item:status:WI-6095' });
+    expect(out.error).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('an UNKNOWN probe (unreadable/ambiguous id) fails OPEN — the registration proceeds', async () => {
+    vi.mocked(liveAssigneeProbe).mockResolvedValueOnce({ verdict: 'unknown' });
+    const out = await call({ event: 'work-item:status:WI-9999' });
+    expect(out.error).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('a PATTERN await never probes (no single id to check)', async () => {
+    const out = await call({ event: 'work-item:status:*' });
+    expect(liveAssigneeProbe).not.toHaveBeenCalled();
+    expect(out.pattern).toBe(true);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('unrelated keys never probe (no per-registration tax on non-work-item awaits)', async () => {
+    await call({ event: 'lock:grant:t9' });
+    expect(liveAssigneeProbe).not.toHaveBeenCalled();
   });
 });
 
