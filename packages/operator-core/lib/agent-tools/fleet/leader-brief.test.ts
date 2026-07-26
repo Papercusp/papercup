@@ -8,12 +8,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeBenchSuggestion,
+  computeFloorStarvedFleetAlert,
   computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
   computeStrandedFleetAlert,
   projectMember,
   reconcilePsuHostLiveness,
   selectLeaderBriefMembers,
+  topExcludedFloors,
   type DecoratedAgent,
 } from './leader-brief';
 
@@ -405,8 +407,14 @@ describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-1868125956
     expect(s?.reason).toMatch(/wake/i);
   });
 
-  it('keeps the historical bench advice when the lane is VERIFIED drained (claimableCount 0)', () => {
-    const s = computeBenchSuggestion(idle, 0);
+  it('keeps the historical bench advice when the lane is VERIFIED drained (0 claimable AND 0 matching)', () => {
+    // EI-18689489507862177 TIGHTENED THIS TEST'S PREMISE. It used to pass `claimableCount: 0`
+    // with no gating read and assert "VERIFIED drained" — but an empty queue alone cannot
+    // establish drainage: a lane whose every matching row sits behind a claim floor reads 0
+    // here too (measured live: 108 matched / 0 claimable). Verification now requires the
+    // pre-floor match count as well, so the second argument below is what makes the claim
+    // true. The test's INTENT is unchanged: a genuinely drained lane keeps the bench advice.
+    const s = computeBenchSuggestion(idle, 0, { matchedByFilter: 0, excluded: {} });
     expect(s?.kind).toBe('laneless-idle');
     expect(s?.reason).toMatch(/VERIFIED drained/);
     expect(s?.reason).toMatch(/fleet:bench/);
@@ -511,5 +519,136 @@ describe('computeSpecStarvedFleetAlert (EI-18655873409999215 — the spec-matche
 
   it('does NOT fire when the spec matches at least one row — this is not the starved-spec shape', () => {
     expect(computeSpecStarvedFleetAlert({ totalLoad: 0, specMatched: 3, poolSize: 1224 })).toBeUndefined();
+  });
+});
+
+/** The live nonp2p-bug-drain-0725 reading at 2026-07-26T07:00Z, used verbatim below so the
+ *  tests assert the ACTUAL measured incident rather than an invented shape. */
+const LIVE_GATED_LANE = {
+  claimable: 0,
+  matchedByFilter: 108,
+  excluded: {
+    federationDetector: 50,
+    claimHold: 38,
+    needsHuman: 11,
+    taken: 8,
+    observationLane: 1,
+    externalBlocker: 1,
+    planLaneReserved: 0,
+    loopNoise: 0,
+  },
+};
+
+describe('topExcludedFloors (EI-18689489507862177)', () => {
+  it('ranks floors largest-first and drops the zero buckets', () => {
+    expect(topExcludedFloors(LIVE_GATED_LANE.excluded)).toEqual([
+      ['federationDetector', 50],
+      ['claimHold', 38],
+      ['needsHuman', 11],
+    ]);
+  });
+
+  it('is empty (never throws) for an absent breakdown', () => {
+    expect(topExcludedFloors(null)).toEqual([]);
+    expect(topExcludedFloors(undefined)).toEqual([]);
+  });
+});
+
+describe('computeFloorStarvedFleetAlert (EI-18689489507862177 — the GATED lane every sibling alert is blind to)', () => {
+  it('fires on the exact live shape: 108 matched, 0 claimable, members idle', () => {
+    const alert = computeFloorStarvedFleetAlert({ ...LIVE_GATED_LANE, idleMemberCount: 5 });
+    expect(alert).toBeDefined();
+    expect(alert?.reason).toMatch(/5 member/);
+    expect(alert?.reason).toMatch(/108 row/);
+    expect(alert?.reason).toMatch(/ZERO survive the claim floors/);
+  });
+
+  it('names the dominant floors so the leader knows WHAT to clear, not just that something is wrong', () => {
+    const alert = computeFloorStarvedFleetAlert({ ...LIVE_GATED_LANE, idleMemberCount: 5 });
+    expect(alert?.reason).toMatch(/federationDetector=50/);
+    expect(alert?.reason).toMatch(/claimHold=38/);
+  });
+
+  it('tells the leader NOT to bench — benching is the harmful remedy this alert exists to prevent', () => {
+    const alert = computeFloorStarvedFleetAlert({ ...LIVE_GATED_LANE, idleMemberCount: 5 });
+    expect(alert?.reason).toMatch(/Do NOT fleet:bench/);
+    expect(alert?.reason).toMatch(/wind-down/);
+  });
+
+  it('does NOT fire when the spec matches nothing — that is computeSpecStarvedFleetAlert, not a floor problem', () => {
+    expect(
+      computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: 0, idleMemberCount: 5 }),
+    ).toBeUndefined();
+  });
+
+  it('does NOT fire when work IS claimable — that is computeIdleWithClaimableAlert', () => {
+    expect(
+      computeFloorStarvedFleetAlert({ claimable: 4, matchedByFilter: 108, idleMemberCount: 5 }),
+    ).toBeUndefined();
+  });
+
+  it('does NOT fire when nobody is idle — a fully-busy fleet is not starving', () => {
+    expect(
+      computeFloorStarvedFleetAlert({ ...LIVE_GATED_LANE, idleMemberCount: 0 }),
+    ).toBeUndefined();
+  });
+
+  it('does NOT fire on an unreadable claimable count — unknown is not evidence of a gated lane', () => {
+    expect(
+      computeFloorStarvedFleetAlert({ claimable: null, matchedByFilter: 108, idleMemberCount: 5 }),
+    ).toBeUndefined();
+  });
+
+  it('does NOT fire on an unreadable match count — the gated verdict requires BOTH halves', () => {
+    expect(
+      computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: null, idleMemberCount: 5 }),
+    ).toBeUndefined();
+  });
+
+  it('still fires without a breakdown, just without naming floors (the count alone is the alert)', () => {
+    const alert = computeFloorStarvedFleetAlert({
+      claimable: 0,
+      matchedByFilter: 108,
+      idleMemberCount: 5,
+    });
+    expect(alert).toBeDefined();
+    expect(alert?.reason).not.toMatch(/buckets overlap/);
+  });
+});
+
+describe('computeBenchSuggestion — GATED vs DRAINED (EI-18689489507862177)', () => {
+  const idleMember = { verdict: 'monitoring' as const, load: 0, queued: [], doing: null, stalled: false };
+
+  it('calls a gated lane GATED and withholds the bench advice', () => {
+    const s = computeBenchSuggestion(idleMember, 0, LIVE_GATED_LANE);
+    expect(s?.kind).toBe('laneless-idle');
+    expect(s?.reason).toMatch(/GATED, not drained/);
+    expect(s?.reason).toMatch(/108 row/);
+    expect(s?.reason).toMatch(/DO NOT fleet:bench/);
+  });
+
+  it('surfaces the dominant floor on the member row, so the leader sees the cause in place', () => {
+    const s = computeBenchSuggestion(idleMember, 0, LIVE_GATED_LANE);
+    expect(s?.reason).toMatch(/federationDetector=50/);
+  });
+
+  it('still reports a VERIFIED drained lane (0 claimable AND 0 matching) and keeps the bench advice', () => {
+    const s = computeBenchSuggestion(idleMember, 0, { matchedByFilter: 0, excluded: {} });
+    expect(s?.reason).toMatch(/VERIFIED drained/);
+    expect(s?.reason).toMatch(/fleet:bench it onto a scoped event/);
+    expect(s?.reason).not.toMatch(/GATED/);
+  });
+
+  it('REFUSES to call the lane drained when the gating was not read — the unchecked assertion this item fixes', () => {
+    // The regression guard: claimableCount===0 alone must never reproduce "VERIFIED drained".
+    const s = computeBenchSuggestion(idleMember, 0, null);
+    expect(s?.reason).not.toMatch(/VERIFIED drained/);
+    expect(s?.reason).toMatch(/NOT read on this brief/);
+    expect(s?.reason).toMatch(/excludedBreakdown/);
+  });
+
+  it('leaves the claimable>0 branch (EI-18681259560385029) untouched', () => {
+    const s = computeBenchSuggestion(idleMember, 3, LIVE_GATED_LANE);
+    expect(s?.kind).toBe('idle-with-claimable');
   });
 });

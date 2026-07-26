@@ -61,18 +61,19 @@ async function upsertPair(
 ): Promise<boolean> {
   const rows = (await sql`
     INSERT INTO harness_shared.bash_tool_substitutions (
-      workspace_id, intent_label, bash_pattern, tool_name,
+      workspace_id, intent_label, bash_pattern, bash_pattern_flags, tool_name,
       equivalence_verdict, sample_size, failing_cases, evidence_ref,
       tier, advisory_text, enabled,
       baseline_calls, baseline_sessions, observed_since
     ) VALUES (
-      ${workspaceId}, ${audit.intentLabel}, ${audit.bashPattern}, ${audit.toolName},
+      ${workspaceId}, ${audit.intentLabel}, ${audit.bashPattern}, ${audit.bashPatternFlags}, ${audit.toolName},
       ${audit.verdict}, ${audit.sampleSize}, ${JSON.stringify(audit.failingCases)}::jsonb, ${fixture.evidenceRef},
       'observe', ${pair.advisoryText}, true,
       ${fixture.totalAtoms}, ${fixture.totalSessions}, now()
     )
     ON CONFLICT (workspace_id, intent_label) DO UPDATE SET
       bash_pattern        = EXCLUDED.bash_pattern,
+      bash_pattern_flags  = EXCLUDED.bash_pattern_flags,
       tool_name           = EXCLUDED.tool_name,
       equivalence_verdict = EXCLUDED.equivalence_verdict,
       sample_size         = EXCLUDED.sample_size,

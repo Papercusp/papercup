@@ -557,6 +557,13 @@ export default defineTool({
       .optional()
       .describe('Filter to one agent (ownerId or adopted agent-name) — "what is X doing".'),
     plan: z.string().max(200).optional().describe('Filter to one plan slug — "who\'s on P".'),
+    fleet: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Filter to one fleet slug — "who\'s on fleet F". Matches fleet_slug on every row (presence + claims), independent of which plan(s) the fleet happens to be working — the correct scope when a fleet runs multiple plans (EI-18689331932953939).',
+      ),
     harness: z.string().max(80).optional(),
     workspace: z.string().max(120).optional(),
     include_stale: z
@@ -622,6 +629,7 @@ export default defineTool({
       workspaceId,
       agent: args.agent,
       plan: args.plan,
+      fleet: args.fleet,
       harness: args.harness,
       activeOnly: !args.include_lapsed,
     });

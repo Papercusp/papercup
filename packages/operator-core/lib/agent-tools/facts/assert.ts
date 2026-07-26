@@ -243,6 +243,17 @@ export default defineTool({
         );
       }
     }
+    // A wall slot with no EXPLICIT ttlSec defaults to WALL_DEFAULT_TTL_SEC (90d)
+    // rather than the ordinary 7d, so an owner-gated blocker cannot quietly lapse
+    // out of folds. An explicit ttlSec always wins (a caller who deliberately
+    // wants a shorter wall can have one).
+    //
+    // Restored 2026-07-26 (WI-5989): this declaration had been deleted while its
+    // use below survived, leaving `ttlSec` an unbound shorthand — a ReferenceError
+    // on EVERY facts:assert call, and a tsc regression that red-pinned the
+    // green-checkpoint typecheck leg. The still-present WALL_DEFAULT_TTL_SEC
+    // import, unused without this line, is what gave the accident away.
+    const ttlSec = args.ttlSec ?? (args.slot === 'wall' ? WALL_DEFAULT_TTL_SEC : undefined);
     const fact = await assertFact({
       scope: args.scope,
       scopeRef: scopeRef ?? null,

@@ -41,16 +41,36 @@ import { groupEntriesIntoTurns, type TimelineEntry } from '../../harness/AgentTh
 /**
  * Map a flat live-thinking timeline into chat messages, oldest-first — the
  * order `OperatorChat`/`ChatConversation` expect.
+ *
+ * `planSlug` (WI-5997, chat-ref-pills-2026-07-26 P-007 residual): a P-NNN ref
+ * pill's destination (D-001's PlanPopupModal) resolves off `ChatMessage.planSlug`
+ * — ChatConversation reads it per-message (`m.planSlug`) — but this mapper
+ * never set it, so a real P- ref pill in a live session's chat rendered and
+ * hydrated correctly yet silently no-op'd on click (confirmed only via direct
+ * `wppop` URL injection, never a real transcript click, during WI-5933's
+ * verification). Callers pass the session's roster `currentPlanSlug`, applied
+ * UNIFORMLY to every mapped message — an approximation (true per-message
+ * historical accuracy would need the plan slug threaded through the raw
+ * transcript itself), but the one available today with no new query. Omit the
+ * argument entirely (undefined) to leave `planSlug` off the message, same as
+ * before this change — only an explicit call site opts in.
  */
-export function sessionTimelineToChatMessages(entries: readonly TimelineEntry[]): ChatMessage[] {
+export function sessionTimelineToChatMessages(
+  entries: readonly TimelineEntry[],
+  planSlug?: string | null,
+): ChatMessage[] {
   const turns = groupEntriesIntoTurns(entries);
   const messages: ChatMessage[] = [];
+  // Only stamp the field when the caller actually passed something (incl.
+  // explicit null) — an omitted second arg must produce byte-identical
+  // messages to the pre-P-007-residual-fix behavior (existing callers/tests).
+  const planSlugField = planSlug !== undefined ? { planSlug } : {};
 
   for (const turn of turns) {
     if (turn.prompt) {
       const promptText = (turn.prompt.text ?? '').trim();
       if (promptText) {
-        messages.push({ role: 'user', content: promptText, id: `prompt-${turn.seq}` });
+        messages.push({ role: 'user', content: promptText, id: `prompt-${turn.seq}`, ...planSlugField });
       }
     }
 
@@ -77,6 +97,7 @@ export function sessionTimelineToChatMessages(entries: readonly TimelineEntry[])
         content,
         ...(tools.length > 0 ? { tools } : {}),
         id: `turn-${turn.seq}`,
+        ...planSlugField,
       });
     }
   }

@@ -179,6 +179,9 @@ export interface ListFleetAssignmentsOpts {
   plan?: string;
   /** Match harness_slug exactly. */
   harness?: string;
+  /** Match fleet_slug exactly (EI-18689331932953939) — "who's on fleet F", the
+   *  natural per-fleet scope a fleet leader/member reaches for. */
+  fleet?: string;
   /** Drop lapsed plan-item leases (claim_active=false). Default true. */
   activeOnly?: boolean;
 }
@@ -228,6 +231,7 @@ export async function listFleetAssignments(
             : sql`harness_slug = ${opts.harness}`
           : sql`TRUE`
       }
+      AND ${opts.fleet ? sql`fleet_slug = ${opts.fleet}` : sql`TRUE`}
       AND ${activeOnly ? sql`(claim_active IS DISTINCT FROM false)` : sql`TRUE`}
     ORDER BY source, holder_heartbeat_at DESC NULLS LAST
   `;

@@ -1434,7 +1434,13 @@ body.has-left-sidebar .pc-header {
    EI-18135716653974462 / WI-5581, the one the HUD board was migrated off after
    an owner-screenshotted regression. DO NOT move the flex back onto the button,
    and do not "verify" this control in a browser — a browser cannot see it. */
-.pc-auto__toggle { display: block; flex: none; width: 24px; height: 24px; padding: 0;
+/* 26px, not 24: globals.css's `:where(button, .pc-btn)` baseline sets a
+   min-height: 26px tap-target floor. A 24px height silently lost to it and
+   rendered a 24x26 EGG rather than a circle — caught by measuring the real
+   WebKitGTK webview, invisible in the unit tests. Match the floor instead of
+   fighting it; if this ever needs to be smaller, raise it with the baseline,
+   don't override min-height here. */
+.pc-auto__toggle { display: block; flex: none; width: 26px; height: 26px; padding: 0;
   border-radius: 999px; cursor: pointer; font: inherit;
   color: var(--good, #34d399);
   background: color-mix(in srgb, var(--good, #34d399), transparent 86%);
@@ -1470,8 +1476,11 @@ body.has-left-sidebar .pc-header {
    it isn't one — a DBOS workflow / managed timer / in-process sweep has no
    switch on this surface. Same footprint as the toggle so rows stay aligned,
    but flat, muted and non-interactive. */
+/* Same 26px footprint as the toggle so controllable and uncontrollable rows
+   stay aligned. This is a <span>, so it gets no min-height from the button
+   baseline — the size has to be stated outright. */
 .pc-auto__nocontrol { display: inline-flex; align-items: center; justify-content: center; flex: none;
-  width: 24px; height: 24px; border-radius: 999px; cursor: default;
+  width: 26px; height: 26px; border-radius: 999px; cursor: default;
   color: var(--fg-mute, #7f9bb4); background: transparent;
   border: 1px dashed color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.22)), transparent 30%); }
 

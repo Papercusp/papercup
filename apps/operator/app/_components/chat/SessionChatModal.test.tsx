@@ -36,6 +36,12 @@ vi.mock('nuqs', () => ({
     mkNuqsSetter(key),
   ],
   parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
+  // hud-first-nav-and-dossier-2026-07-26 P-003: SessionChatModal's own
+  // dossier-rail open/collapsed state is a parseAsBoolean — give it the same
+  // `_d`-default treatment as parseAsString above so the shared mocked
+  // useQueryState honors its default (true) instead of always reading
+  // undefined.
+  parseAsBoolean: { withDefault: (d: unknown) => ({ _d: d }) },
 }));
 // The two popup DESTINATIONS (→ PlanDetail / DetailPanel) are heavy — mocked
 // the SAME way PlansPane.test.tsx mocks PlanPopupModal away, to a tiny probe
@@ -49,6 +55,21 @@ vi.mock('../work-items/WorkItemPopupModal', () => ({
 }));
 vi.mock('../plans/PlanPopupModal', () => ({
   default: () => null,
+}));
+// hud-first-nav-and-dossier-2026-07-26 P-003: AgentDossier's own behavior is
+// covered by AgentDossier.test.tsx — stubbed here (same pattern as
+// WorkItemPopupModal/PlanPopupModal above) to a tiny probe asserting only
+// what THIS file owns: whether the rail mounts, and with which props.
+let lastAgentDossierProps: Record<string, any> | null = null;
+vi.mock('../../adv/sessions/AgentDossier', () => ({
+  default: (props: Record<string, any>) => {
+    lastAgentDossierProps = props;
+    return (
+      <div data-testid="agent-dossier-stub" data-owner={props.ownerId}>
+        <button type="button" data-testid="dossier-stub-close" onClick={props.onClose} />
+      </div>
+    );
+  },
 }));
 
 // jsdom-vs-virtualization seam (same as ChatConversation.test.tsx): the real
@@ -169,6 +190,7 @@ beforeEach(() => {
   H.results = {};
   attentionInvalidate.mockClear();
   lastWorkItemPopupProps = {};
+  lastAgentDossierProps = null;
   for (const k of Object.keys(nuqs)) delete nuqs[k];
 });
 afterEach(() => {
@@ -648,6 +670,79 @@ describe('SessionChatModal', () => {
       // click itself is the thing that safely does nothing.
       fireEvent.click(pill);
       expect(lastWorkItemPopupProps.id ?? null).toBeNull();
+    });
+  });
+
+  describe('P-003 AgentDossier right rail (hud-first-nav-and-dossier-2026-07-26)', () => {
+    function seedRoster(entries: Array<Record<string, unknown>>) {
+      H.results['advRoster.list'] = {
+        data: [{ active: entries, pending: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    it('mounts the dossier rail by default (nuqs default open) once a session resolves', async () => {
+      seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+
+      const rail = await waitFor(() => screen.getByTestId('session-chat-dossier-rail'));
+      expect(within(rail).getByTestId('agent-dossier-stub')).toBeTruthy();
+      expect(lastAgentDossierProps?.ownerId).toBe('su-live-1');
+      // Reuses the SAME already-fetched advRoster.list row (no forked
+      // dossier, no second query) — the stubbed entry's ownerId round-trips.
+      expect(lastAgentDossierProps?.entry?.ownerId).toBe('su-live-1');
+    });
+
+    it('renders no rail while the modal is closed (sessionOwnerId null)', () => {
+      render(<SessionChatModal sessionOwnerId={null} onClose={vi.fn()} />);
+      expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
+      expect(screen.queryByTestId('session-chat-dossier-toggle')).toBeNull();
+    });
+
+    it('the toggle button collapses and reopens the rail via the chatDossier nuqs key', async () => {
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const { rerender } = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+
+      fireEvent.click(screen.getByTestId('session-chat-dossier-toggle'));
+      expect(nuqsSetters.chatDossier).toHaveBeenCalled();
+      // The mock setter mutates the shared nuqs store synchronously but that
+      // alone doesn't trigger a re-render — force one (same pattern the
+      // ref-pill routing suite above uses for the same reason).
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('session-chat-dossier-toggle'));
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy();
+    });
+
+    it('honors an explicit chatDossier=false (deep link) by hiding the rail even though the default is open', async () => {
+      nuqs.chatDossier = false;
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
+      // The toggle itself stays available so the viewer can still reopen it.
+      expect(screen.getByTestId('session-chat-dossier-toggle')).toBeTruthy();
+    });
+
+    it('closing the dossier from its own onClose collapses the rail (chatDossier flips false)', async () => {
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const { rerender } = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+
+      fireEvent.click(screen.getByTestId('dossier-stub-close'));
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
     });
   });
 });

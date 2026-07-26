@@ -15,6 +15,13 @@
  *     a fresh clone of pushed `main` always resolves the entire tree. Each level's
  *     pointer bump shows up as a dirty change when its parent is synced.
  *   - The superproject is synced last.
+ *   - EI-18689553108460319: whether the SUPERPROJECT pushes (`GitSyncConfig.push`) and
+ *     whether SUBMODULES push to their own origins (`GitSyncConfig.pushSubmoduleOrigins`)
+ *     are INDEPENDENT knobs. A bridged/p2p-only hive sets `push:false` so its bridge
+ *     writer stays the sole pusher of the hive's own canonical superproject refs — that
+ *     never implies submodules (unrelated, independently-hosted GitHub libs) should also
+ *     go commit-only; nothing else ever pushes them, so doing so silently strands their
+ *     history forever (8 days / 65 commits observed on `libs/generic/sync` before this fix).
  *
  * git-sync DELIBERATELY `git add -A`s each repo (unlike the SCOPED git-export
  * committer in `git-committer.ts`) — owning the whole-tree commit is its entire
@@ -245,11 +252,23 @@ export const DEFAULT_MAX_BLOB_BYTES = 95 * 1024 * 1024;
 export const DEFAULT_MAX_COMMIT_TOTAL_BYTES = 250 * 1024 * 1024;
 
 export interface GitSyncConfig {
-  /** Push to origin after committing/merging (default true). */
+  /** Push the SUPERPROJECT to its origin after committing/merging (default true).
+   *  Does NOT control submodule pushes — see `pushSubmoduleOrigins` (EI-18689553108460319:
+   *  these used to share one flag, so a bridged/p2p-only hive setting this false to keep
+   *  the bridge writer the sole pusher of the hive's own canonical refs silently ALSO
+   *  stranded every submodule's commits — unrelated vendored libraries with their own
+   *  GitHub origins that nothing else ever pushes). */
   push?: boolean;
   /** Sync submodules too (default true). When true, ALL submodules are synced
    *  recursively — discovery is dynamic, never a fixed list. */
   pushSubmodules?: boolean;
+  /** Push SUBMODULE repos to THEIR OWN origins (default true) — independent of `push`,
+   *  which now controls the superproject only (EI-18689553108460319). A bridged/p2p-only
+   *  hive's `push:false` exists so the bridge writer stays the sole pusher of the hive's
+   *  own canonical superproject refs (github-bridge-hive-egress P-003/S-1); that rationale
+   *  does not extend to submodules, each an independent GitHub repo the bridge never
+   *  touches — so they keep pushing normally unless this is explicitly set false too. */
+  pushSubmoduleOrigins?: boolean;
   /** Branch to sync when a repo is on a branch / for the superproject (default 'main'). */
   branch?: string;
   /** Remote name (default 'origin'). */
@@ -1121,6 +1140,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const remote = cfg.remote ?? 'origin';
   const branch = cfg.branch ?? 'main';
   const doPush = cfg.push !== false;
+  // EI-18689553108460319: submodule origin-push is INDEPENDENT of the superproject's
+  // `push` flag — see the GitSyncConfig doc comment for why they must not share one knob.
+  const doSubPush = cfg.pushSubmoduleOrigins !== false;
   const doSub = cfg.pushSubmodules !== false;
   const message = cfg.message ?? `chore(git-sync): auto-commit ${slug} [skip ci]`;
   const maxBlobBytes = cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
@@ -1200,7 +1222,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     for (const s of subPaths) {
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
       // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
-      absorb(out, s, await syncOneRepo(runGit, join(repo, s), { ...repoO, defaultBranch: 'main', attribution: attributionMapForRepo(roster, s, repo) }));
+      // EI-18689553108460319: submodules push under `doSubPush`, NOT the superproject's
+      // `doPush` — a bridged/p2p-only hive's push:false must not silently strand every
+      // submodule's commits too (see GitSyncConfig.pushSubmoduleOrigins).
+      absorb(out, s, await syncOneRepo(runGit, join(repo, s), { ...repoO, doPush: doSubPush, defaultBranch: 'main', attribution: attributionMapForRepo(roster, s, repo) }));
     }
     return out;
   });

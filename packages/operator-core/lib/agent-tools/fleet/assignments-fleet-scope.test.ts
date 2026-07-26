@@ -1,0 +1,109 @@
+/**
+ * assignments-fleet-scope.test.ts — regression for EI-18689331932953939.
+ *
+ * `fleet:assignments` rejected a `fleet` argument outright ("Unrecognized key:
+ * fleet") even though the tool lives in the `fleet:` namespace and every row
+ * already carries `fleet_slug` — the one obvious per-fleet scope a fleet
+ * leader/member reaches for ("who's on fleet F") had no way to express itself,
+ * forcing a `plan` filter that only coincides with the fleet when it happens
+ * to be working exactly one plan.
+ *
+ * Pins: (1) the zod schema now ACCEPTS a `fleet` key instead of throwing, and
+ * (2) it is threaded straight through to `listFleetAssignments` — the data
+ * layer's own `fleet_slug = $fleet` WHERE clause is exercised at the SQL level
+ * by fleet/assignments.integration.test.ts's existing plan/agent/harness
+ * filter coverage (identical WHERE-clause shape); this file mocks that seam
+ * (no PG needed), mirroring assignments-workspace-scope.test.ts's pattern.
+ */
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+vi.mock('@papercusp/agent-mcp', () => ({
+  defineTool: (def: unknown) => def,
+  readJsonResult: () => undefined,
+}));
+vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({
+    ownerId: 'su-leader',
+    ownerLabel: 'l',
+    source: 'static-client',
+    workspaceId: 'ws-real',
+    userId: null,
+  }),
+}));
+vi.mock('../coordination/self-marker', () => ({
+  resolveSelfRef: () => null,
+  markSelfRows: (rows: unknown[]) => rows,
+}));
+vi.mock('../coordination/presence-wakeability', () => ({ fetchWakeability: vi.fn(async () => new Map()) }));
+vi.mock('../../adv-sessions', () => ({ recordedLiveOwnerIds: vi.fn(async () => new Set()) }));
+vi.mock('../coordination/wake-mode', () => ({
+  getAllWakeModeOverrides: vi.fn(async () => new Map()),
+  getDefaultWakeMode: vi.fn(async () => 'auto'),
+  resolveWakeModeFrom: vi.fn(() => 'auto'),
+}));
+vi.mock('../../events/await/store', () => ({ listParkedAwaitsForSubscribers: vi.fn(async () => []) }));
+vi.mock('../coordination/context-pressure', () => ({ fetchContextPressure: vi.fn(async () => new Map()) }));
+vi.mock('../coordination/unanswered-directed', () => ({ fetchUnansweredDirected: vi.fn(async () => new Map()) }));
+vi.mock('../coordination/inbox-read-freshness', () => ({
+  classifyCoordDeafness: vi.fn(() => null),
+  coordDeafBudgetMs: vi.fn(() => 900_000),
+  lastInboxReadAtBatch: vi.fn(async () => new Map()),
+}));
+vi.mock('../../harness/routines/loop', () => ({ getLoopStatuses: vi.fn(async () => new Map()) }));
+vi.mock('../plans/effective-status', () => ({ resolveEffectiveStatusForItems: vi.fn(async () => new Map()) }));
+vi.mock('../plans/source', () => ({
+  getPlanRow: vi.fn(async () => null),
+  planItemsForRow: vi.fn(() => []),
+  planSlugsForHarness: vi.fn(async () => new Set<string>()),
+}));
+vi.mock('../../plan-item-coverage', () => ({
+  getAllPlanItemCoverage: vi.fn(async () => new Map()),
+  compactCoverage: vi.fn((c: unknown) => c),
+  coverageCollisions: vi.fn(() => []),
+}));
+
+const listFleetAssignmentsMock = vi.fn(async () => []);
+vi.mock('../../fleet/assignments', () => ({
+  listFleetAssignments: (...a: unknown[]) => listFleetAssignmentsMock(...a),
+  groupByAgent: vi.fn(() => []),
+  lastToolCallAtByOwner: vi.fn(async () => new Map()),
+  orphanedClaims: vi.fn(() => []),
+  stalledClaims: vi.fn(() => []),
+  summarizeOrphan: vi.fn((r: unknown) => r),
+  isReclaimCandidate: vi.fn(() => false),
+}));
+
+import fleetAssignmentsTool from './assignments';
+
+const ctx = { workspaceId: 'ws-real' } as unknown as Parameters<typeof fleetAssignmentsTool.handler>[1];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  listFleetAssignmentsMock.mockResolvedValue([]);
+});
+
+describe('fleet:assignments — EI-18689331932953939 fleet-scoped read', () => {
+  it('a { fleet } arg is ACCEPTED by the schema — the pre-fix rejection is gone', () => {
+    expect(() => fleetAssignmentsTool.args.parse({ fleet: 'gui-chat-controls' })).not.toThrow();
+  });
+
+  it('{ fleet } is threaded straight through to listFleetAssignments', async () => {
+    await fleetAssignmentsTool.handler({ fleet: 'gui-chat-controls' } as never, ctx);
+    expect(listFleetAssignmentsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ fleet: 'gui-chat-controls' }),
+    );
+  });
+
+  it('omitting { fleet } passes undefined — byte-identical to pre-fix behavior', async () => {
+    await fleetAssignmentsTool.handler({} as never, ctx);
+    expect(listFleetAssignmentsMock).toHaveBeenCalledWith(expect.objectContaining({ fleet: undefined }));
+  });
+
+  it('{ fleet } composes with an independent { plan } filter (both threaded through, no collision)', async () => {
+    await fleetAssignmentsTool.handler({ fleet: 'gui-chat-controls', plan: 'some-plan' } as never, ctx);
+    expect(listFleetAssignmentsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ fleet: 'gui-chat-controls', plan: 'some-plan' }),
+    );
+  });
+});

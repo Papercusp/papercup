@@ -66,12 +66,7 @@ export default defineTool({
       includeSynthesized: args.includeSynthesized,
     });
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ ok: true, count: scorecards.length, scorecards }),
-        },
-      ],
+      data: { ok: true, count: scorecards.length, scorecards },
     };
   },
 });

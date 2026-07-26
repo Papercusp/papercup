@@ -38,6 +38,7 @@
  * answering from the inbox (P-006's resolve/reply routing + provenance stamp).
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
 import { OperatorChat } from '../OperatorChat';
@@ -49,6 +50,8 @@ import { isEscalationWithOptions } from '@/app/admin/plans/attention-card';
 import { ChatActionBar } from './ChatActionBar';
 import FleetRoleGlyph from '../FleetRoleGlyph';
 import { LocalCardHost } from './LocalCardHost';
+import AgentDossier from '../../adv/sessions/AgentDossier';
+import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 import type { ChatMessage } from './ChatConversation';
 import {
@@ -68,6 +71,11 @@ import '@/app/admin/plans/plans.css';
 // hud__handle / hud__chip / hud__chip--accent — reused by the identity chip
 // (P-012) below, rather than re-declaring the same look under a new class.
 import '../../adv/hud/hud.css';
+// pc-dossier__* — hud-first-nav-and-dossier-2026-07-26 P-003: the right rail
+// below reuses AgentDossier verbatim (no forked dossier), so its stylesheet
+// rides along the same way hud.css/plans.css already do for their own reused
+// pieces.
+import '../../adv/sessions/SessionsRosterView.css';
 
 /** The roster payload shape (advRoster.list). Inlined, never imported from the
  *  server module — same rationale as HudView.tsx's identical inline type
@@ -92,6 +100,61 @@ const BANNER_STYLE: React.CSSProperties = {
 };
 
 const ERROR_BANNER_STYLE: React.CSSProperties = { ...BANNER_STYLE, color: 'var(--bad, #f87171)' };
+
+// hud-first-nav-and-dossier-2026-07-26 P-003: the AgentDossier right rail.
+// Side-by-side on a wide window (the Modal's own contentStyle widens to make
+// room, below in the component); on a narrow window it renders as an
+// overlaying drawer instead, so it never crushes the transcript column.
+const DOSSIER_RAIL_SIDE_STYLE: React.CSSProperties = {
+  flex: '0 0 300px',
+  width: 300,
+  minWidth: 0,
+  minHeight: 0,
+  borderLeft: '1px solid var(--border)',
+  overflowY: 'auto',
+};
+
+const DOSSIER_RAIL_OVERLAY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 0,
+  right: 0,
+  width: 'min(320px, 88vw)',
+  background: 'var(--bg-popover, #0d1829)',
+  borderLeft: '1px solid var(--border)',
+  boxShadow: '-8px 0 24px rgba(0,0,0,0.35)',
+  overflowY: 'auto',
+  zIndex: 5,
+};
+
+const DOSSIER_TOGGLE_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 8,
+  right: 8,
+  zIndex: 6,
+  fontSize: 11,
+  lineHeight: 1,
+  padding: '4px 9px',
+};
+
+/** Narrow-viewport breakpoint below which the dossier rail stops sitting
+ *  side-by-side and becomes a collapsible overlay drawer instead — same
+ *  matchMedia + useEffect pattern BrainstormFull.tsx already uses for its own
+ *  compact-layout switch. */
+const DOSSIER_NARROW_MEDIA_QUERY = '(max-width: 860px)';
+
+function useIsNarrowViewport(query: string): boolean {
+  const [isNarrow, setIsNarrow] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const media = window.matchMedia(query);
+    const sync = () => setIsNarrow(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, [query]);
+  return isNarrow;
+}
 
 /** Resolve the most relevant CLAUDE session for this owner via the existing
  *  sessions:list admin proxy. Exported for tests. */
@@ -256,11 +319,12 @@ function LiveSessionChat({
   sendError: string | null;
 }) {
   const { events, status, thinking } = useAgentThinkingStream('', '', '', streamUrl);
-  const messages = useMemo(() => sessionTimelineToChatMessages(events), [events]);
 
   // P-012: the SAME advRoster.list sync query the HUD/Sessions roster read
   // (shared cache, no new endpoint) — narrowed to this session's owner so the
   // chip can reuse fleetColor/fleetRole exactly as the HUD derives them.
+  // Computed BEFORE `messages` (WI-5997): its `currentPlanSlug` is the
+  // per-message `planSlug` source those messages are stamped with below.
   const roster = useSyncQuery<RosterPayload>({
     queryName: 'advRoster.list',
     args: { workspaceId: null, endedLimit: 50 },
@@ -271,6 +335,18 @@ function LiveSessionChat({
     const entries = [...(payload.active ?? []), ...(payload.pending ?? [])];
     return entries.find((e) => e.ownerId === sessionOwnerId) ?? null;
   }, [roster.data, sessionOwnerId]);
+
+  // WI-5997: stamp every mapped message with this session's roster
+  // currentPlanSlug so a P-NNN ref pill's click can resolve which plan to
+  // open (D-001 PlanPopupModal) — an approximation (uniform across the whole
+  // session, not truly per-message-historical) but the one available with no
+  // new query. `undefined` (no roster entry / no active plan) degrades to the
+  // pre-fix behavior: a P-ref pill still renders, just stays a static link
+  // (ChatMessageContent/HydratedWorkRefPill's existing no-plan-context stance).
+  const messages = useMemo(
+    () => sessionTimelineToChatMessages(events, rosterEntry?.currentPlanSlug),
+    [events, rosterEntry?.currentPlanSlug],
+  );
 
   // D-004: the chip is READ-ONLY (no click handler) — a plain span, only for
   // the assistant's own turns (user turns keep the default 'You' avatar).
@@ -433,6 +509,27 @@ export default function SessionChatModal({
     return entries.find((e) => e.ownerId === sessionOwnerId) ?? null;
   }, [actionRoster.data, sessionOwnerId]);
 
+  // hud-first-nav-and-dossier-2026-07-26 P-003: the SAME advRoster.list row
+  // (actionRoster, already fetched above for the action bar — no new query)
+  // re-read as a RosterEntry (AgentDossier's own prop shape) instead of
+  // HudRosterEntry. Both are independently-inlined TS projections of the
+  // identical server payload (same rationale as this file's own RosterPayload
+  // duplicate of hud-board-model's), so the already-fetched row structurally
+  // satisfies RosterEntry at runtime even though it was fetched under a
+  // narrower type — cast rather than re-query.
+  const dossierEntry = useMemo<RosterEntry | null>(() => {
+    if (!actionRosterEntry) return null;
+    return actionRosterEntry as unknown as RosterEntry;
+  }, [actionRosterEntry]);
+
+  // Open/collapsed state via nuqs (never useState) — deep-linkable + agent
+  // -driveable, per the plan item's requirement. Defaults open: every
+  // conversation opened from the HUD should carry the dossier unless the
+  // viewer collapses it (or the viewport is too narrow to show it side-by-
+  // side, handled separately by isNarrow below).
+  const [dossierOpen, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean.withDefault(true));
+  const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
+
   const actionCtx: ChatActionContext | null = useMemo(
     () =>
       sessionOwnerId
@@ -461,14 +558,23 @@ export default function SessionChatModal({
       }}
       title={title}
       contentStyle={{
-        width: 'min(720px, 92vw)',
+        // hud-first-nav-and-dossier-2026-07-26 P-003: widen to make room for
+        // the dossier rail when it's open AND there's room to show it
+        // side-by-side; on a narrow viewport the rail overlays instead
+        // (DOSSIER_RAIL_OVERLAY_STYLE below), so the modal stays at its
+        // original width rather than crushing the transcript.
+        width: dossierOpen && !isNarrow ? 'min(1040px, 96vw)' : 'min(720px, 92vw)',
         height: 'min(80vh, 820px)',
         padding: 0,
         display: 'flex',
         flexDirection: 'column',
       }}
     >
-      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }} data-testid="session-chat-modal">
+      <div
+        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', position: 'relative' }}
+        data-testid="session-chat-modal"
+      >
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {pendingEscalations.length > 0 ? (
           <div
             style={{ flex: '0 0 auto', maxHeight: '45%', overflowY: 'auto', borderBottom: '1px solid var(--border)' }}
@@ -517,6 +623,32 @@ export default function SessionChatModal({
             <ChatActionBar ctx={actionCtx} />
           </>
         )}
+      </div>
+        {open && dossierOpen ? (
+          <div
+            data-testid="session-chat-dossier-rail"
+            style={isNarrow ? DOSSIER_RAIL_OVERLAY_STYLE : DOSSIER_RAIL_SIDE_STYLE}
+          >
+            <AgentDossier
+              ownerId={sessionOwnerId ?? ''}
+              entry={dossierEntry}
+              onClose={() => void setDossierOpen(false)}
+            />
+          </div>
+        ) : null}
+        {open ? (
+          <button
+            type="button"
+            className="pc-button"
+            onClick={() => void setDossierOpen(!dossierOpen)}
+            aria-pressed={dossierOpen}
+            aria-label={dossierOpen ? 'Hide agent detail' : 'Show agent detail'}
+            data-testid="session-chat-dossier-toggle"
+            style={DOSSIER_TOGGLE_STYLE}
+          >
+            {dossierOpen ? 'Hide detail ›' : '‹ Detail'}
+          </button>
+        ) : null}
       </div>
     </Modal>
   );

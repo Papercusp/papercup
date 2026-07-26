@@ -95,17 +95,12 @@ export default defineTool({
     // the one that blew up. Excerpt by default, exactly as work_items:list already does.
     const rows = marked.map((f) => projectFact(f, args.full === true));
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            count: rows.length,
-            ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
-            facts: rows,
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        count: rows.length,
+        ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
+        facts: rows,
+      },
     };
   },
 });

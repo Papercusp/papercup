@@ -137,4 +137,55 @@ describe('sessionTimelineToChatMessages', () => {
       },
     ]);
   });
+
+  // WI-5997 (chat-ref-pills-2026-07-26 P-007 residual): a P-NNN ref pill's
+  // click resolves off ChatMessage.planSlug (ChatConversation reads it
+  // per-message) — this mapper never set it, so a real P-ref pill rendered
+  // and hydrated but silently no-op'd on click.
+  describe('planSlug (WI-5997)', () => {
+    it('omits planSlug entirely when the caller passes no second argument (unchanged default behavior)', () => {
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: 'hi', ts: 't1' },
+        { kind: 'text', text: 'Hello', ts: 't2' },
+      ];
+      const out = sessionTimelineToChatMessages(entries);
+      expect(out.every((m) => !('planSlug' in m))).toBe(true);
+    });
+
+    it('stamps every mapped message (user + assistant) with the given planSlug', () => {
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: 'hi', ts: 't1' },
+        { kind: 'text', text: 'Hello', ts: 't2' },
+      ];
+      const out = sessionTimelineToChatMessages(entries, 'my-plan-2026-07-26');
+      expect(out).toEqual([
+        { role: 'user', content: 'hi', id: 'prompt-0', planSlug: 'my-plan-2026-07-26' },
+        { role: 'assistant', content: 'Hello', id: 'turn-0', planSlug: 'my-plan-2026-07-26' },
+      ]);
+    });
+
+    it('stamps an explicit null (no active plan) rather than omitting the field, distinct from the undefined default', () => {
+      const entries: TimelineEntry[] = [{ kind: 'prompt', text: 'hi', ts: 't1' }];
+      const out = sessionTimelineToChatMessages(entries, null);
+      expect(out).toEqual([{ role: 'user', content: 'hi', id: 'prompt-0', planSlug: null }]);
+    });
+
+    it('a tool-only assistant message is also stamped', () => {
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: 'run the tests', ts: 't0' },
+        { kind: 'tool_use', toolName: 'Bash', toolInput: { command: 'npm test' }, ts: 't1' },
+      ];
+      const out = sessionTimelineToChatMessages(entries, 'p');
+      expect(out).toEqual([
+        { role: 'user', content: 'run the tests', id: 'prompt-0', planSlug: 'p' },
+        {
+          role: 'assistant',
+          content: '',
+          tools: [{ name: 'Bash', input: { command: 'npm test' } }],
+          id: 'turn-0',
+          planSlug: 'p',
+        },
+      ]);
+    });
+  });
 });

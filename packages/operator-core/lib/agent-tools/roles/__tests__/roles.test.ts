@@ -33,7 +33,10 @@ afterEach(() => {
   vi.doUnmock('../../../known-hooks');
 });
 
-function parseTextPayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
+function parseTextPayload(
+  result: { data: unknown } | { content: Array<{ text: string }> },
+): Record<string, unknown> {
+  if ('data' in result) return result.data as Record<string, unknown>;
   return JSON.parse(result.content[0].text);
 }
 

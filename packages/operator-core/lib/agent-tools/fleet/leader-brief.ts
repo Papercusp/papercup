@@ -165,13 +165,28 @@ export function computeBenchSuggestion(
    * THE THREE VALUES ARE THREE DIFFERENT FACTS AND MUST NOT COLLAPSE:
    *   > 0   → the queue is NOT empty; an idle member is a starvation symptom, and
    *           benching it is the WRONG remedy.
-   *   === 0 → the lane really is drained; the historical bench advice is correct.
+   *   === 0 → the queue is empty. EI-18689489507862177: this alone does NOT establish
+   *           that the lane is DRAINED — a lane whose every matching row sits behind a
+   *           claim floor reads 0 here too, and benching is the wrong remedy for that
+   *           one as well. `laneGating` below is what separates the two.
    *   null  → UNKNOWN (read failed / no harness to scope by). Deliberately NOT
    *           folded into 0: doing so would silently restore the exact bug this
    *           parameter fixes — an unchecked "drained or scoped-out" assertion —
    *           and it would do so invisibly, forever. Unknown says so out loud.
    */
   claimableCount?: number | null,
+  /**
+   * EI-18689489507862177: the PRE-floor half of the same lane read — `matchedByFilter`
+   * plus the per-floor `excluded` buckets that `readFleetLaneHealth` already fetches.
+   * Absent = the gating was not read on this call; it is never inferred, because
+   * inferring it is precisely the bug (see the `=== 0` note above).
+   *
+   *   matchedByFilter > 0 with claimableCount === 0 → GATED: the backlog exists and is
+   *     being withheld by a floor. Bench is actively harmful — it parks the member on a
+   *     completion event nothing can fire.
+   *   matchedByFilter === 0 with claimableCount === 0 → genuinely drained.
+   */
+  laneGating?: { matchedByFilter: number; excluded?: Record<string, number> } | null,
 ): LeaderBriefMember['benchSuggestion'] {
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
@@ -254,17 +269,59 @@ export function computeBenchSuggestion(
         itemTitle: null,
       };
     }
+    // EI-18689489507862177: `claimableCount === 0` is NOT proof the lane is drained — it is
+    // equally the signature of a lane whose rows ALL sit behind claim floors. Live on
+    // nonp2p-bug-drain-0725 2026-07-26T07:00Z: 108 rows matched the fleet's own filter while
+    // claimable was 0 (federationDetector=50, claimHold=38, needsHuman=11, taken=8) and 5 of
+    // 10 members idled. Asserting "VERIFIED drained" there is false, and its paired remedy is
+    // actively harmful: fleet:bench sleeps those members on a completion event that cannot
+    // fire, because nothing is in flight to complete. Same defect class as the branch above —
+    // a confident diagnosis of a fact never checked — so it gets the same treatment: branch on
+    // the pre-floor match count, which readFleetLaneHealth already has in hand.
+    const gatedFloors = topExcludedFloors(laneGating?.excluded);
+    const gated = claimableCount === 0 && (laneGating?.matchedByFilter ?? 0) > 0;
+    if (gated) {
+      return {
+        kind: 'laneless-idle',
+        reason:
+          `alive with NO claim and nothing queued, but this lane is GATED, not drained: ` +
+          `${laneGating?.matchedByFilter} row(s) match this fleet's own filter and 0 survive the ` +
+          `claim floors` +
+          (gatedFloors.length > 0
+            ? ` (${gatedFloors.map(([k, n]) => `${k}=${n}`).join(', ')}; buckets overlap)`
+            : '') +
+          '. DO NOT fleet:bench this member — benching parks it on a completion event that ' +
+          'cannot fire, since nothing is in flight to complete. Act on the floor instead: ' +
+          'clear/redirect the dominant exclusion above (work_items:claimable\'s excludedBreakdown ' +
+          'names it), or widen the spec via scheduler:set_claim_spec. If the gating is correct ' +
+          'and permanent, the honest move is fleet:wind-down, not an idle member.',
+        item: null,
+        itemTitle: null,
+      };
+    }
+    // Three distinct states remain, and they must not collapse into each other:
+    //   drained  — claimable 0 AND the gating read confirmed 0 rows even MATCH the spec.
+    //              Only here is the historical bench advice correct.
+    //   unknown-gating — claimable 0 but no gating read on this call (a direct unit-test
+    //              caller, or a partial read). We know the queue is empty; we do NOT know
+    //              whether that is drainage or gating, so we must not claim either.
+    //   unknown  — claimable itself unreadable.
+    const drainedVerified = claimableCount === 0 && laneGating != null;
     return {
       kind: 'laneless-idle',
       reason:
         'alive with NO claim, nothing queued, and not parked on an event — idle-cycling ' +
-        (claimableCount === 0
-          ? 'a lane VERIFIED drained right now (0 claimable under this fleet\'s spec) '
-          : 'a lane whose claimable queue could NOT be read on this brief (unknown, not verified drained) ') +
+        (drainedVerified
+          ? "a lane VERIFIED drained right now (0 claimable AND 0 rows even match this fleet's spec) "
+          : claimableCount === 0
+            ? 'a lane with 0 claimable, though whether that is drainage or claim-floor gating was NOT read on this brief '
+            : 'a lane whose claimable queue could NOT be read on this brief (unknown, not verified drained) ') +
         'every wake instead of resting on a scoped completion event (EI-13846). ' +
-        (claimableCount === 0
+        (drainedVerified
           ? 'fleet:bench it onto a scoped event, or confirm its claim spec still admits work.'
-          : 'Check work_items:claimable BEFORE benching — an unread queue is not an empty one.'),
+          : claimableCount === 0
+            ? "Read work_items:claimable's excludedBreakdown before benching — a fully-GATED lane looks identical to a drained one from the claimable count alone."
+            : 'Check work_items:claimable BEFORE benching — an unread queue is not an empty one.'),
       item: null,
       itemTitle: null,
     };
@@ -385,27 +442,93 @@ export function computeIdleWithClaimableAlert(input: {
 }
 
 /**
+ * EI-18689489507862177: the FLOOR-STARVED alert — the fourth distinct hole in this family,
+ * and the one every preceding alert is structurally unable to see.
+ *
+ * THE SHAPE: the fleet's spec matches PLENTY of rows, but every one of them is withheld by
+ * a claim floor, so `claimable` is 0 while members idle. The backlog is neither missing nor
+ * mis-scoped — it is being held.
+ *
+ * Why each sibling is blind, by its own definition:
+ *  - computeStrandedFleetAlert (EI-15055) requires `parkedCount > 0 && unownedCritical > 0`.
+ *  - computeSpecStarvedFleetAlert (EI-18655873409999215) requires `specMatched === 0`.
+ *    Here specMatched is large — that alert reads the lane as healthy.
+ *  - computeIdleWithClaimableAlert (EI-18681259560385029) requires `claimableCount > 0`.
+ *    Here it is exactly 0 — that alert reads the lane as drained.
+ * So a fleet in this state trips nothing, and `claimable_now: 0` in the summary reads as a
+ * clean drain. Confirmed live on nonp2p-bug-drain-0725, 2026-07-26T07:00Z: matchedByFilter
+ * 108, claimable 0, 5 of 10 members at load 0 (federationDetector=50, claimHold=38,
+ * needsHuman=11, taken=8) — and the per-member line advised benching all five.
+ *
+ * This is ALSO why the ticket's proposed `laneMatchCount` leader signal would not have
+ * worked: on that fleet it reads 108 and looks healthy. The diagnostic pair is
+ * (matchedByFilter > 0) AND (claimable === 0) — a match count alone means nothing.
+ *
+ * `claimable: null` (unreadable) NEVER fires it, mirroring the sibling above: an unknown
+ * queue is not evidence of a held one. PURE: exported for direct unit-testing.
+ */
+export function computeFloorStarvedFleetAlert(input: {
+  claimable: number | null;
+  matchedByFilter: number | null;
+  idleMemberCount: number;
+  excluded?: Record<string, number> | null;
+}): { reason: string } | undefined {
+  if (input.claimable == null || input.claimable !== 0) return undefined;
+  if (input.matchedByFilter == null || input.matchedByFilter <= 0) return undefined;
+  if (input.idleMemberCount <= 0) return undefined;
+  const floors = topExcludedFloors(input.excluded);
+  return {
+    reason:
+      `${input.idleMemberCount} member(s) are alive with NO claim while this fleet's spec matches ` +
+      `${input.matchedByFilter} row(s) of which ZERO survive the claim floors ` +
+      (floors.length > 0
+        ? `(${floors.map(([k, n]) => `${k}=${n}`).join(', ')}; buckets overlap) `
+        : '') +
+      '(EI-18689489507862177) — the lane is GATED, not drained, and no other fleet alert can ' +
+      'see this state. Do NOT fleet:bench these members: benching parks them on a completion ' +
+      'event that cannot fire, because nothing is in flight to complete. Act on the dominant ' +
+      'floor above — clear/redirect it, or widen the spec via scheduler:set_claim_spec. If the ' +
+      'gating is correct and permanent, this fleet is done: fleet:wind-down is the honest call.',
+  };
+}
+
+/**
  * EI-18681259560385029: IO shell for the alert above — the fleet's live authoritative
  * claimable count, or `null` when it genuinely could not be read.
  *
  * Uses `aggregateIssueClaimExclusions` (the SAME oracle behind work_items:claimable and
  * scheduler:get_next) resolved through the SAME `resolveFleetClaimSpec` path that
  * `work_items:claimable { spec: <fleetSlug> }` uses, so the number this alert fires on and
- * the number an agent sees when they check by hand structurally cannot disagree. Note this
- * is `breakdown.claimable` (post-floor), NOT `matchedByFilter` and NOT
- * previewSpecPoolEffect's `matched` — those are pre-floor filter counts (~113 vs 4 on this
- * fleet at the time of writing), which is why the spec-starved alert cannot stand in here.
+ * the number an agent sees when they check by hand structurally cannot disagree. Note
+ * `claimable` is POST-floor, unlike `matchedByFilter` and previewSpecPoolEffect's `matched`
+ * — those are pre-floor filter counts (~113 vs 4 on this fleet at the time of writing),
+ * which is why the spec-starved alert cannot stand in for this one.
+ *
+ * EI-18689489507862177: this used to `return breakdown.claimable` and DISCARD the rest of
+ * the breakdown it had already paid for. That single lost field is what made the whole
+ * "gated vs drained" distinction below unavailable to the leader — `matchedByFilter` and
+ * the per-floor `excluded` buckets were fetched on every brief and thrown away one line
+ * before the code that needed them. Return the whole shape; the extra fields cost nothing.
  *
  * Fails soft to `null`, never to `0`: a read error must not manufacture "the lane is
  * drained" — that synthesised zero-state is the same class of bug as the wording this item
  * fixes, and it would silently disable the alert rather than announcing itself.
  */
-async function readFleetClaimableCount(args: {
+export interface FleetLaneHealth {
+  /** Post-floor: what a self-selecting member would actually see as claimable right now. */
+  claimable: number;
+  /** Pre-floor: rows the fleet's own view.filter matches. >0 with claimable===0 ⇒ GATED, not drained. */
+  matchedByFilter: number;
+  /** Per-floor counts of why matched rows are not claimable. Buckets OVERLAP (not a partition). */
+  excluded: Record<string, number>;
+}
+
+async function readFleetLaneHealth(args: {
   fleet: string;
   harness?: string;
   workspaceId?: string | null;
   assignee?: string;
-}): Promise<number | null> {
+}): Promise<FleetLaneHealth | null> {
   try {
     const { resolveFleetClaimSpec, resolveClaimSpecWorkspace } = await import(
       '../../scheduler/claim-spec-store'
@@ -424,10 +547,30 @@ async function readFleetClaimableCount(args: {
       states: resolved.record.spec.states,
       assignee: args.assignee,
     });
-    return breakdown.claimable;
+    return {
+      claimable: breakdown.claimable,
+      matchedByFilter: breakdown.matchedByFilter,
+      excluded: breakdown.excluded as unknown as Record<string, number>,
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * The dominant claim floors behind a gated lane, largest first — what the leader must
+ * actually act on. Buckets OVERLAP by construction, so this ranks them rather than
+ * pretending they partition the matched set.
+ */
+export function topExcludedFloors(
+  excluded: Record<string, number> | null | undefined,
+  limit = 3,
+): Array<[string, number]> {
+  if (!excluded) return [];
+  return Object.entries(excluded)
+    .filter(([, n]) => typeof n === 'number' && n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
 }
 
 export type DecoratedAgent = AgentAssignment & {
@@ -488,6 +631,9 @@ export function projectMember(
   a: DecoratedAgent,
   nowMs: number,
   claimableCount?: number | null,
+  /** EI-18689489507862177: pre-floor match + per-floor exclusions, so the bench
+   *  suggestion can tell a GATED lane from a drained one. Absent = not read. */
+  laneGating?: { matchedByFilter: number; excluded?: Record<string, number> } | null,
 ): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   return {
@@ -513,7 +659,7 @@ export function projectMember(
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
     ...(a.parkedOn && a.parkedOn.length > 0 ? { parkedOn: a.parkedOn } : {}),
     ...(() => {
-      const suggestion = computeBenchSuggestion(a, claimableCount);
+      const suggestion = computeBenchSuggestion(a, claimableCount, laneGating);
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
   };
@@ -640,14 +786,17 @@ export default defineTool({
     // EI-18681259560385029: read the fleet's LIVE claimable count before projecting members
     // — the per-member bench suggestion must not assert "drained or scoped-out" without it.
     // Fails soft to null (UNKNOWN), never 0.
-    const fleetClaimableCount = await readFleetClaimableCount({
+    const fleetLaneHealth = await readFleetLaneHealth({
       fleet,
       harness: args.harness,
       workspaceId: actorWorkspace,
       assignee: ownerId,
     });
+    const fleetClaimableCount = fleetLaneHealth?.claimable ?? null;
     const nowMs = Date.now();
-    const members = grouped.map((a) => projectMember(a, nowMs, fleetClaimableCount));
+    const members = grouped.map((a) =>
+      projectMember(a, nowMs, fleetClaimableCount, fleetLaneHealth),
+    );
     const self = resolveSelfRef(ctx);
     const markedMembers = markSelfRows(members, self, 'agentId');
     const summary = {
@@ -676,6 +825,12 @@ export default defineTool({
       // was read as benign (it counts a REMEDY); this counts a STARVATION SYMPTOM.
       idle_with_claimable: members.filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable')
         .length,
+      // EI-18689489507862177: members idle against an EMPTY (or unread) queue. Distinct from
+      // idle_with_claimable above, which by construction only counts them when claimable > 0
+      // — so in a fully-GATED lane (claimable 0, spec matching plenty) that field reads 0 and
+      // these members land here instead. This is the count computeFloorStarvedFleetAlert
+      // keys on; without it the gated-lane alert could never fire.
+      laneless_idle: members.filter((m) => m.benchSuggestion?.kind === 'laneless-idle').length,
       // The live authoritative claimable total behind the two fields above (the same
       // number work_items:claimable reports). null ⇒ could not be read on this brief —
       // NOT zero, and never to be read as a drained lane.
@@ -705,6 +860,16 @@ export default defineTool({
       claimableCount: fleetClaimableCount,
       idleMemberCount: summary.idle_with_claimable,
     });
+    // EI-18689489507862177: the GATED-lane twin of the alert above. `idle_with_claimable`
+    // is 0 by construction in this state (its bench branch requires claimableCount > 0), so
+    // this one counts laneless-idle members instead — keying it to idle_with_claimable would
+    // ship an alert that can never fire.
+    const floorStarvedAlert = computeFloorStarvedFleetAlert({
+      claimable: fleetClaimableCount,
+      matchedByFilter: fleetLaneHealth?.matchedByFilter ?? null,
+      idleMemberCount: summary.laneless_idle,
+      excluded: fleetLaneHealth?.excluded ?? null,
+    });
     let specStarvedAlert: { reason: string } | undefined;
     try {
       const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
@@ -730,6 +895,7 @@ export default defineTool({
           strandedFleetAlert: strandedFleetAlert != null,
           specStarvedAlert: specStarvedAlert != null,
           idleWithClaimableAlert: idleWithClaimableAlert != null,
+          floorStarvedAlert: floorStarvedAlert != null,
         },
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
@@ -738,6 +904,7 @@ export default defineTool({
         ...(idleWithClaimableAlert
           ? { idleWithClaimableAlertReason: idleWithClaimableAlert.reason }
           : {}),
+        ...(floorStarvedAlert ? { floorStarvedAlertReason: floorStarvedAlert.reason } : {}),
       },
     };
   },

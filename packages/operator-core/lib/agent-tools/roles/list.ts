@@ -37,6 +37,6 @@ export default defineTool({
     // allow-scope-default: empty == the intended global role registry, not a leak.
     const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx) ?? '';
     const roles = listRoles(slug);
-    return { content: [{ type: 'text', text: JSON.stringify({ harnessSlug: slug || null, roles }) }] };
+    return { data: { harnessSlug: slug || null, roles } };
   },
 });

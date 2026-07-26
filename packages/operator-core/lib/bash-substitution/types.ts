@@ -105,6 +105,14 @@ export interface PairAudit {
   intentLabel: string;
   /** `bashPattern.source` — the string the registry stores. */
   bashPattern: string;
+  /**
+   * `bashPattern.flags`, minus the stateful ones — the registry's companion
+   * column (migration 667). Stored SEPARATELY from the source because a
+   * consumer recompiling `new RegExp(source)` without them gets a DIFFERENT
+   * regex from the one the verdict was earned under, which silently divorces
+   * enforcement from its evidence (WI-5998).
+   */
+  bashPatternFlags: string;
   toolName: string;
   verdict: EquivalenceVerdict;
   /** How many real commands were tested (`sample_size`). */

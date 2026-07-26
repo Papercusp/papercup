@@ -29,7 +29,7 @@ import { BODY_REFS_OPT_OUT_FIELD, GATE_REFS_FIELD } from '../ref-hydrate';
 import { resolveGateRefStamps } from '../ref-hydrate-resolve';
 import { sendMessage, getMessageById } from '../messages';
 import { parseSlotSelector } from '../slot-selector';
-import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote } from '../inbox-wake';
+import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote, type DormantScheduledInfo } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../federation-scope';
@@ -689,6 +689,11 @@ async function sendOne(
          *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
          *  dispatch black-holes until they are re-spawned. A LOUD miss the sender must handle. */
         recipient_dead?: string[];
+        /** WI-5994: the subset of missed targets that are NOT dead — each has an
+         *  ARMED engine loop with a known next fire (or a turn in flight right
+         *  now), so the message is DEFERRED to that fire, never lost, and never
+         *  grounds for reassignment/respawn. Disjoint from `recipient_dead`. */
+        recipient_dormant_scheduled?: DormantScheduledInfo[];
         /** P-007 (cross-machine-coord-parity): missed targets homed on a REMOTE
          *  machine of this hive — not dead, elsewhere. Delivery + wake continue
          *  via federation when the send is hive-scoped (federated:true). */
@@ -754,6 +759,11 @@ async function sendOne(
         // genuinely dead and the inject black-holes. Classify the dead ones (same non-firing
         // probe the no-wake path uses) and report them LOUDLY + truthfully.
         let dead: string[] = [];
+        // WI-5994: recipients reportIdleRecipients ALREADY excluded from `idle`
+        // because they have an armed loop with a known next fire (or a turn in
+        // flight right now) — dormant BETWEEN loop fires, not dead. Never fold
+        // these into `dead` / the "not running… re-dispatch" note.
+        let dormantScheduled: DormantScheduledInfo[] = [];
         // P-007 (cross-machine-coord-parity): a REMOTE-homed recipient has no
         // local watcher by definition — it is not dead, it is elsewhere. Split
         // it out of the dead set and report it truthfully (below).
@@ -764,6 +774,7 @@ async function sendOne(
             workspaceId: identity.workspaceId ?? undefined,
           });
           dead = report.idle;
+          dormantScheduled = report.dormantScheduled ?? [];
           const remote = await remoteSessionsByOwnerId(identity.workspaceId);
           remoteHomed = fan.targets.filter((t) => remote.has(t));
           dead = dead.filter((d) => !remote.has(d));
@@ -796,17 +807,36 @@ async function sendOne(
               : `recipient(s) ${staleRemote.join(', ')} are remote-homed but their presence beat is STALE — the ` +
                 'session is probably gone. The message still federates (seen if it resumes), but do NOT assume ' +
                 'pickup: treat this like recipient_dead and re-dispatch to a live agent unless the receipt arrives.';
-        } else if (dead.length > 0) {
-          wake.recipient_dead = dead;
+        } else if (dead.length > 0 || dormantScheduled.length > 0) {
+          // WI-5994: `dead` and `dormantScheduled` are disjoint outcomes of the SAME
+          // miss — report each truthfully instead of collapsing both into one
+          // "not running" verdict. Only `dead` justifies redispatch/reassignment.
+          if (dead.length > 0) wake.recipient_dead = dead;
+          if (dormantScheduled.length > 0) wake.recipient_dormant_scheduled = dormantScheduled;
+          const parts: string[] = [];
+          if (dead.length > 0) {
+            parts.push(
+              `NO live session is watching the inbox of: ${dead.join(', ')}, and no scheduled loop fire will ` +
+                'pick it up either — these agents are genuinely not running, so the message will NOT be seen on ' +
+                'any "next turn": the dispatch black-holes until they are re-spawned/resumed. Do NOT assume it ' +
+                'landed: re-dispatch to a LIVE agent (coord:presence → wakeable:true), use coord:handoff, or — ' +
+                "only if something truly re-dispatches — pass backstop:'<what re-dispatches>'.",
+            );
+          }
+          if (dormantScheduled.length > 0) {
+            const etaText = dormantScheduled
+              .map((d) => (d.parked ? `${d.ownerId} (mid-turn right now)` : `${d.ownerId} (next fire ${d.nextFireAt})`))
+              .join(', ');
+            parts.push(
+              `${dormantScheduled.length} recipient(s) are DORMANT BETWEEN LOOP FIRES, not dead: ${etaText}. ` +
+                'Delivery is DEFERRED to their next scheduled fire, not lost — do NOT reassign their work or ' +
+                'treat this as evidence of death; redirect only if you genuinely cannot wait that long.',
+            );
+          }
           wake.note =
             (optimisticNoBackstop
               ? `optimistic wake with NO declared backstop MISSED — `
-              : `required wake MISSED — `) +
-            `NO live session is watching the inbox of: ${dead.join(', ')}. ` +
-            'These agents are not running, so the message will NOT be seen on any "next turn" — the ' +
-            'dispatch black-holes until they are re-spawned/resumed. Do NOT assume it landed: re-dispatch ' +
-            'to a LIVE agent (coord:presence → wakeable:true), use coord:handoff, or — only if something ' +
-            "truly re-dispatches — pass backstop:'<what re-dispatches>'.";
+              : `required wake MISSED — `) + parts.join(' ');
         } else {
           wake.note =
             (optimisticNoBackstop

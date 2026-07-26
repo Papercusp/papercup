@@ -31,6 +31,6 @@ export default defineTool({
     // role picker (and any UI) gets role+consumes in one call.
     const roles = getKnownRoles();
     const consumes = Object.fromEntries(roles.map((id) => [id, roleConsumes(id)]));
-    return { content: [{ type: 'text', text: JSON.stringify({ roles, consumes }) }] };
+    return { data: { roles, consumes } };
   },
 });

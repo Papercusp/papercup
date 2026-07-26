@@ -25,6 +25,7 @@
  * stalled all four.
  */
 
+import { compileRegistryPattern, normalizeRegistryFlags } from './match';
 import type {
   CoverageResult,
   EquivalenceVerdict,
@@ -48,8 +49,13 @@ const MAX_FAILING_CASES = 25;
 
 /** Select the atoms from a corpus that a pair's pattern claims. */
 export function matchingAtoms(pair: SubstitutionPair, corpus: SampledCommand[]): SampledCommand[] {
-  // A regex with /g is stateful across .test() calls; rebuild without it.
-  const pattern = new RegExp(pair.bashPattern.source, pair.bashPattern.flags.replace(/g/g, ''));
+  // Compiled through the SAME helper every enforcement consumer uses, so a
+  // verdict can never be earned under one regex and enforced under another
+  // (WI-5998: the flags used to be dropped on the way into the registry, which
+  // silently made the audited pattern and the enforced pattern different
+  // regexes — `operator-db-select` matched `SELECT` here and missed it there).
+  const pattern = compileRegistryPattern(pair.bashPattern.source, pair.bashPattern.flags);
+  if (!pattern) return [];
   return corpus.filter((entry) => pattern.test(entry.atom));
 }
 
@@ -106,6 +112,7 @@ export function auditPair(pair: SubstitutionPair, corpus: SampledCommand[]): Pai
     pairId: pair.id,
     intentLabel: pair.intentLabel,
     bashPattern: pair.bashPattern.source,
+    bashPatternFlags: normalizeRegistryFlags(pair.bashPattern.flags),
     toolName: pair.toolName,
     verdict,
     sampleSize: sample.length,

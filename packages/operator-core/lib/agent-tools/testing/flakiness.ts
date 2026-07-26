@@ -73,17 +73,12 @@ export default defineTool({
     }
 
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            rows,
-            candidates: candidates.map((c) => c.filePath),
-            ...(filed ? { filed } : {}),
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        rows,
+        candidates: candidates.map((c) => c.filePath),
+        ...(filed ? { filed } : {}),
+      },
     };
   },
 });

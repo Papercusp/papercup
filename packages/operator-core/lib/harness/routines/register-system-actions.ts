@@ -196,6 +196,20 @@
  *     the verdict as a workspace fact every tick; emits the `release-pass:autoloop`
  *     awaited event ONLY on go:true. Seeded INACTIVE
  *     (seed-autoloop-release-readiness-routine.ts --active to arm).
+ *   - `system:gate-canary-sweep` — WI-5977 (explicit-presence-as-convention-2026-07-26).
+ *     The previously-missing SCHEDULED counterpart of the on-demand `gates:canary-check`
+ *     tool: hourly, runs a KNOWN-GOOD sample through the federation-probe apparatus for
+ *     the routine's own install_slug and records a per-harness fact
+ *     (gate-canary-sweep-verdict) — so a gate that goes silently unreachable-by-
+ *     construction (the 2026-07-10 cause #10 class) is caught by the system on a cadence,
+ *     not only when an agent happens to run the on-demand check. A non-federated target
+ *     harness reads as indeterminate (alarm:'none'), never a false 'gate-broken' (EI-11574
+ *     precedent). Does NOT yet sweep the green-checkpoint result-parser canary
+ *     (apps/operator tier — layering-excluded, same as system:autoloop-release-readiness-
+ *     monitor; a named follow-on, not silently dropped) and does not yet escalate on a
+ *     'gate' alarm (fact + log line only this pass). Seeded INACTIVE; the seed script
+ *     ALSO requires an explicit `--harness=<slug>` (no safe default — see
+ *     seed-gate-canary-sweep-routine.ts's header for why).
  */
 import '../git-sync/git-sync-action';
 // `system:foreign-git-sync` — the P-109 foreign-workspace commit lane (a
@@ -361,3 +375,7 @@ import './plan-item-orphan-reconcile-action';
 // `release-pass:autoloop` only on go:true. Seeded INACTIVE
 // (seed-autoloop-release-readiness-routine.ts --active to arm).
 import './autoloop-release-readiness-action';
+// WI-5977 (explicit-presence-as-convention-2026-07-26): `system:gate-canary-sweep` — the
+// previously-missing scheduled counterpart of the on-demand gates:canary-check tool.
+// Seeded INACTIVE (seed-gate-canary-sweep-routine.ts --harness=<slug> --active to arm).
+import '../../gates/gate-canary-sweep-action';

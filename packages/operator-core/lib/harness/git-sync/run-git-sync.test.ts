@@ -453,6 +453,45 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     });
   });
 
+  it('EI-18689553108460319: superproject push:false (bridged-hive commit-only) does NOT strand the submodule — it still pushes to its own origin', () => {
+    // Simulates git-sync-action's hive-mode override (`cfg.push = false`) — the bridge
+    // writer is meant to become the SOLE pusher of the superproject's canonical refs,
+    // never of an unrelated, independently-hosted submodule library.
+    writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
+
+    return runGitSync('test', { repoPath: repo, config: { push: false } }).then((out) => {
+      expect(out.status).toBe('synced');
+      if (out.status === 'synced') {
+        // the submodule still pushed to ITS OWN origin ...
+        expect(out.pushed).toContain('libs/sub');
+        // ... but the superproject did NOT (push:false is commit-only for it)
+        expect(out.pushed).not.toContain('superproject');
+      }
+      // submodule origin received the sub commit
+      expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+      // superproject origin did NOT receive the super commit — still local-only
+      expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+      // the local superproject DOES have the pointer bump + local commit (commit-only, not skipped)
+      expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit test/);
+    });
+  });
+
+  it('EI-18689553108460319: `pushSubmoduleOrigins: false` opts a submodule back OUT of pushing too (explicit override still honored)', () => {
+    writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
+
+    return runGitSync('test', { repoPath: repo, config: { pushSubmoduleOrigins: false } }).then((out) => {
+      expect(out.status).toBe('synced');
+      if (out.status === 'synced') {
+        expect(out.pushed).not.toContain('libs/sub');
+        expect(out.pushed).toContain('superproject');
+      }
+      // submodule origin did NOT receive the sub commit — still local-only
+      expect(git(subOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+    });
+  });
+
   it('reconciles a DIVERGED submodule (behind its origin) via fetch+merge+push instead of erroring', () => {
       // a peer advances the submodule's origin → the harness submodule is now behind
       const subOther = join(root, 'subother');

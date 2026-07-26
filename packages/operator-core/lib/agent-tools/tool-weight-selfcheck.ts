@@ -38,6 +38,23 @@ import { budgetViolations, formatViolations, HARD_CAP, type BudgetViolation } fr
 export type EscalateHardCapFn = (violation: BudgetViolation) => Promise<void>;
 
 export async function defaultEscalateHardCap(v: BudgetViolation): Promise<void> {
+  const watchdogKey = `tool-weight-hard-cap:${v.name}`;
+  // EI-18689219855601091: an authoritative pre-filter BEFORE planning a capture —
+  // mirrors every other watchdog caller of `findIssuesByWatchdogKeys` (per its own
+  // doc comment: "pre-filters signals against this BEFORE planning captures, so a
+  // standing already-filed signal never consumes the per-tick capture budget").
+  // This watchdog skipped that step and relied entirely on captureImprovement's
+  // own lexical/semantic search-first dedup over `input.title` — which is racy (two
+  // near-simultaneous hot-reloads can both search-and-miss before either commits)
+  // and not a guaranteed hit even outside the race window. Root-caused 3 duplicate
+  // rows filed for the SAME watchdogKey in one evening (11ms apart, then again 3min
+  // later). This exact indexed lookup is the reliable check; it does not fully close
+  // the sub-millisecond TOCTOU race (no DB-level unique constraint), but it is the
+  // established pattern for this class of watchdog and removes the dominant cause.
+  const { findIssuesByWatchdogKeys } = await import('../issues-engineer');
+  const existing = await findIssuesByWatchdogKeys([watchdogKey]).catch(() => []);
+  if (existing.some((i) => i.state === 'open')) return;
+
   const { captureImprovement } = await import('../harness/improvements/capture-core');
   await captureImprovement({
     // Deliberately STABLE (no weight/cutAtLeast numbers) — those live in the body.
@@ -53,7 +70,7 @@ export async function defaultEscalateHardCap(v: BudgetViolation): Promise<void> 
     sourceRole: 'system',
     source: 'su',
     dedupScope: 'open',
-    watchdogKey: `tool-weight-hard-cap:${v.name}`,
+    watchdogKey,
     paths: [
       'packages/operator-core/lib/agent-tools/tool-guidance-budget.ts',
       'packages/operator-core/lib/agent-tools/tool-weight-selfcheck.ts',

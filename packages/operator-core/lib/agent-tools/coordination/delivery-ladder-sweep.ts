@@ -131,6 +131,17 @@ export interface LadderMsg {
    *  almost always ANSWERING something the recipient sent — i.e. an answer arriving, not a
    *  new ask waiting on them. Surfaced, never acted on: we mark it and let the agent judge. */
   replyTo: string | null;
+  /** WI-6+ (self-nag loop, EI-18688610206822254): `extra.auto === true` on the envelope —
+   *  the SAME machine-lifecycle flag `unanswered-directed.ts` already excludes (WI-4537a).
+   *  A sender like `await-event` (park/degrade-to-inbox wake notifications) always stamps
+   *  this but does NOT match {@link MACHINE_SENDER_PATTERN}, so without this check its
+   *  wake notices counted as unread directed mail from a "real correspondent" forever —
+   *  a self-sustaining nag loop (the ladder can't read/act on a reply from a machine
+   *  sender any more than it can from one matching the sender pattern). Excluded at the
+   *  SQL source (`findLadderCandidates`); this field lets the pure classifier apply the
+   *  same rule to hand-built rows (tests, or any future non-SQL row source) without
+   *  re-deriving the exclusion. */
+  auto?: boolean | null;
 }
 
 export interface LadderEscalation {
@@ -279,7 +290,7 @@ export function classifyLadderEscalations(input: {
     // you have not read, oldest ~Xm") is only true of THIS set.
     const sourceMsgs = r.recent_msgs ?? [];
     const msgs = sourceMsgs.filter(
-      (m) => Number.isFinite(Number(m?.ts)) && !isMachineAuthoredSender(m.from),
+      (m) => Number.isFinite(Number(m?.ts)) && !isMachineAuthoredSender(m.from) && m.auto !== true,
     );
     const unread = Number.isFinite(lastReadMs)
       ? msgs.filter((m) => Number(m.ts) > lastReadMs)
@@ -351,6 +362,7 @@ async function findLadderCandidates(
         e.body->>'from' AS from_id,
         e.body->>'summary' AS summary,
         e.body->>'related_msg_id' AS reply_to,
+        (e.body->>'auto') = 'true' AS auto,
         (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
         FROM harness_shared.coord_event_log e
         CROSS JOIN LATERAL jsonb_array_elements_text(e.body->'to') AS r
@@ -364,6 +376,13 @@ async function findLadderCandidates(
          -- Shared with sendMessage/unanswered-directed so new watchdog names are
          -- covered automatically rather than by an ever-growing local allowlist.
          AND NOT (e.body->>'from' ~ ${MACHINE_SENDER_PATTERN})
+         -- EI-18688610206822254: the SAME auto=true machine-lifecycle exclusion
+         -- unanswered-directed.ts already applies (WI-4537a). A sender like
+         -- await-event (event-wake park/degrade-to-inbox notices) always stamps
+         -- this but doesn't match MACHINE_SENDER_PATTERN, so without this the
+         -- ladder counted its own wake notifications as unread directed mail from
+         -- a "real correspondent" forever -- a self-sustaining nag loop.
+         AND (e.body->>'auto') IS DISTINCT FROM 'true'
          AND r NOT IN ('*', 'human', '')
          AND r NOT LIKE '@%'
          AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
@@ -383,7 +402,7 @@ async function findLadderCandidates(
            -- already far past "deaf" — truncating the ancient (already-read) head costs
            -- nothing. The newest-first ordering is what makes that cap safe.
            (array_agg(
-              jsonb_build_object('ts', ts_ms, 'from', from_id, 'summary', summary, 'replyTo', reply_to)
+              jsonb_build_object('ts', ts_ms, 'from', from_id, 'summary', summary, 'replyTo', reply_to, 'auto', auto)
               ORDER BY ts_ms DESC
             ))[1:500] AS recent_msgs
       FROM directed

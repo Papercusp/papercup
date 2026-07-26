@@ -109,7 +109,11 @@ export default defineTool({
 
     // A wake that woke nobody: classify whether the target is genuinely dead (no live
     // session watching its key) so the miss is a LOUD relaunch signal, not a silent 0.
+    // WI-5994: `reportIdleRecipients` already excludes a target with an armed loop and
+    // a known future fire from `idle` — such a target is dormant BETWEEN loop fires,
+    // not dead, and must never be told "needs a RELAUNCH".
     let recipient_dead: string[] | undefined;
+    let recipient_dormant_scheduled: import('../inbox-wake').DormantScheduledInfo[] | undefined;
     let warning: string | undefined;
     if (woken === 0 && fan.staged === 0) {
       try {
@@ -120,6 +124,14 @@ export default defineTool({
             `coord:wake reached no live session for ${to} — it is NOT running (sessionState=ended), so the ` +
             'wake black-holes. This target needs a RELAUNCH/resume, not a wake (coord:presence → wakeable:true ' +
             'for a valid target).';
+        } else if ((report.dormantScheduled ?? []).length > 0) {
+          recipient_dormant_scheduled = report.dormantScheduled;
+          const d = report.dormantScheduled[0];
+          warning =
+            `coord:wake reached no live session for ${to}, but it is DORMANT BETWEEN LOOP FIRES, not dead — ` +
+            (d.parked
+              ? 'a turn is in flight right now; it will see this on its current/next cycle.'
+              : `its next scheduled fire is ${d.nextFireAt}. Delivery is DEFERRED, not lost — no relaunch needed.`);
         } else {
           warning =
             `coord:wake woke nobody for ${to} (it may be live-but-paused or mid-turn). Confirm it is running ` +
@@ -140,6 +152,7 @@ export default defineTool({
             woken,
             ...(fan.staged > 0 ? { staged: fan.staged } : {}),
             ...(recipient_dead ? { recipient_dead } : {}),
+            ...(recipient_dormant_scheduled ? { recipient_dormant_scheduled } : {}),
             ...(warning ? { warning } : {}),
           }),
         },

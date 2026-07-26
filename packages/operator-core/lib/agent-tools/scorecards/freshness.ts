@@ -100,7 +100,7 @@ export default defineTool({
       }
     }
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(out) }],
+      data: out,
     };
   },
 });

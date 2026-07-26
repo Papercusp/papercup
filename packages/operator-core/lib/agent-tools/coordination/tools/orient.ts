@@ -1192,23 +1192,41 @@ export async function composeOrient(
   return result;
 }
 
-/** WI-5656: assembles the final coord:orient response object with
- *  RESULT-DOOR-AWARE key priority. result-door.ts (`capInjectionText`) caps
- *  the FINAL serialized JSON text at a per-result token budget and keeps only
- *  the HEAD, spilling whatever comes after the cut to scratch — so KEY
- *  INSERTION ORDER in this object literal directly determines what survives
- *  in-context. `recovery` exists to carry the one thing a just-compacted
- *  successor cannot get any other way (held-item checkpoints, armed-loop
- *  status, staleness warnings, the self-recall pointer) — a just-compacted
- *  agent's MOST fragile turn — so it is serialized right after minimal
- *  identity (`self`), BEFORE every other preamble leg. modes /
- *  instructionPrecedence / ideate / ownerDirectives / captureMiss /
- *  configIntegrity / codexLocks / taskToolSchemaPack are all re-delivered on
- *  subsequent turns via the system prompt + CTRL:transition (or are cheaply
- *  re-fetchable), so they are the right things to spill instead when the
- *  door truncates. `result` (claimable backlog, inbox, fleetDelta,
- *  ownerPresent) is the lowest-priority, most re-fetchable tail and stays
- *  last. Exported (pure, no IO) so a regression test can assert the ordering
+/** WI-5656 + EI-18689334534773965: assembles the final coord:orient response
+ *  object with RESULT-DOOR-AWARE key priority. result-door.ts
+ *  (`capInjectionText`) caps the FINAL serialized JSON text at a per-result
+ *  token budget and keeps only the HEAD, spilling whatever comes after the
+ *  cut to scratch — so KEY INSERTION ORDER in this object literal directly
+ *  determines what survives in-context.
+ *
+ *  Priority, highest first:
+ *   1. `self` + `recovery` — the one thing a just-compacted successor cannot
+ *      get any other way (held-item checkpoints, armed-loop status,
+ *      staleness warnings, the self-recall pointer). A just-compacted
+ *      agent's MOST fragile turn.
+ *   2. The CORE mandate result — `ok` / `me` (assignments) / `claimable`
+ *      (backlog) / `inbox` (summary): the entire reason coord:orient is
+ *      billed as a one-round-trip bootstrap. EI-18689334534773965: these
+ *      previously rode inside `legs.result` spread dead LAST (behind every
+ *      preamble leg below), so a large ownerDirectives/instructionPrecedence/
+ *      taskToolSchemaPack routinely starved them — degrading the "bootstrap
+ *      in ONE call" promise into 3-4 follow-up calls (coord:inbox,
+ *      fleet:assignments, work_items:list) to rebuild what orient was
+ *      supposed to hand over, on the exact turn (post-compaction) an agent
+ *      has the least context left to notice the gap.
+ *   3. `ownerDirectives` / `modes` / `instructionPrecedence` / `ideate` /
+ *      `captureMiss` / `configIntegrity` / `codexLocks` / `taskToolSchemaPack`
+ *      — all re-delivered on subsequent turns via the system prompt +
+ *      CTRL:transition (or cheaply re-fetchable), so they are the right
+ *      things to spill when the door truncates.
+ *   4. The REST of `result` (leaderBrief, memory, planEvents, fleetCatchUp,
+ *      fleetHealth, announcedGates, paneContext, deepWork, recipes,
+ *      pipeline, intentDeclared, fleetDelta, ownerPresent) — genuinely
+ *      discretionary supplementary folds, each independently re-fetchable
+ *      (memory:search, coord:plan-events, coord:catch-up, …) and the least
+ *      costly to lose. Lowest priority, stays last.
+ *
+ *  Exported (pure, no IO) so a regression test can assert the ordering
  *  directly against the real assembly code, not a mirrored fixture. */
 export function assembleOrientOutput(legs: {
   self?: unknown;
@@ -1223,9 +1241,16 @@ export function assembleOrientOutput(legs: {
   taskToolSchemaPack?: unknown;
   result: object;
 }): Record<string, unknown> {
+  const { ok, me, claimable, inbox, ...resultRest } = legs.result as Record<string, unknown>;
   return {
     ...(legs.self ? { self: legs.self } : {}),
     ...(legs.recovery ? { recovery: legs.recovery } : {}),
+    // CORE mandate (EI-18689334534773965) — prioritized ahead of the
+    // discretionary preamble legs below; see the doc comment above.
+    ...(ok !== undefined ? { ok } : {}),
+    ...(me !== undefined ? { me } : {}),
+    ...(claimable !== undefined ? { claimable } : {}),
+    ...(inbox !== undefined ? { inbox } : {}),
     ...(legs.ownerDirectives ? { ownerDirectives: legs.ownerDirectives } : {}),
     ...(legs.modes ? { modes: legs.modes } : {}),
     ...(legs.instructionPrecedence ? { instructionPrecedence: legs.instructionPrecedence } : {}),
@@ -1234,7 +1259,7 @@ export function assembleOrientOutput(legs: {
     ...(legs.configIntegrity ? { configIntegrity: legs.configIntegrity } : {}),
     ...(legs.codexLocks ? { codexLocks: legs.codexLocks } : {}),
     ...(legs.taskToolSchemaPack ? { taskToolSchemaPack: legs.taskToolSchemaPack } : {}),
-    ...legs.result,
+    ...resultRest,
   };
 }
 

@@ -17,7 +17,17 @@ import {
   type NamedToolWeight,
   type BudgetViolation,
 } from './tool-guidance-budget';
-import { runToolWeightSelfCheck, reportViolations } from './tool-weight-selfcheck';
+import { runToolWeightSelfCheck, reportViolations, defaultEscalateHardCap } from './tool-weight-selfcheck';
+
+const findIssuesByWatchdogKeysMock = vi.hoisted(() => vi.fn());
+const captureImprovementMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../issues-engineer', () => ({
+  findIssuesByWatchdogKeys: findIssuesByWatchdogKeysMock,
+}));
+vi.mock('../harness/improvements/capture-core', () => ({
+  captureImprovement: captureImprovementMock,
+}));
 
 describe('promptWeight (EI-10966 — matches the assembled-prompt string weight)', () => {
   it('sums description + every guidance field, including per-role', () => {
@@ -165,5 +175,49 @@ describe('reportViolations (EI-18685386548651513 — tiered: budget=log-only, ha
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('defaultEscalateHardCap (EI-18689219855601091 — authoritative watchdogKey pre-filter)', () => {
+  const violation: BudgetViolation = { name: 'dev:pg_query', weight: HARD_CAP + 50, hardCap: true, grandfathered: false, cutAtLeast: 50 };
+
+  it('skips capture entirely when an OPEN issue already carries this watchdogKey', async () => {
+    findIssuesByWatchdogKeysMock.mockReset().mockResolvedValue([{ id: 'EI-1', state: 'open' }]);
+    captureImprovementMock.mockReset();
+
+    await defaultEscalateHardCap(violation);
+
+    expect(findIssuesByWatchdogKeysMock).toHaveBeenCalledWith(['tool-weight-hard-cap:dev:pg_query']);
+    expect(captureImprovementMock).not.toHaveBeenCalled();
+  });
+
+  it('captures when the pre-filter finds no matching issue', async () => {
+    findIssuesByWatchdogKeysMock.mockReset().mockResolvedValue([]);
+    captureImprovementMock.mockReset().mockResolvedValue({ ok: true, created: true, possibleDuplicates: [] });
+
+    await defaultEscalateHardCap(violation);
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+    expect(captureImprovementMock.mock.calls[0][0]).toMatchObject({
+      watchdogKey: 'tool-weight-hard-cap:dev:pg_query',
+      dedupScope: 'open',
+    });
+  });
+
+  it('captures when a matching issue exists but is not open (resolved dup ⇒ let captureImprovement decide)', async () => {
+    findIssuesByWatchdogKeysMock.mockReset().mockResolvedValue([{ id: 'EI-1', state: 'resolved' }]);
+    captureImprovementMock.mockReset().mockResolvedValue({ ok: true, created: true, possibleDuplicates: [] });
+
+    await defaultEscalateHardCap(violation);
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails open to capture when the pre-filter lookup itself errors', async () => {
+    findIssuesByWatchdogKeysMock.mockReset().mockRejectedValue(new Error('pg down'));
+    captureImprovementMock.mockReset().mockResolvedValue({ ok: true, created: true, possibleDuplicates: [] });
+
+    await expect(defaultEscalateHardCap(violation)).resolves.toBeUndefined();
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
   });
 });

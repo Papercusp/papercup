@@ -30,6 +30,7 @@ import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { listPresence } from './presence';
 import { resolveBestEffortAgainstRoster, isSelectorOrWildcard, knownOwnerIdSet } from './recipient-resolve';
+import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 
 /** Prefix for the per-agent inbox-wake key. A bee watches `inboxWakeKey(self)`;
  *  a `{wake:true}` send to that bee fires exactly this key. */
@@ -324,12 +325,59 @@ export function classifyRecipientLiveness(input: IdleClassificationInput): Recip
   return input.activeWatchers > 0 ? 'live' : 'idle';
 }
 
+/**
+ * WI-5994: a recipient this probe would otherwise call `idle` (zero active
+ * inbox-wake watchers), reclassified because it has an ARMED engine loop with
+ * a KNOWN future fire — dormant BETWEEN loop fires, not dead. The disconfirming
+ * data (`nextFireAt`) was already sitting in `fleet:leader-brief`/`loop:status`
+ * the whole time; this is that same signal consulted on the wake path instead
+ * of only on the read-only presence path.
+ */
+export interface DormantScheduledInfo {
+  ownerId: string;
+  /** ISO timestamp of the loop's next scheduled fire — when the message will
+   *  actually be seen with NO respawn needed. Null when the loop is currently
+   *  PARKED (a turn is in flight right now — the fire is imminent/unknown, not
+   *  merely "some time in the future"). */
+  nextFireAt: string | null;
+  /** True when the loop's turn is in flight right now (parked) rather than
+   *  waiting for a future `nextFireAt`. */
+  parked: boolean;
+}
+
+/**
+ * PURE: does this loop status turn an "idle" (no active wake-watcher) verdict
+ * into "dormant-scheduled" (a real future delivery is already scheduled, no
+ * respawn needed)? Only an ACTIVE, non-stalled loop counts — a stalled loop's
+ * `nextFireAt` is not a promise anything will actually happen (WI-5975 sibling:
+ * a broken dead-man's-switch must not be read as "fine, it'll fire").
+ */
+export function classifyDormantSchedule(
+  loop: Pick<LoopStatus, 'active' | 'nextFireAt' | 'parked' | 'stalled'> | null | undefined,
+  nowMs: number = Date.now(),
+): { parked: boolean; nextFireAt: string | null } | null {
+  if (!loop || !loop.active || loop.stalled) return null;
+  if (loop.parked) return { parked: true, nextFireAt: null };
+  if (loop.nextFireAt) {
+    const t = Date.parse(loop.nextFireAt);
+    if (Number.isFinite(t) && t > nowMs) return { parked: false, nextFireAt: loop.nextFireAt };
+  }
+  return null;
+}
+
 export interface IdleRecipientReport {
   /** Concrete local recipients whose inject lands in an inbox NO live session is
-   *  watching — the work silently stalls. The reportable set (P-001). */
+   *  watching AND no scheduled loop fire will pick it up either — the work
+   *  silently stalls until respawn. The genuinely reportable/reassignable set
+   *  (P-001, tightened by WI-5994 to exclude dormant-scheduled recipients). */
   idle: string[];
   /** Concrete local recipients with a live watcher — the inject will be seen. */
   live: string[];
+  /** WI-5994: recipients that would otherwise read `idle` but have an armed
+   *  loop with a known future fire (or a turn in flight right now) — delivery
+   *  is DEFERRED, not lost. NEVER treat these as grounds for reassignment or a
+   *  `recipient_dead` verdict. */
+  dormantScheduled: DormantScheduledInfo[];
   /** Recipients not in the local roster (federated/remote) — advisory, NEVER
    *  reported as idle (invariant c). */
   unknown: string[];
@@ -338,7 +386,13 @@ export interface IdleRecipientReport {
   degraded: boolean;
 }
 
-const EMPTY_IDLE_REPORT: IdleRecipientReport = { idle: [], live: [], unknown: [], degraded: true };
+const EMPTY_IDLE_REPORT: IdleRecipientReport = {
+  idle: [],
+  live: [],
+  dormantScheduled: [],
+  unknown: [],
+  degraded: true,
+};
 
 /**
  * Probe the no-wake liveness of `recipients` (the POST-expansion `to[]` — audience
@@ -361,7 +415,7 @@ export async function reportIdleRecipients(
   const concrete = [...new Set(recipients)].filter(
     (r) => !isSelectorOrWildcard(r) && !NON_WAKEABLE.has(r),
   );
-  if (concrete.length === 0) return { idle: [], live: [], unknown: [], degraded: false };
+  if (concrete.length === 0) return { idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false };
 
   // The local roster — the membership truth for "is this recipient federated?".
   // A read hiccup DEGRADES the whole probe (invariant c): we cannot tell idle
@@ -412,13 +466,13 @@ export async function reportIdleRecipients(
   );
   if (probed.some((p) => p.disposition === 'error')) return EMPTY_IDLE_REPORT;
 
-  const idle: string[] = [];
+  const idleCandidates: string[] = [];
   const live: string[] = [];
   const unknown: string[] = [];
   for (const p of probed) {
     switch (p.disposition) {
       case 'idle':
-        idle.push(p.ownerId);
+        idleCandidates.push(p.ownerId);
         break;
       case 'live':
         live.push(p.ownerId);
@@ -428,5 +482,31 @@ export async function reportIdleRecipients(
         break;
     }
   }
-  return { idle, live, unknown, degraded: false };
+
+  // WI-5994: before calling an idle candidate genuinely dead, consult the SAME
+  // loop-schedule signal fleet:leader-brief already reads. An agent between
+  // loop fires has zero active inbox-wake watchers (correctly `idle` per the
+  // probe above) yet is dormant-SCHEDULED, not dead — its exact next fire is
+  // known. Best-effort: a loop-status read hiccup just leaves the candidate in
+  // `idle` (today's behavior), never invents a false dormant-scheduled entry.
+  const idle: string[] = [];
+  const dormantScheduled: DormantScheduledInfo[] = [];
+  if (idleCandidates.length > 0) {
+    let loops: Map<string, LoopStatus>;
+    try {
+      loops = await getLoopStatuses(idleCandidates);
+    } catch (e) {
+      console.warn(
+        `[inbox-wake] idle-probe loop-status read failed, treating candidates as plain idle: ${e instanceof Error ? e.message : e}`,
+      );
+      loops = new Map();
+    }
+    for (const ownerId of idleCandidates) {
+      const schedule = classifyDormantSchedule(loops.get(ownerId) ?? null);
+      if (schedule) dormantScheduled.push({ ownerId, ...schedule });
+      else idle.push(ownerId);
+    }
+  }
+
+  return { idle, live, dormantScheduled, unknown, degraded: false };
 }

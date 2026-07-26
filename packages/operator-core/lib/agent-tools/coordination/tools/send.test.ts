@@ -178,6 +178,42 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake.note).toMatch(/next turn|actually running/i);
   });
 
+  it("WI-5994: wake:'required' miss on a DORMANT-SCHEDULED recipient (armed loop, future fire) → NO recipient_dead, deferred-delivery note", async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['loopy-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
+    idleM.mockResolvedValueOnce({
+      idle: [],
+      dormantScheduled: [{ ownerId: 'loopy-bee', parked: false, nextFireAt: '2026-07-26T06:33:29.794Z' }],
+    } as never);
+    const b = await body({ to: ['loopy-bee'], summary: 'pick this up', wake: 'required' });
+    expect(b.results[0].wake.recipient_dead).toBeUndefined();
+    expect(b.results[0].wake.recipient_dormant_scheduled).toEqual([
+      { ownerId: 'loopy-bee', parked: false, nextFireAt: '2026-07-26T06:33:29.794Z' },
+    ]);
+    expect(b.results[0].wake.note).toMatch(/DORMANT BETWEEN LOOP FIRES/i);
+    expect(b.results[0].wake.note).not.toMatch(/not running|re-spawned/i);
+  });
+
+  it("WI-5994: a MIXED miss (one dead, one dormant-scheduled) reports both truthfully, never conflated", async () => {
+    wakeM.mockResolvedValueOnce({
+      targets: ['dead-bee', 'loopy-bee'],
+      keys: [],
+      woken: 0,
+      staged: 0,
+      stagedTargets: [],
+    } as never);
+    idleM.mockResolvedValueOnce({
+      idle: ['dead-bee'],
+      dormantScheduled: [{ ownerId: 'loopy-bee', parked: true, nextFireAt: null }],
+    } as never);
+    const b = await body({ to: ['dead-bee', 'loopy-bee'], summary: 'pick this up', wake: 'required' });
+    expect(b.results[0].wake.recipient_dead).toEqual(['dead-bee']);
+    expect(b.results[0].wake.recipient_dormant_scheduled).toEqual([
+      { ownerId: 'loopy-bee', parked: true, nextFireAt: null },
+    ]);
+    expect(b.results[0].wake.note).toMatch(/dead-bee/);
+    expect(b.results[0].wake.note).toMatch(/loopy-bee \(mid-turn right now\)/);
+  });
+
   it("FF#1: wake:'optimistic' miss with NO backstop → LOUD recipient_absent (same as required)", async () => {
     // The incident: an optimistic transfer to a now-dead agent woke nobody and was read
     // as "fine, the backstop will get it" — when there was no backstop. Now: no declared

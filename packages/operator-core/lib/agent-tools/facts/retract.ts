@@ -38,6 +38,6 @@ export default defineTool({
     // EI-7371: resolve common misnamed aliases (scope_ref/ref/harness) first.
     const scopeRef = await resolveScopeRefFromCtx(args.scope, resolveScopeRefAlias(args.scope, args), ctx);
     const retracted = await retractFact({ scope: args.scope, scopeRef: scopeRef ?? null, key: args.key });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, retracted }) }] };
+    return { data: { ok: true, retracted } };
   },
 });

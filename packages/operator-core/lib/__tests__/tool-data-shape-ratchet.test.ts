@@ -180,7 +180,25 @@ for (const file of TOOL_FILES) {
 // churn headroom without a bump. ~97 same-shape mechanical candidates remain
 // (single return, no isError, no content[0] test) — the next red should take ten
 // of those and LOWER this.
-const BASELINE = 440;
+//
+// 2026-07-26 (EI-18689563276355853, red-test watchdog, su-a8557b): reds at 442 from
+// ordinary fleet churn (10 tools of growth since the 07-17 batch consumed the
+// headroom). Paid off in the intended currency again — 12 more mechanical
+// single-return, no-isError tools migrated to `{ data: obj }`: facts/{list,retract},
+// hooks/known, roles/{get,known,list,firing_on}, scorecards/{list,freshness},
+// testing/flakiness, plan-items/{my-items,status}. Each checked for a direct-handler
+// test reading the legacy content[0].text shape: roles/__tests__/roles.test.ts covers
+// roles:{get,known,list,firing_on}+hooks:known via a shared `parseTextPayload` helper,
+// repointed to accept EITHER shape (`'data' in result ? result.data : JSON.parse(...)`)
+// instead of one-off repointing each call site; plan-items-tools.integration.test.ts's
+// `call()` helper already did `res.data ?? JSON.parse(res.content[0].text)`, so
+// plan-items/{my-items,status} needed no test change at all. No isError branch on any
+// of the 12. Real count 442 → 430; this LOWERS the ceiling to 438, leaving 8 slots of
+// churn headroom (matching this file's established convention).
+//
+// If you are here because the gate is red again: migrate a batch and lower this
+// further — do NOT just bump it.
+const BASELINE = 438;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

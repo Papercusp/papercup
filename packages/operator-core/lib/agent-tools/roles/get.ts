@@ -37,7 +37,7 @@ export default defineTool({
     // the psu role picker — get it uniformly.
     const consumes = roleConsumes(args.id, slug);
     return {
-      content: [{ type: 'text', text: JSON.stringify({ id: args.id, harnessSlug: slug || null, found: role !== null, role, consumes }) }],
+      data: { id: args.id, harnessSlug: slug || null, found: role !== null, role, consumes },
     };
   },
 });

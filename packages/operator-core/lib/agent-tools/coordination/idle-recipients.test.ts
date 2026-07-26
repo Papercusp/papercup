@@ -18,15 +18,53 @@ vi.mock('../../events/await/store', () => ({ listActiveAwaitsForKey: vi.fn() }))
 // The probe must NEVER wake — mock the engine so a stray emit would be a loud,
 // asserted failure rather than a live PG hit.
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
+// WI-5994: the loop-schedule signal the idle→dormant-scheduled reclassification
+// consults. Default: no loop for anyone (every idle candidate stays plain idle,
+// preserving pre-WI-5994 behavior) unless a test opts a recipient in.
+vi.mock('../../harness/routines/loop', () => ({ getLoopStatuses: vi.fn().mockResolvedValue(new Map()) }));
 
 import {
   classifyRecipientLiveness,
+  classifyDormantSchedule,
   reportIdleRecipients,
   inboxWakeKey,
 } from './inbox-wake';
 import { listPresence } from './presence';
 import { listActiveAwaitsForKey } from '../../events/await/store';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { getLoopStatuses } from '../../harness/routines/loop';
+import type { LoopStatus } from '../../harness/routines/loop';
+
+/** A minimal LoopStatus fixture — only the fields classifyDormantSchedule reads matter. */
+function loopStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
+  return {
+    name: 'test-loop',
+    ownerId: 'su-x',
+    harnessSlug: 'papercusp',
+    active: true,
+    intervalSec: 60,
+    carry: 'warm',
+    continuation: 'settle',
+    mode: 'work',
+    fireCount: 1,
+    parked: false,
+    nextFireAt: null,
+    lastFiredAt: null,
+    armedAt: null,
+    costCapCents: null,
+    maxFires: null,
+    maxDurationSec: null,
+    stalled: false,
+    stalledSinceMs: null,
+    lastDeliveryOutcome: null,
+    consecutiveErrors: 0,
+    lastWakeChannel: null,
+    lastWakeStatus: null,
+    lastWakeAt: null,
+    lastWakeError: null,
+    ...overrides,
+  };
+}
 
 const presence = (...ownerIds: string[]) => ownerIds.map((ownerId) => ({ ownerId })) as never;
 /** One fake active watcher row — only the array LENGTH matters to the probe. */
@@ -63,6 +101,9 @@ describe('reportIdleRecipients (host probe — report-only, fail-soft)', () => {
     vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(0));
   });
   afterEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.mocked(getLoopStatuses).mockResolvedValue(new Map());
+  });
 
   it('NEVER fires a wake — report-only (invariant a)', async () => {
     await reportIdleRecipients(['su-bee-1'], {});
@@ -97,7 +138,7 @@ describe('reportIdleRecipients (host probe — report-only, fail-soft)', () => {
 
   it('skips non-wakeable targets ("*"/"human"/empty) and audience selectors (invariant b)', async () => {
     const r = await reportIdleRecipients(['*', 'human', '', '@plan:x', '@role:bee'], {});
-    expect(r).toMatchObject({ idle: [], live: [], unknown: [], degraded: false });
+    expect(r).toMatchObject({ idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false });
     expect(listActiveAwaitsForKey).not.toHaveBeenCalled();
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
   });
@@ -138,7 +179,91 @@ describe('reportIdleRecipients (host probe — report-only, fail-soft)', () => {
 
   it('returns a clean empty (NOT degraded) report when there are no concrete recipients', async () => {
     const r = await reportIdleRecipients(['*', 'human'], {});
-    expect(r).toEqual({ idle: [], live: [], unknown: [], degraded: false });
+    expect(r).toEqual({ idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false });
     expect(listPresence).not.toHaveBeenCalled();
+  });
+});
+
+describe('classifyDormantSchedule (pure core — WI-5994)', () => {
+  it('is null (plain idle) when there is no loop at all', () => {
+    expect(classifyDormantSchedule(null)).toBeNull();
+    expect(classifyDormantSchedule(undefined)).toBeNull();
+  });
+
+  it('is null when the loop is inactive (ended)', () => {
+    expect(classifyDormantSchedule(loopStatus({ active: false, nextFireAt: new Date(Date.now() + 60_000).toISOString() }))).toBeNull();
+  });
+
+  it('is null when the loop is STALLED — a broken dead-man switch is not a promise of delivery', () => {
+    expect(classifyDormantSchedule(loopStatus({ stalled: true, nextFireAt: new Date(Date.now() + 60_000).toISOString() }))).toBeNull();
+  });
+
+  it('is null when nextFireAt is in the PAST (should have fired already — genuinely stuck, not scheduled)', () => {
+    expect(classifyDormantSchedule(loopStatus({ nextFireAt: new Date(Date.now() - 60_000).toISOString() }))).toBeNull();
+  });
+
+  it('reports dormant-scheduled with the ETA when active + a future nextFireAt', () => {
+    const eta = new Date(Date.now() + 5 * 60_000).toISOString();
+    expect(classifyDormantSchedule(loopStatus({ nextFireAt: eta }))).toEqual({ parked: false, nextFireAt: eta });
+  });
+
+  it('reports dormant-scheduled (parked, no ETA) when the loop is mid-turn right now', () => {
+    expect(classifyDormantSchedule(loopStatus({ parked: true, nextFireAt: null }))).toEqual({
+      parked: true,
+      nextFireAt: null,
+    });
+  });
+});
+
+describe('reportIdleRecipients — WI-5994 dormant-scheduled reclassification', () => {
+  beforeEach(() => {
+    vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(0));
+  });
+  afterEach(() => vi.clearAllMocks());
+
+  it('the exact WI-5994 repro: an agent with zero wake-watchers but a future nextFireAt is dormantScheduled, NOT idle', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-055aef7f'));
+    const eta = new Date(Date.now() + 9 * 60_000).toISOString();
+    vi.mocked(getLoopStatuses).mockResolvedValue(new Map([['su-055aef7f', loopStatus({ nextFireAt: eta })]]));
+    const r = await reportIdleRecipients(['su-055aef7f'], {});
+    expect(r.idle).toEqual([]);
+    expect(r.dormantScheduled).toEqual([{ ownerId: 'su-055aef7f', parked: false, nextFireAt: eta }]);
+  });
+
+  it('a genuinely dead recipient (no loop at all) stays idle', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-dead'));
+    vi.mocked(getLoopStatuses).mockResolvedValue(new Map());
+    const r = await reportIdleRecipients(['su-dead'], {});
+    expect(r.idle).toEqual(['su-dead']);
+    expect(r.dormantScheduled).toEqual([]);
+  });
+
+  it('a STALLED loop does not save an idle recipient from being reported idle', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-stalled-loop'));
+    vi.mocked(getLoopStatuses).mockResolvedValue(
+      new Map([['su-stalled-loop', loopStatus({ stalled: true, nextFireAt: new Date(Date.now() + 60_000).toISOString() })]]),
+    );
+    const r = await reportIdleRecipients(['su-stalled-loop'], {});
+    expect(r.idle).toEqual(['su-stalled-loop']);
+    expect(r.dormantScheduled).toEqual([]);
+  });
+
+  it('a loop-status read hiccup degrades to plain idle (never invents a false dormant-scheduled)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listPresence).mockResolvedValue(presence('su-bee-1'));
+    vi.mocked(getLoopStatuses).mockRejectedValue(new Error('loop status down'));
+    const r = await reportIdleRecipients(['su-bee-1'], {});
+    expect(r.idle).toEqual(['su-bee-1']);
+    expect(r.dormantScheduled).toEqual([]);
+    expect(r.degraded).toBe(false); // the OVERALL probe still succeeded — only the loop enrichment degraded
+    warn.mockRestore();
+  });
+
+  it('never calls getLoopStatuses when there are no idle candidates (all live)', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-live'));
+    vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(1));
+    const r = await reportIdleRecipients(['su-live'], {});
+    expect(r.live).toEqual(['su-live']);
+    expect(getLoopStatuses).not.toHaveBeenCalled();
   });
 });

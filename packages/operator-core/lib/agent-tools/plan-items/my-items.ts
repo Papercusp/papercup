@@ -47,12 +47,7 @@ export default defineTool({
     }
     const items = await myItemsWithStateForIdentities(workspaceId, identities);
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ ok: true, agent_name: reportedName, matchedIdentities: identities, count: items.length, items }),
-        },
-      ],
+      data: { ok: true, agent_name: reportedName, matchedIdentities: identities, count: items.length, items },
     };
   },
 });

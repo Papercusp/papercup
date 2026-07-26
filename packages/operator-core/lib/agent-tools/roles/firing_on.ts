@@ -33,7 +33,7 @@ export default defineTool({
     const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx) ?? '';
     const roles = rolesFiringOn(args.event, slug);
     return {
-      content: [{ type: 'text', text: JSON.stringify({ event: args.event, harnessSlug: slug || null, roles }) }],
+      data: { event: args.event, harnessSlug: slug || null, roles },
     };
   },
 });

@@ -179,6 +179,59 @@ describe('classifyLadderEscalations (pure verdict)', () => {
     });
   });
 
+  it('never escalates auto:true wake notices from a sender that does not match MACHINE_SENDER_PATTERN (EI-18688610206822254 — the self-nag loop)', () => {
+    // `await-event` (park / degrade-to-inbox notices) always stamps auto:true but its
+    // ownerId does not match MACHINE_SENDER_PATTERN (no `system:`/`system-` prefix, no
+    // `-watch`/`-sweep`/… suffix) — this is the sole exclusion for it.
+    const out = classifyLadderEscalations({
+      rows: [
+        row('su-looped', {
+          cnt: 1,
+          newest_from: 'await-event',
+          newest_summary: '[await-event] lock:grant:abc fired — wake parked (no live pty)',
+          recent_msgs: [
+            msg(6, {
+              from: 'await-event',
+              summary: '[await-event] lock:grant:abc fired — wake parked (no live pty)',
+              auto: true,
+            }),
+          ],
+        }),
+      ],
+      lastReadByOwner: new Map([['su-looped', new Date(NOW - 30 * MIN).toISOString()]]),
+      signals: new Map([['su-looped', LIVE]]),
+      capped: new Set(),
+      nowMs: NOW,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('still escalates a real peer message when an auto:true await-event notice shares the candidate window', () => {
+    const out = classifyLadderEscalations({
+      rows: [
+        row('su-mixed-auto', {
+          cnt: 2,
+          newest_from: 'await-event',
+          newest_summary: '[await-event] fired',
+          recent_msgs: [
+            msg(6, { from: 'await-event', summary: '[await-event] fired', auto: true }),
+            msg(7, { from: 'su-peer', summary: 'can you review this?' }),
+          ],
+        }),
+      ],
+      lastReadByOwner: new Map([['su-mixed-auto', new Date(NOW - 30 * MIN).toISOString()]]),
+      signals: new Map([['su-mixed-auto', LIVE]]),
+      capped: new Set(),
+      nowMs: NOW,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      candidateCount: 1,
+      newestFrom: 'su-peer',
+      newestSummary: 'can you review this?',
+    });
+  });
+
   it('skips a row with an unparseable newest ts (never escalate on bad data)', () => {
     const out = classifyLadderEscalations({
       rows: [row('su-garbage', { newest_ts_ms: 'not-a-number' })],

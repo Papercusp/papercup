@@ -75,6 +75,25 @@ describe('coord:wake', () => {
     expect(res.warning).toMatch(/confirm/i);
   });
 
+  it('WI-5994: a woken:0 miss to a DORMANT-SCHEDULED target (armed loop, future fire) is NOT recipient_dead', async () => {
+    wakeRecipients.mockResolvedValue({ targets: ['su-loopy'], keys: [], woken: 0, staged: 0 });
+    resolveRecipients.mockResolvedValue({ resolved: ['su-loopy'], unknown: [], ambiguous: [] });
+    reportIdleRecipients.mockResolvedValue({
+      idle: [],
+      live: [],
+      dormantScheduled: [{ ownerId: 'su-loopy', parked: false, nextFireAt: '2026-07-26T06:33:29.794Z' }],
+      unknown: [],
+      degraded: false,
+    });
+    const res = out(await wake.handler({ to: 'su-loopy' } as never, ctx));
+    expect(res.recipient_dead).toBeUndefined();
+    expect(res.recipient_dormant_scheduled).toEqual([
+      { ownerId: 'su-loopy', parked: false, nextFireAt: '2026-07-26T06:33:29.794Z' },
+    ]);
+    expect(res.warning).toMatch(/DORMANT BETWEEN LOOP FIRES/i);
+    expect(res.warning).not.toMatch(/RELAUNCH/);
+  });
+
   it('an unknown recipient is a loud error — nothing woken', async () => {
     resolveRecipients.mockResolvedValue({ resolved: [], unknown: ['nope'], ambiguous: [] });
     const res = out(await wake.handler({ to: 'nope' } as never, ctx));

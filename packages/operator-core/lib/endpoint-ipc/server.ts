@@ -20,6 +20,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
+import { readdirSync, rmSync } from 'node:fs';
 import {
   startEndpointIpcServer as startEndpointIpcServerCore,
   type EndpointIpcServer,
@@ -78,6 +79,57 @@ export function defaultSocketPath(pid: number = process.pid): string {
   return path.join(os.homedir(), '.papercusp', 'sockets', `${pid}.sock`);
 }
 
+/** Is `pid` a live process? Same semantics as the voice-socket reaper's
+ *  `ownerPidAlive` (local-audio-socket.ts): `process.kill(pid,0)` succeeds ⇒
+ *  alive; ESRCH ⇒ dead; EPERM ⇒ exists but owned by another user ⇒ treat as
+ *  ALIVE (never reap a live process's socket just because we can't signal it). */
+function endpointPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * GC orphaned `<pid>.sock` endpoint-ipc files left by operators that never ran a
+ * graceful `close()` — a crash, SIGKILL, OOM-kill, or terminal close all skip it,
+ * so the file lingers on disk forever (WI-5999). This is the endpoint-ipc sibling
+ * of `gcDeadVoiceSockets` (EI-3290) in local-audio-socket.ts, which reaps the
+ * SAME `~/.papercusp/sockets/` directory's `voice-<pid>.sock` files — that regex
+ * deliberately does not match this bare `<pid>.sock` naming, so the two reapers
+ * coexist without stepping on each other's files. Skips our own pid and any file
+ * whose pid is still alive. Best-effort + isolated: a readdir/unlink failure
+ * never blocks startup. `isAlive` is injectable for tests. Returns the count reaped.
+ */
+export function gcDeadEndpointSockets(
+  dir: string = path.join(os.homedir(), '.papercusp', 'sockets'),
+  isAlive: (pid: number) => boolean = endpointPidAlive,
+): number {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 0; // dir absent — nothing to GC
+  }
+  let reaped = 0;
+  for (const name of entries) {
+    const m = /^(\d+)\.sock$/.exec(name);
+    if (!m) continue; // not our bare-pid naming (e.g. voice-<pid>.sock) — leave it
+    const pid = Number(m[1]);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    if (isAlive(pid)) continue; // a live operator owns it — keep
+    try {
+      rmSync(path.join(dir, name), { force: true });
+      reaped++;
+    } catch {
+      /* raced with another reaper / perms — skip */
+    }
+  }
+  return reaped;
+}
+
 /**
  * Start the endpoint IPC server bound to the operator host. Thin wrapper
  * over `@papercusp/ipc-endpoint-server` that injects the operator's
@@ -88,6 +140,28 @@ export function defaultSocketPath(pid: number = process.pid): string {
 export function startEndpointIpcServer(
   options: StartEndpointIpcServerOptions = {},
 ): Promise<EndpointIpcServer> {
+  // WI-5999: reap orphaned <pid>.sock files from dead operators before adding
+  // ours, so ~/.papercusp/sockets/ doesn't grow unbounded across restarts/crashes.
+  // Scoped to ONLY the real, unconfigured production path — i.e. exactly the
+  // condition under which `defaultSocketPath()` below resolves to
+  // `~/.papercusp/sockets/<pid>.sock`. A caller passing an explicit `socketPath`
+  // (every test in this package does, into a tmpdir) or a TCP/named-pipe
+  // endpoint never touches this directory, so it's skipped entirely — the same
+  // hermeticity `gcDeadVoiceSockets`'s callers get via PAPERCUSP_VOICE_IPC_DIR,
+  // achieved here by simply never reaping outside the real default path.
+  if (
+    options.socketPath === undefined &&
+    process.env.PAPERCUSP_IPC_TCP !== '1' &&
+    process.platform !== 'win32'
+  ) {
+    try {
+      const dir = path.join(os.homedir(), '.papercusp', 'sockets');
+      const reaped = gcDeadEndpointSockets(dir);
+      if (reaped > 0) console.error(`[endpoint-ipc] GC'd ${reaped} orphaned endpoint socket(s) from dead pids`);
+    } catch {
+      /* GC is best-effort — never block IPC startup */
+    }
+  }
   return startEndpointIpcServerCore({
     ...options,
     host: operatorHost,

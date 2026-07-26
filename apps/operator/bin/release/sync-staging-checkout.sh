@@ -80,7 +80,20 @@ if [ -n "$seconds_since_start" ] && [ "$seconds_since_start" -lt "$RECENT_RESTAR
 fi
 
 log "restarting $UNIT"
-systemctl --user restart "$UNIT"
+# EI-18689554054680054: don't let `set -e` propagate a transient `systemctl
+# restart` failure straight into a script-exit (which marks THIS unit,
+# papercup-staging-sync.service, as `failed` even though $UNIT itself comes
+# up healthy moments later). `systemctl --user restart` blocks on the FIRST
+# start attempt and reports failure if that attempt doesn't reach "active"
+# in time — e.g. a port still held by the outgoing process it's replacing
+# (observed: "port 3076 in use, trying 3077") crashes the fresh process
+# immediately, systemd's own Restart=on-failure then relaunches it
+# independently, and THAT attempt succeeds seconds later — outside this
+# script's synchronous wait. The health probe below is the real verdict for
+# $UNIT; only fail the sync run on ITS outcome, not on this transient race.
+if ! systemctl --user restart "$UNIT"; then
+  log "⚠ systemctl restart reported failure (likely a transient crash+auto-restart race, e.g. a port still held by the outgoing process) — falling through to the health probe as the real verdict instead of failing on this alone"
+fi
 
 for i in $(seq 1 30); do
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$HEALTH_URL" 2>/dev/null || echo 000)"

@@ -12,7 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { openHandoff, acceptHandoff } from '../handoffs';
 import { resolveBestEffortAgainstRoster } from '../recipient-resolve';
-import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
+import { wakeRecipients, reportIdleRecipients, type DormantScheduledInfo } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { COORD_ROLES } from '../roles';
 import type { HydratableRef } from '../ref-hydrate';
@@ -216,6 +216,10 @@ export default defineTool({
           /** FF#2: missed addressees with NO live session watching their inbox — genuinely
            *  dead, the handoff black-holes until they're relaunched (mirrors coord:send WI-574). */
           recipient_dead?: string[];
+          /** WI-5994: missed addressees that are NOT dead — each has an armed loop
+           *  with a known next fire (or a turn in flight now), so the offer will be
+           *  seen then, never grounds to treat the handoff as failed. */
+          recipient_dormant_scheduled?: DormantScheduledInfo[];
           /** FF#3: each missed addressee's FRESH session state at the open moment. */
           recipient_liveness?: MissedRecipientLiveness[];
           note?: string;
@@ -237,12 +241,16 @@ export default defineTool({
         // FF#2/FF#3: classify the dead ones + force their fresh session state into the
         // result, so a handoff to a long-ended agent isn't read as "offered, all good".
         let dead: string[] = [];
+        let dormantScheduled: DormantScheduledInfo[] = [];
         try {
-          dead = (await reportIdleRecipients(fan.targets, { workspaceId: identity.workspaceId ?? undefined })).idle;
+          const report = await reportIdleRecipients(fan.targets, { workspaceId: identity.workspaceId ?? undefined });
+          dead = report.idle;
+          dormantScheduled = report.dormantScheduled ?? [];
         } catch {
           /* fail-soft */
         }
         if (dead.length > 0) wake.recipient_dead = dead;
+        if (dormantScheduled.length > 0) wake.recipient_dormant_scheduled = dormantScheduled;
         try {
           const liveness = await describeMissedRecipients(fan.targets, {
             workspaceId: identity.workspaceId,
@@ -251,10 +259,18 @@ export default defineTool({
         } catch {
           /* fail-soft */
         }
+        // WI-5994: `dead` and `dormantScheduled` are disjoint — a dormant-scheduled
+        // addressee is NOT "not running"; its next loop fire will see the offer with
+        // no relaunch needed. Only genuinely-dead recipients get the black-hole note.
         wake.note =
           (dead.length > 0
             ? `handoff opened, but NO live session is watching the inbox of: ${dead.join(', ')} — they are not running, so this offer black-holes until they are relaunched (NOT "seen on their next turn"). `
-            : `handoff opened, but no awake/watching session was re-invoked for: ${fan.targets.join(', ')} — it is in their inbox (seen on their next natural turn). `) +
+            : dormantScheduled.length > 0
+              ? `handoff opened; ${dormantScheduled
+                  .map((d) => (d.parked ? `${d.ownerId} (mid-turn right now)` : `${d.ownerId} (next fire ${d.nextFireAt})`))
+                  .join(', ')} ` +
+                'are DORMANT BETWEEN LOOP FIRES, not dead — the offer is DEFERRED to their next scheduled fire, not lost. '
+              : `handoff opened, but no awake/watching session was re-invoked for: ${fan.targets.join(', ')} — it is in their inbox (seen on their next natural turn). `) +
           'A handoff is NOT a pickup: it is pending until accepted (accepted:false below). If this work must ' +
           "be picked up now, re-dispatch to a LIVE agent (coord:presence → wakeable:true) or coord:send wake:'required'. " +
           '(A 30m re-ping backstop will nudge you if it stays un-acked; a 12h sweep auto-expires it.)';

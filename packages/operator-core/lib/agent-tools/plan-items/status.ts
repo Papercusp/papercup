@@ -36,12 +36,7 @@ export default defineTool({
       listWorkGroup(workspaceId, harnessSlug, args.plan),
     ]);
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ ok: true, plan: args.plan, harness: harnessSlug, items, workGroup }),
-        },
-      ],
+      data: { ok: true, plan: args.plan, harness: harnessSlug, items, workGroup },
     };
   },
 });

@@ -1,0 +1,203 @@
+/**
+ * Tests for the substitution matcher (plan
+ * `bash-to-tool-substitution-2026-07-26`, P-015).
+ *
+ * The matcher is what turns a registry row into something an agent actually
+ * sees, so its failure modes are the ones that matter operationally: a rule
+ * that silently never fires (enforcement that does nothing), a rule that fires
+ * on the wrong thing (an advisory that teaches a falsehood), and a rule that
+ * hangs or throws (a wedged gate, fleet-wide). There is a test below for each.
+ */
+
+import { describe, expect, it } from 'vitest';
+
+import { auditPair } from './equivalence';
+import {
+  compileRegistryPattern,
+  matchCommandToSubstitutions,
+  normalizeRegistryFlags,
+  strongestTier,
+  MAX_MATCHABLE_ATOM_LENGTH,
+  type SubstitutionRow,
+} from './match';
+import { loadPairFixtures } from './corpus';
+import { ALL_PAIRS } from './pairs';
+
+/** A registry row with sane defaults, overridable per test. */
+function row(over: Partial<SubstitutionRow> = {}): SubstitutionRow {
+  return {
+    intentLabel: 'file-range-read',
+    bashPattern: String.raw`sed\s+-n\s+['"]?\s*\d+\s*,\s*\d+\s*p['"]?\s+\S`,
+    bashPatternFlags: '',
+    toolName: 'capability:read',
+    tier: 'advise',
+    advisoryText: 'use capability:read',
+    equivalenceVerdict: 'equivalent',
+    ...over,
+  };
+}
+
+describe('matchCommandToSubstitutions — per-atom semantics', () => {
+  it('matches a pattern behind a leading `cd`, which whole-line matching would miss', () => {
+    const hits = matchCommandToSubstitutions("cd /repo && sed -n '1,40p' a.ts", [row()]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].atom).toBe("sed -n '1,40p' a.ts");
+  });
+
+  it('reports the ATOM that matched, not the whole command line', () => {
+    // What an `observe` tier logs must be the thing the pattern claimed, or the
+    // observation window (P-020) reviews evidence it cannot act on.
+    const hits = matchCommandToSubstitutions("ls -la; sed -n '5,9p' b.ts | wc -l", [row()]);
+    expect(hits[0].atom).toBe("sed -n '5,9p' b.ts");
+  });
+
+  it('emits ONE match per row even when several atoms match it', () => {
+    const hits = matchCommandToSubstitutions("sed -n '1,2p' a.ts && sed -n '3,4p' b.ts", [row()]);
+    expect(hits).toHaveLength(1);
+  });
+
+  it('returns nothing for a command no row claims', () => {
+    expect(matchCommandToSubstitutions('npm run build', [row()])).toEqual([]);
+  });
+
+  it('returns nothing for an empty command or an empty registry', () => {
+    expect(matchCommandToSubstitutions('   ', [row()])).toEqual([]);
+    expect(matchCommandToSubstitutions("sed -n '1,2p' a.ts", [])).toEqual([]);
+  });
+});
+
+describe('matchCommandToSubstitutions — safety', () => {
+  it('never throws on a malformed pattern; that row simply does not match', () => {
+    const bad = row({ bashPattern: '([unclosed' });
+    expect(() => matchCommandToSubstitutions("sed -n '1,2p' a.ts", [bad])).not.toThrow();
+    expect(matchCommandToSubstitutions("sed -n '1,2p' a.ts", [bad])).toEqual([]);
+  });
+
+  it('skips `not-a-substitute` rows entirely (D-007)', () => {
+    // These record a tool that answers a DIFFERENT question. Surfacing one as
+    // an advisory would tell an agent to stop doing the correct thing.
+    const hits = matchCommandToSubstitutions("sed -n '1,40p' a.ts", [
+      row({ equivalenceVerdict: 'not-a-substitute' }),
+    ]);
+    expect(hits).toEqual([]);
+  });
+
+  it('does not run patterns against atoms past the length cap', () => {
+    const huge = `sed -n '1,2p' ${'a'.repeat(MAX_MATCHABLE_ATOM_LENGTH + 10)}`;
+    expect(matchCommandToSubstitutions(huge, [row()])).toEqual([]);
+  });
+
+  it('is stable across repeated calls even if a row carries a stateful flag', () => {
+    // A `g`/`y` regex advances lastIndex between .test() calls, so the same
+    // command would match, then miss, then match — an advisory firing every
+    // other time with no reproducible pattern. Migration 667 forbids storing
+    // one; the matcher strips it anyway.
+    const stateful = row({ bashPatternFlags: 'g' });
+    const results = [1, 2, 3, 4].map(
+      () => matchCommandToSubstitutions("sed -n '1,40p' a.ts", [stateful]).length,
+    );
+    expect(results).toEqual([1, 1, 1, 1]);
+  });
+});
+
+describe('registry pattern compilation', () => {
+  it('honours the stored flags — the WI-5998 regression', () => {
+    // The registry used to store `bashPattern.source` alone, so a consumer
+    // recompiled a CASE-SENSITIVE regex while the verdict behind the row had
+    // been earned with `i`. That made `operator-db-select` — the best-adopted
+    // pair in the audit, and the row Phase 5 measures — a silent no-op against
+    // the overwhelmingly common uppercase form.
+    const src = String.raw`^psql\s+[^\n]*-c\s+["']?\s*select\b`;
+    const upper = `psql postgresql://localhost/papercusp -c "SELECT count(*) FROM t"`;
+
+    expect(compileRegistryPattern(src, '')!.test(upper)).toBe(false);
+    expect(compileRegistryPattern(src, 'i')!.test(upper)).toBe(true);
+
+    const hits = matchCommandToSubstitutions(upper, [
+      row({ intentLabel: 'operator-db-select', bashPattern: src, bashPatternFlags: 'i' }),
+    ]);
+    expect(hits).toHaveLength(1);
+  });
+
+  it('returns null rather than throwing for a malformed pattern', () => {
+    expect(compileRegistryPattern('([unclosed')).toBeNull();
+  });
+
+  it('strips stateful flags but keeps semantic ones', () => {
+    expect(normalizeRegistryFlags('gi')).toBe('i');
+    expect(normalizeRegistryFlags('imsu')).toBe('imsu');
+    expect(normalizeRegistryFlags('gy')).toBe('');
+    expect(normalizeRegistryFlags()).toBe('');
+  });
+
+  it('normalised flags always satisfy migration 667\'s CHECK', () => {
+    // The DB accepts `^i?m?s?u?$` — alphabet, no repeats, canonical order.
+    // `RegExp.prototype.flags` is spec'd to emit in that order, so anything
+    // read off a real regex passes; this asserts the normaliser preserves it.
+    for (const pair of ALL_PAIRS) {
+      const stored = normalizeRegistryFlags(pair.bashPattern.flags);
+      expect(stored, `${pair.id} flags "${stored}"`).toMatch(/^i?m?s?u?$/);
+    }
+  });
+});
+
+describe('every seeded pair survives the registry round-trip', () => {
+  // The anti-rot latch for enforcement, mirroring equivalence.test.ts's latch
+  // for verdicts: a pair is audited as a RegExp object but enforced as two
+  // database columns, and this asserts those are the same regex. Without it,
+  // widening a pair's flags silently changes what enforcement matches while
+  // every existing test stays green.
+  const fixtures = loadPairFixtures(ALL_PAIRS);
+
+  for (const { pair, fixture } of fixtures) {
+    it(`${pair.id} matches identically before and after storage`, () => {
+      const audit = auditPair(pair, fixture.sample);
+      const stored = compileRegistryPattern(audit.bashPattern, audit.bashPatternFlags);
+      expect(stored, `${pair.id} stored pattern failed to compile`).not.toBeNull();
+
+      const asAudited = compileRegistryPattern(pair.bashPattern.source, pair.bashPattern.flags)!;
+      for (const entry of fixture.sample) {
+        expect(stored!.test(entry.atom), `${pair.id} diverged on: ${entry.atom}`).toBe(
+          asAudited.test(entry.atom),
+        );
+      }
+    });
+
+    it(`${pair.id} still claims its whole audited sample through the matcher`, () => {
+      // The verdict's sample size is the evidence the registry cites. If the
+      // matcher claims fewer atoms than the audit did, the row's `sample_size`
+      // overstates what enforcement actually covers.
+      const audit = auditPair(pair, fixture.sample);
+      const registryRow = row({
+        intentLabel: audit.intentLabel,
+        bashPattern: audit.bashPattern,
+        bashPatternFlags: audit.bashPatternFlags,
+        toolName: audit.toolName,
+        equivalenceVerdict: audit.verdict,
+      });
+      const claimed = fixture.sample.filter(
+        (entry) => matchCommandToSubstitutions(entry.atom, [registryRow]).length === 1,
+      );
+      expect(claimed).toHaveLength(audit.sampleSize);
+    });
+  }
+});
+
+describe('strongestTier', () => {
+  it('returns null when nothing matched', () => {
+    expect(strongestTier([])).toBeNull();
+  });
+
+  it('lets the strongest tier among matches decide', () => {
+    const hits = matchCommandToSubstitutions("sed -n '1,2p' a.ts && psql -c 'select 1'", [
+      row({ intentLabel: 'file-range-read', tier: 'observe' }),
+      row({
+        intentLabel: 'operator-db-select',
+        bashPattern: String.raw`^psql\b`,
+        tier: 'advise',
+      }),
+    ]);
+    expect(hits).toHaveLength(2);
+    expect(strongestTier(hits)).toBe('advise');
+  });
+});

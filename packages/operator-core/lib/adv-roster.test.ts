@@ -141,6 +141,52 @@ describe('mergeRosterEntries', () => {
     expect(live.currentPlanSlug).toBe('live-plan');
   });
 
+  it('harnessSlug: null with no spawned run and no session brief (today\'s baseline)', () => {
+    const [entry] = mergeRosterEntries([presence()], new Map(), NOW);
+    expect(entry.harnessSlug).toBeNull();
+  });
+
+  it('harnessSlug falls back to the session-brief harness for an interactive session with no spawned run (chat-ref-pills-2026-07-26 P-007 finding: this is the ONLY source for every real psu/su session — spawnedAgentRunInfoByOwner has zero rows for them)', () => {
+    const [entry] = mergeRosterEntries(
+      [presence()],
+      new Map(),
+      NOW,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      new Map(), // runInfoByOwner: no spawned run for this owner
+      undefined,
+      undefined,
+      { sessionBriefHarness: new Map([['su-1', 'papercusp']]) },
+    );
+    expect(entry.harnessSlug).toBe('papercusp');
+  });
+
+  it('harnessSlug prefers the spawned-run harness over the session-brief fallback when both exist (the runId-paired live-thinking-stream semantics stay authoritative)', () => {
+    const [entry] = mergeRosterEntries(
+      [presence()],
+      new Map(),
+      NOW,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      new Map([['su-1', { runId: 'run-1', harness: 'spawned-harness' }]]),
+      undefined,
+      undefined,
+      { sessionBriefHarness: new Map([['su-1', 'brief-harness']]) },
+    );
+    expect(entry.harnessSlug).toBe('spawned-harness');
+    expect(entry.runId).toBe('run-1');
+  });
+
   it('preserves presence order (newest-heartbeat-first from listPresence)', () => {
     const got = mergeRosterEntries(
       [presence({ ownerId: 'x' }), presence({ ownerId: 'y' }), presence({ ownerId: 'z' })],
