@@ -528,6 +528,21 @@ export function fleetScopedMiss(
      *  ignored while paused (the pause message already fully explains the miss), and only ever
      *  surfaced alongside (not instead of) the cooldown-only message when both are present. */
     issueBreakdown?: import('./get-next').IssueClaimExclusionBreakdown | null;
+    /**
+     * EI-18674160393981819: the caller's OWN harness — the `args.harness` every self-select
+     * call site already requires. AND'd into the derived `claimablePayloadFilter` below so the
+     * returned `payloadFilter` (which the miss advice recommends copying verbatim into an
+     * `events:await('work-item:claimable')` idle-park) only fires on SAME-HARNESS emits. Without
+     * this, a harness-scoped fleet whose claim spec's `view.filter` doesn't itself reference
+     * `harness` (the common case — the spec narrows on kind/plan/tags, and harness scoping comes
+     * from the `args.harness` the caller passes to scheduler:get_next, never from the spec tree)
+     * derived an payload_filter with NO harness term, so the idle-park woke the member on every
+     * OTHER harness's claimable bug too (observed: a papercusp-scoped fleet woken by an
+     * oddsmith-hive bug) — a real turn spent confirming nothing changed in its own lane.
+     * Optional so a caller with no harness in scope (there is none today, but the field stays
+     * defensive) degrades to the pre-fix unscoped-by-harness derivation, never a hard failure.
+     */
+    harness?: string;
   },
 ) {
   const paused = opts?.pausedReason !== undefined;
@@ -570,7 +585,23 @@ export function fleetScopedMiss(
   // get woken on every system-wide release. `undefined` ⇒ the spec narrows only on
   // fields the claimable payload does not carry, so the advice below must NOT
   // recommend an unscoped await (the other half of the fix).
-  const claimablePayloadFilter = claimSpecFilterToClaimablePayloadFilter(scope.record.spec.view.filter);
+  const specDerivedPayloadFilter = claimSpecFilterToClaimablePayloadFilter(scope.record.spec.view.filter);
+  // EI-18674160393981819: the claimable payload always carries `harness` (see
+  // claim-spec-payload-filter.ts's PAYLOAD_FILTERABLE_FIELDS doc comment — it is payload-only,
+  // no claim-spec leaf ever references it), so AND it in directly from the caller's own
+  // harness whenever known, independent of whatever the spec's view.filter narrowed. This can
+  // only ever narrow (never widen) what a bare spec-derived filter would already admit — sound
+  // by the same "the derived filter must never suppress an item the spec would admit" contract
+  // claim-spec-payload-filter.ts documents, since a fleet member's own claim path is ALWAYS
+  // scoped to a single harness (args.harness) regardless of what the spec filter narrows on.
+  const claimablePayloadFilter = opts?.harness
+    ? ({
+        all: [
+          { harness: { equals: opts.harness } },
+          ...(specDerivedPayloadFilter ? [specDerivedPayloadFilter] : []),
+        ],
+      } as const)
+    : specDerivedPayloadFilter;
   const cooldownExpirySec = cooldown?.earliestExpiryMs != null ? Math.max(0, Math.round((cooldown.earliestExpiryMs - Date.now()) / 1000)) : null;
   // EI-14615: surface the ABSOLUTE cooldown expiry instant, not just the relative
   // `~Ns` (which is recomputed against Date.now() every poll and so reads the same
