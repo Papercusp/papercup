@@ -22,6 +22,13 @@ import {
 import type { BootedHarnessHandle } from '../boot';
 import type { AdmittedLog } from '../read-merge';
 import type { SwarmHandle } from '../swarm';
+import {
+  _resetSubstrateWakeWiringForTests,
+  _setSubstrateWakeGossipForTests,
+  _setDefaultBindingResolverForTests,
+  substrateWakeKeepaliveStatus,
+} from '../substrate-wake-wiring';
+import type { SubstrateWakeGossipHandle } from '../substrate-wake-gossip';
 import { makeFakeBootedHandle } from './fake-booted-handle';
 import { RemoteBootedHarnessHandle } from '../remote-booted-harness';
 
@@ -70,6 +77,9 @@ function fakeRemoteHandle(workspaceId: string, harnessSlug: string) {
 beforeEach(() => {
   _resetHandleMapForTests();
   _resetEvictionTrackingForTests();
+  // P-012 slice B: clear any wake-keepalive state AND its binding-resolver
+  // override, so no test inherits another's coverage verdict.
+  _resetSubstrateWakeWiringForTests();
   // Neutralise the reboot-on-access trigger by default so no test accidentally
   // fires a REAL corestore boot. Tests that assert on it override with a spy.
   _setRebootOnAccessForTests(() => {});
@@ -77,6 +87,8 @@ beforeEach(() => {
 afterEach(() => {
   _resetHandleMapForTests();
   _resetEvictionTrackingForTests();
+  _resetSubstrateWakeWiringForTests();
+  vi.restoreAllMocks();
 });
 
 describe('gatherBootedHarnessFacts (v1 boundary)', () => {
@@ -143,13 +155,72 @@ describe('evictBootedHarnessEngine (race-guarded)', () => {
     expect(getBootedHarness('ws', 'private')).toBeNull();
   });
 
-  it('SKIPS a harness that gained a swarm since the snapshot (v1 boundary)', async () => {
+  // ── P-012 slice B: a swarmed engine is evictable IFF the wake keepalive
+  //    covers its topic. Before slice B this was an unconditional skip (the v1
+  //    boundary), because a dark federating harness had no way to hear a peer's
+  //    push. Both branches are pinned: dropping either turns eviction of a
+  //    federating harness into the EI-126 silent-divergence class.
+
+  it('SKIPS a swarmed harness when the wake keepalive could NOT be armed', async () => {
     enableSubstrateEvictionTracking();
+    // Resolver throws ⇒ verdict 'uncovered' ⇒ it federates but nothing can wake it.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    _setDefaultBindingResolverForTests(() => {
+      throw new Error('pg unavailable');
+    });
     const handle = fakeHandle('ws', 'shared', { swarm: {} as SwarmHandle });
     _setHandleForTests('ws', 'shared', handle);
     const did = await evictBootedHarnessEngine('ws::shared', { now: 2_000_000, idleMs: 1000 });
     expect(did).toBe(false);
     expect(handle.close).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('EVICTS a swarmed harness once the wake keepalive covers its topic, and arms it BEFORE closing', async () => {
+    enableSubstrateEvictionTracking();
+    const order: string[] = [];
+    const fakeGossip = {
+      watch: () => order.push('armed'),
+      unwatch: async () => {},
+      announceActivity: () => {},
+      close: async () => {},
+      watchedKeys: [],
+      topicCount: 1,
+      topicHexFor: () => undefined,
+      openChannelCount: () => 0,
+    } as unknown as SubstrateWakeGossipHandle;
+    _setSubstrateWakeGossipForTests(fakeGossip);
+    _setDefaultBindingResolverForTests(() => ({
+      kind: 'hive',
+      hive_pubkey: Buffer.alloc(32, 5).toString('base64'),
+    }));
+
+    const handle = fakeHandle('ws', 'shared', { swarm: {} as SwarmHandle });
+    (handle.close as unknown as { mockImplementation: (f: () => Promise<void>) => void })
+      .mockImplementation(async () => {
+        order.push('closed');
+      });
+    _setHandleForTests('ws', 'shared', handle);
+
+    const did = await evictBootedHarnessEngine('ws::shared', { now: 2_000_000, idleMs: 1000 });
+    expect(did).toBe(true);
+    expect(handle.close).toHaveBeenCalledOnce();
+    // The ORDER is the safety property: arming after the close would leave a
+    // window where the harness is on neither the real swarm nor the keepalive.
+    expect(order).toEqual(['armed', 'closed']);
+    expect(substrateWakeKeepaliveStatus().armed).toEqual([
+      { workspaceId: 'ws', harnessSlug: 'shared' },
+    ]);
+  });
+
+  it('a PRIVATE (unswarmed) harness still evicts without arming anything', async () => {
+    enableSubstrateEvictionTracking();
+    const handle = fakeHandle('ws', 'private2');
+    _setHandleForTests('ws', 'private2', handle);
+    const did = await evictBootedHarnessEngine('ws::private2', { now: 2_000_000, idleMs: 1000 });
+    expect(did).toBe(true);
+    // No topic, no peers — nothing to cover, so no keepalive is held.
+    expect(substrateWakeKeepaliveStatus().armed).toEqual([]);
   });
 
   it('SKIPS a harness with admitted remote peers', async () => {

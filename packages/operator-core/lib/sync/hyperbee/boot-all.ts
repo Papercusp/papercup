@@ -1767,14 +1767,31 @@ export async function evictBootedHarnessEngine(
   // Got hot since the snapshot? Skip.
   const last = lastAccess.get(k);
   if (last != null && guard.now - last < guard.idleMs) return false;
-  // Acquired a swarm / peer since the snapshot? Skip (v1 boundary).
-  if (handle.swarm != null || handle.admitted.size > 1) return false;
+  // Acquired a peer since the snapshot? Skip — D-005's dominating rule: a
+  // harness with an ACTIVE peer must stay resident and keep merging, or that
+  // peer's pushes are silently lost (the EI-126 divergence class).
+  if (handle.admitted.size > 1) return false;
   const parsed = parseKey(k);
   if (!parsed) return false;
+  // P-012 slice B: a FEDERATING (swarmed) engine may only be evicted once the
+  // lightweight wake keepalive has taken over its topic — otherwise it goes
+  // dark with no way to hear a peer's push, which is exactly the hole that made
+  // `pinned: hasSwarm` necessary in v1. Arm BEFORE closing (not after) so the
+  // window where the harness is on NEITHER the real swarm nor the keepalive is
+  // as small as possible; if we cannot cover it, leave the engine resident.
+  if (handle.swarm != null) {
+    const verdict = await armSubstrateWakeKeepalive(parsed.workspaceId, parsed.harnessSlug);
+    if (!mayDeferOnWakeVerdict(verdict)) return false;
+  }
   const closed = await closeBootedHarness(parsed.workspaceId, parsed.harnessSlug);
   if (closed) {
     // closeBootedHarness cleared lastAccess + evicted; re-mark for reboot-on-access.
     evicted.add(k);
+  } else if (handle.swarm != null) {
+    // The close did not happen, so the engine is still resident and owns its
+    // topic — release the keepalive we just armed rather than leaving a stray
+    // watcher behind.
+    void disarmSubstrateWakeKeepalive(parsed.workspaceId, parsed.harnessSlug).catch(() => {});
   }
   return closed;
 }
