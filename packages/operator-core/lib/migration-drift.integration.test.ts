@@ -50,4 +50,18 @@ describe('checkMigrationDrift', () => {
     // And the invariant always holds regardless of `extra`.
     expect(d.inSync).toBe(d.missing.length === 0);
   });
+
+  // WI-6037: `missingDeployed`/`missingPendingDeploy` must partition `missing` exactly —
+  // every missing file is in exactly one bucket, and (per the fail-toward-reporting
+  // contract) missingDeployed === missing whenever the deployed tree isn't resolvable.
+  it('missingDeployed + missingPendingDeploy partition missing exactly', async () => {
+    const d = await checkMigrationDrift();
+    const union = new Set([...d.missingDeployed, ...d.missingPendingDeploy]);
+    expect(union.size).toBe(d.missingDeployed.length + d.missingPendingDeploy.length);
+    expect([...union].sort()).toEqual([...d.missing].sort());
+    if (d.deployedSqlDir === null) {
+      expect(d.missingDeployed).toEqual(d.missing);
+      expect(d.missingPendingDeploy).toEqual([]);
+    }
+  });
 });
