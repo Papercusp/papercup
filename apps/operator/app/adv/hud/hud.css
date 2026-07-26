@@ -1,0 +1,366 @@
+/**
+ * /adv/HUD — fleet board styles (adv-hud-fleet-board-2026-07-25 P-003).
+ *
+ * Every colour/space/radius comes from the operator's DTCG token scale
+ * (design/tokens/base.json via globals.css). No literal hexes except the
+ * per-fleet accent, which is DATA — it arrives on the roster entry as
+ * fleetColor and is injected as the --hud-fleet custom property per card.
+ *
+ * Card state is encoded in FORM as well as colour (a left rail, a dot, a chip),
+ * so the board stays readable for a colour-blind operator and survives a
+ * greyscale screenshot in an escalation.
+ */
+
+.hud {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* ── header: counts + toggles ─────────────────────────────────────────────── */
+
+.hud__top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md, 12px);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  flex-wrap: wrap;
+}
+
+.hud__counts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.hud__count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  font-size: 11px;
+  color: var(--fg-mute);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.hud__count b {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.hud__count:hover { border-color: var(--border-strong); }
+.hud__count[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft-bg, rgb(from var(--accent) r g b / 0.12));
+  color: var(--fg);
+}
+.hud__count--hot { border-color: var(--warn); color: var(--warn); }
+.hud__count--hot b { color: var(--warn); }
+
+.hud__spacer { flex: 1 1 auto; }
+
+/* ── fleet filter strip ───────────────────────────────────────────────────── */
+
+.hud__fleets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+
+.hud__fleet {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full, 9999px);
+  font-size: 11px;
+  color: var(--fg-2, var(--fg-mute));
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.hud__fleet:hover { border-color: var(--border-strong); color: var(--fg); }
+.hud__fleet[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--fg);
+  background: rgb(from var(--accent) r g b / 0.12);
+}
+
+.hud__fleet-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+  background: var(--hud-fleet, var(--fg-mute));
+}
+
+.hud__fleet-n {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-mute);
+}
+
+.hud__fleet-warn {
+  color: var(--warn);
+  font-size: 10.5px;
+}
+
+/* ── columns ──────────────────────────────────────────────────────────────── */
+
+.hud__cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(190px, 1fr));
+  gap: 8px;
+  padding: 10px 14px 14px;
+  overflow-x: auto;
+}
+
+.hud__col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.hud__col-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius-sm, 4px) var(--radius-sm, 4px) 0 0;
+  background: var(--bg-2);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.hud__col-h .n {
+  margin-left: auto;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The two columns that justify the surface get their own colour so an operator
+   can find them without reading the headers. */
+.hud__col--needs-you .hud__col-h {
+  color: var(--warn);
+  border-color: rgb(from var(--warn) r g b / 0.35);
+  background: rgb(from var(--warn) r g b / 0.08);
+}
+.hud__col--needs-you .hud__col-h .n { color: var(--warn); }
+.hud__col--blocked .hud__col-h { color: var(--bad); }
+.hud__col--stalled .hud__col-h { color: var(--warn); }
+
+.hud__col-b {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-sm, 4px) var(--radius-sm, 4px);
+  background: var(--bg-2);
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.hud__empty {
+  font-size: 11px;
+  color: var(--fg-mute);
+  padding: 10px 6px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ── card ─────────────────────────────────────────────────────────────────── */
+
+.hud__card {
+  display: flex;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+
+.hud__card:hover { border-color: var(--border-strong); background: var(--bg-hover, var(--bg-raised)); }
+.hud__card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.hud__card--needs-you { border-color: rgb(from var(--warn) r g b / 0.45); }
+.hud__card--blocked { border-color: rgb(from var(--bad) r g b / 0.35); }
+.hud__card--stalled { border-color: rgb(from var(--warn) r g b / 0.4); }
+
+/* The fleet rail: a per-card accent from DATA (fleetColor), falling back to a
+   neutral so an unfleeted session still aligns with its neighbours. */
+.hud__rail {
+  width: 3px;
+  border-radius: 2px;
+  flex: none;
+  align-self: stretch;
+  background: var(--hud-fleet, var(--border-strong));
+}
+
+.hud__card-b { min-width: 0; flex: 1 1 auto; }
+
+.hud__card-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud__handle {
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud__age {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hud__reason {
+  font-size: 10.5px;
+  color: var(--fg-mute);
+  margin-top: 4px;
+  line-height: 1.45;
+  /* Two lines, then ellipsis — a card must stay a card. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hud__plan {
+  display: block;
+  font-size: 10px;
+  color: var(--fg-mute);
+  margin-top: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+}
+
+.hud__chips {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.hud__chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  line-height: 1.6;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs, 3px);
+  border: 1px solid var(--border);
+  color: var(--fg-mute);
+  white-space: nowrap;
+}
+
+.hud__chip--accent {
+  color: var(--accent);
+  border-color: rgb(from var(--accent) r g b / 0.4);
+  background: rgb(from var(--accent) r g b / 0.1);
+}
+.hud__chip--good {
+  color: var(--good);
+  border-color: rgb(from var(--good) r g b / 0.4);
+  background: rgb(from var(--good) r g b / 0.1);
+}
+.hud__chip--warn {
+  color: var(--warn);
+  border-color: rgb(from var(--warn) r g b / 0.4);
+  background: rgb(from var(--warn) r g b / 0.1);
+}
+.hud__chip--bad {
+  color: var(--bad);
+  border-color: rgb(from var(--bad) r g b / 0.4);
+  background: rgb(from var(--bad) r g b / 0.1);
+}
+
+/* status dot — form, not only colour */
+.hud__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--fg-mute);
+}
+.hud__dot--working { background: var(--good); box-shadow: 0 0 0 3px rgb(from var(--good) r g b / 0.16); }
+.hud__dot--needs-you { background: var(--warn); box-shadow: 0 0 0 3px rgb(from var(--warn) r g b / 0.18); }
+.hud__dot--blocked { background: var(--bad); box-shadow: 0 0 0 3px rgb(from var(--bad) r g b / 0.15); }
+.hud__dot--stalled { background: var(--warn); }
+.hud__dot--parked { background: var(--border-strong); }
+
+/* ── states ───────────────────────────────────────────────────────────────── */
+
+.hud__state {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--fg-mute);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hud__state--error { color: var(--bad); }
+
+/* A five-column grid does not convey its counts linearly, and the counts ARE
+   the point of the board — so the live summary is announced. globals.css has no
+   sr-only utility, so it is defined here rather than assumed. */
+.hud .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 900px) {
+  .hud__cols { grid-template-columns: repeat(5, minmax(170px, 1fr)); }
+}

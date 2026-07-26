@@ -345,3 +345,84 @@ describe('work_items:claimable primitives — the survivors COUNT === the row LI
     expect(capped[0]!.kind).toBe('bug');
   });
 });
+
+/**
+ * REGRESSION GUARD — the CLAIM path must honor EVERY spec leg, not just kind/id.
+ *
+ * Why this block exists: the agreement tests above compared the read path and the claim
+ * path only under NO filter and under a `kind` filter — the one filter shape the claim SQL
+ * could already narrow by. Coverage therefore coincided exactly with the working case, and
+ * the following live failure slipped through five successive patches to this area (WI-1407,
+ * EI-10062, WI-4309, WI-5258, WI-5275), every one of which tuned id/kind extraction without
+ * ever comparing the two paths on a leg the claim SQL could not express.
+ *
+ * The failure: `claimNextIssueWorkItem` saw only kind/id, so `paths`/`plan`/`title`/`tags`
+ * legs were enforced only AFTER the atomic claim, by claim-spec-store.ts's post-claim
+ * `matchesWorkItemClaimSpec` release-and-retry — which shares MAX_PLAN_LANE_ATTEMPTS (5), a
+ * budget sized for consecutive plan-lane-BLOCKED candidates. Measured live on fleet
+ * p2p-release (spec p2p-release-lane@9): 26 spec-matching rows out of 1073 lane-wide
+ * claimable (2.4%), so P(>=1 match in 5 draws) ~= 11.6% — scheduler:get_next returned a
+ * FALSE "no claimable work" on ~88% of pulls, indistinguishable from a drained lane, while
+ * work_items:claimable correctly reported 26. Three fleet members independently misread that
+ * as "floor-gated" when zero floors were firing.
+ *
+ * The shape matters: a TOP-LEVEL `any` is what makes this bite. positiveIdCohortIds
+ * correctly refuses to extract a closed-world id set from an OR, so tier 3 runs unrestricted
+ * and leans entirely on the post-claim bounce. Keep the `any` here.
+ */
+describe('the CLAIM path honors every spec leg, not just kind/id (false-drain regression)', () => {
+  it('serves a narrow paths+id OR-shaped lane instead of falsely reporting it drained', async () => {
+    const gn = await import('./get-next');
+
+    // A lane where the spec's matches are a small MINORITY, and the non-matching rows rank
+    // FIRST (older createdTs) — so a claim path blind to `paths` draws violators every time.
+    for (let i = 0; i < 20; i++) await seed(`WI-OUT${i}`, { kind: 'change', createdTs: i });
+    await seed('WI-INPATH1', {
+      kind: 'change', createdTs: 900, payload: { paths: ['packages/operator-core/lib/p2p/boot.ts'] },
+    });
+    await seed('WI-INPATH2', {
+      kind: 'change', createdTs: 901, payload: { paths: ['packages/operator-core/lib/p2p/wire.ts'] },
+    });
+    await seed('WI-INPIN', { kind: 'change', createdTs: 902 });
+
+    const lane: import('./claim-spec').FilterNode = {
+      any: [
+        { field: 'id', op: 'in', value: ['WI-INPIN'] },
+        { field: 'paths', op: 'glob', value: 'packages/operator-core/lib/p2p/*' },
+      ],
+    };
+    const inLane = ['WI-INPATH1', 'WI-INPATH2', 'WI-INPIN'];
+
+    // The READ path was always correct — pin it as the oracle.
+    const rows = await gn.listIssueClaimableRows(lane, { harness: H, assignee: 'probe' }, 50);
+    expect(rows.map((r) => r.id).sort()).toEqual(inLane);
+
+    // The CLAIM path must now agree. Pre-fix this drained WI-OUT* rows (spec violations the
+    // caller then had to bounce) or, under the real bounded retry, returned nothing at all.
+    const compiled = gn.compileFilter(db.sql as never, lane);
+    const claimed: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      const got = await wi.claimNextIssueWorkItem(
+        { harness: H, assignee: 'probe' },
+        WS,
+        { specFilterSql: compiled },
+      );
+      if (!got) break;
+      claimed.push(got.id);
+    }
+
+    // 1. The lane is SERVED, not falsely drained — this is the actual regression.
+    expect(claimed.length).toBeGreaterThan(0);
+    // 2. It serves EXACTLY the spec-matching rows: no violator ever reaches the member, so
+    //    the post-claim quarantine release (and its spurious-wake fanout) never has to run.
+    expect(claimed.sort()).toEqual(inLane);
+    // 3. Claim and read agree — the SSOT guarantee, now extended to the claim path.
+    expect(claimed.sort()).toEqual(rows.map((r) => r.id).sort());
+  });
+
+  it('an undefined spec filter still drains the whole lane (the narrowing is opt-in)', async () => {
+    await seed('WI-FREE1', { kind: 'change', createdTs: 1 });
+    await seed('WI-FREE2', { kind: 'bug', createdTs: 2 });
+    expect(await drainInlineClaimIds()).toEqual(['WI-FREE1', 'WI-FREE2']);
+  });
+});

@@ -272,9 +272,13 @@ let epochCap = DEFAULT_EPOCH_CAP;
  * trace and `peer_connected` (already logged by `[swarm]`, ~110/run): every
  * kind here is edge-triggered and sparse, so this cannot become a hot path.
  *
- * This is the cheap half of the fix. The durable half is persisting boot
- * history out of process (storage-policy default: Postgres) — tracked
- * separately; see EI-18655247267756605.
+ * This is the cheap half of the fix. The durable half — persisting boot
+ * history out of process (storage-policy default: Postgres) — is implemented
+ * below (EI-18655247267756605): the SAME kind set is also best-effort mirrored
+ * to `harness_shared.boot_history_events` (migration 660) via
+ * boot-history-pg-store.ts, so the admission/join/peer/boot-fail trail
+ * survives the restart that clears both in-memory rings, not just the
+ * process's own stdout.
  */
 const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
   // Admission decisions — the WI-5781 blind spot. A 'miss'-buffered peer log
@@ -301,8 +305,32 @@ let _nowImpl: () => number = () => Date.now();
 /** Test seam: capture the stdout mirror instead of writing to the console. */
 let _mirrorImpl: (line: string) => void = (line) => console.log(line);
 
+/**
+ * Default durable-mirror write: a lazy `import('./boot-history-pg-store')` so
+ * this module keeps zero static DB dependency (kept "pure logic" for callers
+ * that don't want @papercusp/db-org pulled in just to record an in-memory
+ * event), then a best-effort PG insert. Errors (a PG hiccup, or a missing
+ * table on a host that hasn't applied migration 660 yet) are swallowed here
+ * AND by the caller's own try/catch — this must never surface on a live
+ * boot/announce/merge path.
+ */
+function _defaultPgWriteImpl(entry: BootHistoryEntry): void {
+  void import('./boot-history-pg-store')
+    .then(({ insertBootHistoryEventPg }) => insertBootHistoryEventPg(entry))
+    .catch(() => {
+      // diagnostic-only — never let a PG hiccup break a boot/announce path
+    });
+}
+
+/** Test seam: override the durable PG mirror instead of hitting real PG. */
+let _pgWriteImpl: (entry: BootHistoryEntry) => void = _defaultPgWriteImpl;
+
 export function _setMirrorForTests(impl: (line: string) => void): void {
   _mirrorImpl = impl;
+}
+
+export function _setPgWriteForTests(impl: (entry: BootHistoryEntry) => void): void {
+  _pgWriteImpl = impl;
 }
 
 export function _setNowForTests(impl: () => number): void {
@@ -323,6 +351,7 @@ export function _resetBootHistoryForTests(): void {
   epochCap = DEFAULT_EPOCH_CAP;
   _nowImpl = () => Date.now();
   _mirrorImpl = (line) => console.log(line);
+  _pgWriteImpl = _defaultPgWriteImpl;
 }
 
 export function recordBootEvent(
@@ -356,6 +385,14 @@ export function recordBootEvent(
       );
     } catch {
       // diagnostic-only — never let logging break a boot/announce path
+    }
+    // EI-18655247267756605: durable half of the fix — best-effort mirror the
+    // SAME sparse kind set to PG (boot-history-pg-store.ts) so this trail also
+    // survives the restart that clears both in-memory rings, not just stdout.
+    try {
+      _pgWriteImpl(entry);
+    } catch {
+      // diagnostic-only — never let a PG hiccup break a boot/announce path
     }
   }
 }
