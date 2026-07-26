@@ -1929,6 +1929,28 @@ export const FLAGS = {
   // step. Fail-soft: no persisted run / no measures ⇒ a no-op `pass`. OFF ⇒ the
   // gate reads nothing and passes (kill-switch).
   DESKTOP_PERF_GATE: "papercusp-desktop-perf-gate",
+  // WI-5820: the lag-triggered CPU profiler in event-loop-lag-monitor.ts. When a
+  // 10s window's p95 loop delay crosses the critical threshold, capture a short V8
+  // `.cpuprofile` to ~/.papercusp/loop-profiles — the histogram says "the loop is
+  // blocked", the profile says BY WHAT. Rate-limited (one capture per 5min) and
+  // retention-capped (20 files), so the cost is bounded and it is silent on a
+  // healthy host: no saturation ⇒ no capture ⇒ zero overhead.
+  // WHY IT IS A FLAG NOW: this capability was gated on a bare
+  // `process.env.PAPERCUSP_LOOP_PROFILER === '1'` that was set on NO host, so the
+  // attribution never fired anywhere (loop-profiles had 21 captures from 07-10 and
+  // essentially nothing after). Five separate agent sessions then hand-rolled CDP
+  // profiling / log correlation to re-derive what this would have handed them, and
+  // the worker-offload work that DEPENDED on its output (WI-323 / WI-344, whose own
+  // text says "sequence AFTER the sampler identifies the actual top culprits") was
+  // dropped still waiting on it. An env gate ships dark, is invisible in
+  // /admin/features, and cannot be flipped at runtime — exactly the failure mode
+  // here, and what lint:env-feature-gates forbids.
+  // DEFAULT ON (not in DARK_FLAGS): a diagnostic that only engages when the host is
+  // ALREADY saturated, i.e. when we most need the answer. Read lazily per
+  // saturation window (never latched at boot — getFlag is fragile at host-boot), so
+  // a flip takes effect without a restart. OFF ⇒ the monitor still logs the lag
+  // histogram, it just captures no profile (today's behavior).
+  LOOP_STALL_PROFILER: "papercusp-loop-stall-profiler",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

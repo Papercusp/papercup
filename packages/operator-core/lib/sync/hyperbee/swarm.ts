@@ -90,6 +90,17 @@ export interface SeveredLinkInfo {
   severedMs: number;
 }
 
+/** EI-18662944242304583: one topic's pre-admission (never-paired) escalation
+ *  event, carried by {@link JoinHarnessSwarmOpts.onUnpairedLink}. */
+export interface UnpairedLinkInfo {
+  /** Hex topic that tripped the escalation. */
+  topicHex: string;
+  /** How long (ms) since the FIRST announce-channel open attempt on it. */
+  unpairedMs: number;
+  /** Announce-channel open attempts made without a single pairing. */
+  attempts: number;
+}
+
 /** Snapshot of the shared swarm's peer-budget pressure at a near-cap crossing
  *  (P-004). Carried by {@link JoinHarnessSwarmOpts.onNearPeerCap}. */
 export interface PeerCapInfo {
@@ -251,6 +262,26 @@ export interface JoinHarnessSwarmOpts {
    * swallowed.
    */
   onSeveredLink?: (info: SeveredLinkInfo) => void;
+  /**
+   * EI-18662944242304583 rung (c): how long this topic may hold LIVE
+   * connections while NEVER once pairing its announce channel before forcing a
+   * topic leave+rejoin. Closes the pre-admission blind window that every
+   * replication-liveness axis is structurally below. Default
+   * `DEFAULT_SUBSTRATE_UNPAIRED_ESCALATION_MS`; `0` disables the rung.
+   */
+  unpairedEscalationMs?: number;
+  /**
+   * EI-18662944242304583 observability: fires when the never-paired escalation
+   * trips (see `unpairedEscalationMs`). Best-effort; a throw is swallowed.
+   */
+  onUnpairedLink?: (info: UnpairedLinkInfo) => void;
+  /**
+   * EI-18662944242304583 test seam (same convention as `hasStalledLogs`):
+   * override the announce-pairing probe rung (c) reads. Defaults to the live
+   * module-level tracker `announcePairingStateForTopic`, so production behavior
+   * is unchanged when omitted.
+   */
+  announcePairingState?: (topicHex: string) => AnnouncePairingState;
   /**
    * P-201 (p2p-git-live-activation-2026-07-09): register this harness's
    * connections to SERVE `papercusp/pot-git` fetch requests (a peer member
@@ -430,6 +461,67 @@ export function lastContentAnnounceRecvMs(topicHex: string): number | null {
   return lastContentAnnounceRecvMsByTopic.get(topicHex) ?? null;
 }
 
+/**
+ * EI-18662944242304583 rung (c) telemetry: per-topic announce-channel PAIRING
+ * progress — how many times we created+`open()`d an announce channel for the
+ * topic, and whether ANY of them ever reached Protomux `onopen`.
+ *
+ * Why this is tracked separately from {@link contentPeerCountForTopic}: that
+ * count is a LIVE gauge (peers whose channel is open right now), so it reads 0
+ * both when we never paired and when a paired peer just closed. The
+ * pre-admission stall axis needs the *cumulative, latching* distinction —
+ * "we have been trying to pair on this topic since T and have never once
+ * succeeded" — which a live gauge structurally cannot express.
+ */
+const announcePairingByTopic = new Map<
+  string,
+  { attempts: number; firstAttemptMs: number; everPaired: boolean }
+>();
+
+/** Cumulative announce-channel pairing progress for one topic. */
+export interface AnnouncePairingState {
+  /** How many announce channels we have created+`open()`d for this topic. */
+  attempts: number;
+  /** True once ANY announce channel on this topic reached `onopen` (paired). */
+  everPaired: boolean;
+  /** ms-epoch of the FIRST open attempt, or null when we've never attempted. */
+  firstAttemptMs: number | null;
+}
+
+function recordAnnounceOpenAttempt(topicHex: string): void {
+  const cur = announcePairingByTopic.get(topicHex);
+  if (cur) cur.attempts += 1;
+  else
+    announcePairingByTopic.set(topicHex, {
+      attempts: 1,
+      firstAttemptMs: Date.now(),
+      everPaired: false,
+    });
+}
+
+function recordAnnouncePaired(topicHex: string): void {
+  const cur = announcePairingByTopic.get(topicHex);
+  if (cur) cur.everPaired = true;
+  else
+    announcePairingByTopic.set(topicHex, {
+      attempts: 0,
+      firstAttemptMs: Date.now(),
+      everPaired: true,
+    });
+}
+
+/** EI-18662944242304583: cumulative announce-channel pairing state for a topic
+ *  (the default source for the pre-admission stall axis' probe). */
+export function announcePairingStateForTopic(topicHex: string): AnnouncePairingState {
+  const cur = announcePairingByTopic.get(topicHex);
+  if (!cur) return { attempts: 0, everPaired: false, firstAttemptMs: null };
+  return {
+    attempts: cur.attempts,
+    everPaired: cur.everPaired,
+    firstAttemptMs: cur.firstAttemptMs,
+  };
+}
+
 // ── WI-1544 (defect iii): periodic announce re-flush ──
 // The announce exchange is ONE-SHOT per (muxer, topic): `sentKeys` dedups
 // forever, and the receive side never re-requests. So any single loss — a
@@ -597,6 +689,10 @@ function createAnnounceChannel(
       announceDebug(
         `open topic=${channelId.toString('hex').slice(0, 16)} entries=${state.entries.size}`,
       );
+      // EI-18662944242304583: this topic has now PAIRED at least once, which
+      // permanently disarms the pre-admission stall axis for it (everything
+      // after first pairing is the downstream liveness detector's business).
+      recordAnnouncePaired(channelId.toString('hex'));
       // EI-1599: this (muxer, topic) pairing succeeded — count this peer
       // toward the topic's content-replication peer count until it closes.
       trackContentPeerOpen(channelId.toString('hex'), mux as object);
@@ -656,6 +752,11 @@ function createAnnounceChannel(
   state.message = message;
   channel.open();
   announceDebug(`open-request mux=${muxId} topic=${channelId.toString('hex').slice(0, 16)}`);
+  // EI-18662944242304583: count the ATTEMPT. Recorded after open() so the axis
+  // only ever arms on topics where we genuinely expect a pairing — a topic that
+  // opens no announce channel at all (a reader with neither `onAnnounce` nor
+  // `ourAnnounce`, which returns early in openAnnounceChannel) never arms it.
+  recordAnnounceOpenAttempt(channelId.toString('hex'));
 }
 
 /** Open the `papercusp/announce` channel on the shared muxer for one peer
@@ -845,6 +946,20 @@ function fireNearCapSafely(cb: ((info: PeerCapInfo) => void) | undefined, info: 
 
 /** Fire the severed-link escalation callback without letting a diagnostic
  *  throw crash the handler (EI-13317). */
+/** EI-18662944242304583: invoke the never-paired escalation callback without
+ *  letting a throwing observer block the actual repair below it. */
+function fireUnpairedLinkSafely(
+  cb: ((info: UnpairedLinkInfo) => void) | undefined,
+  info: UnpairedLinkInfo,
+): void {
+  if (!cb) return;
+  try {
+    cb(info);
+  } catch {
+    // diagnostic-only callback; swallow
+  }
+}
+
 function fireSeveredLinkSafely(
   cb: ((info: SeveredLinkInfo) => void) | undefined,
   info: SeveredLinkInfo,
@@ -972,6 +1087,52 @@ export const DEFAULT_SUBSTRATE_SLOW_REFRESH_MS = 60_000;
  */
 export const DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS = 5 * 60_000;
 
+/**
+ * EI-18662944242304583 rung (c): how long a topic may hold LIVE connections
+ * while never once pairing its announce channel before escalating to a forced
+ * topic leave+rejoin.
+ *
+ * Why this rung exists at the SWARM layer rather than in the replication-
+ * liveness detector: every liveness axis is sampled from
+ * `for (const log of admitted.values())` (boot.ts), so with zero ADMITTED
+ * remote logs the sampler is never invoked and all three axes are dead code.
+ * Admission requires an announce, an announce requires a paired announce
+ * channel — so the entire pre-admission window is unobservable from down
+ * there, and "wedged" and "healthy" both emit silence.
+ *
+ * Live proof (gate run 20260725-183831, frames a+b): 188 established
+ * connections over 20.5 minutes with 91 announce-channel open attempts and
+ * ZERO inbound frames in either direction — the data path was dead, so nothing
+ * was ever admitted and the detector logged nothing at all. The moment one
+ * connection finally paired (23:07:16.096) admission followed in 400ms and the
+ * zombie axis fired correctly 15s later. The detector was never wrong; it was
+ * never *reached*.
+ *
+ * 60s is deliberately far above a healthy pairing (milliseconds — the observed
+ * good path was 4ms from channel create to `onopen`) and far below the 20.5min
+ * blind window it closes. `0` disables the rung.
+ */
+export const DEFAULT_SUBSTRATE_UNPAIRED_ESCALATION_MS = 60_000;
+
+/**
+ * Minimum announce-channel open ATTEMPTS before rung (c) may fire. Guards the
+ * single-connection case where one slow pairing is still in flight: the
+ * failure this detects is a REPEATED one (91 attempts in the live proof), so
+ * requiring a few attempts costs nothing and removes a whole false-positive
+ * class.
+ */
+const MIN_UNPAIRED_ATTEMPTS = 3;
+
+/**
+ * Cap on rung (c) escalations per topic per process. A peer that genuinely
+ * cannot speak the announce protocol (a partially-rolled-out fleet; a Protomux
+ * build without `pair()`) would otherwise re-join every
+ * `unpairedEscalationMs` forever. After the cap the axis goes quiet, having
+ * emitted enough loud signals for forensics — a bounded repair attempt, never
+ * an unbounded rejoin loop.
+ */
+const MAX_UNPAIRED_ESCALATIONS = 5;
+
 export async function joinHarnessSwarm(
   opts: JoinHarnessSwarmOpts,
 ): Promise<SwarmHandle> {
@@ -994,6 +1155,11 @@ export async function joinHarnessSwarm(
   // EI-13317 escalation-ladder state: last time the severed-link escalation
   // fired (rate-limits repeated escalations to once per severedEscalationMs).
   let lastEscalationMs = 0;
+  // EI-18662944242304583 rung (c) state: last never-paired escalation (rate
+  // limit) and how many have fired for this join (bounded by
+  // MAX_UNPAIRED_ESCALATIONS so an un-pairable peer can't rejoin-loop forever).
+  let lastUnpairedEscalationMs = 0;
+  let unpairedEscalations = 0;
   // WI-5355: sockets THIS join currently considers connected (added on
   // `connection`, removed on that socket's own `close` — see the handler +
   // close listener below). Mirrors topic-gossip.ts's per-instance `sockets` Set;
@@ -1379,6 +1545,77 @@ export async function joinHarnessSwarm(
               // best-effort — a failed rejoin attempt is retried at the
               // next escalation tick (lastEscalationMs already advanced,
               // so this waits a full severedEscalationMs before retrying).
+            });
+          }
+        }
+
+        // ── EI-18662944242304583 rung (c): pre-admission NEVER-PAIRED axis ──
+        // The mirror image of rung (a). Rung (a) catches "we HAD peers and now
+        // have none"; this catches "peers keep arriving and the announce
+        // channel has never once paired" — connections churn, `open()` is
+        // called every time, and not one frame ever traverses in either
+        // direction. Nothing downstream can see this: admission needs an
+        // announce, an announce needs a paired channel, and every
+        // replication-liveness axis is sampled per ADMITTED log — so with zero
+        // admissions the detector is not merely quiet, it never executes.
+        // Live proof + the constant's rationale: see
+        // DEFAULT_SUBSTRATE_UNPAIRED_ESCALATION_MS above.
+        //
+        // False-positive discipline (the WI-5686 lesson — a too-eager axis that
+        // tears down healthy sessions is worse than a blind one). All must hold:
+        //   - live connections RIGHT NOW (a genuinely offline peer never fires);
+        //   - we actually attempted ≥ MIN_UNPAIRED_ATTEMPTS pairings, so a topic
+        //     that opens no announce channel at all can never arm the rung;
+        //   - this topic has NEVER paired in this process (a single successful
+        //     pairing disarms it permanently — churn after that belongs to the
+        //     downstream detector, which by then genuinely can see it);
+        //   - sustained past the threshold, rate-limited, and capped.
+        const unpairedEscalationMs =
+          opts.unpairedEscalationMs ?? DEFAULT_SUBSTRATE_UNPAIRED_ESCALATION_MS;
+        if (unpairedEscalationMs > 0 && unpairedEscalations < MAX_UNPAIRED_ESCALATIONS) {
+          const probe = opts.announcePairingState ?? announcePairingStateForTopic;
+          let pairing: AnnouncePairingState | null = null;
+          try {
+            pairing = probe(topicHex);
+          } catch {
+            // a throwing probe is treated as "no signal", never a fire
+            pairing = null;
+          }
+          const unpairedMs =
+            pairing && pairing.firstAttemptMs !== null ? now - pairing.firstAttemptMs : 0;
+          if (
+            pairing &&
+            liveConnectionCount > 0 &&
+            !pairing.everPaired &&
+            pairing.attempts >= MIN_UNPAIRED_ATTEMPTS &&
+            unpairedMs >= unpairedEscalationMs &&
+            now - lastUnpairedEscalationMs >= unpairedEscalationMs
+          ) {
+            lastUnpairedEscalationMs = now;
+            unpairedEscalations += 1;
+            const info: UnpairedLinkInfo = {
+              topicHex,
+              unpairedMs,
+              attempts: pairing.attempts,
+            };
+            // Diagnostic-only; a throwing console must never block the repair.
+            try {
+              if (!process.env.VITEST) {
+                console.error(
+                  `[swarm] ⚠ topic ${topicHex.slice(0, 16)}… has held live connections for ` +
+                    `${Math.round(unpairedMs / 1000)}s across ${pairing.attempts} announce-channel ` +
+                    'open attempts WITHOUT ever pairing — no announce can be exchanged, so nothing ' +
+                    'is admitted and the replication-liveness axes never run at all. Forcing a ' +
+                    'fresh topic leave+rejoin (likely a dead data path behind a connected socket).',
+                );
+              }
+            } catch {
+              /* diagnostic-only; swallow */
+            }
+            fireUnpairedLinkSafely(opts.onUnpairedLink, info);
+            void forceRejoinNow().catch(() => {
+              // best-effort — retried at the next escalation tick (bounded by
+              // MAX_UNPAIRED_ESCALATIONS).
             });
           }
         }

@@ -188,7 +188,9 @@ describe('mergeRosterEntries', () => {
   });
 
   it('stamps fleetSlug + the fleet accent color from fleetByOwner; null when no fleet (#3 grouping)', () => {
-    const fleetByOwner = new Map([['su-1', { fleetSlug: 'atlas', fleetColor: '#86efac' }]]);
+    const fleetByOwner = new Map([
+      ['su-1', { fleetSlug: 'atlas', fleetColor: '#86efac', fleetRole: 'leader' }],
+    ]);
     const [inFleet, noFleet] = mergeRosterEntries(
       [presence({ ownerId: 'su-1' }), presence({ ownerId: 'su-2' })],
       new Map(), // advByOwner
@@ -207,6 +209,98 @@ describe('mergeRosterEntries', () => {
     // An owner absent from the map = no fleet → both null (pui draws a neutral "No fleet" group).
     expect(noFleet.fleetSlug).toBeNull();
     expect(noFleet.fleetColor).toBeNull();
+  });
+
+  // ── adv-hud-fleet-board-2026-07-25 P-001: the signals /adv/HUD's columns need ──
+
+  it('propagates fleetRole from the membership row (the LEAD badge; it used to be dropped)', () => {
+    const fleetByOwner = new Map([
+      ['lead', { fleetSlug: 'atlas', fleetColor: '#86efac', fleetRole: 'leader' }],
+      ['mem', { fleetSlug: 'atlas', fleetColor: '#86efac', fleetRole: 'member' }],
+    ]);
+    const [lead, mem, solo] = mergeRosterEntries(
+      [presence({ ownerId: 'lead' }), presence({ ownerId: 'mem' }), presence({ ownerId: 'solo' })],
+      new Map(),
+      NOW,
+      new Map(),
+      new Map(),
+      new Map(),
+      'auto',
+      new Map(),
+      new Map(),
+      fleetByOwner,
+    );
+    expect(lead.fleetRole).toBe('leader');
+    expect(mem.fleetRole).toBe('member');
+    // Not in a fleet ⇒ no role at all (never defaulted to 'member', which would
+    // invent a membership the agent does not have).
+    expect(solo.fleetRole).toBeNull();
+  });
+
+  it('carries context pressure + intent age straight off the presence row, preserving UNKNOWN as null', () => {
+    const [measured, unmeasured] = mergeRosterEntries(
+      [
+        presence({
+          ownerId: 'a',
+          contextTokens: 124_000,
+          compactionLimit: 200_000,
+          intentDeclaredAt: '2026-07-25T12:00:00.000Z',
+        }),
+        // A row that has never been sampled: the watchdog has not written a
+        // context estimate, and the intent was never declared.
+        presence({ ownerId: 'b', intentDeclaredAt: null }),
+      ],
+      new Map(),
+      NOW,
+    );
+    expect(measured.contextTokens).toBe(124_000);
+    expect(measured.compactionLimit).toBe(200_000);
+    expect(measured.intentDeclaredAt).toBe('2026-07-25T12:00:00.000Z');
+    // The important half: an unsampled context stays null, NOT 0. Coercing to 0
+    // would render as "0% used — plenty of room", the opposite of the truth.
+    expect(unmeasured.contextTokens).toBeNull();
+    expect(unmeasured.compactionLimit).toBeNull();
+    expect(unmeasured.intentDeclaredAt).toBeNull();
+  });
+
+  it('attaches the open await via the extra options bag; absent owners get null', () => {
+    const awaitByOwner = new Map([
+      [
+        'blocked',
+        {
+          eventKey: 'fleet:release-gate:suite-green',
+          note: 'waiting on the gate verdict',
+          sinceIso: '2026-07-25T11:00:00.000Z',
+          expiresIso: '2026-07-25T11:30:00.000Z',
+        },
+      ],
+    ]);
+    const [blocked, free] = mergeRosterEntries(
+      [presence({ ownerId: 'blocked' }), presence({ ownerId: 'free' })],
+      new Map(),
+      NOW,
+      new Map(),
+      new Map(),
+      new Map(),
+      'auto',
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Set(),
+      new Map(),
+      { awaitByOwner },
+    );
+    expect(blocked.openAwait?.eventKey).toBe('fleet:release-gate:suite-green');
+    expect(blocked.openAwait?.note).toBe('waiting on the gate verdict');
+    expect(free.openAwait).toBeNull();
+  });
+
+  it('defaults the extra bag so every existing positional call site keeps working', () => {
+    // The 3-arg form is what most callers (and every pre-existing test) use.
+    const [entry] = mergeRosterEntries([presence()], new Map(), NOW);
+    expect(entry.openAwait).toBeNull();
+    expect(entry.fleetRole).toBeNull();
   });
 });
 

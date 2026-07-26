@@ -9,6 +9,7 @@
  * JS Date params (agent-insights/db-org-client-rejects-js-date-params).
  */
 import type { Sql } from 'postgres';
+import { resolveLearningPotSlug } from '../learning/pot-scope';
 import type { SignalOrigin } from '../harness/improvements/provenance';
 import type { GateTransition } from './gate';
 import type {
@@ -58,6 +59,10 @@ export interface AdmitLessonInput {
   sourceKind?: TransferSourceKind;
   sourceRef?: string | null;
   packCandidateId?: string | null;
+  /** P-002 (pot-scope-all-learnings): the pot this lesson belongs to. Either pass
+   *  it explicitly or pass `harnessSlug` and let the resolver find its owning pot. */
+  potSlug?: string | null;
+  harnessSlug?: string | null;
 }
 
 export type AdmitLessonResult =
@@ -70,11 +75,18 @@ export type AdmitLessonResult =
  * the existing row (so the tick can still link/test it).
  */
 export async function admitTransferLesson(sql: Sql, q: AdmitLessonInput): Promise<AdmitLessonResult> {
+  // P-002: stamp the pot at write time (null when genuinely context-less — see
+  // pot-scope.ts for why a plausible-but-wrong default is worse than null).
+  const potSlug = await resolveLearningPotSlug({
+    workspaceId: q.workspaceId,
+    potSlug: q.potSlug ?? null,
+    harnessSlug: q.harnessSlug ?? null,
+  });
   const rows = (await sql`
     INSERT INTO harness_shared.transfer_lessons
-      (workspace_id, signature, title, lesson_text, source_kind, source_ref, pack_candidate_id)
+      (workspace_id, signature, title, lesson_text, source_kind, source_ref, pack_candidate_id, pot_slug)
     VALUES (${q.workspaceId}, ${q.signature}, ${q.title ?? null}, ${q.lessonText},
-      ${q.sourceKind ?? 'transcript'}, ${q.sourceRef ?? null}, ${q.packCandidateId ?? null})
+      ${q.sourceKind ?? 'transcript'}, ${q.sourceRef ?? null}, ${q.packCandidateId ?? null}, ${potSlug})
     ON CONFLICT ON CONSTRAINT transfer_lessons_signature_uniq DO NOTHING
     RETURNING *`) as Row[];
   if (rows.length > 0) return { admitted: true, lesson: mapLesson(rows[0]) };

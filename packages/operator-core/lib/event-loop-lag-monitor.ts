@@ -37,8 +37,18 @@ export interface LagMonitorOpts {
    * (350-630 windows/hr observed), so a profile started just AFTER a critical
    * window reliably catches the ongoing block. All inspector use is best-effort:
    * any failure degrades silently to today's symptom-only logging.
+   *
+   * WI-5820: accepts a PREDICATE as well as a boolean. Pass a function (e.g.
+   * `() => getFlag(FLAGS.LOOP_STALL_PROFILER, 'operator-host')`) and the gate is
+   * read LAZILY, at the moment a saturated window would trigger a capture —
+   * never latched at boot. That matters twice over: `getFlag` is fragile during
+   * host-boot (it resolves false before the backend is configured, which is how
+   * a boot-latched gate silently stays off forever), and a lazy read means a
+   * flip in /admin/features takes effect without restarting the host. The
+   * predicate may be async; it is evaluated at most once per `minProfileGapMs`,
+   * so a sustained saturation burst cannot turn it into a per-tick flag read.
    */
-  profileOnSaturation?: boolean;
+  profileOnSaturation?: boolean | (() => boolean | Promise<boolean>);
   /** Dir for `.cpuprofile` artifacts. Default ~/.papercusp/loop-profiles. */
   profileDir?: string;
   /** p95 loop-delay (ms) that triggers a capture. Default = the critical band (600ms). */
@@ -271,9 +281,18 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   _liveRead = read;
 
   // infra round-3 F1: lag-triggered CPU-profile capture state.
-  const profileOnSaturation =
-    opts.profileOnSaturation ??
-    (process.env.PAPERCUSP_LOOP_PROFILER === '1' || process.env.PAPERCUSP_LOOP_PROFILER === 'true');
+  // WI-5820: normalize boolean | predicate into ONE lazily-read gate. A bare
+  // boolean (or the env override, which stays for tests/dev — never as the
+  // production feature gate) is wrapped so the trigger site has a single shape.
+  const envProfileGate =
+    process.env.PAPERCUSP_LOOP_PROFILER === '1' || process.env.PAPERCUSP_LOOP_PROFILER === 'true';
+  const profileGate: () => boolean | Promise<boolean> =
+    typeof opts.profileOnSaturation === 'function'
+      ? opts.profileOnSaturation
+      : (() => {
+          const fixed = opts.profileOnSaturation ?? envProfileGate;
+          return () => fixed;
+        })();
   const profileTriggerP95Ms = opts.profileTriggerP95Ms ?? CRITICAL_P95_MS;
   const profileDurationMs = opts.profileDurationMs ?? 3000;
   const minProfileGapMs = opts.minProfileGapMs ?? 300_000;
@@ -329,19 +348,33 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     }
     // F1: when saturated, capture a short CPU profile so the synchronous culprit
     // is identifiable. Rate-limited + single-flight; fully best-effort.
-    if (
-      profileOnSaturation &&
-      !profiling &&
-      s.p95Ms >= profileTriggerP95Ms &&
-      Date.now() - lastProfileAt >= minProfileGapMs
-    ) {
+    if (!profiling && s.p95Ms >= profileTriggerP95Ms && Date.now() - lastProfileAt >= minProfileGapMs) {
+      // Claim the single-flight slot and consume the rate-limit window BEFORE
+      // resolving the (possibly async) gate — so a second tick cannot race in
+      // behind us, and a gate that reads false costs at most one evaluation per
+      // `minProfileGapMs` rather than one per tick for the whole burst. The cost
+      // of consuming the window on a false read is bounded and stated: flipping
+      // the flag ON mid-burst engages within one gap (default 5min).
       profiling = true;
       lastProfileAt = Date.now();
-      captureCpuProfile({ durationMs: profileDurationMs, dir: profileDir, maxProfiles, trigger: s, log })
-        .catch(() => {})
-        .finally(() => {
-          if (!stopped) profiling = false;
-        });
+      void (async () => {
+        let on = false;
+        try {
+          on = await profileGate();
+        } catch {
+          on = false; // a flag-read failure must never break lag monitoring
+        }
+        if (!on) return;
+        await captureCpuProfile({
+          durationMs: profileDurationMs,
+          dir: profileDir,
+          maxProfiles,
+          trigger: s,
+          log,
+        }).catch(() => {});
+      })().finally(() => {
+        if (!stopped) profiling = false;
+      });
     }
     // WI-1088 round 2: arm the sampling heap profiler on the first tick (O(1)
     // overhead from here on; allocation stacks accumulate from ~boot).
