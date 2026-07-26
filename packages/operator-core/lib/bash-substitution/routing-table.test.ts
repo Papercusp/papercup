@@ -30,7 +30,7 @@ import {
   renderRoutingBlock,
   routingCell,
   spliceRoutingBlock,
-} from '../../../../scripts/gen-tool-routing';
+} from './routing-table';
 import { ALL_PAIRS } from './pairs';
 import type { SubstitutionPair } from './types';
 

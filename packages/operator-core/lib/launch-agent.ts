@@ -43,6 +43,12 @@ export interface LaunchAgentResult {
   installCmd?: string;
   /** The recorded adv_sessions row id when `deferSpawn` was set (else absent). */
   advSessionId?: number;
+  /**
+   * EI-18696184925888288: set when launch-su reported `ok` but the spawned
+   * terminal process exited almost immediately — a likely silent launch
+   * failure (no window ever opened) that a flat success would hide.
+   */
+  warning?: string;
 }
 
 /** The launch-su endpoints to try (same-origin first, then Tauri fallback ports). */
@@ -85,7 +91,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         body,
       });
       const data = (await r.json().catch(() => null)) as
-        | { status?: string; code?: string; error?: string; advSessionId?: number }
+        | { status?: string; code?: string; error?: string; advSessionId?: number; warning?: string }
         | null;
       if (!data) { lastError = `launch-su HTTP ${r.status} (no body)`; continue; }
       if (data.code === 'psu_not_installed') {
@@ -97,7 +103,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         };
       }
       if (r.ok && data.status === 'ok') {
-        return { ok: true, advSessionId: data.advSessionId };
+        return { ok: true, advSessionId: data.advSessionId, warning: data.warning };
       }
       lastError = data.error ?? `launch-su HTTP ${r.status}`;
     } catch (e: unknown) {

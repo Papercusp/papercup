@@ -196,11 +196,30 @@ const launchSu = defineTool({
 
     const oneliner = `exec ${psuArgs.map(shellEscape).join(' ')}`;
 
-    const spawned = spawnInTerminal({ oneliner, env: process.env });
+    const spawned = await spawnInTerminal({ oneliner, env: process.env });
     if (!spawned.ok) {
       return json({ status: 'error', error: spawned.error }, 500);
     }
-    return json({ status: 'ok', agent, harnessSlug: harness, planSlug: plan, terminal: spawned.terminal, pid: spawned.pid });
+    // EI-18696184925888288: `ok` here only means the OS spawn call didn't
+    // throw — it cannot confirm a window actually opened or that psu ever
+    // booted (that self-registers a separate adv_sessions row, asynchronously,
+    // once it does). When the spawned terminal process already exited by the
+    // time we checked, say so — a silent no-op reported as confident success
+    // is worse than an honest "not sure this worked".
+    const warning = spawned.likelyOpened
+      ? undefined
+      : 'the spawned terminal process exited almost immediately — it may not have opened a window ' +
+        '(a headless/offscreen display, or the terminal emulator failed silently). Check /adv/sessions ' +
+        'for the new session; if it never appears, the launch did not actually happen.';
+    return json({
+      status: 'ok',
+      agent,
+      harnessSlug: harness,
+      planSlug: plan,
+      terminal: spawned.terminal,
+      pid: spawned.pid,
+      ...(warning ? { warning } : {}),
+    });
   },
 });
 

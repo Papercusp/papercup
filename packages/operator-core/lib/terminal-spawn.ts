@@ -78,19 +78,50 @@ export interface SpawnInTerminalOpts {
   env?: NodeJS.ProcessEnv;
   /** Working directory for the spawned terminal (defaults to the host's cwd). */
   cwd?: string;
+  /**
+   * Silent-launch-failure detector (EI-18696184925888288): after the OS spawn
+   * call returns, wait this many ms then re-check whether the spawned process
+   * is still alive. A terminal client can hand off to a long-lived singleton
+   * server and exit almost immediately even when NO window ever actually
+   * opened (repro'd live: `gnome-terminal --wait` against a headless/offscreen
+   * Xvfb display exits right away instead of blocking on the command it was
+   * asked to run) — before this check, that produced a confident-looking
+   * `{ok:true, terminal, pid}` with no signal that nothing was actually
+   * launched. 0 disables the check. Default 400ms.
+   */
+  livenessCheckDelayMs?: number;
 }
 
 export type SpawnInTerminalResult =
-  | { ok: true; terminal: string; pid: number | undefined }
+  | { ok: true; terminal: string; pid: number | undefined; likelyOpened: boolean }
   | { ok: false; code: 'no_terminal' | 'spawn_failed'; error: string };
+
+export const DEFAULT_LIVENESS_CHECK_DELAY_MS = 400;
+
+/** Whether `pid` is still alive right now — a best-effort `kill(pid, 0)` probe
+ *  (throws ESRCH-class errors for a dead/foreign-namespace pid, never actually
+ *  sends a signal). Exported for reuse/testing. */
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Resolve a terminal and spawn it detached, running `bash -lc <oneliner>`.
  * A login shell (`-l`) is used so the user's profile (cargo PATH etc.) is in
  * scope for whatever the one-liner exec's. The child is `unref`'d so it
  * outlives the request.
+ *
+ * After a successful spawn, briefly re-checks the child's liveness (see
+ * `livenessCheckDelayMs` above) and reports it as `likelyOpened` — callers
+ * should surface a warning rather than a flat success when it comes back
+ * false, since the spawn syscall not throwing is NOT proof a window opened.
  */
-export function spawnInTerminal(opts: SpawnInTerminalOpts): SpawnInTerminalResult {
+export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnInTerminalResult> {
   const term = findTerminal();
   if (!term) {
     return {
@@ -108,7 +139,14 @@ export function spawnInTerminal(opts: SpawnInTerminalOpts): SpawnInTerminalResul
       env: opts.env ?? process.env,
     });
     child.unref();
-    return { ok: true, terminal: term.bin, pid: child.pid };
+    const pid = child.pid;
+    let likelyOpened = true;
+    const delayMs = opts.livenessCheckDelayMs ?? DEFAULT_LIVENESS_CHECK_DELAY_MS;
+    if (pid != null && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      likelyOpened = isProcessAlive(pid);
+    }
+    return { ok: true, terminal: term.bin, pid, likelyOpened };
   } catch (e: any) {
     return { ok: false, code: 'spawn_failed', error: `spawn ${term.bin} failed: ${e?.message}` };
   }

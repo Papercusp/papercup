@@ -80,9 +80,14 @@ all. The lint could not know that, and neither could anyone who trusted the lint
 
 An `ok` that did nothing, an empty result that explains nothing, an alarm that describes
 nothing, and **a lint that names a contradiction without naming its resolution** are one
-bug. The lint's own fixture suite is careful and correct; it simply stops one step short of
-the thing every reader needs. `WI-4496` tracks teaching it to carry the direction (and, for
-partition flags, the live row counts) so nobody has to guess again.
+bug. The lint's own fixture suite is careful and correct; it simply stopped one step short of
+the thing every reader needs. `WI-4496` closed this: `FlagCommentMismatch` now carries an
+`evidence` block (`onEffect`/`offEffect` — `narrows`|`widens`|`unknown` — plus
+`partitionSwing` + the directional/partition comment excerpts themselves), derived straight
+from the flag's own comment, so a mismatch reads "ON narrows reads to the workspace
+partition (11,730 rows vs 2,443, legacy last written 2026-06-22)" instead of forcing every
+reader to re-derive it by hand. See `deriveMismatchEvidence` in `flag-comment-lint.ts` and
+the "carries branch direction and partition evidence with a mismatch" test.
 
 ## Postscript: it caught me too
 

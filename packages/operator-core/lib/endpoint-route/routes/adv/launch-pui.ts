@@ -73,11 +73,22 @@ const launchPui = defineTool({
     // spawnInTerminal) puts ~/.cargo/bin on PATH so pui's own `zellij` spawn
     // resolves. `puiBin` is a fixed resolved path — shellEscape guards it.
     const oneliner = `exec ${shellEscape(puiBin)} workbench`;
-    const spawned = spawnInTerminal({ oneliner, env: process.env });
+    const spawned = await spawnInTerminal({ oneliner, env: process.env });
     if (!spawned.ok) {
       return json({ status: 'error', error: spawned.error }, 500);
     }
-    return json({ status: 'ok', terminal: spawned.terminal, pid: spawned.pid });
+    // EI-18696184925888288: see launch-su.ts's identical check — the spawn
+    // syscall not throwing doesn't confirm a window actually opened.
+    const warning = spawned.likelyOpened
+      ? undefined
+      : 'the spawned terminal process exited almost immediately — it may not have opened a window ' +
+        '(a headless/offscreen display, or the terminal emulator failed silently).';
+    return json({
+      status: 'ok',
+      terminal: spawned.terminal,
+      pid: spawned.pid,
+      ...(warning ? { warning } : {}),
+    });
   },
 });
 

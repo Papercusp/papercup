@@ -449,14 +449,23 @@ plan's `## Now` + your completion report. The dark allowlist carries a
 one (owner mandate 2026-06-23).** `KNOWN_DARK_FLAGS` exists ONLY to express the small set of
 genuinely-not-ready exceptions above (incomplete code / would-break-the-running-fleet /
 owner-authority / staged-cutover) — it is **NOT a parking lot for finished work**, and it was being
-abused as one. A high-watermark test (`DARK_FLAGS_HIGH_WATERMARK` in `production-defaults.test.ts`)
-**fails the build if the dark set grows**. So: flipping a flag ON *removes* its allowlist entry (the
-set shrinks ✓); shipping a NEW genuinely-incomplete flag dark requires first **graduating an existing
-dark flag** to make room (net-zero) or **explicit owner sign-off** to raise the watermark — never a
-quiet append. **Do NOT route around this guard** by re-introducing a second dark allowlist, a
-per-flag `process.env.PAPERCUSP_*` gate, a `darkReason` side-table, or any other parking-lot for
-finished-but-scary work: the temptation to park it dark "to verify later" is *exactly* the abuse this
-exists to stop — flipping it on and watching it work IS the task.
+abused as one. `DarkCase` splits the set into two populations governed differently (WI-4495 — a
+single aggregate ceiling used to penalize adding a legitimate safety kill-switch exactly as hard as
+parking finished work, which is why the watermark kept getting silently raised 22→24→25→26 for the
+SAME bug class every time): the `DARK_FLAGS_HIGH_WATERMARK` size ceiling in
+`libs/flags/src/types.ts` (imported by `production-defaults.test.ts`) governs ONLY the
+**`parked`/`incomplete`** subset (`DARK_FLAGS_PARKING_COUNT`) — the actual parking-lot abuse; it
+**fails the build if THAT subset grows**, not the aggregate `DARK_FLAGS.size`. `owner-authority` /
+`cutover` entries (permanent or staged safety kill-switches) are **not rationed** by the watermark at
+all — they are governed only by the `DARK_FLAGS_REVIEW_BY` re-review date, so a legitimate new safety
+flag never has to fight a parking-lot budget. So: flipping a `parked`/`incomplete` flag ON *removes*
+its allowlist entry (the parking subset shrinks ✓); shipping a NEW genuinely-incomplete flag dark
+requires first **graduating an existing parked/incomplete dark flag** to make room (net-zero) or
+**explicit owner sign-off** to raise the watermark — never a quiet append. **Do NOT route around this
+guard** by re-introducing a second dark allowlist, a per-flag `process.env.PAPERCUSP_*` gate, a
+`darkReason` side-table, or any other parking-lot for finished-but-scary work: the temptation to park
+it dark "to verify later" is *exactly* the abuse this exists to stop — flipping it on and watching it
+work IS the task.
 
 ## Tests after editing
 
