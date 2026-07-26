@@ -2084,7 +2084,13 @@ function applyTopicDialState(
  *
  * Exported for unit testing.
  */
-export function evaluateSwarmFairness(swarm: HyperswarmLike): readonly TopicPeerShare[] {
+export function evaluateSwarmFairness(
+  swarm: HyperswarmLike,
+  /** Test seam: how to read a topic's live peer count. Defaults to the real
+   *  announce-channel gauge; injectable so the policy can be unit-tested without
+   *  standing up real Protomux channels. */
+  peerCountForTopic: (topicHex: string) => number = contentPeerCountForTopic,
+): readonly TopicPeerShare[] {
   const state = swarmFairness.get(swarm as unknown as object);
   if (!state || state.entries.size === 0) return [];
   const entries = [...state.entries.values()];
@@ -2103,7 +2109,7 @@ export function evaluateSwarmFairness(swarm: HyperswarmLike): readonly TopicPeer
   if (!engaged) {
     for (const entry of entries) {
       applyTopicDialState(entry, false, {
-        peers: contentPeerCountForTopic(entry.topicHex),
+        peers: peerCountForTopic(entry.topicHex),
         fairShare: 0,
         live: live ?? 0,
         maxPeers: maxPeers ?? 0,
@@ -2112,15 +2118,15 @@ export function evaluateSwarmFairness(swarm: HyperswarmLike): readonly TopicPeer
     }
     return entries.map((entry) => ({
       topicHex: entry.topicHex,
-      peers: contentPeerCountForTopic(entry.topicHex),
+      peers: peerCountForTopic(entry.topicHex),
       fairShare: null,
       dialPaused: entry.paused,
     }));
   }
-  const fairShare = Math.max(MIN_PEERS_PER_TOPIC, Math.floor(maxPeers / topicCount));
+  const fairShare = computeFairShare(maxPeers, topicCount);
   const shares: TopicPeerShare[] = [];
   for (const entry of entries) {
-    const peers = contentPeerCountForTopic(entry.topicHex);
+    const peers = peerCountForTopic(entry.topicHex);
     // STRICTLY greater: a topic sitting exactly AT its share is not a hog, and
     // throttling it would be the same off-by-one that starves the marginal topic.
     applyTopicDialState(entry, peers > fairShare, {
@@ -2140,7 +2146,10 @@ export function evaluateSwarmFairness(swarm: HyperswarmLike): readonly TopicPeer
  * budget breakdown, without applying anything. For tests, health checks and the
  * near-cap signal's `topics` field.
  */
-export function swarmFairnessSnapshot(swarm: HyperswarmLike): readonly TopicPeerShare[] {
+export function swarmFairnessSnapshot(
+  swarm: HyperswarmLike,
+  peerCountForTopic: (topicHex: string) => number = contentPeerCountForTopic,
+): readonly TopicPeerShare[] {
   const state = swarmFairness.get(swarm as unknown as object);
   if (!state || state.entries.size === 0) return [];
   const entries = [...state.entries.values()];
@@ -2152,15 +2161,40 @@ export function swarmFairnessSnapshot(swarm: HyperswarmLike): readonly TopicPeer
     live !== undefined &&
     entries.length > 1 &&
     live >= Math.ceil(maxPeers * FAIRNESS_ENGAGE_RATIO);
-  const fairShare = engaged
-    ? Math.max(MIN_PEERS_PER_TOPIC, Math.floor((maxPeers as number) / entries.length))
-    : null;
+  const fairShare = engaged ? computeFairShare(maxPeers as number, entries.length) : null;
   return entries.map((entry) => ({
     topicHex: entry.topicHex,
-    peers: contentPeerCountForTopic(entry.topicHex),
+    peers: peerCountForTopic(entry.topicHex),
     fairShare,
     dialPaused: entry.paused,
   }));
+}
+
+/**
+ * The per-topic allowance under pressure: an even split of the ceiling, but
+ * never below {@link MIN_PEERS_PER_TOPIC}. Pure + exported so the arithmetic —
+ * including the floor that stops the fix becoming its own starvation mechanism
+ * on a many-harness host — is directly testable.
+ */
+export function computeFairShare(maxPeers: number, topicCount: number): number {
+  if (topicCount <= 0) return maxPeers;
+  return Math.max(MIN_PEERS_PER_TOPIC, Math.floor(maxPeers / topicCount));
+}
+
+/**
+ * Test seam: register a topic in a swarm's fairness registry directly, without
+ * standing up a real `joinHarnessSwarm`. Returns the same release closure the
+ * production path gets.
+ */
+export function _registerTopicFairnessForTests(
+  swarm: HyperswarmLike,
+  entry: {
+    topicHex: string;
+    session: () => { refresh?: (opts?: object) => unknown } | undefined;
+    onThrottle?: (info: TopicDialThrottleInfo) => void;
+  },
+): () => void {
+  return registerTopicFairness(swarm, { ...entry, paused: false });
 }
 
 /**
