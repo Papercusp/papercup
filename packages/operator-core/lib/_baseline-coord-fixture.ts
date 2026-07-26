@@ -46,6 +46,71 @@ function withUser(dsn: string, user: string, password: string): string {
 }
 
 /**
+ * Cross-process mutex serializing every consumer of THIS fixture
+ * (EI-18683737202696167). `baselineSchemaDsn` is ONE Postgres container
+ * `.withReuse()`d by every concurrent Vitest process on the box (all
+ * packages, all fleet agents at once — see baseline-schema-global-setup.ts),
+ * and every consumer of this fixture directly TRUNCATEs GLOBAL
+ * `harness_shared` tables (coord_presence, plan_item_claims,
+ * plan_item_assignments, coord_event_log, adv_sessions, coord_links,
+ * pending_wakes, fleet_membership_events, …) in its own `beforeEach` — so two
+ * files using this fixture AT THE SAME TIME on the same box race each
+ * other's truncate → seed → assert cycles: one file's INSERTs land inside
+ * another's read window, surfacing as unexplained extra rows/agentIds the
+ * reading file never seeded itself (observed live:
+ * assignments.integration.test.ts polluted by
+ * stalled-claim-collector.integration.test.ts's `su-held-holder` /
+ * `su-stalled-holder` seeds, both via `coord_presence`).
+ *
+ * A Postgres SESSION-level advisory lock — held on a dedicated single
+ * connection from `setupBaselineCoordFixture()` until `dispose()` — makes
+ * only one such file active against the shared tables at a time. This is a
+ * root-cause fix for the WHOLE CLASS (every current + future consumer of
+ * this one fixture), not a per-file patch. Session-scoped locks self-heal on
+ * a crash (Postgres releases the lock the instant the holding connection
+ * dies), so a killed/OOM'd process can never wedge every other file. The
+ * acquire is budget-bounded (not an unbounded blocking `pg_advisory_lock`)
+ * so a genuinely-stuck holder surfaces as a clear timeout instead of hanging
+ * the fleet's test run forever.
+ */
+const FIXTURE_MUTEX_NAME = 'papercusp-baseline-coord-fixture-mutex';
+const FIXTURE_MUTEX_BUDGET_MS = 120_000;
+const FIXTURE_MUTEX_POLL_MS = 250;
+
+async function acquireFixtureMutex(dsn: string): Promise<postgres.Sql> {
+  // A dedicated max:1 connection: postgres.js guarantees every query on this
+  // instance reuses the SAME underlying connection, which is required for a
+  // session-scoped advisory lock to mean anything (it is held by the
+  // connection, not the logical client).
+  const lockClient = postgres(dsn, { max: 1, onnotice: () => {} });
+  const startedAt = Date.now();
+  try {
+    for (;;) {
+      const [{ locked }] = await lockClient<{ locked: boolean }[]>`
+        SELECT pg_try_advisory_lock(hashtext(${FIXTURE_MUTEX_NAME})) AS locked
+      `;
+      if (locked) return lockClient;
+      if (Date.now() - startedAt >= FIXTURE_MUTEX_BUDGET_MS) {
+        throw new Error(
+          `setupBaselineCoordFixture: timed out after ${FIXTURE_MUTEX_BUDGET_MS}ms waiting for the ` +
+            `shared-fixture mutex (another integration-test file is holding it — see ` +
+            `EI-18683737202696167 for why this lock exists).`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, FIXTURE_MUTEX_POLL_MS));
+    }
+  } catch (e) {
+    await lockClient.end({ timeout: 5 }).catch(() => {});
+    throw e;
+  }
+}
+
+async function releaseFixtureMutex(lockClient: postgres.Sql): Promise<void> {
+  await lockClient`SELECT pg_advisory_unlock(hashtext(${FIXTURE_MUTEX_NAME}))`.catch(() => {});
+  await lockClient.end({ timeout: 5 }).catch(() => {});
+}
+
+/**
  * Re-point the coordination modules at the injected baseline DB + hand back an
  * admin client. Call once in `beforeAll`.
  */
@@ -60,6 +125,11 @@ export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture>
   // "this is known local-environment churn" error instead of a cryptic raw
   // "no such database: papercusp_it" deep inside a later query.
   await assertPgReachable(dsn, 'setupBaselineCoordFixture');
+
+  // EI-18683737202696167: serialize against every OTHER file using this
+  // fixture (see the doc comment on acquireFixtureMutex) BEFORE we truncate
+  // or seed anything against the shared tables.
+  const lockClient = await acquireFixtureMutex(dsn);
 
   // The injected DSN points at a throwaway testcontainer with NO PgBouncer in front. On a
   // SERVER-class host (the dev box / a dedicated CI server), pgbouncerEnabled() derives ON from
@@ -121,6 +191,10 @@ export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture>
     _resetUrlCacheForTests();
     _resetHarnessAdminUrlCacheForTests();
     await _resetForTests();
+    // EI-18683737202696167: release the shared-fixture mutex LAST, once this
+    // file's env/cache state is fully torn down, so the next waiter's
+    // truncate/seed cycle never overlaps this file's cleanup.
+    await releaseFixtureMutex(lockClient);
   };
 
   return { admin, dispose };

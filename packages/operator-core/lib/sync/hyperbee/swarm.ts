@@ -79,6 +79,19 @@ export interface SwarmHandle {
    * method applies none itself — it is a raw lever, not a policy).
    */
   forceRejoin(): Promise<void>;
+  /**
+   * EI-18682571591024156: per-live-socket DATA-PATH evidence for this topic —
+   * hyperdht's signalling outcome plus the UDX wire counters, with an explicit
+   * tri-state `proven`.
+   *
+   * This is what a UI or health check should read instead of counting
+   * `onPeerConnected` fires: `connectionCount`/`liveConnectionCount` and
+   * `peer_connected` all measure SIGNALLING, so a peer whose data path never
+   * came up reports "connected" forever. `proven: false` here means the counters
+   * were readable and NO bytes have arrived — a live socket that is not carrying
+   * data.
+   */
+  dataPathSnapshot(): DataPathSnapshotEntry[];
 }
 
 /** EI-13317: one topic's severed-link escalation event, carried by
@@ -127,6 +140,19 @@ export interface HyperswarmLike {
      *  reliably connects a standalone (non-corestore) transport — see
      *  directory-swarm.ts's module header. */
     refresh?: (opts?: object) => unknown;
+    /**
+     * WI-5923: the REFCOUNTED per-caller teardown a real Hyperswarm `join()`
+     * returns (`PeerDiscoverySession.destroy()` — hyperswarm/lib/peer-
+     * discovery.js). Decrements this session's share of the underlying
+     * PeerDiscovery and only actually leaves the topic (`swarm.leave`
+     * internally) once EVERY session on it has destroyed. `close()` below
+     * prefers this over the process-wide `swarm.leave(topic)` precisely so
+     * one harness closing its join can never destroy a SIBLING harness's still-
+     * live session on the same (per-Hive) topic. Optional because a minimal
+     * test fake's `join()` may not return one — `close()` falls back to
+     * `swarm.leave` in that case, unchanged from before.
+     */
+    destroy?: () => Promise<void> | void;
   };
   leave(topic: Buffer): Promise<void> | void;
   on(event: 'connection', listener: (socket: unknown, info?: unknown) => void): unknown;
@@ -148,10 +174,32 @@ export interface JoinHarnessSwarmOpts {
   topic: Buffer;
   /** Test seam: supply a swarm; runtime wrapper auto-instantiates. */
   swarm: HyperswarmLike;
-  /** Hook fires every time a peer connects + replicates. Receives the peer's
-   *  Noise public key (hex) when Hyperswarm surfaces it (P-002). Useful for the
-   *  substrate dashboard, boot-history, and per-peer accounting/rate-limiting. */
-  onPeerConnected?: (remotePublicKeyHex?: string) => void;
+  /**
+   * Hook fires every time a peer completes the Noise handshake + is wired for
+   * replication. Receives the peer's Noise public key (hex) when Hyperswarm
+   * surfaces it (P-002), plus (EI-18682571591024156) a {@link PeerSignallingInfo}
+   * describing WHAT WAS ACTUALLY PROVEN.
+   *
+   * ⚠ THIS IS SIGNALLING SUCCESS, NOT A WORKING CONNECTION. hyperdht completes
+   * the handshake as a DHT RPC and hands `secret-stream` an already-finished
+   * session over a UDX stream that has carried ZERO bytes, so this fires
+   * identically for a connection that works and one that will send 4.9KB,
+   * receive nothing, and die on RTO exhaustion 13s later. `info.signallingOnly`
+   * is always `true` and `info.dataPathProven` is the honest tri-state (`null`
+   * here by construction). A UI or health check that renders "peer connected"
+   * off this alone can be showing a permanently false state — read
+   * {@link SwarmHandle.dataPathSnapshot} for demonstrated data paths instead.
+   */
+  onPeerConnected?: (remotePublicKeyHex?: string, info?: PeerSignallingInfo) => void;
+  /**
+   * EI-18682571591024156: fires when a socket that signalled successfully CLOSES
+   * having never received a single byte — a link that never came up at the data
+   * layer while every layer above reported success. This is the signal whose
+   * absence sent WI-5863's investigation to the wrong layer for hours: without
+   * it the only symptom is a generic ~13s UV_ETIMEDOUT. Best-effort; a throw is
+   * swallowed.
+   */
+  onDataPathNeverUp?: (info: DataPathNeverUpInfo) => void;
   /** DoS guard (ban-list + connection rate-limit). Defaults to the process-global
    *  guard (the same one the shared swarm's firewall reads). Injectable for tests. */
   guard?: SwarmGuard;
@@ -1032,6 +1080,201 @@ export function reportPeerCapPressure(
 }
 
 /**
+ * EI-18682571591024156 — the DHT SIGNALLING outcome for one connection, read off
+ * the socket hyperswarm hands us.
+ *
+ * `hyperdht` computes `relayed` / `serverAddress` / `clientAddress` while
+ * completing the Noise handshake as a DHT RPC, and our `patches/hyperdht+6.32.0`
+ * patch exposes them on the returned `encryptedSocket` (`udxRelayed`,
+ * `udxServerAddress`, `udxClientAddress`; plus `udxRelayHost`/`udxRelayPort` on
+ * the relayed ACCEPT path). NOTHING in this repo read them, so a connection that
+ * signalled fine and then never carried a byte was indistinguishable from a
+ * working one — see {@link readWireStats}.
+ *
+ * `present` is an EXPLICIT presence witness, not a convenience: a shape that
+ * synthesises `relayed: false` for an ABSENT reading makes "hyperdht said
+ * not-relayed" and "we could not read it" identical to every consumer — the
+ * absent-vs-zero trap this very bug class is about. Check `present` before
+ * trusting any other field.
+ */
+export interface PeerConnectionPath {
+  /** True only when the socket actually exposed at least one `udx*` reading. */
+  present: boolean;
+  /** hyperdht's own verdict: was the data path relayed rather than punched? */
+  relayed?: boolean;
+  /** Server-side address hyperdht signalled through (`host:port` when parseable). */
+  serverAddress?: string;
+  /** Client-side address hyperdht signalled through (`host:port` when parseable). */
+  clientAddress?: string;
+  /** Relay host/port on the relayed ACCEPT path (server.js half of the patch). */
+  relayHost?: string;
+  relayPort?: number;
+}
+
+function formatUdxAddress(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value;
+  const addr = value as { host?: unknown; port?: unknown } | null | undefined;
+  const host = typeof addr?.host === 'string' ? addr.host : undefined;
+  const port = typeof addr?.port === 'number' ? addr.port : undefined;
+  if (host && port !== undefined) return `${host}:${port}`;
+  if (host) return host;
+  return undefined;
+}
+
+/**
+ * Read the DHT signalling outcome off a connection socket (see
+ * {@link PeerConnectionPath}). Never throws — an unexpected/fake shape yields
+ * `{ present: false }` rather than a fabricated verdict.
+ */
+export function extractConnectionPath(socket: unknown): PeerConnectionPath {
+  const s = socket as
+    | {
+        udxRelayed?: unknown;
+        udxServerAddress?: unknown;
+        udxClientAddress?: unknown;
+        udxRelayHost?: unknown;
+        udxRelayPort?: unknown;
+      }
+    | null
+    | undefined;
+  if (!s || typeof s !== 'object') return { present: false };
+  const out: PeerConnectionPath = { present: false };
+  if (typeof s.udxRelayed === 'boolean') {
+    out.relayed = s.udxRelayed;
+    out.present = true;
+  }
+  const serverAddress = formatUdxAddress(s.udxServerAddress);
+  if (serverAddress) {
+    out.serverAddress = serverAddress;
+    out.present = true;
+  }
+  const clientAddress = formatUdxAddress(s.udxClientAddress);
+  if (clientAddress) {
+    out.clientAddress = clientAddress;
+    out.present = true;
+  }
+  if (typeof s.udxRelayHost === 'string' && s.udxRelayHost.length > 0) {
+    out.relayHost = s.udxRelayHost;
+    out.present = true;
+  }
+  if (typeof s.udxRelayPort === 'number') {
+    out.relayPort = s.udxRelayPort;
+    out.present = true;
+  }
+  return out;
+}
+
+/**
+ * EI-18682571591024156 — the UDX wire counters for one connection: the ONLY
+ * evidence that the data path actually came up.
+ *
+ * The Noise handshake completes as a DHT RPC, so `secret-stream` attaches an
+ * ALREADY-FINISHED session to a UDX stream that has carried ZERO bytes. A
+ * connection that will send ~4.9KB, receive nothing, retransmit 10× and die on
+ * RTO exhaustion 13s later is therefore indistinguishable at `connection` time
+ * from one that works. `bytesReceived > 0` is what tells them apart.
+ *
+ * Same explicit-presence rule as {@link PeerConnectionPath}: a `bytesReceived: 0`
+ * synthesised for an unreadable stream would read as "measured zero" — the exact
+ * confusion that makes this bug class expensive.
+ */
+export interface PeerWireStats {
+  /** True only when the underlying raw stream exposed real counters. */
+  present: boolean;
+  bytesReceived?: number;
+  bytesTransmitted?: number;
+  packetsReceived?: number;
+  rtoCount?: number;
+  retransmits?: number;
+}
+
+/**
+ * Read the UDX wire counters off a connection socket's raw stream (see
+ * {@link PeerWireStats}). Never throws; `{ present: false }` when unreadable.
+ */
+export function readWireStats(socket: unknown): PeerWireStats {
+  const raw = (socket as { rawStream?: Record<string, unknown> } | null | undefined)?.rawStream;
+  if (!raw || typeof raw !== 'object') return { present: false };
+  const out: PeerWireStats = { present: false };
+  const copy = (key: keyof PeerWireStats & string) => {
+    const v = raw[key];
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      (out as Record<string, unknown>)[key] = v;
+      out.present = true;
+    }
+  };
+  copy('bytesReceived');
+  copy('bytesTransmitted');
+  copy('packetsReceived');
+  copy('rtoCount');
+  copy('retransmits');
+  return out;
+}
+
+/**
+ * EI-18682571591024156 — has this connection DEMONSTRATED a working data path?
+ *
+ * `true` only on positive evidence (bytes actually received from the peer);
+ * `false` on positive evidence of the opposite (readable counters, zero bytes
+ * received); `null` when unknowable. Three states on purpose: collapsing
+ * "unknown" into `false` would alarm on every test fake, and collapsing it into
+ * `true` would re-create the overclaiming signal this fixes.
+ */
+export function dataPathProven(stats: PeerWireStats): boolean | null {
+  if (!stats.present || stats.bytesReceived === undefined) return null;
+  return stats.bytesReceived > 0;
+}
+
+/**
+ * EI-18682571591024156 — what `onPeerConnected` actually proves.
+ *
+ * Handed to {@link JoinHarnessSwarmOpts.onPeerConnected} so no consumer can read
+ * that callback as terminal success by accident: `signallingOnly` is always
+ * `true` there, and `dataPathProven` is the honest tri-state at fire time
+ * (essentially always `null` — zero bytes have crossed yet by construction).
+ */
+export interface PeerSignallingInfo {
+  /** Hex Noise public key of the peer, when Hyperswarm surfaced it. */
+  remotePublicKeyHex?: string;
+  /** Peer IP, when the raw stream exposed it. */
+  remoteIp?: string;
+  /** hyperdht's signalling outcome (relayed / addresses). */
+  path: PeerConnectionPath;
+  /** UDX counters at fire time. */
+  wire: PeerWireStats;
+  /**
+   * ALWAYS true on this callback: what fired is SIGNALLING success, not a
+   * demonstrated data path. Named so a reader of the call site cannot mistake
+   * one for the other.
+   */
+  signallingOnly: true;
+  /** {@link dataPathProven} at fire time — `null` means "not demonstrated yet". */
+  dataPathProven: boolean | null;
+}
+
+/** EI-18682571591024156 — a connection that signalled successfully and then died
+ *  WITHOUT ever receiving a byte, reported at socket close. */
+export interface DataPathNeverUpInfo {
+  topicHex: string;
+  remotePublicKeyHex?: string;
+  remoteIp?: string;
+  path: PeerConnectionPath;
+  wire: PeerWireStats;
+  /** How long the socket lived before closing (ms). */
+  ageMs: number;
+}
+
+/** EI-18682571591024156 — live per-socket data-path evidence for one topic, for a
+ *  UI/health check that must not report "connected" off the signalling signal. */
+export interface DataPathSnapshotEntry {
+  remotePublicKeyHex?: string;
+  path: PeerConnectionPath;
+  wire: PeerWireStats;
+  /** Tri-state: true = bytes received, false = readable-and-zero, null = unknown. */
+  proven: boolean | null;
+}
+
+/**
  * Pull the remote peer's Noise public key (hex) out of Hyperswarm's PeerInfo
  * (the 2nd arg of the `connection` event), defensively — the substrate's
  * per-peer accounting + DoS guard key off this. Returns undefined when the
@@ -1228,11 +1471,55 @@ export async function joinHarnessSwarm(
     // counting ALL peer closes (the shared swarm dedups one socket per peer
     // across topics) only ever schedules a few extra harmless refreshes.
     (socket as { once?: (ev: string, fn: () => void) => unknown })?.once?.('close', () => {
+      const closeAgeMs = Date.now() - churnOpenedAtMs;
+      const closeWire = readWireStats(socket);
+      const closePath = extractConnectionPath(socket);
       churnDbg('close', {
         topic: topicHex.slice(0, 8),
-        ageMs: Date.now() - churnOpenedAtMs,
+        ageMs: closeAgeMs,
         precededByError: churnSawError,
+        // EI-18682571591024156: the close log now carries hyperdht's signalling
+        // outcome + the UDX counters. `bytesReceived: 0` with a nonzero
+        // `bytesTransmitted` IS the never-came-up signature (WI-5863), and it was
+        // previously unavailable at every layer.
+        path: closePath,
+        wire: closeWire,
       });
+      // EI-18682571591024156: a socket that signalled successfully and closed
+      // WITHOUT ever receiving a byte never had a data path — the failure that
+      // `peer_connected` actively mis-reported as success. Loud + unconditional
+      // (not behind the churn-debug env gate): this is a genuine defect signal,
+      // it is rare on a healthy link, and its absence is exactly what redirected
+      // WI-5863's investigation to the wrong layer for hours.
+      if (dataPathProven(closeWire) === false) {
+        console.warn(
+          '[swarm] ⚠ data path NEVER came up for a peer that reported connected — ' +
+            'the Noise handshake completed as a DHT RPC (signalling success) but zero bytes ' +
+            'were ever received on the UDX stream. `peer_connected` for this peer was a ' +
+            'false success report, not a working connection.',
+          {
+            topicHex,
+            remotePublicKeyHex,
+            remoteIp,
+            ageMs: closeAgeMs,
+            precededByError: churnSawError,
+            path: closePath,
+            wire: closeWire,
+          },
+        );
+        try {
+          opts.onDataPathNeverUp?.({
+            topicHex,
+            remotePublicKeyHex,
+            remoteIp,
+            path: closePath,
+            wire: closeWire,
+            ageMs: closeAgeMs,
+          });
+        } catch {
+          // diagnostic-only callback; swallow
+        }
+      }
       fastWindowStartMs = Date.now();
       liveConnectionCount = Math.max(0, liveConnectionCount - 1);
       // WI-5355: this socket genuinely closed (Hyperswarm's own `close` handler
@@ -1368,7 +1655,19 @@ export async function joinHarnessSwarm(
     }
     if (opts.onPeerConnected) {
       try {
-        opts.onPeerConnected(remotePublicKeyHex);
+        // EI-18682571591024156: hand the callback an explicit statement of what
+        // this fire PROVES (signalling, not a data path) plus hyperdht's own
+        // signalling outcome — so a downstream log/UI/health check can render
+        // the truth instead of an outcome-named precondition.
+        const wire = readWireStats(socket);
+        opts.onPeerConnected(remotePublicKeyHex, {
+          remotePublicKeyHex,
+          remoteIp,
+          path: extractConnectionPath(socket),
+          wire,
+          signallingOnly: true,
+          dataPathProven: dataPathProven(wire),
+        });
       } catch {
         // Diagnostic-only callback; swallow.
       }
@@ -1752,6 +2051,21 @@ export async function joinHarnessSwarm(
     async forceRejoin() {
       await forceRejoinNow();
     },
+    dataPathSnapshot() {
+      const out: DataPathSnapshotEntry[] = [];
+      for (const socket of mySockets) {
+        const wire = readWireStats(socket);
+        out.push({
+          remotePublicKeyHex: extractPublicKeyHex({
+            publicKey: (socket as { remotePublicKey?: unknown } | null)?.remotePublicKey,
+          }),
+          path: extractConnectionPath(socket),
+          wire,
+          proven: dataPathProven(wire),
+        });
+      }
+      return out;
+    },
     async close() {
       // WI-752: stop the self-heal loop FIRST so no refresh fires after leave.
       if (refreshTimer) {
@@ -1760,9 +2074,32 @@ export async function joinHarnessSwarm(
       }
       if (opts.swarm.off) opts.swarm.off('connection', handler);
       try {
-        await opts.swarm.leave(opts.topic);
+        // WI-5923: prefer the REFCOUNTED session-level teardown
+        // (`discovery.destroy()`) over the process-wide `swarm.leave(topic)`.
+        // Shared-Hive topics are joined ONCE PER MEMBER HARNESS on a topic that
+        // is per-HIVE (boot.ts), so a shared swarm can hold MULTIPLE sessions
+        // for the same topic — one per harness. `swarm.leave()` ignores that
+        // entirely (hyperswarm/index.js: `discovery.destroy()` unconditionally,
+        // then deletes the topic's map entry) and destroys every sibling
+        // harness's session too, with no callback/event to tell them it
+        // happened — they're left holding a reference to a destroyed
+        // PeerDiscovery while their refresh timer and detector keep running
+        // against a corpse. `discovery.destroy()` (the session Hyperswarm
+        // itself returned from `join()`) instead only decrements THIS
+        // session's share and defers the real `swarm.leave` internally until
+        // every session on the topic has destroyed (hyperswarm/lib/peer-
+        // discovery.js `_destroyMaybe`) — so closing one harness's join can
+        // never tear down a sibling's. Falls back to the old `swarm.leave`
+        // when a test fake's `join()` doesn't return a `destroy` (unchanged
+        // behavior for existing fakes).
+        if (discovery && typeof discovery.destroy === 'function') {
+          await discovery.destroy();
+        } else {
+          await opts.swarm.leave(opts.topic);
+        }
       } catch {
-        // Leaving a non-joined topic is a no-op in Hyperswarm; safe.
+        // Leaving a non-joined topic (or destroying an already-destroyed
+        // session) is a no-op in Hyperswarm; safe.
       }
     },
   };

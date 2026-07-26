@@ -22,14 +22,20 @@
  * against the LIVE items on their OWN identifiers — so any ref that corresponds
  * to a present inbox item selects it, current and future kinds alike.
  *
- * chat-ref-pills-2026-07-26 P-002: {@link resolveWorkingTabDrillIn} EXTENDS
- * this same matching (do not fork a second resolver) for a SECOND
- * destination — a chat WorkRefPill (P-003) pointing at the "Working tab"'s
- * `DetailPanel` (`apps/operator/app/adv/harnesses/DetailPanel.tsx`,
- * `?sel=<id>`) instead of the inbox pane. It calls {@link resolveInboxDrillIn}
- * for the actual id match (the bare-id branch already resolves a plain
- * "WI-5927"-shaped ref) and translates the result onto the Working tab's own
- * nuqs param + dock panel type — no independent matching logic.
+ * chat-ref-pills-2026-07-26 P-002 originally extended this same matching
+ * with a SECOND destination — a chat WorkRefPill (P-003) pointing at the
+ * "Working tab"'s `DetailPanel` (`apps/operator/app/adv/harnesses/
+ * DetailPanel.tsx`, `?sel=<id>`) instead of the inbox pane. D-001 (owner
+ * re-spec, 2026-07-26) superseded that DESTINATION: a pill click now opens a
+ * POPUP (`WorkItemPopupModal`, P-008) instead of navigating tabs. P-009
+ * retired that Working-tab resolver (`resolveWorkingTabDrillIn`) as dead —
+ * the RESOLUTION half (ref -> which live item) still runs through this same
+ * `resolveInboxDrillIn`, unchanged; only the since-removed translation onto
+ * the Working tab's nuqs param + dock panel type is gone. The current
+ * work-item-ref activation path is the D-002 seam: `ChatConversation.tsx`
+ * (P-004) exposes a plain `onWorkRefActivate` passthrough hook with no
+ * destination logic of its own, and `WorkItemPopupModal` (P-008) wires the
+ * popup into that hook.
  */
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
 
@@ -105,53 +111,6 @@ export function drillInRefToInbox(ref: string): string | null {
   return null;
 }
 
-/** The registered dock panel type (HarnessesDock's `panelRegistry`) that
- *  hosts the Working tab's work-item detail pane. */
-const WORKING_TAB_PANEL_TYPE = 'adv:work-items';
-
-/** The minimal item shape {@link resolveWorkingTabDrillIn} needs — a plain
- *  work-item id, same vocabulary parse-work-refs.ts's `WorkRefMatch.id`
- *  reports for `kind: 'work-item'` (e.g. "WI-5927", "EI-42", "F-100"). */
-export type WorkingTabDrillItem = { id: string };
-
-export interface WorkingTabDrillTarget {
-  /** The `?sel=` value DetailPanel's swap view reads, or null when `ref`
-   *  names no live item — the caller should render a plain (non-navigating)
-   *  pill rather than write a dead selection (mirrors P-006's "no plan
-   *  context → plain text" stance one layer up). */
-  sel: string | null;
-  /** The registered dock panel type to focus/open (via
-   *  `requestDockPanelOpen`, `apps/operator/app/adv/harnesses/open-dock-panel.ts`)
-   *  so the detail pane is actually visible before `sel` takes effect — null
-   *  alongside a null `sel` (nothing to navigate to). */
-  panelType: typeof WORKING_TAB_PANEL_TYPE | null;
-}
-
-/**
- * Resolve a WI-/EI-/F- work-item ref (as chat's `parseWorkRefs`, P-001,
- * reports them — a bare id, no `kind:` prefix) onto the Working tab's
- * DetailPanel selection. Pure — `items` passed in for testability, same
- * pattern as {@link resolveInboxDrillIn}.
- *
- * Reuses {@link resolveInboxDrillIn}'s existing bare-id match branch (`ref`
- * with no `kind:` prefix already matches an item's own `id`) rather than
- * re-implementing ref matching — this function only translates that same
- * match onto the Working tab's `sel`/panel-type shape instead of the inbox
- * pane's `selId`/`filter` shape. P-NNN plan-item refs are out of scope here
- * (P-006 handles plan-slug-scoped resolution separately); pass only
- * `work-item`-kind refs.
- */
-export function resolveWorkingTabDrillIn(
-  ref: string,
-  items: readonly WorkingTabDrillItem[],
-): WorkingTabDrillTarget {
-  const { selId } = resolveInboxDrillIn(
-    ref,
-    items.map((i): DrillInItem => ({ id: i.id, itemRef: null, planSlug: null })),
-  );
-  return { sel: selId, panelType: selId ? WORKING_TAB_PANEL_TYPE : null };
-}
-
 /** The minimal plan-item shape {@link resolvePlanItemDrillIn} needs — a
  *  plan-item id plus the plan it belongs to. P-NNN is unique only WITHIN a
  *  plan (every plan has its own P-006), never globally, so a bare id alone
@@ -182,10 +141,10 @@ export interface PlanItemDrillTarget {
  * BOTH a non-empty `messagePlanSlug` AND a live item matching `ref` within
  * that exact plan before returning a `sel`; either miss returns
  * `{ sel: null }` so the caller (P-004's wiring) falls back to plain text,
- * mirroring {@link resolveWorkingTabDrillIn}'s "no match → null" contract.
+ * mirroring {@link resolveInboxDrillIn}'s "no match → null" contract.
  *
  * Pure — `items` passed in for testability, same pattern as
- * {@link resolveInboxDrillIn} / {@link resolveWorkingTabDrillIn}.
+ * {@link resolveInboxDrillIn}.
  */
 export function resolvePlanItemDrillIn(
   ref: string,

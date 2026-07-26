@@ -59,8 +59,13 @@ export interface WorkRefPillProps {
    *  — the id alone is still a meaningful accessible name. */
   title?: string | null;
   /** Href for a real link — open-in-new-tab / middle-click / "copy link"
-   *  all keep working. The wiring layer (P-004) builds this from
-   *  resolveInboxDrillIn's (P-002) nuqs params. Renders an `<a>`. */
+   *  all keep working. Nothing currently passes this: the D-002 seam wires
+   *  activation through `onActivate`/`onWorkRefActivate` (P-004 renders the
+   *  pill and forwards clicks; P-008's WorkItemPopupModal binds the popup to
+   *  that hook) rather than a navigable href, since D-001 (owner re-spec,
+   *  2026-07-26) made the destination a popup, not a Working-tab nuqs
+   *  navigation. Kept as a real option for a future caller that DOES want a
+   *  plain link. Renders an `<a>`. */
   href?: string;
   /** Click/Enter/Space activation handler. Receives the triggering mouse or
    *  keyboard event so the caller can `preventDefault()` an `href` and

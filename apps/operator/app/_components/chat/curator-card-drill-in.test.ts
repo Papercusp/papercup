@@ -2,10 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   drillInRefToInbox,
   resolveInboxDrillIn,
-  resolveWorkingTabDrillIn,
   resolvePlanItemDrillIn,
   type DrillInItem,
-  type WorkingTabDrillItem,
   type PlanItemDrillItem,
 } from './curator-card-drill-in';
 
@@ -67,31 +65,11 @@ describe('resolveInboxDrillIn (WI-5342 — resolve against live items)', () => {
   });
 });
 
-describe('resolveWorkingTabDrillIn (chat-ref-pills-2026-07-26 P-002)', () => {
-  const items: WorkingTabDrillItem[] = [{ id: 'WI-5927' }, { id: 'EI-42' }, { id: 'F-100' }];
-
-  it('a live WI- ref resolves to ?sel + the Working tab panel type', () => {
-    expect(resolveWorkingTabDrillIn('WI-5927', items)).toEqual({ sel: 'WI-5927', panelType: 'adv:work-items' });
-  });
-
-  it('a live EI- and F- ref both resolve the same way', () => {
-    expect(resolveWorkingTabDrillIn('EI-42', items)).toEqual({ sel: 'EI-42', panelType: 'adv:work-items' });
-    expect(resolveWorkingTabDrillIn('F-100', items)).toEqual({ sel: 'F-100', panelType: 'adv:work-items' });
-  });
-
-  it('an unknown/unresolvable ref returns null sel and null panelType (render plain text)', () => {
-    expect(resolveWorkingTabDrillIn('WI-9999', items)).toEqual({ sel: null, panelType: null });
-    expect(resolveWorkingTabDrillIn('', items)).toEqual({ sel: null, panelType: null });
-  });
-
-  it('reuses resolveInboxDrillIn matching — does not select on a mere itemRef-shaped ref', () => {
-    // resolveWorkingTabDrillIn only supplies { id }, itemRef is always null,
-    // so a ref that would only match via itemRef in the inbox surface finds
-    // nothing here — proof this delegates rather than re-implementing a
-    // second, more permissive matcher.
-    expect(resolveWorkingTabDrillIn('wi:papercusp#F-1', items)).toEqual({ sel: null, panelType: null });
-  });
-});
+// resolveWorkingTabDrillIn (chat-ref-pills-2026-07-26 P-002's "Working tab"
+// destination) was retired by P-009 — D-001 (owner re-spec, 2026-07-26)
+// superseded that destination with a popup (WorkItemPopupModal, P-008),
+// wired through the D-002 onWorkRefActivate seam instead. resolveInboxDrillIn
+// itself (tested above) still runs the RESOLUTION half unchanged.
 
 describe('resolvePlanItemDrillIn (chat-ref-pills-2026-07-26 P-006)', () => {
   const items: PlanItemDrillItem[] = [

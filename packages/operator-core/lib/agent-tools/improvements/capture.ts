@@ -138,12 +138,20 @@ export default defineTool({
           .optional()
           .describe('file even if a likely duplicate exists (default false → search-first declines)'),
         checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
+        // WI-5950. Kept SHORT on purpose: the prompt-weight budget (≤1500 soft / ≤1600 hard
+        // per tool) is shared across every field, and the first draft of this description
+        // blew the hard cap on its own. The rationale lives here, not in the agent's context:
+        // the persona tells every agent to file the moment it notices AND to hold a work-item
+        // before editing — without an atomic claim those two conflict, so filing a bug you are
+        // already fixing publishes it to the claimable pool and a peer duplicates the work
+        // (observed 2026-07-26, cost su-63f9b336 a duplicate run at the same fix).
+        // Same name + semantics as work_items:create's assign_to; 'self' resolves to the caller.
         assign_to: z
           .string()
           .max(120)
           .optional()
           .describe(
-            'Atomically CLAIM the filed item in the SAME capture (WI-5950) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Use it whenever you are filing something you are ALREADY working on: an unclaimed item is published to the claimable pool, so a peer can pick up the fix you are mid-way through (this cost a duplicated fix on 2026-07-26). Omit ⇒ unclaimed, which stays the right default for a finding you are handing to whoever picks it up. Same name + semantics as work_items:create\'s assign_to. Ignored for lane:"observation" (a sensor reading is not claimable work).',
+            'Atomically CLAIM the filed item in this same capture — an ownerId, or "self". Use when you are ALREADY working the thing you are filing: an unclaimed item goes to the claimable pool, where a peer may duplicate your in-progress fix. Omit ⇒ unclaimed. Ignored for observations.',
           ),
         origin: z
           .enum(['organic', 'drill', 'replay', 'shadow'])

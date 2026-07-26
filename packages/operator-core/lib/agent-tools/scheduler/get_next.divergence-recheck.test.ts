@@ -1,0 +1,174 @@
+/**
+ * WI-5947: a "CLAIM-PATH/READ-PATH DIVERGENCE" must be CONFIRMED by re-asking the claim path
+ * before it is pronounced.
+ *
+ * The divergence verdict compares two observations taken at two DIFFERENT INSTANTS — the claim
+ * attempt, and a floor breakdown read afterwards — against a table the whole fleet is mutating.
+ * Any row that becomes claimable in between (a peer releasing, a claim-hold lapsing, a detector
+ * filing a new bug) reproduces "claimed nothing AND claimable > 0" with a perfectly healthy claim
+ * path. That mattered because the verdict does not merely report, it INSTRUCTS: "report this
+ * verdict to your fleet leader as a CLAIM-PATH BUG ... it is the reproduction". So ordinary lane
+ * churn manufactured fabricated bug reports against healthy code, carrying what read like a clean
+ * repro. Observed live 2026-07-26 05:18Z on fleet nonp2p-bug-drain-0725 during a 0->2->4
+ * claimable burst.
+ *
+ * The fix: on a would-be-divergent miss, ask the CLAIM path again (the only oracle that can
+ * settle it) — if the retry claims, the caller gets real work instead of a false alarm; if it
+ * misses again and a fresh reading still shows survivors, the divergence is real and is reported
+ * as `divergenceRecheck: 'confirmed-twice'`.
+ *
+ * These tests pin the retry BEHAVIOR at the call site. The verdict wording each outcome produces
+ * is pinned in fleet-scope-admission.test.ts.
+ */
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+const getNextForBeeM = vi.hoisted(() => vi.fn());
+const issueFloorMissM = vi.hoisted(() => vi.fn());
+const fleetScopedMissM = vi.hoisted(() => vi.fn());
+const cooldownMissM = vi.hoisted(() => vi.fn());
+
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
+}));
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'papercusp' }] })),
+}));
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getFlag: vi.fn(async () => true),
+}));
+vi.mock('../../events/await/store', () => ({ cancelClaimableAwaits: vi.fn(async () => 0) }));
+vi.mock('../../scheduler/fleet-scope-admission', () => ({
+  // A fleet-scoped member: this is the path that can report a divergence at all.
+  reconcileFleetScopeClaims: vi.fn(async () => ({
+    scope: { fleetSlug: 'drain-fleet', ownerId: 'su-member', record: { source: 'fleet', spec: { specId: 'drain', revision: 8, view: { filter: undefined }, states: ['open'] } } },
+    quarantinedIds: [],
+  })),
+  readFleetPauseState: vi.fn(async () => ({ paused: false, reason: null })),
+  diagnoseFleetScopeCooldownMiss: cooldownMissM,
+  diagnoseFleetScopeIssueFloorMiss: issueFloorMissM,
+  fleetScopedMiss: fleetScopedMissM,
+}));
+vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();
+  return { ...actual, getNextForBee: getNextForBeeM };
+});
+
+import getNextTool from './get_next';
+
+const survivors = { matchedByFilter: 22, claimable: 19, excluded: {} as never };
+const drained = { matchedByFilter: 22, claimable: 0, excluded: {} as never };
+
+async function call() {
+  const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+    content: Array<{ text: string }>;
+  };
+  return JSON.parse(out.content[0]!.text);
+}
+
+/** The opts object the tool handed to fleetScopedMiss (the verdict inputs under test). */
+function missOpts() {
+  return fleetScopedMissM.mock.calls[0]?.[2] as
+    | { divergenceRecheck?: string; issueBreakdown?: unknown }
+    | undefined;
+}
+
+describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence before pronouncing it', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cooldownMissM.mockResolvedValue(null);
+    fleetScopedMissM.mockReturnValue({ ok: false, error: 'miss', windDown: false });
+  });
+
+  it('retries the claim when the breakdown reports survivors, and RETURNS the item the retry wins', async () => {
+    // The common case: the first attempt lost a race, the row (or another) is claimable now.
+    getNextForBeeM
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ workItem: { id: 'WI-1', harness: 'papercusp' }, claimedUnder: 'drain', specSource: 'fleet' });
+    issueFloorMissM.mockResolvedValue(survivors);
+
+    const res = await call();
+
+    expect(getNextForBeeM).toHaveBeenCalledTimes(2);
+    // the caller gets the work it came for — not an error telling it to file a bug
+    expect(res.ok).toBe(true);
+    expect(res.workItem.id).toBe('WI-1');
+    expect(fleetScopedMissM).not.toHaveBeenCalled();
+  });
+
+  it('a retry that also misses, with survivors STILL reported, is stamped confirmed-twice', async () => {
+    getNextForBeeM.mockResolvedValue(null);
+    issueFloorMissM.mockResolvedValue(survivors); // both the initial read and the re-read
+
+    const res = await call();
+
+    expect(getNextForBeeM).toHaveBeenCalledTimes(2);
+    expect(issueFloorMissM).toHaveBeenCalledTimes(2);
+    expect(missOpts()?.divergenceRecheck).toBe('confirmed-twice');
+    expect(res.ok).toBe(false);
+  });
+
+  it('a retry that misses while the pool has MOVED ON reports no divergence at all', async () => {
+    // The racing row was taken by a peer — the re-read shows a genuinely floor-gated pool.
+    getNextForBeeM.mockResolvedValue(null);
+    issueFloorMissM.mockResolvedValueOnce(survivors).mockResolvedValueOnce(drained);
+
+    await call();
+
+    expect(missOpts()?.divergenceRecheck).toBeUndefined();
+    // and the FRESH reading is what the verdict is built from, not the stale suspicion
+    expect(missOpts()?.issueBreakdown).toEqual(drained);
+  });
+
+  it('does NOT retry on an ordinary drained miss — the common shape pays nothing', async () => {
+    getNextForBeeM.mockResolvedValue(null);
+    issueFloorMissM.mockResolvedValue(drained);
+
+    await call();
+
+    expect(getNextForBeeM).toHaveBeenCalledTimes(1);
+    expect(issueFloorMissM).toHaveBeenCalledTimes(1);
+    expect(missOpts()?.divergenceRecheck).toBeUndefined();
+  });
+
+  it('does not retry on a successful first claim (the hot path is untouched)', async () => {
+    getNextForBeeM.mockResolvedValue({ workItem: { id: 'WI-2', harness: 'papercusp' }, claimedUnder: 'drain', specSource: 'fleet' });
+
+    const res = await call();
+
+    expect(res.ok).toBe(true);
+    expect(getNextForBeeM).toHaveBeenCalledTimes(1);
+    expect(issueFloorMissM).not.toHaveBeenCalled();
+  });
+
+  it('an unavailable breakdown (diagnosis failed soft) never triggers a retry or a divergence claim', async () => {
+    getNextForBeeM.mockResolvedValue(null);
+    issueFloorMissM.mockResolvedValue(null);
+
+    await call();
+
+    expect(getNextForBeeM).toHaveBeenCalledTimes(1);
+    expect(missOpts()?.divergenceRecheck).toBeUndefined();
+  });
+
+  it('a retry that THROWS leaves the original reading in place and still refuses to claim confirmation', async () => {
+    // A degraded retry proves nothing either way; it must not be read as confirmation.
+    // The shared bounded-timeout wrapper swallows the throw into a degraded result and logs it —
+    // assert that rather than letting an unexpected console.warn fail the run, since the log is
+    // the operator's only trace that the re-check could not be completed.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getNextForBeeM.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('pg gone'));
+    issueFloorMissM.mockResolvedValue(survivors);
+
+    const res = await call();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:divergenceRecheck'));
+    // a failed re-check is NOT confirmation — the miss reports the honest unconfirmed shape,
+    // and the second (fresh) reading is never taken on a degraded retry
+    expect(missOpts()?.divergenceRecheck).toBeUndefined();
+    expect(issueFloorMissM).toHaveBeenCalledTimes(1);
+    expect(res.ok).toBe(false);
+    warn.mockRestore();
+  });
+});

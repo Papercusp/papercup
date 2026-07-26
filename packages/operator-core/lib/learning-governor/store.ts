@@ -20,6 +20,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import {
   checkLoopVerdict,
   LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
+  SCOUT_LOOP_ID_PREFIX,
   type GovernorVerdict,
   type LearningBudgetKind,
   type LearningEnforcement,
@@ -231,6 +232,27 @@ export async function recordLearningSpend(sql: Sql, q: RecordLearningSpendInput)
   // top-level client; inside a caller's TransactionSql (no `.begin`) run directly.
   const begin = (sql as unknown as { begin?: unknown }).begin;
   return typeof begin === 'function' ? ((await sql.begin(run)) as LearningSpendEvent) : run(sql);
+}
+
+/**
+ * Windowed scout spend — Σ cost_usd of every `blender:*` spend EVENT in the
+ * workspace at/after `sinceMs`, plus how many distinct scout loops contributed.
+ * The workspace-ceiling gate's data source (scout-ceiling.ts): the event ledger
+ * is the only spend store with timestamps, so it is what makes the ceiling an
+ * accounting-window cap instead of a lifetime one.
+ */
+export async function sumScoutSpendSince(
+  sql: Sql,
+  q: { workspaceId: string; sinceMs: number },
+): Promise<{ totalUsd: number; loopCount: number }> {
+  const rows = (await sql`
+    SELECT COALESCE(SUM(cost_usd), 0)::float8 AS total, COUNT(DISTINCT loop_id)::int AS loops
+      FROM harness_shared.learning_spend_events
+     WHERE workspace_id = ${q.workspaceId}
+       AND loop_id LIKE ${SCOUT_LOOP_ID_PREFIX + '%'}
+       AND created_at >= ${new Date(q.sinceMs)}`) as Row[];
+  const r = rows[0] ?? {};
+  return { totalUsd: Number(r.total ?? 0), loopCount: Number(r.loops ?? 0) };
 }
 
 export async function listLearningSpendEvents(

@@ -98,13 +98,17 @@ describe('CapabilityTool — verb + sandbox scope', () => {
     const sandbox = await openWith(runTool, 'hive-coord');
 
     await coordConsultTool(sandbox).invoke({ specialist: 'reviewer', question: 'is this safe?' });
-    await coordAskTool(sandbox).invoke({ question: 'anyone seen this?' });
+    await coordAskTool(sandbox).invoke({ peer: 'peer-2', question: 'anyone seen this?' });
     await coordHandoffTool(sandbox).invoke({ to: ['peer-1'], summary: 'over to you', nextAction: 'ship it' });
 
     expect(runTool.calls.map((c) => c.name)).toEqual(['coord:ask', 'coord:ask', 'coord:handoff']);
-    expect(runTool.calls[0].args).toMatchObject({ harness: 'hive-coord', force_open: true });
+    // WI-5951: coord:ask REQUIRES `to`, and `force_open` is gone with the
+    // knowledge tier. The consulted specialist becomes the addressee rather
+    // than being buried in the question body.
+    expect(runTool.calls[0].args).toMatchObject({ harness: 'hive-coord', to: ['reviewer'] });
+    expect(runTool.calls[0].args.force_open).toBeUndefined();
     expect(String(runTool.calls[0].args.question)).toContain('[consult:reviewer]');
-    expect(runTool.calls[1].args).toMatchObject({ harness: 'hive-coord' });
+    expect(runTool.calls[1].args).toMatchObject({ harness: 'hive-coord', to: ['peer-2'] });
     expect(runTool.calls[2].args).toMatchObject({ to: ['peer-1'], summary: 'over to you', next_action: 'ship it' });
   });
 

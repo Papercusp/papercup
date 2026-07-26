@@ -8,8 +8,17 @@
  * per-cycle cap, can still sum to a spend that saturates the shared Anthropic
  * rate limit / the operator daily budget. This module is the missing aggregate
  * gate, consulted by the scout cycle's governor gate (runScoutCycleTick) BEFORE
- * a tick: it sums every `scout:<hive>` registrant's ledgered spend in the
- * workspace and REFUSES a new cycle once the total crosses the ceiling.
+ * a tick: it sums the workspace's `blender:*` spend EVENTS within the rolling
+ * accounting window (SCOUT_WORKSPACE_CEILING_WINDOW_MS, 24h) and REFUSES a new
+ * cycle once the windowed total crosses the ceiling.
+ *
+ * WINDOWED, not lifetime (2026-07-26): the gate originally summed the
+ * registrations' lifetime `spent_usd`, which only ever grows — so a workspace
+ * that had EVER spent the ceiling froze scout permanently (live incident:
+ * blender:papercusp's $456 accumulated over a month vs the $10 default gated
+ * every tick after a host restart dropped the env override). The ceiling's own
+ * sizing comment always said "per accounting window"; now the implementation
+ * agrees, reading the learning_spend_events ledger (sumScoutSpendSince).
  *
  * Layering (mirrors registrants.ts):
  *   - the pure rule (sum + compare) is checkScoutWorkspaceCeiling in core.ts;
@@ -31,12 +40,11 @@ import type { Sql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import {
-  checkScoutWorkspaceCeiling,
-  DEFAULT_SCOUT_WORKSPACE_CEILING_USD,
-  type LearningLoopRegistration,
+  SCOUT_WORKSPACE_CEILING_WINDOW_MS,
+  scoutWorkspaceCeilingVerdict,
   type ScoutWorkspaceCeilingVerdict,
 } from './core';
-import { listLearningLoops } from './store';
+import { sumScoutSpendSince } from './store';
 // P-022: the env-only ceiling reader now lives in scout-budget-overrides (alongside the runtime PG
 // override). Re-exported here for back-compat (its original home + the existing test import).
 import {
@@ -49,9 +57,12 @@ export { resolveScoutWorkspaceCeilingUsd } from './scout-budget-overrides';
 export interface ScoutCeilingDeps {
   enabled?: () => Promise<boolean>;
   getSql?: () => Promise<Sql>;
-  listLoops?: (sql: Sql, q: { workspaceId: string }) => Promise<LearningLoopRegistration[]>;
+  /** Windowed `blender:*` spend at/after sinceMs (the learning_spend_events read). */
+  sumSpendSince?: (sql: Sql, q: { workspaceId: string; sinceMs: number }) => Promise<{ totalUsd: number; loopCount: number }>;
   /** Resolve the workspace ceiling. Async so the runtime PG override (P-022) can be consulted. */
   ceilingUsd?: () => number | Promise<number>;
+  /** Clock seam (tests) — the window floor is nowMs() − SCOUT_WORKSPACE_CEILING_WINDOW_MS. */
+  nowMs?: () => number;
   log?: (msg: string) => void;
 }
 
@@ -63,9 +74,10 @@ const defaultDeps: Required<ScoutCeilingDeps> = {
     const { getOrgPg } = await import('@papercusp/db-org');
     return getOrgPg().sql;
   },
-  listLoops: listLearningLoops,
+  sumSpendSince: sumScoutSpendSince,
   // P-022: runtime PG override (learning:set-scout-budget) in front of the env, then the default.
   ceilingUsd: () => resolveScoutWorkspaceCeilingUsdLive(),
+  nowMs: () => Date.now(),
   log: (m) => console.log(`[scout-workspace-ceiling] ${m}`),
 };
 
@@ -105,14 +117,16 @@ export async function scoutWorkspaceCeilingGate(
   try {
     if (!(await d.enabled())) return allowVerdict(ceilingUsd);
     const sql = await d.getSql();
-    const loops = await d.listLoops(sql, { workspaceId: q.workspaceId });
-    const verdict = checkScoutWorkspaceCeiling(loops, ceilingUsd);
+    const sinceMs = d.nowMs() - SCOUT_WORKSPACE_CEILING_WINDOW_MS;
+    const spend = await d.sumSpendSince(sql, { workspaceId: q.workspaceId, sinceMs });
+    const verdict = scoutWorkspaceCeilingVerdict(spend.totalUsd, spend.loopCount, ceilingUsd);
     if (!verdict.allow) {
+      const windowH = Math.round(SCOUT_WORKSPACE_CEILING_WINDOW_MS / 3_600_000);
       d.log(
         `REFUSING new scout cycle for workspace ${q.workspaceId}: aggregate scout spend ` +
           `$${verdict.totalScoutSpentUsd.toFixed(2)} across ${verdict.scoutLoopCount} hive(s) ` +
-          `≥ ceiling $${ceilingUsd.toFixed(2)} (D-005 / P-051 workspace cap; ` +
-          'override PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD)',
+          `in the last ${windowH}h ≥ ceiling $${ceilingUsd.toFixed(2)} (D-005 / P-051 workspace cap; ` +
+          'override learning:set-scout-budget or PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD)',
       );
     }
     return verdict;

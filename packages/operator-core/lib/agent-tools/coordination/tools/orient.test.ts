@@ -73,24 +73,7 @@ const CORE = {
   'coord:plan-events': () => ({ events: [{ kind: 'item_status_changed', plan: 'p1' }], total: 1, truncated: false }),
   'coord:whoami': () => ({ fleetSlug: null }),
   'coord:glance': () => ({ bees: { running: 0, working: 0 } }),
-  // WI-5807 (P-007): the open-questions fold runs on every FULL-mode orient.
-  // Default: nothing open ⇒ the fold is absent (the healthy-workspace case).
-  'conversations:list': () => ({ ok: true, conversations: [] }),
 };
-
-/** WI-5807: a conversations:list row as the tool actually returns it. */
-function questionRow(over: Record<string, unknown> = {}) {
-  return {
-    id: 'conv-1',
-    kind: 'question',
-    state: 'open',
-    title: 'How does the release gate pick its baseline?',
-    asker_id: 'peer-1',
-    harness_slug: null,
-    created_ts: new Date(Date.now() - 2 * 86_400_000).toISOString(),
-    ...over,
-  };
-}
 
 describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   it('folds assignments + claimable + inbox + plan-events into one result (no intent)', async () => {
@@ -114,8 +97,6 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'coord:inbox',
       'coord:whoami',
       'coord:plan-events',
-      // WI-5807 (P-007): the open-questions pull surface, last of the full-mode legs.
-      'conversations:list',
     ]);
     expect(calls[0].args).toMatchObject({ agent: 'me', harness: 'h' });
     // EI-7841: claimable is self-select context — must ask work_items:list to
@@ -226,7 +207,6 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'coord:plan-events',
       'plans:get',
       'recipes:search',
-      'conversations:list', // WI-5807 (P-007)
       'coord:declare-intent',
     ]);
   });
@@ -545,7 +525,6 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(r.fleetCatchUp).toBeUndefined();
       expect(r.fleetHealth).toBeUndefined(); // fold #1 skipped on a monitor tick too
       expect(r.recipes).toBeUndefined();
-      expect(r.openQuestions).toBeUndefined(); // WI-5807 (P-007)
       expect(r.memory).toBeUndefined(); // no recall even though `intent` was passed
       expect(r.intentDeclared).toBe(true); // declare-intent still fires (cheap, peer-visible)
       // no round-trip at all for the skipped legs — not just an empty/capped result
@@ -557,7 +536,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(called.has('coord:whoami')).toBe(false); // fleet block skipped wholesale
       expect(called.has('recipes:search')).toBe(false);
       expect(called.has('memory:search')).toBe(false);
-      expect(called.has('conversations:list')).toBe(false); // WI-5807: no open-questions fold on a monitor tick
+      expect(called.has('conversations:list')).toBe(false); // WI-5951: orient never reads conversations at all now
       // the core kept legs still run
       expect(called.has('fleet:assignments')).toBe(true);
       expect(called.has('coord:inbox')).toBe(true);
@@ -1592,105 +1571,5 @@ describe('P-016 role-specific pane folds (papercup paneContext / papercup-deep d
     } finally {
       vi.useRealTimers();
     }
-  });
-});
-
-// ── WI-5807 (P-007): the open-questions PULL surface ─────────────────────────
-// Q&A's push half is structurally dead (zero topic subscribers workspace-wide ⇒
-// every open question sat at zero replies, including the correctly-tagged ones),
-// so questions are surfaced on the read every agent already makes at wake.
-describe('WI-5807: coord:orient folds OPEN, UNANSWERED questions as a pull surface', () => {
-  it('asks conversations:list for exactly the unanswered-open-question set, widened past the harness pin', async () => {
-    const { call, calls } = fakeCall({ ...CORE });
-    await composeOrient({ harness: 'papercusp' }, call, 'me');
-    const conv = calls.find((c) => c.name === 'conversations:list')!;
-    expect(conv.args).toMatchObject({
-      kind: 'question',
-      state: 'open',
-      unansweredOnly: true,
-      harness: 'papercusp',
-      // 32 of the 39 open questions are workspace-wide (harness_slug NULL); a
-      // strict harness pin would hide ~85% of what this agent could answer.
-      includeUnscoped: true,
-    });
-  });
-
-  it('folds the questions with the honest total, and drops the caller OWN questions', async () => {
-    const { call } = fakeCall({
-      ...CORE,
-      'conversations:list': () => ({
-        conversations: [
-          questionRow({ id: 'conv-mine', asker_id: 'me' }), // the caller's own — dropped
-          questionRow({ id: 'conv-a', asker_id: 'peer-1', title: 'A?' }),
-          questionRow({ id: 'conv-b', asker_id: 'peer-2', title: 'B?' }),
-        ],
-      }),
-    });
-    const r = await composeOrient({}, call, 'me');
-    expect(r.openQuestions?.count).toBe(2);
-    expect(r.openQuestions?.questions.map((q) => q.id)).toEqual(['conv-a', 'conv-b']);
-    expect(r.openQuestions?.questions[0]).toMatchObject({ asker: 'peer-1', title: 'A?' });
-    // The hint must name the ACTIONABLE verb — a nudge with no next step is noise.
-    expect(r.openQuestions?.hint).toContain('conversations:answer');
-  });
-
-  it('is ABSENT (not empty) when nothing qualifies — a healthy workspace pays zero tokens', async () => {
-    const { call } = fakeCall({ ...CORE }); // CORE returns no conversations
-    const r = await composeOrient({}, call, 'me');
-    expect(r.openQuestions).toBeUndefined();
-    expect('openQuestions' in r).toBe(false);
-
-    // …and likewise when the only open question is the caller's own.
-    const { call: call2 } = fakeCall({
-      ...CORE,
-      'conversations:list': () => ({ conversations: [questionRow({ asker_id: 'me' })] }),
-    });
-    expect((await composeOrient({}, call2, 'me')).openQuestions).toBeUndefined();
-  });
-
-  it('a failed conversations:list drops the fold, never the orientation', async () => {
-    const { call } = fakeCall({
-      ...CORE,
-      'conversations:list': () => {
-        throw new Error('PG down');
-      },
-    });
-    const r = await composeOrient({ harness: 'h' }, call, 'me');
-    expect(r.ok).toBe(true);
-    expect(r.claimable).toHaveLength(2); // the rest of the orientation is intact
-    expect(r.openQuestions).toBeUndefined();
-  });
-});
-
-// The fold is a NUDGE, and a nudge that the result-door truncates away ships dead
-// — which is the exact failure mode this whole work-item exists to fix. It must
-// therefore outrank the bulky, re-fetchable `result` tail in serialization order.
-describe('WI-5807: the open-questions fold survives the result-door', () => {
-  it('serializes openQuestions BEFORE the result tail (claimable/inbox/me)', () => {
-    const out = assembleOrientOutput({
-      self: { ownerId: 'me' },
-      result: {
-        ok: true,
-        me: { agents: [] },
-        claimable: [{ id: 'WI-1' }],
-        inbox: { summary: {} },
-        openQuestions: { count: 2, questions: [], hint: 'answer them' },
-      },
-    });
-    const keys = Object.keys(out);
-    expect(keys.indexOf('openQuestions')).toBeGreaterThan(-1);
-    expect(keys.indexOf('openQuestions')).toBeLessThan(keys.indexOf('claimable'));
-    expect(keys.indexOf('openQuestions')).toBeLessThan(keys.indexOf('inbox'));
-    expect(keys.indexOf('openQuestions')).toBeLessThan(keys.indexOf('me'));
-    // Hoisting must not duplicate it or change its value.
-    expect(keys.filter((k) => k === 'openQuestions')).toHaveLength(1);
-    expect(out.openQuestions).toEqual({ count: 2, questions: [], hint: 'answer them' });
-    // …and must not disturb the recovery-block priority WI-5656 established.
-    expect(keys.indexOf('self')).toBeLessThan(keys.indexOf('openQuestions'));
-  });
-
-  it('omits the hoist entirely when the fold is absent', () => {
-    const out = assembleOrientOutput({ self: { ownerId: 'me' }, result: { ok: true, claimable: [] } });
-    expect('openQuestions' in out).toBe(false);
   });
 });

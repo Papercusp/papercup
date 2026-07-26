@@ -211,6 +211,19 @@ export function isScoutLoopId(loopId: string): boolean {
  */
 export const DEFAULT_SCOUT_WORKSPACE_CEILING_USD = 10.0;
 
+/**
+ * The accounting window the ceiling is measured over — 24h rolling.
+ *
+ * The DEFAULT above was always documented as "headroom … per accounting window",
+ * but until 2026-07-26 the gate summed LIFETIME `spent_usd` (which only ever
+ * grows), so any long-lived workspace eventually froze scout permanently — live
+ * incident: blender:papercusp had $456 of spend accumulated over a MONTH of
+ * healthy operation judged against the $10 cap, gating every tick. The gate now
+ * sums the governor's spend-EVENT ledger (learning_spend_events) within this
+ * window, restoring the documented per-window semantics.
+ */
+export const SCOUT_WORKSPACE_CEILING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export type ScoutCeilingRefusal = 'workspace-ceiling-exceeded';
 
 export interface ScoutWorkspaceCeilingVerdict {
@@ -246,14 +259,29 @@ export function checkScoutWorkspaceCeiling(
     total += Math.max(0, reg.spentUsd);
     count += 1;
   }
-  const allow = total < ceilingUsd;
+  return scoutWorkspaceCeilingVerdict(total, count, ceilingUsd);
+}
+
+/**
+ * The bare compare — verdict from an already-summed scout spend total. The gate
+ * (scout-ceiling.ts) feeds it the WINDOWED sum (learning_spend_events within
+ * SCOUT_WORKSPACE_CEILING_WINDOW_MS); checkScoutWorkspaceCeiling above feeds it
+ * a lifetime registration sum (legacy shape, kept for the pure-rule tests).
+ * A cycle is allowed only while the sum is STRICTLY below the cap.
+ */
+export function scoutWorkspaceCeilingVerdict(
+  totalScoutSpentUsd: number,
+  scoutLoopCount: number,
+  ceilingUsd: number = DEFAULT_SCOUT_WORKSPACE_CEILING_USD,
+): ScoutWorkspaceCeilingVerdict {
+  const allow = totalScoutSpentUsd < ceilingUsd;
   return {
     allow,
     ...(allow ? {} : { reason: 'workspace-ceiling-exceeded' as const }),
-    totalScoutSpentUsd: total,
+    totalScoutSpentUsd,
     ceilingUsd,
-    remainingUsd: ceilingUsd - total,
-    scoutLoopCount: count,
+    remainingUsd: ceilingUsd - totalScoutSpentUsd,
+    scoutLoopCount,
   };
 }
 

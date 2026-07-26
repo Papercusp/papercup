@@ -3998,12 +3998,46 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ...(bindingResolvesHiveHomeProjection(binding)
           ? { hiveGitDial: { selfDevicePubkeyBase64: identity.devicePubkeyBase64, sign: signOurAnnounce } }
           : {}),
-        onPeerConnected: (keyHex) => {
-          recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
-           
+        onPeerConnected: (keyHex, info) => {
+          // EI-18682571591024156: `peer_connected` fires on SIGNALLING success (the
+          // Noise handshake completes as a DHT RPC over a UDX stream that has
+          // carried zero bytes), NOT on a demonstrated data path. Say so in the
+          // detail + the log line, and carry hyperdht's own signalling outcome
+          // (relayed / addresses) that we previously discarded — so a reader of
+          // this line can tell "punched path believed up" from "relayed" instead
+          // of inferring it from an RTO timeout 13s later.
+          const pathBits = info?.path.present
+            ? ` relayed=${info.path.relayed ?? '?'}` +
+              (info.path.serverAddress ? ` server=${info.path.serverAddress}` : '') +
+              (info.path.clientAddress ? ` client=${info.path.clientAddress}` : '') +
+              (info.path.relayHost ? ` relay=${info.path.relayHost}:${info.path.relayPort ?? '?'}` : '')
+            : ' path=unknown';
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'peer_connected',
+            `signalling-only (data path NOT yet demonstrated)${pathBits}`,
+          );
+
           console.info(
-            `[swarm] peer_connected harness=${opts.harnessSlug}` +
-              (keyHex ? ` peer=${keyHex.slice(0, 12)}…` : ''),
+            `[swarm] peer_connected(signalling-only) harness=${opts.harnessSlug}` +
+              (keyHex ? ` peer=${keyHex.slice(0, 12)}…` : '') +
+              pathBits,
+          );
+        },
+        // EI-18682571591024156: the honest counterpart — a peer that reported
+        // connected and then closed having never received a byte. Recorded as a
+        // replication stall (it IS one: the transport looked alive and no data
+        // ever crossed), so the failure is visible in boot-history instead of
+        // surfacing only as a generic ~13s UV_ETIMEDOUT.
+        onDataPathNeverUp: (dp) => {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'replication_stalled',
+            `data path never came up: ${peerLabel(dp.remotePublicKeyHex, dp.remoteIp)} ` +
+              `ageMs=${dp.ageMs} bytesTx=${dp.wire.bytesTransmitted ?? '?'} bytesRx=0 ` +
+              `relayed=${dp.path.present ? (dp.path.relayed ?? '?') : 'unknown'}`,
           );
         },
         onPeerRejected: (keyHex, ip) => {

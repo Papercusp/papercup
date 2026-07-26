@@ -681,6 +681,59 @@ def _resolve_write_target(raw_target, cwd):
         return None
 
 
+_HEREDOC_START_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+
+
+def _strip_heredoc_bodies(s):
+    # Remove heredoc BODY text — the lines between a `<<[-]DELIM` operator and
+    # the line consisting of just DELIM (`<<-` allows leading whitespace on
+    # that closing line) — before scanning for redirect operators. A
+    # heredoc's payload is often an embedded script (python/node/SQL/…), and
+    # an operator inside it (`v>100`, `x > y`, `=>`, `->`) is DATA, not real
+    # shell syntax — scanning it as if it were is a false-positive generator
+    # (EI-18683619680591304). Run BEFORE _strip_shell_quotes: quote-stripping
+    # the raw heredoc body first risks mis-parsing an unbalanced quote inside
+    # the payload and swallowing real command text that follows. This only
+    # ever REMOVES characters — it can never manufacture a new match — so it
+    # is safe even when a heredoc is malformed/unterminated.
+    out = []
+    i, n = 0, len(s)
+    while i < n:
+        m = _HEREDOC_START_RE.search(s, i)
+        if not m:
+            out.append(s[i:])
+            break
+        line_end = s.find('\n', m.end())
+        if line_end == -1:
+            out.append(s[i:])
+            break
+        out.append(s[i:line_end + 1])
+        delim = m.group(2)
+        close_re = re.compile(r'^[ \t]*' + re.escape(delim) + r'\s*$', re.MULTILINE)
+        cm = close_re.search(s, line_end + 1)
+        if not cm:
+            i = n  # unterminated heredoc — drop the rest, nothing safe to scan
+            break
+        i = cm.end()
+    return ''.join(out)
+
+
+def _looks_like_redirect_path(raw):
+    # Defense-in-depth alongside the heredoc strip above: a bare comparison/
+    # arrow operator can still appear unquoted OUTSIDE a heredoc (e.g. inside
+    # `$(( … ))` arithmetic, which quote-stripping does not touch) and read as
+    # a redirect whose "target" is just a number. Require the token to look
+    # like an actual path — contains a separator, has a file extension, or is
+    # not purely a decimal integer — before treating it as a write target.
+    if '/' in raw:
+        return True
+    if re.search(r'\.[A-Za-z0-9]{1,10}$', raw):
+        return True
+    if re.fullmatch(r'-?\d+', raw):
+        return False
+    return True
+
+
 def _shell_write_guard():
     _canon = _canonical_tree_root()
     if not _canon:
@@ -689,12 +742,14 @@ def _shell_write_guard():
         _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
     except Exception:
         return
-    _clean = _strip_shell_quotes(command)
+    _clean = _strip_shell_quotes(_strip_heredoc_bodies(command))
     _targets = []  # (raw_target, human-readable construct name)
 
     # `>`/`>>` redirects. The lookahead excludes fd-duplication/comparison
     # forms (`2>&1`, `>=`, `2>&2`) so those never get misread as file targets.
     for _m in re.finditer(r'\d*(>{1,2})(?![&=])\s*([^\s;&|()<>]+)', _clean):
+        if not _looks_like_redirect_path(_m.group(2)):
+            continue
         _targets.append((_m.group(2), 'shell redirect (`%s`)' % _m.group(1)))
 
     # `tee [-a] FILE...`

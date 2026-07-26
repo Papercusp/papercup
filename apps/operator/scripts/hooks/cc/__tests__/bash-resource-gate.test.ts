@@ -1045,4 +1045,56 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     const out = runGate(bashCmd('cat >> apps/operator/foo.ts <<EOF\nx\nEOF', { cwd: CANON }), CANON_ENV);
     expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
   });
+
+  /**
+   * EI-18683619680591304 — heredoc-body comparison/arrow operators are DATA,
+   * not shell redirects. Repro'd live 2026-07-26: a heredoc'd python one-liner
+   * doing `if v>100` was denied as if `100` were a redirect target resolving
+   * inside the shared tree (the guard scanned the heredoc BODY for `>` tokens
+   * with no awareness it was inside a heredoc at all).
+   */
+  it('allows a comparison operator inside a heredoc python script (`v>100`) — the exact repro', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      'per = {"a": 50, "b": 150}\n' +
+      'print(sum(1 for v in per.values() if v>100))\n' +
+      'PY';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it.each([
+    ['a bare `>` comparison (`x > y`)', 'if x > y:'],
+    ['a fat-arrow (`=>`)', 'const f = (x) => x + 1;'],
+    ['a thin-arrow (`->`)', 'def f(x) -> int:'],
+    ['a `>=` comparison', 'if v >= 100:'],
+    ['a real filename-looking token following `>`', 'echo "not a redirect: report.txt > 5"'],
+  ])('allows heredoc body text containing %s', (_label, bodyLine) => {
+    const command = `cat <<'EOF'\n${bodyLine}\nEOF`;
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('an UNQUOTED heredoc delimiter body is stripped the same way', () => {
+    const command = 'node <<EOF\nconsole.log(1 > 2 ? "a" : "b");\nEOF';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('a genuine redirect on the heredoc START line still denies (the strip only removes the BODY)', () => {
+    const command = "cat >> apps/operator/generated.ts <<'PY'\nprint(1 > 2)\nPY";
+    const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  it('a real redirect AFTER a heredoc closes still denies (text past the terminator is not swallowed)', () => {
+    const command = "cat <<'EOF'\nharmless body\nEOF\necho hi > apps/operator/after-heredoc.ts";
+    const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/after-heredoc.ts');
+  });
+
+  it('a bare numeric target with NO heredoc at all is still not treated as a path (looks-like-a-path heuristic)', () => {
+    // `(( v>100 ))` arithmetic — quote-stripping never touches this, so the
+    // looks-like-a-path check is the only thing standing between this and a
+    // false deny; already covered structurally by the existing `(( a >= b ))`
+    // allow-case above, this asserts the un-`=`-suffixed `>100` form too.
+    expectAllow(runGate(bashCmd('echo $(( 1 > 100 ))', { cwd: CANON }), CANON_ENV));
+  });
 });

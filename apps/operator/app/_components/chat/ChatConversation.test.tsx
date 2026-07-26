@@ -32,6 +32,13 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }));
 
+// chat-ref-pills-2026-07-26 P-004: HydratedWorkRefPill's useSyncQuery — no
+// live rows needed for these tests (rendering/no-linkify/activation, not
+// hydration itself, which HydratedWorkRefPill.test.tsx already covers).
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ data: [], loading: false, fetching: false, transport: 'sse' as const, invalidate: () => {}, error: null }),
+}));
+
 import {
   ChatConversation,
   lastUserMessageText,
@@ -206,6 +213,59 @@ describe('ChatConversation', () => {
   it('renders a banner above the transcript', () => {
     renderChat({ banner: <div data-testid="banner" /> });
     expect(screen.getByTestId('banner')).toBeTruthy();
+  });
+
+  describe('work-ref pills (chat-ref-pills-2026-07-26 P-004)', () => {
+    it('renders a WI-/EI-/F-/P- ref in prose as a pill, not literal text', () => {
+      renderChat({
+        messages: [{ role: 'assistant', content: 'see WI-5927 and P-004 for detail' }],
+      });
+      // The pill's accessible name is the bare id (no live title in this test —
+      // useSyncQuery is mocked to return no rows).
+      expect(screen.getByLabelText('WI-5927')).toBeTruthy();
+      expect(screen.getByLabelText('P-004')).toBeTruthy();
+      // Never rendered as literal, unlinkified prose.
+      expect(screen.queryByText('see WI-5927 and P-004 for detail')).toBeNull();
+    });
+
+    it('does NOT linkify a ref inside a fenced code block or an inline code span', () => {
+      renderChat({
+        messages: [
+          { role: 'assistant', content: 'inline `WI-1111` and:\n\n```\nWI-2222 fenced\n```' },
+        ],
+      });
+      expect(screen.queryByLabelText('WI-1111')).toBeNull();
+      expect(screen.queryByLabelText('WI-2222')).toBeNull();
+      expect(screen.getByText('WI-1111')).toBeTruthy();
+      expect(screen.getByText(/WI-2222 fenced/)).toBeTruthy();
+    });
+
+    it('does NOT double-linkify a ref that is already an existing markdown link label', () => {
+      renderChat({
+        messages: [{ role: 'assistant', content: 'already linked: [WI-3333](https://example.com/x)' }],
+      });
+      // One real <a>, no nested pill/anchor inside it.
+      const link = screen.getByRole('link', { name: 'WI-3333' }) as HTMLAnchorElement;
+      expect(link.tagName).toBe('A');
+      expect(link.getAttribute('href')).toBe('https://example.com/x');
+      expect(screen.queryByLabelText('WI-3333')).toBeNull();
+    });
+
+    it('forwards a pill click through onWorkRefActivate with { id, kind }', () => {
+      const onWorkRefActivate = vi.fn();
+      renderChat({
+        messages: [{ role: 'assistant', content: 'see WI-5927' }],
+        onWorkRefActivate,
+      });
+      screen.getByLabelText('WI-5927').click();
+      expect(onWorkRefActivate).toHaveBeenCalledWith({ id: 'WI-5927', kind: 'work-item' });
+    });
+
+    it('renders a static, non-interactive pill when onWorkRefActivate is omitted', () => {
+      renderChat({ messages: [{ role: 'assistant', content: 'see WI-5927' }] });
+      const pill = screen.getByLabelText('WI-5927');
+      expect(pill.tagName).toBe('SPAN');
+    });
   });
 
   it('shows load-earlier states (beginning vs loading)', () => {
