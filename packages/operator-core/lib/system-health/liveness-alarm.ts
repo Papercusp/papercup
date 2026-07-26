@@ -394,8 +394,18 @@ export function evaluateLivenessAlarm(
   //     green+ahead for days while nothing deploys, and nobody is told. Any OTHER
   //     stale-paused routine is only an `advisory` — real, but not fleet-blocking.
   if ((wf?.stalePausedRoutines ?? 0) > 0) {
-    const names = wf?.stalePausedRoutineNames?.length ? `: ${wf.stalePausedRoutineNames.slice(0, 4).join(', ')}` : '';
     const critical = wf?.stalePausedCriticalRoutines ?? 0;
+    // EI-18718973731535914: `stalePausedRoutineNames` is sorted critical-first (see
+    // computeStalePausedRoutines), so its first `critical` entries ARE exactly the
+    // critical ones — slice to those for the critical-severity message. Using the
+    // unfiltered top-4 here previously mixed in non-critical names (e.g. a long-dead
+    // decommissioned routine sharing the "oldest first" sort position) into a message
+    // that reads "release/deploy-critical routine(s) … : X, Y, Z", implying more
+    // critical routines were paused than actually were.
+    const criticalNames = wf?.stalePausedRoutineNames?.slice(0, critical) ?? [];
+    const names = critical > 0
+      ? (criticalNames.length ? `: ${criticalNames.join(', ')}` : '')
+      : (wf?.stalePausedRoutineNames?.length ? `: ${wf.stalePausedRoutineNames.slice(0, 4).join(', ')}` : '');
     signals.push({
       key: 'stale-paused-routines',
       severity: critical > 0 ? 'blocker' : 'advisory',

@@ -157,9 +157,24 @@ export async function joinerPotHomeSlug(
   harnessSlug: string,
   // WI-1378 (federation roster-empty, no-restart): pass { fresh:true } on the
   // in-place-rekey resolve so the registry read bypasses the operator-state cache.
-  // The rekey runs in the substrate SIDECAR process (SUBSTRATE_SIDECAR), a different
-  // process from join-hive's registry write, so the writer's same-process cache
-  // invalidation never reached here — a warm-stale read returned null → the rekey
+  //
+  // ⚠ REACHABILITY — READ BEFORE REASONING FROM THE PARAGRAPH BELOW
+  // (EI-18719279795236712, 2026-07-26): the cross-process framing below describes the
+  // SUBSTRATE_SIDECAR-ON topology, which is NOT what runs today. That flag is DARK
+  // (KNOWN_DARK_FLAGS case:'incomplete', WI-1994; WI-604 deprecated 2026-07-03 — the
+  // sidecar was never built out beyond a stubbed replication spike). Verified on the
+  // live rig 2026-07-26: no substrate-sidecar process in pcusp-rig-a/b, only
+  // serve.mjs + embedded postgres + mcp-proxy.mjs. Today this is ONE process.
+  // The comment was TRUE WHEN WRITTEN (WI-1378 filed 2026-07-01, inside the
+  // 2026-06-29 → 2026-07-05 window where the P-011 inversion made SUBSTRATE_SIDECAR
+  // silently derive default-ON) and was falsified on 2026-07-05 when WI-1994 restored
+  // the OFF default — nothing links a flag-default change to the prose that depends on
+  // it, which is the defect being tracked. `fresh:true` stays correct in BOTH modes
+  // (harmless in-process, required cross-process), so the CODE needs no change.
+  //
+  // WHEN SUBSTRATE_SIDECAR IS ON: the rekey runs in the substrate SIDECAR process, a
+  // different process from join-hive's registry write, so the writer's same-process
+  // cache invalidation never reached here — a warm-stale read returned null → the rekey
   // rebind (and its forceReFold re-fold) never engaged → the member-slug binding
   // latched → the owner's roster rows dropped forever (empty until restart).
   opts?: { fresh?: boolean },

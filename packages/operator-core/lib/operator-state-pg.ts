@@ -205,10 +205,22 @@ export async function readOperatorState<T>(
   //
   // WI-1378 (federation roster-empty, no-restart path): a correctness-critical caller
   // may pass { fresh:true } to BYPASS the cache READ (it still refreshes the entry
-  // below). The joiner hive-home resolve (boot.ts resolveHiveHomeProjectionSlug) runs
-  // on the in-place rekey INSIDE the substrate SIDECAR process (SUBSTRATE_SIDECAR),
-  // a DIFFERENT process from the join-hive registry write — so the writer's
-  // same-process cache invalidation never reached this process. A warm-stale
+  // below).
+  //
+  // ⚠ REACHABILITY (EI-18719279795236712, 2026-07-26): the cross-process framing below
+  // is the SUBSTRATE_SIDECAR-ON topology, NOT what runs today — that flag is DARK
+  // (KNOWN_DARK_FLAGS case:'incomplete', WI-1994; WI-604 deprecated, sidecar never
+  // built out). Verified on the live rig 2026-07-26: no substrate-sidecar process
+  // exists, so this is ONE process and the same-process invalidation DOES reach here.
+  // True when written (WI-1378, 2026-07-01) — inside the 2026-06-29 → 2026-07-05 window
+  // where the P-011 inversion made the flag silently default-ON — and falsified on
+  // 2026-07-05 by WI-1994 restoring OFF. `fresh:true` is correct either way, so the
+  // code is unchanged; see hive-federation.ts joinerPotHomeSlug for the long form.
+  //
+  // WHEN SUBSTRATE_SIDECAR IS ON: the joiner hive-home resolve (boot.ts
+  // resolveHiveHomeProjectionSlug) runs on the in-place rekey INSIDE the substrate
+  // SIDECAR process, a DIFFERENT process from the join-hive registry write — so the
+  // writer's same-process cache invalidation never reached this process. A warm-stale
   // harness_registry entry made joinerPotHomeSlug return null at rekey → the rebind
   // block skipped → forceReFold never fired → the hive_members/hive_settings
   // projections stayed bound to the MEMBER slug → the owner's roster rows dropped

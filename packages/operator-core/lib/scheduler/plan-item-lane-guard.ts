@@ -304,9 +304,10 @@ export async function planItemLaneBlockReason(
     // OWNER_GATE_MARKERS doc comment). Checked last, over the SAME `linked` set,
     // same any-one-gates-the-whole-work-item semantics as blocked/needsHuman above.
     const nowText = [row.nowState, row.nowNext].filter(Boolean).join('\n');
+    const allItemIds = items.map((i) => i.id);
     for (const li of linked) {
       const ownMarker = findOwnerGateMarker(li.text);
-      const nowMarker = itemMentioned(nowText, li.id) ? findOwnerGateMarker(nowText) : null;
+      const nowMarker = findNowOwnerGateMarker(nowText, li.id, allItemIds);
       const decisionMarker = (row.decisions ?? [])
         .filter((d) => d.itemRefs.includes(li.id))
         .map((d) => findOwnerGateMarker(d.title) ?? findOwnerGateMarker(d.body))

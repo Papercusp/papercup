@@ -285,6 +285,34 @@ describe('computeStalePausedRoutines — stale/unexplained routine pause detecto
     expect(computeStalePausedRoutines([], now)).toEqual([]);
   });
 
+  describe('EI-18718973731535914 — a routine dead for WEEKS is decommissioned, not "paused"', () => {
+    const decommissionedMs = 7 * 24 * 60 * 60_000;
+
+    it('excludes a routine last touched well past the decommissioned cutoff, even with NO recorded reason', () => {
+      // Without the fix, `reasonMissing` alone would ALWAYS flag this (per the rule
+      // above) — the exact false-alarm repro: a decommissioned routine (e.g. hive-wake)
+      // inactive for 15-48 days, reported forever as an "unattributed pause".
+      const r = computeStalePausedRoutines([{ name: 'hive-wake', updatedAtMs: now - decommissionedMs - 1 }], now);
+      expect(r).toEqual([]);
+    });
+
+    it('still flags a reasonMissing pause that is recent (within the decommissioned cutoff)', () => {
+      const r = computeStalePausedRoutines([{ name: 'git-sync', updatedAtMs: now - decommissionedMs + 1 }], now);
+      expect(r).toHaveLength(1);
+      expect(r[0]).toMatchObject({ name: 'git-sync', reasonMissing: true });
+    });
+
+    it('a custom decommissionedMs is honored', () => {
+      const oneDayMs = 24 * 60 * 60_000;
+      const r = computeStalePausedRoutines(
+        [{ name: 'old-routine', updatedAtMs: now - oneDayMs - 1 }],
+        now,
+        { decommissionedMs: oneDayMs },
+      );
+      expect(r).toEqual([]);
+    });
+  });
+
   describe('EI-18694769501553335 — critical severity is scoped to the CURRENT install, not any row sharing the name', () => {
     it('does NOT escalate to critical a same-named release routine paused on a DIFFERENT install (the false-positive repro)', () => {
       const criticalMs = 4 * 60 * 60_000;

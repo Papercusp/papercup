@@ -533,6 +533,98 @@ describe('planItemLaneBlockReason', () => {
       expect(got).toBeNull();
     });
 
+    // EI-18718822565695446: the Now-block marker search used to be evaluated over
+    // the WHOLE block independently of the item mention, so one genuinely gated
+    // item false-gated every other item the block named. The real case: the
+    // shared-hive plan's Now block enumerated P-007/P-008/P-009 as the next
+    // actionable work AND separately noted P-019's genuine owner gate — which
+    // made the plan's own declared-next work unpickable via self-select.
+    describe('Now-block marker locality (EI-18718822565695446)', () => {
+      const SHARED_HIVE_NOW_NEXT =
+        'Phase 1 (DHT/discovery cost) is the next actionable block: P-007 (multiplex discovery.refresh() into ONE shared loop), P-008 (topic-level backoff), P-009 (drop the per-topic announce fanout).\n' +
+        'P-019 remains owner-gated — it needs the live 2-machine Hetzner rig.';
+
+      const sharedHivePlan = () => ({
+        items: [
+          planItem({ id: 'P-007', storedStatus: 'todo', text: 'Multiplex DHT discovery.refresh() into ONE shared loop.' }),
+          planItem({ id: 'P-008', storedStatus: 'todo', text: 'Topic-level backoff.' }),
+          planItem({ id: 'P-009', storedStatus: 'todo', text: 'Drop the per-topic announce fanout.' }),
+          planItem({ id: 'P-019', storedStatus: 'todo', text: 'Two-machine federation soak.' }),
+        ],
+        nowState: '',
+        nowNext: SHARED_HIVE_NOW_NEXT,
+      });
+
+      it('does NOT gate an item the Now block names as ACTIONABLE when the marker belongs to a different item', async () => {
+        getPlanRowMock.mockResolvedValue(sharedHivePlan());
+        const got = await planItemLaneBlockReason({
+          payload: { plan_item: { plan_slug: 'shared-hive-cross-machine-scale-10k-2026-06-29', item_id: 'P-007' } },
+          harness: 'papercusp',
+          id: UNUSED_ID,
+          family: UNUSED_FAMILY,
+        });
+        expect(got).toBeNull();
+      });
+
+      it('still gates the item the marker IS about, from the same Now block', async () => {
+        getPlanRowMock.mockResolvedValue(sharedHivePlan());
+        const got = await planItemLaneBlockReason({
+          payload: { plan_item: { plan_slug: 'shared-hive-cross-machine-scale-10k-2026-06-29', item_id: 'P-019' } },
+          harness: 'papercusp',
+          id: UNUSED_ID,
+          family: UNUSED_FAMILY,
+        });
+        expect(got).not.toBeNull();
+        expect(got?.itemId).toBe('P-019');
+        expect(got?.reason).toMatch(/owner-gated \("owner-gated"\)/);
+      });
+
+      // Guards the FALSE-NEGATIVE direction the locality fix could otherwise
+      // introduce — handing genuinely owner-gated work to a self-selector is
+      // worse than over-gating. When the block names no OTHER item, a marker in
+      // a separate sentence is still unambiguously about the one item it names.
+      it('gates when the mention and the marker are in SEPARATE sentences and no other item is named', async () => {
+        getPlanRowMock.mockResolvedValue({
+          items: [planItem({ id: 'P-019', storedStatus: 'todo', text: 'Two-machine federation soak.' })],
+          nowState: '',
+          nowNext: 'P-019 is the only remaining item. It is owner-gated until the rig exists.',
+        });
+        const got = await planItemLaneBlockReason({
+          payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-019' } },
+          harness: 'papercusp',
+          id: UNUSED_ID,
+          family: UNUSED_FAMILY,
+        });
+        expect(got).not.toBeNull();
+        expect(got?.itemId).toBe('P-019');
+      });
+
+      // The WI-1774/P-003 shape at finer granularity: several items named in ONE
+      // sentence that carries the marker are ALL legitimately gated by it.
+      it('gates EVERY item named in a single sentence that carries the marker', async () => {
+        const plan = {
+          items: [
+            planItem({ id: 'P-003', storedStatus: 'todo' }),
+            planItem({ id: 'P-004', storedStatus: 'todo' }),
+          ],
+          nowState: '',
+          nowNext:
+            'The only open items are P-003 (zero-downtime deploy) + P-004 (event-loop scale-out), both HARD-DEFERRED to an owner-attended session.',
+        };
+        for (const itemId of ['P-003', 'P-004']) {
+          getPlanRowMock.mockResolvedValue(plan);
+          const got = await planItemLaneBlockReason({
+            payload: { plan_item: { plan_slug: 'a-plan', item_id: itemId } },
+            harness: 'papercusp',
+            id: UNUSED_ID,
+            family: UNUSED_FAMILY,
+          });
+          expect(got, `expected ${itemId} to be gated`).not.toBeNull();
+          expect(got?.itemId).toBe(itemId);
+        }
+      });
+    });
+
     it('reports owner-gated for an item scoped to a Decision (via itemRefs) carrying a marker', async () => {
       getPlanRowMock.mockResolvedValue({
         items: [planItem({ id: 'P-006', storedStatus: 'todo' })],

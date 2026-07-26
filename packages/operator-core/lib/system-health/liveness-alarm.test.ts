@@ -137,6 +137,33 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(sp?.summary).toContain('scout-cycle');
   });
 
+  // EI-18718973731535914: `stalePausedRoutineNames` is sorted critical-first, so the
+  // top-4 slice used to bleed non-critical names (e.g. a decommissioned routine's
+  // repeated rows) into a message framed around release/deploy-critical routines —
+  // reading as if 4 critical routines were paused when only 1 actually was.
+  it('a critical stale-paused routine sitting alongside non-critical ones → message names ONLY the critical routine(s)', () => {
+    const h = mkHealth({
+      panels: {
+        workFeed: {
+          data: {
+            deadRoutines: 0,
+            stalePausedRoutines: 4,
+            // Sorted critical-first (as computeStalePausedRoutines returns): 1 real
+            // critical pause, followed by 3 non-critical (e.g. decommissioned) rows.
+            stalePausedRoutineNames: ['green-checkpoint', 'hive-wake', 'hive-wake', 'hive-wake'],
+            stalePausedCriticalRoutines: 1,
+          },
+        },
+      },
+    });
+    const sigs = evaluateLivenessAlarm(h, null);
+    const sp = sigs.find((s) => s.key === 'stale-paused-routines');
+    expect(sp?.severity).toBe('blocker');
+    expect(sp?.summary).toContain('green-checkpoint');
+    expect(sp?.summary).not.toContain('hive-wake');
+    expect(sp?.summary).toMatch(/^1 release\/deploy-critical/);
+  });
+
   it('no stale-paused routines → no stale-paused-routines signal', () => {
     const h = mkHealth({ panels: { workFeed: { data: { deadRoutines: 0, stalePausedRoutines: 0 } } } });
     expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('stale-paused-routines');

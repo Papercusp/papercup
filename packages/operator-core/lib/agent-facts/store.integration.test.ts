@@ -43,6 +43,7 @@ beforeAll(async () => {
     '461-agent-facts-federation.sql',
     '462-agent-facts-fed-key.sql',
     '574-agent-facts-audience-provenance.sql',
+    '671-add-agent-facts-confidence.sql',
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper
     // (lifted from this file's own former inline version).

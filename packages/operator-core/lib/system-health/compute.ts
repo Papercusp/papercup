@@ -123,6 +123,15 @@ const PLAN_STALE_MS = 24 * 60 * 60_000;
 // green+ahead for days with zero deploys), and it is trivially checkable.
 const STALE_PAUSE_GENERAL_MS = 24 * 60 * 60_000; // 24h
 const STALE_PAUSE_CRITICAL_MS = 4 * 60 * 60_000; // 4h
+// EI-18718973731535914: a routine inactive for WEEKS is DECOMMISSIONED, not "paused" —
+// e.g. a retired routine (hive-wake) whose every row has sat active=false for 15-48 days
+// is not an unattributed/unexplained pause anyone needs to re-affirm; it is dead code that
+// will never resume. Reporting it under the same signal as a genuine recent stale pause
+// trains everyone to skim past a `blocker`-severity alarm meant for "the deploy pipeline
+// may be silently stopped" — the exact false-alarm-desensitizes-the-real-alarm failure mode.
+// A week is comfortably past even the 24h GENERAL threshold, so this never masks a real,
+// still-live stale pause — only routines nobody has touched in a long time.
+const STALE_PAUSE_DECOMMISSIONED_MS = 7 * 24 * 60 * 60_000; // 7d
 const RELEASE_CRITICAL_ROUTINE_NAMES = new Set(['release-trigger', 'green-checkpoint']);
 const ESCALATION_AGING_MS = 6 * 60 * 60_000;
 const execFileP = promisify(execFile);
@@ -684,14 +693,21 @@ export interface StalePausedRoutine {
  * 'release' group by NAME across every install_slug ("deliberately install_slug-agnostic"
  * per its own comment), and no ongoing path assigns group_slug to a freshly-seeded row —
  * so a legitimate PRODUCTION install's row can equally read group:null.
+ *
+ * EI-18718973731535914: a row whose age is past `opts.decommissionedMs` (default 7d) is
+ * excluded ENTIRELY — even an unattributed (`reasonMissing`) one. Past that age this is no
+ * longer a "pause someone forgot to explain", it is a routine nobody has touched in a week+
+ * (a decommissioned/retired routine, e.g. `hive-wake`) — reporting it as a fresh stale-pause
+ * alarm indefinitely is itself the false-alarm bug.
  */
 export function computeStalePausedRoutines(
   rows: ReadonlyArray<StalePausedRoutineInput>,
   now: number,
-  opts: { generalMs?: number; criticalMs?: number; criticalNames?: ReadonlySet<string>; currentInstallSlug?: string | null } = {},
+  opts: { generalMs?: number; criticalMs?: number; decommissionedMs?: number; criticalNames?: ReadonlySet<string>; currentInstallSlug?: string | null } = {},
 ): StalePausedRoutine[] {
   const generalMs = opts.generalMs ?? STALE_PAUSE_GENERAL_MS;
   const criticalMs = opts.criticalMs ?? STALE_PAUSE_CRITICAL_MS;
+  const decommissionedMs = opts.decommissionedMs ?? STALE_PAUSE_DECOMMISSIONED_MS;
   const criticalNames = opts.criticalNames ?? RELEASE_CRITICAL_ROUTINE_NAMES;
   const out: StalePausedRoutine[] = [];
   for (const r of rows) {
@@ -706,10 +722,13 @@ export function computeStalePausedRoutines(
     const reasonMissing = r.pausedAtMs == null || !r.pauseReason;
     const anchorMs = r.pausedAtMs ?? r.updatedAtMs ?? null;
     if (anchorMs == null) {
+      // No timestamp readable at all — can't judge decommissioned-vs-paused, so err
+      // toward still flagging (the pre-existing, unchanged behavior for this case).
       out.push({ name: r.name, ageMs: Number.POSITIVE_INFINITY, reasonMissing: true, critical });
       continue;
     }
     const ageMs = Math.max(0, now - anchorMs);
+    if (ageMs >= decommissionedMs) continue; // decommissioned, not a live stale-pause signal
     const threshold = isReleaseCriticalNamed ? criticalMs : generalMs;
     if (reasonMissing || ageMs >= threshold) {
       out.push({ name: r.name, ageMs, reasonMissing, critical });
@@ -724,10 +743,33 @@ export function computeStalePausedRoutines(
  *  `currentInstallSlug` (EI-18694769501553335) is this health-check's OWN install
  *  (e.g. `ctx.potSlug`) — passed through so `critical` only fires for a stale pause
  *  on THIS install's own release routine, not any sibling hive's / throwaway repro
- *  harness's paused copy of a same-named routine. */
-export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: string | null): Promise<StalePausedRoutine[]> {
+ *  harness's paused copy of a same-named routine.
+ *
+ *  EI-18718973731535914: two more root causes, fixed at the SQL layer (a fake-sql unit
+ *  test can't prove these — see the paired integration test):
+ *   1. `workspaceId` (e.g. `ctx.ws`) scopes the scan to the LIVE workspace/tenant — the
+ *      same bare-filter multi-tenant trap `dev:pg_query`'s own advisory warns about
+ *      (a filter with no workspace predicate can match another tenant's rows and read
+ *      as stale/diverged state that has nothing to do with this install).
+ *   2. A `NOT EXISTS` sibling check excludes an inactive row when an ACTIVE row already
+ *      exists for the same (workspace, install_slug, name) — i.e. judge a named routine
+ *      by whether ANY live row for it is firing on schedule, not by the mere presence of
+ *      an inactive row. Without this, one orphaned/duplicate dead row (left behind by a
+ *      reseed, or belonging to a decommissioned install with a recycled slug) can outvote
+ *      every one of its healthy, currently-firing siblings and false-alarm a live pipeline. */
+export async function readStalePausedRoutines(sql: Sql, currentInstallSlug?: string | null, workspaceId?: string | null): Promise<StalePausedRoutine[]> {
   const rows = await sql<Array<{ name: string; metadata: Record<string, unknown> | null; updated_at: Date | null; install_slug: string | null }>>`
-    SELECT name, metadata, updated_at, install_slug FROM harness_shared.routines WHERE active = false`;
+    SELECT r.name, r.metadata, r.updated_at, r.install_slug
+      FROM harness_shared.routines r
+     WHERE r.active = false
+       AND (${workspaceId ?? null}::text IS NULL OR r.workspace_id = ${workspaceId ?? null})
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.routines r2
+          WHERE r2.active = true
+            AND r2.name = r.name
+            AND r2.workspace_id = r.workspace_id
+            AND r2.install_slug IS NOT DISTINCT FROM r.install_slug
+       )`;
   const inputs: StalePausedRoutineInput[] = rows.map((r) => {
     const pause = (r.metadata?.pause ?? null) as { reason?: unknown; pausedAtMs?: unknown } | null;
     const pausedAtMs = typeof pause?.pausedAtMs === 'number' ? pause.pausedAtMs : null;
@@ -819,7 +861,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // Best-effort/fail-soft: never let a metadata-shape surprise sink the whole panel.
     let stalePaused: StalePausedRoutine[] = [];
     try {
-      stalePaused = await readStalePausedRoutines(sql, potSlug);
+      stalePaused = await readStalePausedRoutines(sql, potSlug, ctx.ws);
     } catch { /* leave empty — the dead-routine signal above still computes */ }
     const stalePausedRoutineNames = stalePaused.map((r) => r.name);
     const stalePausedCriticalRoutines = stalePaused.filter((r) => r.critical).length;
