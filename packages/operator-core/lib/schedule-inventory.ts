@@ -19,7 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { listDbosScheduledWorkflows, type DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
-import { listManaged, type ManagedEntry } from '@papercusp/scheduled-registry';
+import { listManaged, type ManagedEntry, type TimerClassification } from '@papercusp/scheduled-registry';
 
 /**
  * Every source collectScheduleInventory can emit a row for. SINGLE source of truth:
@@ -83,6 +83,9 @@ export interface InProcessCheckLite {
   intervalMs: number;
   shed?: boolean;
   fireOnArm?: boolean;
+  /** D-004 push-don't-poll classification (P-011) — null when the source check hasn't
+   *  declared one (should not happen for in-process checks; see PeriodicCheck). */
+  classification?: TimerClassification | null;
 }
 export interface InProcessChecksResult {
   checks: InProcessCheckLite[];

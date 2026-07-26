@@ -89,6 +89,24 @@ export function resolveTtlMs(env: Record<string, string | undefined>): number {
  * dist into the desktop bundle, so retained chunks would ship as dead weight.
  * A deploy's release-checkout build deliberately does NOT opt out: that
  * checkout SERVES `:3070` to live windows, so it wants retention too.
+ *
+ * WHERE THE :3270 REBUILDER LIVES (don't repeat the failed grep): the ~2-min
+ * rebuild of the nohmr desktop bundle is `papercup-vite-rebuild.timer` →
+ * `~/.local/bin/papercup-vite-rebuild.sh`, which is **OUTSIDE THIS REPO**. It
+ * already exported the old opt-in flag, so it was never the broken caller — but
+ * because it is out-of-tree, a repo-wide grep for `PAPERCUSP_RETAIN_DIST_CHUNKS`
+ * finds only this file and reads as "nothing ever sets it" (that mis-read cost
+ * an hour on 2026-07-26). The callers that genuinely lacked it were
+ * `green-checkpoint`'s SPA build and any ad-hoc `npm run build` on the shared
+ * tree — i.e. an opt-in whose one correct setter was invisible to the tree that
+ * defines it. That is the second, independent argument for defaulting to retain.
+ *
+ * COST: retention is not free. With that 2-min rebuilder and the 60-min TTL,
+ * `dist/` was measured at ~748 MB / ~970 files on 2026-07-26 (each build writes
+ * ~160 hashed chunks). Bounded and self-pruning, but if disk matters, tune
+ * `PAPERCUSP_DIST_CHUNK_TTL_MIN` down rather than switching retention off —
+ * the TTL is the grace window for an open webview, so shortening it shortens
+ * how long a long-open window stays safe.
  * Pure; exported for tests + reuse by vite.config.
  */
 export function shouldRetainDistChunks(

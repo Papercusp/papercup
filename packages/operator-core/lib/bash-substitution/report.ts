@@ -139,10 +139,23 @@ export interface BucketReport {
   toolCalls: number;
   /**
    * toolCalls / (toolCalls + bashAtoms) — the share of this intent served by
-   * the tool. Null when neither side occurred (an honest "no demand", never 0%,
-   * which would read as total failure).
+   * the tool.
+   *
+   * Null in the two cases where a number would LIE:
+   *  - neither side occurred (an honest "no demand", never 0%, which would read
+   *    as total failure), and
+   *  - the window carries no bucket attribution at all (see
+   *    `coverage.bucketAttribution`). With a zero bash side by construction,
+   *    every bucket would compute a triumphant 100% off an empty table — which
+   *    is how a metric ends up certifying the very thing it failed to measure.
    */
   substitutionRate: number | null;
+  /**
+   * True when another bucket in this report shares the same counterpart tool
+   * (e.g. operator-db-select and operator-db-describe are both dev:pg_query).
+   * `toolCalls` is per-TOOL, so those rows repeat one figure — never sum them.
+   */
+  toolCallsShared: boolean;
   /** The frozen 7d audit baseline for this bucket, when one exists. */
   baseline: { atoms: number; sessions: number; extractedAt: string } | null;
 }
@@ -160,6 +173,17 @@ export interface WindowCoverage {
    * window and must not be compared to the 7d baseline as if it were whole.
    */
   partial: boolean;
+  /**
+   * Whether ANY intent-bucket row exists in this window.
+   *
+   * False means the bash side of every bucket is unmeasured — either the window
+   * predates ingest-time bucket attribution (migration 674) or the registry was
+   * empty while it was ingested. It does NOT mean agents stopped using the
+   * shell. Every substitutionRate is forced to null in that case, because the
+   * alternative is a report that grades itself `healthy` at 100% substitution
+   * on a table with no bash data in it at all.
+   */
+  bucketAttribution: boolean;
 }
 
 export interface SubstitutionReport {
@@ -251,6 +275,13 @@ export function summarizeSubstitutionReport(opts: {
 
   const callsByTool = new Map(counterparts.map((c) => [c.toolName, c.calls]));
 
+  // Is the bash side of the buckets measured AT ALL in this window? Without
+  // this the rate below divides by a zero that means "unmeasured", not "none".
+  const bucketAttribution = bucketAtoms.size > 0;
+
+  const toolUseCount = new Map<string, number>();
+  for (const row of registry) toolUseCount.set(row.toolName, (toolUseCount.get(row.toolName) ?? 0) + 1);
+
   const buckets: BucketReport[] = registry
     .map((row) => {
       const hit = bucketAtoms.get(row.intentLabel) ?? { atoms: 0, sessions: 0 };
@@ -264,7 +295,8 @@ export function summarizeSubstitutionReport(opts: {
         bashAtoms: hit.atoms,
         sessions: hit.sessions,
         toolCalls,
-        substitutionRate: denom > 0 ? toolCalls / denom : null,
+        substitutionRate: bucketAttribution && denom > 0 ? toolCalls / denom : null,
+        toolCallsShared: (toolUseCount.get(row.toolName) ?? 0) > 1,
         baseline: baselineOf(row.intentLabel),
       };
     })
@@ -295,6 +327,7 @@ export function summarizeSubstitutionReport(opts: {
       firstDay,
       lastDay,
       partial: days.size < sinceDays,
+      bucketAttribution,
     },
     emptyRegistry: registry.length === 0,
   };
@@ -400,6 +433,19 @@ export function gradeSubstitution(report: SubstitutionReport): SubstitutionGrade
         `only ${report.calls.bash} Bash calls in the window (< ${REPORT_MIN_SAMPLE})` +
         `${report.coverage.partial ? `; rollup covers ${report.coverage.daysWithData}/${report.coverage.requestedDays} days` : ''}` +
         ' — too thin to grade',
+    };
+  }
+  if (!report.coverage.bucketAttribution) {
+    // The failure this guard exists for: with no bucket rows the bash side of
+    // every bucket is 0, so a naive rate reports 100% substitution and grades
+    // `healthy` — declaring the plan won on a table that contains none of the
+    // evidence. Refuse to grade instead.
+    return {
+      rating: 'unknown',
+      evidence:
+        'no intent-bucket rows in this window — the bash side is UNMEASURED (window predates ' +
+        'ingest-time bucket attribution, or the registry was empty during ingest). Substitution ' +
+        'cannot be rated; the Bash share and cost figures below are still valid.',
     };
   }
   const rated = report.buckets.filter((b) => b.substitutionRate !== null);

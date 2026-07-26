@@ -131,7 +131,16 @@ stay LIVE — `/adv`+`/workbench` are built on them), and the chat sidebar's
 human Inbox face (`_retired/inbox-pane/` — `InboxPane.tsx`; retired
 2026-07-26, `hud-consolidation-2026-07-26` D-001 — every ask it surfaced now
 opens as a HUD conversation instead; the data layer, `use-inbox-pending.ts`,
-stays live). `lint:no-retired` guards re-imports. (The Mug/Kettle left-rail
+stays live), and the **work-item mail surface** (`_retired/work-item-mail/` —
+`messages:send`/`dismiss`/`inbox`/`outbox` + their `cross_harness:` analogs;
+retired 2026-07-26, WI-6097. NOT broken — it lost to `coord:send`, which carried
+~400× its traffic, and took zero writes in its final 30 days. Durable
+work-item-scoped direction is now `work_items:comment` /
+`work_items:checkpoint`, **not** `coord:send`, which targets a live session and
+does not survive a spawn boundary. All 222 rows are preserved — this was code
+removal only. ⚠ the `coord:*` plane — `coord/messages.ts`, `coord_event_log`,
+`coord-inbox-bus` — shares the word "messages" and is fully LIVE: match the
+surface, never the substring). `lint:no-retired` guards re-imports. (The Mug/Kettle left-rail
 tabs, retired under WI-4778, were RESTORED to the LeftSidebar by owner ask
 2026-07-14 — they are live again.)
 

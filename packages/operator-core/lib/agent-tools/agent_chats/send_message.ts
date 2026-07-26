@@ -25,7 +25,7 @@ export default defineTool({
   capability: 'agent_chats:write',
   guidance: {
     when: 'Step 2 of the dispatch flow — you just called `agent_chats:create` and need to post the user\'s first message to kick off the conversation. Also for follow-up messages on an existing chat the user named.',
-    notWhen: 'For broadcasting to multiple recipients (inbox-style), use `messages:send`. For the user\'s own chat with you, just speak.',
+    notWhen: 'For reaching multiple recipients at once, use `coord:send`. For the user\'s own chat with you, just speak.',
     chaining: 'Follow `agent_chats:create` (or `agent_chats:list` if resuming). Then `ui:dispatch` to take the user to the chat.',
     seeAlso: [
       'agent_chats:create (start the chat first)',

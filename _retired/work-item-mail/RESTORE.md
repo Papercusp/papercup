@@ -37,6 +37,7 @@ recorded as plan decision **D-004**. Generalizable trap: **check
 | `outbox.ts` | `packages/agent-mcp/src/tools/messages/outbox.ts` (`messages:outbox`) — same lane |
 | `inbox.test.ts` | `packages/agent-mcp/src/tools/messages/inbox.test.ts` |
 | `outbox.test.ts` | `packages/agent-mcp/src/tools/messages/outbox.test.ts` |
+| `feature-message-durability.integration.test.ts` | `apps/operator/test/feature-message-durability.integration.test.ts` — plan P-008: drove the real `messages:inbox` handler (moved here as `inbox.ts` under P-001) against a real testcontainers PG; imported `inbox.ts` by its pre-retirement path, so it broke at import once P-001 moved the handler. No live replacement — the durability property it proved belongs to the retired surface. |
 
 Import paths inside these files are **left exactly as they were** per the repo's
 retiring convention — `_retired/` is excluded from the workspace

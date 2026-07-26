@@ -68,9 +68,11 @@ const obj = (
  * Deliberately ABSENT: any `features:update` / raw-SQL write verb, and the
  * retired `messages:*` mail surface (retire-work-item-mail-surface-2026-07-26).
  * The SU agent has no such tool; feature-pipeline state advances through the
- * pipeline roles + `coord:send` (the retired `messages:send`'s successor,
- * work_item-scoped via `to_feature_id`). SU-S05 asserts the model doesn't
- * invent a raw write.
+ * pipeline roles + `work_items:comment` (the retired `messages:send`'s
+ * successor for `to_feature_id` hand-offs — durable, work-item-scoped,
+ * per the retire-work-item-mail-surface-2026-07-26 D-004 ruling; `coord:send`
+ * is reserved for live/wakeable direction at an agent, not this hand-off).
+ * SU-S05 asserts the model doesn't invent a raw write.
  */
 export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   // --- docs (context-only readers, harness-scoped) ---

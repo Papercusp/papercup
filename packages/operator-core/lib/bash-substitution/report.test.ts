@@ -155,6 +155,76 @@ describe('summarizeSubstitutionReport — buckets', () => {
   });
 });
 
+describe('REGRESSION: an unmeasured bash side must never grade as 100% substitution', () => {
+  // Caught live on 2026-07-26: with bucket rows not yet ingested, every bucket
+  // had bashAtoms=0 and toolCalls>0, so the rate computed 100% across the board
+  // and the report graded itself `healthy` — certifying the plan had succeeded
+  // using a table that contained none of the evidence.
+  const unmeasured = () =>
+    summarizeSubstitutionReport({
+      sinceDays: 7,
+      usage: [usageRow({ toolName: 'Bash', calls: 1056 })], // calls, but NO bucket rows
+      counterparts: [{ toolName: 'capability:read', calls: 3883, spawns: 40 }],
+      registry: [regRow()],
+      baselineOf: noBaseline,
+    });
+
+  it('flags the window as carrying no bucket attribution', () => {
+    expect(unmeasured().coverage.bucketAttribution).toBe(false);
+  });
+
+  it('reports substitutionRate as null, not 100%', () => {
+    expect(unmeasured().buckets[0].substitutionRate).toBeNull();
+  });
+
+  it('refuses to grade, and says WHY', () => {
+    const g = gradeSubstitution(unmeasured());
+    expect(g.rating).toBe('unknown');
+    expect(g.evidence).toMatch(/UNMEASURED/);
+  });
+
+  it('still reports the Bash share, which does not depend on buckets', () => {
+    expect(unmeasured().calls.bash).toBe(1056);
+  });
+
+  it('rates normally once ANY bucket attribution exists', () => {
+    const measured = summarizeSubstitutionReport({
+      sinceDays: 7,
+      usage: [
+        usageRow({ toolName: 'Bash', calls: 1056 }),
+        usageRow({ toolName: 'Bash', intentLabel: 'file-range-read', atoms: 100 }),
+      ],
+      counterparts: [{ toolName: 'capability:read', calls: 300, spawns: 40 }],
+      registry: [regRow()],
+      baselineOf: noBaseline,
+    });
+    expect(measured.coverage.bucketAttribution).toBe(true);
+    expect(measured.buckets[0].substitutionRate).toBeCloseTo(0.75);
+  });
+});
+
+describe('shared counterpart tools', () => {
+  it('marks buckets that share one tool so their toolCalls are not summed', () => {
+    // dev:pg_query serves both psql intents, so the SAME call count appears on
+    // both rows — adding them would double-count it.
+    const r = summarizeSubstitutionReport({
+      sinceDays: 7,
+      usage: [usageRow({ toolName: 'Bash', intentLabel: 'operator-db-select', atoms: 1 })],
+      counterparts: [{ toolName: 'dev:pg_query', calls: 3883, spawns: 10 }],
+      registry: [
+        regRow({ intentLabel: 'operator-db-select', toolName: 'dev:pg_query' }),
+        regRow({ intentLabel: 'operator-db-describe', toolName: 'dev:pg_query' }),
+        regRow({ intentLabel: 'file-range-read', toolName: 'capability:read' }),
+      ],
+      baselineOf: noBaseline,
+    });
+    const byIntent = Object.fromEntries(r.buckets.map((b) => [b.intentLabel, b.toolCallsShared]));
+    expect(byIntent['operator-db-select']).toBe(true);
+    expect(byIntent['operator-db-describe']).toBe(true);
+    expect(byIntent['file-range-read']).toBe(false);
+  });
+});
+
 describe('summarizeSubstitutionReport — window honesty', () => {
   it('marks a window PARTIAL when the rollup holds fewer days than requested', () => {
     // The rollup only counts forward from when it went live, so an early 7-day

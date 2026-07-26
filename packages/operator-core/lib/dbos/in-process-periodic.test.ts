@@ -28,7 +28,7 @@ describe('runPeriodicCheck', () => {
   it('runs a light (non-shed) tick and never consults the shed policy', async () => {
     const tick = vi.fn(async () => {});
     const shouldShed = vi.fn(() => true); // would shed — but a light check ignores it
-    const check: PeriodicCheck = { name: 'light', intervalMs: 1000, tick };
+    const check: PeriodicCheck = { name: 'light', intervalMs: 1000, classification: 'must-sample', tick };
     const res = await runPeriodicCheck(check, { shouldShed });
     expect(res).toEqual({ ran: true });
     expect(tick).toHaveBeenCalledOnce();
@@ -37,7 +37,7 @@ describe('runPeriodicCheck', () => {
 
   it('skips a HEAVY tick when the shed policy says to shed (tick not called)', async () => {
     const tick = vi.fn(async () => {});
-    const check: PeriodicCheck = { name: 'heavy', intervalMs: 1000, shed: true, tick };
+    const check: PeriodicCheck = { name: 'heavy', intervalMs: 1000, shed: true, classification: 'must-sample', tick };
     const res = await runPeriodicCheck(check, { shouldShed: () => true });
     expect(res).toEqual({ ran: false, shed: true });
     expect(tick).not.toHaveBeenCalled();
@@ -45,7 +45,7 @@ describe('runPeriodicCheck', () => {
 
   it('runs a HEAVY tick when the shed policy says not to shed', async () => {
     const tick = vi.fn(async () => {});
-    const check: PeriodicCheck = { name: 'heavy', intervalMs: 1000, shed: true, tick };
+    const check: PeriodicCheck = { name: 'heavy', intervalMs: 1000, shed: true, classification: 'must-sample', tick };
     const res = await runPeriodicCheck(check, { shouldShed: () => false });
     expect(res).toEqual({ ran: true });
     expect(tick).toHaveBeenCalledOnce();
@@ -56,6 +56,7 @@ describe('runPeriodicCheck', () => {
     const check: PeriodicCheck = {
       name: 'boom',
       intervalMs: 1000,
+      classification: 'must-sample',
       tick: async () => {
         throw new Error('kaboom');
       },
@@ -74,8 +75,8 @@ describe('armInProcessPeriodicChecks', () => {
     const a = vi.fn(async () => {});
     const b = vi.fn(async () => {});
     const checks: PeriodicCheck[] = [
-      { name: 'a', intervalMs: 1000, tick: a },
-      { name: 'b', intervalMs: 2000, tick: b },
+      { name: 'a', intervalMs: 1000, classification: 'must-sample', tick: a },
+      { name: 'b', intervalMs: 2000, classification: 'must-sample', tick: b },
     ];
     armInProcessPeriodicChecks({ checks });
     expect(inProcessPeriodicChecksArmed()).toBe(true);
@@ -95,8 +96,8 @@ describe('armInProcessPeriodicChecks', () => {
     vi.useFakeTimers();
     const first = vi.fn(async () => {});
     const second = vi.fn(async () => {});
-    armInProcessPeriodicChecks({ checks: [{ name: 'first', intervalMs: 1000, tick: first }] });
-    armInProcessPeriodicChecks({ checks: [{ name: 'second', intervalMs: 1000, tick: second }] });
+    armInProcessPeriodicChecks({ checks: [{ name: 'first', intervalMs: 1000, classification: 'must-sample', tick: first }] });
+    armInProcessPeriodicChecks({ checks: [{ name: 'second', intervalMs: 1000, classification: 'must-sample', tick: second }] });
 
     await vi.advanceTimersByTimeAsync(1000);
     expect(first).toHaveBeenCalledTimes(1);
@@ -113,6 +114,7 @@ describe('armInProcessPeriodicChecks', () => {
     const check: PeriodicCheck = {
       name: 'slow',
       intervalMs: 1000,
+      classification: 'must-sample',
       tick: async () => {
         entered += 1;
         await gate; // hold the tick open across the next interval
@@ -175,6 +177,48 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('scorecard-emission-pulse')!.intervalMs).toBe(600_000);
     expect(byName.get('poll-suspect-scan')!.intervalMs).toBe(3600_000);
     expect(byName.get('timer-registration-scan')!.intervalMs).toBe(600_000);
+  });
+
+  it('classifies every check per D-004 (P-011 guard) — no default check is unclassified', () => {
+    const VALID = new Set(['must-sample', 'timeout-reaper', 'violation']);
+    for (const c of checks) {
+      expect(VALID.has(c.classification), `${c.name} has an invalid/missing classification: ${c.classification}`).toBe(true);
+    }
+  });
+
+  it('pins the D-004 classification verdict (lane C1 audit, WI-6091/D-008) per timer', () => {
+    // system-health is the ONE confirmed VIOLATION across all 104 audited timers
+    // (D-008) — a regression here (e.g. someone flipping it to must-sample to
+    // silence a future lint) is exactly the kind of drift this guard exists to
+    // catch, so it is pinned individually rather than folded into a generic map.
+    expect(byName.get('system-health')!.classification).toBe('violation');
+
+    const mustSample = [
+      'harness-status-sweep',
+      'connection-pressure',
+      'service-health',
+      'completion-ref-verify',
+      'learning-infra-health',
+      'steering-churn-sweep', // borderline (D-008), kept must-sample not violation
+      'poll-suspect-scan', // borderline (D-008), kept must-sample not violation
+      'timer-registration-scan', // same shape as poll-suspect-scan
+    ];
+    for (const name of mustSample) {
+      expect(byName.get(name)!.classification, name).toBe('must-sample');
+    }
+
+    const timeoutReaper = [
+      'spawn-reclaim-sweep',
+      'stale-claim-sweep',
+      'release-request-sweep',
+      'federation-drain-reconcile',
+      'pot-epoch-key-reconcile',
+      'shared-presence-reaper',
+      'scorecard-emission-pulse',
+    ];
+    for (const name of timeoutReaper) {
+      expect(byName.get(name)!.classification, name).toBe('timeout-reaper');
+    }
   });
 
   it('only the heavy ticks shed under load (parity with shouldShedHeavyTick)', () => {

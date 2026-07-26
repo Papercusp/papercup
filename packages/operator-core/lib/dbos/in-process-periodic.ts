@@ -27,7 +27,7 @@
  */
 import { shouldShedHeavyTick } from './tick-load-shed';
 import { createConnectionPressureGovernor } from '../connection-pressure-governor';
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { managedSetInterval, type ManagedHandle, type TimerClassification } from '@papercusp/scheduled-registry';
 
 /** One in-process periodic check. The tick must be idempotent — a throw is
  *  caught + logged and the next interval retries (no durable recovery). */
@@ -42,6 +42,14 @@ export interface PeriodicCheck {
    *  interval. For self-heal sweeps that should converge on boot (e.g. epoch-key reconcile)
    *  rather than wait a full interval. Still subject to the shed-gate. */
   fireOnArm?: boolean;
+  /** D-004 push-don't-poll classification (P-011, stop-discarded-dedup-and-audit-server-
+   *  polling-2026-07-26) — REQUIRED here: this file is the one seam whose full 15/16-check
+   *  surface was actually audited (lane C1, WI-6091/D-008), so unlike the generic
+   *  `managedSetInterval` caller pool (grandfathered via lint:timer-classification's
+   *  shrink-only BASELINE — see scripts/check-timer-classification.mjs) there is no excuse
+   *  for a check here to go unclassified. Threaded into `armInProcessPeriodicChecks`'s
+   *  `managedSetInterval` call so it also surfaces in schedule:inventory. */
+  classification: TimerClassification;
   tick: () => Promise<void> | void;
 }
 
@@ -89,6 +97,12 @@ const systemHealthCheck: PeriodicCheck = {
   name: 'system-health',
   intervalMs: 30_000,
   shed: true,
+  // D-004/D-008 (P-011): the ONE confirmed VIOLATION across all 104 audited timers —
+  // recomputes PG-derived state that already fires notifySyncInvalidate, on a clock
+  // rather than in reaction to the write. Lane B (P-006/P-012/P-013) is the authoritative
+  // panel-level conversion; this classification records the system-level audit verdict,
+  // not a promise this file itself converts it.
+  classification: 'violation',
   tick: async () => {
     const { FLAGS } = await import('@papercusp/flags');
     const { getFlag } = await import('@papercusp/flags/server');
@@ -111,6 +125,8 @@ const harnessStatusSweepCheck: PeriodicCheck = {
   name: 'harness-status-sweep',
   intervalMs: 30_000,
   shed: true,
+  // D-004 (P-011): PID-liveness has no publisher — D-004's own MUST-SAMPLE example.
+  classification: 'must-sample',
   tick: async () => {
     const { runHarnessStatusSweepOnce } = await import('../harness-status-sweep');
     await runHarnessStatusSweepOnce();
@@ -129,6 +145,8 @@ const connectionPressureGovernor = createConnectionPressureGovernor();
 const connectionPressureCheck: PeriodicCheck = {
   name: 'connection-pressure',
   intervalMs: 30_000,
+  // D-004 (P-011): live server-wide PG connection saturation has no change-event source.
+  classification: 'must-sample',
   tick: async () => {
     const { pgHealth } = await import('../dev-data');
     const h = await pgHealth().catch(() => null);
@@ -168,6 +186,8 @@ const connectionPressureCheck: PeriodicCheck = {
 const serviceHealthCheck: PeriodicCheck = {
   name: 'service-health',
   intervalMs: 60_000,
+  // D-004 (P-011): own comment already says it — "external liveness has no event source".
+  classification: 'must-sample',
   tick: async () => {
     const { runServiceHealthTick } = await import('../service-health');
     await runServiceHealthTick();
@@ -180,6 +200,8 @@ const serviceHealthCheck: PeriodicCheck = {
 const completionRefVerifyCheck: PeriodicCheck = {
   name: 'completion-ref-verify',
   intervalMs: 60_000,
+  // D-004 (P-011): `git ls-remote` reads external repo state — no publisher exists.
+  classification: 'must-sample',
   tick: async () => {
     const { runCompletionRefVerifierOnce } = await import('../harness/completion-ref-verifier');
     await runCompletionRefVerifierOnce();
@@ -192,6 +214,9 @@ const completionRefVerifyCheck: PeriodicCheck = {
 const spawnReclaimSweepCheck: PeriodicCheck = {
   name: 'spawn-reclaim-sweep',
   intervalMs: 60_000,
+  // D-004 (P-011): every leg is an elapsed-time-since-last-signal detector (stale
+  // heartbeat / no-stream-activity proxy / silence past threshold) — TIMEOUT/REAPER.
+  classification: 'timeout-reaper',
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const {
@@ -359,6 +384,8 @@ const spawnReclaimSweepCheck: PeriodicCheck = {
 const staleClaimSweepCheck: PeriodicCheck = {
   name: 'stale-claim-sweep',
   intervalMs: 60_000,
+  // D-004 names "stale-claim sweep" as its own canonical TIMEOUT/REAPER example.
+  classification: 'timeout-reaper',
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
@@ -694,6 +721,9 @@ const staleClaimSweepCheck: PeriodicCheck = {
 const releaseRequestSweepCheck: PeriodicCheck = {
   name: 'release-request-sweep',
   intervalMs: 60_000,
+  // D-004 (P-011): resolves DUE deadlines — deadline-passing is the trigger by
+  // construction (the "announced consequence" rail).
+  classification: 'timeout-reaper',
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
@@ -776,6 +806,8 @@ const releaseRequestSweepCheck: PeriodicCheck = {
 const learningInfraHealthCheck: PeriodicCheck = {
   name: 'learning-infra-health',
   intervalMs: 120_000,
+  // D-004 (P-011): the binding llm-spine leg requires a live HTTP probe — no publisher.
+  classification: 'must-sample',
   tick: async () => {
     const { FLAGS } = await import('@papercusp/flags');
     const { getFlag } = await import('@papercusp/flags/server');
@@ -794,6 +826,10 @@ const learningInfraHealthCheck: PeriodicCheck = {
 const steeringChurnSweepCheck: PeriodicCheck = {
   name: 'steering-churn-sweep',
   intervalMs: 300_000,
+  // D-004/lane-C1 (P-011): a threshold-over-a-time-window computation, not a
+  // single-value recompute of a store with an existing change event — MUST-SAMPLE
+  // per the C1/P-008 verdict (borderline; flagged, not reclassified VIOLATION).
+  classification: 'must-sample',
   tick: async () => {
     const { sweepSteeringChurn, pruneSteeringChurnEvents } = await import('../steering-churn');
     const r = await sweepSteeringChurn();
@@ -822,6 +858,9 @@ const federationDrainReconcileCheck: PeriodicCheck = {
   name: 'federation-drain-reconcile',
   intervalMs: 300_000,
   shed: true,
+  // D-004 (P-011): flags an undrained outbox past an elapsed-time threshold — a
+  // stall detector, same shape as spawn-reclaim/stale-claim.
+  classification: 'timeout-reaper',
   tick: async () => {
     const { FLAGS } = await import('@papercusp/flags');
     const { getFlag } = await import('@papercusp/flags/server');
@@ -846,6 +885,8 @@ const hiveEpochKeyReconcileCheck: PeriodicCheck = {
   // fireOnArm heal-on-startup runs even during the busy boot window (a shed tick would skip it).
   shed: false,
   fireOnArm: true, // heal stuck members on app startup, not only after the first 10m interval
+  // D-004 names "epoch-key reconcile" as its own canonical TIMEOUT/REAPER example.
+  classification: 'timeout-reaper',
   tick: async () => {
     const { isHiveRekeyEnabled, reconcileOwnedHiveEpochKeys } = await import(
       '../sync/hyperbee/hive-epoch-boundary-wiring'
@@ -869,6 +910,8 @@ const sharedPresenceReaperCheck: PeriodicCheck = {
   name: 'shared-presence-reaper',
   intervalMs: 300_000,
   shed: false,
+  // D-004 names "presence reaper" as its own canonical TIMEOUT/REAPER example.
+  classification: 'timeout-reaper',
   tick: async () => {
     const { reapStaleSharedPresence } = await import('../sync/hyperbee/shared-presence-reaper');
     const r = await reapStaleSharedPresence();
@@ -899,6 +942,9 @@ const scorecardEmissionPulseCheck: PeriodicCheck = {
   name: 'scorecard-emission-pulse',
   intervalMs: 600_000,
   shed: true,
+  // D-004 (P-011): both legs are absence/silence-past-threshold detectors — same
+  // class as the spawn/claim/federation-drain sweeps above.
+  classification: 'timeout-reaper',
   tick: async () => {
     const { readRegistry } = await import('../workspace-registry');
     const { runScorecardEmissionPulse, checkOverwatchEmissionWedge } = await import(
@@ -926,6 +972,9 @@ const scorecardEmissionPulseCheck: PeriodicCheck = {
 const pollSuspectScanCheck: PeriodicCheck = {
   name: 'poll-suspect-scan',
   intervalMs: 3600_000,
+  // D-004/lane-C1 (P-011): a trailing-window rate aggregate over an append-only table,
+  // not a reaction to one row's change — MUST-SAMPLE (borderline, same class as #10).
+  classification: 'must-sample',
   tick: async () => {
     const { runPollSuspectScanOnce } = await import('../poll-suspect-alarm');
     const { alerted } = await runPollSuspectScanOnce();
@@ -951,6 +1000,11 @@ const timerRegistrationScanCheck: PeriodicCheck = {
   name: 'timer-registration-scan',
   intervalMs: 600_000,
   fireOnArm: true,
+  // Same shape as poll-suspect-scan above: a diff against a known-set snapshot, not a
+  // reaction to a single change event — MUST-SAMPLE. (This check IS part of P-011's own
+  // enforcement story — see the file comment above it — but the check itself still needs
+  // its own D-004 classification like every other entry in this array.)
+  classification: 'must-sample',
   tick: async () => {
     const { runTimerRegistrationScanOnce } = await import('../poll-suspect-alarm');
     const { alerted, seeded } = await runTimerRegistrationScanOnce();
@@ -1029,6 +1083,7 @@ export function armInProcessPeriodicChecks(
       category: 'global-sweep',
       shed: check.shed,
       fireOnArm: check.fireOnArm,
+      classification: check.classification,
     }),
   }));
   console.log(
