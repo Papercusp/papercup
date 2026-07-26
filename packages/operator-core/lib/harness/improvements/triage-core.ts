@@ -152,12 +152,36 @@ export async function applyTriageDecision(
     };
   }
 
+  // Evidence-staleness guard (EI-18696839552593260): a 'place' recommendation whose
+  // OWN cited evidence is already terminal-with-completion-ref gets downgraded to
+  // 'gate' before it ever reaches the auto-implement lane. Best-effort — never
+  // throws, never touches a non-'place' decision.
+  let decision: TriageDecision = input.decision;
+  let reason = input.reason;
+  let evidenceDowngrade: ApplyTriageResult['evidenceDowngrade'];
+  if (decision === 'place') {
+    try {
+      const check = await evidenceStalenessCheck(issue, deps);
+      if (check.stale) {
+        evidenceDowngrade = { requestedDecision: decision, citedIds: check.citedIds, staleIds: check.staleIds };
+        decision = 'gate';
+        reason =
+          `${input.reason} — EVIDENCE-STALENESS GUARD (EI-18696839552593260): every cited item ` +
+          `(${check.staleIds.join(', ')}) is already resolved/closed with a completion ref; this idea's ` +
+          `premise may already be contradicted by its own cited evidence. Downgraded place→gate for ` +
+          `human/Queen re-verification before auto-implementing.`;
+      }
+    } catch {
+      // best-effort — a guard failure never blocks a normal triage decision
+    }
+  }
+
   // Full-fidelity classification (D-005): the candidate view carries paths +
   // watchdogKey + kind, which the taxonomy keys off — never a scope-only call.
   const ideaType = classifyIdeaType(issueToCandidate(issue)).type;
   const lifecycle = updateIdeaLifecycle(current, 'triaged', {
-    triageDecision: input.decision,
-    triageReason: input.reason,
+    triageDecision: decision,
+    triageReason: reason,
     ideaType,
   });
 
@@ -165,19 +189,19 @@ export async function applyTriageDecision(
   const patch: Record<string, unknown> = { ideaLifecycle: lifecycle };
   // Reject = a DECIDED idea: record the durable reason for the recall matcher
   // ("already decided: <reason>") and close it so it leaves the open queue.
-  if (input.decision === 'reject') patch.decidedReason = input.reason;
+  if (decision === 'reject') patch.decidedReason = reason;
   await deps.mergeIssuePayload(input.id, patch);
 
   if (input.comment !== false) {
-    await deps.commentIssue(input.id, `Triage (${by}): ${input.decision} — ${input.reason}`, by);
+    await deps.commentIssue(input.id, `Triage (${by}): ${decision} — ${reason}`, by);
   }
 
   let closed = false;
-  if (input.decision === 'reject') {
+  if (decision === 'reject') {
     // Completion-integrity gate (WI-1403, contract C-1): a triage reject is a genuine,
     // reasoned DECISION by a principal (`by`) — the durable rejection reason IS the
     // completion evidence, so it carries a real completionRef rather than a skip.
-    await deps.setIssueState(input.id, 'closed', by, `Triage decision: reject — ${input.reason}`);
+    await deps.setIssueState(input.id, 'closed', by, `Triage decision: reject — ${reason}`);
     closed = true;
   }
 
@@ -187,7 +211,7 @@ export async function applyTriageDecision(
     .then((m) => m.notifySyncInvalidate('learning.improvements'))
     .catch(() => {});
 
-  return { ok: true, id: input.id, decision: input.decision, lifecycle, closed };
+  return { ok: true, id: input.id, decision, lifecycle, closed, ...(evidenceDowngrade ? { evidenceDowngrade } : {}) };
 }
 
 /**

@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { applyTriageDecision, selectUntriaged, type TriageCoreDeps } from './triage-core';
+import { applyTriageDecision, evidenceStalenessCheck, selectUntriaged, type TriageCoreDeps } from './triage-core';
 import type { EngineerIssue } from '../../issues-engineer';
 import type { ScoredItem } from './digest';
 
@@ -17,10 +17,15 @@ function issueOf(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
     severity: p.severity ?? 'major',
     kind: p.kind ?? 'bug',
     payload: p.payload,
+    body: p.body,
+    terminalCompletionRef: p.terminalCompletionRef ?? null,
   } as EngineerIssue;
 }
 
-function depsOf(issue: EngineerIssue | null): TriageCoreDeps & {
+function depsOf(
+  issue: EngineerIssue | null,
+  registry: Record<string, EngineerIssue | null> = {},
+): TriageCoreDeps & {
   merged: Record<string, unknown>[];
   states: string[];
   comments: string[];
@@ -28,11 +33,12 @@ function depsOf(issue: EngineerIssue | null): TriageCoreDeps & {
   const merged: Record<string, unknown>[] = [];
   const states: string[] = [];
   const comments: string[] = [];
+  const byId: Record<string, EngineerIssue | null> = { ...registry, ...(issue ? { [issue.id]: issue } : {}) };
   return {
     merged,
     states,
     comments,
-    getIssue: vi.fn(async () => issue),
+    getIssue: vi.fn(async (id: string) => (id in byId ? byId[id] : id === issue?.id ? issue : null)),
     setIssueState: vi.fn(async (_id, state) => {
       states.push(state);
       return issue;
@@ -123,6 +129,95 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
     const b = depsOf(issueOf({ id: 'i8' }));
     await applyTriageDecision({ id: 'i8', decision: 'gate', reason: 'r', comment: false }, b);
     expect(b.comments).toHaveLength(0);
+  });
+});
+
+describe('evidence-staleness guard (EI-18696839552593260) — place downgrades to gate', () => {
+  it('downgrades place→gate when every cited item is terminal with a completion ref', async () => {
+    const cited = issueOf({ id: 'EI-100', state: 'closed', terminalCompletionRef: 'dropped: premise false' });
+    const idea = issueOf({ id: 'i9', body: 'Regression per EI-100 — see also EI-100 (dup mention).' });
+    const deps = depsOf(idea, { 'EI-100': cited });
+    const res = await applyTriageDecision({ id: 'i9', decision: 'place', reason: 'code-bug, tier=auto' }, deps);
+    expect(res.ok).toBe(true);
+    expect(res.decision).toBe('gate');
+    expect(res.evidenceDowngrade?.requestedDecision).toBe('place');
+    expect(res.evidenceDowngrade?.citedIds).toEqual(['EI-100']);
+    expect(res.evidenceDowngrade?.staleIds).toEqual(['EI-100']);
+    const lc = deps.merged[0].ideaLifecycle as Record<string, unknown>;
+    expect(lc.triageDecision).toBe('gate');
+    expect(lc.triageReason).toContain('EVIDENCE-STALENESS GUARD');
+  });
+
+  it('leaves place alone when a cited item is still open', async () => {
+    const cited = issueOf({ id: 'EI-101', state: 'open' });
+    const idea = issueOf({ id: 'i10', body: 'Regression per EI-101.' });
+    const deps = depsOf(idea, { 'EI-101': cited });
+    const res = await applyTriageDecision({ id: 'i10', decision: 'place', reason: 'code-bug, tier=auto' }, deps);
+    expect(res.ok).toBe(true);
+    expect(res.decision).toBe('place');
+    expect(res.evidenceDowngrade).toBeUndefined();
+  });
+
+  it('leaves place alone when a cited item is terminal but carries no completion ref', async () => {
+    const cited = issueOf({ id: 'EI-102', state: 'closed', terminalCompletionRef: null });
+    const idea = issueOf({ id: 'i11', body: 'Regression per EI-102.' });
+    const deps = depsOf(idea, { 'EI-102': cited });
+    const res = await applyTriageDecision({ id: 'i11', decision: 'place', reason: 'x' }, deps);
+    expect(res.decision).toBe('place');
+  });
+
+  it('leaves place alone when a citation does not resolve to a real item', async () => {
+    const idea = issueOf({ id: 'i12', body: 'Regression per EI-999999 (deleted/renumbered).' });
+    const deps = depsOf(idea, { 'EI-999999': null });
+    const res = await applyTriageDecision({ id: 'i12', decision: 'place', reason: 'x' }, deps);
+    expect(res.decision).toBe('place');
+  });
+
+  it('never downgrades a non-place decision', async () => {
+    const cited = issueOf({ id: 'EI-103', state: 'resolved', terminalCompletionRef: 'fixed' });
+    const idea = issueOf({ id: 'i13', body: 'Per EI-103.' });
+    const deps = depsOf(idea, { 'EI-103': cited });
+    const res = await applyTriageDecision({ id: 'i13', decision: 'gate', reason: 'x' }, deps);
+    expect(res.decision).toBe('gate');
+    expect(res.evidenceDowngrade).toBeUndefined();
+  });
+
+  it('an idea citing nothing is never flagged stale', async () => {
+    const idea = issueOf({ id: 'i14', body: 'No citations here at all.' });
+    const deps = depsOf(idea);
+    const res = await applyTriageDecision({ id: 'i14', decision: 'place', reason: 'x' }, deps);
+    expect(res.decision).toBe('place');
+  });
+
+  it('a lookup failure never blocks the decision (best-effort)', async () => {
+    const idea = issueOf({ id: 'i15', body: 'Per EI-104.' });
+    const deps = depsOf(idea);
+    deps.getIssue = vi.fn(async (id: string) => {
+      if (id === 'EI-104') throw new Error('db unavailable');
+      return id === 'i15' ? idea : null;
+    });
+    const res = await applyTriageDecision({ id: 'i15', decision: 'place', reason: 'x' }, deps);
+    expect(res.ok).toBe(true);
+    expect(res.decision).toBe('place');
+  });
+
+  describe('evidenceStalenessCheck (unit)', () => {
+    it('is stale only when EVERY resolvable citation is terminal-with-ref', async () => {
+      const a = issueOf({ id: 'EI-1', state: 'closed', terminalCompletionRef: 'x' });
+      const b = issueOf({ id: 'EI-2', state: 'open' });
+      const deps = depsOf(null, { 'EI-1': a, 'EI-2': b });
+      const res = await evidenceStalenessCheck({ id: 'idea', title: '', body: 'cites EI-1 and EI-2' }, deps);
+      expect(res.stale).toBe(false);
+      expect(res.citedIds).toEqual(['EI-1', 'EI-2']);
+      expect(res.staleIds).toEqual(['EI-1']);
+    });
+
+    it('excludes a self-citation from the cited-id set', async () => {
+      const deps = depsOf(null);
+      const res = await evidenceStalenessCheck({ id: 'EI-5', title: 'about EI-5 itself', body: '' }, deps);
+      expect(res.citedIds).toEqual([]);
+      expect(res.stale).toBe(false);
+    });
   });
 });
 
