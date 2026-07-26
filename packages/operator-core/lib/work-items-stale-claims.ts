@@ -686,3 +686,41 @@ export async function reclaimStaleIssueClaims(
   }
   return { released, orphanLeasesCleared };
 }
+
+/** One row this sweep pulled back into the claimable pool. */
+export interface StrandedWipRow {
+  workspace_id: string;
+  harness_slug: string;
+  feature_id: string;
+  item_kind: string | null;
+}
+
+/**
+ * WI-6039 — the GENERAL backstop for a work_items row ALREADY stuck at
+ * `status='wip'` with `taken_by` NULL/empty. `reclaimStaleWorkItemClaims` above
+ * decides whether a CURRENT holder is dead before releasing a claim, so its fix
+ * only stops NEW rows from getting stranded through that path — it cannot reach a
+ * row a holder already vacated (via that same reclaim path before this fix landed,
+ * a raw-SQL release elsewhere, or any other writer that clears `taken_by` without
+ * also moving `status` out of `wip`). Such a row needs NO liveness decision: there
+ * is no `taken_by` to protect, so it is unconditionally not "in progress" and
+ * belongs back in the `open` pool — that is the entire defect class WI-6039 found
+ * live (31 rows, oldest since 2026-05-02, one of which hid a 6-day canary outage
+ * because the very BUG REPORT of that outage fell into this hole after being filed).
+ *
+ * Cheap (one indexed UPDATE keyed on `status`), unconditional, and idempotent —
+ * safe to run every tick alongside the stale-claim sweep (wired in
+ * dbos/in-process-periodic.ts). A NON-ZERO result on an ONGOING basis (not just the
+ * one-time historical backlog) is itself a signal worth logging loudly: it means
+ * some writer OTHER than the two fixed here is still creating these, and that
+ * writer needs to be found next.
+ */
+export async function reconcileStrandedWipWorkItems(sql: Db): Promise<StrandedWipRow[]> {
+  return sql<StrandedWipRow[]>`
+    UPDATE harness_shared.work_items
+       SET status = 'open',
+           updated_ts = ${Date.now()}
+     WHERE status = 'wip'
+       AND (taken_by IS NULL OR taken_by = '')
+    RETURNING workspace_id, harness_slug, feature_id, item_kind`;
+}

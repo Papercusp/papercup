@@ -62,6 +62,15 @@ export interface BoundaryRekeyResult {
    * (malformed pubkeys — e.g. leaked test-fixture rows) so nothing was granted.
    */
   reason?: 'flag-disabled' | 'no-fresh-members' | 'no-author' | 'no-gap' | 'all-members-unwrappable';
+  /**
+   * WI-6044: device pubkeys the BOUNDARY skipped because wrapKeyToMember threw (malformed rows).
+   * Absent on the healthy path. This is a PARTIAL success — applied is still true and the epoch
+   * DID advance — so without surfacing it the skip is invisible: those devices silently hold no
+   * key for the new epoch and simply stop being able to read, which is indistinguishable from an
+   * intentional revocation. Same reasoning as `reason` above (WI-280): a boundary that quietly
+   * does less than asked is exactly what made WI-6043 cost hours of parallel diagnosis.
+   */
+  skippedDevicePubkeys?: string[];
 }
 
 export interface BoundaryRekeySeams {
@@ -154,7 +163,7 @@ export async function advanceEpochOnHiveBoundary(
   const revoked = await loadRevokedPubkeys(opts.workspaceId, opts.potHomeSlug, opts.sql);
   const remaining = all.filter((pk) => pk && !cut.has(pk) && !revoked.has(pk));
 
-  const { newEpoch, wrapped } = await advanceAndWrap(
+  const { newEpoch, wrapped, skippedDevicePubkeys } = await advanceAndWrap(
     crypto,
     { workspaceId: opts.workspaceId, potHomeSlug: opts.potHomeSlug, potId: opts.potHomeSlug },
     remaining,
@@ -170,7 +179,14 @@ export async function advanceEpochOnHiveBoundary(
     author,
     opts.sql,
   );
-  return { applied: true, newEpoch, distributed };
+  return {
+    applied: true,
+    newEpoch,
+    distributed,
+    // WI-6044: propagate a PARTIAL boundary so the revoke call-site can record it alongside its
+    // existing rekey_boundary_skipped signal, instead of the skip vanishing behind applied:true.
+    ...(skippedDevicePubkeys && skippedDevicePubkeys.length > 0 ? { skippedDevicePubkeys } : {}),
+  };
 }
 
 /**

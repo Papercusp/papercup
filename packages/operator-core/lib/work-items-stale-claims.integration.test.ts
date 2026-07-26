@@ -8,7 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
-import { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims } from './work-items-stale-claims';
+import { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims, reconcileStrandedWipWorkItems } from './work-items-stale-claims';
 import { SESSION_END_MARKER } from './agent-tools/activity/lifecycle-markers';
 
 const PRESENCE_DDL = `

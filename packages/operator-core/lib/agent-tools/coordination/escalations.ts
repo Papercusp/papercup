@@ -413,13 +413,56 @@ function boundBodyForList(rec: EscalationRecord): EscalationRecord {
  * WI-239: bounds coord:escalations so one call never returns ~9M chars.
  */
 export async function listEscalationsPaginated(
-  opts: { status?: 'open' | 'resolved'; maxRecords?: number } = {},
+  opts: { status?: 'open' | 'resolved'; maxRecords?: number; offset?: number } = {},
 ): Promise<{
   escalations: EscalationRecord[];
   truncated: boolean;
   total: number;
   trueOpenTotal?: number;
+  offset?: number;
 }> {
+  const maxRecords = Math.max(1, Math.min(opts.maxRecords ?? 50, 500));
+  const offset = Math.max(0, opts.offset ?? 0);
+
+  // EI-18712273081050373 (WI-6038's sibling) — for status:'open', when the P-005
+  // materialized projection is available, serve the PAGE directly from it instead
+  // of the recency-windowed raw-event-log fold below. That fold only ever scans
+  // the NEWEST `maxRecords` "escalation" open events (+ a bounded, extended
+  // resolves window) — so in a high-churn workspace where most RECENT escalation
+  // traffic resolves quickly, an OLD escalation that never resolved is buried
+  // under that noise and is NEVER reached, no matter how large `maxRecords` is
+  // raised: raising it only widens the SAME recency window, it never introduces a
+  // way to page further BACK. Live-observed: trueOpenTotal:359, a maxRecords:50
+  // page returning exactly 0-1 rows. The projection already holds the exact,
+  // complete, ordered open set (it's the very source `trueOpenTotal` reads below)
+  // — slicing it directly by `offset` makes the WHOLE backlog pageable (sum of
+  // pages == trueOpenTotal) instead of silently returning a near-empty page while
+  // claiming a true count of hundreds.
+  if (opts.status === 'open' && coordHasPgFastPath()) {
+    let useProjection = false;
+    try {
+      useProjection = await getFlag(FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION, systemDistinctId());
+    } catch {
+      useProjection = false;
+    }
+    if (useProjection) {
+      try {
+        const all = await readOpenEscalationsProjection();
+        const page = all.slice(offset, offset + maxRecords).map(boundBodyForList);
+        return {
+          escalations: page,
+          truncated: offset + maxRecords < all.length,
+          total: page.length,
+          trueOpenTotal: all.length,
+          offset,
+        };
+      } catch {
+        // fall through to the legacy windowed fold below — best-effort, never a
+        // hard dependency of the projection being reachable.
+      }
+    }
+  }
+
   // EI-1548: bound the READ at the storage layer instead of loading the ENTIRE
   // escalations surface into memory and truncating after.
   //
@@ -430,7 +473,6 @@ export async function listEscalationsPaginated(
   // this session's own traffic) crowd OPEN escalations out of the window
   // entirely: `escalations:[]` with a nonzero `total`/`truncated:true`, which
   // read as broken rather than "no matches in a resolve-heavy window."
-  const maxRecords = Math.max(1, Math.min(opts.maxRecords ?? 50, 500));
   // EI-16170: a bounded/windowed page's `total` (== `escalations.length`, see
   // below) is NOT the backlog size — it's just how many fit in this window,
   // and a small `maxRecords` window silently reads like ground truth (a

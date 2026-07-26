@@ -363,7 +363,9 @@ const staleClaimSweepCheck: PeriodicCheck = {
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
 
-    const { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims } = await import('../work-items-stale-claims');
+    const { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims, reconcileStrandedWipWorkItems } = await import(
+      '../work-items-stale-claims'
+    );
     // live-configurability-audit P-014: apply the stale-claim reclaim overrides (undefined ⇒ baked default).
     const { readCoordLivenessConfig } = await import('../coord-liveness-config');
     const livenessCfg = await readCoordLivenessConfig();
@@ -422,6 +424,31 @@ const staleClaimSweepCheck: PeriodicCheck = {
           /* best-effort — the console.warn above is the floor */
         }
       }
+    }
+
+    // WI-6039: the GENERAL backstop for a work_items row ALREADY stuck at
+    // status='wip' with taken_by NULL/empty — the residual state the reclaim SQL
+    // above (pre-fix) could leave behind, or that any OTHER writer might still
+    // produce. Unlike the reclaim above, no liveness decision is needed here:
+    // taken_by is already empty, so the row is unconditionally not "in progress".
+    // A non-zero, RECURRING result here (beyond the one-time historical backlog
+    // WI-6039 reconciled directly) means some writer other than the fixed reclaim
+    // path is still creating these — logged loudly precisely so that's noticed,
+    // since a stuck-wip row is invisible to every other orphan/stall detector
+    // (confirmed live: it hid a 6-day autonomous-loop canary outage).
+    try {
+      const stranded = await reconcileStrandedWipWorkItems(sql);
+      if (stranded.length > 0) {
+        console.warn(
+          `[stranded-wip-reconcile] WI-6039: found + reopened ${stranded.length} work-item(s) stuck at ` +
+            `status='wip' with no holder (unclaimable + undetectable until now): ` +
+            stranded.map((s) => `${s.harness_slug}/${s.feature_id}`).join(', '),
+        );
+      }
+    } catch (e) {
+      console.warn(
+        `[stranded-wip-reconcile] WI-6039 sweep failed (non-fatal — retries next tick): ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
 
     // ── P-017 (cross-machine-coord-parity-and-trust-2026-07-01): the LEASE-table
