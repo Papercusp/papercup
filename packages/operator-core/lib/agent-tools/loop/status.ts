@@ -19,7 +19,7 @@ export default defineTool({
   name: 'loop:status',
   profile: 'engineer',
   description:
-    "Inspect the loop on your own session (or another owner's, with `ownerId`): active?, interval, parked (turn in flight), next/last fire, cost-cap. Returns null when no loop exists for the owner.",
+    "Inspect the loop on your own session (or another owner's, with `ownerId`): active?, interval, parked (turn in flight), next/last fire, cost-cap. Also returns `turnsStalled` (EI-18712914572668391) — true when fires keep landing (fireCount climbing) but `lastTurnAt` (the most recent real turn-completion marker) isn't keeping pace, e.g. a wedged wake channel; `stalled` alone only catches a PARKED in-flight turn stuck past its dwell window, not this armed-but-not-producing case. Returns null when no loop exists for the owner.",
   guidance: {
     when: 'Check whether your loop is still armed + when it next fires, or inspect another agent\'s loop.',
     notWhen: 'See the WORK a loop is producing — that is fleet:assignments (the self-assigned work_items). Whole-engine health — autoloop:status.',

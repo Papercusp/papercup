@@ -36,6 +36,8 @@ import {
   detectDrivenWorkItemId,
   loopRoutineName,
   computeLoopStall,
+  computeTurnsStalled,
+  TURNS_STALLED_MIN_FIRE_COUNT,
   autoArmFleetMemberLoop,
   LOOP_WAKE_ACTION,
   LOOP_INTERVAL_FLOOR_SEC,
@@ -111,6 +113,116 @@ describe('computeLoopStall (P2b — parked-healthy vs parked-dead)', () => {
     // interval 1200s → 4× = 4800s = 80min > 30min, so 60min parked is NOT yet stalled.
     expect(computeLoopStall({ parked: true, parkedMs: 60 * 60_000, intervalSec: 1200, hasCompletionSinceFire: false, activeSinceFire: false }).stalled).toBe(false);
     expect(computeLoopStall({ parked: true, parkedMs: 90 * 60_000, intervalSec: 1200, hasCompletionSinceFire: false, activeSinceFire: false }).stalled).toBe(true);
+  });
+});
+
+describe('computeTurnsStalled (EI-18712914572668391 — fires attempted vs turns produced)', () => {
+  const NOW = 1_800_000_000_000; // arbitrary fixed epoch ms
+  const intervalSec = 300; // 300s, matches the incident this item was filed on
+
+  it('inactive loop → never flagged, regardless of the gap', () => {
+    expect(
+      computeTurnsStalled({
+        active: false,
+        fireCount: 50,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: NOW - 10 * 60 * 60_000,
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it('fewer than TURNS_STALLED_MIN_FIRE_COUNT fires → never flagged (no trend yet, avoid startup noise)', () => {
+    expect(TURNS_STALLED_MIN_FIRE_COUNT).toBeGreaterThan(1);
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: TURNS_STALLED_MIN_FIRE_COUNT - 1,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: null, // even the strongest signal (no turn EVER) is suppressed pre-threshold
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it('no last-fired timestamp → nothing to compare against, never flagged', () => {
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: 10,
+        lastFiredAtMs: null,
+        lastTurnAtMs: null,
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it('NO turn has EVER completed for this owner, yet several fires landed → flagged (the strongest signal)', () => {
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: TURNS_STALLED_MIN_FIRE_COUNT,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: null,
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it('the incident this item was filed on: 36 fires over ~3h @300s interval, carry-note/turn frozen ~3h behind → flagged', () => {
+    // Mirrors the filed evidence: fireCount:36, armed 10:09, lastFiredAt 13:04 — the
+    // session's last real activity (carry-note write) sat frozen at 10:08, ~3h behind.
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: 36,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: NOW - 3 * 60 * 60_000, // ~3h behind the most recent fire
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it('a turn completed recently relative to the last fire (within the generous floor) → NOT flagged (healthy)', () => {
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: 10,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: NOW - 2 * 60_000, // 2min behind — a normal in-flight turn
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it('the floor scales to 4×interval for a long-interval loop, mirroring computeLoopStall\'s own floor', () => {
+    const longIntervalSec = 1200; // 4× = 80min > the 30min base floor
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: 10,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: NOW - 60 * 60_000, // 60min behind — under the scaled 80min floor
+        intervalSec: longIntervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: 10,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: NOW - 90 * 60_000, // 90min behind — past the scaled 80min floor
+        intervalSec: longIntervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(true);
   });
 });
 

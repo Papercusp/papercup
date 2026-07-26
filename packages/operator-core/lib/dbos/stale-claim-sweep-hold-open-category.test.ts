@@ -55,6 +55,10 @@ vi.mock('../coord-liveness-config', () => ({
 vi.mock('../work-items-stale-claims', () => ({
   reclaimStaleWorkItemClaims: async () => ({ released: [] }),
   reclaimStaleIssueClaims: async () => ({ released: [], orphanLeasesCleared: 0 }),
+  // WI-6039's stranded-wip backstop. tick() DESTRUCTURES all three exports up front
+  // (in-process-periodic.ts), outside the per-reaper try/catch — so a missing entry
+  // here fails the whole tick, not just this leg.
+  reconcileStrandedWipWorkItems: async () => [],
 }));
 
 vi.mock('../dead-owner-control-sweep', () => ({

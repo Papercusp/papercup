@@ -744,8 +744,8 @@ export async function getLoopStatuses(
              WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
                AND ag.summary = ${SESSION_END_MARKER} AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
            -- EI-18712914572668391: the most recent turn-completion marker for this owner,
-           -- UNSCOPED by `> r.last_fired_at` (unlike lifecycle_completed_at above, which only
-           -- answers "did THIS fire's turn settle yet"). This is what lets loop:status tell
+           -- UNSCOPED by the "> r.last_fired_at" filter (unlike lifecycle_completed_at above,
+           -- which only answers "did THIS fire's turn settle yet"). This is what lets loop:status tell
            -- fires ATTEMPTED (fire_count, keeps climbing on a bare-interval re-arm even when
            -- delivery never becomes a real turn) apart from turns actually PRODUCED — an armed
            -- (not parked) loop has, by construction, already been judged "settled" for its most
