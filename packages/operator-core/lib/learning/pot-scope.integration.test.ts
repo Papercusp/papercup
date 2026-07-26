@@ -76,7 +76,7 @@ describe('pot-scope guard (P-006) — no learning table regresses to workspace s
   const potOf = async (table: string, where: string, params: unknown[]): Promise<string | null> => {
     const rows = await sql().unsafe(`SELECT pot_slug FROM ${table} WHERE ${where} LIMIT 1`, params as never[]);
     expect(rows.length, `${table}: guard row not found`).toBe(1);
-    return (rows[0] as { pot_slug: string | null }).pot_slug;
+    return (rows[0] as unknown as { pot_slug: string | null }).pot_slug;
   };
 
   it('(b) transfer_lessons: admitTransferLesson stamps the explicit pot', async () => {

@@ -195,8 +195,11 @@ export interface OrientResult {
    *  and is authoritative — a `not_claimable` bounce off a stale candidate is
    *  expected and cheap, not a bug to chase. */
   claimable: unknown[];
-  /** coord:inbox folded down to its summary + the most-recent bounded entries. */
-  inbox: { summary?: unknown; recent?: unknown };
+  /** coord:inbox folded down to its summary + the most-recent bounded entries.
+   *  EI-18667514339699744: `entries` is aliased alongside `recent` (same array,
+   *  same reference) so a caller reading either coord:orient's or coord:inbox's
+   *  key name gets the real rows instead of a silent [] on a mismatched read. */
+  inbox: { summary?: unknown; recent?: unknown; entries?: unknown };
   /** memory:search recall for `intent`/`memoryQuery` — bounded hits; null if the
    *  recall failed/timed out; absent when no query was given. `withheld` counts
    *  queen-loop-steering hits stripped for a responsive caller (P-002). EI-9031:
@@ -596,7 +599,10 @@ export async function composeOrient(
     ok: true,
     me,
     claimable,
-    inbox: { summary: inbox?.summary, recent: inbox?.entries },
+    // EI-18667514339699744: alias `entries` alongside `recent` — coord:inbox's own
+    // key name — so a caller who reads either name off this fold gets real rows
+    // instead of a silent empty array on a mismatched accessor.
+    inbox: { summary: inbox?.summary, recent: inbox?.entries, entries: inbox?.entries },
     ...(fleetDelta !== undefined ? { fleetDelta } : {}),
     // P-004: fold the mechanical owner-present bit when the handler resolved it (undefined ⇒
     // leg absent; the handler passes null on a read failure).

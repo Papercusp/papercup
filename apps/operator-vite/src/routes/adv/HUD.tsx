@@ -1,32 +1,25 @@
-import { createFileRoute } from '@tanstack/react-router';
-import AdvShell from '../../components/adv/AdvShell';
-import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
-import HudView from '@/app/adv/hud/HudView';
+import { createFileRoute, redirect } from '@tanstack/react-router';
 
 /**
- * /adv/HUD — the session HUD (adv-hud-fleet-board-2026-07-25 P-004).
+ * /adv/HUD — kept as a URL, redirected into the tab strip.
  *
- * A REAL route, not a redirect into the /adv tab shell like its `adv/*`
- * siblings: the owner asked for "a new route /adv/HUD" (2026-07-25), and the
- * board is a destination you keep open rather than a tab you pass through.
- *
- * It still renders inside <AdvShell> so the operator chrome (agents pill, nav)
- * is unchanged, and inside the same per-tab error boundary the /adv tabs use —
- * a render crash here must not white-screen the operator.
+ * It WAS a standalone route (the board is a destination you keep open), but the
+ * owner asked for it in the /adv tab strip (2026-07-25), first slot right of
+ * Overview. Two surfaces for one board would have meant the strip stayed dead
+ * while you were on /adv/HUD — every trigger writes `?tab=` on the CURRENT route,
+ * so clicking "git" from the standalone page changed the URL and kept rendering
+ * the HUD. So this follows the same convention as its `adv/*` siblings
+ * (plans, insights): the tab shell owns the surface, the named route redirects.
  *
  * Casing is deliberate: TanStack file routes are case-sensitive, so this file
- * must stay `HUD.tsx` for the requested `/adv/HUD` URL to resolve.
+ * must stay `HUD.tsx` for the requested `/adv/HUD` URL to keep resolving.
+ *
+ * Search params carry through so a deep link like `/adv/HUD?hudcol=blocked`
+ * lands on the board with the column focus intact (the HUD's nuqs keys are
+ * `hudcol` / `hudfleet` / `hudall` / `hudsession`).
  */
 export const Route = createFileRoute('/adv/HUD')({
-  component: HudPage,
+  beforeLoad: ({ search }) => {
+    throw redirect({ to: '/adv', search: { ...(search ?? {}), tab: 'hud' } });
+  },
 });
-
-function HudPage() {
-  return (
-    <AdvShell title="HUD">
-      <AdvTabErrorBoundary tab="hud">
-        <HudView />
-      </AdvTabErrorBoundary>
-    </AdvShell>
-  );
-}

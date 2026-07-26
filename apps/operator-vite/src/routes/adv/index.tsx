@@ -12,6 +12,7 @@ import HealthTab from '../../components/adv/HealthTab';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
+import HudView from '@/app/adv/hud/HudView';
 // plans.css is still needed: the Create dock's panels (PlansListPanel,
 // PreviewPanel, …) reuse the `pc-plans__*` classes from PlansClient.
 import '@/app/admin/plans/plans.css';
@@ -46,6 +47,7 @@ function AdvIndexPage() {
 
 function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'overview') return 'Overview';
+  if (tab === 'hud') return 'HUD';
   if (tab === 'conversations') return 'Conversations';
   if (tab === 'learning') return 'Learning';
   if (tab === 'harnesses') return 'Working';
@@ -63,6 +65,10 @@ function renderAdvTab(tab: AdvTabId) {
   switch (tab) {
     case 'overview':
       return <AdvOverviewTab />;
+    case 'hud':
+      // HUD — the session board: every live session grouped by what it needs
+      // (adv-hud-fleet-board-2026-07-25). `/adv/HUD` redirects to ?tab=hud.
+      return <HudView />;
     case 'conversations':
       return <AdvConversationsTab />;
     case 'learning':

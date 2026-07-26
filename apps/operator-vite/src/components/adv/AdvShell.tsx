@@ -10,6 +10,7 @@ import {
   CalendarClock,
   Check,
   FlaskConical,
+  Gauge,
   GitBranch,
   GraduationCap,
   HeartPulse,
@@ -53,7 +54,7 @@ import { CATEGORICAL } from '@/app/harness/theme';
 // 'brainstorm' removed 2026-07-13 (quick-panel-saved-prompts P-010): the brainstorm
 // surface lives in the Quick Panel popup's Brainstorm tab now (owner ask). Old
 // ?tab=brainstorm deep links fall back to 'overview' via the enum parser.
-const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
+const ADV_TAB_IDS = ['overview', 'hud', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -71,6 +72,12 @@ export const ADV_TABS: ReadonlyArray<{
   accentRgb: string;
 }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: CATEGORICAL.indigo400.hex, accentRgb: CATEGORICAL.indigo400.rgb },
+  // HUD — the session board (adv-hud-fleet-board-2026-07-25). First slot right of
+  // Overview by owner ask (2026-07-25): it is the "who is doing what / who needs me"
+  // glance you reach for immediately after the landing dashboard. Workspace-scoped
+  // (it aggregates every session in the workspace, not one pot), so it also lives in
+  // WORKSPACE_TAB_IDS. `/adv/HUD` redirects here rather than rendering its own page.
+  { id: 'hud', label: 'HUD', icon: Gauge, accent: CATEGORICAL.cyan400.hex, accentRgb: CATEGORICAL.cyan400.rgb },
   // (Brainstorm tab removed — it lives in the Quick Panel popup now; P-010.)
   { id: 'plans', label: 'Create', icon: ListChecks, accent: CATEGORICAL.amber500.hex, accentRgb: CATEGORICAL.amber500.rgb },
   // Calendar — the schedulable time-surface for scheduled/recurring plans
@@ -117,6 +124,9 @@ export const ADV_TABS: ReadonlyArray<{
  */
 export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'overview',
+  // HUD is a roster of every SESSION in the workspace (presence-primary), not a
+  // per-pot view — it stays visible under "All Pots".
+  'hud',
   'plans',
   // Calendar aggregates every pot's scheduled-plan occurrences, not one pot
   // (scheduled-recurring-plans-2026-06-16 P-019), so it stays visible under "All Pots".

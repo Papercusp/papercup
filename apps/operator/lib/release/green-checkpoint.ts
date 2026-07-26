@@ -2191,6 +2191,53 @@ export function hasNpmScript(treeDir: string, scriptName: string): boolean {
   }
 }
 
+/**
+ * EI-18661485259809120: every commit git-sync produces (and therefore every commit
+ * `main` ever advances to, since main only ever FAST-FORWARDS from a staging commit
+ * — it never gets a fresh commit of its own) carries a literal `[skip ci]` suffix
+ * (run-git-sync.ts's default message). GitHub Actions honors `[skip ci]` in the HEAD
+ * commit message for BOTH `push` and `pull_request` events, so test.yml's `push:
+ * branches: [main]` trigger has never actually fired on a real `main` advance since
+ * the staging->main model landed (confirmed: its last real push-triggered run was
+ * 2026-06-30, and the failure that stopped it there is unrelated + already fixed on
+ * HEAD) — its "GATING" lints have been gating nothing.
+ *
+ * `workflow_dispatch` is a DIFFERENT trigger type, not filtered by a commit's
+ * `[skip ci]` marker, so we fire it explicitly right after each real FF of `main` —
+ * once per green-checkpoint promotion (not on every git-sync tick to `staging`,
+ * which this is never called for). Best-effort: a GitHub API hiccup (network, auth,
+ * missing `workflow_dispatch:` trigger on a fork) must never fail the checkpoint
+ * itself, so every failure is caught and only logged.
+ */
+async function dispatchCiWorkflow(integrationRoot: string, ref: string, log: (s: string) => void): Promise<void> {
+  try {
+    const { gitOriginUrl, parseGithubRemote } = await import(
+      '@papercusp/operator-core/lib/cupboard/resolve-repo-coords'
+    );
+    const origin = await gitOriginUrl(integrationRoot);
+    const coords = origin ? parseGithubRemote(origin) : null;
+    if (!coords) {
+      log(`ci-dispatch: skipped — no GitHub origin resolved for ${integrationRoot}`);
+      return;
+    }
+    const { getOctokit } = await import('@papercusp/operator-core/lib/identity/octokit-client');
+    const oc = await getOctokit();
+    if (!oc) {
+      log('ci-dispatch: skipped — gh not authenticated');
+      return;
+    }
+    await oc.rest.actions.createWorkflowDispatch({
+      owner: coords.owner,
+      repo: coords.repo,
+      workflow_id: 'test.yml',
+      ref,
+    });
+    log(`ci-dispatch: triggered test.yml on ${coords.owner}/${coords.repo}@${ref}`);
+  } catch (e) {
+    log(`warn: ci-dispatch failed (non-fatal, test.yml stays un-re-verified this tick): ${e}`);
+  }
+}
+
 export function realCheckpointDeps(
   cfg: ReleaseConfig,
   exec: CheckpointExec = runCmd,
@@ -2704,6 +2751,10 @@ export function realCheckpointDeps(
       await exec('git', ['-C', cfg.integrationRoot, 'push', 'origin', `${ref}:${ref}`], {
         env: { ...process.env, PAPERCUSP_MAIN_PUSH_OK: '1' },
       });
+      // See dispatchCiWorkflow's doc comment (EI-18661485259809120): the pushed commit's
+      // `[skip ci]` message means the push above never actually triggers test.yml on
+      // GitHub's side — re-fire it explicitly so the remote gate still runs.
+      await dispatchCiWorkflow(cfg.integrationRoot, ref, log);
     },
     async broadcast(summary, body) {
       const { sendMessage } = await import('@papercusp/operator-core/lib/agent-tools/coordination/messages');

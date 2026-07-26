@@ -203,12 +203,18 @@ export function workItemsStatus(d: WorkItemsHealth): PanelStatus {
 }
 
 /** Work-feed. crit = a dead routine (EI-584 — a stalled routine starves the whole
- *  feed). warn = auto-eligible work stuck at attempts:0 while routines are alive
- *  (ready work not flowing — mirrors the overwatch's work-feed-stuck nudge). ok
- *  otherwise (frontier depth alone is not unhealthy). */
+ *  feed), OR a release/deploy-critical routine (release-trigger, green-checkpoint)
+ *  sitting on a stale/unexplained pause (WI-5839 / EI-18654017982759582 items 2+3 —
+ *  a paused deploy pipeline silently drops every agent's "shipped" work into a
+ *  void). warn = auto-eligible work stuck at attempts:0 while routines are alive
+ *  (ready work not flowing — mirrors the overwatch's work-feed-stuck nudge), or any
+ *  OTHER routine on a stale/unexplained pause. ok otherwise (frontier depth alone
+ *  is not unhealthy). */
 export function workFeedStatus(d: WorkFeedHealth): PanelStatus {
   if (d.deadRoutines > 0) return 'crit';
+  if ((d.stalePausedCriticalRoutines ?? 0) > 0) return 'crit';
   if (d.autoEligibleStuck > 0) return 'warn';
+  if ((d.stalePausedRoutines ?? 0) > 0) return 'warn';
   return 'ok';
 }
 

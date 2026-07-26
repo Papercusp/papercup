@@ -387,6 +387,25 @@ export function evaluateLivenessAlarm(
     });
   }
 
+  // 2b. Stale-paused routines (WI-5839 / EI-18654017982759582 items 2+3) — the
+  //     PAUSED complement of #2 above, which readDeadRoutines can never see
+  //     (active=true only). A release/deploy-critical routine (release-trigger,
+  //     green-checkpoint) on a stale/unexplained pause is a `blocker`: main can go
+  //     green+ahead for days while nothing deploys, and nobody is told. Any OTHER
+  //     stale-paused routine is only an `advisory` — real, but not fleet-blocking.
+  if ((wf?.stalePausedRoutines ?? 0) > 0) {
+    const names = wf?.stalePausedRoutineNames?.length ? `: ${wf.stalePausedRoutineNames.slice(0, 4).join(', ')}` : '';
+    const critical = wf?.stalePausedCriticalRoutines ?? 0;
+    signals.push({
+      key: 'stale-paused-routines',
+      severity: critical > 0 ? 'blocker' : 'advisory',
+      summary:
+        critical > 0
+          ? `${critical} release/deploy-critical routine(s) on a stale/unexplained pause${names} — the deploy pipeline may be silently stopped.`
+          : `${wf?.stalePausedRoutines} routine(s) on a stale/unexplained pause${names} — an unattributed or long-standing pause nobody has re-affirmed.`,
+    });
+  }
+
   // 3. Queen loop dark — LIVENESS (started but no live wake), distinct from a
   //    chosen pause.
   if (health.crossMonitor?.queenAlive === false && health.panels.queen?.data?.started) {
@@ -593,6 +612,7 @@ export function deriveSignatureFromSummary(summary: string): string | null {
   s = s.trim();
   if (s.startsWith('system-health tick stale')) return 'health-tick-stale';
   if (/dead routine\(s\)/.test(s)) return 'dead-routines';
+  if (/on a stale\/unexplained pause/.test(s)) return 'stale-paused-routines';
   // Dual-recognition: legacy records carry 'Queen'/'Overwatch'; post-rename
   // records carry 'Mug'/'Kettle'. Match both so the classifier never regresses
   // on the old backlog it exists to sweep.

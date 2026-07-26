@@ -20,11 +20,15 @@
  * manifest doesn't enumerate is the cluster-fork boot-failure backstop — see
  * `cluster-fork.ts` `onUnbootable`. This file is the early, actionable signal.)
  *
- * DEPENDENCY-FREE ON PURPOSE: it imports only `node:module`, so it can never be a
- * victim of the very inconsistency it checks for. Keep it that way — do not add any
- * `@papercusp/*` or third-party import here.
+ * DEPENDENCY-FREE ON PURPOSE: it imports only Node built-ins (`node:module`,
+ * `node:fs`, `node:path`, `node:url`), so it can never be a victim of the very
+ * inconsistency it checks for. Keep it that way — do not add any `@papercusp/*` or
+ * third-party import here.
  */
 import { createRequire } from 'node:module';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Load-bearing packages the operator host imports at boot whose absence has (or
@@ -121,6 +125,185 @@ export function preflightCriticalModules(opts?: {
     }
   }
   return { ok: missing.length === 0, checked: [...modules], missing };
+}
+
+// ---------------------------------------------------------------------------
+// Lock ⇄ tree drift (EI-18666996942859193) — the primary, list-free signal.
+//
+// CRITICAL_BOOT_MODULES above is a hand-maintained SENTINEL: it can only ever catch
+// drift in packages someone thought to list, and on 2026-07-25 it missed an 8-package
+// incomplete install for hours because none of the 8 happened to be on the list. It
+// stays (kept as a cheap, resolve-verified smoke check — see the module doc), but it is
+// no longer the primary signal: `package-lock.json` already enumerates the FULL intended
+// tree, so diffing it against node_modules needs no list at all and catches every
+// package, not just the ones we remembered to name.
+//
+// BOTH DIRECTIONS, ALWAYS TOGETHER — this is the specific trap a partial check falls
+// into (EI-18666996942859193's own postmortem): checking only "on-disk-but-not-in-lock"
+// (extraneous / WI-5801's class) can report a confident "0 extraneous ⇒ tree is safe"
+// while missing packages the lock requires (the 2026-07-25 class) entirely, because that
+// direction cannot see them. A caller that wants "is this tree healthy" must look at
+// BOTH `missing` and `extraneous`, never one alone.
+// ---------------------------------------------------------------------------
+
+/** A lock-entry key's shape as it appears under package-lock.json's `packages` map. */
+interface LockPackageEntry {
+  dev?: boolean;
+  optional?: boolean;
+  link?: boolean;
+}
+
+export interface LockTreeDriftResult {
+  /** Direction A: a plain (non-dev, non-optional, non-link) top-level package the lock
+   *  requires, absent from node_modules — an INCOMPLETE install. This is the class that
+   *  cost the fleet hours on 2026-07-25; a sentinel list can never see it in general. */
+  missing: string[];
+  /** Direction B: a top-level node_modules directory with no corresponding lock entry —
+   *  PRUNABLE; the next `npm install` will remove it. Checking only this direction is
+   *  the WI-5801 false-all-clear trap — see the module doc above. */
+  extraneous: string[];
+  /** true iff `missing` is empty (drift-clean does NOT require `extraneous` to be empty —
+   *  an extraneous package is a future prune, not a present breakage). */
+  ok: boolean;
+}
+
+export interface LockTreeDriftDeps {
+  /** Absolute path to the tree root containing `package-lock.json` + `node_modules`. */
+  rootDir: string;
+  /** Reads a file as utf8 text (fs.readFileSync-shaped). Injectable for tests. */
+  readFile?: (path: string) => string;
+  /** Lists a directory's entry names (fs.readdirSync-shaped). Injectable for tests. */
+  readDir?: (path: string) => string[];
+  /** True iff `path` exists and is a directory. Injectable for tests. */
+  isDirectory?: (path: string) => boolean;
+}
+
+const defaultReadFile = (p: string) => readFileSync(p, 'utf8');
+const defaultReadDir = (p: string) => readdirSync(p);
+const defaultIsDirectory = (p: string) => {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+// Matches a TOP-LEVEL package-lock.json `packages` key only — `node_modules/<name>` or
+// `node_modules/@scope/<name>`, with no further nested `node_modules` segment. Nested
+// (per-dependency-private) copies are deliberately out of scope: every observed incident
+// (this one + WI-5801) was a hoisted top-level package, and that is also where a boot-time
+// `require.resolve` / `import` actually resolves from.
+const TOP_LEVEL_LOCK_KEY_RE = /^node_modules\/((?:@[^/]+\/)?[^/]+)$/;
+
+/**
+ * Both-directions diff between package-lock.json's required top-level packages and what
+ * is actually on disk in node_modules. Pure + fully injectable (pass `readFile`/`readDir`/
+ * `isDirectory` in tests so nothing touches a real tree) — mirrors `preflightCriticalModules`'s
+ * injectability above.
+ *
+ * Throws if `package-lock.json` cannot be read/parsed at `deps.rootDir` — callers that want
+ * a never-throws surface should go through `checkLockTreeDrift` instead.
+ */
+export function diffLockAndTree(deps: LockTreeDriftDeps): LockTreeDriftResult {
+  const readFile = deps.readFile ?? defaultReadFile;
+  const readDir = deps.readDir ?? defaultReadDir;
+  const isDirectory = deps.isDirectory ?? defaultIsDirectory;
+
+  const lockRaw = readFile(join(deps.rootDir, 'package-lock.json'));
+  const lock = JSON.parse(lockRaw) as { packages?: Record<string, LockPackageEntry> };
+  const packages = lock.packages ?? {};
+  const nmDir = join(deps.rootDir, 'node_modules');
+
+  // Direction A: lock-required, disk-absent. Also builds the lock-name set Direction B
+  // diffs against, so we walk `packages` exactly once.
+  const missing: string[] = [];
+  const lockTopLevelNames = new Set<string>();
+  for (const [key, entry] of Object.entries(packages)) {
+    const m = TOP_LEVEL_LOCK_KEY_RE.exec(key);
+    if (!m) continue;
+    const name = m[1];
+    lockTopLevelNames.add(name);
+    if (entry?.dev || entry?.optional || entry?.link) continue; // skip per the drift spec
+    if (!isDirectory(join(nmDir, name))) missing.push(name);
+  }
+
+  // Direction B: on-disk, lock-absent.
+  const extraneous: string[] = [];
+  let topEntries: string[] = [];
+  try {
+    topEntries = readDir(nmDir);
+  } catch {
+    topEntries = []; // no node_modules at all ⇒ nothing to report as extraneous here
+  }
+  for (const entry of topEntries) {
+    if (entry.startsWith('.')) continue; // .bin, .package-lock.json, .cache, ...
+    if (entry.startsWith('@')) {
+      let scoped: string[] = [];
+      try {
+        scoped = readDir(join(nmDir, entry));
+      } catch {
+        scoped = [];
+      }
+      for (const s of scoped) {
+        if (s.startsWith('.')) continue;
+        const name = `${entry}/${s}`;
+        if (!lockTopLevelNames.has(name) && isDirectory(join(nmDir, entry, s))) extraneous.push(name);
+      }
+      continue;
+    }
+    if (!lockTopLevelNames.has(entry) && isDirectory(join(nmDir, entry))) extraneous.push(entry);
+  }
+
+  missing.sort();
+  extraneous.sort();
+  return { missing, extraneous, ok: missing.length === 0 };
+}
+
+export interface LockTreeDriftCheck extends LockTreeDriftResult {
+  /** true iff the check could not run at all (no package-lock.json found, parse error,
+   *  ...) — this is NOT a drift signal; `ok` stays `true` in this case purely so a caller
+   *  that only checks `ok` fails safe (never refuses to boot because it couldn't compute
+   *  drift), but callers that care must check `skipped` explicitly rather than reading
+   *  `ok: true` as "verified clean". */
+  skipped: boolean;
+  error?: string;
+}
+
+/**
+ * Walks up from `startDir` looking for a `package-lock.json` — the monorepo root.
+ * Bounded so a misconfigured/rootless environment can't loop forever.
+ */
+function findLockRootUpward(startDir: string): string | null {
+  let dir = startDir;
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(join(dir, 'package-lock.json'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Never-throws wrapper around `diffLockAndTree`: resolves `rootDir` (default: walk up
+ * from this file's own location) and swallows any read/parse failure into
+ * `{ skipped: true, error }` rather than propagating — a broken/absent lockfile must
+ * never itself become a new false-positive boot refusal (the exact hazard this whole
+ * module's design already guards against for CRITICAL_BOOT_MODULES).
+ */
+export function checkLockTreeDrift(
+  opts?: { rootDir?: string } & Partial<Pick<LockTreeDriftDeps, 'readFile' | 'readDir' | 'isDirectory'>>,
+): LockTreeDriftCheck {
+  try {
+    const rootDir = opts?.rootDir ?? findLockRootUpward(dirname(fileURLToPath(import.meta.url)));
+    if (!rootDir) {
+      return { ok: true, missing: [], extraneous: [], skipped: true, error: 'package-lock.json not found in any ancestor directory' };
+    }
+    const result = diffLockAndTree({ rootDir, readFile: opts?.readFile, readDir: opts?.readDir, isDirectory: opts?.isDirectory });
+    return { ...result, skipped: false };
+  } catch (e) {
+    return { ok: true, missing: [], extraneous: [], skipped: true, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** Distinct exit code so systemd / deploy-cli auto-rollback / a human can tell a

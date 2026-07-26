@@ -49,6 +49,7 @@ import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from '../work-items-stale-cl
 import { listStartedPots } from './started';
 import { workItemCheckpointScope } from '../work-item-checkpoint';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { isClaimHoldParked } from '../work-items';
 
 // ── vocabulary (the canonical work-item terminal + stuck states) ──────────────
 
@@ -115,6 +116,28 @@ export function isStuckBlockerState(status: string | null | undefined): boolean 
  *  EXPECTED, not a failure? */
 export function isUnitParked(status: string | null | undefined): boolean {
   return status != null && UNIT_PARKED_STATES.has(status);
+}
+
+/**
+ * EI-18667095591047618 — the FULL "is this placed unit deliberately parked" signal
+ * for the reconcile side, composing BOTH park dialects: a status-level park
+ * ({@link isUnitParked} — `blocked`/`needs-human`) OR a durable claim-hold park
+ * (`payload._claimHold`, WI-2797, {@link isClaimHoldParked} from `../work-items` —
+ * the SAME predicate `fleet/placement-gather.ts` already uses on the PLACE side to
+ * skip these rows). Before this, the reconcile side only ever checked status, so a
+ * claim-held item (status stays `open` by design; never given a live holder by
+ * design, because gather refuses to place it) walked straight past both `evaluatePlacement`
+ * exit conditions (`unitTerminal`, `hasLiveHolder`) into the cursed/stranded latch and
+ * stayed there forever — the deliberate park meant to make an item quiet was exactly
+ * what made it permanently loud (WI-4480: 7 days cursed after a claim-hold park).
+ *
+ * Exported + directly unit-tested so the PARITY between the place side and the
+ * reconcile side is an assertion, not an assumption — the exact gap that let this
+ * defect family recur three times before (WI-1439 `blocked`, EI-6563 `needs-human`,
+ * EI-14404 live-non-cup-holder) with only a per-dialect fix each time.
+ */
+export function isUnitParkedForReconcile(status: string | null | undefined, payload: unknown): boolean {
+  return isUnitParked(status) || isClaimHoldParked(payload);
 }
 
 /**
@@ -796,6 +819,11 @@ interface UnitRow {
   harness_slug: string | null;
   status: string;
   taken_by: string | null;
+  /** EI-18667095591047618 — needed so the reconcile side can also honor a durable
+   *  claim-hold park (`payload._claimHold`), the same signal `fleet/placement-gather.ts`
+   *  already skips on. Untyped here (isClaimHoldParked takes `unknown`) — the column is
+   *  jsonb and this module has no reason to model its shape beyond that one flag. */
+  payload: unknown;
 }
 
 interface PlacementRow {
@@ -1245,7 +1273,7 @@ export async function reconcileOnePot(
   if (candidateIds.size > 0) {
     const ids = [...candidateIds];
     const unitRows = await sql<UnitRow[]>`
-      SELECT feature_id, harness_slug, status, taken_by
+      SELECT feature_id, harness_slug, status, taken_by, payload
         FROM harness_shared.harness_features_consolidated
        WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${ids})`;
     const unitById = new Map<string, UnitRow>(unitRows.map((u) => [u.feature_id, u]));
@@ -1338,7 +1366,9 @@ export async function reconcileOnePot(
         servingCupReclaimedWhileActive,
         servingCupMadeNoToolCalls, // F-FIX-041 — zombie (no-fair-attempt) → bounded infra breaker
         postDormancySweep, // F-FIX-041 — operator-dormancy grace (item-independent, per-sweep)
-        unitParked: isUnitParked(unit?.status), // WI-1439 — deliberate park (e.g. blocked) → never recovered
+        // EI-18667095591047618 — both park dialects (status-level AND claim-hold); see
+        // isUnitParkedForReconcile's doc comment for why this must never be status-only again.
+        unitParked: isUnitParkedForReconcile(unit?.status, unit?.payload),
         checkpointDeclaresTerminal: checkpointDeclaredById.get(unitId) === true, // EI-15232 — stale-open reconcile
         now,
       };

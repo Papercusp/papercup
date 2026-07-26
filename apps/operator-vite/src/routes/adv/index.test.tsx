@@ -27,7 +27,7 @@ vi.mock('../../components/adv/AdvShell', () => ({
   // Inlined (not a top-level const) — vi.mock factories are hoisted above
   // module-scope declarations, so referencing an outer `const` throws.
   ADV_TABS: [
-    'overview', 'conversations', 'learning', 'harnesses', 'health', 'frames',
+    'overview', 'hud', 'conversations', 'learning', 'harnesses', 'health', 'frames',
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings',
     'docs', 'git', 'testing',
   ].map((id) => ({ id })),
@@ -47,6 +47,7 @@ vi.mock('../../components/adv/AdvHarnessPanelPage', () => ({
   },
 }));
 vi.mock('@/app/adv/harnesses/HarnessesWorkspace', () => ({ default: () => <div data-testid="tab-harnesses" /> }));
+vi.mock('@/app/adv/hud/HudView', () => ({ default: () => <div data-testid="tab-hud" /> }));
 vi.mock('@/app/adv/create/AdvCreateDock', () => ({ default: () => <div data-testid="tab-create-dock" /> }));
 vi.mock('@/app/admin/plans/plans.css', () => ({}));
 
@@ -63,6 +64,8 @@ afterEach(cleanup);
 describe('/adv tab router', () => {
   const FIRST_CLASS = [
     { tab: 'overview', t: 'Overview', child: 'tab-overview' },
+    // HUD is a first-class tab (owner ask 2026-07-25) — /adv/HUD redirects here.
+    { tab: 'hud', t: 'HUD', child: 'tab-hud' },
     { tab: 'conversations', t: 'Conversations', child: 'tab-conversations' },
     { tab: 'learning', t: 'Learning', child: 'tab-learning' },
     { tab: 'harnesses', t: 'Working', child: 'tab-harnesses' },

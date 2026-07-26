@@ -100,12 +100,27 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
     // routine path (behavior-neutral, D-004). Lazy: only when no test deps wired.
     let deps = _deps;
     if (!deps) {
-      const [{ productionScoutRunner }, { recordScoutTickToGovernor }, { checkHiveSingleRunner }] =
-        await Promise.all([
-          import('../../scout/register-scout-action.js'),
-          import('../../learning-governor/registrants.js'),
-          import('../../hive-single-runner.js'),
-        ]);
+      const [
+        { productionScoutRunner },
+        { recordScoutTickToGovernor },
+        { checkHiveSingleRunner },
+        { scoutWorkspaceCeilingGate },
+      ] = await Promise.all([
+        import('../../scout/register-scout-action.js'),
+        import('../../learning-governor/registrants.js'),
+        import('../../hive-single-runner.js'),
+        // WI-5785 (P-051 regression): this deterministic blueprint step is the
+        // path that ACTUALLY runs Scout in production (the `system:scout-cycle`
+        // routine action in scout-cycle-action.ts wires the same gate, but that
+        // path was superseded by this op — deterministic-blueprints-migration
+        // P-121 — without carrying the ceiling wire over). Its absence here let
+        // the workspace-wide aggregate cap silently no-op forever: every cycle
+        // still passed its own per-cycle cap, so nothing ever refused, and
+        // blender spend compounded past the $10 default ceiling into the
+        // hundreds of dollars with no aggregate stop. Wiring it restores the
+        // "byte-for-byte the routine path" contract this file's header claims.
+        import('../../learning-governor/scout-ceiling.js'),
+      ]);
       deps = {
         runCycle: productionScoutRunner,
         recordGovernor: recordScoutTickToGovernor,
@@ -114,6 +129,10 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         // N=1 / standalone this always resolves run:true (authority / not-in-hive).
         hiveRunnerGate: ({ workspaceId: ws, installSlug }) =>
           checkHiveSingleRunner(ws, installSlug),
+        // P-051: the workspace-wide scout spend ceiling preflight — sums every
+        // `blender:<hive>` registrant's ledgered spend and refuses a new cycle
+        // once the aggregate crosses the (owner-tunable) ceiling.
+        workspaceCeilingGate: scoutWorkspaceCeilingGate,
       };
     }
 

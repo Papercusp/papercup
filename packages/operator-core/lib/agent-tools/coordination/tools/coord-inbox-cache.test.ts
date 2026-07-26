@@ -134,3 +134,19 @@ describe("coord:inbox — cache the derive, keep side effects", () => {
     expect(M.readInbox).toHaveBeenCalledTimes(2);
   });
 });
+
+// EI-18667514339699744: coord:inbox returns its rows under `entries`; coord:orient
+// folds the SAME rows under `recent`. A caller reading the wrong key for the surface
+// it's actually on got a silent [] (indistinguishable from "no mail") instead of an
+// error. Pin that coord:inbox's own result exposes BOTH key names for the same array.
+describe("coord:inbox — `recent` alias (EI-18667514339699744)", () => {
+  it("exposes the same rows under both `entries` and `recent`", async () => {
+    M.readInbox.mockResolvedValueOnce([
+      { msg_id: "m1", kind: "message", from: "peer", ts: "2026-07-26T00:00:00Z", summary: "hi" },
+    ] as unknown[]);
+    const result = (await inbox("owner-a")) as { content: Array<{ text: string }> };
+    const parsed = JSON.parse(result.content[0].text) as { entries: unknown[]; recent: unknown[] };
+    expect(parsed.entries).toHaveLength(1);
+    expect(parsed.recent).toEqual(parsed.entries);
+  });
+});

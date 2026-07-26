@@ -97,6 +97,14 @@ import {
 const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
 const DEAD_ROUTINE_OVERDUE_MS = 10 * 60_000;
 const PLAN_STALE_MS = 24 * 60 * 60_000;
+// WI-5839 / EI-18654017982759582 items 2+3: a paused (active:false) routine is
+// invisible to readDeadRoutines (active=true only), no matter how long it stays
+// paused. Release/deploy-critical routines get a MUCH shorter threshold — a
+// paused deploy pipeline is the symptom that actually matters (main can go
+// green+ahead for days with zero deploys), and it is trivially checkable.
+const STALE_PAUSE_GENERAL_MS = 24 * 60 * 60_000; // 24h
+const STALE_PAUSE_CRITICAL_MS = 4 * 60 * 60_000; // 4h
+const RELEASE_CRITICAL_ROUTINE_NAMES = new Set(['release-trigger', 'green-checkpoint']);
 const ESCALATION_AGING_MS = 6 * 60 * 60_000;
 const execFileP = promisify(execFile);
 
@@ -535,6 +543,94 @@ export async function readDeadRoutines(sql: Sql, overdueMs: number): Promise<str
   return rows.map((r) => r.name);
 }
 
+/** Minimal per-routine shape {@link computeStalePausedRoutines} needs — the pure
+ *  split from its DB read below, so the threshold/attribution logic is directly
+ *  unit-testable with plain fixtures (no PG). */
+export interface StalePausedRoutineInput {
+  name: string;
+  /** metadata.pause.pausedAtMs — set by routines:set whenever a pause goes through
+   *  the reason-required path (EI-18654017982759582 #1). Absent ⇒ either a legacy
+   *  pause that predates that guard, or one written by a path that bypassed it. */
+  pausedAtMs?: number | null;
+  /** metadata.pause.reason, if recorded. */
+  pauseReason?: string | null;
+  /** Fallback age anchor (the row's updated_at) for when pausedAtMs is absent —
+   *  so an unattributed legacy pause still gets a reportable age instead of none. */
+  updatedAtMs?: number | null;
+}
+
+export interface StalePausedRoutine {
+  name: string;
+  /** Milliseconds since the pause was recorded (or, lacking that, since the row was
+   *  last updated). `Infinity` when neither timestamp is readable — still flagged,
+   *  just with no meaningful age to report. */
+  ageMs: number;
+  /** No metadata.pause.reason was recorded — an unattributed pause is itself the
+   *  bug class this guards against, regardless of age, so it is ALWAYS flagged. */
+  reasonMissing: boolean;
+  /** A release/deploy-critical routine (release-trigger, green-checkpoint). */
+  critical: boolean;
+}
+
+/**
+ * Pure (WI-5839 / EI-18654017982759582 items 2+3): which currently-PAUSED routines
+ * have sat long enough — unexplained or not — to warrant a standing alarm.
+ * `readDeadRoutines` above only ever looks at active=true rows, so a pause is
+ * otherwise invisible no matter how long it persists — the exact shape that let
+ * release-trigger silently sit paused ~4 days, twice (2026-06-18, 2026-07-21→25).
+ *
+ * A routine with NO recorded pause reason (paused before the reason-required guard
+ * landed, or via a path that bypasses routines:set) is ALWAYS flagged, regardless
+ * of age — an unattributed pause is exactly the bug class. A routine WITH a
+ * recorded reason is flagged only once it crosses its threshold; release/deploy-
+ * critical routines get a much shorter one (see module-level constants).
+ */
+export function computeStalePausedRoutines(
+  rows: ReadonlyArray<StalePausedRoutineInput>,
+  now: number,
+  opts: { generalMs?: number; criticalMs?: number; criticalNames?: ReadonlySet<string> } = {},
+): StalePausedRoutine[] {
+  const generalMs = opts.generalMs ?? STALE_PAUSE_GENERAL_MS;
+  const criticalMs = opts.criticalMs ?? STALE_PAUSE_CRITICAL_MS;
+  const criticalNames = opts.criticalNames ?? RELEASE_CRITICAL_ROUTINE_NAMES;
+  const out: StalePausedRoutine[] = [];
+  for (const r of rows) {
+    const critical = criticalNames.has(r.name);
+    const reasonMissing = r.pausedAtMs == null || !r.pauseReason;
+    const anchorMs = r.pausedAtMs ?? r.updatedAtMs ?? null;
+    if (anchorMs == null) {
+      out.push({ name: r.name, ageMs: Number.POSITIVE_INFINITY, reasonMissing: true, critical });
+      continue;
+    }
+    const ageMs = Math.max(0, now - anchorMs);
+    const threshold = critical ? criticalMs : generalMs;
+    if (reasonMissing || ageMs >= threshold) {
+      out.push({ name: r.name, ageMs, reasonMissing, critical });
+    }
+  }
+  // Critical first (the symptom that matters most), then oldest first within each group.
+  return out.sort((a, b) => (a.critical !== b.critical ? (a.critical ? -1 : 1) : b.ageMs - a.ageMs));
+}
+
+/** DB-reading wrapper (thin — the logic lives in the pure split above). Mirrors
+ *  readDeadRoutines's shape/placement but queries the COMPLEMENT (active=false). */
+export async function readStalePausedRoutines(sql: Sql): Promise<StalePausedRoutine[]> {
+  const rows = await sql<Array<{ name: string; metadata: Record<string, unknown> | null; updated_at: Date | null }>>`
+    SELECT name, metadata, updated_at FROM harness_shared.routines WHERE active = false`;
+  const inputs: StalePausedRoutineInput[] = rows.map((r) => {
+    const pause = (r.metadata?.pause ?? null) as { reason?: unknown; pausedAtMs?: unknown } | null;
+    const pausedAtMs = typeof pause?.pausedAtMs === 'number' ? pause.pausedAtMs : null;
+    const pauseReason = typeof pause?.reason === 'string' && pause.reason.length > 0 ? pause.reason : null;
+    return {
+      name: r.name,
+      pausedAtMs,
+      pauseReason,
+      updatedAtMs: r.updated_at ? new Date(r.updated_at).getTime() : null,
+    };
+  });
+  return computeStalePausedRoutines(inputs, Date.now());
+}
+
 /** The minimal ScoredItem projection this split needs (pure/unit-testable). */
 export interface AutoEligibleStuckInput {
   attempts?: number;
@@ -602,6 +698,15 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // mis-fire the engine-starvation crit + fleet blocker page.
     const { sql } = getOrgPg();
     const deadRoutineNames = await readDeadRoutines(sql, DEAD_ROUTINE_OVERDUE_MS);
+    // WI-5839 / EI-18654017982759582 items 2+3: stale/unexplained PAUSED routines —
+    // the complement readDeadRoutines can never see (it only looks at active=true).
+    // Best-effort/fail-soft: never let a metadata-shape surprise sink the whole panel.
+    let stalePaused: StalePausedRoutine[] = [];
+    try {
+      stalePaused = await readStalePausedRoutines(sql);
+    } catch { /* leave empty — the dead-routine signal above still computes */ }
+    const stalePausedRoutineNames = stalePaused.map((r) => r.name);
+    const stalePausedCriticalRoutines = stalePaused.filter((r) => r.critical).length;
     // Auto-eligible-stuck (EI-584): KEYED improvements that ARE auto-eligible but
     // sit at attempts:0 — eligible yet never dispatched (the feed isn't pumping
     // them). EI-14223: split off the KEYLESS human-review backlog (attempts:0 by
@@ -620,13 +725,16 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     const data: WorkFeedHealth = {
       frontier, frontierStuck, frontierBlocked, startedPlans, autoEligibleStuck,
       keylessHumanReviewBacklog, deadRoutines: deadRoutineNames.length, deadRoutineNames,
+      stalePausedRoutines: stalePaused.length, stalePausedRoutineNames, stalePausedCriticalRoutines,
     };
     const status = workFeedStatus(data);
     return {
       status,
       summary: data.deadRoutines > 0
         ? `DEAD ROUTINE(S): ${deadRoutineNames.slice(0, 3).join(', ')}`
-        : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}`,
+        : stalePausedCriticalRoutines > 0
+          ? `STALE PAUSE on release-critical routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')} — deploy pipeline may be silently stopped`
+          : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}${stalePaused.length > 0 ? `, ${stalePaused.length} stale-paused routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')}` : ''}`,
       data,
       link: { label: 'Working', href: '/adv?tab=harnesses' },
       metrics: [
@@ -637,6 +745,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         m('auto-stuck', autoEligibleStuck, autoEligibleStuck > 0 ? 'warn' : undefined),
         m('keyless human-review', keylessHumanReviewBacklog),
         m('dead routines', data.deadRoutines, data.deadRoutines > 0 ? 'crit' : undefined),
+        m('stale-paused routines', stalePaused.length, stalePausedCriticalRoutines > 0 ? 'crit' : stalePaused.length > 0 ? 'warn' : undefined),
       ],
     };
   });

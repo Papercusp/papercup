@@ -96,10 +96,14 @@ describe('shapeOrient trimmed', () => {
   });
 
   it('caps inbox/memory/planEvents with pointers; keeps identity + summary fields', () => {
-    const inbox = out.inbox as { recent: unknown[]; recentTruncated?: unknown; summary?: unknown };
+    const inbox = out.inbox as { recent: unknown[]; entries?: unknown[]; recentTruncated?: unknown; summary?: unknown };
     expect(inbox.recent).toHaveLength(5);
     expect(inbox.summary).toEqual({ total: 3327, returned: 10 });
     expect(inbox.recentTruncated).toBeDefined();
+    // EI-18667514339699744: `entries` must survive tier-shaping aliased to the SAME
+    // (already-projected/capped) rows as `recent` — a caller reading coord:inbox's
+    // key name off a trimmed/standard orient must not see a silently-dropped [].
+    expect(inbox.entries).toEqual(inbox.recent);
     const memory = out.memory as { hits: Array<{ memory: string }>; hitsTruncated?: unknown };
     expect(memory.hits).toHaveLength(3);
     expect(memory.hits[0].memory.length).toBeLessThanOrEqual(220);

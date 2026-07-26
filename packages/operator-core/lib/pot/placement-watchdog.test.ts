@@ -26,6 +26,7 @@ import {
   isUnitTerminal,
   isStuckBlockerState,
   isUnitParked,
+  isUnitParkedForReconcile,
   isHeldByLiveNonCupAssignee,
   placementConfig,
   reconcilePotPlacements,
@@ -37,6 +38,7 @@ import {
   type ReconcileSweepDeps,
 } from './placement-watchdog';
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
+import { isClaimHoldParked as gatherIsClaimHoldParked } from '../fleet/placement-gather';
 
 const CFG: PlacementConfig = {
   breakerThreshold: 3,
@@ -397,6 +399,63 @@ describe('isUnitParked', () => {
     for (const s of ['todo', 'passed', 'in_progress', 'failing', null, undefined]) {
       expect(isUnitParked(s)).toBe(false);
     }
+  });
+});
+
+describe('isUnitParkedForReconcile (EI-18667095591047618) — the reconcile side must honor a claim-hold park too', () => {
+  it('a claim-held unit (status stays `open`, payload._claimHold: true) is parked even though isUnitParked(status) alone is false', () => {
+    expect(isUnitParked('open')).toBe(false); // the status-only check, by itself, misses this — that IS the bug
+    expect(isUnitParkedForReconcile('open', { _claimHold: true })).toBe(true);
+  });
+
+  it('still recognizes the status-level parks (blocked/needs-human) with no payload', () => {
+    expect(isUnitParkedForReconcile('blocked', null)).toBe(true);
+    expect(isUnitParkedForReconcile('needs-human', undefined)).toBe(true);
+  });
+
+  it('a genuinely non-parked, non-claim-held unit is not parked', () => {
+    expect(isUnitParkedForReconcile('open', {})).toBe(false);
+    expect(isUnitParkedForReconcile('open', null)).toBe(false);
+  });
+
+  it('PARITY GUARD: any payload the PLACE side (placement-gather.isClaimHoldParked) treats as claim-hold-parked ' +
+      'must ALSO make the RECONCILE side treat the unit as parked — the exact gap that let this defect class ' +
+      'recur three times before (WI-1439 blocked, EI-6563 needs-human, EI-14404 live-non-cup-holder), each fixed ' +
+      'for one dialect and never asserted to agree with the other half of the placement subsystem.', () => {
+    const claimHoldPayloads = [
+      { _claimHold: true },
+      { _claimHold: true, claim_hold_reason: 'mac build VM down' },
+      { _claimHold: 'true' }, // legacy string form
+    ];
+    for (const payload of claimHoldPayloads) {
+      expect(gatherIsClaimHoldParked(payload)).toBe(true); // sanity: the place side does skip this payload
+      expect(isUnitParkedForReconcile('open', payload)).toBe(true); // the reconcile side must agree
+    }
+    const nonClaimHoldPayloads = [{}, { _claimHold: false }, null, undefined];
+    for (const payload of nonClaimHoldPayloads) {
+      expect(gatherIsClaimHoldParked(payload)).toBe(false);
+      expect(isUnitParkedForReconcile('open', payload)).toBe(false);
+    }
+  });
+});
+
+describe('evaluatePlacement — EI-18667095591047618 a claim-hold-parked unit (payload._claimHold) never latches cursed forever', () => {
+  it('claim-held + no live holder → parked (NOT recover/breaker) — mirrors the WI-1439 status-park contract', () => {
+    const parked = isUnitParkedForReconcile('open', { _claimHold: true });
+    const d = evaluatePlacement(obs({ unitParked: parked, hasLiveHolder: false }), CFG);
+    expect(d.kind).toBe('parked');
+  });
+
+  it('LATCH-EXIT: an ALREADY-cursed claim-held unit still converges to parked, not latched forever — this is ' +
+      'the WI-4480 regression (7 days cursed after a claim-hold park because the latch check ran before this ' +
+      'signal existed)', () => {
+    const parked = isUnitParkedForReconcile('open', { _claimHold: true, claim_hold_reason: 'infra gap' });
+    const d = evaluatePlacement(
+      obs({ unitParked: parked, hasLiveHolder: false, placementStatus: 'cursed', failCount: 4 }),
+      CFG,
+    );
+    expect(d.kind).toBe('parked');
+    expect(d.kind).not.toBe('latched');
   });
 });
 

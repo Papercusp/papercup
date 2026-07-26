@@ -1492,17 +1492,22 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
   });
 
   it("HIDES the picker on workspace-global views", () => {
-    for (const v of [
-      "observations",
-      "ideas",
-      "rubrics",
-      "benchmark",
-      "throughput",
-    ]) {
+    // P-005 (pot-scope-all-learnings): ideas/frontier/throughput joined the
+    // hive-aware set — only views whose tables carry no pot identity stay here.
+    for (const v of ["observations", "rubrics", "benchmark", "signals"]) {
       cleanup();
       nuqsState.lview = v;
       render(<LearningTab />);
       expect(screen.queryByLabelText("pot lens")).toBeNull();
+    }
+  });
+
+  it("SHOWS the picker on the P-005 pot-scoped views (ideas / frontier / throughput)", () => {
+    for (const v of ["ideas", "frontier", "throughput"]) {
+      cleanup();
+      nuqsState.lview = v;
+      render(<LearningTab />);
+      expect(screen.getByLabelText("pot lens")).toBeTruthy();
     }
   });
 

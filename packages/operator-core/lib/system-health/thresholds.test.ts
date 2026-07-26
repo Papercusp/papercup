@@ -189,6 +189,25 @@ describe('workFeedStatus', () => {
   it('ok with a healthy feed (frontier depth alone is fine)', () => {
     expect(workFeedStatus(wf({ frontier: 500 }))).toBe('ok');
   });
+  // WI-5839 / EI-18654017982759582 items 2+3: stale-paused routines.
+  it('crit on a stale-paused RELEASE-CRITICAL routine (paused deploy pipeline)', () => {
+    expect(
+      workFeedStatus(wf({ stalePausedRoutines: 1, stalePausedRoutineNames: ['release-trigger'], stalePausedCriticalRoutines: 1 })),
+    ).toBe('crit');
+  });
+  it('warn on a stale-paused NON-critical routine', () => {
+    expect(workFeedStatus(wf({ stalePausedRoutines: 1, stalePausedRoutineNames: ['scout-cycle'] }))).toBe('warn');
+  });
+  it('a stale-paused critical routine dominates auto-stuck and general stale-paused', () => {
+    expect(
+      workFeedStatus(wf({ autoEligibleStuck: 2, stalePausedRoutines: 1, stalePausedCriticalRoutines: 1 })),
+    ).toBe('crit');
+  });
+  it('dead routines still dominate a stale-paused critical routine', () => {
+    expect(
+      workFeedStatus(wf({ deadRoutines: 1, deadRoutineNames: ['x'], stalePausedRoutines: 1, stalePausedCriticalRoutines: 1 })),
+    ).toBe('crit');
+  });
 });
 
 describe('tokensStatus', () => {

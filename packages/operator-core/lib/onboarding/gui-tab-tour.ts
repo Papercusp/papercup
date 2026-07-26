@@ -33,6 +33,12 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
     blurb:
       'The landing dashboard — what is running right now, plans that need attention, and the pulse of the whole workspace at a glance.',
   },
+  {
+    id: 'hud',
+    label: 'HUD',
+    blurb:
+      'The session board — every agent running right now, grouped by what it needs from you: waiting on an answer, blocked on a gate, working, or idle. Click a card to open that agent’s live conversation.',
+  },
   // ('brainstorm' left the /adv strip for the Quick Panel popup —
   //  quick-panel-saved-prompts-2026-07-13 P-010; the tour mirrors ADV_TABS.)
   {

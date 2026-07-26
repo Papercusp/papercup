@@ -17,12 +17,33 @@
  * The actual FF-of-main (advance → advanceReady) is the orchestration test's
  * real-git temp-repo path; here we never touch a real branch.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hasNpmScript, realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
 import { releaseConfig, type ReleaseConfig } from './release-config';
+
+// EI-18661485259809120: push() also fires a workflow_dispatch of test.yml (since the
+// pushed commit's `[skip ci]` message means the plain `git push` above never actually
+// triggers GitHub's push-event listener). Mock the two dynamic-import seams
+// dispatchCiWorkflow uses so this is asserted without a real GitHub API call.
+const mockCreateWorkflowDispatch = vi.fn(async () => ({}) as unknown);
+const mockGetOctokit = vi.fn(async () => ({
+  rest: { actions: { createWorkflowDispatch: mockCreateWorkflowDispatch } },
+}));
+const mockGitOriginUrl = vi.fn(async (_dir: string) => 'https://github.com/Papercusp/papercup.git');
+
+vi.mock('@papercusp/operator-core/lib/cupboard/resolve-repo-coords', () => ({
+  gitOriginUrl: (dir: string) => mockGitOriginUrl(dir),
+  parseGithubRemote: (url: string) => {
+    const m = /github\.com[:/]([^/]+)\/([^/.]+)/.exec(url);
+    return m ? { owner: m[1], repo: m[2] } : null;
+  },
+}));
+vi.mock('@papercusp/operator-core/lib/identity/octokit-client', () => ({
+  getOctokit: () => mockGetOctokit(),
+}));
 
 interface ExecResp { code: number; stdout?: string; stderr?: string }
 
@@ -474,5 +495,33 @@ describe('realCheckpointDeps.setupTree / push — real-path wiring (gap #10)', (
     expect(calls[0].cmd).toBe('git');
     expect(calls[0].args).toEqual(['-C', '/int', 'push', 'origin', 'ready:ready']);
     expect(calls[0].opts?.env?.PAPERCUSP_MAIN_PUSH_OK).toBe('1');
+  });
+
+  it('push also workflow_dispatches test.yml (EI-18661485259809120: [skip ci] on every commit means the git push above never actually triggers it)', async () => {
+    mockCreateWorkflowDispatch.mockClear();
+    const { exec } = makeExec([{ code: 0 }]);
+    await realCheckpointDeps(cfg, exec).push('ready');
+    expect(mockCreateWorkflowDispatch).toHaveBeenCalledWith({
+      owner: 'Papercusp',
+      repo: 'papercup',
+      workflow_id: 'test.yml',
+      ref: 'ready',
+    });
+  });
+
+  it('push never throws when the CI dispatch fails (best-effort — a GitHub API hiccup must not fail the checkpoint)', async () => {
+    mockGetOctokit.mockRejectedValueOnce(new Error('network down'));
+    const { exec, calls } = makeExec([{ code: 0 }]);
+    await expect(realCheckpointDeps(cfg, exec).push('ready')).resolves.toBeUndefined();
+    // the git push itself still happened
+    expect(calls[0].cmd).toBe('git');
+  });
+
+  it('push skips the CI dispatch (without throwing) when no GitHub origin resolves', async () => {
+    mockGitOriginUrl.mockResolvedValueOnce(null as unknown as string);
+    mockCreateWorkflowDispatch.mockClear();
+    const { exec } = makeExec([{ code: 0 }]);
+    await realCheckpointDeps(cfg, exec).push('ready');
+    expect(mockCreateWorkflowDispatch).not.toHaveBeenCalled();
   });
 });

@@ -95,6 +95,57 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(dr?.summary).toContain('git-sync');
   });
 
+  // WI-5839 / EI-18654017982759582 items 2+3: stale-paused routines.
+  it('a stale-paused release-critical routine → stale-paused-routines BLOCKER', () => {
+    const h = mkHealth({
+      panels: {
+        workFeed: {
+          data: {
+            deadRoutines: 0,
+            stalePausedRoutines: 1,
+            stalePausedRoutineNames: ['release-trigger'],
+            stalePausedCriticalRoutines: 1,
+          },
+        },
+      },
+    });
+    const sigs = evaluateLivenessAlarm(h, null);
+    const sp = sigs.find((s) => s.key === 'stale-paused-routines');
+    expect(sp?.severity).toBe('blocker');
+    expect(sp?.summary).toContain('release-trigger');
+    expect(sp?.summary).toContain('deploy pipeline');
+  });
+
+  it('a stale-paused NON-critical routine → stale-paused-routines ADVISORY (not fleet-blocking)', () => {
+    const h = mkHealth({
+      panels: {
+        workFeed: {
+          data: {
+            deadRoutines: 0,
+            stalePausedRoutines: 1,
+            stalePausedRoutineNames: ['scout-cycle'],
+            stalePausedCriticalRoutines: 0,
+          },
+        },
+      },
+    });
+    const sigs = evaluateLivenessAlarm(h, null);
+    const sp = sigs.find((s) => s.key === 'stale-paused-routines');
+    expect(sp?.severity).toBe('advisory');
+    expect(sp?.summary).toContain('scout-cycle');
+  });
+
+  it('no stale-paused routines → no stale-paused-routines signal', () => {
+    const h = mkHealth({ panels: { workFeed: { data: { deadRoutines: 0, stalePausedRoutines: 0 } } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('stale-paused-routines');
+  });
+
+  it('deriveSignatureFromSummary classifies a legacy stale-paused-routines summary', () => {
+    expect(
+      deriveSignatureFromSummary('1 release/deploy-critical routine(s) on a stale/unexplained pause: release-trigger — the deploy pipeline may be silently stopped.'),
+    ).toBe('stale-paused-routines');
+  });
+
   // P-008: PG-restart drift detector.
   it('PG postmaster-start FIRST observation (no prior baseline) → NO pg-restarted signal (just seeds)', () => {
     const h = mkHealth({ panels: { infra: { data: { pg: { postmasterStartMs: 1_700_000_000_000 } } } } });

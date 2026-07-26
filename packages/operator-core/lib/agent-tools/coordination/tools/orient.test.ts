@@ -129,6 +129,17 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls[4].args).toMatchObject({ limit: 10 });
   });
 
+  // EI-18667514339699744: coord:orient folds coord:inbox's `entries` under `recent`;
+  // coord:inbox itself calls the same array `entries`. A caller reading the "wrong"
+  // key for the surface it's on got a silent [] instead of an error. Both keys must
+  // resolve to the same rows off coord:orient's fold.
+  it('EI-18667514339699744: aliases the folded inbox under BOTH `recent` and `entries`', async () => {
+    const { call } = fakeCall({ ...CORE });
+    const r = await composeOrient({ harness: 'h' }, call, 'me');
+    expect(r.inbox.recent).toEqual([{ msg_id: 'm1' }]);
+    expect(r.inbox.entries).toEqual(r.inbox.recent);
+  });
+
   it('omits the agent filter when no ownerId resolved (fleet-wide assignments)', async () => {
     const { call, calls } = fakeCall({ ...CORE, 'work_items:list': () => [], 'coord:inbox': () => ({ summary: {}, entries: [] }) });
     await composeOrient({}, call, undefined);

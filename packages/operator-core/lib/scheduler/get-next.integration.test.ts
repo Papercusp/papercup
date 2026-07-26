@@ -91,11 +91,16 @@ async function seedFeature(id: string, opts: SeedOpts = {}) {
 /** An ISSUE-family row (bug|change|task) — NOT visible through harness_features_consolidated
  *  (excluded by its WHERE), so this inserts on the work_items BASE table directly. Used by the
  *  WI-1407 tier-3 fallback tests (getNextWorkItem widening past the whole feature family). */
-async function seedIssue(id: string, opts: { createdTs?: number; state?: string; kind?: string } = {}) {
+async function seedIssue(
+  id: string,
+  // `title` (EI-18665895916759270): the column a WI-3268 `not:{title glob}` exclusion leg reads —
+  // defaults to the id so every existing caller keeps a non-null, non-matching title.
+  opts: { createdTs?: number; state?: string; kind?: string; title?: string } = {},
+) {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.state ?? 'open'}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+      (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts, title)
+    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.state ?? 'open'}, ${WS}, ${opts.createdTs ?? 0}, 0, ${opts.title ?? id})`;
 }
 
 async function blockByFeature(blockedId: string, blockerId: string) {
@@ -662,6 +667,69 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     const r = await getNextWorkItem(s, BEE, { harness: H });
     expect(r?.workItem.id).toBe('EI-real-bug');
     expect(r?.workItem.kind).toBe('bug');
+  });
+
+  // EI-18665895916759270 (live incident, 2026-07-25, fleet nonp2p-bug-drain-0725): 10 live members
+  // claimed NOTHING for ~25 min because tier 3 — the ONLY tier that serves issue-family work —
+  // matched zero rows for any spec carrying a `not` leg, while work_items:claimable (which
+  // compiles the SAME tree via issueClaimCandidateSubquery) correctly reported 43. The two halves
+  // of the failure, one test each:
+  //
+  //  (a) the `not` leg must be HONORED by the claim path, not merely re-checked in JS AFTER an
+  //      unentitled claim. Before the specFilterSql threading, tier 3 saw only issueKinds/ids, so
+  //      it drew a violator and leaned on the post-claim matchesWorkItemClaimSpec release-retry —
+  //      which shares MAX_PLAN_LANE_ATTEMPTS (5), so a narrow lane reported a FALSE drain on ~88%
+  //      of pulls (and burned 30-40s per miss doing five claim+release round-trips).
+  //  (b) …and threading it must NOT drag the feature-family `kind` leaf into a query whose rows
+  //      are all bug/change/task — an unsatisfiable predicate that zeroes the tier outright. That
+  //      is the pairing the two asserts below pin: a `not` leg alongside a `kind='feature'` spec.
+  it('tier 3 (EI-18665895916759270): a `not` leg is honored by the CLAIM path — the excluded item is skipped and the other is served', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    // Older, so it wins the age-asc rank and WOULD be claimed if the `not` leg were dropped.
+    await seedIssue('EI-p2p-excluded', { state: 'open', createdTs: 1, kind: 'bug', title: 'p2p sidecar flake' });
+    await seedIssue('EI-in-lane', { state: 'open', createdTs: 100, kind: 'bug', title: 'scheduler drift' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'nonp2p-bug-drain',
+      revision: 2,
+      view: {
+        filter: {
+          all: [
+            { field: 'kind', op: 'in', value: ['bug'] },
+            { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-in-lane'); // NOT the older excluded one
+  });
+
+  // The other half: the SAME `not` leg on a feature-narrowed spec must still fall through to the
+  // adjacent open issue (WI-1407's tier-3 contract). Threading the raw tree compiled
+  // `kind='feature'` into the issue query — always false there — so this returned null.
+  it('tier 3 (EI-18665895916759270): a feature-narrowed spec with a `not` leg still falls through to an issue (the kind leaf is widened past, the `not` is kept)', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-p2p-skip', { state: 'open', createdTs: 1, kind: 'bug', title: 'p2p relay retry' });
+    await seedIssue('EI-fallthrough', { state: 'open', createdTs: 100, kind: 'bug', title: 'lock lease audit' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'feature-lane-with-exclusion',
+      revision: 4,
+      view: {
+        filter: {
+          all: [
+            { field: 'kind', op: '=', value: 'feature' },
+            { not: { field: 'title', op: 'glob', value: '*p2p*' } },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    // Widened past `kind='feature'` (else zero rows), but the `not` leg still excludes the p2p one.
+    expect(r?.workItem.id).toBe('EI-fallthrough');
   });
 
   // EI-10062 (and its duplicate trail: EI-9887/9888/9896/10002/10040): a leader's hand-curated

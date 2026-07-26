@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, type EscalationAgingInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -208,6 +208,81 @@ describe('isLiveRigOnlyFrontierTitle / countStuckFrontier — live-rig/federatio
     expect(
       queenPlacementStalled({ consecutiveZeroTokenWakes: 9, frontier: frontier.length, frontierStuck, paused: false }),
     ).toBe(false);
+  });
+});
+
+describe('computeStalePausedRoutines — stale/unexplained routine pause detector (WI-5839 / EI-18654017982759582 items 2+3)', () => {
+  const now = 10_000_000;
+
+  it('flags a paused routine with NO recorded reason, regardless of age (unattributed pause is the bug class)', () => {
+    const r = computeStalePausedRoutines([{ name: 'git-sync', updatedAtMs: now - 1000 }], now);
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ name: 'git-sync', reasonMissing: true, critical: false });
+  });
+
+  it('does NOT flag a reasoned pause that is still fresh (within the general threshold)', () => {
+    const r = computeStalePausedRoutines(
+      [{ name: 'git-sync', pausedAtMs: now - 1000, pauseReason: 'manual deploy-checkout surgery' }],
+      now,
+    );
+    expect(r).toEqual([]);
+  });
+
+  it('flags a reasoned pause once it crosses the GENERAL threshold', () => {
+    const generalMs = 24 * 60 * 60_000;
+    const r = computeStalePausedRoutines(
+      [{ name: 'scout-cycle', pausedAtMs: now - generalMs - 1, pauseReason: 'pausing scout during an incident' }],
+      now,
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ name: 'scout-cycle', reasonMissing: false, critical: false });
+  });
+
+  it('flags a reasoned pause on a RELEASE-CRITICAL routine much sooner (the CRITICAL threshold)', () => {
+    const criticalMs = 4 * 60 * 60_000;
+    const generalMs = 24 * 60 * 60_000;
+    const rows = [{ name: 'release-trigger', pausedAtMs: now - criticalMs - 1, pauseReason: 'incident mitigation' }];
+    // Past the critical threshold but nowhere near the general one — still flagged, and marked critical.
+    expect(criticalMs).toBeLessThan(generalMs);
+    const r = computeStalePausedRoutines(rows, now);
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ name: 'release-trigger', reasonMissing: false, critical: true });
+  });
+
+  it('does NOT flag a fresh reasoned pause on a release-critical routine (within its shorter threshold)', () => {
+    const r = computeStalePausedRoutines(
+      [{ name: 'green-checkpoint', pausedAtMs: now - 1000, pauseReason: 'holding for a manual migration' }],
+      now,
+    );
+    expect(r).toEqual([]);
+  });
+
+  it('falls back to updatedAtMs as the age anchor when pausedAtMs is absent (a legacy pre-fix pause)', () => {
+    const generalMs = 24 * 60 * 60_000;
+    const r = computeStalePausedRoutines([{ name: 'old-routine', updatedAtMs: now - generalMs - 1 }], now);
+    expect(r).toHaveLength(1);
+    expect(r[0].ageMs).toBeGreaterThanOrEqual(generalMs);
+  });
+
+  it('reports Infinity age (still flagged) when neither pausedAtMs nor updatedAtMs is readable', () => {
+    const r = computeStalePausedRoutines([{ name: 'mystery-routine' }], now);
+    expect(r).toEqual([{ name: 'mystery-routine', ageMs: Infinity, reasonMissing: true, critical: false }]);
+  });
+
+  it('sorts critical routines first, then oldest-first within each group', () => {
+    const r = computeStalePausedRoutines(
+      [
+        { name: 'scout-cycle', updatedAtMs: now - 5000 },
+        { name: 'release-trigger', updatedAtMs: now - 1000 },
+        { name: 'git-sync', updatedAtMs: now - 9000 },
+      ],
+      now,
+    );
+    expect(r.map((x) => x.name)).toEqual(['release-trigger', 'git-sync', 'scout-cycle']);
+  });
+
+  it('a healthy, unpaused fleet (no rows) → empty', () => {
+    expect(computeStalePausedRoutines([], now)).toEqual([]);
   });
 });
 

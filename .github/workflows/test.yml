@@ -4,6 +4,18 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # EI-18661485259809120: every commit git-sync ever produces (and therefore every
+  # commit `main` ever advances to, since main only fast-forwards from a staging
+  # commit — never a fresh commit of its own) carries a literal `[skip ci]` suffix
+  # (run-git-sync.ts's default message). GitHub Actions honors `[skip ci]` in the
+  # HEAD commit message for BOTH `push` and `pull_request` events, so the two
+  # triggers above have never actually fired on a real `main` advance since the
+  # staging->main model landed — the "GATING" lints below have been gating nothing.
+  # `workflow_dispatch` is a distinct trigger type that is NOT filtered by a commit's
+  # `[skip ci]` marker, so green-checkpoint's push() (apps/operator/lib/release/
+  # green-checkpoint.ts) explicitly fires this via the GitHub API right after each
+  # FF of `main` — restoring a real, working remote gate on every promotion.
+  workflow_dispatch:
 
 concurrency:
   group: test-${{ github.ref }}

@@ -840,6 +840,11 @@ export default defineTool({
             owner_id: identity.ownerId,
             summary,
             entries: boundEntries,
+            // EI-18667514339699744: coord:orient folds this SAME array under `recent`
+            // (its own key name for "the most-recent bounded entries"). Alias it here
+            // too so a caller who reads either tool's key name off THIS result gets
+            // real rows instead of a silent [] on a cross-surface accessor mismatch.
+            recent: boundEntries,
             injection,
             // P-015: the ≥80% loud gauge, exposed OUT of `injection` so the PostToolUse
             // hook can inject it even when there are no new entries (empty-inbox turns).

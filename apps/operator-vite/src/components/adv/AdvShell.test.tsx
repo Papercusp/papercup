@@ -290,7 +290,7 @@ describe('AdvShell — strip + header', () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
-    expect(tabs).toEqual(['overview', 'create', 'calendar', 'working', 'health', 'frames', 'conversations', 'learning', 'evaluation']);
+    expect(tabs).toEqual(['overview', 'hud', 'create', 'calendar', 'working', 'health', 'frames', 'conversations', 'learning', 'evaluation']);
     expect(screen.queryByText('sub-pots')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');
@@ -470,9 +470,9 @@ describe('AdvShell — Discord-parity shortcuts', () => {
   it('goto.nextTab / goto.prevTab cycle the visible strip with wrap-around', async () => {
     await renderShell();
     act(() => shortcutHandlers.get('goto.nextTab')!());
-    // next tab after overview is 'plans' since the Brainstorm tab moved to the
-    // Quick Panel popup (P-010).
-    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('plans'));
+    // next tab after overview is 'hud' — the session board took the first slot
+    // right of Overview (owner ask 2026-07-25); 'plans' follows it.
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('hud'));
     act(() => shortcutHandlers.get('goto.prevTab')!());
     // from overview (idx 0) backwards wraps to the last tab
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('settings'));

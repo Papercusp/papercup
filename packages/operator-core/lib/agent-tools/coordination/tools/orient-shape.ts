@@ -130,9 +130,15 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
     const inboxCap = afterCompaction ? Math.max(c.inbox, 20) : c.inbox;
     const inboxSummaryCap = afterCompaction ? Math.max(c.inboxSummary, 700) : c.inboxSummary;
     const recent = Array.isArray(inbox.recent) ? inbox.recent : [];
+    const projectedRecent = recent.slice(-inboxCap).map((e) => projectInboxEntry(e, inboxSummaryCap));
     out.inbox = {
       summary: inbox.summary,
-      recent: recent.slice(-inboxCap).map((e) => projectInboxEntry(e, inboxSummaryCap)),
+      recent: projectedRecent,
+      // EI-18667514339699744: keep `entries` aliased to the SAME projected/capped
+      // array as `recent` through tier-shaping too — reconstructing `inbox` here
+      // without it would silently re-drop the alias for trimmed/standard sessions
+      // (the common fleet-member case) even after coord:orient/coord:inbox added it.
+      entries: projectedRecent,
       ...(recent.length > inboxCap ? { recentTruncated: { total: recent.length, shown: inboxCap, more: 'coord:inbox' } } : {}),
     };
   }

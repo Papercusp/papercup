@@ -394,6 +394,61 @@ function widenPastKind(filter: FilterNode | undefined): FilterNode | undefined {
 }
 
 /**
+ * Tier-3 companion to {@link widenPastKind}: drop the `kind` leaves that admit ONLY
+ * feature-family kinds, leaving the REST of the tree intact, so tier 3 can compile the
+ * spec's real narrowings (title/paths/plan/tags/`not` legs) into the ISSUE-family claim
+ * query without also carrying the feature-family `kind` constraint it is deliberately
+ * widening past.
+ *
+ * Why this exists (the regression this fixes): threading the full compiled filter into
+ * tier 3 (the line that re-unified the CLAIM path with the READ path — see
+ * `getNextWorkItem`'s tier-3 block) ALSO carried leaves like `kind = 'feature'` into a
+ * query over `harness_shared.work_items`, whose rows are all bug/change/task. That leaf can
+ * never be true there, so the compiled filter was an unsatisfiable `FALSE` and tier 3 — the
+ * ONLY tier that serves issue-family work — matched zero rows for every feature-narrowed
+ * spec, silently re-breaking WI-1407's "feature family dry ⇒ fall through to an adjacent
+ * open issue" contract (caught by its regression test).
+ *
+ * A kind leaf that admits an ISSUE kind (`kind in ['bug','change']`, `kind != 'feature'`,
+ * a glob) is KEPT: there it is a genuine lane constraint, and compiling it is exactly the
+ * narrowing tier 3 wants. It must NOT be delegated to `issueKindsForFallback` alone —
+ * that extraction gives up (returns undefined ⇒ unrestricted) as soon as an `any`/`not`
+ * appears anywhere in the tree, so a shape like `all[ kind in ['bug'], any[…] ]` would
+ * lose the bug-only narrowing and let tier 3 claim a reserved task.
+ *
+ * Same conservative shapes as its siblings — a bare leaf, or a leaf directly inside a
+ * top-level `all`. A `kind` leaf nested under `any`/`not` is left alone (dropping it would
+ * change OR/NOT semantics); it stays compiled, which can only ever narrow, never over-serve.
+ */
+function stripFeatureOnlyKindLeaves(filter: FilterNode | undefined): FilterNode | undefined {
+  const isFeatureOnlyKindLeaf = (node: FilterNode): boolean =>
+    isLeaf(node) && node.field === 'kind' && kindLeafAdmitsNoIssueKind(node);
+
+  if (!filter) return undefined;
+  if (isLeaf(filter)) return isFeatureOnlyKindLeaf(filter) ? undefined : filter;
+  if ('all' in filter) {
+    const kept = filter.all.filter((node) => !isFeatureOnlyKindLeaf(node));
+    if (kept.length === filter.all.length) return filter; // nothing dropped
+    if (kept.length === 0) return undefined;
+    return kept.length === 1 ? kept[0] : { all: kept };
+  }
+  // `any` / `not` — leave unrewritten (see doc comment above).
+  return filter;
+}
+
+/**
+ * True iff a `kind` leaf can admit NO issue-family kind at all — i.e. it is a purely
+ * feature-family constraint, the one tier 3 widens past. Only the POSITIVE ops can rule
+ * the issue family out; `!=` / glob / contains all still leave issue kinds in scope, so
+ * they are (correctly) evaluated rather than dropped.
+ */
+function kindLeafAdmitsNoIssueKind(leaf: FilterLeaf): boolean {
+  if (leaf.op !== '=' && leaf.op !== 'in') return false;
+  const values = (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map(String);
+  return values.every((v) => !ISSUE_KIND_SET.has(v));
+}
+
+/**
  * EI-7481: true iff a `kind` leaf admits at least one FEATURE-family kind — the only case
  * tier 2's "widen to the rest of the feature family" is meaningful. An issue-only kind
  * constraint (`kind='bug'`, `kind in ['bug','change']`, `kind='task'`) must NOT be widened
@@ -1143,7 +1198,16 @@ export async function getNextWorkItem(
     // issueClaimCandidateSubquery — correctly reported 26 claimable. This is the line that
     // re-unifies the CLAIM path with the READ path. The post-claim re-check remains as
     // defense-in-depth (and still covers topicTags, which is not a SQL-side field).
-    const specFilterSql = compileFilter(sql, spec.view.filter);
+    //
+    // EI-18665895916759270: compile the filter with the FEATURE-ONLY `kind` leaves stripped
+    // (stripFeatureOnlyKindLeaves — see its doc comment). This query runs over
+    // `harness_shared.work_items`, where every row is bug/change/task, so a surviving
+    // `kind = 'feature'` leaf would compile to an unsatisfiable predicate and zero out the
+    // ONLY tier that serves issue-family work — silently re-breaking WI-1407's "feature
+    // family dry ⇒ fall through to an adjacent open issue" contract. Widening past exactly
+    // that leaf is what tier 3 IS; every other narrowing (including an issue-kind lane
+    // constraint) still compiles through.
+    const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
     claimed = await claimNextIssueWorkItem(
       {
         harness: opts.harness,

@@ -265,6 +265,20 @@ export interface WorkFeedHealth {
   /** Active routines whose next_fire_at is long overdue (the dead-routine / EI-584 signal). */
   deadRoutines: number;
   deadRoutineNames: string[];
+  /** Currently-PAUSED (active:false) routines flagged stale (WI-5839 /
+   *  EI-18654017982759582 items 2+3): an unattributed pause (no recorded
+   *  metadata.pause.reason) is flagged immediately; a reasoned pause is flagged once
+   *  it crosses its age threshold. `readDeadRoutines` above only ever looks at
+   *  active=true rows, so a pause — deliberate or not — was otherwise invisible no
+   *  matter how long it persisted (release-trigger sat paused ~4 days, twice, before
+   *  a human happened to notice). Optional; absent ⇒ 0 (prior fixtures unaffected). */
+  stalePausedRoutines?: number;
+  stalePausedRoutineNames?: string[];
+  /** Subset of `stalePausedRoutines` that are release/deploy-critical routines
+   *  (release-trigger, green-checkpoint) — a paused deploy pipeline silently drops
+   *  every agent's "shipped" work into a void, so this drives `crit` rather than
+   *  `warn`. Optional; absent ⇒ 0. */
+  stalePausedCriticalRoutines?: number;
 }
 
 /**

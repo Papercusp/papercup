@@ -19,6 +19,19 @@ const { registerCoordOp, runScoutCycleTick } = vi.hoisted(() => ({
 vi.mock('../../coord-ops/registry.js', () => ({ registerCoordOp }));
 vi.mock('../../scout/run.js', () => ({ runScoutCycleTick }));
 
+// WI-5785 (P-051 regression): mocks for the LAZY production-deps path (used only by
+// the "lazy production deps" describe block below, which never calls setScoutCycleDeps).
+const { registerScoutAction, registrants, hiveSingleRunner, scoutCeiling } = vi.hoisted(() => ({
+  registerScoutAction: { productionScoutRunner: vi.fn() },
+  registrants: { recordScoutTickToGovernor: vi.fn() },
+  hiveSingleRunner: { checkHiveSingleRunner: vi.fn().mockResolvedValue({ run: true }) },
+  scoutCeiling: { scoutWorkspaceCeilingGate: vi.fn() },
+}));
+vi.mock('../../scout/register-scout-action.js', () => registerScoutAction);
+vi.mock('../../learning-governor/registrants.js', () => registrants);
+vi.mock('../../hive-single-runner.js', () => hiveSingleRunner);
+vi.mock('../../learning-governor/scout-ceiling.js', () => scoutCeiling);
+
 // Pin WORKSPACE_COORDINATION OFF so the installSlug assertion exercises the
 // per-hive default (`ctx.harnessSlug ?? 'op'`) this test was written for, rather
 // than the workspace-sentinel collapse the ON default (graduated 2026-06-23) maps
@@ -97,5 +110,21 @@ describe('scoutCycleOp.run', () => {
     const c = ctx();
     await scoutCycleOp.run({}, c as never);
     expect(c.log).toHaveBeenCalledWith(expect.stringMatching(/blender:cycle fired=true reason=idle/));
+  });
+});
+
+// WI-5785 (P-051 regression): the LAZY production-deps path (no test deps injected)
+// is exactly the path that ran in production unwired for the workspace-wide scout
+// ceiling — the tests above all inject fakeDeps and so never exercised it. Cover the
+// lazy-build branch directly to pin the wiring so it can't silently drop again.
+describe('scoutCycleOp lazy production deps (WI-5785)', () => {
+  it('wires workspaceCeilingGate (alongside runCycle/recordGovernor/hiveRunnerGate) into the deps runScoutCycleTick receives', async () => {
+    runScoutCycleTick.mockResolvedValue({ fired: false, reason: 'too-soon' });
+    await scoutCycleOp.run({}, ctx() as never);
+    const [, deps] = runScoutCycleTick.mock.calls[0];
+    expect(deps.runCycle).toBe(registerScoutAction.productionScoutRunner);
+    expect(deps.recordGovernor).toBe(registrants.recordScoutTickToGovernor);
+    expect(typeof deps.hiveRunnerGate).toBe('function');
+    expect(deps.workspaceCeilingGate).toBe(scoutCeiling.scoutWorkspaceCeilingGate);
   });
 });
