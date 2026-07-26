@@ -27,8 +27,8 @@ import {
   listIssueClaimableRows,
 } from '../../scheduler/get-next';
 import {
-  getClaimSpecRecord,
-  fleetSpecBeeKey,
+  resolveFleetClaimSpec,
+  listFleetClaimSpecCandidates,
   resolveClaimSpecWorkspace,
 } from '../../scheduler/claim-spec-store';
 import type { ClaimSpec, FilterNode } from '../../scheduler/claim-spec';
@@ -72,7 +72,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "a FLEET SLUG whose sentinel claim-spec scopes the lane (its view.filter + states + rank ordering). Omit ⇒ the whole issue-family lane for the harness (DEFAULT_CLAIM_SPEC).",
+        "a fleet's claim-spec scoping the lane (its view.filter + states + rank ordering) — either the FLEET SLUG or the spec's own `specId` (both resolve; an unrecognized value errors with candidates, it never silently widens to the whole backlog). Omit ⇒ the whole issue-family lane for the harness (DEFAULT_CLAIM_SPEC).",
       ),
     states: z
       .array(z.string().min(1).max(40))
@@ -94,22 +94,71 @@ export default defineTool({
     const ws = resolveClaimSpecWorkspace((ctx as { workspaceId?: string | null }).workspaceId);
 
     // Optionally resolve a fleet claim-spec to scope the lane (filter + states + rank).
+    // EI-18672834165659298: `args.spec` may be either the fleet SLUG or the spec's own
+    // specId — resolveFleetClaimSpec tries both namespaces and returns null when NEITHER
+    // matches. A miss is a hard error (candidates included), never a silent fall-through to
+    // the whole-backlog DEFAULT_CLAIM_SPEC — that silent widening (safe→unsafe) is exactly
+    // the bug this fixes.
     let specFilter: FilterNode | undefined;
     let spec: ClaimSpec | undefined;
     let specStates: readonly string[] | undefined;
-    let specProvenance: { specId: string; revision: number | null; source: 'cup' | 'fleet' | 'default' } = {
+    let specProvenance: {
+      specId: string;
+      revision: number | null;
+      source: 'cup' | 'fleet' | 'default';
+      fleetSlug?: string;
+      matchedBy?: 'fleet-slug' | 'spec-id';
+    } = {
       specId: 'default-fixed-ordering',
       revision: 0,
       source: 'default',
     };
     if (args.spec) {
-      const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(args.spec), workspaceId: ws }).catch(() => null);
-      if (rec) {
-        spec = rec.spec;
-        specFilter = rec.spec.view.filter;
-        specStates = rec.spec.states;
-        specProvenance = { specId: rec.spec.specId ?? args.spec, revision: rec.revision, source: rec.source };
+      const resolved = await resolveFleetClaimSpec({ spec: args.spec, workspaceId: ws }).catch(() => undefined);
+      if (resolved === undefined) {
+        // A genuine lookup failure (e.g. DB hiccup) — distinguish from "no match" below by
+        // erroring rather than silently proceeding on an unfiltered lane.
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: `failed to resolve claim-spec '${args.spec}' — lookup error, not a not-found; retry`,
+              }),
+            },
+          ],
+        };
       }
+      if (resolved === null) {
+        const candidates = await listFleetClaimSpecCandidates({ workspaceId: ws }).catch(() => []);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error:
+                  `no fleet or claim-spec named '${args.spec}' found (checked both the fleet-slug and specId ` +
+                  `namespaces) — refusing to fall back to the unfiltered whole-backlog lane. Pass a valid fleet ` +
+                  `slug or specId from \`candidates\`, or omit \`spec\` to intentionally read the whole lane.`,
+                candidates,
+              }),
+            },
+          ],
+        };
+      }
+      const rec = resolved.record;
+      spec = rec.spec;
+      specFilter = rec.spec.view.filter;
+      specStates = rec.spec.states;
+      specProvenance = {
+        specId: rec.spec.specId ?? args.spec,
+        revision: rec.revision,
+        source: rec.source,
+        fleetSlug: resolved.fleetSlug,
+        matchedBy: resolved.matchedBy,
+      };
     }
 
     // Effective filter = the spec's filter AND (optional) a kind restriction. Both are

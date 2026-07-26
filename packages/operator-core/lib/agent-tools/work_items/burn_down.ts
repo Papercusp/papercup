@@ -13,6 +13,7 @@ import { listPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import {
   listWorkItems,
   getWorkItem,
+  readWorkItemClaimHoldProvenance,
   type WorkItem,
   type WorkItemKind,
 } from '../../work-items';
@@ -202,6 +203,31 @@ function hasClaimHold(item: WorkItem): boolean {
   );
 }
 
+/**
+ * EI-18672701535825889: a claim-hold row has TWO mutually-invisible provenance
+ * conventions (held_open_* lease vs claim_hold_* durable park — see
+ * readWorkItemClaimHoldProvenance). Reporting the raw `payload._claimHold` marker
+ * with no holder/reason is exactly what sent a leader auditing this census down the
+ * wrong path (84 policy-gated holds read as "(no holder), (no reason)" stale
+ * corruption, one force-cleared off a security gate before the mistake was caught).
+ * Surface whichever convention(s) actually attributed the hold; only a row with
+ * NEITHER is a genuine unattributed-hold triage candidate.
+ */
+function claimHoldReason(item: WorkItem): string {
+  const { heldOpen, parked, attributed } = readWorkItemClaimHoldProvenance(item.payload);
+  if (!attributed) {
+    return 'excluded from self-select by payload._claimHold — UNATTRIBUTED (no held_open_by / claim_hold_by on the row)';
+  }
+  const parts: string[] = [];
+  if (heldOpen) {
+    parts.push(`held open by ${heldOpen.by}${heldOpen.reason ? `: ${heldOpen.reason}` : ''}`);
+  }
+  if (parked) {
+    parts.push(`durably parked by ${parked.by}${parked.reason ? `: ${parked.reason}` : ''}`);
+  }
+  return parts.join('; ');
+}
+
 function hasNeedsHuman(item: WorkItem): boolean {
   const payload = item.payload;
   return Boolean(
@@ -311,7 +337,7 @@ export function buildBurnDownResult(
     if (hasClaimHold(item)) {
       parked.push({
         ...row,
-        reason: 'excluded from self-select by payload._claimHold',
+        reason: claimHoldReason(item),
         mechanism: 'claimHold',
         aliasedState: state,
       });

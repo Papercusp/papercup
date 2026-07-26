@@ -1789,6 +1789,11 @@ async function escalateStaleRecovery(unitId: string, harness: string | null, age
         `Work-item ${unitId}${harness ? ` (${harness})` : ''} remained in placement recovery for ${ageHours} hours ` +
         `without acquiring a live cup or reaching a terminal state. The watchdog has stopped automatic recovery ` +
         `and marked the placement stranded. Verify the work, then re-place, split, deprecate, or resolve it.`,
+      // WI-5848 (sweep of EI-18668025239634541's class): `summary` embeds the live
+      // `${ageHours}` duration, which could vary if this ever fires more than once
+      // for the SAME stranded episode. Key on the stable unitId so any such re-fire
+      // coalesces instead of leaking.
+      meta: { subjectSignature: `pot-placement-watchdog:stale-recovery:${unitId}` },
     });
     return rec.msg_id;
   } catch (e) {
@@ -1989,6 +1994,11 @@ async function reconcileStrandedWork(
           `${blk.downstream} non-terminal downstream work-item(s) — they cannot proceed until it resolves. ` +
           `Resolve, deprecate, or re-place the blocker to un-gate the downstream work. ` +
           `(mug-autonomous-execution B-09 / P-022)`,
+        // WI-5848 (sweep of EI-18668025239634541's class): the caller already
+        // guards re-entry via `existing.escalation_msg_id` above, so this is
+        // low-risk in practice — but `summary` embeds the live `${blk.downstream}`
+        // count, so add the same defense-in-depth conditionKey convention.
+        meta: { subjectSignature: `pot-placement-watchdog:stranded:${blk.blocker_id}` },
       });
       msgId = rec.msg_id;
     } catch (e) {

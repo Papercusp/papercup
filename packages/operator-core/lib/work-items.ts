@@ -3068,6 +3068,33 @@ export async function setWorkItemClaimHold(
      WHERE workspace_id = ${ws} AND feature_id = ${id}
      RETURNING payload`;
   if (!rows[0]) return null;
+  // EI-18672701535825889 finding #3: a floor that hides work from a whole fleet had ZERO
+  // audit_log rows — a leader auditing "why is my claim-hold count non-zero" via audit:list
+  // saw nothing, forcing a per-row payload dig. Fire-and-forget (mirrors
+  // release-force-guard.ts's recordForceReleaseAudit; never blocks/throws the caller).
+  const auditActor = opts.by ?? opts.parkedBy ?? null;
+  void sql
+    .unsafe(
+      `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+      [
+        `wi-claim-hold-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        Date.now(),
+        auditActor ?? 'system',
+        hold ? 'work_items:claim_hold:set' : 'work_items:claim_hold:clear',
+        id,
+        JSON.stringify({
+          mode: opts.by ? 'held_open' : opts.parkedBy ? 'claim_hold' : opts.leaseOnly ? 'lease_only_clear' : 'clear',
+          by: auditActor,
+          reason: opts.reason ?? opts.parkedReason ?? null,
+          leaseOnly: opts.leaseOnly === true,
+        }),
+        ws,
+      ],
+    )
+    .catch((err: unknown) => {
+      console.warn('[setWorkItemClaimHold] audit write failed:', (err as Error)?.message);
+    });
   return { id, harness: located[0].harness_slug ?? null, hold, applicable: true };
 }
 
@@ -3085,6 +3112,44 @@ export function readWorkItemHeldOpenBy(
     reason: typeof p.held_open_reason === 'string' ? p.held_open_reason : null,
     at: typeof p.held_open_at === 'string' ? p.held_open_at : null,
   };
+}
+
+/** Durable-park provenance (payload.claim_hold_by), or null. Sibling reader to
+ *  {@link readWorkItemHeldOpenBy} for the OTHER `_claimHold` provenance convention
+ *  (`release {claimHold:true}`'s park — no lease, no reaper, survives the parker's
+ *  session ending; see {@link setWorkItemClaimHold}'s doc comment for the split). */
+export function readWorkItemClaimHoldParkedBy(
+  payload: unknown,
+): { by: string; reason: string | null; at: string | null } | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  if (typeof p.claim_hold_by !== 'string' || !p.claim_hold_by) return null;
+  return {
+    by: p.claim_hold_by,
+    reason: typeof p.claim_hold_reason === 'string' ? p.claim_hold_reason : null,
+    at: typeof p.claim_hold_at === 'string' ? p.claim_hold_at : null,
+  };
+}
+
+/**
+ * EI-18672701535825889: a UNIFIED read across BOTH `_claimHold` provenance conventions
+ * (`held_open_*` lease vs `claim_hold_*` durable park — see {@link setWorkItemClaimHold}'s
+ * doc comment). Any surface that reports "who/why is this held" — burn_down's parked-row
+ * reason, an ad-hoc audit query, a leader's held-open census — must check BOTH, or a
+ * durably-parked row (deliberately gated, e.g. a policy-tier human hold) reads as
+ * unattributed corruption when queried by only one convention's field names (the exact
+ * near-miss this item documents: 65 policy-gated rows misread as stale, one force-cleared).
+ * `attributed` is true when EITHER convention names a holder — the row is NOT a genuine
+ * unknown; only rows with `attributed:false` are real unattributed-hold triage candidates.
+ */
+export function readWorkItemClaimHoldProvenance(payload: unknown): {
+  heldOpen: { by: string; reason: string | null; at: string | null } | null;
+  parked: { by: string; reason: string | null; at: string | null } | null;
+  attributed: boolean;
+} {
+  const heldOpen = readWorkItemHeldOpenBy(payload);
+  const parked = readWorkItemClaimHoldParkedBy(payload);
+  return { heldOpen, parked, attributed: Boolean(heldOpen || parked) };
 }
 
 /**
@@ -3440,7 +3505,11 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'observation-lane': 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
   'needs-human': 'payload.needsHuman = true — routed to a human for ratification (EI-7776)',
   'external-blocker': 'payload.externalBlockers contains an active typed capability dependency',
-  'claim-hold': 'payload._claimHold = true — deliberately held open by an agent/leader (WI-2797)',
+  'claim-hold':
+    'payload._claimHold = true — deliberately held (WI-2797). TWO provenance conventions, both must be checked before ' +
+    'assuming a row is unattributed: `held_open_by`/`held_open_reason` (a liveness-bound LEASE, work_items:hold_open) or ' +
+    '`claim_hold_by`/`claim_hold_reason` (a durable PARK that outlives its parker\'s session, release{claimHold:true}) — ' +
+    'see readWorkItemClaimHoldProvenance / EI-18672701535825889.',
   'plan-lane-reserved': 'payload.plan_item — reserved to its own plan lane while that plan is active (WI-2118/WI-3667)',
   'federation-detector': 'an auto-filed replication-liveness detector, gated to the p2p fleet (WI-2633)',
   'loop-noise': 'an AUTO-loop-iteration bookkeeping marker, not work (EI-8802)',

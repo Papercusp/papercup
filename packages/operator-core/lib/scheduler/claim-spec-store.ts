@@ -552,6 +552,128 @@ export async function getClaimSpecRecord(
   };
 }
 
+/**
+ * A fleet claim-spec resolved from a caller-supplied `spec` string that may be EITHER
+ * namespace it can legitimately be addressed by.
+ */
+export interface ResolvedFleetClaimSpec {
+  record: ClaimSpecRecord;
+  /** The fleet slug the record actually resolved under (the sentinel `bee_id` sans its
+   *  `fleet:` prefix) — always populated, regardless of which namespace matched. */
+  fleetSlug: string;
+  /** Which namespace the caller's `spec` value matched. */
+  matchedBy: 'fleet-slug' | 'spec-id';
+}
+
+/**
+ * EI-18672834165659298: resolve a caller-supplied `spec` string against BOTH namespaces a
+ * fleet claim-spec is legitimately addressed by — the FLEET SLUG (the sentinel `bee_id` key,
+ * `fleet:<slug>`, per {@link fleetSpecBeeKey}) and the spec's own `specId` (the value stamped
+ * into every claim-spec payload, printed by scheduler:get_claim_spec, and quoted in
+ * get_next's own refusal text — "does not match p2p-release-lane@12" — making the specId the
+ * MORE discoverable value and therefore the one callers are likeliest to pass here).
+ *
+ * Trying the fleet-slug namespace FIRST preserves today's common-case query shape (one
+ * indexed point lookup); the specId fallback only fires when that misses, so it costs
+ * nothing on the well-formed path.
+ *
+ * Returns `null` when NEITHER namespace matches — the caller MUST treat that as an error
+ * (surface it + {@link listFleetClaimSpecCandidates}), never silently degrade to
+ * DEFAULT_CLAIM_SPEC. Before this fix, work_items:claimable passed an unresolved specId
+ * straight to getClaimSpecRecord as a fake cupId, which fell through to
+ * `{ source:'default', spec: DEFAULT_CLAIM_SPEC }` — reporting the WHOLE issue-family
+ * backlog (1023 items in the field report) as "claimable" under a 10-item fleet lane, a
+ * silent safe→unsafe scope widening.
+ */
+export async function resolveFleetClaimSpec(
+  args: { spec: string; workspaceId?: string },
+  sqlOverride?: OrgSql,
+): Promise<ResolvedFleetClaimSpec | null> {
+  const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  const sql = sqlOverride ?? getOrgPg().sql;
+
+  type Row = {
+    bee_id: string;
+    spec: unknown;
+    revision: number;
+    updated_by: string | null;
+    updated_at: string;
+    harness_slug: string | null;
+  };
+  // matchedBy is set by each call site below (it knows which lookup produced the row);
+  // this just builds the common record shape once validation passes.
+  const toRecord = (row: Row, fleetSlug: string): Omit<ResolvedFleetClaimSpec, 'matchedBy'> | null => {
+    const v = validateClaimSpec(row.spec);
+    if (!v.ok || !v.spec) return null;
+    return {
+      fleetSlug,
+      record: {
+        source: 'fleet',
+        spec: v.spec,
+        revision: row.revision,
+        updatedBy: row.updated_by,
+        updatedAt: row.updated_at,
+        harnessSlug: row.harness_slug,
+        fleetSlug,
+      },
+    };
+  };
+
+  // 1) literal fleet-slug lookup — the sentinel row keyed `fleet:<spec>`.
+  const bySlugRows = (await sql`
+    SELECT bee_id, spec, revision, updated_by, updated_at, harness_slug
+      FROM harness_shared.cup_claim_specs
+     WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(args.spec)} LIMIT 1`) as Row[];
+  if (bySlugRows.length > 0) {
+    const resolved = toRecord(bySlugRows[0]!, args.spec);
+    if (resolved) return { ...resolved, matchedBy: 'fleet-slug' };
+  }
+
+  // 2) specId lookup — the value stamped into the spec's own payload (spec->>'specId'),
+  // scoped to fleet-sentinel rows only (bee_id LIKE 'fleet:%') so this can never resolve a
+  // bare bee's per-agent spec by accident.
+  const bySpecIdRows = (await sql`
+    SELECT bee_id, spec, revision, updated_by, updated_at, harness_slug
+      FROM harness_shared.cup_claim_specs
+     WHERE workspace_id = ${ws}
+       AND bee_id LIKE 'fleet:%'
+       AND spec->>'specId' = ${args.spec}
+     ORDER BY revision DESC LIMIT 1`) as Row[];
+  if (bySpecIdRows.length > 0) {
+    const row = bySpecIdRows[0]!;
+    const fleetSlug = row.bee_id.slice('fleet:'.length);
+    const resolved = toRecord(row, fleetSlug);
+    if (resolved) return { ...resolved, matchedBy: 'spec-id' };
+  }
+
+  return null;
+}
+
+/**
+ * The candidate fleet claim-spec identifiers (slug + specId) under a workspace — for an
+ * "unrecognized `spec`" error message so a caller sees what WOULD have matched instead of
+ * guessing again (EI-18672834165659298, option 2: "error with the candidates, never fall
+ * back").
+ */
+export async function listFleetClaimSpecCandidates(
+  args: { workspaceId?: string; limit?: number },
+  sqlOverride?: OrgSql,
+): Promise<Array<{ fleetSlug: string; specId: string | null; revision: number }>> {
+  const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  const sql = sqlOverride ?? getOrgPg().sql;
+  const limit = args.limit ?? 20;
+  const rows = (await sql`
+    SELECT bee_id, spec->>'specId' AS spec_id, revision
+      FROM harness_shared.cup_claim_specs
+     WHERE workspace_id = ${ws} AND bee_id LIKE 'fleet:%'
+     ORDER BY updated_at DESC LIMIT ${limit}`) as Array<{ bee_id: string; spec_id: string | null; revision: number }>;
+  return rows.map((r) => ({
+    fleetSlug: r.bee_id.slice('fleet:'.length),
+    specId: r.spec_id,
+    revision: Number(r.revision),
+  }));
+}
+
 /** The claim-spec head (specId@revision) a bee is running under — the live-execution view's
  *  per-run spec column (P-001). */
 export interface ClaimSpecHead {

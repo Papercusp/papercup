@@ -12,6 +12,16 @@
  *   - the claim itself is untouched — the holder keeps working it.
  * `clear:true` lifts the hold (holder or force). The lifecycle note is
  * best-effort: a coord hiccup never un-holds the item.
+ *
+ * ⚠ EI-18672701535825889: `held_open_by`/`held_open_reason` is ONE of TWO `_claimHold`
+ * provenance conventions, not the only one. `release { claimHold:true }` writes a SIBLING
+ * convention — `claim_hold_by`/`claim_hold_reason` (a durable PARK: no reaper, no
+ * terminal-transition gate, survives the parker's session ending — see
+ * setWorkItemClaimHold's doc comment for the deliberate lease-vs-park split). An audit that
+ * checks only this tool's fields will read every `claim_hold_by` row (the majority of held
+ * rows on this harness) as unattributed — several are deliberate policy-tier human gates, not
+ * corruption. Always read via `readWorkItemClaimHoldProvenance` (checks both), never
+ * `readWorkItemHeldOpenBy` alone, when auditing why a row is held.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -27,7 +37,9 @@ export default defineTool({
     'Hold a work-item OPEN without releasing your claim: stamps you as held_open_by (+ reason), excludes it from ' +
     'claim_next/scheduler self-select, and makes a terminal transition (done/resolved/closed/dropped) by anyone ELSE ' +
     'refuse until you clear it. { id, reason } to hold; { id, clear:true } to lift. Clearing another agent\'s hold ' +
-    'needs force:true (leader override). Returns { ok, id, held, heldBy, reason }.',
+    'needs force:true (leader override). Returns { ok, id, held, heldBy, reason }. NOTE: a sibling convention ' +
+    '(release{claimHold:true}) durably parks via claim_hold_by/claim_hold_reason instead — when AUDITING why a row ' +
+    'is held, read work_items:burn_down\'s parked reason (checks both) rather than held_open_by alone.',
   guidance: {
     when:
       'You are gating an item — verifying, awaiting evidence, or keeping a recurring/leader item alive — and peers must ' +
