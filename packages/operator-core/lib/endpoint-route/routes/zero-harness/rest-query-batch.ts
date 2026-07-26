@@ -149,22 +149,13 @@ export default defineTool({
     // net so no present/future resolver can 500 the sync transport on a stray BigInt.
     //
     // infra-perf-reliability-audit-round3 P-011 / round4 P-002: offload
-    // JSON.stringify + gzip to the cpu-task worker so neither blocks the main
+    // JSON.stringify to the cpu-task worker so it does not block the main
     // event loop. serializeJsonResponse applies the BigInt→Number replacer on
     // the worker thread (byte-identical to the previous inline replacer).
-    const acceptsGzip = (req.headers.get('accept-encoding') ?? '').toLowerCase().includes('gzip');
-    const { body: responseBody, encoding } = await serializeJsonResponse({ results }, acceptsGzip, list.length);
-    if (encoding === 'gzip') {
-      return new Response(responseBody, {
-        status: 200,
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          'content-encoding': 'gzip',
-          'vary': 'accept-encoding',
-        },
-      });
-    }
-    return new Response(responseBody as string, {
+    // The response is NOT compressed — this is a loopback desktop sidecar
+    // (see host-handler.ts §1); do not re-add gzip here.
+    const responseBody = await serializeJsonResponse({ results }, list.length);
+    return new Response(responseBody, {
       status: 200,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });

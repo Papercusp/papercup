@@ -15,6 +15,7 @@ import {
   loadOrGenerateHiveKeypair,
   loadHivePubkey,
   HIVE_KEYPAIR_SERVICE,
+  RemoteHiveViewMintRefusedError,
 } from './identity/hive-keypair';
 import { keychainLoad } from './identity/keychain';
 import { deriveHiveFederationTopic } from './sync/hyperbee/derive-swarm-topic';
@@ -114,6 +115,27 @@ async function remoteHiveView(
 }
 
 /**
+ * EI-18688308662198558 (2026-07-26): a joined `remote_hive` VIEW's mint refusal
+ * (RemoteHiveViewMintRefusedError) is a STRUCTURAL, permanent fact about a given
+ * (workspaceId, homeSlug) pair — this box is a peer, not the owner, for that
+ * hive, and that does not change from one call to the next. Left uncached, any
+ * caller that invokes resolveHivePubkey on a cadence (a periodic pot-list /
+ * dashboard refresh, a routine tick) re-runs the full registry lookup + mint
+ * attempt AND re-logs the identical warning on every single call, for as long
+ * as the caller keeps polling — observed live: a wall of the identical
+ * "backfill failed" line for a full hour inside the gym's hermetic ephemeral
+ * instance (gym-loop-ws), with the gym cycle itself never progressing past
+ * boot. This module-scoped cache remembers the refusal so a repeat caller for
+ * the SAME pair gets an immediate `undefined` with zero registry I/O and zero
+ * repeat logging — a genuinely different (workspaceId, homeSlug) pair, or a
+ * TRANSIENT failure (PG/network blip), is never affected: only this specific,
+ * permanent refusal is cached, and `getHiveBySlug` is still checked first on
+ * every call so a hives row that later appears (the view gets healed) is
+ * picked up immediately, bypassing the cache entirely.
+ */
+const remoteViewRefusalCache = new Set<string>();
+
+/**
  * The Hive's public identity for the read path: the stored pubkey, or — for a
  * pre-existing hive that predates the entity — a best-effort lazy-backfill (mint +
  * persist on this owning Swarm). Returns `undefined` only if backfill genuinely
@@ -127,13 +149,24 @@ export async function resolveHivePubkey(
 ): Promise<string | undefined> {
   const existing = await getHiveBySlug(workspaceId, homeSlug);
   if (existing) return existing.pubkeyBase64;
+  const cacheKey = `${workspaceId}/${homeSlug}`;
+  if (remoteViewRefusalCache.has(cacheKey)) return undefined;
   try {
     const { record } = await ensureHiveIdentity(workspaceId, homeSlug);
     return record.pubkeyBase64;
   } catch (e) {
-    console.warn(
-      `[hive-identity] backfill failed for ${workspaceId}/${homeSlug}: ${e instanceof Error ? e.message : e}`,
-    );
+    if (e instanceof RemoteHiveViewMintRefusedError) {
+      remoteViewRefusalCache.add(cacheKey);
+      console.warn(
+        `[hive-identity] backfill permanently refused for ${workspaceId}/${homeSlug} ` +
+          `(joined remote_hive view with no stamped pubkey) — caching; will not retry ` +
+          `this pair again this process. ${e.message}`,
+      );
+    } else {
+      console.warn(
+        `[hive-identity] backfill failed for ${workspaceId}/${homeSlug}: ${e instanceof Error ? e.message : e}`,
+      );
+    }
     return undefined;
   }
 }

@@ -69,11 +69,12 @@ export default defineTool({
       // key can only cost a refetch (no win), never a wrong view. Inert until a client opts in.
       //
       // infra-perf-reliability-audit-round3 P-011 / round4 P-002: offload
-      // JSON.stringify + gzip to the cpu-task worker so neither blocks the main
+      // JSON.stringify to the cpu-task worker so it does not block the main
       // event loop. serializeJsonResponse handles the BigInt replacer on the worker.
+      // The response is NOT compressed — this is a loopback desktop sidecar
+      // (see host-handler.ts §1); do not re-add gzip here.
       const deltaParam = u.searchParams.get('delta');
       const dcfg = deltaParam !== null ? resourceDeltaConfig(name) : undefined;
-      const acceptsGzip = (req.headers.get('accept-encoding') ?? '').toLowerCase().includes('gzip');
       let responseValue: unknown;
       let itemCount: number;
       if (dcfg && Array.isArray(rows)) {
@@ -97,18 +98,8 @@ export default defineTool({
         responseValue = { rows, version: String(Date.now()) };
         itemCount = Array.isArray(rows) ? rows.length : 1;
       }
-      const { body, encoding } = await serializeJsonResponse(responseValue, acceptsGzip, itemCount);
-      if (encoding === 'gzip') {
-        return new Response(body, {
-          status: 200,
-          headers: {
-            'content-type': 'application/json; charset=utf-8',
-            'content-encoding': 'gzip',
-            'vary': 'accept-encoding',
-          },
-        });
-      }
-      return new Response(body as string, {
+      const body = await serializeJsonResponse(responseValue, itemCount);
+      return new Response(body, {
         status: 200,
         headers: { 'content-type': 'application/json; charset=utf-8' },
       });

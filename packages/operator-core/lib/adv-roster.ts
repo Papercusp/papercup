@@ -499,7 +499,12 @@ export function mergeRosterEntries(
    * positionals, and each new one makes every call site a counting exercise.
    * New joins go in here so the arity stops growing.
    */
-  extra: { awaitByOwner?: Map<string, OpenAwait> } = {},
+  extra: {
+    awaitByOwner?: Map<string, OpenAwait>;
+    /** P-007 finding: fallback harnessSlug source for interactive psu/su
+     *  sessions — see sessionBriefHarnessByOwner's docblock. */
+    sessionBriefHarness?: Map<string, string>;
+  } = {},
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -614,7 +619,11 @@ export function mergeRosterEntries(
       intentDeclaredAt: p.intentDeclaredAt ?? null,
       openAwait: extra.awaitByOwner?.get(p.ownerId) ?? null,
       runId: runInfoByOwner.get(p.ownerId)?.runId ?? null,
-      harnessSlug: runInfoByOwner.get(p.ownerId)?.harness ?? null,
+      // Fallback order: a classic harness-spawned run (paired with the runId
+      // above, for the live-thinking-stream URL) first, else the interactive
+      // psu/su session's own declared harness (P-007 finding — see
+      // sessionBriefHarnessByOwner's docblock for why this fallback exists).
+      harnessSlug: runInfoByOwner.get(p.ownerId)?.harness ?? extra.sessionBriefHarness?.get(p.ownerId) ?? null,
       thinking: false, // annotated by mergeRosterWithAssignments (transcript mtime)
       // Default true (non-claude backends gate on their own handle); a claude session
       // whose transcript doesn't resolve is flipped false in mergeRosterWithAssignments.
@@ -902,6 +911,43 @@ async function spawnedAgentRunInfoByOwner(): Promise<Map<string, { runId: string
 }
 
 /**
+ * chat-ref-pills-2026-07-26 P-007 finding: `spawnedAgentRunInfoByOwner` above
+ * is the ONLY source `RosterEntry.harnessSlug` had, and it is scoped to
+ * classic harness-SPAWNED runs (spawned_agents, paired with a runId for the
+ * live-thinking-stream URL) — it has ZERO rows for an interactive psu/su
+ * session (the entire live fleet today; verified 2026-07-26: `SELECT * FROM
+ * spawned_agents WHERE status='running' AND session_owner IS NOT NULL` = 0
+ * rows fleet-wide). That silently starved every OTHER `harnessSlug` consumer
+ * that has nothing to do with the thinking-stream (SessionChatModal's
+ * WI-/EI-/F- ref-pill popup destination, P-008), which no-ops for every real
+ * session even though the pill itself renders + hydrates correctly.
+ *
+ * `harness_shared.session_briefs` is a second, already-populated per-owner
+ * source: `writeSessionBrief` (presence.ts) upserts `harness_slug` on EVERY
+ * presence declaration (coord:orient / declare-intent / bootstrap), so any
+ * live psu/su session scoped to a harness has a fresh row here. Used ONLY as
+ * a FALLBACK (spawned-run harness still wins when both exist) so the
+ * thinking-stream's own runId-paired semantics are undisturbed.
+ */
+async function sessionBriefHarnessByOwner(): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const { sql } = getOrgPg();
+    const rows = (await sql`
+      SELECT owner_id, harness_slug
+        FROM harness_shared.session_briefs
+       WHERE harness_slug IS NOT NULL
+    `) as unknown as Array<{ owner_id: string | null; harness_slug: string | null }>;
+    for (const r of rows) {
+      if (r.owner_id && r.harness_slug) out.set(r.owner_id, r.harness_slug);
+    }
+  } catch {
+    /* best-effort — falls back to null harnessSlug (today's behavior) on any read error */
+  }
+  return out;
+}
+
+/**
  * Owner ids that currently have an ARMED engine loop — an active
  * harness_shared.routines loop row (reschedule_interval_sec IS NOT NULL) pinned to
  * that owner (target_owner_id). A loop-armed agent counts as "live" in the roster
@@ -1010,6 +1056,7 @@ export async function mergeRosterWithAssignments(
     runInfoByOwner,
     loopArmedOwners,
     nurseryByOwner,
+    sessionBriefHarness,
   ] = await Promise.all([
     listPresence(),
     advSessionsByCoordOwner(),
@@ -1026,6 +1073,10 @@ export async function mergeRosterWithAssignments(
     // adds to the roster-merge baseline the search-transcripts endpoint pays
     // on every query).
     runningSpawnLivenessByOwner(os.hostname()),
+    // P-007 finding (see sessionBriefHarnessByOwner docblock): harnessSlug
+    // fallback for interactive psu/su sessions, which spawnedAgentRunInfoByOwner
+    // alone never covers.
+    sessionBriefHarnessByOwner(),
   ]);
   const localPresence = scopePresenceToWorkspace(presenceAll, workspaceId);
   // Shared-hive federation: when presence-gossip is on, fold in cross-machine agents
@@ -1071,7 +1122,7 @@ export async function mergeRosterWithAssignments(
     runInfoByOwner,
     loopArmedOwners,
     modesByOwner,
-    { awaitByOwner },
+    { awaitByOwner, sessionBriefHarness },
   );
   const active = enrichPidLiveness(entries, os.hostname());
   // Stamp local agents with this machine's label (federated rows already carry their

@@ -4,7 +4,7 @@
  *
  * infra-perf-reliability-audit-round3-2026-06-19 P-011 / round4 P-002.
  *
- * Background: the F1 cpuprofile attributed two hot-path culprits that run
+ * Background: the F1 cpuprofile attributed two hot-path culprits that ran
  * SYNCHRONOUSLY on the main thread per SSE polling tick:
  *
  *  (a) JSON.stringify on large result-batch payloads (coord:plan-events
@@ -14,23 +14,29 @@
  * At 350–630 elevated windows/hr this compounds into p95 501 ms / worst
  * 3475 ms event-loop lag seen in round-3 cpuprofile captures.
  *
+ * (b) IS GONE — the operator no longer compresses any response. It is a
+ * loopback desktop sidecar, so gzip only ever shrank bytes that never left
+ * the machine while costing CPU on both ends; this worker existed partly to
+ * HIDE that cost rather than not pay it. Do not re-add compression here
+ * (guard: scripts/check-no-wire-compression.mjs). (a) is real work that
+ * still has to happen, so the serialize offload stays.
+ *
  * Architecture: one persistent worker per process (lazy-spawned on first
- * call). The main thread postMessages a `{ kind:'serialize', id, value,
- * gzip }` envelope; the worker does JSON.stringify + optional gzip and
- * transfers the result back. Falls back to inline sync execution on the
- * main thread when worker_threads are unavailable or the worker crashes —
- * byte-identical behavior (same BigInt→Number replacer), just slower.
+ * call). The main thread postMessages a `{ kind:'serialize', id, value }`
+ * envelope; the worker does JSON.stringify and transfers the result back.
+ * Falls back to inline sync execution on the main thread when
+ * worker_threads are unavailable or the worker crashes — byte-identical
+ * behavior (same BigInt→Number replacer), just slower.
  *
  * The structured-clone transfer of `value` to the worker is faster than
  * JSON.stringify because V8 uses a compact binary format internally.
  * Main-thread blocking is reduced to the clone step (~10 ms for a 3.5 MB
- * object) rather than stringify + gzip (~80–130 ms).
+ * object) rather than the full stringify (~30–50 ms).
  *
  * Pattern follows libs/generic/memory/src/local-embedder-worker.ts exactly.
  */
 
 import { Worker } from 'node:worker_threads';
-import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
 
@@ -52,7 +58,6 @@ interface PendingRequest {
 
 interface WorkerResult {
   json: string | null;
-  compressed: Uint8Array | null;
 }
 
 let _worker: Worker | null = null;
@@ -88,7 +93,6 @@ function ensureWorker(): Promise<void> {
         kind: string;
         id?: number;
         json?: string | null;
-        compressed?: Uint8Array | null;
         error?: string;
       }) => {
         if (msg.kind === 'ready') {
@@ -101,7 +105,7 @@ function ensureWorker(): Promise<void> {
         if (!p) return;
         _pending.delete(msg.id);
         if (msg.kind === 'serialize_ok') {
-          p.resolve({ json: msg.json ?? null, compressed: msg.compressed ?? null });
+          p.resolve({ json: msg.json ?? null });
         } else {
           p.reject(new Error(msg.error ?? 'cpu-task worker error'));
         }
@@ -135,23 +139,22 @@ function bigIntReplacer(_k: string, v: unknown): unknown {
 }
 
 /**
- * Produce an HTTP-ready body for a JSON response via the CPU-task worker.
+ * Serialize a JSON response body via the CPU-task worker.
  *
- * When `acceptsGzip` is true AND `itemCount` is above OFFLOAD_MIN_ITEMS,
- * both JSON.stringify AND gzip are offloaded to the worker thread so
- * neither blocks the main event loop. Falls back to sync stringify +
- * gzipSync when the worker is unavailable, disabled, or the batch is small.
+ * When `itemCount` is above OFFLOAD_MIN_ITEMS the JSON.stringify is
+ * offloaded to the worker thread so it does not block the main event loop.
+ * Falls back to sync stringify when the worker is unavailable, disabled, or
+ * the batch is small. The response is never compressed — see the file
+ * header.
  *
- * @param value       The JS value to serialize.
- * @param acceptsGzip True when the HTTP client sent Accept-Encoding: gzip.
- * @param itemCount   Number of top-level items in the batch; used as a
- *                    cheap proxy for expected payload size.
+ * @param value     The JS value to serialize.
+ * @param itemCount Number of top-level items in the batch; used as a cheap
+ *                  proxy for expected payload size.
  */
 export async function serializeJsonResponse(
   value: unknown,
-  acceptsGzip: boolean,
   itemCount: number,
-): Promise<{ body: string | Buffer; encoding: 'gzip' | null }> {
+): Promise<string> {
   const useWorker = !_workerDisabled && itemCount >= OFFLOAD_MIN_ITEMS;
 
   if (useWorker) {
@@ -160,20 +163,10 @@ export async function serializeJsonResponse(
       const id = _nextId++;
       const result = await new Promise<WorkerResult>((res, rej) => {
         _pending.set(id, { resolve: res, reject: rej });
-        _worker!.postMessage({
-          kind: 'serialize',
-          id,
-          value,
-          gzip: acceptsGzip,
-        });
+        _worker!.postMessage({ kind: 'serialize', id, value });
       });
 
-      if (acceptsGzip && result.compressed) {
-        return { body: Buffer.from(result.compressed), encoding: 'gzip' };
-      }
-      if (!acceptsGzip && result.json !== null) {
-        return { body: result.json, encoding: null };
-      }
+      if (result.json !== null) return result.json;
       // Unexpected null result — fall through to sync path.
     } catch {
       // Worker spawn failed or crashed — sync fallback below.
@@ -181,15 +174,7 @@ export async function serializeJsonResponse(
   }
 
   // Sync fallback (small batch or worker unavailable).
-  const json = JSON.stringify(value, bigIntReplacer);
-  if (acceptsGzip && json.length >= 1024) {
-    try {
-      return { body: gzipSync(json), encoding: 'gzip' };
-    } catch {
-      /* gzip failed — return plain JSON */
-    }
-  }
-  return { body: json, encoding: null };
+  return JSON.stringify(value, bigIntReplacer);
 }
 
 /** Test seam — terminate the worker and reset module state. */

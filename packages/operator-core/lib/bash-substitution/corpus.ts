@@ -16,14 +16,30 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { atomize } from './atomize';
-import type { SampledCommand } from './types';
+import type { SampledCommand, SubstitutionPair } from './types';
 
 /** One line of the audit extract. */
 interface RawCall {
   sid: string;
   ts: string;
   cmd: string;
+}
+
+/** Where the committed samples live. */
+export const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+
+/** Read one pair's frozen sample. Throws if the fixture is missing — a pair
+ *  without evidence must never silently audit as `unaudited`. */
+export function loadFixture(pairId: string): CorpusFixture {
+  return JSON.parse(readFileSync(join(FIXTURE_DIR, `${pairId}.sample.json`), 'utf8')) as CorpusFixture;
+}
+
+/** Pair every given pair with its committed sample. */
+export function loadPairFixtures(pairs: SubstitutionPair[]): Array<{ pair: SubstitutionPair; fixture: CorpusFixture }> {
+  return pairs.map((pair) => ({ pair, fixture: loadFixture(pair.id) }));
 }
 
 /** A frozen fixture file: the sample plus the population it was drawn from. */

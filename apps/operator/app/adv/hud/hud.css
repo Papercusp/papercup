@@ -306,6 +306,22 @@
      scale, it cannot paint over the neighbouring card. Long monospace plan
      slugs and chips were doing exactly that at ~95 sessions. */
   overflow: hidden;
+  /* WI-5970 defect 2 ROOT CAUSE (live-reproduced at ~95 sessions, not a WebKit
+     compositing artifact as first suspected): .hud__card is a flex ITEM inside
+     .hud__col-b's column flex (`display:flex; flex-direction:column;
+     overflow-y:auto`). With no flex-shrink override it kept the default
+     flex-shrink:1, so once a column's cards' combined natural height exceeded
+     the container's box, flexbox SHRANK every card below its content height
+     (measured live: clientHeight 16-26px vs scrollHeight/content ~69-136px)
+     instead of leaving cards full-height and letting .hud__col-b's
+     overflow-y:auto scroll them — exactly the same missing-flex:none class of
+     bug already fixed on .hud__top/.hud__fleets above, just one level deeper.
+     The overflow:hidden backstop above then silently clipped the excess
+     instead of it painting onto the next card, which read as "content
+     escaping" but was actually a squashed card losing most of its own text.
+     flex-shrink:0 makes cards render at their true content height and pushes
+     the (correct, already-present) column scrollbar to do its job. */
+  flex-shrink: 0;
 }
 
 .hud__card-row {

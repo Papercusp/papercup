@@ -13,7 +13,6 @@
  * regular Next.js route handlers in app/api/{credentials,profile,auth,marketplace,installed}/.
  */
 import { Hono } from 'hono';
-import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
 import { registerRouteLiterals, registerRouteCatchalls } from '@papercusp/operator-core/lib/endpoint-route/register';
 import { installMethodNotAllowed } from '@papercusp/operator-core/lib/endpoint-route/method-not-allowed';
@@ -51,13 +50,6 @@ const tauriApiCors = cors({
   maxAge: 600,
 });
 
-// Compress JSON bodies. Next 16 with output:'standalone' skips its built-in
-// gzip even when running via `next start`, so the operator's API responses
-// were going out uncompressed. agentRunsSheets.all is 85 KB raw vs 12 KB
-// gzipped (7.3x), and Zero polls it every 3 s — enabling compression here
-// saves ~1.4 MB/min of bandwidth on a typical dashboard session.
-// `threshold: 1024` skips small responses where gzip overhead exceeds the
-// payload (e.g. /api/auth/me at 151 B).
 app.use('/harness/*', tauriApiCors);
 app.use('/plugins', tauriApiCors);
 app.use('/plugins/*', tauriApiCors);
@@ -67,7 +59,11 @@ app.use('/harness-phase-last-used/*', tauriApiCors);
 app.use('/themes', tauriApiCors);
 app.use('/themes/*', tauriApiCors);
 
-app.use('*', compress({ threshold: 1024 }));
+// NO RESPONSE COMPRESSION — deliberate, do not re-add. See the long-form
+// rationale in host-handler.ts §1: every consumer of this host is on
+// loopback (desktop sidecar), so gzip buys no bandwidth and costs real CPU
+// on both ends. The original justification here was "Zero polls it every
+// 3 s" — Zero is retired. Guarded by scripts/check-no-wire-compression.mjs.
 
 // Per-window workspace context: read `x-papercusp-workspace` and run the
 // handler inside the workspace ALS so `activeWorkspaceId()` (and therefore

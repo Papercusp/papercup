@@ -213,6 +213,43 @@ describe('fleet_assignment view + reader (P-001/P-002)', () => {
     expect(lapsed?.claimActive).toBe(false);
   });
 
+  // EI-18688119768148709: `needs-human` and `blocked` are CORRECTLY-PARKED statuses
+  // (excluded from claim_next/scheduler:get_next by design, EI-9360) — not stuck work.
+  // Before this fix, only the terminal statuses (done/passed/deprecated/resolved/
+  // closed/dropped) dropped out of the work_item_claim leg, so a needs-human or
+  // blocked item with a live (heartbeating) holder and no recent progress read as a
+  // false-positive `stalled` claim, inviting the exact wasteful re-placement cycle
+  // EI-8529 already paid for once. Assert both statuses drop out of the view
+  // entirely (same as `done`), regardless of holder liveness or progress age.
+  it('EI-18688119768148709: needs-human and blocked work-items drop out like terminal ones, never surfacing as stalled', async () => {
+    await seedPresence('su-parked-nh', { ageSeconds: 0 }); // alive holder
+    await seedPresence('su-parked-blocked', { ageSeconds: 0 }); // alive holder
+    await admin`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, taken_by, taken_at, last_progress_at)
+      VALUES
+        (${WS}, 'demo', 'FA-TEST-NEEDS-HUMAN', 'needs-human feature', 'needs-human', 'su-parked-nh', now() - interval '4 hours', now() - interval '4 hours'),
+        (${WS}, 'demo', 'FA-TEST-BLOCKED', 'blocked feature', 'blocked', 'su-parked-blocked', now() - interval '4 hours', now() - interval '4 hours')
+    `;
+
+    const rows = await listFleetAssignments({ workspaceId: WS });
+    const workItemRows = rows.filter((r) => r.source === 'work_item_claim');
+    expect(workItemRows).toHaveLength(0);
+
+    // Sanity check the fixture actually exercises the stall window this fix guards:
+    // an ordinary `open` item in the exact same shape (alive holder, no progress in
+    // >10min) DOES surface as a live, stalled claim — proving the needs-human/blocked
+    // rows above are excluded by STATUS, not by some unrelated fixture quirk.
+    await admin`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, taken_by, taken_at, last_progress_at)
+      VALUES (${WS}, 'demo', 'FA-TEST-OPEN-STALLED', 'open feature', 'open', 'su-parked-nh', now() - interval '4 hours', now() - interval '4 hours')
+    `;
+    const rowsWithOpen = await listFleetAssignments({ workspaceId: WS });
+    const openRow = rowsWithOpen.find((r) => r.workItemId === 'FA-TEST-OPEN-STALLED');
+    expect(openRow?.stalled).toBe(true);
+  });
+
   it('filters: by plan ("who\'s on P"), by agent ("what is X doing"), by workspace', async () => {
     await seedPresence('su-a', { planSlug: 'plan-x' });
     await seedPlanClaim('su-a', { plan: 'plan-x', item: 'P-001' });

@@ -37,7 +37,7 @@ import { useMemo, useState } from 'react';
 import type { ComponentType } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, CalendarClock, Coins, Lock, Pause, Play, Shield } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Coins, Lock, Pause, Play, Shield, ShieldOff } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import type {
   AutomationCatalog,
@@ -127,6 +127,82 @@ export function armingLaneValue(gymPots: readonly AutomationGymArm[], lanes: rea
 export function armBudgetLabel(spentUsd: number, budgetUsd: number | null): string {
   const money = (n: number) => `$${n >= 100 ? Math.round(n) : n.toFixed(2).replace(/\.00$/, '')}`;
   return budgetUsd === null ? `${money(spentUsd)} · no budget` : `${money(spentUsd)} of ${money(budgetUsd)}`;
+}
+
+/**
+ * The pane's ONE pause/start control. Every start/stop switch in this pane —
+ * per-routine and per-arming-row — renders through here, so there is a single
+ * place to get the transport idiom right (rounds 2 and 3 each restyled only the
+ * control in front of them and left the other looking like something else).
+ *
+ * Two rules live in this component rather than in CSS, because both are easy to
+ * undo by accident:
+ *
+ *  • THE GLYPH IS SOLID. lucide draws Play/Pause stroke-only, which at 13px is a
+ *    hollow triangle and two hairline bars — it reads as a faint mark, not a
+ *    transport glyph, and that is the single biggest reason the owner has now
+ *    asked four times for these to "look like pause/start buttons". `fill` +
+ *    a low `strokeWidth` make the fill define the shape. Do not drop the fill.
+ *  • LAYOUT LIVES ON THE INNER SPAN. The <button> is display:block and
+ *    .pc-auto__glyph does the centring, because WebKitGTK (the Tauri webview
+ *    this actually ships in) IGNORES flex set on a <button> element — centring
+ *    declared on the button is silently dropped on the real desktop while
+ *    looking perfect in Chromium (EI-18135716653974462 / WI-5581).
+ *
+ * `on` means the thing is currently RUNNING (or ARMED), so the button offers the
+ * STOP verb. The glyph always shows the ACTION THE CLICK PERFORMS, never the
+ * current state — the row's own tint already carries state.
+ */
+function TransportToggle({
+  on,
+  busy,
+  disabled,
+  label,
+  testId,
+  kind = 'transport',
+  onClick,
+}: {
+  on: boolean;
+  busy: boolean;
+  disabled: boolean;
+  label: string;
+  testId: string;
+  /** 'transport' → play/pause (schedules). 'shield' → arm/disarm (spend gates). */
+  kind?: 'transport' | 'shield';
+  onClick: () => void;
+}) {
+  const glyph = kind === 'shield' ? (on ? 'disarm' : 'arm') : on ? 'pause' : 'play';
+  return (
+    <button
+      type="button"
+      className={`pc-auto__toggle${on ? ' is-on' : ''}`}
+      data-glyph={glyph}
+      disabled={disabled}
+      aria-pressed={on}
+      aria-label={label}
+      onClick={onClick}
+      data-testid={testId}
+    >
+      <span className="pc-auto__glyph">
+        {busy ? (
+          <span className="pc-auto__spinner" data-testid={`${testId}-busy`} aria-hidden />
+        ) : kind === 'shield' ? (
+          // Shields stay stroke-only: they are not transport glyphs, they read
+          // fine as outlines at this size, and the amber/green tint already says
+          // which way the switch is thrown.
+          on ? (
+            <ShieldOff size={13} aria-hidden />
+          ) : (
+            <Shield size={13} aria-hidden />
+          )
+        ) : on ? (
+          <Pause size={13} fill="currentColor" strokeWidth={1.5} aria-hidden />
+        ) : (
+          <Play size={13} fill="currentColor" strokeWidth={1.5} aria-hidden />
+        )}
+      </span>
+    </button>
+  );
 }
 
 export interface AutomationPaneProps {
@@ -317,12 +393,19 @@ export default function AutomationPane({
             <Tooltip label={`Pause all ${activeSpawning} token-spending ${title} agent${activeSpawning === 1 ? '' : 's'}`}>
               <button
                 type="button"
-                className="pc-auto__action pc-auto__action--danger"
+                className="pc-auto__action pc-auto__action--stop"
                 disabled={busy !== null}
                 onClick={() => void pauseAll(false)}
                 data-testid="automation-pause-all"
               >
-                <Pause size={11} aria-hidden /> Pause all
+                {/* Inner span carries the icon/label row — WebKitGTK ignores
+                    flex on the <button> itself (see TransportToggle's note). */}
+                <span className="pc-auto__action-inner">
+                  <span className="pc-auto__action-dot">
+                    <Pause size={9} fill="currentColor" strokeWidth={1.5} aria-hidden />
+                  </span>
+                  Pause all
+                </span>
               </button>
             </Tooltip>
           ) : (
@@ -330,12 +413,17 @@ export default function AutomationPane({
               <Tooltip label={`Resume the scheduled ${title} agents`}>
                 <button
                   type="button"
-                  className="pc-auto__action"
+                  className="pc-auto__action pc-auto__action--go"
                   disabled={busy !== null}
                   onClick={() => void pauseAll(true)}
                   data-testid="automation-resume-all"
                 >
-                  <Play size={11} aria-hidden /> Resume all
+                  <span className="pc-auto__action-inner">
+                    <span className="pc-auto__action-dot">
+                      <Play size={9} fill="currentColor" strokeWidth={1.5} aria-hidden />
+                    </span>
+                    Resume all
+                  </span>
                 </button>
               </Tooltip>
             )
@@ -397,17 +485,14 @@ export default function AutomationPane({
                           <span className="pc-auto__when">last {agoLabel(r.lastFiredAt)}</span>
                         </div>
                         {r.controllable ? (
-                          <button
-                            type="button"
-                            className={`pc-auto__toggle${r.active ? ' is-on' : ''}`}
+                          <TransportToggle
+                            on={r.active}
+                            busy={busy === key}
                             disabled={busy !== null}
-                            aria-pressed={r.active}
-                            aria-label={`${r.active ? 'Pause' : 'Resume'} ${r.name}`}
+                            label={`${r.active ? 'Pause' : 'Start'} ${r.name}`}
+                            testId={`automation-toggle-${r.name}`}
                             onClick={() => void toggleRoutine(r)}
-                            data-testid={`automation-toggle-${r.name}`}
-                          >
-                            {busy === key ? '…' : r.active ? <Pause size={12} /> : <Play size={12} />}
-                          </button>
+                          />
                         ) : (
                           /* Listed for visibility, but NOT pausable from here:
                              `routines:set` writes harness_shared.routines and
@@ -582,17 +667,20 @@ export default function AutomationPane({
                       </span>
                       <span className="pc-auto__when">{row.meta}</span>
                     </div>
-                    <button
-                      type="button"
-                      className={`pc-auto__toggle${row.enabled ? ' is-on' : ''}`}
+                    {/* kind="shield": these rows ARM/DISARM a spend gate, they do
+                        not start or pause a schedule. They used to borrow the
+                        play/pause glyph, so ▶ and ⏸ meant two unrelated verbs in
+                        one pane. The shield keeps ▶/⏸ meaning exactly one thing
+                        here — start or pause a scheduled agent. */}
+                    <TransportToggle
+                      kind="shield"
+                      on={row.enabled}
+                      busy={busy === row.key}
                       disabled={busy !== null}
-                      aria-pressed={row.enabled}
-                      aria-label={`${row.enabled ? 'Disarm' : 'Arm'} ${row.name}`}
+                      label={`${row.enabled ? 'Disarm' : 'Arm'} ${row.name}`}
+                      testId={`arming-toggle-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
                       onClick={() => void runArm(row.key, row.tool, { ...row.idArgs, enabled: !row.enabled })}
-                      data-testid={`arming-toggle-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
-                    >
-                      {busy === row.key ? '…' : row.enabled ? <Pause size={12} /> : <Play size={12} />}
-                    </button>
+                    />
                   </div>
                 ))}
               </div>

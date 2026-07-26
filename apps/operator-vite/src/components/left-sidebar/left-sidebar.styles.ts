@@ -1290,38 +1290,54 @@ body.has-left-sidebar .pc-header {
   border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); background: var(--bg-2, rgba(255, 255, 255, 0.04));
   white-space: nowrap; }
 .pc-auto__spacer { flex: 1; }
-/* The whole-pane action on the MUG idiom (owner, 2026-07-25 round 3: "the
-   pause/start buttons in the blender docs and agents tabs all look very bad
-   make them look better like the ones in the mug tab").
-   Round 2 restyled the per-row toggle (.pc-auto__toggle) but LEFT THIS ONE —
-   so the pane still led with a flat grey --bg-3 chip with a hairline border,
-   sitting in the header where the eye lands first, next to a Mug tab whose
-   buttons are filled and tinted. That mismatch is what still read as "bad".
-   Now it matches .pc-queen__btn: same 11.5px/720 type, same 7px radius, same
-   tinted-fill + matching-border treatment, and the same semantic colour rule —
-   ACCENT for the go action (Resume all), GOOD for the stop action (Pause all),
-   exactly as the Mug's pause control colours itself. */
-.pc-auto__action { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  flex-shrink: 0; white-space: nowrap;
-  font-size: 11.5px; font-weight: 720; padding: 5px 9px; border-radius: 7px; cursor: pointer;
+/* The whole-pane action — "Pause all" / "Resume all" (owner ask 2026-07-26:
+   "the pause and start buttons ... don't look like pause/start buttons").
+   FOURTH pass. Rounds 2 and 3 both answered the wrong question: each one made
+   this match a sibling BUTTON idiom (.pc-queen__btn — tinted fill, 7px radius,
+   11.5/720 type) instead of making it look like a TRANSPORT CONTROL, which is
+   what the owner has been asking for the whole time. Matching another chip is
+   not the fix; do not reach for that answer a fourth time.
+   What changed, and why each part:
+     • the glyph is now SOLID (fill="currentColor" on the same lucide icons).
+       It was stroke-only — a hollow triangle and two hairline bars at 11px —
+       and an outline at that size reads as a small mark, not a button face.
+     • the glyph gets its own tinted DISC inside the pill, so the control reads
+       as "transport button + label" rather than "chip with a decoration".
+     • colour carries ONE meaning per hue across this whole pane now:
+       GOOD/green = start, WARN/amber = pause. This deliberately SUPERSEDES the
+       2026-07-25 rule that made "Pause all" green to mirror .pc-queen__btn--stop
+       (owner decision 2026-07-26): green meant STOP here while green on a row
+       toggle two lines below meant START — the same hue, opposite verbs, in one
+       pane. The pill body is now neutral and only the disc is tinted, so the
+       header no longer competes with the rows for attention either.
+   ⚠ display is BLOCK and the row layout lives on .pc-auto__action-inner. See
+   the WebKitGTK note on .pc-auto__toggle below — the old inline-flex here also
+   silently dropped this button's icon/label gap on the desktop. */
+.pc-auto__action { display: block; flex-shrink: 0; white-space: nowrap;
+  font: inherit; font-size: 11.5px; font-weight: 720;
+  padding: 4px 10px 4px 4px; border-radius: 999px; cursor: pointer;
   color: var(--fg, #e7f7ff);
-  background: color-mix(in srgb, var(--accent), transparent 88%);
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 54%); }
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32)); }
+.pc-auto__action-inner { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.pc-auto__action-dot { display: flex; align-items: center; justify-content: center; flex: none;
+  width: 17px; height: 17px; border-radius: 999px; }
+.pc-auto__action-dot svg { display: block; }
+/* "Resume all" — the GO action. Green disc; the triangle is nudged right by a
+   half pixel because a triangle's visual mass sits left of its bounding box. */
+.pc-auto__action--go .pc-auto__action-dot { color: var(--good, #34d399);
+  background: color-mix(in srgb, var(--good, #34d399), transparent 78%); }
+.pc-auto__action--go .pc-auto__action-dot svg { transform: translateX(0.5px); }
+/* "Pause all" — the STOP action. Amber, not red: pausing your own agents is a
+   normal, reversible control, not an alarm. */
+.pc-auto__action--stop .pc-auto__action-dot { color: var(--warn, #fbbf24);
+  background: color-mix(in srgb, var(--warn, #fbbf24), transparent 80%); }
 .pc-auto__action:hover:not(:disabled) { color: var(--fg, #e7f7ff);
-  border-color: color-mix(in srgb, var(--accent), transparent 48%);
-  background: color-mix(in srgb, var(--accent), transparent 82%); }
+  border-color: color-mix(in srgb, var(--accent), transparent 44%);
+  background: var(--bg-4, rgba(255, 255, 255, 0.12)); }
 .pc-auto__action:disabled { opacity: 0.55; cursor: default; }
-/* "Pause all" — the STOP action. Mirrors .pc-queen__btn--stop (good/green),
-   not a red alarm: pausing your own agents is a normal, reversible control,
-   and the Mug already established green as what "click to stop" looks like. */
-.pc-auto__action--danger { color: var(--fg, #e7f7ff);
-  background: color-mix(in srgb, var(--good, #34d399), transparent 86%);
-  border-color: color-mix(in srgb, var(--good, #34d399), transparent 58%); }
-.pc-auto__action--danger:hover:not(:disabled) { color: var(--fg, #e7f7ff);
-  border-color: color-mix(in srgb, var(--good, #34d399), transparent 44%);
-  background: color-mix(in srgb, var(--good, #34d399), transparent 80%); }
 .pc-auto__action:focus-visible, .pc-auto__lane:focus-visible, .pc-auto__toggle:focus-visible {
-  outline: 1px solid var(--accent); outline-offset: 1px; }
+  outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* 2 — lane strip (mirrors .pc-queen__lanes) */
 .pc-auto__lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
@@ -1383,27 +1399,65 @@ body.has-left-sidebar .pc-header {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 9.5px; color: var(--fg-mute, #7f9bb4); opacity: 0.8; white-space: nowrap; }
 
-/* The pause/start control on the MUG idiom (owner ask 2026-07-25: "the pause and
-   start buttons look retarted, make them like the ones in the mug tab"). It was
-   a bare transparent-square icon button, which read as an unfilled input next to
-   the Mug's filled, tinted, semantic buttons. Now it matches .pc-queen__btn--go /
-   --stop: a tinted fill + matching border, ACCENT while running (click to pause)
-   and GOOD while paused (click to resume) — the same colour language the Mug's
-   pause control uses, so the two panes agree on what a running thing looks like. */
-.pc-auto__toggle { display: inline-flex; align-items: center; justify-content: center; flex: none;
-  width: 26px; height: 24px; border-radius: 7px; cursor: pointer;
-  font: inherit; font-size: 11.5px; font-weight: 720;
-  color: var(--fg, #e7f7ff);
-  background: color-mix(in srgb, var(--good, #34d399), transparent 88%);
-  border: 1px solid color-mix(in srgb, var(--good, #34d399), transparent 60%); }
-.pc-auto__toggle.is-on {
-  background: color-mix(in srgb, var(--accent), transparent 88%);
-  border-color: color-mix(in srgb, var(--accent), transparent 54%); }
-.pc-auto__toggle:hover:not(:disabled) { color: var(--fg, #e7f7ff);
-  border-color: color-mix(in srgb, var(--accent), transparent 48%);
-  background: color-mix(in srgb, var(--accent), transparent 90%); }
-.pc-auto__toggle:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+/* The pause/start control — a TRANSPORT button, not another chip.
+   Owner ask 2026-07-26: "the pause and start buttons in the middle pane in the
+   blender docs and agents tabs all don't look like pause/start buttons". This
+   is the FOURTH time it has been raised, and rounds 2 and 3 both failed the same
+   way: they restyled it to match a neighbouring BUTTON (.pc-queen__btn, the Mug
+   tab's tinted chip) rather than making it read as a pause/start control. Three
+   things were actually wrong — fix these, don't chase another chip:
+     • THE GLYPHS WERE OUTLINES. lucide's <Play>/<Pause> render stroke-only, so
+       at 12px this was a hollow triangle and two hairline bars. Every transport
+       control ever built draws them SOLID; an outline that size reads as a small
+       mark, not a button face. They are now filled — fill="currentColor" on the
+       same lucide icons, so we stay on the design system's icon set.
+     • THE SILHOUETTE WAS A CHIP. A 26x24 rounded rect is the same shape as the
+       count and token-flag chips sitting inches away. It is now a 24px CIRCLE,
+       which is what a transport button looks like everywhere else on earth.
+     • COLOUR ARGUED WITH ITSELF. --good meant START here but STOP on the header
+       action, and :hover forced BOTH states to --accent, so the green start
+       button turned blue under the cursor. Colour now carries the VERB, one hue
+       one meaning, pane-wide: GOOD/green = start, WARN/amber = pause. Hover
+       deepens the button's OWN hue instead of flipping it to accent.
+   Tint is always on (owner decision 2026-07-26, "Option B"): a paused routine
+   reads as paused from across the pane without anyone reading a label.
+   ⚠ display is BLOCK, and the centring flex lives on the inner .pc-auto__glyph
+   span. WebKitGTK — the Tauri webview this actually ships in — IGNORES flex set
+   on a <button> element, so the old inline-flex left the glyph uncentred on the
+   real desktop while looking perfect in Chromium. That is the bug class of
+   EI-18135716653974462 / WI-5581, the one the HUD board was migrated off after
+   an owner-screenshotted regression. DO NOT move the flex back onto the button,
+   and do not "verify" this control in a browser — a browser cannot see it. */
+.pc-auto__toggle { display: block; flex: none; width: 24px; height: 24px; padding: 0;
+  border-radius: 999px; cursor: pointer; font: inherit;
+  color: var(--good, #34d399);
+  background: color-mix(in srgb, var(--good, #34d399), transparent 86%);
+  border: 1px solid color-mix(in srgb, var(--good, #34d399), transparent 50%); }
+.pc-auto__toggle.is-on { color: var(--warn, #fbbf24);
+  background: color-mix(in srgb, var(--warn, #fbbf24), transparent 88%);
+  border-color: color-mix(in srgb, var(--warn, #fbbf24), transparent 56%); }
+.pc-auto__toggle:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--good, #34d399), transparent 78%);
+  border-color: color-mix(in srgb, var(--good, #34d399), transparent 38%); }
+.pc-auto__toggle.is-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn, #fbbf24), transparent 80%);
+  border-color: color-mix(in srgb, var(--warn, #fbbf24), transparent 44%); }
 .pc-auto__toggle:disabled { opacity: 0.55; cursor: default; }
+/* The inner span carries the centring — see the WebKitGTK note above. */
+.pc-auto__glyph { display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%; }
+.pc-auto__glyph svg { display: block; }
+/* Optical centring: a triangle's visual mass sits left of its bounding box, so
+   a mathematically-centred play glyph looks a hair too far left in a circle. */
+.pc-auto__toggle[data-glyph='play'] .pc-auto__glyph svg { transform: translateX(0.5px); }
+/* Busy keeps the CIRCLE. The old busy state swapped the glyph for a literal "…"
+   text character, so mid-click the control stopped looking like a control at
+   all — the one moment the owner most needs to see that the click landed. */
+.pc-auto__spinner { width: 11px; height: 11px; border-radius: 999px;
+  border: 1.6px solid color-mix(in srgb, currentColor, transparent 62%);
+  border-top-color: currentColor; animation: pc-auto-spin 0.7s linear infinite; }
+@keyframes pc-auto-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pc-auto__spinner { animation-duration: 2.4s; } }
 
 /* The "listed but not pausable from here" marker. Deliberately NOT built on
    .pc-auto__toggle: it must not read as a button the owner can press, because
@@ -1411,7 +1465,7 @@ body.has-left-sidebar .pc-header {
    switch on this surface. Same footprint as the toggle so rows stay aligned,
    but flat, muted and non-interactive. */
 .pc-auto__nocontrol { display: inline-flex; align-items: center; justify-content: center; flex: none;
-  width: 26px; height: 24px; border-radius: 7px; cursor: default;
+  width: 24px; height: 24px; border-radius: 999px; cursor: default;
   color: var(--fg-mute, #7f9bb4); background: transparent;
   border: 1px dashed color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.22)), transparent 30%); }
 

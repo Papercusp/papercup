@@ -1,0 +1,164 @@
+/**
+ * release-request-sweep.test.ts — the `release-request-sweep` periodic check
+ * (in-process-periodic.ts, WI-5974): fires the ANNOUNCED onSilence consequence for
+ * work_items:request_release deadlines that passed unanswered.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+
+const findDueReleaseRequests = vi.fn();
+const resolveWorkItemReleaseRequest = vi.fn();
+vi.mock('../work-items-release-request', () => ({
+  findDueReleaseRequests: (...a: unknown[]) => findDueReleaseRequests(...a),
+  resolveWorkItemReleaseRequest: (...a: unknown[]) => resolveWorkItemReleaseRequest(...a),
+}));
+
+const releaseWorkItem = vi.fn();
+const commentWorkItem = vi.fn();
+vi.mock('../work-items', () => ({
+  releaseWorkItem: (...a: unknown[]) => releaseWorkItem(...a),
+  commentWorkItem: (...a: unknown[]) => commentWorkItem(...a),
+}));
+
+const sendMessage = vi.fn();
+vi.mock('../agent-tools/coordination/messages', () => ({
+  sendMessage: (...a: unknown[]) => sendMessage(...a),
+}));
+
+const notifyAttention = vi.fn();
+vi.mock('../attention-notify', () => ({
+  notifyAttention: (...a: unknown[]) => notifyAttention(...a),
+}));
+
+const { buildDefaultChecks } = await import('./in-process-periodic');
+const check = buildDefaultChecks().find((c) => c.name === 'release-request-sweep')!;
+
+function dueRow(overrides: Partial<{ id: string; harness: string | null; workspaceId: string; holderNow: string | null; onSilence: 'reclaim' | 'escalate' | 'nothing' }> = {}) {
+  const onSilence = overrides.onSilence ?? 'reclaim';
+  return {
+    id: overrides.id ?? 'WI-1',
+    harness: overrides.harness ?? 'papercup',
+    workspaceId: overrides.workspaceId ?? 'default',
+    holderNow: overrides.holderNow ?? 'holder-1',
+    request: {
+      by: 'requester-1',
+      holder: 'holder-1',
+      reason: 'looked orphaned',
+      onSilence,
+      deadlineAt: Date.now() - 1000,
+      requestedAt: Date.now() - 60_000,
+      resolved: false,
+      resolution: null,
+      resolvedAt: null,
+    },
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // The tick intentionally console.warn()s a one-line summary per fired consequence
+  // (operational visibility, mirrors every other sweep in this file) — expected, not a bug.
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  findDueReleaseRequests.mockResolvedValue([]);
+  commentWorkItem.mockResolvedValue({ id: 'post' });
+  sendMessage.mockResolvedValue(undefined);
+  notifyAttention.mockResolvedValue(undefined);
+  releaseWorkItem.mockResolvedValue({ id: 'WI-1', assignee: null });
+});
+
+describe('release-request-sweep check', () => {
+  it('is registered at a 60s cadence and does not shed under load', () => {
+    expect(check.intervalMs).toBe(60_000);
+    expect(check.shed).toBeFalsy();
+  });
+
+  it('no due rows → no side effects', async () => {
+    await check.tick();
+    expect(resolveWorkItemReleaseRequest).not.toHaveBeenCalled();
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(notifyAttention).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('onSilence:"reclaim" — CAS wins → releases the item + notifies both parties + comments', async () => {
+    const row = dueRow({ onSilence: 'reclaim' });
+    findDueReleaseRequests.mockResolvedValue([row]);
+    resolveWorkItemReleaseRequest.mockResolvedValue({ ...row.request, resolved: true, resolution: 'consequence-reclaim' });
+
+    await check.tick();
+
+    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'papercup', resolution: 'consequence-reclaim' });
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-1', { harness: 'papercup' });
+    expect(commentWorkItem).toHaveBeenCalledTimes(1);
+    expect(commentWorkItem.mock.calls[0][1]).toContain('EXPIRED');
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0][1]).toMatchObject({ to: ['holder-1', 'requester-1'] });
+    expect(notifyAttention).not.toHaveBeenCalled();
+  });
+
+  it('onSilence:"escalate" — CAS wins → pages the owner, item is NEVER released', async () => {
+    const row = dueRow({ onSilence: 'escalate' });
+    findDueReleaseRequests.mockResolvedValue([row]);
+    resolveWorkItemReleaseRequest.mockResolvedValue({ ...row.request, resolved: true, resolution: 'consequence-escalate' });
+
+    await check.tick();
+
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(notifyAttention).toHaveBeenCalledTimes(1);
+    expect(notifyAttention.mock.calls[0][0]).toMatchObject({ kind: 'intervention', importance: 'high' });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('onSilence:"nothing" — CAS wins → records the silence, no release, no escalation', async () => {
+    const row = dueRow({ onSilence: 'nothing' });
+    findDueReleaseRequests.mockResolvedValue([row]);
+    resolveWorkItemReleaseRequest.mockResolvedValue({ ...row.request, resolved: true, resolution: 'consequence-nothing' });
+
+    await check.tick();
+
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(notifyAttention).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(commentWorkItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('CAS losing the race (null) → the row is skipped entirely — no double-fire', async () => {
+    const row = dueRow({ onSilence: 'reclaim' });
+    findDueReleaseRequests.mockResolvedValue([row]);
+    resolveWorkItemReleaseRequest.mockResolvedValue(null); // a concurrent holder-release / tick already resolved it
+
+    await check.tick();
+
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(commentWorkItem).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(notifyAttention).not.toHaveBeenCalled();
+  });
+
+  it('processes multiple due rows independently', async () => {
+    const rowA = dueRow({ id: 'WI-A', onSilence: 'reclaim', holderNow: 'holder-a' });
+    const rowB = dueRow({ id: 'WI-B', onSilence: 'nothing', holderNow: 'holder-b' });
+    findDueReleaseRequests.mockResolvedValue([rowA, rowB]);
+    resolveWorkItemReleaseRequest.mockImplementation(async (id: string) => ({
+      ...(id === 'WI-A' ? rowA.request : rowB.request),
+      resolved: true,
+      resolution: id === 'WI-A' ? 'consequence-reclaim' : 'consequence-nothing',
+    }));
+
+    await check.tick();
+
+    expect(releaseWorkItem).toHaveBeenCalledTimes(1);
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-A', { harness: 'papercup' });
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('never throws when releaseWorkItem itself fails (best-effort logging only)', async () => {
+    const row = dueRow({ onSilence: 'reclaim' });
+    findDueReleaseRequests.mockResolvedValue([row]);
+    resolveWorkItemReleaseRequest.mockResolvedValue({ ...row.request, resolved: true, resolution: 'consequence-reclaim' });
+    releaseWorkItem.mockRejectedValue(new Error('boom'));
+
+    await expect(check.tick()).resolves.toBeUndefined();
+  });
+});

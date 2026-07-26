@@ -93,7 +93,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
           const p = spawn(
             'bash',
             [PC_HEAVY, 'bash', '-c', `s=$(date +%s%3N); sleep 0.4; e=$(date +%s%3N); echo "$s $e" > "${f}"`],
-            { env: baseEnv({ PC_HEAVY_SLOTS: String(slots) }) },
+            { env: baseEnv({ PC_HEAVY_SLOTS: String(slots) }), cwd: dir },
           );
           p.on('exit', () => res());
         }),
@@ -127,6 +127,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     // frees it — exactly the crash we care about.)
     const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
       env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
+      cwd: dir,
       detached: true, // own process group, so -pid kills the whole tree
     });
     await new Promise((r) => setTimeout(r, 500)); // let it grab the only slot
@@ -170,7 +171,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
           const p = spawn(
             'bash',
             [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 0.4; echo same-output`],
-            { env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }) },
+            { env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }), cwd: dir },
           );
           let stdout = '';
           let stderr = '';
@@ -254,6 +255,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
 
     const leader = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
       env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' }),
+      cwd: dir,
       detached: true,
     });
     await new Promise((r) => setTimeout(r, 400)); // let it claim the coalescing lock
@@ -265,6 +267,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
 
     const follower = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
       env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' }),
+      cwd: dir,
       detached: true,
     });
     try {
@@ -283,5 +286,74 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     } finally {
       process.kill(-(follower.pid as number), 'SIGKILL'); // cleanup, don't let it run 30s
     }
+  });
+
+  // Regression suite for EI-18688348461605365: cwd+argv alone is a STALE key
+  // whenever the SOURCE the command exercises changed between two identical
+  // invocations (edit, then re-run to check) — the coalescer replayed a
+  // pre-edit result as if it were fresh. The fix folds a cheap tree-state
+  // token (referenced-file mtime+size, plus a git-status hash when inside a
+  // worktree) into the key so an edit busts the cache while a genuine
+  // no-op re-run still coalesces.
+  describe('tree-state token busts the cache on a real edit (EI-18688348461605365)', () => {
+    it('a referenced file argument changing between runs busts the cache — even OUTSIDE the git tree (the exact reported repro: a /tmp script)', () => {
+      // The script path must be its own argv TOKEN (not embedded inside a
+      // `-c '...'` shell string) — the fix stats each literal argv token
+      // that resolves to an existing file, matching how a real caller
+      // invokes e.g. `npx tsx /tmp/genfix.mts` (the reported repro).
+      const script = join(dir, 'genfix.mts');
+      writeFileSync(script, 'console.log("version-one")');
+      const first = runSync(['cat', script], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+      expect(first.stderr).not.toContain('coalesced:');
+      expect(first.stdout).toContain('version-one');
+
+      // Edit the referenced file — deliberately a different LENGTH so the
+      // size component of the token changes even if the filesystem's mtime
+      // resolution is coarse enough to collide within the same test.
+      writeFileSync(script, 'console.log("version-two-longer")');
+      const second = runSync(['cat', script], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+      expect(second.stderr).not.toContain('coalesced:'); // must NOT replay the stale version-one result
+      expect(second.stdout).toContain('version-two-longer');
+    });
+
+    it('a git-tracked source file changing between runs busts the cache, even when the command does not name it directly', () => {
+      execSync('git init -q', { cwd: dir });
+      execSync('git config user.email t@example.com && git config user.name test', { cwd: dir });
+      writeFileSync(join(dir, 'src.txt'), 'v1');
+      execSync('git add -A && git commit -q -m init', { cwd: dir });
+
+      const first = runSync(['bash', '-c', 'echo build-output'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+      expect(first.stderr).not.toContain('coalesced:');
+
+      // Simulate "I edited the source this build/test exercises" — e.g. the
+      // `npm run test:affected` shape, where the changed file is nowhere in
+      // argv but IS what makes the previous output stale.
+      writeFileSync(join(dir, 'src.txt'), 'v2 - modified');
+
+      const second = runSync(['bash', '-c', 'echo build-output'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+      expect(second.stderr).not.toContain('coalesced:'); // busted, not a stale replay
+    });
+
+    it('still coalesces a genuine no-op re-run inside a git worktree with no diff (the fix does not over-bust)', () => {
+      execSync('git init -q', { cwd: dir });
+      execSync('git config user.email t@example.com && git config user.name test', { cwd: dir });
+      writeFileSync(join(dir, 'src.txt'), 'v1');
+      execSync('git add -A && git commit -q -m init', { cwd: dir });
+
+      const first = runSync(['bash', '-c', 'echo out-y; echo err-y >&2; exit 3'], {
+        PC_HEAVY_SLOTS: '2',
+        PC_HEAVY_COALESCE_SEC: '30',
+      });
+      expect(first.status).toBe(3);
+      expect(first.stderr).not.toContain('coalesced:');
+
+      // Nothing changed (no edit, no new commit) — a true duplicate poll.
+      const second = runSync(['bash', '-c', 'echo out-y; echo err-y >&2; exit 3'], {
+        PC_HEAVY_SLOTS: '2',
+        PC_HEAVY_COALESCE_SEC: '30',
+      });
+      expect(second.status).toBe(3);
+      expect(second.stderr).toContain('coalesced:');
+    });
   });
 });

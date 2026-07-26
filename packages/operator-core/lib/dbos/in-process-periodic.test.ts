@@ -145,6 +145,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'pot-epoch-key-reconcile',
         'learning-infra-health',
         'poll-suspect-scan',
+        'release-request-sweep',
         'scorecard-emission-pulse',
         'service-health',
         'shared-presence-reaper',
@@ -164,6 +165,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('completion-ref-verify')!.intervalMs).toBe(60_000);
     expect(byName.get('spawn-reclaim-sweep')!.intervalMs).toBe(60_000);
     expect(byName.get('stale-claim-sweep')!.intervalMs).toBe(60_000);
+    expect(byName.get('release-request-sweep')!.intervalMs).toBe(60_000);
     expect(byName.get('learning-infra-health')!.intervalMs).toBe(120_000);
     expect(byName.get('steering-churn-sweep')!.intervalMs).toBe(300_000);
     expect(byName.get('federation-drain-reconcile')!.intervalMs).toBe(300_000);

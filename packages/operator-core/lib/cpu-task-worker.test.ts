@@ -10,7 +10,7 @@
  *   - serializeJsonResponse: small-batch sync fallback path
  *   - serializeJsonResponse: large-batch worker path (end-to-end)
  *   - BigInt→Number coercion on both paths
- *   - gzip path (worker + fallback)
+ *   - that the output is NEVER compressed (inverse guard, 2026-07-26)
  *   - getCpuWorkerState diagnostics
  *   - _resetCpuWorker test seam
  *
@@ -19,7 +19,6 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import zlib from 'node:zlib';
 
 // Dynamic import lets afterEach reset module state between tests.
 async function mod() {
