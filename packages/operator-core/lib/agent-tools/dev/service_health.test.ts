@@ -176,7 +176,7 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
   const registry = [{ name: "staging-api", unit: "papercup-staging-api" }];
 
   it("attaches secondsSinceStart + a recentRestartNote when the unit came up inside the window", async () => {
-    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 5 }));
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 5, activeState: "active" }));
     const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
     expect(probeFn).toHaveBeenCalledWith("papercup-staging-api");
     expect(out[0]?.secondsSinceStart).toBe(5);
@@ -185,14 +185,14 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
   });
 
   it("attaches secondsSinceStart WITHOUT a note once outside the recent-restart window", async () => {
-    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 600 }));
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 600, activeState: "active" }));
     const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
     expect(out[0]?.secondsSinceStart).toBe(600);
     expect(out[0]?.recentRestartNote).toBeUndefined();
     expect(out[0]?.active).toBe(true);
   });
 
-  it("leaves the entry untouched when the probe can't determine a start time (fail-soft) — honest 'unknown', never active:false", async () => {
+  it("leaves the entry untouched when the probe can't determine anything (fail-soft) — honest 'unknown', never active:false", async () => {
     const probeFn = vi.fn(async () => ({ ok: false }));
     const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
     expect(out[0]).toEqual(stagingEntry);
@@ -208,8 +208,15 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
     expect(out[0]?.active).toBeUndefined();
   });
 
+  it("leaves the entry untouched when ok:true but ActiveState itself couldn't be read (defensive edge case)", async () => {
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 5 }));
+    const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+    expect(out[0]).toEqual(stagingEntry);
+    expect(out[0]?.active).toBeUndefined();
+  });
+
   it("skips non-systemd-user entries and units missing from the registry", async () => {
-    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 1, secondsSinceStart: 1 }));
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 1, secondsSinceStart: 1, activeState: "active" }));
     const nodeChild = { ...stagingEntry, name: "substrate-sidecar", layer: "node-child" as const };
     const unregistered = { ...stagingEntry, name: "not-in-registry" };
     const out = await overlaySystemdRestartRecency([nodeChild, unregistered], probeFn, registry);
@@ -217,21 +224,26 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
     expect(out).toEqual([nodeChild, unregistered]);
   });
 
-  // EI-18700974567040702: MainPID 0 (systemd confirms no live main process) is a DETERMINATE
-  // "down" — it must be reported explicitly, not dropped alongside a genuine probe failure
-  // (previously both cases left the entry byte-identical, so callers couldn't tell "down"
-  // from "couldn't check").
-  describe("MainPID 0 reports a determinate DOWN, distinct from a probe failure (EI-18700974567040702)", () => {
-    it("mainPid: 0 sets active:false and carries no secondsSinceStart/recentRestartNote", async () => {
-      const probeFn = vi.fn(async () => ({ ok: true, mainPid: 0 }));
+  // EI-18700974567040702: ActiveState (not MainPID) is systemd's DETERMINATE liveness
+  // signal — it must be reported explicitly, not dropped alongside a genuine probe failure
+  // (previously a stopped unit and "couldn't check" left the entry byte-identical).
+  describe("ActiveState reports a determinate up/down, distinct from a probe failure (EI-18700974567040702)", () => {
+    it("activeState: 'failed' sets active:false and carries no secondsSinceStart/recentRestartNote", async () => {
+      const probeFn = vi.fn(async () => ({ ok: true, mainPid: 0, activeState: "failed" }));
       const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
       expect(out[0]?.active).toBe(false);
       expect(out[0]?.secondsSinceStart).toBeUndefined();
       expect(out[0]?.recentRestartNote).toBeUndefined();
     });
 
-    it("mainPid: 0 (DOWN) is distinguishable from ok:false (probe failure) — different `active` values", async () => {
-      const downProbe = vi.fn(async () => ({ ok: true, mainPid: 0 }));
+    it("activeState: 'inactive' also reports active:false (down is down, regardless of WHY)", async () => {
+      const probeFn = vi.fn(async () => ({ ok: true, mainPid: 0, activeState: "inactive" }));
+      const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+      expect(out[0]?.active).toBe(false);
+    });
+
+    it("DOWN (activeState:'failed') is distinguishable from a probe failure (ok:false) — different `active` values", async () => {
+      const downProbe = vi.fn(async () => ({ ok: true, mainPid: 0, activeState: "failed" }));
       const failedProbe = vi.fn(async () => ({ ok: false }));
       const [down] = await overlaySystemdRestartRecency([stagingEntry], downProbe, registry);
       const [unknown] = await overlaySystemdRestartRecency([stagingEntry], failedProbe, registry);
@@ -241,10 +253,29 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
     });
 
     it("a live mainPid with no measurable secondsSinceStart still reports active:true (up, just couldn't time it)", async () => {
-      const probeFn = vi.fn(async () => ({ ok: true, mainPid: 456 }));
+      const probeFn = vi.fn(async () => ({ ok: true, mainPid: 456, activeState: "active" }));
       const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
       expect(out[0]?.active).toBe(true);
       expect(out[0]?.secondsSinceStart).toBeUndefined();
+    });
+
+    // The concrete bug this fix kills: a `.timer` unit has NO MainPID concept at all, so a
+    // MainPID-keyed liveness read (the old code) would call a healthy, running timer "down".
+    it("a .timer unit (no MainPID at all) reports active:true from ActiveState alone — the exact case that motivated this fix", async () => {
+      const timerEntry = { ...stagingEntry, name: "live-federation-gate-timer" };
+      const timerRegistry = [{ name: "live-federation-gate-timer", unit: "papercup-live-federation-gate.timer" }];
+      const probeFn = vi.fn(async () => ({ ok: true, activeState: "active" })); // mainPid omitted — a real .timer probe result
+      const out = await overlaySystemdRestartRecency([timerEntry], probeFn, timerRegistry);
+      expect(out[0]?.active).toBe(true);
+      expect(out[0]?.secondsSinceStart).toBeUndefined();
+    });
+
+    it("a .timer unit reports active:false when its ActiveState is genuinely not 'active'", async () => {
+      const timerEntry = { ...stagingEntry, name: "live-federation-gate-timer" };
+      const timerRegistry = [{ name: "live-federation-gate-timer", unit: "papercup-live-federation-gate.timer" }];
+      const probeFn = vi.fn(async () => ({ ok: true, activeState: "inactive" }));
+      const out = await overlaySystemdRestartRecency([timerEntry], probeFn, timerRegistry);
+      expect(out[0]?.active).toBe(false);
     });
   });
 });

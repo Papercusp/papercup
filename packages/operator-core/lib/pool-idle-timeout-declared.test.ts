@@ -19,6 +19,26 @@
  * That second case is why this is a "declare it" guard rather than a lint banning 0, and
  * why the shared helper deliberately does NOT supply a nonzero default: 5 LISTEN buses
  * spread the same helper, and a default would have broken every one of them.
+ *
+ * ── application_name (WI-6062, 2026-07-26) ──────────────────────────────────
+ * A SEPARATE class of the same "silent omission" bug: a hand-rolled `postgres(...)`
+ * MODULE-LEVEL SINGLETON pool (`let pool: ...|null = null; ... pool = postgres(...)`)
+ * that skips `longLivedPoolConnectionOptions()`/`suPoolConnectionOptions()` entirely
+ * ALSO inherits postgres-js's other silent default: `application_name: 'postgres.js'`
+ * (its own literal fallback string, not blank — see `node_modules/postgres/src/index.js`).
+ * Found live: 10 `llm-testing/*` singleton pools (ledger/telemetry/storage/promotion/
+ * replay + 4 admin routes) all built their own bare `postgres(getHarnessAdminUrl(), {
+ * max, prepare: false })` — no helper, no tag — so any connection they opened was
+ * PERMANENTLY UNATTRIBUTABLE in `pg_stat_activity` (indistinguishable from any other
+ * untagged pool) AND missed the helper's WI-3816 dead-client zombie-detection GUCs,
+ * which is exactly why 2 of them sat open, idle, unexplained, for 6.65 days (WI-6062).
+ * The second describe block below extends the SAME guard shape to this class: find
+ * every module-level singleton pg-client declaration, then require its `postgres(...)`
+ * assignment to declare an application_name (via one of the two shared helpers, or an
+ * inline `application_name:` for a bespoke case like the watchdog tick-lock). Scoped to
+ * the SINGLETON shape deliberately — a function-scoped, always-`.end()`-ed client (a
+ * script, a gym cycle, a test fixture) isn't the "opened once, held forever" leak shape
+ * this guards against, so those are correctly out of scope here.
  */
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -88,6 +108,55 @@ function declaresIdleTimeout(source: string, startLine: number): boolean {
     const trimmed = lines[i].trim();
     if (i > startLine && (trimmed.startsWith('})') || trimmed.startsWith('});'))) return false;
     if (/\bidle_timeout\s*:/.test(lines[i])) return true;
+  }
+  return false;
+}
+
+/**
+ * WI-6062: find MODULE-LEVEL singleton pg-client declarations — the
+ * `let name: <type> | null = null;` (or `undefined`) shape at column 0 — then the
+ * `name = postgres(...)` assignment that later fills them in, anywhere in the same
+ * file. This is deliberately narrower than "every `postgres(...)` call": a
+ * function-scoped client that is always `.end()`-ed on every path (a script, a gym
+ * cycle, a test fixture) is a different, lower-risk shape — it gets reaped every time
+ * it's used, so it can't accumulate into the "opened once, held forever" leak this
+ * guards against. Only a column-0 `let ... = null` singleton, reassigned once and then
+ * reused indefinitely, has that shape.
+ */
+function findSingletonPoolSites(source: string): { line: number; name: string }[] {
+  const lines = source.split('\n');
+  const declRe = /^let\s+(\w+)\s*:[^=]*=\s*(?:null|undefined);/;
+  const names = new Set<string>();
+  for (const line of lines) {
+    const m = declRe.exec(line);
+    if (m) names.add(m[1]);
+  }
+  if (names.size === 0) return [];
+  const sites: { line: number; name: string }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) continue;
+    for (const name of names) {
+      if (new RegExp(`\\b${name}\\s*=\\s*postgres\\(`).test(lines[i])) sites.push({ line: i, name });
+    }
+  }
+  return sites;
+}
+
+/**
+ * Does the `postgres(...)` call starting at this line declare an application_name —
+ * either directly (a bespoke inline tag, e.g. the watchdog tick-lock) or via one of
+ * the shared `longLivedPoolConnectionOptions()` / `suPoolConnectionOptions()` helpers
+ * (which always set it — see connection.ts's `pgAppName`)? Same forward-scan-to-
+ * closing-brace shape as {@link declaresIdleTimeout}.
+ */
+function declaresApplicationName(source: string, startLine: number): boolean {
+  const lines = source.split('\n');
+  for (let i = startLine; i < Math.min(lines.length, startLine + 25); i++) {
+    const trimmed = lines[i].trim();
+    if (i > startLine && (trimmed.startsWith('})') || trimmed.startsWith('});'))) return false;
+    if (/\bapplication_name\s*:/.test(lines[i])) return true;
+    if (HELPERS.some((h) => lines[i].includes(`...${h}(`))) return true;
   }
   return false;
 }
@@ -174,6 +243,103 @@ describe('pool idle policy is always declared (P-009 connection saturation)', ()
         `their backends are held open FOREVER. Declare the intent explicitly:\n` +
         `  transactional → idle_timeout: poolIdleTimeoutSec()\n` +
         `  LISTEN        → idle_timeout: 0  // idle by design; reaping drops the subscription\n` +
+        offenders.map((o) => `  - ${o}`).join('\n'),
+    ).toEqual([]);
+  });
+});
+
+describe('the singleton-pool guard itself detects an undeclared application_name (non-vacuity)', () => {
+  const UNTAGGED = `
+let pool: ReturnType<typeof postgres> | null = null;
+function db() {
+  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: 2, prepare: false });
+  return pool;
+}`;
+  const TAGGED_VIA_HELPER = `
+let pool: ReturnType<typeof postgres> | null = null;
+function db() {
+  if (!pool) {
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('some-pool'),
+      max: 2,
+      idle_timeout: poolIdleTimeoutSec(),
+      prepare: false,
+    });
+  }
+  return pool;
+}`;
+  const TAGGED_INLINE = `
+let _tickLockSql: Sql | null = null;
+function tickLockSql(): Sql {
+  if (!_tickLockSql) {
+    _tickLockSql = postgres(watchdogTickLockUrl(), {
+      max: 1,
+      idle_timeout: 0,
+      connection: { application_name: \`pcusp:watchdog-ticklock:p\${process.pid}\` },
+    });
+  }
+  return _tickLockSql;
+}`;
+  // The bug's real shape: a function-scoped client (always .end()-ed) must NOT be
+  // flagged — only the module-level singleton is the "held forever" leak shape.
+  const FUNCTION_SCOPED_NOT_A_SINGLETON = `
+async function run() {
+  let gymSql: postgres.Sql | undefined;
+  try {
+    gymSql = postgres(gymUri, { max: 4, onnotice: () => {}, prepare: false });
+  } finally {
+    if (gymSql) await gymSql.end({ timeout: 5 });
+  }
+}`;
+
+  it('flags a singleton pool that omits application_name', () => {
+    const sites = findSingletonPoolSites(UNTAGGED);
+    expect(sites).toHaveLength(1);
+    expect(declaresApplicationName(UNTAGGED, sites[0].line)).toBe(false);
+  });
+
+  it('accepts both legitimate declarations (shared helper, or inline tag)', () => {
+    for (const src of [TAGGED_VIA_HELPER, TAGGED_INLINE]) {
+      const sites = findSingletonPoolSites(src);
+      expect(sites).toHaveLength(1);
+      expect(declaresApplicationName(src, sites[0].line)).toBe(true);
+    }
+  });
+
+  it('ignores a function-scoped (always-.end()-ed) client — not the singleton shape', () => {
+    expect(findSingletonPoolSites(FUNCTION_SCOPED_NOT_A_SINGLETON)).toEqual([]);
+  });
+});
+
+describe('singleton pg-client pools always declare an application_name (WI-6062)', () => {
+  const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));
+
+  it('finds the singleton sites it is meant to guard (test is not vacuously green)', () => {
+    const total = files.reduce((n, f) => n + findSingletonPoolSites(readFileSync(f, 'utf8')).length, 0);
+    // Guards against the scan silently matching nothing (bad root, renamed pattern).
+    // Measured live 2026-07-26: ~14 module-level singleton pg-client pools.
+    expect(total).toBeGreaterThanOrEqual(10);
+  });
+
+  it('every module-level singleton pg-client pool declares an application_name', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      for (const site of findSingletonPoolSites(source)) {
+        if (!declaresApplicationName(source, site.line)) {
+          offenders.push(`${relative(REPO_ROOT, file)}:${site.line + 1} (${site.name})`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      `These singleton pools leave application_name undeclared, so postgres-js's own ` +
+        `'postgres.js' default applies and any connection they open is PERMANENTLY ` +
+        `UNATTRIBUTABLE in pg_stat_activity (WI-6062: this is exactly how 2 llm-testing ` +
+        `pools sat idle, unexplained, for 6.65 days). Route the pool through the shared ` +
+        `helper (spread FIRST so a call site's own overrides still win):\n` +
+        `  ...longLivedPoolConnectionOptions('<label>')  // also declare idle_timeout\n` +
+        `or, for a bespoke case, tag it inline: connection: { application_name: '<label>' }\n` +
         offenders.map((o) => `  - ${o}`).join('\n'),
     ).toEqual([]);
   });

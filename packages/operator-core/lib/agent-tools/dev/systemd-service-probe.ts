@@ -57,29 +57,44 @@ export interface ServiceStartInfo {
  *  indistinguishable from a probe failure (the exact defect this file's other fix kills). */
 const KNOWN_UNIT_SUFFIXES = /\.(service|timer|socket|target|mount|path|slice)$/;
 
+/**
+ * PURE — the unit-type-suffix decision, split out so the exact `.timer`
+ * mangling bug (EI-18700974567040702) is directly unit-testable without
+ * mocking `child_process`. Exported for `systemd-service-probe.test.ts`.
+ */
+export function resolveUnitName(unit: string): string {
+  return KNOWN_UNIT_SUFFIXES.test(unit) ? unit : `${unit}.service`;
+}
+
+/**
+ * PURE — parse `systemctl show` KEY=VALUE output (NOT `--value`, see the call
+ * site's comment for why) into a lookup map. A property systemd considers
+ * inapplicable to the queried unit's TYPE (MainPID on a `.timer`) is simply
+ * absent as a key, never an empty string. Split out for direct unit testing.
+ */
+export function parseSystemctlShowOutput(stdout: string): Map<string, string> {
+  const props = new Map<string, string>();
+  for (const line of stdout.split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    props.set(line.slice(0, eq), line.slice(eq + 1));
+  }
+  return props;
+}
+
 export async function probeServiceStart(unit: string): Promise<ServiceStartInfo> {
   // Linux/systemd-only (a Windows desktop runs this sidecar under WSL, still
   // process.platform === 'linux', so it is NOT short-circuited — the try/catch
   // is the backstop for WSL-without-systemd).
   if (process.platform !== 'linux') return { ok: false };
   try {
-    const svc = KNOWN_UNIT_SUFFIXES.test(unit) ? unit : `${unit}.service`;
-    // KEY=VALUE lines, deliberately NOT `--value`: a property systemd considers
-    // inapplicable to this unit's TYPE (MainPID on a `.timer`) is OMITTED from the
-    // output entirely rather than printed empty — `--value`'s positional-only output
-    // has no way to tell "omitted" apart from "the next requested property", so a
-    // `.timer`'s single ActiveState line would misparse as if it were MainPID.
+    const svc = resolveUnitName(unit);
     const { stdout } = await run(
       'systemctl',
       ['--user', 'show', '-p', 'MainPID', '-p', 'ActiveState', svc],
       { timeout: 3000 },
     );
-    const props = new Map<string, string>();
-    for (const line of stdout.split('\n')) {
-      const eq = line.indexOf('=');
-      if (eq === -1) continue;
-      props.set(line.slice(0, eq), line.slice(eq + 1));
-    }
+    const props = parseSystemctlShowOutput(stdout);
     const activeState = props.get('ActiveState');
     const mainPidRaw = props.get('MainPID');
     if (mainPidRaw === undefined) {

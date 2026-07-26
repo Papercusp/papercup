@@ -223,4 +223,30 @@ describe('unguarded-halt rescue — wiring', () => {
       .filter((f) => readFileSync(join(dir, f), 'utf8').includes('boundedUnguardedHaltSweep'));
     expect(callers.length).toBeGreaterThan(0);
   });
+
+  /**
+   * OBSERVABILITY GUARD (WI-6054) — found while verifying this very routine
+   * after its first deploy.
+   *
+   * The quiet path used to `return` silently, which made "ran, and correctly
+   * found nothing to do" byte-identical to "never ran at all". The routines row
+   * cannot break that tie: `last_fired_at` advances on every tick either way —
+   * it advanced on schedule for the whole window in which this handler was NOT
+   * yet deployed and the engine skipped it with a "no handler registered" warn.
+   * So on the overwhelmingly common no-op tick there was no evidence anywhere
+   * that the deployed sweep was alive, and confirming the routine actually
+   * executes after a deploy was impossible.
+   *
+   * One line per tick restores that. Deleting it silently re-creates an
+   * unverifiable guard, which is the same defect class this routine exists to
+   * fix — so it reds a test instead.
+   */
+  it('logs on the quiet path, so a correct no-op is distinguishable from never running', () => {
+    const src = readFileSync(join(__dirname, 'unguarded-halt-rescue-action.ts'), 'utf8');
+    const guard = src.indexOf('candidates.length === 0');
+    expect(guard).toBeGreaterThan(-1);
+    const quietPath = src.slice(guard, src.indexOf('return;', guard));
+    expect(quietPath).toContain('console.log');
+    expect(quietPath).toContain('nothing to rescue');
+  });
 });

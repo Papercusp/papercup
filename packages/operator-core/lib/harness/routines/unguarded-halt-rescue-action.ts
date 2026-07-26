@@ -267,7 +267,20 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
     idleMs,
     maxIdleMs,
   });
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) {
+    // A quiet sweep must still be OBSERVABLE. Returning silently makes "ran and
+    // correctly found nothing" byte-identical to "never ran at all" — and the
+    // routines row cannot break the tie, because last_fired_at advances either
+    // way (it advanced on every tick while this handler was undeployed and the
+    // engine skipped it with a warn). One line per tick is the only cheap proof
+    // that the DEPLOYED handler is actually executing, which is exactly what
+    // verifying this routine after a deploy requires.
+    console.log(
+      `[unguarded-halt-rescue] ${all.length} member(s) → 0 idle in an active fleet → nothing to rescue` +
+        (recentlyRescued.size > 0 ? ` (${recentlyRescued.size} within throttle)` : ''),
+    );
+    return;
+  }
 
   // Is there work for each fleet? Asked once per fleet, not once per member.
   const claimableByFleet = new Map<string, number>();
