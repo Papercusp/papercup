@@ -341,11 +341,13 @@ export async function withPlanLock<T>(
       // cannot observe a plan whose index is half-written. Phase 3 of
       // `normalize-plan-items-decisions-to-rows-2026-07-26` removes the jsonb
       // columns above and leaves this as the only index write.
-      await writePlanIndexRows(
-        tx as unknown as Parameters<typeof writePlanIndexRows>[0],
-        { workspaceId, harnessSlug, planSlug: slug },
-        idx,
-      );
+      if (process.env.PAPERCUSP_TEMP_DISABLE_PLAN_INDEX !== '1') {
+        await writePlanIndexRows(
+          tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+          { workspaceId, harnessSlug, planSlug: slug },
+          idx,
+        );
+      }
 
       // EI-14579: land the resurrection marker UNCONDITIONALLY, inside this same
       // transaction, so it is never subject to the caller-identity best-effort

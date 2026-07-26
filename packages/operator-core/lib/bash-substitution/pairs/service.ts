@@ -15,23 +15,34 @@
  *       operator (http://127.0.0.1:3070/api/desktop/version)
  *       vite (:3055, onDemand) · scout (:3350) · embed-sidecar (:3384, opt-in)
  *       desktop · bg-host-ticker · bg-host-code · substrate-sidecar (portless)
- *   • `supervision[]` — one row per `SUPERVISED_PROCESSES` entry. THE DECISIVE
- *     DETAIL: a supervision row carries `flapState` / `restartsLast10m` /
- *     `consecutiveProbeFailures` / `secondsSinceStart` and **no up-or-down
- *     field**. It describes restart CHURN, not liveness. Worse, a genuinely
- *     stopped unit and a failed probe are indistinguishable: both leave
- *     `secondsSinceStart` undefined, because `overlaySystemdRestartRecency`
- *     returns the entry untouched for `MainPID 0` exactly as it does for a probe
- *     error. So `supervision[]` cannot answer `systemctl is-active` for ANY unit.
+ *   • `supervision[]` — one row per `SUPERVISED_PROCESSES` entry, carrying
+ *     `flapState` / `restartsLast10m` / `consecutiveProbeFailures` /
+ *     `secondsSinceStart` — restart CHURN — PLUS, for `systemd-user` rows, an
+ *     `active?: boolean` derived from systemd `ActiveState`: `false` means
+ *     confirmed DOWN, OMITTED means the probe genuinely could not tell. A
+ *     missing `active` must never be read as "down".
  *
- * The practical consequence: of the seven systemd units in the supervision
- * registry, only `papercup-dev-api` (→ `operator`), `papercup-bg-host` (→
- * `bg-host-ticker`) and `papercup-embed-sidecar` (→ `embed-sidecar`) have a
- * liveness answer at all, and they have it because something PROBES them, not
- * because they are in the registry. `papercup-staging-api`,
- * `papercup-inference-gateway`, `papercup-mcp-proxy` and
- * `papercup-live-federation-gate` are supervised but unprobed — the tool returns
- * a row about them that says nothing about whether they are running.
+ * ⚠ HISTORY, because the original verdict rests on it: this block used to carry
+ * NO up-or-down field at all, and a stopped unit was indistinguishable from a
+ * failed probe (both left `secondsSinceStart` undefined). That was D-010 item 2
+ * and it has been FIXED — `active` is added by the tool's overlay
+ * (`SupervisionStatusEntryWithRecency`), NOT by `unit-reconciler`'s own type,
+ * which is why grepping the reconciler still makes it look like an open gap.
+ *
+ * The practical consequence TODAY: `papercup-dev-api` (→ `operator`),
+ * `papercup-staging-api` (→ `staging-api`, added by WI-6146), `papercup-bg-host`
+ * (→ `bg-host-ticker`) and `papercup-embed-sidecar` (→ `embed-sidecar`) have a
+ * liveness answer from a PROBE. `papercup-inference-gateway`,
+ * `papercup-mcp-proxy` and `papercup-live-federation-gate` remain supervised but
+ * unprobed — they now get a determinate `active` from systemd, but no HTTP
+ * probe, so nothing confirms they are actually SERVING.
+ *
+ * ⚠ MODEL DRIFT: the constants below are a hand-written MODEL of that tool, and
+ * nothing in the equivalence machinery reads the real `HEALTH_ENDPOINTS`. The
+ * `expectedVerdict` latch does NOT catch a tool that was widened without
+ * updating this model — it only catches a model changed without updating the
+ * verdict. `pairs/service-model-drift.test.ts` (WI-6153) is the guard that
+ * closes that hole; keep it green rather than routing around it.
  *
  * `dev:restart` takes `target: 'dev' | 'staging' | 'gateway' | 'bg-host' |
  * 'embed-sidecar'` and only ever RESTARTS (`systemctl --user restart <unit>`);
@@ -186,11 +197,11 @@ export const systemctlIsActive: SubstitutionPair = {
   bashPattern: /^systemctl\s+(?:--\S+\s+)*(?:is-active|is-failed)\b/,
   toolName: 'dev:service_health',
   advisoryText:
-    'dev:service_health reports up/down ONLY for what it probes (operator :3070, vite :3055, scout :3350, embed-sidecar :3384, plus the portless desktop/bg-host probes). Its supervision[] block carries restart-churn counters and NO up-or-down field, so it cannot answer is-active for staging-api, the inference gateway, mcp-proxy, the federation gate, or any unit outside the registry. Keep using systemctl for those.',
+    'dev:service_health reports up/down for what it probes (operator :3070, staging-api :3170, vite :3055, scout :3350, embed-sidecar :3384, plus the portless desktop/bg-host probes) — papercup-dev-api, papercup-staging-api, papercup-bg-host and papercup-embed-sidecar all have a real is-active answer there. Its supervision[] block additionally carries `active` (from systemd ActiveState) for systemd-user units: false means confirmed DOWN, OMITTED means the probe could not tell — never read a missing `active` as down. For the inference gateway, mcp-proxy, the federation gate, or any unit outside the registry, keep using systemctl.',
   routing: {
     want: 'whether a systemd unit is currently active',
-    use: '`dev:service_health` — only for the probed set (operator/vite/scout/embed-sidecar/bg-host)',
-    insteadOf: '`systemctl --user is-active <unit>` — still required for every other unit; supervision[] has no liveness field',
+    use: '`dev:service_health` — for the probed set (operator/staging-api/vite/scout/embed-sidecar/bg-host); supervision[].active covers other systemd-user units',
+    insteadOf: '`systemctl --user is-active <unit>` — still required for units outside the supervision registry entirely',
   },
   expectedVerdict: 'needs-widening',
   cover(atom: string): CoverageResult {
@@ -240,11 +251,11 @@ export const curlHealthProbe: SubstitutionPair = {
   bashPattern: /^curl\b[^\n]*https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/(?:api\/)?(?:health|version)\b/,
   toolName: 'dev:service_health',
   advisoryText:
-    'dev:service_health probes a FIXED set (operator :3070, vite :3055, scout :3350, embed-sidecar :3384) and returns its own diagnostic shape — it takes no url/port argument and never returns the /api/health body. For :3170 staging, :8788 gateway, or any health payload you actually read, keep using curl.',
+    'dev:service_health probes a FIXED set (operator :3070, staging-api :3170, vite :3055, scout :3350, embed-sidecar :3384) and returns its own diagnostic shape — it takes no url/port argument and never returns the /api/health body. :3170 IS covered now, so the CLAUDE.md verify-a-staging-edit workflow (dev:restart{target:"staging"} then check staging-api) needs no curl. For :8788 gateway or any other unprobed port, and whenever you actually READ the health payload, keep using curl.',
   routing: {
     want: 'whether a local dev service is answering',
-    use: '`dev:service_health` — for the probed set, when you need only up/down',
-    insteadOf: '`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:<port>/api/health` — still required for :3170/:8788/etc, and whenever you read the body',
+    use: '`dev:service_health` — for the probed set (incl. :3170 staging), when you need only up/down',
+    insteadOf: '`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:<port>/api/health` — still required for :8788 and other unprobed ports, and whenever you read the body',
   },
   expectedVerdict: 'needs-widening',
   cover(atom: string): CoverageResult {

@@ -157,6 +157,11 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
       }),
     );
 
+    // BOTH sides must be scoped in CTEs before the join. Putting the
+    // workspace/harness/plan predicates in a FULL OUTER JOIN's ON clause does
+    // NOT restrict which plan_items rows participate — every other plan's rows
+    // come through unmatched (x.* NULL) and read as mismatches. That bug made
+    // this test pass alone and fail in the suite.
     const mismatches = await admin`
       WITH expect AS (
         SELECT e->>'id' AS item_id,
@@ -165,12 +170,14 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
           FROM harness_shared.harness_plans p,
                LATERAL jsonb_array_elements(p.items) AS e
          WHERE p.workspace_id = ${wsId} AND p.harness_slug = ${HARNESS} AND p.plan_slug = ${SLUG}
+      ), got AS (
+        SELECT item_id, status, item_text
+          FROM harness_shared.plan_items
+         WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
       )
       SELECT count(*)::int AS n
         FROM expect x
-        FULL OUTER JOIN harness_shared.plan_items a
-          ON a.workspace_id = ${wsId} AND a.harness_slug = ${HARNESS}
-         AND a.plan_slug = ${SLUG} AND a.item_id = x.item_id
+        FULL OUTER JOIN got a ON a.item_id = x.item_id
        WHERE a.item_id IS NULL OR x.item_id IS NULL
           OR a.status IS DISTINCT FROM x.status
           OR a.item_text IS DISTINCT FROM x.item_text
