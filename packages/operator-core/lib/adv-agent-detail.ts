@@ -188,7 +188,11 @@ export interface AgentDetail {
   coord: AgentCoordState;
   nativeSession: NativeSessionHandle | null;
   codex: CodexHomeDiagnostics | null;
-  signals: AgentSignals;
+  /** Optional (not required) so existing fixtures/mocks built before P-005
+   *  (e.g. the chat footer's summary-chip test harness, a second reader of
+   *  this SAME DTO) keep compiling without an update — `getAgentDetail`
+   *  always populates it for real traffic. */
+  signals?: AgentSignals;
 }
 
 // ──────────────────────────── pure shaping ─────────────────────────────────

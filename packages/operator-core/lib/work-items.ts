@@ -73,6 +73,7 @@ import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
+import { pgTimestampToIso } from './pg-timestamp';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
   ExternalBlockerCapability,
@@ -282,11 +283,12 @@ export function workItemObjectRef(wi: Pick<WorkItem, 'family' | 'harness' | 'id'
 function nowIso(): string {
   return new Date().toISOString();
 }
-function tsIso(v: unknown): string {
-  if (v instanceof Date) return v.toISOString();
-  if (typeof v === 'number') return new Date(v).toISOString();
-  return String(v ?? '');
-}
+// EI-18691099450966094: delegates to the shared pg-timestamp helper so a
+// raw Postgres-text timestamptz (no parsed Date, e.g. from a UNION leg that
+// casts for type parity across the feature/issue facade) is parsed and
+// re-emitted as an explicit UTC "...Z" string rather than passed through
+// as an ambiguous local-offset string.
+const tsIso = pgTimestampToIso;
 
 function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
   let obj = payload;

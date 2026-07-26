@@ -17,6 +17,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { createWorkItem, getWorkItem, setWorkItemState, commentWorkItem, type WorkItem } from './work-items';
 import { findTaskBySessionId } from './issues-engineer';
+import { pgTimestampToIso } from './pg-timestamp';
 
 /**
  * The operator's stable coordination owner id. It is the creator + delegator
@@ -152,10 +153,9 @@ interface SessionRowDb {
   turn_count: string | number | null;
 }
 
-function tsIso(v: unknown): string {
-  if (v == null) return '';
-  return v instanceof Date ? v.toISOString() : String(v);
-}
+// EI-18691099450966094: delegates to the shared pg-timestamp helper — see
+// pg-timestamp.ts for why a bare `String(v)` fallback is a staleness-trap bug.
+const tsIso = pgTimestampToIso;
 
 function rowToSession(r: SessionRowDb, transcript: DelegatedSessionTurn[] = []): DelegatedSession {
   return {

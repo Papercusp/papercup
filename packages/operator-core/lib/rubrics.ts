@@ -57,6 +57,7 @@ import {
   type ExistingRubricRow,
   type LocalRubric,
 } from './cupboard/rubric-store';
+import { pgTimestampToIso } from './pg-timestamp';
 
 export type RubricStatus = 'proposed' | 'active' | 'retired';
 export const RUBRIC_STATUSES: readonly RubricStatus[] = ['proposed', 'active', 'retired'];
@@ -150,9 +151,11 @@ function defaultRubricWriteHarness(): string {
   return operatorHomeHarnessSlug();
 }
 
-function tsIso(v: string | Date): string {
-  return typeof v === 'string' ? v : v.toISOString();
-}
+// EI-18691099450966094: was `typeof v === 'string' ? v : ...` — a raw
+// Postgres-text timestamptz string (session-offset, no 'Z') passed straight
+// through unparsed. Delegate to the shared helper, which parses+re-emits any
+// string as an explicit UTC ISO value instead.
+const tsIso = pgTimestampToIso;
 
 // ─── plans leg: a rubric IS a `template: rubric` plan (P-006/P-007) ──────────────────
 

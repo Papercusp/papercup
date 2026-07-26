@@ -802,6 +802,27 @@ def _strip_heredoc_bodies(s):
     return ''.join(out)
 
 
+def _segment_has_unsplittable_expansion(seg):
+    # EI-18691980588797795: `tee`/`sed -i`/`perl -i`/`ruby -i`/`cp` all identify
+    # their target(s) by `.split()`-ing the raw command-tail segment on
+    # whitespace. A `$(...)`/backtick command substitution containing an
+    # INTERNAL space (e.g. `cp src.txt $(echo target dir)/dest.txt`) splits
+    # across MULTIPLE resulting tokens — the substitution's tail then reads as
+    # its own bare positional token (e.g. `dir)/dest.txt`), which usually
+    # carries none of `_resolve_write_target`'s own expansion markers ($ ` ~ *
+    # ? [) and so is NOT recognized as unsafe-to-resolve. That stray fragment
+    # then gets resolved against cwd like any ordinary literal path — and when
+    # cwd is INSIDE the canonical tree (the exact situation this guard exists
+    # to protect), any such fragment resolves to a path that trivially starts
+    # with the canonical root, producing a FALSE DENY on an otherwise-fine
+    # command. Conservative fix: if `$(` or a backtick appears ANYWHERE in the
+    # raw segment, the split is unsafe to trust at all — skip target detection
+    # for this invocation entirely (fail-open), matching this guard's own
+    # stated "unsafe to resolve without actually running the shell" policy for
+    # expansions, just applied BEFORE the split loses the marker.
+    return '$(' in seg or '`' in seg
+
+
 def _looks_like_redirect_path(raw):
     # Defense-in-depth alongside the heredoc strip above: a bare comparison/
     # arrow operator can still appear unquoted OUTSIDE a heredoc (e.g. inside
@@ -838,6 +859,8 @@ def _shell_write_guard():
 
     # `tee [-a] FILE...`
     for _m in re.finditer(r'\btee\b([^;&|\n]*)', _clean):
+        if _segment_has_unsplittable_expansion(_m.group(1)):
+            continue
         for _tok in _m.group(1).split():
             if not _tok.startswith('-'):
                 _targets.append((_tok, '`tee`'))
@@ -850,15 +873,36 @@ def _shell_write_guard():
         _seg = _m.group(1)
         if not re.search(r'(?:^|\s)-i\S*|--in-place\b', _seg):
             continue
+        if _segment_has_unsplittable_expansion(_seg):
+            continue
         for _tok in _seg.split():
             if not _tok.startswith('-'):
                 _targets.append((_tok, '`sed -i`'))
+
+    # `perl -i[.bak] FILE...` / `ruby -i[.bak] FILE...` — the same in-place
+    # side door as `sed -i` above, just a different interpreter
+    # (EI-18691482279179647: "the shell-write guard misses interpreter
+    # writes" — this leg is the in-place-flag half of that fix; the other
+    # half, an interpreter's OWN open()/writeFileSync() call inside inline
+    # code, is a different shape and handled by _interpreter_write_guard
+    # below since there is no shell-level flag to key on there).
+    for _m in re.finditer(r'\b(?:perl|ruby)\b([^;&|\n]*)', _clean):
+        _seg = _m.group(1)
+        if not re.search(r'(?:^|\s)-i\S*\b', _seg):
+            continue
+        if _segment_has_unsplittable_expansion(_seg):
+            continue
+        for _tok in _seg.split():
+            if not _tok.startswith('-'):
+                _targets.append((_tok, '`perl -i`/`ruby -i`'))
 
     # `cp SRC... DEST` — the last positional (non-flag) token is the
     # destination. Skipped for a recursive/archive copy (`-r`/`-R`/`-a`/
     # `--recursive`/`--archive`): a directory copy has no single-file
     # Edit/Write substitute, so there is nothing safe to redirect this to.
     for _m in re.finditer(r'\bcp\b([^;&|\n]*)', _clean):
+        if _segment_has_unsplittable_expansion(_m.group(1)):
+            continue
         _toks = _m.group(1).split()
         if any(re.match(r'-[a-zA-Z]*[rRa][a-zA-Z]*$|--recursive$|--archive$', t)
                for t in _toks if t.startswith('-')):
@@ -886,6 +930,148 @@ def _shell_write_guard():
 
 try:
     _shell_write_guard()
+except Exception:
+    pass  # guard must never wedge a command
+
+# ── Interpreter inline-code write guard (EI-18691482279179647) ─────────────
+# The shell-write guard above only knows SHELL write constructs (>, >>, tee,
+# sed/perl/ruby -i, cp). An interpreter invoked with inline code — `python3
+# -c "..."`, `node -e "..."`, or a `python3 - <<EOF ... EOF` stdin/heredoc
+# script — does its own file I/O (open(...,'w'), fs.writeFileSync(...), …),
+# which is not a shell redirect at all and is invisible to that guard.
+#
+# Self-caught 2026-07-26: rewriting a tree file via `python3 - <<EOF` (the
+# target path spelled out literally inside the heredoc body) sailed straight
+# through — no lock claimed, no worktree validation, exactly the state the
+# shell-write guard exists to prevent. The interpreter rewrite ALSO mangled
+# the file (a regex that dropped closing braces across 4 call sites) — Edit
+# would have been both locked AND structurally safer, so this hole costs
+# correctness, not just locking.
+#
+# LITERAL PATHS ONLY, same discipline as the shell-write guard: this never
+# parses the interpreted language — it only checks whether a literal tree
+# path substring appears anywhere in the code payload (a `-c`/`-e` quoted
+# argument, or a heredoc body that follows an interpreter invocation), AND
+# that same payload contains a recognizable WRITE-shaped call. HONEST LIMIT
+# (permanent, not a bug to fix later): an interpreter can always construct a
+# path at runtime (string concatenation, an env var, a computed join), and a
+# write call this heuristic doesn't recognize slips through too — no static
+# scan of the command text can see either. The guard's value is catching the
+# ordinary, literal, accidental case — precisely the case that produced both
+# this near-miss and EI-18664655909328670's stray-file incident — not
+# achieving completeness.
+#
+# SELF-CAUGHT DURING THIS OWN FIX (2026-07-26): the first version of this
+# guard flagged ANY literal tree path in an inline-code payload, full stop —
+# and immediately denied its OWN verification command, a read-only
+# `python3 -c "... open(<this file>).read() ..."` syntax check with no write
+# call anywhere. A read needs no lock; blocking it is pure false-positive
+# friction with no safety upside, and a guard that fires on ordinary reads
+# trains agents to route around it. The WRITE-indicator requirement below is
+# the fix — same shape as the mistake this whole item exists to catch (an
+# agent walking through a hole without noticing), just caught inside the fix
+# instead of downstream of it.
+_WRITE_INDICATOR_RE = re.compile(
+    r'\bwrite\w*\s*\('                                    # .write(/.writelines(/writeFileSync-style calls
+    r'|\bopen\s*\([^)]*,\s*[\'"][waxWAX][b+t]?[\'"]'       # open(path, 'w'/'a'/'x'[b/t/+])
+    r'|writeFileSync|appendFileSync|createWriteStream'      # node fs, common named forms
+    r'|\.save\s*\('                                        # common ORM/model .save(
+    r'|(?:pickle|json|yaml)\.dump\s*\('                     # serialize-to-file idioms
+    r'|shutil\.(?:copy|move)|os\.(?:rename|remove|replace)|unlink\s*\('
+)
+_INTERPRETER_RE = re.compile(r'(?:^|[\s;&|(])(?:[\w./-]*/)?(python3?|node|perl|ruby|deno|bun)(?=\s|$)')
+_INLINE_CODE_FLAG_RE = re.compile(r'(?:^|\s)-[ce]\b')
+
+
+def _extract_quoted_flag_bodies(cmd):
+    # The quoted argument to a `-c`/`-e` flag (either quote style, DOTALL so
+    # a multi-line script matches) — extracted from the RAW command, since
+    # quote-stripping (used elsewhere to find command-position tokens) would
+    # erase exactly the text this needs to scan.
+    return [m.group(2) for m in re.finditer(r'-[ce]\s+([\'"])(.*?)\1', cmd, re.DOTALL)]
+
+
+def _extract_heredoc_bodies(cmd):
+    # The CAPTURED dual of _strip_heredoc_bodies above (which discards this
+    # same text) — every heredoc BODY (between a `<<[-]DELIM` operator and
+    # its closing DELIM line), for scanning instead of stripping.
+    bodies = []
+    i, n = 0, len(cmd)
+    while i < n:
+        m = _HEREDOC_START_RE.search(cmd, i)
+        if not m:
+            break
+        line_end = cmd.find('\n', m.end())
+        if line_end == -1:
+            break
+        delim = m.group(2)
+        close_re = re.compile(r'^[ \t]*' + re.escape(delim) + r'\s*$', re.MULTILINE)
+        cm = close_re.search(cmd, line_end + 1)
+        if not cm:
+            break  # unterminated — nothing safe to scan past here
+        bodies.append(cmd[line_end + 1:cm.start()])
+        i = cm.end()
+    return bodies
+
+
+def _payload_literal_tree_path(body, canon, cwd):
+    # Every quoted token inside `body` that looks path-like (contains `/` or
+    # a dotted extension) and carries no shell/interpreter expansion syntax
+    # ($, `, {, }) — resolved the same literal-only way as
+    # _resolve_write_target. Intentionally coarse: no attempt to parse which
+    # call the literal is an argument TO — an interpreter invocation with
+    # inline code is unusual enough on its own that a literal tree path
+    # anywhere in that code is signal, per the guard's own honest-limit note.
+    for raw in re.findall(r'''['"]([^'"\n]+)['"]''', body):
+        if any(ch in raw for ch in ('$', '`', '{', '}')):
+            continue
+        if not re.search(r'[./]', raw):
+            continue
+        resolved = _resolve_write_target(raw, cwd)
+        if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
+            return raw
+    return None
+
+
+def _interpreter_write_guard():
+    _canon = _canonical_tree_root()
+    if not _canon:
+        return
+    try:
+        _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
+    except Exception:
+        return
+    _clean = _strip_shell_quotes(_strip_heredoc_bodies(command))
+    if not _INTERPRETER_RE.search(_clean):
+        return  # no interpreter invocation at all — nothing to check
+    _interp_m = _INTERPRETER_RE.search(_clean)
+    _interp = _interp_m.group(1)
+    _has_heredoc = bool(_HEREDOC_START_RE.search(command))
+    _has_inline_flag = bool(_INLINE_CODE_FLAG_RE.search(_clean))
+    if not (_has_heredoc or _has_inline_flag):
+        return  # e.g. a plain `node script.js` — the code lives in a real
+        # file, which Edit already locks; nothing new for this guard to see.
+    _bodies = _extract_quoted_flag_bodies(command) + _extract_heredoc_bodies(command)
+    for _body in _bodies:
+        if not _WRITE_INDICATOR_RE.search(_body):
+            continue  # a read (or no recognized I/O at all) — nothing to gate
+        _hit = _payload_literal_tree_path(_body, _canon, _cwd)
+        if _hit:
+            deny(
+                'shell-write guard (EI-18691482279179647): this `%s` invocation runs inline '
+                'code that references `%s`, which resolves INSIDE the shared staging tree. '
+                'An interpreter write (open()/fs.writeFileSync()/etc.) is invisible to '
+                'shell-redirect detection — it skips the file-lock hook entirely, the same '
+                'side door as a raw `cat >>`/`tee`/`sed -i` (EI-18664655909328670). Use the '
+                'Edit or Write tool instead — they claim the lock and validate the worktree '
+                'for you (for a copy: Read the source, then Write the destination). '
+                'Genuinely a scratch/log file? Write it outside the tree '
+                '(~/.papercusp/scratch or /tmp).' % (_interp, _hit)
+            )
+
+
+try:
+    _interpreter_write_guard()
 except Exception:
     pass  # guard must never wedge a command
 

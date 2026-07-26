@@ -145,6 +145,24 @@ function globRegex(pattern: string): RegExp {
   return new RegExp(`^${escaped}$`, 'i');
 }
 
+/** Escape a literal string for safe interpolation into a JS regex. */
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * EI-18690730909662985: `word` is a case-insensitive WHOLE-WORD substring match —
+ * `\bliteral\b` — unlike `glob`'s bare `*literal*` substring match, which
+ * false-positives whenever the literal appears inside a larger word (e.g. a
+ * `*p2p*` title-exclusion wrongly matching a fleet named "nonp2p-bug-drain",
+ * whose own title mentions its own name). Mirrored byte-for-byte in
+ * get-next.ts's SQL compiler (`~* '\m...\M'`) and claim-spec-payload-filter.ts's
+ * `matches` translation — keep all three in sync.
+ */
+function wordBoundaryRegex(literal: string): RegExp {
+  return new RegExp(`\\b${escapeRegexLiteral(literal)}\\b`, 'i');
+}
+
 function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolean {
   if (actual == null) {
     // A NULL/absent field has NO value, so it matches no positive predicate (`=`, `glob`,
@@ -161,6 +179,7 @@ function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolea
   const values = Array.isArray(leaf.value) ? leaf.value : [leaf.value];
   if (leaf.op === 'in') return values.some((v) => String(actual) === String(v));
   if (leaf.op === 'glob') return globRegex(String(leaf.value)).test(String(actual));
+  if (leaf.op === 'word') return wordBoundaryRegex(String(leaf.value)).test(String(actual));
   if (leaf.op === 'contains') return String(actual).toLowerCase().includes(String(leaf.value).toLowerCase());
 
   if (typeof actual === 'number') {
@@ -195,6 +214,7 @@ function matchLeaf(subject: ClaimSpecSubject, leaf: FilterLeaf): boolean {
     const wanted = (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map(String);
     if (leaf.op === 'in') return actual.some((v) => wanted.includes(v));
     if (leaf.op === 'glob') return actual.some((v) => globRegex(String(leaf.value)).test(v));
+    if (leaf.op === 'word') return actual.some((v) => wordBoundaryRegex(String(leaf.value)).test(v));
     if (leaf.op === '!=') return !actual.includes(String(leaf.value));
     // SQL compiler treats array '=' and 'contains' as membership.
     return actual.includes(String(leaf.value));

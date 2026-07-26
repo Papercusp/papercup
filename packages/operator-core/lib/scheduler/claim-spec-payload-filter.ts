@@ -84,6 +84,14 @@ function literalToRegexSource(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Mirror claim-spec-match.ts's `wordBoundaryRegex` EXACTLY (EI-18690730909662985):
+ * a case-insensitive WHOLE-WORD substring match, for the `word` op.
+ */
+function wordBoundaryRegexSource(value: string): string {
+  return `\\b${literalToRegexSource(value)}\\b`;
+}
+
 interface Translated {
   /** null ⇒ permissive (matches every payload — no narrowing over this subtree). */
   cond: DataCondition | null;
@@ -106,6 +114,11 @@ function leafToCondition(leaf: FilterLeaf): DataCondition | null {
       return { [field]: { in: Array.isArray(value) ? value : [value] } };
     case 'glob':
       return { [field]: { matches: { source: globToRegexSource(String(value)), flags: 'i' } } };
+    case 'word':
+      // Word-boundary literal match — sound on both scalar and array-valued fields
+      // (mingo's implicit per-element matching applies to `matches` too, same as
+      // `glob` above), so no ARRAY_VALUED_FIELDS branch is needed here.
+      return { [field]: { matches: { source: wordBoundaryRegexSource(String(value)), flags: 'i' } } };
     case 'contains':
       // Array fields (tags): `contains` is EXACT membership per claim-spec-match's
       // array leaf branch, not a substring test — map like `=` (see ARRAY_VALUED_FIELDS).

@@ -45,6 +45,7 @@ import {
   type GymRubricInput,
   type JudgeLlmCall,
 } from './gym/primitives';
+import { pgTimestampToIso } from './pg-timestamp';
 
 /**
  * Authority-op kinds for the replica store (EI-266) — the redundancy analog of
@@ -685,11 +686,9 @@ function replicaFromDb(r: ReplicaDbRow): WorkItemReplica {
   };
 }
 
-function tsIso(v: unknown): string {
-  if (v instanceof Date) return v.toISOString();
-  if (typeof v === 'number') return new Date(v).toISOString();
-  return String(v ?? '');
-}
+// EI-18691099450966094: delegates to the shared pg-timestamp helper — see
+// pg-timestamp.ts for why a bare `String(v)` fallback is a staleness-trap bug.
+const tsIso = pgTimestampToIso;
 
 function clampTtl(n: number): number {
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_REPLICA_TTL_SEC;

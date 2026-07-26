@@ -30,6 +30,7 @@ import {
 } from './harness/improvements/observation-types';
 import { issuesScopeWorkspace, issuesOutLinksMany } from './issues-engineer';
 import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
+import { pgTimestampToIso } from './pg-timestamp';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
@@ -447,9 +448,11 @@ interface ScorecardRowDb {
   payload: unknown | null;
 }
 
-function tsIso(v: string | Date): string {
-  return typeof v === 'string' ? v : v.toISOString();
-}
+// EI-18691099450966094: was `typeof v === 'string' ? v : ...` — a raw
+// Postgres-text timestamptz string (session-offset, no 'Z') passed straight
+// through unparsed. Delegate to the shared helper, which parses+re-emits any
+// string as an explicit UTC ISO value instead.
+const tsIso = pgTimestampToIso;
 
 /**
  * List rubric-graded scorecards (newest-first), optionally filtered by rubric,

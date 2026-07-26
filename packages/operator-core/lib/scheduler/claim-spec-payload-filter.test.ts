@@ -93,6 +93,13 @@ describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => 
     expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ title: { matches: { source: 'p2p', flags: 'i' } } });
   });
 
+  it('NOT title word → { not: { title: { matches } } } mirroring the spec wordBoundaryRegex (EI-18690730909662985)', () => {
+    const f: FilterNode = { not: { field: 'title', op: 'word', value: 'p2p' } };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({
+      not: { title: { matches: { source: '\\bp2p\\b', flags: 'i' } } },
+    });
+  });
+
   it('relational op on a payload field is dropped permissively → undefined', () => {
     // (< <= > >= only target numeric non-payload fields; dropping is sound.)
     const f: FilterNode = { field: 'id', op: '>', value: 5 };

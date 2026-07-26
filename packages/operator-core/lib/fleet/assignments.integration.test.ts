@@ -65,6 +65,17 @@ async function truncateAll(): Promise<void> {
   // while its claim lives under a DIFFERENT workspace_id, so it can't be scoped by WS
   // alone like the rest of this cleanup.
   await admin`DELETE FROM harness_shared.fleet_membership_events WHERE owner_id = 'fa-test-ws-mismatch'`;
+  // Same reasoning applies to the CLAIM itself: seedPlanClaim(owner, { workspaceId:
+  // DEFAULT_WORKSPACE_ID }) below deliberately inserts under DEFAULT_WORKSPACE_ID, not
+  // WS, so the `workspace_id = WS` DELETE above never touches it. Without this line the
+  // row survives every beforeEach/afterAll, leaking into every OTHER test's WS-scoped
+  // read (listFleetAssignments intentionally surfaces plan-store-scoped rows alongside
+  // WS ones — that's the bug this test exists to cover) and colliding with itself as a
+  // duplicate-key error on the very next run (plan_item_claims_pkey is keyed on
+  // workspace_id+harness_slug+plan_slug+item_id, all four of which repeat verbatim).
+  // Self-caught 2026-07-26 re-verifying EI-18690480039212432's own completion: this gap
+  // reproducibly broke 4 sibling tests in this same file plus the new test's own re-run.
+  await admin`DELETE FROM harness_shared.plan_item_claims WHERE owner = 'fa-test-ws-mismatch'`;
 }
 
 /** A nursery row (EI-311 alias-liveness leg) — cup:spawn's three identity

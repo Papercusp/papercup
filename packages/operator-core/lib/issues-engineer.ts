@@ -48,6 +48,7 @@ import type { Issue as PipelineIssue } from './harness/issue-types';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, auditPredicateSqlFor, type CompletionAudit } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
+import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
@@ -328,13 +329,13 @@ interface IssueRowDb {
   created_at: unknown;
   updated_at: unknown;
 }
-function tsIso(v: unknown): string {
-  return v instanceof Date ? v.toISOString() : String(v);
-}
-function tsIsoOrNull(v: unknown): string | null {
-  if (v == null) return null;
-  return v instanceof Date ? v.toISOString() : String(v);
-}
+// EI-18691099450966094: delegates to the shared pg-timestamp helper — a raw
+// Postgres-text timestamptz (e.g. "2026-07-26 03:34:43.647148-04") must be
+// parsed and re-emitted as an explicit UTC "...Z" string, never passed
+// through as-is (a bare local-offset string reads as ambiguous/UTC and can
+// manufacture a false staleness verdict on a live claim).
+const tsIso = pgTimestampToIso;
+const tsIsoOrNull = pgTimestampToIsoOrNull;
 function toIssue(r: IssueRowDb): EngineerIssue {
   return {
     id: r.issue_id,

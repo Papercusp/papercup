@@ -139,7 +139,8 @@ export interface AgentDetail {
   coord: AgentCoordState;
   nativeSession: NativeSessionHandle | null;
   codex: CodexHomeDiagnostics | null;
-  signals: AgentSignals;
+  /** Optional — see the server-side AgentDetail doc (adv-agent-detail.ts) for why. */
+  signals?: AgentSignals;
 }
 
 /** Lazy-load the Tier-3 dossier for one owner id through sync. Any number of

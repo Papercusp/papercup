@@ -295,6 +295,27 @@ describe('get_next — spec filter + rank selects the correct item', () => {
     // The only seeded item matches the excluded pattern ⇒ nothing eligible.
     expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
   });
+
+  it('EI-18690730909662985: `word` excludes a real p2p title but ADMITS one that merely CONTAINS "p2p" inside a larger word', async () => {
+    // `glob`'s `*p2p*` is a bare SUBSTRING match — it wrongly excludes a title like
+    // "nonp2p-bug-drain" (the false positive observed live in fleet nonp2p-bug-drain-0725).
+    // `word` anchors to Postgres `\m`/`\M` word boundaries so only a real "p2p" WORD is excluded.
+    await seedFeature('F-p2p-real', { title: 'p2p handshake retry storm', createdTs: 1, featureOrder: 1 });
+    await seedFeature('F-p2p-substring', {
+      title: 'Fleet nonp2p-bug-drain scheduler regex false positive',
+      createdTs: 2,
+      featureOrder: 1,
+    });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'exclude-p2p-word',
+      revision: 1,
+      view: { filter: { not: { field: 'title', op: 'word', value: 'p2p' } } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('F-p2p-substring');
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -74,11 +74,17 @@ export const ITEM_FIELDS = [
   'id',
   // `title` — the work-item title text. Filterable (WI-3268) so a constrained fleet can
   // durably EXCLUDE a class of work the `tags`/`redundancy` columns don't classify — e.g.
-  // `{ not: { field:'title', op:'glob', value:'*p2p*' } }` to stop re-encountering p2p work
+  // `{ not: { field:'title', op:'word', value:'p2p' } }` to stop re-encountering p2p work
   // whose items carry no `tags` at all (the pre-existing tag-based exclusion path is a
   // no-op when tags are unpopulated, which is the common case today). Composes with `not`/
   // `any`/`all` like every other leaf. NOT rankable (ordering by title text is meaningless,
   // same rationale as `id`) — excluded from `RANKABLE_ITEM_FIELDS` below.
+  // EI-18690730909662985: prefer `word` (whole-word, case-insensitive) over `glob` for a
+  // bare keyword exclusion like this — `glob`'s `*p2p*` is a raw SUBSTRING match, so it
+  // false-positives on any title merely CONTAINING "p2p" as part of a longer word (e.g. a
+  // fleet named "nonp2p-bug-drain" excluding itself). `word` anchors to word boundaries
+  // (`\bp2p\b`) so "P2P sync fails" still matches but "nonp2p-bug-drain" does not. `glob`
+  // remains right for wildcard/prefix/suffix shapes (`lib/p2p/*`, `*.test.ts`).
   'title',
 ] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
@@ -102,8 +108,15 @@ export const FILTERABLE_ITEM_FIELDS = ITEM_FIELDS.filter((f) => f !== 'blocked' 
   'blocked' | 'cursed'
 >[];
 
-/** Predicate operators usable in a `view.filter` leaf (the plan's "Predicates"). */
-export const FILTER_OPS = ['=', '!=', '<', '<=', '>', '>=', 'in', 'contains', 'glob'] as const;
+/**
+ * Predicate operators usable in a `view.filter` leaf (the plan's "Predicates").
+ * `word` (EI-18690730909662985) is a case-insensitive WHOLE-WORD substring match
+ * (`\bvalue\b`) — unlike `glob`'s `*value*`, which is a bare, unanchored substring
+ * match that false-positives when the literal appears inside a larger word (e.g.
+ * `*p2p*` matching "nonp2p-bug-drain"). Prefer `word` for a bare keyword exclusion;
+ * `glob` stays right for wildcard/prefix/suffix shapes.
+ */
+export const FILTER_OPS = ['=', '!=', '<', '<=', '>', '>=', 'in', 'contains', 'glob', 'word'] as const;
 export type FilterOp = (typeof FILTER_OPS)[number];
 
 /**
@@ -300,7 +313,7 @@ export interface ClaimSpecValidation {
 /** Operators whose `value` must be a list. */
 const ARRAY_OPS = new Set<string>(['in']);
 /** Operators whose `value` must be a single scalar. */
-const SCALAR_OPS = new Set<string>(['=', '!=', '<', '<=', '>', '>=', 'contains', 'glob']);
+const SCALAR_OPS = new Set<string>(['=', '!=', '<', '<=', '>', '>=', 'contains', 'glob', 'word']);
 /** Operators that require a numeric `value`. */
 const NUMERIC_OPS = new Set<string>(['<', '<=', '>', '>=']);
 

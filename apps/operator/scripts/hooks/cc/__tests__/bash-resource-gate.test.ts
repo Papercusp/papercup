@@ -1194,6 +1194,107 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
   });
 });
 
+/**
+ * EI-18691482279179647 — interpreter inline-code write guard.
+ *
+ * The shell-write guard above only recognizes SHELL write constructs
+ * (`>`/`>>`, `tee`, `sed -i`, `cp`). An interpreter invoked with inline code
+ * (`python3 -c`, `node -e`, or a `python3 - <<EOF … EOF` heredoc script) does
+ * its own file I/O — invisible to shell-redirect detection — and sailed
+ * straight through with no lock claimed and no worktree validation
+ * (self-caught live 2026-07-26 rewriting a tree file via a heredoc'd python
+ * script). Also covers the `perl -i`/`ruby -i` in-place-flag half, added as
+ * a new leg on the existing shell-write guard's target extraction.
+ */
+describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
+  const expectInterpDeny = (out: { stdout: string; status: number | null }) => {
+    const reason = denyReason(out);
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toMatch(/Edit or Write/);
+    return reason;
+  };
+
+  it('denies the exact repro: a python3 heredoc script writing a literal tree path via open(...)', () => {
+    const command =
+      "python3 - <<'EOF'\n" +
+      "s2 = open('apps/operator/scripts/hooks/cc/__tests__/bash-resource-gate.test.ts').read()\n" +
+      "open('apps/operator/scripts/hooks/cc/__tests__/bash-resource-gate.test.ts', 'w').write(s2)\n" +
+      'EOF';
+    const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/scripts/hooks/cc/__tests__/bash-resource-gate.test.ts');
+    expect(reason).toContain('python3');
+  });
+
+  it('denies `python3 -c "..."` with an inline literal tree-path write', () => {
+    const command = `python3 -c "open('apps/operator/generated.ts', 'w').write('x')"`;
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('denies `node -e "..."` with fs.writeFileSync targeting a literal tree path', () => {
+    const command = `node -e "require('fs').writeFileSync('apps/operator/generated.ts', data)"`;
+    const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('node');
+  });
+
+  it('denies `perl -i` editing a tree file in place (the in-place-flag leg, same as `sed -i`)', () => {
+    const out = runGate(bashCmd("perl -i -pe 's/a/b/' apps/operator/foo.pl", { cwd: CANON }), CANON_ENV);
+    const reason = denyReason(out);
+    expect(reason).toContain('EI-18664655909328670');
+    expect(reason).toMatch(/perl -i.*ruby -i/);
+  });
+
+  it('denies `ruby -i` editing a tree file in place', () => {
+    const out = runGate(bashCmd("ruby -i.bak -pe 'gsub!(/a/,\"b\")' apps/operator/foo.rb", { cwd: CANON }), CANON_ENV);
+    expect(denyReason(out)).toContain('EI-18664655909328670');
+  });
+
+  it('fires WITH NO agent marker at all — unconditional, like the shell-write guard', () => {
+    const command = `python3 -c "open('apps/operator/generated.ts', 'w').write('x')"`;
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows the exact pre-existing v>100 heredoc repro (EI-18683619680591304) — no literal tree path in the body', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      'per = {"a": 50, "b": 150}\n' +
+      'print(sum(1 for v in per.values() if v>100))\n' +
+      "PY";
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows a READ-ONLY interpreter script that merely references a literal tree path (no write call) — the exact false-positive this guard self-caught during its own fix', () => {
+    // A read-only syntax-check idiom: read a tree file's content, parse it,
+    // print a result — no open(...,'w')/write(/writeFileSync anywhere. This
+    // must stay allowed: a read needs no lock, and the ORIGINAL guard did
+    // deny this before the write-indicator requirement was added, blocking
+    // this test suite's own author mid-verification.
+    const command =
+      "python3 -c \"\n" +
+      "with open('apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh') as f:\n" +
+      "    content = f.read()\n" +
+      "print(len(content))\n" +
+      '"';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it.each([
+    ['a python3 -c write targeting /tmp (outside the tree)', `python3 -c "open('/tmp/scratch.txt', 'w').write('x')"`],
+    ['a node -e write targeting ~/.papercusp/scratch', `node -e "require('fs').writeFileSync('/home/x/.papercusp/scratch/out.json', '{}')"`],
+    ['a plain `node script.js` — the code lives in a real (Edit-locked) file, not inline', 'node apps/operator/script.js'],
+    ['a plain `python3 file.py` with no -c/-e/heredoc', 'python3 apps/operator/tool.py --flag'],
+    ['python3 -c with no path literal at all', `python3 -c "print(1 + 1)"`],
+    ['a read-only python3 -c (no write call, no tree path)', `python3 -c "import sys; print(sys.version)"`],
+    ['a redirect target using shell expansion is left alone (fail-open)', `python3 -c "open(sys.argv[1], 'w')" "$SOME_PATH"`],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('does not fire when the resolved target is OUTSIDE the canonical tree even with a relative path', () => {
+    const command = "python3 -c \"open('notes.txt', 'w').write('x')\"";
+    expectAllow(runGate(bashCmd(command, { cwd: '/tmp/outside-canonical' }), CANON_ENV));
+  });
+});
+
 // ── Substitution gate (bash-to-tool-substitution-2026-07-26, P-016) ─────────
 // Two distinct things are under test and they fail differently:
 //   1. the PRE-FILTER — does a command a registry rule could claim actually

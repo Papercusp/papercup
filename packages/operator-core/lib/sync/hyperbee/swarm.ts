@@ -35,6 +35,7 @@ import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
 import { wireHiveGitServe, type PotGitServeConfig } from '../pot-git/serve-wiring';
 import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../pot-git/peer-dial-registry';
+import { loadOrGenerateSwarmSeed } from '../../identity/swarm-keypair';
 
 /** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
  *  Exported for the A-002 multi-hive demonstrator test. */

@@ -261,6 +261,10 @@ function compileLeaf(sql: OrgSql, leaf: FilterLeaf) {
         // isolation" must still match the lowercase pattern `*hyperswarm*`.
         return sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(${col}, '[]'::jsonb)) e WHERE e ILIKE ${globToLike(String(v))})`;
       }
+      if (leaf.op === 'word') {
+        // Word-boundary literal match — see wordBoundaryPgRegex above.
+        return sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(${col}, '[]'::jsonb)) e WHERE e ~* ${wordBoundaryPgRegex(String(v))})`;
+      }
       if (leaf.op === 'in') {
         const arr = (Array.isArray(v) ? v : [v]).map(String);
         return sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(${col}, '[]'::jsonb)) e WHERE e = ANY(${arr}::text[]))`;
@@ -293,6 +297,10 @@ function compileLeaf(sql: OrgSql, leaf: FilterLeaf) {
         // case-insensitive matching, and there is no scalar-text use case that
         // wants case-SENSITIVE glob matching to break instead.
         return sql`${col}::text ILIKE ${globToLike(String(v))}`;
+      }
+      if (leaf.op === 'word') {
+        // Word-boundary literal match — see wordBoundaryPgRegex above.
+        return sql`${col}::text ~* ${wordBoundaryPgRegex(String(v))}`;
       }
       if (leaf.op === 'contains') {
         // substring containment for a scalar (text) field — same case-insensitivity
@@ -353,6 +361,26 @@ function globToLike(glob: string): string {
   // Escape LIKE's own metacharacters first, then map glob wildcards.
   const escaped = glob.replace(/([%_\\])/g, '\\$1');
   return escaped.replace(/\*/g, '%').replace(/\?/g, '_');
+}
+
+/**
+ * Escape a literal for interpolation into a Postgres ARE (advanced regular
+ * expression), used by the `word` op below. Mirrors claim-spec-match.ts's
+ * `escapeRegexLiteral` (JS regex metachars are the same set Postgres ARE uses).
+ */
+function escapePgRegexLiteral(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * `\m`/`\M` are Postgres ARE begin-of-word/end-of-word anchors — the SQL mirror of
+ * the JS evaluator's `\b...\b` word-boundary (EI-18690730909662985). Used by the
+ * `word` op: a case-insensitive WHOLE-WORD substring match, unlike `glob`'s bare
+ * substring ILIKE which false-positives on a literal nested inside a larger word
+ * (e.g. `*p2p*` matching "nonp2p-bug-drain").
+ */
+function wordBoundaryPgRegex(literal: string): string {
+  return `\\m${escapePgRegexLiteral(literal)}\\M`;
 }
 
 /**

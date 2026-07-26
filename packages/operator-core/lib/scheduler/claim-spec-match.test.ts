@@ -279,3 +279,65 @@ describe('EI-14231 — a not:{id in [...]} exclusion in a wide drain spec never 
     expect(admissible.map((it) => it.id)).toEqual(['WI-5174', 'EI-8100', 'WI-7000']);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// EI-18690730909662985 — `word` op: a whole-word title exclusion, fixing `glob`'s
+// bare-substring false positive. Observed live: fleet "nonp2p-bug-drain-0725"'s
+// `not:{ title, op:'glob', value:'*p2p*' }` exclusion refused a member's own
+// self-claim of a meta-bug whose TITLE merely mentions the fleet's own name
+// ("nonp2p-bug-drain..." contains the substring "p2p"), even though the item is
+// precisely the OPPOSITE of P2P/federation work.
+// ────────────────────────────────────────────────────────────────────────────
+describe('EI-18690730909662985 — `word` op is a whole-word title match, not glob\'s bare substring', () => {
+  const wordExcludeP2p: FilterNode = { not: { field: 'title', op: 'word', value: 'p2p' } };
+  const globExcludeP2p: FilterNode = { not: { field: 'title', op: 'glob', value: '*p2p*' } };
+
+  it('`word` does NOT exclude a title that merely CONTAINS "p2p" inside a larger word (the false-positive glob hits)', () => {
+    const item = issueItem({
+      id: 'EI-18690730909662985',
+      title:
+        'Fleet claim-spec\'s p2p title-exclusion regex substring-matches "nonp2p" — a member can\'t self-claim any item whose title mentions the fleet\'s own name',
+      kind: 'bug',
+    });
+    expect(matchesWorkItemClaimSpec(item, specOf(wordExcludeP2p))).toBe(true); // admitted
+    expect(matchesWorkItemClaimSpec(item, specOf(globExcludeP2p))).toBe(false); // the bug: wrongly excluded
+  });
+
+  it('`word` DOES exclude a title that mentions "p2p" as its own word', () => {
+    const item = issueItem({ id: 'WI-9002', title: 'p2p offer-store publish leg is flaky', kind: 'bug' });
+    expect(matchesWorkItemClaimSpec(item, specOf(wordExcludeP2p))).toBe(false);
+  });
+
+  it('`word` is case-insensitive, like `glob`', () => {
+    const item = issueItem({ id: 'WI-9003', title: 'P2P handshake timeout', kind: 'bug' });
+    expect(matchesWorkItemClaimSpec(item, specOf(wordExcludeP2p))).toBe(false);
+  });
+
+  it('`word` matches at a non-alnum boundary too (hyphen, slash) — not ONLY whitespace', () => {
+    for (const title of ['fix the p2p-gateway retry', 'audit lib/p2p/handshake.ts', '(p2p) connection drop']) {
+      const item = issueItem({ id: 'WI-9004', title, kind: 'bug' });
+      expect(matchesWorkItemClaimSpec(item, specOf(wordExcludeP2p)), title).toBe(false);
+    }
+  });
+
+  it('validateClaimSpec accepts the `word` op with a scalar value', () => {
+    const v = validateClaimSpec(specOf(wordExcludeP2p));
+    expect(v.ok, `spec invalid: ${v.errors.join('; ')}`).toBe(true);
+  });
+
+  it('validateClaimSpec rejects `word` with an array value (it is a SCALAR op, same as glob/contains)', () => {
+    const v = validateClaimSpec(specOf({ field: 'title', op: 'word', value: ['p2p', 'federation'] }));
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => e.includes('op "word"'))).toBe(true);
+  });
+
+  function specOf(filter: FilterNode): ClaimSpec {
+    return {
+      specVersion: '1.0',
+      specId: 'word-op-test',
+      revision: 1,
+      view: { filter },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    };
+  }
+});

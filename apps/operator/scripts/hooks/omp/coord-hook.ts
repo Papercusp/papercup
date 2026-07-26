@@ -1268,6 +1268,174 @@ export function systemdExitDenyReason(op: string): string {
   );
 }
 
+// ── bash→tool substitution + resource verdict (bash-to-tool-substitution-2026-07-26, P-017) ──
+/**
+ * The OMP half of the substitution gate. Claude/Codex reach the registry through
+ * the shell PreToolUse hook (`pretooluse-bash-resource-gate.sh`); OMP has no
+ * shell-subprocess PreToolUse contract, so it asks the SAME question here over
+ * MCP — `locks:check_command`, one round-trip, both answers.
+ *
+ * WHAT IS DELIBERATELY *NOT* MIRRORED: the patterns. Every guard above this one
+ * is a TypeScript re-implementation of a Python regex, and each carries the
+ * "fix one, fix both" tax that the file's own comments keep restating. The
+ * substitution rules live in the registry
+ * (`harness_shared.bash_tool_substitutions`) and are matched SERVER-side, so a
+ * rule added there starts enforcing on both paths at once with no code change
+ * in either. Duplicating the patterns here would reintroduce exactly the drift
+ * the registry exists to remove.
+ *
+ * The one thing that must stay in step is the cheap PRE-FILTER — the local test
+ * that decides whether a command is worth an HTTP round-trip at all. That is a
+ * port of the server's atomizer (`packages/operator-core/lib/bash-substitution/
+ * atomize.ts`), for the reason its shell twin spells out: testing registry verbs
+ * as bare substrings would match "concatenate"/"duplicate"/"categories" and make
+ * nearly every command pay the call this filter exists to avoid. A pre-filter
+ * that disagrees with the matcher silently drops the very commands a rule was
+ * written for, and that failure is invisible — so it is guarded mechanically by
+ * replaying the committed equivalence fixtures through it (coord-hook.test.ts),
+ * the same anti-drift test the shell hook has.
+ */
+
+/** Compound-command separators — `atomize.ts` SEPARATORS. */
+const SUBST_SPLIT_RE = /\|\||&&|\||;|\n/;
+/** Leading runner wrappers — `atomize.ts` RUNNER_PREFIX. */
+const SUBST_RUNNER_RE =
+  /^(?:sudo\s+(?:-n\s+)?|nohup\s+|timeout\s+\S+\s+|time\s+|env\s+|command\s+|exec\s+)+/;
+/** Leading `FOO=bar` env assignments — `atomize.ts` ENV_PREFIX. */
+const SUBST_ENV_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
+
+/**
+ * Atom heads any enabled registry row can claim. A SET (not a regex
+ * alternation) so it stays a cheap hash lookup on the hot path, and identical
+ * to the shell hook's `_SUBSTITUTION_HEADS`. Adding a registry pair whose verb
+ * is missing here enforces it nowhere on the OMP path — the fixture-replay test
+ * fails if that happens.
+ */
+export const SUBSTITUTION_PREFILTER_HEADS = new Set(['sed', 'cat', 'head', 'tail', 'psql']);
+
+/** Resource-registry pre-filter — mirrors the shell hook's `_needs_check` regex. */
+const RESOURCE_PREFILTER_RE =
+  /systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(?:dev|build)/;
+
+/** True when any atom of `command` has a head a substitution row could claim. */
+export function substitutionPrefilterHit(command: string): boolean {
+  for (const part of command.split(SUBST_SPLIT_RE)) {
+    let atom = part.trim();
+    for (;;) {
+      const stripped = atom.replace(SUBST_RUNNER_RE, '').replace(SUBST_ENV_RE, '');
+      if (stripped === atom) break;
+      atom = stripped;
+    }
+    if (!atom) continue;
+    const first = atom.split(/\s+/).filter(Boolean)[0] ?? '';
+    const head = (first.split('/').pop() ?? '').replace(/^[({`$'"]+|[)}`$'"]+$/g, '');
+    if (head && SUBSTITUTION_PREFILTER_HEADS.has(head)) return true;
+  }
+  return false;
+}
+
+/** True when the command could touch a named resource under an exclusive hold. */
+export function resourcePrefilterHit(command: string): boolean {
+  return RESOURCE_PREFILTER_RE.test(command);
+}
+
+/** One substitution match as `locks:check_command` returns it. */
+export interface SubstitutionWire {
+  atom?: string;
+  toolName?: string;
+  advisoryText?: string;
+  tier?: string;
+}
+
+/** The `locks:check_command` verdict, narrowed to what this hook consumes. */
+export interface CheckCommandVerdict {
+  decision?: string;
+  matched?: { resource?: string }[];
+  substitutions?: SubstitutionWire[];
+  substitutionTier?: string | null;
+}
+
+/**
+ * Ask the operator. Returns null on any failure — FAIL-OPEN is mandatory: a
+ * wedged or detached operator must never wedge a shell command (`callMcpTool`
+ * already swallows and returns null). The 3s budget is tighter than the shell
+ * hook's 4s because this call sits inside an OMP tool_call handler, where the
+ * latency is paid before the tool starts rather than in a detached subprocess.
+ */
+export async function checkCommandVerdict(command: string): Promise<CheckCommandVerdict | null> {
+  const res = await callMcpTool('locks:check_command', { command }, { timeoutMs: 3000 });
+  return res && typeof res === 'object' ? (res as CheckCommandVerdict) : null;
+}
+
+/** `  • \`<atom>\` → <tool>` + the row's authored advisory, one block per match. */
+export function formatSubstitutionLines(subs: SubstitutionWire[]): string {
+  return subs
+    .map((s) => {
+      const tool = s.toolName || '?';
+      const atom = (s.atom || '').trim().slice(0, 160);
+      const text = (s.advisoryText || '').trim();
+      return text ? `  • \`${atom}\` → ${tool}\n    ${text}` : `  • \`${atom}\` → ${tool}`;
+    })
+    .join('\n');
+}
+
+/** Refusal for tier `deny` — mirrors the shell hook's message so both paths teach the same thing. */
+export function substitutionDenyReason(subs: SubstitutionWire[]): string {
+  return (
+    'substitution-gate: this command has a tool form that must be used instead.\n\n' +
+    `${formatSubstitutionLines(subs)}\n\n` +
+    'Re-run using the tool above. (This rule reached `deny` only by proving ' +
+    'equivalence against real sampled commands, or because the prohibition ' +
+    'already existed independently.)'
+  );
+}
+
+/** Soft advisory for tier `advise` — the command runs exactly as issued. */
+export function substitutionAdvisoryText(subs: SubstitutionWire[]): string {
+  return (
+    'bash→tool advisory: a tool already answers this question directly.\n\n' +
+    `${formatSubstitutionLines(subs)}\n\n` +
+    'The tool call is cheaper (no shell round-trip, structured result) and is ' +
+    'what the routing table points at. Advisory only; this command proceeded as issued.'
+  );
+}
+
+/** Refusal for a resource under an exclusive hold — mirrors the shell hook verbatim. */
+export function resourceBlockReason(matched: { resource?: string }[] | undefined): string {
+  const names = (matched ?? []).map((m) => m.resource || '?').join(', ') || 'a registered resource';
+  return (
+    `resource-gate: this command touches ${names}, which has an exclusive hold ` +
+    "in flight (a peer is restarting/migrating it). Wait for the 'back up' " +
+    'broadcast, or coordinate via locks:list / locks:acquire_resource. ' +
+    'Use the blessed wrapper (dev:restart / db:migrate) instead of a raw command.'
+  );
+}
+
+/**
+ * Pending soft advisory, drained by the tool_result reminder path.
+ *
+ * The shell hook rides `advise` out as `additionalContext` on an explicit
+ * allow; OMP's tool_call return carries only `{ block, reason }`, and a `reason`
+ * without `block` is discarded. So the equivalent non-blocking channel here is
+ * the EXISTING tool_result `followUp` reminder — the same delivery the coord
+ * inbox uses, deliberately NOT `steer` (steer aborts the in-flight tool and
+ * livelocks a slow model, see the tool_result comment). This keeps `advise` a
+ * new matched CLASS inside the existing mechanisms (plan D-003), not a fourth
+ * one.
+ */
+let _pendingSubstitutionAdvisory: string | null = null;
+
+export function stageSubstitutionAdvisory(text: string): void {
+  _pendingSubstitutionAdvisory = text;
+}
+
+/** Take and clear the pending advisory (empty string when there is none). */
+export function drainSubstitutionAdvisory(): string {
+  const text = _pendingSubstitutionAdvisory;
+  _pendingSubstitutionAdvisory = null;
+  return text ?? '';
+}
+
 export interface ToolCallEvent {
   type: 'tool_call';
   toolName: string;
@@ -3357,6 +3525,51 @@ export async function onToolCall(
     }
   }
 
+  // Registry verdict — resource holds + bash→tool substitutions (P-017). LAST of
+  // the Bash guards on purpose: every guard above is a local regex that costs
+  // nothing, so a command they already refuse must not first pay an HTTP
+  // round-trip. Two questions, one call (locks:check_command).
+  //
+  // Gating differs per answer, and deliberately so:
+  //  • RESOURCE (`decision === 'block'`) is UNGATED — same rationale as the
+  //    tauri and systemd guards just above, and the same as the shell hook,
+  //    which checks it for every session: the protected thing is a SHARED
+  //    resource mid restart/migration, so who typed the command is irrelevant.
+  //  • SUBSTITUTION is agent-gated (D-003). It is a routing discipline for
+  //    agents; denying an owner's `cat` would be a papercut, and an advisory to
+  //    an owner is noise. The pre-filter is agent-gated to match, so an owner
+  //    session pays no round-trip for a command only a substitution row claims.
+  //
+  // Resource wins when both fire: an exclusive hold means a peer is mid
+  // restart/migration RIGHT NOW (a live collision), whereas a substitution is a
+  // lasting suggestion about tool choice — surfacing the lesson would bury the
+  // emergency. Same precedence, and the same reason, as the shell hook.
+  if (event.toolName.toLowerCase().startsWith('bash')) {
+    const cmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
+    const agent = isAgentSession();
+    if (cmd && (resourcePrefilterHit(cmd) || (agent && substitutionPrefilterHit(cmd)))) {
+      // Fail-open throughout: a null verdict (detached / slow / malformed
+      // operator) leaves the command exactly as it was before this block.
+      const verdict = await checkCommandVerdict(cmd);
+      if (verdict) {
+        if (verdict.decision === 'block') {
+          return { block: true, reason: resourceBlockReason(verdict.matched) };
+        }
+        const subs = Array.isArray(verdict.substitutions) ? verdict.substitutions : [];
+        if (agent && subs.length > 0) {
+          if (verdict.substitutionTier === 'deny') {
+            return { block: true, reason: substitutionDenyReason(subs) };
+          }
+          if (verdict.substitutionTier === 'advise') {
+            // SOFT: the command proceeds as issued; the lesson rides out on the
+            // next tool_result as a non-interrupting followUp.
+            stageSubstitutionAdvisory(substitutionAdvisoryText(subs));
+          }
+        }
+      }
+    }
+  }
+
   // Off-ramp closure (weak-model-tool-tier-2026-07-01 / ornith-coordination): CLOSE OMP's native
   // search_tool_bm25 for agent sessions and REDIRECT to tools:find. The trimmed surface hands a
   // weak/local model (e.g. ornith IQ3_M) tools:find + tools:invoke as its ONLY discovery path —
@@ -4004,9 +4217,13 @@ export default function register(pi: HookApi): void {
     //    boundary (one call later) — an acceptable trade vs. a full livelock.
     const bundle = await safe(() => reportActivityResult(event), null);
     const { reminder } = await safe(() => consumeActivityHookBundle(bundle, pi, ctx), { reminder: '' });
-    if (reminder.length > 0) {
+    // 3. Drain any bash→tool advisory staged by this tool's tool_call (P-017).
+    //    Rides the SAME followUp message rather than adding a channel, so the
+    //    advisory can never abort the tool it is about.
+    const content = [drainSubstitutionAdvisory(), reminder].filter((s) => s.length > 0).join('\n\n');
+    if (content.length > 0) {
       pi.sendMessage(
-        { customType: 'coord-reminder', content: reminder, display: false, attribution: 'agent' },
+        { customType: 'coord-reminder', content, display: false, attribution: 'agent' },
         { deliverAs: 'followUp' },
       );
     }
