@@ -186,7 +186,7 @@ export function Popover({
 
   return (
     <RP.Root open={open} onOpenChange={onOpenChange}>
-      <RP.Trigger asChild>{trigger}</RP.Trigger>
+      {anchorNode}
       {popoverContent}
     </RP.Root>
   );

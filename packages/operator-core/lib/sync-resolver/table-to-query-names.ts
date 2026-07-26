@@ -208,10 +208,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Tag and subscriber changes alter the Q&A list/detail projections even
   // though the conversation scalar row itself does not change.
   'harness_shared.coord_entity_subscriptions': ['conversations.questionDetail'],
-  'harness_shared.messages_consolidated': [
-    'conversations.messageList',
-    { name: 'conversations.messageDetail', scope: idScope },
-  ],
+  // harness_shared.messages_consolidated entry retired with the work-item
+  // mail read queries — see retire-work-item-mail-surface-2026-07-26 P-004.
   'harness_shared.harness_feature_notes': ['featureNotes.byHarness'],
   'harness_shared.harness_feature_debug_notes': ['featureDebugNotes.byHarness', 'featureTimeline.byFeature'],
   'harness_shared.feature_audit_consolidated': ['featureAudit.byHarness'],

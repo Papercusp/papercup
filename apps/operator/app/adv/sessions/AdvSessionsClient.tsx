@@ -784,19 +784,21 @@ export default function AdvSessionsClient() {
             <Combobox
               triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--plan"
               value={launchPlanSlug ?? PLAN_SELECT_PLACEHOLDER}
+              emptyValue={PLAN_SELECT_PLACEHOLDER}
               onChange={(value) => void setLaunchPlanSlug(value === PLAN_SELECT_PLACEHOLDER ? null : value)}
               disabled={planList.loading}
               ariaLabel="Plan for new session"
-              searchPlaceholder="Search plans…"
+              placeholder={planList.loading ? 'Loading plans…' : 'Select plan…'}
               emptyLabel="No plans match"
               options={launchPlanOptions}
             />
             <Combobox
               triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--model"
               value={launchModel || MODEL_SELECT_DEFAULT}
+              emptyValue={MODEL_SELECT_DEFAULT}
               onChange={(value) => void setLaunchModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
               ariaLabel="Model for new session"
-              searchPlaceholder="Search models…"
+              placeholder="Default"
               emptyLabel="No models match"
               options={OMP_MODEL_OPTIONS}
             />

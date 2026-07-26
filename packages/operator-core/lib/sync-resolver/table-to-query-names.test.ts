@@ -178,7 +178,6 @@ describe('per-row scoped invalidation (caching-layer-tag-eca P-006)', () => {
       'plans.get',
       'conversations.questionDetail',
       'conversations.agentChatDetail',
-      'conversations.messageDetail',
       'agentChats.detail',
       'hive.beaconConsent',
     ]);
@@ -365,10 +364,9 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
       'conversations.agentChatList',
       expect.objectContaining({ name: 'conversations.agentChatDetail' }),
     ]));
-    expect(TABLE_TO_QUERY_NAMES['harness_shared.messages_consolidated']).toEqual(expect.arrayContaining([
-      'conversations.messageList',
-      expect.objectContaining({ name: 'conversations.messageDetail' }),
-    ]));
+    // harness_shared.messages_consolidated entry retired with the work-item
+    // mail read queries — see retire-work-item-mail-surface-2026-07-26 P-004.
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.messages_consolidated']).toBeUndefined();
     expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_links']).toEqual(expect.arrayContaining([
       'conversations.questionsList',
       'conversations.questionDetail',

@@ -42,8 +42,6 @@ export type { HandoffEntry, SpawnHandoffContext };
 
 /** A direct-upstream count cap (P-013: "direct upstreams only"). */
 const MAX_PREDECESSORS = 8;
-/** Feature-scoped handoff messages cap. */
-const MAX_MESSAGES = 12;
 /** Per-entry body budget (chars) — capped BEFORE framing so an untrusted frame
  *  is never split when the seam drops/bounds entries. */
 const PER_ENTRY_BODY_CAP = 1200;
@@ -124,37 +122,11 @@ export function frameHandoffEntries(
   return { entries, truncated };
 }
 
-interface FeatureMsgRow {
-  from_slug: string | null;
-  from_feature_id: string | null;
-  kind: string | null;
-  subject: string | null;
-  body: string | null;
-  created_at: unknown;
-}
-
 function toMs(v: unknown): number {
   if (v == null) return 0;
   if (typeof v === 'number') return v;
   const t = new Date(v as string).getTime();
   return Number.isFinite(t) ? t : 0;
-}
-
-/** Resolve a source feature's provenance triple (origin/audit/verified) for
- *  classification. A null/absent feature ⇒ treated as local (no remote risk). */
-async function provenanceOf(
-  featureId: string | null | undefined,
-  harness: string,
-): Promise<{ origin: string | null; auditVerdict: string | null; verifiedAuthorGithubUserId: number | null; author?: string }> {
-  if (!featureId) return { origin: 'local', auditVerdict: null, verifiedAuthorGithubUserId: null };
-  const wi = await getWorkItem(featureId, harness).catch(() => null);
-  if (!wi) return { origin: 'local', auditVerdict: null, verifiedAuthorGithubUserId: null };
-  return {
-    origin: wi.origin,
-    auditVerdict: wi.auditVerdict,
-    verifiedAuthorGithubUserId: wi.verifiedAuthorGithubUserId,
-    ...(wi.assignee ? { author: wi.assignee } : {}),
-  };
 }
 
 /**
@@ -216,40 +188,16 @@ export async function getSpawnHandoffContext(opts: {
   }
 
   // ── messages: feature-scoped handoffs addressed to this feature ───────────
+  // NOTE (retire-work-item-mail-surface-2026-07-26 P-006): this used to also
+  // SELECT harness_shared.messages_consolidated (the retired work-item mail
+  // table — its only writer, `messages:send`, was retired in Lane 0). That
+  // read is removed here; nothing writes new rows there any more, so it could
+  // only ever return stale pre-retirement data. `messages` is now populated
+  // SOLELY by the slot-parked drain below (a separate, still-live mechanism —
+  // agent-tools/coordination/slot-parked-store, not the mail surface).
+  // Existing messages_consolidated rows/table are left untouched (no data
+  // deleted); see `_retired/work-item-mail/RESTORE.md` for the write-path.
   let messages: HandoffEntry[] = [];
-  try {
-    const { sql } = getOrgPg();
-    const rows = (await sql.unsafe(
-      `SELECT from_slug, from_feature_id, kind, subject, body, created_at
-         FROM harness_shared.messages_consolidated
-        WHERE to_feature_id = $1 AND COALESCE(status, '') <> 'dismissed'
-        ORDER BY created_at DESC
-        LIMIT ${MAX_MESSAGES}`,
-      [featureId],
-    )) as unknown as FeatureMsgRow[];
-    const raw: RawHandoffEntry[] = [];
-    for (const m of rows) {
-      const prov = await provenanceOf(m.from_feature_id, harness);
-      const subject = (m.subject ?? '').trim();
-      const mbody = (m.body ?? '').trim();
-      const text = `[${m.kind ?? 'message'}] ${subject}${mbody ? `\n${mbody}` : ''}`;
-      raw.push({
-        kind: 'message',
-        ...(m.from_feature_id ? { fromFeatureId: m.from_feature_id } : {}),
-        ...(prov.author || m.from_slug ? { author: prov.author ?? m.from_slug ?? undefined } : {}),
-        origin: prov.origin,
-        auditVerdict: prov.auditVerdict,
-        verifiedAuthorGithubUserId: prov.verifiedAuthorGithubUserId,
-        rawBody: text,
-        ts: toMs(m.created_at),
-      });
-    }
-    const framed = frameHandoffEntries(raw, trustedSet);
-    messages = framed.entries;
-    truncated = truncated || framed.truncated;
-  } catch {
-    messages = [];
-  }
 
   // ── slot-parked messages: B2 deliver-on-spawn (P-023) ─────────────────────
   //    A coord:send addressed to a SLOT this spawnee fills (@feature / @role)

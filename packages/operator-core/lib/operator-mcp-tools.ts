@@ -102,9 +102,6 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // is the agent-initiated side (surfaced here so the brain sees the request shape).
   'mcp__agentmcp__new_subagent:request',
   'mcp__agentmcp__new_subagent:approve',
-  'mcp__agentmcp__messages:inbox',
-  'mcp__agentmcp__messages:outbox',
-  'mcp__agentmcp__messages:send',
   'mcp__agentmcp__audit:list',
   'mcp__agentmcp__pending_events:list',
   // hindsight:recall removed 2026-05-31 — the tool was DEPRECATED 2026-05-09 and

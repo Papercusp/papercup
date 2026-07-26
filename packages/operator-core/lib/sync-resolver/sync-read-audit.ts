@@ -93,7 +93,6 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'chunkPlans.byFeature': null,
   'conversations.agentChatDetail': null,
   'conversations.deliberationDetail': null,
-  'conversations.messageDetail': null,
   'conversations.questionDetail': null,
   'designSketches.byFeature': null,
   'dockLayouts.byName': null,

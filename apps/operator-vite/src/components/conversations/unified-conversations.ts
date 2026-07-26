@@ -5,7 +5,7 @@
  * WHY THIS FILE EXISTS (WI-5754): the unified stream was born inside
  * `adv/AdvConversationsTab.tsx` and, while that was the only surface reading
  * it, living there cost nothing. The left rail's Conversations tab
- * (`left-sidebar/ConversationsTab.tsx`) is a SECOND reader of the same four
+ * (`left-sidebar/ConversationsTab.tsx`) is a SECOND reader of the same three
  * stores, so the composition rules had to move somewhere both can import —
  * otherwise the two panes drift on the questions that matter most and are
  * least visible: which rows count as conversations, which are hidden as system
@@ -16,9 +16,9 @@
  * `useSyncQuery` reads stay with their components — this module only says what
  * to do with the rows once they arrive.
  *
- * The row TYPES are the wire shapes of the four `conversations.*List` sync
+ * The row TYPES are the wire shapes of the three `conversations.*List` sync
  * queries (see packages/operator-core/lib/sync-resolver): Q&A questions,
- * coord-thread deliberations, agent-chat sessions, and work-item mail.
+ * coord-thread deliberations, and agent-chat sessions.
  */
 
 // ─── Source row shapes (the four `conversations.*List` sync queries) ─────────

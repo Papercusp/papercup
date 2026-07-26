@@ -4,7 +4,7 @@
  *
  * Overwatch is an always-on supervisor (a sibling to the Queen). It acts on
  * AGENTS, never on WORK placement (D-001): its only write-to-the-world verbs are
- * NUDGE (`coord:send` / `messages:send`), OBSERVE (`improvements:capture`
+ * NUDGE (`coord:send`), OBSERVE (`improvements:capture`
  * lane:observation), and ESCALATE (`coord:escalate`). Everything else — restart a
  * routine, flip a flag, rebind the gateway, kill a process, spawn/place work — is
  * a STRUCTURAL change it must NOT perform; it ESCALATES instead.
@@ -55,7 +55,7 @@ export type OverwatchPosture = AutonomyPosture;
  * `autonomy:decide` tool already takes. The persona maps a C-1
  * `SuggestedAction.type` (nudge|observe|escalate) to its verb, then asks the gate.
  */
-const NUDGE_VERBS: ReadonlySet<string> = new Set(['coord:send', 'messages:send']);
+const NUDGE_VERBS: ReadonlySet<string> = new Set(['coord:send']);
 const OBSERVE_VERBS: ReadonlySet<string> = new Set(['improvements:capture']);
 const ESCALATE_VERBS: ReadonlySet<string> = new Set(['coord:escalate']);
 /**

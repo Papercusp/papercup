@@ -7,6 +7,17 @@
  * heterogeneous (items:[{ id, topic, harness?, remove? }]) → { ok, results:[{ ok,
  * id, topic? | error }], counts }. Each result self-describes its id; one not-found
  * item never fails the rest. The rationale-reproject reaction fires per item (D-007).
+ *
+ * THIS IS ALSO HOW YOU POPULATE THE CLAIM-SPEC `tags` FILTER FIELD (EI-18654138087054247,
+ * work-item-topic-tags.ts): every call here ALSO mirrors the topic into the exact tag
+ * field each claim-spec evaluator reads (the `tags` jsonb column for feature-family,
+ * `payload.tags` for issue-family — see syncTopicTagToClaimTags). So `scheduler:set_claim_spec`
+ * `{ field:"tags", op:"contains", value:"<topic>" }` DOES admit an item after you call
+ * `work_items:tag { id, topic:"<topic>" }` on it — verified live 2026-07-26. If you land
+ * here believing "nothing writes `tags`" (this exact belief was independently filed 9x in
+ * 19h as WI-6102/EI-18730476010072570/…): re-verify against a real write+read before
+ * re-filing — the mechanism has worked since 2026-07-25 18:21 (commit 8fb140cc).
+ * `work_items:update` rejects a `tags` key on purpose; this tool is the writer.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -26,10 +37,10 @@ export default defineTool({
   name: 'work_items:tag',
   profile: 'engineer',
   description:
-    'Tag one OR many work-items with a topic (or untag with remove:true) — routes the item to that topic\'s subscribers. Single: { id, topic }. Many same topic: { ids:[…], topic }. Many heterogeneous: items:[{ id, topic, harness?, remove? }]. Returns { ok, results:[{ ok, id, topic? | error }], counts } — correlate by id; a not-found item never fails the rest.',
+    'Tag one OR many work-items with a topic (or untag with remove:true) — routes the item to that topic\'s subscribers, AND mirrors the topic into the claim-spec-visible `tags` field (a `scheduler:set_claim_spec` view.filter on `tags` reads exactly what this call writes). Single: { id, topic }. Many same topic: { ids:[…], topic }. Many heterogeneous: items:[{ id, topic, harness?, remove? }]. Returns { ok, results:[{ ok, id, topic? | error }], counts } — correlate by id; a not-found item never fails the rest.',
   guidance: {
-    when: 'You want a work-item visible to agents following an area (topics:list to see topics). Tag several at once via ids:[…]+topic or items:[…].',
-    chaining: 'topics:list → work_items:tag { topic } (or { ids, topic }).',
+    when: 'You want a work-item visible to agents following an area (topics:list to see topics), OR you want it to match a claim-spec filter on `tags` (this is the only writer for that field — work_items:update deliberately rejects a `tags` key). Tag several at once via ids:[…]+topic or items:[…].',
+    chaining: 'topics:list → work_items:tag { topic } (or { ids, topic }). For claim-spec lane-scoping: work_items:tag { id, topic:"<lane-tag>" } then scheduler:set_claim_spec { …filter: { field:"tags", op:"contains", value:"<lane-tag>" } }.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

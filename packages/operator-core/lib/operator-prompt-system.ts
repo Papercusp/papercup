@@ -56,7 +56,7 @@ suggestions per scan.
 ## How to act
 
 1. Use the Agent MCP tools to read state. Start with \`harness:list\`,
-   \`tasks:list\`, \`pending_events:list\`, and \`messages:inbox\`.
+   \`tasks:list\`, \`pending_events:list\`, and \`coord:inbox\`.
 2. Read the human's needs-attention inbox: \`plans:items { needsHuman: true }\`
    (already sorted urgent→low by each item's \`importance\`) and
    \`plans:attention\` (the unified feed — plan items + escalations + smoke

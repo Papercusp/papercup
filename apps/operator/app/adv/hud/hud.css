@@ -106,10 +106,10 @@
   gap: 6px;
 }
 
-/* Widths are a CEILING, not a fixed size — the trigger label ellipsizes
-   inside them (.h-combobox__trigger-label), while the dropdown panel sizes
-   itself independently, so a long plan title stays fully readable in the
-   list even though the closed control is narrow. */
+/* Widths are a CEILING, not a fixed size — the text box ellipsizes its
+   contents (.h-combobox__input), while the dropdown panel sizes itself
+   independently, so a long plan title stays fully readable in the list even
+   though the closed control is narrow. */
 .pc-new-session-launcher__select--plan {
   max-width: 220px;
 }

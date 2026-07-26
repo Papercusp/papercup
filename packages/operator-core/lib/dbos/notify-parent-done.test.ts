@@ -5,7 +5,10 @@
  * Covers the full branch matrix through the DI seam — no PG and no `vi.mock`
  * (so it cannot leak a module mock into a sibling test the way the fleet just
  * flagged for the locks suite). Each case injects a fake org-PG tagged-template
- * + a fake action dispatcher.
+ * + a fake `sendMessage` (retire-work-item-mail-surface-2026-07-26 P-006: this
+ * used to inject a fake `dispatchAction({op:'send_message'})`; that verb was
+ * retired, the builtin now rides `sendMessage` — the same primitive
+ * `coord:send` uses — directly).
  */
 import { describe, it, expect, vi } from 'vitest';
 import { notifyParentOnDone } from './notify-parent-done';
@@ -33,61 +36,53 @@ function makeSql(returns: SqlReturn[]) {
 
 function makeDeps(
   sqlReturns: SqlReturn[],
-  dispatchImpl?: (...args: unknown[]) => Promise<unknown>,
+  sendImpl?: (...args: unknown[]) => Promise<unknown>,
 ) {
   const sql = makeSql(sqlReturns);
-  const dispatch = vi.fn(dispatchImpl ?? (() => Promise.resolve({ ok: true })));
+  const send = vi.fn(sendImpl ?? (() => Promise.resolve({ msg_id: 'm-1' })));
   const di: NotifyDeps = {
     sql: sql as unknown as NotifyDeps['sql'],
-    dispatch: dispatch as unknown as NotifyDeps['dispatch'],
+    send: send as unknown as NotifyDeps['send'],
   };
-  return { sql, dispatch, di };
+  return { sql, send, di };
 }
 
 const BASE = { harnessSlug: 'child-h', workspaceId: 'ws-1', featureId: 'F-9' };
 
 describe('notifyParentOnDone — afterDone parent-completion builtin', () => {
   it('no parent → reports no_parent and never sends', async () => {
-    const { dispatch, di } = makeDeps([[]]); // parent lookup returns no rows
+    const { send, di } = makeDeps([[]]); // parent lookup returns no rows
     const r = await notifyParentOnDone({ ...BASE, deps: di });
     expect(r).toEqual({ notified: false, reason: 'no_parent' });
-    expect(dispatch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('queue not drained → reports queue_not_drained with the remaining count, no send', async () => {
-    const { dispatch, di } = makeDeps([[{ parent_slug: 'parent-h' }], [{ n: 3 }]]);
+    const { send, di } = makeDeps([[{ parent_slug: 'parent-h' }], [{ n: 3 }]]);
     const r = await notifyParentOnDone({ ...BASE, deps: di });
     expect(r).toEqual({ notified: false, parent: 'parent-h', reason: 'queue_not_drained', remaining: 3 });
-    expect(dispatch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it('drained → posts a Completion to the parent (child is the caller) and reports notified', async () => {
-    const { sql, dispatch, di } = makeDeps([[{ parent_slug: 'parent-h' }], [{ n: 0 }]]);
+  it('drained → sends a Completion to the parent (child is the sender identity) and reports notified', async () => {
+    const { sql, send, di } = makeDeps([[{ parent_slug: 'parent-h' }], [{ n: 0 }]]);
     const r = await notifyParentOnDone({ ...BASE, deps: di });
     expect(r).toEqual({ notified: true, parent: 'parent-h' });
-    expect(dispatch).toHaveBeenCalledTimes(1);
-    const [callerSlug, action] = dispatch.mock.calls[0] as [
-      string,
-      { op: string; to: string[]; kind: string; body: string },
+    expect(send).toHaveBeenCalledTimes(1);
+    const [identity, options] = send.mock.calls[0] as [
+      { ownerId: string },
+      { to: string[]; summary: string; body: string; harnessSlug: string },
     ];
-    expect(callerSlug).toBe('child-h'); // the child is the bearer/caller
-    expect(action).toMatchObject({ op: 'send_message', to: ['parent-h'], kind: 'Completion' });
-    expect(action.body).toContain('F-9');
+    expect(identity.ownerId).toBe('harness-afterdone:child-h'); // the child is named in the sender identity
+    expect(options).toMatchObject({ to: ['parent-h'], harnessSlug: 'child-h' });
+    expect(options.summary).toContain('child-h');
+    expect(options.body).toContain('F-9');
     // the drain count EXCLUDES the triggering feature and is workspace-scoped:
     // call[1] values are [workspaceId, harnessSlug, featureId].
     expect(sql.calls[1]).toEqual(['ws-1', 'child-h', 'F-9']);
   });
 
-  it('dispatch returns not-ok → reports send_failed (keeps the parent)', async () => {
-    const { di } = makeDeps(
-      [[{ parent_slug: 'parent-h' }], [{ n: 0 }]],
-      () => Promise.resolve({ ok: false, error: 'rate-limited' }),
-    );
-    const r = await notifyParentOnDone({ ...BASE, deps: di });
-    expect(r).toEqual({ notified: false, parent: 'parent-h', reason: 'send_failed' });
-  });
-
-  it('dispatch throws → swallowed, reports send_failed (best-effort, never throws)', async () => {
+  it('send throws → swallowed, reports send_failed (best-effort, never throws)', async () => {
     const { di } = makeDeps(
       [[{ parent_slug: 'parent-h' }], [{ n: 0 }]],
       () => Promise.reject(new Error('boom')),
@@ -100,9 +95,9 @@ describe('notifyParentOnDone — afterDone parent-completion builtin', () => {
   });
 
   it('PG lookup throws → swallowed, reports lookup_failed and never sends', async () => {
-    const { dispatch, di } = makeDeps([new Error('db down')]);
+    const { send, di } = makeDeps([new Error('db down')]);
     const r = await notifyParentOnDone({ ...BASE, deps: di });
     expect(r).toEqual({ notified: false, reason: 'lookup_failed' });
-    expect(dispatch).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 /**
  * AdvConversationsTab — the /adv "Conversations" tab. One deduplicated curated
- * stream combines Q&A, group decisions, agent-chat transcripts, and work-item
- * mail. Source identity is an inline type pill, not a separate navigation tab.
+ * stream combines Q&A, group decisions, and agent-chat transcripts. Source
+ * identity is an inline type pill, not a separate navigation tab.
  * Raw coordination events remain set apart as the subordinate diagnostic view.
  *
  *  - **Q&A** (default, `conv=threads`): the conversations substrate (questions +
@@ -17,10 +17,6 @@
  *  - **Agent chats** (`conv=agentchats`): the internal detail route for
  *    multi-turn transcript rows projected into the unified stream. Live chats
  *    retain their interactive composer; archived chats remain read-only.
- *
- *  - **Messages** (`conv=messages`): work-item-scoped agent↔agent messages
- *    (messages:send / messages:inbox) from `messages_consolidated` — from → to,
- *    kind, subject/body, status, click-to-expand.
  *
  *  - **Raw events** (`conv=feed`): raw coordination events for debugging,
  *    newest-first, with day separators, grouped filters, URL-backed advanced
@@ -42,7 +38,7 @@ import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef, type FilterableColumn } from '@papercusp/grid-core';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ArrowLeft, ArrowUpRight, Bot, CheckCircle2, Inbox, Mail, MessageCircle, MessagesSquare, Plus, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowUpRight, Bot, CheckCircle2, Inbox, MessageCircle, MessagesSquare, Plus, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import { listCountLabel, readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useColumnFilters, ColumnFilterBar } from '@/app/harness/filters';
@@ -90,7 +86,6 @@ import {
   type ConvPost,
   type ConvRow,
   type DeliberationDetail,
-  type MsgRow,
   type ThreadPost,
   type ThreadRow,
   type UnifiedConversationRow,
@@ -169,7 +164,7 @@ const railRowProps = () => RAIL_ROW_PROPS;
 const streamRowProps = () => STREAM_ROW_PROPS;
 
 // ─── View switch ─────────────────────────────────────────────────────
-const CONV_VIEWS = ['inbox', 'threads', 'deliberations', 'agentchats', 'messages', 'feed'] as const;
+const CONV_VIEWS = ['inbox', 'threads', 'deliberations', 'agentchats', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
 const CONVERSATION_ROUTE_PARAMS = {
@@ -177,7 +172,6 @@ const CONVERSATION_ROUTE_PARAMS = {
   conversation: parseAsString,
   thread: parseAsString,
   chat: parseAsString,
-  msg: parseAsString,
   fmsg: parseAsString,
 };
 
@@ -185,7 +179,6 @@ const EMPTY_CONVERSATION_SELECTION = {
   conversation: null,
   thread: null,
   chat: null,
-  msg: null,
   fmsg: null,
 } as const;
 
@@ -207,7 +200,6 @@ const VIEW_DEFS: ReadonlyArray<ViewDef> = [
   { id: 'threads', label: 'Questions & discussions', desc: 'Questions and discussions between you and the agents.', group: 'curated', Icon: MessageCircle },
   { id: 'deliberations', label: 'Group decisions', desc: 'Coord threads, proposals, and votes.', group: 'curated', Icon: MessagesSquare },
   { id: 'agentchats', label: 'Agent chat', desc: "An agent's full multi-turn transcript.", group: 'curated', Icon: Bot },
-  { id: 'messages', label: 'Work-item mail', desc: 'Work-item-scoped mail between agents.', group: 'curated', Icon: Mail },
   { id: 'feed', label: 'Raw events', desc: 'The system message log — system-origin coordination (watchdog, routines, infra), newest first. The diagnostic traffic the curated conversations filter out.', group: 'raw', Icon: Radio },
 ];
 const CURATED_VIEW_DEFS = VIEW_DEFS.filter((v) => v.id === 'inbox');
@@ -222,7 +214,6 @@ const VIEW_ACCENT: Record<ConvView, string> = {
   threads: 'var(--accent)',
   deliberations: 'var(--accent)',
   agentchats: 'var(--accent)',
-  messages: 'var(--accent)',
   feed: 'var(--fg-mute)',
 };
 
@@ -284,10 +275,9 @@ function UnifiedInboxView() {
   const questions = useSyncQuery<ConvRow>({ queryName: 'conversations.questionsList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const deliberations = useSyncQuery<ThreadRow>({ queryName: 'conversations.deliberationList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const agentChats = useSyncQuery<AgentChatRow>({ queryName: 'conversations.agentChatList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
-  const messages = useSyncQuery<MsgRow>({ queryName: 'conversations.messageList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const rows = useMemo(
-    () => composeUnifiedConversationRows(questions.data ?? [], deliberations.data ?? [], agentChats.data ?? [], messages.data ?? [], UNIFIED_LIST_LIMIT),
-    [questions.data, deliberations.data, agentChats.data, messages.data],
+    () => composeUnifiedConversationRows(questions.data ?? [], deliberations.data ?? [], agentChats.data ?? [], UNIFIED_LIST_LIMIT),
+    [questions.data, deliberations.data, agentChats.data],
   );
   const columnFilters = useColumnFilters(UNIFIED_FILTER_COLUMNS, rows, { ns: 'cv' });
   const filteredRows = useMemo(() => {
@@ -306,7 +296,7 @@ function UnifiedInboxView() {
     ].some((value) => normalizedConversationText(value).includes(query)));
   }, [columnFilters.rows, debouncedSearch]);
   const filtersActive = columnFilters.hasActive || search.trim() !== '';
-  const queries = [questions, deliberations, agentChats, messages];
+  const queries = [questions, deliberations, agentChats];
   const loading = queries.some((query) => query.loading);
   const error = queries.find((query) => query.error)?.error ?? null;
   const invalidate = () => queries.forEach((query) => query.invalidate());
@@ -340,7 +330,6 @@ function UnifiedInboxView() {
     conversation: row.source === 'threads' ? row.sourceId : null,
     thread: row.source === 'deliberations' ? row.sourceId : null,
     chat: row.source === 'agentchats' ? row.sourceId : null,
-    msg: row.source === 'messages' ? row.sourceId : null,
     fmsg: null,
   });
   const selectedSourceId = route.conv === 'threads'
@@ -349,9 +338,7 @@ function UnifiedInboxView() {
       ? route.thread
       : route.conv === 'agentchats'
         ? route.chat
-        : route.conv === 'messages'
-          ? route.msg
-          : null;
+        : null;
   const selectedUnifiedId = selectedSourceId ? `${route.conv}:${selectedSourceId}` : null;
   const selectedRow = selectedUnifiedId ? rows.find((row) => row.id === selectedUnifiedId) : undefined;
   const closeDetail = () => setRoute({ conv: 'inbox', ...EMPTY_CONVERSATION_SELECTION });
@@ -361,18 +348,16 @@ function UnifiedInboxView() {
       ? <DeliberationsView detailOnly loadingSummary={selectedRow} />
       : route.conv === 'agentchats' && route.chat
         ? <AgentChatsView detailOnly loadingSummary={selectedRow} />
-        : route.conv === 'messages' && route.msg
-          ? <MessagesView detailOnly />
-          : (
-            <section className="pc-coord__detail">
-              <EmptyState
-                style={{ minHeight: '100%' }}
-                icon={<Inbox size={22} aria-hidden />}
-                title="Select a conversation"
-                desc="Open a conversation to review its full context."
-              />
-            </section>
-          );
+        : (
+          <section className="pc-coord__detail">
+            <EmptyState
+              style={{ minHeight: '100%' }}
+              icon={<Inbox size={22} aria-hidden />}
+              title="Select a conversation"
+              desc="Open a conversation to review its full context."
+            />
+          </section>
+        );
 
   return (
     <ConvFrame
@@ -539,7 +524,6 @@ function ConvFrame({
       conversation: preserveActiveSelection && nextView === 'threads' ? route.conversation : null,
       thread: preserveActiveSelection && nextView === 'deliberations' ? route.thread : null,
       chat: preserveActiveSelection && nextView === 'agentchats' ? route.chat : null,
-      msg: preserveActiveSelection && nextView === 'messages' ? route.msg : null,
       fmsg: preserveActiveSelection && nextView === 'feed' ? route.fmsg : null,
     });
   };
@@ -627,9 +611,7 @@ export default function AdvConversationsTab() {
       ? route.thread
       : route.conv === 'agentchats'
         ? route.chat
-        : route.conv === 'messages'
-          ? route.msg
-          : null;
+        : null;
   const isInternalDetailRoute = route.conv !== 'inbox' && route.conv !== 'feed';
   const view = isInternalDetailRoute && !sourceSelection ? 'inbox' : route.conv;
   useEffect(() => {
@@ -2178,219 +2160,6 @@ function AgentChatsView({
   );
 }
 
-// ─── Messages — work-item-scoped agent↔agent messages ──────────────────
-
-function MessagesView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
-  const [open, setOpen] = useQueryState('msg', parseAsString);
-  const listQuery = useSyncQuery<MsgRow>({
-    queryName: 'conversations.messageList',
-    args: { limit: COMMS_LIST_LIMIT },
-    staleTime: 30_000,
-  });
-  const detailQuery = useSyncQuery<MsgRow>({
-    queryName: 'conversations.messageDetail',
-    args: { id: open ?? '' },
-    enabled: !!open,
-    staleTime: 30_000,
-  });
-  const list = listQuery.data ?? [];
-  const total = readListTotal(list);
-  // See the matching guard + comment in ThreadsView (WI-4142): a keepPreviousData
-  // cross-id placeholder must not be trusted as the currently-open message —
-  // fall back to the (already-loaded) list row, then to the loading state.
-  const messageDetailRaw = detailQuery.data?.[0] ?? null;
-  const messageDetail = messageDetailRaw && messageDetailRaw.id === open ? messageDetailRaw : null;
-  const selectedMessage = messageDetail ?? list.find((message) => message.id === open) ?? null;
-  const loading = listQuery.loading;
-  const error = listQuery.error ? errText(listQuery.error) : null;
-
-  // U1 (operator-vite-ui-consolidation): the messages stream (up to 500 rows)
-  // renders through the shared, virtualized @papercusp/grid-core RichGrid instead
-  // of a raw `.map()`. The stream itself is the scroll container; `measureAll`
-  // keeps virtual offsets exact as a row grows when click-expanded. Open state is
-  // the nuqs `?msg=` scalar, fed in as the selection set so only the toggled rows
-  // re-render (and the cell's `isSelected` drives the `.is-open` styling).
-  const streamRef = useRef<HTMLDivElement | null>(null);
-  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: open ? 0 : list.length,
-    getScrollElement: () => streamRef.current,
-    estimateSize: () => 40,
-    overscan: 12,
-  });
-  useEffect(() => {
-    if (!open) rowVirtualizer.measure();
-  }, [list, open, rowVirtualizer]);
-  const openSet = useMemo(() => new Set(open ? [open] : []), [open]);
-  const columns = useMemo<ColumnDef<MsgRow>[]>(
-    () => [
-      {
-        key: 'message',
-        header: '',
-        headerText: '',
-        width: 1,
-        toCopyText: (m) => m.subject ?? m.body ?? '',
-        cellStyle: { display: 'block', padding: 0, overflow: 'visible' },
-        render: ({ row: m, isSelected: isOpen }) => {
-          const full = isOpen && messageDetail?.id === m.id ? messageDetail : m;
-          const hasDetail = !!full.body || !!full.from_feature_id || !!full.to_feature_id || !!full.harness_slug;
-          return (
-            <div className={`pc-advfeed__item${isOpen ? ' is-open' : ''}`}>
-              <div className="pc-advfeed__row">
-                <span className="pc-advfeed__time" title={m.created_at}>{fmtTs(m.created_at)}</span>
-                <span className="pc-advfeed__badge">{m.kind}</span>
-                <span className="pc-advfeed__route">
-                  <span className="pc-advfeed__from">{m.from_slug}</span>
-                  <span className="pc-advfeed__to">→ {m.to_slug ?? m.to_role ?? '∅'}</span>
-                </span>
-                <button
-                  type="button"
-                  className="pc-advfeed__summary"
-                  onClick={() => void setOpen((p) => (p === m.id ? null : m.id))}
-                  aria-expanded={isOpen}
-                  aria-label={hasDetail ? 'Expand row' : undefined}
-                >
-                  {m.subject || m.body || <em className="pc-advfeed__nosum">(no subject)</em>}
-                </button>
-                {m.status && <span className={`pc-advconv__statepill pc-advconv__statepill--${m.status}`}>{m.status}</span>}
-                <span className="pc-advfeed__rel">{fmtRel(m.created_at)}</span>
-              </div>
-              {isOpen && hasDetail && (
-                <div className="pc-advfeed__detail">
-                  {full.body && (
-                    <div className="pc-advfeed__bodycard">
-                      <strong>Body</strong>
-                      <p className="pc-advfeed__body">{full.body}</p>
-                    </div>
-                  )}
-                  {(full.from_feature_id || full.to_feature_id) && (
-                    <div className="pc-advfeed__kv">
-                      <strong>work-item</strong>
-                      <span>{full.from_feature_id ?? '—'} → {full.to_feature_id ?? '—'}</span>
-                    </div>
-                  )}
-                  {full.harness_slug && (
-                    <div className="pc-advfeed__kv">
-                      <strong>harness</strong>
-                      <span>{hiveHomeLabel(full.harness_slug)}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        },
-      },
-    ],
-    [messageDetail, setOpen],
-  );
-
-  if (open) {
-    return (
-      <ConvFrame
-        detailOnly={detailOnly}
-        detailOpen
-        onBack={() => void setOpen(null)}
-        detail={(
-          <section className="pc-coord__detail">
-            {detailQuery.loading && !selectedMessage ? (
-              <LoadingRows rows={5} label="Loading message" />
-            ) : detailQuery.error && !selectedMessage ? (
-              <LoadError message={errText(detailQuery.error)} onRetry={() => detailQuery.invalidate()} />
-            ) : !selectedMessage ? (
-              <EmptyState
-                style={{ minHeight: '100%' }}
-                icon={<Mail size={22} aria-hidden />}
-                title="Message unavailable"
-                desc="This message is no longer available in the synchronized conversation data."
-              />
-            ) : (
-              <article className="pc-coord__card">
-                <header className="pc-advconv__detailhead">
-                  <div>
-                    <p className="pc-advconv__detailkicker">
-                      <span className="pc-advconv__unified-kind pc-advconv__unified-kind--messages">Work-item mail</span>
-                      {selectedMessage.status ? <span className={`pc-advconv__statepill pc-advconv__statepill--${selectedMessage.status}`}>{selectedMessage.status}</span> : null}
-                    </p>
-                    <h2>{selectedMessage.subject || selectedMessage.body || selectedMessage.id}</h2>
-                  </div>
-                  <div className="pc-advconv__detailstats" aria-label="Message metadata">
-                    <span><strong>{selectedMessage.from_slug}</strong> → {selectedMessage.to_slug ?? selectedMessage.to_role ?? '∅'}</span>
-                    <span>{fmtTs(selectedMessage.created_at)}</span>
-                    {selectedMessage.harness_slug ? <span>{hiveHomeLabel(selectedMessage.harness_slug)}</span> : null}
-                  </div>
-                </header>
-                {selectedMessage.body ? <p className="pc-coord__body">{selectedMessage.body}</p> : null}
-                {(selectedMessage.from_feature_id || selectedMessage.to_feature_id) ? (
-                  <div className="pc-advconv__callout pc-advconv__callout--linked">
-                    <ArrowUpRight size={15} aria-hidden />
-                    <div>
-                      <strong>Related work</strong>
-                      <p>{selectedMessage.from_feature_id ?? '—'} → {selectedMessage.to_feature_id ?? '—'}</p>
-                    </div>
-                  </div>
-                ) : null}
-              </article>
-            )}
-          </section>
-        )}
-      />
-    );
-  }
-
-  return (
-    <ConvFrame
-      detailOnly={detailOnly}
-      detail={
-        <div className="pc-advfeed">
-      <div className="pc-advfeed__filters">
-        <div className="pc-advfeed__filterhead">
-          <div>
-            <span><Mail size={12} aria-hidden /> Agent messages</span>
-            <p>Work-item-scoped messages between agents (messages:send / inbox).</p>
-          </div>
-          <div className="pc-advfeed__filtermeta">
-            <strong>{loading ? 'loading…' : `${listCountLabel(list.length, total)} messages`}</strong>
-            <button type="button" className="pc-coord__chip pc-advfeed__refresh" aria-label="Reload messages" disabled={loading} onClick={() => listQuery.invalidate()}>
-              <RefreshCw size={11} aria-hidden />
-            </button>
-          </div>
-        </div>
-      </div>
-      <div className="pc-advfeed__stream" ref={streamRef}>
-        {loading && list.length === 0 ? (
-          <LoadingRows rows={6} label="Loading messages" />
-        ) : error && list.length === 0 ? (
-          <LoadError message={error} onRetry={() => listQuery.invalidate()} />
-        ) : list.length === 0 ? (
-          <EmptyState
-            icon={<Mail size={22} aria-hidden />}
-            title="No messages"
-            desc="No agent-to-agent messages recorded."
-          />
-        ) : (
-          <RichGrid<MsgRow>
-            inline
-            disableCopySupport
-            headerStyle={{ display: 'none' }}
-            columns={columns}
-            getRowId={(m) => m.id}
-            virtualMode={{
-              virtualizer: rowVirtualizer,
-              totalRows: list.length,
-              rowAt: (i) => list[i],
-              measureAll: true,
-            }}
-            selectedRowIds={openSet}
-            getRowBg={gridTransparentBg}
-            rowProps={streamRowProps}
-          />
-        )}
-      </div>
-        </div>
-      }
-    />
-  );
-}
 
 // ─── Styles ──────────────────────────────────────────────────────────
 
@@ -3029,7 +2798,6 @@ function AdvConvStyles() {
       .pc-advconv__unified-source--threads { --type-accent: var(--accent-strong); }
       .pc-advconv__unified-source--deliberations { --type-accent: #a78bfa; }
       .pc-advconv__unified-source--agentchats { --type-accent: #f472b6; }
-      .pc-advconv__unified-source--messages { --type-accent: #fb923c; }
       .pc-advconv__unified-content {
         min-width: 0;
         display: flex;
@@ -3069,7 +2837,6 @@ function AdvConvStyles() {
       .pc-advconv__unified-kind--threads { --type-accent: var(--accent-strong); }
       .pc-advconv__unified-kind--deliberations { --type-accent: #a78bfa; }
       .pc-advconv__unified-kind--agentchats { --type-accent: #f472b6; }
-      .pc-advconv__unified-kind--messages { --type-accent: #fb923c; }
       .pc-advconv__unified-content > strong {
         min-width: 0;
         overflow: hidden;

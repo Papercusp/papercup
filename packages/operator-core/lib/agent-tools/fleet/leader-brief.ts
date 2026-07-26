@@ -123,6 +123,12 @@ export interface LeaderBriefMember {
     item: string | null;
     itemTitle: string | null;
   };
+  /** EI-18730414627683753: this member has NO self-wake mechanism at all — no active
+   *  engine loop, not parked on any event, holding no claim. Nothing will bring it back;
+   *  the leader must coord:send { wake: 'required' } it NOW. Independent of
+   *  `benchSuggestion` (a laneless-idle member with a healthy armed loop is NOT dormant —
+   *  it will re-cycle on its own next tick). See computeDormantAlert. */
+  dormant?: true;
   isSelf?: true;
 }
 
@@ -357,6 +363,50 @@ export function computeBenchSuggestion(
     };
   }
   return undefined;
+}
+
+/**
+ * EI-18730414627683753: the DORMANT alert — a member that has gone permanently silent
+ * with NO self-wake mechanism whatsoever: no active engine loop (`loopMode` null), not
+ * parked on any event (`parkedOn` empty), and holding no claim. Distinct from — and
+ * independent of — computeBenchSuggestion's existing `laneless-idle` kind, which fires
+ * for the SAME "alive, no claim, nothing queued" shape but does not distinguish a
+ * loop-armed member that will re-cycle on its own next tick from one that has genuinely
+ * gone silent forever. Both read identically in every existing summary counter
+ * (`bench_suggested`/`laneless_idle`), which is exactly how the incident below went
+ * undetected: every counter read healthy.
+ *
+ * Live 2026-07-26 (fleet push-not-poll, plan stop-discarded-dedup-and-audit-server-polling
+ * -2026-07-26): 2 of 6 members completed their lane, reported completion correctly with
+ * evidence, then went permanently dormant — verdict `first-turn-done`, `loopMode: null`,
+ * `nextFireAt: null` — while `members/dead/stalled/orphaned` all read 0 problems. The
+ * leader only caught it by manually reading `loopMode`+`nextFireAt` per member row.
+ * (The always-armed coord:inbox-wake keepalive is NOT a counterexample: it only fires on
+ * a peer/human message, never on a schedule, so it does not put a dormant member back to
+ * work on its own.)
+ *
+ * Deliberately does NOT require the queue to be nonempty (unlike idle-with-claimable) or
+ * empty (unlike laneless-idle/floor-starved) — a member with zero self-wake mechanism is
+ * equally a problem regardless of what work exists, because NOTHING will bring it back to
+ * check. Suppressed for a paused (winding-down) fleet, matching every sibling alert in
+ * this file: an idle, loopless member IS the compliant response to an owner-ordered
+ * stand-down, not a fault to surface.
+ *
+ * PURE: exported for direct unit-testing.
+ */
+export function computeDormantAlert(
+  a: Pick<DecoratedAgent, 'load' | 'doing' | 'parkedOn'> & {
+    verdict?: MemberVerdict | null;
+    loopMode?: 'work' | 'monitor' | null;
+    queued?: readonly unknown[];
+  },
+  fleetPaused?: boolean | null,
+): boolean {
+  if (fleetPaused) return false;
+  if ((a.parkedOn?.length ?? 0) > 0) return false;
+  if (a.loopMode != null) return false;
+  if (a.load !== 0 || (a.queued?.length ?? 0) !== 0 || a.doing) return false;
+  return a.verdict === 'speaking' || a.verdict === 'first-turn-done';
 }
 
 /**
@@ -711,6 +761,7 @@ export function projectMember(
       const suggestion = computeBenchSuggestion(a, claimableCount, laneGating, fleetPaused);
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
+    ...(computeDormantAlert(a, fleetPaused) ? { dormant: true } : {}),
   };
 }
 

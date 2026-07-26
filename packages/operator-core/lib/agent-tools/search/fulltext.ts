@@ -7,7 +7,7 @@
  * just the `defineTool` projection.
  *
  * Different from `search:query`: that one searches structured rows
- * (tasks/goals/projects/audit/messages) by title/summary. This one
+ * (tasks/goals/projects/audit) by title/summary. This one
  * targets free-text bodies for paraphrase recall.
  */
 
@@ -40,7 +40,7 @@ export default defineTool({
   guidance: {
     when: 'User references prose past the chat history budget ("remember when we decided pricing", "the X discussion from last week"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets. Also: BEFORE filing a new bug/change work-item, pass scope:["work_item"] to dedup-check against existing EI-* issues by title/body keyword — cheaper and more scalable than work_items:list + grep past ~500 items.',
     notWhen:
-      'For STRUCTURED queries on harness state, features, tasks, or messages — use the dedicated tools (harness:status, tasks:list, etc). They are faster and more precise when the schema matches the query. For CODE recall, use `gitnexus:query`. For tasks/goals/projects text, use `search:query`. `scope:["work_item"]` only covers the ISSUE family (bug/change/task, engineer_issues) — feature-family (F-NNN) work-items are not in this corpus.',
+      'For STRUCTURED queries on harness state, features, or tasks — use the dedicated tools (harness:status, tasks:list, etc). They are faster and more precise when the schema matches the query. For CODE recall, use `gitnexus:query`. For tasks/goals/projects text, use `search:query`. `scope:["work_item"]` only covers the ISSUE family (bug/change/task, engineer_issues) — feature-family (F-NNN) work-items are not in this corpus.',
     chaining:
       'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a returned hit; pair `scope:["work_item"]` hits with `work_items:get { id }` for the full record. The result `excerpt` is just the first 200 chars for ranking display.',
     seeAlso: [

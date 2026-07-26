@@ -269,31 +269,38 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
       className={`pc-new-session-launcher${className ? ` ${className}` : ''}`}
       aria-label="Launch a new agent session"
     >
+      {/* Each box shows its DEFAULT as placeholder text (owner ask
+          2026-07-26), which is what `emptyValue` buys: while the value is the
+          sentinel, the field renders empty with the prompt showing rather than
+          echoing the sentinel row's label back as if it were typed. */}
       <Combobox
         triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--plan"
         value={planSlug ?? PLAN_SELECT_PLACEHOLDER}
+        emptyValue={PLAN_SELECT_PLACEHOLDER}
         onChange={(value) => setPlanSlug(value === PLAN_SELECT_PLACEHOLDER ? null : value)}
         disabled={planList.loading}
         ariaLabel="Plan for new session"
-        searchPlaceholder="Search plans…"
+        placeholder={planList.loading ? 'Loading plans…' : 'Select plan…'}
         emptyLabel="No plans match"
         options={planOptions}
       />
       <Combobox
         triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
         value={model || MODEL_SELECT_DEFAULT}
+        emptyValue={MODEL_SELECT_DEFAULT}
         onChange={(value) => setModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
         ariaLabel="Model for new session"
-        searchPlaceholder="Search models…"
+        placeholder="Default"
         emptyLabel="No models match"
         options={OMP_MODEL_OPTIONS}
       />
       <Combobox
         triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--effort"
         value={effort || EFFORT_SELECT_DEFAULT}
+        emptyValue={EFFORT_SELECT_DEFAULT}
         onChange={(value) => setEffort(value === EFFORT_SELECT_DEFAULT ? '' : value)}
         ariaLabel="Effort level for new session"
-        searchPlaceholder="Search effort levels…"
+        placeholder="Default effort"
         emptyLabel="No effort levels match"
         options={EFFORT_OPTIONS}
       />

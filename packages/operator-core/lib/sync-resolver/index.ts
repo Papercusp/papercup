@@ -5308,38 +5308,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return rows;
     },
   },
-  'conversations.messageList': {
-    argsSchema: z.object({ limit: clampedLimit(1000, 100) }),
-    resolve: async (args) => {
-      const { limit } = args as { limit: number };
-      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
-      const [rows, totalRows] = await Promise.all([
-        sql`
-          SELECT id, harness_slug, from_slug, to_slug, to_role, kind, subject,
-                 left(COALESCE(body, ''), 280) AS body, status, created_at,
-                 acknowledged_at, from_feature_id, to_feature_id
-            FROM harness_shared.messages_consolidated
-           ORDER BY created_at DESC NULLS LAST
-           LIMIT ${limit}`,
-        sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.messages_consolidated`,
-      ]);
-      return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
-    },
-  },
-  'conversations.messageDetail': {
-    argsSchema: z.object({ id: z.string().min(1) }),
-    resolve: async (args) => {
-      const { id } = args as { id: string };
-      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
-      const rows = await sql`
-        SELECT id, harness_slug, from_slug, to_slug, to_role, kind, subject, body,
-               status, created_at, acknowledged_at, from_feature_id, to_feature_id
-          FROM harness_shared.messages_consolidated
-         WHERE id = ${id}
-         LIMIT 1`;
-      return [...rows];
-    },
-  },
+  // conversations.messageList / conversations.messageDetail (work-item mail
+  // read queries over harness_shared.messages_consolidated) retired here —
+  // see retire-work-item-mail-surface-2026-07-26 P-004 / _retired/work-item-mail/RESTORE.md.
 
   // sidebar.hives — every p2p-swarm peer (`shared_presence` — remote installs
   // whose announces the peer-log projected), INCLUDING stale ones (a hive that

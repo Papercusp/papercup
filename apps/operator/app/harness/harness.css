@@ -1001,37 +1001,66 @@
  * hud-session-launcher-and-board-tabs-2026-07-26 P-003/P-006/P-007.
  */
 
-.h-combobox__trigger {
-  display: inline-flex;
+/* The control IS a text box (owner ask 2026-07-26: "make the search dropdowns
+   show as a text box to type in with the default as just the default text").
+   .h-combobox is the cmdk root wrapper; .h-combobox__box is the bordered
+   field; the chevron sits inside it purely as an affordance hint. */
+.h-combobox {
+  display: inline-block;
+  min-width: 0;
+}
+
+.h-combobox__box {
+  display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 3px 6px 3px 8px;
   background: var(--bg-2);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
+  min-width: 0;
+}
+
+.h-combobox__box:hover { border-color: var(--border-strong); }
+/* Lit while focused OR while the list is open, so the field reads as the
+   active control rather than the panel floating unattached. */
+.h-combobox__box:focus-within,
+.h-combobox__box[data-open='true'] {
+  border-color: var(--accent);
+}
+
+.h-combobox__box:has(> .h-combobox__input:disabled) {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+/* A bare <input> inherits none of the operator chrome — it must be reset to
+   transparent explicitly or it renders as a browser-default field. */
+.h-combobox__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  padding: 1px 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
   font-size: 12px;
   font-family: inherit;
-  cursor: pointer;
-  outline: none;
-  min-width: 0;
-}
-
-.h-combobox__trigger:hover:not(:disabled) { border-color: var(--border-strong); }
-.h-combobox__trigger:focus-visible { border-color: var(--accent); }
-.h-combobox__trigger:disabled { opacity: 0.48; cursor: not-allowed; }
-
-/* The label is the part that must ellipsize — the chevron never shrinks. */
-.h-combobox__trigger-label {
-  overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
 }
 
-.h-combobox__trigger-label--placeholder {
+.h-combobox__input::placeholder {
   color: color-mix(in oklab, var(--fg), transparent 42%);
+}
+
+.h-combobox__input:disabled { cursor: not-allowed; }
+
+.h-combobox__chevron {
+  flex: none;
+  opacity: 0.65;
+  pointer-events: none;
 }
 
 .h-combobox__panel {
@@ -1048,23 +1077,6 @@
   min-width: max(var(--radix-popover-trigger-width, 220px), 240px);
   max-width: min(460px, var(--radix-popover-content-available-width, 460px));
 }
-
-.h-combobox__input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 5px 7px;
-  margin-bottom: 4px;
-  background: var(--bg-1, var(--bg-2));
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 12px;
-  font-family: inherit;
-  outline: none;
-}
-
-.h-combobox__input:focus { border-color: var(--accent); }
-.h-combobox__input::placeholder { color: color-mix(in oklab, var(--fg), transparent 55%); }
 
 /* P-006 — THE overflow fix. The old Radix Select rendered an unbounded
    Viewport with no scroll buttons, so a long plan list simply ran off the

@@ -32,7 +32,6 @@ interface KindScript {
 /** table-name fragment → kind, so the mock can route a query to its script. */
 const TABLE_KIND: Array<[string, string]> = [
   ['harness_features_consolidated', 'tasks'],
-  ['messages_consolidated', 'messages'],
   ['goals', 'goals'],
   ['projects', 'projects'],
   ['audit_log', 'audit'],
@@ -175,52 +174,7 @@ describe('search:query — per-kind isolation when BOTH legs fail (audit P-048)'
     expect(kinds).not.toContain('tasks');
   });
 
-  it('a messages double-failure degrades alone; other kinds still answer', async () => {
-    const tx = makeTx({
-      messages: { fts: 'throw', ilike: 'throw' },
-      goals: { fts: [{ id: 'g1', title: 'still here', rank: 0.7 }] },
-    });
-    const res = await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never);
-    expect(res.degraded).toBe(true);
-    expect(res.degradedReasons).toContain('messages_unavailable');
-    expect((res.data as Array<{ kind: string }>).some((h) => h.kind === 'goals')).toBe(true);
-  });
 });
 
-describe('search:query — messages kind (EI-282, implemented over messages_consolidated)', () => {
-  it('explicit messages search returns ranked hits with harness-scoped ids', async () => {
-    const tx = makeTx({
-      messages: {
-        fts: [{ harness_slug: 'papercup', id: 'uuid-1', subject: 'deploy blocked', body: 'details', rank: 0.8 }],
-      },
-    });
-    const res = await tool.handler({ query: 'deploy', kinds: ['messages'], limit: 25 } as never, CTX(tx) as never);
-    expect(res.degraded).toBeUndefined();
-    const hit = (res.data as Array<{ kind: string; id: string; snippet: string; score: number }>)[0];
-    expect(hit).toMatchObject({ kind: 'messages', id: 'papercup/uuid-1', snippet: 'deploy blocked', score: 0.8 });
-  });
-
-  it('messages FTS failure falls back to ILIKE with the degraded reason', async () => {
-    const tx = makeTx({
-      messages: {
-        fts: 'throw',
-        ilike: [{ harness_slug: 'papercup', id: 'uuid-2', subject: null, body: 'body text here' }],
-      },
-    });
-    const res = await tool.handler({ query: 'body', kinds: ['messages'], limit: 25 } as never, CTX(tx) as never);
-    expect(res.degradedReasons).toContain('messages_using_ilike_fallback');
-    const hit = (res.data as Array<{ id: string; snippet: string; score: number }>)[0];
-    expect(hit).toMatchObject({ id: 'papercup/uuid-2', snippet: 'body text here', score: 1 });
-  });
-
-  it('default all-kinds search now includes messages', async () => {
-    const visited: string[] = [];
-    const tx = (strings: TemplateStringsArray) => {
-      const k = kindForSql(strings.join(' '));
-      if (k) visited.push(k);
-      return Promise.resolve([]);
-    };
-    await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never);
-    expect(visited).toContain('messages');
-  });
-});
+// 'messages' kind (EI-282, over messages_consolidated) retired here — see
+// retire-work-item-mail-surface-2026-07-26 P-004 / _retired/work-item-mail/RESTORE.md.

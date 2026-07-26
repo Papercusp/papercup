@@ -190,17 +190,18 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('includes every Conversations list/detail query', () => {
-      expect(knownQueryNamesV2()).toEqual(expect.arrayContaining([
+    it('includes every Conversations list/detail query (messages retired — retire-work-item-mail-surface-2026-07-26 P-004)', () => {
+      const names = knownQueryNamesV2();
+      expect(names).toEqual(expect.arrayContaining([
         'conversations.questionsList',
         'conversations.questionDetail',
         'conversations.deliberationList',
         'conversations.deliberationDetail',
         'conversations.agentChatList',
         'conversations.agentChatDetail',
-        'conversations.messageList',
-        'conversations.messageDetail',
       ]));
+      expect(names).not.toContain('conversations.messageList');
+      expect(names).not.toContain('conversations.messageDetail');
     });
 
     it('includes the plans.* Create-tab live queries', () => {
