@@ -38,7 +38,7 @@ vi.mock('@papercusp/sync', () => ({
   }),
 }));
 
-import AutomationPane, { scheduleLaneValue } from './AutomationPane';
+import AutomationPane, { armBudgetLabel, armingLaneValue, scheduleLaneValue } from './AutomationPane';
 
 type Routine = {
   name: string;
@@ -283,5 +283,95 @@ describe('AutomationPane — non-routine schedules', () => {
     expect(btn.textContent).toMatch(/Pause all/);
     expect(screen.getByTestId('automation-nocontrol-doc-freshness-sweep')).toBeTruthy();
     expect(screen.getByTestId('automation-toggle-gym-cycle')).toBeTruthy();
+  });
+});
+
+/**
+ * Arming section (P-011 — owner ask 2026-07-25: "where is the ability to
+ * disable/enable this in the gui? it should be in the blender tab").
+ *
+ * On the $-figures note: the no-spend regression above bans per-ROLE spend
+ * attribution (a guess rendered as fact). The arming rows show each pot/lane's
+ * OWN governor ledger — the metered spend and the budget the owner arms
+ * against — which is exactly the number an arming switch must show. The two
+ * must not be conflated; the default fixture has no `arming`, so the no-spend
+ * test keeps guarding the role-attribution ban.
+ */
+const arming = {
+  gymPots: [
+    { harnessSlug: 'papercusp', enabled: true, budgetUsd: 50, spentUsd: 12.892153, status: 'running' },
+  ],
+  lanes: [
+    { loopId: 'red-queen', displayName: 'Red Queen', potSlug: 'papercusp', enabled: false, budgetUsd: null, spentUsd: 0, enforcement: 'governor' },
+  ],
+};
+
+describe('armingLaneValue / armBudgetLabel', () => {
+  it('counts open spend gates across both groups', () => {
+    expect(armingLaneValue(arming.gymPots as never, arming.lanes as never)).toBe('1 armed');
+    expect(armingLaneValue([], [])).toBe('None registered');
+    expect(
+      armingLaneValue([{ ...arming.gymPots[0], enabled: false }] as never, arming.lanes as never),
+    ).toBe('All disarmed');
+  });
+  it('renders one honest money label per row', () => {
+    expect(armBudgetLabel(12.892153, 50)).toBe('$12.89 of $50');
+    expect(armBudgetLabel(0, null)).toBe('$0 · no budget');
+  });
+});
+
+describe('AutomationPane — Arming section (P-011)', () => {
+  it('renders gym pots and governor lanes with toggles for the learning pane', () => {
+    renderPane({ arming } as never);
+    expect(screen.getByTestId('automation-arming')).toBeTruthy();
+    expect(screen.getByTestId('automation-arming-status').textContent).toBe('1 armed');
+    expect(screen.getByTestId('arming-row-gym-papercusp')).toBeTruthy();
+    expect(screen.getByTestId('arming-row-lane-red-queen')).toBeTruthy();
+  });
+
+  it('does NOT render for a pane that does not own the learning category', () => {
+    H.catalogResult = { data: [{ ...catalog, arming }], loading: false, error: null };
+    render(
+      <AutomationPane
+        active
+        categories={['docs'] as never}
+        title="Docs"
+        subtitle="Keeps documentation fresh"
+        icon={Blend}
+        blurb="Docs agents."
+      />,
+    );
+    expect(screen.queryByTestId('automation-arming')).toBeNull();
+  });
+
+  it('disarming a gym pot fires gym:arm and refreshes the pane read', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPane({ arming } as never);
+
+    fireEvent.click(screen.getByTestId('arming-toggle-gym-papercusp'));
+    await waitFor(() => expect(H.invalidated).toContain('automation.catalog'));
+    const sent = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(sent).toEqual([{ name: 'gym:arm', args: { harness: 'papercusp', enabled: false }, confirmed: true }]);
+  });
+
+  it('budget click-to-edit saves via governor:arm on Enter (empty clears)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPane({ arming } as never);
+
+    fireEvent.click(screen.getByTestId('arming-budget-lane-red-queen'));
+    const input = screen.getByTestId('arming-budget-input-lane-red-queen');
+    fireEvent.change(input, { target: { value: '25' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(H.invalidated).toContain('automation.catalog'));
+    const sent = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(sent).toEqual([{ name: 'governor:arm', args: { loopId: 'red-queen', budgetUsd: 25 }, confirmed: true }]);
   });
 });

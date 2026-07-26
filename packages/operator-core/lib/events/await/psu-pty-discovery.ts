@@ -512,6 +512,14 @@ export function injectIntoHost(
 
   return new Promise((resolve) => {
     let settled = false;
+    // EI-18676244363359331 / WI-5872: true delivery confirmation, when the host
+    // sends one (see psu-pty-host.mjs's conn.on('end', ...) — it now writes a
+    // single JSON-line ACK/NACK `{ v:1, ok, reason, ... }` back on this same
+    // connection before closing its own end, instead of the bare TCP close this
+    // client used to treat as its only signal). An ack, once parsed, is
+    // authoritative and settles this promise on its own `ok` value.
+    let ackReceived = false;
+    let ackBuf = '';
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
@@ -523,8 +531,41 @@ export function injectIntoHost(
       c.write(payload);
       c.end();
     });
+    c.on('data', (d) => {
+      // A NOT-YET-RESTARTED host (running pre-WI-5872 code) never writes
+      // anything here — ackBuf simply never gets a newline and the 'close'
+      // fallback below reproduces exactly the OLD behavior for that case, so
+      // this is safe to roll out without a coordinated host restart.
+      ackBuf += d.toString('utf8');
+      const nl = ackBuf.indexOf('\n');
+      if (nl === -1) return;
+      const line = ackBuf.slice(0, nl);
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          (parsed as { v?: unknown }).v === 1 &&
+          typeof (parsed as { ok?: unknown }).ok === 'boolean'
+        ) {
+          ackReceived = true;
+          finish((parsed as { ok: boolean }).ok);
+        }
+      } catch {
+        /* malformed ack line — ignore, the close/timeout fallback still applies */
+      }
+    });
     c.on('error', () => finish(false));
-    c.on('close', () => finish(true));
+    c.on('close', () => {
+      // No ack ever arrived — either an old host (pre-WI-5872, never sends
+      // one: preserve today's optimistic behavior so this client-side change
+      // is safe against a host that hasn't restarted yet), or a host that
+      // crashed/was killed mid-delivery after accepting the connection but
+      // before writing back. Either way this is the EXACT pre-fix fallback:
+      // bare close alone still resolves true. Once a real ack DID arrive,
+      // `finish` already ran above and this is a no-op (the `settled` guard).
+      if (!ackReceived) finish(true);
+    });
     const t = setTimeout(() => {
       try {
         c.destroy();

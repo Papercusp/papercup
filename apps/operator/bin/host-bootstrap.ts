@@ -268,19 +268,22 @@ export function runBootstrap(): void {
     }
   })();
 
-  // [EI-2224 startup validation / EI-10660] Active routines must target a REGISTERED harness.
-  // A routine whose install_slug no longer resolves still sits there `active = true` while its
-  // fire-path 404s — it goes dark without an error. The drift that causes it is boot-shaped
-  // (registry cleared/rebuilt, a host restart introducing a slug mismatch), which is why the
-  // check belongs here. It was written for exactly this and then never called from anywhere:
-  // a guard that nothing invokes is not a guard (EI-10660). Read-only + fail-soft, like both
-  // of its siblings; the not-ok path logs FATAL naming every routine that will 404.
+  // [EI-2224 startup validation / EI-10660 / EI-18678269428596559] Active routines must target
+  // a REGISTERED harness. A routine whose install_slug no longer resolves still sits there
+  // `active = true` while its fire-path 404s — it goes dark without an error, or worse, keeps
+  // firing (git-sync / green-checkpoint singletons) against orphaned state. The drift that
+  // causes it is boot-shaped (registry cleared/rebuilt, a host restart introducing a slug
+  // mismatch), which is why the check belongs here. It was written for exactly this and then
+  // never called from anywhere: a guard that nothing invokes is not a guard (EI-10660).
+  // `enforceActiveRoutines` (not the bare validator) so a violation is auto-PAUSED here, not
+  // just logged FATAL forever — see its doc comment for the concurrency + no-FK-cascade
+  // rationale. Fail-soft like its siblings.
   void (async () => {
     try {
-      const { validateActiveRoutines } = await import(
+      const { enforceActiveRoutines } = await import(
         '@papercusp/operator-core/lib/startup/validate-active-routines'
       );
-      const r = await validateActiveRoutines();
+      const r = await enforceActiveRoutines();
       if (r.ok) console.log(`[routine-validation] startup validation passed — ${r.activeRoutineCount} active routine(s) resolve: [${r.activeRoutineNames.join(', ')}]`);
     } catch (e) {
       console.warn('[routine-validation] startup validation skipped (non-fatal):', (e as Error)?.message ?? e);

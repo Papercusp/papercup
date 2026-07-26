@@ -37,7 +37,8 @@
  * `OtherDetail`'s own action path unmodified, so it is byte-identical to
  * answering from the inbox (P-006's resolve/reply routing + provenance stamp).
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
 import { OperatorChat } from '../OperatorChat';
 import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
@@ -48,10 +49,23 @@ import { isEscalationWithOptions } from '@/app/admin/plans/attention-card';
 import { ChatActionBar } from './ChatActionBar';
 import { LocalCardHost } from './LocalCardHost';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
+import type { ChatMessage } from './ChatConversation';
+import { shortHandle, type HudRosterEntry } from '../../adv/hud/hud-board-model';
 // OtherDetail's styles (pc-items__*, pc-tier/pc-kind badges) — global CSS, so
 // importing it here (as InboxPane already does) makes this modal
 // self-sufficient wherever it's mounted.
 import '@/app/admin/plans/plans.css';
+// hud__handle / hud__chip / hud__chip--accent — reused by the identity chip
+// (P-012) below, rather than re-declaring the same look under a new class.
+import '../../adv/hud/hud.css';
+
+/** The roster payload shape (advRoster.list). Inlined, never imported from the
+ *  server module — same rationale as HudView.tsx's identical inline type
+ *  (importing it would drag PG/node builtins into the SPA bundle). */
+interface RosterPayload {
+  active: HudRosterEntry[];
+  pending?: HudRosterEntry[];
+}
 
 interface SessionListRow {
   source_kind: string;
@@ -116,12 +130,16 @@ export async function sendToSessionOwner(ownerId: string, body: string): Promise
  *  (it only skips that when `streamUrl` is already truthy at call time). */
 function LiveSessionChat({
   streamUrl,
+  sessionOwnerId,
   agentName,
   onSend,
   sending,
   sendError,
 }: {
   streamUrl: string;
+  /** The su agent this session belongs to — resolves its roster entry for the
+   *  identity chip (P-012). */
+  sessionOwnerId: string;
   agentName: string;
   onSend: (text: string) => void;
   sending: boolean;
@@ -129,6 +147,45 @@ function LiveSessionChat({
 }) {
   const { events, status, thinking } = useAgentThinkingStream('', '', '', streamUrl);
   const messages = useMemo(() => sessionTimelineToChatMessages(events), [events]);
+
+  // P-012: the SAME advRoster.list sync query the HUD/Sessions roster read
+  // (shared cache, no new endpoint) — narrowed to this session's owner so the
+  // chip can reuse fleetColor/fleetRole exactly as the HUD derives them.
+  const roster = useSyncQuery<RosterPayload>({
+    queryName: 'advRoster.list',
+    args: { workspaceId: null, endedLimit: 50 },
+  });
+  const rosterEntry = useMemo<HudRosterEntry | null>(() => {
+    const payload = roster.data?.[0];
+    if (!payload) return null;
+    const entries = [...(payload.active ?? []), ...(payload.pending ?? [])];
+    return entries.find((e) => e.ownerId === sessionOwnerId) ?? null;
+  }, [roster.data, sessionOwnerId]);
+
+  // D-004: the chip is READ-ONLY (no click handler) — a plain span, only for
+  // the assistant's own turns (user turns keep the default 'You' avatar).
+  const renderAvatar = useCallback(
+    (m: ChatMessage): ReactNode | null => {
+      if (m.role !== 'assistant' || !rosterEntry) return null;
+      return (
+        <span
+          className="oracle-msg-avatar oracle-msg-avatar--identity"
+          aria-hidden="true"
+          style={
+            rosterEntry.fleetColor
+              ? ({ '--hud-fleet': rosterEntry.fleetColor } as React.CSSProperties)
+              : undefined
+          }
+        >
+          <span className="hud__handle">{shortHandle(rosterEntry.ownerId)}</span>
+          {rosterEntry.fleetRole === 'leader' ? (
+            <span className="hud__chip hud__chip--accent">LEAD</span>
+          ) : null}
+        </span>
+      );
+    },
+    [rosterEntry],
+  );
 
   let banner: ReactNode = null;
   if (status === 'connecting' && events.length === 0) {
@@ -149,6 +206,7 @@ function LiveSessionChat({
       banner={banner}
       error={sendError}
       agentName={agentName}
+      renderAvatar={renderAvatar}
     />
   );
 }
@@ -291,9 +349,10 @@ export default function SessionChatModal({
           </div>
         ) : !resolved ? (
           <div style={BANNER_STYLE}>No recent Claude session found for this agent.</div>
-        ) : streamUrl ? (
+        ) : streamUrl && sessionOwnerId ? (
           <LiveSessionChat
             streamUrl={streamUrl}
+            sessionOwnerId={sessionOwnerId}
             agentName={agentName}
             onSend={handleSend}
             sending={sending}

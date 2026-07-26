@@ -52,11 +52,15 @@ const h = vi.hoisted(() => ({
   // fail-open default as the real fail-soft path, so existing tests that don't care
   // about this never suppress anything.
   lastInboxReadAtBatch: vi.fn(async (_ownerIds: string[]): Promise<Map<string, string>> => new Map()),
+  // EI-18676763837940562: the reply-linkage leg's batched lookup — no replies on
+  // record by default, matching the fail-open default (never suppresses anything
+  // existing tests don't explicitly set up).
+  repliedMsgIdsBatch: vi.fn(async (_subscriberId: string, _msgIds: readonly string[]): Promise<Set<string>> => new Set()),
 }));
 
 vi.mock('./store', () => h.store);
 vi.mock('./wake-executor', () => ({ executeWake: h.executeWake, degradeToInboxOrDrop: h.degradeToInboxOrDrop }));
-vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage }));
+vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage, repliedMsgIdsBatch: h.repliedMsgIdsBatch }));
 vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({ listEventKeySubscribers: h.listEventKeySubscribers }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
@@ -698,6 +702,75 @@ describe('isInboxWakeGroupRedundant (EI-18673058981655804: redundant-inbox-wake 
   it('false: an empty group', () => {
     expect(isInboxWakeGroupRedundant([], new Date(2000).toISOString())).toBe(false);
   });
+
+  describe('EI-18676763837940562: reply-linkage leg (the read-cursor blind spot)', () => {
+    it('true: no read-cursor coverage at all, but the delivery\'s msg_id was already replied to', () => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [{ eventKey: inboxKey, createdAt: new Date(5000).toISOString(), urgent: false, payload: { msg_id: 'm-1' } }],
+          null, // no read on record — the read-cursor leg alone would say "not redundant"
+          new Set(['m-1']),
+        ),
+      ).toBe(true);
+    });
+    it('true: the message POSTDATES the last read (genuinely-new-mail per the read-cursor leg) but was already replied to', () => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [{ eventKey: inboxKey, createdAt: new Date(5000).toISOString(), urgent: false, payload: { msg_id: 'm-1' } }],
+          new Date(1000).toISOString(),
+          new Set(['m-1']),
+        ),
+      ).toBe(true);
+    });
+    it('false: repliedMsgIds has a DIFFERENT msg_id — never suppressed on an unrelated reply', () => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [{ eventKey: inboxKey, createdAt: new Date(5000).toISOString(), urgent: false, payload: { msg_id: 'm-1' } }],
+          null,
+          new Set(['m-other']),
+        ),
+      ).toBe(false);
+    });
+    it('false: no payload.msg_id at all (a coalesced/foreign delivery) — the leg is a no-op, not a crash', () => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [{ eventKey: inboxKey, createdAt: new Date(5000).toISOString(), urgent: false }],
+          null,
+          new Set(['m-1']),
+        ),
+      ).toBe(false);
+    });
+    it('false: an urgent delivery is never suppressed even with a matching reply', () => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [{ eventKey: inboxKey, createdAt: new Date(5000).toISOString(), urgent: true, payload: { msg_id: 'm-1' } }],
+          null,
+          new Set(['m-1']),
+        ),
+      ).toBe(false);
+    });
+    it('false: empty repliedMsgIds set behaves exactly like omitting it', () => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [{ eventKey: inboxKey, createdAt: new Date(5000).toISOString(), urgent: false, payload: { msg_id: 'm-1' } }],
+          null,
+          new Set(),
+        ),
+      ).toBe(false);
+    });
+    it('true: a MIXED group where each delivery is covered by a DIFFERENT leg (one by read-cursor, one by reply)', () => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [
+            { eventKey: inboxKey, createdAt: new Date(1000).toISOString(), urgent: false }, // covered by read-cursor
+            { eventKey: inboxKey, createdAt: new Date(9000).toISOString(), urgent: false, payload: { msg_id: 'm-1' } }, // covered by reply only
+          ],
+          new Date(2000).toISOString(),
+          new Set(['m-1']),
+        ),
+      ).toBe(true);
+    });
+  });
 });
 
 describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake suppression', () => {
@@ -785,7 +858,12 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
   });
 
   it('a MIXED coalesced group (one covered inbox-wake + one genuine event) still fires — never suppressed', async () => {
-    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
+    // Pre-existing test-hygiene bug (found while adding the reply-linkage leg tests below):
+    // `allInboxWakeNoUrgent` is false for a mixed group, so the pre-check short-circuits
+    // BEFORE ever calling lastInboxReadAtBatch — a queued mockResolvedValueOnce for it here
+    // is dead code that is NEVER consumed by this test, silently drifting the mock's once-queue
+    // forward (since beforeEach only clearAllMocks, which does not drop queued once-values) and
+    // corrupting whichever LATER test's turn it lands on instead. Deliberately not set here.
     h.store.claimDueDeliveries.mockResolvedValueOnce([
       workRow({
         id: 35,
@@ -801,6 +879,7 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
       }),
     ]);
     const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.lastInboxReadAtBatch).not.toHaveBeenCalled();
     expect(h.executeWake).toHaveBeenCalledTimes(1);
     expect(stats.suppressed).toBe(0);
     expect(stats.delivered).toBe(1);
@@ -831,6 +910,77 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(stats.suppressed).toBe(1);
     expect(stats.delivered).toBe(1);
     expect(stats.coalesced).toBe(1);
+  });
+
+  describe('EI-18676763837940562: reply-linkage leg wired end-to-end through the pump', () => {
+    it('suppresses a delivery whose msg_id was already replied to, even with NO read on record', async () => {
+      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map()); // no read-cursor coverage at all
+      h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set(['m-orig']));
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 40,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(5000).toISOString(),
+          payload: { msg_id: 'm-orig' },
+        }),
+      ]);
+      const stats = await pumpWakeDeliveries('ws-test');
+      expect(h.repliedMsgIdsBatch).toHaveBeenCalledWith('su-a', ['m-orig']);
+      expect(h.executeWake).not.toHaveBeenCalled();
+      expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(40, 'suppressed-redundant', 1);
+      expect(stats.suppressed).toBe(1);
+    });
+
+    it('does NOT query repliedMsgIdsBatch at all when no delivery in the group carries a payload.msg_id', async () => {
+      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 41,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(5000).toISOString(),
+        }),
+      ]);
+      const stats = await pumpWakeDeliveries('ws-test');
+      expect(h.repliedMsgIdsBatch).not.toHaveBeenCalled();
+      expect(h.executeWake).toHaveBeenCalledTimes(1);
+      expect(stats.suppressed).toBe(0);
+    });
+
+    it('a msg_id present but NOT yet replied to still fires normally (no false suppression)', async () => {
+      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
+      h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set()); // nothing replied
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 42,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(5000).toISOString(),
+          payload: { msg_id: 'm-orig' },
+        }),
+      ]);
+      const stats = await pumpWakeDeliveries('ws-test');
+      expect(h.executeWake).toHaveBeenCalledTimes(1);
+      expect(stats.suppressed).toBe(0);
+    });
+
+    it('a repliedMsgIdsBatch failure fails OPEN — the delivery still fires, never crashes the pump', async () => {
+      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map());
+      h.repliedMsgIdsBatch.mockRejectedValueOnce(new Error('pg down'));
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 43,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(5000).toISOString(),
+          payload: { msg_id: 'm-orig' },
+        }),
+      ]);
+      const stats = await pumpWakeDeliveries('ws-test');
+      expect(h.executeWake).toHaveBeenCalledTimes(1);
+      expect(stats.suppressed).toBe(0);
+    });
   });
 });
 

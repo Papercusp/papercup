@@ -165,6 +165,18 @@ export interface ChatConversationProps {
    */
   renderReport?: (msg: ChatMessage) => ReactNode | null | undefined;
 
+  /**
+   * Optional per-message AVATAR override (gui-chat-session-controls-2026-07-25
+   * P-012). When it returns a truthy node for a message, that node replaces the
+   * default `.oracle-msg-avatar` span (icon mark) entirely — used by
+   * SessionChatModal to swap the papercup agent-kind icon for a roster-driven
+   * identity chip (handle + fleet colour + leader/member marker) on assistant
+   * turns. Returns null/undefined ⇒ falls through to the default icon avatar
+   * (AGENT_MARKS / iconForRole / emptyState.icon), same as when the prop is
+   * omitted entirely.
+   */
+  renderAvatar?: (msg: ChatMessage) => ReactNode | null | undefined;
+
   /** Input form (controlled). */
   inputValue: string;
   onInputChange: (v: string) => void;
@@ -225,6 +237,7 @@ export function ChatConversation(props: ChatConversationProps) {
     renderToolChip,
     renderToolCard,
     renderReport,
+    renderAvatar,
     inputValue,
     onInputChange,
     onSubmit,
@@ -504,6 +517,7 @@ export function ChatConversation(props: ChatConversationProps) {
               const label =
                 labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : emptyState.title);
               const showRoleLabel = label.trim().length > 0;
+              const avatarOverride = renderAvatar?.(m);
               return (
                 <div
                   key={vi.key}
@@ -519,9 +533,13 @@ export function ChatConversation(props: ChatConversationProps) {
                     transform: `translateY(${vi.start}px)`,
                   }}
                 >
-                  <span className="oracle-msg-avatar" aria-hidden="true">
-                    <Icon className="oracle-msg-icon" />
-                  </span>
+                  {avatarOverride ? (
+                    avatarOverride
+                  ) : (
+                    <span className="oracle-msg-avatar" aria-hidden="true">
+                      <Icon className="oracle-msg-icon" />
+                    </span>
+                  )}
                   <div className="oracle-msg-stack">
                     {showRoleLabel && <div className="oracle-msg-role">{label}</div>}
                     {/*

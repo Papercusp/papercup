@@ -66,10 +66,16 @@ function toCompletedPlanItems(value: unknown): CompletedPlanItem[] {
       const harnessSlug = typeof (v as { harnessSlug?: unknown }).harnessSlug === "string"
         ? (v as { harnessSlug: string }).harnessSlug
         : null;
+      // EI-18677799334390930: carry the best-effort resolved triggering actor
+      // through to the reconciler so it can attribute the terminal close it stamps.
+      const triggeredBy = typeof (v as { triggeredBy?: unknown }).triggeredBy === "string"
+        ? (v as { triggeredBy: string }).triggeredBy
+        : null;
       out.push({
         planSlug: (v as { planSlug: string }).planSlug,
         itemId: (v as { itemId: string }).itemId,
         harnessSlug,
+        ...(triggeredBy ? { triggeredBy } : {}),
       });
     }
   }

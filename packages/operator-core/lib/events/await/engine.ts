@@ -63,6 +63,7 @@ import { composedWakeSummary } from './compose-spec';
 import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
+import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
 import type { AwaitRow, DeliveryWork } from './types';
 import {
   recordTimeoutFires,
@@ -573,6 +574,18 @@ export interface PumpStats {
  *  wake-executor.ts's own copy of this constant. */
 const COORD_INBOX_WAKE_PREFIX = 'coord:inbox-wake:';
 
+/** Best-effort extraction of a wake delivery payload's `msg_id` (send.ts stamps
+ *  `{ msg_id: env.msg_id }` on every directed coord:send wake — EI-18663224517726594).
+ *  Never throws on a malformed/foreign payload shape (a coalesced or non-coord-send
+ *  delivery may carry no such field at all). */
+function deliveryMsgId(payload: unknown): string | null {
+  if (payload && typeof payload === 'object' && 'msg_id' in payload) {
+    const v = (payload as { msg_id?: unknown }).msg_id;
+    return typeof v === 'string' && v ? v : null;
+  }
+  return null;
+}
+
 /**
  * EI-18673058981655804 (redundant-inbox-wake-suppression): is this GROUP of due
  * deliveries entirely redundant against the subscriber's OWN inbox reads?
@@ -585,26 +598,43 @@ const COORD_INBOX_WAKE_PREFIX = 'coord:inbox-wake:';
  * needs (`lastInboxReadAtBatch`, built for coord-deafness detection) — this
  * consults it instead of unconditionally spending a turn.
  *
- * True ONLY when EVERY delivery in the group is a non-urgent inbox-wake
- * delivery (`coord:inbox-wake:<owner>`) whose `createdAt` is at or before the
- * subscriber's last observed read. Fail-OPEN on every uncertain case — a
- * mixed group (a genuine non-inbox-wake await coalesced alongside it), an
- * urgent delivery, or no read on record at all is NEVER suppressed, so the
- * worst case of getting this wrong is identical to today's status quo (an
- * extra turn), never a dropped wake.
+ * EI-18676763837940562 (reply-linkage leg): the read-cursor check above cannot see
+ * one real case — a subscriber who read AND REPLIED to the message within the SAME
+ * turn a queued wake delivery for it later lands (the cleanest reported instance:
+ * read + reply at T, wake for a delivery created at T-2min still fires at T+few-sec,
+ * because whatever updates the read-cursor watermark hadn't yet been observed by
+ * this batch, or lags the reply itself). A REPLY — a message this exact subscriber
+ * sent whose `related_msg_id` equals the delivery's own `payload.msg_id` — is
+ * unambiguous, independent proof of discharge: the recipient cannot have replied to
+ * a message they never saw. `repliedMsgIds` is optional (omitted ⇒ this leg is a
+ * no-op, byte-identical to before) and pre-resolved by the caller (batched over the
+ * group's subscriber, mirroring `lastReadAtIso`) so this stays a pure, DB-free check.
+ *
+ * A delivery is redundant when it is non-urgent, an inbox-wake delivery, AND
+ * (its `createdAt` is at or before the read-cursor OR its `msg_id` was replied to).
+ * Fail-OPEN on every uncertain case — a mixed group (a genuine non-inbox-wake await
+ * coalesced alongside it), an urgent delivery, or neither signal present is NEVER
+ * suppressed, so the worst case of getting this wrong is identical to today's
+ * status quo (an extra turn), never a dropped wake.
  */
 export function isInboxWakeGroupRedundant(
-  group: readonly Pick<DeliveryWork, 'eventKey' | 'createdAt' | 'urgent'>[],
+  group: readonly (Pick<DeliveryWork, 'eventKey' | 'createdAt' | 'urgent'> & { payload?: unknown })[],
   lastReadAtIso: string | null | undefined,
+  repliedMsgIds?: ReadonlySet<string>,
 ): boolean {
-  if (!lastReadAtIso || group.length === 0) return false;
-  const readMs = Date.parse(lastReadAtIso);
-  if (Number.isNaN(readMs)) return false;
+  if (group.length === 0) return false;
+  const readMs = lastReadAtIso ? Date.parse(lastReadAtIso) : NaN;
+  const hasReadSignal = !Number.isNaN(readMs);
+  if (!hasReadSignal && (!repliedMsgIds || repliedMsgIds.size === 0)) return false;
   return group.every((d) => {
     if (d.urgent) return false;
     if (!d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)) return false;
-    const createdMs = Date.parse(d.createdAt);
-    return !Number.isNaN(createdMs) && createdMs <= readMs;
+    if (hasReadSignal) {
+      const createdMs = Date.parse(d.createdAt);
+      if (!Number.isNaN(createdMs) && createdMs <= readMs) return true;
+    }
+    const msgId = deliveryMsgId(d.payload);
+    return msgId != null && (repliedMsgIds?.has(msgId) ?? false);
   });
 }
 
@@ -724,7 +754,16 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       if (allInboxWakeNoUrgent) {
         const lastRead = await lastInboxReadAtBatch([subscriberId]);
         const lastReadAt = lastRead.get(subscriberId) ?? null;
-        if (isInboxWakeGroupRedundant(group, lastReadAt)) {
+        // EI-18676763837940562: the read-cursor's own blind spot (read-then-reply within
+        // the same turn a queued delivery lands after) — a bounded, msg_id-scoped query,
+        // only when some delivery in the group actually carries one (the common
+        // coord:send-directed-wake shape; see deliveryMsgId's doc).
+        const candidateMsgIds = group.map((d) => deliveryMsgId(d.payload)).filter((id): id is string => id != null);
+        const repliedMsgIds =
+          candidateMsgIds.length > 0
+            ? await repliedMsgIdsBatch(subscriberId, candidateMsgIds).catch(() => new Set<string>())
+            : undefined;
+        if (isInboxWakeGroupRedundant(group, lastReadAt, repliedMsgIds)) {
           await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
           stats.delivered++;
           stats.suppressed++;

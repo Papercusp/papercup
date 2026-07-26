@@ -76,6 +76,13 @@ vi.mock("../../git-pipeline-position", () => ({
   })),
 }));
 
+// EI-18676650746298156: checkpoint:await's candidateSha already-judged latch probes this —
+// mocked here so the rig stays hermetic (the real module hits Postgres). Default: no
+// matching row, so every EXISTING checkpoint:await case keeps registering exactly as before.
+vi.mock("../../harness/git-sync/pipeline-events", () => ({
+  findGreenCheckpointVerdictForCandidate: vi.fn(async () => null),
+}));
+
 // EI-13095: the work-item:await latches probe the live item — mocked here so the
 // rig stays hermetic (the real module pulls db-org). Default 'live'/'blocked' =
 // every existing case registers exactly as before.
@@ -91,6 +98,7 @@ import { devDeployState } from "../../dev-deploy-state";
 import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
 import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { gitPipelinePosition } from "../../git-pipeline-position";
+import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 import { checkpointPipelineName } from "./sugar";
 
 const checkpointTool = definedTools.find(
@@ -319,6 +327,143 @@ describe("deploy:await already-deployed latch (EI-18676050719521433 — was pure
     expect(out.already_deployed).toBeUndefined();
     expect(registerAwait).toHaveBeenCalledTimes(2);
     warnSpy.mockRestore();
+  });
+});
+
+describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy:await's candidateSha sibling)", () => {
+  const call = async (args: Record<string, unknown>) => {
+    const res = await checkpointTool.handler(args as never, ctx);
+    return JSON.parse(res.content[0].text);
+  };
+
+  it("a candidateSha ALREADY judged GREEN answers already_judged and registers NOTHING (the stranded-wait class)", async () => {
+    vi.mocked(findGreenCheckpointVerdictForCandidate).mockResolvedValueOnce({
+      status: "advanced",
+      detail: { candidate: "94c123456789", green: true },
+      createdAtMs: 1_700_000_000_000,
+    } as never);
+
+    const out = await call({ candidateSha: "94c1234567890abcdef" });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_judged: true,
+      green: true,
+      status: "advanced",
+      event: "release:green:papercusp",
+    });
+    expect(out.advice).toContain("Do not wait");
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it("a candidateSha ALREADY judged HELD/RED answers already_judged (green:false) against the red key and registers NOTHING", async () => {
+    vi.mocked(findGreenCheckpointVerdictForCandidate).mockResolvedValueOnce({
+      status: "not-green",
+      detail: { candidate: "94c123456789", green: false },
+      createdAtMs: 1_700_000_000_000,
+    } as never);
+
+    const out = await call({ candidateSha: "94c1234567890abcdef" });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_judged: true,
+      green: false,
+      status: "not-green",
+      event: "green-checkpoint:red:papercusp",
+    });
+    expect(out.advice).toContain("Do not wait");
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it("WI-5685 shape: an 'advanced-prefix' match (candidate stayed red; a DIFFERENT earlier prefix advanced) reports green:false, never misread as green from the status string alone", async () => {
+    vi.mocked(findGreenCheckpointVerdictForCandidate).mockResolvedValueOnce({
+      status: "advanced-prefix",
+      detail: { candidate: "94c123456789", green: false, advancedTo: "aaaaaaaaaaaa" },
+      createdAtMs: 1_700_000_000_000,
+    } as never);
+
+    const out = await call({ candidateSha: "94c1234567890abcdef" });
+
+    expect(out.already_judged).toBe(true);
+    expect(out.green).toBe(false);
+    expect(out.event).toBe("green-checkpoint:red:papercusp");
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it("a candidateSha NOT yet judged still registers exactly as before (sibling case — default mock answers no match)", async () => {
+    const out = await call({ candidateSha: "94c1234567890abcdef" });
+
+    expect(out.already_judged).toBeUndefined();
+    expect(
+      vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
+    ).toEqual(["release:green:papercusp", "green-checkpoint:red:papercusp"]);
+  });
+
+  it("omitting candidateSha entirely skips the probe and registers the pipeline keys as before", async () => {
+    const out = await call({});
+
+    expect(findGreenCheckpointVerdictForCandidate).not.toHaveBeenCalled();
+    expect(out.already_judged).toBeUndefined();
+    expect(
+      vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
+    ).toEqual(["release:green:papercusp", "green-checkpoint:red:papercusp"]);
+  });
+
+  it("global:true probes across ALL pipelines (installSlug null) rather than the current pipeline", async () => {
+    await call({ candidateSha: "94c1234567890abcdef", global: true });
+
+    expect(findGreenCheckpointVerdictForCandidate).toHaveBeenCalledWith(
+      null,
+      "94c1234567890abcdef",
+      { runId: undefined },
+    );
+  });
+
+  it("a scoped call probes with the resolved pipeline as installSlug", async () => {
+    await call({ candidateSha: "94c1234567890abcdef", pipeline: "papercup" });
+
+    expect(findGreenCheckpointVerdictForCandidate).toHaveBeenCalledWith(
+      "papercup",
+      "94c1234567890abcdef",
+      { runId: undefined },
+    );
+  });
+
+  it("threads runId into the probe alongside candidateSha", async () => {
+    await call({ candidateSha: "94c1234567890abcdef", runId: "run-xyz" });
+
+    expect(findGreenCheckpointVerdictForCandidate).toHaveBeenCalledWith(
+      "papercusp",
+      "94c1234567890abcdef",
+      { runId: "run-xyz" },
+    );
+  });
+
+  it("a probe failure/timeout fails OPEN — registers normally rather than blocking the await", async () => {
+    // withBoundedTimeout logs a console.warn on a caught rejection (expected here —
+    // we are deliberately exercising its fallback path, not a real bug).
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(findGreenCheckpointVerdictForCandidate).mockRejectedValueOnce(new Error("db unavailable"));
+
+    const out = await call({ candidateSha: "94c1234567890abcdef" });
+
+    expect(out.already_judged).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+    warnSpy.mockRestore();
+  });
+
+  it("a match with detail.green missing/non-boolean is treated as unresolved and falls through to a normal registration", async () => {
+    vi.mocked(findGreenCheckpointVerdictForCandidate).mockResolvedValueOnce({
+      status: "skipped-disabled",
+      detail: { candidate: "94c123456789" }, // no `green` key at all
+      createdAtMs: 1_700_000_000_000,
+    } as never);
+
+    const out = await call({ candidateSha: "94c1234567890abcdef" });
+
+    expect(out.already_judged).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(2);
   });
 });
 

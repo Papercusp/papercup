@@ -253,6 +253,67 @@ describe('injectIntoHost', () => {
   }, 20_000);
 });
 
+/** A server mimicking the UPDATED psu-pty-host.mjs (EI-18676244363359331 /
+ *  WI-5872): allowHalfOpen so it stays writable after the client's FIN, and it
+ *  writes a `{v:1,ok,reason}` JSON-line ACK/NACK back before ending its own
+ *  side — as opposed to `startSocket` above, which mimics the OLD/not-yet-
+ *  upgraded host (bare close, no ack) for backward-compat coverage. */
+function startAckingSocket(
+  dir: string,
+  ownerId: string,
+  ack: { ok: boolean; reason: string } | 'malformed' | 'none',
+): { sock: string; received: Promise<string> } {
+  const sock = join(dir, `${sanitizeKey(ownerId)}.sock`);
+  let resolveRecv!: (s: string) => void;
+  const received = new Promise<string>((r) => (resolveRecv = r));
+  const server = net.createServer({ allowHalfOpen: true }, (conn) => {
+    const chunks: Buffer[] = [];
+    conn.on('data', (d) => chunks.push(d));
+    conn.on('end', () => {
+      resolveRecv(Buffer.concat(chunks).toString('utf8'));
+      if (ack !== 'none') {
+        conn.write(ack === 'malformed' ? 'not-json\n' : `${JSON.stringify({ v: 1, ...ack })}\n`);
+      }
+      conn.end();
+    });
+  });
+  server.listen(sock);
+  cleanups.push(() => server.close());
+  return { sock, received };
+}
+
+describe('injectIntoHost — application-level ACK (EI-18676244363359331 / WI-5872)', () => {
+  it('resolves TRUE from an explicit {ok:true} ack — a real delivery confirmation, not just the close race', async () => {
+    const dir = tmpDir();
+    const { sock } = startAckingSocket(dir, 'acker-ok', { ok: true, reason: 'delivered' });
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'x' })).toBe(true);
+  });
+
+  it('resolves FALSE from an explicit {ok:false} ack — the core fix: a real server-side drop (e.g. a busy-gate defer or a stale-fire guard) is no longer misreported as delivered just because the TCP connection closed cleanly', async () => {
+    const dir = tmpDir();
+    const { sock } = startAckingSocket(dir, 'acker-drop', { ok: false, reason: 'deferred-busy-gate' });
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'x' })).toBe(false);
+  });
+
+  it('falls back to resolving TRUE on bare close when no ack ever arrives — backward compat with a NOT-YET-RESTARTED old host during a rolling upgrade', async () => {
+    const dir = tmpDir();
+    const { sock } = startAckingSocket(dir, 'acker-none', 'none');
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'x' })).toBe(true);
+  });
+
+  it('falls back to resolving TRUE on close when the ack line is malformed — never throws, never hangs waiting on a bad parse', async () => {
+    const dir = tmpDir();
+    const { sock } = startAckingSocket(dir, 'acker-bad', 'malformed');
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'x' })).toBe(true);
+  });
+
+  it('an OLD-style host (allowHalfOpen:false default, the exact pre-fix startSocket helper) still resolves true unchanged', async () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'acker-old');
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'x' })).toBe(true);
+  });
+});
+
 describe('recolorViaPty (fleet-color-schemes live recolor)', () => {
   // recolorViaPty reads the REAL PSU_PTY_DIR (no dir param), so set up a live host
   // there under a unique throwaway ownerId, then clean it up — mirrors interruptViaPty.

@@ -103,6 +103,16 @@ interface Props {
    * a context with no inbox to navigate to).
    */
   onDrillIn?: (ref: string) => void;
+
+  /**
+   * Per-message avatar override, forwarded straight through to
+   * ChatConversation (gui-chat-session-controls-2026-07-25 P-012). Used by
+   * SessionChatModal to swap the default agent-kind icon for a roster-driven
+   * identity chip (handle + fleet colour + leader/member marker). Omit to
+   * keep the default icon avatar — this component adds no behavior of its
+   * own around it, it's a pure passthrough (same pattern as onDrillIn).
+   */
+  renderAvatar?: (msg: ChatMessage) => ReactNode | null | undefined;
 }
 
 const STARTING_PROMPTS = [
@@ -127,6 +137,7 @@ export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
   conversationId, workspaceId, agentName = 'Papercup', onDrillIn,
+  renderAvatar,
 }: Props) {
   // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
   // consume a staged seed on mount (the usual path — the chat body was
@@ -307,6 +318,7 @@ export function OperatorChat({
       renderToolChip={renderOperatorToolChip}
       renderToolCard={renderToolCard}
       renderReport={renderReport}
+      renderAvatar={renderAvatar}
       onLoadEarlier={onLoadEarlier}
       hasMoreEarlier={hasMoreEarlier}
       loadingEarlier={loadingEarlier}

@@ -238,6 +238,61 @@ describe('SessionChatModal', () => {
     expect(screen.queryByText(/A{100,}/)).toBeNull();
   });
 
+  describe('P-012 identity chip', () => {
+    function seedRoster(entries: Array<Record<string, unknown>>) {
+      H.results['advRoster.list'] = {
+        data: [{ active: entries, pending: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    it('renders the roster handle + LEAD marker on the assistant avatar for a fleet leader', async () => {
+      seedRoster([
+        { ownerId: 'su-live-1', fleetColor: '#86efac', fleetRole: 'leader' },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'Here is my answer.' }]));
+      });
+
+      await waitFor(() => expect(screen.getByText('Here is my answer.')).toBeTruthy());
+      expect(screen.getByText('su-live-1')).toBeTruthy();
+      expect(screen.getByText('LEAD')).toBeTruthy();
+    });
+
+    it('omits the LEAD marker for a non-leader member, and falls back to the default icon avatar when the owner has no roster row', async () => {
+      seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'member reply' }]));
+      });
+
+      await waitFor(() => expect(screen.getByText('member reply')).toBeTruthy());
+      expect(screen.getByText('su-live-1')).toBeTruthy();
+      expect(screen.queryByText('LEAD')).toBeNull();
+    });
+
+    it('falls back to the default icon avatar when the roster has no matching entry', async () => {
+      seedRoster([{ ownerId: 'su-someone-else', fleetColor: null, fleetRole: null }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'no roster row' }]));
+      });
+
+      await waitFor(() => expect(screen.getByText('no roster row')).toBeTruthy());
+      expect(screen.queryByText('su-live-1')).toBeNull();
+    });
+  });
+
   it('the composer sends a coord:send to the resolved owner with wake:"required"', async () => {
     mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
     render(<SessionChatModal sessionOwnerId="su-live-1" ownerLabel="su · live-1" onClose={vi.fn()} />);

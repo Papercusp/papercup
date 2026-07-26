@@ -21,7 +21,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { modeById, MODES } from '../../modes/registry';
@@ -73,6 +73,15 @@ export default defineTool({
     const def = modeById(args.mode);
     if (!def) return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: `unknown mode '${args.mode}'` }) }] };
 
+    // The admin coord/mode UI (P-003/P-004) acts on the owner's behalf when it
+    // sets a mode on the agent session the human is chatting with — a PEER-set
+    // (setBy !== ownerId) that nonetheless carries verified owner authority.
+    // resolveAgentIdentity already ties this ownerId to the admin route's
+    // synthesized `?client=` (never client-suppliable from an ordinary agent
+    // context), so this is a tool-layer-VERIFIED check, not a trusted claim.
+    const callerIsOwnerAuthority = ident.ownerId === ADMIN_COORD_UI_OWNER;
+    const ownerAuthorized = isSelf || callerIsOwnerAuthority;
+
     const res = await setMode({
       workspaceId: ident.workspaceId ?? 'default',
       ownerId: target,
@@ -81,15 +90,16 @@ export default defineTool({
       reason: args.reason,
       setBy: ident.ownerId,
       ownerDirected: args.ownerDirected,
+      callerIsOwnerAuthority,
     });
     const control = res.ok && !res.noop
       ? await refreshControlAnchorAfterMutation({
           ownerId: target,
           workspaceId: ident.workspaceId ?? 'default',
-          origin: args.ownerDirected && isSelf ? 'owner' : 'agent',
+          origin: args.ownerDirected && ownerAuthorized ? 'owner' : 'agent',
           actorId: ident.ownerId,
           source: 'mode:set',
-          ownerDirected: Boolean(args.ownerDirected && isSelf),
+          ownerDirected: Boolean(args.ownerDirected && ownerAuthorized),
         })
       : null;
 

@@ -139,16 +139,23 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
   const sql = pg(opts.sql);
   const axisKey = axisKeyFor(def);
   const isSelf = opts.setBy === opts.ownerId;
-  const ownerDirected = Boolean(opts.ownerDirected) && isSelf; // peers can never arm sticky for others
+  // Only a genuine self-set, or a tool-layer-VERIFIED owner-authority caller,
+  // may arm/hold the sticky flag — an ordinary agent peer cannot, no matter
+  // what it claims via opts.ownerDirected.
+  const ownerAuthorized = isSelf || Boolean(opts.callerIsOwnerAuthority);
+  const ownerDirected = Boolean(opts.ownerDirected) && ownerAuthorized;
 
   const existing = await sql`
     SELECT * FROM harness_shared.agent_modes
     WHERE workspace_id = ${opts.workspaceId} AND owner_id = ${opts.ownerId} AND axis_key = ${axisKey}`;
   const incumbent = existing.length ? toRow(existing[0] as Record<string, unknown>) : null;
 
-  // OWNER-STICKY (D-003): a peer cannot change an owner-directed incumbent
-  // (neither replace it nor clear it). Self + owner-directed writes pass.
-  if (incumbent?.ownerDirected && !isSelf && !opts.ownerDirected) {
+  // OWNER-STICKY (D-003): a caller without owner authority cannot change an
+  // owner-directed incumbent (neither replace it nor clear it) — regardless
+  // of what `ownerDirected` it CLAIMS (an unauthorized peer's claim is never
+  // honored — see `ownerAuthorized` above). Self, and a verified
+  // owner-authority write (e.g. the admin UI, P-003), pass.
+  if (incumbent?.ownerDirected && !ownerAuthorized) {
     return { ok: false, stickyConflict: true, mode: def, switchedFrom: incumbent.mode };
   }
 

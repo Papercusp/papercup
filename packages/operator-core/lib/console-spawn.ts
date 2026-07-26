@@ -1298,20 +1298,26 @@ export interface SpawnHeadlessOpts {
 // confirmed by direct evidence on EI-9748: staging-api restarted every ~5-6min
 // for hours from a completely unrelated, sanctioned dev workflow).
 //
-// A full fix needs headless children to NOT share that cgroup (e.g. a durable,
-// separately-supervised spawner process) — a bigger infra change requiring
-// either a policy exception (ad-hoc `systemd-run --scope` is explicitly blocked
-// for agent use by the native-scheduler guard) or a new installed supervisor
-// unit, tracked on EI-9748. Until then, this wraps the child's own SIGTERM
-// handling so a cgroup-kill logs a clear, self-diagnosing breadcrumb instead of
-// a bare `Terminated` — turning "wasted an hour blaming load" into "read the log,
-// see EI-9748, move on". Exported + pure (string in, string out) for testing.
+// FIXED (EI-9748 Route A, landed 2026-07-11, see buildHeadlessSpawnCommand
+// below): on a systemd-managed Linux host, headless children now escape the
+// operator service's cgroup entirely via `systemd-run --user --scope`, so a
+// `systemctl --user restart` of papercup-dev-api/papercup-staging-api no
+// longer reaps them. The residual gap above (plain fork() sharing the parent
+// cgroup) applies ONLY on the fallback path — a host with no `systemd-run` on
+// PATH (macOS, a bare/non-systemd container). This still wraps the child's own
+// SIGTERM handling so any cgroup-kill (the fallback path, or another cause
+// entirely on the escaped path) logs a clear, self-diagnosing breadcrumb
+// instead of a bare `Terminated`. Exported + pure (string in, string out) for
+// testing.
 export function wrapHeadlessSigtermDiagnostic(oneliner: string): string {
   const trap =
-    `trap 'echo "[EI-9748] SIGTERM received at $(date -u +%FT%TZ) — this headless fleet member ` +
-    `was very likely reaped by an operator-service restart (systemd KillMode=control-group kills ` +
-    `this whole detached cgroup on any systemctl restart of papercup-dev-api/papercup-staging-api), ` +
-    `NOT a crash, OOM, or rate limit. See work-item EI-9748 for the root cause + fix status." >&2; ` +
+    `trap 'echo "[EI-9748] SIGTERM received at $(date -u +%FT%TZ) — on this host, if the ` +
+    `systemd-run --user --scope cgroup escape (EI-9748 Route A, landed 2026-07-11) succeeded ` +
+    `at spawn time, this is NOT an operator-service restart (that escape makes this scope a ` +
+    `SIBLING of papercup-dev-api/papercup-staging-api, immune to their KillMode=control-group ` +
+    `restarts) — look elsewhere: a manual kill, host reboot/shutdown, or OOM. Only on a host ` +
+    `WITHOUT systemd-run on PATH (no escape available, plain detached child) does an ` +
+    `operator-service restart remain a likely cause. See work-item EI-9748 for detail." >&2; ` +
     `exit 143' TERM`;
   return `${trap}; ${oneliner}`;
 }

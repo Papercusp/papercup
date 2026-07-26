@@ -85,6 +85,24 @@ export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
 ];
 
 /**
+ * EI-18677799334390930: the `by` identity `plan-items/reconcile-linked-work-items.ts`
+ * stamps when it terminal-closes a work-item by MIRRORING its linked plan-item's
+ * done/dropped status (NOT `skipCompletionGate` — it satisfies the ordinary by+
+ * completionRef gate with a synthetic ref). Declared here, in the module that owns
+ * the audit predicate, and imported by the reconciler — never re-typed as a bare
+ * string in either place — so the write and the read can't drift apart (the exact
+ * discipline this module's header describes for `_completionEvidence`).
+ *
+ * A reconcile-sourced close is BY CONSTRUCTION never independently verified: it only
+ * ever mirrors an ADJACENT plan item's terminal status onto this work-item, which is
+ * exactly how a mis-flip (the wrong plan item flipped `done`) silently marks a live
+ * defect "fixed" with a completionRef that reads as genuine prose (see the module doc
+ * above + `auditPredicateSql`'s `no-evidence` branch, which always flags this actor
+ * regardless of whether a `_completionEvidence` key is ever added).
+ */
+export const RECONCILER_SYSTEM_ACTOR = 'system:plan-item-reconcile' as const;
+
+/**
  * The audit's WHERE fragment. Callers AND it with their own terminal-state predicate
  * (the two families spell their state column differently — `status` vs `state`).
  *
@@ -98,7 +116,12 @@ export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
   if (audit === 'no-completion-record-suspicious') {
     return sql`terminal_completion_ref IS NULL AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
   }
-  return sql`NOT (COALESCE(payload, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY})`;
+  // EI-18677799334390930: a reconcile-sourced close (RECONCILER_SYSTEM_ACTOR) is ALWAYS
+  // flagged here, independent of the `_completionEvidence` key check — it never carries
+  // independent verification by construction (it only mirrors an adjacent plan item's
+  // status), so this can't be silently defeated by a future caller adding a well-meaning
+  // but misleading evidence stamp to that write path.
+  return sql`(NOT (COALESCE(payload, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY}) OR terminal_owner = ${RECONCILER_SYSTEM_ACTOR})`;
 }
 
 /** Same fragment, for a query that aliases the table (e.g. `ei.payload`). */
@@ -110,7 +133,8 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
   if (audit === 'no-completion-record-suspicious') {
     return sql`${ref} IS NULL AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
   }
-  return sql`NOT (COALESCE(${col}, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY})`;
+  // EI-18677799334390930: same always-flag rule as auditPredicateSql above.
+  return sql`(NOT (COALESCE(${col}, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY}) OR ${owner} = ${RECONCILER_SYSTEM_ACTOR})`;
 }
 
 /**

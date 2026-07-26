@@ -205,3 +205,82 @@ describe('setMode semantics', () => {
     expect(map.has('su-nobody')).toBe(false);
   });
 });
+
+describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified owner-authority channel)', () => {
+  let m: ReturnType<typeof mockSql>;
+  const ADMIN = 'pc-admin-coord-ui';
+  beforeEach(() => { m = mockSql(); });
+
+  it('self-set: ownerAuthorized is implied — arms sticky without callerIsOwnerAuthority', async () => {
+    const res = await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true,
+      reason: 'owner said auto', setBy: ME, ownerDirected: true, sql: m.sql,
+    });
+    expect(res.ok).toBe(true);
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows[0].ownerDirected).toBe(true);
+  });
+
+  it('admin-UI peer-set with callerIsOwnerAuthority:true CAN arm the sticky flag (the P-003 fix)', async () => {
+    const res = await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true,
+      reason: 'owner clicked Autonomy: auto in the chat UI', setBy: ADMIN,
+      ownerDirected: true, callerIsOwnerAuthority: true, sql: m.sql,
+    });
+    expect(res.ok).toBe(true);
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].mode).toBe('auto');
+    expect(rows[0].ownerDirected).toBe(true);
+    expect(rows[0].setBy).toBe(ADMIN);
+  });
+
+  it('ordinary peer-set (no callerIsOwnerAuthority) claiming ownerDirected:true is DOWNGRADED — sticky never arms', async () => {
+    const res = await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true,
+      reason: 'peer claims owner authority', setBy: PEER, ownerDirected: true, sql: m.sql,
+    });
+    expect(res.ok).toBe(true);
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows[0].ownerDirected).toBe(false);
+    expect(rows[0].setBy).toBe(PEER);
+  });
+
+  it('admin-UI peer-set (callerIsOwnerAuthority:true) BYPASSES an existing owner-directed incumbent — an ordinary peer still cannot', async () => {
+    await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true,
+      reason: 'owner froze this posture', setBy: ME, ownerDirected: true, sql: m.sql,
+    });
+    // An ordinary peer is still refused (unchanged D-003 behavior).
+    const peerAttempt = await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'cold-auto', enabled: true,
+      reason: 'peer thinks cold is better', setBy: PEER, sql: m.sql,
+    });
+    expect(peerAttempt.ok).toBe(false);
+    expect(peerAttempt.stickyConflict).toBe(true);
+
+    // The admin-UI, acting for the owner, CAN override it — even without
+    // re-claiming ownerDirected on this particular call.
+    const adminOverride = await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'cold-auto', enabled: true,
+      reason: 'owner switched to cold-auto from the chat UI', setBy: ADMIN,
+      callerIsOwnerAuthority: true, sql: m.sql,
+    });
+    expect(adminOverride.ok).toBe(true);
+    expect(adminOverride.stickyConflict).toBeFalsy();
+    expect(adminOverride.switchedFrom).toBe('auto');
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows.map((r) => r.mode)).toEqual(['cold-auto']);
+  });
+
+  it('admin-UI peer-set without ownerDirected:true does NOT itself arm sticky — callerIsOwnerAuthority only widens WHO can bypass/arm it', async () => {
+    const res = await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'ideate', enabled: true,
+      reason: 'owner toggled the Overlays checkbox', setBy: ADMIN,
+      callerIsOwnerAuthority: true, sql: m.sql,
+    });
+    expect(res.ok).toBe(true);
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows[0].ownerDirected).toBe(false);
+  });
+});

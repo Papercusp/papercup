@@ -26,6 +26,7 @@ import {
   appendPipelineEvent,
   summarizePipelineWindow,
   recentPipelineEvents,
+  findGreenCheckpointVerdictForCandidate,
   type PipelineEventKind,
 } from './pipeline-events';
 
@@ -34,7 +35,14 @@ let db: FreshPgDb;
 
 // Keep in sync with libs/papercusp/libs/db/sql/419-pipeline-events-kind-content-release-fixer.sql —
 // this is the LIVE constraint's allowlist, mirrored here on purpose (see EI-2969 note above).
-const ALL_KINDS: PipelineEventKind[] = ['git_sync', 'merge_resolver', 'content_fixer', 'green_checkpoint', 'deploy', 'release_fixer'];
+const ALL_KINDS: PipelineEventKind[] = [
+  'git_sync',
+  'merge_resolver',
+  'content_fixer',
+  'green_checkpoint',
+  'deploy',
+  'release_fixer',
+];
 
 describe('pipeline-events runtime — real Postgres', () => {
   beforeAll(async () => {
@@ -63,10 +71,28 @@ describe('pipeline-events runtime — real Postgres', () => {
     for (let i = 0; i < 5; i++) {
       await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'git_sync', status: 'synced' }, db.sql);
     }
-    await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'git_sync', status: 'conflict', detail: { conflicts: [{ scope: 'libs/x' }] } }, db.sql);
-    await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'merge_resolver', status: 'ok', detail: { exitCode: 0 } }, db.sql);
-    await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'green_checkpoint', status: 'advanced', detail: { green: true } }, db.sql);
-    await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'green_checkpoint', status: 'not-green', detail: { green: false } }, db.sql);
+    await appendPipelineEvent(
+      {
+        workspaceId: 'ws',
+        installSlug: SLUG,
+        kind: 'git_sync',
+        status: 'conflict',
+        detail: { conflicts: [{ scope: 'libs/x' }] },
+      },
+      db.sql,
+    );
+    await appendPipelineEvent(
+      { workspaceId: 'ws', installSlug: SLUG, kind: 'merge_resolver', status: 'ok', detail: { exitCode: 0 } },
+      db.sql,
+    );
+    await appendPipelineEvent(
+      { workspaceId: 'ws', installSlug: SLUG, kind: 'green_checkpoint', status: 'advanced', detail: { green: true } },
+      db.sql,
+    );
+    await appendPipelineEvent(
+      { workspaceId: 'ws', installSlug: SLUG, kind: 'green_checkpoint', status: 'not-green', detail: { green: false } },
+      db.sql,
+    );
 
     const w = await summarizePipelineWindow(SLUG, 24 * 60 * 60, db.sql);
     expect(w.gitSync).toMatchObject({ total: 6, synced: 5, conflict: 1 });
@@ -89,7 +115,10 @@ describe('pipeline-events runtime — real Postgres', () => {
 
   it('scopes counts to the harness slug', async () => {
     await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'git_sync', status: 'synced' }, db.sql);
-    await appendPipelineEvent({ workspaceId: 'ws', installSlug: 'other-harness', kind: 'git_sync', status: 'conflict' }, db.sql);
+    await appendPipelineEvent(
+      { workspaceId: 'ws', installSlug: 'other-harness', kind: 'git_sync', status: 'conflict' },
+      db.sql,
+    );
     const w = await summarizePipelineWindow(SLUG, 24 * 60 * 60, db.sql);
     expect(w.gitSync.total).toBe(1);
     expect(w.gitSync.conflict).toBe(0);
@@ -108,7 +137,10 @@ describe('pipeline-events runtime — real Postgres', () => {
 
   it('reads the recent timeline newest-first with parsed detail', async () => {
     await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'git_sync', status: 'synced' }, db.sql);
-    await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'merge_resolver', status: 'ok', detail: { scopes: ['libs/x'] } }, db.sql);
+    await appendPipelineEvent(
+      { workspaceId: 'ws', installSlug: SLUG, kind: 'merge_resolver', status: 'ok', detail: { scopes: ['libs/x'] } },
+      db.sql,
+    );
 
     const recent = await recentPipelineEvents(SLUG, 10, db.sql);
     expect(recent).toHaveLength(2);
@@ -119,8 +151,11 @@ describe('pipeline-events runtime — real Postgres', () => {
     expect(recent[0].detail).toBeTypeOf('object');
   });
 
-  it('P-009: every appended event is stamped with the emitting process\'s vintage (treeSha/bundleVersion)', async () => {
-    await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'green_checkpoint', status: 'not-green' }, db.sql);
+  it("P-009: every appended event is stamped with the emitting process's vintage (treeSha/bundleVersion)", async () => {
+    await appendPipelineEvent(
+      { workspaceId: 'ws', installSlug: SLUG, kind: 'green_checkpoint', status: 'not-green' },
+      db.sql,
+    );
     const [recent] = await recentPipelineEvents(SLUG, 1, db.sql);
     expect(recent.detail).toHaveProperty('vintage');
     const vintage = recent.detail.vintage as { treeSha: string | null; bundleVersion: string };
@@ -130,5 +165,169 @@ describe('pipeline-events runtime — real Postgres', () => {
     expect(typeof vintage.bundleVersion).toBe('string');
     // The existing host stamp (P-015) must still be present alongside it (additive, not replaced).
     expect(typeof recent.detail.host).toBe('string');
+  });
+
+  // EI-18676650746298156: checkpoint:await's candidateSha already-judged latch — real-Postgres
+  // coverage for the exact-match probe against RECORDED green_checkpoint verdicts. Nested
+  // INSIDE the outer describe so it shares the SAME beforeAll/beforeEach/afterAll lifecycle
+  // (the module-level `db` connection + its per-test TRUNCATE) — a sibling top-level describe
+  // here would run AFTER the outer describe's `afterAll` already closed `db.sql`, hitting
+  // postgres.js's CONNECTION_ENDED on every query (caught + discarded here, the hard way).
+  describe('findGreenCheckpointVerdictForCandidate — real Postgres', () => {
+    const FULL_SHA = '94c1234567890abcdef1234567890abcdef12345';
+    const OTHER_SHA = 'ffffffffff890abcdef1234567890abcdef12345';
+
+    it('finds a GREEN verdict for the exact candidate (full sha matched against the truncated stored prefix)', async () => {
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: SLUG,
+          kind: 'green_checkpoint',
+          status: 'advanced',
+          detail: { candidate: FULL_SHA.slice(0, 12), green: true },
+        },
+        db.sql,
+      );
+      const match = await findGreenCheckpointVerdictForCandidate(SLUG, FULL_SHA, { sql: db.sql });
+      expect(match).not.toBeNull();
+      expect(match?.status).toBe('advanced');
+      expect(match?.detail.green).toBe(true);
+    });
+
+    it('finds a HELD/RED verdict for the exact candidate', async () => {
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: SLUG,
+          kind: 'green_checkpoint',
+          status: 'not-green',
+          detail: { candidate: FULL_SHA.slice(0, 12), green: false },
+        },
+        db.sql,
+      );
+      const match = await findGreenCheckpointVerdictForCandidate(SLUG, FULL_SHA, { sql: db.sql });
+      expect(match).not.toBeNull();
+      expect(match?.status).toBe('not-green');
+      expect(match?.detail.green).toBe(false);
+    });
+
+    it('returns null for a candidate that was never judged (the not-yet-judged sibling case)', async () => {
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: SLUG,
+          kind: 'green_checkpoint',
+          status: 'advanced',
+          detail: { candidate: OTHER_SHA.slice(0, 12), green: true },
+        },
+        db.sql,
+      );
+      const match = await findGreenCheckpointVerdictForCandidate(SLUG, FULL_SHA, { sql: db.sql });
+      expect(match).toBeNull();
+    });
+
+    it("WI-5685 shape: an 'advanced-prefix' row's detail.candidate is the RED tip — matching it must report green:false even though the pipeline overall advanced (to a DIFFERENT, earlier prefix)", async () => {
+      const redTip = FULL_SHA;
+      const advancedTo = OTHER_SHA;
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: SLUG,
+          kind: 'green_checkpoint',
+          status: 'advanced-prefix',
+          // Mirrors buildCheckpointDetail exactly: candidate = the still-red tip, green:false,
+          // advancedTo = the earlier prefix that actually shipped.
+          detail: { candidate: redTip.slice(0, 12), green: false, advancedTo: advancedTo.slice(0, 12) },
+        },
+        db.sql,
+      );
+      // Querying the RED TIP itself must say "judged, and NOT green" — never inferred as green
+      // just because the pipeline as a whole advanced.
+      const tipMatch = await findGreenCheckpointVerdictForCandidate(SLUG, redTip, { sql: db.sql });
+      expect(tipMatch).not.toBeNull();
+      expect(tipMatch?.status).toBe('advanced-prefix');
+      expect(tipMatch?.detail.green).toBe(false);
+      // The prefix that actually advanced is a DIFFERENT candidate — querying for IT (a
+      // candidateSha the caller never asked about here) must not spuriously match the red tip's row.
+      const prefixMatch = await findGreenCheckpointVerdictForCandidate(SLUG, advancedTo, { sql: db.sql });
+      expect(prefixMatch).toBeNull();
+    });
+
+    it('WI-4957: filters to the exact runId when two runs judged the same candidate', async () => {
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: SLUG,
+          kind: 'green_checkpoint',
+          status: 'not-green',
+          detail: { candidate: FULL_SHA.slice(0, 12), green: false, runId: 'run-A' },
+        },
+        db.sql,
+      );
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: SLUG,
+          kind: 'green_checkpoint',
+          status: 'advanced',
+          detail: { candidate: FULL_SHA.slice(0, 12), green: true, runId: 'run-B' },
+        },
+        db.sql,
+      );
+      const matchB = await findGreenCheckpointVerdictForCandidate(SLUG, FULL_SHA, { sql: db.sql, runId: 'run-B' });
+      expect(matchB?.status).toBe('advanced');
+      const matchNone = await findGreenCheckpointVerdictForCandidate(SLUG, FULL_SHA, { sql: db.sql, runId: 'run-C' });
+      expect(matchNone).toBeNull();
+    });
+
+    it('returns the NEWEST matching verdict when a candidate was judged more than once', async () => {
+      await db.sql`
+      INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, detail, created_at)
+      VALUES ('ws', ${SLUG}, 'green_checkpoint', 'not-green', ${JSON.stringify({ candidate: FULL_SHA.slice(0, 12), green: false })}::text::jsonb, now() - interval '1 hour')
+    `;
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: SLUG,
+          kind: 'green_checkpoint',
+          status: 'advanced',
+          detail: { candidate: FULL_SHA.slice(0, 12), green: true },
+        },
+        db.sql,
+      );
+      const match = await findGreenCheckpointVerdictForCandidate(SLUG, FULL_SHA, { sql: db.sql });
+      expect(match?.status).toBe('advanced'); // the newer row, not the 1h-old one
+    });
+
+    it('scopes to the install_slug — a same-candidate verdict on a DIFFERENT pipeline does not match', async () => {
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: 'other-harness',
+          kind: 'green_checkpoint',
+          status: 'advanced',
+          detail: { candidate: FULL_SHA.slice(0, 12), green: true },
+        },
+        db.sql,
+      );
+      const match = await findGreenCheckpointVerdictForCandidate(SLUG, FULL_SHA, { sql: db.sql });
+      expect(match).toBeNull();
+    });
+
+    it('installSlug:null searches across ALL pipelines (the global:true case)', async () => {
+      await appendPipelineEvent(
+        {
+          workspaceId: 'ws',
+          installSlug: 'some-other-pipeline',
+          kind: 'green_checkpoint',
+          status: 'advanced',
+          detail: { candidate: FULL_SHA.slice(0, 12), green: true },
+        },
+        db.sql,
+      );
+      const match = await findGreenCheckpointVerdictForCandidate(null, FULL_SHA, { sql: db.sql });
+      expect(match).not.toBeNull();
+      expect(match?.status).toBe('advanced');
+    });
   });
 });

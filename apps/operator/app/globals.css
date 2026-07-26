@@ -25664,6 +25664,21 @@ body.papercusp-chromeless .oracle-fab {
   color: #dff7ff;
 }
 
+/* Identity chip (gui-chat-session-controls-2026-07-25 P-012): a live su
+   session's avatar swaps the fixed 34px circular icon mark for a pill
+   carrying its roster handle (+ a LEAD marker) — reuses hud.css's
+   .hud__handle/.hud__chip classes, so this only needs a shape override on
+   the existing avatar slot rather than a whole new component. */
+.oracle-msg-avatar--identity {
+  width: auto;
+  min-width: 34px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0 7px;
+  gap: 4px;
+  border-color: var(--hud-fleet, rgb(from var(--accent-strong) r g b / 0.14));
+}
+
 .oracle-msg-icon {
   width: 20px;
   height: 20px;

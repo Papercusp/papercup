@@ -24,6 +24,7 @@ import { registerReactionRule } from '../events';
 import { PLAN_ITEM_RECONCILE_ACTION } from '../events/builtin-actions';
 import type { ToolInvocationEvent } from '../events/types';
 import type { CompletedPlanItem } from './reconcile-linked-work-items';
+import { resolveAgentIdentity } from '../agent-tools/coordination/identity';
 
 /** One fanned per-item `plans:set-status` result — the flat record `setStatusOne`
  *  returns for a single item (engine.ts `fanOutBulkEvent` sets `result.data = ri`). */
@@ -33,6 +34,24 @@ interface SetStatusItemResult {
   itemId?: string;
   oldStatus?: string | null;
   newStatus?: string;
+}
+
+/**
+ * EI-18677799334390930: best-effort resolve the coordination identity of whoever's
+ * `plans:set-status` call triggered this reaction, for attribution on the
+ * synthetic completionRef the reconciler stamps on every work-item it
+ * terminal-closes (so a leader can route a correction to the real actor instead
+ * of broadcasting "who flipped this plan item?" to the fleet). `resolveAgentIdentity`
+ * THROWS for a ctx it cannot attribute (e.g. an unverified/system-internal call) —
+ * that is expected here and simply means no attribution is available; never let it
+ * fail the reconcile sweep itself.
+ */
+function resolveTriggeringActor(ctx: ToolInvocationEvent['ctx']): string | null {
+  try {
+    return resolveAgentIdentity(ctx).ownerId;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -56,7 +75,10 @@ export function newlyDonePlanItem(e: ToolInvocationEvent): CompletedPlanItem | n
     // instead of guessing the operator-home harness for a plan that lives
     // elsewhere.
     const harnessSlug = typeof e.ctx?.harnessSlug === 'string' ? e.ctx.harnessSlug : null;
-    return { planSlug: r.slug, itemId: r.itemId, harnessSlug };
+    const triggeredBy = resolveTriggeringActor(e.ctx);
+    const item: CompletedPlanItem = { planSlug: r.slug, itemId: r.itemId, harnessSlug };
+    if (triggeredBy) item.triggeredBy = triggeredBy;
+    return item;
   }
   return null;
 }

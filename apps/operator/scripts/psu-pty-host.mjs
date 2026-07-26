@@ -2328,7 +2328,18 @@ export function hostThroughPty(o) {
   // P-013: a 'turn' (wake) is deferred until the user's input line is idle so a
   // mid-keystroke human line is never corrupted; a 'raw' (force interrupt) is
   // written IMMEDIATELY (the whole point of force is to land mid-thinking).
-  const server = net.createServer((conn) => {
+  // EI-18676244363359331 / WI-5872: allowHalfOpen:true is LOAD-BEARING for the
+  // application-level ACK below. Node's net.Server default (allowHalfOpen:false)
+  // auto-ends the WRITABLE side the instant the readable side sees the client's
+  // FIN ('end') — i.e. the server socket starts closing back IMMEDIATELY, before
+  // the async gate pipeline below (idleGate/agentBusyGate/stale-fire/superseded
+  // checks, then the actual pty write) ever runs. That auto-close is exactly what
+  // makes injectIntoHost()'s client-side `c.on('close', () => finish(true))`
+  // resolve true on bare TCP close alone — the close race, not any real signal of
+  // delivery. allowHalfOpen:true keeps `conn` writable after 'end' fires so the
+  // handler below can write a real ACK/NACK once it actually knows the outcome,
+  // then close the connection itself.
+  const server = net.createServer({ allowHalfOpen: true }, (conn) => {
     const chunks = [];
     let payloadBytes = 0;
     let payloadRejected = false;
@@ -2357,10 +2368,19 @@ export function hostThroughPty(o) {
       chunks.push(d);
     });
     conn.on('error', () => {});
+    // EI-18676244363359331 / WI-5872: the whole existing gate/delivery pipeline
+    // is now wrapped in an inner IIFE that RETURNS an { ok, reason } outcome at
+    // every exit (instead of a bare `return;`) — the outer wrapper writes that
+    // outcome back on `conn` as an application-level ACK/NACK before closing it,
+    // so a caller no longer has to infer delivery from bare TCP close timing.
+    // Every existing early-exit / drop / success path below is UNCHANGED in its
+    // own behavior (same gates, same logging, same side effects) — each just
+    // now also reports what happened, on the same connection, before it closes.
     conn.on('end', async () => {
-      if (payloadRejected) return;
+      const outcome = await (async () => {
+      if (payloadRejected) return { ok: false, reason: 'payload-rejected' };
       const payload = Buffer.concat(chunks);
-      if (!payload.length) return;
+      if (!payload.length) return { ok: false, reason: 'empty-payload' };
       const msg = decodeControl(payload);
       // EI-153: MISDELIVERY guard — the sender's addressed-recipient assertion
       // (decodeOwnerIdentity) is checked against THIS host's own registered
@@ -2383,7 +2403,7 @@ export function hostThroughPty(o) {
         } catch {
           /* diagnostic only */
         }
-        return;
+        return { ok: false, reason: 'ownerId-mismatch' };
       }
       // EI-18109211232286833: stamp the receipt time ONCE, here, so both this
       // delivery attempt and its one makeCarryRearmController retry (which
@@ -2404,7 +2424,7 @@ export function hostThroughPty(o) {
         } catch {
           /* diagnostic only */
         }
-        return;
+        return { ok: true, reason: 'coalesced-into-pending-turn' };
       }
       // EI-8822: hold the per-host inject mutex across the ENTIRE gated
       // critical section (gate wait → pty write → submit verify) so a wake
@@ -2485,7 +2505,7 @@ export function hostThroughPty(o) {
             // waiter are dropped WITH it (same queue-to-next-turn semantics), and
             // later arrivals must start a fresh cycle, never fold into a dead one.
             if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
-            return;
+            return { ok: false, reason: 'deferred-busy-gate' };
           }
         }
         // WI-5510: STALE-FIRE GUARD. Once a message has passed every gate above
@@ -2522,7 +2542,7 @@ export function hostThroughPty(o) {
             // a dropped waiter must release any same-source turn folded into it,
             // never black-hole it; a later arrival starts a fresh cycle.
             if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
-            return;
+            return { ok: false, reason: 'stale-fire-dropped' };
           }
         }
         // EI-18109211232286833: CARRY-RESPAWN STALENESS GUARD. Placed here —
@@ -2567,7 +2587,7 @@ export function hostThroughPty(o) {
             /* diagnostic only */
           }
           if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
-          return;
+          return { ok: false, reason: superseded ? 'superseded' : 'carry-stale' };
         }
         // RECYCLE (su-cold-auto-mode P-004b): a hard cold reset — kill + respawn
         // the child in THIS host, then open the fresh process on the carry-note.
@@ -2581,7 +2601,7 @@ export function hostThroughPty(o) {
             drillId: msg.mode === 'carry-respawn' ? msg.drillId : '',
             sessionClass: msg.mode === 'carry-respawn' ? msg.sessionClass : '',
           });
-          return;
+          return { ok: true, reason: 'delivered' };
         }
         // COMPACT — RETIRED (P-022, 2026-07-18): native compaction is removed
         // fleet-wide; carry-respawn above is the only context cut, and every
@@ -2604,7 +2624,7 @@ export function hostThroughPty(o) {
           } catch {
             /* diagnostic only */
           }
-          return;
+          return { ok: false, reason: 'retired-mode-dropped' };
         }
         // MCP-RECONNECT (mcp-transport-resilience P-003, 2026-07-13): drive the
         // claude TUI's /mcp dialog to re-attach a dead HTTP-MCP server IN PLACE.
@@ -2620,7 +2640,7 @@ export function hostThroughPty(o) {
               reason: 'unsupported-backend',
               backend: agent,
             });
-            return;
+            return { ok: false, reason: 'mcp-reconnect-unsupported-backend' };
           }
           const serverName = String(msg.data ?? '').trim() || 'papercusp-su';
           const tap = makeOutputTap();
@@ -2646,10 +2666,10 @@ export function hostThroughPty(o) {
             } catch {
               /* diagnostic only */
             }
+            return { ok: result.ok, reason: result.ok ? 'delivered' : 'mcp-reconnect-failed', detail: result.detail };
           } finally {
             tap.close();
           }
-          return;
         }
         // mode:'osc' targets the terminal DISPLAY — the host's stdout IS the
         // visible window — so a fleet:join recolors the LIVE window. Every other
@@ -2677,6 +2697,7 @@ export function hostThroughPty(o) {
         if (msg.mode === 'turn' || msg.mode === 'reset') {
           await verifySubmitted(`${msg.mode} inject`);
         }
+        return { ok: true, reason: 'delivered' };
       } catch (err) {
         // P-001a: an error path must clear the coalesce slot too (claim is
         // idempotent — a no-op when the delivery already claimed it above).
@@ -2690,11 +2711,37 @@ export function hostThroughPty(o) {
             error: String((err && err.message) || err).slice(0, 300),
           });
         }
+        // EI-18676244363359331 / WI-5872: this used to be a silent swallow for
+        // every OTHER mode (turn/raw/osc/mcp-reconnect) too — the sender had no
+        // way to learn a mid-delivery throw ever happened. Now folded into the
+        // ACK below as a real outcome instead of a bare successful-looking close.
+        return { ok: false, reason: 'error', error: String((err && err.message) || err).slice(0, 300) };
       } finally {
         // EI-8822: always free the inject mutex — on success, an early return
         // (defer/recycle/compact), OR a throw — so one inject never wedges the
         // queue behind an unreleased lock.
         if (releaseInject) releaseInject();
+      }
+      })().catch((err) => ({
+        ok: false,
+        reason: 'unhandled-error',
+        error: String((err && err.message) || err).slice(0, 300),
+      }));
+      // Write the ACK/NACK back on the STILL-OPEN connection (allowHalfOpen:true
+      // above kept the writable side alive past the client's FIN) before we
+      // close our end. Best-effort: a write/end failure here must never throw
+      // out of this event handler and must never re-run any delivery — the real
+      // work above already happened (or didn't) regardless of whether the ACK
+      // itself makes it back.
+      try {
+        conn.write(`${JSON.stringify({ v: 1, ...outcome })}\n`);
+      } catch {
+        /* best-effort — the client's own timeout is the backstop */
+      }
+      try {
+        conn.end();
+      } catch {
+        /* already closing */
       }
     });
   });

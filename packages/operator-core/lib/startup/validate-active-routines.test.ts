@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { validateActiveRoutines } from './validate-active-routines';
+import { validateActiveRoutines, enforceActiveRoutines } from './validate-active-routines';
 
 // Mock the dependencies
 vi.mock('@papercusp/db-org', () => ({
@@ -154,6 +154,89 @@ describe('validateActiveRoutines', () => {
     expect(result.problematicRoutines[0].installSlug).toBe('<empty>');
     // Verify FATAL error was logged
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[routine-validation] FATAL'));
+
+    consoleSpy.mockRestore();
+  });
+});
+
+describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('auto-deactivates an active routine targeting an unregistered harness, and logs AUTO-DEACTIVATED (not FATAL)', async () => {
+    const mockWs = 'papercusp-workspace';
+    const mockRoutines = [{ install_slug: 'ei665-verify-x1', name: 'git-sync', workspace_id: mockWs }];
+
+    // 1st call = the validator's SELECT; 2nd call = enforce's UPDATE ... RETURNING (1 row).
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce(mockRoutines)
+      .mockResolvedValueOnce([{ name: 'git-sync' }]);
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
+    vi.mocked(harnessCore.resolveProject).mockResolvedValueOnce(null); // unregistered
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await enforceActiveRoutines();
+
+    expect(result.ok).toBe(false); // the scan still found a violation this pass
+    expect(result.autoDeactivated).toEqual([{ installSlug: 'ei665-verify-x1', routineName: 'git-sync' }]);
+    expect(mockSql).toHaveBeenCalledTimes(2); // SELECT, then exactly one UPDATE
+
+    const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.includes('[routine-validation] AUTO-DEACTIVATED'))).toBe(true);
+    // The validator's own FATAL is suppressed (silent:true) — enforce does its own logging.
+    expect(logged.some((l) => l.startsWith('[routine-validation] FATAL'))).toBe(false);
+
+    consoleSpy.mockRestore();
+  });
+
+  it('logs nothing for a routine a concurrent process already paused (UPDATE affects 0 rows)', async () => {
+    const mockWs = 'papercusp-workspace';
+    const mockRoutines = [{ install_slug: 'ei665-verify-x1', name: 'green-checkpoint', workspace_id: mockWs }];
+
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce(mockRoutines)
+      .mockResolvedValueOnce([]); // another worker won the race — 0 rows updated
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
+    vi.mocked(harnessCore.resolveProject).mockResolvedValueOnce(null);
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await enforceActiveRoutines();
+
+    expect(result.autoDeactivated).toEqual([]);
+    // No AUTO-DEACTIVATED (we didn't do it) and no FATAL (it's not our problem to report —
+    // this is exactly the dedup that stops ~15 concurrent workers each logging the same thing).
+    expect(consoleSpy).not.toHaveBeenCalled();
+
+    consoleSpy.mockRestore();
+  });
+
+  it('never auto-heals a blank install_slug — keeps logging FATAL, issues no UPDATE', async () => {
+    const mockWs = 'papercusp-workspace';
+    const mockRoutines = [{ install_slug: '', name: 'broken-routine', workspace_id: mockWs }];
+
+    const mockSql = vi.fn().mockResolvedValueOnce(mockRoutines);
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
+
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await enforceActiveRoutines();
+
+    expect(result.autoDeactivated).toEqual([]);
+    expect(mockSql).toHaveBeenCalledTimes(1); // only the SELECT — no UPDATE attempted
+    const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.startsWith('[routine-validation] FATAL'))).toBe(true);
 
     consoleSpy.mockRestore();
   });

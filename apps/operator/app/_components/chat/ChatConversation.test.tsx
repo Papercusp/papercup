@@ -172,6 +172,22 @@ describe('ChatConversation', () => {
     expect(screen.getByTestId('tool-chip')).toBeTruthy();
   });
 
+  it('renders a renderAvatar override in place of the default icon avatar (gui-chat-session-controls-2026-07-25 P-012)', () => {
+    renderChat({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'yo' },
+      ],
+      renderAvatar: (m: ChatMessage) => (m.role === 'assistant' ? <span data-testid="identity-chip">su-ae6cb</span> : null),
+    });
+    // The override renders for the assistant turn…
+    expect(screen.getByTestId('identity-chip')).toBeTruthy();
+    // …and only ONE avatar renders per message (override replaces, not adds to,
+    // the default `.oracle-msg-avatar` icon span) — the user turn still gets the
+    // default icon avatar since renderAvatar returned null for it.
+    expect(document.querySelectorAll('.oracle-msg-avatar').length).toBe(1);
+  });
+
   it('renders a banner above the transcript', () => {
     renderChat({ banner: <div data-testid="banner" /> });
     expect(screen.getByTestId('banner')).toBeTruthy();

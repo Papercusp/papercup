@@ -51,6 +51,7 @@ import {
   updateExternalBlockerHistory,
   type ExternalBlockerCapability,
 } from '../external-blockers';
+import { RECONCILER_SYSTEM_ACTOR } from '../completion-audit';
 
 /** The two TERMINAL plan-item statuses this reconciler heals (mirrors
  *  `isTerminalStatus` in agent-tools/plans/set-status.ts) and the settled
@@ -81,6 +82,19 @@ export interface CompletedPlanItem {
    *  operator-home harness for a plan that actually lives in a different one.
    *  Optional/omitted is safe — the guard degrades to a best-effort resolve. */
   harnessSlug?: string | null;
+  /**
+   * EI-18677799334390930: the coordination identity (ownerId) of whoever actually
+   * flipped the plan item to done/dropped, when the trigger's ctx resolved one —
+   * best-effort, may be absent (e.g. a system-triggered flip). Threaded into the
+   * synthetic completionRef this module stamps on every linked work-item it
+   * terminal-closes, so a leader reading a reconcile-sourced close can route a
+   * correction straight to the actor who caused it, instead of broadcasting to the
+   * fleet asking "who flipped this plan item?" (the exact operational gap the
+   * originating bug report hit — `coord:send` to RECONCILER_SYSTEM_ACTOR itself
+   * always fails with `unknown_recipient`, since the reconciler is a mechanism, not
+   * an addressable agent).
+   */
+  triggeredBy?: string | null;
 }
 
 export interface ReconcileLinkedWorkItemsResult {
@@ -238,12 +252,13 @@ export async function reconcileLinkedWorkItemsForPlanItem(
       // Best-effort: a clear failure here must not block the transition attempt.
       await clearStaleLaneHold(wi, planLaneBlockerRef(item.planSlug, item.itemId));
       try {
+        const attribution = item.triggeredBy ? ` (plan item flipped by ${item.triggeredBy})` : '';
         await setWorkItemState(wi.id, targetState, {
           harness: wi.harness ?? undefined,
-          by: 'system:plan-item-reconcile',
+          by: RECONCILER_SYSTEM_ACTOR,
           completionRef: `Reconciled via plan-item status: ${item.planSlug}#${item.itemId} ${
             terminalStatus === 'dropped' ? 'dropped' : 'completed'
-          }`,
+          }${attribution}`,
         });
         out.reconciled.push(wi.id);
       } catch {
