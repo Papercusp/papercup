@@ -438,10 +438,31 @@ export async function reclaimStaleWorkItemClaims(
            -- (b) SPAWN-EXIT: a confirmed-terminal spawn's alias — no grace.
            OR EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by)
            -- (c) STALLED (flag-gated): holder ALIVE but not progressing in the window.
+           -- WI-6015 (EI-18691099450966094 trap c): `last_progress_at` is bumped
+           -- ONLY by an explicit work_items:checkpoint call, so a holder doing
+           -- substantial real work (edits, tool calls, tests) WITHOUT
+           -- checkpointing reads as "no progress" here forever — confirmed live:
+           -- a holder with 138 tool_invocations in the prior 8 minutes still had
+           -- last_progress_at NULL. Mirror the watchdog's already-landed EI-14763
+           -- `holder_active` guard (collectStalledClaimSignals) HERE, on the
+           -- actual reclaim action, not just the reporting signal: a holder with
+           -- ANY agent_activity/tool_invocations row inside the stalled window is
+           -- demonstrably working and must never be reclaimed as stalled, no
+           -- matter how stale last_progress_at/taken_at read.
            OR ( ${includeStalled ? sql`(
                   EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
                   AND f.taken_by <> 'improvement-runner'
                   AND (now() - COALESCE(f.last_progress_at, f.taken_at)) > make_interval(secs => ${stalledSec})
+                  AND NOT EXISTS (
+                    SELECT 1 FROM harness_shared.agent_activity aa
+                     WHERE aa.owner_id = f.taken_by
+                       AND aa.created_at > now() - make_interval(secs => ${stalledSec})
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM harness_shared.tool_invocations ti
+                     WHERE ti.coord_owner_id = f.taken_by
+                       AND ti.invoked_at > now() - make_interval(secs => ${stalledSec})
+                  )
                 )` : sql`false`} )
          )
          FOR UPDATE OF f SKIP LOCKED

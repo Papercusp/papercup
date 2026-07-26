@@ -24513,8 +24513,16 @@ body:has(.operator-panel) {
 /* P-004: the "⚠ N locks / M unread" summary chip — D-002's one deliberate
  * duplicate, reusing .hud__chip's look but as a real button (it opens +
  * scrolls the dossier rail), so reset the button chrome the base chip class
- * doesn't need to account for. */
-.oracle-session-footer-detail-chip {
+ * doesn't need to account for. Also resets .hud__chip's `display:
+ * inline-flex` to `inline-block` — WebKitGTK (the Tauri desktop webview)
+ * ignores flex/grid set on the <button> element itself (same class of bug as
+ * .hud__card / .hud__count — see hud.css), and this button's content is
+ * plain text (no children that need flex alignment), so inline-block alone
+ * reproduces the same visual with no inner span required. The `button.`
+ * prefix raises specificity above the plain-class `.hud__chip` rule so this
+ * override wins regardless of CSS source order. */
+button.oracle-session-footer-detail-chip {
+  display: inline-block;
   cursor: pointer;
   font: inherit;
   appearance: none;

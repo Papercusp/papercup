@@ -293,10 +293,12 @@ describe('EI-18690730909662985 — `word` op is a whole-word title match, not gl
   const globExcludeP2p: FilterNode = { not: { field: 'title', op: 'glob', value: '*p2p*' } };
 
   it('`word` does NOT exclude a title that merely CONTAINS "p2p" inside a larger word (the false-positive glob hits)', () => {
+    // No standalone "p2p" word here — only nested inside "nonp2p" (the fleet's own name),
+    // exactly the live collision: fleet "nonp2p-bug-drain-0725"'s title-glob exclusion
+    // refused a member's self-claim of a meta-bug ABOUT that fleet.
     const item = issueItem({
       id: 'EI-18690730909662985',
-      title:
-        'Fleet claim-spec\'s p2p title-exclusion regex substring-matches "nonp2p" — a member can\'t self-claim any item whose title mentions the fleet\'s own name',
+      title: "Fleet nonp2p-bug-drain-0725's own claim-spec can't self-claim a meta-bug naming the fleet",
       kind: 'bug',
     });
     expect(matchesWorkItemClaimSpec(item, specOf(wordExcludeP2p))).toBe(true); // admitted
