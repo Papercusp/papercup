@@ -50,6 +50,9 @@ function fakeStoredFact(input: AssertFactInput): AgentFact {
     scopeRef: input.scopeRef ?? null,
     key: input.key,
     body: clampFactBody(input.body),
+    // Echo the caller's tier rather than hardcoding null: this stand-in models
+    // the persisted row, so it should reflect whatever the assert was given.
+    confidence: input.confidence ?? null,
     sourceRef: input.sourceRef ?? null,
     audienceScope: input.audienceScope ?? null,
     sourceProvenance: input.sourceProvenance ?? null,

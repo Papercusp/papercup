@@ -727,6 +727,16 @@ function rowToFact(r: AgentFactRow): AgentFact {
     sourceRef: r.source_ref,
     audienceScope: r.audience_scope ?? null,
     sourceProvenance: parseFactSourceProvenance(r.source_provenance),
+    // NOT YET PERSISTED. `confidence` reached the AgentFact contract + the
+    // write-side TTL/lint behaviour (EI-18681964809855890) but never reached
+    // the SCHEMA: harness_shared.agent_facts has no `confidence` column, so
+    // neither the INSERT nor any SELECT above carries it and there is nothing
+    // to read back. `null` is therefore the CORRECT value here, and it is the
+    // documented "unset ⇒ renders unbadged" case on the interface — not a
+    // placeholder. Closing that round-trip needs a migration + a matching
+    // update to the federated wire-shape in
+    // sync/hyperbee/projections/agent-facts.ts; tracked on WI-6052.
+    confidence: null,
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,

@@ -1089,6 +1089,26 @@ def _extract_heredoc_bodies(cmd):
     return bodies
 
 
+# EI-18700825865251498: the quoted-literal scan below used to pair ANY quote
+# CHARACTER with the next one of EITHER type (`['"]([^'"\n]+)['"]`), so it
+# didn't recognize that a single `'` and a double `"` don't close each
+# other's string. An apostrophe/contraction inside one string literal (or a
+# nested differently-quoted literal, e.g. an f-string embedding `d['key']`)
+# then paired with an unrelated quote character further along the SAME line,
+# and the plain code text sitting between them — never a string literal at
+# all — became the "matched path". Repro: a for-loop line whose real string
+# literals were fine on their own produced the garbage capture
+# " in ln: ln = ln.replace(" (a code fragment, not a path) purely because a
+# quote of the other type appeared somewhere else on that line; that fragment
+# contains a `.` (from `ln.replace`), which is all `_resolve_write_target`
+# needs to resolve it — against a cwd inside the tree — into a false in-tree
+# hit. Matching quotes of the SAME type only (two alternatives, not one
+# type-agnostic class) fixes this: a stray apostrophe with no matching `'`
+# later on the line simply fails to open a match at all, instead of being
+# closed by an unrelated `"`.
+_QUOTED_LITERAL_RE = re.compile(r'"([^"\n]*)"|\'([^\'\n]*)\'')
+
+
 def _payload_literal_tree_path(body, canon, cwd):
     # Every quoted token inside `body` that looks path-like (contains `/` or
     # a dotted extension) and carries no shell/interpreter expansion syntax
@@ -1097,7 +1117,8 @@ def _payload_literal_tree_path(body, canon, cwd):
     # call the literal is an argument TO — an interpreter invocation with
     # inline code is unusual enough on its own that a literal tree path
     # anywhere in that code is signal, per the guard's own honest-limit note.
-    for raw in re.findall(r'''['"]([^'"\n]+)['"]''', body):
+    for _m in _QUOTED_LITERAL_RE.finditer(body):
+        raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
         if any(ch in raw for ch in ('$', '`', '{', '}')):
             continue
         if not re.search(r'[./]', raw):

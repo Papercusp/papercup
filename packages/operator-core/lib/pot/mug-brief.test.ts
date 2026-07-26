@@ -255,6 +255,7 @@ test('renderMugBrief — owner steering renders an AUTHORITATIVE section BEFORE 
         directive: 'Finish the in-flight backlog before anything new.',
         eligiblePlans: ['plan-x', 'plan-y'],
         eligibleHives: [],
+        createWakeSuppressPlans: [],
         includeUnplannedWork: true,
         pauseNewWork: false,
         pausedUntil: null,
@@ -273,7 +274,7 @@ test('renderMugBrief — owner steering renders an AUTHORITATIVE section BEFORE 
 
 test('renderMugBrief — pauseNewWork renders a HARD "PAUSED — start NO new work" line', () => {
   const out = renderMugBrief({
-    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: [], includeUnplannedWork: true, pauseNewWork: true, pausedUntil: null } },
+    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: [], createWakeSuppressPlans: [], includeUnplannedWork: true, pauseNewWork: true, pausedUntil: null } },
   });
   assert.match(out, /\*\*PAUSED — start NO new work\.\*\*/);
   assert.match(out, /drive existing placements to terminal/i);
@@ -287,6 +288,7 @@ test('renderMugBrief — EI-8277: a resume-sounding directive with pauseNewWork 
         directive: 'Gate hold lifted at 2026-07-05T21:36Z; resume normal autonomous placement',
         eligiblePlans: [],
         eligibleHives: [],
+        createWakeSuppressPlans: [],
         includeUnplannedWork: true,
         pauseNewWork: true,
         pausedUntil: null,
@@ -305,6 +307,7 @@ test('renderMugBrief — EI-8277: no nudge when pauseNewWork already matches the
         directive: 'Gate hold lifted; resume normal autonomous placement',
         eligiblePlans: [],
         eligibleHives: [],
+        createWakeSuppressPlans: [],
         includeUnplannedWork: true,
         pauseNewWork: false,
         pausedUntil: null,
@@ -317,14 +320,14 @@ test('renderMugBrief — EI-8277: no nudge when pauseNewWork already matches the
 test('renderMugBrief — a pausedUntil renders the deadline (deterministic from the floor value, not the clock)', () => {
   const until = Date.parse('2026-06-15T12:00:00.000Z');
   const out = renderMugBrief({
-    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: [], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: until } },
+    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: [], createWakeSuppressPlans: [], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: until } },
   });
   assert.match(out, /PAUSED until 2026-06-15T12:00:00\.000Z — start NO new work/);
 });
 
 test('renderMugBrief — eligiblePots renders the placement-scope line (B-04 round-2)', () => {
   const out = renderMugBrief({
-    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: ['pot-a', 'pot-b'], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: null } },
+    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: ['pot-a', 'pot-b'], createWakeSuppressPlans: [], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: null } },
   });
   assert.match(out, /### Owner steering directive/);
   assert.match(out, /Eligible hives ONLY:.*pot-a, pot-b/);
@@ -343,6 +346,7 @@ test('renderMugBrief — throttle knobs (P-006/P-009) render a self-governance e
         directive: null,
         eligiblePlans: [],
         eligibleHives: [],
+        createWakeSuppressPlans: [],
         includeUnplannedWork: true,
         pauseNewWork: false,
         pausedUntil: null,
@@ -372,6 +376,7 @@ test('renderMugBrief — a throttle-only steering still renders the section (no 
         directive: null,
         eligiblePlans: [],
         eligibleHives: [],
+        createWakeSuppressPlans: [],
         includeUnplannedWork: true,
         pauseNewWork: false,
         pausedUntil: null,

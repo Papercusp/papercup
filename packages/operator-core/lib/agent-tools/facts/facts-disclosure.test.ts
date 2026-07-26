@@ -16,6 +16,7 @@ const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   scopeRef: 'papercusp',
   key: 'k',
   body,
+  confidence: null,
   sourceRef: 'wi:EI-10951',
   audienceScope: null,
   sourceProvenance: null,

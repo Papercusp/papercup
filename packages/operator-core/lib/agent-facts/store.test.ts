@@ -190,6 +190,7 @@ describe('renderFactsFold', () => {
     scopeRef: 'mug',
     key: 'k',
     body: 'WI-1439 is owner-residue — exclude from the placeable frontier',
+    confidence: null,
     sourceRef: 'WI-1574',
     audienceScope: null,
     sourceProvenance: null,
