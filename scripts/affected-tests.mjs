@@ -241,7 +241,31 @@ function submoduleDirtyPaths() {
 }
 
 const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-const workspaces = expandWorkspaces(root.workspaces);
+
+// STANDALONE packages: real, tested packages in this tree that are deliberately NOT
+// npm workspaces, so `root.workspaces` cannot see them and this script used to run
+// ZERO of their tests — including in the green gate, whose greenCmd is
+// `npm run test:affected` (release-config.ts). papercusp-desktop is the case that
+// exposed it (WI-6077): a git SUBMODULE with its own dependency graph and lockfile,
+// whose ~20 guard suites (deb/sidecar/reaper/config + the live-federation rig
+// selftests) protect exactly the release+packaging paths this repo ships, and none
+// of them were reachable from any gate.
+//
+// ⚠ DO NOT "tidy" these into root.workspaces. Adding a submodule there changes npm's
+// install/hoisting topology for a package that manages its own deps — a far larger and
+// riskier change than the gate gap it would close. They are joined to the graph HERE
+// instead, and marked `standalone` so spawnSpecFor() runs them with cwd=<dir> rather
+// than `npm run --workspace <dir>`, which only resolves for genuine workspaces.
+//
+// Its Rust tests are NOT included and must not be: a separate cargo step already runs
+// them (`test:rust` -> scripts/report-cargo-tests.mjs). The gap was only the JS/shell side.
+const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop'];
+
+const workspaces = [
+  ...expandWorkspaces(root.workspaces),
+  ...STANDALONE_PACKAGE_DIRS.filter((d) => existsSync(join(ROOT, d, 'package.json'))),
+];
+const standaloneDirs = new Set(STANDALONE_PACKAGE_DIRS);
 
 function expandWorkspaces(patterns) {
   const out = [];
@@ -268,7 +292,13 @@ const wsByName = new Map();
 const wsByDir = new Map();
 for (const dir of workspaces) {
   const pkg = JSON.parse(readFileSync(join(ROOT, dir, 'package.json'), 'utf8'));
-  const meta = { dir, name: pkg.name, scripts: pkg.scripts || {}, deps: depsOf(pkg) };
+  const meta = {
+    dir,
+    name: pkg.name,
+    scripts: pkg.scripts || {},
+    deps: depsOf(pkg),
+    standalone: standaloneDirs.has(dir),
+  };
   wsByName.set(pkg.name, meta);
   wsByDir.set(dir, meta);
 }
@@ -528,8 +558,28 @@ if (!npmAvailable) {
  */
 function spawnSpecFor(t, extraArgs) {
   if (npmAvailable) {
+    // A STANDALONE package (see STANDALONE_PACKAGE_DIRS) is not an npm workspace, so
+    // `--workspace <dir>` does not resolve for it — npm fails with "No workspaces
+    // found". Run it the way a human would: `npm run <script>` with cwd = its own dir,
+    // which resolves against ITS package.json and its own node_modules/.bin.
+    if (t.ws.standalone) {
+      const argv = ['run', t.script, ...(extraArgs.length ? ['--', ...extraArgs] : [])];
+      return { cmd: 'npm', argv, cwd: join(ROOT, t.ws.dir) };
+    }
     const argv = ['run', t.script, '--workspace', t.ws.dir, ...(extraArgs.length ? ['--', ...extraArgs] : [])];
     return { cmd: 'npm', argv, cwd: ROOT };
+  }
+  // No npm (a PACKAGED install — see the note above). The direct-exec fallback below
+  // reproduces `npm run` for a script that is a single binary invocation; a standalone
+  // package's aggregate `test` is a composite shell line (`npm run a && npm run b`),
+  // which that fallback cannot honor. Fail LOUDLY rather than silently verifying
+  // nothing — the stated principle for this whole code path.
+  if (t.ws.standalone) {
+    throw new Error(
+      `${t.ws.name} :: "${t.script}" is a standalone package's aggregate script and needs npm, ` +
+        `which is unavailable here (packaged install?). Run its suites individually, or skip ` +
+        `standalone packages in this environment — do not treat this as a pass.`,
+    );
   }
   const script = (t.ws.scripts[t.script] ?? '').trim();
   const [tool, ...rest] = script.split(/\s+/);

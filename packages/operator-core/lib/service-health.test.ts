@@ -15,7 +15,9 @@ import {
   BG_HOST_STALE_MS,
   SUPERVISED_PROCESSES,
   supervisedProcesses,
-  applyDesktopDebounce,
+  applyDownConfirmDebounce,
+  DOWN_CONFIRM_TICKS,
+  STAGING_API_DOWN_CONFIRM_TICKS,
   DESKTOP_DOWN_CONFIRM_TICKS,
   type ProbeResult,
 } from './service-health';
@@ -86,7 +88,11 @@ describe('diffHealth', () => {
 // cause is diffHealth's own single-bad-tick-no-debounce design. Require
 // DESKTOP_DOWN_CONFIRM_TICKS consecutive bad ticks before `desktop` is
 // reported down to any consumer; a single good tick clears the streak.
-describe('applyDesktopDebounce (EI-18144960689849695 — desktop flap damping)', () => {
+// WI-6146/P-013 generalized this from a desktop-only special case to the
+// per-probe DOWN_CONFIRM_TICKS map. The desktop cases below are UNCHANGED in
+// substance — they are the parity guard proving the generalization did not
+// alter the behaviour EI-18144960689849695 shipped.
+describe('applyDownConfirmDebounce (EI-18144960689849695 — flap damping)', () => {
   const down = (note = 'ipc socket unreachable'): ProbeResult => ({
     name: 'desktop',
     up: false,
@@ -100,9 +106,9 @@ describe('applyDesktopDebounce (EI-18144960689849695 — desktop flap damping)',
   const other: ProbeResult = { name: 'operator', up: true, status: 200, latencyMs: 1 };
 
   it('a single bad tick is SUPPRESSED (reported up, annotated) below the confirm threshold', () => {
-    const { results, nextStreak } = applyDesktopDebounce([down(), other], 0);
-    expect(nextStreak).toBe(1);
-    expect(nextStreak).toBeLessThan(DESKTOP_DOWN_CONFIRM_TICKS);
+    const { results, nextStreaks } = applyDownConfirmDebounce([down(), other], {});
+    expect(nextStreaks.desktop).toBe(1);
+    expect(nextStreaks.desktop).toBeLessThan(DESKTOP_DOWN_CONFIRM_TICKS);
     const d = results.find((r) => r.name === 'desktop')!;
     expect(d.up).toBe(true);
     expect(d.note).toMatch(/unconfirmed down \(streak 1\/2\)/);
@@ -112,37 +118,84 @@ describe('applyDesktopDebounce (EI-18144960689849695 — desktop flap damping)',
   });
 
   it('reports genuinely DOWN once the streak reaches the confirm threshold', () => {
-    const first = applyDesktopDebounce([down()], 0);
-    const second = applyDesktopDebounce([down()], first.nextStreak);
-    expect(second.nextStreak).toBe(DESKTOP_DOWN_CONFIRM_TICKS);
+    const first = applyDownConfirmDebounce([down()], {});
+    const second = applyDownConfirmDebounce([down()], first.nextStreaks);
+    expect(second.nextStreaks.desktop).toBe(DESKTOP_DOWN_CONFIRM_TICKS);
     const d = second.results.find((r) => r.name === 'desktop')!;
     expect(d.up).toBe(false);
     expect(d.note).toBe('ipc socket unreachable'); // unmodified once confirmed
   });
 
   it('a single good tick immediately clears an in-progress streak (fast-recover, slow-alarm)', () => {
-    const { nextStreak: afterOneBad } = applyDesktopDebounce([down()], 0);
-    expect(afterOneBad).toBe(1);
-    const { results, nextStreak } = applyDesktopDebounce([up], afterOneBad);
-    expect(nextStreak).toBe(0);
+    const { nextStreaks: afterOneBad } = applyDownConfirmDebounce([down()], {});
+    expect(afterOneBad.desktop).toBe(1);
+    const { results, nextStreaks } = applyDownConfirmDebounce([up], afterOneBad);
+    expect(nextStreaks.desktop).toBeUndefined();
     expect(results.find((r) => r.name === 'desktop')).toEqual(up); // pass-through, no rewrite
   });
 
   it('a legitimately-absent desktop (present:false) resets the streak and passes through untouched', () => {
-    const { results, nextStreak } = applyDesktopDebounce([absent], 2);
-    expect(nextStreak).toBe(0);
+    const { results, nextStreaks } = applyDownConfirmDebounce([absent], { desktop: 2 });
+    expect(nextStreaks.desktop).toBeUndefined();
     expect(results.find((r) => r.name === 'desktop')).toEqual(absent);
   });
 
   it('no desktop entry in the batch → streak resets, results untouched', () => {
-    const { results, nextStreak } = applyDesktopDebounce([other], 3);
-    expect(nextStreak).toBe(0);
+    const { results, nextStreaks } = applyDownConfirmDebounce([other], { desktop: 3 });
+    expect(nextStreaks.desktop).toBeUndefined();
     expect(results).toEqual([other]);
   });
 
   it('does not touch non-desktop entries even while desktop is being debounced', () => {
-    const { results } = applyDesktopDebounce([other, down()], 0);
+    const { results } = applyDownConfirmDebounce([other, down()], {});
     expect(results.find((r) => r.name === 'operator')).toEqual(other);
+  });
+
+  // ── WI-6146 / P-013: the generalization itself ──
+
+  const stagingDown: ProbeResult = {
+    name: 'staging-api',
+    up: false,
+    status: null,
+    latencyMs: 1,
+    note: 'connect ECONNREFUSED',
+  };
+
+  it('damps staging-api too: a dev:restart blip is suppressed, a real outage confirms', () => {
+    const first = applyDownConfirmDebounce([stagingDown], {});
+    expect(first.nextStreaks['staging-api']).toBe(1);
+    expect(first.results[0].up).toBe(true); // restart blip — not yet an outage
+    expect(first.results[0].note).toMatch(/unconfirmed down \(streak 1\/2\)/);
+
+    const second = applyDownConfirmDebounce([stagingDown], first.nextStreaks);
+    expect(second.nextStreaks['staging-api']).toBe(STAGING_API_DOWN_CONFIRM_TICKS);
+    expect(second.results[0].up).toBe(false); // sustained — a real DOWN still alarms
+    expect(second.results[0].note).toBe('connect ECONNREFUSED');
+  });
+
+  it('an UNDAMPED endpoint keeps single-tick alerting (damping is opt-in)', () => {
+    const operatorDown: ProbeResult = { name: 'operator', up: false, status: null, latencyMs: 1 };
+    const { results, nextStreaks } = applyDownConfirmDebounce([operatorDown], {});
+    expect(results[0].up).toBe(false); // reported DOWN immediately, no suppression
+    expect(results[0]).toEqual(operatorDown); // untouched
+    expect(nextStreaks.operator).toBeUndefined(); // no streak carried for undamped names
+  });
+
+  it('tracks streaks per name independently', () => {
+    const step1 = applyDownConfirmDebounce([down(), stagingDown], {});
+    expect(step1.nextStreaks).toEqual({ desktop: 1, 'staging-api': 1 });
+    // desktop recovers, staging-api stays down → only staging-api's streak advances
+    const step2 = applyDownConfirmDebounce([up, stagingDown], step1.nextStreaks);
+    expect(step2.nextStreaks.desktop).toBeUndefined();
+    expect(step2.nextStreaks['staging-api']).toBe(2);
+    expect(step2.results.find((r) => r.name === 'staging-api')!.up).toBe(false);
+  });
+
+  it('every DOWN_CONFIRM_TICKS name is a real probe target (no damping a name nothing emits)', () => {
+    const probeNames = new Set([...HEALTH_ENDPOINTS.map((e) => e.name), 'desktop']);
+    for (const name of Object.keys(DOWN_CONFIRM_TICKS)) {
+      expect(probeNames.has(name)).toBe(true);
+    }
   });
 });
 

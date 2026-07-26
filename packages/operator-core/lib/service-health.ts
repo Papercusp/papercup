@@ -72,6 +72,23 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   { name: 'scout', url: 'http://127.0.0.1:3350/' },
   // code-server probe removed (owner directive 2026-07-07): code-server is no
   // longer bundled or spawned, so :8082 was a permanent false-DOWN.
+  //
+  // WI-6146 / P-013 (D-010, plan bash-to-tool-substitution-2026-07-26): the
+  // :3170 staging operator. CLAUDE.md tells every agent to verify a
+  // server-side edit with `dev:restart { target:'staging' }` and then "probe
+  // :3170" — but :3170 was not in this list, so the documented workflow had
+  // NO tool form and 80 curl atoms went to bash for want of anywhere else to
+  // ask. Same path as the `operator` entry above because it is the same
+  // operator build on the staging port (verified live: 200 in ~2ms).
+  //
+  // NOT `onDemand`: unlike `vite`, this is a persistent systemd unit
+  // (papercup-staging-api, already in SUPERVISED_PROCESSES as 'staging-api'),
+  // so a sustained down is a REAL signal and must still alarm. It is instead
+  // flap-damped via DOWN_CONFIRM_TICKS, because `dev:restart` restarts it
+  // several times a day by design — see STAGING_API_DOWN_CONFIRM_TICKS.
+  // The name matches its SUPERVISED_PROCESSES entry so the probe and the
+  // supervision row join, per this file's naming convention.
+  { name: 'staging-api', url: 'http://127.0.0.1:3170/api/desktop/version' },
 ];
 
 export interface ProbeResult {
@@ -697,46 +714,88 @@ export function diffHealth(
  * unchanged) — i.e. a real multi-tick flap unrelated to either previously-
  * fixed cause, self-clearing with no operator action.
  *
- * Fix: require `DESKTOP_DOWN_CONFIRM_TICKS` CONSECUTIVE bad ticks before
- * `desktop` is reported down to any consumer (coord broadcast, the
- * `collectServiceDownSignals` watchdog EI-filer, `dev:service_health`) — a
- * single good tick clears the streak immediately (fast-recover, slow-alarm:
- * standard flap damping). This generalizes the intent already on record in
- * the EI-18131725582506957 comment instead of adding a fourth narrow
- * per-cause patch. Scoped to `desktop` only (not every monitored service) —
- * it is the one with a documented, repeated flapping history; HTTP endpoints
- * that the fleet relies on for fast down-detection (e.g. :3170 staging,
- * watched by `dev:restart` drains) keep today's single-tick alerting.
+ * Fix: require N CONSECUTIVE bad ticks before a name is reported down to any
+ * consumer (coord broadcast, the `collectServiceDownSignals` watchdog
+ * EI-filer, `dev:service_health`) — a single good tick clears the streak
+ * immediately (fast-recover, slow-alarm: standard flap damping). This
+ * generalizes the intent already on record in the EI-18131725582506957
+ * comment instead of adding a fourth narrow per-cause patch.
+ *
+ * WI-6146 / P-013 (plan bash-to-tool-substitution-2026-07-26) generalized it
+ * the rest of the way, from a desktop-only special case to the per-probe
+ * `DOWN_CONFIRM_TICKS` map below, when `staging-api` (:3170) became a probed
+ * endpoint. Damping is OPT-IN per name; everything absent from that map keeps
+ * today's single-tick alerting.
+ *
+ * NB — this SUPERSEDES a claim that used to live here, namely that ":3170
+ * staging, watched by `dev:restart` drains" must keep single-tick detection.
+ * That was written while :3170 was not probed at all, and it does not survive
+ * checking: `dev:restart`'s drain drains LOCK HOLDERS (it acquires
+ * exclusive(<target>-server) and drains agents currently using the resource)
+ * and never reads `lastServiceHealth()` or any probe result. Nothing
+ * operational depends on single-tick detection of :3170, so the restart-blip
+ * false alarms it would produce buy nothing. See `staging-api` in
+ * HEALTH_ENDPOINTS for the measured restart rate behind that call.
  */
 export const DESKTOP_DOWN_CONFIRM_TICKS = 2;
 
-let desktopDownStreak = 0;
+/**
+ * WI-6146: `staging-api` is restarted on purpose by `dev:restart
+ * { target:'staging' }` whenever an agent loads a server-side edit — measured
+ * at 7 (2026-07-25: 11) restarts/day in `harness_shared.audit_log`, i.e. a
+ * handful of seconds of expected downtime several times a day. Two ticks
+ * distinguishes that blip from a real outage; a genuinely dead :3170 still
+ * alarms one tick later.
+ */
+export const STAGING_API_DOWN_CONFIRM_TICKS = 2;
 
 /**
- * Pure debounce step for the `desktop` entry only: increments/resets a
- * consecutive-bad-tick streak and, while under `confirmTicks`, rewrites the
- * exposed result to `up: true` (annotated) so downstream consumers never see
- * the not-yet-confirmed blip. Exported for direct unit testing.
+ * Per-probe flap damping: consecutive bad ticks required before a name is
+ * reported DOWN. A name ABSENT from this map is undamped (1 tick) — that is
+ * the default, so adding an endpoint never silently delays its alerting.
+ * Keyed by `ProbeResult.name` rather than hung off `EndpointSpec` because the
+ * portless probes (`desktop`, bg-host-ticker, the sidecars) have no spec.
  */
-export function applyDesktopDebounce(
+export const DOWN_CONFIRM_TICKS: Readonly<Record<string, number>> = {
+  desktop: DESKTOP_DOWN_CONFIRM_TICKS,
+  'staging-api': STAGING_API_DOWN_CONFIRM_TICKS,
+};
+
+let downStreaks: Record<string, number> = {};
+
+/**
+ * Pure debounce step: for each damped probe, increments/resets a
+ * consecutive-bad-tick streak and, while under its confirm threshold,
+ * rewrites the exposed result to `up: true` (annotated) so downstream
+ * consumers never see the not-yet-confirmed blip. Undamped names pass
+ * through untouched. Exported for direct unit testing.
+ *
+ * A name missing from `results` this tick drops out of the returned streaks
+ * (equivalent to a reset), matching the pre-generalization behaviour.
+ */
+export function applyDownConfirmDebounce(
   results: ProbeResult[],
-  streak: number,
-  confirmTicks = DESKTOP_DOWN_CONFIRM_TICKS,
-): { results: ProbeResult[]; nextStreak: number } {
-  const idx = results.findIndex((r) => r.name === 'desktop');
-  if (idx === -1) return { results, nextStreak: 0 };
-  const r = results[idx];
-  if (r.present === false || r.up) return { results, nextStreak: 0 };
-  const nextStreak = streak + 1;
-  if (nextStreak >= confirmTicks) return { results, nextStreak };
-  const suppressed: ProbeResult = {
-    ...r,
-    up: true,
-    note: `unconfirmed down (streak ${nextStreak}/${confirmTicks}) — ${r.note ?? 'no detail'}`,
-  };
-  const next = results.slice();
-  next[idx] = suppressed;
-  return { results: next, nextStreak };
+  streaks: Record<string, number>,
+  confirmTicksByName: Readonly<Record<string, number>> = DOWN_CONFIRM_TICKS,
+): { results: ProbeResult[]; nextStreaks: Record<string, number> } {
+  const nextStreaks: Record<string, number> = {};
+  let out = results;
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const confirmTicks = confirmTicksByName[r.name] ?? 1;
+    // Undamped, recovered, or legitimately absent → no streak to carry.
+    if (confirmTicks <= 1 || r.present === false || r.up) continue;
+    const streak = (streaks[r.name] ?? 0) + 1;
+    nextStreaks[r.name] = streak;
+    if (streak >= confirmTicks) continue; // confirmed — expose the real DOWN
+    if (out === results) out = results.slice();
+    out[i] = {
+      ...r,
+      up: true,
+      note: `unconfirmed down (streak ${streak}/${confirmTicks}) — ${r.note ?? 'no detail'}`,
+    };
+  }
+  return { results: out, nextStreaks };
 }
 
 // Cross-tick last-known state. A module singleton (not PG): on operator
@@ -776,8 +835,8 @@ export function lastServiceHealthAt(): number | null {
  */
 export async function runServiceHealthTick(): Promise<{ checked: number; transitions: HealthTransition[] }> {
   const rawResults = await probeAll();
-  const { results, nextStreak } = applyDesktopDebounce(rawResults, desktopDownStreak);
-  desktopDownStreak = nextStreak;
+  const { results, nextStreaks } = applyDownConfirmDebounce(rawResults, downStreaks);
+  downStreaks = nextStreaks;
   lastResults = results;
   lastResultsAt = Date.now();
   const { transitions, next } = diffHealth(lastHealth, results);
@@ -807,5 +866,5 @@ export function _resetServiceHealthState(): void {
   lastHealth = {};
   lastResults = [];
   lastResultsAt = null;
-  desktopDownStreak = 0;
+  downStreaks = {};
 }
