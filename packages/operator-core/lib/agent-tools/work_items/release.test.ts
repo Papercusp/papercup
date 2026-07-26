@@ -136,6 +136,35 @@ describe('work_items:release holder guard (EI-7588)', () => {
   });
 });
 
+// WI-6031: a federated (origin='remote') issue-family row's release is intentionally
+// no-op'd by the engineer_issues_view_dml trigger (EI-7833) — every OTHER visible
+// predicate (unassigned, ids match) looks eligible, so the caller needs a NAMED signal
+// instead of the generic release_failed catch-all.
+describe('work_items:release remote-origin guard (WI-6031)', () => {
+  it('a remote-origin issue fails with release_blocked_remote_origin, not the generic release_failed', async () => {
+    releaseM.mockResolvedValue(null as never); // engineer_issues_view_dml no-ops the UPDATE
+    getM.mockResolvedValue({ id: 'EI-REMOTE', family: 'issue', origin: 'remote', assignee: null } as never);
+    const b = await body({ id: 'EI-REMOTE' });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-REMOTE', error: 'release_blocked_remote_origin' });
+    expect(b.results[0].hint).toMatch(/federated.*origin='remote'/);
+    expect(b.results[0].workItem).toMatchObject({ id: 'EI-REMOTE', origin: 'remote' });
+  });
+
+  it('a local-origin item with no other cause still falls back to the generic release_failed', async () => {
+    releaseM.mockResolvedValue(null as never);
+    getM.mockResolvedValue({ id: 'WI-ODD', family: 'feature', origin: 'local', assignee: null } as never);
+    const b = await body({ id: 'WI-ODD' });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-ODD', error: 'release_failed' });
+  });
+
+  it('a remote-origin FEATURE-family row (origin only meaningful for issues) still falls back to release_failed', async () => {
+    releaseM.mockResolvedValue(null as never);
+    getM.mockResolvedValue({ id: 'F-1', family: 'feature', origin: 'remote', assignee: null } as never);
+    const b = await body({ id: 'F-1' });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'F-1', error: 'release_failed' });
+  });
+});
+
 // WI-4198: force is a CHECKED override — authority/liveness guard + reason + audit + notify.
 describe('work_items:release force guard (WI-4198)', () => {
   it('an authorized cross-holder force releases, reports `forced`, and audits + notifies', async () => {

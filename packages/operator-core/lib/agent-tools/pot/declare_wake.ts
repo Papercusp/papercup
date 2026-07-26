@@ -191,7 +191,15 @@ export default defineTool({
     // declared before persisting: her declared events REPLACE her own custom set
     // (re-tunable, exactly as pot:start's ENSURE mode preserves her tuning), but the
     // demand defaults always survive while the pot is started.
-    const subs = withDefaultPotWakeSubscriptions(declared);
+    // EI-13608: fold the owner's create-wake plan-suppression list (if any) into
+    // the built-in defaults before ensuring them onto her declared set — fail-soft
+    // (readCreateWakeSuppressPlans never throws), so an unreadable steering store
+    // just means no suppression, same as before this option existed.
+    const suppressCreateWakePlans = await readCreateWakeSuppressPlans(workspaceId, installSlug);
+    const subs = withDefaultPotWakeSubscriptions(
+      declared,
+      defaultPotEventSubscriptions({ suppressCreateWakePlans }),
+    );
     const eventRules = await setPotEventSubscriptions(workspaceId, subs);
     const defaultsEnsured = subs.length - declared.length;
 

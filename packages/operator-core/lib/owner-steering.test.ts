@@ -97,6 +97,7 @@ describe('getOwnerSteering — decode + defaults', () => {
       decomposition: null,
       modelOverrides: null,
       federatedPriming: null,
+      createWakeSuppressPlans: [],
     } satisfies OwnerSteering);
   });
 
@@ -229,6 +230,31 @@ describe('setOwnerSteering — write fan-out', () => {
       [OWNER_STEERING_KEYS.eligiblePlans, ['p1']],
       [OWNER_STEERING_KEYS.pauseNewWork, false],
       [OWNER_STEERING_KEYS.pausedUntil, 123],
+    ]);
+  });
+
+  it('EI-13608: decodes + writes createWakeSuppressPlans (default [], round-trips a list)', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    expect((await getOwnerSteering('ws', 'hive')).createWakeSuppressPlans).toEqual([]);
+
+    await setOwnerSteering('ws', 'hive', {
+      createWakeSuppressPlans: ['p2p-public-release-remaining-lanes-2026-07-16'],
+    });
+    expect(setHiveSetting).toHaveBeenCalledWith(
+      {
+        workspaceId: 'ws',
+        potHomeSlug: 'hive',
+        settingKey: OWNER_STEERING_KEYS.createWakeSuppressPlans,
+        value: ['p2p-public-release-remaining-lanes-2026-07-16'],
+      },
+      undefined,
+    );
+
+    listHiveSettings.mockResolvedValue(
+      rows({ [OWNER_STEERING_KEYS.createWakeSuppressPlans]: ['p2p-public-release-remaining-lanes-2026-07-16'] }),
+    );
+    expect((await getOwnerSteering('ws', 'hive')).createWakeSuppressPlans).toEqual([
+      'p2p-public-release-remaining-lanes-2026-07-16',
     ]);
   });
 

@@ -28,7 +28,7 @@ export default defineTool({
   name: 'pot:set-steering',
   profile: 'engineer',
   description:
-    'Set the owner steering the Mug reads on every wake (the 👑 Mug tab writes through this): a focus `directive`, `eligiblePlans` / `eligiblePots` (what it may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxCups`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), and the federated Blender priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Mug so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.',
+    'Set the owner steering the Mug reads on every wake (the 👑 Mug tab writes through this): a focus `directive`, `eligiblePlans` / `eligiblePots` (what it may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxCups`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), the federated Blender priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`), and `createWakeSuppressPlans` (plan slugs whose unassigned creates should not wake the Mug — EI-13608). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Mug so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.',
   guidance: {
     when: 'Steering the Mug from the owner surface — focus it on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Mug tab is the UI for this.',
     notWhen:
@@ -133,6 +133,11 @@ export default defineTool({
       .nullable()
       .optional()
       .describe('SESSION Blender federated-priming override: nearby foreign-elites surfaced per ideation cycle plus crowded/empty niche counts for the repulsion map. 0 disables each subsection; null / {} clears it back to the blueprint default.'),
+    createWakeSuppressPlans: z
+      .array(z.string().min(1).max(200))
+      .max(200)
+      .optional()
+      .describe('EI-13608: plan slugs whose UNASSIGNED work_items:create should NOT wake the Mug — for a KNOWN cup-forbidden plan (e.g. gated on a live 2-machine rig or an owner decision) that re-homes items unassigned and would otherwise burn a no-op survey+decide cycle per create. Does not affect eligibility/placement. [] clears it (default: no suppression).'),
     pauseNewWork: z
       .boolean()
       .optional()
@@ -177,6 +182,7 @@ export default defineTool({
     if (args.decomposition !== undefined) patch.decomposition = args.decomposition;
     if (args.modelOverrides !== undefined) patch.modelOverrides = args.modelOverrides;
     if (args.federatedPriming !== undefined) patch.federatedPriming = args.federatedPriming;
+    if (args.createWakeSuppressPlans !== undefined) patch.createWakeSuppressPlans = args.createWakeSuppressPlans;
     if (args.pauseNewWork !== undefined) patch.pauseNewWork = args.pauseNewWork;
     if (args.pausedUntil !== undefined) patch.pausedUntil = args.pausedUntil;
     if (args.clear !== undefined) patch.clear = args.clear;

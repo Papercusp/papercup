@@ -7,7 +7,7 @@
  * `when` DataConditions actually match/reject the producer events end-to-end
  * through @papercusp/rules (the P-003 chain minus the dispatcher).
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const stateStore = new Map<string, unknown>();
 vi.mock('../operator-state-pg', () => ({
@@ -17,6 +17,14 @@ vi.mock('../operator-state-pg', () => ({
     stateStore.set(key, next);
     return next;
   },
+}));
+
+// EI-13608: mutable per-test owner-steering stub — readCreateWakeSuppressPlans
+// (called from armDefaultPotWakeSubscriptions when `installSlug` is passed) reads
+// through this instead of the real hive_settings-backed store.
+let mockCreateWakeSuppressPlans: string[] = [];
+vi.mock('../owner-steering', () => ({
+  getOwnerSteering: async () => ({ createWakeSuppressPlans: mockCreateWakeSuppressPlans }),
 }));
 
 import { matchReactions, _resetReactionsForTests } from '../events/registry';
@@ -51,6 +59,70 @@ describe('defaultPotEventSubscriptions', () => {
     const subs = defaultPotEventSubscriptions();
     expect(subs.map((s) => s.on)).toEqual(['plans:start', 'work_items:create', 'coord:escalate']);
     for (const s of subs) expect(s.when).toBeDefined();
+  });
+
+  it('omits the plan-suppression clause when no suppress list is passed (byte-identical default)', () => {
+    const withNoOpt = defaultPotEventSubscriptions();
+    const withEmpty = defaultPotEventSubscriptions({ suppressCreateWakePlans: [] });
+    const createSub = withNoOpt.find((s) => s.on === 'work_items:create');
+    expect(createSub?.when).not.toHaveProperty('args.plan_item.slug');
+    expect(withEmpty.find((s) => s.on === 'work_items:create')?.when).toEqual(createSub?.when);
+  });
+
+  it('adds an args.plan_item.slug notIn clause when a suppress list is passed (EI-13608)', () => {
+    const subs = defaultPotEventSubscriptions({ suppressCreateWakePlans: ['p2p-public-release-remaining-lanes-2026-07-16'] });
+    const createSub = subs.find((s) => s.on === 'work_items:create');
+    expect(createSub?.when).toMatchObject({
+      'args.plan_item.slug': { notIn: ['p2p-public-release-remaining-lanes-2026-07-16'] },
+    });
+  });
+});
+
+describe('EI-13608 — plan-scoped create-wake suppression (end-to-end match)', () => {
+  const armSuppressed = (plans: string[]) =>
+    setPotEventSubscriptions(WS, defaultPotEventSubscriptions({ suppressCreateWakePlans: plans }));
+
+  const evWithArgs = (tool: string, args: unknown, data: unknown): ToolInvocationEvent => ({
+    tool,
+    args: args as Record<string, unknown>,
+    result: { ok: true, data },
+    ctx: {} as ToolInvocationEvent['ctx'],
+  });
+
+  beforeEach(async () => {
+    await armSuppressed(['forbidden-plan']);
+  });
+
+  it('suppresses the wake for an unassigned create linked to a named forbidden plan', () => {
+    const e = evWithArgs(
+      'work_items:create',
+      { plan_item: { slug: 'forbidden-plan', item: 'P-001' } },
+      { ok: true, workItem: { id: 'WI-1' } },
+    );
+    expect(potWakeMatches(e)).toHaveLength(0);
+  });
+
+  it('still wakes for an unassigned create with NO plan_item at all (undefined notIn list ⇒ still fires)', () => {
+    const e = evWithArgs('work_items:create', {}, { ok: true, workItem: { id: 'WI-2' } });
+    expect(potWakeMatches(e)).toHaveLength(1);
+  });
+
+  it('still wakes for an unassigned create linked to a DIFFERENT (non-suppressed) plan', () => {
+    const e = evWithArgs(
+      'work_items:create',
+      { plan_item: { slug: 'some-other-plan', item: 'P-001' } },
+      { ok: true, workItem: { id: 'WI-3' } },
+    );
+    expect(potWakeMatches(e)).toHaveLength(1);
+  });
+
+  it('a PRE-ASSIGNED create on the forbidden plan is still skipped by EI-1850 regardless', () => {
+    const e = evWithArgs(
+      'work_items:create',
+      { plan_item: { slug: 'forbidden-plan', item: 'P-001' } },
+      { ok: true, workItem: { id: 'WI-4', assignee: 'cup-1' } },
+    );
+    expect(potWakeMatches(e)).toHaveLength(0);
   });
 });
 
@@ -104,6 +176,27 @@ describe('armDefaultPotWakeSubscriptions', () => {
     const { added, rules } = await armDefaultPotWakeSubscriptions(WS, { mode: 'ensure' });
     expect(added).toBe(3);
     expect(rules).toBe(3);
+  });
+});
+
+describe('armDefaultPotWakeSubscriptions + installSlug (EI-13608 owner-steering wiring)', () => {
+  afterEach(() => {
+    mockCreateWakeSuppressPlans = [];
+  });
+
+  it('folds owner-steering createWakeSuppressPlans into the built-in work_items:create default', async () => {
+    mockCreateWakeSuppressPlans = ['forbidden-plan'];
+    await armDefaultPotWakeSubscriptions(WS, { mode: 'replace', installSlug: 'papercusp' });
+    const createSub = (await readPotWakeState(WS)).subscriptions.find((s) => s.on === 'work_items:create');
+    expect(createSub?.when).toMatchObject({ 'args.plan_item.slug': { notIn: ['forbidden-plan'] } });
+  });
+
+  it('omitting installSlug never looks up owner-steering (no suppression, unchanged behavior)', async () => {
+    mockCreateWakeSuppressPlans = ['forbidden-plan']; // would apply if (wrongly) consulted
+    const { rules } = await armDefaultPotWakeSubscriptions(WS, { mode: 'replace' });
+    expect(rules).toBe(3);
+    const createSub = (await readPotWakeState(WS)).subscriptions.find((s) => s.on === 'work_items:create');
+    expect(createSub?.when).not.toHaveProperty('args.plan_item.slug');
   });
 });
 

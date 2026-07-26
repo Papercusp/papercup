@@ -29,6 +29,22 @@ import { activeWorkspaceId } from '../workspace-registry';
 export const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'] as const;
 export type FactScope = (typeof FACT_SCOPES)[number];
 
+/**
+ * EI-18681964809855890 (owner-filed 2026-07-26): a fact's EVIDENCE STRENGTH —
+ * orthogonal to `scope` (what it's about) the same way `audienceScope` is
+ * orthogonal to who receives it. `facts:assert` used to render a peer's single
+ * unreplicated run at IDENTICAL authority to a verified, replicated
+ * measurement — this is the dimension that was missing. NULL (unset) is the
+ * legacy/default shape and renders exactly as before (no badge) —
+ * fully backward compatible; only an explicit 'provisional'/'suspected'/
+ * 'verified' changes fold rendering + TTL defaulting.
+ *   verified    — you (or the platform) confirmed it directly / replicated it.
+ *   provisional — a single run / one data point; plausible but unreplicated.
+ *   suspected   — a hunch / a peer's hedge relayed second-hand; weakest tier.
+ */
+export const FACT_CONFIDENCE_LEVELS = ['verified', 'provisional', 'suspected'] as const;
+export type FactConfidence = (typeof FACT_CONFIDENCE_LEVELS)[number];
+
 // EI-18681984560352579 / migration 664 (2026-07-26): raised 500 -> 1200. The
 // old 500-char cap was silently amputating the OPERATIVE clause of facts
 // (which fold VERBATIM as binding context) — observed 3x in one session,
@@ -42,6 +58,15 @@ export const FACT_BODY_MAX_CHARS = 1200;
  *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
 export const FACT_PROVENANCE_QUOTE_CHARS = 160;
 export const FACT_DEFAULT_TTL_SEC = 7 * 24 * 3600;
+/** EI-18681964809855890: a 'provisional' fact (one unreplicated run) defaults
+ *  to a much shorter TTL than a plain/'verified' conclusion — "stale
+ *  certainty is worse than stale doubt" (the owner's framing). Overridable
+ *  via an explicit `ttlSec` like every other default here. */
+export const FACT_PROVISIONAL_DEFAULT_TTL_SEC = 24 * 3600;
+/** 'suspected' (the weakest tier — a hunch / second-hand hedge) decays faster
+ *  still; it should be gone from the fold well before anyone could mistake it
+ *  for settled fact. */
+export const FACT_SUSPECTED_DEFAULT_TTL_SEC = 6 * 3600;
 /** Per-(scope,ref) live-fact cap — oldest-updated evicted past this. */
 export const FACTS_PER_SCOPE_CAP = 50;
 /** Fold budget: max facts per scope-selector in one fold read. */
@@ -114,6 +139,9 @@ export interface AgentFact {
   audienceScope: string | null;
   /** P-007: assert-time verification stamp for a typed sourceRef; null otherwise. */
   sourceProvenance: FactSourceProvenance | null;
+  /** EI-18681964809855890: evidence-strength; null = unset (legacy/default,
+   *  renders unbadged — see {@link renderFactsFold}). */
+  confidence: FactConfidence | null;
   createdBy: string;
   updatedAt: string;
   expiresAt: string;
@@ -134,6 +162,9 @@ export interface AssertFactInput {
   /** P-007: the assert-time verification stamp (resolved by the tool layer —
    *  the store persists it verbatim). */
   sourceProvenance?: FactSourceProvenance | null;
+  /** EI-18681964809855890: evidence-strength (see {@link FactConfidence}).
+   *  Omitted/null = unset — legacy shape, unbadged in folds, ordinary TTL. */
+  confidence?: FactConfidence | null;
   createdBy: string;
   ttlSec?: number;
   workspaceId?: string;

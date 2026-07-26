@@ -271,15 +271,18 @@ export const curlHealthProbe: SubstitutionPair = {
  * port's probe. If P-013 later adds a socket table and this pair is re-derived,
  * that branch is where the coverage will start appearing.
  *
- * `^ss(?:\s|$)` rather than `^ss\b`: the corpus contains JavaScript heredocs
- * with `ss._blocked = true` and `ss = makeStore()`, which `\b` happily matched.
- * The harness surfaced them as "atoms" the first time this pattern ran — a
- * pattern that claims a language's variable names is not claiming an intent.
+ * `^ss(?:\s+-|\s*$)` rather than `^ss\b`: the corpus contains JavaScript
+ * heredocs with `ss._blocked=true` and `ss=makeStore()`, which `\b` happily
+ * matched. The harness surfaced them as "atoms" the first time this pattern ran
+ * — a pattern that claims a language's variable names is not claiming an
+ * intent. Requiring a FLAG (or nothing at all) after the verb is what separates
+ * the two: every one of the 16 distinct real `ss` shapes in the corpus is
+ * `ss -<flags>`, while an assignment is always followed by `=`.
  */
 export const listeningPorts: SubstitutionPair = {
   id: 'service.listening-ports',
   intentLabel: 'listening-socket-query',
-  bashPattern: /^(?:ss|netstat)(?:\s|$)|^lsof\b[^\n]*\s-{1,2}i/,
+  bashPattern: /^(?:ss|netstat)(?:\s+-|\s*$)|^lsof\b[^\n]*\s-{1,2}i/,
   toolName: 'dev:service_health',
   advisoryText:
     'dev:service_health returns no listening sockets and no owning pid — its per-service `url` is the address it probed, not proof of a bound listener. There is no tool form for ss/lsof/netstat today (P-013 tracks adding one); keep using them.',
