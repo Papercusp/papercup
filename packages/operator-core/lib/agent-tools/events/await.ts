@@ -628,6 +628,23 @@ export default defineTool({
             ...(args.fromMsg ? { resolved_from_msg: args.fromMsg } : {}),
             ...(patternAwait ? { pattern: true } : {}),
             ...(announcedGate ? { announced_gate: announcedGate } : {}),
+            ...(noKnownEmitterForAnnouncedGate
+              ? {
+                  no_known_emitter: true,
+                  no_known_emitter_advice:
+                    `The gate "${eventKey}" is DECLARED (by ${announcedGate?.announcedBy ?? 'someone'}) but matches no ` +
+                    `catalogued emitter family and has never fired on this host. An announcement only proves someone ` +
+                    `WANTS this key to fire — it does NOT guarantee anything ever will. Confirm the party who owns the ` +
+                    `completion this gate represents will actually call events:emit on this EXACT key, or you may be ` +
+                    `waiting forever.` +
+                    (noKnownEmitterForAnnouncedGate.catalogNearMiss.length > 0
+                      ? ` Possible near-miss catalogued key(s) — did you mean one of these instead? ${noKnownEmitterForAnnouncedGate.catalogNearMiss.join(', ')} (see events:catalog for their full templates).`
+                      : ''),
+                  ...(noKnownEmitterForAnnouncedGate.catalogNearMiss.length > 0
+                    ? { catalog_near_miss: noKnownEmitterForAnnouncedGate.catalogNearMiss }
+                    : {}),
+                }
+              : {}),
             ...(nearMiss
               ? {
                   near_miss: nearMiss,

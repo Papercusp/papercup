@@ -36,6 +36,13 @@ vi.mock('../../events/await/store', () => ({
     fires: 0,
     lastFiredAt: null,
   })),
+  // EI-18701276960172209: the announced-gate latch/no-known-emitter checks read
+  // these — default to "no announcement, no near-miss" so every PRE-EXISTING test
+  // above is unaffected (previously this silently threw and was swallowed by the
+  // handler's own try/catch; mocking explicitly is just more honest about it).
+  // Overridden per-test below to exercise the announced-gate path.
+  findAnnouncementsForKey: vi.fn(async () => [] as unknown[]),
+  findNearMissKeys: vi.fn(async () => [] as unknown[]),
 }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
 vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
@@ -69,7 +76,7 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 
 import awaitTool from './await';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { registerAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence } from '../../events/await/store';
+import { registerAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence, findAnnouncementsForKey } from '../../events/await/store';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
@@ -392,6 +399,91 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(out.ok).toBe(true);
     expect(out.await_id).toBe(99); // the await still registers — the guard is advisory
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:orphanKey'));
+    warn.mockRestore();
+  });
+});
+
+describe('EI-18701276960172209 — a self-declared gate with no known emitter is not automatically legitimate', () => {
+  const declaredRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 1,
+    subscriberId: 'su-declarer',
+    eventKey: 'green-gate-verdict',
+    firedAt: null,
+    firedReason: null,
+    causalGeneration: 1,
+    expectedCondition: null,
+    note: 'waiting on green-checkpoint',
+    ...overrides,
+  });
+
+  it('the live incident: an announced gate matching no catalog family AND never fired gets no_known_emitter + a catalog near-miss suggestion', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([declaredRow()] as never);
+    // probeKeyFireEvidence default mock already returns fires:0 (no evidence).
+    const out = await call({ event: 'green-gate-verdict' });
+
+    expect(out.announced_gate).toMatchObject({ announcedBy: 'su-declarer' });
+    expect(out.no_known_emitter).toBe(true);
+    expect(out.no_known_emitter_advice).toMatch(/does NOT guarantee anything ever will/);
+    expect(out.catalog_near_miss).toEqual(expect.arrayContaining(['release:green', 'green-checkpoint:red']));
+    expect(out.no_known_emitter_advice).toMatch(/release:green/);
+
+    // Still registers — advisory only, never a refusal.
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT warn when the announced key genuinely matches a catalog family (a legitimate pair-emit gate on a real key)', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({ eventKey: 'release:green:my-pipeline' }),
+    ] as never);
+    const out = await call({ event: 'release:green:my-pipeline' });
+    expect(out.no_known_emitter).toBeUndefined();
+    expect(out.catalog_near_miss).toBeUndefined();
+  });
+
+  it('does NOT warn when the announced key has real fire history even though it is uncatalogued (EI-18676056143796303 evidence still wins)', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([declaredRow()] as never);
+    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
+      prefix: 'green-gate-verdict',
+      exact: true,
+      distinctKeys: 1,
+      fires: 2,
+      lastFiredAt: '2026-07-25T00:00:00Z',
+    });
+    const out = await call({ event: 'green-gate-verdict' });
+    expect(out.no_known_emitter).toBeUndefined();
+  });
+
+  it('does NOT warn on an ALREADY-FIRED gate (that path returns already_fired and never reaches this check)', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({ firedAt: '2026-07-26T09:53:00Z', firedReason: 'event' }),
+    ] as never);
+    const out = await call({ event: 'green-gate-verdict' });
+    expect(out.already_fired).toBe(true);
+    expect(out.no_known_emitter).toBeUndefined();
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('is advisory-only, never blocking — still registers when there is no catalog near-miss at all', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({ eventKey: 'totally-invented-key-xyz' }),
+    ] as never);
+    const out = await call({ event: 'totally-invented-key-xyz' });
+    expect(out.no_known_emitter).toBe(true);
+    expect(out.catalog_near_miss).toBeUndefined();
+    expect(out.no_known_emitter_advice).not.toMatch(/Possible near-miss/);
+    expect(out.ok).toBe(true);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('is fail-soft: a discovery timeout leaves no_known_emitter unset rather than a false claim', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([declaredRow()] as never);
+    vi.mocked(readInstalledUnitEvents).mockRejectedValueOnce(new Error('plugin host cold'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await call({ event: 'green-gate-verdict' });
+    expect(out.no_known_emitter).toBeUndefined();
+    expect(out.ok).toBe(true);
     warn.mockRestore();
   });
 });

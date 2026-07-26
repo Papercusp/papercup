@@ -50,6 +50,8 @@ import { listStartedPots } from './started';
 import { workItemCheckpointScope } from '../work-item-checkpoint';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { isClaimHoldParked } from '../work-items';
+import { reconcileLinkedWorkItemsForPlanItem } from '../plan-items/reconcile-linked-work-items';
+import { getPlanRow } from '../agent-tools/plans/source';
 
 // ── vocabulary (the canonical work-item terminal + stuck states) ──────────────
 
@@ -172,6 +174,43 @@ const CHECKPOINT_TERMINAL_MARKERS: ReadonlyArray<RegExp> = [
 export function checkpointDeclaresTerminal(checkpoint: string | null | undefined): boolean {
   if (!checkpoint) return false;
   return CHECKPOINT_TERMINAL_MARKERS.some((re) => re.test(checkpoint));
+}
+
+/**
+ * WI-6038 — the SAME "declares terminal but the unit row hasn't caught up yet"
+ * shape as {@link checkpointDeclaresTerminal}, for a SECOND, independently
+ * observed source of lag: a work-item minted from (or stamped to) a plan item
+ * via `convert.ts` carries `payload.plan_item: { plan_slug, item_id }`. When that
+ * plan item reaches `done`/`dropped`, the unit's OWN terminal flip is applied by
+ * a SEPARATE, periodic sweep (`reconcileOrphanedPlanItemWorkItems`, home routine
+ * `system:plan-item-orphan-reconcile`) — not by this watchdog's 30s tick. That
+ * sweep can lag the plan item's actual completion by a long time (observed live,
+ * 2026-07-26: 5 units whose linked plan items completed 2026-07-11/07-13/07-15
+ * sat non-terminal until the orphan sweep finally reconciled them, MINUTES after
+ * THIS watchdog's own candidate-discovery evaluated the exact same units — cup
+ * long dead, unit not-yet-terminal — and fired a "re-place or recover" page for
+ * work that was, in substance, already finished). Reads the raw jsonb payload
+ * (already deserialized by postgres-js) OR the JSON-stringified-scalar shape
+ * `normalizedPayloadExpr` guards against on the SQL side (createWorkItem's
+ * `::jsonb`-cast-of-a-string quirk — see reconcile-linked-work-items.ts). Pure;
+ * exported for the decider unit tests.
+ */
+export function readPlanItemStamp(payload: unknown): { planSlug: string; itemId: string } | null {
+  let obj: unknown = payload;
+  if (typeof obj === 'string') {
+    try {
+      obj = JSON.parse(obj);
+    } catch {
+      return null;
+    }
+  }
+  if (!obj || typeof obj !== 'object') return null;
+  const raw = (obj as Record<string, unknown>).plan_item;
+  if (!raw || typeof raw !== 'object') return null;
+  const planSlug = (raw as Record<string, unknown>).plan_slug;
+  const itemId = (raw as Record<string, unknown>).item_id;
+  if (typeof planSlug === 'string' && typeof itemId === 'string') return { planSlug, itemId };
+  return null;
 }
 
 /** The system actor that owns watchdog-fired escalations. */
@@ -406,6 +445,13 @@ export interface PlacementObservation {
    *  liveness-only-misread class). When true the placement is RECONCILED (a single
    *  state-reconciliation nudge to the Mug), never re-placed. Default false. */
   checkpointDeclaresTerminal?: boolean;
+  /** WI-6038 — the unit is stamped `payload.plan_item` and that LINKED plan item has
+   *  already reached done/dropped, but the unit's own terminal flip is still pending
+   *  the separate periodic orphan-reconcile sweep (see {@link readPlanItemStamp}'s doc
+   *  comment). Same shape as checkpointDeclaresTerminal: self-heal (trigger the same
+   *  reconciler inline) instead of paging the Mug to re-place a cup for finished work.
+   *  Default false. */
+  planItemDeclaresTerminal?: boolean;
   now: number;
 }
 
@@ -416,6 +462,10 @@ export type PlacementDecision =
   // EI-15232 — the cup's checkpoint declares terminal/blocked but the unit state is
   // still open (a silently-failed flip): reconcile the state, do NOT re-place a cup.
   | { kind: 'checkpoint-reconcile'; reason: string }
+  // WI-6038 — the unit's linked plan item is already done/dropped but the unit's own
+  // terminal flip is still pending the periodic orphan-reconcile sweep: self-heal via
+  // the SAME reconciler that sweep uses, do NOT re-place a cup.
+  | { kind: 'plan-item-reconcile'; reason: string }
   | { kind: 'recover'; nextFailCount: number; nextInfraLossCount: number; reason: string; infraAttributed?: boolean }
   | { kind: 'debounced' }
   | { kind: 'stale-recovery'; reason: string }
@@ -530,6 +580,21 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
       reason:
         'cup checkpoint declares terminal/blocked but the unit state is still open (stale-open) — ' +
         'reconcile the state, do not re-place',
+    };
+  }
+
+  // WI-6038 — the SAME shape as the checkpoint check above, for a second independent
+  // lag source: the unit's linked plan item already reached done/dropped, but the
+  // unit's own flip is only ever applied by the separate periodic orphan-reconcile
+  // sweep, which can lag by a long time. Checked BEFORE every failed-loss path so a
+  // dead-cup + already-terminal-plan-item unit never fires a recovery wake or bumps a
+  // curse counter for work that is, in substance, already finished.
+  if (obs.planItemDeclaresTerminal) {
+    return {
+      kind: 'plan-item-reconcile',
+      reason:
+        'linked plan item already reached done/dropped but the unit state is still open ' +
+        '(orphan-reconcile lag) — self-heal via the plan-item reconciler, do not re-place',
     };
   }
 
@@ -1321,6 +1386,39 @@ export async function reconcileOnePot(
       }
     }
 
+    // WI-6038 — batch-resolve each NON-terminal candidate's linked plan item (via the
+    // payload.plan_item stamp), grouped by plan so each plan is read once. A unit whose
+    // plan item already reached done/dropped is not genuinely stalled — its own flip is
+    // just pending the separate periodic orphan-reconcile sweep. Mirrors the checkpoint
+    // batch-read immediately above; see readPlanItemStamp's doc comment for why this
+    // second lag source exists independent of the checkpoint one.
+    const planItemStampById = new Map<string, { planSlug: string; itemId: string }>();
+    for (const unitId of ids) {
+      const u = unitById.get(unitId);
+      if (isUnitTerminal(u?.status)) continue;
+      const stamp = readPlanItemStamp(u?.payload);
+      if (stamp) planItemStampById.set(unitId, stamp);
+    }
+    const planItemTerminalById = new Map<string, boolean>();
+    if (planItemStampById.size > 0) {
+      const unitIdsByPlan = new Map<string, string[]>();
+      for (const [unitId, stamp] of planItemStampById) {
+        const arr = unitIdsByPlan.get(stamp.planSlug) ?? [];
+        arr.push(unitId);
+        unitIdsByPlan.set(stamp.planSlug, arr);
+      }
+      for (const [planSlug, unitIdsForPlan] of unitIdsByPlan) {
+        const harnessHint = unitById.get(unitIdsForPlan[0])?.harness_slug ?? undefined;
+        const row = await getPlanRow(planSlug, { harnessSlug: harnessHint ?? undefined }).catch(() => null);
+        if (!row) continue; // fail-closed: cannot confirm status → never treat as terminal.
+        const statusById = new Map(row.items.map((i) => [i.id, i.status]));
+        for (const unitId of unitIdsForPlan) {
+          const st = statusById.get(planItemStampById.get(unitId)!.itemId);
+          if (st === 'done' || st === 'dropped') planItemTerminalById.set(unitId, true);
+        }
+      }
+    }
+
     for (const unitId of ids) {
       const unit = unitById.get(unitId);
       const existing = placeById.get(unitId);
@@ -1370,6 +1468,7 @@ export async function reconcileOnePot(
         // isUnitParkedForReconcile's doc comment for why this must never be status-only again.
         unitParked: isUnitParkedForReconcile(unit?.status, unit?.payload),
         checkpointDeclaresTerminal: checkpointDeclaredById.get(unitId) === true, // EI-15232 — stale-open reconcile
+        planItemDeclaresTerminal: planItemTerminalById.get(unitId) === true, // WI-6038 — orphan-reconcile lag
         now,
       };
       const decision = evaluatePlacement(obs, cfg);
@@ -1524,6 +1623,75 @@ export async function reconcileOnePot(
             detail: decision.reason,
           });
           break;
+        case 'plan-item-reconcile': {
+          // WI-6038 — self-heal INLINE via the same reconciler the periodic orphan
+          // sweep uses, rather than paging the Mug to re-place a cup for work that is
+          // already, in substance, done. Best-effort: reconcileLinkedWorkItemsForPlanItem
+          // never throws (internal try/catch) and re-reads the plan item's CURRENT
+          // status itself, so a race that un-terminals it between our batch read above
+          // and now is handled safely (it just skips, `healed` stays false below).
+          const stamp = planItemStampById.get(unitId);
+          let healed = false;
+          if (stamp) {
+            const result = await reconcileLinkedWorkItemsForPlanItem({
+              planSlug: stamp.planSlug,
+              itemId: stamp.itemId,
+              harnessSlug: base.harnessSlug,
+            }).catch(() => null);
+            healed = result?.reconciled.includes(unitId) === true;
+          }
+          if (healed) {
+            // Mirrors the 'completed' case: the reconciler just terminal-flipped the
+            // unit directly, so converge the placement ledger + fire the same
+            // downstream unblock wake a natural completion would.
+            if (existing?.escalation_msg_id) {
+              await suppressCursedEscalation(existing.escalation_msg_id, unitId);
+            }
+            await upsertPlacement(sql, {
+              ...base,
+              status: 'completed',
+              failCount: obs.failCount,
+              infraLossCount: obs.infraLossCount,
+              lastLossSpawnId: null,
+              disposition: 'plan-item-reconcile',
+            });
+            out.push({
+              workspaceId,
+              installSlug,
+              workItemId: unitId,
+              decision: 'plan-item-reconcile',
+              detail: decision.reason,
+            });
+            if (base.harnessSlug) {
+              const downstream = await countNonTerminalDownstream(sql, workspaceId, base.harnessSlug, unitId);
+              if (downstream > 0) {
+                await fireUnblockWake(workspaceId, mugOwner, unitId, base.harnessSlug, downstream);
+                out.push({
+                  workspaceId,
+                  installSlug,
+                  workItemId: unitId,
+                  decision: 'unblocked',
+                  detail: `${downstream} downstream`,
+                });
+              }
+            }
+          } else {
+            // Couldn't confirm the heal (raced back off terminal, in-flight elsewhere,
+            // or a link the reconciler couldn't resolve) — track as recovering WITHOUT
+            // paging, same debounce protection checkpoint-reconcile uses, so a
+            // genuinely-stuck unit still surfaces via the stale-recovery backstop.
+            await upsertPlacement(sql, {
+              ...base,
+              status: 'recovering',
+              failCount: obs.failCount,
+              infraLossCount: obs.infraLossCount,
+              lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
+              disposition: 'plan-item-reconcile',
+              bumpRecovery: true,
+            });
+          }
+          break;
+        }
         case 'recover':
           await upsertPlacement(sql, {
             ...base,

@@ -15,6 +15,7 @@ import {
   familyKeyPrefix,
   keyMatchesCatalog,
   findRequiredParamPrefixMatch,
+  findCatalogNearMiss,
   type EventCatalogEntry,
 } from './catalog';
 
@@ -299,5 +300,38 @@ describe('EI-13089 — findRequiredParamPrefixMatch (the family-prefix-missing-r
     expect(findRequiredParamPrefixMatch('work-item:claimable')).toBeUndefined();
     expect(findRequiredParamPrefixMatch('overwatch:surface-landed')).toBeUndefined();
     expect(findRequiredParamPrefixMatch('')).toBeUndefined();
+  });
+});
+
+describe('EI-18701276960172209 — findCatalogNearMiss (catalog "did you mean" suggestion)', () => {
+  it('the live incident: "green-gate-verdict" suggests both green-checkpoint families', () => {
+    // The actual repro: an agent declared this key expecting green-checkpoint to fire
+    // it; the REAL keys are release:green:<pipeline> / green-checkpoint:red:<pipeline>.
+    const hits = findCatalogNearMiss('green-gate-verdict');
+    expect(hits).toContain('release:green');
+    expect(hits).toContain('green-checkpoint:red');
+  });
+
+  it('a genuinely unrelated invented key suggests nothing', () => {
+    expect(findCatalogNearMiss('overwatch:surface-landed')).toEqual([]);
+    expect(findCatalogNearMiss('totally-made-up-xyz')).toEqual([]);
+  });
+
+  it('an empty/short key never matches (short tokens are too generic to mean anything)', () => {
+    expect(findCatalogNearMiss('')).toEqual([]);
+    expect(findCatalogNearMiss('id ws x')).toEqual([]); // every token < 4 chars
+  });
+
+  it('a key that already matches the catalog exactly can still surface siblings, but callers only invoke this when keyMatchesCatalog is already false', () => {
+    // Documents intended usage, not a hard contract: this helper does not itself
+    // check keyMatchesCatalog — callers (events:await) only call it after confirming
+    // the key is unmatched, so this just proves the token-overlap logic in isolation.
+    expect(findCatalogNearMiss('release:green:papercusp')).toContain('release:green');
+  });
+
+  it('respects the `limit` cap and dedupes repeated prefixes', () => {
+    const hits = findCatalogNearMiss('work-item-done-lock-grant', EVENT_CATALOG, 1);
+    expect(hits.length).toBeLessThanOrEqual(1);
+    expect(new Set(hits).size).toBe(hits.length);
   });
 });
