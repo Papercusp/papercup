@@ -429,6 +429,63 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(ckptLine.endsWith('…')).toBe(true);
     expect(out).toContain('(no checkpoint written — read the item via work_items:get before acting)');
   });
+
+  describe('EI-18684357744098956 — a checkpoint superseded by later session activity flags as SUPERSEDED', () => {
+    const now = Date.parse('2026-07-26T05:30:00.000Z');
+    const brief = (checkpointUpdatedAtMs: number | null): CarryBrief => ({
+      ownerId: 'x',
+      loop: null,
+      heldItems: [
+        {
+          id: 'WI-5943',
+          title: null,
+          body: null,
+          harness: 'h',
+          checkpoint: 'ZERO CODE HAS BEEN WRITTEN. No file is edited.',
+          checkpointUpdatedAtMs,
+        },
+      ],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    });
+
+    it('flags a checkpoint written well before the latest known session activity', () => {
+      const checkpointAt = now - 10 * 60_000; // written 10m before the boundary
+      const out = renderCarryBriefColdExtras(brief(checkpointAt), { sessionActivityMs: now });
+      expect(out).toContain('⚠ SUPERSEDED');
+      expect(out).toContain('verify via');
+      // The stale text still rides along (never dropped) so nothing is lost —
+      // just no longer rendered with the authority of plain fact.
+      expect(out).toContain('ZERO CODE HAS BEEN WRITTEN');
+    });
+
+    it('does NOT flag a checkpoint written at (or just before) the boundary — normal write latency', () => {
+      const checkpointAt = now - 5_000; // 5s before — ordinary flush latency
+      const out = renderCarryBriefColdExtras(brief(checkpointAt), { sessionActivityMs: now });
+      expect(out).not.toContain('SUPERSEDED');
+      expect(out).toContain('checkpoint: ZERO CODE HAS BEEN WRITTEN');
+    });
+
+    it('does NOT flag when no sessionActivityMs is supplied — purely additive, backward compatible', () => {
+      const out = renderCarryBriefColdExtras(brief(now - 60 * 60_000));
+      expect(out).not.toContain('SUPERSEDED');
+    });
+
+    it('does NOT flag when the item has no checkpointUpdatedAtMs (unknown write time)', () => {
+      const out = renderCarryBriefColdExtras(brief(null), { sessionActivityMs: now });
+      expect(out).not.toContain('SUPERSEDED');
+    });
+
+    it('renderCarryBriefText forwards sessionActivityMs through to the held-items flag', () => {
+      const fullBrief: CarryBrief = { ...brief(now - 10 * 60_000), loop: null };
+      const out = renderCarryBriefText(fullBrief, now, { sessionActivityMs: now });
+      expect(out).toContain('⚠ SUPERSEDED');
+    });
+  });
 });
 
 describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)', () => {

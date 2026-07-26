@@ -22,11 +22,24 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_bas
 import { collectStalledClaimSignals } from './watchdog';
 
 let fx: BaselineCoordFixture;
-const WS = 'default';
+// EI-18683737202696167: WS is deliberately NOT 'default'. listFleetAssignments (the reader
+// `harness_shared.fleet_assignment` is exposed through elsewhere, e.g.
+// assignments.integration.test.ts) always OR's in `workspace_id = 'default'` regardless of
+// the caller's own workspace filter (EI-295, for plan-store-default-scoped claims) — so
+// seeding under 'default' here made every row this file inserts (`su-held-holder`,
+// `su-stalled-holder`, …) visible to ANY other concurrent consumer of the same shared
+// baseline-coord fixture's reads, independent of the fixture mutex's timing. A workspace id
+// outside that always-included bucket makes this file's rows structurally invisible to
+// other files' workspace-scoped reads.
+const WS = 'sct-collector-test-ws';
 const H = 'papercup';
 
+// Scoped DELETEs (by WS / the SCT-TEST-% feature-id namespace), never a blunt TRUNCATE of
+// the globally-shared coord_presence table — a TRUNCATE wipes every row from every OTHER
+// concurrent consumer of the same fixture (any file, any fleet agent, any moment), not just
+// this file's own seed (EI-18683737202696167).
 async function truncateAll(): Promise<void> {
-  await fx.admin`TRUNCATE harness_shared.coord_presence`;
+  await fx.admin`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS}`;
   await fx.admin`DELETE FROM harness_shared.work_items WHERE feature_id LIKE 'SCT-TEST-%'`;
   await fx.admin`DELETE FROM harness_shared.carry_notes WHERE scope LIKE 'workitem:%SCT-TEST-%'`;
 }
@@ -64,6 +77,9 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  // EI-18683737202696167: clean up this file's own seeded rows BEFORE releasing the
+  // shared-fixture mutex, so the next waiter never inherits leftover SCT-TEST-* rows.
+  await truncateAll().catch(() => {});
   await fx?.dispose();
 });
 

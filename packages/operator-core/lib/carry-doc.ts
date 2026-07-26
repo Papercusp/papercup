@@ -433,6 +433,26 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   };
 }
 
+/**
+ * EI-18684357744098956: the epoch ms of the MOST RECENT timestamped tail turn —
+ * "session active until" for the held-item checkpoint staleness comparison
+ * ({@link renderCarryBriefText}'s `sessionActivityMs`). The tail is not
+ * guaranteed chronologically monotonic by every reader, so this takes the max
+ * over all entries rather than trusting the last one; null when nothing in the
+ * tail carries a parseable timestamp (no transcript, or every ts absent) — the
+ * comparison is then simply skipped, never guessed. Pure.
+ */
+function latestTailTurnMs(tail: ReadonlyArray<CarryDocTailTurn>): number | null {
+  let max: number | null = null;
+  for (const t of tail) {
+    if (!t.ts) continue;
+    const ms = Date.parse(t.ts);
+    if (!Number.isFinite(ms)) continue;
+    if (max == null || ms > max) max = ms;
+  }
+  return max;
+}
+
 // ── Continuation / last-turn handling (P-010, pure) ─────────────────────────────
 
 const CONT_PREVIEW_CAP = 240;
@@ -786,7 +806,15 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
     renderIdentity(doc.identity),
     renderSessionMode(doc.sessionMode),
   ];
-  const briefBody = renderCarryBriefText(doc.brief, now).trim();
+  // EI-18684357744098956: the carry doc (unlike the bare brief) also carries the
+  // verbatim tail — the one place a held item's checkpoint write-time can be
+  // compared against DEMONSTRABLE subsequent session activity. Feed the latest
+  // tail-turn timestamp through so a checkpoint the session outgrew (wrote, then
+  // kept working past, without the correction landing) renders SUPERSEDED
+  // instead of as plain, equally-authoritative fact.
+  const briefBody = renderCarryBriefText(doc.brief, now, {
+    sessionActivityMs: latestTailTurnMs(doc.tail),
+  }).trim();
   const briefText = briefBody ? `## Standing carry\n${briefBody}` : null;
   const planText = renderPlanState(doc.planItems);
   const asksText = renderAsks(doc.asks);

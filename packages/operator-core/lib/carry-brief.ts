@@ -148,6 +148,27 @@ const COLD_TITLE_CAP = 120;
  *  workhorse), as is a recently-ended loop's (still-warm context). */
 const INACTIVE_LOOP_NOTE_STALE_MS = 24 * 60 * 60_000;
 
+/**
+ * EI-18684357744098956: a held work-item's checkpoint carries the SAME authority
+ * whether it is current or SUPERSEDED — nothing distinguishes a checkpoint the
+ * session wrote-then-outgrew from one written last. The verified incident: a
+ * pre-cut session wrote a checkpoint ("ZERO CODE WRITTEN"), then did real work,
+ * then detected the staleness and tried to correct it — but the correction never
+ * reached the store, so the successor woke on the stale claim rendered as plain
+ * fact, and (holding "I wrote nothing" + "the file exists on disk" simultaneously)
+ * misattributed its own work to a peer. A checkpoint whose write-time PREDATES
+ * demonstrable subsequent session activity (further transcript turns) by more
+ * than this margin cannot be trusted at face value — flag it instead of rendering
+ * it as current. The margin absorbs ordinary write/flush latency so a checkpoint
+ * written moments before the final turn isn't flagged on clock noise alone. */
+const HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS = 2 * 60_000;
+
+/** `HH:MM` (UTC) for the superseded-checkpoint flag — compact, sortable, and
+ *  unambiguous next to another such stamp in the same line. */
+function fmtClock(ms: number): string {
+  return `${new Date(ms).toISOString().slice(11, 16)}Z`;
+}
+
 // ── Held-items read (shared with the orient recovery fold) ────────────────────
 
 export interface ReadHeldWorkItemsOpts {
@@ -650,6 +671,17 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   return cap(parts.join('; ') + '.', max);
 }
 
+export interface RenderCarryBriefColdExtrasOpts {
+  /** EI-18684357744098956: the epoch ms of the LATEST demonstrable session
+   *  activity (e.g. the last verbatim tail turn) known to the caller — the
+   *  "session active until" half of the staleness comparison. A held item's
+   *  checkpoint written more than {@link HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS}
+   *  before this instant is flagged SUPERSEDED rather than rendered as current.
+   *  Omitted/null ⇒ no comparison is possible (e.g. no transcript available);
+   *  every checkpoint renders as before — this is purely additive. */
+  sessionActivityMs?: number | null;
+}
+
 /**
  * The sections a COLD reset/recycle injection appends AFTER the loop carry-note
  * (consumer iii — wake-executor). The note stays the injection's core (P-006:
@@ -657,7 +689,11 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
  * + capped checkpoints, standing facts, armed awaits, the fleet pointer.
  * Returns '' when the brief carries nothing beyond the loop note.
  */
-export function renderCarryBriefColdExtras(brief: CarryBrief): string {
+export function renderCarryBriefColdExtras(
+  brief: CarryBrief,
+  opts: RenderCarryBriefColdExtrasOpts = {},
+): string {
+  const sessionActivityMs = opts.sessionActivityMs ?? null;
   const sections: string[] = [];
   if (brief.directives.length > 0) {
     // EI-11484: open owner directives render FIRST — above walls, above the
@@ -689,9 +725,22 @@ export function renderCarryBriefColdExtras(brief: CarryBrief): string {
   if (brief.heldItems.length > 0) {
     const lines = brief.heldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';
-      const ckpt = h.checkpoint
-        ? `\n    checkpoint: ${cap(h.checkpoint, COLD_CHECKPOINT_CAP)}`
-        : '\n    (no checkpoint written — read the item via work_items:get before acting)';
+      let ckpt: string;
+      if (!h.checkpoint) {
+        ckpt = '\n    (no checkpoint written — read the item via work_items:get before acting)';
+      } else {
+        const superseded =
+          sessionActivityMs != null &&
+          h.checkpointUpdatedAtMs != null &&
+          sessionActivityMs - h.checkpointUpdatedAtMs > HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS;
+        ckpt = superseded
+          ? `\n    checkpoint: ⚠ SUPERSEDED — written ${fmtClock(h.checkpointUpdatedAtMs!)}, session active until ` +
+            `${fmtClock(sessionActivityMs!)} (more happened after this was written; it may be flat-out wrong — ` +
+            `verify via sessions:search { session:'self', mode:'verbatim' } and the actual files/state before ` +
+            `trusting it, never treat it as "nothing done" or "work undone" at face value): ` +
+            `${cap(h.checkpoint, COLD_CHECKPOINT_CAP)}`
+          : `\n    checkpoint: ${cap(h.checkpoint, COLD_CHECKPOINT_CAP)}`;
+      }
       return `  • ${h.id}${title}${ckpt}`;
     });
     sections.push(
@@ -726,12 +775,18 @@ export function renderCarryBriefColdExtras(brief: CarryBrief): string {
   return sections.join('\n\n');
 }
 
+export interface RenderCarryBriefTextOpts extends RenderCarryBriefColdExtrasOpts {}
+
 /**
  * The full brief as text — the P-004 recovery-hook payload (and a debugging
  * surface). Loop section first (with the note's write age when known), then the
  * cold-extras sections.
  */
-export function renderCarryBriefText(brief: CarryBrief, now: number = Date.now()): string {
+export function renderCarryBriefText(
+  brief: CarryBrief,
+  now: number = Date.now(),
+  opts: RenderCarryBriefTextOpts = {},
+): string {
   const sections: string[] = [];
   // EI-11484: open owner directives render ABOVE the loop contract — the whole
   // point of the store is that they outrank the re-injected standing agenda.
@@ -786,7 +841,9 @@ export function renderCarryBriefText(brief: CarryBrief, now: number = Date.now()
   }
   // Directives already rendered at the top — strip them so the extras call
   // (shared with the cold path, where they DO belong inside) can't double-render.
-  const extras = renderCarryBriefColdExtras(directivesBlock ? { ...brief, directives: [] } : brief);
+  const extras = renderCarryBriefColdExtras(directivesBlock ? { ...brief, directives: [] } : brief, {
+    sessionActivityMs: opts.sessionActivityMs,
+  });
   if (extras) sections.push(extras);
   return sections.join('\n\n');
 }

@@ -21,25 +21,41 @@ import { reorderWorkItem } from '../work-items';
 import { onFleetAssignmentChange, _stopForTests, type FleetAssignmentChange } from '../fleet-assignment-bus';
 
 // getWorkItem (used by reorderWorkItem) scopes its feature lookup by activeWorkspaceId()
-// (F-B3 workspace-data-isolation-leaks). Every row here is seeded under WS='default', but
+// (F-B3 workspace-data-isolation-leaks). Every row here is seeded under WS, but
 // nothing in this isolated test sets the process-global active workspace — so the lookup
 // filtered the wrong workspace and an existing-but-unassigned row read as 'not found'
 // (intermittently, on whatever global state a sibling test leaked into the worker). Pin
 // the active workspace to the seed workspace so the lookup sees the seeded rows.
+//
+// EI-18683737202696167: WS is deliberately NOT 'default' (nor listFleetAssignments'
+// other always-included bucket, GLOBAL_WORKSPACE='*'). listFleetAssignments's workspace
+// filter is `(workspace_id = opts.workspaceId OR workspace_id = '*' OR workspace_id =
+// 'default')` by design (EI-295, for plan-store-default-scoped claims) — so ANY row
+// seeded under workspace_id='default' by ANY OTHER concurrent consumer of the shared
+// baseline-coord fixture (e.g. stalled-claim-collector.integration.test.ts, which used to
+// share this exact 'default' id) is ALWAYS pulled into this file's own listFleetAssignments
+// reads, regardless of any mutex/serialization between the two files. Using a workspace id
+// distinct from both special buckets makes that structurally impossible: this file's own
+// rows are the ONLY ones visible under an opts.workspaceId filter of WS.
 vi.mock('../workspace-registry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../workspace-registry')>();
-  return { ...actual, activeWorkspaceId: () => 'default' };
+  return { ...actual, activeWorkspaceId: () => 'fa-assign-test-ws' };
 });
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
 
-const WS = 'default';
+const WS = 'fa-assign-test-ws';
 
+// EI-18683737202696167: scoped DELETEs (by WS), never a blunt TRUNCATE of these
+// globally-shared tables — a TRUNCATE wipes every row from every OTHER concurrent
+// consumer of the same fixture (any file, any fleet agent, any moment), not just this
+// file's own seed. Scoping by workspace_id makes this file's cleanup structurally
+// incapable of touching another file's rows, independent of the fixture mutex's timing.
 async function truncateAll(): Promise<void> {
-  await admin`TRUNCATE harness_shared.coord_presence`;
-  await admin`TRUNCATE harness_shared.plan_item_claims`;
-  await admin`TRUNCATE harness_shared.plan_item_assignments`;
+  await admin`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS}`;
+  await admin`DELETE FROM harness_shared.plan_item_claims WHERE workspace_id = ${WS}`;
+  await admin`DELETE FROM harness_shared.plan_item_assignments WHERE workspace_id = ${WS}`;
   await admin`DELETE FROM harness_shared.harness_features_consolidated WHERE feature_id LIKE 'FA-TEST-%'`;
   await admin`DELETE FROM harness_shared.engineer_issues WHERE issue_id LIKE 'FA-TEST-%'`;
   await admin`DELETE FROM harness_shared.spawned_agents WHERE spawn_id LIKE 'fa-test-%'`;

@@ -1601,6 +1601,12 @@ export async function joinHarnessSwarm(
 
   const guard = opts.guard ?? getSwarmGuard();
   const topicHex = opts.topic.toString('hex');
+  // WI-5923: this instance's slot in the shared per-(swarm,topic) forced-rejoin
+  // coordinator (see its doc above `swarmJoinSocketTopics`) — a forced rejoin is
+  // topic-wide, never scoped to just this harness. Registered once the initial
+  // join succeeds (below); unregistered in `close()`.
+  const topicRejoinCoordinator = getTopicRejoinCoordinator(opts.swarm, opts.topic, topicHex);
+  const rejoinParticipantToken = Symbol(`joinHarnessSwarm:${topicHex.slice(0, 16)}`);
   let connectionCount = 0;
   let liveConnectionCount = 0;
   // WI-752 self-heal state: the start of the current FAST-refresh window (join
@@ -1983,8 +1989,21 @@ export async function joinHarnessSwarm(
    * cost — a brief reconnect blip for a co-tenant topic that was genuinely
    * healthy on the same peer — is bounded by the redial and far cheaper than a
    * multi-minute federation freeze; a forced rejoin is a rare recovery action.)
+   *
+   * WI-5923 (topic-scoped rejoin): the actual leave()+rejoin() sequence below
+   * used to run inline, scoped to only THIS `joinHarnessSwarm` instance —
+   * including a raw `opts.swarm.leave(opts.topic)`, the PROCESS-WIDE teardown
+   * that destroys every SIBLING harness's still-live session on the same
+   * (per-Hive) topic with no callback/event to warn them (see the
+   * `TopicRejoinCoordinator` doc above `swarmJoinSocketTopics`). It now
+   * delegates to the shared per-(swarm,topic) coordinator, which evicts every
+   * registered sibling's dead sockets, performs ONE real topic-wide
+   * `swarm.leave()`, then has every sibling — not just this one — rejoin onto
+   * the fresh discovery. This function's own eviction/rejoin behavior
+   * (`evictOwnSockets` / `rejoinOwnSession` below) is BYTE-IDENTICAL to what
+   * used to run inline here; only the orchestration moved out.
    */
-  async function forceRejoinNow(): Promise<void> {
+  const evictOwnSockets = (): void => {
     for (const socket of mySockets) {
       swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
       // Diagnostic-only: note when we are breaking the shared-socket deadlock
@@ -2005,12 +2024,22 @@ export async function joinHarnessSwarm(
       evictIdleZombieSocket(socket);
     }
     mySockets.clear();
-    await Promise.resolve(opts.swarm.leave(opts.topic)).catch(() => {});
+  };
+  const rejoinOwnSession = (): void => {
     discovery = opts.swarm.join(opts.topic, { server: true, client: true });
     fastWindowStartMs = Date.now();
+  };
+  async function forceRejoinNow(): Promise<void> {
+    await topicRejoinCoordinator.requestRejoin();
   }
   try {
     discovery = opts.swarm.join(opts.topic, { server: true, client: true });
+    // WI-5923: register THIS instance with the shared topic-wide rejoin
+    // coordinator now that the initial join has actually succeeded (a failed
+    // join below throws before this point and unwinds via the catch block, so
+    // a never-successfully-joined instance is never registered to receive a
+    // sibling's rejoin callback).
+    topicRejoinCoordinator.register(rejoinParticipantToken, { evictOwnSockets, rejoinOwnSession });
     // Best-effort flush — some Hyperswarm builds expose this, some
     // don't. Either way, returning before flush is fine because peers
     // can connect any time after the join call returns.
@@ -2271,6 +2300,15 @@ export async function joinHarnessSwarm(
         refreshTimer.stop();
         refreshTimer = null;
       }
+      // WI-5923: unregister from the shared topic-wide rejoin coordinator
+      // BEFORE tearing this instance down — an in-flight coordinated rejoin
+      // (triggered by a SIBLING's escalation) must never call back into a
+      // participant that's mid-close. Release the coordinator entry entirely
+      // once the last participant on this (swarm,topic) leaves, so a
+      // long-lived shared process swarm doesn't accumulate one Map entry per
+      // ever-joined topic.
+      topicRejoinCoordinator.unregister(rejoinParticipantToken);
+      releaseTopicRejoinCoordinatorIfEmpty(opts.swarm, topicHex);
       if (opts.swarm.off) opts.swarm.off('connection', handler);
       try {
         // WI-5923: prefer the REFCOUNTED session-level teardown

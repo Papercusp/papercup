@@ -517,6 +517,97 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
   });
 });
 
+describe('joinHarnessSwarm — forceRejoin topic-scoped coordination (WI-5923)', () => {
+  const guard = () => ({
+    firewall: () => false,
+    isBannedKey: () => false,
+    isBannedIp: () => false,
+    banKey: () => {},
+    banIp: () => {},
+    recordConnection: vi.fn(async () => ({ allow: true })),
+  });
+
+  it('one sibling forcing a rejoin performs exactly ONE topic-wide swarm.leave() and rejoins EVERY sibling on the same topic, not just itself', async () => {
+    const { swarm, state } = fakeSwarm();
+    const first = fakeStore();
+    const second = fakeStore();
+    // Two harnesses sharing ONE topic on ONE process swarm — the exact
+    // Shared-Hive shape (boot.ts joins once per member harness on a per-Hive
+    // topic) that made the OLD process-wide `swarm.leave()` self-cancelling:
+    // harness A's forced rejoin used to destroy harness B's live session with
+    // no callback, and vice versa, in a ping-pong bounded only by
+    // MAX_UNPAIRED_ESCALATIONS.
+    const h1 = await joinHarnessSwarm({ store: first.store, topic: topic32(), swarm, guard: guard() });
+    const h2 = await joinHarnessSwarm({ store: second.store, topic: topic32(), swarm, guard: guard() });
+    expect(state.joins.length).toBe(2);
+    expect(state.leaves.length).toBe(0);
+
+    // Only h1's escalation ladder fires — h2 never asked for a rejoin.
+    await h1.forceRejoin();
+
+    // Exactly ONE real topic-wide leave (not one per sibling — that's the
+    // OLD self-cancelling behavior) …
+    expect(state.leaves.length).toBe(1);
+    // … but EVERY sibling on the topic rejoined onto the fresh discovery, not
+    // just the caller: 2 initial joins + 2 rejoins (h1's own + h2's, driven by
+    // the coordinator on h2's behalf even though h2 never called forceRejoin
+    // itself).
+    expect(state.joins.length).toBe(4);
+
+    // Neither sibling is left "orphaned" (holding a stale session with no
+    // sign anything happened) — both still observe live connection events
+    // normally after the coordinated rejoin.
+    const socket = { pipe: vi.fn(), destroy: vi.fn(), rawStream: { remoteHost: '203.0.113.9' } };
+    // Re-emit via the swarm's own listener registry (both instances are
+    // still attached — the coordinator never touches `on`/`off`).
+    for (const l of state.listeners.get('connection') ?? []) {
+      l(socket, { publicKey: Buffer.from('99'.repeat(32), 'hex') });
+    }
+    expect(h1.liveConnectionCount).toBe(1);
+    expect(h2.liveConnectionCount).toBe(1);
+  });
+
+  it('two siblings forcing a rejoin ~concurrently collapse onto ONE shared rejoin (fixes the WI-5923 self-cancelling ping-pong)', async () => {
+    const { swarm, state } = fakeSwarm();
+    const first = fakeStore();
+    const second = fakeStore();
+    const h1 = await joinHarnessSwarm({ store: first.store, topic: topic32(), swarm, guard: guard() });
+    const h2 = await joinHarnessSwarm({ store: second.store, topic: topic32(), swarm, guard: guard() });
+    expect(state.joins.length).toBe(2);
+
+    // Both siblings' escalation ladders fire ~simultaneously (the measured
+    // WI-5923 signature: detectors ~2.5s out of phase, each escalating on its
+    // own topic-wide leave+rejoin). Pre-fix this was TWO independent
+    // leave()+join() sequences, each undoing the other's repair. Post-fix the
+    // second call folds into the first's in-flight operation.
+    await Promise.all([h1.forceRejoin(), h2.forceRejoin()]);
+
+    expect(state.leaves.length).toBe(1);
+    expect(state.joins.length).toBe(4); // 2 initial + ONE coordinated round (2 rejoins), not 2 rounds
+  });
+
+  it('closing one sibling does not disrupt (or re-leave) the topic for a sibling that stays joined', async () => {
+    const { swarm, state } = fakeSwarm();
+    const first = fakeStore();
+    const second = fakeStore();
+    const h1 = await joinHarnessSwarm({ store: first.store, topic: topic32(), swarm, guard: guard() });
+    const h2 = await joinHarnessSwarm({ store: second.store, topic: topic32(), swarm, guard: guard() });
+
+    await h1.close();
+    // close() prefers the refcounted discovery.destroy() (fakeSwarm's join()
+    // doesn't return one, so this falls back to swarm.leave() — unrelated to
+    // the topic-rejoin coordinator, which h1.close() also unregisters from
+    // without triggering a coordinated rejoin of its own).
+    expect(state.leaves.length).toBe(1);
+
+    // h2 is still live and can still force its OWN rejoin — now the SOLE
+    // remaining participant, so it's back to the single-instance behavior.
+    await h2.forceRejoin();
+    expect(state.leaves.length).toBe(2);
+    expect(state.joins.length).toBe(3); // 2 initial + h2's own rejoin (h1 already closed, never re-joined)
+  });
+});
+
 describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {
   it('sends ourAnnounce + opens the channel on a non-banned connection', async () => {
     const { swarm, emit } = fakeSwarm();

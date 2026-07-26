@@ -21,10 +21,32 @@ vi.mock('../coordination/identity', () => ({
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
 }));
-vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn(), classifyClaimFailure: vi.fn(), getWorkItem: vi.fn() }));
+// PARTIAL mock (importOriginal), deliberately — NOT a factory listing each export.
+// A hand-listed factory silently returns `undefined` for any member claim.ts imports but the
+// list forgot, and the tool then crashes on it. That is exactly how this suite went red: WI-5946
+// added a pre-claim `getWorkItem(...).catch(...)` guard read; the old factory's bare `vi.fn()`
+// returned `undefined`, so `.catch` blew up ("Cannot read properties of undefined") and EVERY
+// test here failed with ok:false before the hint was ever looked up. Spreading the real module
+// means a FUTURE import claim.ts adds resolves to the genuine implementation instead of
+// undefined, so this mock cannot go stale the same way again — only the fns we deliberately
+// stub (below) are replaced.
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  claimWorkItem: vi.fn(),
+  classifyClaimFailure: vi.fn(),
+  getWorkItem: vi.fn(),
+}));
+// Keep assessClaimHoldGuard REAL (it composes the real payload readers above); stub only the
+// side-effecting audit/notify so no test here can touch a real DB/coord backend.
+vi.mock('./claim-hold-guard', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  recordClaimHoldBypassAudit: vi.fn(async () => {}),
+  notifyClaimHoldBypass: vi.fn(async () => {}),
+}));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitWorkItemForFleetTarget: vi.fn(async () => fleetAdmission.decision),
   notifyFleetScopeRefusal: fleetAdmission.notify,
+  fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 
@@ -83,6 +105,25 @@ describe('work_items:claim — checkpoint hint at claim time (EI-529)', () => {
     const b = await body({ id: 'WI-3' });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3' });
     expect(b.results[0].checkpoint).toBeUndefined();
+  });
+
+  // REGRESSION (this suite's own red): claim.ts runs WI-5946's pre-claim `getWorkItem(...)`
+  // claim-hold guard read BEFORE it ever reaches the EI-529 hint. When that read is stubbed to
+  // something that is not a promise (a bare `vi.fn()` → `undefined`), the `.catch(…)` chained on
+  // it throws, runBulk converts the throw into `ok:false`, and all four tests above fail with a
+  // confusing "expected ok:false to equal ok:true" that names neither getWorkItem nor the guard.
+  // This pins the coupling explicitly so a future re-stub fails HERE, with a message that says
+  // which call broke it, instead of reddening the whole file for an unrelated-looking reason.
+  it('runs the WI-5946 pre-claim guard read without failing the claim or suppressing the hint', async () => {
+    getClaimTimeCheckpointHint.mockResolvedValue({ checkpoint: 'prior work', checkpointAgeMs: 1_000 });
+    const b = await body({ id: 'WI-GUARD' });
+    // The guard read must actually happen (it is claim.ts's only claim-hold check on the by-id path)…
+    expect(getWorkItemM).toHaveBeenCalled();
+    // …and it must be awaitable — a non-promise stub is what broke this suite.
+    expect(getWorkItemM.mock.results[0]?.value).toBeInstanceOf(Promise);
+    // …while leaving the claim itself successful, un-errored, and still carrying the EI-529 hint.
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-GUARD', checkpoint: 'prior work' });
+    expect(b.results[0].error).toBeUndefined();
   });
 
   it('surfaces the hint on EACH item of a multi-item batch independently', async () => {

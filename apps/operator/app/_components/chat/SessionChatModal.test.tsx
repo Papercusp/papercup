@@ -614,7 +614,7 @@ describe('SessionChatModal', () => {
     it('scopes a WI- ref pill click to the roster entry\'s harnessSlug', async () => {
       seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member', harnessSlug: 'papercusp' }]);
       mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
-      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      const { rerender } = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
       await waitFor(() => expect(captured).not.toBeNull());
       act(() => {
         captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'see WI-1234 for detail' }]));
@@ -622,6 +622,11 @@ describe('SessionChatModal', () => {
 
       const pill = await waitFor(() => screen.getByLabelText('WI-1234'));
       fireEvent.click(pill);
+      // The mock setter mutates the shared nuqs store synchronously but that
+      // mutation alone doesn't trigger React's own re-render — force one
+      // (same as a real nuqs setter's own state update would), same pattern
+      // as OperatorChat.test.tsx's own popup-routing suite.
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
       expect(lastWorkItemPopupProps.id).toBe('WI-1234');
       expect(lastWorkItemPopupProps.harnessSlug).toBe('papercusp');
