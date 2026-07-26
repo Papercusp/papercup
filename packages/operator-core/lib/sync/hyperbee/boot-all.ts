@@ -207,6 +207,47 @@ let evictionTrackingEnabled = false;
 const lastAccess = new Map<string, number>();
 const evicted = new Set<string>();
 
+/**
+ * P-010: harnesses the ACTIVATE-ON-DEMAND boot policy deliberately did NOT boot
+ * (see substrate-active-set-policy). Functionally identical to `evicted` for the
+ * on-demand wake paths — the engine is not resident and any access or captured
+ * local write must bring it up — but tracked separately because the two arise
+ * differently and the distinction matters when reading logs/telemetry: `evicted`
+ * means "was resident, reaped for idleness", `deferredActivation` means "never
+ * booted this process".
+ *
+ * This set is what makes deferral SAFE. Both wake paths (`getBootedHarness` and
+ * `handleOutboxNotifyForEvictedHarness`) previously keyed on `evicted` ALONE, so
+ * a never-booted harness was invisible to them: its NOTIFY was dropped and its
+ * outbox rows would accumulate undrained forever (the EI-126 divergence class).
+ * Every membership test on `evicted` in a wake path must also test this set.
+ */
+const deferredActivation = new Set<string>();
+
+/** True when this harness is not resident but IS wake-eligible — either the
+ *  reaper evicted it, or the activation policy deferred it at boot. Consuming
+ *  the flag CLEARS it: the caller is about to trigger the re-boot, and leaving
+ *  it set would let a second caller fire a duplicate boot. */
+function takeWakeEligible(k: string): boolean {
+  if (evicted.delete(k)) return true;
+  return deferredActivation.delete(k);
+}
+
+/**
+ * P-010: record that the boot sweep deliberately left this harness dark, making
+ * it eligible for on-demand wake. No-op unless eviction/lazy tracking is on, so
+ * the LAZY_SUBSTRATE_BOOT-OFF path stays byte-identical.
+ */
+export function markHarnessActivationDeferred(workspaceId: string, harnessSlug: string): void {
+  if (!evictionTrackingEnabled) return;
+  deferredActivation.add(key(workspaceId, harnessSlug));
+}
+
+/** Observability: how many harnesses this process is holding dark on purpose. */
+export function deferredActivationCount(): number {
+  return deferredActivation.size;
+}
+
 /** The reboot-on-access trigger — fires a background re-boot for an evicted
  *  engine on its next access. Default calls `bootSingleHarness` fire-and-forget;
  *  overridable in tests so a unit test never triggers a real corestore boot. */
@@ -238,6 +279,7 @@ export function _resetEvictionTrackingForTests(): void {
   evictionTrackingEnabled = false;
   lastAccess.clear();
   evicted.clear();
+  deferredActivation.clear();
 }
 
 /**
@@ -566,8 +608,10 @@ export function getBootedHarness(
   // null (the consumer's null-handling is graceful — feature-queue returns
   // `substrate-off`, claims fall back to legacy — never data loss). bootSingleHarness
   // coalesces on `inflight`, so a burst of accesses triggers a single re-boot.
-  if (evictionTrackingEnabled && evicted.has(k)) {
-    evicted.delete(k);
+  // P-010: `takeWakeEligible` covers BOTH "the reaper evicted it" and "the
+  // activation policy never booted it", so a deferred harness wakes on access
+  // exactly like an evicted one.
+  if (evictionTrackingEnabled && takeWakeEligible(k)) {
     rebootOnAccess(workspaceId, harnessSlug);
   }
   return null;
@@ -1555,8 +1599,10 @@ export function handleOutboxNotifyForEvictedHarness(
   if (!evictionTrackingEnabled) return;
   const k = key(workspaceId, harnessSlug);
   if (handles.has(k)) return; // currently booted; running drain handles this NOTIFY
-  if (evicted.has(k)) {
-    evicted.delete(k);
+  // P-010: a harness the activation policy DEFERRED is equally wake-eligible —
+  // keying on `evicted` alone dropped this NOTIFY on the floor and left the
+  // captured write undrained forever.
+  if (takeWakeEligible(k)) {
     rebootOnAccess(workspaceId, harnessSlug);
   }
 }
