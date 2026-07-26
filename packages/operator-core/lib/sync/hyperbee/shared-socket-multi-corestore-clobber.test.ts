@@ -395,4 +395,100 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
     const attachedCount = (aAttached ? 1 : 0) + (bAttached ? 1 : 0);
     expect(attachedCount).toBe(1);
   }, 30_000);
+
+  /**
+   * THE DIRECT PROOF OF THE RECONNECT-ORDER REFINEMENT.
+   *
+   * A natural experiment across two real gate bundles predicted that the winner
+   * is decided by `replicate()` ORDER, and therefore RESHUFFLES on every
+   * reconnect (~/.papercusp/live-fed-gate/triage/fail/…):
+   *
+   *   bundle            swarm-churn(A)  rejoins(A)  harnesses hit(A)  frame B episodes
+   *   content_bidir            1            1              1                0
+   *   replication_soak        85            5              3                4
+   *
+   * i.e. with no churn the SAME frame+harness loses every time (frame B never
+   * emits an episode); with heavy churn both frames and both harnesses take
+   * turns losing. That only follows if the winner is order-dependent.
+   *
+   * This test decides it mechanically, with no production instrumentation:
+   * run the same two-store/one-key setup in BOTH registration orders and see
+   * whether the winner follows the order. If it does, a reconnect — which
+   * re-runs both stores' replicate() in whatever order they reconnect — can
+   * hand the replicator to the other harness, which is exactly the observed
+   * never_attached ⇄ replicator_lost churn on a single key.
+   */
+  it('WHAT DECIDES THE WINNER: core-OPEN order, not replicate() order (a first attempt asserting replicate-order was REFUTED here)', async () => {
+    async function winnerFor(
+      replicateOrder: 'A-first' | 'B-first',
+      openOrder: 'A-first' | 'B-first',
+    ): Promise<string> {
+      const tag = `${replicateOrder}-${openOrder}`;
+      const serveStore = makeStore(`ssc-ord-serve-${tag}-`);
+      await serveStore.ready();
+      const keyHex = await seedLog(serveStore, 'ORDER-1');
+
+      const storeA = makeStore(`ssc-ord-a-${tag}-`);
+      await storeA.ready();
+      const storeB = makeStore(`ssc-ord-b-${tag}-`);
+      await storeB.ready();
+
+      const [sockFetch, sockServe] = await noiseStreamPair();
+      serveStore.replicate(sockServe);
+      if (replicateOrder === 'A-first') {
+        storeA.replicate(sockFetch);
+        storeB.replicate(sockFetch);
+      } else {
+        storeB.replicate(sockFetch);
+        storeA.replicate(sockFetch);
+      }
+      await waitFor(() => false, 250);
+
+      let viaA;
+      let viaB;
+      if (openOrder === 'A-first') {
+        viaA = await openRemoteLog(storeA, keyHex);
+        viaB = await openRemoteLog(storeB, keyHex);
+      } else {
+        viaB = await openRemoteLog(storeB, keyHex);
+        viaA = await openRemoteLog(storeA, keyHex);
+      }
+      await waitFor(() => (viaA.peersCount?.() ?? 0) > 0 || (viaB.peersCount?.() ?? 0) > 0, 4_000);
+      await waitFor(() => false, 500); // fair chance for the loser to attach late
+
+      const a = (viaA.peersCount?.() ?? 0) > 0;
+      const b = (viaB.peersCount?.() ?? 0) > 0;
+      return `${a ? 'A' : ''}${b ? 'B' : ''}` || 'NEITHER';
+    }
+
+    const repA_openA = await winnerFor('A-first', 'A-first');
+    const repB_openA = await winnerFor('B-first', 'A-first');
+    const repA_openB = await winnerFor('A-first', 'B-first');
+    const repB_openB = await winnerFor('B-first', 'B-first');
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[WI-5673 order matrix] rep=A,open=A -> ${repA_openA} | rep=B,open=A -> ${repB_openA} | ` +
+        `rep=A,open=B -> ${repA_openB} | rep=B,open=B -> ${repB_openB}`,
+    );
+
+    // The defect itself: never both, in any combination.
+    for (const w of [repA_openA, repB_openA, repA_openB, repB_openB]) {
+      expect(['A', 'B']).toContain(w);
+    }
+
+    // REFUTED (recorded so nobody re-tries it): replicate() order does NOT
+    // decide the winner — holding open-order fixed and flipping replicate order
+    // leaves the winner unchanged.
+    expect(repA_openA).toBe(repB_openA);
+    expect(repA_openB).toBe(repB_openB);
+
+    // WHAT DOES decide it: whichever store OPENS the core first claims the
+    // muxer channel for that discovery key; the other never gets a replicator.
+    // This still permits the victim to flip across a reconnect — both harnesses'
+    // repair loops race to re-open after a rejoin — but the race is on OPEN,
+    // not on replicate().
+    expect(repA_openA).toBe('A');
+    expect(repA_openB).toBe('B');
+  }, 120_000);
 });
