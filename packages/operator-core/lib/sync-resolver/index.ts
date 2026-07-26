@@ -2748,6 +2748,48 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return Array.isArray(r?.groups) ? r.groups : [];
     },
   },
+  // plans.attentionItem — the DETAIL half of the attention list/detail split
+  // (slim-plans-attention-sync-payload-2026-07-26 P-004). `plans.attention` is
+  // the fattest UI read (1490KB), so its list feed clips each item's `body` and
+  // drops `actions`; the detail pane (OtherDetail) fetches the ONE selected item
+  // back at full fidelity here.
+  //
+  // Two things make this cheap rather than a second 1.5MB read:
+  //   - `uiProjection: false` skips the list projection (that is the entire
+  //     point) but NOT the payload-tier ceiling escape — the dispatch still
+  //     requests payloadTier:'full', or WI-5078 reappears as an item-less
+  //     group summary and this resolver finds nothing.
+  //   - the underlying plans:attention tool memoizes its own read (cachedRead),
+  //     so on selection this rides the warm entry the list feed just populated
+  //     instead of recomputing the ~15-source attention scan.
+  // Returns a 1-element array (or [] for an unknown id) to fit the useSyncQuery
+  // `data: T[]` contract, like plans.get.
+  'plans.attentionItem': {
+    // `id` ONLY — deliberately NOT scoped by harnessSlug. Attention item ids are
+    // globally unique, so the UNSCOPED read always contains the selection
+    // whichever scope the list feed used, and every session already fetches the
+    // unscoped feed for the inbox badge (useInboxPendingCount) — so this shares
+    // that warm cache entry instead of fragmenting it per scope.
+    argsSchema: z.object({ id: z.string().min(1) }),
+    resolve: async (args) => {
+      const { id } = args as { id: string };
+      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('attention', {}, {
+        uiProjection: false,
+      })) as { groups?: unknown[] };
+      const groups = Array.isArray(r?.groups) ? r.groups : [];
+      for (const group of groups) {
+        const items = (group as { items?: unknown })?.items;
+        if (!Array.isArray(items)) continue;
+        // An item that is not plan-scoped appears in MULTIPLE groups (the same
+        // duplication useInboxAttention dedupes client-side, WI-5337) — first
+        // match wins, they are the same object.
+        const hit = items.find((it) => (it as { id?: unknown })?.id === id);
+        if (hit) return [hit];
+      }
+      return [];
+    },
+  },
   'plans.search': {
     resolve: async (args) => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');

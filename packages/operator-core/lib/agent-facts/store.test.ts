@@ -364,4 +364,19 @@ describe('clampFactBody — over-cap bodies truncate instead of rejecting (P-007
     const exact = 'y'.repeat(FACT_BODY_MAX_CHARS);
     expect(clampFactBody(exact)).toBe(exact);
   });
+
+  // EI-18681984560352579 / mig 664: recurrence guard the bug report asked for —
+  // no accepted (in-cap) write is ever silently altered. clampFactBody is the
+  // ONLY mutation the store applies to `body` before it lands in Postgres (the
+  // DB CHECK char_length(body) <= FACT_BODY_MAX_CHARS is the storage backstop,
+  // kept in sync via migration 664), so byte-identical here IS the round-trip
+  // guarantee facts:list must honor.
+  it('any body at or under the cap round-trips byte-identical — no accepted write is ever silently altered', () => {
+    for (const len of [1, 50, 499, 500, 501, 900, FACT_BODY_MAX_CHARS - 1, FACT_BODY_MAX_CHARS]) {
+      // .trim() up front — clampFactBody trims too, and a raw slice can land on
+      // trailing whitespace that would make the byte-identity check spurious.
+      const body = 'a discriminator rule with a verdict clause. '.repeat(Math.ceil(len / 46)).slice(0, len).trim();
+      expect(clampFactBody(body)).toBe(body);
+    }
+  });
 });

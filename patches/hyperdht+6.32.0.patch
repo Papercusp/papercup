@@ -1,0 +1,23 @@
+diff --git a/node_modules/hyperdht/lib/connect.js b/node_modules/hyperdht/lib/connect.js
+index 86afb4e..4f0cef0 100644
+--- a/node_modules/hyperdht/lib/connect.js
++++ b/node_modules/hyperdht/lib/connect.js
+@@ -477,6 +477,18 @@ async function connectThroughNode(c, address, socket) {
+     payload
+   }
+ 
++  // WI-5863: surface the DHT signalling outcome onto the returned encryptedSocket
++  // (the object hyperswarm hands back to app code as the 'connection' socket) —
++  // these three were destructured above but only ever lived on the internal `c`
++  // state machine, so app code could never distinguish "punch believed to have
++  // succeeded but the data path is dead" (relayed:false) from "the relay path
++  // itself is dead" (relayed:true). Both explain a connected-with-zero-bytes
++  // socket; only this tells them apart. Non-enumerable so it can't perturb any
++  // existing JSON.stringify/deepEqual of the stream object elsewhere.
++  Object.defineProperty(c.encryptedSocket, 'udxRelayed', { value: relayed, configurable: true })
++  Object.defineProperty(c.encryptedSocket, 'udxServerAddress', { value: serverAddress, configurable: true })
++  Object.defineProperty(c.encryptedSocket, 'udxClientAddress', { value: clientAddress, configurable: true })
++
+   c.payload = new SecurePayload(hs.holepunchSecret)
+ 
+   c.onsocket = function (socket, port, host) {

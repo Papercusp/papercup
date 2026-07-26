@@ -29,7 +29,15 @@ import { activeWorkspaceId } from '../workspace-registry';
 export const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'] as const;
 export type FactScope = (typeof FACT_SCOPES)[number];
 
-export const FACT_BODY_MAX_CHARS = 500;
+// EI-18681984560352579 / migration 664 (2026-07-26): raised 500 -> 1200. The
+// old 500-char cap was silently amputating the OPERATIVE clause of facts
+// (which fold VERBATIM as binding context) — observed 3x in one session,
+// once removing a discriminator rule's verdict sentence entirely. 1200 is
+// generous enough that a tight, front-loaded conclusion essentially never
+// truncates, while the clamp-not-reject fallback below (clampFactBody)
+// still guarantees a write is never lost outright for genuine overflow.
+// Keep in sync with the DB CHECK constraint (agent_facts_body_check, mig 664).
+export const FACT_BODY_MAX_CHARS = 1200;
 /** P-007: bounded verbatim quote inside a source-provenance stamp (fold-friendly —
  *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
 export const FACT_PROVENANCE_QUOTE_CHARS = 160;

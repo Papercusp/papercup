@@ -38,9 +38,24 @@ export interface PlansReadResult {
  * via `status` + `data` (the tool's error envelope). The admin route uses
  * this to build its `Response`.
  */
+export interface PlansReadOpts {
+  /**
+   * Apply the UI display projection (ui-read-projection.ts). Default true.
+   *
+   * Pass `false` for a DETAIL read that must see the fields the list feed
+   * drops — `plans.attentionItem` is the one caller: the list feed clips each
+   * attention item's `body` and drops `actions`, and the detail pane's card
+   * needs both back (slim-plans-attention-sync-payload-2026-07-26 P-004).
+   * This is NOT a way to opt out of the payload-tier ceiling — that is
+   * `payloadTier` above, and it stays `'full'` either way.
+   */
+  uiProjection?: boolean;
+}
+
 export async function callPlansReadRaw(
   verb: string,
   body: Record<string, unknown>,
+  opts?: PlansReadOpts,
 ): Promise<PlansReadResult> {
   const sp = new URLSearchParams();
   sp.set('superuser', '1');
@@ -80,13 +95,16 @@ export async function callPlansReadRaw(
     const text = rb.content?.find((c) => c.type === 'text')?.text;
     if (text !== undefined) {
       try {
-        // UI-only display projection (whole-app-sync-payload-audit P-005): slim
-        // the fat scan-list payloads (plans:list/items) to the display shape —
-        // clip preview text + drop non-display blobs. Attention/get/etc. pass
-        // through unchanged; agent/MCP sessions never reach callPlansReadRaw, so
-        // the agent shapers are untouched. See ui-read-projection.ts.
+        // UI-only display projection (whole-app-sync-payload-audit P-005, extended
+        // to `attention` by slim-plans-attention-sync-payload-2026-07-26 P-003):
+        // slim the fat scan-list payloads (plans:list/items/attention) to the
+        // display shape — clip preview text + drop non-display blobs. get/etc.
+        // pass through unchanged; agent/MCP sessions never reach callPlansReadRaw,
+        // so the agent shapers are untouched. See ui-read-projection.ts.
+        const parsed: unknown = JSON.parse(text);
+        if (opts?.uiProjection === false) return { status: 200, data: parsed };
         const { projectPlansReadForUi } = await import('./ui-read-projection');
-        return { status: 200, data: projectPlansReadForUi(verb, JSON.parse(text)) };
+        return { status: 200, data: projectPlansReadForUi(verb, parsed) };
       } catch {
         return { status: 200, data: text };
       }
@@ -104,8 +122,9 @@ export async function callPlansReadRaw(
 export async function callPlansRead(
   verb: string,
   body: Record<string, unknown>,
+  opts?: PlansReadOpts,
 ): Promise<unknown> {
-  const r = await callPlansReadRaw(verb, body);
+  const r = await callPlansReadRaw(verb, body, opts);
   if (r.status !== 200) {
     const err = (r.data as { error?: unknown } | null)?.error;
     throw new Error(typeof err === 'string' ? err : `plans:${verb} → ${r.status}`);

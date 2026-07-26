@@ -502,16 +502,16 @@ export default defineTool({
   name: 'fleet:leader-brief',
   profile: 'engineer',
   description:
-    "A leader's ONE-call fleet-health brief: per-member sessionState, lifecycle `verdict` " +
+    "A leader's ONE-call fleet-health brief: per-member sessionState, `verdict` " +
     '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, ' +
-    'current claims (doing/workItemIds/queuedCount/load), healthy loop state (monitoring|waiting|' +
-    'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
-    'messages (count/oldestAgeMs/newest), contextPressure ' +
-    '(ok|high|critical), bench state (parkedOn), benchSuggestion (alive but not advancing, ' +
-    'or alive+idle — check its `kind` before benching), idleWithClaimableAlert, ' +
-    'and unownedCriticals (aged unassigned criticals the spec admits). Scoped to ONE fleet ' +
-    '(yours by default), not fleet:assignments\' whole-workspace roster. ' +
-    'Replaces the hand-assembled presence+assignments+inbox scan each monitor wake.',
+    'current claims (doing/workItemIds/queuedCount/load), loop state (monitoring|waiting|' +
+    'parked-awaiting-capability)+nextFireAt, stalled flag, unanswered msgs ' +
+    '(count/oldestAgeMs/newest), contextPressure ' +
+    '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing or idle ' +
+    '— check `kind` before acting), ' +
+    'and unownedCriticals (aged criticals the spec admits). Scoped to ONE fleet ' +
+    '(yours by default), not fleet:assignments\' whole roster. ' +
+    'Replaces the manual presence+assignments+inbox scan each monitor wake.',
   guidance: {
     when:
       "On a leader's repeating monitor tick: "

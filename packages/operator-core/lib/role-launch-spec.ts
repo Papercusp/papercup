@@ -50,6 +50,32 @@ import * as path from 'node:path';
 // su-context-size-variants: the always-loaded core spine the codex 'trimmed' variant
 // advertises via ?tools= (the only trim lever codex has — it has no native discovery).
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
+
+/**
+ * gui-chat-session-controls-2026-07-25 P-010: chat:ask_choice UNCONDITIONALLY
+ * seeded onto every su/psu session's tool surface, on top of the shared
+ * CORE_MCP_TOOL_NAMES spine — NOT added to the spine itself, because that
+ * array is shared by every headless pipeline-role launch too (fleet workers,
+ * validators, …) where a blocking human-facing card tool has no demand-
+ * evidence case (CORE_MCP_TOOL_NAMES's own convention: every entry there
+ * carries call-count justification).
+ *
+ * Every su/psu session is reachable from a live GUI chat (SessionChatModal —
+ * apps/operator/app/_components/chat/SessionChatModal.tsx), where P-008
+ * already wires an agent-presented option set to render as a real clickable
+ * card (via the chat:ask_choice → durable coord-escalation → OtherDetail
+ * path, apps/operator-docs/.../agent-insights/inbox-cards.mdx). Before this,
+ * chat:ask_choice was reachable only via a `tools:find` discovery round trip
+ * (dynamic-tool-surface-2026-07-01) — every OTHER surface that already relies
+ * on it (operator-converse's ALL_AGENT_MCP_TOOLS, oracle's
+ * ORACLE_ALLOWED_TOOLS) gets it unconditionally in a static `--allowed-tools`
+ * list, with no discovery step required. Without this seed, P-011's persona
+ * instruction ("reach for chat:ask_choice when putting an option set to the
+ * owner") is inert for any su session that hasn't already discovered the tool
+ * — the exact "never advertise the CREATE and hide the UNDO"-style
+ * discoverability trap CORE_MCP_TOOL_NAMES's own EI-10946 note warns about.
+ */
+export const SU_EXTRA_MCP_TOOL_NAMES: readonly string[] = ['chat:ask_choice'];
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
@@ -697,7 +723,10 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // names; parseToolsAllowlist decodes them server-side.)
   const wantsSeed = input.contextSize !== 'full';
   if (wantsSeed) {
-    mcpUrl.searchParams.set('tools', CORE_MCP_TOOL_NAMES.join(','));
+    // P-010: su sessions ALWAYS get chat:ask_choice on top of the shared core
+    // spine (see SU_EXTRA_MCP_TOOL_NAMES) — su is unconditionally reachable
+    // from a live GUI chat, unlike a generic headless role launch.
+    mcpUrl.searchParams.set('tools', [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
   }
   const mcpUrlStr = mcpUrl.toString();
   const mcpJsonContents = JSON.stringify(

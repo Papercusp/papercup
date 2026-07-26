@@ -119,7 +119,7 @@ export default defineTool({
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
     notWhen:
-      'Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — 500-char cap, per-scope cap 50, TTL mandatory.',
+      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope cap 50, TTL mandatory.`,
     chaining:
       'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
@@ -141,9 +141,12 @@ export default defineTool({
     // over-cap write is accepted-and-clipped instead of hard-rejected and lost whole —
     // code-run-self-state-adoption-2026-07-03 P-007, after a hard reject cost 7 whole
     // writes in 14d). The REAL cap a caller must size against is FACT_BODY_MAX_CHARS
-    // (500) — front-loaded below because a caller sizing off the bare `maxLength: 4000`
-    // in the schema (without reading the rest of the description) silently loses
-    // everything past 500, discovered only after the write via truncated.droppedTail.
+    // (1200 as of EI-18681984560352579 / migration 664, raised from 500 — the old
+    // cap was silently amputating the operative clause of real conclusions) —
+    // front-loaded below because a caller sizing off the bare `maxLength: 4000` in
+    // the schema (without reading the rest of the description) silently loses
+    // everything past the real cap, discovered only after the write via
+    // truncated.droppedTail.
     body: z
       .string()
       .min(1)

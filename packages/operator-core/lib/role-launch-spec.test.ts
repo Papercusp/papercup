@@ -64,7 +64,7 @@ vi.mock('./papercusp-root', () => ({
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildRoleLaunchSpec, buildLaunchSpec } from './role-launch-spec';
+import { buildRoleLaunchSpec, buildLaunchSpec, SU_EXTRA_MCP_TOOL_NAMES } from './role-launch-spec';
 import { resolveProjectDir } from './spawn-config';
 import { readSuperuserToken } from './superuser-token';
 // su-context-size-variants (WI-1282): the always-loaded core spine the codex
@@ -468,13 +468,16 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
   const WEAK = 'ollama/maxwell1500/ornith-35b:IQ3_M';
   const FRONTIER = 'anthropic/claude-opus-4-8';
 
-  it('codex + trimmed ⇒ tools= present and EQUALS CORE_MCP_TOOL_NAMES (URL-decoded)', async () => {
+  it('codex + trimmed ⇒ tools= present and EQUALS CORE_MCP_TOOL_NAMES + SU_EXTRA_MCP_TOOL_NAMES (URL-decoded)', async () => {
     const u = await suMcpUrl('codex', { contextSize: 'trimmed' });
     // URLSearchParams.get decodes the %3A/%2C-encoded colon/comma tool names.
-    expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect(u.searchParams.get('tools')).toBe([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
     // …and that round-trips back to the exact list the server allowlist decodes.
-    expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES]);
+    expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES]);
     expect(u.searchParams.get('tools')!.split(',')).toContain('fleet:launch-on-plan');
+    // P-010: every su session is seeded with chat:ask_choice too — unconditionally
+    // reachable from a live GUI chat (SessionChatModal), unlike a headless role launch.
+    expect(u.searchParams.get('tools')!.split(',')).toContain('chat:ask_choice');
     // The superuser door is otherwise unchanged.
     expect(u.searchParams.get('superuser')).toBe('1');
     expect(u.searchParams.get('workspace')).toBe('default');
@@ -489,26 +492,30 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
   // re-fetch) + tools:invoke reaches the tail, so nothing is stranded. Only an
   // explicit contextSize:'full' opts codex back into the ~140k-token full catalog.
   it('codex + omitted, no model ⇒ tools= present (seed-by-default, D-004 token win)', async () => {
-    expect((await suMcpUrl('codex')).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect((await suMcpUrl('codex')).searchParams.get('tools')).toBe(
+      [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','),
+    );
     expect((await suMcpUrl('codex', { contextSize: null })).searchParams.get('tools')).toBe(
-      CORE_MCP_TOOL_NAMES.join(','),
+      [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','),
     );
   });
 
   it('codex + FRONTIER model ⇒ tools= present (seed-by-default holds on strong models too)', async () => {
     expect((await suMcpUrl('codex', { model: FRONTIER })).searchParams.get('tools')).toBe(
-      CORE_MCP_TOOL_NAMES.join(','),
+      [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','),
     );
   });
 
   // weak-model-tool-tier: when contextSize is omitted, the tier is derived from the MODEL.
   it('omp + WEAK model ⇒ tools= present (THE OMP FIX — its native discovery is a no-op)', async () => {
     const u = await suMcpUrl('omp', { model: WEAK });
-    expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect(u.searchParams.get('tools')).toBe([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
   });
 
   it('omp + FRONTIER model ⇒ tools= present (D-010: trimmed is the default on ALL tiers now)', async () => {
-    expect((await suMcpUrl('omp', { model: FRONTIER })).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect((await suMcpUrl('omp', { model: FRONTIER })).searchParams.get('tools')).toBe(
+      [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','),
+    );
   });
 
   it('omp + full ⇒ NO tools= param (the escape hatch out of the seed)', async () => {
@@ -523,10 +530,10 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     expect((await suMcpUrl('omp', { model: FRONTIER, contextSize: 'trimmed' })).searchParams.has('tools')).toBe(true);
   });
 
-  it('claude + trimmed ⇒ tools= present and EQUALS CORE_MCP_TOOL_NAMES (THE FIX — ToolSearch defers only schemas, not the ~165k of names+descriptions)', async () => {
+  it('claude + trimmed ⇒ tools= present and EQUALS CORE_MCP_TOOL_NAMES + SU_EXTRA_MCP_TOOL_NAMES (THE FIX — ToolSearch defers only schemas, not the ~165k of names+descriptions)', async () => {
     const u = await suMcpUrl('claude', { contextSize: 'trimmed' });
-    expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
-    expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES]);
+    expect(u.searchParams.get('tools')).toBe([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
+    expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES]);
   });
 
   it('claude + WEAK model ⇒ tools= present (the tier gates the trim for every client)', async () => {
@@ -535,9 +542,11 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
 
   it('claude + FRONTIER model, no override ⇒ tools= present (D-010: claude defaults to trimmed too — the ~165k names+descriptions ToolSearch leaves inline are the waste)', async () => {
     expect((await suMcpUrl('claude', { model: FRONTIER })).searchParams.get('tools')).toBe(
-      CORE_MCP_TOOL_NAMES.join(','),
+      [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','),
     );
-    expect((await suMcpUrl('claude')).searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect((await suMcpUrl('claude')).searchParams.get('tools')).toBe(
+      [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','),
+    );
   });
 
   it('claude + full ⇒ NO tools= param (the escape hatch keeps native ToolSearch over the whole catalog)', async () => {

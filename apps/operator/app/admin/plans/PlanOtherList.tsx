@@ -35,7 +35,14 @@ import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@
 import { InputCard, type InputCardResponse } from '@/app/_components/chat/InputCard';
 import { QueueCardActions } from './QueueCardActions';
 import { attentionItemToCardSpec, resolveAttentionAction, replyToAttentionItem } from './attention-card';
-import { TIER_LABEL, type AttentionGroup, type AttentionItem, type AttentionKind, type AttentionTier } from './plans-api';
+import {
+  TIER_LABEL,
+  useHydratedAttentionItem,
+  type AttentionGroup,
+  type AttentionItem,
+  type AttentionKind,
+  type AttentionTier,
+} from './plans-api';
 import { byAuthorizer, planSections, whyLine } from './queue-authorizer';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
@@ -386,7 +393,7 @@ export default function PlanOtherList({
   );
 }
 
-export function OtherDetail({ item, onResolved, onDiscuss }: {
+export function OtherDetail({ item: listItem, onResolved, onDiscuss }: {
   item: AttentionItem | null;
   onResolved: () => void;
   /** Host override for the Discuss pick (owner ask 2026-07-16: the sidebar
@@ -394,6 +401,12 @@ export function OtherDetail({ item, onResolved, onDiscuss }: {
    *  the inline DiscussPanel is suppressed; false/omitted = default panel. */
   onDiscuss?: (item: AttentionItem) => boolean;
 }) {
+  // The row arrives from the SLIMMED list feed (body clipped, `actions` dropped
+  // — slim-plans-attention-sync-payload-2026-07-26 P-003), so the detail pane
+  // fetches the full item back. Hydrating HERE rather than in each host keeps
+  // all three call sites (InboxPane, PlansClient, PreviewPanel) unchanged, and
+  // guarantees every action dispatched below acts on the full row.
+  const { item, hydrated } = useHydratedAttentionItem(listItem);
   const [discussOpen, setDiscussOpen] = useState(false);
   // D-027 follow-on (1): the inline Answer InputCard (conversation kind). State
   // resets per selection — PlansClient remounts OtherDetail with key={item.id}.
@@ -507,13 +520,22 @@ export function OtherDetail({ item, onResolved, onDiscuss }: {
           <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
         ) : null}
         {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
-        {/* #4: actions live in the toolbar, not in the card body. */}
-        <QueueCardActions
-          options={spec.options}
-          answered={answered}
-          busy={busy}
-          onResponse={(r) => void onResponse(r)}
-        />
+        {/* #4: actions live in the toolbar, not in the card body.
+            Held back until the detail fetch lands: `actions` is dropped from the
+            list feed, so rendering the bar early would show ZERO buttons — which
+            reads as "this item has no actions" rather than "still loading". */}
+        {hydrated ? (
+          <QueueCardActions
+            options={spec.options}
+            answered={answered}
+            busy={busy}
+            onResponse={(r) => void onResponse(r)}
+          />
+        ) : (
+          <span className="pc-items__detail-loading" data-testid="detail-actions-loading">
+            loading actions…
+          </span>
+        )}
       </div>
       {/* A1 (P-005): the "why it's here" line — who must sign off + why, with the
           autonomy-policy deep-link for queen-eligible items. */}

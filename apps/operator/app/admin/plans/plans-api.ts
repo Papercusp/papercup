@@ -843,6 +843,53 @@ function useSyncRows<T>(
   };
 }
 
+/**
+ * The `plans:list` archived/legacy filter, as a pure client-side predicate over
+ * rows the server already stamped with `archived` + `isLegacy`
+ * (slim-plans-attention-sync-payload-2026-07-26 P-001).
+ *
+ * This MIRRORS the server's own filter, so the two must not drift — see
+ * plans-list-superset-filter.test.ts, which pins both defaults against the
+ * literal expressions in `agent-tools/plans/list.ts`:
+ *   `includeArchived = args.includeArchived === true`   → default FALSE
+ *   `includeLegacy   = args.includeLegacy !== false`    → default TRUE
+ * (the asymmetry is easy to get backwards, which is the whole reason this is a
+ * named + tested function rather than an inline `.filter()`).
+ */
+export function filterPlanListRows(
+  rows: readonly PlanListRow[] | undefined,
+  opts: { includeArchived: boolean; includeLegacy: boolean },
+): PlanListRow[] {
+  if (!rows) return [];
+  if (opts.includeArchived && opts.includeLegacy) return rows as PlanListRow[];
+  return rows.filter(
+    (p) => (opts.includeArchived || !p.archived) && (opts.includeLegacy || !p.isLegacy),
+  );
+}
+
+/**
+ * The plans list.
+ *
+ * ONE sync cache entry per (status, harness_slugs) scope, regardless of the
+ * caller's archived/legacy preference: this always fetches the SUPERSET
+ * (`includeArchived: true, includeLegacy: true`) and narrows client-side via
+ * {@link filterPlanListRows}.
+ *
+ * Why (P-001, measured on live :3070 2026-07-26): eight call sites asked for
+ * three different arg shapes — `{}` (PlansPane), `{true,true}` (AdvPlansTabs,
+ * AdvSessionsClient) and `{false,false}` (AdvOverviewTab, MugTab) — which the
+ * sync layer keys separately, so a cold wave fetched ~763KB THREE times for
+ * what is one 895-row dataset differing by 15 rows. The narrowing axis is two
+ * booleans already present on every row, so collapsing it costs a `.filter()`
+ * and saves ~1.5MB per cold wave.
+ *
+ * `status` and `harness_slugs` stay SERVER-side deliberately: legacy plans
+ * report status `draft` (a server-side rule this predicate does not know), and
+ * a harness scope is not reproducible from row fields — the same trap that
+ * killed the equivalent collapse for `plans.attention` (see the plan's D-001,
+ * where a client-side `harnessSlug` filter would have silently dropped ~677
+ * items). Only collapse an axis you can prove is a pure row predicate.
+ */
 export function usePlanList(params?: {
   status?: PlanStatus;
   includeArchived?: boolean;
@@ -856,14 +903,24 @@ export function usePlanList(params?: {
   const args = useMemo<Record<string, unknown>>(
     () => ({
       ...(params?.status ? { status: params.status } : {}),
-      ...(params?.includeArchived !== undefined ? { includeArchived: params.includeArchived } : {}),
-      ...(params?.includeLegacy !== undefined ? { includeLegacy: params.includeLegacy } : {}),
+      // The superset on the archived/legacy axis — narrowed client-side below.
+      includeArchived: true,
+      includeLegacy: true,
       ...(params?.harness_slugs ? { harness_slugs: [...params.harness_slugs] } : {}),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [params?.status, params?.includeArchived, params?.includeLegacy, harnessSlugsKey],
+    [params?.status, harnessSlugsKey],
   );
-  return useSyncResource<PlanListRow, 'plans'>('plans.list', args, 'plans');
+  const r = useSyncResource<PlanListRow, 'plans'>('plans.list', args, 'plans');
+  // Mirror the SERVER defaults exactly: archived off unless asked, legacy on
+  // unless refused (see filterPlanListRows).
+  const includeArchived = params?.includeArchived === true;
+  const includeLegacy = params?.includeLegacy !== false;
+  const plans = useMemo(
+    () => filterPlanListRows(r.data?.plans, { includeArchived, includeLegacy }),
+    [r.data?.plans, includeArchived, includeLegacy],
+  );
+  return { ...r, data: { plans } };
 }
 
 const EMPTY_ARGS: Record<string, unknown> = {};
@@ -987,6 +1044,62 @@ export function usePlanAttention(params?: {
     ...raw,
     data: { groups },
   };
+}
+
+/**
+ * The DETAIL half of the attention list/detail split
+ * (slim-plans-attention-sync-payload-2026-07-26 P-004/P-005).
+ *
+ * The `plans.attention` list feed is slimmed at the sync boundary — each item's
+ * `body` is clipped to a preview and `actions` is dropped — because it was the
+ * fattest UI read at 1490KB. This fetches the ONE selected item back at full
+ * fidelity. Cheap: the resolver rides the plans:attention tool's own warm read
+ * cache, which the list feed just populated.
+ *
+ * Consumers should not call this directly — {@link useHydratedAttentionItem}
+ * merges the result over the list row, which is what `OtherDetail` uses.
+ */
+export function usePlanAttentionItem(id: string | null): AsyncResult<AttentionItem | null> {
+  const args = useMemo<Record<string, unknown>>(() => (id ? { id } : {}), [id]);
+  const q = useSyncQuery<AttentionItem>({
+    queryName: 'plans.attentionItem',
+    args,
+    enabled: !!id,
+  });
+  return {
+    data: id ? (q.data?.[0] ?? null) : null,
+    loading: q.loading,
+    error: q.error ? q.error.message : null,
+    refresh: () => q.invalidate(),
+  };
+}
+
+/**
+ * A list-feed attention row with its detail-tier fields filled back in.
+ *
+ * Returns the LIST row immediately (so the detail pane paints its title, tier,
+ * badges and layout with no spinner) and merges the full row over it when it
+ * arrives — the clipped `body` becomes the full body and `actions` reappears.
+ * `hydrated` is false until then, which is what gates rendering the action card:
+ * a card built from a row with no `actions` would render as a question with no
+ * buttons, which reads as "this item has no actions" rather than "still loading".
+ *
+ * A failed detail fetch degrades to the list row rather than blanking the pane —
+ * the preview body and every non-action affordance still work.
+ */
+export function useHydratedAttentionItem(item: AttentionItem | null): {
+  item: AttentionItem | null;
+  hydrated: boolean;
+} {
+  const detail = usePlanAttentionItem(item?.id ?? null);
+  const full = detail.data;
+  return useMemo(() => {
+    if (!item) return { item: null, hydrated: false };
+    // Only accept a detail row for the item we actually asked about — an
+    // in-flight selection change can otherwise merge the previous item's body.
+    if (!full || full.id !== item.id) return { item, hydrated: false };
+    return { item: { ...item, ...full }, hydrated: true };
+  }, [item, full]);
 }
 
 export function usePlanSearch(query: string): AsyncResult<{ hits: PlanSearchHit[] }> {

@@ -141,6 +141,13 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // the moment a consumer lands with different args. Revisit when one exists.
     'plans.items',
     'plans.attention',
+    // plans.attentionItem (slim-plans-attention-sync-payload-2026-07-26 P-004) —
+    // the detail half of the attention split. Full-bust for the same reason
+    // plans.items is: its consumer args are `{ id, ...scope }`, and `id` is an
+    // attention-item id (e.g. `coord-message:m1`), NOT a plan slug, so
+    // planSlugScope cannot match it. It must invalidate WITH plans.attention or
+    // an open detail pane keeps showing a resolved item's stale actions.
+    'plans.attentionItem',
     'plans.search',
     // plans.byHive (WI-259 P-006) — the cross-member plan rollup. A FEDERATED plan
     // write lands on harness_plans under the author member's slug + fires the change
@@ -441,7 +448,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // a live `plans.attention` refresh regardless of plan_slug (EI-14209: the
   // Inbox pane needed a manual reload). Bare full-bust target, same shape as
   // harness_plans -> plans.attention below.
-  'harness_shared.coord_open_escalations': ['plans.attention'],
+  'harness_shared.coord_open_escalations': ['plans.attention', 'plans.attentionItem'],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 
   // ── Insights / activity ledger (v5 addendum 3) ──────────────────
