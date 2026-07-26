@@ -1615,6 +1615,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh'], label: 'restart settle-barrier budget + WARN_IS_FAIL escalation (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh'], label: 'rig wait-converged: non-numeric psql is not a false PASS (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/roster-scope.selftest.sh'], label: 'roster-gate workspace + pot scoping (WI-6181)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh'], label: 'rig deployed-state: uniform sidecar + build provenance + DHT isolation (WI-6212)' },
       ],
     },
   ],

@@ -1646,10 +1646,30 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // back. Best-effort, never throws into the tick.
     const swept = await sweepStalePackTmpFiles(repoPath).catch(() => null);
     if (swept && swept.removed.length > 0) {
-      console.log(
-        `[git-sync] ${slug}: reclaimed ${swept.removed.length} orphaned pack temp file(s), ` +
-          `${(swept.bytesReclaimed / 1e9).toFixed(2)} GB`,
-      );
+      // Report the two reclaim kinds SEPARATELY. They are not the same event and
+      // must not read as one: a temp pack is disk hygiene, while `shallow.lock`
+      // is the thing that WEDGES the cold-join ladder — clearing it is the
+      // moment a stuck joiner becomes able to make progress again, and it is the
+      // single highest-signal line in this whole feature's logs. Live-caught on
+      // the rig 2026-07-26: the unwedge printed as "reclaimed 1 orphaned pack
+      // temp file(s), 0.00 GB", which names the wrong artifact AND rounds the
+      // 41-byte lock to nothing — i.e. the one line a future debugger most needs
+      // said, in effect, that nothing had happened.
+      const unwedged = swept.removed.filter((n) => n.endsWith('.lock'));
+      const packs = swept.removed.filter((n) => !n.endsWith('.lock'));
+      if (packs.length > 0) {
+        // MB, not GB: a 2-decimal GB reads "0.00" for anything under ~5 MB.
+        console.log(
+          `[git-sync] ${slug}: reclaimed ${packs.length} orphaned pack temp file(s), ` +
+            `${(swept.bytesReclaimed / 1e6).toFixed(1)} MB`,
+        );
+      }
+      if (unwedged.length > 0) {
+        console.log(
+          `[git-sync] ${slug}: cleared stranded ${unwedged.join(', ')} — ` +
+            `the cold-join ladder was WEDGED (every shallow fetch failing) and can now advance`,
+        );
+      }
     }
 
     const actor = await resolveUsageActor();
@@ -1697,8 +1717,27 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         }
       }),
     );
+    // WI-6189: a seeded peer namespace is NECESSARY but no longer SUFFICIENT.
+    // The resumable ladder seeds all-or-nothing PER NAMESPACE, so a store can
+    // hold a fully-seeded namespace while ANOTHER device's history is still
+    // mid-ladder in quarantine. Testing only "does a peer namespace exist?"
+    // (which was equivalent back when bootstrap was all-or-nothing) declares
+    // that PARTIAL join complete and returns warm on every later tick, so the
+    // ladder never runs again and the unfinished namespaces are stranded
+    // forever — a silent partial cold-join that looks like a successful one.
+    //
+    // Live-caught on the P-302 rig 2026-07-26, in the very tick after the first
+    // successful cold join: 5 namespaces seeded, 4 quarantine refs pending,
+    // store permanently shallow, zero further bootstrap ticks.
+    //
+    // So: warm ⇔ seeded from a peer member AND nothing still staged. Re-running
+    // with quarantine pending is safe and is the whole point — bootstrapFromPeer
+    // is rewind-safe by contract and resumes from those very refs.
     const existing = await listNamespaces(repoPath);
-    if (existing.some((n) => memberNamespaceKeys.has(n))) return; // warm — already seeded from a peer member
+    if (existing.some((n) => memberNamespaceKeys.has(n))) {
+      const pending = await hasPendingQuarantine(repoPath).catch(() => false);
+      if (!pending) return; // warm — seeded from a peer member, nothing left staged
+    }
 
     // DIAL-REGISTRY (WI-3583) — see module doc above. Real per-device dial
     // once this harness has a live swarm topic; falls back to the same

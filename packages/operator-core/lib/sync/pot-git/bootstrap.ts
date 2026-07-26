@@ -208,6 +208,30 @@ async function readQuarantine(repoPath: string, runGit: RunGit): Promise<Quarant
   return out;
 }
 
+/**
+ * Is there staged-but-unfinished cold-join work in this store?
+ *
+ * WI-6189: the resumable ladder made bootstrap INCREMENTAL. It seeds
+ * all-or-nothing PER NAMESPACE, so a store can legitimately hold some seeded
+ * `refs/namespaces/*` while OTHER devices' history is still mid-ladder in
+ * quarantine. Any caller whose "have we already bootstrapped?" check is
+ * "does a peer namespace exist?" is therefore asking the wrong question now —
+ * it was only ever equivalent back when bootstrap was all-or-nothing — and will
+ * declare a PARTIAL join complete, stranding the unfinished namespaces forever.
+ *
+ * Live-caught on the P-302 rig 2026-07-26: the joiner seeded 5 namespaces,
+ * still had 4 quarantined refs for another device, and its leg then returned
+ * "warm" on every subsequent tick — the ladder never ran again and the store sat
+ * permanently shallow. Pair this with the namespace check: warm means a peer
+ * namespace exists AND nothing is left pending.
+ */
+export async function hasPendingQuarantine(
+  repoPath: string,
+  runGit: RunGit = defaultRunGit,
+): Promise<boolean> {
+  return (await readQuarantine(repoPath, runGit)).length > 0;
+}
+
 /** Best-effort delete of every quarantine ref.
  *
  * WI-6189: called ONLY once the ladder has finished and the namespaces are

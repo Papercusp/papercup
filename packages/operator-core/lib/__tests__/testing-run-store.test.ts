@@ -14,6 +14,8 @@ import {
   getRun,
   cancelRun,
   listRuns,
+  distillVitestRun,
+  COLLECTION_FAILURE_TEST,
   _resetTestingRunStore,
 } from '../testing-run-store';
 

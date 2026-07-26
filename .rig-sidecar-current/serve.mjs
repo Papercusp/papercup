@@ -393898,10 +393898,23 @@ async function pathExists(p3) {
 }
 async function sweepStalePackTmpFiles(repoPath, opts = {}) {
   const maxAgeMs = opts.maxAgeMs ?? STALE_PACK_TMP_MAX_AGE_MS;
+  const shallowLockMaxAgeMs = opts.shallowLockMaxAgeMs ?? STALE_SHALLOW_LOCK_MAX_AGE_MS;
   const now2 = opts.now ?? Date.now();
-  const packDir = join36(repoPath, "objects", "pack");
   const removed = [];
   let bytesReclaimed = 0;
+  for (const lock of ["shallow.lock"]) {
+    const p3 = join36(repoPath, lock);
+    try {
+      const st3 = await stat2(p3);
+      if (now2 - st3.mtimeMs >= shallowLockMaxAgeMs) {
+        await unlink3(p3);
+        removed.push(lock);
+        bytesReclaimed += st3.size;
+      }
+    } catch {
+    }
+  }
+  const packDir = join36(repoPath, "objects", "pack");
   let entries;
   try {
     entries = await readdir4(packDir);
@@ -393975,7 +393988,7 @@ async function listNamespaceRefs(repoPath, devicePubkeyBase64, runGit5 = default
   }
   return out.sort((a3, b6) => a3.ref.localeCompare(b6.ref));
 }
-var defaultRunGit, defaultRunGitStdin, NETWORK_RUN_GIT_TIMEOUT_MS, STALE_PACK_TMP_MAX_AGE_MS;
+var defaultRunGit, defaultRunGitStdin, NETWORK_RUN_GIT_TIMEOUT_MS, STALE_PACK_TMP_MAX_AGE_MS, STALE_SHALLOW_LOCK_MARGIN_MS, FETCH_CEILING_MS_MIRROR, STALE_SHALLOW_LOCK_MAX_AGE_MS;
 var init_storage = __esm({
   "../../packages/operator-core/lib/sync/pot-git/storage.ts"() {
     "use strict";
@@ -394047,6 +394060,9 @@ git ${args26.join(" ")} timed out`;
     });
     NETWORK_RUN_GIT_TIMEOUT_MS = 10 * 6e4;
     STALE_PACK_TMP_MAX_AGE_MS = 15 * 6e4;
+    STALE_SHALLOW_LOCK_MARGIN_MS = 6e4;
+    FETCH_CEILING_MS_MIRROR = 12e4;
+    STALE_SHALLOW_LOCK_MAX_AGE_MS = FETCH_CEILING_MS_MIRROR + STALE_SHALLOW_LOCK_MARGIN_MS;
   }
 });
 
@@ -541021,9 +541037,9 @@ function intermittentUnderevidencedWhereSql(sql5, titleExpr, testResultExpr, tes
   )`;
 }
 function auditPredicateSql(sql5, audit6) {
-  if (audit6 === "no-completion-record") return sql5`terminal_completion_ref IS NULL`;
+  if (audit6 === "no-completion-record") return sql5`terminal_completion_ref IS NULL AND authority IS NULL`;
   if (audit6 === "no-completion-record-suspicious") {
-    return sql5`terminal_completion_ref IS NULL AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES})))`;
+    return sql5`terminal_completion_ref IS NULL AND authority IS NULL AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES})))`;
   }
   if (audit6 === "geometry-unverified") {
     return geometryUnverifiedWhereSql(
@@ -541046,9 +541062,10 @@ function auditPredicateSqlFor(sql5, audit6, alias) {
   const col = sql5.unsafe(`${alias}.payload`);
   const ref2 = sql5.unsafe(`${alias}.terminal_completion_ref`);
   const owner = sql5.unsafe(`${alias}.terminal_owner`);
-  if (audit6 === "no-completion-record") return sql5`${ref2} IS NULL`;
+  const authority = sql5.unsafe(`${alias}.authority`);
+  if (audit6 === "no-completion-record") return sql5`${ref2} IS NULL AND ${authority} IS NULL`;
   if (audit6 === "no-completion-record-suspicious") {
-    return sql5`${ref2} IS NULL AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES})))`;
+    return sql5`${ref2} IS NULL AND ${authority} IS NULL AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES})))`;
   }
   if (audit6 === "geometry-unverified") {
     return geometryUnverifiedWhereSql(
@@ -666167,9 +666184,14 @@ async function writeDeepenStep(repoPath, runGit5, n7) {
 }
 async function bootstrapFromPeer(localRepoPath, duplex, opts = {}) {
   const runGit5 = opts.runGit ?? defaultRunGit;
-  await sweepStalePackTmpFiles(localRepoPath).catch(() => ({ removed: [], bytesReclaimed: 0 }));
+  await sweepStalePackTmpFiles(localRepoPath, {
+    shallowLockMaxAgeMs: (opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS) + STALE_SHALLOW_LOCK_MARGIN_MS
+  }).catch(() => ({ removed: [], bytesReclaimed: 0 }));
   const preExisting = new Set(await listNamespaces(localRepoPath, runGit5));
   const maxSteps = Math.max(1, opts.maxSteps ?? DEFAULT_MAX_STEPS);
+  const now2 = opts.now ?? Date.now;
+  const maxWallMs = Math.max(1, opts.maxWallMs ?? DEFAULT_MAX_WALL_MS);
+  const ladderStartedAt = now2();
   let res = { code: 0, stderr: "", timedOut: false };
   let phase = "seed";
   let steps = 0;
@@ -666208,7 +666230,7 @@ async function bootstrapFromPeer(localRepoPath, duplex, opts = {}) {
       releasePending();
       break;
     }
-    if (steps >= maxSteps) {
+    if (steps >= maxSteps || steps > 0 && now2() - ladderStartedAt >= maxWallMs) {
       releasePending();
       return partial2();
     }
@@ -666310,7 +666332,7 @@ seed ${key12}/${q4.rest}: ${w4.stderr.trim()}`;
     skippedSelf
   };
 }
-var ZERO_SHA4, BOOTSTRAP_QUARANTINE_PREFIX, ALL_NAMESPACES_QUARANTINE_REFSPEC, DEEPEN_CONFIG_KEY, MIN_DEEPEN_COMMITS, INITIAL_DEEPEN_COMMITS, MAX_DEEPEN_COMMITS, DEEPEN_TARGET_FRACTION, DEEPEN_GROW_BELOW_FRACTION, DEFAULT_MAX_STEPS;
+var ZERO_SHA4, BOOTSTRAP_QUARANTINE_PREFIX, ALL_NAMESPACES_QUARANTINE_REFSPEC, DEEPEN_CONFIG_KEY, MIN_DEEPEN_COMMITS, INITIAL_DEEPEN_COMMITS, MAX_DEEPEN_COMMITS, DEEPEN_TARGET_FRACTION, DEEPEN_GROW_BELOW_FRACTION, DEFAULT_MAX_STEPS, DEFAULT_MAX_WALL_MS;
 var init_bootstrap2 = __esm({
   "../../packages/operator-core/lib/sync/pot-git/bootstrap.ts"() {
     "use strict";
@@ -666326,6 +666348,7 @@ var init_bootstrap2 = __esm({
     DEEPEN_TARGET_FRACTION = 0.25;
     DEEPEN_GROW_BELOW_FRACTION = 0.5;
     DEFAULT_MAX_STEPS = 12;
+    DEFAULT_MAX_WALL_MS = 15e4;
   }
 });
 
@@ -865964,6 +865987,37 @@ var init_claimable = __esm({
   }
 });
 
+// ../../packages/operator-core/lib/work-item-completion-authority.ts
+function isWorkItemCompletionAuthority(v8) {
+  return typeof v8 === "string" && WORK_ITEM_COMPLETION_AUTHORITIES.includes(v8);
+}
+function countsTowardBurnDown(authority, isTerminal2) {
+  if (!isTerminal2) return false;
+  if (authority === null) return true;
+  return authority === "committed" || authority === "validated";
+}
+function isSufficientEvidence(evidence) {
+  if (!evidence) return false;
+  if (!evidence.verifiedHow) return false;
+  return Boolean(evidence.testsRun?.trim() || evidence.testResult?.trim());
+}
+function authorityForCompletion(evidence) {
+  return isSufficientEvidence(evidence) ? "committed" : "proposed";
+}
+var WORK_ITEM_COMPLETION_AUTHORITIES;
+var init_work_item_completion_authority = __esm({
+  "../../packages/operator-core/lib/work-item-completion-authority.ts"() {
+    "use strict";
+    WORK_ITEM_COMPLETION_AUTHORITIES = [
+      "proposed",
+      "validated",
+      "committed",
+      "pending_human",
+      "invalid"
+    ];
+  }
+});
+
 // ../../packages/operator-core/lib/agent-tools/work_items/burn_down.ts
 function buildCohortAudit(requestedIds, items) {
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -866095,7 +866149,8 @@ function buildBurnDownResult(items, liveOwners, opts) {
     deprecated: 0,
     dropped: 0,
     deltaSince: opts.since ?? null,
-    delta: 0
+    delta: 0,
+    authority: { counted: 0, committed: 0, validated: 0, proposed: 0, pendingHuman: 0, invalid: 0, legacy: 0 }
   };
   const inFlight4 = [];
   const parked = [];
@@ -866113,6 +866168,11 @@ function buildBurnDownResult(items, liveOwners, opts) {
       if (state7 in terminal && typeof terminal[state7] === "number") {
         terminal[state7] += 1;
       }
+      const auth2 = item.completionAuthority;
+      if (countsTowardBurnDown(auth2, true)) terminal.authority.counted += 1;
+      if (auth2 === null) terminal.authority.legacy += 1;
+      else if (auth2 === "pending_human") terminal.authority.pendingHuman += 1;
+      else terminal.authority[auth2] += 1;
       if (hasSince && Date.parse(item.updatedAt) > sinceMs) {
         terminal.delta += 1;
         closedRows.push({ id: item.id, kind: item.kind, title: item.title, state: state7, harness: item.harness, ts: item.updatedAt });
@@ -866192,6 +866252,7 @@ var init_burn_down = __esm({
     init_presence5();
     init_work_items();
     init_work_item_dispatch_states();
+    init_work_item_completion_authority();
     TERMINAL_STATES2 = new Set(ANY_FAMILY_TERMINAL_STATES);
     PARKED_STATES = /* @__PURE__ */ new Set(["blocked", "needs-human", "needs_human", "cursed"]);
     DELTA_ROW_CAP = 30;
@@ -867919,6 +867980,7 @@ async function completeOne(it3, ident3, ctx) {
   let appliedState;
   const closeIntentRequested = Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
   const completionEvidenceForGate = completionEvidenceFromRecord(it3.completion);
+  const completionAuthority = authorityForCompletion(completionEvidenceForGate);
   const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceForGate);
   if (unbackedLiveDroveUiClose) {
     stateError = `REJECTED \u2014 this completion claims verifiedHow:'live-drove-ui' to close ${it3.id} but cites no real artifact (a screenshot/capture image path, or a recorded tauri-agent-tools capture/screenshot/check invocation) in testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past its own author: unit tests verify structure, not pixels. Either cite the artifact, or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send.`;
@@ -867927,8 +867989,11 @@ async function completeOne(it3, ident3, ctx) {
       const res = await setWorkItemStateWithAliasInfo(it3.id, effectiveState, {
         harness: it3.harness,
         by: ident3.ownerId,
-        completionRef: it3.completion.summary,
-        completionEvidence: completionEvidenceForGate
+        // NO `completionRef` — see the block comment above. The summary is not lost:
+        // it is persisted on the completion record itself, which is where a reader
+        // should look for the narrative. What lands on the row is the judgement.
+        completionEvidence: completionEvidenceForGate,
+        completionAuthority
       });
       workItem2 = res.workItem ?? existing;
       aliasNote = res.aliasNote;
@@ -867946,6 +868011,8 @@ async function completeOne(it3, ident3, ctx) {
   const hasTests = completionEvidenceForGate !== void 0;
   const hasDeferred = Array.isArray(it3.completion.deferred) && it3.completion.deferred.length > 0;
   const verificationWarning = !hasTests && !hasDeferred ? shapeCoercedFromBareString ? `completion for ${it3.id} was passed as a bare STRING and silently coerced to { summary: ${JSON.stringify(it3.completion.summary)} } \u2014 every other field (testsRun, testResult, verifiedHow, addedTests, filesChanged, whatLanded, deferred, migrations) is EMPTY, not just unfilled, because a string can only ever populate \`summary\`. If you have structured evidence, RESEND as an object: work_items:complete({ id, state, completion: { summary, testsRun: '<what you ran>', testResult: '<pass/fail summary>', verifiedHow: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests: <boolean>, filesChanged: [...] } }) \u2014 or, if genuinely unverified, resend with \`deferred: ['<what you left undone + why>']\`.` : `recorded a completion for ${it3.id} with neither \`tests\` nor \`deferred\` populated \u2014 a settled unit should state whether it was VERIFIED (fill \`tests\`: what you ran / how you checked it, e.g. "18 vitest green" or "n/a \u2014 docs only") or CONSCIOUSLY DEFERRED (fill \`deferred\`: what you left undone + why). Add one so the unit isn't silently unverified (flush-to-proceed: a unit settles only live-verified or explicitly deferred-with-reason).` : void 0;
+  const stampedAuthority = !stateError && finalState && TERMINAL_WORK_ITEM_STATES4.has(finalState) ? completionAuthority : null;
+  const authorityWarning = stampedAuthority === "proposed" ? `${it3.id} is CLOSED but its completion landed authority:'proposed' \u2014 recorded and out of the claimable pool, but NOT counted toward burn-down, and it stays owned by you until it is settled. \`committed\` requires \`verifiedHow\` ('unit'|'integration'|'live-drove-ui'|'manual'|'already-passing') PLUS at least one of \`testsRun\` / \`testResult\`. \`filesChanged\` and \`addedTests\` do NOT qualify \u2014 both say what changed, neither says anything was checked. To settle it, re-call work_items:complete for this id with those fields filled; if the work genuinely cannot be verified, say so in \`deferred\` and leave it proposed.` : void 0;
   const completion = {
     ...it3.completion,
     workItem: it3.completion.workItem || it3.id,
@@ -868025,8 +868092,12 @@ async function completeOne(it3, ident3, ctx) {
     ...inferredCloseState ? {
       stateInferredFromCompletionStatus: `no top-level \`state\` was passed, but completion.status ('${inferredCloseState}') is this issue's own terminal vocabulary \u2014 inferred state:'${inferredCloseState}' and closed it (EI-12027). Pass top-level \`state\` explicitly to avoid relying on this inference.`
     } : {},
+    ...authorityWarning ? { authorityWarning } : {},
     ...verificationWarning ? { verificationWarning } : {},
     ...assigneeMismatchWarning ? { assigneeMismatchWarning } : {},
+    // Reported unconditionally on a real close (including `committed`) so the caller can
+    // see the judgement rather than infer it from the absence of a warning.
+    ...stampedAuthority ? { completionAuthority: stampedAuthority, countsTowardBurnDown: countsTowardBurnDown(stampedAuthority, true) } : {},
     ...duplicateOfWarning ? { duplicateOfWarning } : {},
     workItem: workItem2,
     completion,
@@ -868048,6 +868119,7 @@ var init_complete2 = __esm({
     init_work_items();
     init_records();
     init_completion_audit();
+    init_work_item_completion_authority();
     init_render();
     init_friction_markers();
     init_bulk2();
@@ -1012060,6 +1012132,7 @@ function issueToWorkItem(i4) {
     terminalOwner: i4.terminalOwner,
     terminalCompletionRef: i4.terminalCompletionRef,
     terminalCompletionEvidence: extractTerminalCompletionEvidence(i4.payload),
+    completionAuthority: i4.completionAuthority,
     // Federated issue-family rows are replicated facts owned by the authoring peer.
     // Surface the physical-row provenance so mutators can fail loud instead of
     // reporting "not found" after the engineer_issues view deliberately no-ops.
@@ -1012108,6 +1012181,10 @@ function featureRowToWorkItem(r4) {
     terminalOwner: r4.terminal_owner,
     terminalCompletionRef: r4.terminal_completion_ref,
     terminalCompletionEvidence: extractTerminalCompletionEvidence(r4.payload),
+    // A value outside the union can only arrive from a row written before the CHECK
+    // constraint, or by a hand-edit that evaded it — read it as "no judgement" rather
+    // than surfacing an unparseable token to every consumer.
+    completionAuthority: isWorkItemCompletionAuthority(r4.authority) ? r4.authority : null,
     createdAt: tsIso6(r4.created_ts),
     updatedAt: tsIso6(r4.updated_ts)
   };
@@ -1012564,6 +1012641,9 @@ async function createWorkItem(input2) {
     terminalCompletionRef: null,
     terminalCompletionEvidence: null,
     // freshly-inserted row never took a terminal transition (peer added this required field to the WorkItem type but missed this construction site)
+    // P-004: same reasoning — a row that has never been closed owes no authority
+    // judgement. non-terminal + null is the OPEN reading, not the legacy-close one.
+    completionAuthority: null,
     assignee: assignTo,
     // B-LOOP-4: created already-claimed when `assignee` was given
     // P-001: an atomic create+claim stamps taken_at=now() (the grace anchor); a fresh
@@ -1012670,9 +1012750,9 @@ async function setWorkItemState(id2, state7, opts = {}) {
       `work_item '${id2}' (kind=${wi2.kind}) cannot take state '${state7}' \u2014 valid: ${norm3.valid.join(", ")}`
     );
   }
-  if (!opts.force && wi2.terminalOwner && wi2.terminalCompletionRef && opts.by !== wi2.terminalOwner && isSettledWorkItemState(wi2.state) && !isSettledWorkItemState(state7)) {
+  if (!opts.force && wi2.terminalOwner && (wi2.terminalCompletionRef || wi2.completionAuthority) && opts.by !== wi2.terminalOwner && isSettledWorkItemState(wi2.state) && !isSettledWorkItemState(state7)) {
     throw new Error(
-      `work_item '${id2}' is already terminally completed (by ${wi2.terminalOwner}: "${wi2.terminalCompletionRef}") \u2014 reopening into '${state7}' would silently discard that completion. To deliberately reopen it (e.g. the completion was wrong), use work_items:set_state { id: '${id2}', state: '${state7}', force: true } \u2014 NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530). Otherwise investigate the peer's completion first.`
+      `work_item '${id2}' is already terminally completed (by ${wi2.terminalOwner}: "${wi2.terminalCompletionRef ?? `authority:${wi2.completionAuthority}`}") \u2014 reopening into '${state7}' would silently discard that completion. To deliberately reopen it (e.g. the completion was wrong), use work_items:set_state { id: '${id2}', state: '${state7}', force: true } \u2014 NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530). Otherwise investigate the peer's completion first.`
     );
   }
   const heldOpen = readWorkItemHeldOpenBy(wi2.payload);
@@ -1012710,7 +1012790,8 @@ async function setWorkItemState(id2, state7, opts = {}) {
     }
     const updated = await setIssueState(id2, state7, opts.by, opts.completionRef, {
       completionEvidence: opts.completionEvidence,
-      skipCompletionGate: opts.skipCompletionGate
+      skipCompletionGate: opts.skipCompletionGate,
+      completionAuthority: opts.completionAuthority
     });
     result27 = updated ? issueToWorkItem(updated) : null;
   } else {
@@ -1012721,9 +1012802,9 @@ async function setWorkItemState(id2, state7, opts = {}) {
           `completion-integrity: work_item '${id2}' \u2192 '${state7}' rejected \u2014 a terminal transition requires an owner (by)`
         );
       }
-      if (!opts.completionRef || !opts.completionRef.trim()) {
+      if (!opts.completionRef?.trim() && !opts.completionAuthority) {
         throw new Error(
-          `completion-integrity: work_item '${id2}' \u2192 '${state7}' rejected \u2014 a terminal transition requires a completionRef`
+          `completion-integrity: work_item '${id2}' \u2192 '${state7}' rejected \u2014 a terminal transition requires either a completionRef or a completion-authority judgement. Prefer work_items:complete { id, state: '${state7}', completion: { summary: '...', verifiedHow: '...', testResult: '...' } }, which judges your evidence and stamps the authority for you.`
         );
       }
     }
@@ -1012745,6 +1012826,10 @@ async function setWorkItemState(id2, state7, opts = {}) {
              updated_ts = ${Date.now()},
              terminal_owner = ${opts.by ?? null},
              terminal_completion_ref = ${opts.completionRef ?? null},
+             -- P-004: the authority judgement for THIS close. NULL when the caller
+             -- supplied none — a legacy-shaped close (D-008), which is the right reading
+             -- for the skipCompletionGate system paths and any writer not yet migrated.
+             authority = ${opts.completionAuthority ?? null},
              payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                             THEN payload
                             ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
@@ -1012777,7 +1012862,7 @@ async function setWorkItemState(id2, state7, opts = {}) {
       }
     }
   }
-  if (result27 && isSettledWorkItemState(wi2.state) && !isSettledWorkItemState(result27.state) && (wi2.terminalOwner || wi2.terminalCompletionRef)) {
+  if (result27 && isSettledWorkItemState(wi2.state) && !isSettledWorkItemState(result27.state) && (wi2.terminalOwner || wi2.terminalCompletionRef || wi2.completionAuthority)) {
     try {
       const { sql: sql5 } = getOrgPg();
       const prevHistory = Array.isArray(wi2.payload?.reopenHistory) ? wi2.payload.reopenHistory : [];
@@ -1012787,13 +1012872,16 @@ async function setWorkItemState(id2, state7, opts = {}) {
         force: opts.force === true,
         prevState: wi2.state,
         terminalOwner: wi2.terminalOwner,
-        terminalCompletionRef: wi2.terminalCompletionRef
+        terminalCompletionRef: wi2.terminalCompletionRef,
+        completionAuthority: wi2.completionAuthority
       };
       const history3 = JSON.stringify({ reopenHistory: [...prevHistory.slice(-4), entry3] });
+      const reopenedAuthority = wi2.completionAuthority === null ? null : "invalid";
       await sql5`
         UPDATE harness_shared.work_items
            SET terminal_owner = NULL,
                terminal_completion_ref = NULL,
+               authority = ${reopenedAuthority},
                -- work-item-status-full-unify (P-003): a reopened item is no longer terminal,
                -- so its collapsed-nuance reason must clear too (else a later plain done/dropped
                -- would inherit a stale passed/resolved reason).
@@ -1012804,6 +1012892,7 @@ async function setWorkItemState(id2, state7, opts = {}) {
            AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
       result27.terminalOwner = null;
       result27.terminalCompletionRef = null;
+      result27.completionAuthority = reopenedAuthority;
     } catch {
     }
   }
@@ -1012923,7 +1013012,7 @@ async function getCompletionIntegrityStats(harness) {
         count(*) FILTER (
           WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
             AND terminal_owner IS NOT NULL AND terminal_owner <> ''
-            AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
+            AND ((terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> '') OR authority IS NOT NULL)
         ) AS genuine
       FROM harness_shared.harness_features_consolidated
       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${harness}`,
@@ -1012933,7 +1013022,7 @@ async function getCompletionIntegrityStats(harness) {
         count(*) FILTER (
           WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
             AND terminal_owner IS NOT NULL AND terminal_owner <> ''
-            AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
+            AND ((terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> '') OR authority IS NOT NULL)
         ) AS genuine
       FROM harness_shared.engineer_issues
       WHERE workspace_id = ${issuesScopeWorkspace()} AND scope = ${`harness:${harness}`}`
@@ -1013253,7 +1013342,10 @@ function loopIterationNoiseExclusionSql(sql5) {
 function alreadyTerminallyCompletedExclusionSql(sql5) {
   return sql5`(
     (wi.terminal_owner IS NULL OR wi.terminal_owner = '')
-    OR (wi.terminal_completion_ref IS NULL OR wi.terminal_completion_ref = '')
+    OR (
+      (wi.terminal_completion_ref IS NULL OR wi.terminal_completion_ref = '')
+      AND wi.authority IS NULL
+    )
   )`;
 }
 async function setWorkItemClaimHold(id2, hold, opts = {}) {
@@ -1014162,6 +1014254,7 @@ var init_work_items = __esm({
     init_work_item_claim_lease_wiring();
     init_records();
     init_completion_audit();
+    init_work_item_completion_authority();
     init_external_blockers();
     init_pg_timestamp();
     init_external_blockers();
@@ -1014182,7 +1014275,8 @@ var init_work_items = __esm({
     FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
   taken_at, last_progress_at,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
-  origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref`;
+  origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref,
+  authority`;
     TERMINAL_WORK_ITEM_STATES3 = [
       "done",
       "passed",
@@ -1025296,6 +1025390,9 @@ function toIssue(r4) {
     rankUpdatedAt: tsIsoOrNull(r4.rank_updated_at),
     terminalOwner: r4.terminal_owner,
     terminalCompletionRef: r4.terminal_completion_ref,
+    // A token outside the union can only come from a pre-CHECK row or a hand-edit that
+    // evaded it — read it as "no judgement" rather than leaking it to every consumer.
+    completionAuthority: isWorkItemCompletionAuthority(r4.authority) ? r4.authority : null,
     featureOrder: r4.feature_order,
     createdAt: tsIso7(r4.created_at),
     updatedAt: tsIso7(r4.updated_at)
@@ -1025759,9 +1025856,9 @@ async function setIssueState(id2, state7, by2, completionRef, opts = {}) {
         `completion-integrity: issue '${id2}' \u2192 '${state7}' rejected \u2014 a terminal transition requires an owner (by)`
       );
     }
-    if (!completionRef || !completionRef.trim()) {
+    if (!completionRef?.trim() && !opts.completionAuthority) {
       throw new Error(
-        `completion-integrity: issue '${id2}' \u2192 '${state7}' rejected \u2014 a terminal transition requires a completionRef. Pass one directly (set_state { id, state, completionRef: "..." }), or prefer work_items:complete { id, state: "${state7}", completion: { summary: "..." } } which supplies it from completion.summary automatically \u2014 a prior work_items:complete WITHOUT \`state\` does NOT persist anything this call can reuse, so re-call complete with both, not set_state alone.`
+        `completion-integrity: issue '${id2}' \u2192 '${state7}' rejected \u2014 a terminal transition requires either a completionRef or a completion-authority judgement. Prefer work_items:complete { id, state: "${state7}", completion: { summary: "...", verifiedHow: "...", testResult: "..." } } \u2014 it judges your evidence and stamps the authority for you. Note that summary ALONE now lands \`proposed\` (recorded, but not counted toward burn-down); \`committed\` needs verifiedHow plus one of testsRun/testResult. Or pass a ref directly (set_state { id, state, completionRef: "..." }). A prior work_items:complete WITHOUT \`state\` does NOT persist anything this call can reuse, so re-call complete with both, not set_state alone.`
       );
     }
   }
@@ -1025773,6 +1025870,10 @@ async function setIssueState(id2, state7, by2, completionRef, opts = {}) {
            SET state = ${state7}, origin = 'local', updated_at = now(),
                assignee = NULL, assigned_at = NULL,
                terminal_owner = ${by2 ?? null}, terminal_completion_ref = ${completionRef ?? null},
+               -- P-004: the authority judgement for THIS close. Left NULL when the caller
+               -- supplied none — a legacy-shaped close (D-008), which is exactly right for
+               -- the skipCompletionGate system paths and for any writer not yet migrated.
+               authority = ${opts.completionAuthority ?? null},
                payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                               THEN payload
                               ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
@@ -1026047,6 +1026148,7 @@ var init_issues_engineer = __esm({
     init_records();
     init_completion_audit();
     init_digest();
+    init_work_item_completion_authority();
     init_pg_timestamp();
     init_provenance();
     init_work_item_blocking();
@@ -1026090,7 +1026192,7 @@ var init_issues_engineer = __esm({
     ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
-  terminal_completion_ref, feature_order, created_at, updated_at`;
+  terminal_completion_ref, authority, feature_order, created_at, updated_at`;
     ISSUE_ROW_DB_KEYS = [
       "issue_id",
       "kind",
@@ -1026115,6 +1026217,7 @@ var init_issues_engineer = __esm({
       "rank_updated_at",
       "terminal_owner",
       "terminal_completion_ref",
+      "authority",
       "feature_order",
       "created_at",
       "updated_at"

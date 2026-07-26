@@ -69,10 +69,11 @@ import {
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
-import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
+import { COMPLETION_ATTESTATIONS_KEY, TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, type CompletionAudit } from './completion-audit';
-import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
+import type { CompletionAttestation, CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
+  isSufficientEvidence,
   isWorkItemCompletionAuthority,
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
@@ -1617,6 +1618,56 @@ async function isStaleHoldOpenAndCleared(
   }
 }
 
+/**
+ * EI-18736669939338784 — what happened when a SECOND terminal close met an item that was
+ * already completed by SOMEONE ELSE, reported back to the caller.
+ *
+ * `outcome`:
+ *  · `attested`  — the STORED record stands; this close was filed under
+ *    `payload._completionAttestations` and did NOT become authoritative.
+ *  · `upgraded`  — this close carried strictly richer evidence, became authoritative, and
+ *    the record it replaced was archived as an attestation rather than deleted.
+ */
+export interface TerminalCompletionConflict {
+  outcome: 'attested' | 'upgraded';
+  /** The principal already credited with the item's completion. */
+  existingOwner: string | null;
+  existingAuthority: WorkItemCompletionAuthority | null;
+  /** Did the STORED record meet the `committed` evidence bar? */
+  existingEvidenceSufficient: boolean;
+  /** Did the INCOMING close meet it? */
+  incomingEvidenceSufficient: boolean;
+  /** Caller-facing explanation — surfaced verbatim by work_items:complete. */
+  note: string;
+}
+
+/**
+ * Record a non-authoritative terminal close beside the authoritative one.
+ *
+ * Writes through `harness_shared.work_items`, which is UPDATE-able for BOTH families (the
+ * feature side is an auto-updatable view, the issue side has an INSTEAD OF trigger) — the
+ * same surface the reopen-history archive below uses, which is why this needs no
+ * per-family branching.
+ *
+ * Bounded to the newest 5, newest-last, mirroring `reopenHistory`.
+ */
+async function appendCompletionAttestation(
+  id: string,
+  priorPayload: unknown,
+  entry: CompletionAttestation,
+): Promise<void> {
+  const existing = (priorPayload as Record<string, unknown> | null)?.[COMPLETION_ATTESTATIONS_KEY];
+  const prior = Array.isArray(existing) ? existing : [];
+  const merged = JSON.stringify({ [COMPLETION_ATTESTATIONS_KEY]: [...prior.slice(-4), entry] });
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.work_items
+       SET payload = COALESCE(payload, '{}'::jsonb) || ${merged}::text::jsonb,
+           updated_ts = ${Date.now()}
+     WHERE feature_id = ${id}
+       AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
+}
+
 /** Lifecycle.setState — feature → status; issue → state. The requested state is
  *  normalized onto the family's native vocabulary first (EI-24); an unmappable
  *  state throws a typed error naming the valid set.
@@ -1661,6 +1712,16 @@ export async function setWorkItemState(
      * when the requested state is already canonical.
      */
     onAlias?: (info: { requested: string; resolved: string }) => void;
+    /**
+     * EI-18736669939338784: fired when this write was a SECOND terminal close, by a
+     * DIFFERENT principal, of an item that already carried a completion — so the write was
+     * reshaped to preserve the stronger record instead of overwriting it.
+     *
+     * Exists because the SILENCE was the bug: both callers were told `ok:true` while one of
+     * their records was destroyed. A caller that cannot learn which record the ledger now
+     * carries has no way to know its evidence needs re-posting.
+     */
+    onTerminalConflict?: (info: TerminalCompletionConflict) => void;
     /**
      * EI-7422: a target that is ALREADY terminally completed (terminalOwner +
      * terminalCompletionRef stamped, e.g. via a peer's work_items:complete that
@@ -1727,6 +1788,106 @@ export async function setWorkItemState(
         `NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530). ` +
         `Otherwise investigate the peer's completion first.`,
     );
+  }
+  // EI-18736669939338784 — THE SAME HARM AS THE GUARD ABOVE, BY A SHORTER PATH. That arm
+  // stops a peer DISCARDING a completion by REOPENING it; its condition carries
+  // `!isSettledWorkItemState(state)`, so a terminal→terminal RE-CLOSE sails straight past
+  // it and overwrites the stored record instead. The terminal UPDATE stamps
+  // `terminal_owner`/`terminal_completion_ref`/`authority` unconditionally, and merges
+  // evidence with jsonb `||` — a TOP-LEVEL key merge, so an incoming `_completionEvidence`
+  // REPLACES the stored object wholesale rather than deep-merging it.
+  //
+  // Proven live on WI-6112 (tool_invocations, ORDER BY invoked_at ASC): a rich structured
+  // close (verifiedHow:'integration', testsRun, 4 filesChanged) landed at 15:30:03.446, and
+  // a bare-string close from a DIFFERENT agent landed 1.9s later and is what survived —
+  // leaving the row reading as an unverified assertion. Both callers were told ok:true.
+  //
+  // WHY THIS DIRECTION IS THE DANGEROUS ONE: completion-integrity audits read whatever
+  // closed LAST, so absent this guard the WEAKER record wins by arriving later — a bare
+  // assertion ERASES a verification.
+  //
+  // Measured over 30 days before the fix: 27 items took a cross-owner second close. ALL 27
+  // had terminal_owner reassigned away from the first closer; 12 lost or degraded their
+  // evidence; and 15 ended up MIS-ATTRIBUTED — crediting closer B while still carrying
+  // closer A's verification, which reads as a clean well-evidenced close and passes every
+  // check we have. That last group is why this keys on `terminalOwner` + a different `by`
+  // rather than on "would evidence be overwritten": the evidence-loss reading would have
+  // covered 12 of 27 and missed the 15 worst.
+  //
+  // UNLIKE THE REOPEN ARM, THIS DOES NOT THROW. The item is ALREADY terminal, so refusing
+  // gives the caller nothing to do with the refusal. Instead the write is reshaped to keep
+  // the stronger record and the loser is preserved as an attestation — the reporter's
+  // stated preference (merge/append over refuse), and strictly more information than either
+  // a throw or the old silent clobber.
+  //
+  // `skipCompletionGate` is deliberately exempt: those are trusted internal restore/sweep
+  // paths documented as "not completions at all", and reshaping them would change behaviour
+  // this change has not audited. That leaves a narrower hole (a system sweep can still
+  // reassign credit) tracked separately as WI-6218, rather than widened into here.
+  const isSecondTerminalClose =
+    !opts.force &&
+    !opts.skipCompletionGate &&
+    Boolean(opts.by?.trim()) &&
+    Boolean(wi.terminalOwner) &&
+    Boolean(wi.terminalCompletionRef || wi.completionAuthority) &&
+    opts.by !== wi.terminalOwner &&
+    isSettledWorkItemState(wi.state) &&
+    isSettledWorkItemState(state);
+  if (isSecondTerminalClose) {
+    const existingSufficient = isSufficientEvidence(wi.terminalCompletionEvidence);
+    const incomingSufficient = isSufficientEvidence(opts.completionEvidence);
+    // "Strictly richer" is the EXISTING `committed` bar (verifiedHow AND one of
+    // testsRun/testResult), not a new notion of quality. A TIE does not upgrade: two equally
+    // sufficient records leave the FIRST standing, because the property being defended is
+    // "a second write must not destroy the first", not "the newest wins".
+    const upgrade = incomingSufficient && !existingSufficient;
+    const attestation: CompletionAttestation = {
+      at: new Date().toISOString(),
+      by: upgrade ? wi.terminalOwner : (opts.by ?? null),
+      state: upgrade ? wi.state : state,
+      completionRef: upgrade ? wi.terminalCompletionRef : (opts.completionRef ?? null),
+      completionAuthority: upgrade ? wi.completionAuthority : (opts.completionAuthority ?? null),
+      evidence: upgrade ? wi.terminalCompletionEvidence : (opts.completionEvidence ?? null),
+      outcome: upgrade ? 'superseded' : 'attested',
+    };
+    // Best-effort, and deliberately so on the ATTESTED path: failing to file the second
+    // record must not turn a harmless duplicate close into a hard error for the caller. The
+    // authoritative record is untouched either way, which is the property that matters.
+    await appendCompletionAttestation(id, wi.payload, attestation).catch(() => {});
+    if (!upgrade) {
+      opts.onTerminalConflict?.({
+        outcome: 'attested',
+        existingOwner: wi.terminalOwner,
+        existingAuthority: wi.completionAuthority,
+        existingEvidenceSufficient: existingSufficient,
+        incomingEvidenceSufficient: incomingSufficient,
+        note:
+          `work_item '${id}' was ALREADY completed by ${wi.terminalOwner}` +
+          `${wi.completionAuthority ? ` (authority:${wi.completionAuthority})` : ''}. Your close was RECORDED ` +
+          `AS A SECOND ATTESTATION (payload.${COMPLETION_ATTESTATIONS_KEY}) and did NOT replace theirs — ` +
+          `${incomingSufficient ? 'both records meet the evidence bar, and a tie leaves the first standing' : `it does not meet the bar to supersede a stored record (\`committed\` needs verifiedHow plus one of testsRun/testResult)`}. ` +
+          `The item's authoritative completion record and terminal state are unchanged. If ${wi.terminalOwner}'s ` +
+          `completion is WRONG, correct it deliberately with work_items:set_state { id: '${id}', state: '${state}', force: true } ` +
+          `(work_items:complete has no \`force\` arg — WI-4530), or coordinate with them via coord:send.`,
+      });
+      // The stored record stands, so there is nothing further to write. Returning the
+      // re-read row (not the pre-call snapshot) so the caller sees the attestation that was
+      // just filed. The settled-event fan-out below is skipped deliberately: the item's
+      // state did not change, and a duplicate close should not re-fire `work-item:done`.
+      return (await getWorkItem(id, opts.harness)) ?? wi;
+    }
+    opts.onTerminalConflict?.({
+      outcome: 'upgraded',
+      existingOwner: wi.terminalOwner,
+      existingAuthority: wi.completionAuthority,
+      existingEvidenceSufficient: existingSufficient,
+      incomingEvidenceSufficient: incomingSufficient,
+      note:
+        `work_item '${id}' was already completed by ${wi.terminalOwner}, but your close carries strictly richer ` +
+        `evidence (verifiedHow plus test results, which theirs lacked) — it is now the AUTHORITATIVE record. ` +
+        `Their record was ARCHIVED to payload.${COMPLETION_ATTESTATIONS_KEY} rather than discarded.`,
+    });
+    // Fall through: the normal terminal write below installs this richer record.
   }
   // P-006 (fleet-deltas-leader-primitives, EI-8993): an item HELD OPEN by someone
   // (payload.held_open_by — a leader gating it on a release criterion / owner

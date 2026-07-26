@@ -249,10 +249,18 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
     ).toBe('open');
   });
 
-  it('feature-family REJECTS a terminal transition with an owner but no completionRef', async () => {
+  // P-004 widened what SATISFIES this gate (a completion-authority judgement now counts
+  // alongside a completionRef), so the message became "requires EITHER a completionRef or a
+  // completion-authority judgement" and the old `/requires a completionRef/` literal stopped
+  // matching. The BEHAVIOUR under test is unchanged and still correct — a terminal
+  // transition carrying neither is still rejected — so this asserts the contract rather than
+  // one phrasing of it: it must reject, and it must name both accepted satisfiers so the
+  // caller learns the actual fix. (Assertion updated with the P-004 change; the reject-path
+  // behaviour it guards was never broken.)
+  it('feature-family REJECTS a terminal transition with an owner but neither completionRef nor authority', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     await expect(wi.setWorkItemState(feat.id, 'deprecated', { harness: 'papercup', by: 'agA' })).rejects.toThrow(
-      /completion-integrity:.*requires a completionRef/,
+      /completion-integrity:.*requires (?:a|either a) completionRef.*(?:authority|judgement)/s,
     );
   });
 
@@ -288,10 +296,11 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
     await expect(wi.setWorkItemState(bug.id, 'resolved')).rejects.toThrow(/completion-integrity:.*requires an owner/);
   });
 
-  it('issue-family REJECTS a terminal transition with an owner but no completionRef', async () => {
+  // Same P-004 message widening as the feature-family case above — see that comment.
+  it('issue-family REJECTS a terminal transition with an owner but neither completionRef nor authority', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
     await expect(wi.setWorkItemState(bug.id, 'closed', { by: 'agA' })).rejects.toThrow(
-      /completion-integrity:.*requires a completionRef/,
+      /completion-integrity:.*requires (?:a|either a) completionRef.*(?:authority|judgement)/s,
     );
   });
 

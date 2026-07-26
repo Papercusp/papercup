@@ -42,6 +42,7 @@ import {
   linkWorkItem,
   subscribeWorkItem,
   SETTLED_WORK_ITEM_STATES,
+  type TerminalCompletionConflict,
 } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 import { isBackedLiveDroveUiClaim } from '../../completion-audit';
@@ -420,6 +421,11 @@ async function completeOne(
   let workItem = existing;
   let stateError: string | undefined;
   let aliasNote: string | undefined;
+  // EI-18736669939338784: set when this close met an item ALREADY completed by someone
+  // else, so the write was reshaped to preserve the stronger record. Surfaced as a loud
+  // warning below — the caller being told `ok:true` while their evidence was destroyed IS
+  // the bug this closes.
+  let terminalConflict: TerminalCompletionConflict | undefined;
   // EI-7712: same shared discriminator as work_items:set_state — compares the
   // ACTUALLY-persisted state against what the caller asked for, not just whether the
   // normalize-layer onAlias fired. Only meaningful when a terminal `state` was passed;
@@ -465,6 +471,9 @@ async function completeOne(
         // should look for the narrative. What lands on the row is the judgement.
         completionEvidence: completionEvidenceForGate,
         completionAuthority,
+        onTerminalConflict: (info) => {
+          terminalConflict = info;
+        },
       });
       workItem = res.workItem ?? existing;
       aliasNote = res.aliasNote;
@@ -717,6 +726,22 @@ async function completeOne(
     ...(inferredCloseState
       ? {
           stateInferredFromCompletionStatus: `no top-level \`state\` was passed, but completion.status ('${inferredCloseState}') is this issue's own terminal vocabulary — inferred state:'${inferredCloseState}' and closed it (EI-12027). Pass top-level \`state\` explicitly to avoid relying on this inference.`,
+        }
+      : {}),
+    // EI-18736669939338784 — ordered with the other LOUD signals, ahead of the bulky echoed
+    // data, for the reason documented above: the result door truncates from the tail, and
+    // this is precisely the field a caller must not lose. `completionEvidenceStored` stays
+    // true and is NOT repurposed to report this: the evidence WAS durably recorded (as an
+    // attestation), and that flag feeds `finish.complete`, whose `false` means "re-call the
+    // same completion to converge" — advice that cannot help here and would send the caller
+    // into a retry loop against a guard that will make the same decision every time.
+    ...(terminalConflict
+      ? {
+          terminalConflictWarning:
+            terminalConflict.outcome === 'attested'
+              ? `COMPLETION RECORDED AS A SECOND ATTESTATION, NOT AS THIS ITEM'S RECORD — ${terminalConflict.note}`
+              : `YOUR COMPLETION REPLACED AN EARLIER, THINNER ONE — ${terminalConflict.note}`,
+          terminalConflict,
         }
       : {}),
     ...(authorityWarning ? { authorityWarning } : {}),

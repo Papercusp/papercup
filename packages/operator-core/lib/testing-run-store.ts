@@ -388,6 +388,159 @@ export function parseVitestJsonForHarnessRows(
   return rows;
 }
 
+// ── P-021: the AGENT-facing distillation ──────────────────────────────────
+//
+// `parseVitestJsonForHarnessRows` above answers the Tests-tab's question ("one
+// row per FILE, for history"). An agent asks a different one: "did it pass, and
+// if not, which TEST failed and why". D-021 measured that gap: 84.8% of the
+// 2,620 test-running commands in the 7d corpus pipe their output to `tail`/
+// `head` and 81.7% merge stderr into that pipe, because the only way to answer
+// the second question today is to eyeball raw reporter output through a
+// hand-chosen line budget (median `tail -60`).
+//
+// So this is a SECOND PURE PROJECTION over the SAME parsed JSON, not a second
+// parser and never a stdout scrape (D-022). The two differ only in grain:
+// `parseVitestJsonForHarnessRows` collapses every failure message into a
+// 4000-char `outputTail` and DISCARDS `assertionResults[].fullName`; this one
+// keeps the test identity and drops everything the agent will not read.
+
+/** One failing test, identified precisely enough to re-run it with `-t`. */
+export interface DistilledTestFailure {
+  /** Root-relative POSIX path of the file the failing test lives in. */
+  file: string;
+  /**
+   * The failing test's full name (`describe > it`), from `fullName`, falling
+   * back to `title`. {@link COLLECTION_FAILURE_TEST} when the file never
+   * produced assertions at all — see the note on that constant.
+   */
+  test: string;
+  /** First failure message, trimmed to `maxMessageChars`. */
+  message: string;
+}
+
+/**
+ * A test file that threw at import/collection time has NO assertionResults —
+ * its error lives only in the file-level `message`. That is simultaneously the
+ * most confusing failure class (Vitest 4 prints nothing per-suite when two or
+ * more collide — EI-18099113673609528, which `scripts/test-files.mjs` carries a
+ * whole recovery path for) and the one a naive per-test projection drops
+ * ENTIRELY, reporting `failed: 0` for a run that failed. Surfacing it under a
+ * reserved pseudo-test name is what keeps this projection honest.
+ */
+export const COLLECTION_FAILURE_TEST = '(file failed to collect)';
+
+/** The distilled envelope P-021 returns instead of raw reporter output. */
+export interface DistilledTestRun {
+  /** Tests that passed, summed across files (NOT files — the file grain lives in test_runs). */
+  passed: number;
+  failed: number;
+  skipped: number;
+  /** Test FILES the run covered — the router's `matched` count, from the report itself. */
+  files: number;
+  failures: DistilledTestFailure[];
+  /** True when `failures` was capped; the counts above always remain complete. */
+  failuresTruncated: boolean;
+  /** Wall-clock span of the run (max endTime - min startTime), null if unreported. */
+  durationMs: number | null;
+}
+
+/** Budgets chosen from D-021's measurement: agents keep a median of 60 output
+ *  lines, so ~20 failures at ~1.2KB each stays inside the context they were
+ *  already willing to spend, while carrying strictly more signal. */
+const DEFAULT_MAX_FAILURES = 20;
+const DEFAULT_MAX_MESSAGE_CHARS = 1200;
+
+/**
+ * Distil a vitest `--reporter=json` report into the agent-facing envelope.
+ *
+ * Pure + defensive, exactly like its sibling: malformed JSON or an unexpected
+ * shape yields an empty, all-zero run rather than throwing — a distillation
+ * failure must never be reported as a test failure.
+ *
+ * @param jsonText raw `--reporter=json` output
+ * @param rootAbs the worktree the run executed in (absolute paths are relativized against it)
+ */
+export function distillVitestRun(
+  jsonText: string,
+  rootAbs: string,
+  opts?: { maxFailures?: number; maxMessageChars?: number },
+): DistilledTestRun {
+  const maxFailures = opts?.maxFailures ?? DEFAULT_MAX_FAILURES;
+  const maxMessageChars = opts?.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
+  const empty: DistilledTestRun = {
+    passed: 0, failed: 0, skipped: 0, files: 0,
+    failures: [], failuresTruncated: false, durationMs: null,
+  };
+
+  let parsed: { testResults?: VitestJsonFile[] };
+  try {
+    parsed = JSON.parse(jsonText) as { testResults?: VitestJsonFile[] };
+  } catch {
+    return empty;
+  }
+  const files = Array.isArray(parsed.testResults) ? parsed.testResults : [];
+  if (files.length === 0) return empty;
+
+  const out: DistilledTestRun = { ...empty, failures: [] };
+  let minStart: number | null = null;
+  let maxEnd: number | null = null;
+
+  for (const f of files) {
+    if (!f || typeof f.name !== 'string' || f.name.length === 0) continue;
+    out.files += 1;
+    const file = relToRootPosix(f.name, rootAbs);
+
+    if (typeof f.startTime === 'number') minStart = minStart === null ? f.startTime : Math.min(minStart, f.startTime);
+    if (typeof f.endTime === 'number') maxEnd = maxEnd === null ? f.endTime : Math.max(maxEnd, f.endTime);
+
+    const asserts = Array.isArray(f.assertionResults) ? f.assertionResults : [];
+    for (const a of asserts) {
+      if (!a) continue;
+      if (a.status === 'failed') {
+        out.failed += 1;
+        const message = (Array.isArray(a.failureMessages) ? a.failureMessages : [])
+          .find((m): m is string => typeof m === 'string' && m.trim().length > 0);
+        if (out.failures.length < maxFailures) {
+          out.failures.push({
+            file,
+            test: (a.fullName ?? a.title ?? '(unnamed test)').trim() || '(unnamed test)',
+            message: (message ?? '(no failure message reported)').trim().slice(0, maxMessageChars),
+          });
+        } else {
+          out.failuresTruncated = true;
+        }
+      } else if (a.status === 'skipped' || a.status === 'pending' || a.status === 'todo') {
+        out.skipped += 1;
+      } else if (a.status === 'passed') {
+        out.passed += 1;
+      }
+    }
+
+    // The collection-failure case: the file is failed but produced no failing
+    // assertion to attribute it to. Without this branch the run reports
+    // `failed: 0` while the suite is red — see COLLECTION_FAILURE_TEST.
+    const hasFailingAssertion = asserts.some((a) => a?.status === 'failed');
+    if (f.status === 'failed' && !hasFailingAssertion) {
+      out.failed += 1;
+      if (out.failures.length < maxFailures) {
+        out.failures.push({
+          file,
+          test: COLLECTION_FAILURE_TEST,
+          message: (typeof f.message === 'string' && f.message.trim()
+            ? f.message.trim()
+            : '(no failure message reported)'
+          ).slice(0, maxMessageChars),
+        });
+      } else {
+        out.failuresTruncated = true;
+      }
+    }
+  }
+
+  out.durationMs = minStart !== null && maxEnd !== null ? Math.max(0, Math.round(maxEnd - minStart)) : null;
+  return out;
+}
+
 /** A postgres-js-like tagged-template client; injectable so the persist path is unit-testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown>;
 
