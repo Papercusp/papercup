@@ -13,7 +13,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity, deriveAgentRole } from '../coordination/identity';
+import { resolveAgentIdentity, deriveAgentRole, resolveSelfLiteral } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { notifyAgents } from '../coordination/notify-agents';
@@ -138,6 +138,13 @@ export default defineTool({
           .optional()
           .describe('file even if a likely duplicate exists (default false → search-first declines)'),
         checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
+        assign_to: z
+          .string()
+          .max(120)
+          .optional()
+          .describe(
+            'Atomically CLAIM the filed item in the SAME capture (WI-5950) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Use it whenever you are filing something you are ALREADY working on: an unclaimed item is published to the claimable pool, so a peer can pick up the fix you are mid-way through (this cost a duplicated fix on 2026-07-26). Omit ⇒ unclaimed, which stays the right default for a finding you are handing to whoever picks it up. Same name + semantics as work_items:create\'s assign_to. Ignored for lane:"observation" (a sensor reading is not claimable work).',
+          ),
         origin: z
           .enum(['organic', 'drill', 'replay', 'shadow'])
           .optional()
@@ -427,6 +434,9 @@ export default defineTool({
             ? { ...(observation ? { observation } : {}), ...(hasIdeation ? { ideation } : {}) }
             : undefined,
         createdBy: id.ownerId,
+        // WI-5950: resolve the 'self' literal here (same seam work_items:create uses) so the
+        // core always receives a concrete ownerId and never has to know about caller identity.
+        assignee: resolveSelfLiteral(args.assign_to, id.ownerId),
         filedByRole,
         source,
       });

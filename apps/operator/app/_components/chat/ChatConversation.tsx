@@ -32,6 +32,9 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatMessage, ChatToolCall } from './chat-types';
+import { remarkWorkRefs } from './remark-work-refs';
+import { HydratedWorkRefPill } from './HydratedWorkRefPill';
+import type { WorkRefKind } from './parse-work-refs';
 
 // ChatMessage / ChatToolCall were lifted to ./chat-types.ts while this
 // component was retired (design-simplification-2026-07-09 P-010) —
@@ -82,16 +85,71 @@ const MESSAGE_MARKDOWN_COMPONENTS = {
   ),
 };
 
+/** The `workrefpill` custom mdast/hast node's shape as react-markdown hands
+ *  it to a `components` override — `node.properties` carries whatever
+ *  `remarkWorkRefs` (chat-ref-pills-2026-07-26 P-004) put in `hProperties`. */
+interface WorkRefPillHastNode {
+  properties?: { refId?: unknown; refKind?: unknown };
+}
+
 /**
  * Message content renderer (WI gui-chat-session-controls-2026-07-25 P-009):
  * chat turns are plain-text markdown from the agent (bold, links, lists),
  * but the surface printed it literally (`**bold**`, a bare URL). Reuses the
  * same react-markdown + remark-gfm pairing HowItWorksHereCard already uses
  * for README rendering — no new markdown stack.
+ *
+ * chat-ref-pills-2026-07-26 P-004: `remarkWorkRefs` splices a `workrefpill`
+ * node in place of every WI-/EI-/F-/P- ref found in the message's prose (see
+ * that module for why fenced/inline code and existing-link labels are never
+ * touched); the `workrefpill` entry below is the ONLY thing that turns that
+ * node into a real pill — everything else about ReactMarkdown's usual
+ * rendering is unchanged.
+ *
+ * `harnessSlug`/`planSlug` are just handed to HydratedWorkRefPill for live
+ * status hydration (P-005) — this component makes no resolution decisions of
+ * its own. `onWorkRefActivate` is a plain passthrough activation hook: P-004
+ * only wires the MECHANISM (a pill that can be clicked); what a click
+ * actually DOES (open a popup — D-001, P-008) is the caller's decision, so
+ * this component takes no position on it and simply forwards clicks when a
+ * handler is given (renders a static, non-interactive pill otherwise, same
+ * WorkRefPill degrade as when no plan context resolves a P-ref).
  */
-function ChatMessageContent({ content }: { content: string }) {
+function ChatMessageContent({
+  content,
+  harnessSlug,
+  planSlug,
+  onWorkRefActivate,
+}: {
+  content: string;
+  harnessSlug?: string;
+  planSlug?: string | null;
+  onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind }) => void;
+}) {
+  const components = useMemo(
+    () => ({
+      ...MESSAGE_MARKDOWN_COMPONENTS,
+      workrefpill: ({ node }: { node?: WorkRefPillHastNode }) => {
+        const id = typeof node?.properties?.refId === 'string' ? node.properties.refId : '';
+        const kind: WorkRefKind = node?.properties?.refKind === 'plan-item' ? 'plan-item' : 'work-item';
+        if (!id) return null;
+        return (
+          <HydratedWorkRefPill
+            id={id}
+            kind={kind}
+            harnessSlug={harnessSlug ?? ''}
+            planSlug={planSlug}
+            size="xs"
+            onActivate={onWorkRefActivate ? () => onWorkRefActivate({ id, kind }) : undefined}
+          />
+        );
+      },
+    }),
+    [harnessSlug, planSlug, onWorkRefActivate],
+  );
+
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MESSAGE_MARKDOWN_COMPONENTS}>
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkWorkRefs]} components={components}>
       {withHardBreaks(content)}
     </ReactMarkdown>
   );
@@ -164,6 +222,23 @@ export interface ChatConversationProps {
    * read `msg.report` + route the drill-in.
    */
   renderReport?: (msg: ChatMessage) => ReactNode | null | undefined;
+
+  /**
+   * Harness scoping this conversation's WI-/EI-/F- ref pills
+   * (chat-ref-pills-2026-07-26 P-004) — forwarded to HydratedWorkRefPill for
+   * live status hydration (P-005). Omit when the surface isn't scoped to one
+   * harness (e.g. a cross-harness feed); pills still render, just without
+   * live state/title (HydratedWorkRefPill's own graceful degrade).
+   */
+  harnessSlug?: string;
+  /**
+   * Activation hook for a WI-/EI-/F-/P- ref pill rendered in a message's
+   * markdown content (chat-ref-pills-2026-07-26 P-004). This component only
+   * wires the MECHANISM — it takes no position on what a click should DO
+   * (open a popup, per the 2026-07-26 owner re-spec D-001, is the caller's
+   * decision). Omit to render static, non-interactive pills.
+   */
+  onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind }) => void;
 
   /**
    * Optional per-message AVATAR override (gui-chat-session-controls-2026-07-25
@@ -249,6 +324,8 @@ export function ChatConversation(props: ChatConversationProps) {
     renderToolCard,
     renderReport,
     renderAvatar,
+    harnessSlug,
+    onWorkRefActivate,
     inputValue,
     onInputChange,
     onSubmit,
@@ -581,7 +658,12 @@ export function ChatConversation(props: ChatConversationProps) {
                             ? <div className="oracle-msg-report">{reportCard}</div>
                             : m.content && (
                               <div className="oracle-msg-content">
-                                <ChatMessageContent content={m.content} />
+                                <ChatMessageContent
+                                  content={m.content}
+                                  harnessSlug={harnessSlug}
+                                  planSlug={m.planSlug}
+                                  onWorkRefActivate={onWorkRefActivate}
+                                />
                               </div>
                             )}
                           {cardSlots.map(({ index, node }) => (

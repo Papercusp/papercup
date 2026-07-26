@@ -107,9 +107,10 @@ function groupOptions(agents: readonly AskAgentOption[]): Array<{ label: string;
  * broadcasting, so a caller that forgets the picker fails loudly in development
  * instead of shipping an unaddressed question.
  *
- * `force_open` is always set: coord:ask is knowledge-first by default and would
- * otherwise hand back inline knowledge candidates. A human who has just named a
- * specific agent wants that agent, not a search result.
+ * No `force_open` is sent: coord:ask no longer has a knowledge tier to bypass.
+ * `to` is now REQUIRED server-side (WI-5951), so naming an agent IS the whole
+ * contract — the tool can only open a directed question. Args schemas are
+ * `.strict()`, so passing the removed `force_open` would hard-fail the call.
  */
 export async function submitAsk(input: {
   question: string;
@@ -125,7 +126,6 @@ export async function submitAsk(input: {
     to: [input.agentId],
     topics: input.topics?.length ? input.topics : undefined,
     harness: input.harness || undefined,
-    force_open: true,
   });
 }
 

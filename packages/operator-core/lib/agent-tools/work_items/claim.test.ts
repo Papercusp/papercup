@@ -16,7 +16,29 @@ vi.mock('../coordination/identity', () => ({
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
 }));
-vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn(), classifyClaimFailure: vi.fn(), getWorkItem: vi.fn() }));
+// WI-5946: readWorkItemClaimHoldProvenance/looksLikePolicyGate are real dependencies of BOTH
+// claim.ts (the pre-read guard) and claim-hold-guard.ts's assessClaimHoldGuard (mocked at the
+// SAME module path, so both importers see this one mock) — default "nothing held" so every
+// pre-existing test in this file is unaffected; the claim-hold-specific tests below override it.
+vi.mock('../../work-items', () => ({
+  claimWorkItem: vi.fn(),
+  classifyClaimFailure: vi.fn(),
+  getWorkItem: vi.fn(),
+  readWorkItemClaimHoldProvenance: vi.fn(() => ({ heldOpen: null, parked: null, attributed: false })),
+  looksLikePolicyGate: vi.fn(() => false),
+}));
+// Keep assessClaimHoldGuard REAL (it composes the two mocked work-items reads above — an
+// integration test of the guard's own logic, not a re-mock of it); stub only the
+// side-effecting audit/notify calls so a claim-hold-bypass test never touches a real
+// DB/coord/attention backend.
+vi.mock('./claim-hold-guard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./claim-hold-guard')>();
+  return {
+    ...actual,
+    recordClaimHoldBypassAudit: vi.fn(async () => {}),
+    notifyClaimHoldBypass: vi.fn(async () => {}),
+  };
+});
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitWorkItemForFleetTarget: vi.fn(async () => fleetAdmission.decision),
   notifyFleetScopeRefusal: fleetAdmission.notify,
@@ -26,10 +48,14 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
 // mock it here so the handler test stays a hermetic unit (no real memory backend).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 
-import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
+import { claimWorkItem, classifyClaimFailure, getWorkItem, readWorkItemClaimHoldProvenance } from '../../work-items';
+import { recordClaimHoldBypassAudit, notifyClaimHoldBypass } from './claim-hold-guard';
 const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getM = vi.mocked(getWorkItem);
+const provenanceM = vi.mocked(readWorkItemClaimHoldProvenance);
+const auditM = vi.mocked(recordClaimHoldBypassAudit);
+const notifyM = vi.mocked(notifyClaimHoldBypass);
 const tool = (await import('./claim')).default;
 
 type Out = { data: any };
@@ -40,6 +66,13 @@ beforeEach(() => {
   identity.ownerId = 'me';
   fleetAdmission.decision = { allowed: true, scoped: false };
   claimM.mockImplementation(async (id: string) => ({ id, assignee: 'me' }) as never);
+  // WI-5946: claim.ts now pre-reads the item (getWorkItem) BEFORE every claim, purely to check
+  // payload._claimHold — default it to "not found" (a real getWorkItem miss simply means the
+  // guard sees no hold, same as an unclaimed item; claimWorkItem's own compare-and-claim, not
+  // this pre-read, is what actually resolves not_found for the claim itself) so every
+  // pre-existing test below — none of which cares about claim-hold — is unaffected.
+  getM.mockResolvedValue(null as never);
+  provenanceM.mockReturnValue({ heldOpen: null, parked: null, attributed: false });
 });
 
 describe('work_items:claim handler (keyed-array)', () => {
@@ -154,5 +187,79 @@ describe('work_items:claim handler (keyed-array)', () => {
     const b = await body({ id: 'WI-1', assignee: 'self-service-bot' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(claimM).toHaveBeenCalledWith('WI-1', 'self-service-bot', { harness: undefined });
+  });
+
+  // WI-5946: the by-id claim path never checked payload._claimHold — reproduced live on
+  // EI-1416 (a policy-tier D-003 security hold). These pin the fix: a claim-hold-parked item
+  // refuses by default, force clears a plain hold, and a policy-tier reason additionally
+  // requires ownerOverride — mirroring work_items:hold_open's own clear-guard exactly.
+  describe('claim-hold guard (WI-5946)', () => {
+    it('refuses a claim-hold-parked item with claim_hold_blocked, and never calls claimWorkItem', async () => {
+      getM.mockResolvedValue({ id: 'WI-HELD', payload: { _claimHold: true } } as never);
+      provenanceM.mockReturnValue({
+        heldOpen: null,
+        parked: { by: 'su-leader', reason: 'D-003 policy hold — do not self-pick', at: '2026-07-26T00:00:00Z' },
+        attributed: true,
+      });
+      const b = await body({ id: 'WI-HELD' });
+      expect(b.results[0]).toMatchObject({
+        ok: false,
+        id: 'WI-HELD',
+        error: 'claim_hold_blocked',
+        heldBy: 'su-leader',
+        convention: 'claim_hold (durable park)',
+      });
+      expect(b.results[0].hint).toMatch(/force:true/);
+      expect(claimM).not.toHaveBeenCalled();
+      expect(auditM).not.toHaveBeenCalled();
+      expect(notifyM).not.toHaveBeenCalled();
+    });
+
+    it('force:true claims past a plain (non-policy) claim-hold, and audits + notifies the holder', async () => {
+      getM.mockResolvedValue({ id: 'WI-HELD', payload: { _claimHold: true } } as never);
+      provenanceM.mockReturnValue({
+        heldOpen: { by: 'su-leader', reason: 'still triaging', at: '2026-07-26T00:00:00Z' },
+        parked: null,
+        attributed: true,
+      });
+      const b = await body({ id: 'WI-HELD', force: true });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-HELD' });
+      expect(claimM).toHaveBeenCalledWith('WI-HELD', 'me', { harness: undefined });
+      expect(auditM).toHaveBeenCalledWith(
+        'me',
+        'WI-HELD',
+        expect.objectContaining({ heldBy: 'su-leader', convention: 'held_open (lease)' }),
+      );
+      expect(notifyM).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'me' }),
+        expect.objectContaining({ itemId: 'WI-HELD', heldBy: 'su-leader' }),
+      );
+    });
+
+    it('a policy-tier hold reason refuses force:true alone (requires ownerOverride too)', async () => {
+      getM.mockResolvedValue({ id: 'WI-SEC', payload: { _claimHold: true } } as never);
+      provenanceM.mockReturnValue({
+        heldOpen: null,
+        parked: { by: 'su-leader', reason: 'D-003 explicit policy-tier human gate — owner sign-off required', at: '2026-07-26T00:00:00Z' },
+        attributed: true,
+      });
+      const looksLikePolicyGateM = vi.mocked((await import('../../work-items')).looksLikePolicyGate);
+      looksLikePolicyGateM.mockReturnValue(true);
+      const forced = await body({ id: 'WI-SEC', force: true });
+      expect(forced.results[0]).toMatchObject({ ok: false, id: 'WI-SEC', error: 'policy_gate_requires_owner_override' });
+      expect(claimM).not.toHaveBeenCalled();
+
+      const overridden = await body({ id: 'WI-SEC', force: true, ownerOverride: true });
+      expect(overridden.results[0]).toMatchObject({ ok: true, id: 'WI-SEC' });
+      expect(claimM).toHaveBeenCalledWith('WI-SEC', 'me', { harness: undefined });
+      expect(auditM).toHaveBeenCalledWith('me', 'WI-SEC', expect.objectContaining({ ownerOverride: true }));
+    });
+
+    it('an unheld item is unaffected by force/ownerOverride being absent (no guard, no audit)', async () => {
+      const b = await body({ id: 'WI-1' });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
+      expect(auditM).not.toHaveBeenCalled();
+      expect(notifyM).not.toHaveBeenCalled();
+    });
   });
 });

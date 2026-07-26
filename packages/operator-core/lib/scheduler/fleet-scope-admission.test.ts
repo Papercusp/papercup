@@ -861,22 +861,30 @@ describe('fleet scope assignment admission (P-016)', () => {
       },
     };
 
+    // WI-5947: a survivor count alone is only a SUSPICION — it is read after the claim attempt,
+    // so lane churn reproduces it with a healthy claim path. The loud divergence verdict is now
+    // gated on the caller having CONFIRMED it by re-asking the claim path. These cases all
+    // describe that confirmed shape; the unconfirmed shape is covered in its own block below.
+    const confirmed = { issueBreakdown: divergentBreakdown, divergenceRecheck: 'confirmed-twice' as const };
+
     it('does NOT set windDown when the oracle still reports claimable rows (the harmful half)', () => {
-      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+      const miss = fleetScopedMiss(divergentScope, [], confirmed);
       expect(miss.windDown).toBe(false);
     });
 
     it('names the divergence in `error` instead of claiming the scope matched nothing', () => {
-      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+      const miss = fleetScopedMiss(divergentScope, [], confirmed);
       expect(miss.error).toMatch(/CLAIM-PATH\/READ-PATH DIVERGENCE/);
       expect(miss.error).toMatch(/19 of 22/);
       expect(miss.error).toMatch(/NOT drained and NOT floor-gated/);
       // the old bare message must NOT be what a diverging member is told
       expect(miss.error).not.toMatch(/NOT allowed to fall through to the generic backlog/);
+      // WI-5947: and it must say WHY this is not just churn, or the reader cannot weigh it
+      expect(miss.error).toMatch(/CONFIRMED across TWO claim attempts/);
     });
 
     it('advice tells the member to keep working (claim by id) and to report a claim-path bug — never to stand down', () => {
-      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+      const miss = fleetScopedMiss(divergentScope, [], confirmed);
       expect(miss.advice).toMatch(/DO NOT STAND DOWN/);
       expect(miss.advice).toMatch(/work_items:claimable/);
       expect(miss.advice).toMatch(/work_items:claim/);
@@ -886,8 +894,28 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.advice).not.toMatch(/loop:end/);
     });
 
+    it('WI-5947: the report instruction is framed as an observation to re-verify, not a settled diagnosis', () => {
+      const miss = fleetScopedMiss(divergentScope, [], confirmed);
+      // the reader must be told to quote the CONFIRMATION, since that is what separates a real
+      // divergence from churn — a bare claimable count is exactly what produced false reports
+      expect(miss.advice).toMatch(/confirmed-twice/);
+      expect(miss.advice).toMatch(/not as a settled\s+diagnosis|not as a settled diagnosis/);
+      // the old text pre-supplied an excuse for why a maintainer could not reproduce it
+      // ("it just has not DEPLOYED yet"), which insulated a false report from correction
+      expect(miss.advice).not.toMatch(/has not DEPLOYED yet/);
+      expect(miss.advice).not.toMatch(/pre-fix release checkout/);
+    });
+
+    it('WI-5947: warns that the by-id workaround can itself return an empty list under churn', () => {
+      const miss = fleetScopedMiss(divergentScope, [], confirmed);
+      // the advice routes through work_items:claimable, whose row list is read separately from
+      // its count — so under the same churn it can come back empty and read as "broken too"
+      expect(miss.advice).toMatch(/EMPTY under a churning lane/);
+      expect(miss.advice).toMatch(/WI-5947/);
+    });
+
     it('the breakdown summary says the pool is NOT floor-gated, so the floor counts are not misread as the cause', () => {
-      const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+      const miss = fleetScopedMiss(divergentScope, [], confirmed);
       expect(miss.excludedBreakdown).toEqual(divergentBreakdown);
       expect(miss.excludedBreakdownSummary).toMatch(/NOT floor-gated/);
       expect(miss.excludedBreakdownSummary).toMatch(/19 of them survive ALL floors/);
@@ -897,11 +925,56 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('a divergence outranks a cooldown re-attribution (never renders as do-not-escalate cooldown noise)', () => {
       const miss = fleetScopedMiss(divergentScope, [], {
         cooldownDiag: { cooldownExcluded: 1, earliestExpiryMs: Date.now() + 5_000, earliestRowId: 'WI-9011' },
-        issueBreakdown: divergentBreakdown,
+        ...confirmed,
       });
       expect(miss.windDown).toBe(false);
       expect(miss.error).toMatch(/CLAIM-PATH\/READ-PATH DIVERGENCE/);
       expect(miss.advice).toMatch(/DO NOT STAND DOWN/);
+    });
+
+    // WI-5947 — the regression this fix exists for. An UNCONFIRMED survivor reading (the shape
+    // every caller produced before the re-check existed, and the shape a degraded retry still
+    // produces) must NOT be dressed up as a claim-path defect: that is what sent agents to file
+    // fabricated bugs against healthy code, carrying what looked like a clean reproduction.
+    describe('WI-5947 — survivors reported but NOT confirmed by a second claim attempt', () => {
+      it('does not pronounce a divergence, and does not tell anyone to file a claim-path bug', () => {
+        const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+        expect(miss.error).not.toMatch(/CLAIM-PATH\/READ-PATH DIVERGENCE/);
+        expect(miss.advice).not.toMatch(/CLAIM-PATH BUG/);
+        expect(miss.advice).not.toMatch(/EI-10062/);
+      });
+
+      it('still refuses to certify a drain — an unconfirmed reading is not evidence of an empty lane', () => {
+        const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+        expect(miss.windDown).toBe(false);
+      });
+
+      it('names the real likely cause (the pool moved) and gives the one useful action: pull again', () => {
+        const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+        expect(miss.error).toMatch(/POOL CHANGED UNDER YOU/);
+        expect(miss.error).toMatch(/19 of 22/);
+        expect(miss.advice).toMatch(/PULL AGAIN/);
+        expect(miss.advice).toMatch(/scheduler:get_next again/);
+        // and must not push the member toward the two wrong remedies
+        expect(miss.advice).not.toMatch(/re-author the claim spec\b(?!.*do NOT)/);
+        expect(miss.advice).not.toMatch(/loop:end/);
+      });
+
+      it('stamps the provenance so a relayed report carries its own confidence level', () => {
+        const unconfirmed = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+        expect((unconfirmed as { divergenceRecheck?: string }).divergenceRecheck).toBe('unconfirmed');
+        const conf = fleetScopedMiss(divergentScope, [], confirmed);
+        expect((conf as { divergenceRecheck?: string }).divergenceRecheck).toBe('confirmed-twice');
+        // absent entirely when there were no survivors to be suspicious about
+        const drained = fleetScopedMiss(divergentScope, [], { issueBreakdown: { ...divergentBreakdown, claimable: 0 } });
+        expect((drained as { divergenceRecheck?: string }).divergenceRecheck).toBeUndefined();
+      });
+
+      it('the breakdown summary frames the survivors as a later instant, not a floor story', () => {
+        const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: divergentBreakdown });
+        expect(miss.excludedBreakdownSummary).toMatch(/the pool moved/);
+        expect(miss.excludedBreakdownSummary).not.toMatch(/genuinely floor-gated/);
+      });
     });
 
     // The other side of the guard: a GENUINE floor-gated drain must be untouched, or the fix

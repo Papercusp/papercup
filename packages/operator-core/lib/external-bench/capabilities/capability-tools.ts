@@ -361,7 +361,9 @@ export interface CoordHandoffArgs {
   nextAction?: string;
 }
 export interface CoordAskArgs {
-  /** The question to ask the sandbox peers. */
+  /** The sandbox peer to ask. Required — coord:ask refuses an unaddressed question (WI-5951). */
+  peer: string;
+  /** The question to ask that peer. */
   question: string;
 }
 
@@ -384,7 +386,12 @@ export function coordConsultTool(sandbox: RunSandbox): CapabilityTool<CoordConsu
       callTool(sandbox, 'coord:ask', {
         question: `[consult:${args.specialist}] ${args.question}`,
         harness: sandbox.potSlug, // scope the question to the sandbox hive — never the live fleet.
-        force_open: true,
+        // WI-5951: coord:ask now REQUIRES `to` — an unaddressed question reaches
+        // nobody, so the platform refuses it. The specialist the caller named IS
+        // the addressee, so pass it through instead of burying it in the body.
+        // (`force_open` is gone: with `to` mandatory there is no knowledge tier
+        // left to bypass, and args schemas are .strict() so sending it fails.)
+        to: [args.specialist],
       }),
   };
 }
@@ -419,19 +426,25 @@ export function coordAskTool(sandbox: RunSandbox): CapabilityTool<CoordAskArgs, 
   return {
     name: 'coord.ask',
     capability: 'coord',
-    description: 'Ask the sandbox peers a question (a scoped coord question).',
+    description: 'Ask a NAMED sandbox peer a question (a scoped, addressed coord question).',
     inputSchema: {
       type: 'object',
       properties: {
+        peer: { type: 'string', description: 'The sandbox peer to ask. Required — an unaddressed question reaches nobody.' },
         question: { type: 'string', description: 'The question.' },
       },
-      required: ['question'],
+      required: ['peer', 'question'],
       additionalProperties: false,
     },
+    // WI-5951: this was a broadcast ("ask the sandbox peers") — the exact shape
+    // retired platform-side, where 53 unaddressed questions drew zero answers in
+    // 7 weeks. A bench that lets an agent do what the platform forbids measures
+    // the wrong thing, so the recipient is required here too.
     invoke: (args) =>
       callTool(sandbox, 'coord:ask', {
         question: args.question,
         harness: sandbox.potSlug, // scope to the sandbox hive — never the live fleet.
+        to: [args.peer],
       }),
   };
 }

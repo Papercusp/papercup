@@ -780,3 +780,41 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
     expect(first.issue?.id).not.toBe(second.issue?.id);
   });
 });
+
+describe('captureImprovement — atomic claim-on-file (WI-5950)', () => {
+  it('passes assignee through to createIssue so the filed item lands CLAIMED', async () => {
+    const d = deps();
+    await captureImprovement(
+      { title: 'bug I am already fixing', kind: 'bug', assignee: 'su-abc', createdBy: 'su-abc' },
+      d,
+    );
+    expect(d.created[0].assignee).toBe('su-abc');
+  });
+
+  it('stamps assignedBy from the filer, so the claim has a durable delegator', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'x', kind: 'bug', assignee: 'su-abc', createdBy: 'su-abc' }, d);
+    expect(d.created[0].assignedBy).toBe('su-abc');
+  });
+
+  it('leaves the item UNCLAIMED when assignee is omitted — filing stays cheap', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'a finding for whoever picks it up', kind: 'bug', createdBy: 'su-abc' }, d);
+    expect(d.created[0].assignee).toBeUndefined();
+  });
+
+  it('NEVER claims an observation — a sensor reading is not claimable work', async () => {
+    const d = deps();
+    await captureImprovement(
+      {
+        title: 'docs:search felt slow',
+        kind: 'change',
+        lane: 'observation',
+        assignee: 'su-abc',
+        createdBy: 'su-abc',
+      },
+      d,
+    );
+    expect(d.created[0].assignee).toBeUndefined();
+  });
+});

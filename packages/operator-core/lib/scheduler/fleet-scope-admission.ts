@@ -530,6 +530,15 @@ export function fleetScopedMiss(
      *  surfaced alongside (not instead of) the cooldown-only message when both are present. */
     issueBreakdown?: import('./get-next').IssueClaimExclusionBreakdown | null;
     /**
+     * WI-5947: the caller's verdict on a would-be claim/read divergence, after re-asking the
+     * CLAIM path (the only oracle that can settle it). `'confirmed-twice'` — two claim attempts
+     * missed while survivors persisted across two readings — is the only value that licenses
+     * the loud EI-10062-class divergence report. Absent (or any other value) means the
+     * suspicion was never confirmed, and the miss is reported as a transient pool change the
+     * caller should simply re-pull against. See the `divergent` derivation below.
+     */
+    divergenceRecheck?: 'resolved-by-retry' | 'confirmed-twice';
+    /**
      * EI-18674160393981819: the caller's OWN harness — the `args.harness` every self-select
      * call site already requires. AND'd into the derived `claimablePayloadFilter` below so the
      * returned `payloadFilter` (which the miss advice recommends copying verbatim into an
@@ -647,7 +656,15 @@ export function fleetScopedMiss(
           `${breakdown!.claimable} of ${breakdown!.matchedByFilter} in-spec issue-family row(s) passing spec_match AND every claim floor ` +
           `for fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}. Your lane is NOT drained and NOT floor-gated — ` +
           'this is an internal inconsistency in the claim path\'s own spec narrowing (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class). ' +
+          'CONFIRMED across TWO claim attempts with survivors present in two independent readings, so this is not lane churn. ' +
           'windDown is deliberately NOT set: do not stand down.'
+        : unconfirmedSurvivors
+        ? `POOL CHANGED UNDER YOU (not a drained lane, not a bug): the claim path selected nothing, but a reading taken just ` +
+          `afterwards reports ${breakdown!.claimable} of ${breakdown!.matchedByFilter} in-spec row(s) passing every claim floor for fleet scope ` +
+          `${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}. Those are two different instants on a table your whole ` +
+          'fleet is mutating, so the likeliest explanation by far is that a row became claimable in between (a peer released, a claim-hold ' +
+          'lapsed, a detector filed) — NOT a defect. This was NOT confirmed by a second claim attempt, so do not report it as one ' +
+          '(WI-5947). windDown is NOT set: there may well be work — just pull again.'
         : specEmpty
           ? `SPEC MATCHES NOTHING (EI-18663622382734446): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
             'view.filter matches 0 issue-family row(s) in this harness/workspace at all — this is a SPEC-AUTHORING problem ' +
@@ -671,7 +688,10 @@ export function fleetScopedMiss(
     // EI-18666093519248020: a claim-path/read-path divergence is NOT a drained lane, so it must
     // never be certified as one. `windDown` is THE signal a member stands its loop down on, so
     // it stays false while the oracle still reports claimable rows.
-    windDown: !divergent,
+    // WI-5947: an UNCONFIRMED survivor reading is equally disqualifying for a drain stamp. It may
+    // not be a claim-path defect, but it is certainly not evidence of an empty lane — certifying
+    // windDown off the back of it is the same harmful call, reached by a different route.
+    windDown: !divergent && !unconfirmedSurvivors,
     // EI-15185: the ready-made payload_filter derived from THIS member's own claim
     // spec — present only when the spec can be narrowed over the claimable payload's
     // fields (id/kind/title/plan). Copy it verbatim into the idle-park await below.
@@ -687,6 +707,10 @@ export function fleetScopedMiss(
     // relayed report) can branch on this WITHOUT digging into excludedBreakdown.matchedByFilter.
     // Absent for every other miss shape — this is deliberately the loud, rare case.
     ...(specEmpty ? { reason: 'spec_matches_nothing' as const } : {}),
+    // WI-5947: quotable provenance for the survivor reading — 'confirmed-twice' is what makes a
+    // divergence report credible, and its ABSENCE is what tells a reader (or a leader receiving a
+    // relayed report) that the claim was never confirmed. Present whenever survivors were seen.
+    ...(survivorsReported ? { divergenceRecheck: opts?.divergenceRecheck ?? ('unconfirmed' as const) } : {}),
     // WI-5561: the issue-family floor breakdown — present whenever the diagnosis ran (including
     // the EI-18663622382734446 zero-match case: a genuine query/workspace-resolution failure is
     // the only thing that keeps this absent now, not a `matchedByFilter === 0` result).
@@ -705,23 +729,37 @@ export function fleetScopedMiss(
             (divergent
               ? ` — BUT ${breakdown.claimable} of them survive ALL floors, so this pool is NOT floor-gated. The floors below are ` +
                 'informational only; they are not why you got nothing. The claim path failed to select rows the shared oracle ' +
-                'reports as claimable (buckets are independent, a row can count under more than one).'
-              : ' (buckets are independent, a row can count under more than one; 0 candidates surviving ALL floors means the pool is genuinely floor-gated, not a scope/spec bug — re-authoring the claim spec will not help).'),
+                'reports as claimable, across two attempts (buckets are independent, a row can count under more than one).'
+              : unconfirmedSurvivors
+                ? ` — and ${breakdown.claimable} of them survived ALL floors at read time, so the pool is NOT floor-gated. This ` +
+                  'reading was taken AFTER the claim attempt, so it describes a later instant; treat it as "the pool moved", not ' +
+                  'as a floor story and not as a defect (WI-5947). Re-pull rather than re-authoring the spec.'
+                : ' (buckets are independent, a row can count under more than one; 0 candidates surviving ALL floors means the pool is genuinely floor-gated, not a scope/spec bug — re-authoring the claim spec will not help).'),
         }
       : {}),
     advice: paused
       ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, loop:end any armed loop, and ack your leader. Do NOT re-park a work-item:claimable await while paused (any pre-pause await of yours was just cancelled server-side, EI-15777 — a peer\'s compliant release will no longer re-wake you for nothing). Resume normal pull cadence only after a fleet:resume cue.'
       : divergent
-        ? 'DO NOT STAND DOWN, and do NOT re-author the claim spec — neither is the problem. The claim path returned nothing while ' +
-          'the shared claimability oracle (the SAME floors, via aggregateIssueClaimExclusions) reports rows that pass every one of ' +
-          'them, so this is a defect in the claim path\'s spec narrowing, not a drained or floor-gated lane. ' +
+        ? 'DO NOT STAND DOWN, and do NOT re-author the claim spec — neither is the problem. TWO claim attempts returned nothing while ' +
+          'two independent readings of the shared claimability oracle (the SAME floors, via aggregateIssueClaimExclusions) both reported ' +
+          'rows passing every one of them, so lane churn is ruled out and this is a genuine defect in the claim path\'s spec narrowing. ' +
           'To keep working RIGHT NOW: list with work_items:claimable { harness, spec: <your fleet slug> } and take a specific row with ' +
           'work_items:claim { id } — the by-id path does not depend on the narrowing that is failing here (note a by-id claim has no ' +
-          'terminal-state floor by design, EI-8972, so check the returned item\'s state before building on it). ' +
+          'terminal-state floor by design, EI-8972, so check the returned item\'s state before building on it; and note the list itself ' +
+          'can come back EMPTY under a churning lane even when the count is nonzero — WI-5947 — so re-read it rather than concluding ' +
+          'the workaround is broken too). ' +
           'Then report this verdict to your fleet leader as a CLAIM-PATH BUG (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class), ' +
-          'quoting excludedBreakdown.claimable — it is the reproduction. If a fix for that class is already committed, the most ' +
-          'likely cause is that it has not DEPLOYED yet: the operator you are calling may still run the pre-fix release checkout.'
-        : specEmpty
+          'quoting excludedBreakdown.claimable AND divergenceRecheck:"confirmed-twice" — that pair is the reproduction, and the ' +
+          'confirmation is what distinguishes it from ordinary churn. State it as an observation with its evidence, not as a settled ' +
+          'diagnosis: verify the claim path against the CURRENT tree before anyone acts on it, since a relayed report hardens into ' +
+          'certainty on each hop and no one re-checks a claim that already carries someone else\'s confidence (WI-3532).'
+        : unconfirmedSurvivors
+          ? 'PULL AGAIN — that is the whole remedy. Do NOT stand down, do NOT re-author the claim spec, and do NOT report a claim-path ' +
+            'bug: the survivor count was read AFTER your claim attempt, so it describes a later instant on a table your fleet is ' +
+            'actively mutating, and an unconfirmed reading is not evidence of a defect (WI-5947). Call scheduler:get_next again now; ' +
+            'if a row really did free up you will simply get it. Only a miss carrying divergenceRecheck:"confirmed-twice" — two claim ' +
+            'attempts against two readings that both showed survivors — is worth escalating.'
+          : specEmpty
           ? 'ESCALATE to your fleet leader NOW (EI-18663622382734446) — this is a leader-alert-worthy spec-authoring bug, not a ' +
             'normal drain: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision. ' +
             'The leader\'s remedy is scheduler:set_claim_spec { fleet, spec: <a revision whose view.filter actually admits work> } — ' +

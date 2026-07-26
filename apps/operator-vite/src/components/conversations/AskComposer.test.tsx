@@ -45,10 +45,12 @@ describe('submitAsk — recipient is mandatory', () => {
     const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('coord/ask');
     const body = JSON.parse(String(init.body));
-    // Directed at ONE recipient, and force_open so the question actually opens a
-    // conversation rather than silently relying on topic subscribers.
+    // Directed at ONE recipient. `to` is REQUIRED server-side (WI-5951), so it
+    // alone opens the conversation — no `force_open` (that arg was removed with
+    // the knowledge tier, and args schemas are .strict(), so still sending it
+    // would hard-fail the call).
     expect(body.to).toEqual(['su-1']);
-    expect(body.force_open).toBe(true);
+    expect(body.force_open).toBeUndefined();
     expect(body.question).toBe('who owns sync?');
   });
 

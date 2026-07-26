@@ -1,75 +1,70 @@
 /**
- * coord:ask — ask a question, knowledge-FIRST (coordination-conversations D-001/
- * D-002). The tool SHAPE runs the knowledge tier (search:semantic + mem0) before
- * any peer is interrupted:
- *   • HIT  → returns answer candidates inline (each citing its source), no peer
- *            touched, synchronously. The asker judges whether one answers them.
- *   • MISS → opens a `question` conversation tagged with your topics, fans it out
- *            to topic subscribers, and returns immediately (never blocks — peer
- *            answers arrive in your inbox on a later turn, D-002).
- * If the inline candidates don't answer you, call again with force_open:true to
- * open the question to peers anyway.
+ * coord:ask — ask a NAMED agent a question. `to` is REQUIRED.
+ *
+ * This tool is the backend for the owner's "Ask an agent" surfaces
+ * (left-sidebar AskAgentPane + the /adv AskComposer modal), which proxy in via
+ * POST /api/admin/coordination/coord/ask. It is NOT an agent-to-agent Q&A
+ * mechanism — agents talk to each other with `coord:send`.
+ *
+ * WHY `to` IS REQUIRED (WI-5951, 2026-07-26). The old shape ran a knowledge
+ * tier and, on a miss, opened a `question` conversation fanned out to TOPIC
+ * SUBSCRIBERS. Measured over the 7 weeks to 2026-07-26: 53 question
+ * conversations were opened and NOT ONE ever received a post — zero peer
+ * answers, because there are zero topic subscribers workspace-wide. The
+ * broadcast path's only durable effect was manufacturing 40 orphaned questions
+ * (oldest 25 days). A question addressed to everyone is owned by no one.
+ *
+ * So the audience is now a precondition, not a fallback: no recipient, no
+ * conversation. Enforced HERE rather than taught in a prompt, because the
+ * playbook already said "coordination is queried, not chatted" and this tool's
+ * own guidance already said "NAME the agents in `to:`" — and both were ignored
+ * in every one of those 53 asks. A tool that refuses corrects every caller on
+ * every call and needs no agent to remember anything.
+ *
+ * `topics` still TAG the conversation and may widen the audience additively,
+ * but can no longer be the sole audience — that is what made orphans.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
-import { runKnowledgeTier } from '../ask-knowledge-tier';
 import { openConversation } from '../conversations';
 import { hardText, LIMITS } from '../../limits';
 
 export default defineTool({
   name: 'coord:ask',
   description:
-    'Ask a question knowledge-FIRST. Runs search:semantic + mem0 before interrupting anyone: a hit returns answer candidates inline (with sources); a miss opens a `question` conversation routed to topic subscribers and returns immediately (answers arrive in your inbox — never blocks). Pass topics to route a miss; force_open:true to ask peers even when knowledge had candidates.',
+    'Ask ONE named agent a question, opening a `question` conversation addressed to them. `to` is REQUIRED — an unaddressed question reaches nobody and is refused. Backs the owner\'s "Ask an agent" UI; non-blocking (the answer lands in your inbox).',
   guidance: {
     when:
-      'DEFAULT FIRST MOVE for any question you cannot answer from your own knowledge or the code — it routes to the peer/expert who owns the area (knowledge-first, non-blocking). Reach for this BEFORE escalating to the owner/human: ask peers here first; only ask the owner (coord:ask-owner / coord:escalate) if the best answer is still unclear after asking. NAME the agents in `to:` — a topic tag alone reaches only that topic\'s subscribers, and most have none. Pass harness for a harness-specific question.',
+      'You need a SPECIFIC named agent to answer something only they know (resolve ids via coord:presence). Normally reached from the owner\'s Ask-an-agent UI, not from agent code.',
     notWhen:
-      'For an open-ended discussion (no single answer), use conversations:post. Do NOT jump to coord:ask-owner / coord:escalate (interrupting the owner) before trying coord:ask — escalate to the owner only when peers + knowledge leave the answer unclear. coord:ask is deliberately non-blocking; to turn-block on a peer/handoff use coord:escalate / coord:handoff.',
+      'Agent-to-agent: use `coord:send` (5,591 calls/30d vs this tool\'s 16 — it is what agents actually use, and it wakes the recipient). For live state do NOT ask a peer at all — query it: who holds a file → locks:list; who is on what → fleet:assignments / coord:presence; a work-item\'s status → work_items:get (its checkpoint IS the status). For an owner decision → coord:ask-owner. Open-ended discussion → conversations:post.',
     chaining:
-      'topics:list → coord:ask (with topics). On a miss you get a conversation_id; conversations:get to read replies, conversations:resolve when answered. Still unclear after peers replied? THEN coord:ask-owner / coord:escalate.',
+      'coord:presence (get the ownerId) → coord:ask { to:[id] } → conversations:get for replies → conversations:resolve when answered.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     question: hardText(LIMITS.ANNOTATION),
-    topics: z.array(z.string().min(1)).max(8).optional().describe('Topic slugs to route a miss to (topics:list). Strongly recommended — without them only direct subscribers see the question.'),
-    to: z.array(z.string().min(1)).max(8).optional().describe('Agent ids to ask DIRECTLY. They are subscribed to the question before fan-out, so it reaches them even when no topic routes to them; implies force_open (you asked a person, not the knowledge base). Topics still widen the audience on top.'),
-    harness: z.string().optional().describe('Scope the question to a harness (restricts knowledge search + tags the conversation harness-scoped).'),
-    force_open: z.boolean().optional().describe('Open a peer question even if the knowledge tier returned candidates (use when the inline candidates did not answer you).'),
+    to: z
+      .array(z.string().min(1))
+      .min(1, 'coord:ask requires at least one recipient in `to` — an unaddressed question reaches nobody.')
+      .max(8)
+      .describe('REQUIRED. Agent ids to ask (coord:presence lists live agents). They are subscribed to the question, so it reaches them regardless of topics.'),
+    topics: z.array(z.string().min(1)).max(8).optional().describe('Optional tags that also widen the audience additively. NOT an audience on their own — `to` is what guarantees delivery.'),
+    harness: z.string().optional().describe('Tag the conversation harness-scoped.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    // A DIRECTED ask names a person, so the knowledge tier must not answer on
-    // their behalf — addressing someone implies force_open (WI-5754).
-    const directTo = args.to ?? [];
-    const forceOpen = args.force_open || directTo.length > 0;
-
-    const tier = await runKnowledgeTier({
-      query: args.question,
-      workspaceId: identity.workspaceId,
-      asker_id: identity.ownerId,
-      harness_slug: args.harness ?? null,
-    });
-
-    if (tier.candidates.length > 0 && !forceOpen) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            found: true,
-            searched: tier.searched,
-            embedder_available: tier.embedder_available,
-            answer_candidates: tier.candidates,
-            hint: 'Knowledge-first hit — these come from existing knowledge (judge them by their source). If none answers you, call coord:ask again with force_open:true to open the question to topic subscribers.',
-          }),
-        }],
-      };
-    }
+    // `to` is schema-required (min 1), so a directed recipient always exists by
+    // the time we get here. The old knowledge tier + force_open pair is gone:
+    // a DIRECTED ask names a person, so knowledge must never answer on their
+    // behalf (WI-5754) — which made the tier unreachable once `to` became
+    // mandatory. Callers wanting knowledge should use search:semantic directly.
+    const directTo = args.to;
 
     const opened = await openConversation(identity, {
       kind: 'question',
@@ -91,22 +86,14 @@ export default defineTool({
           asked: opened.direct_to,
           unrouted: opened.unrouted,
           notified_subscribers: opened.delivered,
-          searched: tier.searched,
-          // `unrouted` is now measured from actual delivery, so this hint can
-          // state what really happened instead of what the asker attempted.
-          // Tagging topics used to produce the cheerful "opened to topic
-          // subscribers" line even when the topic had zero subscribers and the
-          // question reached no one at all — the asker then waited on an answer
-          // that could never come.
+          // `unrouted` is measured from ACTUAL delivery, not from what the
+          // asker attempted. With `to` now mandatory it can only mean the named
+          // recipient was undeliverable (dead/unknown ownerId) — the old "you
+          // tagged topics that have no subscribers" case can no longer arise,
+          // because topics are no longer an audience on their own.
           hint: opened.unrouted
-            ? `Question opened, but it reached NOBODY — 0 agents were notified${
-                opened.topics.length
-                  ? ` (the topics you tagged — ${opened.topics.join(', ')} — have no subscribers)`
-                  : ' (no topics tagged, no agent addressed)'
-              }. Nobody will answer this as-is: re-ask with \`to: ['<ownerId>']\` to address a specific agent (coord:presence lists who is live), which subscribes them directly.`
-            : `Question opened and ${opened.delivered} agent${opened.delivered === 1 ? '' : 's'} notified${
-                opened.direct_to.length ? ` (incl. ${opened.direct_to.join(', ')})` : ''
-              }; answers arrive in your inbox on a later turn. If you are BLOCKED on the answer, events:await { event: 'conversation:answered:${opened.conversation.id}' } and end your turn — the resolve wakes you. conversations:resolve when answered (captures the answer for the next asker).`,
+            ? `Question opened but reached NOBODY: the agent(s) you named (${opened.direct_to.join(', ') || 'none resolved'}) could not be delivered to — most likely a dead or unknown ownerId. Confirm a LIVE id with coord:presence and re-ask; as-is nobody will answer.`
+            : `Question opened and ${opened.delivered} agent${opened.delivered === 1 ? '' : 's'} notified (${opened.direct_to.join(', ')}); answers arrive in your inbox on a later turn. If you are BLOCKED on the answer, events:await { event: 'conversation:answered:${opened.conversation.id}' } and end your turn — the resolve wakes you. conversations:resolve when answered (captures the answer for the next asker).`,
         }),
       }],
     };

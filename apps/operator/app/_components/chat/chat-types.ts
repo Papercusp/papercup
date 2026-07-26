@@ -79,4 +79,14 @@ export interface ChatMessage {
    * set for optimistic local messages before they're persisted.
    */
   seq?: number;
+  /**
+   * The plan this message's content is about, when known
+   * (chat-ref-pills-2026-07-26 P-006/P-004). A `P-NNN` plan-item ref is
+   * unique only WITHIN a plan, so resolving/hydrating one requires the
+   * MESSAGE'S OWN plan context — never a guess. Omit/null when the message
+   * carries no plan context; a P-ref then renders as plain, non-navigating
+   * text (mirrors resolvePlanItemDrillIn's "no plan context → plain text"
+   * contract one layer down).
+   */
+  planSlug?: string | null;
 }
