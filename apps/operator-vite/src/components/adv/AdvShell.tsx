@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
@@ -271,6 +271,31 @@ export function tabOverflowState(
   return { left: scrollLeft > 1, right: scrollLeft < max - 1 };
 }
 
+/**
+ * The pot scope every /adv tab INHERITS from the top-bar selector (owner
+ * directive 2026-07-26: "the pot should be inherited by the currently selected
+ * pot" — no per-tab pot pickers). `hive` is the hive HOME slug the top-bar
+ * selection resolves to (a member harness resolves to its hive; '' = All Pots
+ * ⇒ workspace-wide); `ready` is false while the projects list — the
+ * member→hive mapping — is still loading, so scoped queries can gate on it
+ * instead of firing with a half-resolved lens.
+ */
+export interface AdvScope {
+  allMode: boolean;
+  /** The raw top-bar selection (?slug=), null under All Pots. */
+  slug: string | null;
+  /** Hive home the selection resolves to; '' ⇒ workspace-wide. */
+  hive: string;
+  ready: boolean;
+}
+
+const AdvScopeContext = createContext<AdvScope>({ allMode: true, slug: null, hive: '', ready: false });
+
+/** Read the inherited pot scope from the nearest AdvShell. */
+export function useAdvScope(): AdvScope {
+  return useContext(AdvScopeContext);
+}
+
 export default function AdvShell({
   title = 'Advanced',
   children,
@@ -444,6 +469,19 @@ export default function AdvShell({
   // surfaces as a passive badge — no new per-harness shares can be created.
   const activeIsHive = activeProject?.harness_kind === 'hive';
   const activeIsShared = !!activeProject?.is_shared;
+
+  // The inherited pot scope for every tab (useAdvScope above). A selected
+  // member harness resolves to its hive home via the lite payload's
+  // authoritative hive_slug; a selected hive is itself; All Pots ⇒ ''.
+  const advScope = useMemo<AdvScope>(
+    () => ({
+      allMode,
+      slug: singleSlug,
+      hive: !singleSlug ? '' : activeIsHive ? singleSlug : activeProject?.hive_slug || singleSlug,
+      ready: allMode || projects.length > 0 || Boolean(projectLoadError),
+    }),
+    [allMode, singleSlug, activeIsHive, activeProject?.hive_slug, projects.length, projectLoadError],
+  );
 
   // The active HIVE's directory share-state (comb-hive-native-sharing-2026-06-11):
   // a hive is "shared" once its owned directory listing is `public` or `invite`
@@ -845,7 +883,9 @@ export default function AdvShell({
           <PublishHiveCard potSlug={activeSlug} />
         </Modal>
       )}
-      <div className="pc-advshell__body">{children}</div>
+      <div className="pc-advshell__body">
+        <AdvScopeContext.Provider value={advScope}>{children}</AdvScopeContext.Provider>
+      </div>
       <style>{`
         .pc-advshell {
           display: flex;

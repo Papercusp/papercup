@@ -103,6 +103,66 @@ for humans/agents, just never closed for this one automated caller.
    `repo-conventions.mdx`'s two-port section (previously silent on it — the
    section described only the deliberate human/agent restart path).
 
+## Root-cause fix (WI-5710, 2026-07-26) — the branch moving is not the code changing
+
+EI-13221 above made the flap *diagnosable* and skipped the redundant
+double-restart, but left the cadence itself intact: `:3170` still restarted on
+essentially every tick. Measured 2026-07-26, hours apart from the original
+report and still reproducing exactly: restarts at 15:38:06 / 15:44:47 /
+15:50:36 / 15:56:51 / 16:02:55 / 16:08:49 — 42 `Started|Stopping` journal
+entries in 90 minutes.
+
+The actual defect is a **proxy that stopped being true at scale**. The script's
+only gate was `target != current` — "the `staging` branch moved" used as a
+stand-in for "the code the running process holds changed". That was a perfectly
+reasonable proxy when commits were human-paced. Under a fleet where git-sync
+auto-commits the whole tree every ~3min, the proxy decoupled from the thing it
+proxied, and it degraded *silently* — it still "worked", just wastefully. When
+something fires far more often than the condition it is supposed to track,
+suspect the proxy, not the trigger.
+
+Two gates now stand between "the branch moved" and "kill the process":
+
+1. **Relevance** (`paths_require_restart`). The SPA needs no restart at all:
+   `apps/operator/bin/host-spa.ts` serves the dist **from disk per request**
+   (`existsSync` + `serveFile` per asset; `index.html` read per request with
+   `cache-control: no-store`), so once `--build-spa` has run the new SPA is
+   already live. An SPA/docs/tests-only advance therefore rebuilds and **skips
+   the restart entirely**. The allowlist is deliberately conservative and its
+   **fail-safe direction is load-bearing**: a restart is required *unless every*
+   changed path is provably inert, so an unknown or newly-added path shape falls
+   through to a restart. Never invert it — "skip unless known-server" would mean
+   a new server directory silently stops being picked up.
+2. **Live-session deferral** (`staging_live_client_count` +
+   `current_commit_age_sec`). When a restart *is* required but someone is
+   actually connected to `:3170`, the **entire sync** defers — not just the
+   restart. Advancing the checkout while keeping the old process would serve a
+   NEW SPA against an OLD server, and that skew is worse than a few minutes of
+   staleness; pinning the whole checkout leaves the live session on a fully
+   consistent build. Bounded by `PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC`
+   (default 1800s) so a permanently-attached client can never freeze `:3170`
+   indefinitely.
+
+**Expected effect, stated honestly.** Gate 1 alone is *not* the win it first
+looks like. Measured over 200 real staging commits with a 6-minute timer
+simulation: `restart=113, skip=12` — only ~10% of ticks are SPA/docs-only,
+because `libs/papercusp` submodule bumps and `packages/operator-core` edits are
+genuinely constant. (An earlier estimate of ~85% was wrong; it classified
+individual commits rather than the multi-commit span a real tick diffs.) The
+real reduction comes from gate 2: an idle `:3170` still restarts promptly, while
+an in-use one is left alone until it goes idle or hits the ceiling — turning
+"every ~6min unconditionally" into "when it's free, or at worst every 30min".
+
+Full zero-downtime restart (SO_REUSEPORT generation overlap, the item's option
+A) remains the eventual end state for the residual ceiling-forced restarts, but
+is deliberately *not* built here — with the stale-chunk 404s already fixed by
+`dist-chunk-retention-default-2026-07-26` and the cadence cut by these gates,
+that architectural change no longer pays for itself.
+
+Behaviour is locked by `apps/operator/lib/release/sync-staging-checkout.test.ts`
+(27 tests), including structural guards that the shipped script still *calls*
+the gates and still orders the deferral before the checkout advance.
+
 ## The tell
 
 If you hit a connection-refused against `:3170` and it clears on its own
@@ -110,3 +170,9 @@ within ~15s: call `dev:service_health` and look at the `staging-api`
 supervision entry's `secondsSinceStart` / `recentRestartNote` before treating
 it as a real outage, a memory-watchdog recycle, or evidence your own change
 broke something.
+
+If instead `:3170` seems to be serving **stale** code, check the sync journal
+for a `deferring sync` line — that is gate 2 holding the checkout because your
+own session (or another) is connected. It clears when you disconnect, at the
+staleness ceiling, or immediately via `dev:restart { target: 'staging' }`, which
+is unaffected by either gate.

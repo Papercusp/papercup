@@ -66,7 +66,7 @@ import type { RetainExtrasSnapshot } from "@papercusp/operator-core/lib/sync-res
 import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
 import type { PotSoakReportSnapshot } from "@papercusp/operator-core/lib/pot/soak-report";
 import type { ReleaseReadinessSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-release-readiness-read";
-import { tabOverflowState } from "./AdvShell";
+import { tabOverflowState, useAdvScope } from "./AdvShell";
 import { BenchmarkTrend, type BenchmarkTrendInstance } from "./BenchmarkTrend";
 import type { BakeoffTrendRow } from "@papercusp/operator-core/lib/pot-eval/bakeoff-trend";
 import { EkgPanel } from "./EkgPanel";
@@ -395,43 +395,21 @@ export default function LearningTab() {
   const [rubricId, setRubricId] = useQueryState("rrubric", parseAsString);
   const [, setGradeDetail] = useQueryState("grade", parseAsString);
   const [, setRetainDetail] = useQueryState("lretain", parseAsString);
-  const [harnessSlug] = useQueryState("slug", parseAsString);
-  // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
-  // promoted up from the Learnings sub-view so it applies across every hive-aware
-  // view. Agents drive it via ui:dispatch; the hive-creation success card
-  // deep-links here with ?lhive=<slug>. Default '' ⇒ the first hive (resolved
-  // once the list loads).
-  const [lhive, setLhive] = useQueryState(
-    "lhive",
-    parseAsString.withDefault(""),
-  );
   const view: LView = (LVIEWS as readonly string[]).includes(lview)
     ? (lview as LView)
     : "improvements";
 
-  // The workspace's hives back the header picker (reuses the Learnings view's
-  // query). Only fetched/shown for hive-aware views; an empty selection falls
-  // back to the first hive so a fresh tab lands on a real hive.
-  const hiveList = useSyncQuery<{ slug: string; remote: boolean }>({
-    queryName: "learning.hiveList",
-    args: {},
-    staleTime: 60_000,
-    enabled: HIVE_AWARE_VIEWS.has(view),
-  });
-  const hives = hiveList.data ?? [];
+  // Pot lens INHERITED from the top-bar pot selector (owner directive
+  // 2026-07-26: "the pot should be inherited by the currently selected pot" —
+  // the tab-level `?lhive=` picker is GONE; one selection scopes every tab).
+  // All Pots ⇒ '' ⇒ the workspace-wide rollup each hive-aware view already
+  // supports. WI-5412 perf gate preserved: hive-aware views wait for the scope
+  // to resolve (projects list loaded) so the first fetch runs with the real
+  // lens, never a transient.
+  const scope = useAdvScope();
+  const hive = scope.hive;
   const hiveAware = HIVE_AWARE_VIEWS.has(view);
-  const hive =
-    lhive ||
-    hives.find((candidate) => candidate.slug === harnessSlug)?.slug ||
-    hives[0]?.slug ||
-    "";
-  // WI-5412 perf: a hive-aware view must NOT fetch until the hive lens is
-  // resolved — firing with {} and re-firing with {hive} once the hive list
-  // landed made the first click pay the heavy improvements read TWICE,
-  // sequentially. An explicit ?lhive= is ready immediately; otherwise wait for
-  // the hive list (data present, even if empty ⇒ workspace-wide is the real
-  // answer, not a transient).
-  const hiveReady = !hiveAware || Boolean(lhive) || hiveList.data !== undefined;
+  const hiveReady = !hiveAware || scope.ready;
   const activeStage = stageForView(view);
   const activeStageMeta =
     STAGES.find((stage) => stage.id === activeStage) ?? null;
@@ -586,38 +564,15 @@ export default function LearningTab() {
       </Tabs.Root>
 
       <div className="pc-learning__controls">
-        {/* Pot lens FIRST in the row (owner ask 2026-07-26: left-aligned, was
-            pushed right) — scope reads before view picking. */}
-        {hiveAware ? (
-          <Tooltip
-            label={`Scope this view to one ${t("pot", { lower: true })}`}
-          >
-            <label className="pc-learning__hivepick">
-              <Brain size={12} aria-hidden />
-              <span className="pc-learning__hivepicklabel">
-                {t("pot", { lower: true })}
-              </span>
-              <Select
-                ariaLabel={`${t("pot")} lens`}
-                value={hive}
-                onChange={(next: string) => void setLhive(next)}
-                disabled={hives.length === 0}
-                placeholder={
-                  hives.length === 0
-                    ? `no ${t("pot", { plural: true, lower: true })} yet`
-                    : undefined
-                }
-                triggerStyle={{
-                  maxWidth: 200,
-                  opacity: hives.length === 0 ? 0.6 : undefined,
-                }}
-                options={hives.map((candidate) => ({
-                  value: candidate.slug,
-                  label: `${hiveHomeLabel(candidate.slug)}${candidate.remote ? " (joined)" : ""}`,
-                }))}
-              />
-            </label>
-          </Tooltip>
+        {/* The per-tab pot picker that lived here is GONE (owner directive
+            2026-07-26): the lens is inherited from the top-bar pot selector via
+            useAdvScope — see the `hive` derivation above. The inherited pot is
+            named in the strap line below so scope stays visible. */}
+        {hiveAware && hive ? (
+          <span className="pc-learning__hivepick" title={`Scoped to the ${t("pot", { lower: true })} selected in the top bar`}>
+            <Brain size={12} aria-hidden />
+            <span className="pc-learning__hivepicklabel">{hiveHomeLabel(hive)}</span>
+          </span>
         ) : null}
         {activeStageMeta && activeStageMeta.views.length > 1 ? (
           <Tabs.Root
@@ -3603,7 +3558,10 @@ export function ScoutView({
   const [, setCreateView] = useQueryState("view", parseAsString);
   const [, setPlanSel] = useQueryState("plan", parseAsString);
   const [, setLviewRaw] = useQueryState("lview", parseAsString);
-  const [, setLhiveRaw] = useQueryState("lhive", parseAsString);
+  // `?lhive=` is retired (pot inherited from the top-bar selector, owner
+  // directive 2026-07-26) — carrying an idea's pot now sets the GLOBAL
+  // selection, and every tab follows.
+  const [, setTopBarSlug] = useQueryState("slug", parseAsString);
   const [, setLane] = useQueryState("lane", parseAsString);
   const [, setSrcSel] = useQueryState("lsrc", parseAsString);
   const [, setLsel] = useQueryState("lsel", parseAsString);
@@ -3630,10 +3588,10 @@ export function ScoutView({
       openPlan(item.routedRef.slice("plan:".length));
     } else if (item.rail === "gym") {
       // WI-5412 item 4: carry the idea's hive so the Gym view opens on the
-      // seed's data, not the default hive's (empty) challengers. The ledger
+      // seed's data, not another pot's (empty) challengers. The ledger
       // doesn't stamp harness_slug consistently (EI-10520) — when absent,
-      // navigate without touching the lens.
-      if (item.harnessSlug) void setLhiveRaw(item.harnessSlug);
+      // navigate without touching the selection.
+      if (item.harnessSlug) void setTopBarSlug(item.harnessSlug);
       void setLviewRaw("gym");
     } else if (item.rail === "instance") {
       void setLviewRaw("benchmark");

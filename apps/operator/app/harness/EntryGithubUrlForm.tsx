@@ -787,7 +787,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
               Started with {result.seededLearnings.count} default learnings (pack{' '}
               <code>{result.seededLearnings.packId}</code>
               {result.seededLearnings.packVersion ? <> v{result.seededLearnings.packVersion}</> : null}) —{' '}
-              <a href={`/adv?tab=learning&lview=learnings&lhive=${encodeURIComponent(result.potSlug)}`}>
+              <a href={`/adv?tab=learning&lview=learnings&slug=${encodeURIComponent(result.potSlug)}`}>
                 view &amp; edit
               </a>
               . Your agents treat them as starting wisdom, not gospel.

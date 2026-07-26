@@ -151,11 +151,15 @@ more reason to `coord:declare-intent` with a real one-liner before long edits.
 - **No MCP `tools/list_changed`** is emitted, so a tool-surface change (add/remove
   a verb) leaves *running* agent sessions with a **stale cached catalog** until
   they relaunch. New sessions are correct.
-- **Codex coord fold is SU-only** (pipeline-role sessions coordinate via
-  `messages:send`/`inbox`, not the SU coord bus) — expressed since EI-11405 as
-  `PAPERCUSP_COORD_FOLD=0` baked into a role session's activity-report hook
-  command, not a separate hook's absence — and activates server-side on the
-  next operator restart (the `:3070` host has no hot-reload).
+- **Codex coord fold is SU-only** — pipeline-role sessions do **not** ride the SU
+  coord bus. Expressed since EI-11405 as `PAPERCUSP_COORD_FOLD=0` baked into a
+  role session's activity-report hook command, not a separate hook's absence —
+  and activates server-side on the next operator restart (the `:3070` host has
+  no hot-reload). What a role session *does* use instead: the **activity bridge**
+  (it reports under its own session identity) plus the **SU lock hooks**, which
+  `role-codex-home.ts` installs so its edits are coordinated. It does **not** use
+  the work-item mail surface — `messages:send`/`inbox` were retired 2026-07-26
+  (WI-6097); that half of this note was stale and is corrected here.
 - **Codex managed-PTY turn injection needs a longer submit settle than Claude,
   plus a redundant submit.**
   The injected text can land in Codex's compose box while the submit CR is still
