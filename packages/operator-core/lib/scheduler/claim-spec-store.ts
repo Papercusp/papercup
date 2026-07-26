@@ -21,6 +21,7 @@ import { planItemLaneBlockReason } from './plan-item-lane-guard';
 import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
+import { recordClaimAttempt } from '../orchestrator/claim-audit';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
 /**
@@ -334,6 +335,45 @@ export async function getClaimSpec(
   return DEFAULT_CLAIM_SPEC;
 }
 
+/**
+ * WI-6007: wire the (fully-built, zero-writer) `harness_shared.claim_audit` detector
+ * into the ONE place that knows the RESOLVED claim-spec provenance — getNextForBee.
+ * Motivating incident (WI-5995): a p2p-titled bug was served to two fleet members
+ * whose claim spec rev 8 explicitly excludes `*p2p*`; proving which spec/revision
+ * actually admitted it took a full SQL + JS-evaluator investigation and still could
+ * only be INFERRED, never read straight off the row. This closes that gap: after
+ * this lands, `SELECT feature_id, detail FROM harness_shared.claim_audit WHERE
+ * feature_id='<id>' ORDER BY attempt_ts DESC` answers it in one query.
+ *
+ * Pure observability — best-effort ONLY (per the ticket's explicit scope: never
+ * throw into the claim path, never change admission behavior). Errors are
+ * swallowed here so a claim_audit hiccup (PG blip, schema drift) can never fail or
+ * delay a real claim.
+ */
+async function auditClaimAttempt(
+  args: {
+    workspaceId?: string;
+    harnessSlug: string;
+    featureId: string;
+    claimerId: string;
+    outcome: 'won' | 'lost';
+    detail: Record<string, unknown>;
+  },
+): Promise<void> {
+  try {
+    await recordClaimAttempt({
+      workspaceId: args.workspaceId ?? DEFAULT_COORD_WORKSPACE,
+      harnessSlug: args.harnessSlug,
+      feature_id: args.featureId,
+      claimer_pubkey: args.claimerId,
+      outcome: args.outcome,
+      detail: JSON.stringify(args.detail).slice(0, 2000),
+    });
+  } catch {
+    /* best-effort observability only — never let an audit-write failure touch the claim path */
+  }
+}
+
 /** The bee's get_next: claim the next work-item per the bee's stored spec (the global floors always apply). */
 export async function getNextForBee(args: {
   cupId: string;
@@ -372,7 +412,25 @@ export async function getNextForBee(args: {
   // stored specs; only an explicit per-bee or valid fleet spec may pull.
   // (An explicitly-LEFT agent carries no fleetSlug marker — getClaimSpecRecord
   // treats a settled leave as solo, so DEFAULT_CLAIM_SPEC pulls resume there.)
-  if (resolvedRecord.source === 'default' && resolvedRecord.fleetSlug) return null;
+  if (resolvedRecord.source === 'default' && resolvedRecord.fleetSlug) {
+    // WI-6007 point 4: record the fail-closed refusal too. There is no candidate
+    // work-item here (the refusal fires before any row is selected), so feature_id
+    // uses a sentinel naming the fleet whose sentinel spec was missing/invalid —
+    // never a real work-item id — so it can't collide with a genuine claim row.
+    await auditClaimAttempt({
+      workspaceId: args.workspaceId,
+      harnessSlug: args.harness,
+      featureId: `fleet-scope-refusal:${resolvedRecord.fleetSlug}`,
+      claimerId: args.cupId,
+      outcome: 'lost',
+      detail: {
+        source: resolvedRecord.source,
+        fleetSlug: resolvedRecord.fleetSlug,
+        reason: 'fail-closed: membership names a fleet with no valid spec sentinel (WI-4770 transition guard)',
+      },
+    });
+    return null;
+  }
   const record = args.ignoreStoredSpec
     ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
     : resolvedRecord;
@@ -458,7 +516,27 @@ export async function getNextForBee(args: {
       continue;
     }
     const blocked = await planItemLaneBlockReason(result.workItem);
-    if (!blocked) return { ...result, specSource: record.source };
+    if (!blocked) {
+      await auditClaimAttempt({
+        workspaceId: args.workspaceId,
+        harnessSlug: args.harness,
+        featureId: result.workItem.id,
+        claimerId: args.cupId,
+        outcome: 'won',
+        detail: {
+          source: record.source,
+          specId: result.claimedUnder.specId,
+          revision: result.claimedUnder.revision,
+          fleetSlug: record.fleetSlug,
+          // Coarse proxy for "which SQL tier admitted this row" — getNextWorkItem does not
+          // return a first-class tier number, and threading one through would be a much
+          // larger change than this detector-only ticket scopes for. issue-family rows are
+          // served ONLY by tier 3; feature-family rows by tiers 1/2.
+          tier: result.workItem.family === 'issue' ? 'issue-tier3' : 'feature-tier1-2',
+        },
+      });
+      return { ...result, specSource: record.source };
+    }
     // Confirmed blocked (whether this is attempt 1 or the last) — always release; NEVER
     // serve a row we just confirmed is plan-lane-blocked (EI-9108).
     // EI-14837 (completes the EI-15019 class — see the spec-mismatch release above): this

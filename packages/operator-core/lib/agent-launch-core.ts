@@ -556,22 +556,35 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   return parts.join(' ');
 }
 
+/**
+ * The universal MEMBER OPERATING BASELINE rules, composed onto EVERY member's
+ * launch context ahead of any per-fleet brief. Encodes the drain-discipline
+ * lessons learned watching real fleets run: check-already-fixed before building,
+ * flag to the leader (not just the broadcast stream), don't re-claim a
+ * ping-ponging item, and always ship completion evidence. Single source so the
+ * member's full text and the leader's echo (headlines) can never drift.
+ */
 export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }> = [
   {
     head: 'Already-fixed check FIRST',
-    body: 'Before building anything, spend ~2 min confirming the fix has not already shipped — check code/tests, `git log`, sibling work-items. Re-implementing a peer\'s fix is the single biggest fleet-time waste. If already done, close it as already-fixed WITH the evidence you checked — do not rebuild it.',
+    body: "Before building anything, spend ~2 min confirming the fix has not already shipped — check code/tests, `git log`, sibling work-items. Re-implementing a peer's fix is the single biggest fleet-time waste. If already done, close it as already-fixed WITH the evidence you checked — do not rebuild it.",
   },
   {
+    // EI-8318: members were completing exactly ONE item per external wake, then ending
+    // their turn with no armed self-wake — the leader became a manual clock, capping
+    // fleet throughput at its re-wake cadence instead of draining continuously.
+    // EI-8393: kept tight — this rule is the single biggest driver of the P-013
+    // prompt-bloat budget; trim further before adding anything to it.
     head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
-    body: 'You have no human at your keyboard: as your FIRST action, call `loop:arm { intervalSec, goal }` to drain your lane. Each wake: pull via `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat — the armed loop re-wakes you automatically. `loop:end` ONLY when nothing is claimable for your spec, or you are genuinely blocked. Ending a turn with no armed loop IS parking (EI-8318): you go silent until the leader manually re-wakes you, capping the WHOLE fleet at their re-wake cadence instead of draining continuously.',
+    body: 'You have no human at your keyboard: as your FIRST action, call `loop:arm { intervalSec, goal }` to drain your lane. Each wake: pull via `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat — the armed loop re-wakes you automatically. `loop:end` ONLY when nothing is claimable for your spec, or you are genuinely blocked. Ending a turn with no armed loop IS parking (EI-8318): you go silent until the leader manually re-wakes you, capping the WHOLE fleet at their wake cadence.',
   },
   {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
-    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader (`wakeOnReply:true`) — broadcast is easy to miss. A finding >1 paragraph goes on the item, not chat; `coord:read { msg_id }` gets its full text. In-fleet: bare to:["*"] auto-scopes `@fleet:<slug>`; `allHive:true` only for system-wide news.',
+    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader (`wakeOnReply:true`) — broadcast is easy to miss. A finding >1 paragraph goes on the item, not chat; `coord:read {msg_id}` gets its full text. In-fleet: bare to:["*"] auto-scopes `@fleet:<slug>`; `allHive:true` only for system-wide news.',
   },
   {
     head: 'Do not re-claim a ping-ponging item',
-    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of your next `scheduler:get_next` pull and you loop on it. If an item reappears right after you release it, sink it (`work_items:set_priority`) or set it `blocked` with a reason — do not re-claim.',
+    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of your next `scheduler:get_next` pull and you loop on it. If an item reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
   },
   {
     head: 'Completion evidence is mandatory',
@@ -579,29 +592,42 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: '"Not available" means DEFERRED, not missing',
-    body: 'An InputValidationError / "not available" on a tool means load it (ToolSearch / `tools:find`) and continue — never stop or report a tool as unavailable.',
+    body: 'An InputValidationError / "not available" on a tool means load it (ToolSearch / tools:find) and continue — never stop or report a tool as unavailable.',
   },
   {
     head: 'Edit only the staging tree; git-sync owns commit + push',
-    body: 'Never git add / commit / push. If a file-lock blocks an edit, pivot to the next item rather than routing around it.',
+    body: 'Never git add / commit / push. If a file-lock blocks an edit, pivot to the next item rather than routing around the lock.',
   },
   {
     head: 'A hive pause is a Mug-loop signal, not a self-drain order',
-    body: '`pauseNewWork` / `maxBees` / a pot-steering fact you SEE in orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you (check its authority+scope stamp: `hive-queen(<hive>)→hive-wide` is the Mug; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business — ignore it) or an explicit `fleet:*`/owner action. Unsure? Ask your leader, never self-drain on an observed pause.',
+    body: "`pauseNewWork` / `maxBees` / a pot-steering fact you SEE in orient governs the autonomous mug-cup loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you (check its authority+scope stamp: `hive-queen(<hive>)→hive-wide` is the Mug; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet's business — ignore it) or an explicit `fleet:*`/owner action. Unsure? Ask your leader, never self-drain on an observed pause.",
   },
   {
+    // su-loop-capability-parity P-011: the bee turn-end reflection ritual + the overwatch
+    // integrity clause, ported to fleet members (bee.base.md / the overwatch prompt).
     head: 'Turn-end reflection + reporting integrity',
-    body: 'End each turn with ONE bounded reflection: file an observation (`improvements:capture lane:"observation"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING (a sensor reading, never a fix or self-grade). Never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you weren\'t in, a send you didn\'t make, or a reading you didn\'t take.',
+    body: "End each turn with ONE bounded reflection: file an observation (`improvements:capture lane:\"observation\"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING (a sensor reading, never a fix or self-grade). Never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you weren't in, a send you didn't make, or a reading you didn't take.",
   },
   {
+    // su-loop-capability-parity P-012: the bee checkpoint protocol (bee.base.md §"End of
+    // turn — checkpoint"), ported to fleet members. Store + injection seam already exist.
     head: 'Carry-note checkpoint at every boundary',
     body: 'Write `work_items:checkpoint { id, checkpoint }` at task completion, before going idle at a task boundary, and on graceful-evict — so your successor resumes mid-thread instead of cold. Content = what you accomplished / what is left / the key insight / a gotcha for your successor; concrete facts, not self-evaluation; a compact digest, never a transcript. Replace-on-write (blank to clear).',
   },
 ];
 
+/** Render the full member-facing baseline markdown (the numbered rules with a
+ *  short header). Pure + exported for tests.
+ *  P-004 carry (owner directive 2026-07-10, orthogonal to headless): `carry:'cold'`
+ *  rewrites the loop:arm rule to arm a COLD loop (each wake a fresh context) and
+ *  promotes the carry-note checkpoint from "at every boundary" to LOAD-BEARING —
+ *  a cold wake reconstructs ONLY from the last checkpoint. Default 'warm' is
+ *  byte-identical to before (nothing silently goes cold). */
 export function renderMemberBaseline(opts: {
   fleetSlug: string;
-  plan: string;
+  /** OPTIONAL (P-003): a pure claim-spec fleet has no plan — the baseline then points
+   *  at the fleet's claim lane instead of a named plan. */
+  plan?: string | null;
   count: number;
   carry?: 'warm' | 'cold';
 }): string {
@@ -623,18 +649,22 @@ export function renderMemberBaseline(opts: {
   return [
     '# Fleet member — operating baseline',
     '',
-    `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, working plan \`${plan}\`. The session that launched you is your LEADER — report notable completions and blockers to them.`,
+    `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, ${plan ? `working plan \`${plan}\`` : 'draining your fleet claim-lane backlog'}. The session that launched you is your LEADER — report notable completions and blockers to them.`,
     '',
-    'Your loop, until nothing is claimable: **pull** via `scheduler:get_next` (NOT `work_items:claim_next` — leader steers WHICH item via `scheduler:set_claim_spec`; no spec = default order) → **read** it (`work_items:get`) → **classify + act** (fix / already-fixed-close / blocked) → drive to a **terminal** state with evidence → repeat. Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader\'s call, PICKUP is yours.',
+    "Your loop, until nothing is claimable: **pull** via `scheduler:get_next` (NOT `work_items:claim_next` — leader steers WHICH item via `scheduler:set_claim_spec`; no spec = default order) → **read** it (`work_items:get`) → **classify + act** (fix / already-fixed-close / blocked) → drive to a **terminal** state with evidence → repeat. Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader's call, PICKUP is yours.",
     '',
     '## Non-negotiables',
     rules,
   ].join('\n');
 }
 
+/** Compose a member's launch context = the universal baseline + (optionally) the
+ *  leader's per-fleet brief BELOW it (the brief wins on fleet-specifics). Pure +
+ *  exported for tests. */
 export function composeMemberLaunchContext(opts: {
   fleetSlug: string;
-  plan: string;
+  /** OPTIONAL (P-003): absent for a pure claim-spec fleet. */
+  plan?: string | null;
   count: number;
   carry?: 'warm' | 'cold';
   customBriefText?: string | null;

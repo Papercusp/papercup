@@ -5218,3 +5218,512 @@ describe('reportTurnAskIngest (OMP turn_end ask ingest + followUp nudge)', () =>
     expect(calls).not.toContain('sessions:ingest-gate-event');
   });
 });
+
+// ── bash→tool substitution gate, OMP path (bash-to-tool-substitution-2026-07-26, P-017) ──
+//
+// This is a PARITY suite, not a fresh one. D-005 makes the two hook paths carry
+// every rule ("a guard fixed in one path must be fixed in both, since
+// Claude/Codex hit THIS one and OMP hits that one"), and a rule enforced on only
+// one path produces exactly the asymmetry that decision exists to prevent — "it
+// blocked me yesterday but not today". So the cases below deliberately mirror
+// bash-resource-gate.test.ts's: the same pre-filter corpus, the same fixture
+// replay, the same tier semantics. They diverge only where the MECHANISMS
+// genuinely differ (`advise` rides out as a staged followUp here, as
+// additionalContext there) — and where they must NOT diverge, a test asserts it
+// mechanically rather than trusting two files to be edited together.
+
+const SHELL_HOOK_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../cc/pretooluse-bash-resource-gate.sh',
+);
+// __tests__ → omp → hooks → scripts → operator → apps → repo root (six).
+const SUBSTITUTION_FIXTURE_DIR = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../../../packages/operator-core/lib/bash-substitution/fixtures',
+);
+
+describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the round-trip)', () => {
+  // A pre-filter MISS is the silent failure this whole describe exists for: no
+  // error, no log, just an advisory that never fires for the commands its rule
+  // was written for.
+  it.each([
+    ['sed range read', "sed -n '1,80p' packages/foo.ts"],
+    ['sed behind a cd', "cd /repo && sed -n '1,80p' packages/foo.ts"],
+    ['cat a file', 'cat packages/operator-core/lib/foo.ts'],
+    ['head a file', 'head -n 20 packages/foo.ts'],
+    ['tail a file', 'tail -n 50 packages/foo.ts'],
+    ['psql select', 'psql -d papercusp -c "SELECT 1"'],
+    ['behind sudo', "sudo sed -n '1,5p' /etc/hosts"],
+    ['behind sudo -n', 'sudo -n cat /etc/hosts'],
+    ['behind an env assignment', 'FOO=bar cat notes.txt'],
+    ['behind nohup', 'nohup tail -f log.txt'],
+    ['behind timeout', 'timeout 5s cat notes.txt'],
+    ['second atom in a pipeline', 'echo hi; cat notes.txt'],
+    ['second atom behind &&', 'npm run lint && cat notes.txt'],
+    ['an absolute path to the verb', '/usr/bin/cat notes.txt'],
+  ])('claims %s', (_label, command) => {
+    expect(substitutionPrefilterHit(command)).toBe(true);
+  });
+
+  it.each([
+    ['a plain listing', 'ls -la'],
+    ['a word merely CONTAINING a verb', 'echo concatenate the duplicates'],
+    ['a path merely containing a verb', 'node scripts/cat-herder.mjs'],
+    ['an unrelated npm script', 'npm run lint'],
+    ['a verb only as an argument', 'grep -n cat notes.txt'],
+    ['an empty command', ''],
+  ])('does NOT claim %s (no round-trip)', (_label, command) => {
+    expect(substitutionPrefilterHit(command)).toBe(false);
+  });
+
+  it('never throws on pathological input (a pre-filter bug must not wedge a command)', () => {
+    for (const cmd of ['|||', ';;;', '$(', '`', 'FOO=', 'sudo ', '\n\n', '((((']) {
+      expect(() => substitutionPrefilterHit(cmd)).not.toThrow();
+    }
+  });
+
+  // THE ANTI-DRIFT GUARD, and the reason the heads live in a hand-written set:
+  // a registry pair whose verb is missing from it is enforced nowhere while
+  // every other test in this file stays green. Replays the REAL atoms behind
+  // every recorded equivalence verdict — the same frozen corpus those verdicts
+  // were computed from. Add a pair without adding its verb and this goes red.
+  it('every atom behind a recorded equivalence verdict passes the pre-filter', () => {
+    const files = readdirSync(SUBSTITUTION_FIXTURE_DIR).filter((f) => f.endsWith('.sample.json'));
+    expect(files.length).toBeGreaterThan(0);
+
+    const missed: string[] = [];
+    let atoms = 0;
+    for (const file of files) {
+      const fixture = JSON.parse(
+        readFileSync(join(SUBSTITUTION_FIXTURE_DIR, file), 'utf8'),
+      ) as { sample: { atom: string }[] };
+      for (const { atom } of fixture.sample) {
+        atoms += 1;
+        if (!substitutionPrefilterHit(atom)) missed.push(`${file}: ${atom}`);
+      }
+    }
+    expect(atoms).toBeGreaterThan(0);
+    expect(
+      missed,
+      `pre-filter dropped atoms a registry rule claims:\n${missed.join('\n')}`,
+    ).toEqual([]);
+  });
+});
+
+describe('cross-path parity with the shell hook (D-005 — the duplicated pre-filter)', () => {
+  // D-002 keeps the RULES in Postgres so neither hook hardcodes patterns. The
+  // pre-filter is the one thing genuinely duplicated (each hook must run it with
+  // no imports), so it is the one thing that can drift — and drift here is
+  // invisible: the command still runs, it just stops reaching the operator on
+  // ONE path. These assertions are the mechanical form of "fix one, fix both".
+  const shellHook = readFileSync(SHELL_HOOK_PATH, 'utf8');
+
+  /** The raw source of a `NAME = re.compile(r'...')` pattern in the shell hook. */
+  const pyRaw = (name: string): string => {
+    const m = new RegExp(`${name} = re\\.compile\\(\\s*r'([\\s\\S]*?)'\\)`).exec(shellHook);
+    expect(m, `could not find ${name} in ${SHELL_HOOK_PATH}`).not.toBeNull();
+    return m![1];
+  };
+
+  it('the atom-head set matches the shell hook byte-for-byte', () => {
+    const m = /_SUBSTITUTION_HEADS = frozenset\(\(([^)]*)\)\)/.exec(shellHook);
+    expect(m, 'could not find _SUBSTITUTION_HEADS in the shell hook').not.toBeNull();
+    const shellHeads = [...m![1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+    expect(shellHeads.length).toBeGreaterThan(0);
+    expect([...shellHeads].sort()).toEqual([...SUBSTITUTION_PREFILTER_HEADS].sort());
+  });
+
+  it('the three atomizer regexes match the shell hook byte-for-byte', () => {
+    expect(SUBST_SPLIT_RE.source).toBe(pyRaw('_SUBST_SPLIT_RE'));
+    expect(SUBST_RUNNER_RE.source).toBe(pyRaw('_SUBST_RUNNER_RE'));
+    expect(SUBST_ENV_RE.source).toBe(pyRaw('_SUBST_ENV_RE'));
+  });
+
+  it('the resource pre-filter matches the shell hook (modulo the capturing-group dialect)', () => {
+    const m = /re\.search\(r'(systemctl\|[^']*)', command\)/.exec(shellHook);
+    expect(m, 'could not find the resource pre-filter regex in the shell hook').not.toBeNull();
+    // The only permitted difference: the shell hook writes a capturing
+    // `(dev|build)` where the TS uses a non-capturing `(?:dev|build)`. Neither
+    // hook reads the group, so it is dialect, not behaviour.
+    expect(RESOURCE_PREFILTER_RE.source).toBe(m![1].replace('(dev|build)', '(?:dev|build)'));
+  });
+});
+
+describe('resourcePrefilterHit', () => {
+  it.each([
+    ['systemctl', 'systemctl --user restart papercup-staging-api.service'],
+    ['overmind', 'overmind restart web'],
+    ['psql', 'psql -d papercusp -c "SELECT 1"'],
+    ['astro', 'astro build'],
+    ['the desktop sidecar build', 'npm run build-desktop-sidecar'],
+    ['release-local', 'papercusp-desktop/bin/release-local.sh'],
+    ['npm run dev', 'npm run dev'],
+    ['npm run build', 'npm run build'],
+  ])('claims %s', (_label, command) => {
+    expect(resourcePrefilterHit(command)).toBe(true);
+  });
+
+  it.each([
+    ['a plain listing', 'ls -la'],
+    ['an unrelated npm script', 'npm run lint'],
+    ['a test run', 'npm run test:file -- a.test.ts'],
+  ])('does NOT claim %s', (_label, command) => {
+    expect(resourcePrefilterHit(command)).toBe(false);
+  });
+});
+
+describe('substitution message formatting', () => {
+  const sub = (over: Record<string, unknown> = {}) => ({
+    atom: 'cat notes.txt',
+    toolName: 'capability:read',
+    advisoryText: 'capability:read returns the file with no shell round-trip.',
+    tier: 'advise',
+    ...over,
+  });
+
+  it('renders one block per match, atom + arrow + tool, advisory on its own line', () => {
+    const out = formatSubstitutionLines([sub()]);
+    expect(out).toContain('`cat notes.txt` → capability:read');
+    expect(out).toContain('capability:read returns the file with no shell round-trip.');
+  });
+
+  it('omits the advisory line when the row carries no text', () => {
+    expect(formatSubstitutionLines([sub({ advisoryText: '' })])).toBe(
+      '  • `cat notes.txt` → capability:read',
+    );
+  });
+
+  it('falls back to ? for a row missing its tool name (never renders undefined)', () => {
+    const out = formatSubstitutionLines([sub({ toolName: undefined })]);
+    expect(out).toContain('→ ?');
+    expect(out).not.toContain('undefined');
+  });
+
+  it('truncates a pathological atom so a refusal stays readable', () => {
+    const out = formatSubstitutionLines([sub({ atom: `cat ${'x'.repeat(500)}` })]);
+    expect(out.split('\n')[0].length).toBeLessThan(200);
+  });
+
+  it('renders every match, not just the first', () => {
+    const out = formatSubstitutionLines([
+      sub(),
+      sub({ atom: 'psql -c "SELECT 1"', toolName: 'dev:pg_query' }),
+    ]);
+    expect(out).toContain('capability:read');
+    expect(out).toContain('dev:pg_query');
+  });
+
+  it('the deny reason names the gate, the tool, and how to proceed', () => {
+    const out = substitutionDenyReason([sub({ tier: 'deny' })]);
+    expect(out).toContain('substitution-gate');
+    expect(out).toContain('capability:read');
+    expect(out).toContain('Re-run using the tool above');
+  });
+
+  it('the advisory says the command PROCEEDED — past tense, because on this path it already has', () => {
+    // Not a cosmetic divergence from the shell hook's "is proceeding": there the
+    // advisory rides out on the allow, BEFORE the command runs; here it is
+    // delivered on the next tool_result, AFTER it ran. Same fact, correct tense.
+    const out = substitutionAdvisoryText([sub()]);
+    expect(out).toContain('bash→tool advisory');
+    expect(out).toContain('Advisory only');
+    expect(out).toContain('proceeded as issued');
+  });
+
+  it('the resource refusal names the held resources', () => {
+    expect(
+      resourceBlockReason([{ resource: 'db:migrate' }, { resource: 'dev:restart' }]),
+    ).toContain('db:migrate, dev:restart');
+  });
+
+  it('the resource refusal degrades to a generic name when the payload is empty', () => {
+    expect(resourceBlockReason(undefined)).toContain('a registered resource');
+    expect(resourceBlockReason([])).toContain('a registered resource');
+    expect(resourceBlockReason([{}])).toContain('?');
+  });
+});
+
+describe('stageSubstitutionAdvisory / drainSubstitutionAdvisory (the soft channel)', () => {
+  beforeEach(() => {
+    drainSubstitutionAdvisory();
+  });
+
+  it('drains empty when nothing is staged', () => {
+    expect(drainSubstitutionAdvisory()).toBe('');
+  });
+
+  it('is one-shot — a staged advisory is delivered exactly once', () => {
+    stageSubstitutionAdvisory('advisory text');
+    expect(drainSubstitutionAdvisory()).toBe('advisory text');
+    expect(drainSubstitutionAdvisory()).toBe('');
+  });
+});
+
+describe('checkCommandVerdict (fail-open transport)', () => {
+  const originalFetch = global.fetch;
+  const prevOperatorUrl = process.env.PAPERCUSP_OPERATOR_URL;
+  const prevBundleUrl = process.env.PAPERCUSP_BUNDLE_URL;
+  beforeEach(() => {
+    delete process.env.PAPERCUSP_BUNDLE_URL;
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:59999/';
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevOperatorUrl === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+    else process.env.PAPERCUSP_OPERATOR_URL = prevOperatorUrl;
+    if (prevBundleUrl === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundleUrl;
+  });
+
+  it('returns the parsed verdict on a well-formed MCP envelope', async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            content: [
+              { type: 'text', text: JSON.stringify({ decision: 'allow', substitutionTier: 'advise' }) },
+            ],
+          },
+        }),
+    })) as unknown as typeof fetch;
+    await expect(checkCommandVerdict('cat notes.txt')).resolves.toMatchObject({
+      decision: 'allow',
+      substitutionTier: 'advise',
+    });
+  });
+
+  it('returns null when the operator is unreachable (never throws into the hook)', async () => {
+    global.fetch = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    await expect(checkCommandVerdict('cat notes.txt')).resolves.toBeNull();
+  });
+
+  it('returns null on a non-200', async () => {
+    global.fetch = (async () => ({ ok: false, text: async () => 'nope' })) as unknown as typeof fetch;
+    await expect(checkCommandVerdict('cat notes.txt')).resolves.toBeNull();
+  });
+
+  it('returns null on a malformed body rather than propagating a parse error', async () => {
+    global.fetch = (async () => ({ ok: true, text: async () => 'not json' })) as unknown as typeof fetch;
+    await expect(checkCommandVerdict('cat notes.txt')).resolves.toBeNull();
+  });
+});
+
+describe('onToolCall registry verdict — resource holds + substitutions (P-017)', () => {
+  const originalFetch = global.fetch;
+  const prevOperatorUrl = process.env.PAPERCUSP_OPERATOR_URL;
+  const prevBundleUrl = process.env.PAPERCUSP_BUNDLE_URL;
+  let bodies: string[] = [];
+  let reply: Record<string, unknown> = {};
+  let seq = 0;
+
+  /** How many times the hook actually asked the operator. */
+  const checkCalls = () => bodies.filter((b) => b.includes('locks:check_command')).length;
+  /** A fresh toolCallId per call so the identical-call loop-breaker never fires. */
+  const call = (command: string) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: `subst-${++seq}`,
+      input: { command },
+    });
+
+  beforeEach(() => {
+    bodies = [];
+    reply = { decision: 'allow', matched: [] };
+    // A concrete operator URL so a round-trip is POSSIBLE — otherwise
+    // callMcpTool short-circuits to null and every "paid no round-trip"
+    // assertion below would pass for the wrong reason.
+    delete process.env.PAPERCUSP_BUNDLE_URL;
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:59999/';
+    global.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      bodies.push(String(init?.body ?? ''));
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: JSON.stringify(reply) }] },
+          }),
+      };
+    }) as unknown as typeof fetch;
+    _resetToolCallCacheForTests();
+    resetToolCallLoopState();
+    drainSubstitutionAdvisory();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevOperatorUrl === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+    else process.env.PAPERCUSP_OPERATOR_URL = prevOperatorUrl;
+    if (prevBundleUrl === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundleUrl;
+  });
+
+  const denySub = [
+    {
+      atom: 'cat notes.txt',
+      toolName: 'capability:read',
+      advisoryText: 'Use capability:read.',
+      tier: 'deny',
+    },
+  ];
+
+  it('pays NO round-trip for a command neither registry can claim', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    const r = await call('ls -la');
+    expect(r.block).toBeUndefined();
+    expect(checkCalls()).toBe(0);
+  });
+
+  it('asks the operator once for a command a substitution rule could claim', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    await call('cat notes.txt');
+    expect(checkCalls()).toBe(1);
+  });
+
+  it('DENIES on tier=deny, naming the tool to use instead', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = { decision: 'allow', substitutions: denySub, substitutionTier: 'deny' };
+    const r = await call('cat notes.txt');
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('substitution-gate');
+    expect(r.reason).toContain('capability:read');
+  });
+
+  it('tier=advise does NOT block and stages the lesson for the next tool_result', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = {
+      decision: 'allow',
+      substitutions: [{ ...denySub[0], tier: 'advise' }],
+      substitutionTier: 'advise',
+    };
+    const r = await call('cat notes.txt');
+    expect(r.block).toBeUndefined();
+    const advisory = drainSubstitutionAdvisory();
+    expect(advisory).toContain('bash→tool advisory');
+    expect(advisory).toContain('capability:read');
+  });
+
+  it('tier=observe neither blocks nor says anything (the default tier is silent)', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = {
+      decision: 'allow',
+      substitutions: [{ ...denySub[0], tier: 'observe' }],
+      substitutionTier: 'observe',
+    };
+    const r = await call('cat notes.txt');
+    expect(r.block).toBeUndefined();
+    expect(drainSubstitutionAdvisory()).toBe('');
+  });
+
+  it('a resource hold OUTRANKS a substitution deny — the emergency is not buried by the lesson', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = {
+      decision: 'block',
+      matched: [{ resource: 'db:migrate' }],
+      substitutions: denySub,
+      substitutionTier: 'deny',
+    };
+    const r = await call('psql -d papercusp -c "SELECT 1"');
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('resource-gate');
+    expect(r.reason).toContain('db:migrate');
+    expect(r.reason).not.toContain('substitution-gate');
+  });
+
+  it('the resource half is UNCONDITIONAL — it fires with no agent marker set', async () => {
+    delete process.env.PAPERCUSP_AGENT;
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    reply = { decision: 'block', matched: [{ resource: 'dev:restart' }] };
+    const r = await call('overmind restart web');
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('resource-gate');
+  });
+
+  it("the substitution half is agent-gated — an owner's session pays no round-trip and is never denied", async () => {
+    delete process.env.PAPERCUSP_AGENT;
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    reply = { decision: 'allow', substitutions: denySub, substitutionTier: 'deny' };
+    const r = await call('cat notes.txt');
+    expect(r.block).toBeUndefined();
+    expect(checkCalls()).toBe(0);
+    expect(drainSubstitutionAdvisory()).toBe('');
+  });
+
+  it('an owner session that DOES reach the operator still gets no substitution verdict', async () => {
+    // psql trips BOTH pre-filters, so the round-trip happens for the RESOURCE
+    // question even in an owner session — the substitution answer must still be
+    // ignored, or the agent-gate would leak in through the resource path.
+    delete process.env.PAPERCUSP_AGENT;
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    reply = { decision: 'allow', substitutions: denySub, substitutionTier: 'deny' };
+    const r = await call('psql -d papercusp -c "SELECT 1"');
+    expect(checkCalls()).toBe(1);
+    expect(r.block).toBeUndefined();
+    expect(drainSubstitutionAdvisory()).toBe('');
+  });
+
+  it('FAILS OPEN when the operator is unreachable — a wedged operator never wedges a command', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    global.fetch = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const r = await call('cat notes.txt');
+    expect(r.block).toBeUndefined();
+    expect(drainSubstitutionAdvisory()).toBe('');
+  });
+
+  it('FAILS OPEN on a malformed substitutions payload (a string where an array belongs)', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = { decision: 'allow', substitutions: 'not-an-array', substitutionTier: 'deny' };
+    const r = await call('cat notes.txt');
+    expect(r.block).toBeUndefined();
+  });
+
+  it('does not act on a tier with no matches behind it', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = { decision: 'allow', substitutions: [], substitutionTier: 'deny' };
+    const r = await call('cat notes.txt');
+    expect(r.block).toBeUndefined();
+    expect(drainSubstitutionAdvisory()).toBe('');
+  });
+
+  it('does not act on matches with no tier (an unset tier is not a deny)', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = { decision: 'allow', substitutions: denySub, substitutionTier: null };
+    const r = await call('cat notes.txt');
+    expect(r.block).toBeUndefined();
+    expect(drainSubstitutionAdvisory()).toBe('');
+  });
+
+  it('covers the `shell` tool-name spelling too, not just `bash`', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = { decision: 'allow', substitutions: denySub, substitutionTier: 'deny' };
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'shell',
+      toolCallId: 'subst-shell',
+      input: { command: 'cat notes.txt' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('substitution-gate');
+  });
+
+  it('ignores a non-shell tool entirely', async () => {
+    process.env.PAPERCUSP_AGENT = 'omp';
+    reply = { decision: 'block', matched: [{ resource: 'db:migrate' }] };
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'read',
+      toolCallId: 'subst-read',
+      input: { command: 'psql -c "SELECT 1"' },
+    });
+    expect(r.block).toBeUndefined();
+    expect(checkCalls()).toBe(0);
+  });
+});
