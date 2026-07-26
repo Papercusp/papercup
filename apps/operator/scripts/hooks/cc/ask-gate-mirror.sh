@@ -334,6 +334,72 @@ def question_shaped_ending(text):
     return last.endswith('?')
 
 
+# ── WI-5865: "deferred deliverable" heuristic — the failure the PreToolUse
+# delivery guard CANNOT see. That guard fires when a dialog and a long report
+# collide in ONE turn; this one fires when a turn ends by PROMISING content for
+# a future turn and delivers neither ("next turn I'll put the plan in front of
+# you"). Owner-reported 2026-07-25 after an su deferred a finished plan twice —
+# two round trips for content that already existed.
+#
+# Deliberately narrow, because a bounce costs the fleet a turn: a sentence must
+# carry ALL THREE of (1) a future-TURN marker — "next wake"/"next tick" are
+# EXCLUDED, they are legitimate loop cadence — (2) a first-person future
+# ("I'll" / "I will" / "let me"), and (3) a delivery verb or a deliverable noun.
+# So "next turn I'll re-check the gate" (real future work) does not trip it,
+# while "I'll lay out the options next turn" (withheld content) does. ──────────
+
+_DEFER_FUTURE_TURN_RE = re.compile(
+    r'\bnext\s+(?:turn|message|reply|response)\b|\bfollowing\s+turn\b|\bin\s+my\s+next\s+(?:turn|message|reply|response)\b',
+    re.I,
+)
+_DEFER_FIRST_PERSON_RE = re.compile(r"\b(?:i'?ll|i\s+will|i'?m\s+going\s+to|let\s+me)\b", re.I)
+_DEFER_DELIVERY_VERB_RE = re.compile(
+    r"\b(?:put|present|lay\s+out|show|share|send|give|hand|deliver|walk\s+you\s+through|"
+    r"write\s+up|outline|sketch|circulate)\b",
+    re.I,
+)
+_DEFER_DELIVERABLE_NOUN_RE = re.compile(
+    r"\b(?:plan|report|summary|analysis|options|breakdown|write-?up|proposal|"
+    r"recommendations?|findings|design|spec|route|choices?|comparison|draft|"
+    r"assessment|walkthrough|rundown)\b",
+    re.I,
+)
+
+
+def deferred_deliverable_ending(text):
+    t = (text or '').strip()
+    if not t:
+        return False
+    # Sentence-level so the three signals must actually co-occur in one clause,
+    # not merely somewhere in a long report.
+    for sentence in re.split(r'(?<=[.!?])\s+|\n+', t):
+        s = sentence.strip()
+        if not s or len(s) > 400 or s.startswith('```'):
+            continue
+        if not _DEFER_FUTURE_TURN_RE.search(s):
+            continue
+        if not _DEFER_FIRST_PERSON_RE.search(s):
+            continue
+        if _DEFER_DELIVERY_VERB_RE.search(s) or _DEFER_DELIVERABLE_NOUN_RE.search(s):
+            return True
+    return False
+
+
+DEFERRED_DELIVERABLE_REASON = (
+    "This turn ends by DEFERRING a deliverable to a future turn (\"next turn I'll …\"). "
+    "If you already have that content — a plan, a report, an analysis, a set of options — "
+    "withholding it costs the owner a full round trip for something that existed.\n\n"
+    "The delivery-discipline rule splits the DIALOG from the content; it NEVER licenses "
+    "withholding the content. Anticipating that you will need to ask something is a reason "
+    "to send the content THIS turn and ask NEXT turn — not to send neither. Do this now:\n"
+    "  1. Write the plan/report/analysis out in THIS turn, as plain text.\n"
+    "  2. End the turn.\n"
+    "  3. Ask the question on the NEXT turn, self-contained (AskUserQuestion / coord:escalate).\n\n"
+    "If the content genuinely does not exist yet, do NOT promise it for a later turn: say "
+    "plainly what is still unknown and what you are doing to resolve it, then end."
+)
+
+
 def last_assistant_text(transcript_path):
     """Tail-read the transcript JSONL and return the LAST assistant turn's
     concatenated text blocks (skipping pure tool_use turns with no text),
@@ -454,6 +520,11 @@ call_tool('sessions:ingest-gate-event', {
 transcript_path = first('transcript_path', 'transcriptPath') or ''
 final_text = last_assistant_text(transcript_path)
 
+# WI-5865: computed BEFORE the ask-mirror so a turn that both mirrors an ask AND
+# defers its content still gets bounced — the mirror fires first (the owner's
+# question is never dropped), then we fall through to the deferral bounce.
+deferred = deferred_deliverable_ending(final_text)
+
 ask = parse_ask_tag(final_text)
 if ask:
     escalate_args = {
@@ -467,7 +538,16 @@ if ask:
     # EI-14208: this is the one silent-drop that matters most — an owner-directed
     # <ask> that never reaches the Inbox — so retry once before giving up + logging.
     call_tool('coord:escalate', escalate_args, timeout=5, retries=1, label='stop-ask-escalate')
-    sys.exit(0)  # structured mirror landed — allow the stop.
+    if not deferred:
+        sys.exit(0)  # structured mirror landed — allow the stop.
+
+if deferred:
+    # WI-5865 — the deferral bounce. Ranked ABOVE the question-shaped bounce
+    # because withheld content is the costlier failure: a question at least
+    # reaches the owner, whereas a deferred plan reaches nobody and burns a
+    # round trip. The reason text teaches the fix rather than just refusing.
+    print(json.dumps({'decision': 'block', 'reason': DEFERRED_DELIVERABLE_REASON}))
+    sys.exit(0)
 
 if question_shaped_ending(final_text):
     # inbox-pane-active-scope-dates-filters-2026-07-19 P-401 (D-2/b): steer the

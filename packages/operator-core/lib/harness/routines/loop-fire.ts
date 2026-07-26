@@ -56,6 +56,7 @@ import {
   incrementLoopFireCount as defaultIncrementLoopFireCount,
   readLoopFireCount as defaultReadLoopFireCount,
 } from './loop-dead-man';
+import { ensureInboxWakeArmedForActiveSession as defaultEnsureWakeArmed } from '../../events/await/inbox-wake-arm';
 
 /** The wake-turn text delivered when the loop's row carries no explicit kickoff. Mirrors the
  *  D-006 / B-LOOP-5 convention: each wake, create + SELF-ASSIGN this iteration's work_items
@@ -119,6 +120,10 @@ export interface LoopFireDeps {
   /** EI-10901: read the owner's currently-active BLOCKING awaits (defaults to
    *  listParkedAwaitsForSubscribers, scoped to one owner). */
   listBlockingAwaits?: (targetOwnerId: string) => Promise<BlockingAwaitLike[]>;
+  /** EI-18673998482704275-followup (WI-5862): self-heal seam for a `!reached` miss —
+   *  defaults to ensureInboxWakeArmedForActiveSession (a live adv_sessions row but no
+   *  active standing inbox-wake await ⇒ re-arm it and report true). Injected for tests. */
+  ensureWakeArmed?: typeof defaultEnsureWakeArmed;
 }
 
 export interface LoopFireResult {
@@ -760,14 +765,39 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // through (reconcile-loop-routines.ts) — which retries multiple times across a bounded dwell
   // window before ever concluding the owner is truly gone, and which — unlike this fast path —
   // LOUDLY escalates to the owner (`escalateDeadLoop`) at the moment it actually terminates.
-  const reached = (fan.woken ?? 0) > 0 || (fan.staged ?? 0) > 0;
+  let reached = (fan.woken ?? 0) > 0 || (fan.staged ?? 0) > 0;
+  let fan2 = fan;
+  // WI-5862: a `!reached` miss does NOT necessarily mean the target owner is gone — it can
+  // equally mean a LIVE, tracked session simply has no active standing inbox-wake await right
+  // now (never armed / spuriously cancelled by an abnormal-exit SessionEnd hook — see the
+  // `!reached` doc above re: rate-limit/auth_wall kills). Distinguishing those two cases is
+  // exactly what `ensureInboxWakeArmedForActiveSession` already does (live adv_sessions row +
+  // no active await ⇒ re-arm; anything else ⇒ false, no-op) — reused here as a ONE-TIME
+  // self-heal + retry before concluding "no session" and feeding the failure-streak circuit.
+  // A genuinely dead/gone owner still falls through to today's behavior unchanged (the ensure
+  // call is a fast, targeted PG probe, not a new failure surface).
+  if (!reached) {
+    const ensureWakeArmed = deps.ensureWakeArmed ?? defaultEnsureWakeArmed;
+    const healed = await ensureWakeArmed({ ownerId: input.targetOwnerId, workspaceId: input.workspaceId }).catch(
+      () => false,
+    );
+    if (healed) {
+      fan2 = await wake([input.targetOwnerId], {
+        summary: kickoff,
+        payload: loopMarkerPayload,
+        source: `loop:${input.routineId}`,
+        workspaceId: input.workspaceId,
+      });
+      reached = (fan2.woken ?? 0) > 0 || (fan2.staged ?? 0) > 0;
+    }
+  }
   if (!reached) {
     await recordFire(input.installSlug, input.routineName, 'no-session-now', 'error').catch(() => {});
     return {
       fired: false,
       reason: 'no-session-now',
-      woken: fan.woken,
-      staged: fan.staged,
+      woken: fan2.woken,
+      staged: fan2.staged,
       detail:
         'pinned warm session did not pick up this wake (woken:0, staged:0) — left parked for the ' +
         'stuck-park/quick-retry ladder to retry; only the reachability-vetoed terminal guard ' +
@@ -783,5 +813,5 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // non-delivered wake never consumes a slot. Best-effort; single-flight per loop.
   await incrementFireCount(input.sql ?? undefined, input.routineId).catch(() => {});
 
-  return { fired: true, woken: fan.woken, staged: fan.staged };
+  return { fired: true, woken: fan2.woken, staged: fan2.staged };
 }

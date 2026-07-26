@@ -137,6 +137,81 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     expect(out.reason).toMatch(/Do NOT emit a raw <ask>/i);
   });
 
+  // WI-5865 — the DEFERRED-DELIVERABLE bounce. Owner-reported 2026-07-25: an su
+  // ended two consecutive turns with "next turn I'll put the plan in front of
+  // you" while already holding the finished plan. The PreToolUse delivery guard
+  // is blind to it by construction (a turn that asks nothing never trips it), so
+  // the Stop branch is the only place it can be caught.
+  describe('deferred-deliverable bounce (WI-5865)', () => {
+    const bounced = (text: string) => {
+      const r = run(payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptWith(text) }));
+      expect(r.status).toBe(0);
+      return r.stdout ? JSON.parse(r.stdout) : null;
+    };
+
+    it.each([
+      "Next turn I'll put the plan and the route choice in front of you.",
+      "I'll lay out the full options next turn.",
+      "Investigated all six. I will present the analysis in my next message.",
+      "Let me write up the comparison next turn.",
+    ])('BOUNCES a withheld deliverable: %s', (text) => {
+      const out = bounced(text);
+      expect(out?.decision).toBe('block');
+      expect(out.reason).toMatch(/DEFERRING a deliverable/);
+      // The reason must TEACH the fix (write it now → end → ask next turn),
+      // not merely refuse the stop.
+      expect(out.reason).toMatch(/in THIS turn/i);
+    });
+
+    it.each([
+      // Real future WORK, not withheld content — the loop-cadence false positive
+      // this heuristic exists to avoid.
+      "Next turn I'll re-check whether the deploy landed.",
+      "I'll continue with lane B next turn.",
+      // "next wake" is legitimate armed-loop cadence and must never bounce.
+      "Next wake I'll send the burn-down summary to the leader.",
+      // A deliverable DELIVERED this turn, with no future-turn promise.
+      'Here is the plan: lane A ships first. All done, tests pass.',
+    ])('ALLOWS legitimate future work: %s', (text) => {
+      const r = run(payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptWith(text) }));
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe('');
+    });
+
+    it('the three signals must co-occur in ONE sentence, not merely somewhere in a long report', () => {
+      const r = run(
+        payload({
+          hook_event_name: 'Stop',
+          session_id: 's1',
+          transcript_path: transcriptWith(
+            'Here is the full plan, written out in detail. The migration lands first.\n' +
+              "Next turn I'll start on it.",
+          ),
+        }),
+      );
+      expect(r.stdout).toBe('');
+    });
+
+    it('a deferring turn that ALSO carries an <ask> tag still bounces (mirror fires, then bounce)', () => {
+      const out = bounced('Which route do you want? <ask>{"question":"Which route?"}</ask>\nNext turn I\'ll send the plan.');
+      expect(out?.decision).toBe('block');
+      expect(out.reason).toMatch(/DEFERRING a deliverable/);
+    });
+
+    it('is loop-guarded: stop_hook_active:true → allow, so the bounce can never double-fire', () => {
+      const r = run(
+        payload({
+          hook_event_name: 'Stop',
+          session_id: 's1',
+          transcript_path: transcriptWith("Next turn I'll put the plan in front of you."),
+          stop_hook_active: true,
+        }),
+      );
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe('');
+    });
+  });
+
   it('Stop with a question ending but stop_hook_active:true → loop-guarded, allow (no bounce)', () => {
     const r = run(
       payload({

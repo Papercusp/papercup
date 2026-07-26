@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { spawn } from 'node:child_process';
 import {
   ensureBootstrap,
   getTxPool,
@@ -19,6 +20,31 @@ import {
 import { inWorkspaceTxn } from '../in-workspace-txn';
 import { _resetListenersForTests } from '../workspace-listener';
 import { acquireResourceExclusiveWithWait } from '../resource-acquire-wait';
+
+/** Spawn + reap a throwaway child process so we have a REAL pid guaranteed to
+ *  be dead by the time it resolves — not a made-up large number that might
+ *  coincidentally collide with a live process on the test host. */
+function definitelyDeadPid(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)']);
+    const pid = child.pid;
+    if (!pid) {
+      reject(new Error('spawn returned no pid'));
+      return;
+    }
+    child.on('exit', () => resolve(pid));
+    child.on('error', reject);
+  });
+}
+
+/** Mirrors deploy-deps.ts's parseDeployOwnerPid convention (`<label>:<pid>`)
+ *  for these tests, without depending on that app-layer module. */
+const hostLocalOwnerPidFromLabel = (owner: string): number | null => {
+  const m = /^stale-owner:(\d+)$/.exec(owner);
+  if (!m) return null;
+  const pid = Number(m[1]);
+  return Number.isFinite(pid) && pid > 0 ? pid : null;
+};
 
 async function dbLive(): Promise<boolean> {
   try {
@@ -139,6 +165,127 @@ describe('acquireResourceExclusiveWithWait (drain wait loop)', async () => {
         expect(r.holders.some((h) => h.mode === 'shared')).toBe(true);
       }
     }
+
+    await _resetListenersForTests();
+    await _resetForTests();
+  });
+});
+
+describe('acquireResourceExclusiveWithWait — hostLocalOwnerPid reclaim (EI-18674647773291145 Defect 1)', async () => {
+  const live = await dbLive();
+
+  it.skipIf(!live)('reclaims + retries once when the exclusive holder is a definitively-dead pid', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const deadPid = await definitelyDeadPid();
+    const staleOwner = `stale-owner:${deadPid}`;
+
+    // Simulate a crashed holder: acquire exclusive as `staleOwner`, never release —
+    // exactly the shape a deploy-cli process that died mid-flight leaves behind.
+    const first = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: staleOwner,
+      ownerLabel: 'stale',
+      resource: 'dev-server',
+      reason: 'test',
+      ttlSec: 60,
+      maxWaitSec: 0,
+    });
+    expect(first.ok).toBe(true);
+
+    let reclaimed: { holder: { owner: string }; pid: number } | null = null;
+    const second = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: 'fresh-owner',
+      ownerLabel: 'fresh',
+      resource: 'dev-server',
+      reason: 'deploy',
+      ttlSec: 60,
+      maxWaitSec: 0,
+      hostLocalOwnerPid: hostLocalOwnerPidFromLabel,
+      onStaleHolderReclaimed: (info) => {
+        reclaimed = info;
+      },
+    });
+
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.status).toBe('held');
+    expect(reclaimed).not.toBeNull();
+    expect(reclaimed!.pid).toBe(deadPid);
+    expect(reclaimed!.holder.owner).toBe(staleOwner);
+
+    await _resetListenersForTests();
+    await _resetForTests();
+  });
+
+  it.skipIf(!live)('does NOT reclaim a LIVE holder — coalesce against a live pid stays blocked', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const liveOwner = `stale-owner:${process.pid}`; // this test process is definitely alive
+
+    const first = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: liveOwner,
+      ownerLabel: 'live',
+      resource: 'dev-server',
+      reason: 'test',
+      ttlSec: 60,
+      maxWaitSec: 0,
+    });
+    expect(first.ok).toBe(true);
+
+    let reclaimCalled = false;
+    const second = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: 'fresh-owner',
+      ownerLabel: 'fresh',
+      resource: 'dev-server',
+      reason: 'deploy',
+      ttlSec: 60,
+      maxWaitSec: 0,
+      hostLocalOwnerPid: hostLocalOwnerPidFromLabel,
+      onStaleHolderReclaimed: () => {
+        reclaimCalled = true;
+      },
+    });
+
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.reason).toBe('held_exclusive');
+    expect(reclaimCalled).toBe(false);
+
+    await _resetListenersForTests();
+    await _resetForTests();
+  });
+
+  it.skipIf(!live)('an owner shape hostLocalOwnerPid does not recognize is left alone (no-op, normal conflict)', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const unrelatedOwner = 'plain-owner-no-pid-shape';
+
+    const first = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: unrelatedOwner,
+      ownerLabel: 'unrelated',
+      resource: 'dev-server',
+      reason: 'test',
+      ttlSec: 60,
+      maxWaitSec: 0,
+    });
+    expect(first.ok).toBe(true);
+
+    const second = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: 'fresh-owner',
+      ownerLabel: 'fresh',
+      resource: 'dev-server',
+      reason: 'deploy',
+      ttlSec: 60,
+      maxWaitSec: 0,
+      hostLocalOwnerPid: hostLocalOwnerPidFromLabel, // returns null for this owner shape
+    });
+
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.reason).toBe('held_exclusive');
 
     await _resetListenersForTests();
     await _resetForTests();

@@ -53,6 +53,30 @@ export interface LagMonitorOpts {
   profileDir?: string;
   /** p95 loop-delay (ms) that triggers a capture. Default = the critical band (600ms). */
   profileTriggerP95Ms?: number;
+  /**
+   * WI-5820 SAFETY CAP — the upper edge of the profiling band. A window whose p95
+   * is at or above this is TOO SATURATED to profile safely: capture is skipped
+   * (and logged), not attempted. Default 3000ms.
+   *
+   * WHY THIS EXISTS: captureCpuProfile() drives a node:inspector Profiler session
+   * whose async post/response must complete over the SAME event loop it is
+   * diagnosing. Under a deeply blocked loop the native binding aborts with
+   * `Napi::Error` — a native abort, NOT a catchable JS exception, so the try/catch
+   * inside captureCpuProfile() cannot save the process. That is exactly how this
+   * feature crash-looped the green operator 8x on 2026-07-10 (WI-3797, SIGABRT,
+   * 60-90s downtime per crash) and why it was reverted to opt-in and then never
+   * re-enabled — the profiler is only dangerous in the regime where it is also
+   * least likely to survive long enough to tell us anything.
+   *
+   * WHY 3000ms: every WI-3797 crash landed with lag p99 in the TENS OF SECONDS
+   * during a host-wide CPU crisis (load avg ~1318 on a 128-core box). The band we
+   * actually need attributed is the chronic one — measured over 12h on bg-host
+   * (2026-07-25, post-WI-5471): 2,937 windows, p95Ms p50 274ms / p99 473ms / max
+   * 1143ms, with only 6 windows crossing the 600ms trigger at all. So a 3s cap
+   * excludes NOTHING observed in the band we care about while keeping the
+   * crash regime structurally unreachable. Raise it only with fresh evidence.
+   */
+  profileMaxP95Ms?: number;
   /** How long each capture samples (ms). Default 3000. */
   profileDurationMs?: number;
   /** Minimum gap between captures (ms) — rate-limit so a long burst can't profile-storm. Default 300_000 (5 min). */

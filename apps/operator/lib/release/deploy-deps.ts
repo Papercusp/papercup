@@ -58,7 +58,7 @@ const DEFAULT_DRAIN_SEC = 120;
  * other owner shape (a differently-labelled resource holder, a malformed/legacy
  * row) returns null, which is a no-op for the reclaim path — same as omitting it.
  */
-function parseDeployOwnerPid(owner: string): number | null {
+export function parseDeployOwnerPid(owner: string): number | null {
   const m = /^release-deploy:(\d+):/.exec(owner);
   if (!m) return null;
   const pid = Number(m[1]);

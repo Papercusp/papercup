@@ -34,6 +34,7 @@ function mkDeps(
     | 'takeWallNag'
     | 'renderOwnerDirectives'
     | 'listBlockingAwaits'
+    | 'ensureWakeArmed'
   >
 > {
   return {
@@ -54,6 +55,7 @@ function mkDeps(
     takeWallNag: vi.fn(async () => null) as never,
     renderOwnerDirectives: vi.fn(async () => null) as never,
     listBlockingAwaits: vi.fn(async () => []) as never,
+    ensureWakeArmed: vi.fn(async () => false) as never,
     ...over,
   };
 }
@@ -349,6 +351,73 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     // only that ladder's reachability-vetoed terminal guard may eventually auto-pause it,
     // and it does so LOUDLY (escalateDeadLoop), unlike this fast path.
     expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'error');
+    // No self-heal was possible (default mkDeps ensureWakeArmed returns false — no live
+    // session found), so exactly one wake attempt was made, no retry.
+    expect(deps.wake).toHaveBeenCalledTimes(1);
+  });
+
+  describe('WI-5862: self-heal a missed wake when a live session has no active standing await', () => {
+    it('ensureWakeArmed heals it → the wake is RETRIED and the retry reaching the session counts as fired (no error recorded)', async () => {
+      const wake = vi
+        .fn()
+        // First attempt: nobody was listening (the standing inbox-wake await was missing).
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })
+        // Retry, after ensureWakeArmed re-armed the standing await: now reached.
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: ['coord:inbox-wake:su-pinned'], woken: 1, staged: 0 });
+      const ensureWakeArmed = vi.fn(async () => true);
+      const deps = mkDeps({ wake: wake as never, ensureWakeArmed: ensureWakeArmed as never });
+
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(ensureWakeArmed).toHaveBeenCalledWith({ ownerId: 'su-pinned', workspaceId: 'papercusp-workspace' });
+      expect(wake).toHaveBeenCalledTimes(2);
+      expect(res).toMatchObject({ fired: true, woken: 1, staged: 0 });
+      expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'error');
+      expect(deps.incrementFireCount).toHaveBeenCalledTimes(1); // the healed retry consumes a fire slot
+    });
+
+    it('ensureWakeArmed heals it but the retry STILL misses (genuinely gone) → falls through to no-session-now, exactly one retry (no loop)', async () => {
+      const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
+      const ensureWakeArmed = vi.fn(async () => true);
+      const deps = mkDeps({ wake: wake as never, ensureWakeArmed: ensureWakeArmed as never });
+
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(wake).toHaveBeenCalledTimes(2); // original attempt + exactly one retry, never more
+      expect(res).toMatchObject({ fired: false, reason: 'no-session-now', woken: 0, staged: 0 });
+      expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'error');
+    });
+
+    it('ensureWakeArmed reports false (no live session to heal, or already armed) → no retry, unchanged no-session-now behavior', async () => {
+      const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
+      const ensureWakeArmed = vi.fn(async () => false);
+      const deps = mkDeps({ wake: wake as never, ensureWakeArmed: ensureWakeArmed as never });
+
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(wake).toHaveBeenCalledTimes(1); // no retry attempted
+      expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
+    });
+
+    it('ensureWakeArmed THROWING degrades to the plain no-session-now path (fail-soft, never breaks the fire)', async () => {
+      const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
+      const ensureWakeArmed = vi.fn(async () => {
+        throw new Error('pg unreachable');
+      });
+      const deps = mkDeps({ wake: wake as never, ensureWakeArmed: ensureWakeArmed as never });
+
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(wake).toHaveBeenCalledTimes(1);
+      expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
+    });
+
+    it('a normally-reached wake never consults ensureWakeArmed at all (no self-heal cost on the healthy path)', async () => {
+      const ensureWakeArmed = vi.fn(async () => true);
+      const deps = mkDeps({ ensureWakeArmed: ensureWakeArmed as never }); // default wake ⇒ woken:1
+      await fireLoopWake(baseInput, deps);
+      expect(ensureWakeArmed).not.toHaveBeenCalled();
+    });
   });
 
   it('a staged wake (manual wake-mode / hive pause) counts as reached → queued (attempt, streak preserved)', async () => {

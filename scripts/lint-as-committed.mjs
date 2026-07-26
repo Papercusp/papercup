@@ -1,0 +1,350 @@
+#!/usr/bin/env node
+/**
+ * lint-as-committed.mjs — run a lint the way the RELEASE GATE runs it: the
+ * COMMITTED detector over COMMITTED content, in a tree isolated from your edits.
+ *
+ * WHY THIS EXISTS (a real, observed wrong-instrument failure — EI-18672078222841101)
+ * On 2026-07-26 three agents each "verified" a red `lint:identity-leak` gate leg by
+ * running `npm run lint:no-owner-name-tags` FROM THE WORKING TREE and reported green.
+ * At that moment a peer had an uncommitted refactor of `scripts/check-no-owner-name-tags.mjs`
+ * plus an untracked `scripts/lib/identity-leak-patterns.mjs` sitting on disk. So the
+ * command they ran executed a DIFFERENT DETECTOR than the one the gate runs. They
+ * happened to get the right answer; the method could equally have produced a
+ * confident wrong one — and a confident wrong "the gate leg is green" is worse than
+ * no answer, because it retires the question.
+ *
+ * THE POINT IS NOT "the working tree is dirty". It is that `npm run lint:x` answers a
+ * DIFFERENT QUESTION than the gate asks, and the two questions are indistinguishable
+ * from the command line. The gate runs `npm run <lint>` with cwd set to its own
+ * isolated checkout of a candidate commit (green-checkpoint.ts: `exec('npm', ['run',
+ * <lint>], { cwd: cfg.checkpointRoot })`). BOTH axes come from the commit:
+ *
+ *     axis 1 — the DETECTOR: which version of the lint script executes
+ *     axis 2 — the CONTENT:  which bytes it scans
+ *
+ * A working-tree run gets both axes wrong, silently. This tool gets both right, and
+ * costs ~5 seconds — so the sound check is as cheap as the unsound one. That price
+ * parity is the entire design goal: a correct method nobody reaches for because it is
+ * expensive loses every time to a fast wrong one.
+ *
+ * WHY NOT THE OBVIOUS ALTERNATIVES
+ *  - `git stash` then run: FORBIDDEN here and genuinely dangerous — this checkout is
+ *    edited concurrently by the whole fleet and everyone's work sits unstaged, so a
+ *    stash irrecoverably destroys peers' in-flight edits (see CLAUDE.md).
+ *  - `git worktree`: the shared tree stays on `staging` by policy, and a worktree
+ *    would still need its own node_modules.
+ *  - Extracting only the lint script and running it against the working tree: fixes
+ *    axis 1 and leaves axis 2 wrong. A half-fidelity check that PRESENTS as full is
+ *    the same class of bug this tool exists to remove, so it is deliberately not an
+ *    option here.
+ *  - Reading `papercup-checkpoint/`: that is the gate's own tree — it is reset and
+ *    cleaned out from under you on every run, and writing to it poisons the gate.
+ *  - `git archive <ref> | tar -x` into a tmpdir: this was the first implementation and
+ *    it DOES NOT WORK, for a reason worth recording. A tar extraction is not a git
+ *    repository, and most of these lints enumerate their inputs with `git ls-files`
+ *    (that is how they scan tracked content rather than node_modules). Every one of
+ *    them died with "fatal: not a git repository". The gate's tree is a real CHECKOUT,
+ *    so faithfully reproducing it requires a real repo, not just the right bytes.
+ *
+ * So: `git clone --local --shared --no-checkout` + `checkout --detach <ref>` into a
+ * tmpdir. `--local --shared` means the clone borrows the source object store via
+ * alternates instead of copying it, so this costs ~3s and almost no disk beyond the
+ * checked-out files, and it touches the shared checkout only for reads. node_modules
+ * is symlinked in (never copied) so nothing is installed and nothing is mutated.
+ *
+ * The alternates borrow is safe for a run of this length but is a borrow: if the
+ * source repo pruned the ref's objects mid-run the clone would break. It cannot
+ * silently corrupt anything — git errors loudly — and the tree is disposable.
+ *
+ * USAGE
+ *   npm run lint:as-committed -- lint:no-owner-name-tags
+ *   npm run lint:as-committed -- lint:no-owner-name-tags lint:no-identity-literals
+ *   npm run lint:as-committed -- lint:tsc --ref=origin/staging
+ *   npm run lint:as-committed -- lint:no-box-identity --keep   # keep the tree to poke at
+ *
+ * FAIL-CLOSED BEHAVIOUR (the property that makes a green from this tool mean anything)
+ *  - A script that does not exist AT THE REF is a hard FAILURE, never a skip. "It only
+ *    exists in your working tree" is precisely the finding worth surfacing, and a tool
+ *    that skipped it would report green for a lint it never ran.
+ *  - The overall exit code is nonzero if ANY requested lint failed or could not run.
+ *  - Detector drift (your copy of the lint script differs from the ref's) is reported
+ *    explicitly, so you can see WHY a working-tree run disagreed with this one.
+ */
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+/* ─────────────────────────── pure helpers (unit-tested) ─────────────────────────── */
+
+/**
+ * Parse argv. Script names are positional; everything else is a flag.
+ *
+ * The `lint:` prefix guard is not pedantry: this tool runs a command inside an
+ * extracted tree with symlinked node_modules, which is a fine place to run a
+ * read-only scanner and a bad place to run a build/migrate/deploy script. Requiring
+ * `--any` makes the blast radius an explicit choice rather than a typo away.
+ */
+export function parseArgs(argv) {
+  const scripts = [];
+  let ref = 'HEAD';
+  let keep = false;
+  let any = false;
+  const unknown = [];
+
+  for (const arg of argv) {
+    if (arg === '--keep') keep = true;
+    else if (arg === '--any') any = true;
+    else if (arg.startsWith('--ref=')) ref = arg.slice('--ref='.length);
+    else if (arg === '--help' || arg === '-h') return { help: true, scripts: [], ref, keep, any, unknown };
+    else if (arg.startsWith('-')) unknown.push(arg);
+    else scripts.push(arg);
+  }
+
+  const nonLint = any ? [] : scripts.filter((s) => !s.startsWith('lint:'));
+  return { help: false, scripts, ref, keep, any, unknown, nonLint };
+}
+
+/**
+ * Pull the detector file paths out of an npm script command, so we can report whether
+ * YOUR copy of the lint differs from the ref's.
+ *
+ * Matches repo-relative .mjs/.ts/.js paths (`node scripts/check-x.mjs`,
+ * `tsx apps/operator/scripts/check-y.mjs`, and multi-file commands like
+ * `node scripts/test-files.mjs a.test.ts b.test.ts`). Intentionally ignores bare
+ * binaries (`knip`, `vitest`) — those come from node_modules, which this tool does not
+ * and cannot version against a git ref, and pretending otherwise would be a lie.
+ */
+export function detectorPathsFromCommand(command) {
+  if (typeof command !== 'string') return [];
+  const out = [];
+  const re = /(?:^|[\s'"=])((?:[\w.-]+\/)+[\w.-]+\.(?:mjs|cjs|ts|tsx|js))(?=$|[\s'"])/g;
+  let m;
+  while ((m = re.exec(command)) !== null) {
+    const p = m[1];
+    if (!out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Overall verdict. Nonzero if ANY lint failed OR could not be run.
+ *
+ * `missing` (absent at the ref) and `error` (the run itself blew up) MUST count as
+ * failures. If they were skips, this tool would print a green summary for a lint it
+ * never executed — reproducing, in a tool meant to prevent it, the exact
+ * "confidently green without having asked the question" bug it was built for.
+ */
+export function summarize(results) {
+  const failed = results.filter((r) => r.status !== 'pass');
+  const lines = results.map((r) => {
+    const mark = r.status === 'pass' ? 'PASS' : r.status === 'fail' ? 'FAIL' : r.status === 'missing' ? 'MISSING@REF' : 'ERROR';
+    return `  ${mark.padEnd(11)} ${r.script}${r.note ? `  — ${r.note}` : ''}`;
+  });
+  return { exitCode: failed.length > 0 ? 1 : 0, failedCount: failed.length, lines };
+}
+
+/* ─────────────────────────────────── the CLI ─────────────────────────────────── */
+
+const USAGE = `
+lint-as-committed — run a lint as the release gate runs it (committed detector, committed content)
+
+  npm run lint:as-committed -- <lint:script> [<lint:script>...] [--ref=<git-ref>] [--keep] [--any]
+
+  --ref=<git-ref>   which commit to test (default HEAD). e.g. --ref=origin/staging
+  --keep            do not delete the extracted tree (path is printed)
+  --any             allow a non-'lint:' npm script (blast-radius opt-in)
+
+Why: 'npm run lint:x' runs YOUR detector over YOUR uncommitted content. The gate runs
+the COMMITTED detector over COMMITTED content. Those are different questions.
+`.trimStart();
+
+function git(args, cwd) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).trim();
+}
+
+/** Bytes of a path at a ref, or null if the path does not exist there. */
+function showAtRef(repoRoot, ref, path) {
+  try {
+    return execFileSync('git', ['show', `${ref}:${path}`], { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+
+  if (args.help || args.scripts.length === 0) {
+    process.stdout.write(USAGE);
+    process.exit(args.help ? 0 : 2);
+  }
+  if (args.unknown.length > 0) {
+    console.error(`lint-as-committed: unknown flag(s): ${args.unknown.join(', ')}\n`);
+    process.stdout.write(USAGE);
+    process.exit(2);
+  }
+  if (args.nonLint.length > 0) {
+    console.error(
+      `lint-as-committed: refusing to run non-lint script(s): ${args.nonLint.join(', ')}\n` +
+        `  This tool extracts a tree and runs a command in it — safe for a read-only scanner,\n` +
+        `  not for a build/migrate/deploy script. Pass --any if you really mean it.\n`,
+    );
+    process.exit(2);
+  }
+
+  let repoRoot;
+  try {
+    repoRoot = git(['rev-parse', '--show-toplevel'], process.cwd());
+  } catch {
+    console.error('lint-as-committed: not inside a git repository.');
+    process.exit(2);
+  }
+
+  let sha;
+  try {
+    sha = git(['rev-parse', '--verify', `${args.ref}^{commit}`], repoRoot);
+  } catch {
+    console.error(`lint-as-committed: cannot resolve ref '${args.ref}'.`);
+    process.exit(2);
+  }
+
+  const short = sha.slice(0, 10);
+  console.log(`lint-as-committed: ref ${args.ref} = ${short}`);
+  console.log(`  repo: ${repoRoot}`);
+
+  // The one thing worth saying out loud up front: this is NOT what you get from a
+  // plain `npm run lint:x`, and the difference is the whole point.
+  let dirtyTracked = 0;
+  try {
+    dirtyTracked = git(['diff', '--name-only', sha], repoRoot).split('\n').filter(Boolean).length;
+  } catch {
+    /* non-fatal */
+  }
+  if (dirtyTracked > 0) {
+    console.log(`  note: your working tree differs from this ref in ${dirtyTracked} tracked file(s) — those edits are NOT under test here.`);
+  }
+
+  const workRoot = mkdtempSync(join(tmpdir(), `papercusp-lint-as-committed-${short}-`));
+  let results = [];
+
+  try {
+    // ── materialise the committed content as a REAL git repo ──
+    // It must be a real repo, not just the right bytes: these lints enumerate their
+    // inputs with `git ls-files`. See the header for the archive/tar attempt that died
+    // on exactly this.
+    const t0 = Date.now();
+    const clone = spawnSync('git', ['clone', '--local', '--shared', '--no-checkout', '--quiet', repoRoot, workRoot], {
+      encoding: 'utf8',
+    });
+    if (clone.status !== 0) {
+      console.error(`lint-as-committed: failed to clone ${repoRoot}:\n${clone.stderr || clone.stdout}`);
+      process.exit(2);
+    }
+    const checkout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', sha], {
+      cwd: workRoot,
+      encoding: 'utf8',
+    });
+    if (checkout.status !== 0) {
+      console.error(`lint-as-committed: failed to check out ${short}:\n${checkout.stderr || checkout.stdout}`);
+      process.exit(2);
+    }
+    console.log(`  materialised committed tree in ${((Date.now() - t0) / 1000).toFixed(1)}s -> ${workRoot}`);
+
+    // ── symlink (never copy, never install) every node_modules the workspaces need ──
+    // These are the ONE thing not versioned against the ref, and that is stated in the
+    // header rather than papered over: a lint whose behaviour depends on a dependency
+    // version is not made reproducible by this tool.
+    let linked = 0;
+    const nmDirs = spawnSync(
+      'bash',
+      ['-c', `find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*' 2>/dev/null`],
+      { cwd: repoRoot, encoding: 'utf8' },
+    );
+    for (const rel of (nmDirs.stdout || '').split('\n').map((s) => s.replace(/^\.\//, '').trim()).filter(Boolean)) {
+      const target = join(repoRoot, rel);
+      const linkPath = join(workRoot, rel);
+      if (existsSync(linkPath)) continue;
+      try {
+        mkdirSync(dirname(linkPath), { recursive: true });
+        symlinkSync(target, linkPath, 'dir');
+        linked += 1;
+      } catch {
+        /* a workspace absent at this ref simply has nowhere to link — fine */
+      }
+    }
+    console.log(`  linked ${linked} node_modules dir(s) (not installed, not copied)`);
+
+    // ── read the COMMITTED package.json: the script DEFINITION is versioned too ──
+    let refScripts = {};
+    try {
+      refScripts = JSON.parse(readFileSync(join(workRoot, 'package.json'), 'utf8')).scripts ?? {};
+    } catch (err) {
+      console.error(`lint-as-committed: cannot read package.json at ${short}: ${err.message}`);
+      process.exit(2);
+    }
+
+    for (const script of args.scripts) {
+      const command = refScripts[script];
+      console.log(`\n─── ${script} ───`);
+
+      if (!command) {
+        console.log(`  MISSING at ${short}: this npm script does not exist in the committed package.json.`);
+        console.log(`  That is a real finding, not a skip — a working-tree run of it tests something the gate cannot run.`);
+        results.push({ script, status: 'missing', note: `not in package.json at ${short}` });
+        continue;
+      }
+      console.log(`  committed command: ${command}`);
+
+      // Detector drift: WHY a working-tree run may disagree with this one.
+      for (const p of detectorPathsFromCommand(command)) {
+        const atRef = showAtRef(repoRoot, sha, p);
+        const local = existsSync(join(repoRoot, p)) ? readFileSync(join(repoRoot, p), 'utf8') : null;
+        if (atRef === null) console.log(`  detector ${p}: absent at ${short} (untracked locally?)`);
+        else if (local === null) console.log(`  detector ${p}: present at ${short}, absent in your working tree`);
+        else if (local !== atRef) console.log(`  detector ${p}: DIFFERS from your working tree — a local run executes different code`);
+      }
+
+      const run = spawnSync('npm', ['run', script], {
+        cwd: workRoot,
+        encoding: 'utf8',
+        stdio: 'inherit',
+        env: { ...process.env, npm_config_workspaces: undefined },
+      });
+
+      if (run.error) {
+        results.push({ script, status: 'error', note: run.error.message });
+      } else if (run.status === 0) {
+        results.push({ script, status: 'pass' });
+      } else {
+        results.push({ script, status: 'fail', note: `exit ${run.status}` });
+      }
+    }
+  } finally {
+    if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot}`);
+    else rmSync(workRoot, { recursive: true, force: true });
+  }
+
+  const { exitCode, failedCount, lines } = summarize(results);
+  console.log(`\n═══ as committed at ${short} ═══`);
+  for (const line of lines) console.log(line);
+  console.log(
+    failedCount === 0
+      ? `\nAll ${results.length} lint(s) pass AS COMMITTED at ${short}.`
+      : `\n${failedCount} of ${results.length} lint(s) did NOT pass as committed at ${short}.`,
+  );
+  process.exit(exitCode);
+}
+
+/**
+ * Only run when invoked directly. This module is imported by its unit test for the
+ * pure exports above, and an import must never extract a tree or spawn npm. Keyed on
+ * the process entry basename (not `import.meta.url`, which a bundler rewrites — see
+ * the long note in check-conflict-markers.mjs for that landmine).
+ */
+export const isDirectCliInvocation = (entryPath = process.argv[1]) =>
+  typeof entryPath === 'string' && /(?:^|[\\/])lint-as-committed\.mjs$/.test(entryPath);
+
+if (isDirectCliInvocation()) {
+  main();
+}
