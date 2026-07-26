@@ -1765,6 +1765,11 @@ async function escalateCursedPlacement(unitId: string, harness: string | null, f
         `reaching a terminal state. Per the cursed-item circuit breaker (mug-autonomous-execution B-09 / P-021) ` +
         `the Mug has STOPPED auto-re-placing it. Investigate it (ill-specified? wedging cups?) then re-place, ` +
         `deprecate, or split it. Re-placing clears the breaker when it next completes.`,
+      // WI-5848 (sweep of EI-18668025239634541's class): `summary` embeds the live
+      // `${fails}` count, which could vary if this ever fires more than once for
+      // the SAME curse episode (e.g. a process restart racing a new attempt). Key
+      // on the stable unitId so any such re-fire coalesces instead of leaking.
+      meta: { subjectSignature: `pot-placement-watchdog:cursed:${unitId}` },
     });
     return rec.msg_id;
   } catch (e) {

@@ -162,6 +162,15 @@ export const defaultSteeringChurnEscalator: SteeringChurnEscalator = async ({
       `Queens. If this is sustained, it is the evidence that gates building the single-steerer lease ` +
       `(P-011, revisit condition a). Investigate which Swarms are contending this item; consider pinning ` +
       `it (work_items:co_locate) or building the lease.`,
+    // WI-5848 (sweep of EI-18668025239634541's class): the caller's own DB-backed
+    // steering_churn_escalations cooldown only RATE-LIMITS how often this fires — it
+    // does not prevent a NEW permanently-open row per cooldown period for the SAME
+    // feature, because the summary above embeds live counts (distinctWriters,
+    // churnCount, mins) that vary every time. Key the dedup on the stable
+    // (workspace, harness, feature) identity so repeated churn on the SAME item
+    // coalesces onto one row (bumping repeatCount) instead of leaking a new one
+    // every time the cooldown lapses and churn is still ongoing.
+    meta: { subjectSignature: `steering-churn:${workspaceId}:${harnessSlug}:${featureId}` },
   });
 };
 

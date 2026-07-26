@@ -4,8 +4,17 @@
  * one writer is no churn (the N=1 reality today); sustained ping-pong between
  * different writers (>= threshold flips) is thrash.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { detectSteeringChurn, STEERING_CHURN_THRESHOLD, type SteerEvent } from './steering-churn';
+
+// WI-5848 (sweep of EI-18668025239634541's class): mocked so the recurrence guard
+// below can assert on the `meta.subjectSignature` (conditionKey)
+// `defaultSteeringChurnEscalator` passes — without it, every escalation embeds a
+// live churn count/writer count/duration in its summary, so dedup falls back to a
+// prose hash that never repeats and leaks a fresh permanently-open row per firing.
+vi.mock('./agent-tools/coordination/escalations', () => ({
+  openEscalation: vi.fn(async () => undefined),
+}));
 
 const ev = (writer: string, ts: number): SteerEvent => ({ writer, ts, featureOrder: ts });
 
@@ -69,5 +78,72 @@ describe('detectSteeringChurn', () => {
 
   it('the default flip threshold is 3', () => {
     expect(STEERING_CHURN_THRESHOLD).toBe(3);
+  });
+});
+
+describe('defaultSteeringChurnEscalator — stable conditionKey (WI-5848)', () => {
+  const resultBase = {
+    distinctWriters: 2,
+    writers: ['a', 'b'],
+    steerCount: 4,
+  };
+
+  it('passes an IDENTICAL non-empty conditionKey across two calls with DIFFERENT churn counts/duration', async () => {
+    const { openEscalation } = await import('./agent-tools/coordination/escalations');
+    const { defaultSteeringChurnEscalator } = await import('./steering-churn');
+    const mockOpenEscalation = vi.mocked(openEscalation);
+    mockOpenEscalation.mockClear();
+
+    await defaultSteeringChurnEscalator({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      featureId: 'F-1',
+      result: { ...resultBase, churnCount: 3, trip: true },
+      windowMs: 5 * 60_000,
+    });
+    await defaultSteeringChurnEscalator({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      featureId: 'F-1',
+      result: { ...resultBase, churnCount: 9, trip: true },
+      windowMs: 47 * 60_000,
+    });
+
+    expect(mockOpenEscalation).toHaveBeenCalledTimes(2);
+    const key1 = (mockOpenEscalation.mock.calls[0]?.[1] as { meta?: { subjectSignature?: string } })?.meta
+      ?.subjectSignature;
+    const key2 = (mockOpenEscalation.mock.calls[1]?.[1] as { meta?: { subjectSignature?: string } })?.meta
+      ?.subjectSignature;
+    expect(key1).toBeTruthy();
+    expect(key1).toBe(key2); // THE regression this guards: must NOT vary with churnCount/writers/windowMs.
+    expect(key1).toBe('steering-churn:ws-1:papercusp:F-1');
+  });
+
+  it('keys the conditionKey on the (workspace, harness, feature) identity, distinguishing different items', async () => {
+    const { openEscalation } = await import('./agent-tools/coordination/escalations');
+    const { defaultSteeringChurnEscalator } = await import('./steering-churn');
+    const mockOpenEscalation = vi.mocked(openEscalation);
+    mockOpenEscalation.mockClear();
+
+    await defaultSteeringChurnEscalator({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      featureId: 'F-1',
+      result: { ...resultBase, churnCount: 3, trip: true },
+      windowMs: 5 * 60_000,
+    });
+    await defaultSteeringChurnEscalator({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      featureId: 'F-2',
+      result: { ...resultBase, churnCount: 3, trip: true },
+      windowMs: 5 * 60_000,
+    });
+
+    const keyA = (mockOpenEscalation.mock.calls[0]?.[1] as { meta?: { subjectSignature?: string } })?.meta
+      ?.subjectSignature;
+    const keyB = (mockOpenEscalation.mock.calls[1]?.[1] as { meta?: { subjectSignature?: string } })?.meta
+      ?.subjectSignature;
+    expect(keyA).not.toBe(keyB);
   });
 });
