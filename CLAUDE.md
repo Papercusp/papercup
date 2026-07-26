@@ -127,9 +127,13 @@ orchestrator run-loop + orchestrator-spawn plugin
 pane is the only chat surface), the legacy per-slug harness dashboard
 (`_retired/harness-dashboard/` — `/harness/$slug` shell/pages/Real-panels; the
 design-system primitives AND the dock engine in `apps/operator/app/harness/`
-stay LIVE — `/adv`+`/workbench` are built on them). `lint:no-retired` guards
-re-imports. (The Mug/Kettle left-rail tabs, retired under WI-4778, were
-RESTORED to the LeftSidebar by owner ask 2026-07-14 — they are live again.)
+stay LIVE — `/adv`+`/workbench` are built on them), and the chat sidebar's
+human Inbox face (`_retired/inbox-pane/` — `InboxPane.tsx`; retired
+2026-07-26, `hud-consolidation-2026-07-26` D-001 — every ask it surfaced now
+opens as a HUD conversation instead; the data layer, `use-inbox-pending.ts`,
+stays live). `lint:no-retired` guards re-imports. (The Mug/Kettle left-rail
+tabs, retired under WI-4778, were RESTORED to the LeftSidebar by owner ask
+2026-07-14 — they are live again.)
 
 Full table with restore points + the retiring-a-surface convention:
 [repo-conventions § retired surfaces](/internal/docs/system/repo-conventions).

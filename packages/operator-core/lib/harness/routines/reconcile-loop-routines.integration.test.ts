@@ -86,11 +86,18 @@ async function seedLifecycle(ownerId: string, summary: string, atMs: number): Pr
     VALUES (${WS}, ${ownerId}, 'lifecycle', ${summary}, ${new Date(atMs)})`;
 }
 
-/** Seed/refresh the session's genuine-activity timestamp (presence-v2 last_active_at). */
+/** Seed/refresh the session's genuine-activity timestamp (presence-v2 last_active_at).
+ *  WI-5964: coord_presence_pkey is PRIMARY KEY(owner_id) ONLY — globally unique,
+ *  not scoped by workspace_id — so a bare INSERT can collide with a same-named
+ *  literal owner_id seeded by another concurrent *.integration.test.ts process on
+ *  this shared fixture. Upsert so this test's own values always win. */
 async function seedPresence(ownerId: string, lastActiveMs: number): Promise<void> {
   await sql`
     INSERT INTO harness_shared.coord_presence (owner_id, workspace_id, last_active_at)
-    VALUES (${ownerId}, ${WS}, ${new Date(lastActiveMs)})`;
+    VALUES (${ownerId}, ${WS}, ${new Date(lastActiveMs)})
+    ON CONFLICT (owner_id) DO UPDATE SET
+      workspace_id = EXCLUDED.workspace_id,
+      last_active_at = EXCLUDED.last_active_at`;
 }
 
 /** Read a routine's parked-ness + next_fire_at. Parked-ness is a SQL boolean because

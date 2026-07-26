@@ -1572,6 +1572,57 @@ const post = defineTool({
     const drainMode = modeRaw === 'drain';
     const autoMode = body.auto === true || drainMode;
 
+    // EI-11110 / WI-5976 (text-vs-registry authorization contradiction): autoMode/
+    // drainMode used to be baked ONLY as prose (the seeded kickoff text below) and
+    // into the launch-time instructionPrecedence SNAPSHOT (source:'bootstrap-su',
+    // computed from these same local booleans) — never written to the actual mode
+    // registry (harness_shared.agent_modes) that mode:set/coord:orient read. A
+    // fresh session's FIRST prompt would assert "AUTO mode is ON" with an
+    // authoritative-looking watermarked precedence block, while the very next
+    // coord:orient call (source:'coord:orient', reading the real registry) reported
+    // NO active modes and 'confirm-before-execution' — a live, reproduced instance
+    // of the forged-authority shape WI-5976 describes, not merely a hypothetical.
+    // Fix: persist the SAME decision into the registry via the identical write path
+    // `mode:set` uses, so every later live read agrees with the prose from turn 1.
+    // Best-effort + awaited (not fire-and-forget) — a registry hiccup must never
+    // fail the launch, but we do want it to have landed before the agent's first
+    // coord:orient, which can happen within seconds of boot.
+    if (autoMode) {
+      try {
+        const { setMode } = await import('../../../modes/store');
+        const { refreshControlAnchorAfterMutation } = await import(
+          '../../../agent-tools/coordination/control-anchor'
+        );
+        const reason = drainMode
+          ? 'fleet launch: --mode=drain (DRAIN implies AUTO)'
+          : fleetPin.fleetSlug
+            ? 'fleet launch: --auto'
+            : 'launch: --auto';
+        for (const modeId of drainMode ? ['auto', 'drain'] : ['auto']) {
+          await setMode({
+            workspaceId: workspace,
+            ownerId: sid,
+            modeId,
+            enabled: true,
+            reason,
+            setBy: sid,
+          });
+        }
+        await refreshControlAnchorAfterMutation({
+          ownerId: sid,
+          workspaceId: workspace,
+          origin: 'system',
+          actorId: sid,
+          source: 'mode:set',
+        });
+      } catch (e: any) {
+        process.stderr.write(
+          `[bootstrap-su] launch-time mode-registry sync failed (non-fatal — the kickoff prose ` +
+            `may now disagree with the registry until the agent self-registers via mode:set): ${e?.message}\n`,
+        );
+      }
+    }
+
     // solo-launch-provenance: identity-shaped only — refuse garbage loudly rather
     // than bake it into a system prompt / standing fact.
     const launchedByRaw = body.launched_by?.trim() || null;

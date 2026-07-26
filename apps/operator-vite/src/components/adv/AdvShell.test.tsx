@@ -195,11 +195,19 @@ vi.mock('@/lib/hotkeys', () => ({
   },
 }));
 
-// cmdk (the "More" menu, D-001) scrolls the active item into view, which
-// jsdom does not implement (CommandPalette.test.tsx carries the same shim).
+// cmdk (the "More" menu, D-001) scrolls the active item into view and touches
+// ResizeObserver, neither of which jsdom implements — same shim as
+// CommandPalette.test.tsx.
 beforeAll(() => {
   if (!Element.prototype.scrollIntoView) {
     Element.prototype.scrollIntoView = vi.fn();
+  }
+  if (typeof globalThis.ResizeObserver === 'undefined') {
+    globalThis.ResizeObserver = class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    } as unknown as typeof ResizeObserver;
   }
 });
 
@@ -343,12 +351,13 @@ describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, rece
   it('groups the secondary tabs under labelled headings', async () => {
     await renderShell();
     fireEvent.click(screen.getByRole('button', { name: 'More sections' }));
-    expect(await screen.findByText('Build')).toBeTruthy();
-    expect(screen.getByText('Work')).toBeTruthy();
-    expect(screen.getByText('Insights')).toBeTruthy();
-    expect(screen.getByText('System')).toBeTruthy();
-    expect(screen.getByText('Git')).toBeTruthy();
-    expect(screen.getByText('Settings')).toBeTruthy();
+    await screen.findByText('Git'); // wait for the menu to mount
+    const headings = Array.from(document.querySelectorAll('[cmdk-group-heading]')).map((el) => el.textContent);
+    expect(headings).toEqual(['Build', 'Work', 'Insights', 'System']);
+    const items = Array.from(document.querySelectorAll('[cmdk-item]')).map((el) => el.textContent?.trim());
+    expect(items).toEqual(
+      expect.arrayContaining(['Create', 'Git', 'Tests', 'Docs', 'Working', 'Conversations', 'Calendar', 'Insights', 'Learning', 'Evaluation', 'Health', 'Frames', 'Settings']),
+    );
   });
 
   it('is type-to-filter searchable: typing narrows to matching sections', async () => {

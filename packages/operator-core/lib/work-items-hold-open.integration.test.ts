@@ -126,9 +126,14 @@ async function holdOf(featureId: string): Promise<{ by: string | null; claimHold
 }
 
 async function seedPresence(ownerId: string, beatAgoMin: number): Promise<void> {
+  // WI-5964: coord_presence_pkey is PRIMARY KEY(owner_id) ONLY — globally unique,
+  // not scoped by workspace_id — so a bare INSERT can collide with a same-named
+  // literal owner_id seeded by another concurrent *.integration.test.ts process on
+  // this shared fixture. Upsert so this test's own values always win.
   await sql`
     INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at)
-    VALUES (${ownerId}, now() - make_interval(mins => ${beatAgoMin}))`;
+    VALUES (${ownerId}, now() - make_interval(mins => ${beatAgoMin}))
+    ON CONFLICT (owner_id) DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at`;
 }
 
 describe('WI-4531 — a hold-open must not outlive its holder', () => {

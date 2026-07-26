@@ -182,7 +182,10 @@ export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; ta
 
 if (process.env.NODE_ENV !== 'production') {
   const grouped = new Set(SECONDARY_TAB_GROUPS.flatMap((g) => g.tabIds));
-  const missing = ADV_TAB_IDS.filter((id) => !PRIMARY_ADV_TAB_IDS.has(id) && !grouped.has(id));
+  // ADV_TABS, not ADV_TAB_IDS: 'prs' is a valid AdvTabId (its own redirect
+  // route) but deliberately excluded from ADV_TABS — it was never a strip tab
+  // and isn't a More-menu candidate either.
+  const missing = ADV_TABS.map((t) => t.id).filter((id) => !PRIMARY_ADV_TAB_IDS.has(id) && !grouped.has(id));
   if (missing.length > 0) {
     // eslint-disable-next-line no-console
     console.error(`AdvShell: SECONDARY_TAB_GROUPS is missing tab id(s): ${missing.join(', ')} — they would be unreachable (no strip entry, no More-menu entry).`);

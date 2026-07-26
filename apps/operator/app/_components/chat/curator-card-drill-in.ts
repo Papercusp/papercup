@@ -1,10 +1,17 @@
 /**
  * curator-card-drill-in — map a curator/report card's opaque row `ref` onto the
- * inbox selection it should open (deterministic-status-cards-2026-07-17
- * P-003/D-004; drill-in resolver rework WI-5342). Pure + unit-testable; the
- * chat (OperatorChatSidebar.handleCardDrillIn) opens the inbox pane
- * (`?opcv=inbox`), switches the filter (`?opci`), and sets the selection
- * (`?opcis=<id>`) from this.
+ * attention item it should select (deterministic-status-cards-2026-07-17
+ * P-003/D-004; drill-in resolver rework WI-5342). Pure + unit-testable — this
+ * is the RESOLUTION half only (ref -> which live item, `selId`), unchanged by
+ * WHERE the caller opens it.
+ *
+ * hud-consolidation-2026-07-26 P-003/P-004: the Inbox pane this used to open
+ * (`?opcv=inbox` + `?opci` filter + `?opcis=<id>` selection) is retired
+ * (`_retired/inbox-pane/`). The chat (OperatorChatSidebar.handleCardDrillIn)
+ * now looks up the matched item's `ownerAgentId` and navigates to the HUD tab
+ * instead — `/adv?tab=hud&hudsession=<ownerAgentId>` when one exists, or just
+ * `/adv?tab=hud` for an ownerless ask (it still renders there, in the HUD's
+ * unattributed lane — hud-consolidation P-002) or a ref with no live match.
  *
  * The curator's refs (fleet-signals.ts) and the inbox item ids (attention
  * adapters) are DIFFERENT identifier spaces:

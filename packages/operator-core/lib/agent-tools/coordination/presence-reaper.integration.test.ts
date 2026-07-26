@@ -20,12 +20,21 @@ let admin: postgres.Sql;
 
 const TTL = 60 * 60 * 1000; // 1h for the test
 
-/** Seed a presence row with an explicit heartbeat age (seconds in the past). */
+/** Seed a presence row with an explicit heartbeat age (seconds in the past).
+ *  WI-5964: coord_presence_pkey is PRIMARY KEY(owner_id) ONLY — globally unique,
+ *  not scoped by workspace_id — so a bare INSERT can collide with a same-named
+ *  literal owner_id seeded by another concurrent *.integration.test.ts process on
+ *  this shared fixture. Upsert so this test's own values always win. */
 async function seedPresence(ownerId: string, ageSeconds: number): Promise<void> {
   await admin`
     INSERT INTO harness_shared.coord_presence (owner_id, owner_label, workspace_id, source, heartbeat_at)
     VALUES (${ownerId}, ${ownerId}, 'default', 'static-client',
             now() - ${`${ageSeconds} seconds`}::interval)
+    ON CONFLICT (owner_id) DO UPDATE SET
+      owner_label = EXCLUDED.owner_label,
+      workspace_id = EXCLUDED.workspace_id,
+      source = EXCLUDED.source,
+      heartbeat_at = EXCLUDED.heartbeat_at
   `;
 }
 

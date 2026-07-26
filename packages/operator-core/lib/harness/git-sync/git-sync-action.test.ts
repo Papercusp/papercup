@@ -39,6 +39,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { GitSyncOutcome } from './run-git-sync';
+// WI-5960: NOT mocked — the real implementation, so the invariant test below
+// pins the ACTUAL cross-module agreement (a mock would just assert against
+// itself and could drift silently alongside a real-code regression).
+import { resourceLockDomain, workspaceScopedLockDomain } from '../../agent-tools/locks/coordination-domain';
 
 // --- mocks (factories only close over these; nothing dereferenced at hoist time) --
 const tryAcquireResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));

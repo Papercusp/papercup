@@ -29,7 +29,11 @@ async function truncateAll(): Promise<void> {
 
 /** Seed a coord_presence row WITH the mig-277 columns (pot_slug / last_active_at
  *  / agent_role) — the assignments fixture's seedPresence predates them. (pot_slug
- *  is the D-007 pot-rename successor to the mig-277 hive_slug hive-scope key.) */
+ *  is the D-007 pot-rename successor to the mig-277 hive_slug hive-scope key.)
+ *  WI-5964: coord_presence_pkey is PRIMARY KEY(owner_id) ONLY — globally unique,
+ *  not scoped by workspace_id — so a bare INSERT can collide with a same-named
+ *  literal owner_id seeded by another concurrent *.integration.test.ts process on
+ *  this shared fixture. Upsert so this test's own values always win. */
 async function seedPresence(
   ownerId: string,
   opts: {
@@ -52,6 +56,16 @@ async function seedPresence(
       ${opts.agentRole ?? null},
       ${opts.potSlug === undefined ? HIVE : opts.potSlug}
     )
+    ON CONFLICT (owner_id) DO UPDATE SET
+      owner_label = EXCLUDED.owner_label,
+      workspace_id = EXCLUDED.workspace_id,
+      source = EXCLUDED.source,
+      intent = EXCLUDED.intent,
+      current_plan_slug = EXCLUDED.current_plan_slug,
+      heartbeat_at = EXCLUDED.heartbeat_at,
+      last_active_at = EXCLUDED.last_active_at,
+      agent_role = EXCLUDED.agent_role,
+      pot_slug = EXCLUDED.pot_slug
   `;
 }
 

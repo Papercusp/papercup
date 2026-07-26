@@ -588,9 +588,9 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
       expect(screen.getAllByTestId('op-chat-face-peers')).toHaveLength(1);
     });
 
-    it('renders the three built-in faces unchanged when no faces are passed', () => {
+    it('renders the built-in faces unchanged when no faces are passed', () => {
       render(<OperatorChatSidebar />);
-      expect(screen.getByTestId('op-chat-inbox-toggle')).toBeTruthy();
+      expect(screen.getByTestId('op-chat-plans-toggle')).toBeTruthy();
       expect(screen.getByTestId('operator-chat')).toBeTruthy();
       expect(document.querySelector('.op-chat-face-toggle')).toBeNull();
     });

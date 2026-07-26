@@ -11,6 +11,7 @@
  * (no identity on the test ctx → throws). That is EI-5826 (the EI-5541 class).
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import readTool from './read';
@@ -58,6 +59,47 @@ describe('capability:read', () => {
     const r = (await readTool.handler!({ file_path: join(DIR, 'nope.txt') }, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
     expect(r.isError).toBe(true);
     expect(parse(r).reason).toBe('read_failed');
+  });
+
+  // The two widenings below close the file-read gaps the 2026-07-26 bash audit
+  // measured against real commands (plan bash-to-tool-substitution-2026-07-26,
+  // P-005). Without them the `tail -n N FILE` and `~/`-path forms — 1,752 and
+  // ~200 real atoms respectively — had NO tool expression, so the substitution
+  // registry could not honestly claim equivalence for them.
+
+  it('reads the last N lines with tail', async () => {
+    const f = join(DIR, 'r-tail.txt');
+    writeFileSync(f, Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join('\n'));
+    const r = (await readTool.handler!({ file_path: f, tail: 3 }, ctx)) as { content: Array<{ text: string }> };
+    const text = r.content[0].text;
+    expect(text).toContain('line98');
+    expect(text).toContain('line100');
+    expect(text).not.toContain('line97\n');
+    // Line numbers stay absolute, so a tail read is still addressable by offset.
+    expect(text).toMatch(/\s+100\tline100/);
+    // Nothing follows the end of the file.
+    expect(text).not.toContain('more lines');
+  });
+
+  it('clamps tail to the file length', async () => {
+    const f = join(DIR, 'r-tail-short.txt');
+    writeFileSync(f, 'only\ntwo\n');
+    const r = (await readTool.handler!({ file_path: f, tail: 500 }, ctx)) as { content: Array<{ text: string }> };
+    expect(r.content[0].text).toMatch(/\s+1\tonly/);
+    expect(r.content[0].text).toContain('two');
+  });
+
+  it('expands a ~/ path instead of resolving it under the project dir', async () => {
+    // `~` is a SHELL feature: Node sees it as relative, so before this the read
+    // silently looked for `<projectDir>/~/…` and failed with a confusing error.
+    const r = (await readTool.handler!({ file_path: '~/definitely-not-a-real-file-xyz.txt' }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(r.isError).toBe(true);
+    const message = String(parse(r).message);
+    expect(message).toContain(homedir());
+    expect(message).not.toContain('~');
   });
 });
 

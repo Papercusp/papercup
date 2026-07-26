@@ -49,3 +49,9 @@ convention.
   full-height Pot Health view instead). `ModelOverride`/`useModelOverride`
   stay live (PapercupTab), `resolveHomeHive` extracted to
   `left-sidebar/resolve-home-hive.ts`. Restore: `mug-kettle-rail-tabs/RESTORE.md`.
+- `inbox-pane/` — the chat sidebar's human Inbox face (`InboxPane.tsx`, `?opcv=inbox`).
+  Retired 2026-07-26 (`hud-consolidation-2026-07-26` D-001, owner decision: every
+  ask it surfaced now opens as a HUD conversation instead, gated on P-002 first
+  proving the HUD covers ownerless asks too). The data layer
+  (`use-inbox-pending.ts`) stays live — the HUD board consumes it directly.
+  Restore: `inbox-pane/RESTORE.md`.
