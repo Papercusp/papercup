@@ -162,12 +162,19 @@ describe('attestation_unattested_device diagnostic attribution (EI-1873722523357
       expect(body).toMatch(/NEVER REACHED THE APPLY PATH/);
     });
 
-    it('carries no blanket do-not-investigate directive', () => {
-      const body = unattestedLegBody();
+    it('EMITS no blanket do-not-investigate directive', () => {
+      // Scoped to what the leg PRINTS, not what it documents: the comments deliberately quote
+      // the historical message to explain the bug, and a guard that banned the words outright
+      // would fire on that documentation — a false positive that would train the next reader
+      // to delete the explanation rather than keep the fix.
+      const emitted = unattestedLegBody()
+        .split('\n')
+        .filter((l) => !/^\s*#/.test(l))
+        .join('\n');
       // The precise sentence that suppressed the WI-5064 investigation for hours.
-      expect(body).not.toContain('Do not open a fresh investigation off this signature alone');
+      expect(emitted).not.toContain('Do not open a fresh investigation off this signature alone');
       // And it must not assert environmental causation as settled fact in a FAIL verdict.
-      expect(body).not.toContain('RIG/ENVIRONMENTAL, not a fresh feature defect');
+      expect(emitted).not.toContain('RIG/ENVIRONMENTAL, not a fresh feature defect');
     });
   });
 

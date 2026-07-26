@@ -257,13 +257,15 @@
 
 /* ── plan filter (P-004) ──────────────────────────────────────────────────── */
 
-/* Rides at the end of the fleet strip, pushed to the far edge so the two axes
-   read as two controls rather than one long run of chips. `flex: none` because
-   .hud__fleets scrolls horizontally: without it the box would be the thing
-   that compresses when the chips overflow. */
+/* Sits at the end of .hud__top, past the spacer — NOT in the fleet strip. That
+   strip is nowrap + overflow-x:auto, so a control appended after the chips is
+   off screen until you scroll past all of them (observed live in the narrow HUD
+   rail with 14 fleets). .hud__top wraps, so the picker right-aligns when there
+   is room and takes its own line when there is not.
+
+   `flex: none` so it keeps its width instead of being the thing that
+   compresses when the count chips wrap. */
 .hud__planfilter {
-  margin-left: auto;
-  padding-left: 10px;
   flex: none;
 }
 

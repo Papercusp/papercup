@@ -22,6 +22,7 @@
 import { withWorkspace } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { hashPlanContent } from './content-hash';
+import { writePlanIndexRows } from './plan-index-rows';
 import {
   resolvePlanScope,
   syntheticPlanPath,
@@ -333,6 +334,18 @@ export async function withPlanLock<T>(
           -- never reaches the outbox/log (so a later replay reverts it).
           origin        = 'local'
       `;
+
+      // Migration 675: the same derived index, as real rows. Inside THIS
+      // transaction (which holds the plan's advisory lock) so the rows can
+      // never diverge from `items`/`decisions` or from `content` — a reader
+      // cannot observe a plan whose index is half-written. Phase 3 of
+      // `normalize-plan-items-decisions-to-rows-2026-07-26` removes the jsonb
+      // columns above and leaves this as the only index write.
+      await writePlanIndexRows(
+        tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+        { workspaceId, harnessSlug, planSlug: slug },
+        idx,
+      );
 
       // EI-14579: land the resurrection marker UNCONDITIONALLY, inside this same
       // transaction, so it is never subject to the caller-identity best-effort

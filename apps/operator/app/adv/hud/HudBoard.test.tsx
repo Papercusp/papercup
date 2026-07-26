@@ -418,14 +418,18 @@ describe('HudBoard', () => {
     expect(clear.getAttribute('placeholder')).toBe('All plans');
   });
 
-  // Both axes share one row, and neither suppresses the other — the row's
-  // guard used to be `board.fleets.length > 0` alone.
-  it('keeps the fleet chips and the plan filter in the same filter row', () => {
+  /* Placement regression guard. The picker first shipped at the end of the
+     fleet strip, which is `nowrap` + `overflow-x: auto` — so on the narrow HUD
+     rail, with 14 fleet chips ahead of it, it was off screen entirely (caught
+     live 2026-07-26, not by any unit test). It belongs in .hud__top, which
+     wraps. Asserting the CONTAINER is the cheap standing guard for that. */
+  it('puts the plan filter in the wrapping controls row, not the scrolling fleet strip', () => {
     renderBoard([entry({ currentPlanSlug: 'alpha-plan', fleetSlug: 'atlas', fleetRole: 'leader' })]);
-    const row = document.querySelector('.hud__fleets');
-    expect(row).toBeTruthy();
-    expect(within(row as HTMLElement).getByRole('button', { name: /all fleets/ })).toBeTruthy();
-    expect(within(row as HTMLElement).getByRole('combobox', { name: 'Filter by plan' })).toBeTruthy();
+    const top = document.querySelector('.hud__top');
+    expect(top).toBeTruthy();
+    expect(within(top as HTMLElement).getByRole('combobox', { name: 'Filter by plan' })).toBeTruthy();
+    const strip = document.querySelector('.hud__fleets') as HTMLElement;
+    expect(within(strip).queryByRole('combobox', { name: 'Filter by plan' })).toBeNull();
   });
 
   it('hides the plan filter on a non-session tab', () => {

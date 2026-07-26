@@ -367,59 +367,56 @@ export default function HudBoard({
         </div>
 
         <span className="hud__spacer" />
+
+        {/* The plan filter lives in THIS row, not down among the fleet chips,
+            because of how the two rows behave when space runs out: .hud__fleets
+            is `nowrap` + `overflow-x: auto` (deliberately — see its comment),
+            so anything appended after the chips is reachable only by scrolling
+            the strip past every one of them. Verified live 2026-07-26 in the
+            narrow HUD rail: with 14 fleets the picker was completely off
+            screen. .hud__top wraps instead, so here it right-aligns on a wide
+            board and drops onto its own line in the rail — visible either way. */}
+        {board.plans.length > 0 ? (
+          <span className="hud__planfilter">
+            <Combobox
+              ariaLabel="Filter by plan"
+              triggerClassName="hud__planfilter-box"
+              testId="hud-plan-filter"
+              value={planValue}
+              emptyValue={ALL_PLANS}
+              placeholder="All plans"
+              emptyLabel="No plan matches"
+              options={planOptions}
+              onChange={(v) => onSelectPlan(v === NO_PLAN_TOKEN ? null : v)}
+              align="end"
+            />
+          </span>
+        ) : null}
       </div>
 
-      {/* One filter row, two axes. The plan picker sits beside the fleet chips
-          rather than in its own row because the relationship is the point:
-          which fleets you have selected is what determines the plans on offer
-          (see buildHudBoard). Guarded on EITHER axis having rows — today both
-          derivations bucket every session (an agent with no fleet lands in the
-          solo group, one with no plan in the unbound group), so the two are
-          non-empty together; the OR is so that a future narrowing of one axis
-          cannot silently take the other's control off screen with it. */}
-      {board.fleets.length > 0 || board.plans.length > 0 ? (
+      {board.fleets.length > 0 ? (
         <div className="hud__fleets">
-          {board.fleets.length > 0 ? (
-            <>
-              <Tooltip label="Show every fleet">
-                <button
-                  type="button"
-                  className="hud__fleet"
-                  aria-pressed={selectedFleets.length === 0}
-                  onClick={() => onToggleFleet(ALL_FLEETS)}
-                >
-                  <span className="hud__fleet-row">
-                    <span>all fleets</span>
-                    <span className="hud__fleet-n">{board.total}</span>
-                  </span>
-                </button>
-              </Tooltip>
-              {board.fleets.map((f) => (
-                <FleetChip
-                  key={f.fleetSlug ?? SOLO_FLEET_KEY}
-                  fleet={f}
-                  selected={selectedFleets.includes(f.fleetSlug)}
-                  onToggle={onToggleFleet}
-                />
-              ))}
-            </>
-          ) : null}
-          {board.plans.length > 0 ? (
-            <span className="hud__planfilter">
-              <Combobox
-                ariaLabel="Filter by plan"
-                triggerClassName="hud__planfilter-box"
-                testId="hud-plan-filter"
-                value={planValue}
-                emptyValue={ALL_PLANS}
-                placeholder="All plans"
-                emptyLabel="No plan matches"
-                options={planOptions}
-                onChange={(v) => onSelectPlan(v === NO_PLAN_TOKEN ? null : v)}
-                align="end"
-              />
-            </span>
-          ) : null}
+          <Tooltip label="Show every fleet">
+            <button
+              type="button"
+              className="hud__fleet"
+              aria-pressed={selectedFleets.length === 0}
+              onClick={() => onToggleFleet(ALL_FLEETS)}
+            >
+              <span className="hud__fleet-row">
+                <span>all fleets</span>
+                <span className="hud__fleet-n">{board.total}</span>
+              </span>
+            </button>
+          </Tooltip>
+          {board.fleets.map((f) => (
+            <FleetChip
+              key={f.fleetSlug ?? SOLO_FLEET_KEY}
+              fleet={f}
+              selected={selectedFleets.includes(f.fleetSlug)}
+              onToggle={onToggleFleet}
+            />
+          ))}
         </div>
       ) : null}
 
