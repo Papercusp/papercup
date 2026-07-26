@@ -70,12 +70,28 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  *    structure-passing, pixel-failing. This bucket names that exact shape so a leader
  *    audit (`work_items:list { audit: 'geometry-unverified' }`) surfaces it going
  *    forward, the same way `no-evidence` surfaces a bare-assertion close today.
+ *
+ *  - `intermittent-underevidenced` (EI-18716652701919665) — a terminal row whose title is
+ *    classified intermittent/flaky/racy ({@link looksLikeIntermittentClassification}) AND
+ *    carries STRUCTURED completion evidence (so `no-evidence` does NOT already catch it) AND
+ *    that evidence states neither a failure rate/root-cause nor cites a deterministic
+ *    regression test ({@link hasIntermittentFailureRateEvidence}). This is an EVIDENCE-SHAPE
+ *    defect, not a bareness one: WI-5673 (live-federation-gate content-matrix) closed with a
+ *    fully structured, honest completion — `verifiedHow:'integration'`, testResult "2
+ *    consecutive runs, 10/10 both times" — and passed the ordinary `no-evidence` bar cleanly.
+ *    It then reopened 5 days later, now failing 4/4 with a wider blast radius. For a bug whose
+ *    own title says "intermittently", N consecutive passes is a SAMPLE that cannot falsify
+ *    "we happened to sample the passing branch N times" unless a per-run failure rate (or an
+ *    actual root cause + deterministic repro test) is stated. This bucket names that gap so a
+ *    leader audit (`work_items:list { audit: 'intermittent-underevidenced' }`) surfaces it,
+ *    the same way `geometry-unverified` surfaces an evidence-shape mismatch for layout bugs.
  */
 export const COMPLETION_AUDITS = [
   'no-evidence',
   'no-completion-record',
   'no-completion-record-suspicious',
   'geometry-unverified',
+  'intermittent-underevidenced',
 ] as const;
 export type CompletionAudit = (typeof COMPLETION_AUDITS)[number];
 
@@ -155,6 +171,60 @@ function geometryUnverifiedWhereSql(sql: OrgSql, filesChangedExpr: unknown, veri
 }
 
 /**
+ * EI-18716652701919665 — title patterns that classify a work-item as a known-intermittent
+ * bug. Word-bounded so e.g. "flaky" doesn't also match inside an unrelated word.
+ */
+const INTERMITTENT_TITLE_RE = /\b(?:intermittent(?:ly)?|flaky|flake|racy|race condition|nondeterministic|non-deterministic)\b/i;
+
+/** Pure — does this title (or other short classification text) mark the underlying bug as
+ *  intermittent/flaky/racy? Used by both the SQL bucket and any JS-side caller. */
+export function looksLikeIntermittentClassification(title: string | null | undefined): boolean {
+  if (!title) return false;
+  return INTERMITTENT_TITLE_RE.test(title);
+}
+
+/**
+ * EI-18716652701919665 — phrases that count as REAL evidence for an intermittent bug: a
+ * stated failure rate/percentage, an explicit reference to having measured flakiness, or
+ * language indicating an actual root cause + deterministic regression test were found
+ * (which makes the bug no longer merely "sampled passing," but understood and pinned).
+ * Deliberately narrow/textual, same bias as {@link touchesLayoutBearingFiles}: cheap to
+ * over-flag (a wasted read) but expensive to under-flag (a still-flaky bug closed again on
+ * another lucky streak).
+ */
+const INTERMITTENT_EVIDENCE_RE =
+  /(\d+(?:\.\d+)?\s*%|failure rate|flake rate|flakiness|historically|root cause|regression test|deterministic repro|observed[^\n]{0,40}fail)/i;
+
+/** Pure — does this completion evidence text (testResult/testsRun) state a failure rate or
+ *  root cause, rather than just reporting a streak of consecutive passes? */
+export function hasIntermittentFailureRateEvidence(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return INTERMITTENT_EVIDENCE_RE.test(text);
+}
+
+// Postgres ARE equivalents of the two JS regexes above — kept textually parallel so the SQL
+// bucket and the pure JS helpers can't silently diverge; `\y` is Postgres's word-boundary atom.
+const INTERMITTENT_TITLE_SQL_RE =
+  '\\y(intermittent(ly)?|flaky|flake|racy|race condition|nondeterministic|non-deterministic)\\y';
+const INTERMITTENT_EVIDENCE_SQL_RE =
+  '(\\d+(\\.\\d+)?\\s*%|failure rate|flake rate|flakiness|historically|root cause|regression test|deterministic repro|observed.{0,40}fail)';
+
+/** The `intermittent-underevidenced` WHERE fragment, parameterized on the title + the two
+ *  evidence-text jsonb-path expressions the two callers below alias differently (unaliased
+ *  vs `ei.`). Only fires when structured evidence EXISTS (testResult/testsRun non-NULL) but
+ *  is the wrong SHAPE — a row with no evidence at all is the `no-evidence` bucket's job. */
+function intermittentUnderevidencedWhereSql(sql: OrgSql, titleExpr: unknown, testResultExpr: unknown, testsRunExpr: unknown) {
+  return sql`(
+    ${titleExpr as string} ~* ${INTERMITTENT_TITLE_SQL_RE}
+    AND (${testResultExpr as string} IS NOT NULL OR ${testsRunExpr as string} IS NOT NULL)
+    AND NOT (
+      COALESCE(${testResultExpr as string}, '') ~* ${INTERMITTENT_EVIDENCE_SQL_RE}
+      OR COALESCE(${testsRunExpr as string}, '') ~* ${INTERMITTENT_EVIDENCE_SQL_RE}
+    )
+  )`;
+}
+
+/**
  * The audit's WHERE fragment. Callers AND it with their own terminal-state predicate
  * (the two families spell their state column differently — `status` vs `state`).
  *
@@ -173,6 +243,14 @@ export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
       sql,
       sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->'filesChanged'`),
       sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'verifiedHow'`),
+    );
+  }
+  if (audit === 'intermittent-underevidenced') {
+    return intermittentUnderevidencedWhereSql(
+      sql,
+      sql.unsafe('title'),
+      sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testResult'`),
+      sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testsRun'`),
     );
   }
   // EI-18677799334390930: a reconcile-sourced close (RECONCILER_SYSTEM_ACTOR) is ALWAYS
@@ -197,6 +275,14 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
       sql,
       sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->'filesChanged'`),
       sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'verifiedHow'`),
+    );
+  }
+  if (audit === 'intermittent-underevidenced') {
+    return intermittentUnderevidencedWhereSql(
+      sql,
+      sql.unsafe(`${alias}.title`),
+      sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testResult'`),
+      sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testsRun'`),
     );
   }
   // EI-18677799334390930: same always-flag rule as auditPredicateSql above.

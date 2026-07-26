@@ -381,11 +381,17 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
       '@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts',
       '@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts',
     ]);
-    // exactly the suite + 2 isolation re-runs — no SPA build (the suite started red).
-    expect(calls).toHaveLength(3);
+    // WI-6053: the suite + 2 isolation re-runs + the post-suite legs the absorption now
+    // pays for (cpTree declares no lint scripts, so that is the conflict-marker grep and
+    // the SPA build). This assertion previously read `toHaveLength(3)` with the comment
+    // "no SPA build (the suite started red)" — it was encoding the defect: an absorbed
+    // candidate reached `main` having never been built or typechecked.
+    expect(calls).toHaveLength(5);
+    expect(calls[3].cmd).toBe('git'); // conflict-marker grep
+    expect(calls[4].args).toContain('build'); // the SPA build DID run post-absorption
     // the isolation re-runs are `npm run test --workspace <ws> -- --no-file-parallelism <file>`
     // at SINGLE concurrency, in the checkpoint tree, with the stripped gate env.
-    for (const c of calls.slice(1)) {
+    for (const c of calls.slice(1, 3)) {
       expect(c.cmd).toBe('npm');
       expect(c.args.slice(0, 4)).toEqual(['run', 'test', '--workspace', '@papercusp/operator-core']);
       expect(c.args).toContain('--no-file-parallelism');
@@ -450,8 +456,13 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
 
     expect(r.green).toBe(true); // absorbed: the crashed workspace passed on the re-run
     expect(r.flakeSuspects).toEqual(['@papercusp/operator-core (worker-pool crash)']);
-    // exactly the suite + 1 workspace re-run — no SPA build (the suite started red).
-    expect(calls).toHaveLength(2);
+    // WI-6053: the suite + 1 workspace re-run + the post-suite legs the absorption now pays
+    // for (marker grep + SPA build). Previously `toHaveLength(2)` — the worker-crash
+    // absorber had the identical hole, so a pool-crash candidate was also fast-forwarded
+    // with its build and typecheck never run.
+    expect(calls).toHaveLength(4);
+    expect(calls[2].cmd).toBe('git'); // conflict-marker grep
+    expect(calls[3].args).toContain('build'); // the SPA build DID run post-absorption
     const rerun = calls[1];
     expect(rerun.cmd).toBe('npm');
     expect(rerun.args).toEqual(['run', 'test', '--workspace', '@papercusp/operator-core']);

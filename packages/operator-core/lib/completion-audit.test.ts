@@ -20,9 +20,11 @@ import {
   auditPredicateSqlFor,
   citesScreenshotArtifact,
   COMPLETION_AUDITS,
+  hasIntermittentFailureRateEvidence,
   isBackedLiveDroveUiClaim,
   KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES,
   looksLikeCitedProseEvidence,
+  looksLikeIntermittentClassification,
   RECONCILER_SYSTEM_ACTOR,
   touchesLayoutBearingFiles,
 } from './completion-audit';
@@ -198,6 +200,43 @@ describe('completion-audit predicates (EI-10867)', () => {
       expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
     });
   });
+
+  // EI-18716652701919665 — evidence-SHAPE mismatch for a title classified intermittent/flaky:
+  // N consecutive passes is a sample, not a demonstration, unless a failure rate or root
+  // cause is stated.
+  describe("'intermittent-underevidenced' (EI-18716652701919665)", () => {
+    it('checks the title for an intermittent/flaky/racy classification', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'intermittent-underevidenced'));
+      expect(f.text).toContain('title');
+      expect(f.text).toContain('~*');
+      // The regex pattern itself is a BOUND parameter (not spliced into the SQL text), so
+      // its content is asserted against params, not text.
+      expect(f.params).toContain(
+        '\\y(intermittent(ly)?|flaky|flake|racy|race condition|nondeterministic|non-deterministic)\\y',
+      );
+    });
+
+    it('requires structured evidence to be PRESENT (testResult/testsRun non-NULL) before flagging', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'intermittent-underevidenced'));
+      expect(f.text).toContain('testResult');
+      expect(f.text).toContain('testsRun');
+      expect(f.text).toContain('IS NOT NULL');
+    });
+
+    it('checks the evidence text is NOT a failure-rate / root-cause statement', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'intermittent-underevidenced'));
+      expect(f.text).toContain('AND NOT (');
+      expect(f.params).toContain(
+        '(\\d+(\\.\\d+)?\\s*%|failure rate|flake rate|flakiness|historically|root cause|regression test|deterministic repro|observed.{0,40}fail)',
+      );
+    });
+
+    it('the aliased form matches its unaliased twin', () => {
+      const plain = frag(auditPredicateSql(recordingSql(), 'intermittent-underevidenced'));
+      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'intermittent-underevidenced', 'ei'));
+      expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+    });
+  });
 });
 
 // WI-5891 — pure heuristics feeding both the `geometry-unverified` audit bucket and the
@@ -328,5 +367,69 @@ describe('looksLikeCitedProseEvidence (EI-13424)', () => {
     // because it contains digits; that would recreate the over-detection failure mode
     // this exists to avoid, just shifted to short refs instead of long ones.
     expect(looksLikeCitedProseEvidence('Fixed bug #123, done.')).toBe(false);
+  });
+});
+
+// EI-18716652701919665 — pure heuristics feeding the `intermittent-underevidenced` audit
+// bucket.
+describe('looksLikeIntermittentClassification (EI-18716652701919665)', () => {
+  it('flags a title containing "intermittent" / "intermittently"', () => {
+    expect(looksLikeIntermittentClassification('live-federation-gate fails intermittently on B->A')).toBe(true);
+    expect(looksLikeIntermittentClassification('Intermittent test failure in content-matrix')).toBe(true);
+  });
+
+  it('flags "flaky" / "flake"', () => {
+    expect(looksLikeIntermittentClassification('flaky integration test in hyperbee suite')).toBe(true);
+    expect(looksLikeIntermittentClassification('this test is a known flake')).toBe(true);
+  });
+
+  it('flags "race condition" / "racy" / "nondeterministic"', () => {
+    expect(looksLikeIntermittentClassification('race condition in claim reconciliation')).toBe(true);
+    expect(looksLikeIntermittentClassification('racy ordering in the SSE fan-out')).toBe(true);
+    expect(looksLikeIntermittentClassification('nondeterministic ordering breaks the snapshot')).toBe(true);
+    expect(looksLikeIntermittentClassification('non-deterministic plan selection')).toBe(true);
+  });
+
+  it('does NOT flag an unrelated title', () => {
+    expect(looksLikeIntermittentClassification('coord:escalations is over the prompt-weight hard cap')).toBe(false);
+  });
+
+  it('does NOT flag a partial-word collision (word-bounded)', () => {
+    // "flakiness" contains "flak" but not the bare word "flaky"/"flake" — still should NOT
+    // false-positive on an unrelated word that merely shares a substring.
+    expect(looksLikeIntermittentClassification('reflaky is not a real word, sanity check')).toBe(false);
+  });
+
+  it('does NOT flag null/undefined/empty', () => {
+    expect(looksLikeIntermittentClassification(null)).toBe(false);
+    expect(looksLikeIntermittentClassification(undefined)).toBe(false);
+    expect(looksLikeIntermittentClassification('')).toBe(false);
+  });
+});
+
+describe('hasIntermittentFailureRateEvidence (EI-18716652701919665)', () => {
+  it('flags a stated percentage / failure rate', () => {
+    expect(hasIntermittentFailureRateEvidence('observed a ~12% failure rate across 50 runs')).toBe(true);
+    expect(hasIntermittentFailureRateEvidence('failure rate dropped to 0 after the fix')).toBe(true);
+  });
+
+  it('flags root-cause / deterministic-repro language', () => {
+    expect(hasIntermittentFailureRateEvidence('root cause: unawaited promise in the SSE fan-out')).toBe(true);
+    expect(hasIntermittentFailureRateEvidence('added a deterministic repro + regression test')).toBe(true);
+  });
+
+  it('flags "historically" / "flakiness" / "flake rate"', () => {
+    expect(hasIntermittentFailureRateEvidence('historically fails about 1 in 5 runs')).toBe(true);
+    expect(hasIntermittentFailureRateEvidence('flakiness dropped after the timeout fix')).toBe(true);
+  });
+
+  it("does NOT flag a bare consecutive-passes streak (the WI-5673 shape this audit exists for)", () => {
+    expect(hasIntermittentFailureRateEvidence('2 consecutive runs, 10/10 both times')).toBe(false);
+  });
+
+  it('does NOT flag null/undefined/empty', () => {
+    expect(hasIntermittentFailureRateEvidence(null)).toBe(false);
+    expect(hasIntermittentFailureRateEvidence(undefined)).toBe(false);
+    expect(hasIntermittentFailureRateEvidence('')).toBe(false);
   });
 });

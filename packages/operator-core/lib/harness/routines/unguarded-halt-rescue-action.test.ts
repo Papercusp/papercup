@@ -2,8 +2,10 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { detectUnguardedHalt } from '../../turn-end-tracking';
+import { VERDICT_SPEAKING_FRESH_MS } from '../../agent-tools/fleet/assignments';
 import { getSystemAction } from './system-actions';
 import {
+  DEFAULT_HALT_IDLE_MS,
   DEFAULT_RESCUE_THROTTLE_MS,
   MAX_RESCUES_PER_TICK,
   RESCUE_PREFIX,
@@ -14,43 +16,93 @@ import {
 
 const NOW = 1_700_000_000_000;
 const STALE = 5 * 60_000;
+const IDLE = 15 * 60_000;
+const OPTS = { staleMs: STALE, idleMs: IDLE };
 
-function candidate(agentId: string, ageMs: number): HaltCandidate {
-  return { agentId, workspaceId: 'ws', heartbeatMs: NOW - ageMs };
+/** Default candidate: process alive, and idle long enough to be a real halt. */
+function candidate(
+  agentId: string,
+  over: Partial<HaltCandidate> = {},
+): HaltCandidate {
+  return {
+    agentId,
+    workspaceId: 'ws',
+    heartbeatMs: NOW - 1_000,
+    lastToolCallMs: NOW - (IDLE + 1_000),
+    ...over,
+  };
 }
 
 describe('unguarded-halt rescue — candidate selection (WI-6054)', () => {
-  it('sweeps a live agent', () => {
-    const got = selectSweepCandidates([candidate('a', 1_000)], new Set(), NOW, STALE);
+  it('sweeps a live-but-idle agent — heartbeat fresh, no turn for well over the idle window', () => {
+    const got = selectSweepCandidates([candidate('a')], new Set(), NOW, OPTS);
     expect(got.map((c) => c.agentId)).toEqual(['a']);
   });
 
   it('skips an agent whose heartbeat is stale — a dead session is the reaper\'s job, not a wake target', () => {
-    const got = selectSweepCandidates([candidate('a', STALE + 1)], new Set(), NOW, STALE);
-    expect(got).toEqual([]);
-  });
-
-  it('skips an agent with no heartbeat at all', () => {
     const got = selectSweepCandidates(
-      [{ agentId: 'a', workspaceId: 'ws', heartbeatMs: null }],
+      [candidate('a', { heartbeatMs: NOW - (STALE + 1) })],
       new Set(),
       NOW,
-      STALE,
+      OPTS,
     );
     expect(got).toEqual([]);
   });
 
+  it('skips an agent with no heartbeat at all', () => {
+    const got = selectSweepCandidates([candidate('a', { heartbeatMs: null })], new Set(), NOW, OPTS);
+    expect(got).toEqual([]);
+  });
+
+  /**
+   * THE FALSE-POSITIVE CLASS. A busy agent has autonomous mode, no armed loop and
+   * no await — identical to a halted one on those three signals — because it does
+   * not NEED a wake source while it is taking turns. Heartbeat cannot separate
+   * them either: a halted agent keeps heartbeating (the observed orphans read
+   * heartbeatFresh:true with lastActive 3-4h ago). Only turn-recency can.
+   * Waking a working agent is a spurious billable interruption.
+   */
+  it('does NOT wake an agent that is mid-turn', () => {
+    const got = selectSweepCandidates(
+      [candidate('busy', { lastToolCallMs: NOW - 30_000 })],
+      new Set(),
+      NOW,
+      OPTS,
+    );
+    expect(got).toEqual([]);
+  });
+
+  it('does NOT wake an agent inside a long single call (build / test suite) below the idle window', () => {
+    // 6 min of silence: past the 5-min "speaking" window, but plainly still working.
+    const got = selectSweepCandidates(
+      [candidate('building', { lastToolCallMs: NOW - 6 * 60_000 })],
+      new Set(),
+      NOW,
+      OPTS,
+    );
+    expect(got).toEqual([]);
+  });
+
+  it('skips an agent that has never made a tool call — no turn taken, so no halt to rescue', () => {
+    const got = selectSweepCandidates([candidate('a', { lastToolCallMs: null })], new Set(), NOW, OPTS);
+    expect(got).toEqual([]);
+  });
+
+  it('uses an idle window well beyond the speaking window, so a long call is never mistaken for a halt', () => {
+    expect(DEFAULT_HALT_IDLE_MS).toBeGreaterThan(VERDICT_SPEAKING_FRESH_MS * 2);
+  });
+
   it('skips an agent rescued within the throttle window, so a rescue never becomes a wake loop', () => {
-    const got = selectSweepCandidates([candidate('a', 1_000)], new Set(['a']), NOW, STALE);
+    const got = selectSweepCandidates([candidate('a')], new Set(['a']), NOW, OPTS);
     expect(got).toEqual([]);
   });
 
   it('orders deterministically so a capped tick never starves the same agent', () => {
     const got = selectSweepCandidates(
-      [candidate('c', 1_000), candidate('a', 1_000), candidate('b', 1_000)],
+      [candidate('c'), candidate('a'), candidate('b')],
       new Set(),
       NOW,
-      STALE,
+      OPTS,
     );
     expect(got.map((c) => c.agentId)).toEqual(['a', 'b', 'c']);
   });

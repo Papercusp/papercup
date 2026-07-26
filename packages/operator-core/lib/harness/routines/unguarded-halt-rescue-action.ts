@@ -36,6 +36,7 @@
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { STALE_MS } from '../../liveness';
+import { lastToolCallAtByOwner } from '../../fleet/assignments';
 import { listPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
@@ -70,30 +71,61 @@ export const MAX_RESCUES_PER_TICK = 10;
 export interface HaltCandidate {
   agentId: string;
   workspaceId: string | null;
-  /** Epoch ms of the last heartbeat, or null when unknown. */
+  /** Epoch ms of the last heartbeat (process keepalive), or null when unknown. */
   heartbeatMs: number | null;
+  /** Epoch ms of the agent's last tool call — its last real TURN activity. */
+  lastToolCallMs: number | null;
 }
+
+/**
+ * A halted agent must have taken no turn for at least this long.
+ *
+ * DELIBERATELY well beyond `VERDICT_SPEAKING_FRESH_MS` (5 min, the "speaking"
+ * window): an agent that is genuinely working can make NO tool calls for
+ * several minutes while a single long call runs — a build, a full test suite, a
+ * typecheck. Waking it mid-turn would be a spurious, billable interruption AND
+ * would teach exactly the wrong lesson. A halted agent, by contrast, is idle
+ * forever, so a conservative threshold costs one extra tick of latency and
+ * removes the whole false-positive class.
+ */
+export const DEFAULT_HALT_IDLE_MS = 15 * 60_000;
 
 /**
  * PURE: which live agents are eligible to be SWEPT this tick.
  *
- * Excludes agents whose heartbeat is stale (a truly dead session is the idle
- * reaper's job, not a wake target — waking a corpse burns a wake and teaches
- * nothing) and agents rescued within the throttle window. Ordering is stable by
- * agentId so a capped tick is deterministic and the same agent is not starved.
+ * The discriminator is deliberately TWO-SIDED, because neither signal alone is
+ * sufficient (WI-6054):
+ *   - heartbeat FRESH  ⇒ the process is alive. A stale heartbeat is a truly dead
+ *     session — the idle reaper's job, not a wake target (waking a corpse burns
+ *     a wake and teaches nothing). Note a halted agent DOES keep heartbeating:
+ *     the observed orphans read heartbeatFresh:true with lastActive 3-4h ago, so
+ *     heartbeat alone can never distinguish halted from working.
+ *   - last tool call OLD ⇒ it is not mid-turn. This is the signal that separates
+ *     "halted" from "actively working", and it is the one heartbeat cannot give.
+ * An agent with no tool call on record at all is SKIPPED (conservative): it has
+ * never taken a turn, so there is no halt to rescue.
+ *
+ * Ordering is stable by agentId so a capped tick is deterministic and the same
+ * agent is not starved.
  */
 export function selectSweepCandidates(
   candidates: readonly HaltCandidate[],
   recentlyRescued: ReadonlySet<string>,
   nowMs: number,
-  staleMs: number = STALE_MS,
+  opts: { staleMs?: number; idleMs?: number } = {},
 ): HaltCandidate[] {
+  const staleMs = opts.staleMs ?? STALE_MS;
+  const idleMs = opts.idleMs ?? DEFAULT_HALT_IDLE_MS;
   return candidates
     .filter((c) => {
       if (!c.agentId) return false;
       if (recentlyRescued.has(c.agentId)) return false;
+      // Process must be alive.
       if (c.heartbeatMs == null) return false;
-      return nowMs - c.heartbeatMs < staleMs;
+      if (nowMs - c.heartbeatMs >= staleMs) return false;
+      // ...and it must not be mid-turn.
+      if (c.lastToolCallMs == null) return false;
+      return nowMs - c.lastToolCallMs >= idleMs;
     })
     .sort((a, b) => a.agentId.localeCompare(b.agentId));
 }
@@ -130,18 +162,30 @@ export function rescueBody(): string {
  */
 export async function readHaltCandidates(): Promise<HaltCandidate[]> {
   const rows = await listPresence();
+  // The last-tool-call read is what separates "halted" from "mid-turn"; without
+  // it every busy agent looks halted. Fail-soft to an empty map, which (because
+  // a null lastToolCallMs is SKIPPED) means "rescue nobody this tick" — the safe
+  // direction for a routine whose action is a billable wake.
+  const lastCalls = await lastToolCallAtByOwner(rows.map((r) => r.ownerId)).catch(
+    () => new Map<string, string>(),
+  );
   return rows.map((r) => {
-    const ms = r.heartbeatAt ? Date.parse(r.heartbeatAt) : NaN;
+    const hb = r.heartbeatAt ? Date.parse(r.heartbeatAt) : NaN;
+    const callIso = lastCalls.get(r.ownerId);
+    const call = callIso ? Date.parse(callIso) : NaN;
     return {
       agentId: r.ownerId,
       workspaceId: r.workspaceId ?? null,
-      heartbeatMs: Number.isFinite(ms) ? ms : null,
+      heartbeatMs: Number.isFinite(hb) ? hb : null,
+      lastToolCallMs: Number.isFinite(call) ? call : null,
     };
   });
 }
 
 registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.UNGUARDED_HALT_RESCUE))) return;
+  // Fail-CLOSED on a flag-IO error, matching fleet-headcount-action: a wake costs
+  // a real billable turn, and a missed rescue is recovered by the next tick.
+  if (!(await getFlag(FLAGS.UNGUARDED_HALT_RESCUE, 'system').catch(() => false))) return;
 
   const cfg = ctx.triggerConfig ?? {};
   const throttleMin = Number(cfg.throttle_min);
@@ -159,7 +203,9 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
       .flatMap((e) => e.to),
   );
 
-  const candidates = selectSweepCandidates(await readHaltCandidates(), recentlyRescued, nowMs);
+  const idleRaw = Number(cfg.idle_min);
+  const idleMs = Number.isFinite(idleRaw) && idleRaw > 0 ? idleRaw * 60_000 : DEFAULT_HALT_IDLE_MS;
+  const candidates = selectSweepCandidates(await readHaltCandidates(), recentlyRescued, nowMs, { idleMs });
 
   // The sweep is per-agent IO; run it concurrently but keep the wake fan capped.
   const verdicts = await Promise.all(

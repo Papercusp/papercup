@@ -20,6 +20,7 @@ import {
   clampFactBody,
   FACT_SCOPES,
   FACT_BODY_MAX_CHARS,
+  FACT_CONFIDENCE_LEVELS,
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
   WALL_DEFAULT_TTL_SEC,
@@ -164,6 +165,12 @@ export default defineTool({
         "Typed slot. 'dead-end' (P-015) = a tried-and-failed approach, recorded so successors never re-try it: the key is normalized under 'dead-end:' and the body rendered with the ⛔ DEAD END marker in every future fold. 'wall' (owner-wall-ttl-lapse-hardening) = an OWNER-GATED blocker whose absence must never be read as resolved: the key is normalized under 'wall:' and the body rendered with the ⚠ WALL marker; TTL defaults to 90d instead of the ordinary 7d (still overridable via ttlSec, capped at 90d) and an unretracted lapse is escalated LOUDLY by the wall-lapse watchdog rather than silently vanishing from folds. State the approach AND why it failed / the condition and what remediates it; pair with sourceRef to anchor the evidence.",
       ),
     audienceScope: z.string().max(160).optional().describe('Restrict WHO receives this fact in folds (v1 grammar: "fleet:<slug>") — it then folds ONLY into orients of that fleet\'s members. Omit = every reader of the scope. Orthogonal to `scope` (what the fact is about). facts:list still shows it to everyone (delivery relevance, not secrecy).'),
+    confidence: z
+      .enum(FACT_CONFIDENCE_LEVELS)
+      .optional()
+      .describe(
+        "Evidence strength (WI-6052): 'verified' (you confirmed it directly / it's replicated), 'provisional' (a single run / one data point — plausible but unreplicated), or 'suspected' (a hunch / a peer's hedge relayed second-hand). Omit = legacy/unset, renders unbadged, ordinary TTL. Setting 'provisional'/'suspected' shortens the default TTL so a hedge can't quietly calcify into settled fact. Never write a peer's provisional evidence at higher confidence than they stated it.",
+      ),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
     acceptTruncation: z
@@ -262,6 +269,7 @@ export default defineTool({
       sourceRef: args.sourceRef ?? null,
       audienceScope: args.audienceScope ?? null,
       sourceProvenance,
+      confidence: args.confidence ?? null,
       ttlSec,
       createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),

@@ -883,6 +883,9 @@ function toAgentFactValue(row: Record<string, unknown>): AgentFactWireRow {
       row.source_provenance && typeof row.source_provenance === 'object' && !Array.isArray(row.source_provenance)
         ? (row.source_provenance as Record<string, unknown>)
         : null,
+    // mig 671 (WI-6052): evidence-strength tier — CONTENT, same pass-through
+    // pattern as audience_scope/source_provenance above.
+    confidence: strOrNull(row.confidence),
   };
 }
 

@@ -33,6 +33,9 @@ export function projectFact(
     updatedAt: f.updatedAt,
     expiresAt: f.expiresAt,
     ...(f.audienceScope ? { audienceScope: f.audienceScope } : {}),
+    // WI-6052: confidence is now persisted — surface it same as audienceScope
+    // (omitted when unset, matching the legacy/unbadged shape).
+    ...(f.confidence ? { confidence: f.confidence } : {}),
     // The staleness flag is NEVER excerpted away — it is the reason to read the list.
     ...(f.sourceStale ? { stale: f.sourceStale } : {}),
   };

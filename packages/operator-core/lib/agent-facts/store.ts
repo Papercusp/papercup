@@ -444,13 +444,14 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   const rows = await sql<AgentFactRow[]>`
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
-       audience_scope, source_provenance)
+       audience_scope, source_provenance, confidence)
     VALUES
       (${ws}, ${input.potHomeSlug ?? null}, ${input.scope}, ${ref}, ${key}, ${body},
        ${input.sourceRef ?? null}, ${input.createdBy},
        now() + make_interval(secs => ${ttl}), ${input.shareable === true},
        ${audienceScope},
-       ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb)
+       ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,
+       ${confidence})
     ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))
     DO UPDATE SET body = EXCLUDED.body,
                   source_ref = EXCLUDED.source_ref,
@@ -461,13 +462,14 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                   expires_at = EXCLUDED.expires_at,
                   retracted_at = NULL,
                   shareable = EXCLUDED.shareable,
-                  -- P-007: a re-assert REPLACES audience + provenance — the fresh
-                  -- assert is the current truth (omitting them clears, matching
-                  -- source_ref's existing replace semantics).
+                  -- P-007: a re-assert REPLACES audience + provenance + confidence
+                  -- — the fresh assert is the current truth (omitting them clears,
+                  -- matching source_ref's existing replace semantics).
                   audience_scope = EXCLUDED.audience_scope,
-                  source_provenance = EXCLUDED.source_provenance
+                  source_provenance = EXCLUDED.source_provenance,
+                  confidence = EXCLUDED.confidence
     RETURNING scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-              created_by, updated_at::text, expires_at::text`;
+              confidence, created_by, updated_at::text, expires_at::text`;
   // Cap enforcement — evict oldest-updated live facts past the cap for this
   // (scope, ref). LOCAL partition only (H6): the local writer's cap must never
   // evict foreign-source observations (those are bounded per-source by the
@@ -561,7 +563,7 @@ export async function foldFacts(
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
     const rows = await sql<AgentFactRow[]>`
       SELECT scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-             created_by, updated_at::text, expires_at::text
+             confidence, created_by, updated_at::text, expires_at::text
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws} AND scope = ${sel.scope}
          AND coalesce(scope_ref,'') = ${ref}
@@ -713,9 +715,22 @@ interface AgentFactRow {
   source_ref: string | null;
   audience_scope: string | null;
   source_provenance: unknown;
+  confidence: string | null;
   created_by: string;
   updated_at: string;
   expires_at: string;
+}
+
+/** Defensive validation of a raw `confidence` DB value against the 3-tier
+ *  enum (mirrors parseFactSourceProvenance's defensive style, per WI-6052's
+ *  fix step 3) — an out-of-band write (a raw psql INSERT, a future bad
+ *  migration) that smuggles in an unrecognized value renders unbadged rather
+ *  than propagating a bogus tier into the AgentFact contract. The DB CHECK
+ *  constraint (mig 671) already rejects this at write time for ordinary
+ *  callers; this is the read-side backstop. */
+function parseFactConfidence(raw: string | null): FactConfidence | null {
+  if (raw === null) return null;
+  return (FACT_CONFIDENCE_LEVELS as readonly string[]).includes(raw) ? (raw as FactConfidence) : null;
 }
 
 function rowToFact(r: AgentFactRow): AgentFact {
@@ -727,16 +742,9 @@ function rowToFact(r: AgentFactRow): AgentFact {
     sourceRef: r.source_ref,
     audienceScope: r.audience_scope ?? null,
     sourceProvenance: parseFactSourceProvenance(r.source_provenance),
-    // NOT YET PERSISTED. `confidence` reached the AgentFact contract + the
-    // write-side TTL/lint behaviour (EI-18681964809855890) but never reached
-    // the SCHEMA: harness_shared.agent_facts has no `confidence` column, so
-    // neither the INSERT nor any SELECT above carries it and there is nothing
-    // to read back. `null` is therefore the CORRECT value here, and it is the
-    // documented "unset ⇒ renders unbadged" case on the interface — not a
-    // placeholder. Closing that round-trip needs a migration + a matching
-    // update to the federated wire-shape in
-    // sync/hyperbee/projections/agent-facts.ts; tracked on WI-6052.
-    confidence: null,
+    // WI-6052: now persisted — mig 671 added the `confidence` column and the
+    // INSERT/RETURNING/SELECT above all carry it round-trip.
+    confidence: parseFactConfidence(r.confidence),
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,

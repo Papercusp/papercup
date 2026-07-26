@@ -2830,226 +2830,44 @@ export function realCheckpointDeps(
       const env = buildGreenCheckpointEnv(base);
       const r = await exec(cmd, args, { cwd: treeDir, env, allowNonZero: true });
 
-      // WI-4493: `test:affected` is an esbuild/Vitest gate and does not typecheck
-      // operator-core. The Papercusp root's `lint:tsc` ratchet catches new per-file
-      // regressions, so run it in the same isolated candidate tree before allowing
-      // the candidate through the release gate. Subject hives without that script
-      // retain their existing gate semantics.
-      let typecheckOut = '';
-      let typecheckOk = true;
-      if (r.code === 0 && hasNpmScript(treeDir, 'lint:tsc')) {
-        const typecheck = await exec('npm', ['run', 'lint:tsc'], {
-          cwd: treeDir,
-          env,
-          allowNonZero: true,
-        });
-        typecheckOk = typecheck.code === 0;
-        if (!typecheckOk) {
-          typecheckOut =
-            '\n\n=== TYPECHECK FAILED (npm run lint:tsc) — operator-core type regressions block the release ===\n' +
-            typecheck.stdout +
-            typecheck.stderr;
-        }
-      }
+      // WI-6053: the five post-suite legs (typecheck · migrations lint · identity lints ·
+      // design-primitives lint · SPA build) live in ONE function now, and run whenever the
+      // suite is CONSIDERED PASSING — here natively, or after flake-absorption below flips
+      // the verdict. They used to be five inline blocks each gated on `r.code === 0` with an
+      // `*Ok` flag defaulting to `true`, so a red suite skipped every one and they all still
+      // read as "passed"; absorption then set green without ever running them. See
+      // runPostSuiteLegs' doc for the incident this cost us.
+      let legs = r.code === 0
+        ? await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace)
+        : legsNotRun('suite red — post-suite legs deferred until the suite is considered passing');
+      let green = r.code === 0 && legs.ok;
+      let fullOutput = r.stdout + r.stderr + legs.output;
 
-      // EI-485: lint:migrations' PG-backed "unreserved migration number" check (a
-      // hand-picked NNN that skipped db:next-migration) was never wired into any
-      // automated gate — its 3 pure-filesystem checks (dup-NNN, raw transaction
-      // control, unguarded RENAME CONSTRAINT) got wired into the vitest suite itself
-      // (lint-migrations.test.ts, EI-6843) and so already ran on every `test:affected`,
-      // but the PG-backed leg only ever ran on a manual `npm run lint:migrations` —
-      // which nobody ran, so real drift (16 already-applied numbers >= ENFORCED_FROM
-      // lacking a reservation row, backfilled in 620-backfill-migration-reservations-
-      // ei485.sql) reached green `main` undetected. Cheap (one fs scan + one PG query;
-      // gracefully skips the PG leg when unreachable, never a false red) and the
-      // checkpoint tree has a reachable PG, so gate it here like lint:tsc. A subject
-      // hive without the script (hasNpmScript false — no migrations dir) skips this
-      // leg entirely, same fallback as the typecheck leg above.
-      let lintMigrationsOut = '';
-      let lintMigrationsOk = true;
-      if (r.code === 0 && typecheckOk && hasNpmScript(treeDir, 'lint:migrations')) {
-        const migrations = await exec('npm', ['run', 'lint:migrations'], {
-          cwd: treeDir,
-          env,
-          allowNonZero: true,
-        });
-        lintMigrationsOk = migrations.code === 0;
-        if (!lintMigrationsOk) {
-          lintMigrationsOut =
-            '\n\n=== MIGRATION LINT FAILED (npm run lint:migrations) — committed migration-file discipline / unreserved migration number ===\n' +
-            migrations.stdout +
-            migrations.stderr;
-        }
-      }
 
-      // EI-18147177863084708: the 3 identity-leak lints (check-no-owner-name-tags.mjs =
-      // `[owner:<name>]` provenance tags; check-no-box-identity.mjs = hardcoded
-      // `/home/<user>/` paths; check-no-identity-literals.mjs = bare box git-name/email/
-      // hostname/OS-user) previously ran ONLY inside release-local.sh's WI-4776 gate, at
-      // release-CUT time — so a leak an agent authors on `staging` (a `[owner:Jane …]` tag
-      // or a stray box-identity literal is CORRECT on a carry surface but a leak in shipped
-      // source) sits undetected through every green-checkpoint tick until a release attempt
-      // finally trips over it, sometimes dozens of commits later: the 0.0.12 Windows Server
-      // cut (2026-07-20) hit 24 accumulated leaks across 13 files, killing 2 cut attempts
-      // ~30min each. These are GLOBAL source scans, independent of the candidate diff — same
-      // rationale as lint:design-primitives below — so run all three here, UNCONDITIONALLY,
-      // so a leak reds the checkpoint the tick it lands instead of surfacing only at cut
-      // time. Unlike release-local.sh's `&&`-chain (which only ever shows the FIRST failing
-      // lint's leaks, forcing whack-a-mole across multiple builds), every one of the three
-      // is run and every failure is reported together in one verdict. A subject hive without
-      // these scripts (hasNpmScript false) skips this leg entirely, same fallback as the
-      // legs above.
-      let lintIdentityOut = '';
-      let lintIdentityOk = true;
-      if (r.code === 0 && typecheckOk && lintMigrationsOk) {
-        const identityLints: Array<{ script: string; label: string }> = [
-          { script: 'lint:no-owner-name-tags', label: 'OWNER-NAME TAG' },
-          { script: 'lint:no-box-identity', label: 'BOX-IDENTITY PATH' },
-          { script: 'lint:no-identity-literals', label: 'BOX IDENTITY LITERAL' },
-        ];
-        const identityFailures: string[] = [];
-        for (const { script, label } of identityLints) {
-          if (!hasNpmScript(treeDir, script)) continue;
-          const out = await exec('npm', ['run', script], { cwd: treeDir, env, allowNonZero: true });
-          if (out.code !== 0) {
-            identityFailures.push(`\n\n=== ${label} LINT FAILED (npm run ${script}, WI-4776 class) ===\n` + out.stdout + out.stderr);
-          }
-        }
-        lintIdentityOk = identityFailures.length === 0;
-        if (!lintIdentityOk) {
-          lintIdentityOut =
-            '\n\n=== IDENTITY-LEAK LINTS FAILED (WI-4776 class — owner-name tag / box path / box identity literal committed to tracked source) ===' +
-            identityFailures.join('');
-        }
-      }
-
-      // EI-18218408212070282: `test:affected` (the `r` leg above) only runs a workspace's
-      // suite when that workspace is in the CANDIDATE DIFF's affected set (scripts/
-      // affected-tests.mjs). design-primitives.test.ts and its siblings (css-tokens.test.ts,
-      // contrast.test.ts) are GLOBAL source-scanning lints — they scan the WHOLE
-      // apps/operator + operator-vite tree for token/primitive compliance, independent of
-      // what this candidate's diff touched. So a candidate whose diff doesn't happen to
-      // touch @papercusp/web (or anything reverse-depending on it) skips them entirely, and
-      // a real, pre-existing violation elsewhere in the tree (e.g. left by an earlier
-      // candidate whose OWN diff also missed the affected set, or a live-merge landing
-      // between checkpoint runs) rides straight into the green pin: the gate flapped
-      // red<->green on the SAME uncorrected violation purely depending on each candidate's
-      // diff shape, not on whether the tree was actually clean. Run these three files
-      // UNCONDITIONALLY here — like lint:tsc/lint:migrations above, never gated by the
-      // affected set — so "green" means the whole tree's design-primitive invariants hold,
-      // not just the diffed slice. `npm run test:file` (scripts/test-files.mjs) resolves
-      // each file to its owning Vitest config and hard-fails on a zero/partial match, so a
-      // future rename of any of the three files fails LOUDLY here instead of silently
-      // stopping being gated. A subject hive without the script (hasNpmScript false — no
-      // design-lint files) skips this leg entirely, same fallback as the legs above.
-      let lintDesignPrimitivesOut = '';
-      let lintDesignPrimitivesOk = true;
-      if (r.code === 0 && typecheckOk && lintMigrationsOk && lintIdentityOk && hasNpmScript(treeDir, 'lint:design-primitives')) {
-        const designPrimitives = await exec('npm', ['run', 'lint:design-primitives'], {
-          cwd: treeDir,
-          env,
-          allowNonZero: true,
-        });
-        lintDesignPrimitivesOk = designPrimitives.code === 0;
-        if (!lintDesignPrimitivesOk) {
-          lintDesignPrimitivesOut =
-            '\n\n=== DESIGN PRIMITIVES LINT FAILED (npm run lint:design-primitives) — global token/primitive scan, independent of the affected set ===\n' +
-            designPrimitives.stdout +
-            designPrimitives.stderr;
-        }
-      }
-
-      // P-005: the SPA build is PART of "green". A build break (a bad import, a type
-      // error in a bundled module) passes the Vitest suite, then fails at the deploy's
-      // swap step (`--build-spa`) and rolls back — needlessly draining + restarting the
-      // live :3070 (2026-06-09 13:31–14:00: three rolled-back deploys of the same broken
-      // green). Build it here, in the isolated checkpoint tree, so a broken build holds
-      // `main` like any other red — before it ever reaches a deploy. Only run it once the
-      // suite is green (a red suite already holds `main`; no point building).
-      let buildOut = '';
-      let buildOk = true;
-      // The SPA build is the platform operator SPA (@papercusp/operator-vite by default).
-      // A per-hive SUBJECT repo with no operator SPA sets cfg.spaBuildWorkspace='' (via
-      // PAPERCUSP_SPA_BUILD_WORKSPACE in its env overlay): there is nothing to build, so
-      // SKIP it and let the gate = the hive's test suite. Hardcoding the workspace here
-      // made `npm --workspace @papercusp/operator-vite run build` die with "No workspaces
-      // found" on every per-hive gate, holding that hive's `main` forever (oddsmith).
-      const spaWorkspace = cfg.spaBuildWorkspace;
-      if (r.code === 0 && typecheckOk && lintMigrationsOk && lintIdentityOk && lintDesignPrimitivesOk && spaWorkspace) {
-        // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a
-        // cryptic CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such
-        // markers in globals.css (a bad git-sync auto-merge — the live-merge resolver
-        // doesn't catch already-committed ones) froze the SPA/sidecar/WI-280-witness/
-        // green-checkpoint builds: the whole fleet deploy, on a stray word in CSS, with
-        // no named root. Catch markers HERE, before the expensive+cryptic build, so the
-        // held gate NAMES the file:line. git grep (not scripts/check-conflict-markers.mjs)
-        // keeps this robust for an older candidate tree predating that script. The ERE
-        // mirrors its CONFLICT_MARKER_ERE: 7 of `<`/`>`/`|` at line start — brackets every
-        // git conflict, zero false positives (the bare `=======` separator is excluded as
-        // FP-prone). git grep exit 0 = match found, 1 = clean.
-        const markers = await exec(
-          'git',
-          ['grep', '-n', '-I', '-E', '^(<{7}|>{7}|\\|{7})([ \\t]|$)', '--', '.'],
-          { cwd: treeDir, env, allowNonZero: true },
-        );
-        if (markers.code === 0 && markers.stdout.trim()) {
-          // Treat exactly like a failed build (buildOk=false folds @papercusp/operator-vite
-          // into checkpointFailureSignature) and SKIP the build entirely — it would only
-          // die cryptically on the same markers.
-          buildOk = false;
-          buildOut =
-            '\n\n=== COMMITTED CONFLICT MARKERS (@papercusp/operator-vite, EI-1836) — would break the SPA build ===\n' +
-            markers.stdout;
-        } else {
-          // PAPERCUSP_RETAIN_DIST_CHUNKS=1 — this build targets the LIVE WORKING
-          // TREE, which is exactly where desktop windows are open (:3170/:3270
-          // serve this dist). A default one-shot build stages into dist.next/ and
-          // SWAPS it over dist/, deleting every old hashed chunk; any window opened
-          // before the swap then 404s the lazy chunk it is pinned to and dead-ends
-          // on "Importing a module script failed" (owner-reported 2026-07-26).
-          // Because this gate runs on a TIMER, it broke every open window on a
-          // schedule — and the error card blames "the dev build watcher", so it was
-          // never traced back to here. Retention is the documented cure (WI-1484):
-          // emptyOutDir:false + devDistPrunePlugin's age-prune, so old chunks
-          // survive long enough for an open webview and are still bounded.
-          // ⚠ This does NOT weaken the gate: index.html always points at the NEW
-          // chunks, so what is verified/deployed is unchanged — retained chunks are
-          // extra files, and on a fresh checkout (the release build) there are none
-          // to retain, which is why the release path is deliberately left alone.
-          const b = await exec('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
-            cwd: treeDir,
-            env: { ...env, PAPERCUSP_RETAIN_DIST_CHUNKS: '1' },
-            allowNonZero: true,
-          });
-          buildOk = b.code === 0;
-          if (!buildOk) {
-            buildOut = '\n\n=== SPA BUILD FAILED (@papercusp/operator-vite) — would fail the deploy swap ===\n' + b.stdout + b.stderr;
-          }
-        }
-      }
-      let green = r.code === 0 && typecheckOk && lintMigrationsOk && lintIdentityOk && lintDesignPrimitivesOk && buildOk;
-      const fullOutput = r.stdout + r.stderr + typecheckOut + lintMigrationsOut + lintIdentityOut + lintDesignPrimitivesOut + buildOut;
 
       // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
-      // SUITE is what failed (r.code !== 0; the build only runs on a green suite, so
-      // buildOk is still true here) — a build break is deterministic, never a load-flake.
-      // Re-run each originally-failing FILE in isolation at single concurrency; if EVERY
-      // one passes, the red was box-weather (the 8-fork checkpoint load) and the gate is
-      // GREEN. If any still fails, it's a real break and the gate stays red. Fail-safe:
-      // attemptFlakeAbsorption can only flip red→green on POSITIVE proof, never on error.
-      // This is what AFFECTED_RETRY_FAILED=1 couldn't absorb for runner-aggregate.test.ts
-      // + scheduler-workspace-scope.test.ts (the 2026-06-23 4h gate stall).
+      // SUITE is what failed (r.code !== 0) — a build break is deterministic, never a
+      // load-flake, and on a red suite no post-suite leg has run yet anyway. Re-run each
+      // originally-failing FILE in isolation at single concurrency; if EVERY one passes, the
+      // red was box-weather (the 8-fork checkpoint load). If any still fails, it is a real
+      // break and the gate stays red. Fail-safe: attemptFlakeAbsorption can only flip
+      // red→green on POSITIVE proof, never on error. This is what AFFECTED_RETRY_FAILED=1
+      // couldn't absorb for runner-aggregate.test.ts + scheduler-workspace-scope.test.ts
+      // (the 2026-06-23 4h gate stall).
       let flakeSuspects: string[] | undefined;
       // isolation-retry-resilience-2026-07-19 (EI-15849): the absorber's own note,
       // persisted REGARDLESS of whether it absorbed — see CheckpointDeps.runGreen's
       // isolationNote doc for why (a not-absorbed verdict's reasoning was previously
       // undiagnosable after the fact).
       let isolationNote: string | undefined;
-      if (r.code !== 0 && buildOk) {
+      // WI-6053: did absorption prove the suite's red was flakes? If so the SUITE is no
+      // longer what is failing — but the five legs it skipped have still never run.
+      let suiteAbsorbed = false;
+      if (r.code !== 0) {
         const outcome = await attemptFlakeAbsorption(fullOutput, isolationRun, log, flakeAbsorptionOpts);
         isolationNote = outcome.note;
         if (outcome.absorbedToGreen) {
-          green = true;
+          suiteAbsorbed = true;
           flakeSuspects = outcome.flakeSuspects;
         } else if (isWorkerPoolCrash(fullOutput) && parseFailingFilesByWorkspace(fullOutput).length === 0) {
           // WI-806: a vitest WORKER-POOL crash (a fork OOM/terminate under fleet load) emits
@@ -3062,8 +2880,24 @@ export function realCheckpointDeps(
           const crash = await attemptWorkerCrashAbsorption(fullOutput, workspaceRerun, log);
           isolationNote = crash.note;
           if (crash.absorbedToGreen) {
-            green = true;
+            suiteAbsorbed = true;
             flakeSuspects = crash.flakeSuspects;
+          }
+        }
+
+        if (suiteAbsorbed) {
+          // WI-6053 — THE FIX. Absorption is not a bypass. The suite is now considered
+          // passing, so this candidate must clear exactly the same bar a natively-green one
+          // clears: PAY for the legs the red suite skipped, instead of inheriting their
+          // `true` defaults. Note `green` is ASSIGNED FROM the legs' verdict — the old code
+          // set it to a bare `true` right here, which is precisely how five checks that
+          // never ran became five assumed passes and rode a fast-forward into `main`.
+          legs = await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace);
+          fullOutput += legs.output;
+          green = legs.ok;
+          if (!legs.ok) {
+            const failed = legs.failingSignatures.join(', ') || '@papercusp/operator-vite (SPA build)';
+            log(`suite red was absorbed as a load-flake, but a post-suite leg FAILED — holding the gate: ${failed}`);
           }
         }
       }
@@ -3089,11 +2923,19 @@ export function realCheckpointDeps(
       // P-012: a stable failure signature from the FULL output (before truncation), folding
       // the SPA build break in, so the release-fixer dedups by WHAT failed, not the candidate
       // sha. The de-noised 2000-char tail rides the held-gate broadcast/escalation.
-      let failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
-      if (!typecheckOk && !failingTests.includes('lint:tsc')) failingTests.push('lint:tsc');
-      if (!lintMigrationsOk && !failingTests.includes('lint:migrations')) failingTests.push('lint:migrations');
-      if (!lintIdentityOk && !failingTests.includes('lint:identity-leak')) failingTests.push('lint:identity-leak');
-      if (!lintDesignPrimitivesOk && !failingTests.includes('lint:design-primitives')) failingTests.push('lint:design-primitives');
+      //
+      // WI-6053: score the signature against the LEGS ALONE once the suite has been
+      // absorbed. Absorption's whole claim is that those suite failures were flakes — so
+      // they are not what is red, and attributing them anyway is actively dangerous: the
+      // stale-candidate re-triage below (see the `failingFiles` consumer ~line 2043) re-runs
+      // exactly these files at tip, finds them passing — which absorption already PROVED
+      // they do — and declares the red STALE, re-firing the gate green. That would hand a
+      // real typecheck/lint/build failure a second false-green path into `main`, defeating
+      // the fix above. A non-absorbed run is unchanged: the suite output IS the evidence.
+      const signatureOutput = suiteAbsorbed ? legs.output : fullOutput;
+      const buildOk = legs.build.status !== 'failed';
+      let failingTests = checkpointFailureSignature(signatureOutput, green, buildOk);
+      for (const sig of legs.failingSignatures) if (!failingTests.includes(sig)) failingTests.push(sig);
       let summary = summarizeSuiteOutput(fullOutput);
       if (!green && buildOk && failingTests.length) {
         try {
@@ -3114,7 +2956,7 @@ export function realCheckpointDeps(
       // Workspace-mapped failures for the stale-candidate re-triage (which file, and the
       // cwd to re-run it in). Recomputed from the raw output, not `failingTests`, because
       // the re-triage needs the {workspace,file} pair, not the flat signature.
-      const failingFiles = green ? [] : parseFailingFilesByWorkspace(fullOutput);
+      const failingFiles = green ? [] : parseFailingFilesByWorkspace(signatureOutput);
       return {
         green,
         summary,

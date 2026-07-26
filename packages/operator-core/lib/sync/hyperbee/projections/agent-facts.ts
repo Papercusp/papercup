@@ -49,6 +49,12 @@ export interface AgentFactWireRow {
    *  jsonb, passed through like gym's outcome_record). Sender-attested — same
    *  trust level as body. OPTIONAL on the wire — pre-574 history ops lack it. */
   source_provenance?: Record<string, unknown> | null;
+  /** mig 671 (WI-6052): evidence-strength tier ('verified'|'provisional'|
+   *  'suspected'). CONTENT, same as audience_scope/source_provenance — a
+   *  receiving peer must see the sender's own stated confidence, never
+   *  upgrade it. OPTIONAL on the wire — pre-671 history ops lack it (absent
+   *  ⇒ NULL, the legacy/unbadged shape). */
+  confidence?: string | null;
 }
 
 function isString(v: unknown): v is string {
@@ -59,6 +65,10 @@ function isStringOrNull(v: unknown): v is string | null {
 }
 
 const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'];
+// mig 671 (WI-6052): mirrors store.ts's FACT_CONFIDENCE_LEVELS, replicated
+// locally rather than imported — same style already used for FACT_SCOPES
+// above, keeping this wire-validation module dependency-free of the store.
+const FACT_CONFIDENCES = ['verified', 'provisional', 'suspected'];
 
 export function isAgentFactWireRow(input: unknown): input is AgentFactWireRow {
   if (!input || typeof input !== 'object') return false;
@@ -81,6 +91,13 @@ export function isAgentFactWireRow(input: unknown): input is AgentFactWireRow {
     (typeof r.source_provenance !== 'object' || Array.isArray(r.source_provenance))
   )
     return false;
+  // mig 671 (WI-6052) — optional (pre-671 history ops omit it), but when
+  // present must be a recognized string tier or the op is malformed (never
+  // trust an arbitrary sender-supplied value into the confidence dimension).
+  if (r.confidence !== undefined) {
+    if (!isStringOrNull(r.confidence)) return false;
+    if (r.confidence !== null && !FACT_CONFIDENCES.includes(r.confidence)) return false;
+  }
   return true;
 }
 
@@ -147,17 +164,18 @@ async function writeToPg(
   // postgres-js-jsonb-binding agent-insight); NULL passes through the casts.
   const audienceScope = row.audience_scope ?? null;
   const sourceProvenance = row.source_provenance != null ? JSON.stringify(row.source_provenance) : null;
+  const confidence = row.confidence ?? null;
   await sql`
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref,
        created_by, expires_at, retracted_at, shareable,
-       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance)
+       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance, confidence)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.scope}, ${row.scope_ref},
        ${row.key}, ${row.body}, ${row.source_ref}, ${row.created_by},
        ${row.expires_at}::timestamptz, ${row.retracted_at}::timestamptz, true,
        ${authorPubkey}, ${origin}, ${fedTs}, ${sourceHive},
-       ${audienceScope}, ${sourceProvenance}::text::jsonb)
+       ${audienceScope}, ${sourceProvenance}::text::jsonb, ${confidence})
     ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))
     DO UPDATE SET
       body          = EXCLUDED.body,
@@ -169,6 +187,7 @@ async function writeToPg(
       fed_ts        = EXCLUDED.fed_ts,
       audience_scope    = EXCLUDED.audience_scope,
       source_provenance = EXCLUDED.source_provenance,
+      confidence        = EXCLUDED.confidence,
       updated_at    = now()
     WHERE harness_shared.fed_order_key(NULL, EXCLUDED.fed_ts)
       >= harness_shared.fed_order_key(NULL, harness_shared.agent_facts.fed_ts)
