@@ -44,6 +44,17 @@ export interface SetModeOpts {
   setBy: string;
   /** The human owner explicitly instructed this — arms the sticky flag. */
   ownerDirected?: boolean;
+  /**
+   * The CALLER is a verified owner-authority channel even though this is a
+   * peer-set (setBy !== ownerId) — e.g. the human's admin coord/mode UI
+   * acting on the owner's behalf to set a mode on the agent session they're
+   * chatting with (gui-chat-session-controls-2026-07-25 P-003/P-004). Set
+   * ONLY by the tool layer after verifying the caller identity — never
+   * derived from client-supplied args. Self-set already carries owner
+   * authority implicitly; this widens it to that one additional verified
+   * channel, not to arbitrary agent peers.
+   */
+  callerIsOwnerAuthority?: boolean;
   sql?: Sql;
 }
 

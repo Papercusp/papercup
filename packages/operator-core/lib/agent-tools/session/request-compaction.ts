@@ -39,6 +39,7 @@ import {
   type CheckpointFlushWarning,
 } from '../../enforcement-gate';
 import { runFlushGate } from '../../enforcement-gate-io';
+import { markRespawnExpected } from '../../carry-respawn-marker';
 
 // Re-exported for back-compat: the flush-integrity detector + its shape now live
 // in enforcement-gate.ts (the single source shared with the P-016 enforcement
@@ -309,6 +310,16 @@ export default defineTool({
       systemPromptAddendum: spec.systemPromptAddendum,
       ownerId: identity.ownerId,
     });
+    // EI-18676518990229124 (session-death-claim-release-2026-07-11 P-002 false
+    // positive): the cut we just queued will end THIS process under the SAME
+    // ownerId and relaunch it in seconds — the killed child's ordinary
+    // SessionEnd/Stop hook must NOT be read as "this owner is confirmed dead"
+    // and force-release every work-item lease it holds. Mark the owner
+    // "respawn expected" now (only once the respawn is genuinely queued, i.e.
+    // the socket write succeeded) so report.ts's P-002 branch skips the
+    // release for this transition; a respawn that never lands still frees the
+    // owner's claims via the P-001 scheduled backstop (the marker's short TTL).
+    if (ok) markRespawnExpected(identity.ownerId);
     // EI-8987: the cut is already QUEUED at this point (idle-gated — it fires
     // after THIS turn ends), so a warning here is still actionable: the turn
     // hasn't ended yet, so the agent reading this result can fire one more

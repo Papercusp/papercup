@@ -1,10 +1,11 @@
 /**
- * pipeline-events.test.ts — pure unit coverage for the window-fold logic (mig 177).
- * The append/summarize/recent DB round-trip is covered in
+ * pipeline-events.test.ts — pure unit coverage for the window-fold logic (mig 177) and
+ * the EI-18676650746298156 candidate-prefix matcher. The append/summarize/recent/
+ * findGreenCheckpointVerdictForCandidate DB round-trip is covered in
  * pipeline-events.integration.test.ts (real Postgres).
  */
 import { describe, expect, it } from 'vitest';
-import { foldPipelineWindow, emptyWindow } from './pipeline-events';
+import { foldPipelineWindow, emptyWindow, candidatePrefixMatches } from './pipeline-events';
 
 describe('foldPipelineWindow', () => {
   it('folds (kind,status,count) rows into the typed per-kind summary', () => {
@@ -66,5 +67,51 @@ describe('foldPipelineWindow', () => {
     expect(w.gitSync.total).toBe(0);
     expect(w.mergeResolver.total).toBe(0);
     expect(w.greenCheckpoint.total).toBe(0);
+  });
+});
+
+// EI-18676650746298156: checkpoint:await's candidateSha already-judged latch matches on
+// this function alone — buildCheckpointDetail truncates the WRITTEN `detail.candidate` to
+// 12 chars, and a caller's candidateSha can be anywhere from 4 to 64 chars, so the matcher
+// must work correctly regardless of which side is shorter.
+describe('candidatePrefixMatches — prefix-safe candidate-sha comparison', () => {
+  it('matches a full 40-char sha against its own 12-char stored (truncated) prefix', () => {
+    const full = '94c1234567890abcdef1234567890abcdef12345';
+    const stored = full.slice(0, 12);
+    expect(candidatePrefixMatches(full, stored)).toBe(true);
+  });
+
+  it('matches a short caller-supplied prefix (4 chars, the arg floor) against a longer stored value', () => {
+    expect(candidatePrefixMatches('94c1', '94c1234567')).toBe(true);
+  });
+
+  it('matches two equal-length values', () => {
+    expect(candidatePrefixMatches('94c1234567', '94c1234567')).toBe(true);
+  });
+
+  it('rejects genuinely different candidates even when both are 12 chars', () => {
+    expect(candidatePrefixMatches('94c1234567ab', 'ffffffffffff')).toBe(false);
+  });
+
+  it('rejects a same-length near-miss (differs only in the last char)', () => {
+    expect(candidatePrefixMatches('94c1234567ab', '94c1234567ac')).toBe(false);
+  });
+
+  it('WI-5685 shape: a DIFFERENT (later) candidate that happens to share a short prefix is not conflated once the overlap is long enough to disambiguate', () => {
+    // Two distinct real commits that happen to share their first 4 hex chars but diverge
+    // after that — the exact scenario the 4-char floor exists to still get right once the
+    // compared prefix is long enough to tell them apart.
+    expect(candidatePrefixMatches('94c1aaaaaaaa', '94c1bbbbbbbb')).toBe(false);
+  });
+
+  it('refuses to match below the 4-char floor — never risk a false positive on a coincidental short overlap', () => {
+    expect(candidatePrefixMatches('94c', '94c')).toBe(false);
+    expect(candidatePrefixMatches('9', '9')).toBe(false);
+  });
+
+  it('rejects empty/missing values on either side', () => {
+    expect(candidatePrefixMatches('', 'anything')).toBe(false);
+    expect(candidatePrefixMatches('anything', '')).toBe(false);
+    expect(candidatePrefixMatches('', '')).toBe(false);
   });
 });

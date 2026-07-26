@@ -237,3 +237,103 @@ function normalizeDetail(v: unknown): Record<string, unknown> {
   }
   return {};
 }
+
+/**
+ * EI-18676650746298156: prefix-safe candidate-sha match. `buildCheckpointDetail`
+ * (release-actions.ts) truncates the full candidate sha to 12 chars before writing
+ * `detail.candidate`, and a caller of `checkpoint:await`/this probe may ALSO pass a
+ * shorter prefix (as short as 4 chars — same floor as its `candidateSha` arg). Compare
+ * only the shorter of the two lengths so either truncation still matches the SAME
+ * commit: a full 40-char sha compared against a stored 12-char prefix, or a 4-char
+ * caller prefix compared against a longer stored value, both resolve correctly.
+ * Below 4 chars neither side means anything — refuse rather than risk a false
+ * positive on a coincidental short overlap.
+ */
+export function candidatePrefixMatches(requested: string, stored: string): boolean {
+  if (!requested || !stored) return false;
+  const cmpLen = Math.min(requested.length, stored.length);
+  if (cmpLen < 4) return false;
+  return requested.slice(0, cmpLen) === stored.slice(0, cmpLen);
+}
+
+/** One matched `green_checkpoint` verdict row, as {@link findGreenCheckpointVerdictForCandidate}
+ *  returns it. `detail.green` is the verdict's OWN green/not-green outcome for the EXACT
+ *  candidate matched (not re-derived from `status`, which conflates outcomes like
+ *  'advanced-prefix' — a candidate that stayed RED while an EARLIER prefix advanced instead;
+ *  `buildCheckpointDetail` already carries the right `green` value for the candidate this
+ *  row's `detail.candidate` names, so trust it directly). */
+export interface GreenCheckpointVerdictMatch {
+  status: string;
+  detail: Record<string, unknown>;
+  createdAtMs: number;
+}
+
+/**
+ * EI-18676650746298156: find the newest recorded `green_checkpoint` verdict (any status)
+ * whose `detail.candidate` matches `candidateSha` — the exact-match probe
+ * `checkpoint:await`'s candidateSha needs so a candidate ALREADY judged before the wait
+ * armed doesn't strand the caller for the full timeout (the sibling gap to
+ * EI-18676050719521433's `deploy:await` already-deployed latch). Optionally also
+ * requires `detail.runId` to match exactly (WI-4957 — only needed when two runs might
+ * judge the same candidate).
+ *
+ * DELIBERATELY EXACT, never ancestry-based (WI-5685): a LATER candidate that happens to
+ * contain the requested commit is judged under a DIFFERENT `detail.candidate` value and
+ * will not match here — same as it would not fire `checkpoint:await`'s payload-filtered
+ * key. Conflating the two would silently reintroduce the WI-5685 race while closing this
+ * one; see `checkpoint:await`'s own `candidateSha` arg description for that caveat.
+ *
+ * `installSlug: null` searches across ALL pipelines at once — the `global:true` case,
+ * where `checkpoint:await` arms the unscoped keys. Read-only, bounded (`scanLimit`
+ * caps how many recent green_checkpoint rows are scanned — this candidate match is a JS
+ * loop over a small window, not a jsonb query, to keep the SQL simple and avoid
+ * direction-dependent LIKE patterns), and non-throwing: a query failure returns null,
+ * same fail-soft contract as the rest of this module — this probe must never itself
+ * become a reason `checkpoint:await` fails to arm.
+ */
+export async function findGreenCheckpointVerdictForCandidate(
+  installSlug: string | null,
+  candidateSha: string,
+  opts: { runId?: string; sql?: Sql; scanLimit?: number } = {},
+): Promise<GreenCheckpointVerdictMatch | null> {
+  const scanLimit = Math.min(Math.max(opts.scanLimit ?? 100, 1), 500);
+  try {
+    const rows = installSlug
+      ? await withPgRetry(
+          () => db(opts.sql)<{ status: string; detail: unknown; created_at: Date }[]>`
+            SELECT status, detail, created_at
+              FROM harness_shared.pipeline_events
+             WHERE kind = 'green_checkpoint'
+               AND install_slug = ${installSlug}
+             ORDER BY created_at DESC
+             LIMIT ${scanLimit}
+          `,
+          { label: 'findGreenCheckpointVerdictForCandidate' },
+        )
+      : await withPgRetry(
+          () => db(opts.sql)<{ status: string; detail: unknown; created_at: Date }[]>`
+            SELECT status, detail, created_at
+              FROM harness_shared.pipeline_events
+             WHERE kind = 'green_checkpoint'
+             ORDER BY created_at DESC
+             LIMIT ${scanLimit}
+          `,
+          { label: 'findGreenCheckpointVerdictForCandidate' },
+        );
+    for (const r of rows) {
+      const detail = normalizeDetail(r.detail);
+      const storedCandidate = typeof detail.candidate === 'string' ? detail.candidate : null;
+      if (!storedCandidate || !candidatePrefixMatches(candidateSha, storedCandidate)) continue;
+      if (opts.runId && detail.runId !== opts.runId) continue;
+      return {
+        status: r.status,
+        detail,
+        createdAtMs: r.created_at instanceof Date ? r.created_at.getTime() : new Date(r.created_at).getTime(),
+      };
+    }
+    return null;
+  } catch (e) {
+    console.warn(`[pipeline-events] findGreenCheckpointVerdictForCandidate failed: ${e instanceof Error ? e.message : e}`);
+    return null;
+  }
+}

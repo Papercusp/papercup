@@ -18,6 +18,11 @@
  */
 import type { ReactNode } from 'react';
 import type { CardSpec } from '@papercusp/agent-mcp';
+// askUserLocal (lib/chat-cards/ask-user-local.ts) — the host every params()
+// card is rendered through — is typed `TSchema extends ZodTypeAny`, not
+// CardSpec's generic StandardSchemaV1 default; pin the same bound here so a
+// params() CardSpec type-checks straight into askUserLocal without a cast.
+import type { ZodTypeAny } from 'zod';
 
 /**
  * Context handed to every hook on a ChatAction. Deliberately an open bag
@@ -61,7 +66,7 @@ export interface ChatAction {
    * fetch their option set at click time (e.g. P-005's rubric picker reads
    * `rubrics:list` live).
    */
-  params?(ctx: ChatActionContext): Promise<CardSpec>;
+  params?(ctx: ChatActionContext): Promise<CardSpec<ZodTypeAny>>;
   /** Optional confirm-before-run step, after `params` resolves. */
   confirm?: ChatActionConfirm | ((ctx: ChatActionContext) => ChatActionConfirm | null | undefined);
   /**

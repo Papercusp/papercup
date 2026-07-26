@@ -35,6 +35,7 @@ import { withBoundedTimeout } from "../../bounded-timeout";
 import { CHECKPOINT_MAX_RUNTIME_SEC } from "../../release-checkpoint-launch";
 import { gitPipelinePosition } from "../../git-pipeline-position";
 import { gitPipelineSnapshot } from "../../git-pipeline-stats";
+import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -248,6 +249,38 @@ defineTool({
   },
 });
 
+// EI-18676650746298156: checkpoint:await's candidateSha sibling to
+// EI-18676050719521433's deploy-already-landed latch (deployAlreadyLiveProbe, above). A
+// candidateSha binds via a payload predicate on a FUTURE `release:green`/
+// `green-checkpoint:red` emit — a candidate ALREADY judged before the wait armed produces
+// no future emit to match, so the caller would sleep the FULL (3h+) checkpoint timeout
+// even though the verdict already exists.
+//
+// Unlike the deploy sibling this MUST be an exact-match probe against RECORDED verdicts
+// (harness_shared.pipeline_events, kind='green_checkpoint'), never an ancestry/ready-pin
+// check — WI-5685 is the OPPOSITE failure mode: a LATER candidate that still contains your
+// commit must NOT short-circuit you, because its verdict is for a DIFFERENT candidate than
+// the one you asked about. findGreenCheckpointVerdictForCandidate matches on the recorded
+// `detail.candidate` exactly (prefix-safe both directions), so it can never conflate the
+// two races. Best-effort + time-bounded, same contract as the deploy sibling: an
+// unresolvable probe (timeout, no matching row) falls through to a normal registration,
+// never blocks arming.
+async function checkpointAlreadyJudgedProbe(
+  candidateSha: string,
+  installSlug: string | null,
+  runId?: string,
+): Promise<{ judged: boolean; green: boolean | null; status: string | null; createdAtMs: number | null }> {
+  const match = await findGreenCheckpointVerdictForCandidate(installSlug, candidateSha, { runId });
+  if (!match) return { judged: false, green: null, status: null, createdAtMs: null };
+  const rawGreen = match.detail.green;
+  return {
+    judged: true,
+    green: typeof rawGreen === "boolean" ? rawGreen : null,
+    status: match.status,
+    createdAtMs: match.createdAtMs,
+  };
+}
+
 // ── checkpoint:await — "wake when the green gate resolves" ────────────────────
 defineTool({
   name: "checkpoint:await",
@@ -256,7 +289,7 @@ defineTool({
     // hard cap at 1875 total) — the detailed WI-5685 race-condition explanation now
     // lives ONLY on the candidateSha arg's own .describe() (still full detail there,
     // uncounted by the prompt-weight budget), not duplicated here.
-    "Sleep until the pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held), so you wake either way instead of polling. candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). runId (WI-4957) binds to the exact judging run. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
+    "Sleep until the pipeline green-checkpoint resolves — arms awaits on BOTH release:green:<pipeline> (passed) and green-checkpoint:red:<pipeline> (held), so you wake either way instead of polling. candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). A candidateSha ALREADY judged before you armed returns already_judged immediately instead of a dead wait. runId (WI-4957) binds to the exact judging run. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
@@ -297,7 +330,11 @@ defineTool({
           "EXACT match, not an ancestry check — a LATER candidate that still contains your commit (e.g. the hourly " +
           "cron races ahead and judges a newer tip) will NOT wake you even though its green verdict already covers " +
           "you. If a cron tick could plausibly land before your exact candidate does, omit candidateSha (wake on " +
-          "ANY verdict for this pipeline) and confirm inclusion afterwards with release:trace instead of binding here.",
+          "ANY verdict for this pipeline) and confirm inclusion afterwards with release:trace instead of binding here. " +
+          "EI-18676650746298156: if this EXACT candidate was already judged before you armed (recorded in " +
+          "harness_shared.pipeline_events), you get already_judged:true immediately instead of sleeping to the " +
+          "timeout — this is the same EXACT-match rule as above, so it can never be fooled by a later candidate " +
+          "that merely contains your commit.",
       ),
     runId: z
       .string()
@@ -348,6 +385,36 @@ defineTool({
     // CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC's doc comment for why the generic 30min default
     // strands a caller mid-suite.
     const timeoutSec = args.timeout_sec ?? CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC;
+
+    // EI-18676650746298156: the already-judged latch — see checkpointAlreadyJudgedProbe's
+    // doc above. Only meaningful when candidateSha is given (an unbound wait has no exact
+    // candidate to look up, exactly like deploy:await skipping its probe when sha is omitted).
+    if (args.candidateSha) {
+      const probe = await withBoundedTimeout(
+        checkpointAlreadyJudgedProbe(args.candidateSha, args.global ? null : (pipeline ?? null), args.runId),
+        {
+          fallback: { judged: false, green: null, status: null, createdAtMs: null },
+          timeoutMs: 3_000,
+          label: "checkpoint-await:alreadyJudgedLatch",
+        },
+      );
+      if (probe.value.judged && probe.value.green !== null) {
+        const firedKey = probe.value.green ? keys[0] : keys[1];
+        return reply({
+          ok: true,
+          already_judged: true,
+          green: probe.value.green,
+          status: probe.value.status,
+          event: firedKey,
+          candidateSha: args.candidateSha,
+          judgedAtMs: probe.value.createdAtMs,
+          advice: probe.value.green
+            ? `${args.candidateSha} ALREADY resolved GREEN (status=${probe.value.status}) — its exact "${firedKey}" key already fired when this candidate was judged and will not re-fire for it. Do not wait; proceed with the work that needed the gate green now.`
+            : `${args.candidateSha} ALREADY resolved HELD/RED (status=${probe.value.status}) — its exact "${firedKey}" key already fired when this candidate was judged and will not re-fire for it. Do not wait; go fix the red / handle the hold now (dev:pipeline_position / release:trace for the current failing-test detail).`,
+        });
+      }
+    }
+
     return reply(
       await armAwaits(ctx, keys, note, timeoutSec, {
         payloadFilter,

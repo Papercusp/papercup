@@ -46,6 +46,7 @@ describe('chat-actions registry', () => {
   });
 
   it('a throwing available() is excluded, not fatal to the whole list', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     registerChatAction(
       stub({
         id: 'broken',
@@ -56,6 +57,8 @@ describe('chat-actions registry', () => {
     );
     registerChatAction(stub({ id: 'fine', available: () => true }));
     expect(listChatActions(ctx).map((a) => a.id)).toEqual(['fine']);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('_resetChatActionsForTests clears the registry', () => {

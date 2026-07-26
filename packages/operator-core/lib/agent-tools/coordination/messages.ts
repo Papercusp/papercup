@@ -496,6 +496,53 @@ export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>
 }
 
 /**
+ * EI-18676763837940562 (redundant-inbox-wake-suppression, reply-linkage leg): which of
+ * `msgIds` has `subscriberId` ALREADY REPLIED to — i.e. sent ANY message (not just an
+ * `ack`) whose `related_msg_id` is one of them? A reply is unambiguous proof the recipient
+ * discharged that specific message THEMSELVES (unlike the read-cursor check in
+ * `isInboxWakeGroupRedundant`, which only proves the message predates their last inbox
+ * poll) — the wake-pump's redundant-inbox-wake suppression uses this as a SECOND,
+ * independent discharge signal for the one case its read-cursor check cannot see: a
+ * subscriber who read + replied via the SAME turn a queued wake delivery lands after
+ * (the reply's `related_msg_id` is set at reply time, before the read-cursor watermark this
+ * batch would otherwise need to have observed the read moved past).
+ *
+ * Mirrors `readAckedMsgIds`'s scoping (own-sends only — never a global reply set, which
+ * would let a THIRD party's reply to a broadcast wrongly suppress someone else's still-due
+ * wake) and its DB-first-then-log-fallback shape. Bounded to the given `msgIds` (never a
+ * full-log scan) — cheap even when called on every pump tick.
+ */
+export async function repliedMsgIdsBatch(subscriberId: string, msgIds: readonly string[]): Promise<Set<string>> {
+  const replied = new Set<string>();
+  if (!subscriberId || msgIds.length === 0) return replied;
+  const ids = [...new Set(msgIds)];
+  try {
+    const sql = coordSql();
+    const rows = await sql<{ related_msg_id: string | null }[]>`
+      SELECT body->>'related_msg_id' AS related_msg_id
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND body->>'from' = ${subscriberId}
+         AND body->>'related_msg_id' = ANY(${ids})
+    `;
+    for (const row of rows) {
+      if (typeof row.related_msg_id === 'string') replied.add(row.related_msg_id);
+    }
+  } catch {
+    // Fallback to the slow path if the query fails (mirrors readAckedMsgIds).
+    const lines = await coordLog.readLines('messages');
+    const idSet = new Set(ids);
+    for (const l of lines) {
+      if (l.from === subscriberId && typeof l.related_msg_id === 'string' && idSet.has(l.related_msg_id)) {
+        replied.add(l.related_msg_id);
+      }
+    }
+  }
+  return replied;
+}
+
+/**
  * Read everything `ownerId` SENT — every envelope whose `from === ownerId`,
  * across the whole message log. The outbox half of the per-bee mail view
  * (pui-bee-dossier-pane-2026-06-06). Sorted by ts ascending; `since_ts` filters

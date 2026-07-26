@@ -34,6 +34,7 @@ import {
 import { writeWatermark } from '../coordination/watermarks';
 import { isWorkspaceContended } from '../locks/contention-retry';
 import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release';
+import { consumeRespawnExpected } from '../../carry-respawn-marker';
 import { buildActivityHookBundle } from './hook-bundle';
 import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
 
@@ -206,29 +207,45 @@ export default defineTool({
         );
       }
       if (phase === 'end') {
-        // session-death-claim-release-2026-07-11 P-002 (the FAST PATH): the
-        // SAME SessionEnd/Stop lifecycle event that already fires on every
-        // psu session (hooks/cc/lifecycle-report.sh → THIS call, unchanged)
-        // is the earliest, cheapest signal that `owner`'s process is gone —
-        // force-release every work-item lease + coordination claim it holds
-        // NOW, in seconds, rather than waiting on the ~hourly reap schedule
-        // (P-001, the backstop for the cases this event misses: a SIGKILL, a
-        // raw terminal close that skips the hook, a host crash). Own try/catch
-        // (releaseAllWorkItemLeasesForOwner never throws either) so a release
-        // hiccup can never fail this report or skip the inbox-wake cancel above.
-        try {
-          const rel = await releaseAllWorkItemLeasesForOwner(owner);
-          if (rel.releasedIds.length || rel.claimsCleared) {
-            console.log(
-              `[activity:report] session-end lease release for ${owner}: released ${rel.releasedIds.length} item(s) ` +
-                `[${rel.releasedIds.slice(0, 20).join(',')}${rel.releasedIds.length > 20 ? ',…' : ''}], ` +
-                `cleared ${rel.claimsCleared} claim-ledger row(s)`,
+        // EI-18676518990229124: a carry-respawn (session:request-compaction,
+        // deterministic-context-carry P-018/P-022) ends THIS process under the
+        // SAME ownerId and relaunches it seconds later — that SessionEnd is a
+        // scheduled continuation, not a death, so the P-002 force-release
+        // below must be SKIPPED for it (the marker is set by
+        // request-compaction only once its respawn is genuinely queued; see
+        // carry-respawn-marker.ts for the full incident + evidence). A
+        // respawn that never actually lands still frees the owner's claims
+        // via the P-001 scheduled backstop (the marker's short TTL), so
+        // skipping here trades nothing away for the real-death case.
+        if (consumeRespawnExpected(owner)) {
+          console.log(
+            `[activity:report] session-end lease release SKIPPED for ${owner}: a carry-respawn is expected (same-owner continuation, not a death)`,
+          );
+        } else {
+          // session-death-claim-release-2026-07-11 P-002 (the FAST PATH): the
+          // SAME SessionEnd/Stop lifecycle event that already fires on every
+          // psu session (hooks/cc/lifecycle-report.sh → THIS call, unchanged)
+          // is the earliest, cheapest signal that `owner`'s process is gone —
+          // force-release every work-item lease + coordination claim it holds
+          // NOW, in seconds, rather than waiting on the ~hourly reap schedule
+          // (P-001, the backstop for the cases this event misses: a SIGKILL, a
+          // raw terminal close that skips the hook, a host crash). Own try/catch
+          // (releaseAllWorkItemLeasesForOwner never throws either) so a release
+          // hiccup can never fail this report or skip the inbox-wake cancel above.
+          try {
+            const rel = await releaseAllWorkItemLeasesForOwner(owner);
+            if (rel.releasedIds.length || rel.claimsCleared) {
+              console.log(
+                `[activity:report] session-end lease release for ${owner}: released ${rel.releasedIds.length} item(s) ` +
+                  `[${rel.releasedIds.slice(0, 20).join(',')}${rel.releasedIds.length > 20 ? ',…' : ''}], ` +
+                  `cleared ${rel.claimsCleared} claim-ledger row(s)`,
+              );
+            }
+          } catch (e) {
+            console.warn(
+              `[activity:report] session-end lease release for ${owner} failed: ${e instanceof Error ? e.message : e}`,
             );
           }
-        } catch (e) {
-          console.warn(
-            `[activity:report] session-end lease release for ${owner} failed: ${e instanceof Error ? e.message : e}`,
-          );
         }
       }
     } else if (args.kind !== 'lifecycle') {

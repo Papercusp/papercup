@@ -685,6 +685,39 @@ recent Rust logs to one directory. For the report, include:
 that "looks fine" without a DOM/screenshot/log assertion is
 `INCONCLUSIVE`.
 
+<Aside type="danger" title="For layout/CSS changes, a DOM query is NOT verification — a DOM query cannot see two boxes sitting on top of each other">
+**Incident (gui-chat-session-controls-2026-07-25 P-001, WI-5581/WI-5874):**
+the HUD board's `.hud__card` (and `.hud__count`/`.hud__fleet`) buttons set
+`display: flex` directly on a `<button>` element. WebKitGTK (the Tauri
+desktop webview's actual rendering engine) **ignores** `display: flex`/`grid`
+set on a `<button>` — Chromium honors it. The bug was "verified" by
+querying the DOM for element counts, classes, and computed style tokens —
+every one of those checks passed, because the *structure* was correct. The
+*pixels* were not: the rail and card body silently collapsed on top of each
+other in the real desktop app. Structure-only verification shipped a visibly
+broken UI, and it shipped again the first time (the class itself was already
+a known hazard — see the WebKitGTK Aside on `unexpectedFlexOrGridOnButtonSelectors`
+in `design-primitives.test.ts` — before this incident gave it a second, live,
+owner-screenshotted occurrence).
+
+**The rule this incident makes durable:** whenever the change under
+verification can affect rendered **geometry** — layout (flex/grid/position/
+float), sizing, overflow/clipping, z-index/stacking, or anything CSS that a
+`getComputedStyle()`/`getBoundingClientRect()` read might not fully capture —
+a DOM-only check (element exists, class applied, computed style property
+reads the expected token, child count matches) **does not count as
+verification** and must not be reported `PASS`. Take an actual screenshot
+(`tauri-agent-tools screenshot` for the whole window, or `capture` for the
+full bundle) and **look at the rendered image** before claiming the layout is
+correct — the same rule as any other visual check in this playbook, stated
+explicitly here because a DOM assertion can look like a complete check and
+silently isn't one for this whole class of bug. This applies **on every
+verification pass**, not only after a reported regression — the WebKitGTK
+button-flex hazard in particular reproduces ONLY in the real Tauri/WebKitGTK
+webview, never in jsdom/Chromium-run unit tests, so a green unit-test suite
+is not a substitute either.
+</Aside>
+
 For CI-style assertions inline in a script, prefer `check` — it
 exits 0/1 and prints a structured failure:
 

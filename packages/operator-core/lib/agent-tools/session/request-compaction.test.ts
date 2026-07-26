@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { truncateHint } from './request-compaction';
 import { __resetRefusalMarkers } from '../../enforcement-gate-io';
+import { __resetRespawnExpectedMarkers, consumeRespawnExpected } from '../../carry-respawn-marker';
 
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
@@ -89,6 +90,7 @@ const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 beforeEach(() => {
   vi.clearAllMocks();
   __resetRefusalMarkers(); // P-016 gate marker is module-level — isolate each test
+  __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
   injectIntoHost.mockResolvedValue(true);
   buildCarryBrief.mockResolvedValue(emptyBrief);
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
@@ -192,6 +194,48 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     injectIntoHost.mockResolvedValue(false);
     const b = body(await call({ focus: 'x' }));
     expect(b).toMatchObject({ ok: false, requested: false, respawn: false });
+  });
+});
+
+/**
+ * EI-18676518990229124: a successful carry-respawn must mark the owner
+ * "respawn expected" so activity:report's SessionEnd/Stop P-002 fast path
+ * skips force-releasing its work-item leases (the killed child's SessionEnd
+ * is a scheduled same-owner continuation, not a death). A FAILED respawn
+ * (nothing actually queued) must NOT mark the owner — the P-001 scheduled
+ * backstop remains the correct recovery for that case, unchanged.
+ */
+describe('session:request-compaction — carry-respawn marker (EI-18676518990229124)', () => {
+  it('a successful respawn marks the owner as respawn-expected', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(true);
+    const b = body(await call({ focus: 'x' }));
+    expect(b.ok).toBe(true);
+    expect(consumeRespawnExpected('su-caller')).toBe(true);
+  });
+
+  it('a failed socket write does NOT mark the owner', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(false);
+    await call({ focus: 'x' });
+    expect(consumeRespawnExpected('su-caller')).toBe(false);
+  });
+
+  it('a refused cut (host predates carry-respawn) never marks the owner', async () => {
+    findLiveHost.mockReturnValue(staleHost);
+    await call({ focus: 'x' });
+    expect(consumeRespawnExpected('su-caller')).toBe(false);
+  });
+
+  it('a P-016 flush-gate refusal never marks the owner (nothing was queued)', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id: 'WI-500', title: 'unflushed', body: null, harness: 'papercup', checkpoint: null }],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.error).toBe('flush-required');
+    expect(consumeRespawnExpected('su-caller')).toBe(false);
   });
 });
 

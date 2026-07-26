@@ -45,6 +45,9 @@ import { sessionTimelineToChatMessages } from './session-transcript-mapping';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import { isEscalationWithOptions } from '@/app/admin/plans/attention-card';
+import { ChatActionBar } from './ChatActionBar';
+import { LocalCardHost } from './LocalCardHost';
+import type { ChatActionContext } from '@/lib/chat-actions/types';
 // OtherDetail's styles (pc-items__*, pc-tier/pc-kind badges) — global CSS, so
 // importing it here (as InboxPane already does) makes this modal
 // self-sufficient wherever it's mounted.
@@ -233,6 +236,15 @@ export default function SessionChatModal({
       .finally(() => setSending(false));
   };
 
+  // gui-chat-session-controls-2026-07-25 P-002: the bottom-of-chat action
+  // bar's context bag. Concrete actions (posture P-004, grade P-005, session
+  // actions P-006, identity P-012) extend this via their own ctx fields —
+  // this modal only owns the two fields every action can rely on.
+  const actionCtx: ChatActionContext | null = useMemo(
+    () => (sessionOwnerId ? { sessionOwnerId, ownerLabel } : null),
+    [sessionOwnerId, ownerLabel],
+  );
+
   const agentName = ownerLabel || sessionOwnerId || 'agent session';
   const title = `Chat — ${agentName}`;
 
@@ -289,6 +301,16 @@ export default function SessionChatModal({
           />
         ) : null}
         {sentOk ? <div style={BANNER_STYLE}>Sent — the agent is woken if it's live.</div> : null}
+        {actionCtx && (
+          <>
+            {/* Renders whatever askUserLocal card an action's params()/confirm
+                step opens (P-002 substrate) — the SAME renderer the
+                agent-initiated card path uses, mounted here so action-bar
+                cards appear inline in this modal specifically. */}
+            <LocalCardHost />
+            <ChatActionBar ctx={actionCtx} />
+          </>
+        )}
       </div>
     </Modal>
   );

@@ -37,17 +37,19 @@ import { useMemo, useState } from 'react';
 import type { ComponentType } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, CalendarClock, Coins, Lock, Pause, Play } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Coins, Lock, Pause, Play, Shield } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import type {
   AutomationCatalog,
   AutomationCategory,
+  AutomationGymArm,
+  AutomationLaneArm,
   AutomationRoutine,
 } from '@papercusp/operator-core/lib/automation/catalog';
 
 /** Fire a routine control tool through the gated/audited run-tool bridge (mirrors OverwatchTab). */
 async function runRoutineTool(
-  name: 'routines:set' | 'routines:group-set',
+  name: 'routines:set' | 'routines:group-set' | 'gym:arm' | 'governor:arm',
   args: Record<string, unknown>,
 ): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
@@ -105,6 +107,25 @@ export function scheduleLaneValue(rows: readonly AutomationRoutine[]): string {
   return spenders > 0 ? 'None can spend' : `${rows.length} scheduled`;
 }
 
+/**
+ * The Arming section's headline — how many spend gates are OPEN right now.
+ * Distinct from `scheduleLaneValue` on purpose: that one counts schedules that
+ * can fire, this one counts pots/lanes allowed to SPEND when something fires.
+ * Pure.
+ */
+export function armingLaneValue(gymPots: readonly AutomationGymArm[], lanes: readonly AutomationLaneArm[]): string {
+  const total = gymPots.length + lanes.length;
+  if (total === 0) return 'None registered';
+  const armed = gymPots.filter((g) => g.enabled).length + lanes.filter((l) => l.enabled).length;
+  return armed > 0 ? `${armed} armed` : 'All disarmed';
+}
+
+/** "$12.89 of $50" / "$0 · no budget" — one honest money label per arming row. Pure. */
+export function armBudgetLabel(spentUsd: number, budgetUsd: number | null): string {
+  const money = (n: number) => `$${n >= 100 ? Math.round(n) : n.toFixed(2).replace(/\.00$/, '')}`;
+  return budgetUsd === null ? `${money(spentUsd)} · no budget` : `${money(spentUsd)} of ${money(budgetUsd)}`;
+}
+
 export interface AutomationPaneProps {
   active: boolean;
   /** Which categories this pane owns. Blender → ['learning'], Docs → ['docs']. */
@@ -133,6 +154,9 @@ export default function AutomationPane({
   });
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Budget click-to-edit: which arming row is being edited, and the draft text.
+  // Draft state is render-local (mid-edit), so useState is correct here, not nuqs.
+  const [budgetEdit, setBudgetEdit] = useState<{ key: string; value: string } | null>(null);
 
   // useSyncQuery always yields an ARRAY (SyncQueryResult<T>.data is T[]); the
   // resolver returns a single catalog row, so unwrap it.
@@ -201,6 +225,43 @@ export default function AutomationPane({
     } finally {
       setBusy(null);
     }
+  }
+
+  // ── Arming (spend gates) — Blender only ────────────────────────────────────
+  // The schedule rows above gate WHEN things fire; these gate whether a fire may
+  // SPEND. Rendered only for the learning category (the owner ask that created
+  // this section: "it should be in the blender tab").
+  const showArming = categories.includes('learning');
+  const arming = data?.arming ?? null;
+
+  async function runArm(
+    key: string,
+    tool: 'gym:arm' | 'governor:arm',
+    args: Record<string, unknown>,
+  ): Promise<void> {
+    setBusy(key);
+    setErr(null);
+    try {
+      await runRoutineTool(tool, args);
+      cat.invalidate?.();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** Commit a budget draft: '' clears the budget (null), otherwise a finite ≥0 number. */
+  async function saveBudget(row: { key: string; tool: 'gym:arm' | 'governor:arm'; idArgs: Record<string, unknown> }): Promise<void> {
+    if (!budgetEdit || budgetEdit.key !== row.key) return;
+    const raw = budgetEdit.value.trim();
+    const budgetUsd = raw === '' ? null : Number(raw);
+    if (budgetUsd !== null && (!Number.isFinite(budgetUsd) || budgetUsd < 0)) {
+      setErr(`"${raw}" is not a valid budget — enter a dollar amount, or clear to remove the cap`);
+      return;
+    }
+    setBudgetEdit(null);
+    await runArm(row.key, row.tool, { ...row.idArgs, budgetUsd });
   }
 
   if (!active) return null;
@@ -344,6 +405,110 @@ export default function AutomationPane({
                 </div>
               )}
           </section>
+
+          {/* 3 — the Arming section (P-011, Blender only): the SPEND gates.
+              A schedule row above can be active while its pot/lane here is
+              disarmed — the routine fires and spends nothing. This section is
+              the switch the owner asked for ("it should be in the blender
+              tab"): per-pot gym arming (gym:arm writes BOTH the autoloop config
+              and the gym:<slug> governor row) and per-lane governor arming
+              (governor:arm). */}
+          {showArming && arming && (arming.gymPots.length > 0 || arming.lanes.length > 0) && (
+            <section className="pc-auto__section" data-testid="automation-arming">
+              <div className="pc-auto__section-head">
+                <Shield size={12} aria-hidden />
+                <span className="pc-auto__section-title">Arming — spend gates</span>
+                <span className="pc-auto__count" data-testid="automation-arming-status">
+                  {armingLaneValue(arming.gymPots, arming.lanes)}
+                </span>
+              </div>
+              <div className="pc-auto__list" role="list">
+                {[
+                  ...arming.gymPots.map((g) => ({
+                    key: `gym/${g.harnessSlug}`,
+                    tool: 'gym:arm' as const,
+                    idArgs: { harness: g.harnessSlug },
+                    name: `gym · ${g.harnessSlug}`,
+                    hint: `Gym autoloop for the ${g.harnessSlug} pot — arming writes the autoloop config AND its governor row together`,
+                    enabled: g.enabled,
+                    budgetUsd: g.budgetUsd,
+                    spentUsd: g.spentUsd,
+                    meta: g.status,
+                  })),
+                  ...arming.lanes.map((l) => ({
+                    key: `lane/${l.loopId}`,
+                    tool: 'governor:arm' as const,
+                    idArgs: { loopId: l.loopId },
+                    name: l.displayName,
+                    hint: l.loopId + (l.potSlug ? ` · pot ${l.potSlug}` : ''),
+                    enabled: l.enabled,
+                    budgetUsd: l.budgetUsd,
+                    spentUsd: l.spentUsd,
+                    meta: l.enforcement,
+                  })),
+                ].map((row) => (
+                  <div
+                    key={row.key}
+                    role="listitem"
+                    className={`pc-auto__row${row.enabled ? ' is-active' : ''}`}
+                    data-testid={`arming-row-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
+                  >
+                    <div className="pc-auto__row-main">
+                      <span className="pc-auto__name" title={row.hint}>
+                        {row.name}
+                      </span>
+                      <span className="pc-auto__meta">
+                        {budgetEdit?.key === row.key ? (
+                          <input
+                            className="pc-auto__budget-input"
+                            style={{ width: 64, font: 'inherit' }}
+                            autoFocus
+                            inputMode="decimal"
+                            aria-label={`Budget for ${row.name} (USD; empty clears)`}
+                            value={budgetEdit.value}
+                            onChange={(e) => setBudgetEdit({ key: row.key, value: e.target.value })}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void saveBudget(row);
+                              if (e.key === 'Escape') setBudgetEdit(null);
+                            }}
+                            onBlur={() => setBudgetEdit(null)}
+                            data-testid={`arming-budget-input-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
+                          />
+                        ) : (
+                          <Tooltip label="Click to edit the budget (Enter saves, Esc cancels; empty clears the cap)">
+                            <button
+                              type="button"
+                              className="pc-auto__budget"
+                              style={{ all: 'unset', cursor: 'pointer' }}
+                              disabled={busy !== null}
+                              onClick={() =>
+                                setBudgetEdit({ key: row.key, value: row.budgetUsd === null ? '' : String(row.budgetUsd) })
+                              }
+                              data-testid={`arming-budget-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
+                            >
+                              <Coins size={10} aria-hidden /> {armBudgetLabel(row.spentUsd, row.budgetUsd)}
+                            </button>
+                          </Tooltip>
+                        )}
+                      </span>
+                      <span className="pc-auto__when">{row.meta}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className={`pc-auto__toggle${row.enabled ? ' is-on' : ''}`}
+                      disabled={busy !== null}
+                      aria-pressed={row.enabled}
+                      aria-label={`${row.enabled ? 'Disarm' : 'Arm'} ${row.name}`}
+                      onClick={() => void runArm(row.key, row.tool, { ...row.idArgs, enabled: !row.enabled })}
+                      data-testid={`arming-toggle-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
+                    >
+                      {busy === row.key ? '…' : row.enabled ? <Pause size={12} /> : <Play size={12} />}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       </div>
     </TooltipPrimitive.Provider>

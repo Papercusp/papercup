@@ -71,6 +71,16 @@ vi.mock('../../events/await/store', () => ({
   })),
   findAnnouncementsForKey: vi.fn(async () => []),
   findNearMissKeys: vi.fn(async () => []),
+  // EI-18676056143796303: the orphan-key guard's fire-latch cross-check — mocked as a
+  // genuine "no evidence" answer (fires:0) so `unknownEventKey` behaves exactly as it did
+  // before this cross-check existed (this suite asserts nothing about it either way).
+  probeKeyFireEvidence: vi.fn(async (eventKey: string) => ({
+    prefix: eventKey,
+    exact: false,
+    distinctKeys: 0,
+    fires: 0,
+    lastFiredAt: null,
+  })),
 }));
 
 import emit from './emit';

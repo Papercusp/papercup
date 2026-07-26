@@ -88,12 +88,47 @@ export interface AutomationCategorySummary {
   activeSpawning: number;
 }
 
+/** Per-pot gym arm state (harness_shared.gym_autoloop_config) — armed via gym:arm. */
+export interface AutomationGymArm {
+  harnessSlug: string;
+  enabled: boolean;
+  budgetUsd: number | null;
+  spentUsd: number;
+  status: string;
+}
+
+/** Per-lane learning-governor arm state (harness_shared.learning_governor_loops) — armed via governor:arm. */
+export interface AutomationLaneArm {
+  loopId: string;
+  displayName: string;
+  potSlug: string | null;
+  enabled: boolean;
+  budgetUsd: number | null;
+  spentUsd: number;
+  enforcement: string;
+}
+
+/**
+ * The SPEND-GATING layer, distinct from the schedule layer above (P-011): a
+ * routine can be active while its pot/lane is disarmed (fires, spends nothing)
+ * and vice versa. `gym:*` governor rows are deliberately folded into `gymPots`
+ * (via gym_autoloop_config) rather than listed as lanes — gym arming writes both
+ * layers through gym:arm, and the dozens of disabled `gym:<dead-test-pot>` rows
+ * would otherwise swamp the list.
+ */
+export interface AutomationArming {
+  gymPots: AutomationGymArm[];
+  lanes: AutomationLaneArm[];
+}
+
 export interface AutomationCatalog {
   routines: AutomationRoutine[];
   categories: AutomationCategorySummary[];
   /** 7-day spend by agent role. NOT attributable per-routine — see module header. */
   spend7d: AutomationRoleSpend[];
   spend7dTotalUsd: number;
+  /** Arming (spend-gate) state for the Blender pane's Arming section. */
+  arming: AutomationArming;
   generatedAt: string;
 }
 
@@ -322,11 +357,53 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       lastSeenAt: r.last_ts ? new Date(Number(r.last_ts)).toISOString() : null,
     }));
 
+  // Arming (spend-gate) state — same degrade-to-empty posture as the schedule
+  // inventory above: a partial pane beats a pane that fails to load.
+  let arming: AutomationArming = { gymPots: [], lanes: [] };
+  try {
+    const gymRows = await sql<
+      Array<{ harness_slug: string; enabled: boolean; budget_usd: number | null; spent_usd: number | null; status: string | null }>
+    >`
+      SELECT harness_slug, enabled, budget_usd, spent_usd, status
+        FROM harness_shared.gym_autoloop_config
+       WHERE workspace_id = ${ws}
+       ORDER BY enabled DESC, harness_slug ASC`;
+    const laneRows = await sql<
+      Array<{ loop_id: string; display_name: string | null; pot_slug: string | null; enabled: boolean; budget_usd: string | null; spent_usd: string | null; enforcement: string | null }>
+    >`
+      SELECT loop_id, display_name, pot_slug, enabled, budget_usd, spent_usd, enforcement
+        FROM harness_shared.learning_governor_loops
+       WHERE workspace_id = ${ws}
+         AND loop_id NOT LIKE 'gym:%'
+       ORDER BY enabled DESC, loop_id ASC`;
+    arming = {
+      gymPots: gymRows.map((r) => ({
+        harnessSlug: r.harness_slug,
+        enabled: r.enabled === true,
+        budgetUsd: r.budget_usd === null ? null : Number(r.budget_usd),
+        spentUsd: Number(r.spent_usd ?? 0) || 0,
+        status: r.status ?? 'idle',
+      })),
+      lanes: laneRows.map((r) => ({
+        loopId: r.loop_id,
+        displayName: r.display_name ?? r.loop_id,
+        potSlug: r.pot_slug,
+        enabled: r.enabled === true,
+        budgetUsd: r.budget_usd === null ? null : Number(r.budget_usd),
+        spentUsd: Number(r.spent_usd ?? 0) || 0,
+        enforcement: r.enforcement ?? 'governor',
+      })),
+    };
+  } catch {
+    /* degrade: arming section renders empty, schedule section still loads */
+  }
+
   return {
     routines: allRoutines,
     categories,
     spend7d,
     spend7dTotalUsd: spend7d.reduce((a, b) => a + b.costUsd, 0),
+    arming,
     generatedAt: new Date().toISOString(),
   };
 }
