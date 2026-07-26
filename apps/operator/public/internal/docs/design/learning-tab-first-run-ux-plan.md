@@ -1,13 +1,13 @@
 # Learning tab first-run UX — design memo (P-009, for owner review)
 URL: /internal/docs/design/learning-tab-first-run-ux-plan
 
-Design-shape proposal for the Learning tab's public first-run experience: progressive disclosure over the 17 views, teaching empty states, lexicon glosses, and a first-run orientation banner. Present to Avi before building (P-009).
+Design-shape proposal for the Learning tab's public first-run experience: progressive disclosure over the 17 views, teaching empty states, lexicon glosses, and a first-run orientation banner. Present to the owner before building (P-009).
 
 # Learning tab first-run UX — design memo (P-009)
 
 > **Status: DRAFT for owner review** — P-009's contract is *present the design
-> before building*. Nothing here is implemented. Build starts only after Avi
-> reviews (and after P-006 re-certification closes).
+> before building*. Nothing here is implemented. Build starts only after the
+> owner reviews (and after P-006 re-certification closes).
 
 ## The problem, from a first-run public user's seat
 

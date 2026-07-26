@@ -6,6 +6,7 @@ import { VERDICT_SPEAKING_FRESH_MS } from '../../agent-tools/fleet/assignments';
 import { getSystemAction } from './system-actions';
 import {
   DEFAULT_HALT_IDLE_MS,
+  DEFAULT_HALT_MAX_IDLE_MS,
   DEFAULT_RESCUE_THROTTLE_MS,
   MAX_RESCUES_PER_TICK,
   RESCUE_PREFIX,
@@ -15,99 +16,127 @@ import {
 } from './unguarded-halt-rescue-action';
 
 const NOW = 1_700_000_000_000;
-const STALE = 5 * 60_000;
 const IDLE = 15 * 60_000;
-const OPTS = { staleMs: STALE, idleMs: IDLE };
+const MAX_IDLE = 6 * 60 * 60_000;
+const OPTS = { idleMs: IDLE, maxIdleMs: MAX_IDLE };
+const ACTIVE = new Set(['drain-fleet']);
+const NONE = new Set<string>();
 
-/** Default candidate: process alive, and idle long enough to be a real halt. */
-function candidate(
-  agentId: string,
-  over: Partial<HaltCandidate> = {},
-): HaltCandidate {
+/** Default: an empty-handed member of an ACTIVE fleet, idle inside the window. */
+function candidate(agentId: string, over: Partial<HaltCandidate> = {}): HaltCandidate {
   return {
     agentId,
-    workspaceId: 'ws',
-    heartbeatMs: NOW - 1_000,
-    lastToolCallMs: NOW - (IDLE + 1_000),
+    fleetSlug: 'drain-fleet',
+    load: 0,
+    lastToolCallMs: NOW - (IDLE + 60_000),
     ...over,
   };
 }
 
-describe('unguarded-halt rescue — candidate selection (WI-6054)', () => {
-  it('sweeps a live-but-idle agent — heartbeat fresh, no turn for well over the idle window', () => {
-    const got = selectSweepCandidates([candidate('a')], new Set(), NOW, OPTS);
+describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', () => {
+  it('sweeps an empty-handed member of an active fleet, idle inside the window', () => {
+    const got = selectSweepCandidates([candidate('a')], NONE, ACTIVE, NOW, OPTS);
     expect(got.map((c) => c.agentId)).toEqual(['a']);
   });
 
-  it('skips an agent whose heartbeat is stale — a dead session is the reaper\'s job, not a wake target', () => {
+  /**
+   * THE WAKE-STORM CLASS. Measured on live data: 30+ agents had made no tool call
+   * for 6-9 DAYS while still heartbeating every ~50s, and read
+   * state='parked', wakeable=true — INDISTINGUISHABLE from a real orphan on every
+   * liveness surface. Only the fleet-active + idle-upper-bound conjuncts exclude
+   * them. Each spurious wake is a real billable turn.
+   */
+  it('does NOT wake a 9-day-abandoned session (past the idle upper bound)', () => {
+    const nineDays = 9 * 24 * 60 * 60_000;
     const got = selectSweepCandidates(
-      [candidate('a', { heartbeatMs: NOW - (STALE + 1) })],
-      new Set(),
+      [candidate('zombie', { lastToolCallMs: NOW - nineDays })],
+      NONE,
+      ACTIVE,
       NOW,
       OPTS,
     );
     expect(got).toEqual([]);
   });
 
-  it('skips an agent with no heartbeat at all', () => {
-    const got = selectSweepCandidates([candidate('a', { heartbeatMs: null })], new Set(), NOW, OPTS);
+  it('does NOT wake a member whose fleet is winding down or unknown', () => {
+    const got = selectSweepCandidates([candidate('a')], NONE, NONE, NOW, OPTS);
+    expect(got).toEqual([]);
+  });
+
+  it('does NOT wake a non-member (no fleet at all)', () => {
+    const got = selectSweepCandidates([candidate('a', { fleetSlug: null })], NONE, ACTIVE, NOW, OPTS);
+    expect(got).toEqual([]);
+  });
+
+  it('does NOT wake an agent that still holds work — it has something to resume', () => {
+    const got = selectSweepCandidates([candidate('a', { load: 1 })], NONE, ACTIVE, NOW, OPTS);
     expect(got).toEqual([]);
   });
 
   /**
-   * THE FALSE-POSITIVE CLASS. A busy agent has autonomous mode, no armed loop and
-   * no await — identical to a halted one on those three signals — because it does
-   * not NEED a wake source while it is taking turns. Heartbeat cannot separate
-   * them either: a halted agent keeps heartbeating (the observed orphans read
-   * heartbeatFresh:true with lastActive 3-4h ago). Only turn-recency can.
-   * Waking a working agent is a spurious billable interruption.
+   * A working agent has autonomous mode, no armed loop and no await — identical to
+   * a halted one on those signals — because it does not NEED a wake source while
+   * it is taking turns. Only turn-recency separates them.
    */
   it('does NOT wake an agent that is mid-turn', () => {
     const got = selectSweepCandidates(
       [candidate('busy', { lastToolCallMs: NOW - 30_000 })],
-      new Set(),
+      NONE,
+      ACTIVE,
       NOW,
       OPTS,
     );
     expect(got).toEqual([]);
   });
 
-  it('does NOT wake an agent inside a long single call (build / test suite) below the idle window', () => {
+  it('does NOT wake an agent inside a long single call (build / test suite)', () => {
     // 6 min of silence: past the 5-min "speaking" window, but plainly still working.
     const got = selectSweepCandidates(
       [candidate('building', { lastToolCallMs: NOW - 6 * 60_000 })],
-      new Set(),
+      NONE,
+      ACTIVE,
       NOW,
       OPTS,
     );
     expect(got).toEqual([]);
   });
 
-  it('skips an agent that has never made a tool call — no turn taken, so no halt to rescue', () => {
-    const got = selectSweepCandidates([candidate('a', { lastToolCallMs: null })], new Set(), NOW, OPTS);
+  it('skips an agent that has never made a tool call — no turn taken, so no halt', () => {
+    const got = selectSweepCandidates([candidate('a', { lastToolCallMs: null })], NONE, ACTIVE, NOW, OPTS);
     expect(got).toEqual([]);
   });
 
-  it('uses an idle window well beyond the speaking window, so a long call is never mistaken for a halt', () => {
-    expect(DEFAULT_HALT_IDLE_MS).toBeGreaterThan(VERDICT_SPEAKING_FRESH_MS * 2);
-  });
-
   it('skips an agent rescued within the throttle window, so a rescue never becomes a wake loop', () => {
-    const got = selectSweepCandidates([candidate('a')], new Set(['a']), NOW, OPTS);
+    const got = selectSweepCandidates([candidate('a')], new Set(['a']), ACTIVE, NOW, OPTS);
     expect(got).toEqual([]);
   });
 
   it('orders deterministically so a capped tick never starves the same agent', () => {
     const got = selectSweepCandidates(
       [candidate('c'), candidate('a'), candidate('b')],
-      new Set(),
+      NONE,
+      ACTIVE,
       NOW,
       OPTS,
     );
     expect(got.map((c) => c.agentId)).toEqual(['a', 'b', 'c']);
   });
+});
 
-  it('bounds wake cost by default', () => {
+describe('unguarded-halt rescue — bounds', () => {
+  it('uses an idle floor well beyond the speaking window, so a long call is never a "halt"', () => {
+    expect(DEFAULT_HALT_IDLE_MS).toBeGreaterThan(VERDICT_SPEAKING_FRESH_MS * 2);
+  });
+
+  it('bounds idleness ABOVE, so abandoned sessions are the reaper\'s job and never woken', () => {
+    expect(DEFAULT_HALT_MAX_IDLE_MS).toBeGreaterThan(DEFAULT_HALT_IDLE_MS);
+    // Must comfortably cover a real halt (the observed orphans were 3.3-4.1h idle)…
+    expect(DEFAULT_HALT_MAX_IDLE_MS).toBeGreaterThanOrEqual(5 * 60 * 60_000);
+    // …and fall far short of the 6-9-day heartbeating population.
+    expect(DEFAULT_HALT_MAX_IDLE_MS).toBeLessThan(24 * 60 * 60_000);
+  });
+
+  it('bounds wake cost per agent and per tick', () => {
     expect(DEFAULT_RESCUE_THROTTLE_MS).toBe(60 * 60 * 1000);
     expect(MAX_RESCUES_PER_TICK).toBeGreaterThan(0);
     expect(MAX_RESCUES_PER_TICK).toBeLessThanOrEqual(25);
@@ -115,10 +144,9 @@ describe('unguarded-halt rescue — candidate selection (WI-6054)', () => {
 });
 
 describe('unguarded-halt rescue — the halt predicate it acts on', () => {
-  // These pin the exact condition that stranded 4 of 10 members of
-  // nonp2p-bug-drain-0725 for 3.3-4.1h. The predicate lives in
-  // turn-end-tracking (one definition, shared with the agent-side warning);
-  // these assert the rescue routine is acting on the RIGHT one.
+  // Pins the exact condition that stranded 4 of 10 members for 3.3-4.1h. The
+  // predicate lives in turn-end-tracking (ONE definition, shared with the
+  // agent-side warning); these assert the routine acts on the RIGHT one.
   const halted = { autonomousModeActive: true, loopActive: false, activeAwaitCount: 0 };
 
   it('flags an autonomous agent with no loop and no real await', () => {
@@ -143,17 +171,20 @@ describe('unguarded-halt rescue — wiring', () => {
     expect(getSystemAction('unguarded-halt-rescue')).toBeTypeOf('function');
   });
 
-  it('tells a rescued agent to re-measure rather than trust its stale drained verdict', () => {
-    const body = rescueBody();
-    expect(body).toContain('work_items:claimable');
+  it('tells the agent work is actually waiting, and how to re-arm', () => {
+    const body = rescueBody('drain-fleet', 13);
+    expect(body).toContain('13 item(s) are claimable');
+    expect(body).toContain('drain-fleet');
+    expect(body).toContain('scheduler:get_next');
     expect(body).toContain('loop:arm');
-    // The rescue must not read as a peer message — an agent that thinks a human
-    // pinged it will reply instead of resuming work.
-    expect(body).toContain('system-side unguarded-halt sweep');
+    // Must not read as a peer message — an agent that thinks a human pinged it
+    // will reply instead of resuming work.
+    expect(body).toContain('there is no one to reply to');
   });
 
   it('marks its own outbox rows so the throttle can find them', () => {
     expect(RESCUE_PREFIX.length).toBeGreaterThan(0);
+    expect(rescueBody('f', 1)).not.toContain(RESCUE_PREFIX);
   });
 
   /**
