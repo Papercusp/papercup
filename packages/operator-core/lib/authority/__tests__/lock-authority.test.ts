@@ -89,11 +89,50 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
   // A fake tagged-template `sql` that records each query's text + interpolated
   // values and returns canned rows — lets these pure tests assert the SQL shape
   // (the new `last_seen_at >=` predicate) without a real Postgres.
+  //
+  // EI-18714245790501659: production code now composes queries with postgres.js's
+  // ternary-fragment idiom (`cond ? sql\`AND x = ${v}\` : sql\`\``, embedded as a
+  // value in an outer sql`` template). Real postgres.js recognizes a nested sql``
+  // call and splices its own literal text + bound values into the outer query
+  // instead of binding it as an opaque parameter — so this mock must do the same
+  // (flattenTemplate) rather than record the fragment as a single value, or a
+  // top-level `await` on a never-embedded inner fragment would double-count calls.
+  interface SqlFragment {
+    __fragment: true;
+    strings: TemplateStringsArray;
+    values: unknown[];
+  }
+
+  function flattenTemplate(strings: TemplateStringsArray, values: unknown[]): { text: string; values: unknown[] } {
+    let text = strings[0];
+    const out: unknown[] = [];
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i];
+      if (v && typeof v === 'object' && (v as Partial<SqlFragment>).__fragment) {
+        const frag = v as SqlFragment;
+        const inner = flattenTemplate(frag.strings, frag.values);
+        text += inner.text;
+        out.push(...inner.values);
+      } else {
+        text += '§';
+        out.push(v);
+      }
+      text += strings[i + 1];
+    }
+    return { text, values: out };
+  }
+
   function recordingSql(rows: unknown[]) {
     const calls: { text: string; values: unknown[] }[] = [];
-    const sql = (<T,>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> => {
-      calls.push({ text: strings.join('§'), values });
-      return Promise.resolve(rows as T);
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const fragment: SqlFragment = { __fragment: true, strings, values };
+      return {
+        ...fragment,
+        then(onResolve: (v: unknown) => void, onReject?: (e: unknown) => void) {
+          calls.push(flattenTemplate(strings, values));
+          return Promise.resolve(rows).then(onResolve, onReject);
+        },
+      };
     }) as never;
     return { sql, calls };
   }
@@ -106,9 +145,12 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
     expect(calls).toHaveLength(1);
     expect(calls[0].text).toMatch(/harness_slug =/);
     expect(calls[0].text).toMatch(/last_seen_at\s*>=\s*now\(\)\s*-\s*make_interval/);
-    // values = [harnessSlug, workspaceId(null,IS-NULL branch), workspaceId(null,eq branch), looseWindowSecs];
-    // loose cutoff = 2×90s = 180s. workspaceId omitted → both null (WI-6032 no-op predicate).
-    expect(calls[0].values).toEqual(['h', null, null, 180]);
+    // values = [harnessSlug, looseWindowSecs]; loose cutoff = 2×90s = 180s.
+    // workspaceId omitted → the workspace_id predicate is OMITTED entirely
+    // (EI-18714245790501659: no un-foldable parameterized-NULL OR, so no
+    // workspaceId value at all rather than a WI-6032-era duplicated null).
+    expect(calls[0].values).toEqual(['h', 180]);
+    expect(calls[0].text).not.toMatch(/workspace_id/);
     // BIGINT→string columns are still coerced to numbers.
     expect(out).toEqual([{ device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: 123 }]);
   });
@@ -117,7 +159,9 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
     const { sql, calls } = recordingSql([]);
     await queryPresenceRows(sql, 'h', 90_000, 'ws-1');
     expect(calls[0].text).toMatch(/workspace_id = /);
-    expect(calls[0].values).toEqual(['h', 'ws-1', 'ws-1', 180]);
+    // EI-18714245790501659: a single bound occurrence now, not the old duplicated
+    // (IS-NULL branch, eq branch) pair.
+    expect(calls[0].values).toEqual(['h', 'ws-1', 180]);
   });
 
   it('hive query adds the same loose predicate, scoped on hive_slug', async () => {
@@ -125,20 +169,21 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
     await queryPresenceRowsForHive(sql, 'my-hive', 10_000);
     expect(calls[0].text).toMatch(/pot_slug =/);
     expect(calls[0].text).toMatch(/last_seen_at\s*>=\s*now\(\)\s*-\s*make_interval/);
-    expect(calls[0].values).toEqual(['my-hive', null, null, 20]); // 2×10s, workspaceId omitted
+    expect(calls[0].values).toEqual(['my-hive', 20]); // 2×10s, workspaceId omitted → predicate omitted
+    expect(calls[0].text).not.toMatch(/workspace_id/);
   });
 
   it('WI-6032: hive query filters on workspace_id when passed', async () => {
     const { sql, calls } = recordingSql([]);
     await queryPresenceRowsForHive(sql, 'my-hive', 10_000, 'ws-2');
     expect(calls[0].text).toMatch(/workspace_id = /);
-    expect(calls[0].values).toEqual(['my-hive', 'ws-2', 'ws-2', 20]);
+    expect(calls[0].values).toEqual(['my-hive', 'ws-2', 20]);
   });
 
   it('defaults the loose window to 2× the DEFAULT staleness window when staleMs is omitted', async () => {
     const { sql, calls } = recordingSql([]);
     await queryPresenceRows(sql, 'h');
-    expect(calls[0].values[3]).toBe((2 * DEFAULT_AUTHORITY_STALE_MS) / 1000); // 180
+    expect(calls[0].values[1]).toBe((2 * DEFAULT_AUTHORITY_STALE_MS) / 1000); // 180
   });
 
   it('the loose pre-filter never changes the argmin — selection is byte-identical to the un-pre-filtered set', async () => {

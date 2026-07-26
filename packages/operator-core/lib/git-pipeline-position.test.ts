@@ -23,14 +23,40 @@ function fakeGit(opts: {
    *  so a test can simulate a stale LOCAL origin/staging ref (contains says
    *  not-present) disagreeing with the true remote tip. */
   remoteStagingTip?: string;
+  /**
+   * EI-18715870370005934: models the SUBMODULE BOUNDARY faithfully — the
+   * superproject stores a gitlink (mode 160000), never submodule file content.
+   * So inside the submodule repo a superproject sha does NOT resolve (rev-parse
+   * fails) and `git show <superSha>:<submodulePath>` yields nothing, while
+   * `git ls-tree <superSha> <submodulePath>` in the ROOT reports the pin.
+   */
+  submodulePin?: { superSha: string; pinnedSha: string; path: string };
 }): GitRunner {
+  const root = '/repo';
   return async (_repo, args) => {
     if (args[0] === 'config' && args.includes('.gitmodules')) {
       const subs = opts.submodules ?? [];
       return subs.length ? subs.map((p, i) => `submodule.s${i}.path ${p}`).join('\n') : null;
     }
     if (args[0] === 'status') return opts.dirty ? 'M somefile' : '';
-    if (args[0] === 'rev-parse') return args[args.length - 1].replace('^{commit}', '');
+    // The gitlink read that IS the ground truth across the boundary.
+    if (args[0] === 'ls-tree') {
+      const pin = opts.submodulePin;
+      if (pin && _repo === root && args[1] === pin.superSha && args[2] === pin.path) {
+        return `160000 commit ${pin.pinnedSha}\t${pin.path}`;
+      }
+      return null;
+    }
+    // The naive cross-boundary content probe: empty, because the superproject
+    // commit holds a gitlink, not the file. `realGit` turns git's non-zero exit
+    // into null, so null is the faithful stand-in for "grep -c => 0".
+    if (args[0] === 'show') return null;
+    if (args[0] === 'rev-parse') {
+      const want = args[args.length - 1].replace('^{commit}', '');
+      // A SUPERPROJECT sha does not exist in the submodule's object store.
+      if (opts.submodulePin && _repo !== root && want === opts.submodulePin.superSha) return null;
+      return want;
+    }
     if (args[0] === 'log' && args.includes('--pretty=%H')) return opts.pathCommit ?? null;
     if (args[0] === 'log' && args.includes('--pretty=%s')) return opts.subject ?? 'subj';
     if (args[0] === 'rev-list' && args[1] === '--count') {
@@ -306,6 +332,7 @@ describe('gitPipelinePosition (P-002)', () => {
       input: { path: 'a.ts', sha: null },
       repoRoot: '/repo',
       submodule: null,
+      submodulePin: null,
       targetSha: 'aaaaaaa',
       targetShortSha: 'aaaaaaa',
       targetSubject: 'subj',

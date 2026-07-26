@@ -310,6 +310,11 @@ import './test-webview-reaper-action';
 // next task spawns fresh. Flag-gated DEFAULT-OFF + seeded INACTIVE (double-gated).
 import './bee-transcript-cap-action';
 import './claim-discipline-action';
+// WI-6054 (turn-end-tracking P-016): the SYSTEM-side unguarded-halt sweep. The
+// detector's only caller was the agent-invoked `journal:record-turn`, so it never
+// fired for an agent that simply stopped. This runs the same sweep from a system
+// path and WAKES halted agents. Flag-gated DEFAULT-ON; throttled + capped.
+import './unguarded-halt-rescue-action';
 import './wake-brain-action';
 import './gym-actions';
 import '../../interactive-usage/interactive-usage-action';

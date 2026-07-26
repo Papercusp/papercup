@@ -474,6 +474,137 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
     expect(r.green).toBe(false);
   });
+
+  // ── WI-6053 ────────────────────────────────────────────────────────────────
+  // Every post-suite leg (typecheck, the 3 identity lints, lint:migrations,
+  // lint:design-primitives, the SPA build) used to be gated on `r.code === 0` while its
+  // `*Ok` flag DEFAULTED TO `true`. So on a red suite they all skipped and stayed
+  // "passed", and flake-absorption then set `green = true` without re-running or
+  // re-checking any of them: an absorbed-green candidate was fast-forwarded to `main`
+  // with five legs merely ASSUMED. That is how afdbda332b's operator-core type errors
+  // reached `main` (2026-07-26). An absorbed-green candidate must clear the SAME bar as
+  // a natively-green one — "never ran" must never render as "passed".
+  describe('WI-6053: an absorbed-green candidate must still clear every post-suite leg', () => {
+    it('red suite → absorbed → FAILING typecheck still comes out RED (the leg runs after absorption)', async () => {
+      // call 0: suite red. calls 1-2: both files pass in isolation → absorbed.
+      // call 3: the typecheck leg — which previously never ran at all — FAILS.
+      const { exec, calls } = makeExec([
+        { code: 1, stdout: RED_OUTPUT },
+        { code: 0 },
+        { code: 0 },
+        { code: 1, stdout: 'operator-core/lib/broken.ts: TS2322' },
+      ]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, 'base-sha');
+
+      expect(r.green).toBe(false); // the whole point: absorption is not a bypass
+      expect(r.failingTests).toContain('lint:tsc');
+      expect(r.summary).toContain('TYPECHECK FAILED');
+      // the leg genuinely EXECUTED post-absorption (not merely assumed), in the
+      // candidate tree, with the stripped gate env.
+      expect(calls).toHaveLength(4);
+      expect(calls[3].cmd).toBe('npm');
+      expect(calls[3].args).toEqual(['run', 'lint:tsc']);
+      expect(calls[3].opts?.cwd).toBe(typecheckTree);
+      expect(calls[3].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+      // ...and the SPA build is still skipped behind the failing leg.
+    });
+
+    it('the post-absorption red is attributed to the LEG, not to the absorbed flake files (else the tip re-triage clears it as STALE)', async () => {
+      // Compounding hazard: runGreen's `failingFiles` drives the stale-candidate
+      // re-triage (green-checkpoint.ts :2043) — it re-runs those files at tip and, if
+      // they pass, declares the red STALE and re-fires green. The absorbed files pass
+      // BY DEFINITION (that is what absorption proved), so leaking them here would hand
+      // the typecheck red a second false-green path straight to `main`.
+      const { exec } = makeExec([
+        { code: 1, stdout: RED_OUTPUT },
+        { code: 0 },
+        { code: 0 },
+        { code: 1, stdout: 'operator-core/lib/broken.ts: TS2322' },
+      ]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, null);
+
+      expect(r.green).toBe(false);
+      expect(r.failingFiles ?? []).toEqual([]); // no test file is failing — the LEG is
+      expect(r.failingTests).toEqual(['lint:tsc']);
+      expect(r.failingTests).not.toContain('lib/llm-testing/__tests__/runner-aggregate.test.ts');
+    });
+
+    it('red suite → absorbed → all legs PASS → green, with the legs actually run and the flake suspects preserved', async () => {
+      // Guards the opposite failure: the fix must not turn every absorbed candidate red,
+      // and must not disable flake absorption (it exists for real 8-fork load flakes).
+      // call 0: red suite. 1-2: isolation passes. 3: lint:tsc green.
+      // 4: conflict-marker grep clean (code 1). 5: SPA build green.
+      const { exec, calls } = makeExec([
+        { code: 1, stdout: RED_OUTPUT },
+        { code: 0 },
+        { code: 0 },
+        { code: 0 },
+        { code: 1 },
+        { code: 0 },
+      ]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, 'base-sha');
+
+      expect(r.green).toBe(true);
+      expect(r.flakeSuspects).toEqual([
+        '@papercusp/operator-core::lib/llm-testing/__tests__/runner-aggregate.test.ts',
+        '@papercusp/operator-core::lib/scout/scheduler-workspace-scope.test.ts',
+      ]);
+      expect(calls).toHaveLength(6);
+      expect(calls[3].args).toEqual(['run', 'lint:tsc']);
+      expect(calls[4].cmd).toBe('git'); // marker grep
+      expect(calls[5].args).toContain('build'); // the SPA build DID run
+    });
+
+    it('red suite → absorbed → FAILING SPA build still comes out RED', async () => {
+      // The build is the leg the original comment explicitly assumed safe ("the build
+      // only runs on a green suite, so buildOk is still true here") — which is exactly
+      // why an absorbed candidate shipped with it never having been built.
+      const { exec, calls } = makeExec([
+        { code: 1, stdout: RED_OUTPUT },
+        { code: 0 },
+        { code: 0 },
+        { code: 1 }, // marker grep clean
+        { code: 1, stdout: 'vite: bundle failed' },
+      ]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
+
+      expect(r.green).toBe(false);
+      expect(r.failingTests).toContain('@papercusp/operator-vite');
+      expect(r.summary).toContain('vite: bundle failed');
+      expect(calls).toHaveLength(5);
+    });
+
+    it('worker-crash absorption takes the same path: crash absorbed → FAILING typecheck still RED', async () => {
+      // The second absorber (green-checkpoint.ts :2783) had an identical hole.
+      const { exec, calls } = makeExec([
+        { code: 1, stdout: CRASH_OUTPUT },
+        { code: 0 }, // workspace re-run passes → absorbed
+        { code: 1, stdout: 'operator-core/lib/broken.ts: TS2322' },
+      ]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, null);
+
+      expect(r.green).toBe(false);
+      expect(r.failingTests).toContain('lint:tsc');
+      expect(calls).toHaveLength(3);
+      expect(calls[2].args).toEqual(['run', 'lint:tsc']);
+    });
+
+    it('a NON-absorbed red suite still short-circuits — no leg is run on a genuinely red suite', async () => {
+      // The legs are the price of claiming green; a red that stays red must not pay it
+      // (a full typecheck + 3 lints + an SPA build on every red tick is real gate time).
+      const { exec, calls } = makeExec([
+        { code: 1, stdout: RED_OUTPUT },
+        { code: 0 }, // file #1 passes
+        { code: 1 }, // file #2 still fails → NOT absorbed
+        { code: 1 }, // ...and its ISOLATION_RETRY_MAX retry fails too
+      ]);
+      const r = await realCheckpointDeps(cfg, exec, undefined, { sleep: async () => {} }).runGreen(typecheckTree, null);
+
+      expect(r.green).toBe(false);
+      expect(r.failingTests).not.toContain('lint:tsc'); // never ran ⇒ never reported as failed
+      expect(calls).toHaveLength(4); // suite + 2 isolation runs + 1 retry — no legs
+    });
+  });
 });
 
 describe('realCheckpointDeps.setupTree / push — real-path wiring (gap #10)', () => {

@@ -1605,6 +1605,16 @@ export const FLAGS = {
   // it only after reviewing the bounded deficit, duplicate-suppression, and
   // exponential-backoff behavior. OFF is a pure no-op for the routine.
   FLEET_HEADCOUNT_GOVERNOR: "papercusp-fleet-headcount-governor",
+  // WI-6054 (turn-end-tracking P-016): gates `system:unguarded-halt-rescue`, the
+  // SYSTEM-side leg of the unguarded-halt guard. The detector already existed
+  // (turn-end-tracking.detectUnguardedHalt) but its only caller was the
+  // agent-invoked `journal:record-turn` tool — so it never fired for an agent
+  // that simply STOPPED, which is the failure it was built for. This routine runs
+  // the SAME sweep from a system path and WAKES halted agents. DEFAULT ON: it
+  // opens no new sessions (unlike FLEET_HEADCOUNT_GOVERNOR — it only re-wakes
+  // agents that already exist), is throttled per agent and capped per tick, and
+  // recovers work that is otherwise lost silently. OFF ⇒ pure no-op.
+  UNGUARDED_HALT_RESCUE: "papercusp-unguarded-halt-rescue",
   // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): gates the LLM-facing
   // SEMANTIC-delta opt-in (mode:delta merge responses) — the silent-wrong-merge
   // hazard the owner BUILD decision agreed to retire BY TEST. DEFAULT ON

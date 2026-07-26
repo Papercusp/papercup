@@ -370,6 +370,16 @@ export interface PipelinePosition {
   repoRoot: string;
   /** Set when the path resolved inside a submodule. */
   submodule: string | null;
+  /**
+   * EI-18715870370005934: set when the caller passed a SUPERPROJECT sha together
+   * with a submodule path. The superproject stores only a gitlink for a
+   * submodule, so that sha resolves to no content and no commit inside the
+   * submodule; we resolve the gitlink and report positions for the PINNED
+   * submodule commit instead. Non-null means "the sha you asked about is not the
+   * sha these positions describe" — the mapping is recorded here so the
+   * substitution is never silent.
+   */
+  submodulePin: { superprojectSha: string; submoduleSha: string } | null;
   /** The commit whose pipeline position we report. */
   targetSha: string | null;
   targetShortSha: string | null;
@@ -451,6 +461,31 @@ export interface PipelinePositionDeps {
   loadSnapshot?: () => Promise<GitPipelineSnapshot>;
 }
 
+/**
+ * EI-18715870370005934: resolve the GITLINK a superproject commit pins for a
+ * submodule — `git ls-tree <superSha> <submodulePath>` => `160000 commit <sha>`.
+ *
+ * This is the half of the check that nobody hand-composes correctly. A
+ * superproject commit does NOT contain submodule file content, only a gitlink,
+ * so every naive cross-boundary probe (`git show <superSha>:<submodulePath>`,
+ * `git status --porcelain <submodulePath>`, `git log -- <submodulePath>`)
+ * returns EMPTY — which reads as "absent" / "clean" rather than "wrong question".
+ * The failure mode is an ABSENCE THAT READS AS EVIDENCE, and both wrong answers
+ * are the safe-sounding ones, so they compose into a confident false negative
+ * ("my instrumentation isn't in this build — abort the run").
+ */
+async function resolveSubmodulePin(
+  git: GitRunner,
+  root: string,
+  superSha: string,
+  submodulePath: string,
+): Promise<string | null> {
+  const out = await git(root, ['ls-tree', superSha, submodulePath]);
+  if (!out) return null;
+  const m = /^160000\s+commit\s+([0-9a-f]{7,40})\b/.exec(out.trim());
+  return m ? m[1] : null;
+}
+
 /** Parse `.gitmodules` submodule paths (best-effort). */
 async function submodulePaths(git: GitRunner, root: string): Promise<string[]> {
   const out = await git(root, ['config', '--file', '.gitmodules', '--get-regexp', 'path']);
@@ -494,9 +529,16 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
   }
 
   if (p.submodule) {
+    // EI-18715870370005934: when the reported sha is NOT the sha the caller asked
+    // about (they passed a superproject commit; we resolved its gitlink), say so
+    // in the one line most readers stop at — a silent substitution here is the
+    // same confidently-wrong reading this fix exists to prevent.
+    const pin = p.submodulePin
+      ? ` — superproject ${p.submodulePin.superprojectSha.slice(0, 9)} PINS submodule commit ${p.submodulePin.submoduleSha.slice(0, 9)}; positions are for the PINNED commit, not the superproject one (the superproject holds only a gitlink, so \`git show\`/\`git status\` on this path from the root return empty and read as "absent"/"clean")`
+      : '';
     return `${label} @${p.targetShortSha}${subj} [submodule ${p.submodule}]: committed ${tick(
       p.positions.committedLocal,
-    )} · pushed-to-origin ${tick(p.positions.onStaging)}${dirty} — superproject→main→deploy chain not tracked for submodule paths.`;
+    )} · pushed-to-origin ${tick(p.positions.onStaging)}${dirty} — superproject→main→deploy chain not tracked for submodule paths.${pin}`;
   }
   const gateNote = !p.positions.inMain && p.gate.fireStale
     ? ` (green gate WEDGED — not firing: ${p.gate.fireStaleReason ?? 'stale'})`
@@ -551,8 +593,33 @@ export async function gitPipelinePosition(
 
   // Resolve the target sha: explicit sha, else the path's last commit.
   let targetSha: string | null = null;
+  let submodulePin: PipelinePosition['submodulePin'] = null;
   if (inp.sha) {
     targetSha = (await git(gitDir, ['rev-parse', '--verify', `${inp.sha}^{commit}`])) ?? null;
+    // EI-18715870370005934: a submodule path given with a SUPERPROJECT sha (the
+    // overwhelmingly common case — "is my change in the build at <gate sha>?",
+    // where the only sha an agent has is the superproject's). That sha does not
+    // exist in the submodule's object store, so the rev-parse above fails and we
+    // used to report `targetSha: null` + "did not resolve" — a bare ABSENCE, from
+    // the very tool CLAUDE.md points agents at for "is my edit live". Resolve the
+    // gitlink instead and report the pinned submodule commit, which is what the
+    // caller actually meant.
+    if (!targetSha && submodule) {
+      const pinned = await resolveSubmodulePin(git, root, inp.sha, submodule);
+      if (pinned) {
+        targetSha = pinned;
+        submodulePin = { superprojectSha: inp.sha, submoduleSha: pinned };
+        notes.push(
+          `'${inp.sha}' is a SUPERPROJECT commit and does not exist inside submodule '${submodule}' — ` +
+            `resolved its gitlink instead: that superproject commit PINS submodule commit ${pinned.slice(0, 12)}, ` +
+            `and all positions below are reported for that pinned commit. ` +
+            `Hand-rolled equivalents (\`git show ${inp.sha.slice(0, 12)}:${submodule}/<file>\`, ` +
+            `\`git status --porcelain ${submodule}/<file>\`) return EMPTY here and read as "absent"/"clean" — ` +
+            `they are the wrong question, not a negative answer. To inspect content: ` +
+            `\`git -C ${submodule} show ${pinned.slice(0, 12)}:<path-inside-submodule>\`.`,
+        );
+      }
+    }
     if (!targetSha) notes.push(`SHA '${inp.sha}' did not resolve in ${submodule ?? 'the superproject'}.`);
   } else if (relPath) {
     targetSha = await git(gitDir, ['log', '-1', '--pretty=%H', '--', relPath]);
@@ -648,6 +715,7 @@ export async function gitPipelinePosition(
     input: { path: inp.path ?? null, sha: inp.sha ?? null },
     repoRoot: root,
     submodule,
+    submodulePin,
     targetSha,
     targetShortSha,
     targetSubject,

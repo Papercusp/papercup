@@ -312,6 +312,9 @@ export async function queryPresenceRowsForHive(
   // unchanged. See {@link queryPresenceRows} for the full rationale.
   const looseWindowSecs = (2 * staleMs) / 1000;
   // WI-6032 (P-005): `workspaceId` OPTIONAL — see queryPresenceRows / LockAuthorityDeps.workspaceId.
+  // EI-18714245790501659: conditional predicate, not a parameterized-NULL OR — see the
+  // matching comment in queryPresenceRows for the full rationale.
+  const workspaceFilter = workspaceId ? sql`AND workspace_id = ${workspaceId}` : sql``;
   const rows = (await sql`
     SELECT device_pubkey,
            github_user_id,
@@ -319,7 +322,7 @@ export async function queryPresenceRowsForHive(
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
     WHERE pot_slug = ${potSlug}
-      AND (${workspaceId ?? null}::text IS NULL OR workspace_id = ${workspaceId ?? null})
+      ${workspaceFilter}
       AND device_pubkey <> ''
       AND last_seen_at >= now() - make_interval(secs => ${looseWindowSecs})
   `) as Array<{
