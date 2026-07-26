@@ -184,6 +184,39 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('OWNER (interactive)');
   });
 
+  it('EI-18680056073436345: a per-row ttlMs keeps a cli-schedule-wakeup row live past the global default', () => {
+    // A row written 25 minutes ago is DEAD under the global 10-minute default,
+    // but this row carries its own ttlMs (e.g. a 3600s ScheduleWakeup delay +
+    // slack) — the per-row override must win.
+    writeRow({
+      origin: 'cli-schedule-wakeup',
+      ts: Date.now() - 25 * 60_000,
+      ttlMs: 65 * 60_000,
+    });
+    const ctx = contextOf(runHook({ prompt: 'the injected payload' }));
+    expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
+    expect(ctx).toContain('origin: cli-schedule-wakeup');
+  });
+
+  it('EI-18680056073436345: a per-row ttlMs still expires — a 70-minute-old scheduled row past its own ttl is NOT owner', () => {
+    // Same shape, but now the row's OWN ttl has also lapsed (71 min old vs a
+    // 65-min ttl) — must fall to the machine-surface/owner path like any
+    // other expired hash row, never a false verify.
+    writeRow({
+      origin: 'cli-schedule-wakeup',
+      ts: Date.now() - 71 * 60_000,
+      ttlMs: 65 * 60_000,
+    });
+    const ctx = contextOf(runHook({ prompt: 'the injected payload' }));
+    expect(ctx).not.toContain('VERIFIED AGENT-ORIGIN');
+  });
+
+  it('a row with no ttlMs field (every other origin) still uses the global default unchanged', () => {
+    writeRow({ ts: Date.now() - 11 * 60_000 }); // no ttlMs field at all — legacy row shape
+    const ctx = contextOf(runHook({ prompt: 'the injected payload' }));
+    expect(ctx).not.toContain('VERIFIED AGENT-ORIGIN');
+  });
+
   it('PAPERCUSP_TURN_PROVENANCE_TTL_MS env override widens the live window', () => {
     writeRow({ ts: Date.now() - 11 * 60_000 }); // dead at the default 10m ttl
     const ctx = contextOf(

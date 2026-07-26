@@ -151,6 +151,13 @@ const RULES: ReadonlyArray<{
       // desktop-callable admin routes so a future auth sweep does not regress
       // the owner-local Send/Wake actions back to 403.
       { method: 'POST', path: '/admin/coord/:verb', auth: VTL },
+      // GUI session chat's posture actions (Autonomy radio, Overlays
+      // checkboxes — gui-chat-session-controls-2026-07-25 P-003/P-004) POST
+      // here from the same cookie-less loopback webview as its /admin/coord/:verb
+      // sibling immediately above — same EI-338 HTTP-fallback rationale, same
+      // requireAllowedOriginOr403 CSRF backstop. See admin/mode.ts's own
+      // doc-comment.
+      { method: 'POST', path: '/admin/mode/:verb', auth: VTL },
       // Owner-Inbox reply delivery (owner-inbox-single-pane-2026-07-17 P-006):
       // invoked from the same cookie-less loopback webview as its
       // /admin/coord/:verb sibling above, so the same VTL posture. Because the

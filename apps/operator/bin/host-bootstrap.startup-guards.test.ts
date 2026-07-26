@@ -31,7 +31,14 @@ const STARTUP_GUARDS: Array<{ fn: string; module: string; catches: string }> = [
     catches: 'the HOME harness slug does not resolve — every fire-path 404s and goes dark',
   },
   {
-    fn: 'validateActiveRoutines',
+    // EI-18678269428596559: the boot caller was intentionally switched from the bare
+    // validateActiveRoutines() to enforceActiveRoutines() (which auto-PAUSES a violating
+    // routine instead of just logging FATAL forever) — enforceActiveRoutines() itself calls
+    // validateActiveRoutines(ws, { silent: true }) internally, so the guard stays wired, just
+    // one hop deeper. Assert the actual boot-site call so this doesn't false-positive on that
+    // refactor (host-bootstrap.startup-guards.test.ts flagged red 2026-07-26 on stale source
+    // text after the rename).
+    fn: 'enforceActiveRoutines',
     module: 'startup/validate-active-routines',
     catches: 'an ACTIVE routine targets an unregistered harness — it 404s and goes dark',
   },

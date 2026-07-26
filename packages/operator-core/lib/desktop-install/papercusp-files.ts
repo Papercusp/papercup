@@ -538,6 +538,14 @@ const CC_HOOK_FILES = [
   // installer (dead code whose own header claimed it was "the hard backstop").
   // Moved here and wired below.
   'pretooluse-secrets-guard.mjs',
+  // EI-18680056073436345: PreToolUse (matcher "ScheduleWakeup") best-effort
+  // turn-provenance ENROLLMENT for the Claude-CLI-native ScheduleWakeup tool —
+  // observes the SCHEDULING call (which does pass through this hook chain) and
+  // writes a hash-only ledger row with a per-row ttl sized to the requested
+  // delay, so the eventual delivery classifies VERIFIED agent-origin instead of
+  // falling through to the affirmative (and WRONG) OWNER default. See the
+  // script's own header for the full root-cause + fix writeup.
+  'pretooluse-schedule-wakeup-provenance.mjs',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1478,6 +1486,13 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-secrets-guard.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('pretooluse-secrets-guard.mjs'),
+    });
+  // merge_schedule_wakeup_provenance_hook — PreToolUse, matcher 'ScheduleWakeup'
+  // (EI-18680056073436345). Observational only (never denies) — see the script.
+  if (has('pretooluse-schedule-wakeup-provenance.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-schedule-wakeup-provenance.mjs'), {
+      matcher: 'ScheduleWakeup',
+      hooks: cmd('pretooluse-schedule-wakeup-provenance.mjs'),
     });
 
   return cfg;
