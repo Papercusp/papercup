@@ -104,17 +104,21 @@ jobs:
       # They need no node_modules of their own (node: builtins + bash only),
       # which matters because the root install does not cover this submodule.
       #
+      # test:config is included as of WI-6075: it was RED (the 2GB hive seed was
+      # being packaged into the GUI/base bundle, which that test exists to forbid),
+      # so wiring it earlier would have redded the gate for the whole fleet. WI-6075
+      # removed seed/**/* from the base config and gave the gate its own explicit
+      # tauri.gate.conf.json overlay, and the test now also pins that overlay — so
+      # it guards both halves of the split. Verified green (2/2) before wiring.
+      #
       # Deliberately NOT wired here:
       #   test:rust   — needs a Rust toolchain this job does not install.
-      #   test:config — genuinely RED right now (WI-6075): the 2GB seed is being
-      #                 packaged into the GUI/base bundle, which that test exists
-      #                 to forbid. Wiring it before WI-6075 lands would red the
-      #                 gate for the whole fleet. Add it as part of WI-6075.
       - name: Desktop tests (papercusp-desktop selftests + build-script guards)
         working-directory: papercusp-desktop
         run: |
           npm run test:selftests
           npm run test:shell
+          npm run test:config
 
       # Plan-doc lint — fast read-only check against apps/operator/docs/plans/.
       # Fails the build on any error; warnings (e.g. missing ## Now)

@@ -165,18 +165,20 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
   );
 
   const launch = useCallback(async () => {
-    if (!selectedPlan) {
-      toast.error('Choose a plan before launching a session.');
-      return;
-    }
+    // P-005 (owner ask 2026-07-26): a plan is OPTIONAL. Launching with none
+    // selected starts an unbound session — the plan only ever supplied launch
+    // CONTEXT, never a requirement, and `launchAgent` already accepts a null
+    // planSlug (it takes a null `slug` on this path too).
     if (launching) return;
     setLaunching(true);
     try {
       const chosenModel = model.trim();
-      const label = selectedPlan.title?.trim() || selectedPlan.slug;
+      const label = selectedPlan
+        ? selectedPlan.title?.trim() || selectedPlan.slug
+        : 'su session';
       const result = await launchAgent({
         slug: null,
-        planSlug: selectedPlan.slug,
+        planSlug: selectedPlan?.slug ?? null,
         label,
         model: chosenModel || null,
       });
@@ -230,7 +232,7 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         size="sm"
         className="pc-new-session-launcher__btn"
         onClick={() => void launch()}
-        disabled={launching || !selectedPlan}
+        disabled={launching}
       >
         {launching ? 'Launching…' : '+ New session'}
       </Button>

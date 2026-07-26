@@ -96,13 +96,34 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('NewSessionLauncher', () => {
-  it('renders a plan picker, a model picker, and a disabled launch button by default', () => {
+  it('renders a plan picker, a model picker, and an ENABLED launch button by default', () => {
+    // P-005 (owner ask 2026-07-26): "You should be able to launch a session
+    // with no plan selected." This assertion previously required the button to
+    // be DISABLED until a plan was chosen — that was the requirement the owner
+    // reversed, so the inverted expectation here is the point of the change.
     render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
     expect(screen.getByRole('combobox', { name: 'Plan for new session' })).toBeTruthy();
     expect(screen.getByRole('combobox', { name: 'Model for new session' })).toBeTruthy();
     expect(
       (screen.getByRole('button', { name: '+ New session' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it('launches with NO plan selected, passing planSlug: null', async () => {
+    const onLaunched = vi.fn();
+    render(<NewSessionLauncher onLaunched={onLaunched} />, { wrapper: withNuqsTestingAdapter() });
+    // Deliberately choose nothing — the placeholder is still selected.
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+    expect(h.launchAgent).toHaveBeenCalledWith({
+      slug: null,
+      planSlug: null,
+      label: 'su session',
+      model: null,
+    });
+    await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
+    expect(h.toastError).not.toHaveBeenCalled();
+    expect(onLaunched).toHaveBeenCalledTimes(1);
   });
 
   it('enables the button once a plan is chosen, and launches with the selected plan', async () => {
