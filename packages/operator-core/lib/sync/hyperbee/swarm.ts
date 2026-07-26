@@ -1720,6 +1720,127 @@ const MIN_UNPAIRED_ATTEMPTS = 3;
  */
 const MAX_UNPAIRED_ESCALATIONS = 5;
 
+/**
+ * ── P-007: ONE shared refresh loop per swarm, instead of one timer per join ──
+ *
+ * `joinHarnessSwarm` used to arm its OWN `managedSetInterval`, and boot.ts calls
+ * it once per MEMBER HARNESS against the process-singleton shared swarm
+ * (`getSharedSwarm` — "one Hyperswarm per process"). So N shared hives meant N
+ * independent timers, each waking the event loop on its own phase to run a full
+ * per-topic tick: the plan's per-topic refresh storm. The tick WORK is
+ * irreducibly per-topic (every topic needs its own DHT announce+lookup), but the
+ * TIMERS are not — one loop can drive every registered join.
+ *
+ * Mirrors `topic-gossip.ts`'s single-loop pattern (ONE timer whose body is
+ * `for (const st of topics.values())`, each entry applying its OWN cadence gate
+ * inside the shared tick). The only difference is where per-entry state lives:
+ * topic-gossip owns a Map of topic state, whereas each `joinHarnessSwarm` call
+ * already owns its state in a closure that the connection handler, the
+ * socket-close fast-window re-arm, `rejoinOwnSession` and the handle getters all
+ * read and write. So an entry registers that closure as its `tick` rather than
+ * re-homing a dozen mutable locals — same consolidation, without moving
+ * load-bearing state out from under its existing writers.
+ *
+ * Scoped PER SWARM rather than module-global: in production the swarm is a
+ * process singleton, so every harness's join lands on the SAME loop (one timer —
+ * the whole point), while a test that builds its own fake swarm gets its own
+ * loop and cannot leak ticks into the next test through module state. The
+ * WeakMap entry dies with the swarm.
+ *
+ * Two load-bearing invariants this preserves (see the tick body for why):
+ *   - the escalation ladders are evaluated on EVERY one of a join's ticks,
+ *     independent of that join's refresh-cadence gate. An entry's `refreshMs`
+ *     therefore gates the WHOLE tick body, exactly as its private timer's
+ *     interval did, and the ladders keep their own thresholds inside it.
+ *   - joins may request DIFFERENT cadences, so the shared timer is armed at the
+ *     FINEST registered `refreshMs` and each entry computes its own due-ness
+ *     against that base — never one shared cadence.
+ */
+type SwarmRefreshEntry = {
+  /** this join's requested tick cadence — its OWN due-ness gate, not the loop's */
+  readonly refreshMs: number;
+  /** last time this entry's tick body actually ran */
+  lastTickMs: number;
+  /** this join's tick body (closes over that join's state) */
+  readonly tick: (now: number) => void;
+};
+
+type SwarmRefreshLoop = {
+  readonly entries: Set<SwarmRefreshEntry>;
+  timer: ManagedHandle | null;
+  /** the interval `timer` is currently armed at (0 = not armed) */
+  baseMs: number;
+};
+
+const swarmRefreshLoops = new WeakMap<object, SwarmRefreshLoop>();
+
+/**
+ * Arm (or re-arm, or stop) a loop's single timer so it ticks at the FINEST
+ * cadence any registered entry asked for. Phase is irrelevant: every entry gates
+ * on its own `lastTickMs`, so re-arming can never speed up or slow down an
+ * already-registered entry's cadence.
+ */
+function syncSwarmRefreshTimer(loop: SwarmRefreshLoop): void {
+  let base = 0;
+  for (const e of loop.entries) base = base === 0 ? e.refreshMs : Math.min(base, e.refreshMs);
+  if (base === loop.baseMs) return;
+  if (loop.timer) {
+    try {
+      loop.timer.stop();
+    } catch {
+      /* no-op — best-effort teardown of the previous arming */
+    }
+    loop.timer = null;
+  }
+  loop.baseMs = base;
+  if (base <= 0) return; // no entries left — stay unarmed
+  loop.timer = managedSetInterval(
+    'hyperbee-swarm-refresh',
+    base,
+    () => {
+      const now = Date.now();
+      // Iterate a SNAPSHOT: a tick can force a rejoin, and a `close()` from
+      // anywhere (including inside a tick) may deregister mid-iteration.
+      for (const entry of [...loop.entries]) {
+        if (!loop.entries.has(entry)) continue; // deregistered during this tick
+        if (now - entry.lastTickMs < entry.refreshMs) continue; // not due yet
+        entry.lastTickMs = now;
+        try {
+          entry.tick(now);
+        } catch {
+          // One join's tick must NEVER stop the shared loop from serving every
+          // OTHER join on this swarm. A private timer had no such blast radius,
+          // so consolidating without this guard would be a regression.
+        }
+      }
+    },
+    { category: 'lifecycle', instanced: true },
+  );
+}
+
+/**
+ * Register a join's tick on its swarm's shared refresh loop. Returns an
+ * idempotent release that deregisters the entry and stops the shared timer once
+ * the last join on that swarm has released.
+ */
+function registerSwarmRefresh(swarm: object, entry: SwarmRefreshEntry): () => void {
+  let loop = swarmRefreshLoops.get(swarm);
+  if (!loop) {
+    loop = { entries: new Set(), timer: null, baseMs: 0 };
+    swarmRefreshLoops.set(swarm, loop);
+  }
+  const own = loop;
+  own.entries.add(entry);
+  syncSwarmRefreshTimer(own);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    own.entries.delete(entry);
+    syncSwarmRefreshTimer(own);
+  };
+}
+
 export async function joinHarnessSwarm(
   opts: JoinHarnessSwarmOpts,
 ): Promise<SwarmHandle> {
@@ -2111,9 +2232,9 @@ export async function joinHarnessSwarm(
   // remove it, and boot.ts's join-retry loop (armSwarmJoinRetry) re-calls
   // joinHarnessSwarm on every failed attempt — so a flapping join would
   // accumulate one leaked 'connection' listener per retry, unbounded, with
-  // setMaxListeners(0) hiding the count. Undo the listener (+ any timer) on any
-  // setup failure so a failed join leaks nothing.
-  let refreshTimer: ManagedHandle | null = null;
+  // setMaxListeners(0) hiding the count. Undo the listener (+ any shared-refresh
+  // registration) on any setup failure so a failed join leaks nothing.
+  let releaseRefresh: (() => void) | null = null;
   // Hoisted above the try block (was `let discovery = ...` scoped to the try
   // block) so `forceRejoinNow` — defined once, below, and called both by the
   // escalation ladder tick and by `handle.forceRejoin()` — can reassign it.
@@ -2276,8 +2397,12 @@ export async function joinHarnessSwarm(
     const fastWindowMs = opts.fastWindowMs ?? DEFAULT_SUBSTRATE_FAST_WINDOW_MS;
     const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SUBSTRATE_SLOW_REFRESH_MS;
     if (refreshMs > 0) {
-      refreshTimer = managedSetInterval('hyperbee-swarm-refresh', refreshMs, () => {
-        const now = Date.now();
+      // P-007: this join's tick body. It is registered on the swarm's ONE shared
+      // refresh loop (see registerSwarmRefresh above) instead of arming a timer
+      // of its own — `now` is supplied by the shared tick, and `refreshMs` still
+      // gates THIS body, so the cadence (and the ladders' every-tick evaluation
+      // within it) is exactly what a private timer gave us.
+      const refreshTick = (now: number): void => {
 
         // ── EI-18687938054040755: emit the POSITIVE data-path signal ──
         // Rides this existing managed tick deliberately — no new timer (repo
@@ -2483,14 +2608,20 @@ export async function joinHarnessSwarm(
         } catch {
           // best-effort — refresh is keepalive, not load-bearing for this tick
         }
-      }, { category: 'lifecycle', instanced: true });
+      };
+      releaseRefresh = registerSwarmRefresh(opts.swarm, {
+        refreshMs,
+        lastTickMs: Date.now(),
+        tick: refreshTick,
+      });
     }
   } catch (e) {
-    // Setup failed after the listener was registered — undo it (and any timer)
-    // so a failed/flapping join never orphan-accumulates 'connection' listeners.
-    if (refreshTimer) {
-      try { refreshTimer.stop(); } catch { /* no-op */ }
-      refreshTimer = null;
+    // Setup failed after the listener was registered — undo it (and any
+    // shared-refresh registration) so a failed/flapping join never
+    // orphan-accumulates 'connection' listeners or shared-loop entries.
+    if (releaseRefresh) {
+      try { releaseRefresh(); } catch { /* no-op */ }
+      releaseRefresh = null;
     }
     try {
       opts.swarm.off?.('connection', handler);
@@ -2547,10 +2678,13 @@ export async function joinHarnessSwarm(
       return out;
     },
     async close() {
-      // WI-752: stop the self-heal loop FIRST so no refresh fires after leave.
-      if (refreshTimer) {
-        refreshTimer.stop();
-        refreshTimer = null;
+      // WI-752: leave the self-heal loop FIRST so no refresh fires after leave.
+      // P-007: this deregisters THIS join's tick from the swarm's shared loop
+      // (and stops that loop's timer once the last join on the swarm releases) —
+      // it must never stop a sibling harness's ticks.
+      if (releaseRefresh) {
+        releaseRefresh();
+        releaseRefresh = null;
       }
       // WI-5923: unregister from the shared topic-wide rejoin coordinator
       // BEFORE tearing this instance down — an in-flight coordinated rejoin

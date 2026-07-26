@@ -63,7 +63,9 @@ export default defineTool({
     chaining:
       'script → code:run { dryRun:true } → inspect plannedMutations → code:run. A correct tool ' +
       'name with a WRONG field mapping fails SILENTLY (ok:true, blank rows) — check the tool\'s ' +
-      '`returns` (tools:find), or return one raw result before mapping a batch.',
+      '`returns` (tools:find), or return one raw result before mapping a batch. ORDERING: a ' +
+      'rejected/thrown call aborts every LATER call in the same script — put durable writes ' +
+      '(checkpoint, facts:assert) FIRST, never last.',
     seeAlso: [
       'code:tools (typed signatures for a namespace — optional pre-check)',
       'recipes:run (run a saved composed recipe instead)',
@@ -495,6 +497,19 @@ function sanitizeCodeRunLogLine(raw: string): string {
  *
  * PURE — unit-tested without PG or a live dispatcher.
  */
+// EI-18717906460509995: a write-effect call that throws (rejected OR uncertain) aborts the
+// REST of the script — any tool.ns.verb(...) written after it in source order never dispatches
+// at all (it isn't merely unexecuted-but-recorded; it's invisible to plannedMutations/rejected/
+// uncertain, because the vm script itself unwound before reaching that line). The durable write
+// most worth protecting (a checkpoint, a fact) is also the one an agent is likeliest to author
+// LAST in a batch (state the outcome, then persist it) — exactly backwards from safe. Surface the
+// mitigation the moment a rejection actually strands something, not just in the tool's static
+// guidance text (which a script author only reads before their FIRST batch, not their next one).
+const ORDERING_HINT =
+  'Ordering tip: a rejected/thrown call aborts every call written AFTER it in the same script — ' +
+  'nothing past that line even dispatches. Put durable/continuity writes (work_items:checkpoint, ' +
+  'loop:checkpoint, facts:assert) FIRST in a batch so a later call\'s failure can never strand them.';
+
 export function buildFailureWarning(
   planned: readonly { tool: string }[],
   rejected: readonly { tool: string }[],
@@ -528,7 +543,8 @@ export function buildFailureWarning(
       warning:
         `${rejected.length} write-effect call(s) were REJECTED before execution (${tally(rejected)}) — ` +
         'the dispatcher refused them (bad args / denied gate), so NOTHING was written. ' +
-        'No double-write risk: fix the call and re-run the script.',
+        'No double-write risk: fix the call and re-run the script. ' +
+        ORDERING_HINT,
     };
   }
 
@@ -553,7 +569,8 @@ export function buildFailureWarning(
   return {
     warning:
       `${parts.join('; ')} — do NOT blindly re-run the whole script; check what actually ` +
-      `landed before retrying, to avoid a double-write.${suffix}`,
+      `landed before retrying, to avoid a double-write.${suffix}` +
+      (rejected.length > 0 || uncertain.length > 0 ? ` ${ORDERING_HINT}` : ''),
   };
 }
 

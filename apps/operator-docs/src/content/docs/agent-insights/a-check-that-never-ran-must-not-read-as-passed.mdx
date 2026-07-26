@@ -110,6 +110,42 @@ The same disease at two other scales, both encountered the same day:
   leg — silently disabling every optional leg at once while still reporting green. Filed
   as its own item; the plumbing to name that reason now exists.
 
+### The observational dual: a probe that could not have seen it
+
+Every case above is a *program* recording an unrun check as a pass. The same shape bites
+the **investigator**, and it is the easier one to fall for because there is no code to
+blame — you simply looked, saw nothing, and concluded nothing was there.
+
+Same day, mine, and it cost two wrongly-filed work-items plus a false report to two peers.
+I inventoried a log-bank directory to decide whether scenario logs were being persisted:
+
+```bash
+ls -la ~/.papercusp/live-fed-gate/triage/ | tail -20   # ← only serve-* files came back
+```
+
+I read that as absence and filed "scenario logs are never banked". They *were* banked —
+had been for seven days. Alphabetically `load-` &lt; `scn.` &lt; `serve-`, so `tail -20`
+returned the last twenty rows, which were **all** `serve-*`, and hid ~170 `scn.*` files.
+The directory held 215 files; I had looked at 20 of them and generalized.
+
+The trap is that a truncated listing and a genuinely empty one are the **same observation** —
+exactly `typecheckOk = true` meaning both "passed" and "never ran". Cheap discriminators,
+any one of which would have caught it:
+
+- **Count before you conclude.** `ls -1 <dir> | wc -l` against how many rows you actually
+  read. `215` vs `20` is the whole story.
+- **Never conclude absence from a `head`/`tail`-truncated listing.** Use a prefix histogram
+  (`ls -1 | sed 's/[0-9].*//' | sort | uniq -c`) or a targeted glob (`ls -la scn.*`) that
+  names the thing whose absence you are claiming.
+- **Grep the SOURCE for the feature, not the OUTPUT for its artifacts.** One
+  `grep -n 'scn\.\*\.log' lib/*.sh` would have found the implementing block instantly and
+  ended the question.
+- **Give a negative result a positive control.** Prove the same probe finds something you
+  *know* is present. An instrument that cannot find the known cannot testify about the unknown.
+
+"I looked and it wasn't there" is a claim about your instrument as much as about the world.
+State which instrument, and why it was capable of seeing the thing.
+
 ## The fix
 
 1. **One function, one trigger.** All five legs hoisted into `runPostSuiteLegs()`, invoked
@@ -167,3 +203,8 @@ green throughout, proving the change was surgical.
   is how a real regression becomes permanent.
 - **A green gate is a periodic VERDICT, not a live reaction to your commit.** Landing a fix
   does not re-green it — commit, re-run the verdict, then ship. Three separate hops.
+- **Distrust your own "I checked and it isn't there"** — including, especially, when it
+  arrives as a satisfying discovery. Both times this shape bit me in one session, the false
+  reading was the *flattering* one: it made a fix look needed, and made me the one who found
+  it. Evidence that hands you a filing, a diagnosis, or credit is exactly the evidence to
+  attack hardest, because nobody downstream is positioned to attack it for you.

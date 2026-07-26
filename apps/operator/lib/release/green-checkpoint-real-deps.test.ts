@@ -21,7 +21,7 @@ import { describe, it, expect, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hasNpmScript, realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
+import { checkNpmScript, hasNpmScript, realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
 import { releaseConfig, type ReleaseConfig } from './release-config';
 
 // EI-18661485259809120: push() also fires a workflow_dispatch of test.yml (since the
@@ -124,6 +124,13 @@ writeFileSync(
   }),
 );
 afterAll(() => rmSync(identityLintTree, { recursive: true, force: true }));
+
+// WI-6056: a candidate tree whose package.json EXISTS but is corrupt/truncated — the
+// freshly-materialised checkpoint tree can genuinely land in this state (a partial copy /
+// interrupted write), and it must NOT read the same as "this hive opts out of every leg".
+const corruptPkgJsonTree = mkdtempSync(join(tmpdir(), 'green-cp-corrupt-pkgjson-tree-'));
+writeFileSync(join(corruptPkgJsonTree, 'package.json'), '{ "name": "truncated-mid-wri');
+afterAll(() => rmSync(corruptPkgJsonTree, { recursive: true, force: true }));
 
 const cfg: ReleaseConfig = releaseConfig({
   integrationRoot: '/int',
@@ -255,6 +262,30 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(r.summary).toContain('OWNER-NAME TAG LINT FAILED');
     expect(r.summary).toContain('BOX-IDENTITY PATH LINT FAILED');
     expect(calls).toHaveLength(4); // all 3 lints ran (unconditional) — build NOT attempted
+  });
+
+  // WI-6056: hasNpmScript's bare `catch { return false }` used to conflate "this hive
+  // legitimately has no such script" with "package.json could not be read/parsed" — a
+  // corrupt/partial candidate tree (a real, reachable state: it is freshly materialised
+  // on every checkpoint run) would silently skip every optional leg and still report
+  // green. checkNpmScript's 'unreadable' result must instead fail the leg loudly.
+  it('WI-6056: distinguishes a corrupt/unreadable package.json from a legitimate script-absent hive', () => {
+    expect(checkNpmScript(corruptPkgJsonTree, 'lint:tsc')).toBe('unreadable');
+    expect(checkNpmScript(cpTree, 'lint:tsc')).toBe('absent'); // valid package.json, just no such script
+    expect(hasNpmScript(corruptPkgJsonTree, 'lint:tsc')).toBe(false); // boolean wrapper still collapses to false
+  });
+
+  it('WI-6056: a corrupt/unreadable package.json fails the gate loudly instead of silently skipping every leg', async () => {
+    // suite green → the very first post-suite leg (typecheck) finds package.json
+    // unreadable and must halt the whole chain as a FAILURE, never a silent skip that
+    // lets an untypechecked, unlinted, unbuilt candidate ride through as green.
+    const { exec, calls } = makeExec([{ code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(corruptPkgJsonTree, 'base-sha');
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain('package.json-unreadable');
+    expect(r.summary).toContain('PACKAGE.JSON UNREADABLE');
+    expect(calls).toHaveLength(1); // only the suite ran — every post-suite leg short-circuited, none silently skipped as green
   });
 
   it('detects the optional lint:design-primitives script without requiring it from subject hives', () => {

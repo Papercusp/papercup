@@ -58,6 +58,22 @@ describe('unguarded-halt rescue — targeting is by REASON TO WAKE (WI-6054)', (
     expect(got).toEqual([]);
   });
 
+  /**
+   * THE INCIDENT ITSELF, pinned with its measured numbers. These are the four
+   * real members of nonp2p-bug-drain-0725 (an ACTIVE fleet) at the idle times
+   * observed at 14:05Z on 2026-07-26, each holding zero work while 13 items were
+   * claimable under their own spec. A selector that excludes these has silently
+   * regressed to the behaviour that cost ~14 agent-hours.
+   */
+  it('WOULD have woken all four real orphans at their observed idle times', () => {
+    const observedIdleSec = [14912, 14898, 12365, 11905]; // 4.1h, 4.1h, 3.4h, 3.3h
+    const orphans = observedIdleSec.map((s, i) =>
+      candidate(`orphan-${i}`, { lastToolCallMs: NOW - s * 1000 }),
+    );
+    const got = selectSweepCandidates(orphans, NONE, ACTIVE, NOW, OPTS);
+    expect(got).toHaveLength(4);
+  });
+
   it('does NOT wake a member whose fleet is winding down or unknown', () => {
     const got = selectSweepCandidates([candidate('a')], NONE, NONE, NOW, OPTS);
     expect(got).toEqual([]);

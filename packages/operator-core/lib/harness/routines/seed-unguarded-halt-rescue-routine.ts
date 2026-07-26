@@ -18,8 +18,14 @@
  *   tsx seed-unguarded-halt-rescue-routine.ts --inactive   # seed dark
  *
  * trigger_config knobs (optional, editable via the routines admin):
- *   - throttle_min  (default 60) — minutes between rescues of the same agent.
- *   - max_per_tick  (default 10) — cap on wakes fired in one tick.
+ *   - throttle_min  (default 60)  — minutes between rescues of the same agent.
+ *   - max_per_tick  (default 10)  — cap on wakes fired in one tick.
+ *   - idle_min      (default 15)  — LOWER bound: minutes of no tool call before an
+ *                                   agent counts as halted rather than mid-turn.
+ *                                   Below this a long build/test run looks like a halt.
+ *   - max_idle_min  (default 360) — UPPER bound: past this the session is ABANDONED,
+ *                                   not halted, and is the reaper's job. Without it the
+ *                                   sweep reaches the 6-9-day heartbeating population.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -37,7 +43,13 @@ async function main(): Promise<void> {
   const { sql } = getOrgPg();
   const name = 'unguarded-halt-rescue';
   const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = { cron: CRON, throttle_min: 60, max_per_tick: 10 };
+  const triggerConfig = {
+    cron: CRON,
+    throttle_min: 60,
+    max_per_tick: 10,
+    idle_min: 15,
+    max_idle_min: 360,
+  };
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,

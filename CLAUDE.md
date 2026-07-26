@@ -473,7 +473,28 @@ work IS the task.
 ```bash
 npm run test:affected                  # unit only — fast, default
 npm run test:affected:integration      # also runs *.integration.test.ts
+npm run lint:tsc -- --mine             # TYPES — vitest does not typecheck (see below)
 ```
+
+⚠ **`test:affected` is TYPE-BLIND — a green run does NOT mean your change compiles.**
+Vitest transforms via esbuild/swc, and neither `scripts/affected-tests.mjs` nor
+`lint:affected-gate` invokes `tsc` at all. So a type-only regression is invisible to
+the routine loop and first surfaces at the **green-checkpoint** hours later, where it
+reds the gate for the whole fleet and costs a peer the diagnosis. **Run
+`npm run lint:tsc -- --mine` after editing** — it gates a PER-FILE baseline scoped to
+the files *you* changed (fail-soft, never gates peer drift), which is what makes it
+usable while operator-core still carries ~200 pre-existing errors that would otherwise
+drown your one new one.
+
+**The trigger to watch: adding a REQUIRED field to a shared interface** (or renaming
+/ re-typing one). Every fixture that constructs that type elsewhere goes stale
+instantly, in files your change never touched and `test:affected` never selects — and
+a stale fixture in a file whose tsc baseline ALREADY tolerates errors is invisible to
+the ratchet too, so it stays silently broken rather than loudly red. This bit three
+separate changes on 2026-07-26 alone (`AgentFact.confidence`,
+`OwnerSteering.createWakeSuppressPlans`, `PipelinePosition.submodulePin`). After such
+a change, grep the field's type name across the tree and check every construction
+site — the baseline will not do it for you.
 
 Schema/migration edits (`libs/papercusp/libs/db/**`) → `npm run
 test:all:integration` (the dependency graph won't catch them). Don't run

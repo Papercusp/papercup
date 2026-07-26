@@ -67,4 +67,34 @@ describe('buildFailureWarning (EI-10951)', () => {
     // The common case: the script threw in pure-read code. Nothing to warn about.
     expect(buildFailureWarning([], [], []).warning).toBeUndefined();
   });
+
+  // EI-18717906460509995: a rejected/thrown write aborts every call written AFTER it in the
+  // SAME script — the ordering hazard the reporter hit (a facts:assert rejection stranded an
+  // unreached work_items:checkpoint). The failure warning now teaches the mitigation (durable
+  // writes FIRST) at the exact moment it would have helped, not just in the tool's static docs.
+  it('a rejected-only failure includes the ordering hint', () => {
+    const w = buildFailureWarning([m('facts:assert')], [m('facts:assert')], []);
+    expect(w.warning).toMatch(/Ordering tip/);
+    expect(w.warning).toMatch(/aborts every call written AFTER it/);
+    expect(w.warning).toMatch(/work_items:checkpoint/);
+  });
+
+  it('a mixed landed+rejected failure includes the ordering hint', () => {
+    const w = buildFailureWarning(
+      [m('coord:send'), m('work_items:create')],
+      [m('work_items:create')],
+      [],
+    );
+    expect(w.warning).toMatch(/Ordering tip/);
+  });
+
+  it('an uncertain (threw mid-flight) failure includes the ordering hint', () => {
+    const w = buildFailureWarning([m('work_items:complete')], [], [m('work_items:complete')]);
+    expect(w.warning).toMatch(/Ordering tip/);
+  });
+
+  it('a pure landed-then-script-failed case (no rejected/uncertain) omits the ordering hint — nothing was aborted mid-script', () => {
+    const w = buildFailureWarning([m('coord:send'), m('work_items:claim')], [], []);
+    expect(w.warning).not.toMatch(/Ordering tip/);
+  });
 });

@@ -2329,22 +2329,65 @@ export function isNothingToGate(greenCmd: string, treeHasPackageJson: boolean): 
   return npmGreenCmd && !treeHasPackageJson;
 }
 
+/** WI-6056: the three worlds a per-script probe of package.json can land in.
+ *
+ *  - `present`    — the script is declared and non-blank.
+ *  - `absent`     — there is genuinely no such script (or no package.json at all —
+ *                    ENOENT — which is the legitimate codeless-tree case the
+ *                    EI-8744 `isNothingToGate` short-circuit already handles
+ *                    upstream). A subject hive opting out of a leg is `absent`.
+ *  - `unreadable` — package.json EXISTS but could not be read or parsed (a
+ *                    truncated/mid-write file, a permission error, invalid JSON).
+ *                    This is NOT the same as "hive opts out" — the candidate tree
+ *                    is freshly materialised on every run, so a partial copy is a
+ *                    real, reachable state, and it is exactly the case that must
+ *                    fail loudly rather than silently degrading every optional
+ *                    leg to a skip while still reporting green.
+ */
+export type NpmScriptCheck = 'present' | 'absent' | 'unreadable';
+
+/** Probe the candidate checkout for one npm script, distinguishing a legitimate
+ *  per-hive opt-out (`absent`) from a package.json that exists but could not be
+ *  read/parsed (`unreadable`) — see `NpmScriptCheck`. Callers that skip a whole
+ *  release-gate leg on `absent` MUST treat `unreadable` as a failed leg, never a
+ *  silent skip (WI-6056).
+ */
+export function checkNpmScript(treeDir: string, scriptName: string): NpmScriptCheck {
+  let raw: string;
+  try {
+    raw = readFileSync(path.join(treeDir, 'package.json'), 'utf8');
+  } catch (e) {
+    // ENOENT (no package.json at all) is the legitimate codeless-tree case; any OTHER
+    // read failure (EACCES, EISDIR, an OS refusing a mid-write partial file, ...) is a
+    // corrupt/inaccessible tree, not "nothing to gate" — surface it as unreadable.
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'unreadable';
+  }
+  let pkg: { scripts?: Record<string, unknown> };
+  try {
+    pkg = JSON.parse(raw) as { scripts?: Record<string, unknown> };
+  } catch {
+    // Exists but failed to parse — truncated / mid-write / syntax error. Must not read
+    // the same as "this hive has no such script".
+    return 'unreadable';
+  }
+  const script = pkg.scripts?.[scriptName];
+  return typeof script === 'string' && script.trim().length > 0 ? 'present' : 'absent';
+}
+
 /** Whether the isolated candidate checkout exposes the platform typecheck leg.
  *
  * The Papercusp root owns `lint:tsc`; subject hives are allowed to omit it, so the
  * release gate must discover the script rather than blindly running an operator-only
  * command in every per-hive checkout. A missing script means there is no typecheck leg
  * for that subject, not a typecheck failure.
+ *
+ * Boolean convenience wrapper over `checkNpmScript` — collapses `unreadable` into
+ * `false` (as `absent` also does), so it must NOT be used to gate a release-gate leg
+ * (see `runPostSuiteLegs`, which uses `checkNpmScript` directly to keep the two states
+ * apart). Kept for simple presence checks + existing test coverage.
  */
 export function hasNpmScript(treeDir: string, scriptName: string): boolean {
-  try {
-    const pkg = JSON.parse(readFileSync(path.join(treeDir, 'package.json'), 'utf8')) as {
-      scripts?: Record<string, unknown>;
-    };
-    return typeof pkg.scripts?.[scriptName] === 'string' && pkg.scripts[scriptName].trim().length > 0;
-  } catch {
-    return false;
-  }
+  return checkNpmScript(treeDir, scriptName) === 'present';
 }
 
 /**
@@ -2480,7 +2523,17 @@ export async function runPostSuiteLegs(
   // regressions, so run it in the same isolated candidate tree before allowing the
   // candidate through the release gate. Subject hives without that script retain their
   // existing gate semantics.
-  if (!hasNpmScript(treeDir, 'lint:tsc')) {
+  const lintTscCheck = checkNpmScript(treeDir, 'lint:tsc');
+  if (lintTscCheck === 'unreadable') {
+    // WI-6056: package.json exists but couldn't be read/parsed — this is NOT the same as
+    // "hive opts out" and must not silently skip. Fail the leg loudly and halt the chain.
+    legs.typecheck = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:tsc)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc; a corrupt/partial candidate tree must fail loudly, not silently skip every remaining leg ===\n`,
+    );
+  } else if (lintTscCheck === 'absent') {
     legs.typecheck = { status: 'skipped', skipReason: 'candidate provides no lint:tsc script' };
   } else {
     const typecheck = await exec('npm', ['run', 'lint:tsc'], { cwd: treeDir, env, allowNonZero: true });
@@ -2506,9 +2559,17 @@ export async function runPostSuiteLegs(
   // 620-backfill-migration-reservations-ei485.sql) reached green `main` undetected. Cheap
   // (one fs scan + one PG query; gracefully skips the PG leg when unreachable, never a
   // false red) and the checkpoint tree has a reachable PG, so gate it here like lint:tsc.
+  const lintMigrationsCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:migrations');
   if (haltedBy) {
     legs.lintMigrations = { status: 'skipped', skipReason: haltedBy };
-  } else if (!hasNpmScript(treeDir, 'lint:migrations')) {
+  } else if (lintMigrationsCheck === 'unreadable') {
+    legs.lintMigrations = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:migrations)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:migrations ===\n`,
+    );
+  } else if (lintMigrationsCheck === 'absent') {
     legs.lintMigrations = { status: 'skipped', skipReason: 'candidate provides no lint:migrations script' };
   } else {
     const migrations = await exec('npm', ['run', 'lint:migrations'], { cwd: treeDir, env, allowNonZero: true });
@@ -2548,16 +2609,31 @@ export async function runPostSuiteLegs(
     const identityFailures: string[] = [];
     let identityRan = 0;
     for (const { script, label } of identityLints) {
-      if (!hasNpmScript(treeDir, script)) continue;
+      const check = checkNpmScript(treeDir, script);
+      if (check === 'unreadable') {
+        // WI-6056: an unreadable package.json must not silently `continue` past this
+        // script as if the hive simply opted out — record it as a failure instead.
+        identityFailures.push(
+          `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for ${script} (${label}) ===\n`,
+        );
+        continue;
+      }
+      if (check === 'absent') continue;
       identityRan++;
       const out = await exec('npm', ['run', script], { cwd: treeDir, env, allowNonZero: true });
       if (out.code !== 0) {
         identityFailures.push(`\n\n=== ${label} LINT FAILED (npm run ${script}, WI-4776 class) ===\n` + out.stdout + out.stderr);
       }
     }
-    legs.lintIdentity = identityRan === 0
-      ? { status: 'skipped', skipReason: 'candidate provides none of the 3 identity-leak lint scripts' }
-      : { status: identityFailures.length === 0 ? 'passed' : 'failed' };
+    // WI-6056: previously `identityRan === 0 ? skipped : (failed/passed by identityFailures)`
+    // — if EVERY script came back unreadable, identityRan stayed 0 and this would have
+    // reported 'skipped' despite real failures sitting in identityFailures. Check failures
+    // FIRST so an all-unreadable run reports failed, never a silent skip.
+    legs.lintIdentity = identityFailures.length > 0
+      ? { status: 'failed' }
+      : identityRan === 0
+        ? { status: 'skipped', skipReason: 'candidate provides none of the 3 identity-leak lint scripts' }
+        : { status: 'passed' };
     if (identityFailures.length) {
       haltedBy = 'identity-leak lints failed';
       failingSignatures.push('lint:identity-leak');
@@ -2582,9 +2658,17 @@ export async function runPostSuiteLegs(
   // slice. `npm run test:file` (scripts/test-files.mjs) resolves each file to its owning
   // Vitest config and hard-fails on a zero/partial match, so a future rename of any of the
   // three files fails LOUDLY here instead of silently stopping being gated.
+  const lintDesignPrimitivesCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:design-primitives');
   if (haltedBy) {
     legs.lintDesignPrimitives = { status: 'skipped', skipReason: haltedBy };
-  } else if (!hasNpmScript(treeDir, 'lint:design-primitives')) {
+  } else if (lintDesignPrimitivesCheck === 'unreadable') {
+    legs.lintDesignPrimitives = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:design-primitives)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:design-primitives ===\n`,
+    );
+  } else if (lintDesignPrimitivesCheck === 'absent') {
     legs.lintDesignPrimitives = { status: 'skipped', skipReason: 'candidate provides no lint:design-primitives script' };
   } else {
     const designPrimitives = await exec('npm', ['run', 'lint:design-primitives'], { cwd: treeDir, env, allowNonZero: true });
