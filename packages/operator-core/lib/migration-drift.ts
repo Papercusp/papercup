@@ -26,13 +26,73 @@ function isRunnerMigration(f: string): boolean {
   return true;
 }
 
-export function resolveSqlDir(): string | null {
+export function resolveSqlDir(baseDir: string = process.cwd()): string | null {
   const candidates = [
-    path.resolve(process.cwd(), 'libs/papercusp/libs/db/sql'),
-    path.resolve(process.cwd(), '../../libs/papercusp/libs/db/sql'),
-    path.resolve(process.cwd(), '../../../libs/papercusp/libs/db/sql'),
+    path.resolve(baseDir, 'libs/papercusp/libs/db/sql'),
+    path.resolve(baseDir, '../../libs/papercusp/libs/db/sql'),
+    path.resolve(baseDir, '../../../libs/papercusp/libs/db/sql'),
   ];
   return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
+
+/** Path segments from a tree's root down to its migration sql dir — used both
+ *  to resolve a dir (resolveSqlDir's candidates) and, in reverse, to recover a
+ *  tree's root FROM an already-resolved sql dir (treeRootFromSqlDir). Keep the
+ *  two in sync. */
+const SQL_DIR_REL_SEGMENTS = ['libs', 'papercusp', 'libs', 'db', 'sql'];
+
+/** Recover the containing tree's root from an on-disk sql dir found via
+ *  resolveSqlDir() — the inverse of `path.resolve(baseDir, 'libs/papercusp/libs/db/sql')`.
+ *  No git/env lookup needed: we already know the exact relative offset. */
+function treeRootFromSqlDir(sqlDir: string): string {
+  return path.resolve(sqlDir, ...SQL_DIR_REL_SEGMENTS.map(() => '..'));
+}
+
+/**
+ * WI-6037: resolve the DEPLOYED (release checkout) tree's sql dir, independent
+ * of which tree THIS process happens to be running from. `:3070` (green) and
+ * `:3170` (staging) are sibling git worktrees under the same parent workspace
+ * dir — the staging tree is legitimately AHEAD (new migration files land there
+ * first, before a deploy). Comparing missing-on-disk migrations against the
+ * DEPLOYED tree (rather than whichever tree is asking) distinguishes "normal
+ * staging-ahead-of-release noise" (self-healing on the next deploy) from a
+ * genuine unapplied migration in the tree actually serving the shared DB.
+ *
+ * Returns null when the deployed tree can't be resolved (no sibling
+ * `papercup-release` checkout, e.g. a packaged install, CI, or a dev box with
+ * no release checkout at all) — callers must treat null as "can't classify",
+ * not as "nothing missing".
+ */
+export function resolveDeployedSqlDir(currentSqlDir: string | null): string | null {
+  if (!currentSqlDir) return null;
+  const treeRoot = treeRootFromSqlDir(currentSqlDir);
+  const parent = path.dirname(treeRoot);
+  const releaseRoot = process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release');
+  const releaseSqlDir = path.join(releaseRoot, ...SQL_DIR_REL_SEGMENTS);
+  return fs.existsSync(releaseSqlDir) ? releaseSqlDir : null;
+}
+
+/**
+ * Pure classifier: split `missing` (on-disk, unapplied) into what's genuinely
+ * unapplied at the DEPLOYED tree (`missingDeployed` — the real hazard) versus
+ * merely not-yet-deployed noise (`missingPendingDeploy` — present here, absent
+ * from the deployed tree, self-healing on the next deploy). `deployedOnDisk`
+ * null means the deployed tree couldn't be resolved: fail TOWARD reporting
+ * (treat every missing file as deployed/critical) rather than silently
+ * suppressing a hazard we simply couldn't classify.
+ */
+export function classifyMissingByDeployedTree(
+  missing: string[],
+  deployedOnDisk: string[] | null,
+): { missingDeployed: string[]; missingPendingDeploy: string[] } {
+  if (deployedOnDisk === null) {
+    return { missingDeployed: missing, missingPendingDeploy: [] };
+  }
+  const deployedSet = new Set(deployedOnDisk);
+  return {
+    missingDeployed: missing.filter((f) => deployedSet.has(f)),
+    missingPendingDeploy: missing.filter((f) => !deployedSet.has(f)),
+  };
 }
 
 export interface MigrationDrift {
@@ -61,6 +121,20 @@ export interface MigrationDrift {
    *  killed federation: post-mig-557 hives→pots DB vs pre-557 code). Empty when
    *  the code tree can't be resolved (unknown ≠ ahead). */
   schemaAhead: string[];
+  /** WI-6037: the DEPLOYED (release checkout) tree's sql dir, resolved
+   *  independent of which tree THIS process is running from. Null when it
+   *  can't be resolved (no sibling `papercup-release` checkout). */
+  deployedSqlDir: string | null;
+  /** `missing` restricted to files that ALSO exist on disk in `deployedSqlDir`
+   *  — i.e. genuinely unapplied at the tree actually serving the shared DB.
+   *  Equal to the full `missing` when `deployedSqlDir` is null (fail toward
+   *  reporting, never silently suppress an unclassifiable hazard). This is
+   *  the field a CRITICAL alert should key on, not the raw `missing`. */
+  missingDeployed: string[];
+  /** `missing` minus `missingDeployed` — present on disk here, absent from the
+   *  deployed tree: the NORMAL staging-ahead-of-release window. Always
+   *  self-healing on the next deploy; never a runtime hazard on its own. */
+  missingPendingDeploy: string[];
 }
 
 /** Numeric NNN prefix of a migration filename, or null (template/manual files). */

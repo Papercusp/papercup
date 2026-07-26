@@ -486,6 +486,14 @@ the files *you* changed (fail-soft, never gates peer drift), which is what makes
 usable while operator-core still carries ~200 pre-existing errors that would otherwise
 drown your one new one.
 
+⚠⚠ **`lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
+`tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`). A change confined
+to another workspace — **`libs/generic/*`, `libs/papercusp/*`, `apps/*`, other
+`packages/*`** — is typechecked by NEITHER `lint:tsc` NOR vitest, so a type-only
+regression there is invisible to *both* routine checks and first reds the
+**green-checkpoint**. Editing outside operator-core? Also run that workspace's own tsc
+directly: `npx tsc -p <workspace>/tsconfig.json --noEmit` (EI-18719561823587590).
+
 **The trigger to watch: adding a REQUIRED field to a shared interface** (or renaming
 / re-typing one). Every fixture that constructs that type elsewhere goes stale
 instantly, in files your change never touched and `test:affected` never selects — and

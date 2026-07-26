@@ -48,7 +48,16 @@ function walk(dir: string, out: string[] = []): string[] {
       continue; // broken symlink / race with a concurrent agent's edit
     }
     if (st.isDirectory()) walk(full, out);
-    else if (name.endsWith('.ts') && !name.endsWith('.d.ts')) out.push(full);
+    // Tests are excluded deliberately: they contain fixture pool literals (including
+    // this file's own deliberately-omitted one, which the guard correctly flagged when
+    // they were in scope) that are not real connection pools.
+    else if (
+      name.endsWith('.ts') &&
+      !name.endsWith('.d.ts') &&
+      !name.endsWith('.test.ts') &&
+      !name.endsWith('.integration.test.ts')
+    )
+      out.push(full);
   }
   return out;
 }
@@ -82,6 +91,63 @@ function declaresIdleTimeout(source: string, startLine: number): boolean {
   }
   return false;
 }
+
+describe('the guard itself detects an undeclared idle policy (non-vacuity)', () => {
+  // Proven against fixtures rather than by temporarily breaking a real pool: this tree
+  // is shared and auto-committed every few minutes, so a deliberately-wrong file
+  // becomes a real commit other agents pull.
+  const OMITTED = `
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('some-new-pool'),
+      max: 4,
+      prepare: false,
+    });`;
+  const TRANSACTIONAL = `
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('some-new-pool'),
+      max: 4,
+      idle_timeout: poolIdleTimeoutSec(),
+      prepare: false,
+    });`;
+  const LISTENER = `
+    listenerSql = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions("some-bus"),
+      max: 1,
+      idle_timeout: 0,
+    });`;
+  const DOC_COMMENT_ONLY = `
+     * Usage: \`postgres(url, { ...longLivedPoolConnectionOptions('x'), max: 1 })\`
+     * — spread FIRST so a call site's own overrides still win.`;
+  // The bug's real shape: a NEXT pool declared after one that did it right. A naive
+  // forward scan would run past the first pool's closing brace and find its
+  // idle_timeout, exonerating the offender.
+  const OMITTED_AFTER_A_GOOD_ONE = `${TRANSACTIONAL}\n${OMITTED}`;
+
+  it('flags a pool that omits idle_timeout', () => {
+    const sites = findPoolSites(OMITTED);
+    expect(sites).toHaveLength(1);
+    expect(declaresIdleTimeout(OMITTED, sites[0].line)).toBe(false);
+  });
+
+  it('accepts both legitimate declarations', () => {
+    for (const src of [TRANSACTIONAL, LISTENER]) {
+      const sites = findPoolSites(src);
+      expect(sites).toHaveLength(1);
+      expect(declaresIdleTimeout(src, sites[0].line)).toBe(true);
+    }
+  });
+
+  it('does not scan past the enclosing object into a neighbouring pool', () => {
+    const sites = findPoolSites(OMITTED_AFTER_A_GOOD_ONE);
+    expect(sites).toHaveLength(2);
+    expect(declaresIdleTimeout(OMITTED_AFTER_A_GOOD_ONE, sites[0].line)).toBe(true);
+    expect(declaresIdleTimeout(OMITTED_AFTER_A_GOOD_ONE, sites[1].line)).toBe(false);
+  });
+
+  it('ignores the usage example in a doc comment', () => {
+    expect(findPoolSites(DOC_COMMENT_ONLY)).toEqual([]);
+  });
+});
 
 describe('pool idle policy is always declared (P-009 connection saturation)', () => {
   const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));

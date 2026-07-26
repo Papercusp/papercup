@@ -65,6 +65,46 @@ describe('readRunningGeneration — the stampable generation identity (EI-12147,
   });
 });
 
+describe('readScoutGenerationCodeHash — the LEDGER-stamped scout identity (WI-5397 doc/impl divergence fix)', () => {
+  it("reports the hash bg-host stamped on the tick ledger, floored at the generation boundary — never this process's own module hash", async () => {
+    const { readScoutGenerationCodeHash } = await import('./generation-watermark');
+    const calls: Array<{ sinceMs: number }> = [];
+    const hash = await readScoutGenerationCodeHash(1_785_077_592_000, {
+      readNewestScoutCodeHash: async (opts) => {
+        calls.push(opts);
+        return 'b01b01128a38273c';
+      },
+    });
+    expect(hash).toBe('b01b01128a38273c');
+    // The floor must be the generation boundary, so a stamp the PREVIOUS generation
+    // wrote can never be attributed to the running one (WI-5451 intersect semantics).
+    expect(calls).toEqual([{ sinceMs: 1_785_077_592_000 }]);
+  });
+
+  it('a null boundary (hostStartedAt unresolvable) is null WITHOUT touching the ledger — no instant to attribute a stamp to', async () => {
+    const { readScoutGenerationCodeHash } = await import('./generation-watermark');
+    let touched = false;
+    const hash = await readScoutGenerationCodeHash(null, {
+      readNewestScoutCodeHash: async () => {
+        touched = true;
+        return 'never';
+      },
+    });
+    expect(hash).toBeNull();
+    expect(touched).toBe(false);
+  });
+
+  it('a ledger read failure degrades to null, never throws — best-effort like every other leg', async () => {
+    const { readScoutGenerationCodeHash } = await import('./generation-watermark');
+    const hash = await readScoutGenerationCodeHash(1, {
+      readNewestScoutCodeHash: async () => {
+        throw new Error('pg unreachable');
+      },
+    });
+    expect(hash).toBeNull();
+  });
+});
+
 describe('resolveStagingHeadAsOf — retroactive git-history reconstruction of a boot-time HEAD', () => {
   it('resolves a 40-char sha for a timestamp within this repo\'s own history', async () => {
     const sha = await resolveStagingHeadAsOf(new Date().toISOString());

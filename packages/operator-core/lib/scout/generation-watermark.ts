@@ -22,7 +22,6 @@
 import { execFile } from 'node:child_process';
 
 import { getBuildInfo } from '../build-info';
-import { currentScoutCodeHash } from './scout-code-identity';
 
 /** The named watermark: the running scout bg-host generation's start instant. */
 export const BG_HOST_RESTART_WATERMARK = 'bg-host-restart';
@@ -108,8 +107,8 @@ export function readBgHostActiveEnterMs(unit: string = BG_HOST_UNIT): Promise<nu
  *    ./tick-ledger.ts's readNewestScoutCodeHash) — the PRECISE signal, since a git
  *    sha alone cannot distinguish "the tree moved on" from "the code that matters
  *    changed" on a continuously-edited working tree. Null until bg-host has recorded
- *    at least one tick since restart (or when reading from a process that has never
- *    itself run a scout tick — e.g. the QUERYING process is not bg-host).
+ *    at least one tick since restart (or when `hostStartedAt` itself is unresolvable —
+ *    no generation boundary to attribute a stamp to).
  *  - `staleHost` — true unless we have POSITIVE evidence the running scout loop is
  *    executing `deployedSha`'s code (bootHeadSha resolved AND equals deployedSha).
  *    Fails toward "not proven fresh", never toward a false all-clear — an unresolved
@@ -156,6 +155,33 @@ export function resolveStagingHeadAsOf(atIso: string, opts: { cwd?: string } = {
   });
 }
 
+/**
+ * IO edge: the RUNNING scout generation's ledger-stamped code identity — the newest
+ * `detail.scoutCodeHash` bg-host stamped on a scout tick AT/AFTER the generation
+ * boundary (`sinceMs` = hostStartedAt). The tick ledger IS the cross-process channel
+ * (WI-5397, {@link ./tick-ledger}'s readNewestScoutCodeHash): the querying process
+ * must never report its OWN module hash here — bg-host is a separate process, so a
+ * local `currentScoutCodeHash()` read names the wrong process's code (null in a
+ * bundled build, or worse, the querying tree's hash presented as the scout's). Null
+ * when the boundary is unresolvable, when no tick has stamped a hash since it, or on
+ * any read failure/timeout — best-effort, never throws.
+ */
+export async function readScoutGenerationCodeHash(
+  sinceMs: number | null,
+  deps: { readNewestScoutCodeHash?: (opts: { sinceMs: number }) => Promise<string | null> } = {},
+): Promise<string | null> {
+  if (sinceMs == null) return null;
+  const read = (async () => {
+    const readFn = deps.readNewestScoutCodeHash ?? (await import('./tick-ledger')).readNewestScoutCodeHash;
+    return readFn({ sinceMs });
+  })().catch(() => null);
+  const timeout = new Promise<null>((resolve) => {
+    const t = setTimeout(() => resolve(null), 5_000);
+    t.unref?.();
+  });
+  return Promise.race([read, timeout]);
+}
+
 /** Read the running generation's identity. Never throws; each leg degrades to null
  *  (staleHost still resolves to a real boolean — see {@link RunningGeneration}). */
 export async function readRunningGeneration(): Promise<RunningGeneration> {
@@ -168,12 +194,7 @@ export async function readRunningGeneration(): Promise<RunningGeneration> {
     deployedSha = null;
   }
   const bootHeadSha = hostStartedAt ? await resolveStagingHeadAsOf(hostStartedAt).catch(() => null) : null;
-  let scoutCodeHash: string | null = null;
-  try {
-    scoutCodeHash = currentScoutCodeHash();
-  } catch {
-    scoutCodeHash = null;
-  }
+  const scoutCodeHash = await readScoutGenerationCodeHash(ms);
   // staleHost fails toward "not proven fresh": false ONLY when both shas resolved AND
   // match (a full sha vs a shortened one is still a match via prefix comparison —
   // getBuildInfo() commonly yields a short `--short HEAD`, while resolveStagingHeadAsOf

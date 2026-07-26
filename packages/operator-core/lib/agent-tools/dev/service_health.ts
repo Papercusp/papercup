@@ -68,6 +68,19 @@ export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
    *  English pointer so "connection refused right now" reads as "known restart
    *  window, retry" instead of "the service is down / under load". */
   recentRestartNote?: string;
+  /**
+   * EI-18700974567040702: ground-truth liveness for a systemd-user unit, read
+   * directly from `probeServiceStart`'s MainPID — a DETERMINATE answer, not a
+   * flap/churn signal. `true` = a live MainPID; `false` = systemd confirms
+   * MainPID 0 (the unit is genuinely DOWN right now); omitted = not a
+   * systemd-user unit, OR the probe itself could not determine an answer
+   * (non-linux, no systemd, transient exec error) — an honest "unknown" that
+   * must never be conflated with `false`. Previously `MainPID 0` and "probe
+   * failed" were BYTE-IDENTICAL in this payload (both just left the entry
+   * untouched), so a caller could not tell "this service is down" from "I
+   * couldn't check" — this field is the fix.
+   */
+  active?: boolean;
 };
 
 /**
@@ -91,8 +104,18 @@ export async function overlaySystemdRestartRecency(
       const unit = entry.layer === "systemd-user" ? unitByName.get(entry.name) : undefined;
       if (!unit) return entry;
       const info = await probeFn(unit).catch(() => ({ ok: false }) as ServiceStartInfo);
-      if (!info.ok || info.secondsSinceStart === undefined) return entry;
-      const withRecency: SupervisionStatusEntryWithRecency = { ...entry, secondsSinceStart: info.secondsSinceStart };
+      if (!info.ok) return entry; // probe genuinely couldn't determine an answer — honest "unknown", untouched
+      // EI-18700974567040702: MainPID 0 is a DETERMINATE "down" from systemd itself, not a
+      // probe failure — it must not be dropped alongside the `!info.ok` case above (that was
+      // the bug: both left the entry byte-identical, so "down" and "couldn't check" were
+      // indistinguishable). Report it explicitly and stop — there is no start time to overlay.
+      if (info.mainPid === 0) return { ...entry, active: false };
+      if (info.secondsSinceStart === undefined) return { ...entry, active: true };
+      const withRecency: SupervisionStatusEntryWithRecency = {
+        ...entry,
+        active: true,
+        secondsSinceStart: info.secondsSinceStart,
+      };
       if (info.secondsSinceStart < RECENT_RESTART_WINDOW_SEC) {
         withRecency.recentRestartNote =
           `${entry.name} restarted ${info.secondsSinceStart}s ago — a connection-refused seen ` +
@@ -155,7 +178,7 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe dev services now (:3070, :3055, :3350, Tauri desktop, bg-host ticker) and return the standard runtime fields { configured, effective, evidence, rootCause, nextVerb } alongside per-service latency/status/URL and supervisor flap state. Each HTTP-probed entry in `services` carries the exact `url` it hit (e.g. operator → http://127.0.0.1:3070/...) — read that instead of guessing a port. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. First read for connection-refused, process-running-with-no-window, or "which port is the operator on" symptoms.',
+    'Probe dev services now (:3070, :3055, :3350, Tauri desktop, bg-host ticker) and return the standard runtime fields { configured, effective, evidence, rootCause, nextVerb } alongside per-service latency/status/URL and supervisor flap state. Each HTTP-probed entry in `services` carries the exact `url` it hit (e.g. operator → http://127.0.0.1:3070/...) — read that instead of guessing a port. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. `supervision[].active` (systemd-user entries only) is a determinate up/down read: `false` means the unit is confirmed DOWN, omitted means the probe genuinely could not tell — never treat a missing `active` as "down". First read for connection-refused, process-running-with-no-window, or "which port is the operator on" symptoms.',
   guidance: {
     when: 'Confirm which dev services are up before testing against one; find the canonical local URL/port for the operator or vite instead of guessing; diagnose a "connection refused" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the "bg-host-ticker" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).',
     notWhen:
