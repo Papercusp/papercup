@@ -16,6 +16,16 @@ vi.mock('@papercusp/papercusp-shared', () => ({
   openFeatureChat: (...args: unknown[]) => openFeatureChat(...args),
 }));
 
+// WI-6023: the popup HOSTS ChatPanel (the PlanChat precedent). Stubbed here —
+// the real panel opens an EventSource and runs its own sync queries, none of
+// which this component's contract depends on. What matters is that the popup
+// mounts it with the resolved chatId.
+vi.mock('../../harness/ChatPanel', () => ({
+  default: ({ slug, chatId, mode }: { slug: string; chatId: string; mode?: string }) => (
+    <div data-testid="chat-panel" data-slug={slug} data-chat-id={chatId} data-mode={mode} />
+  ),
+}));
+
 const { syncResults, syncLoading, syncCalls } = vi.hoisted(() => ({
   syncResults: {} as Record<string, unknown[]>,
   syncLoading: { current: false },
@@ -117,5 +127,88 @@ describe('WorkItemPopupModal — cross-link + close', () => {
     render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={onClose} />);
     fireEvent.click(screen.getByTestId('wi-popup-close'));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * WI-6023 (owner-reported: "the chat button in the work item popup doesn't
+ * work"). The popup is mounted by OperatorChat, whose tree contains NO dock —
+ * and the only OPEN_CHAT_EVENT listeners are HarnessesDock / PiTerminalsDock.
+ * So the pre-fix button awaited its fetch, dispatched into a tree with no
+ * listener, and reset its spinner: no error, no toast, indistinguishable from
+ * a dead control.
+ *
+ * These assert the OBSERVABLE effect, not merely that the handler ran. The
+ * suite was green before the fix precisely because it only ever asserted the
+ * button EXISTS — the same shape as EI-18694403367371331, where a failure
+ * rendered identically to a legitimate empty state.
+ */
+describe('WorkItemPopupModal — hosted chat (WI-6023)', () => {
+  const row = { id: 'WI-5952', kind: 'task', family: 'issue', title: 'Build the popup', state: 'wip' };
+
+  it('pressing Chat HOSTS a chat panel in the popup (the button has a visible effect)', async () => {
+    syncResults['workItems.detail'] = [row];
+    openFeatureChat.mockResolvedValue({ chatId: 'chat-abc' });
+    render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+
+    expect(screen.queryByTestId('wi-popup-chat')).toBeNull();
+    fireEvent.click(screen.getByTestId('wi-detail-chat'));
+    await screen.findByTestId('wi-popup-chat');
+    expect(screen.getByTestId('chat-panel').getAttribute('data-chat-id')).toBe('chat-abc');
+  });
+
+  it('suppresses the dock dispatch so the pending-opens queue is not poisoned', async () => {
+    syncResults['workItems.detail'] = [row];
+    openFeatureChat.mockResolvedValue({ chatId: 'chat-abc' });
+    const seen: Event[] = [];
+    const listener = (e: Event) => seen.push(e);
+    window.addEventListener('papercusp:open-chat', listener);
+    try {
+      render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+      fireEvent.click(screen.getByTestId('wi-detail-chat'));
+      await screen.findByTestId('wi-popup-chat');
+      // The popup passes dispatch:false — without it the detail ALSO lands on
+      // window.__PAPERCUSP_PENDING_CHAT_OPENS__, and the next dock to mount
+      // replays a backlog of stale opens somewhere else entirely.
+      expect(openFeatureChat).toHaveBeenCalledWith(expect.objectContaining({ dispatch: false }));
+      expect(seen).toHaveLength(0);
+    } finally {
+      window.removeEventListener('papercusp:open-chat', listener);
+    }
+  });
+
+  it('the back control returns to the work-item detail', async () => {
+    syncResults['workItems.detail'] = [row];
+    openFeatureChat.mockResolvedValue({ chatId: 'chat-abc' });
+    render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId('wi-detail-chat'));
+    await screen.findByTestId('wi-popup-chat');
+    fireEvent.click(screen.getByTestId('wi-popup-chat-back'));
+    expect(screen.queryByTestId('wi-popup-chat')).toBeNull();
+    expect(screen.getByTestId('wi-detail-chat')).toBeTruthy();
+  });
+
+  it('re-targeting the popup to another id drops the hosted chat (no stale panel over the new item)', async () => {
+    syncResults['workItems.detail'] = [row];
+    openFeatureChat.mockResolvedValue({ chatId: 'chat-abc' });
+    const { rerender } = render(
+      <WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />,
+    );
+    fireEvent.click(screen.getByTestId('wi-detail-chat'));
+    await screen.findByTestId('wi-popup-chat');
+
+    syncResults['workItems.detail'] = [{ ...row, id: 'WI-6000', title: 'A different item' }];
+    rerender(<WorkItemPopupModal id="WI-6000" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+    expect(screen.queryByTestId('wi-popup-chat')).toBeNull();
+    expect(screen.getByText('A different item')).toBeTruthy();
+  });
+
+  it('a failed open does NOT host an empty panel', async () => {
+    syncResults['workItems.detail'] = [row];
+    openFeatureChat.mockResolvedValue({ error: 'HTTP 500' });
+    render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId('wi-detail-chat'));
+    await Promise.resolve();
+    expect(screen.queryByTestId('wi-popup-chat')).toBeNull();
   });
 });

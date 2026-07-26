@@ -83,10 +83,24 @@ describe('killProcess — kind allowlist', () => {
     expect(killSpy).not.toHaveBeenCalled();
   });
 
-  it('rejects an unknown pid (not in the live list) without signaling', async () => {
+  it('rejects a pid that truly does not exist (absent from the list AND the raw /proc probe)', async () => {
     withProcs(proc(1, 'run.sh'));
+    withNoProbeHit();
     const r = await killProcess({ pid: 4242, ...BASE });
     expect(r).toMatchObject({ ok: false, pid: 4242, error: 'pid_not_found' });
+    expect(probeProcessMock).toHaveBeenCalledWith(4242);
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it('EI-18698120633403217: a LIVE pid outside the six tracked kinds (e.g. vitest) is reported unsupported_kind, NOT pid_not_found — and is never signaled', async () => {
+    // listProcesses() silently drops anything classified 'other' before the
+    // caller sees it — so the pid is absent from the classified list even
+    // though it is demonstrably alive. The raw /proc probe must catch this.
+    withProcs(proc(1, 'run.sh'));
+    withProbeHit('other', '/usr/bin/vitest run');
+    const r = await killProcess({ pid: 5555, ...BASE });
+    expect(r).toMatchObject({ ok: false, pid: 5555, kind: 'other', error: 'unsupported_kind' });
+    expect(r.detail).toContain('5555');
     expect(killSpy).not.toHaveBeenCalled();
   });
 

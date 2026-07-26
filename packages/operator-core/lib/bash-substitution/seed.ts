@@ -23,6 +23,29 @@
  * `advise` is P-020's staged decision after a real observation window, never an
  * automatic consequence of a green verdict — the DB's `tier_requires_equivalence`
  * CHECK sets the ceiling, and this seeder deliberately stays under it.
+ *
+ * ── Why `failing_cases` is bound as `::text::jsonb` and not `::jsonb` ────────
+ * The double cast is load-bearing; do not "simplify" it. postgres-js picks a
+ * parameter serializer from the INFERRED type, and the jsonb serializer differs
+ * between the two clients this seeder runs under:
+ *
+ *   - the canonical `getOrgPg()` client has been drizzle-mutated, so its jsonb
+ *     serializer is a PASSTHROUGH — a pre-stringified JSON string survives
+ *     intact (and a raw array throws `Buffer.byteLength(Array)`);
+ *   - a hand-rolled `postgres(url, …)` client (what the integration test's
+ *     `_org-test-db` builds) keeps the stock serializer, which JSON.stringifies
+ *     AGAIN — storing the jsonb SCALAR `"[{…}]"` instead of an array.
+ *
+ * The two are exactly inverted, so no single JS-value form is correct under
+ * both. Casting through `::text` sidesteps the question: the parameter binds as
+ * TEXT, no jsonb serializer is consulted on either client, and Postgres parses
+ * the JSON itself. Verified against both clients (2026-07-26, P-008).
+ *
+ * This was invisible until P-008 because every prior pair audited `equivalent`
+ * and therefore carried an EMPTY `failing_cases`, and the
+ * `verdict_evidence` CHECK short-circuits on the verdict before it ever calls
+ * `jsonb_array_length` — so a double-encoded `"[]"` was never inspected. The
+ * first non-equivalent verdict is what made the latent bug reachable.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -73,7 +96,7 @@ async function upsertPair(
       baseline_calls, baseline_sessions, observed_since
     ) VALUES (
       ${workspaceId}, ${audit.intentLabel}, ${audit.bashPattern}, ${audit.bashPatternFlags}, ${audit.toolName},
-      ${audit.verdict}, ${audit.sampleSize}, ${JSON.stringify(audit.failingCases)}::jsonb, ${fixture.evidenceRef},
+      ${audit.verdict}, ${audit.sampleSize}, ${JSON.stringify(audit.failingCases)}::text::jsonb, ${fixture.evidenceRef},
       'observe', ${pair.advisoryText}, true,
       ${fixture.totalAtoms}, ${fixture.totalSessions}, now()
     )
