@@ -279,6 +279,85 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
   });
 });
 
+// EI-18681259560385029 — the live incident: five members carried the laneless-idle line
+// ("likely idle-cycling a drained or scoped-out lane") while claimableCount was 2, and the
+// leader read it, concluded the lane was drained, and stood the fleet down. The wording
+// asserted a fact it never checked; the remedy it named (fleet:bench) was backwards.
+describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-18681259560385029)', () => {
+  const idle = { stalled: false, verdict: 'waiting' as const, parkedOn: [], doing: null, load: 0, queued: [] };
+
+  it('does NOT claim the lane is drained when work IS claimable — and says so explicitly', () => {
+    const s = computeBenchSuggestion(idle, 2);
+    expect(s?.kind).toBe('idle-with-claimable');
+    expect(s?.reason).toMatch(/2 item\(s\) ARE claimable/);
+    expect(s?.reason).toMatch(/lane is NOT drained/);
+    // The regression in one line: it must never assert the queue is empty when it is not.
+    expect(s?.reason).not.toMatch(/drained or scoped-out/);
+  });
+
+  it('does NOT recommend benching when the queue is nonempty — benching sleeps a member beside real work', () => {
+    const s = computeBenchSuggestion(idle, 2);
+    expect(s?.reason).toMatch(/DO NOT fleet:bench/);
+    expect(s?.reason).toMatch(/wake/i);
+  });
+
+  it('keeps the historical bench advice when the lane is VERIFIED drained (claimableCount 0)', () => {
+    const s = computeBenchSuggestion(idle, 0);
+    expect(s?.kind).toBe('laneless-idle');
+    expect(s?.reason).toMatch(/VERIFIED drained/);
+    expect(s?.reason).toMatch(/fleet:bench/);
+  });
+
+  it('an UNREADABLE queue (null) is reported as unknown — never silently folded into "drained"', () => {
+    for (const unknown of [null, undefined]) {
+      const s = computeBenchSuggestion(idle, unknown);
+      expect(s?.kind).toBe('laneless-idle');
+      expect(s?.reason).toMatch(/could NOT be read/);
+      expect(s?.reason).toMatch(/an unread queue is not an empty one/);
+      expect(s?.reason).not.toMatch(/VERIFIED drained/);
+    }
+  });
+
+  it('tags the stalled branch with its own kind so a leader can tell the two remedies apart', () => {
+    const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: [], doing }, 5);
+    expect(s?.kind).toBe('stalled-no-mcp');
+  });
+
+  it('projectMember threads the claimable count through end-to-end', () => {
+    const m = projectMember(baseAgent({ verdict: 'waiting', monitorState: 'waiting' }), NOW, 3);
+    expect(m.benchSuggestion?.kind).toBe('idle-with-claimable');
+    expect(m.benchSuggestion?.reason).toMatch(/3 item\(s\) ARE claimable/);
+  });
+});
+
+describe('computeIdleWithClaimableAlert (EI-18681259560385029 — the summary-level alert)', () => {
+  it('fires on the exact incident shape: 5 idle members, 2 claimable', () => {
+    const alert = computeIdleWithClaimableAlert({ claimableCount: 2, idleMemberCount: 5 });
+    expect(alert).toBeDefined();
+    expect(alert?.reason).toMatch(/5 member\(s\)/);
+    expect(alert?.reason).toMatch(/2 item\(s\) are claimable/);
+    expect(alert?.reason).toMatch(/wake/i);
+  });
+
+  it('does not fire when the queue is genuinely empty — idle beside nothing is correct', () => {
+    expect(computeIdleWithClaimableAlert({ claimableCount: 0, idleMemberCount: 5 })).toBeUndefined();
+  });
+
+  it('does not fire when every member is working, however full the queue', () => {
+    expect(computeIdleWithClaimableAlert({ claimableCount: 40, idleMemberCount: 0 })).toBeUndefined();
+  });
+
+  it('does NOT fire on an unreadable count — unknown is not evidence of a full queue either', () => {
+    expect(computeIdleWithClaimableAlert({ claimableCount: null, idleMemberCount: 5 })).toBeUndefined();
+  });
+
+  it('fires even while OTHER members are busy — partial starvation is still starvation', () => {
+    // Deliberately unlike computeStrandedFleetAlert/computeSpecStarvedFleetAlert, which both
+    // require fleet-wide zero wip and so miss a fleet that is half-working, half-starving.
+    expect(computeIdleWithClaimableAlert({ claimableCount: 1, idleMemberCount: 1 })).toBeDefined();
+  });
+});
+
 describe('computeStrandedFleetAlert (EI-15055 — the whole-fleet-asleep-on-available-supply shape)', () => {
   it('fires on the exact incident shape: zero fleet-wide load, ≥1 parked member, ≥1 unowned critical', () => {
     const alert = computeStrandedFleetAlert({ totalLoad: 0, parkedCount: 7, unownedCriticalCount: 8 });

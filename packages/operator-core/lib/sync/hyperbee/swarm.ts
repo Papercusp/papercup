@@ -480,6 +480,20 @@ const announcePairingByTopic = new Map<
 
 /** Cumulative announce-channel pairing progress for one topic. */
 export interface AnnouncePairingState {
+  /**
+   * EI-18680482533031746: explicit presence witness — true only when this
+   * topic has a real tracked entry (at least one open attempt or a pairing
+   * ever recorded). A diagnostic accessor that synthesises a zero-state for
+   * "no entry" (attempts:0/everPaired:false) makes "never attempted" and
+   * "attempted and measured zero" read identically through the numeric
+   * fields alone — exactly the information-destroying-at-the-boundary shape
+   * the empty swarm-connection catch (WI-5895) had one layer down. Callers
+   * MUST check this before trusting `attempts`/`everPaired` as a real
+   * measurement; `firstAttemptMs === null` happens to correlate with
+   * `present === false` today (both writers always stamp it), but that is an
+   * accident of the current writers, not a contract — check `present`.
+   */
+  present: boolean;
   /** How many announce channels we have created+`open()`d for this topic. */
   attempts: number;
   /** True once ANY announce channel on this topic reached `onopen` (paired). */
@@ -514,8 +528,9 @@ function recordAnnouncePaired(topicHex: string): void {
  *  (the default source for the pre-admission stall axis' probe). */
 export function announcePairingStateForTopic(topicHex: string): AnnouncePairingState {
   const cur = announcePairingByTopic.get(topicHex);
-  if (!cur) return { attempts: 0, everPaired: false, firstAttemptMs: null };
+  if (!cur) return { present: false, attempts: 0, everPaired: false, firstAttemptMs: null };
   return {
+    present: true,
     attempts: cur.attempts,
     everPaired: cur.everPaired,
     firstAttemptMs: cur.firstAttemptMs,
@@ -1558,8 +1573,14 @@ export async function joinHarnessSwarm(
             // signal, not console scraping).
             try {
               if (!process.env.VITEST) {
+                // EI-18680482533031746: `[swarm:severed]` is a DISTINCT stable
+                // token from the unpaired rung's `[swarm:unpaired]` below —
+                // both rungs' messages otherwise share the substring "fresh
+                // topic leave+rejoin", which conflated their counts under a
+                // plain log grep (a real ~10-vs-5 false anomaly). Count by
+                // this tag, never by the shared phrase.
                 console.error(
-                  `[swarm] ⚠ topic ${topicHex.slice(0, 16)}… severed for ${Math.round(severedMs / 1000)}s ` +
+                  `[swarm:severed] ⚠ topic ${topicHex.slice(0, 16)}… severed for ${Math.round(severedMs / 1000)}s ` +
                     'despite refresh() ticking — forcing a fresh topic leave+rejoin ' +
                     '(the local discovery session likely holds stale DHT announce/lookup state).',
                 );
@@ -1608,10 +1629,17 @@ export async function joinHarnessSwarm(
             // a throwing probe is treated as "no signal", never a fire
             pairing = null;
           }
+          // EI-18680482533031746: gate on the explicit `present` witness, not
+          // the `firstAttemptMs !== null` coincidence — a topic we've never
+          // tracked at all must never be mistaken for one we've tracked and
+          // measured zero attempts on.
           const unpairedMs =
-            pairing && pairing.firstAttemptMs !== null ? now - pairing.firstAttemptMs : 0;
+            pairing && pairing.present && pairing.firstAttemptMs !== null
+              ? now - pairing.firstAttemptMs
+              : 0;
           if (
             pairing &&
+            pairing.present &&
             liveConnectionCount > 0 &&
             !pairing.everPaired &&
             pairing.attempts >= MIN_UNPAIRED_ATTEMPTS &&
@@ -1626,10 +1654,15 @@ export async function joinHarnessSwarm(
               attempts: pairing.attempts,
             };
             // Diagnostic-only; a throwing console must never block the repair.
+            // EI-18680482533031746: `[swarm:unpaired]` is a DISTINCT stable
+            // token from the severed rung's `[swarm:severed]` above — see
+            // that call site's comment for why (shared "fresh topic
+            // leave+rejoin" substring conflated their counts under a plain
+            // log grep). Count by this tag, never by the shared phrase.
             try {
               if (!process.env.VITEST) {
                 console.error(
-                  `[swarm] ⚠ topic ${topicHex.slice(0, 16)}… has held live connections for ` +
+                  `[swarm:unpaired] ⚠ topic ${topicHex.slice(0, 16)}… has held live connections for ` +
                     `${Math.round(unpairedMs / 1000)}s across ${pairing.attempts} announce-channel ` +
                     'open attempts WITHOUT ever pairing — no announce can be exchanged, so nothing ' +
                     'is admitted and the replication-liveness axes never run at all. Forcing a ' +

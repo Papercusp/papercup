@@ -332,7 +332,7 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   | plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` over `harness_plans` |
   | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
   | prose / full-text | `search:fulltext` · `search:semantic` | `ILIKE '%…%'` |
-  | code graph / call sites | `gitnexus:query` | a hand-walk of the tree |
+  | code graph / call sites | `gitnexus.query` (dot, not colon — a plugin-namespaced MCP tool, not the usual `server:verb` form) | a hand-walk of the tree, or raw `grep -r`/`rg` over source (grep gives file/line matches; gitnexus.query gives call chains + callers/callees) |
 
   Nothing in the table fits and the shape is genuinely one-off? Then **`dev:pg_query`**
   (read-only SELECT — read-only txn + `statement_timeout` + row cap) or a server-side

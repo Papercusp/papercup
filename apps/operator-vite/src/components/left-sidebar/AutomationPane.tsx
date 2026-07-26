@@ -185,13 +185,22 @@ export default function AutomationPane({
 
   async function toggleRoutine(r: AutomationRoutine) {
     const key = `${r.installSlug}/${r.name}`;
+    const nextActive = !r.active;
     setBusy(key);
     setErr(null);
     try {
       await runRoutineTool('routines:set', {
         name: r.name,
         installSlug: r.installSlug,
-        active: !r.active,
+        active: nextActive,
+        // routines:set requires `reason` when pausing (EI-18654017982759582 — an
+        // unattributed pause has twice stayed silently off for days). This pane's
+        // whole point is a ONE-CLICK pause (see header comment), so a text prompt
+        // would defeat the design — attribute it to the pane itself instead of
+        // leaving the click to structurally fail every time (EI-18680916805234639,
+        // 3/14 = 21% of routines:set calls in a 24h window, all coord_owner_id
+        // 'loopback' from this exact call site).
+        ...(nextActive ? {} : { reason: `Paused via Automation pane (${title})` }),
       });
       cat.invalidate?.();
     } catch (e) {
@@ -217,6 +226,8 @@ export default function AutomationPane({
           name: r.name,
           installSlug: r.installSlug,
           active: nextActive,
+          // Same reason-on-pause requirement as toggleRoutine above.
+          ...(nextActive ? {} : { reason: `Paused via Automation pane "Pause all" (${title})` }),
         });
       }
       cat.invalidate?.();

@@ -91,6 +91,7 @@ function makeFakeSwarm() {
 function makeProbe(over: Partial<AnnouncePairingState> = {}): () => AnnouncePairingState {
   const firstAttemptMs = Date.now();
   const state: AnnouncePairingState = {
+    present: true,
     attempts: 8,
     everPaired: false,
     firstAttemptMs,
@@ -252,6 +253,34 @@ describe('joinHarnessSwarm never-paired escalation, rung (c) (EI-186629442423045
     expect(f.leaves).toHaveLength(0);
   });
 
+  it('EI-18680482533031746: never escalates on a probe reporting present:false (an untracked topic must never be read as a real zero-attempt measurement)', async () => {
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    const onUnpairedLink = vi.fn();
+    const handle = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      refreshMs: 50,
+      fastWindowMs: 200,
+      slowRefreshMs: 500,
+      severedEscalationMs: 0,
+      unpairedEscalationMs: 1000,
+      // A probe that looks superficially like a real measurement (high attempts,
+      // never paired) but explicitly flags present:false must still never fire —
+      // present is the authoritative gate, not a derived guess from the other fields.
+      announcePairingState: makeProbe({ present: false, attempts: 8, everPaired: false }),
+      onUnpairedLink,
+    });
+    handles.push(handle);
+
+    f.emitConnection(makeFakeSocket());
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(onUnpairedLink).not.toHaveBeenCalled();
+    expect(f.leaves).toHaveLength(0);
+  });
+
   it('is disabled by unpairedEscalationMs: 0', async () => {
     vi.useFakeTimers();
     const f = makeFakeSwarm();
@@ -359,8 +388,11 @@ describe('joinHarnessSwarm never-paired escalation, rung (c) (EI-186629442423045
 });
 
 describe('announcePairingStateForTopic (EI-18662944242304583 telemetry)', () => {
-  it('reports a never-attempted topic as a clean zero (the disarmed default)', () => {
+  it('reports a never-attempted topic as a clean zero (the disarmed default), explicitly flagged present:false', () => {
     const st = announcePairingStateForTopic('deadbeef'.repeat(8));
-    expect(st).toEqual({ attempts: 0, everPaired: false, firstAttemptMs: null });
+    // EI-18680482533031746: `present` is the explicit witness that this is a
+    // SYNTHESISED absent-state, not a real measurement of zero attempts —
+    // never rely on firstAttemptMs===null alone to tell the two apart.
+    expect(st).toEqual({ present: false, attempts: 0, everPaired: false, firstAttemptMs: null });
   });
 });

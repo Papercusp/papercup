@@ -113,7 +113,14 @@ export interface LeaderBriefMember {
    *  blocked on one member's diagnosis, instead of parking on an event).
    *  A one-glance nudge toward `fleet:bench { member, wakeEvent }` — never
    *  auto-applied, since only the leader knows the right gate to park on. */
-  benchSuggestion?: { reason: string; item: string | null; itemTitle: string | null };
+  benchSuggestion?: {
+    /** EI-18681259560385029: which branch fired. `idle-with-claimable` is the one a
+     *  leader must NOT act on by benching — see computeBenchSuggestion. */
+    kind: 'stalled-no-mcp' | 'laneless-idle' | 'idle-with-claimable';
+    reason: string;
+    item: string | null;
+    itemTitle: string | null;
+  };
   isSelf?: true;
 }
 
@@ -144,6 +151,21 @@ export function computeBenchSuggestion(
     load?: number;
     queued?: readonly unknown[];
   },
+  /**
+   * EI-18681259560385029: the fleet's LIVE authoritative claimable count (the same
+   * `claimableCount` work_items:claimable reports — spec_match AND all ~12 floors),
+   * or `null` when it could not be read.
+   *
+   * THE THREE VALUES ARE THREE DIFFERENT FACTS AND MUST NOT COLLAPSE:
+   *   > 0   → the queue is NOT empty; an idle member is a starvation symptom, and
+   *           benching it is the WRONG remedy.
+   *   === 0 → the lane really is drained; the historical bench advice is correct.
+   *   null  → UNKNOWN (read failed / no harness to scope by). Deliberately NOT
+   *           folded into 0: doing so would silently restore the exact bug this
+   *           parameter fixes — an unchecked "drained or scoped-out" assertion —
+   *           and it would do so invisibly, forever. Unknown says so out loud.
+   */
+  claimableCount?: number | null,
 ): LeaderBriefMember['benchSuggestion'] {
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
@@ -161,6 +183,7 @@ export function computeBenchSuggestion(
       // AMBIGUITY honestly instead of naming a wrong cause, and point at the one
       // cheap way to disambiguate before acting.
       return {
+        kind: 'stalled-no-mcp',
         reason:
           'no recent MCP tool call while alive and holding a claim — may be genuinely wedged, ' +
           'OR mid a long foreground exec (a test run, a build) that emits no MCP calls until it ' +
@@ -189,11 +212,38 @@ export function computeBenchSuggestion(
   if (a.verdict == null) return undefined;
   if (a.verdict === 'dead' || a.verdict === 'booted' || a.verdict === 'joined') return undefined;
   if (a.load === 0 && (a.queued?.length ?? 0) === 0 && !a.doing) {
+    // EI-18681259560385029: the ORIGINAL text asserted "likely idle-cycling a drained or
+    // scoped-out lane" UNCONDITIONALLY — a confident diagnosis of a fact it never checked.
+    // When the queue is actually nonempty that sentence points a leader AWAY from the truth
+    // ("lane drained, parking is correct") and its paired remedy (fleet:bench onto an event)
+    // is precisely backwards: it puts the member to SLEEP next to work it should be taking.
+    // Live 2026-07-26T04:32Z: five members carried this line while claimableCount was 2, and
+    // the leader read it and stood the fleet down. Branch on the real number instead.
+    if (claimableCount != null && claimableCount > 0) {
+      return {
+        kind: 'idle-with-claimable',
+        reason:
+          `alive with NO claim and nothing queued while ${claimableCount} item(s) ARE claimable ` +
+          "right now under this fleet's own spec (EI-18681259560385029) — the lane is NOT drained. " +
+          'DO NOT fleet:bench this member: benching sleeps it next to work it should be taking. ' +
+          'Wake it to re-run scheduler:get_next (coord:send wake:required), and if it wakes and ' +
+          'still takes nothing, that is a claim-floor problem — read work_items:claimable\'s ' +
+          'excludedBreakdown rather than assuming the member is at fault.',
+        item: null,
+        itemTitle: null,
+      };
+    }
     return {
+      kind: 'laneless-idle',
       reason:
-        'alive with NO claim, nothing queued, and not parked on an event — likely idle-cycling ' +
-        'a drained or scoped-out lane every wake instead of resting on a scoped completion event ' +
-        '(EI-13846). Confirm its claim spec still admits work, or fleet:bench it onto a scoped event.',
+        'alive with NO claim, nothing queued, and not parked on an event — idle-cycling ' +
+        (claimableCount === 0
+          ? 'a lane VERIFIED drained right now (0 claimable under this fleet\'s spec) '
+          : 'a lane whose claimable queue could NOT be read on this brief (unknown, not verified drained) ') +
+        'every wake instead of resting on a scoped completion event (EI-13846). ' +
+        (claimableCount === 0
+          ? 'fleet:bench it onto a scoped event, or confirm its claim spec still admits work.'
+          : 'Check work_items:claimable BEFORE benching — an unread queue is not an empty one.'),
       item: null,
       itemTitle: null,
     };
@@ -272,6 +322,93 @@ export function computeSpecStarvedFleetAlert(input: {
   };
 }
 
+/**
+ * EI-18681259560385029: the IDLE-WITH-CLAIMABLE alert — the summary-level half of the
+ * benchSuggestion wording fix above, and the third distinct hole in this family.
+ *
+ * The two existing fleet alerts are each structurally unable to fire for this shape:
+ *  - computeStrandedFleetAlert (EI-15055) requires `parkedCount > 0` AND
+ *    `unownedCriticalCount > 0`. The incident's members were NOT parked (the laneless-idle
+ *    branch excludes parked members by construction) and the queued work was `major`, not
+ *    `critical` — so it was excluded twice over.
+ *  - computeSpecStarvedFleetAlert (EI-18655873409999215) requires `specMatched === 0`, i.e.
+ *    a spec matching NOTHING. Here the spec was healthy and matching fine; the work was
+ *    claimable and simply unclaimed. Correct by its own definition, blind to this.
+ * So "idle members next to a nonempty queue" — the one state a drain fleet must never sit
+ * in — had no alert at all, while `bench_suggested: 5` sat in the summary looking benign.
+ *
+ * Fires when work IS claimable under the fleet's own spec AND at least one member is
+ * alive-but-idle (no claim, nothing queued, not parked). Deliberately does NOT require
+ * fleet-wide zero wip (unlike both alerts above): a fleet where SOME members work and
+ * others idle beside a filling queue is still starving, just more quietly.
+ *
+ * `claimableCount: null` (unreadable) NEVER fires it — an unknown queue is not evidence of
+ * a full one, exactly as it is not evidence of an empty one. PURE: exported for unit-testing.
+ */
+export function computeIdleWithClaimableAlert(input: {
+  claimableCount: number | null;
+  idleMemberCount: number;
+}): { reason: string } | undefined {
+  if (input.claimableCount == null || input.claimableCount <= 0) return undefined;
+  if (input.idleMemberCount <= 0) return undefined;
+  return {
+    reason:
+      `${input.idleMemberCount} member(s) are alive with NO claim and nothing queued while ` +
+      `${input.claimableCount} item(s) are claimable under this fleet's own spec right now ` +
+      '(EI-18681259560385029) — idle members beside a nonempty queue is the one state a drain ' +
+      'fleet must never sit in. This is NOT a drained lane and benching is the wrong remedy: ' +
+      'coord:send { wake: "required" } those members so they re-run scheduler:get_next now. ' +
+      'If they wake and still claim nothing, read work_items:claimable\'s excludedBreakdown — ' +
+      'a claim floor is holding the rows, not the members.',
+  };
+}
+
+/**
+ * EI-18681259560385029: IO shell for the alert above — the fleet's live authoritative
+ * claimable count, or `null` when it genuinely could not be read.
+ *
+ * Uses `aggregateIssueClaimExclusions` (the SAME oracle behind work_items:claimable and
+ * scheduler:get_next) resolved through the SAME `resolveFleetClaimSpec` path that
+ * `work_items:claimable { spec: <fleetSlug> }` uses, so the number this alert fires on and
+ * the number an agent sees when they check by hand structurally cannot disagree. Note this
+ * is `breakdown.claimable` (post-floor), NOT `matchedByFilter` and NOT
+ * previewSpecPoolEffect's `matched` — those are pre-floor filter counts (~113 vs 4 on this
+ * fleet at the time of writing), which is why the spec-starved alert cannot stand in here.
+ *
+ * Fails soft to `null`, never to `0`: a read error must not manufacture "the lane is
+ * drained" — that synthesised zero-state is the same class of bug as the wording this item
+ * fixes, and it would silently disable the alert rather than announcing itself.
+ */
+async function readFleetClaimableCount(args: {
+  fleet: string;
+  harness?: string;
+  workspaceId?: string | null;
+  assignee?: string;
+}): Promise<number | null> {
+  try {
+    const { resolveFleetClaimSpec, resolveClaimSpecWorkspace } = await import(
+      '../../scheduler/claim-spec-store'
+    );
+    const { aggregateIssueClaimExclusions } = await import('../../scheduler/get-next');
+    const ws = resolveClaimSpecWorkspace(args.workspaceId ?? undefined);
+    const resolved = await resolveFleetClaimSpec({ spec: args.fleet, workspaceId: ws });
+    if (!resolved) return null;
+    // aggregateIssueClaimExclusions requires a harness to scope by. Prefer the caller's,
+    // else the one the spec record itself rides — without either we cannot produce a
+    // trustworthy number, and null (unknown) is the honest answer.
+    const harness = args.harness ?? resolved.record.harnessSlug ?? null;
+    if (!harness) return null;
+    const breakdown = await aggregateIssueClaimExclusions(resolved.record.spec.view.filter, {
+      harness,
+      states: resolved.record.spec.states,
+      assignee: args.assignee,
+    });
+    return breakdown.claimable;
+  } catch {
+    return null;
+  }
+}
+
 export type DecoratedAgent = AgentAssignment & {
   sessionState?: SessionState | null;
   confirmLiveness?: boolean | null;
@@ -323,8 +460,14 @@ export function reconcilePsuHostLiveness<T extends DecoratedAgent>(
   return applyPsuHostAuthority(agents, agentRoles, findHost);
 }
 
-/** PURE: exported for direct unit-testing (no PG/DI ceremony needed). */
-export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMember {
+/** PURE: exported for direct unit-testing (no PG/DI ceremony needed).
+ *  `claimableCount` (EI-18681259560385029) is the fleet-wide live claimable total threaded
+ *  into the per-member bench suggestion; `null`/omitted reads as UNKNOWN, never as 0. */
+export function projectMember(
+  a: DecoratedAgent,
+  nowMs: number,
+  claimableCount?: number | null,
+): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   return {
     agentId: a.agentId,
@@ -349,7 +492,7 @@ export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMemb
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
     ...(a.parkedOn && a.parkedOn.length > 0 ? { parkedOn: a.parkedOn } : {}),
     ...(() => {
-      const suggestion = computeBenchSuggestion(a);
+      const suggestion = computeBenchSuggestion(a, claimableCount);
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
   };
@@ -473,8 +616,17 @@ export default defineTool({
       workspaceId,
       ageHours: args.unowned_critical_age_hours,
     });
+    // EI-18681259560385029: read the fleet's LIVE claimable count before projecting members
+    // — the per-member bench suggestion must not assert "drained or scoped-out" without it.
+    // Fails soft to null (UNKNOWN), never 0.
+    const fleetClaimableCount = await readFleetClaimableCount({
+      fleet,
+      harness: args.harness,
+      workspaceId: actorWorkspace,
+      assignee: ownerId,
+    });
     const nowMs = Date.now();
-    const members = grouped.map((a) => projectMember(a, nowMs));
+    const members = grouped.map((a) => projectMember(a, nowMs, fleetClaimableCount));
     const self = resolveSelfRef(ctx);
     const markedMembers = markSelfRows(members, self, 'agentId');
     const summary = {
@@ -498,6 +650,15 @@ export default defineTool({
       // EI-9943: members alive+speaking but not advancing and not yet benched —
       // the live-loop-polling-on-a-blocker pattern this whole item targets.
       bench_suggested: members.filter((m) => m.benchSuggestion != null).length,
+      // EI-18681259560385029: of those, the ones that must NOT be benched — alive,
+      // unclaimed, and idle beside a queue that is NOT empty. `bench_suggested` alone
+      // was read as benign (it counts a REMEDY); this counts a STARVATION SYMPTOM.
+      idle_with_claimable: members.filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable')
+        .length,
+      // The live authoritative claimable total behind the two fields above (the same
+      // number work_items:claimable reports). null ⇒ could not be read on this brief —
+      // NOT zero, and never to be read as a drained lane.
+      claimable_now: fleetClaimableCount,
       // WI-3818: make any incomplete canonical roster read explicit to callers
       // instead of silently presenting a partial membership list.
       degraded_roster_legs: rosterResult.degradedLegs,
@@ -517,6 +678,12 @@ export default defineTool({
     // preview error or missing spec must never break the brief). Measures the
     // fleet's OWN effective claim spec against the live claimable pool, the same
     // compiled-filter count scheduler:set_claim_spec's write-time guard uses.
+    // EI-18681259560385029: idle members beside a NONEMPTY queue — the shape both alerts
+    // below are structurally blind to (see computeIdleWithClaimableAlert).
+    const idleWithClaimableAlert = computeIdleWithClaimableAlert({
+      claimableCount: fleetClaimableCount,
+      idleMemberCount: summary.idle_with_claimable,
+    });
     let specStarvedAlert: { reason: string } | undefined;
     try {
       const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
@@ -541,11 +708,15 @@ export default defineTool({
           ...summary,
           strandedFleetAlert: strandedFleetAlert != null,
           specStarvedAlert: specStarvedAlert != null,
+          idleWithClaimableAlert: idleWithClaimableAlert != null,
         },
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
         ...(strandedFleetAlert ? { strandedFleetAlertReason: strandedFleetAlert.reason } : {}),
         ...(specStarvedAlert ? { specStarvedAlertReason: specStarvedAlert.reason } : {}),
+        ...(idleWithClaimableAlert
+          ? { idleWithClaimableAlertReason: idleWithClaimableAlert.reason }
+          : {}),
       },
     };
   },

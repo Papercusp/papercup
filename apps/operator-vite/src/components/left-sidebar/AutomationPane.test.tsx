@@ -208,6 +208,80 @@ describe('AutomationPane — controls', () => {
     vi.unstubAllGlobals();
   });
 
+  /**
+   * EI-18680916805234639 recurrence guard: `routines:set { active: false }`
+   * (server-side) has REQUIRED a `reason` since EI-18654017982759582, but this
+   * pane's pause paths went un-updated and hit that validation error on every
+   * single pause click (3/14 = 21% of all routines:set calls in a 24h window,
+   * every one coord_owner_id 'loopback' — this exact call site). Pin that a
+   * pause write always carries a reason, and a resume write never needs one.
+   */
+  it('attaches a reason when pausing (pause-all) — routines:set rejects an unattributed pause', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPane();
+
+    fireEvent.click(screen.getByTestId('automation-pause-all'));
+    await waitFor(() => expect(H.invalidated).toContain('automation.catalog'));
+
+    const sent = fetchMock.mock.calls.map(
+      ([, init]) => JSON.parse((init as { body: string }).body) as { args: { active: boolean; reason?: string } },
+    );
+    expect(sent[0].args.active).toBe(false);
+    expect(typeof sent[0].args.reason).toBe('string');
+    expect(sent[0].args.reason!.length).toBeGreaterThan(0);
+    vi.unstubAllGlobals();
+  });
+
+  it('attaches a reason when pausing a single routine via the row toggle', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPane();
+
+    // gym-cycle starts active:true, so this click pauses it.
+    fireEvent.click(screen.getByTestId('automation-toggle-gym-cycle'));
+    await waitFor(() => expect(H.invalidated).toContain('automation.catalog'));
+
+    const sent = fetchMock.mock.calls.map(
+      ([, init]) => JSON.parse((init as { body: string }).body) as { args: { active: boolean; reason?: string } },
+    );
+    expect(sent[0].args.active).toBe(false);
+    expect(typeof sent[0].args.reason).toBe('string');
+    expect(sent[0].args.reason!.length).toBeGreaterThan(0);
+    vi.unstubAllGlobals();
+  });
+
+  it('does NOT send a reason when resuming — routines:set only requires it on pause', async () => {
+    H.catalogResult = {
+      data: [{ ...catalog, routines: catalog.routines.map((r) => ({ ...r, active: false })) }],
+      loading: false,
+      error: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPane();
+
+    // Every routine is now inactive, so the toggle resumes it.
+    fireEvent.click(screen.getByTestId('automation-toggle-gym-cycle'));
+    await waitFor(() => expect(H.invalidated).toContain('automation.catalog'));
+
+    const sent = fetchMock.mock.calls.map(
+      ([, init]) => JSON.parse((init as { body: string }).body) as { args: { active: boolean; reason?: string } },
+    );
+    expect(sent[0].args.active).toBe(true);
+    expect(sent[0].args.reason).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
   it('offers Resume all once nothing is spending', () => {
     H.catalogResult = {
       data: [{ ...catalog, routines: catalog.routines.map((r) => ({ ...r, active: false })) }],
