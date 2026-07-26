@@ -632,6 +632,18 @@ function cap(s: string, max: number): string {
   return t.length > max ? t.slice(0, Math.max(0, max - 1)) + '…' : t;
 }
 
+/**
+ * EI-18697157970421032: a plain, comparable build-time stamp for the top of
+ * every carry document — the concrete counterpart to REORIENT_BANNER's prose
+ * instruction. `now` is the moment THIS document was assembled (not when it
+ * is eventually delivered), so a successor reading it can diff it against its
+ * own current wall-clock and judge staleness directly, instead of relying
+ * solely on remembering to re-orient. Pure; exported for direct testing.
+ */
+export function renderBuiltAtStamp(now: number): string {
+  return `> Carry document built at ${new Date(now).toISOString()} — if it is now meaningfully later than that, treat any "currently working on / waiting on" claim below as UNVERIFIED until coord:orient reconciles it (a queued carry-respawn can deliver up to 30 minutes after it was built).`;
+}
+
 function renderIdentity(id: CarryDocIdentity): string {
   const lines = [
     `- su-id: ${id.ownerId}${id.ownerLabel ? ` (${id.ownerLabel})` : ''}`,
@@ -803,6 +815,18 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   const head = [
     '# Carry document (deterministic — assembled from the DB, no LLM)',
     `> ${REORIENT_BANNER}`,
+    // EI-18697157970421032: a carry-respawn control message can sit busy-gate
+    // deferred + rearm-retried for up to CARRY_RESPAWN_MAX_AGE_MS (30min
+    // default, psu-pty-host.mjs) before actual delivery — its content (this
+    // whole document) is built ONCE here and never re-rendered against live
+    // state before delivery. The re-orient banner above already tells the
+    // successor to reconcile, but carries no CONCRETE staleness signal — a
+    // stamped build time lets the successor compare it against its own
+    // current wall-clock and judge for itself how much may have changed
+    // since (an incident traced a stale carry-respawn's frozen `focus`
+    // describing a work-item that had been reassigned away by delivery
+    // time — the mandatory re-orient caught it, but only after the fact).
+    renderBuiltAtStamp(now),
     renderIdentity(doc.identity),
     renderSessionMode(doc.sessionMode),
   ];

@@ -20,6 +20,7 @@ import {
   CARRY_DOC_MAX_TAIL_TURNS,
   CARRY_DOC_MAX_PLAN_ITEMS,
   flagAsksAgainstFacts,
+  renderBuiltAtStamp,
   type CarryDoc,
   type CarryDocPlanItem,
   type CarryDocAsk,
@@ -196,6 +197,20 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
   });
 });
 
+describe('renderBuiltAtStamp (EI-18697157970421032, pure)', () => {
+  it('renders the exact ISO build time and a concrete staleness window', () => {
+    const stamp = renderBuiltAtStamp(NOW);
+    expect(stamp).toContain(new Date(NOW).toISOString());
+    expect(stamp).toContain('Carry document built at');
+    expect(stamp).toMatch(/30 minutes/);
+  });
+
+  it('is deterministic (same input, same output)', () => {
+    expect(renderBuiltAtStamp(NOW)).toBe(renderBuiltAtStamp(NOW));
+    expect(renderBuiltAtStamp(NOW)).not.toBe(renderBuiltAtStamp(NOW + 1));
+  });
+});
+
 describe('renderCarryDoc (pure)', () => {
   const planItems: CarryDocPlanItem[] = [
     { itemId: 'P-009', planSlug: 'deterministic-context-carry-2026-07-14', status: 'wip', disposition: 'claimed' },
@@ -223,6 +238,9 @@ describe('renderCarryDoc (pure)', () => {
     const text = renderCarryDoc(doc(), NOW);
     expect(text).toContain('# Carry document (deterministic');
     expect(text).toContain(REORIENT_BANNER);
+    expect(text).toContain(renderBuiltAtStamp(NOW));
+    expect(text.indexOf(REORIENT_BANNER)).toBeLessThan(text.indexOf(renderBuiltAtStamp(NOW)));
+    expect(text.indexOf(renderBuiltAtStamp(NOW))).toBeLessThan(text.indexOf('## Identity'));
     expect(text).toContain('## Identity');
     expect(text).toContain('su-id: su-1 (su · su-1)');
     expect(text).toContain('fleet: f1 (leader)');

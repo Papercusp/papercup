@@ -95,7 +95,7 @@ beforeEach(() => {
   // which is NOT a real process — kill(4242,0) would normally throw ESRCH, so
   // stub it to keep this file's existing (pre-liveness-check) assertions
   // intact; the liveness check itself is covered by terminal-spawn.test.ts.
-  vi.spyOn(process, 'kill').mockReturnValue(true as unknown as boolean);
+  vi.spyOn(process, 'kill').mockReturnValue(true);
 });
 
 describe('launch-su kickoff passthrough', () => {

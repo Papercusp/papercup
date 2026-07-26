@@ -10,8 +10,17 @@
 import type { SubstitutionPair } from '../types';
 import { FILE_READ_PAIRS } from './file-read';
 import { POSTGRES_PAIRS } from './postgres';
+import { PROCESS_PAIRS } from './process';
 
-export { FILE_READ_PAIRS, POSTGRES_PAIRS };
+export { FILE_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS };
 
-/** Every audited pair, in registry order. */
-export const ALL_PAIRS: SubstitutionPair[] = [...FILE_READ_PAIRS, ...POSTGRES_PAIRS];
+/**
+ * Every audited pair, in registry order.
+ *
+ * NOTE this list is not "the pairs we enforce" — it is "the pairs we have
+ * EVIDENCE about", positive or negative. `PROCESS_PAIRS` carries a
+ * `not-a-substitute` verdict and exists so the conclusion is durable and
+ * re-derived on every test run; the routing generator filters it out of
+ * CLAUDE.md, and the DB's `tier_requires_equivalence` keeps it at `observe`.
+ */
+export const ALL_PAIRS: SubstitutionPair[] = [...FILE_READ_PAIRS, ...POSTGRES_PAIRS, ...PROCESS_PAIRS];

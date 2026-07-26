@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
-const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as unknown as boolean);
+const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
@@ -109,7 +109,7 @@ beforeEach(() => {
   // Default: the spawned pid stays alive past the liveness-check beat, i.e.
   // the "normal" success path — no `warning` on the response. Individual
   // tests in the "silent launch failure" block override this.
-  killSpy.mockReturnValue(true as unknown as boolean);
+  killSpy.mockReturnValue(true);
 });
 
 afterEach(() => {
