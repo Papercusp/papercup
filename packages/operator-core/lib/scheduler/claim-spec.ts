@@ -417,6 +417,57 @@ function validateFilterNode(node: unknown, path: string, errors: string[]): void
 }
 
 /**
+ * EI-18699032970141084: a structural authoring footgun in `view.filter` — a bare
+ * `kind` clause (matches broadly: virtually every issue-family item of that kind)
+ * sitting as a SIBLING disjunct inside an `any` alongside scoping clauses (plan/
+ * plan_item/tags/id/paths). Because `any` is OR, the broad `kind` disjunct alone
+ * is sufficient for admission, silently defeating the scoping disjuncts — the
+ * author almost always meant "these kinds, AND within this scope" (`all`), not
+ * "these kinds, OR this scope" (`any`). Observed live: a fleet's plan/tag/id
+ * scoping disjuncts were entirely dead weight because a `kind in [bug,change,task]`
+ * leaf sat alongside them in the same `any`, so `scheduler:get_next` handed the
+ * fleet unrelated backlog items.
+ *
+ * Detects the SHAPE only (any `any` node, anywhere in the tree, with a direct
+ * `kind` leaf sibling next to a direct scoping-field leaf) — advisory, never a
+ * hard rejection: an author may occasionally want the true OR semantics.
+ */
+const KIND_FOOTGUN_SCOPING_FIELDS = new Set<string>(['plan', 'plan_item', 'tags', 'id', 'paths']);
+
+function isFilterLeafOnField(node: unknown, field: string): boolean {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return false;
+  const obj = node as Record<string, unknown>;
+  return typeof obj.field === 'string' && obj.field === field;
+}
+
+function detectBroadKindDisjunctFootgun(node: unknown, path: string, warnings: string[]): void {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
+  const obj = node as Record<string, unknown>;
+  if (Array.isArray(obj.any)) {
+    const children = obj.any as unknown[];
+    const hasKindLeaf = children.some((c) => isFilterLeafOnField(c, 'kind'));
+    const hasScopingSibling = children.some((c) =>
+      [...KIND_FOOTGUN_SCOPING_FIELDS].some((f) => isFilterLeafOnField(c, f)),
+    );
+    if (hasKindLeaf && hasScopingSibling) {
+      warnings.push(
+        `${path}.any: a bare "kind" clause sits alongside plan/tags/id/paths-scoping clause(s) inside this ` +
+          '"any" (OR) — the kind clause alone admits virtually the whole backlog of that kind, silently ' +
+          'defeating the scoping disjuncts (EI-18699032970141084). If you meant "these kinds, AND within this ' +
+          'scope", nest instead: { all: [ { field:"kind", op:"in", value:[...] }, { any: [...scoping clauses...] } ] }.',
+      );
+    }
+    children.forEach((c, i) => detectBroadKindDisjunctFootgun(c, `${path}.any[${i}]`, warnings));
+    return;
+  }
+  if (Array.isArray(obj.all)) {
+    (obj.all as unknown[]).forEach((c, i) => detectBroadKindDisjunctFootgun(c, `${path}.all[${i}]`, warnings));
+    return;
+  }
+  if ('not' in obj) detectBroadKindDisjunctFootgun(obj.not, `${path}.not`, warnings);
+}
+
+/**
  * Validate a claim spec, returning `{ ok, errors, warnings, spec }`. Never throws
  * (an authoring agent wants the issues back, not an exception — same contract as
  * `blueprint:validate`). Checks, in order:
@@ -451,6 +502,11 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
   // (3) Filter op/value coherence.
   if (spec.view.filter) {
     validateFilterNode(spec.view.filter, 'view.filter', errors);
+    // Only bother with the shape-advisory once the tree is structurally sound —
+    // an already-broken filter doesn't need a second, noisier complaint.
+    if (errors.length === 0) {
+      detectBroadKindDisjunctFootgun(spec.view.filter, 'view.filter', warnings);
+    }
   }
 
   // (4) Rank term expressions + weighted-mode weights.

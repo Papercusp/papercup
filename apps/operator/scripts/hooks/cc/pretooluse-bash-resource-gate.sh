@@ -839,6 +839,40 @@ def _looks_like_redirect_path(raw):
     return True
 
 
+# WI-6026 (EI-18664655909328670, 3rd instance): `tee`/`sed -i`/`perl -i`/
+# `ruby -i`/`cp` all find their target(s) by `.split()`-ing the raw
+# command-tail segment on whitespace, same as the substitution-fragment bug
+# above — but here the stray token is a REDIRECT the caller wrote to silence
+# output (`cmd ... 2>/dev/null`, `cmd ... > /tmp/out.log`), an extremely
+# common idiom. Redirect syntax is not a positional argument: strip it BEFORE
+# any of those legs treats "the last remaining token" as the destination, or
+# a combined `2>/dev/null` reads as the `cp`/`tee`/`sed -i` target itself
+# (repro: `cp a.txt /tmp/x/b.txt 2>/dev/null` denied with the guard naming
+# `2>/dev/null` as the target — the give-away that its own parse was wrong).
+# Handles both the combined form (`2>/dev/null`, `>>file`, `&>file`) and the
+# split form where the operator and its target are separate tokens
+# (`cp a b > out`), plus bare fd-duplication (`2>&1`, `>&2`) which carries no
+# path target at all.
+def _strip_redirect_tokens(toks):
+    out = []
+    skip_next = False
+    for t in toks:
+        if skip_next:
+            skip_next = False
+            continue
+        if re.fullmatch(r'\d*>&\d*', t):
+            continue
+        _m = re.match(r'^\d*(?:>{1,2}|&>)(.*)$', t)
+        if _m:
+            if _m.group(1) == '':
+                # bare operator token (`>`, `2>`, `>>`, `&>`) — its target, if
+                # any, is the NEXT token; drop both.
+                skip_next = True
+            continue
+        out.append(t)
+    return out
+
+
 def _shell_write_guard():
     _canon = _canonical_tree_root()
     if not _canon:
@@ -861,7 +895,7 @@ def _shell_write_guard():
     for _m in re.finditer(r'\btee\b([^;&|\n]*)', _clean):
         if _segment_has_unsplittable_expansion(_m.group(1)):
             continue
-        for _tok in _m.group(1).split():
+        for _tok in _strip_redirect_tokens(_m.group(1).split()):
             if not _tok.startswith('-'):
                 _targets.append((_tok, '`tee`'))
 
@@ -875,7 +909,7 @@ def _shell_write_guard():
             continue
         if _segment_has_unsplittable_expansion(_seg):
             continue
-        for _tok in _seg.split():
+        for _tok in _strip_redirect_tokens(_seg.split()):
             if not _tok.startswith('-'):
                 _targets.append((_tok, '`sed -i`'))
 
@@ -892,7 +926,7 @@ def _shell_write_guard():
             continue
         if _segment_has_unsplittable_expansion(_seg):
             continue
-        for _tok in _seg.split():
+        for _tok in _strip_redirect_tokens(_seg.split()):
             if not _tok.startswith('-'):
                 _targets.append((_tok, '`perl -i`/`ruby -i`'))
 
@@ -907,7 +941,7 @@ def _shell_write_guard():
         if any(re.match(r'-[a-zA-Z]*[rRa][a-zA-Z]*$|--recursive$|--archive$', t)
                for t in _toks if t.startswith('-')):
             continue
-        _pos = [t for t in _toks if not t.startswith('-')]
+        _pos = [t for t in _strip_redirect_tokens(_toks) if not t.startswith('-')]
         if len(_pos) >= 2:
             _targets.append((_pos[-1], '`cp`'))
 

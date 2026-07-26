@@ -474,6 +474,94 @@ describe('isIdOnlySelector — the id-pin tripwire', () => {
   });
 });
 
+describe('validateClaimSpec — broad-kind-disjunct footgun advisory (EI-18699032970141084)', () => {
+  const specWith = (filter: unknown): unknown => ({
+    specVersion: '1.0',
+    specId: 'footgun-test',
+    revision: 1,
+    view: { filter },
+    rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+  });
+
+  it('warns when a bare "kind" leaf sits alongside plan/tags/id/paths clauses inside an "any"', () => {
+    const r = validateClaimSpec(
+      specWith({
+        any: [
+          { field: 'plan', op: '=', value: 'p1' },
+          { field: 'tags', op: 'contains', value: 'gui' },
+          { field: 'id', op: '=', value: 'EI-1' },
+          { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('EI-18699032970141084'))).toBe(true);
+    expect(r.warnings.some((w) => w.includes('view.filter.any'))).toBe(true);
+  });
+
+  it('warns when the offending "any" is nested (not just top-level)', () => {
+    const r = validateClaimSpec(
+      specWith({
+        all: [
+          { field: 'risk_tier', op: '<=', value: 2 },
+          {
+            any: [
+              { field: 'plan', op: '=', value: 'p1' },
+              { field: 'kind', op: '=', value: 'bug' },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('EI-18699032970141084'))).toBe(true);
+  });
+
+  it('does NOT warn on the correct nested shape — kind ANDed with a scoping "any"', () => {
+    const r = validateClaimSpec(
+      specWith({
+        all: [
+          { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+          {
+            any: [
+              { field: 'plan', op: '=', value: 'p1' },
+              { field: 'tags', op: 'contains', value: 'gui' },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('EI-18699032970141084'))).toBe(false);
+  });
+
+  it('does NOT warn when "kind" is the only kind of clause in the "any" (no scoping sibling)', () => {
+    const r = validateClaimSpec(
+      specWith({
+        any: [
+          { field: 'kind', op: 'in', value: ['bug', 'change'] },
+          { field: 'risk_tier', op: '<=', value: 1 },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('EI-18699032970141084'))).toBe(false);
+  });
+
+  it('does NOT warn when there is no "kind" leaf at all', () => {
+    const r = validateClaimSpec(
+      specWith({
+        any: [
+          { field: 'plan', op: '=', value: 'p1' },
+          { field: 'tags', op: 'contains', value: 'gui' },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('EI-18699032970141084'))).toBe(false);
+  });
+});
+
 describe('fixedCohortIds — exact fixed-wave extraction', () => {
   const spec = (filter: unknown) => ({ view: { filter } });
 

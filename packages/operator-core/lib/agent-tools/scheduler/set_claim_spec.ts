@@ -537,6 +537,14 @@ export default defineTool({
     // (Skipped for a FLEET target — the sentinel key is not a spawned agent.)
     const spawnedRole = args.fleet ? null : await lookupSpawnedRole(targetBeeId);
     const out: Record<string, unknown> = { ...res };
+    // Surface validateClaimSpec's own warnings (e.g. a lexicographic "weight ignored",
+    // or the EI-18699032970141084 broad-kind-disjunct-footgun advisory) — these were
+    // previously computed and then silently DROPPED on the success path.
+    if (validated.warnings.length > 0) {
+      out.warning = out.warning
+        ? `${out.warning as string}\n${validated.warnings.join('\n')}`
+        : validated.warnings.join('\n');
+    }
     out.admissibilityPreview = {
       ...admission.preview,
       ...(poolEffect ? { checked: true, poolEffect } : {}),

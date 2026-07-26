@@ -1779,7 +1779,28 @@ export async function joinHarnessSwarm(
       : () => {};
     const churnOpenedAtMs = Date.now();
     let churnSawError: string | null = null;
-    churnDbg('open', { topic: topicHex.slice(0, 8), n: connectionCount });
+    // EI-18694945517907886: this `handler` is registered once PER JOINED
+    // HARNESS on the same process-global shared swarm (see the N+1-listeners
+    // doc near `setMaxListeners` below) — a single physical peer connection
+    // therefore invokes it once per harness, all synchronously, for the SAME
+    // socket. Every diagnostic LOG LINE emitted unconditionally below
+    // (`[swarm-churn] open/error/close`, `[swarm] ⚠ data path NEVER came up`)
+    // was therefore printed (joined harnesses + 1)x per real connection/close
+    // — byte-identical blocks, differing only by ~1-3ms — silently inflating
+    // every log-derived connection metric (measured: 78 close records / 39
+    // distinct sockets == 2 harnesses joined; a 25-harness host sees 26x).
+    // This directly corrupted the WI-5980 corpus analysis, which counts these
+    // printed lines. Fix: print the diagnostic lines exactly once per socket,
+    // using `swarmJoinSocketTopics` (already populated just below, keyed by
+    // socket) as the "have I already logged this socket" latch — checked
+    // BEFORE this call's own registration. This changes ONLY what gets
+    // PRINTED: every harness's own `onDataPathNeverUp` callback (→
+    // boot-history) still fires exactly as before, unconditionally, for every
+    // joined harness — that's a separate per-harness functional signal
+    // (symmetric with the unconditional per-harness `onPeerConnected` above),
+    // not the log-text corpus this bug is about.
+    const alreadyLoggedSocket = swarmJoinSocketTopics.has(socket as object);
+    if (!alreadyLoggedSocket) churnDbg('open', { topic: topicHex.slice(0, 8), n: connectionCount });
     {
       let set = swarmJoinSocketTopics.get(socket as object);
       if (!set) {
@@ -1797,7 +1818,7 @@ export async function joinHarnessSwarm(
     // job — the error itself is just churn.
     (socket as { on?: (ev: string, fn: (e: unknown) => void) => unknown })?.on?.('error', (e) => {
       churnSawError = e instanceof Error ? e.message : String(e);
-      churnDbg('error', { topic: topicHex.slice(0, 8), msg: churnSawError });
+      if (!alreadyLoggedSocket) churnDbg('error', { topic: topicHex.slice(0, 8), msg: churnSawError });
     });
     // WI-752 self-heal: re-arm the FAST refresh window when this peer socket
     // closes, so a dropped peer re-pairs snappily (the DHT round after a loss
