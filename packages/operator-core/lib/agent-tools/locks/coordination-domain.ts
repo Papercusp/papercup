@@ -108,11 +108,27 @@ export function hostGlobalLockDomain(): string {
  * Resource names whose acquirers use {@link hostGlobalLockDomain} instead of
  * {@link lockCoordinationDomain} — kept as a single source of truth so a
  * diagnostic reader (`locks:list`) can resolve the SAME fixed domain a
- * host-global acquirer used. Currently just `release-deploy` (EI-18674647773291145
- * Defect 2's concrete incident); `dev-server` has the identical cross-tree
- * defect but is deliberately NOT included here yet — it has more call sites
- * (dev:restart, system-health) that need their own dedicated review before
- * migrating, tracked separately so this fix stays narrowly scoped to the
- * incident it closes.
+ * host-global acquirer used. `release-deploy` is EI-18674647773291145
+ * Defect 2's concrete incident; `dev-server` (EI-18676514870990022) has the
+ * identical cross-tree defect — it names the one shared `:3070` operator
+ * process, not a physical file tree, so a `dev:restart`/`release deploy`/
+ * `system-health` call from a DIFFERENT checkout than the one that acquired
+ * the lock must still see it as held. All call sites that acquire or read it
+ * (deploy-deps.ts's `withDrain`, dev/restart.ts, system-health/compute.ts)
+ * have been migrated — see {@link resourceLockDomain}.
  */
-export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set(['release-deploy']);
+export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set(['release-deploy', 'dev-server']);
+
+/**
+ * The correct lock coordination domain for a NAMED resource — the fixed
+ * {@link hostGlobalLockDomain} when `resource` is in
+ * {@link HOST_GLOBAL_RESOURCES}, else the caller-tree-scoped
+ * {@link lockCoordinationDomain}. Centralizes the branch `locks:list` already
+ * applied ad hoc (EI-18674647773291145 Defect 2) so every acquirer/reader of a
+ * resource lock picks the same domain by construction — adding a resource to
+ * `HOST_GLOBAL_RESOURCES` fixes every call site in one place instead of
+ * requiring each one to remember the branch.
+ */
+export function resourceLockDomain(resource: string): string {
+  return HOST_GLOBAL_RESOURCES.has(resource) ? hostGlobalLockDomain() : lockCoordinationDomain();
+}
