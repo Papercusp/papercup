@@ -20,18 +20,24 @@ import type postgres from 'postgres';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import type { PlanPgFixture } from './_pg-tool-fixture';
 
-// EI-16183: plans:start resolves its write workspace via activeWorkspaceId()
-// (process-global — request-ALS → PAPERCUSP_WORKSPACE_ID → registry default),
-// uncontrolled here. Pin it to DEFAULT_WORKSPACE_ID (= WS below, what this fixture
-// seeds under) rather than depending on the real machine's workspace-registry file.
-vi.mock('../../../workspace-registry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../workspace-registry')>();
-  return { ...actual, activeWorkspaceId: () => actual.DEFAULT_WORKSPACE_ID };
+// WI-5825: plans:start resolves its write key through resolvePlanScope — the SAME
+// authority its plan READ uses — not the ambient activeWorkspaceId(). Pin the resolver
+// to what this fixture seeds under, rather than depending on the real machine's
+// harness registry / workspace-registry file.
+vi.mock('../source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../source')>();
+  return {
+    ...actual,
+    resolvePlanScope: async (opts: { harnessSlug?: string } = {}) => ({
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      harnessSlug: opts.harnessSlug?.trim() || HARNESS,
+    }),
+  };
 });
 
 // Import AFTER the mock is declared (vi.mock is hoisted, but these pull in `start`,
-// which reads activeWorkspaceId at call time, not at import time — either ordering
-// works; kept dynamic for symmetry with the mock-then-import convention elsewhere).
+// which resolves the scope at call time, not at import time — either ordering works;
+// kept dynamic for symmetry with the mock-then-import convention elsewhere).
 const startTool = (await import('../start')).default;
 const { setupPlanPgFixture, cleanupPlans, seedPlan } = await import('./_pg-tool-fixture');
 

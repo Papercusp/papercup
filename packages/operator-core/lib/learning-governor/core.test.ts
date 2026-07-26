@@ -138,6 +138,7 @@ describe('registrant mappings — gym + scout become governor sub-budgets, zero 
     expect(input).toEqual({
       workspaceId: 'w',
       loopId: 'gym:papercup',
+      potSlug: 'papercup',
       displayName: 'Gym autoloop (papercup)',
       budgetKind: 'lifetime',
       budgetUsd: 25,
@@ -159,6 +160,7 @@ describe('registrant mappings — gym + scout become governor sub-budgets, zero 
     expect(input).toEqual({
       workspaceId: 'w',
       loopId: 'blender:papercup',
+      potSlug: null,
       displayName: 'Scout cadence (papercup)',
       budgetKind: 'per-cycle',
       budgetUsd: 1.5,
@@ -167,6 +169,18 @@ describe('registrant mappings — gym + scout become governor sub-budgets, zero 
       enforcement: 'native',
     });
     expect('spentUsd' in input).toBe(false);
+  });
+
+  it('scout with a RESOLVED pot keys the loop by the pot, not the install slug (P-004 re-key)', () => {
+    const input = scoutRegistrationInput({
+      workspaceId: 'w',
+      harnessSlug: 'papercusp-workspace',
+      potSlug: 'the-pot',
+      perCycleBudgetUsd: 1.5,
+    });
+    expect(input.loopId).toBe('blender:the-pot');
+    expect(input.potSlug).toBe('the-pot');
+    expect(input.displayName).toBe('Scout cadence (the-pot)');
   });
 
   it('loop-id helpers are stable', () => {

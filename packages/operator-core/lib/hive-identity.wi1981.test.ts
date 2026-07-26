@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const inserted: Array<Record<string, unknown>> = [];
 const mintCalls: string[] = [];
 const divergentCalls: Array<Record<string, unknown>> = [];
+const clearDivergentCalls: Array<Record<string, unknown>> = [];
 let heldPk: string | null = null; // what loadHivePubkey returns (the key this box holds)
 let hiveRow: Record<string, unknown> | null = null; // the hives row getHiveBySlug returns
 
@@ -22,6 +23,7 @@ beforeEach(() => {
   inserted.length = 0;
   mintCalls.length = 0;
   divergentCalls.length = 0;
+  clearDivergentCalls.length = 0;
   heldPk = null;
   hiveRow = null; // no hives row — the backfill gap state
   vi.doMock('./hive-store', () => ({
@@ -38,6 +40,9 @@ beforeEach(() => {
     signalHiveKeyDivergent: vi.fn(async (ref: Record<string, unknown>) => {
       divergentCalls.push(ref);
       return true;
+    }),
+    clearHiveKeyDivergence: vi.fn((ref: Record<string, unknown>) => {
+      clearDivergentCalls.push(ref);
     }),
   }));
   vi.doMock('./identity/hive-keypair', () => {

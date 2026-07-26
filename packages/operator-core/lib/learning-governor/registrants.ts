@@ -45,6 +45,8 @@ export interface GovernorGlueDeps {
   register?: (sql: Sql, input: RegisterLearningLoopInput) => Promise<unknown>;
   recordSpend?: (sql: Sql, input: RecordLearningSpendInput) => Promise<unknown>;
   check?: (sql: Sql, q: { workspaceId: string; loopId: string; floorUsd?: number }) => Promise<GovernorVerdict>;
+  /** P-004: resolve the pot a scout install learns for (default: resolveLearningPotSlug). */
+  resolvePot?: (q: { workspaceId: string; harnessSlug: string }) => Promise<string | null>;
   log?: (msg: string) => void;
 }
 
@@ -59,6 +61,12 @@ const defaultDeps: Required<GovernorGlueDeps> = {
   register: registerLearningLoop,
   recordSpend: recordLearningSpend,
   check: governorCheck,
+  // Lazy import for the same reason as getSql: the flag-off unit path must not
+  // load (or pay for) the registry resolver.
+  resolvePot: async (q) => {
+    const { resolveLearningPotSlug } = await import('../learning/pot-scope');
+    return resolveLearningPotSlug({ workspaceId: q.workspaceId, harnessSlug: q.harnessSlug });
+  },
   log: (m) => console.log(`[learning-governor] ${m}`),
 };
 
@@ -175,13 +183,11 @@ export async function recordScoutTickToGovernor(
     const sql = await d.getSql();
     // P-004 (pot-scope-all-learnings): the loop keys by the POT the scout learns
     // for, not the raw install slug — the workspace-brain scout previously minted
-    // `blender:papercusp-workspace` / `blender:@singleton` registrants. Lazy
-    // import + catch mirrors getSql above; an unresolvable pot degrades to the
-    // install slug so a degraded process still budgets consistently.
-    const potSlug = await import('../learning/pot-scope')
-      .then((m) =>
-        m.resolveLearningPotSlug({ workspaceId: input.workspaceId, harnessSlug: input.harnessSlug }),
-      )
+    // `blender:papercusp-workspace` / `blender:@singleton` registrants. An
+    // unresolvable pot degrades to the install slug so a degraded process still
+    // budgets/ledgers consistently.
+    const potSlug = await d
+      .resolvePot({ workspaceId: input.workspaceId, harnessSlug: input.harnessSlug })
       .catch(() => null);
     await d.register(
       sql,

@@ -54,14 +54,38 @@ interface ClaimItem {
  * decision) AND keep WARNING (this fix), and a future edit must not be able to silently drop one.
  */
 export function terminalClaimWarning(
-  workItem: { state?: string | null; terminalCompletionRef?: string | null } | null | undefined,
+  workItem:
+    | {
+        state?: string | null;
+        terminalOwner?: string | null;
+        terminalCompletionRef?: string | null;
+      }
+    | null
+    | undefined,
 ): string | null {
-  const state = String(workItem?.state ?? '').trim();
-  if (!state || !ANY_FAMILY_TERMINAL_STATES.includes(state.toLowerCase())) return null;
-  const ref = workItem?.terminalCompletionRef;
+  if (!workItem) return null;
+  const state = String(workItem.state ?? '').trim();
+  const owner = String(workItem.terminalOwner ?? '').trim();
+  const ref = String(workItem.terminalCompletionRef ?? '').trim();
+
+  // "Finished" has TWO independent expressions here and the warning must catch both, because
+  // the live miss and the pre-existing test each exhibit a DIFFERENT one:
+  //   (a) a terminal `state` (done/resolved/closed/…) — the shape reported live 2026-07-26;
+  //   (b) terminal_owner AND terminal_completion_ref both stamped — the shape EI-8972's
+  //       self-select floor keys on, which can sit on a row whose state is still 'open'.
+  // Keying on (a) alone silently missed (b) — caught by the guard test below, which seeds
+  // exactly that row. EI-8972 is deliberate that BOTH columns are required for (b): a row with
+  // only ONE set is NOT a genuine completion (it has its own two tests asserting it stays
+  // claimable by self-select), so requiring both here keeps this warning consistent with the
+  // floor instead of inventing a second, stricter notion of "done".
+  const stateTerminal = state !== '' && ANY_FAMILY_TERMINAL_STATES.includes(state.toLowerCase());
+  const genuinelyCompleted = owner !== '' && ref !== '';
+  if (!stateTerminal && !genuinelyCompleted) return null;
+
+  const label = stateTerminal ? state.toUpperCase() : 'COMPLETED';
   return (
-    `⚠ THIS ITEM IS ALREADY ${state.toUpperCase()}` +
-    (ref ? ` (completed: "${ref}")` : '') +
+    `⚠ THIS ITEM IS ALREADY ${label}` +
+    (ref ? ` (completed: "${ref}"${owner ? ` by ${owner}` : ''})` : '') +
     '. The claim SUCCEEDED — claiming a finished item by id is allowed on purpose (reopen / inherit ' +
     'ownership / attach follow-up) — but this is NOT fresh work. Do NOT rebuild it: read the ' +
     'completion first and verify against the tree. If you wanted new work, release this and use ' +

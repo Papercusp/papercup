@@ -864,7 +864,9 @@ describe("LearningTab — Gym view", () => {
     };
     render(<LearningTab />);
     expect(screen.getByText("Loading gym experiments…")).toBeTruthy();
-    expect(screen.queryByText(/No gym experiments/)).toBeNull();
+    // Match the CURRENT empty-state copy ("No gym activity …"); the old
+    // /No gym experiments/ regex silently stopped matching anything.
+    expect(screen.queryByText(/No gym activity/)).toBeNull();
   });
 
   // WI-5420 flagged `scopeFallback: true` when the server fell back to the

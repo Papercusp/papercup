@@ -296,6 +296,29 @@ describe('mergeRosterEntries', () => {
     expect(free.openAwait).toBeNull();
   });
 
+  it('scopes the await join by OWNER IDS, not workspace (the cross-tenant trap)', async () => {
+    // Regression for a bug that only live data exposed. event_awaits and
+    // coord_presence do not share a workspace vocabulary — on this box every
+    // open await carries workspace_id 'default' while every presence row
+    // carries 'papercusp-workspace'. Filtering awaits by the roster's workspace
+    // therefore matched ZERO rows on any scoped read: the Blocked column
+    // rendered empty in the app while an unscoped curl of the same endpoint
+    // returned 13. Pin the contract at the SQL boundary so the workspace
+    // predicate cannot come back.
+    const { openAwaitsByOwner } = await import('./adv-roster');
+    const src = await import('node:fs').then((fs) =>
+      fs.readFileSync(new URL('./adv-roster.ts', import.meta.url), 'utf8'),
+    );
+    const fn = src.slice(src.indexOf('export async function openAwaitsByOwner'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toContain('subscriber_id = ANY(');
+    expect(body).not.toMatch(/workspace_id\s*=/);
+    // The always-armed inbox wake must stay excluded (see the guard above).
+    expect(body).toContain("NOT LIKE 'coord:inbox-wake:%'");
+    // An empty roster short-circuits without touching PG.
+    await expect(openAwaitsByOwner([])).resolves.toEqual(new Map());
+  });
+
   it('defaults the extra bag so every existing positional call site keeps working', () => {
     // The 3-arg form is what most callers (and every pre-existing test) use.
     const [entry] = mergeRosterEntries([presence()], new Map(), NOW);

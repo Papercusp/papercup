@@ -183,7 +183,16 @@ export async function isCanonicalHiveOwner(
     }
   }
   if (canonical === null) return true; // held key + no canonical record → legacy heuristic
-  if (canonical === held) return true;
+  if (canonical === held) {
+    // Held key matches canonical — clear any outstanding DIVERGENT-key alert
+    // (WI-5714: the sibling recovery edge signalHiveKeyDivergent never had).
+    // No-op when this hive was never flagged divergent (Set.delete's return
+    // value gates the broadcast inside clearHiveKeyDivergence itself).
+    void import('./hive-owner-key-health')
+      .then((m) => m.clearHiveKeyDivergence({ workspaceId, potSlug: homeSlug }))
+      .catch(() => {});
+    return true;
+  }
   // Divergent local identity — the epoch-poison class. Signal loudly (deduped,
   // best-effort) and report NOT-owner.
   const canonicalPk = canonical;

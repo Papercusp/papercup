@@ -170,6 +170,18 @@ describe('claimNextWorkItem SKIPS an already-genuinely-terminally-completed row 
     await seedIssue('WI-live-row', { createdTs: 101 });
     const live = await wi.claimWorkItem('WI-live-row', 'p2p-fleet', { harness: H });
     expect(terminalClaimWarning(live)).toBeNull();
+
+    // "Finished" has TWO expressions and both must warn. The row above is the
+    // terminal_owner+ref shape (state may still be 'open'); this is the terminal-STATE shape,
+    // which is what was actually reported live on 2026-07-26.
+    expect(terminalClaimWarning({ state: 'done' })).toMatch(/ALREADY DONE/i);
+    expect(terminalClaimWarning({ state: 'resolved' })).toBeTruthy();
+
+    // …and the PARTIAL shapes must stay silent, matching EI-8972's rule that only ONE of the
+    // two terminal columns is NOT a genuine completion (it has its own tests above asserting
+    // such a row remains self-selectable). Warning here would contradict the floor.
+    expect(terminalClaimWarning({ state: 'open', terminalOwner: 'su-peer' })).toBeNull();
+    expect(terminalClaimWarning({ state: 'open', terminalCompletionRef: 'some note' })).toBeNull();
   });
 
   it('a normal unclaimed row with no terminal columns set is NOT excluded', async () => {

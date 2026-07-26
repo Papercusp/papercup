@@ -319,9 +319,38 @@ export function clearOwnedHiveKeyHealth(ref: { workspaceId: string; potSlug: str
   }).catch(() => {});
 }
 
+/**
+ * Recovery edge for the DIVERGENT-key alarm (signalHiveKeyDivergent) — the
+ * WI-5714 sibling gap to clearOwnedHiveKeyHealth above. That function only ever
+ * clears the PLAIN (non-prefixed) dedupKey, so a 'divergent::'-prefixed alert
+ * could never emit a RECOVERED broadcast even once the divergence resolved
+ * (the held key came to match the hive's canonical identity again, e.g. after
+ * a keychain cleanup + re-derive, or an ownership handoff). Call this on that
+ * success path — mirrors clearOwnedHiveKeyHealth's shape/posture exactly:
+ * only broadcasts on a real signaled→recovered transition (Set.delete's
+ * return value), reuses the same severe-event-broadcast.ts resolved-condition
+ * rail, and is best-effort + never throws.
+ */
+export function clearHiveKeyDivergence(ref: { workspaceId: string; potSlug: string }): void {
+  const k = 'divergent::' + dedupKey(ref.workspaceId, ref.potSlug);
+  const wasSignaled = signaled.delete(k);
+  if (!wasSignaled) return;
+  void broadcastSevereEventResolved({
+    conditionKey: k,
+    summary:
+      `✅ hive identity key DIVERGENCE RESOLVED for ${ref.workspaceId}/${ref.potSlug} — ` +
+      `the held key now matches the hive's canonical identity again.`,
+  }).catch(() => {});
+}
+
 /** Whether this hive currently has an outstanding (un-recovered) owner-key alert. */
 export function isOwnedHiveKeyMissingSignaled(ref: { workspaceId: string; potSlug: string }): boolean {
   return signaled.has(dedupKey(ref.workspaceId, ref.potSlug));
+}
+
+/** Whether this hive currently has an outstanding (un-recovered) DIVERGENT-key alert. */
+export function isHiveKeyDivergentSignaled(ref: { workspaceId: string; potSlug: string }): boolean {
+  return signaled.has('divergent::' + dedupKey(ref.workspaceId, ref.potSlug));
 }
 
 /** Test-only — reset the cross-tick dedup singleton. */

@@ -779,14 +779,25 @@ async function resolveFleetInfoByOwner(
  * everyone tells you nothing about anyone. Any future filtering here must keep
  * this predicate.
  *
+ * ⚠ Scoped by the ROSTER'S OWNER IDS, never by workspace_id — and that is not a
+ * style choice. The two tables do not share a workspace vocabulary: on this box
+ * every open await carries `workspace_id = 'default'` while every presence row
+ * carries `workspace_id = 'papercusp-workspace'`. An earlier version filtered
+ * `event_awaits.workspace_id = <the roster's workspace>` and therefore matched
+ * ZERO rows on any workspace-scoped read — the Blocked column silently rendered
+ * empty in the app while an unscoped curl of the same endpoint returned 13, which
+ * is precisely the "looks stale but is actually cross-tenant" failure the
+ * raw-SQL-scope runbook describes. `subscriber_id` is a globally-unique owner id
+ * and the caller's roster is already scoped, so filtering by the owner set is
+ * both correct and tighter (it also bounds the scan, mirroring fetchPresenceFleet).
+ *
  * Best-effort by design: a read failure yields an empty map, so the Blocked
  * column degrades to empty and every agent still renders. A roster read must
  * never fail because one enrichment leg did.
  */
-export async function openAwaitsByOwner(
-  workspaceId: string | null = null,
-): Promise<Map<string, OpenAwait>> {
+export async function openAwaitsByOwner(ownerIds: string[]): Promise<Map<string, OpenAwait>> {
   const out = new Map<string, OpenAwait>();
+  if (ownerIds.length === 0) return out;
   try {
     const { sql } = getOrgPg();
     const rows = (await sql`
@@ -797,7 +808,7 @@ export async function openAwaitsByOwner(
          AND cancelled_at IS NULL
          AND superseded_at IS NULL
          AND event_key NOT LIKE 'coord:inbox-wake:%'
-         AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
+         AND subscriber_id = ANY(${ownerIds}::text[])
        ORDER BY subscriber_id, created_at ASC
     `) as unknown as Array<{
       subscriber_id: string;
@@ -1003,7 +1014,8 @@ export async function mergeRosterWithAssignments(
     // adv-hud P-001: the open-await join (HUD's Blocked column). Batched here
     // rather than awaited after — a serial hop would add to the roster-merge
     // baseline every caller pays (see the perf docs' serial-loop anti-pattern).
-    openAwaitsByOwner(workspaceId),
+    // Scoped by the roster's OWNER IDS, not workspace — see openAwaitsByOwner.
+    openAwaitsByOwner(presence.map((p) => p.ownerId)),
   ]);
   const entries = mergeRosterEntries(
     presence,

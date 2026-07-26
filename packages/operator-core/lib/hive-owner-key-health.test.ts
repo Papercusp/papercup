@@ -3,6 +3,9 @@ import {
   signalOwnedHiveKeyMissing,
   clearOwnedHiveKeyHealth,
   isOwnedHiveKeyMissingSignaled,
+  signalHiveKeyDivergent,
+  clearHiveKeyDivergence,
+  isHiveKeyDivergentSignaled,
   _resetOwnerKeyHealthForTests,
   type OwnerKeyHealthDeps,
 } from './hive-owner-key-health';
@@ -211,6 +214,120 @@ describe('signalOwnedHiveKeyMissing', () => {
     expect(capturedSummary).toContain('cross-hive-boot');
     // …plus a diagnosable box identity: `#pid<N>`.
     expect(capturedSummary).toMatch(/#pid\d+/);
+  });
+});
+
+// WI-5714: signalHiveKeyDivergent's alerts (dedup keys prefixed 'divergent::',
+// the WI-1981 epoch-poison class) previously had NO clear/resolve path at all —
+// clearOwnedHiveKeyHealth only ever cleared the plain (non-prefixed) dedupKey.
+// clearHiveKeyDivergence is the sibling recovery edge, mirroring
+// clearOwnedHiveKeyHealth's shape/tests exactly but for the 'divergent::' key.
+describe('signalHiveKeyDivergent / clearHiveKeyDivergence — WI-5714', () => {
+  beforeEach(() => {
+    _resetOwnerKeyHealthForTests();
+    sendMessageMock.mockClear();
+  });
+
+  const fakeDeps = (): { deps: OwnerKeyHealthDeps; warned: string[]; escalated: string[] } => {
+    const warned: string[] = [];
+    const escalated: string[] = [];
+    return {
+      warned,
+      escalated,
+      deps: {
+        warn: (m) => warned.push(m),
+        escalate: async (ref) => {
+          escalated.push(`${ref.workspaceId}::${ref.potSlug}`);
+        },
+      },
+    };
+  };
+
+  it('first detection fires a LOUD warn + escalation and returns true', async () => {
+    const { deps, warned, escalated } = fakeDeps();
+    const fired = await signalHiveKeyDivergent(
+      {
+        workspaceId: 'w',
+        potSlug: 'h',
+        context: 'isCanonicalHiveOwner',
+        heldPubkey: 'HELD_PK',
+        canonicalPubkey: 'CANONICAL_PK',
+      },
+      deps,
+    );
+    expect(fired).toBe(true);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain('DIVERGENT');
+    expect(warned[0]).toContain('w/h');
+    expect(escalated).toEqual(['w::h']);
+    expect(isHiveKeyDivergentSignaled({ workspaceId: 'w', potSlug: 'h' })).toBe(true);
+    // the plain (non-prefixed) missing-key dedup is a DISTINCT key — unaffected.
+    expect(isOwnedHiveKeyMissingSignaled({ workspaceId: 'w', potSlug: 'h' })).toBe(false);
+  });
+
+  it('DEDUP: re-detecting the same divergence is suppressed (no second alert)', async () => {
+    const { deps, escalated } = fakeDeps();
+    const ref = {
+      workspaceId: 'w',
+      potSlug: 'h',
+      context: 'isCanonicalHiveOwner',
+      heldPubkey: 'A',
+      canonicalPubkey: 'B',
+    };
+    expect(await signalHiveKeyDivergent(ref, deps)).toBe(true);
+    expect(await signalHiveKeyDivergent(ref, deps)).toBe(false);
+    expect(escalated).toHaveLength(1);
+  });
+
+  it('RECOVERY: clearHiveKeyDivergence re-arms so a later divergence re-alerts', async () => {
+    const { deps, escalated } = fakeDeps();
+    const ref = {
+      workspaceId: 'w',
+      potSlug: 'h',
+      context: 'isCanonicalHiveOwner',
+      heldPubkey: 'A',
+      canonicalPubkey: 'B',
+    };
+    expect(await signalHiveKeyDivergent(ref, deps)).toBe(true);
+    clearHiveKeyDivergence({ workspaceId: 'w', potSlug: 'h' });
+    expect(isHiveKeyDivergentSignaled({ workspaceId: 'w', potSlug: 'h' })).toBe(false);
+    // divergent again → a NEW alert fires.
+    expect(await signalHiveKeyDivergent(ref, deps)).toBe(true);
+    expect(escalated).toEqual(['w::h', 'w::h']);
+  });
+
+  it('RESOLVED BROADCAST: a real signaled→recovered transition emits a matching resolution', async () => {
+    const { deps } = fakeDeps();
+    await signalHiveKeyDivergent(
+      { workspaceId: 'w', potSlug: 'h', context: 'c', heldPubkey: 'A', canonicalPubkey: 'B' },
+      deps,
+    );
+    sendMessageMock.mockClear(); // isolate: only the RESOLUTION call from here on
+    clearHiveKeyDivergence({ workspaceId: 'w', potSlug: 'h' });
+    await Promise.resolve(); // let the fire-and-forget broadcast microtask run
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    const [, opts] = sendMessageMock.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(opts.category).toBe('severe-event-resolved');
+    expect((opts.extra as Record<string, unknown>).resolves_condition).toBe('divergent::w::h');
+    expect(opts.summary).toContain('RESOLVED');
+    expect(opts.summary).toContain('w/h');
+  });
+
+  it('RESOLVED BROADCAST is a no-op when the hive was never signaled divergent (no spurious "resolved")', async () => {
+    clearHiveKeyDivergence({ workspaceId: 'w', potSlug: 'never-divergent' });
+    await Promise.resolve();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('clearHiveKeyDivergence does NOT clear a plain missing-key alert (distinct dedup keys)', async () => {
+    const { deps } = fakeDeps();
+    await signalOwnedHiveKeyMissing(
+      { workspaceId: 'w', potSlug: 'h', context: 'cross-hive-boot' },
+      { ...deps, recentlyAlerted: async () => false },
+    );
+    expect(isOwnedHiveKeyMissingSignaled({ workspaceId: 'w', potSlug: 'h' })).toBe(true);
+    clearHiveKeyDivergence({ workspaceId: 'w', potSlug: 'h' }); // never signaled divergent — no-op
+    expect(isOwnedHiveKeyMissingSignaled({ workspaceId: 'w', potSlug: 'h' })).toBe(true); // untouched
   });
 });
 

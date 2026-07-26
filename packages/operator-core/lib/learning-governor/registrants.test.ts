@@ -31,6 +31,9 @@ function fakeDeps(opts: { enabled?: boolean } = {}) {
     recordSpend: async (_sql, input) => {
       calls.spend.push(input);
     },
+    // P-004: hermetic pot resolve — 'the pot that owns hive-X is hive-X' for
+    // hive-shaped slugs, unresolvable otherwise (the workspace-brain case).
+    resolvePot: async (q) => (q.harnessSlug.startsWith('hive-') ? q.harnessSlug : null),
     check: async () => ({ allow: true, remainingUsd: 5 }),
     log: (m) => calls.logs.push(m),
   };
@@ -84,6 +87,7 @@ describe('recordGymTickToGovernor', () => {
       {
         workspaceId: 'w',
         loopId: 'gym:alpha',
+        potSlug: 'alpha',
         costUsd: 1.25,
         runRef: 'gym-cycle:alpha',
         note: 'gym autoloop cycle',
@@ -117,7 +121,7 @@ describe('recordGymTickToGovernor', () => {
     expect(calls.register.every((r) => r.enforcement === 'native')).toBe(true);
     // Spend ledgered against the ran hive ONLY (event-only, the row spent comes from the mirror).
     expect(calls.spend).toEqual([
-      { workspaceId: 'w', loopId: 'gym:hive-beta', costUsd: 0.9, runRef: 'gym-cycle:hive-beta', note: 'gym autoloop cycle', accumulate: false },
+      { workspaceId: 'w', loopId: 'gym:hive-beta', potSlug: 'hive-beta', costUsd: 0.9, runRef: 'gym-cycle:hive-beta', note: 'gym autoloop cycle', accumulate: false },
     ]);
   });
 
@@ -175,12 +179,24 @@ describe('recordScoutTickToGovernor', () => {
       {
         workspaceId: 'w',
         loopId: 'blender:papercup',
+        potSlug: null,
         costUsd: 0.4,
         runRef: 'scout-9',
         note: 'scout ideation cycle',
         accumulate: true,
       },
     ]);
+  });
+
+  it('P-004 re-key: a resolved pot keys BOTH the registration and the spend by blender:<pot>', async () => {
+    const { deps, calls } = fakeDeps();
+    const out = await recordScoutTickToGovernor(
+      { workspaceId: 'w', harnessSlug: 'hive-acme', perCycleBudgetUsd: 1.5, fired: { costUsd: 0.4, cycleId: 'scout-10' } },
+      deps,
+    );
+    expect(out).toEqual({ applied: true });
+    expect(calls.register[0]).toMatchObject({ loopId: 'blender:hive-acme', potSlug: 'hive-acme' });
+    expect(calls.spend[0]).toMatchObject({ loopId: 'blender:hive-acme', potSlug: 'hive-acme' });
   });
 
   it('a withheld tick mirrors the registration only', async () => {

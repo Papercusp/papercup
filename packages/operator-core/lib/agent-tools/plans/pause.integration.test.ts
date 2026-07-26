@@ -18,13 +18,25 @@ vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...actual, withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql) };
 });
-// EI-16183: the handler resolves its workspace via activeWorkspaceId() (process-global —
-// request-ALS → PAPERCUSP_WORKSPACE_ID → registry default), uncontrolled here. Pin it to
-// 'default' to match the seeded rows below, deterministically (not the real machine's
-// workspace-registry file).
+// WI-5825: the handler keys its UPDATE off resolvePlanScope — the SAME authority the
+// plan readers use — so pin THAT, not the ambient activeWorkspaceId(). Deliberately NOT
+// 'default': a regression to the 'default' literal (gen 1) or to the ambient workspace
+// (gen 2) matches zero rows, which for THIS tool used to look like the benign
+// notStarted:true branch. These tests now catch that.
+const SEED_WS = 'ws-integration';
+vi.mock('./source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./source')>();
+  return {
+    ...actual,
+    resolvePlanScope: async (opts: { harnessSlug?: string } = {}) => ({
+      workspaceId: SEED_WS,
+      harnessSlug: opts.harnessSlug?.trim() || 'web',
+    }),
+  };
+});
 vi.mock('../../workspace-registry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../workspace-registry')>();
-  return { ...actual, activeWorkspaceId: () => 'default' };
+  return { ...actual, activeWorkspaceId: () => 'ambient-WRONG-workspace' };
 });
 
 const pauseTool = (await import('./pause')).default;
@@ -32,8 +44,8 @@ const pauseTool = (await import('./pause')).default;
 // envelope (../_bulk bulkContent), NOT the legacy MCP `{ content:[{text}] }` shape —
 // the dispatch layer renders the content; the raw handler hands back `{ data }`.
 const call = (slug: string, harness = 'web') => pauseTool.handler({ slug, harness } as never, {} as never) as Promise<{ data: { results: Record<string, unknown>[] } }>;
-const statusOf = async (plan: string) =>
-  (await rootSql<{ op_status: string | null }[]>`SELECT op_status FROM harness_shared.harness_plans WHERE plan_slug=${plan}`)[0]?.op_status;
+const statusOf = async (plan: string, ws = SEED_WS) =>
+  (await rootSql<{ op_status: string | null }[]>`SELECT op_status FROM harness_shared.harness_plans WHERE workspace_id=${ws} AND plan_slug=${plan}`)[0]?.op_status;
 
 let rootSql: postgres.Sql;
 
@@ -66,9 +78,12 @@ afterAll(async () => {
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.harness_plans`;
   await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_status) VALUES
-    ('default', 'web', 'started-plan', 'started'),
-    ('default', 'web', 'never-started', NULL),
-    ('default', 'web', 'sibling', 'started')`;
+    (${SEED_WS}, 'web', 'started-plan', 'started'),
+    (${SEED_WS}, 'web', 'never-started', NULL),
+    (${SEED_WS}, 'web', 'sibling', 'started')`;
+  // Same-named row in the ambient/wrong tenant — the row a gen-2 regression would hit.
+  await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_status) VALUES
+    ('ambient-WRONG-workspace', 'web', 'started-plan', 'started')`;
 });
 
 describe('plans:pause handler (PG)', () => {
@@ -87,5 +102,21 @@ describe('plans:pause handler (PG)', () => {
   it('is scoped to args.slug — a sibling started plan is untouched', async () => {
     await call('started-plan');
     expect(await statusOf('sibling')).toBe('started'); // unchanged
+  });
+
+  it('WI-5825: pauses the RESOLVED tenant only — a same-named plan in another workspace is untouched', async () => {
+    await call('started-plan');
+    expect(await statusOf('started-plan')).toBe('paused');
+    // Before the fix this handler keyed off activeWorkspaceId(), so THIS is the row
+    // it would have paused while the caller's real plan stayed started.
+    expect(await statusOf('started-plan', 'ambient-WRONG-workspace')).toBe('started');
+  });
+
+  it('WI-5825: a slug with no row in this scope reports plan_not_found — NOT the benign notStarted', async () => {
+    const res = await call('no-such-plan');
+    // The distinction that used to be lost: a mis-scoped write matched 0 rows and was
+    // reported as "you never started this plan", which reads as normal behavior.
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'plan_not_found' });
+    expect(res.data.results[0]).not.toHaveProperty('notStarted');
   });
 });

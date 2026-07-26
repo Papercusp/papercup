@@ -15,9 +15,13 @@ const H = vi.hoisted(() => {
   const state: {
     txCalls: { strings: readonly string[]; values: unknown[] }[];
     frontmatterStatus: string | null;
-  } = { txCalls: [], frontmatterStatus: 'ready' };
+    /** WI-5825 regression override: force the next UPDATE to match 0 rows. */
+    forceNoMatch: boolean;
+  } = { txCalls: [], frontmatterStatus: 'ready', forceNoMatch: false };
   const tx = (strings: readonly string[], ...values: unknown[]) => {
     state.txCalls.push({ strings, values });
+    // WI-5825 regression hook: force the UPDATE to match 0 rows.
+    if (state.forceNoMatch) return Promise.resolve([]);
     return Promise.resolve([{ op_status: 'started', op_updated_at: '2026-06-02T00:00:00.000Z' }]);
   };
   const withWorkspace = async (_wsId: string, fn: (t: unknown) => Promise<unknown>) => fn(tx);
@@ -37,6 +41,15 @@ vi.mock('../source', async (orig) => {
       parsed: { frontmatter: { status: H.state.frontmatterStatus } },
       archived: false,
       row: { planSlug: 'mock', version: 1, opStatus: null },
+    })),
+    // WI-5825: plans:start now resolves its WRITE key through the same authority
+    // its READ above uses (resolvePlanScope), instead of re-deriving the tenant
+    // from the ambient activeWorkspaceId(). Pin it so the SQL params are
+    // deterministic — and deliberately NOT 'default', so a regression to the old
+    // literal/ambient path shows up in the assertions below.
+    resolvePlanScope: vi.fn(async (opts: { harnessSlug?: string } = {}) => ({
+      workspaceId: 'ws-of-harness',
+      harnessSlug: opts.harnessSlug?.trim() || 'home-harn',
     })),
   };
 });
@@ -76,6 +89,7 @@ const run = async (args: Record<string, unknown>) =>
 beforeEach(() => {
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
+  H.state.forceNoMatch = false;
 });
 
 describe('plans:start terminal guard', () => {
@@ -109,5 +123,27 @@ describe('plans:start terminal guard', () => {
     const res = await run({ slug: 'legacy-plan' });
     expect(res.isError).toBeUndefined();
     expect(H.state.txCalls).toHaveLength(1);
+  });
+
+  it('WI-5825: the UPDATE is keyed on the resolvePlanScope pair — the same authority the plan READ used', async () => {
+    H.state.frontmatterStatus = 'ready';
+    await run({ slug: 'live-plan-2026-06-02' });
+    const { values } = H.state.txCalls[0];
+    // This handler reads the plan through the reader path and then writes; keying
+    // the write off a second resolver (activeWorkspaceId / the raw ctx slug) is
+    // exactly how the two came to disagree.
+    expect(values).toContain('ws-of-harness');
+    expect(values).not.toContain(DEFAULT_WORKSPACE_ID);
+  });
+
+  it('WI-5825: a 0-row UPDATE reports plan_not_found instead of announcing a start that never happened', async () => {
+    H.state.frontmatterStatus = 'ready';
+    H.state.forceNoMatch = true;
+    const res = await run({ slug: 'ghost-plan' });
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'plan_not_found' });
+    // ...and crucially it is NOT reported as started, so the `plan started` demand
+    // event (which fires on transitioned:true) cannot fire on a write that missed.
+    expect(res.data.results[0]).not.toMatchObject({ status: 'started' });
   });
 });
