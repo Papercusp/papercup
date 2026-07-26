@@ -82,6 +82,29 @@ export interface SubstitutionPair {
   /** Shown to the agent at tier `advise`/`deny`. */
   advisoryText: string;
   /**
+   * How this pair renders as a CLAUDE.md routing row (P-019).
+   *
+   * The generator (`npm run gen:tool-routing`) is a PURE PROJECTION of these
+   * three strings — it invents no prose and makes no judgement — so the table
+   * every agent reads in its prompt and the registry the PreToolUse gate
+   * enforces are the same statement of intent, and `--check` fails the build
+   * when the committed file drifts from the pairs. That is the whole point of
+   * P-019: prose that cannot drift from the gate.
+   *
+   * These are DISPLAY fields and deliberately NOT derived from the fields above:
+   * a `bashPattern` source is unreadable in a table cell, and `advisoryText` is
+   * a full sentence written to be read inside a hook refusal. Keep each one
+   * short enough to sit in a markdown table cell.
+   */
+  routing: {
+    /** Column 1 — the question in the agent's own words ("read a line range of one file"). */
+    want: string;
+    /** Column 2 — the tool call form (`capability:read { file_path, offset, limit }`). */
+    use: string;
+    /** Column 3 — the bash form it replaces (`sed -n '1,80p' FILE`), plus any caveat. */
+    insteadOf: string;
+  };
+  /**
    * The verdict this pair is RECORDED as carrying. The harness recomputes the
    * verdict from the sample and asserts it still equals this — so widening the
    * tool (and its envelope) without re-recording the verdict fails the test

@@ -189,6 +189,11 @@ export const sedRangeRead: SubstitutionPair = {
   toolName: 'capability:read',
   advisoryText:
     "capability:read { file_path, offset, limit } reads a line range directly — `sed -n 'N,Mp' FILE` is offset=N, limit=M-N+1.",
+  routing: {
+    want: 'a line RANGE of one file',
+    use: '`capability:read { file_path, offset, limit }`',
+    insteadOf: "`sed -n 'N,Mp' FILE` (offset=N, limit=M-N+1)",
+  },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
@@ -222,6 +227,11 @@ export const catFileRead: SubstitutionPair = {
   toolName: 'capability:read',
   advisoryText:
     'capability:read { file_path } returns the file with line numbers, paged at 2000 lines — no shell round-trip.',
+  routing: {
+    want: 'the WHOLE of one file',
+    use: '`capability:read { file_path }`',
+    insteadOf: '`cat FILE` (a heredoc or redirect is a WRITE — not this)',
+  },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
@@ -247,6 +257,11 @@ export const headFileRead: SubstitutionPair = {
   bashPattern: readPattern(String.raw`head\s+(?:-n\s*\d+\s+|-\d+\s+)?[^\s-][^\s]*\/`),
   toolName: 'capability:read',
   advisoryText: 'capability:read { file_path, limit: N } returns the first N lines — the `head -n N FILE` equivalent.',
+  routing: {
+    want: 'the FIRST N lines of a file',
+    use: '`capability:read { file_path, limit: N }`',
+    insteadOf: '`head -n N FILE` (a `… | head` pipe filter is not this)',
+  },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);
@@ -286,6 +301,11 @@ export const tailFileRead: SubstitutionPair = {
   bashPattern: readPattern(String.raw`tail\s+(?!-f\b)(?!--follow\b)(?!-c\b)(?:-n\s*\d+\s+|-\d+\s+)?[^\s-][^\s]*\/`),
   toolName: 'capability:read',
   advisoryText: 'capability:read { file_path, tail: N } returns the last N lines — the `tail -n N FILE` equivalent.',
+  routing: {
+    want: 'the LAST N lines of a file (a build / gate log tail)',
+    use: '`capability:read { file_path, tail: N }`',
+    insteadOf: '`tail -n N FILE` (`tail -f` streaming has no tool form — keep using bash)',
+  },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const parsed = parseAtom(atom);

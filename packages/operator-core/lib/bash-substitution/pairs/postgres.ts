@@ -81,6 +81,12 @@ export const psqlSelectRead: SubstitutionPair = {
   toolName: 'dev:pg_query',
   advisoryText:
     'dev:pg_query { sql } runs read-only SELECT/WITH against the operator Postgres directly — no connection string, no psql, and it applies the row cap and statement_timeout for you.',
+  routing: {
+    want: 'a one-off SELECT against the OPERATOR database',
+    use: '`dev:pg_query { sql }` (read-only txn + row cap + statement_timeout)',
+    insteadOf:
+      '`psql -d papercusp -c "SELECT …"`. ⚠ ONLY the operator DB — a `$VAR`/other-database connection has NO tool form, so keep using psql for those rather than risk querying the WRONG database',
+  },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     if (!OPERATOR_DB.test(atom)) {
@@ -128,6 +134,11 @@ export const psqlDescribe: SubstitutionPair = {
   toolName: 'dev:pg_query',
   advisoryText:
     'dev:pg_query { describe: "schema.table" } returns columns, indexes and constraints — the `\\d` equivalent; a `*` glob lists matching relations, like `\\dt`.',
+  routing: {
+    want: "a table's columns / indexes / constraints",
+    use: '`dev:pg_query { describe: "schema.table" }` (a `*` glob lists relations)',
+    insteadOf: '`psql -c "\\d table"` (`\\df`/`\\dn`/`\\du` are other object classes — no tool form)',
+  },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const sql = extractCommandArg(atom);
