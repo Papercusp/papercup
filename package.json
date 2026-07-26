@@ -163,6 +163,7 @@
     "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
     "lint:no-raw-setinterval": "node scripts/check-no-raw-setinterval.mjs",
+    "lint:timer-classification": "node scripts/check-timer-classification.mjs",
     "lint:no-wire-compression": "node scripts/check-no-wire-compression.mjs",
     "lint:no-eager-execfile-promisify": "node scripts/check-no-eager-execfile-promisify.mjs",
     "lint:no-sql-json": "node scripts/check-no-sql-json.mjs",

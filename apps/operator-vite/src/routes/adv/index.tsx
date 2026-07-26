@@ -50,7 +50,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'hud') return 'HUD';
   if (tab === 'conversations') return 'Conversations';
   if (tab === 'learning') return 'Learning';
-  if (tab === 'harnesses') return 'Working';
+  if (tab === 'harnesses') return 'Work';
   if (tab === 'health') return 'Health';
   if (tab === 'frames') return 'Frames';
   if (tab === 'evals') return 'Evaluation';

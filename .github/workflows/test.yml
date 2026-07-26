@@ -243,6 +243,15 @@ jobs:
       - name: Lint no raw setInterval
         run: npm run lint:no-raw-setinterval
 
+      # timer-classification guard (stop-discarded-dedup-and-audit-server-polling-
+      # 2026-07-26 P-011): every managedSetInterval/PeriodicCheck registration must
+      # declare a D-004 push-don't-poll classification (must-sample | timeout-reaper |
+      # violation) so a new timer over derived state can't land unclassified.
+      # GATING on a NEW unclassified call site; a shrink-to-empty BASELINE grandfathers
+      # the pre-P-011 call sites.
+      - name: Lint timer classification
+        run: npm run lint:timer-classification
+
       # no-wire-compression guard (WI-5988, owner directive 2026-07-26):
       # Papercusp ships as a Tauri DESKTOP app — the operator host binds
       # 127.0.0.1 and every consumer is on the same machine, so compressing a

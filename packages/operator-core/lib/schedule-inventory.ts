@@ -243,6 +243,7 @@ function defaultGetInProcessChecks(): InProcessChecksResult {
       intervalMs: c.intervalMs,
       shed: c.shed,
       fireOnArm: c.fireOnArm,
+      classification: c.classification,
     }));
   } catch {
     /* ignore */
@@ -363,6 +364,7 @@ export async function collectScheduleInventory(
         running: m.running,
         instances: m.instances ?? 1,
         instanced: m.instanced ?? false,
+        classification: m.classification ?? null,
       },
     });
   }
@@ -385,7 +387,7 @@ export async function collectScheduleInventory(
       nextFire: null,
       lastError: null,
       groupSlug: null,
-      detail: { intervalMs: c.intervalMs, shed: c.shed ?? false, fireOnArm: c.fireOnArm ?? false },
+      detail: { intervalMs: c.intervalMs, shed: c.shed ?? false, fireOnArm: c.fireOnArm ?? false, classification: c.classification ?? null },
     });
   }
 

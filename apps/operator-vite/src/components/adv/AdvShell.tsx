@@ -91,12 +91,12 @@ export const ADV_TABS: ReadonlyArray<{
   // routines tab — plans are just optionally-scheduled). Workspace-scoped (aggregates
   // every pot's scheduled plans), so it also lives in WORKSPACE_TAB_IDS.
   { id: 'calendar', label: 'Calendar', icon: CalendarClock, accent: CATEGORICAL.teal400.hex, accentRgb: CATEGORICAL.teal400.rgb },
-  // Label "Working" (owner ask 2026-06-11, was "Progress"): the tab is the
-  // live-work view (work items / agents / runs for the selected project). The
-  // tab ID stays 'harnesses' — it's serialized in URLs (?tab=harnesses), deep
-  // links, and the agent ui:dispatch surface; renaming the id would break all
-  // of them.
-  { id: 'harnesses', label: 'Working', icon: Boxes, accent: CATEGORICAL.violet400.hex, accentRgb: CATEGORICAL.violet400.rgb },
+  // Label "Work" (owner ask 2026-07-26; was "Working" 2026-06-11, "Progress"
+  // before that): the tab is the live-work view (work items / agents / runs for
+  // the selected project). The tab ID stays 'harnesses' — it's serialized in
+  // URLs (?tab=harnesses), deep links, and the agent ui:dispatch surface;
+  // renaming the id would break all of them.
+  { id: 'harnesses', label: 'Work', icon: Boxes, accent: CATEGORICAL.violet400.hex, accentRgb: CATEGORICAL.violet400.rgb },
   // Health — the read-only at-a-glance system dashboard (system-health-tab-2026-06-15),
   // beside Working. Workspace-scoped (it aggregates the whole running system, not one
   // pot), so it also lives in WORKSPACE_TAB_IDS. Flag-gated (SYSTEM_HEALTH_TAB).
@@ -168,9 +168,16 @@ export function visibleAdvTabs(allMode: boolean): typeof ADV_TABS {
 export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'overview',
   'hud',
-  // Learning promoted to the visible strip, right of HUD (owner ask 2026-07-26
-  // — pulled out of the More menu's Insights group; splitPrimarySecondary
-  // preserves ADV_TABS order, so no explicit ordering needed here).
+  // Work (id 'harnesses') promoted to the visible strip, immediately right of
+  // HUD (owner ask 2026-07-26: "pull it out of MORE as a main tab to put next
+  // to HUD") — pulled out of the More menu's Work group, which now holds only
+  // Conversations + Calendar and is labelled "Activity" so it doesn't collide
+  // with this tab's name. splitPrimarySecondary preserves ADV_TABS order, and
+  // 'harnesses' sits before 'learning' there, so HUD → Work → Learning falls
+  // out without explicit ordering here.
+  'harnesses',
+  // Learning promoted to the visible strip (owner ask 2026-07-26 — pulled out
+  // of the More menu's Insights group).
   'learning',
 ]);
 
@@ -182,7 +189,10 @@ export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
  */
 export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; tabIds: readonly AdvTabId[] }> = [
   { id: 'build', label: 'Build', tabIds: ['plans', 'git', 'testing', 'docs'] },
-  { id: 'work', label: 'Work', tabIds: ['harnesses', 'conversations', 'calendar'] },
+  // Was "Work" holding ['harnesses','conversations','calendar'] — 'harnesses'
+  // IS the Work tab now (promoted to the strip 2026-07-26), so the group was
+  // relabelled "Activity" to avoid two things called "Work" in the same nav.
+  { id: 'work', label: 'Activity', tabIds: ['conversations', 'calendar'] },
   { id: 'insights', label: 'Insights', tabIds: ['insights', 'evals', 'health'] },
   { id: 'system', label: 'System', tabIds: ['frames', 'settings'] },
 ];
@@ -646,8 +656,8 @@ export default function AdvShell({
               activeHiveShared ? (
                 // Already shared to the directory → a passive Shared badge in
                 // place of the Share button (manage/change visibility from the
-                // Working tab's hive header).
-                <Tooltip label={`${activeSlug} is shared to the directory (${hiveShareViz}) — manage sharing from the Working tab`}>
+                // Work tab's hive header).
+                <Tooltip label={`${activeSlug} is shared to the directory (${hiveShareViz}) — manage sharing from the Work tab`}>
                   <span className="pc-advshell__action pc-advshell__action--shared">
                     <Check size={13} aria-hidden /> Shared
                   </span>

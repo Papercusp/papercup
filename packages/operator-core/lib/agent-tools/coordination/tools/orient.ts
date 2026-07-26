@@ -1231,6 +1231,7 @@ export async function composeOrient(
 export function assembleOrientOutput(legs: {
   self?: unknown;
   recovery?: unknown;
+  presenceDrift?: unknown;
   ownerDirectives?: unknown;
   modes?: unknown;
   instructionPrecedence?: unknown;
@@ -1251,6 +1252,11 @@ export function assembleOrientOutput(legs: {
     ...(me !== undefined ? { me } : {}),
     ...(claimable !== undefined ? { claimable } : {}),
     ...(inbox !== undefined ? { inbox } : {}),
+    // EI-18731216945970087: a presence/registry leadership DRIFT diagnostic — kept
+    // LOUD and high-priority (never silently spilled) precisely because its whole
+    // point is to replace a silent leaderBrief omission with something a leader
+    // cannot miss.
+    ...(legs.presenceDrift ? { presenceDrift: legs.presenceDrift } : {}),
     ...(legs.ownerDirectives ? { ownerDirectives: legs.ownerDirectives } : {}),
     ...(legs.modes ? { modes: legs.modes } : {}),
     ...(legs.instructionPrecedence ? { instructionPrecedence: legs.instructionPrecedence } : {}),
@@ -1465,7 +1471,46 @@ export default defineTool({
     // row first so a newly-installed leader gets the WHOLE fleet brief and a caller
     // that left a fleet does not resurrect stale membership. Only a failed presence
     // read may fall back to launch context.
-    const fleetMembership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
+    let fleetMembership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
+    // EI-18731216945970087: a resolvable FLEET LEADER on a monitor tick was seeing
+    // `agents:1` (agents:'me' is BY DESIGN caller-scoped — see OrientResult.me) with
+    // `leaderBrief` silently ABSENT — byte-indistinguishable from "all quiet" — because
+    // presence (coord_presence.fleet_slug/fleet_role, the SOFT membership label
+    // resolvePresenceFleet reads) had no row for this caller at the moment of the read,
+    // even though `harness_shared.agent_fleets.leader_owner_id` (the durable, single-
+    // leader-invariant REGISTRY fact `fleet:take-leadership` writes FIRST — see
+    // take-leadership-core.ts step 1) already named them leader. Ground-truthed
+    // (fleet:assignments{fleet:<slug>} showed the same caller as live leader in the
+    // same window) — a presence/registry disagreement, not a "not a leader" verdict.
+    // Cross-check the registry — cheap (one indexed lookup on a tiny table) and
+    // deliberately narrow: only when presence resolved to NO fleet at all (the exact
+    // failure shape reported), so every correctly-labeled member's monitor tick (the
+    // overwhelmingly common case) pays no extra round-trip.
+    let presenceDrift: { fleet: string; note: string } | undefined;
+    if (args.mode === 'monitor' && ownerId && !fleetMembership?.fleetSlug) {
+      try {
+        const { listFleetsLedBy } = await import('../../../agent-fleets-store');
+        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+        const led = await listFleetsLedBy(ws, ownerId);
+        if (led.length > 0) {
+          const fleet = led[0]!.fleetSlug;
+          fleetMembership = { fleetSlug: fleet, fleetRole: 'leader' };
+          presenceDrift = {
+            fleet,
+            note:
+              `PRESENCE DRIFT (EI-18731216945970087): the registry (agent_fleets.leader_owner_id) says ` +
+              `you LEAD fleet '${fleet}', but your presence row (coord_presence.fleet_slug/fleet_role) ` +
+              `showed no fleet at all — the exact shape that used to silently drop \`leaderBrief\` and ` +
+              `read as "my whole fleet is gone". Recovered from the registry for THIS call; leaderBrief ` +
+              `below is real. If this repeats, your presence row is not settling after ` +
+              `fleet:take-leadership — do not relaunch live members on the strength of a bare orient ` +
+              `read alone; corroborate with fleet:assignments { fleet } / fleet:status first.`,
+          };
+        }
+      } catch {
+        /* best-effort — never break orientation over a drift cross-check */
+      }
+    }
     // ── role-specific pane folds (voice-public-release-readiness-2026-07-12 P-016):
     // the papercup FAST pane orients with the SAME live-system digest block the
     // converse brain walks in with (papercup-context.ts — one identity, one
@@ -1802,6 +1847,7 @@ export default defineTool({
     const out = assembleOrientOutput({
       self,
       recovery,
+      presenceDrift,
       ownerDirectives,
       modes,
       instructionPrecedence,
