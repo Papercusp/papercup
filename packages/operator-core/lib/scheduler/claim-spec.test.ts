@@ -22,6 +22,7 @@ import {
   isIdOnlySelector,
   fixedCohortIds,
   positiveIdCohortIds,
+  formatSpecRef,
   type ClaimSpec,
 } from './claim-spec';
 
@@ -616,5 +617,22 @@ describe('claim-spec `states` field (D-002, EI-11300)', () => {
 
   it("DEFAULT_CLAIM_SPEC carries no `states` (today's ['todo']-default behavior, unchanged)", () => {
     expect(DEFAULT_CLAIM_SPEC.states).toBeUndefined();
+  });
+});
+
+describe('formatSpecRef — unambiguous spec+revision label (EI-18676258006299036)', () => {
+  it('never renders the bare "<specId>@<revision>" form that reads as a size/replica count', () => {
+    const ref = formatSpecRef('nonp2p-bug-drain-0725', 5);
+    expect(ref).not.toMatch(/nonp2p-bug-drain-0725@5/);
+    expect(ref).toBe('nonp2p-bug-drain-0725 (spec rev 5)');
+  });
+
+  it('handles a null/undefined revision without producing a bare "@"', () => {
+    expect(formatSpecRef('some-spec', null)).toBe('some-spec (spec rev unknown)');
+    expect(formatSpecRef('some-spec', undefined)).toBe('some-spec (spec rev unknown)');
+  });
+
+  it('renders revision 0 (falsy but valid) distinctly from unknown', () => {
+    expect(formatSpecRef('some-spec', 0)).toBe('some-spec (spec rev 0)');
   });
 });

@@ -7,6 +7,7 @@ import {
   lockCoordinationDomain,
   hostGlobalLockDomain,
   HOST_GLOBAL_RESOURCES,
+  resourceLockDomain,
   __resetLockCoordinationDomain,
 } from './coordination-domain';
 
@@ -141,7 +142,34 @@ describe('HOST_GLOBAL_RESOURCES', () => {
     expect(HOST_GLOBAL_RESOURCES.has('release-deploy')).toBe(true);
   });
 
-  it('deliberately excludes dev-server (scoped separately — more call sites to review)', () => {
-    expect(HOST_GLOBAL_RESOURCES.has('dev-server')).toBe(false);
+  it('includes dev-server (EI-18676514870990022 — the identical cross-tree defect, now migrated)', () => {
+    expect(HOST_GLOBAL_RESOURCES.has('dev-server')).toBe(true);
+  });
+
+  it('does not include an unrelated per-target resource (e.g. staging-server)', () => {
+    expect(HOST_GLOBAL_RESOURCES.has('staging-server')).toBe(false);
+  });
+});
+
+// EI-18676514870990022: resourceLockDomain() centralizes the branch every
+// acquirer/reader of a resource lock must apply — adding a resource to
+// HOST_GLOBAL_RESOURCES must fix every call site through this one function.
+describe('resourceLockDomain', () => {
+  it('resolves a HOST_GLOBAL_RESOURCES member to hostGlobalLockDomain()', () => {
+    expect(resourceLockDomain('release-deploy')).toBe(hostGlobalLockDomain());
+    expect(resourceLockDomain('dev-server')).toBe(hostGlobalLockDomain());
+  });
+
+  it('resolves a non-member to lockCoordinationDomain() (the caller-tree-scoped domain)', () => {
+    expect(resourceLockDomain('staging-server')).toBe(lockCoordinationDomain());
+    expect(resourceLockDomain('some-unregistered-resource')).toBe(lockCoordinationDomain());
+  });
+
+  it('two calls for the same host-global resource agree regardless of caller — the exact defect this closes', () => {
+    // hostGlobalLockDomain() never varies by cwd/import.meta.url, so pinning
+    // this here guards against resourceLockDomain() accidentally routing a
+    // host-global resource through the tree-scoped path in a future edit.
+    expect(resourceLockDomain('dev-server')).toBe(resourceLockDomain('dev-server'));
+    expect(resourceLockDomain('dev-server').startsWith('/')).toBe(false);
   });
 });

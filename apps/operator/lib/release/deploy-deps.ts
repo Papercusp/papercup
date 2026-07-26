@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { guardResource } from '@papercusp/operator-core/lib/agent-tools/locks/resource-lock-guard';
-import { lockCoordinationDomain, hostGlobalLockDomain } from '@papercusp/operator-core/lib/agent-tools/locks/coordination-domain';
+import { hostGlobalLockDomain } from '@papercusp/operator-core/lib/agent-tools/locks/coordination-domain';
 import { sendMessage } from '@papercusp/operator-core/lib/agent-tools/coordination/messages';
 import type { AgentIdentity } from '@papercusp/operator-core/lib/agent-tools/coordination/identity';
 import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
@@ -219,7 +219,16 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       const id = deployIdentity();
       const outcome = await guardResource(
         {
-          coordinationDomain: lockCoordinationDomain(),
+          // EI-18676514870990022: 'dev-server' has the SAME cross-tree domain
+          // defect release-deploy had (EI-18674647773291145 Defect 2) — it names
+          // the one shared :3070 process, not a physical file tree, so it must
+          // resolve to the fixed hostGlobalLockDomain() regardless of which
+          // checkout this deploy process loaded its code from, or a manual
+          // deploy-cli run from the staging tree (or dev:restart, or
+          // system-health's read) would land in a different domain and silently
+          // fail to serialize / see the held lock. See coordination-domain.ts's
+          // HOST_GLOBAL_RESOURCES / resourceLockDomain doc comments.
+          coordinationDomain: hostGlobalLockDomain(),
           ownerId: id.ownerId,
           ownerLabel: id.ownerLabel,
           coordIdentity: id,

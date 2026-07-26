@@ -132,3 +132,47 @@ export function looksLikeCitedProseEvidence(ref: string | null | undefined): boo
   if (text.length < PROSE_EVIDENCE_MIN_LENGTH) return false;
   return PROSE_EVIDENCE_PATTERNS.some((re) => re.test(text));
 }
+
+/**
+ * EI-18676290701611705 — the synthetic `terminal_completion_ref` ANY `skipCompletionGate`
+ * bypass stamps when the caller supplied none. `skipCompletionGate` exists for a small,
+ * TRUSTED set of non-completion transitions (watchdog auto-close, hygiene sweep,
+ * orphaned-dispatch reconciliation, a tripwire revert, a bee-exit reconcile) that must
+ * NOT claim a genuine completion — by design they call `setWorkItemState`/`setIssueState`
+ * with `completionRef` omitted. Before this, that meant the column was written NULL, so
+ * the `no-completion-record` audit (`terminal_completion_ref IS NULL`) could fire on a
+ * MAJOR, human-filed bug that closed through one of these paths, with nothing left to
+ * distinguish "a sanctioned system bypass" from "a bare assertion no one investigated" —
+ * exactly the ambiguity a DRAIN leader hit on EI-18673480587329034 (a real, verified fix,
+ * closed with both `completion` and `terminal_completion_ref` empty).
+ *
+ * This is deliberately NOT prose evidence — it names the bypass + the closing actor + a
+ * timestamp, so the audit can never again find a bare-NULL ref for a sanctioned system
+ * write, while `looksLikeCitedProseEvidence` still correctly reads it as non-evidence
+ * (it carries none of the file:line / test-ratio / sha / uuid citation patterns) — a
+ * reader can tell at a glance "system bypass, not a real fix" rather than mistaking it
+ * for genuine verification.
+ */
+export function skipGateCompletionRef(by: string | null | undefined): string {
+  return (
+    `[SYSTEM-BYPASS] non-completion state transition by '${by ?? 'unknown'}' at ${new Date().toISOString()}` +
+    ' (skipCompletionGate — not a genuine completion; see work-item-completion-integrity-2026-07-01 WI-1403)'
+  );
+}
+
+/**
+ * Resolve the completionRef to actually WRITE for a terminal transition: the caller's own
+ * ref when non-empty, else — ONLY when `skipCompletionGate` is set — the synthetic marker
+ * above, so a sanctioned bypass never leaves the column truly empty. Returns the input
+ * unchanged (including null/undefined) when the gate is NOT bypassed, matching the existing
+ * `completionRef ?? null` write shape exactly for every caller that already enforces the
+ * completion-integrity gate before calling this.
+ */
+export function resolveTerminalCompletionRef(
+  completionRef: string | null | undefined,
+  opts: { skipCompletionGate?: boolean; by?: string | null },
+): string | null | undefined {
+  if (completionRef && completionRef.trim()) return completionRef;
+  if (opts.skipCompletionGate) return skipGateCompletionRef(opts.by);
+  return completionRef;
+}

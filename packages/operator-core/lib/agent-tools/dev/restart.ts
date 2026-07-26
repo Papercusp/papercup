@@ -62,6 +62,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
+import { resourceLockDomain } from '../locks/coordination-domain';
 import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { probeServiceStart } from './systemd-service-probe';
@@ -262,7 +263,16 @@ export default defineTool({
       });
     }
 
-    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain: callerDomain } = readIdentity(ctx);
+    // EI-18676514870990022: cfg.resource ('dev-server' for the "dev" target)
+    // is HOST-GLOBAL — it names the one shared :3070 operator, not a physical
+    // file tree — so it must resolve to hostGlobalLockDomain() regardless of
+    // which checkout this call happened to load from, exactly like
+    // 'release-deploy' (EI-18674647773291145 Defect 2). Every other current
+    // target (staging/gateway/bg-host/embed-sidecar) is NOT in
+    // HOST_GLOBAL_RESOURCES yet, so this is a no-op for them — falls straight
+    // through to the same callerDomain as before.
+    const coordinationDomain = resourceLockDomain(cfg.resource);
     const coordIdentity = resolveAgentIdentity(ctx);
     const enabledByEnv = process.env.PAPERCUSP_ALLOW_DEV_RESTART === '1';
     // EI-18198340374286980: an agent cannot set PAPERCUSP_ALLOW_DEV_RESTART on
@@ -397,6 +407,9 @@ export default defineTool({
 
     const outcome = await guardResource(
       {
+        // coordinationDomain is the resourceLockDomain(cfg.resource) computed
+        // above (host-global for 'dev-server', unchanged for everything else) —
+        // see that declaration's comment for why.
         coordinationDomain,
         ownerId,
         ownerLabel,

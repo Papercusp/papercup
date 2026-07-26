@@ -966,11 +966,14 @@ describe('fleet scope assignment admission (P-016)', () => {
       scope,
     };
 
-    it('fleetScopeLeaderRemedy names scheduler:set_claim_spec, the fleet slug, and the current specId@revision for a scope violation', () => {
+    it('fleetScopeLeaderRemedy names scheduler:set_claim_spec, the fleet slug, and the current spec ref (unambiguous, not "@N") for a scope violation', () => {
       const remedy = fleetScopeLeaderRemedy(violation);
       expect(remedy).toMatch(/scheduler:set_claim_spec/);
       expect(remedy).toMatch(/fleet: "p2p-release-verify"/);
-      expect(remedy).toMatch(/p2p-release-verify-lane@20/);
+      // EI-18676258006299036: "<specId>@<revision>" reads as a size/replica count in ops
+      // tooling — a member misread it as a live-member count. Render unambiguously instead.
+      expect(remedy).toMatch(/p2p-release-verify-lane \(spec rev 20\)/);
+      expect(remedy).not.toMatch(/p2p-release-verify-lane@20/);
       // A live scope violation is NOT a pause — it must never route the leader at fleet:resume.
       expect(remedy).not.toMatch(/fleet:resume/);
     });

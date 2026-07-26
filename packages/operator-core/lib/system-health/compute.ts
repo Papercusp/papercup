@@ -1302,9 +1302,16 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         let deployInProgress = false;
         try {
           const { getTxPool, readResourceQueue } = await import('../agent-tools/locks/su-lock-store');
-          const { lockCoordinationDomain } = await import('../agent-tools/locks/coordination-domain');
+          // EI-18676514870990022: 'dev-server' is a HOST-GLOBAL resource
+          // (HOST_GLOBAL_RESOURCES) — deploy-deps.ts's withDrain acquires it
+          // under the fixed hostGlobalLockDomain(), not the caller-tree-scoped
+          // lockCoordinationDomain() this used to read. Reading the wrong domain
+          // here silently reports `holders: []` during a genuine deploy (the
+          // exact EI-18674647773291145 Defect 2 symptom), producing a false
+          // operator-unreachable crit instead of suppressing it.
+          const { resourceLockDomain } = await import('../agent-tools/locks/coordination-domain');
           const { holders } = await readResourceQueue(getTxPool(), {
-            coordinationDomain: lockCoordinationDomain(),
+            coordinationDomain: resourceLockDomain('dev-server'),
             resource: 'dev-server',
           });
           deployInProgress = holders.some((h) => h.mode === 'exclusive');
