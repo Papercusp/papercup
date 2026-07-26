@@ -248,6 +248,33 @@ export default function HudBoard({
   return (
     <div className="hud">
       <div className="hud__top">
+        {/* P-002 (owner asks 2026-07-26). First ask: "left align these buttons
+            instead of right align" — a `hud__spacer` used to sit here, ahead of
+            the launcher, pushing it and the su-sessions toggle to the far
+            right; it now trails the row so the slack falls on the right
+            instead. Follow-up ask: "move these to the left of the needs you and
+            the stuff that comes after that" — so the launch cluster leads the
+            header outright and the count chips follow it, rather than the
+            other way round. */}
+        {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
+
+        <Tooltip
+          label={
+            suOnly
+              ? 'Currently showing your su sessions only. Include nursery cups and autonomous agents too.'
+              : 'Currently showing every agent on the roster. Narrow back to your su sessions.'
+          }
+        >
+          <button
+            type="button"
+            className="hud__count"
+            aria-pressed={!suOnly}
+            onClick={onToggleSuOnly}
+          >
+            <span className="hud__count-row">{suOnly ? 'su sessions' : 'all agents'}</span>
+          </button>
+        </Tooltip>
+
         <div className="hud__counts">
           {board.columns.map((c) => {
             const hot = c.id === 'needs-you' && c.sessions.length > 0;
@@ -270,30 +297,6 @@ export default function HudBoard({
           })}
         </div>
 
-        {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
-
-        <Tooltip
-          label={
-            suOnly
-              ? 'Currently showing your su sessions only. Include nursery cups and autonomous agents too.'
-              : 'Currently showing every agent on the roster. Narrow back to your su sessions.'
-          }
-        >
-          <button
-            type="button"
-            className="hud__count"
-            aria-pressed={!suOnly}
-            onClick={onToggleSuOnly}
-          >
-            <span className="hud__count-row">{suOnly ? 'su sessions' : 'all agents'}</span>
-          </button>
-        </Tooltip>
-
-        {/* P-002 (owner ask 2026-07-26: "left align these buttons instead of
-            right align"). The spacer used to sit BEFORE the header action,
-            which is what pushed the launcher cluster + the su-sessions toggle
-            to the far right. Trailing it instead left-aligns the whole row and
-            lets the slack fall on the right. */}
         <span className="hud__spacer" />
       </div>
 

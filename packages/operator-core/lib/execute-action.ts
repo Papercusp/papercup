@@ -10,9 +10,15 @@
  *   3. Dispatch on action.op
  *   4. Cache to harness_<callerSlug>.executed_actions for idempotency replay
  *
- * The four verbs (send_message, mark_message_status, spinup_project,
- * scaffold_harness) are implemented in this module. spinup_project recurses
- * in-process to fire follow-up send_messages within a single transaction.
+ * The verbs (spinup_project, scaffold_harness, pause/resume_project,
+ * create_feature, add_directive_summary) are implemented in this module.
+ *
+ * RETIRED 2026-07-26 (plan surface-every-routine-and-unbreak-automation-panes
+ * -2026-07-25 P-008, owner-directed): the work-item MAIL verbs — send_message,
+ * mark_message_status and mark_campaign_published — were removed along with the
+ * rest of the `harness_<slug>.messages` surface. coord:send absorbed the job at
+ * ~400x the volume. The rows are preserved; only the code path is gone. Do NOT
+ * reintroduce a message verb here — see _retired/work-item-mail/RESTORE.md.
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
@@ -80,13 +86,10 @@ export interface ExecuteActionRequest {
 }
 
 export type ExecuteAction =
-  | SendMessageAction
-  | MarkMessageStatusAction
   | SpinupProjectAction
   | ScaffoldHarnessAction
   | PauseProjectAction
   | ResumeProjectAction
-  | MarkCampaignPublishedAction
   | AddDirectiveSummaryAction
   | CreateFeatureAction;
 
@@ -120,39 +123,6 @@ export interface ResumeProjectAction {
   op: 'resume_project';
   projectSlug: string;
   status?: string; // default 'in_progress'
-}
-
-export interface MarkCampaignPublishedAction {
-  op: 'mark_campaign_published';
-  messageId: string;
-  channels: string[];
-  impressions?: number;
-  clicks?: number;
-  installs?: number;
-}
-
-export interface SendMessageAction {
-  op: 'send_message';
-  to: string[];
-  toRole?: string; // optional: narrow to a specific role within each recipient
-  /** Phase 3 feature messaging — feature this message is addressed to (within each `to` harness). */
-  toFeatureId?: string;
-  /** Feature whose worker authored this message (within `from` harness). Identifies the sender at feature granularity. */
-  fromFeatureId?: string;
-  kind: string;
-  subject: string;
-  body?: string;
-  parentMessageId?: string;
-  reason: string;
-  from?: string; // body-supplied; rejected if mismatched with bearer
-}
-
-export interface MarkMessageStatusAction {
-  op: 'mark_message_status';
-  messageId: string;
-  status: 'acknowledged' | 'archived';
-  /** Audited via saveAction's generic `action.reason` read (messages:dismiss). */
-  reason?: string;
 }
 
 export interface SpinupProjectAction {
@@ -225,9 +195,6 @@ export function validateIdentityFields(
     return { status: 403, error: 'identity_mismatch', detail: `body.callingHarness=${body.callingHarness} does not match bearer-derived ${derivedSlug}` };
   }
   const { action } = body;
-  if (action.op === 'send_message' && action.from && action.from !== derivedSlug) {
-    return { status: 403, error: 'identity_mismatch', detail: `body.from=${action.from} does not match bearer-derived ${derivedSlug}` };
-  }
   if (action.op === 'scaffold_harness' && action.parent_slug !== undefined) {
     return { status: 400, error: 'parent_slug_not_caller_controlled', detail: 'parent_slug is server-derived; do not include it in the request body' };
   }
@@ -245,9 +212,8 @@ export function validateIdentityFields(
  * Opt-in cache-and-verify mode (set PAPERCUSP_REPLAY_VERIFY=1): re-runs a
  * lightweight existence check on the produced side effect and, if missing,
  * treats the cache as stale (returns null so the caller re-executes).
- * Currently checks: send_message → message row still exists in recipient
- * inbox; spinup_project → project row still exists; scaffold_harness →
- * harness still in registry.
+ * Currently checks: spinup_project → project row still exists;
+ * scaffold_harness → harness still in registry.
  */
 const REPLAY_VERIFY = process.env.PAPERCUSP_REPLAY_VERIFY === '1';
 
@@ -285,13 +251,6 @@ async function verifyEffectExists(
   response: any,
 ): Promise<boolean> {
   const { sql } = getOrgPg();
-  if (op === 'send_message' && targetSlug) {
-    const msgId = response?.result?.inserted?.[0]?.messageId;
-    if (!msgId) return true; // nothing to verify
-    const schema = slugToSchema(targetSlug);
-    const rows = await sql.unsafe(`SELECT 1 FROM ${schema}.messages WHERE id = $1 LIMIT 1`, [msgId]);
-    return (rows as any).length > 0;
-  }
   if (op === 'spinup_project') {
     const projectId = response?.result?.projectId;
     if (!projectId) return true;
@@ -362,8 +321,6 @@ async function saveAction(opts: {
 function extractTargetSlug(action: ExecuteAction): string | null {
   switch (action.op) {
     case 'create_feature': return action.harness_slug ?? null;
-    case 'send_message': return action.to?.[0] ?? null;
-    case 'mark_message_status': return null;
     case 'spinup_project': return null;
     case 'scaffold_harness': return action.projectSlug ?? null;
     default: return null;
@@ -371,148 +328,6 @@ function extractTargetSlug(action: ExecuteAction): string | null {
 }
 
 // ── Verb implementations ───────────────────────────────────────────────────
-
-// Rate limit: at most N send_message ops per caller per 60s window.
-// Default 50; configurable via PAPERCUSP_SEND_MESSAGE_RATE_LIMIT.
-const SEND_MESSAGE_RATE_LIMIT = Number(process.env.PAPERCUSP_SEND_MESSAGE_RATE_LIMIT ?? 50);
-const RATE_WINDOW_MS = 60_000;
-
-async function checkSendMessageRate(callerSlug: string): Promise<{ ok: true } | { ok: false; detail: string }> {
-  if (SEND_MESSAGE_RATE_LIMIT <= 0) return { ok: true }; // disabled
-  // System principals (e.g. "system:operator") have no per-harness
-  // executed_actions schema — skip the rate-limit check rather than
-  // generate an invalid SQL identifier (`harness_system:operator`,
-  // which Postgres rejects with `syntax error at or near ":"`). The
-  // operator already throttles its own send_message frequency at the
-  // scan-loop level.
-  if (callerSlug.startsWith('system:')) return { ok: true };
-  const { sql } = getOrgPg();
-  const schema = slugToSchema(callerSlug);
-  const since = new Date(Date.now() - RATE_WINDOW_MS).toISOString();
-  const rows = await sql.unsafe(
-    `SELECT count(*)::int AS n FROM ${schema}.executed_actions
-     WHERE op = 'send_message' AND executed_at > $1::timestamptz`,
-    [since],
-  );
-  const n = (rows as any)[0]?.n ?? 0;
-  if (n >= SEND_MESSAGE_RATE_LIMIT) {
-    return { ok: false, detail: `rate limit exceeded: ${n} send_message ops in last 60s (limit=${SEND_MESSAGE_RATE_LIMIT})` };
-  }
-  return { ok: true };
-}
-
-async function doSendMessage(
-  callerSlug: string,
-  action: SendMessageAction,
-): Promise<ExecuteActionResult> {
-  const reason = (action.reason ?? '').trim();
-  if (reason.length < 10) {
-    return { ok: false, actionId: '', error: 'validation_error', detail: 'reason must be at least 10 characters' };
-  }
-  if (!Array.isArray(action.to) || action.to.length === 0) {
-    return { ok: false, actionId: '', error: 'validation_error', detail: 'to[] must be non-empty' };
-  }
-  if (!action.kind || !action.subject) {
-    return { ok: false, actionId: '', error: 'validation_error', detail: 'kind and subject required' };
-  }
-
-  // Rate limit by caller (sliding 60s window).
-  const rate = await checkSendMessageRate(callerSlug);
-  if (!rate.ok) {
-    return { ok: false, actionId: '', error: 'rate_limited', detail: rate.detail };
-  }
-
-  const placeholderFlag = PLACEHOLDER_REASON.test(reason);
-  const { sql } = getOrgPg();
-
-  // Verify every recipient harness exists BEFORE inserting anything. A
-  // non-existent recipient has no `harness_<slug>` schema, so the INSERT
-  // below would throw a raw "schema ... does not exist" error. Over HTTP that
-  // surfaces as an opaque 500; for in-process callers (the operator scan loop,
-  // spinup_project's cross-schema transaction) it propagates as an unhandled
-  // exception and crashes the caller. Schema presence is the canonical
-  // existence check (same probe as harness-status-sweep). Pre-validating up
-  // front fails cleanly with a not_found response (→ 404) and never leaves a
-  // partial insert across a multi-recipient batch (WI-385).
-  const missingRecipients: string[] = [];
-  for (const recipient of action.to) {
-    const schema = slugToSchema(recipient);
-    if (!(await harnessSchemaExists(sql, schema))) missingRecipients.push(recipient);
-  }
-  if (missingRecipients.length > 0) {
-    return {
-      ok: false,
-      actionId: '',
-      error: 'not_found',
-      detail: `recipient harness not found: ${missingRecipients.join(', ')}`,
-    };
-  }
-
-  const toRole = action.toRole && /^[a-z][a-z0-9_-]*$/i.test(action.toRole) ? action.toRole : null;
-  // Feature-id format check (Phase 3). Accept the canonical F-XXX-NNN
-  // shape; reject silently → null so a malformed id can't be used to
-  // smuggle into the column.
-  const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
-  const toFeatureId = action.toFeatureId && FEATURE_ID_RE.test(action.toFeatureId) ? action.toFeatureId : null;
-  const fromFeatureId = action.fromFeatureId && FEATURE_ID_RE.test(action.fromFeatureId) ? action.fromFeatureId : null;
-  const inserted: { recipient: string; messageId: string }[] = [];
-  for (const recipient of action.to) {
-    const schema = slugToSchema(recipient);
-    // INSERT one message into the recipient's inbox. to_role optional.
-    // workspace_id explicit (WI-5243) — see the executed_actions note above.
-    // The active workspace is correct for the RECIPIENT's row too: cross-workspace
-    // dispatch is not supported in v1 (see the projects insert below), so caller
-    // and recipient are always in the same workspace.
-    const rows = await sql.unsafe(
-      `INSERT INTO ${schema}.messages (workspace_id, from_slug, to_slug, to_role, from_feature_id, to_feature_id, kind, subject, body, parent_message_id, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
-       RETURNING id`,
-      [activeWorkspaceId(), callerSlug, recipient, toRole, fromFeatureId, toFeatureId, action.kind, action.subject, action.body ?? null, action.parentMessageId ?? null],
-    );
-    const messageId = (rows as any)[0].id as string;
-
-    // If it's a Directive, also append to supervisor_notes for prompt-build.
-    if (action.kind === 'Directive') {
-      await sql.unsafe(
-        `INSERT INTO ${schema}.supervisor_notes (workspace_id, body, source) VALUES ($1, $2, 'message')`,
-        [
-          activeWorkspaceId(), // explicit (WI-5243) — see the executed_actions note above
-          `[Directive from ${callerSlug}] ${action.subject}\n\n${action.body ?? ''}`.slice(0, 4000),
-        ],
-      );
-    }
-
-    inserted.push({ recipient, messageId });
-  }
-
-  return {
-    ok: true,
-    actionId: '',
-    result: { inserted, placeholder_reason_flag: placeholderFlag },
-  };
-}
-
-async function doMarkMessageStatus(
-  callerSlug: string,
-  action: MarkMessageStatusAction,
-): Promise<ExecuteActionResult> {
-  if (!action.messageId || !['acknowledged', 'archived'].includes(action.status)) {
-    return { ok: false, actionId: '', error: 'validation_error', detail: 'messageId and valid status required' };
-  }
-  const { sql } = getOrgPg();
-  const schema = slugToSchema(callerSlug);
-  const rows = await sql.unsafe(
-    `UPDATE ${schema}.messages
-     SET status = $1, acknowledged_at = now()
-     WHERE id = $2
-     RETURNING id, status`,
-    [action.status, action.messageId],
-  );
-  if ((rows as any).length === 0) {
-    return { ok: false, actionId: '', error: 'not_found', detail: `message ${action.messageId} not found in caller's schema` };
-  }
-  return { ok: true, actionId: '', result: { id: action.messageId, status: action.status } };
-}
 
 async function doSpinupProject(
   callerSlug: string,
@@ -545,32 +360,10 @@ async function doSpinupProject(
         [projectId, action.projectName, projectSlug, action.projectBudgetCents, action.departments[0] ?? null, action.projectVertical, now, callerSlug, ws],
       );
 
-      // Auto-fire follow-up messages to each department.
-      for (const dept of action.departments) {
-        const schema = slugToSchema(dept);
-        for (const kind of ['Kickoff', 'Priority', 'Budget']) {
-          try {
-            const subj =
-              kind === 'Kickoff' ? `Kickoff: ${action.projectName}` :
-              kind === 'Priority' ? `Priority for ${action.projectName}` :
-              `Budget allocated: $${(action.projectBudgetCents / 100).toFixed(2)}`;
-            const body =
-              kind === 'Kickoff' ? `Project ${projectId} (slug: ${projectSlug}). Vertical: ${action.projectVertical}. Tied to directive ${action.directiveId}.` :
-              kind === 'Priority' ? `Treat ${projectId} as priority work; coordinate with siblings on shared subprojects.` :
-              `${action.projectBudgetCents} cents allocated to ${projectId}.`;
-            const rows = await tx.unsafe(
-              `INSERT INTO ${schema}.messages (workspace_id, from_slug, to_slug, kind, subject, body, status)
-               VALUES ($1, $2, $3, $4, $5, $6, 'pending')
-               RETURNING id`,
-              [activeWorkspaceId(), callerSlug, dept, kind, subj, body], // ws explicit (WI-5243)
-            );
-            subActions.push({ op: 'send_message', ok: true, recipient: dept, messageId: (rows as any)[0].id });
-          } catch (e) {
-            subActions.push({ op: 'send_message', ok: false, recipient: dept, error: String((e as Error).message).slice(0, 200) });
-            throw e; // abort transaction
-          }
-        }
-      }
+      // The Kickoff/Priority/Budget message fan-out to each department was
+      // REMOVED 2026-07-26 with the rest of the work-item mail surface (P-008,
+      // owner-directed). It was the last writer to `harness_<slug>.messages`
+      // outside the retired mail verbs; the project row above is unaffected.
     });
   } catch (e) {
     return { ok: false, actionId: '', error: 'internal', detail: String((e as Error).message).slice(0, 500), result: { subActions } };
@@ -870,32 +663,6 @@ async function doAddDirectiveSummary(
   };
 }
 
-async function doMarkCampaignPublished(
-  callerSlug: string,
-  action: MarkCampaignPublishedAction,
-): Promise<ExecuteActionResult> {
-  if (!action.messageId || !Array.isArray(action.channels) || action.channels.length === 0) {
-    return { ok: false, actionId: '', error: 'validation_error', detail: 'messageId and channels[] required' };
-  }
-  const { sql } = getOrgPg();
-  const schema = slugToSchema(callerSlug);
-  // Annotate the existing message with a JSON block in body (preserves it)
-  // and bump status to acknowledged. The campaign metrics live as an
-  // appended marker; v2 may add a dedicated column.
-  const annotation = `\n\n[mark_campaign_published @ ${new Date().toISOString()}] channels=${action.channels.join(',')} impressions=${action.impressions ?? 0} clicks=${action.clicks ?? 0} installs=${action.installs ?? 0}`;
-  const rows = await sql.unsafe(
-    `UPDATE ${schema}.messages
-     SET body = COALESCE(body, '') || $1, status = 'acknowledged', acknowledged_at = now()
-     WHERE id = $2
-     RETURNING id, status`,
-    [annotation, action.messageId],
-  );
-  if ((rows as any).length === 0) {
-    return { ok: false, actionId: '', error: 'not_found', detail: `message ${action.messageId} not in caller's schema` };
-  }
-  return { ok: true, actionId: '', result: { id: action.messageId, channels: action.channels } };
-}
-
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 
 async function doCreateFeature(
@@ -1016,32 +783,6 @@ function validateActionShape(action: ExecuteAction): ExecuteActionResult | null 
   const a = action as any;
 
   switch (action.op) {
-    case 'send_message': {
-      if (!Array.isArray(a.to) || a.to.length === 0) {
-        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_message: to[] (non-empty array) required' };
-      }
-      if (typeof a.kind !== 'string' || !a.kind) {
-        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_message: kind (string) required' };
-      }
-      if (typeof a.subject !== 'string' || !a.subject) {
-        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_message: subject (string) required' };
-      }
-      if (typeof a.reason !== 'string' || a.reason.trim().length < 10) {
-        return { ok: false, actionId: '', error: 'validation_error', detail: 'send_message: reason (≥10 chars) required' };
-      }
-      break;
-    }
-
-    case 'mark_message_status': {
-      if (typeof a.messageId !== 'string' || !a.messageId) {
-        return { ok: false, actionId: '', error: 'validation_error', detail: 'mark_message_status: messageId (string) required' };
-      }
-      if (!['acknowledged', 'archived'].includes(a.status)) {
-        return { ok: false, actionId: '', error: 'validation_error', detail: 'mark_message_status: status must be "acknowledged" or "archived"' };
-      }
-      break;
-    }
-
     case 'spinup_project': {
       if (typeof a.directiveId !== 'string' || !a.directiveId) {
         return { ok: false, actionId: '', error: 'validation_error', detail: 'spinup_project: directiveId (string) required' };
@@ -1085,16 +826,6 @@ function validateActionShape(action: ExecuteAction): ExecuteActionResult | null 
       break;
     }
 
-    case 'mark_campaign_published': {
-      if (typeof a.messageId !== 'string' || !a.messageId) {
-        return { ok: false, actionId: '', error: 'validation_error', detail: 'mark_campaign_published: messageId (string) required' };
-      }
-      if (!Array.isArray(a.channels) || a.channels.length === 0) {
-        return { ok: false, actionId: '', error: 'validation_error', detail: 'mark_campaign_published: channels[] (non-empty array) required' };
-      }
-      break;
-    }
-
     case 'add_directive_summary': {
       if (typeof a.directiveId !== 'string' || !a.directiveId) {
         return { ok: false, actionId: '', error: 'validation_error', detail: 'add_directive_summary: directiveId (string) required' };
@@ -1132,13 +863,10 @@ export async function dispatchAction(
 ): Promise<ExecuteActionResult> {
   switch (action.op) {
     case 'create_feature': return doCreateFeature(callerSlug, action);
-    case 'send_message': return doSendMessage(callerSlug, action);
-    case 'mark_message_status': return doMarkMessageStatus(callerSlug, action);
     case 'spinup_project': return doSpinupProject(callerSlug, action);
     case 'scaffold_harness': return doScaffoldHarness(callerSlug, action);
     case 'pause_project': return doPauseProject(callerSlug, action);
     case 'resume_project': return doResumeProject(callerSlug, action);
-    case 'mark_campaign_published': return doMarkCampaignPublished(callerSlug, action);
     case 'add_directive_summary': return doAddDirectiveSummary(callerSlug, action);
     default: return { ok: false, actionId: '', error: 'validation_error', detail: `unknown op: ${(action as any).op}` };
   }

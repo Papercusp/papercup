@@ -15,9 +15,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 
+/** Mirrors the useful part of launchAgent's result union. Declared explicitly
+ *  because inferring it from the default implementation narrows to
+ *  `{ ok: true }`, which then rejects every mockResolvedValueOnce for the
+ *  warning and failure paths below. */
+type LaunchResult = { ok: boolean; warning?: string; error?: string; installCmd?: string };
+
 const h = vi.hoisted(() => ({
   planListData: { plans: [] as Array<Record<string, unknown>>, loading: false },
-  launchAgent: vi.fn(async (_opts: unknown) => ({ ok: true as const })),
+  launchAgent: vi.fn(async (_opts: unknown): Promise<LaunchResult> => ({ ok: true })),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   toastWarning: vi.fn(),

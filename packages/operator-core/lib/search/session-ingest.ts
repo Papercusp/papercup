@@ -51,6 +51,15 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
+import {
+  addResultBytes,
+  addToolUse,
+  dayOf,
+  extractLineUsage,
+  rollupRows,
+  type LineUsage,
+  type UsageRollup,
+} from '../bash-substitution/usage-rollup';
 
 /** How far back a source file's mtime may be and still get ingested. */
 const INGEST_WINDOW_DAYS = 45;
@@ -430,6 +439,22 @@ interface FileAdapter {
   classifyLine: (line: string) => LineSignal | null;
   /** Best-effort provenance derived from the file path. */
   meta: (filePath: string) => { sessionId: string; owner: string | null };
+  /**
+   * P-002: per-TOOL / per-VERB usage extracted from the same pass, for the
+   * bash→tool substitution metric.
+   *
+   * Optional because the shape is client-specific and only the Claude adapter
+   * implements it today. `classifyLine` already sees every `tool_use` block but
+   * deliberately reduces them to a COUNT — the substitution metric needs the
+   * tool's NAME (and, for the shell tool, the command's verbs), which is a
+   * strictly larger signal than the EI-9970 counters wanted.
+   *
+   * Extracted HERE, inside the existing incremental walk, rather than by a
+   * second scanner: a standalone 7d sweep measures ~95s over 10.5M lines, and
+   * transcripts roll off, so counting as we ingest is the only way the number
+   * survives its own window (see `bash-substitution/usage-rollup.ts`).
+   */
+  usageOf?: (line: string) => LineUsage;
 }
 
 /** Resolve Codex rollout identity from its filename plus the per-session
@@ -460,6 +485,7 @@ const HOME = homedir();
 export const FILE_ADAPTERS: FileAdapter[] = [
   {
     sourceKind: 'claude',
+    usageOf: extractLineUsage,
     roots: () => [
       // ~/.claude/projects/<munged-cwd>/<uuid>.jsonl
       { root: join(HOME, '.claude', 'projects'), dirDepth: 1 },
@@ -596,6 +622,7 @@ export async function readNewLines(
   parseLine: (l: string) => ParsedTurn | null,
   classifyLine: (l: string) => LineSignal | null,
   lastInferenceId: string | null,
+  usageOf?: (l: string) => LineUsage,
 ): Promise<{
   turns: ParsedTurn[];
   newOffset: number;
@@ -603,12 +630,18 @@ export async function readNewLines(
   responseCount: number;
   toolCallCount: number;
   lastInferenceId: string | null;
+  /** P-002 per-tool/per-verb usage; empty when the adapter has no extractor. */
+  usage: UsageRollup;
 }> {
+  // Declared up front so every early return reports the same (empty) shape —
+  // a caller must never have to distinguish "no usage extractor" from "this
+  // tick read nothing".
+  const usage: UsageRollup = new Map();
   const fh = await open(filePath, 'r');
   try {
     const s = await fh.stat();
     if (s.size <= offset) {
-      return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId };
+      return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId, usage };
     }
     const toRead = Math.min(s.size - offset, MAX_BYTES_PER_FILE_PER_TICK);
     const buf = Buffer.alloc(toRead);
@@ -639,11 +672,12 @@ export async function readNewLines(
             responseCount: 0,
             toolCallCount: 0,
             lastInferenceId,
+            usage,
           };
         }
         cursor += size;
       }
-      return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId };
+      return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId, usage };
     }
     const usable = chunk.slice(0, lastNl + 1);
     const turns: ParsedTurn[] = [];
@@ -680,6 +714,21 @@ export async function readNewLines(
             cursor = sig.inferenceId;
           }
         }
+        if (usageOf) {
+          // P-002. Folded into the SAME pass — the per-line JSON.parse is
+          // already the expensive thing here (WI-5218), so a second walk just
+          // to count tools would double the cost of the hot loop.
+          // Undated records are dropped rather than dated "now": the metric is
+          // read as a ts-window, and defaulting would inflate whichever window
+          // happened to be running.
+          try {
+            const u = usageOf(line);
+            for (const obs of u.toolUses) addToolUse(usage, obs, null);
+            if (u.resultBytes > 0) addResultBytes(usage, u.resultBytes, dayOf(u.ts));
+          } catch {
+            // A metric must never cost an ingest. Skip this line's counts.
+          }
+        }
       }
       yielded = await cooperativeYield(yielded, LINE_YIELD_EVERY);
     }
@@ -690,10 +739,55 @@ export async function readNewLines(
       responseCount,
       toolCallCount,
       lastInferenceId: cursor,
+      usage,
     };
   } finally {
     await fh.close();
   }
+}
+
+/**
+ * Persist one tick's per-tool/per-verb counts (P-002).
+ *
+ * BEST-EFFORT BY CONTRACT, and called AFTER the offset has advanced. The
+ * tradeoff is deliberate and worth stating: if this write fails, that tick's
+ * counts are lost for good (those bytes will not be re-read). The alternative —
+ * writing the rollup before the offset so a failure retries — would let a
+ * persistently failing metric WEDGE transcript ingestion for the whole fleet.
+ * A metric is never allowed to damage the pipeline it measures, so it loses
+ * rather than blocks, and the caller only counts the error.
+ *
+ * Idempotent per (workspace, source, session, day, tool, verb): counts are
+ * ADDED on conflict, since each call carries only the delta this tick read.
+ */
+async function writeUsageRollup(
+  sql: Sql,
+  sourceKind: string,
+  sessionId: string,
+  usage: UsageRollup,
+): Promise<void> {
+  const rows = rollupRows(usage);
+  if (!rows.length) return;
+  const days = rows.map((r) => r.day);
+  const tools = rows.map((r) => r.toolName);
+  const verbs = rows.map((r) => r.verb ?? '');
+  const calls = rows.map((r) => r.calls);
+  const atoms = rows.map((r) => r.atoms);
+  const bytes = rows.map((r) => r.resultBytes);
+  await sql`
+    INSERT INTO harness_shared.tool_usage_rollup
+      (workspace_id, source_kind, session_id, day, tool_name, verb, calls, atoms, result_bytes)
+    SELECT 'default', ${sourceKind}, ${sessionId}, d::date, t, v, c, a, b
+      FROM UNNEST(
+        ${sql.array(days)}::text[], ${sql.array(tools)}::text[], ${sql.array(verbs)}::text[],
+        ${sql.array(calls)}::bigint[], ${sql.array(atoms)}::bigint[], ${sql.array(bytes)}::bigint[]
+      ) AS u(d, t, v, c, a, b)
+    ON CONFLICT (workspace_id, source_kind, session_id, day, tool_name, verb) DO UPDATE
+      SET calls        = harness_shared.tool_usage_rollup.calls + EXCLUDED.calls,
+          atoms        = harness_shared.tool_usage_rollup.atoms + EXCLUDED.atoms,
+          result_bytes = harness_shared.tool_usage_rollup.result_bytes + EXCLUDED.result_bytes,
+          updated_at   = now()
+  `;
 }
 
 async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
@@ -1296,8 +1390,10 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           if (meta.owner) ownerBackfill.set(meta.sessionId, meta.owner);
           if (cand.size <= st.byte_offset) continue; // nothing new
           filesThisAdapter += 1;
-          const { turns, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId } =
-            await readNewLines(cand.path, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id);
+          const { turns, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId, usage } =
+            await readNewLines(
+              cand.path, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id, adapter.usageOf,
+            );
           if (newOffset === st.byte_offset) continue;
           const rows: TurnRow[] = turns.map((t, i) => ({
             workspace_id: 'default',
@@ -1325,6 +1421,15 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             sessionId: meta.sessionId,
             mtimeMs: cand.mtimeMs,
           });
+          // P-002 — deliberately AFTER writeState and independently caught: the
+          // substitution metric must never fail, retry, or wedge an ingest.
+          try {
+            await writeUsageRollup(sql, adapter.sourceKind, meta.sessionId, usage);
+          } catch (err) {
+            if ((stats.errorSample ??= []).length < 3) {
+              stats.errorSample.push(`usage-rollup ${meta.sessionId}: ${(err as Error).message.slice(0, 160)}`);
+            }
+          }
           stats.filesIngested += 1;
           budget.turns -= turns.length;
         } catch (err) {
