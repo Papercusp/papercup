@@ -17,110 +17,18 @@
  * reads at a glance.
  */
 
-import { useSyncQuery } from '@papercusp/sync';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
-
-// ── Server DTO mirror (apps/operator/lib/adv-agent-detail.ts). Inlined, not
-//    imported, so this client component never pulls the PG-backed server module.
-interface LockHeld {
-  path: string;
-  intent: string;
-  acquiredAt: string;
-  expiresAt: string;
-}
-interface LockBlocker {
-  path: string;
-  holder: string;
-  holderLabel: string | null;
-  intent: string;
-  expiresAt: string;
-}
-interface LockWaiting {
-  ticketId: string;
-  paths: string[];
-  intent: string;
-  aheadCount: number;
-  queuedAt: string;
-  waitUntil: string;
-  blockedBy: LockBlocker[];
-}
-interface AgentLocks {
-  held: LockHeld[];
-  waiting: LockWaiting[];
-  error: string | null;
-}
-interface CoordMessageSummary {
-  msgId: string;
-  from: string;
-  to: string[];
-  kind: string;
-  summary: string;
-  ts: string;
-  direction: 'inbound' | 'outbound';
-}
-interface CoordHandoffSummary {
-  msgId: string;
-  from: string;
-  to: string[];
-  summary: string;
-  ts: string;
-  planSlug: string | null;
-  nextAction: string | null;
-  direction: 'inbound' | 'outbound';
-  accepted: boolean;
-}
-interface CoordEscalationSummary {
-  msgId: string;
-  severity: 'blocker' | 'question' | 'advisory';
-  summary: string;
-  ts: string;
-  planSlug: string | null;
-}
-interface AgentCoordState {
-  lastMessage: CoordMessageSummary | null;
-  unreadCount: number;
-  openHandoffs: CoordHandoffSummary[];
-  openEscalations: CoordEscalationSummary[];
-  error: string | null;
-}
-interface CodexHomeDiagnostics {
-  codexHome: string;
-  exists: boolean;
-  agentsPath: string;
-  agentsExists: boolean;
-  configPath: string;
-  configExists: boolean;
-  hooksPath: string;
-  hooksExists: boolean;
-  promptsPath: string;
-  promptsExists: boolean;
-  authPath: string;
-  authExists: boolean;
-  diagnosticsPath: string;
-  diagnosticsExists: boolean;
-  diagnostics: {
-    lockEnforcement?: string;
-    codexPreToolUseStatus?: string;
-    requiresExplicitPapercuspLocks?: boolean;
-    inheritedPromptsCopied?: boolean;
-  } | null;
-  latestRolloutId: string | null;
-  latestRolloutPath: string | null;
-  resumeStrategy: 'codex-resume-last-in-code-home';
-  resumeCommand: string;
-  error: string | null;
-}
-export interface AgentDetail {
-  ownerId: string;
-  locks: AgentLocks;
-  coord: AgentCoordState;
-  nativeSession: NativeSessionHandle | null;
-  codex: CodexHomeDiagnostics | null;
-}
+import { useAgentDetail } from './use-agent-detail';
+// hud-first-nav-and-dossier-2026-07-26 P-004: the DTO + the `agentDetail.byOwner`
+// fetch hook now live in use-agent-detail.ts so the chat footer's "N locks / M
+// unread" summary chip can share the SAME useSyncQuery cache entry (no new
+// query) — re-exported here for backward compat (AgentDossier.test.tsx and any
+// other existing `import { type AgentDetail } from './AgentDossier'`).
+export type { AgentDetail } from './use-agent-detail';
 
 function shortSource(s: string): string {
   const v = (s || '').toLowerCase();
@@ -137,20 +45,6 @@ function expiresIn(iso: string): string {
   if (ms <= 0) return 'expired';
   const min = Math.round(ms / 60_000);
   return min < 1 ? '<1m left' : `${min}m left`;
-}
-
-/** Lazy-load the Tier-3 dossier for one owner id through sync. */
-function useAgentDetail(ownerId: string | null): { detail: AgentDetail | null; error: string | null; loading: boolean } {
-  const query = useSyncQuery<AgentDetail>({
-    queryName: 'agentDetail.byOwner',
-    args: ownerId ? { ownerId } : undefined,
-    enabled: !!ownerId,
-  });
-  return {
-    detail: query.data?.[0] ?? null,
-    error: query.error ? String(query.error) : null,
-    loading: query.loading,
-  };
 }
 
 function MetaRow({ label, value }: { label: string; value: React.ReactNode }): React.JSX.Element | null {
@@ -355,7 +249,10 @@ export default function AgentDossier({
       ) : null}
 
       {/* ── Locks ── */}
-      <section className="pc-dossier__section">
+      {/* hud-first-nav-and-dossier-2026-07-26 P-004: id is the scroll target
+          for the footer's "⚠ N locks / M unread" summary chip (D-002's one
+          deliberate duplicate) — clicking it opens this rail + scrolls here. */}
+      <section className="pc-dossier__section" id="pc-dossier-locks">
         <h4 className="pc-dossier__h">
           Locks
           {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
@@ -392,7 +289,9 @@ export default function AgentDossier({
       </section>
 
       {/* ── Coord ── */}
-      <section className="pc-dossier__section">
+      {/* hud-first-nav-and-dossier-2026-07-26 P-004: scroll target for the
+          footer's summary chip, same rationale as #pc-dossier-locks above. */}
+      <section className="pc-dossier__section" id="pc-dossier-coord">
         <h4 className="pc-dossier__h">
           Coord
           {coord && coord.unreadCount > 0 ? (

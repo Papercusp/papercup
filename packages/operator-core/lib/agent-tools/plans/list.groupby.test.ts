@@ -19,8 +19,13 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
-  listPlanIndexRows: vi.fn(async () => [] as unknown[]),
-  listPlanIndexRowsForWorkspace: vi.fn(async () => [] as unknown[]),
+  // vitest 4 infers a vi.fn mock's Parameters from its initial implementation
+  // — a zero-arg arrow made `.mock.calls[N]` the empty tuple `[]`, so indexing
+  // `?.[0]` on a call (below) failed to typecheck (TS2493) even though the real
+  // listPlanIndexRows always takes one opts arg. An explicit unused param keeps
+  // the mock body identical while giving `.mock.calls[N][0]` a real element type.
+  listPlanIndexRows: vi.fn(async (_opts?: unknown) => [] as unknown[]),
+  listPlanIndexRowsForWorkspace: vi.fn(async (_opts?: unknown) => [] as unknown[]),
   getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
   resolveHarnessPlansDir: vi.fn(async (slug: string) => ({
     harnessSlug: slug,

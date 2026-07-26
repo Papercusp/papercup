@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest';
 import { atomize, atomHead, normalizeAtom } from './atomize';
 import { auditPair, deriveVerdict, matchingAtoms, maxTierFor, MIN_SAMPLE_SIZE } from './equivalence';
 import { ALL_PAIRS } from './pairs';
-import { catFileRead, headFileRead, sedRangeRead, tailFileRead } from './pairs/file-read';
+import { catFileRead, headFileRead, sedRangeRead, tailFileRead, FILE_READ_PAIRS } from './pairs/file-read';
 import { psqlDescribe, psqlSelectRead } from './pairs/postgres';
 import type { CorpusFixture } from './corpus';
 import type { SampledCommand } from './types';

@@ -58,7 +58,12 @@ const assessM = vi.mocked(assessForceRelease);
 const auditM = vi.mocked(recordForceReleaseAudit);
 const notifyM = vi.mocked(notifyForceRelease);
 const tool = (await import('./release')).default;
-const sendMessageM = vi.hoisted(() => vi.fn(async () => ({}) as never));
+// vitest 4 infers a vi.fn mock's Parameters from its initial implementation —
+// a zero-arg arrow made `.mock.calls[N]` the empty tuple `[]`, so indexing
+// `[1]` below (line 262) failed to typecheck (TS2493) even though the real
+// sendMessage takes multiple positional args. A rest param keeps the mock
+// body identical while giving `.mock.calls[N][i]` real element types.
+const sendMessageM = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({}) as never));
 vi.mock('../coordination/messages', () => ({ sendMessage: sendMessageM }));
 
 type Out = { data: any };

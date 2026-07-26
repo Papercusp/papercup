@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// @ts-expect-error vitest-summary.mjs is a standalone Node script without declarations.
 import { parseSummaryFailedCounts } from '../../../../scripts/lib/vitest-summary.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');

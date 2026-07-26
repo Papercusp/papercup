@@ -71,7 +71,11 @@ describe('left-rail pane coverage', () => {
     // AUTOMATION_CATEGORIES must land in the catch-all automatically, with no
     // one remembering to edit a pane. Simulating that is what makes this a
     // regression test and not a restatement of the implementation.
-    const named = new Set([...BLENDER_PANE_CATEGORIES, ...DOCS_PANE_CATEGORIES]);
+    // Explicit type param: without it, TS narrows this Set to the literal
+    // union of the two pane arrays' own element types (e.g. 'learning'|'docs')
+    // rather than the full AutomationCategory — so `named.has(c)` below, where
+    // `c: AutomationCategory`, failed to typecheck (TS2345).
+    const named = new Set<AutomationCategory>([...BLENDER_PANE_CATEGORIES, ...DOCS_PANE_CATEGORIES]);
     const expected = AUTOMATION_CATEGORIES.filter((c) => !named.has(c));
     expect([...CATCH_ALL_PANE_CATEGORIES]).toEqual([...expected]);
     // …and it must be non-empty, or the catch-all pane renders nothing at all.

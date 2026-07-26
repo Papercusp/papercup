@@ -72,6 +72,7 @@ import migrateTool, {
   lockRetryBackoffMs,
   isTransientConnectionFailure,
   connectionRetryBackoffMs,
+  isDuplicateMigrationLedgerFailure,
 } from './migrate';
 
 const CTX = { role: 'operator' } as never;
@@ -265,6 +266,80 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     expect(out.lock_timeout_retries_exhausted).toBe(true);
     expect(h.spawnSync).toHaveBeenCalledTimes(5);
     expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('db:migrate — false-failure guard on the schema_migrations ledger (WI-6002)', () => {
+  beforeEach(() => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+  });
+
+  const DUP_KEY_STDERR =
+    'ERROR:  duplicate key value violates unique constraint "schema_migrations_pkey"\n' +
+    'DETAIL:  Key (filename)=(999-fake.sql) already exists.';
+
+  it('a script failure on the schema_migrations duplicate-key guard, with the file ALREADY recorded, reports ok:true/already_applied — not a failure', async () => {
+    h.spawnSync
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: DUP_KEY_STDERR }) // the migration script attempt
+      .mockReturnValueOnce({ status: 0, stdout: '1\n', stderr: '' }); // the fresh verification SELECT
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(false);
+    expect(out.already_applied).toBe(true);
+    expect(out.note).toContain('FRESH connection');
+
+    expect(h.spawnSync).toHaveBeenCalledTimes(2);
+    const [verifyCmd, verifyArgs] = h.spawnSync.mock.calls[1];
+    expect(verifyCmd).toBe('psql');
+    expect(verifyArgs).toContain('-tAc');
+    expect(verifyArgs.join(' ')).toContain('schema_migrations');
+    expect(verifyArgs.join(' ')).toContain('999-fake.sql');
+  });
+
+  it('a script failure on the duplicate-key guard, with the file NOT actually recorded (a genuinely different collision), still reports a real failure', async () => {
+    h.spawnSync
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: DUP_KEY_STDERR })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' }); // verification finds no row
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.ok).toBe(false);
+    expect(out.applied).toBe(false);
+    expect(out.already_applied).toBeUndefined();
+  });
+
+  it('a genuine syntax/logic error never triggers the verification round-trip', async () => {
+    h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'ERROR: syntax error at or near "FOO"' });
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.ok).toBe(false);
+    expect(out.already_applied).toBeUndefined();
+    expect(h.spawnSync).toHaveBeenCalledTimes(1); // no second (verification) call
+  });
+
+  it('a verification psql invocation that itself fails is treated as unknown, not already-applied — reports the real failure', async () => {
+    h.spawnSync
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: DUP_KEY_STDERR })
+      .mockReturnValueOnce({ status: 2, stdout: '', stderr: 'psql: could not connect to server' });
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.ok).toBe(false);
+    expect(out.already_applied).toBeUndefined();
+  });
+});
+
+describe('isDuplicateMigrationLedgerFailure — pure helper (WI-6002)', () => {
+  it("matches PG's own duplicate-key error on the schema_migrations ledger, case-insensitively", () => {
+    expect(
+      isDuplicateMigrationLedgerFailure(
+        'ERROR:  duplicate key value violates unique constraint "schema_migrations_pkey"',
+      ),
+    ).toBe(true);
+    expect(isDuplicateMigrationLedgerFailure('error: violates unique constraint "SCHEMA_MIGRATIONS_PKEY"')).toBe(true);
+  });
+
+  it('does not match an unrelated failure (including a different unique-constraint violation)', () => {
+    expect(isDuplicateMigrationLedgerFailure('ERROR: syntax error at or near "FOO"')).toBe(false);
+    expect(
+      isDuplicateMigrationLedgerFailure('ERROR: duplicate key value violates unique constraint "some_other_pkey"'),
+    ).toBe(false);
+    expect(isDuplicateMigrationLedgerFailure('')).toBe(false);
   });
 });
 

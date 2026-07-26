@@ -24476,8 +24476,11 @@ body:has(.operator-panel) {
 
 /* Session status footer (gui-chat-session-controls-2026-07-25 P-007) — a
  * slim, purely-informational row under the composer form. Reuses the HUD's
- * .hud__handle/.hud__chip/.hud__plan chip look (hud.css) rather than
- * inventing a second chip style. */
+ * .hud__chip chip look (hud.css) rather than inventing a second chip style.
+ * hud-first-nav-and-dossier-2026-07-26 P-004: scoped to D-002's glance
+ * fields only (liveness, ctx %, current claim, mode chips, awaiting-gate) —
+ * identity/reference fields (handle, plan slug, intent) that duplicated the
+ * AgentDossier panel (P-003) moved there exclusively. */
 .oracle-session-footer {
   display: flex;
   flex-direction: column;
@@ -24500,11 +24503,21 @@ body:has(.operator-panel) {
   font-variant-numeric: tabular-nums;
 }
 
-.oracle-session-footer-intent {
+/* hud-first-nav-and-dossier-2026-07-26 P-004 (D-002 glance-frequency split):
+ * the footer's liveness label, next to its LivenessDot. */
+.oracle-session-footer-liveness {
   color: var(--fg-mute);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-transform: capitalize;
+}
+
+/* P-004: the "⚠ N locks / M unread" summary chip — D-002's one deliberate
+ * duplicate, reusing .hud__chip's look but as a real button (it opens +
+ * scrolls the dossier rail), so reset the button chrome the base chip class
+ * doesn't need to account for. */
+.oracle-session-footer-detail-chip {
+  cursor: pointer;
+  font: inherit;
+  appearance: none;
 }
 
 .oracle-tab-add.is-open {

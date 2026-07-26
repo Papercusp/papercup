@@ -32,6 +32,15 @@ import {
   type NativeSessionHandle,
   type ClaudeNativeSessionHandle,
 } from './native-session-handles';
+// hud-first-nav-and-dossier-2026-07-26 P-005: the six "is this agent healthy and
+// will it keep going?" signals, each sourced from an EXISTING roster/sync feed
+// (no new query per field) — see the docstring on `getAgentSignals` below.
+import { getLoopStatus } from './harness/routines/loop';
+import { readHeldWorkItems } from './carry-brief';
+import { getPresence } from './agent-tools/coordination/presence';
+import { fetchUnansweredDirected } from './agent-tools/coordination/unanswered-directed';
+import { lastToolCallAtByOwner } from './fleet/assignments';
+import { activeWorkspaceId } from './workspace-registry';
 
 // ──────────────────────────── DTOs (the endpoint JSON contract) ────────────
 // Dates are ISO strings on the wire (readQueue returns Date objects; we map).
@@ -113,12 +122,73 @@ export interface AgentCoordState {
   error: string | null;
 }
 
+/**
+ * hud-first-nav-and-dossier-2026-07-26 P-005: "is this agent healthy and will
+ * it keep going?" — six signals the dossier panel didn't surface before this,
+ * each read from an EXISTING primitive (no new query authored for any of
+ * them):
+ *   1. loop            — `getLoopStatus` (harness/routines/loop.ts), the same
+ *                         read `loop:status` and the leader-brief use.
+ *   2. currentClaim     — `readHeldWorkItems` (carry-brief.ts), the same held-
+ *                         item read the carry doc / post-compaction recovery
+ *                         fold use. The panel showed PLAN but never the
+ *                         work-item within it.
+ *   3. contextTokens/
+ *      compactionLimit  — `getPresence` (coordination/presence.ts); the HUD
+ *                         board already derives its context% bar from the
+ *                         same two fields (hud-board-model.ts `contextPct`).
+ *   4. lastCheckpoint   — the SAME `readHeldWorkItems` row's `.checkpoint` —
+ *                         the carry note a restart would resume from.
+ *   5. unansweredDirectedCount — `fetchUnansweredDirected` (unanswered-
+ *                         directed.ts), the same fold `fleet:assignments`'
+ *                         `unanswered_directed` summary counts against.
+ *   6. lastToolCallAt   — `lastToolCallAtByOwner` (fleet/assignments.ts), the
+ *                         "real work" freshness signal distinct from the
+ *                         60s-keepalive `heartbeatAt` already shown above (a
+ *                         warm-dead session can heartbeat while doing nothing).
+ */
+export interface AgentDossierLoopStatus {
+  active: boolean;
+  intervalSec: number | null;
+  nextFireAt: string | null;
+  parked: boolean;
+  stalled: boolean;
+}
+
+export interface AgentDossierClaim {
+  id: string;
+  title: string | null;
+  harness: string | null;
+}
+
+export interface AgentDossierCheckpoint {
+  text: string;
+  updatedAtMs: number | null;
+}
+
+export interface AgentSignals {
+  /** null when the agent has no engine loop routine at all (never armed). */
+  loop: AgentDossierLoopStatus | null;
+  /** The agent's most recently taken held work-item, or null if it holds none. */
+  currentClaim: AgentDossierClaim | null;
+  contextTokens: number | null;
+  compactionLimit: number | null;
+  /** null when the held claim (if any) carries no checkpoint yet. */
+  lastCheckpoint: AgentDossierCheckpoint | null;
+  /** Directed messages (never a broadcast) addressed to this agent that are
+   *  still unanswered — "how many peers are blocked on this agent". */
+  unansweredDirectedCount: number;
+  /** Last recorded tool_invocations row for this owner — null if never observed. */
+  lastToolCallAt: string | null;
+}
+
 export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
   coord: AgentCoordState;
   nativeSession: NativeSessionHandle | null;
   codex: CodexHomeDiagnostics | null;
+  signals: AgentSignals;
 }
 
 // ──────────────────────────── pure shaping ─────────────────────────────────

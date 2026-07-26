@@ -63,7 +63,12 @@ vi.mock('../../plan-item-coverage', () => ({
   coverageCollisions: vi.fn(() => []),
 }));
 
-const listFleetAssignmentsMock = vi.fn(async () => []);
+// vitest 4 infers a vi.fn mock's Parameters from its initial implementation —
+// a zero-arg arrow made spreading `...a` (below, into the mocked module's
+// wrapper) fail to typecheck (TS2556: a spread argument must have a tuple
+// type or hit a rest parameter). A rest param keeps the mock body identical
+// while accepting the wrapper's forwarded args.
+const listFleetAssignmentsMock = vi.fn(async (..._args: unknown[]) => []);
 vi.mock('../../fleet/assignments', () => ({
   listFleetAssignments: (...a: unknown[]) => listFleetAssignmentsMock(...a),
   groupByAgent: vi.fn(() => []),

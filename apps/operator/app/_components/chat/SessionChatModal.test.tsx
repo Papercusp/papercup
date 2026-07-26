@@ -376,10 +376,11 @@ describe('SessionChatModal', () => {
       };
     }
 
-    it('renders fleet/plan/context/claims/objective from the SAME roster entry the identity chip reads', async () => {
+    it('renders liveness/context/current-claim from the SAME roster entry the identity chip reads (D-002 glance fields)', async () => {
       seedRoster([
         {
           ownerId: 'su-live-1',
+          liveness: 'live',
           fleetSlug: 'gui-chat-controls',
           fleetColor: '#86efac',
           fleetRole: 'leader',
@@ -401,12 +402,17 @@ describe('SessionChatModal', () => {
       });
 
       const footer = await waitFor(() => screen.getByTestId('session-chat-footer'));
-      expect(footer.textContent).toContain('gui-chat-controls');
-      expect(footer.textContent).toContain('👑');
-      expect(footer.textContent).toContain('gui-chat-session-controls-2026-07-25');
+      // D-002 footer fields: liveness, context %, current claim (the
+      // claims-progress badge), mode chips, awaiting-gate.
+      expect(footer.textContent).toContain('live');
       expect(footer.textContent).toContain('ctx 20%');
       expect(footer.textContent).toContain('1/2');
-      expect(footer.textContent).toContain('Building the session footer');
+      // Identity/reference fields that duplicated the AgentDossier panel
+      // (P-003) moved there exclusively — the footer no longer repeats them.
+      expect(footer.textContent).not.toContain('gui-chat-controls');
+      expect(footer.textContent).not.toContain('👑');
+      expect(footer.textContent).not.toContain('gui-chat-session-controls-2026-07-25');
+      expect(footer.textContent).not.toContain('Building the session footer');
     });
 
     it('never renders the always-armed inbox-wake as a blocked-on gate (isInfrastructureAwait)', async () => {
@@ -473,6 +479,66 @@ describe('SessionChatModal', () => {
 
       await waitFor(() => expect(screen.getByText('hi')).toBeTruthy());
       expect(screen.queryByTestId('session-chat-footer')).toBeNull();
+    });
+
+    it('P-004: the "N locks / M unread" summary chip renders from agentDetail.byOwner and opens the dossier rail on click (D-002 deliberate duplicate)', async () => {
+      seedRoster([{ ownerId: 'su-live-1', liveness: 'live', modes: [], claims: [], currentFiles: [], openAwait: null }]);
+      H.results['agentDetail.byOwner'] = {
+        data: [
+          {
+            ownerId: 'su-live-1',
+            locks: { held: [{ path: 'a.ts' }], waiting: [], error: null },
+            coord: { lastMessage: null, unreadCount: 3, openHandoffs: [], openEscalations: [], error: null },
+            nativeSession: null,
+            codex: null,
+          },
+        ],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const chip = await waitFor(() => screen.getByTestId('session-chat-footer-detail-chip'));
+      expect(chip.textContent).toContain('1 lock');
+      expect(chip.textContent).toContain('3 unread');
+
+      fireEvent.click(chip);
+      expect(nuqsSetters['chatDossier']).toHaveBeenCalledWith(true);
+    });
+
+    it('omits the summary chip when there are no locks and nothing unread', async () => {
+      seedRoster([{ ownerId: 'su-live-1', liveness: 'live', modes: [], claims: [], currentFiles: [], openAwait: null }]);
+      H.results['agentDetail.byOwner'] = {
+        data: [
+          {
+            ownerId: 'su-live-1',
+            locks: { held: [], waiting: [], error: null },
+            coord: { lastMessage: null, unreadCount: 0, openHandoffs: [], openEscalations: [], error: null },
+            nativeSession: null,
+            codex: null,
+          },
+        ],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-footer')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-footer-detail-chip')).toBeNull();
     });
   });
 

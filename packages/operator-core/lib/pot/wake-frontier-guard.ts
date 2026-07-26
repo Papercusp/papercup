@@ -112,7 +112,13 @@ export async function listUnplacedPotFrontier(
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
-       AND status = 'todo'
+       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
+       -- 'todo' was rewritten to the unified claimable token 'open'. This literal was
+       -- never updated, so since that migration this guard has silently seen an EMPTY
+       -- frontier for genuinely-unplaced work — letting the Mug declare a no-time wake
+       -- exactly when this guard exists to refuse it (same root cause as survey.ts's
+       -- fetchFrontierRows, EI-18690462961089460).
+       AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
        -- EI-13695: a row carrying a surviving work-item checkpoint is RECONCILE

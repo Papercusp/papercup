@@ -268,6 +268,14 @@ describe('runReplyDeadlineSweepOnce', () => {
       h.rows = [row({ summary: 'please send the WI-3232 VM-verify report' })];
       h.sqlImpl = (strings) => {
         const text = strings.join('');
+        // EI-18689956983040659: a full sqlImpl override bypasses the default
+        // per-table dispatch entirely, so the supersede-check query (which now
+        // runs BEFORE this probe) must be handled explicitly too — otherwise it
+        // falls through to `h.rows` (the DUE row itself, which happens to share
+        // the same `msg_id`) and findSupersedingMessage misreads that as a real
+        // superseding message, short-circuiting before the alarm path this test
+        // means to exercise.
+        if (text.includes('supersede-check')) return Promise.resolve([]);
         if (text.includes('coord_thread_posts')) return Promise.reject(new Error('probe down'));
         return Promise.resolve(h.rows);
       };
@@ -282,7 +290,66 @@ describe('runReplyDeadlineSweepOnce', () => {
       h.rows = [row({ summary: 'please send the WI-3232 VM-verify report', to_ids: [] })];
       h.threadRows = [threadRow()];
       const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
-      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, truncated: false });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
+    });
+  });
+
+  // EI-18689956983040659: the sender superseded/retracted their own ask by
+  // sending a later directed message to the same recipient(s) — the deadline
+  // must auto-resolve quietly instead of alarming the sender about a question
+  // they themselves already withdrew.
+  describe('sender-side supersede (EI-18689956983040659)', () => {
+    it('auto-resolves — quiet note, no alarm, no wake — when the sender sent a LATER directed message to the same recipient', async () => {
+      h.rows = [row()];
+      h.supersedeRows = [{ msg_id: 'm2', ts_ms: String(NOW - 10 * 60_000) }];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 0, autoResolved: 0, superseded: 1, truncated: false });
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const [identity, opts] = (sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(identity.ownerId).toBe(RECONCILE_REPLY_DEADLINE_OWNER);
+      expect(opts.to).toEqual(['su-sender']); // notifies the ORIGINAL sender, not the recipient
+      expect(opts.related_msg_id).toBe('m1'); // idempotency marker still lands
+      expect(opts.summary).toContain('auto-resolved');
+      expect(opts.summary).not.toContain('no reply by deadline');
+      expect(opts.body).toContain('m2');
+
+      // the whole point: no false-alarm wake for an ask the sender already withdrew.
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it('is checked BEFORE the reply-equivalent probe — a supersede short-circuits even when thread activity ALSO exists', async () => {
+      h.rows = [row({ summary: 'please send the WI-3232 VM-verify report' })];
+      h.supersedeRows = [{ msg_id: 'm2', ts_ms: String(NOW - 10 * 60_000) }];
+      h.threadRows = [threadRow({ thread_id: 'issue-thread-WI-3232', author_id: 'su-recipient' })];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 0, autoResolved: 0, superseded: 1, truncated: false });
+    });
+
+    it('still alarms normally when no superseding message is found', async () => {
+      h.rows = [row()];
+      h.supersedeRows = [];
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
+
+    it('a supersede-probe failure fails soft to the ordinary checks (never silently swallows a genuinely-overdue deadline)', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      h.rows = [row()];
+      h.sqlImpl = (strings) => {
+        const text = strings.join('');
+        if (text.includes('supersede-check')) return Promise.reject(new Error('probe down'));
+        if (text.includes('coord_thread_posts')) return Promise.resolve([]);
+        return Promise.resolve(h.rows);
+      };
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result.nudged).toBe(1);
+      expect(result.superseded).toBe(0);
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -9,7 +9,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, CARRY_NOTES_DDL } from '../../test/_work-items-schema';
 import { listUnplacedPotFrontier } from './wake-frontier-guard';
 
 const readMigration = (f: string) =>
@@ -35,7 +35,7 @@ async function seed(
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, origin, audit_verdict)
-    VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
+    VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'open'},
             ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0,
             ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
 }
@@ -49,6 +49,12 @@ beforeAll(async () => {
   // passed (every real call). Must exist or every query in this suite errors
   // "relation does not exist" (mirrors survey.integration.test.ts's EI-8498 setup).
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  // EI-18690462961089460: listUnplacedPotFrontier's checkpoint-reconcile exclusion
+  // (EI-13695) unconditionally queries harness_shared.carry_notes; must exist or
+  // every query in this suite errors "relation does not exist" — this fixture was
+  // never updated when that exclusion landed (mirrors survey.integration.test.ts's
+  // own EI-13695 fixture note; found live fixing the sibling status-token bug).
+  await db.sql.unsafe(CARRY_NOTES_DDL);
 }, 90_000);
 
 afterAll(async () => {
@@ -56,7 +62,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.user_trust_list`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.user_trust_list, harness_shared.carry_notes`;
 });
 
 const POT = 'sb-devboard';
@@ -70,12 +76,21 @@ describe('listUnplacedPotFrontier (EI-309)', () => {
     expect(frontier).toEqual(['WI-115', 'WI-116', 'WI-117']); // oldest-first by created_ts
   });
 
-  it('EXCLUDES assigned items (taken_by set) and non-todo statuses', async () => {
+  it('EXCLUDES assigned items (taken_by set) and non-open statuses', async () => {
     await seed(POT, 'WI-taken', { takenBy: 'swarm-a' });
     await seed(POT, 'WI-validating', { status: 'validating' });
     await seed(POT, 'WI-passed', { status: 'passed' });
-    await seed(POT, 'WI-open', {}); // todo + unassigned — the only frontier item
+    await seed(POT, 'WI-open', {}); // open + unassigned — the only frontier item
     expect(await listUnplacedPotFrontier(db.sql as unknown as postgres.Sql, 'default', POT)).toEqual(['WI-open']);
+  });
+
+  it('EI-18690462961089460 (work-item-status-full-unify regression): a row genuinely sitting at the LEGACY \'todo\' token is NOT surfaced', async () => {
+    // Migration 638 (2026-07-19) rewrote feature-family status todo -> open; no writer
+    // produces 'todo' anymore. Pinning the CURRENT token here is what silently broke
+    // this guard between 07-19 and the fix — it kept matching only the retired literal.
+    await seed(POT, 'WI-LEGACY-TODO', { status: 'todo', createdTs: 1 });
+    await seed(POT, 'WI-CURRENT-OPEN', { status: 'open', createdTs: 2 });
+    expect(await listUnplacedPotFrontier(db.sql as unknown as postgres.Sql, 'default', POT)).toEqual(['WI-CURRENT-OPEN']);
   });
 
   it('is scoped to the home harness (other harnesses are not the frontier)', async () => {

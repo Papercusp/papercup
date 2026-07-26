@@ -40,6 +40,7 @@ const lesson: TransferLesson = {
   memoryId: null,
   packCandidateId: null,
   signalOrigin: 'replay',
+  potSlug: null,
   createdAt: '2026-06-12T00:00:00.000Z',
   updatedAt: '2026-06-12T00:00:00.000Z',
 };

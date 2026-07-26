@@ -104,6 +104,44 @@ export function connectionRetryBackoffMs(attempt: number): number {
   return Math.min(CONNECTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), CONNECTION_RETRY_MAX_DELAY_MS);
 }
 
+// WI-6002: a failed psql apply is NOT necessarily a failed migration. The
+// migration script wraps its DDL and the harness_shared.schema_migrations
+// ledger INSERT in ONE transaction — so the specific case where the script
+// fails on that INSERT's unique-constraint (filename already recorded) means
+// an EARLIER attempt already committed the whole thing (e.g. one whose
+// success response was lost to the exact connection-layer blip
+// isTransientConnectionFailure retries above, which triggers a full re-run
+// via withConnectionRetry — see EI-18159491440495603). Reporting `ok:false`
+// in that case is a FALSE FAILURE that invites a destructive retry of an
+// already-applied migration. Verify against the ledger itself — on a FRESH
+// psql invocation, independent of whatever connection just dropped — before
+// trusting the failed exit code as evidence the migration never landed.
+const SCHEMA_MIGRATIONS_DUP_KEY_RE = /schema_migrations_pkey/i;
+
+/** True iff `stderr` looks like the schema_migrations ledger's own
+ *  duplicate-key guard (filename already recorded) rather than a genuine
+ *  DDL/logic failure. Exported + pure for unit testing. */
+export function isDuplicateMigrationLedgerFailure(stderr: string): boolean {
+  return SCHEMA_MIGRATIONS_DUP_KEY_RE.test(stderr);
+}
+
+/** Query harness_shared.schema_migrations directly (a fresh psql
+ *  invocation — NOT the pool that may have just dropped) for whether
+ *  `filename` is already recorded as applied. Never throws: an unreadable
+ *  result (psql itself fails, e.g. box is genuinely down) returns false
+ *  rather than falsely claiming already-applied. `spawn` is injectable for
+ *  tests, matching runMigrationWithLockRetry's own pattern. */
+function checkSchemaMigrationsRecorded(
+  url: string,
+  filename: string,
+  spawn: (cmd: string, args: string[], opts: { encoding: 'utf8' }) => SpawnResult = spawnSync,
+): boolean {
+  const escaped = filename.replace(/'/g, "''");
+  const query = `SELECT 1 FROM harness_shared.schema_migrations WHERE filename = '${escaped}' LIMIT 1;`;
+  const r = spawn('psql', [url, '-tAc', query], { encoding: 'utf8' });
+  return r.status === 0 && r.stdout.trim() === '1';
+}
+
 /** Run `fn` (a guardResource(...) call), retrying ONLY on a transient
  *  connection-layer throw, up to `maxAttempts`, with backoff between
  *  attempts. A non-transient error (including a genuine SQL/logic failure)
@@ -361,6 +399,27 @@ export default defineTool({
         // see runMigrationWithLockRetry above.
         const { result: r, attempts } = await runMigrationWithLockRetry(url, script);
         if (r.status !== 0) {
+          // WI-6002: before trusting this failure, check whether it's actually
+          // the schema_migrations duplicate-key guard tripping on a migration
+          // an EARLIER attempt already committed (see the comment above
+          // checkSchemaMigrationsRecorded). Only bother with the extra psql
+          // round-trip when the stderr shape matches — a genuine syntax/logic
+          // error skips straight to the real failure report, unchanged.
+          if (isDuplicateMigrationLedgerFailure(r.stderr ?? '') && checkSchemaMigrationsRecorded(url, path.basename(args.file))) {
+            return json({
+              ok: true,
+              applied: false,
+              already_applied: true,
+              file: args.file,
+              note:
+                'psql reported a failure (schema_migrations duplicate-key guard), but harness_shared.schema_migrations ' +
+                'already records this file as applied — verified via a FRESH connection, independent of whatever ' +
+                'connection dropped on the earlier attempt. Treating this as a redundant retry, not a real failure.',
+              exit_code: r.status,
+              stderr: (r.stderr ?? '').slice(-2000),
+              attempts,
+            });
+          }
           return json({
             ok: false,
             applied: false,

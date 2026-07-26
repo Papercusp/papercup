@@ -57,7 +57,11 @@ def allow():
         json.dump({'hookSpecificOutput': {
             'hookEventName': 'PreToolUse',
             'permissionDecision': 'allow',
-            'permissionDecisionReason': 'long-foreground-exec advisory (non-blocking)',
+            # Generic on purpose: FOUR different guards now ride this channel
+            # (long-foreground-exec, background-pipe exit code, tauri --token,
+            # bash→tool substitution), so naming only the first one mislabels
+            # the other three. The specific text is in additionalContext.
+            'permissionDecisionReason': 'advisory (non-blocking)',
             'additionalContext': ADVISORY,
         }}, sys.stdout)
     sys.exit(0)

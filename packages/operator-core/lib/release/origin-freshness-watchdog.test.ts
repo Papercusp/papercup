@@ -41,7 +41,16 @@ vi.mock('../sync/pot-git/storage', () => ({
   readNamespaceRef: async () => null,
   defaultRunGit: async () => ({ code: 0, stdout: '', stderr: '' }),
 }));
-const broadcasts = vi.hoisted(() => ({ alarm: vi.fn(async () => true), resolved: vi.fn(async () => undefined) }));
+// vitest 4 infers a vi.fn mock's Parameters from its initial implementation —
+// a zero-arg arrow made `.mock.calls[N]` the empty tuple `[]`, so indexing
+// `[0]` below (the event-payload assertions) failed to typecheck (TS2493)
+// even though the real broadcast fns are always called with a payload. Rest
+// params keep the mock bodies identical while giving `.mock.calls[N][0]` a
+// real (unknown) element type for the existing `as {...}` casts to narrow.
+const broadcasts = vi.hoisted(() => ({
+  alarm: vi.fn(async (..._args: unknown[]) => true),
+  resolved: vi.fn(async (..._args: unknown[]) => undefined),
+}));
 vi.mock('../severe-event-broadcast', () => ({
   broadcastSevereEvent: broadcasts.alarm,
   broadcastSevereEventResolvedMany: broadcasts.resolved,

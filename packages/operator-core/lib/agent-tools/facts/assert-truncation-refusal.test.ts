@@ -3,20 +3,73 @@
  * clipped body UNCONDITIONALLY and only disclose the loss AFTER the write
  * (truncationField) — silently dropping the operative clause 3x, once
  * removing a discriminator rule's verdict sentence entirely. The handler now
- * REFUSES the write up front (no PG call — proven below by never seeding a
- * DB mock) whenever the body would be clipped, unless the caller explicitly
- * accepts the loss via `acceptTruncation: true`.
+ * REFUSES the write up front whenever the body would be clipped, unless the
+ * caller explicitly accepts the loss via `acceptTruncation: true`.
  *
- * These are pure handler-boundary tests: no PG is mocked or reachable, so a
- * passing "refuses" case is itself proof no write was attempted.
+ * EI-18690423801323019 — HOW THIS FILE PROVES "no write happened". It used to
+ * lean on ambient PG-unreachability: the pass-through cases asserted
+ * `.rejects.not.toThrow(/cap/)`, i.e. "the handler rejected, but for a DB
+ * reason rather than our refusal". That made the ENVIRONMENT the assertion
+ * mechanism, with two consequences:
+ *   1. false red — on a box where PG *is* reachable (this dev box), the
+ *      handler resolves instead of rejecting and `.rejects` fails outright;
+ *   2. worse, a real WRITE — the un-isolated handler wrote live rows into
+ *      harness_shared.agent_facts on every run, and facts fold VERBATIM into
+ *      every future orient as binding context.
+ * So the write path is stubbed at its ONE PG-touching call, `assertFact`, and
+ * the no-write claim is asserted POSITIVELY against that spy instead of being
+ * implied by a missing DB. `assertFact` really is the only IO in the handler:
+ * resolveAgentIdentity is pure (ctx-derived), and carryProvenanceFields
+ * short-circuits with zero IO for bodies carrying no directive shapes or
+ * [turn:…] refs (stampCarrySurfaceProvenance's early return) — as these
+ * bodies do not. The suite is therefore hermetic in BOTH environments.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentFact, AssertFactInput } from '../../agent-facts/store';
+
+const assertFactSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<AgentFact>>());
+
+vi.mock('../../agent-facts/store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../agent-facts/store')>();
+  // Spread the real module: the tool imports clampFactBody / resolveFactScopeRef /
+  // FACT_SCOPES / the key-prefix + cap constants from here too, and the refusal
+  // logic under test is built on the REAL clamp. Only the write is replaced.
+  return { ...actual, assertFact: assertFactSpy };
+});
+
 import assertTool from './assert';
-import { FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
+import { FACT_BODY_MAX_CHARS, clampFactBody } from '../../agent-facts/store';
 
 const ctx = { isSuperuser: true, uiClientId: 'su-test-truncation-refusal' } as never;
 
+/** Stand-in for the persisted row: echoes the input through the REAL clamp, so
+ *  the post-write truncation disclosure is still exercised end-to-end. */
+function fakeStoredFact(input: AssertFactInput): AgentFact {
+  return {
+    scope: input.scope,
+    scopeRef: input.scopeRef ?? null,
+    key: input.key,
+    body: clampFactBody(input.body),
+    sourceRef: input.sourceRef ?? null,
+    audienceScope: input.audienceScope ?? null,
+    sourceProvenance: input.sourceProvenance ?? null,
+    createdBy: input.createdBy,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2026-01-08T00:00:00.000Z',
+  };
+}
+
+/** Parse the tool's JSON text payload. */
+function payloadOf(result: Awaited<ReturnType<typeof assertTool.handler>>): Record<string, unknown> {
+  return JSON.parse((result as { content: { text: string }[] }).content[0].text);
+}
+
 describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)', () => {
+  beforeEach(() => {
+    assertFactSpy.mockReset();
+    assertFactSpy.mockImplementation(async (input) => fakeStoredFact(input));
+  });
+
   it('REFUSES an over-cap body with no acceptTruncation — names the overage + previews the exact dropped tail', async () => {
     const body = `${'Front-loaded operative clause. '.repeat(50)}THE VERDICT SENTENCE THAT WOULD BE LOST.`;
     expect(body.length).toBeGreaterThan(FACT_BODY_MAX_CHARS);
@@ -26,6 +79,8 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
         ctx,
       ),
     ).rejects.toThrow(/over the .*char cap|CLIPPED/i);
+    // The point of the refusal: it happens BEFORE the write. Asserted, not assumed.
+    expect(assertFactSpy).not.toHaveBeenCalled();
   });
 
   it('the refusal error names the char overage and the cap', async () => {
@@ -33,26 +88,42 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     await expect(
       assertTool.handler({ scope: 'owner', scopeRef: 'su-test', key: 'k-overage', body } as never, ctx),
     ).rejects.toThrow(new RegExp(`${FACT_BODY_MAX_CHARS}-char cap`));
+    expect(assertFactSpy).not.toHaveBeenCalled();
   });
 
   it('does NOT refuse (and reaches the write path) for a body within the cap', async () => {
-    // A within-cap body must sail past the new check straight to assertFact —
-    // which then fails on the missing PG connection, NOT on our refusal. That
-    // distinguishes "refused pre-write" from "failed for an unrelated reason".
+    // A within-cap body must sail past the refusal check straight to assertFact.
+    // Asserted at the write boundary itself — the handler resolves cleanly and
+    // the store was called ONCE with the body verbatim (nothing clipped, no
+    // truncation disclosure).
     const body = 'a short, tight conclusion well within the cap.';
-    await expect(
-      assertTool.handler({ scope: 'owner', scopeRef: 'su-test', key: 'k-short', body } as never, ctx),
-    ).rejects.not.toThrow(/over the .*char cap|CLIPPED/i);
+    const result = await assertTool.handler(
+      { scope: 'owner', scopeRef: 'su-test', key: 'k-short', body } as never,
+      ctx,
+    );
+    expect(assertFactSpy).toHaveBeenCalledTimes(1);
+    expect(assertFactSpy.mock.calls[0][0]).toMatchObject({ key: 'k-short', body });
+    const payload = payloadOf(result);
+    expect(payload.ok).toBe(true);
+    expect(payload.truncated).toBeUndefined();
   });
 
   it('acceptTruncation:true skips the refusal and reaches the write path instead', async () => {
     const body = 'y'.repeat(FACT_BODY_MAX_CHARS + 400);
-    await expect(
-      assertTool.handler(
-        { scope: 'owner', scopeRef: 'su-test', key: 'k-accept', body, acceptTruncation: true } as never,
-        ctx,
-      ),
-    ).rejects.not.toThrow(/over the .*char cap|CLIPPED/i);
+    const result = await assertTool.handler(
+      { scope: 'owner', scopeRef: 'su-test', key: 'k-accept', body, acceptTruncation: true } as never,
+      ctx,
+    );
+    // The escape hatch reaches the store with the FULL body (the store, not the
+    // tool, owns the clamp) ...
+    expect(assertFactSpy).toHaveBeenCalledTimes(1);
+    expect(assertFactSpy.mock.calls[0][0]).toMatchObject({ key: 'k-accept', body });
+    // ... and the opt-in write is still DISCLOSED as clipped — accepting the
+    // truncation must never mean silently accepting it (the EI-18685042986450096
+    // failure mode was precisely a clipped write reported as clean).
+    const payload = payloadOf(result);
+    expect(payload.ok).toBe(true);
+    expect(payload.truncated).toMatchObject({ storedChars: FACT_BODY_MAX_CHARS, droppedChars: 400 });
   });
 
   it('the acceptTruncation arg description documents the escape hatch (P-007 regression guard stays visible)', () => {

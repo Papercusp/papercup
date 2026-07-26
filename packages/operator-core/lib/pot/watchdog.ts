@@ -189,8 +189,13 @@ export async function potDemandCheck(workspaceId: string): Promise<PotDemand> {
     .catch(() => [] as string[]);
   const rows = await sql<Array<{ todo_items: number; started_plans: number }>>`
     SELECT
+      -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
+      -- 'todo' was rewritten to the unified claimable token 'open'. This literal was
+      -- never updated, so since that migration this demand check has silently
+      -- under-counted standing feature-family demand to ~0 (same root cause as
+      -- survey.ts's fetchFrontierRows, EI-18690462961089460).
       (SELECT count(*) FROM harness_shared.harness_features_consolidated
-        WHERE workspace_id = ${workspaceId} AND status = 'todo'
+        WHERE workspace_id = ${workspaceId} AND status = 'open'
         ${stopped.length > 0 ? sql`AND harness_slug != ALL(${stopped})` : sql``})::int AS todo_items,
       (SELECT count(*) FROM harness_shared.harness_plans
         WHERE workspace_id = ${workspaceId} AND op_status = 'started'

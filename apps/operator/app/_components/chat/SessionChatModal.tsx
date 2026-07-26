@@ -52,6 +52,12 @@ import FleetRoleGlyph from '../FleetRoleGlyph';
 import { LocalCardHost } from './LocalCardHost';
 import AgentDossier from '../../adv/sessions/AgentDossier';
 import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
+// hud-first-nav-and-dossier-2026-07-26 P-004: the footer's liveness dot +
+// its "N locks / M unread" summary-chip counts. Imported from the standalone
+// use-agent-detail module (not AgentDossier.tsx, which SessionChatModal.test.tsx
+// mocks wholesale) so this hook keeps working under that mock.
+import { LivenessDot } from '@/app/coord/presence-ui';
+import { useAgentDetail } from '../../adv/sessions/use-agent-detail';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 import type { ChatMessage } from './ChatConversation';
 import {
@@ -223,8 +229,28 @@ function footerChipClass(b: HudBadge): string {
  * (Lane B's P-004), not here. `objective` = the roster's declared `intent`;
  * model/effort are NOT on the roster entry and are omitted rather than
  * guessed at.
+ *
+ * hud-first-nav-and-dossier-2026-07-26 P-004 (D-002's glance-frequency
+ * split): the footer owns exactly what CHANGES while you read the
+ * conversation — liveness, context %, current claim (the claims-progress
+ * badge below), mode chips, awaiting-gate. Identity/reference fields that
+ * duplicated the AgentDossier panel verbatim (the short handle, the plan
+ * slug, the intent line — all re-shown by the panel's own header/meta rows,
+ * P-003) were REMOVED from here rather than kept in both places; they're
+ * still one click away via the dossier rail (default open) or the modal
+ * title bar. Fleet role/slug stay: the panel never showed them, so they are
+ * not a duplicate to remove.
  */
-function SessionFooter({ entry }: { entry: HudRosterEntry }) {
+function SessionFooter({
+  entry,
+  onOpenDetail,
+}: {
+  entry: HudRosterEntry;
+  /** D-002's ONE deliberate duplicate: the footer's "⚠ N locks / M unread"
+   *  chip opens (if collapsed) and scrolls the dossier rail to the named
+   *  section — "the glance stays in the reading path, the detail moves." */
+  onOpenDetail?: (section: 'locks' | 'coord') => void;
+}) {
   // A live ticking clock so context/age readings stay current without a new
   // fetch — same pattern + tick cadence as HudView.tsx's board clock.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -254,20 +280,25 @@ function SessionFooter({ entry }: { entry: HudRosterEntry }) {
       ? entry.openAwait.note?.trim() || `Waiting on ${entry.openAwait.eventKey}`
       : null;
 
+  // P-004: the SAME agentDetail.byOwner cache AgentDossier's own Locks/Coord
+  // sections read (useSyncQuery shares its cache by {queryName, args} — a
+  // second reader, not a second fetch) — just enough to size the summary
+  // chip's counts, without the full dossier DTO plumbed down as a prop.
+  const { detail } = useAgentDetail(entry.ownerId);
+  const locksCount = (detail?.locks.held.length ?? 0) + (detail?.locks.waiting.length ?? 0);
+  const unreadCount = detail?.coord.unreadCount ?? 0;
+  const detailChipLabel = [
+    locksCount > 0 ? `${locksCount} lock${locksCount === 1 ? '' : 's'}` : null,
+    unreadCount > 0 ? `${unreadCount} unread` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
     <div className="oracle-session-footer" data-testid="session-chat-footer">
       <div className="oracle-session-footer-row">
-        <span className="hud__handle">{shortHandle(entry.ownerId)}</span>
-        {entry.fleetRole === 'leader' ? <FleetRoleGlyph role="leader" className="hud__role" /> : null}
-        {entry.fleetSlug ? (
-          <span
-            className="hud__chip"
-            style={entry.fleetColor ? ({ '--hud-fleet': entry.fleetColor } as React.CSSProperties) : undefined}
-          >
-            {entry.fleetSlug}
-          </span>
-        ) : null}
-        {entry.currentPlanSlug ? <span className="hud__plan">{entry.currentPlanSlug}</span> : null}
+        <LivenessDot liveness={entry.liveness} />
+        <span className="oracle-session-footer-liveness">{entry.liveness}</span>
         {pct != null ? (
           <span
             className="oracle-session-footer-ctx"
@@ -276,10 +307,18 @@ function SessionFooter({ entry }: { entry: HudRosterEntry }) {
             ctx {pct}%
           </span>
         ) : null}
+        {detailChipLabel ? (
+          <button
+            type="button"
+            className="hud__chip hud__chip--warn oracle-session-footer-detail-chip"
+            onClick={() => onOpenDetail?.(locksCount > 0 ? 'locks' : 'coord')}
+            title="Open the agent detail panel to this section"
+            data-testid="session-chat-footer-detail-chip"
+          >
+            ⚠ {detailChipLabel}
+          </button>
+        ) : null}
       </div>
-      {entry.intent?.trim() ? (
-        <div className="oracle-session-footer-intent">{entry.intent.trim()}</div>
-      ) : null}
       {badges.length > 0 || awaitText ? (
         <div className="hud__chips">
           {awaitText ? (
@@ -308,6 +347,7 @@ function LiveSessionChat({
   onSend,
   sending,
   sendError,
+  onOpenDetail,
 }: {
   streamUrl: string;
   /** The su agent this session belongs to — resolves its roster entry for the
@@ -317,6 +357,8 @@ function LiveSessionChat({
   onSend: (text: string) => void;
   sending: boolean;
   sendError: string | null;
+  /** P-004: forwarded to SessionFooter's summary chip — see its own doc. */
+  onOpenDetail?: (section: 'locks' | 'coord') => void;
 }) {
   const { events, status, thinking } = useAgentThinkingStream('', '', '', streamUrl);
 
@@ -393,7 +435,7 @@ function LiveSessionChat({
       error={sendError}
       agentName={agentName}
       renderAvatar={renderAvatar}
-      footer={rosterEntry ? <SessionFooter entry={rosterEntry} /> : null}
+      footer={rosterEntry ? <SessionFooter entry={rosterEntry} onOpenDetail={onOpenDetail} /> : null}
       // chat-ref-pills-2026-07-26 P-008: scopes this session's WI-/EI-/F- ref
       // pills (live hydration + the popup destination) to the harness the
       // roster attributes this agent's spawned run to — the SAME roster
@@ -530,6 +572,24 @@ export default function SessionChatModal({
   const [dossierOpen, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean.withDefault(true));
   const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
 
+  // hud-first-nav-and-dossier-2026-07-26 P-004 (D-002's one deliberate
+  // duplicate): the footer's "⚠ N locks / M unread" chip opens the rail
+  // (it may be collapsed) and scrolls it to the named section — a plain DOM
+  // query rather than plumbing a ref down through AgentDossier, since the
+  // rail and the footer are siblings under this component, not parent/child.
+  const scrollToDossierSection = useCallback(
+    (section: 'locks' | 'coord') => {
+      void setDossierOpen(true);
+      // Wait a frame so a just-opened rail has mounted before we query it.
+      requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-testid="session-chat-dossier-rail"] #pc-dossier-${section}`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    },
+    [setDossierOpen],
+  );
+
   const actionCtx: ChatActionContext | null = useMemo(
     () =>
       sessionOwnerId
@@ -610,6 +670,7 @@ export default function SessionChatModal({
             onSend={handleSend}
             sending={sending}
             sendError={sendError}
+            onOpenDetail={scrollToDossierSection}
           />
         ) : null}
         {sentOk ? <div style={BANNER_STYLE}>Sent — the agent is woken if it's live.</div> : null}

@@ -11,8 +11,7 @@
  * round-trip fails open fast instead of touching a live operator.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import { createServer, type Server } from 'node:http';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -1239,9 +1238,10 @@ describe('substitution pre-filter', () => {
   // equivalence verdict — the same frozen corpus those verdicts were computed
   // from — and asserts each still reaches the operator. Add a pair without
   // adding its verb and this goes red.
+  // __tests__ → cc → hooks → scripts → operator → apps → repo root (six).
   const FIXTURE_DIR = resolve(
     dirname(fileURLToPath(import.meta.url)),
-    '../../../../../packages/operator-core/lib/bash-substitution/fixtures',
+    '../../../../../../packages/operator-core/lib/bash-substitution/fixtures',
   );
 
   it('every atom behind a recorded verdict passes the pre-filter', () => {
@@ -1266,31 +1266,57 @@ describe('substitution pre-filter', () => {
 describe('substitution verdict handling', () => {
   // A stand-in operator returning a real MCP envelope, so the hook's own
   // response parsing is exercised rather than mocked away.
-  let server: Server;
+  //
+  // It MUST run in a separate process. runGate uses spawnSync, which blocks
+  // this process's event loop for the whole hook run — an in-process server
+  // could never accept the connection, so every case would hang until the
+  // hook's 4s HTTP timeout and then fail open, and the suite would report
+  // "allow" everywhere while testing nothing. (Cost an initial round of four
+  // confusing "Unexpected end of JSON input" failures.)
+  //
+  // The desired reply is passed through a FILE the server re-reads per request,
+  // so a test can change it without restarting the child.
+  let child: ReturnType<typeof spawn>;
   let url = '';
-  let reply: Record<string, unknown> = {};
+  let replyFile = '';
+  const setReply = (r: Record<string, unknown>) =>
+    writeFileSync(replyFile, JSON.stringify({ ok: true, ...r }));
 
   beforeAll(async () => {
-    server = createServer((req, res) => {
-      req.resume();
-      req.on('end', () => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            result: { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...reply }) }] },
-          }),
-        );
+    replyFile = join(fakeHome, 'reply.json');
+    setReply({ decision: 'allow', matched: [] });
+    const serverJs = join(fakeHome, 'fake-operator.mjs');
+    writeFileSync(
+      serverJs,
+      `import { createServer } from 'node:http';
+       import { readFileSync } from 'node:fs';
+       const s = createServer((req, res) => {
+         req.resume();
+         req.on('end', () => {
+           const body = readFileSync(process.argv[2], 'utf8');
+           res.writeHead(200, { 'Content-Type': 'application/json' });
+           res.end(JSON.stringify({ jsonrpc: '2.0', id: 1,
+             result: { content: [{ type: 'text', text: body }] } }));
+         });
+       });
+       s.listen(0, '127.0.0.1', () => console.log('PORT=' + s.address().port));`,
+    );
+
+    child = spawn(process.execPath, [serverJs, replyFile], { stdio: ['ignore', 'pipe', 'ignore'] });
+    url = await new Promise<string>((ok, fail) => {
+      const t = setTimeout(() => fail(new Error('fake operator did not start')), 10_000);
+      child.stdout!.on('data', (b: Buffer) => {
+        const m = /PORT=(\d+)/.exec(String(b));
+        if (m) {
+          clearTimeout(t);
+          ok(`http://127.0.0.1:${m[1]}`);
+        }
       });
     });
-    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
-    const addr = server.address();
-    url = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
   });
 
-  afterAll(async () => {
-    await new Promise<void>((ok) => server.close(() => ok()));
+  afterAll(() => {
+    child?.kill();
   });
 
   const CAT = 'cat packages/operator-core/lib/foo.ts';
@@ -1304,7 +1330,7 @@ describe('substitution verdict handling', () => {
   const run = (command = CAT) => runGate(bashCmd(command), { PAPERCUSP_OPERATOR_URL: url });
 
   it('tier=advise rides out as a NON-BLOCKING additionalContext', () => {
-    reply = { decision: 'allow', matched: [], substitutions: [SUB], substitutionTier: 'advise' };
+    setReply({ decision: 'allow', matched: [], substitutions: [SUB], substitutionTier: 'advise' });
     const out = run();
     const hook = JSON.parse(out.stdout).hookSpecificOutput;
     expect(hook.permissionDecision).toBe('allow'); // the command still runs
@@ -1313,22 +1339,22 @@ describe('substitution verdict handling', () => {
   });
 
   it('tier=observe changes nothing the agent sees', () => {
-    reply = {
+    setReply({
       decision: 'allow',
       matched: [],
       substitutions: [{ ...SUB, tier: 'observe' }],
       substitutionTier: 'observe',
-    };
+    });
     expectAllow(run());
   });
 
   it('tier=deny blocks and names the tool to use instead', () => {
-    reply = {
+    setReply({
       decision: 'allow',
       matched: [],
       substitutions: [{ ...SUB, tier: 'deny' }],
       substitutionTier: 'deny',
-    };
+    });
     const hook = JSON.parse(run().stdout).hookSpecificOutput;
     expect(hook.permissionDecision).toBe('deny');
     expect(hook.permissionDecisionReason).toContain('capability:read');
@@ -1337,24 +1363,24 @@ describe('substitution verdict handling', () => {
   it('an in-flight RESOURCE hold outranks a substitution advisory', () => {
     // A lock collision is happening right now; tool-choice guidance is not.
     // Burying the urgent message under the educational one is the failure.
-    reply = {
+    setReply({
       decision: 'block',
       matched: [{ resource: 'dev:restart' }],
       substitutions: [SUB],
       substitutionTier: 'advise',
-    };
+    });
     const hook = JSON.parse(run().stdout).hookSpecificOutput;
     expect(hook.permissionDecision).toBe('deny');
     expect(hook.permissionDecisionReason).toContain('resource-gate');
   });
 
   it('degrades to pre-P-016 behaviour when the payload carries no substitutions', () => {
-    reply = { decision: 'allow', matched: [] };
+    setReply({ decision: 'allow', matched: [] });
     expectAllow(run());
   });
 
   it('never wedges a command on a malformed substitutions payload', () => {
-    reply = { decision: 'allow', matched: [], substitutions: 'not-an-array', substitutionTier: 'advise' };
+    setReply({ decision: 'allow', matched: [], substitutions: 'not-an-array', substitutionTier: 'advise' });
     const out = run();
     expect(out.status).toBe(0);
     if (out.stdout.trim()) {
