@@ -414,23 +414,41 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
   });
 
   it('conflict-check runs the neighbor search even when dedup is OFF (EI-2032 decouple)', async () => {
+    // EI-2032's invariant — the conflict-check must NOT be nested under the
+    // dedup flag — is unchanged and still asserted here.
+    //
+    // REFINED by memory-write-latency-2026-07-26 P-007: the search now also
+    // requires a USABLE judge. This test previously ran with no credential and
+    // asserted the search happened anyway ("the uncredentialed judge degrades"),
+    // which is exactly the waste that fix removed: on the live operator, which
+    // has no ANTHROPIC_API_KEY, that search was 85-95% of the write path and
+    // fed a judge that could only ever return an empty report. So the judge is
+    // credentialed here, isolating the decouple from the capability gate.
+    // The no-judge case is covered in remember-neighbour-search-guard.test.ts.
     delete process.env.PAPERCUSP_MEMORY_DEDUP;          // dedup off → no similar_exists rejection
     delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK; // conflict-check default ON
+    const priorKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
     const b = fakeBackend([
       { id: 'mem-rel', text: 'a related fact', score: 0.5 },
     ]);
     useBackend(b);
 
-    const res = await remember.handler(
-      { content: 'a brand new fact', kind: 'feedback' },
-      fakeCtx,
-    );
-    // The neighbor search MUST run for the conflict-check even with dedup off
-    // (the exact bug this decouple fixes — previously it was nested under dedup).
-    expect(b.search).toHaveBeenCalledTimes(1);
-    // dedup off → no rejection; the uncredentialed judge degrades → write succeeds.
-    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
-    process.env.PAPERCUSP_MEMORY_DEDUP = 'on'; // restore for following tests
+    try {
+      const res = await remember.handler(
+        { content: 'a brand new fact', kind: 'feedback' },
+        fakeCtx,
+      );
+      // The neighbor search MUST run for the conflict-check even with dedup off
+      // (the exact bug this decouple fixes — previously it was nested under dedup).
+      expect(b.search).toHaveBeenCalledTimes(1);
+      // dedup off → no rejection; the judge finds no conflict → write succeeds.
+      expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
+    } finally {
+      if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = priorKey;
+      process.env.PAPERCUSP_MEMORY_DEDUP = 'on'; // restore for following tests
+    }
   });
 });
 

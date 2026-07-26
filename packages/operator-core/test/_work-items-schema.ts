@@ -108,6 +108,16 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     -- legacy-spelled terminal and the reopen-clear nulls it — a fixture missing it made
     -- that whole UPDATE throw (silently swallowed), leaving terminal_owner uncleared.
     terminal_reason text,
+    -- agent-protocol-authority-semantics-2026-07-26 P-003 (migration 677): the AUTHORITY
+    -- axis — how trustworthy a terminal claim is, orthogonal to lifecycle status.
+    -- (No backticks anywhere in this file: the whole DDL is one TS template literal,
+    -- so a backtick in a SQL comment silently ends the string and breaks the parse.)
+    -- proposed|validated|committed|pending_human|invalid; NULL on a terminal row means a
+    -- legacy pre-authority close (D-005/D-008). Live carries a CHECK constraint on the
+    -- value set; it is omitted here for the same reason the other CHECKs are — fixtures
+    -- insert deliberately-odd rows, and the enum is asserted against the migration by
+    -- work-item-authority.test.ts rather than by this fixture.
+    authority text,
     last_released_by text,
     last_released_at timestamptz,
     _search tsvector GENERATED ALWAYS AS (
@@ -166,7 +176,13 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- EI-10421 (migration 588): expose feature_order so issue-family items'
       -- Queen-steered priority round-trips through work_items:get/list instead of
       -- being silently hardcoded null on read even after a successful write.
-      feature_order
+      feature_order,
+      -- agent-protocol-authority-semantics-2026-07-26 P-003 (migration 677). The
+      -- feature-family view above is SELECT * and picks the column up for free; this
+      -- one is an explicit list, so it has to be named here or every integration test
+      -- reading authority through the issue family would see "column does not exist"
+      -- while live works fine.
+      authority
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;

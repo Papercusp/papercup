@@ -1,0 +1,246 @@
+/**
+ * WI-6149 / P-013 (D-010 item 4) — the supervision registry's UNIT-COVERAGE
+ * invariants, and the `episodic` behaviour that makes them enforceable.
+ *
+ * Item 4 asked which non-papercusp units agents probe should become probes. The
+ * answer was ONE addition (`oddsmith-sidecar`) and four documented exclusions,
+ * and the measurement that produced it exposed a live defect: the registry had
+ * no concept of a TIMER-DRIVEN unit, so a healthy hourly oneshot
+ * (`papercup-live-federation-gate`) was reported through `dev:service_health` as
+ * `active: false` — which that tool's own description sold as "the unit is
+ * confirmed DOWN". Verified live 2026-07-26 before the fix.
+ *
+ * These tests exist because the fix is only half of the work: the reason the
+ * defect survived is that NOTHING asserted the registry's shape. Comments in
+ * `service-health.ts` state the invariants; this file is what makes them fail.
+ *
+ * Deliberately separate from `service-health.test.ts`, which covers the PROBE
+ * mechanics (timeouts, debounce, diffing). This file covers the REGISTRY: who is
+ * in it, who is deliberately not, and what "down" means per entry.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  HEALTH_ENDPOINTS,
+  SUPERVISED_PROCESSES,
+  NON_PROBED_UNITS,
+  DOWN_CONFIRM_TICKS,
+  ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,
+  applyDownConfirmDebounce,
+  type ProbeResult,
+} from './service-health';
+import { isUnitDown, isActiveStateDown, type SystemctlUnitStatus } from './supervision/unit-reconciler';
+import { overlaySystemdRestartRecency } from './agent-tools/dev/service_health';
+import type { ServiceStartInfo } from './agent-tools/dev/systemd-service-probe';
+
+const unitStatus = (active: string): SystemctlUnitStatus => ({
+  unit: 'x.service',
+  load: 'loaded',
+  active,
+  sub: 'x',
+  description: 'x',
+});
+
+describe('SupervisionEntry.episodic — what "down" means for a timer-driven unit (WI-6149)', () => {
+  it('an episodic unit is NOT down while inactive — only when it FAILED', () => {
+    // The whole defect in one assertion. A `Type=oneshot` on an hourly timer is
+    // `inactive` for ~96% of every hour; calling that down is what produced the
+    // false "confirmed DOWN" reading, and (once the reconciler is armed) would
+    // produce ~48 coord broadcasts/day for one healthy unit.
+    expect(isUnitDown(unitStatus('inactive'), { episodic: true })).toBe(false);
+    expect(isUnitDown(unitStatus('failed'), { episodic: true })).toBe(true);
+    // A run in flight is not a fault either.
+    expect(isUnitDown(unitStatus('activating'), { episodic: true })).toBe(false);
+    expect(isUnitDown(unitStatus('active'), { episodic: true })).toBe(false);
+  });
+
+  it('a PERSISTENT unit keeps the original semantics — inactive IS down', () => {
+    // The episodic option must not quietly relax the default. If this ever
+    // inverts, every real outage stops alarming.
+    expect(isUnitDown(unitStatus('inactive'))).toBe(true);
+    expect(isUnitDown(unitStatus('failed'))).toBe(true);
+    expect(isUnitDown(unitStatus('active'))).toBe(false);
+    expect(isUnitDown(unitStatus('activating'))).toBe(false);
+  });
+
+  it('isActiveStateDown is the SAME oracle, reachable from a bare ActiveState string', () => {
+    // dev:service_health holds an ActiveState string, not a parsed list-units row.
+    // Before WI-6149 it applied its own `=== "active"` rule and therefore
+    // DISAGREED with the reconciler about `activating`. One oracle, two doors.
+    for (const state of ['active', 'activating', 'reloading', 'deactivating', 'inactive', 'failed']) {
+      expect(isActiveStateDown(state), `state=${state}`).toBe(isUnitDown(unitStatus(state)));
+      expect(isActiveStateDown(state, { episodic: true }), `episodic state=${state}`).toBe(
+        isUnitDown(unitStatus(state), { episodic: true }),
+      );
+    }
+  });
+
+  it('an unreadable ActiveState is UNKNOWN, never a determinate down', () => {
+    expect(isActiveStateDown(undefined)).toBeUndefined();
+  });
+
+  it('INVARIANT: every episodic registry entry has autoRestart:false', () => {
+    // Auto-restarting a oneshot does not heal it — it RE-RUNS the job once per
+    // reconciler tick until the give-up threshold escalates. For a backup unit
+    // that means re-running pg_dump every 60s.
+    const violations = SUPERVISED_PROCESSES.filter((e) => e.episodic && e.autoRestart).map((e) => e.name);
+    expect(
+      violations,
+      `An episodic (timer-driven oneshot) entry must never be auto-restarted — a restart re-RUNS the job rather ` +
+        `than healing anything:\n  - ${violations.join('\n  - ')}`,
+    ).toEqual([]);
+  });
+
+  it('live-federation-gate is marked episodic, and its .timer is NOT', () => {
+    // The specific unit the defect was found on, asserted by name so the
+    // regression cannot return silently. The distinction is real: the SERVICE is
+    // a oneshot; an armed TIMER is genuinely active/waiting continuously, so
+    // persistent semantics are correct for it.
+    const svc = SUPERVISED_PROCESSES.find((e) => e.name === 'live-federation-gate');
+    const timer = SUPERVISED_PROCESSES.find((e) => e.name === 'live-federation-gate-timer');
+    expect(svc?.episodic, 'papercup-live-federation-gate is a Type=oneshot unit on an hourly timer').toBe(true);
+    expect(timer?.episodic, 'an ARMED timer is continuously active — marking it episodic would mask a stopped timer').toBeFalsy();
+  });
+});
+
+describe('dev:service_health supervision overlay reports the honest state (WI-6149)', () => {
+  const entry = (name: string) => ({
+    name,
+    layer: 'systemd-user' as const,
+    autoRestart: false,
+    criticality: 'important' as const,
+    consecutiveProbeFailures: 0,
+    lastRestartAt: null,
+    restartsLast10m: 0,
+    flapState: 'ok' as const,
+  });
+  const probeReturning = (activeState: string, secondsSinceStart?: number) => async (): Promise<ServiceStartInfo> => ({
+    ok: true,
+    activeState,
+    ...(secondsSinceStart === undefined ? {} : { mainPid: 123, secondsSinceStart }),
+  });
+
+  it('an idle EPISODIC unit reads healthy — the exact live misreport this fixes', () => {
+    // Pre-fix, this returned { active: false } and nothing else, which the tool
+    // description defined as "confirmed DOWN".
+    return overlaySystemdRestartRecency(
+      [entry('gate')],
+      probeReturning('inactive'),
+      [{ name: 'gate', unit: 'papercup-live-federation-gate', episodic: true }],
+    ).then(([row]) => {
+      expect(row.activeState).toBe('inactive');
+      expect(row.active).toBe(false); // the RAW systemd read is still reported honestly
+      expect(row.healthy, 'an idle timer-driven unit is not down').toBe(true);
+      expect(row.episodic).toBe(true);
+    });
+  });
+
+  it('a FAILED episodic unit reads unhealthy — damping must not hide a real failure', () => {
+    return overlaySystemdRestartRecency(
+      [entry('gate')],
+      probeReturning('failed'),
+      [{ name: 'gate', unit: 'papercup-live-federation-gate', episodic: true }],
+    ).then(([row]) => {
+      expect(row.activeState).toBe('failed');
+      expect(row.healthy).toBe(false);
+    });
+  });
+
+  it('a PERSISTENT unit that is inactive reads unhealthy', () => {
+    return overlaySystemdRestartRecency(
+      [entry('sidecar')],
+      probeReturning('inactive'),
+      [{ name: 'sidecar', unit: 'papercup-oddsmith-sidecar' }],
+    ).then(([row]) => {
+      expect(row.healthy).toBe(false);
+      expect(row.episodic).toBeUndefined();
+    });
+  });
+
+  it('a unit MID-RESTART reads unhealthy=false→healthy, not down (the activating disagreement)', () => {
+    // `activating` is explicitly not-down per isUnitDown, but the overlay used to
+    // report active:false for it with no way to tell it from a crash — so a
+    // caller could not distinguish "retry in a second" from "page someone".
+    return overlaySystemdRestartRecency(
+      [entry('operator')],
+      probeReturning('activating'),
+      [{ name: 'operator', unit: 'papercup-dev-api' }],
+    ).then(([row]) => {
+      expect(row.activeState).toBe('activating');
+      expect(row.active).toBe(false);
+      expect(row.healthy, 'a transitional state is not a fault').toBe(true);
+    });
+  });
+
+  it('a probe that could not determine anything leaves the row untouched (no invented verdict)', () => {
+    return overlaySystemdRestartRecency(
+      [entry('operator')],
+      async () => ({ ok: false }) as ServiceStartInfo,
+      [{ name: 'operator', unit: 'papercup-dev-api' }],
+    ).then(([row]) => {
+      expect(row.activeState).toBeUndefined();
+      expect(row.active).toBeUndefined();
+      expect(row.healthy).toBeUndefined();
+    });
+  });
+});
+
+describe('unit-coverage decisions (WI-6149 D-010 item 4)', () => {
+  it('oddsmith-sidecar has BOTH a probe and a supervision row, joined by name', () => {
+    // service-health.ts's naming convention: the probe name matches its
+    // SUPERVISED_PROCESSES entry so the two rows join. A mismatch silently
+    // produces an unjoined pair of half-answers.
+    const probe = HEALTH_ENDPOINTS.find((s) => s.name === 'oddsmith-sidecar');
+    const row = SUPERVISED_PROCESSES.find((e) => e.name === 'oddsmith-sidecar');
+    expect(probe?.url, 'ODDSMITH_HONO_PORT=46229 is pinned in the unit file').toBe('http://127.0.0.1:46229/health');
+    expect(row?.unit).toBe('papercup-oddsmith-sidecar');
+    // Already Restart=always at the systemd level, so a registry restart lever
+    // would be a SECOND restarter racing systemd's own (the bg-host precedent).
+    expect(row?.autoRestart).toBe(false);
+  });
+
+  it('every DOWN_CONFIRM_TICKS key names a probe the tool can actually emit', () => {
+    // Damping is keyed by ProbeResult.name. A typo'd key is not an error — it is
+    // silently NO damping, i.e. exactly the phantom-DOWN flood the entry was
+    // added to prevent, with a green test suite.
+    const portless = new Set(['desktop', 'bg-host-ticker', 'bg-host-code', 'substrate-sidecar', 'embed-sidecar']);
+    const emittable = new Set([...HEALTH_ENDPOINTS.map((s) => s.name), ...portless]);
+    const orphans = Object.keys(DOWN_CONFIRM_TICKS).filter((name) => !emittable.has(name));
+    expect(
+      orphans,
+      `These names are damped but no probe emits them, so the damping is a silent no-op:\n  - ${orphans.join('\n  - ')}`,
+    ).toEqual([]);
+  });
+
+  it('two ticks of damping actually suppress a single-tick blip and then expose a real down', () => {
+    // The behavioural claim behind ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS: a restart
+    // window (≤2s measured) cannot span two ticks 60s apart, but a genuinely dead
+    // sidecar stays down and must still alarm one tick later.
+    const down: ProbeResult[] = [{ name: 'oddsmith-sidecar', up: false, status: null, latencyMs: 1 }];
+    const first = applyDownConfirmDebounce(down, {});
+    expect(first.results[0].up, 'first bad tick is not yet a confirmed down').toBe(true);
+    const second = applyDownConfirmDebounce(down, first.nextStreaks);
+    expect(second.results[0].up, 'second consecutive bad tick IS the real down').toBe(false);
+    expect(ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS).toBe(2);
+  });
+
+  it('every documented exclusion is honoured — not probed, not registered', () => {
+    const probed = new Set(HEALTH_ENDPOINTS.map((s) => s.name));
+    const units = new Set(SUPERVISED_PROCESSES.map((e) => e.unit).filter((u): u is string => Boolean(u)));
+    const contradictions = Object.keys(NON_PROBED_UNITS).filter(
+      (u) => probed.has(u) || units.has(u) || units.has(`${u}.service`),
+    );
+    expect(
+      contradictions,
+      `NON_PROBED_UNITS documents why these are excluded, but they are probed/registered anyway:\n  - ${contradictions.join('\n  - ')}`,
+    ).toEqual([]);
+  });
+
+  it('each exclusion records a structural reason, not a preference', () => {
+    // The four reasons are the load-bearing part of item 4's answer: they are why
+    // a future agent must not "just add a probe". A new exclusion code means a new
+    // structural category, which deserves the same measurement — so the set is
+    // pinned rather than open.
+    const codes = [...new Set(Object.values(NON_PROBED_UNITS).map((v) => v.reason))].sort();
+    expect(codes).toEqual(['episodic-oneshot', 'system-scope-unit', 'transient-unit-name', 'unit-not-installed']);
+  });
+});

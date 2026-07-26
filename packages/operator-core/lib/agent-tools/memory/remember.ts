@@ -26,7 +26,11 @@ import { anchorMetadata } from '../../memory/anchors';
 import { expandRefsForEmbed } from '../../memory/ref-expand';
 import { getWorkItem } from '../../work-items';
 import { checkConflicts, conflictCheckEnabled } from '../../memory/conflict-check';
-import { createAnthropicJudge } from '../../memory/anthropic-judge';
+import {
+  createAnthropicJudge,
+  conflictJudgeAvailable,
+  warnConflictJudgeUnavailableOnce,
+} from '../../memory/anthropic-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
 import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
 import { isMemoryPaused, MEMORY_PAUSED_REFUSAL } from '../../memory/memory-pause';
@@ -95,6 +99,46 @@ function dedupThreshold(): number {
   return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.9;
 }
 const DEDUP_TOP_K = 3;
+
+/**
+ * Cap on the TEXT used as the neighbour-search QUERY (P-008).
+ *
+ * The neighbour lookup used to pass the ENTIRE memory body as its query, which
+ * meant the query vector — and therefore the write's latency — scaled with body
+ * length. Measured 2026-07-26 (bench/write-latency-trace-cli.ts, live backend,
+ * medians of 4): 982ms at 250 chars, 2,225ms at 1,200, 3,222ms at 3,000, against
+ * a real-world body p50 of 1,189 chars and p95 of 2,553 (327 live writes/30d).
+ *
+ * This bound is the RECURRENCE GUARD for that cost class. The capability gate
+ * below (skip the search when nothing can consume it) is not sufficient on its
+ * own: the moment anyone sets ANTHROPIC_API_KEY the search comes back, and with
+ * a real judge call on top of it. Bounding the query means enabling conflict-
+ * check costs a bounded search, not a body-proportional one.
+ *
+ * Safe because the backend only RETRIEVES candidates here — it does not decide
+ * anything. The dedup JUDGEMENT is made on the FULL text via `lexicalSimilarity`
+ * (EI-10544: a fused RRF score is ordinal and cannot make that call), and the
+ * conflict judge receives the full `newText` regardless. So the only effect is
+ * on which neighbours get retrieved: a long body's opening ~512 chars carry the
+ * subject it is about, and a near-duplicate of a long fact overwhelmingly shares
+ * that opening. The trade is slightly weaker retrieval on the tail of very long
+ * bodies, in exchange for removing the dominant term of the write path.
+ *
+ * Env-tunable, evaluated at call time so tests/ops can flip it without a module
+ * reset; <= 0 restores the old unbounded behaviour.
+ */
+function neighbourQueryMaxChars(): number {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_NEIGHBOUR_QUERY_CHARS);
+  return Number.isFinite(raw) ? raw : 512;
+}
+
+/** The bounded text handed to `backend.search` as the neighbour query. Exported
+ *  for the P-009 recurrence test, which asserts a long body is NOT passed whole. */
+export function neighbourSearchQuery(content: string): string {
+  const max = neighbourQueryMaxChars();
+  if (max <= 0 || content.length <= max) return content;
+  return content.slice(0, max);
+}
 
 // EI-2032: memory↔agent-insights boundary nudge. Memory is for SHORT facts
 // recalled semantically EVERY turn; long-form runbooks belong in agent-insights
@@ -354,13 +398,29 @@ export default defineTool({
     // existing one. Decoupled here: dedup-rejection stays gated on dedupEnabled()
     // (it is false-positive-prone, hence opt-in), but the conflict-check runs
     // independently whenever it is enabled.
-    if (!args.force && (dedupEnabled() || conflictCheckEnabled())) {
+    // P-007: only pay for the neighbour search if something can actually CONSUME
+    // it. Dedup consumes it when opt-in is on; the conflict-check consumes it only
+    // when a REAL judge can be built — a keyless `createAnthropicJudge()` returns
+    // an instant no-op, so gating on `conflictCheckEnabled()` alone bought a full
+    // semantic search (85-95% of this handler's cost) to feed nothing at all.
+    // Measured before/after in plan memory-write-latency-2026-07-26 (D-001/D-002).
+    const dedupWanted = !args.force && dedupEnabled();
+    const conflictWanted = !args.force && conflictCheckEnabled();
+    const judgeAvailable = conflictJudgeAvailable();
+    // Configured ON but inert — say so ONCE. That silence is what let a default-ON
+    // contradiction guard sit dead in this operator (EI-18746586784230719).
+    if (conflictWanted && !judgeAvailable) warnConflictJudgeUnavailableOnce();
+    const conflictUsable = conflictWanted && judgeAvailable;
+
+    if (dedupWanted || conflictUsable) {
       try {
         // B1: bounded — a search hang must not block the write. On timeout this
         // throws into the surrounding catch, which proceeds with the write
         // (degraded dedup/conflict), exactly as a search error already does.
+        // P-008: the QUERY is length-capped (see neighbourSearchQuery) so this
+        // stays bounded instead of scaling with the body.
         const neighbors = await withMemoryToolTimeout(
-          backend.search(args.content, {
+          backend.search(neighbourSearchQuery(args.content), {
             scope: scopeKey,
             limit: DEDUP_TOP_K,
           }),
@@ -374,7 +434,7 @@ export default defineTool({
         // neighbors[0]: memory decay (recency ranking bias, mem0-backend.ts)
         // re-orders search results by freshness, so the first row is not
         // necessarily the closest one.
-        if (dedupEnabled()) {
+        if (dedupWanted) {
           let top: (typeof neighbors)[number] | undefined;
           let best = -Infinity;
           for (const n of neighbors) {
@@ -410,7 +470,10 @@ export default defineTool({
         // Catches a new fact that directly CONTRADICTS a near neighbor (Haiku
         // judges) even when dedup similarity did not trip — runs independently of
         // the dedup flag now. Bypassable via force=true.
-        if (neighbors.length > 0) {
+        // `conflictUsable` (not just `conflictCheckEnabled()`) — with no real
+        // judge this call could only ever return an empty report, and we no
+        // longer even have neighbours to hand it in that case.
+        if (conflictUsable && neighbors.length > 0) {
           const conflict = await checkConflicts({
             newText: args.content,
             neighbors: neighbors.map((n) => ({ id: n.id, text: n.text, score: n.score })),

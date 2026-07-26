@@ -75,7 +75,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
-import { type TransportResult, fetchOverDuplex } from './fetch-transport';
+import { DEFAULT_FETCH_TIMEOUT_MS, type TransportResult, fetchOverDuplex } from './fetch-transport';
 import {
   type RunGit,
   defaultRunGit,
@@ -106,6 +106,27 @@ const DEEPEN_CONFIG_KEY = 'papercusp.bootstrapDeepen';
 export const MIN_DEEPEN_COMMITS = 16;
 export const INITIAL_DEEPEN_COMMITS = 64;
 export const MAX_DEEPEN_COMMITS = 8192;
+
+/**
+ * The rung-size control law targets WALL TIME, not commit count — because the
+ * constraint that actually matters is "this rung must finish inside a channel
+ * window", and commits are a terrible proxy for bytes. Measured against the
+ * real papercusp store (11 612 commits, 2.5 GB), plain doubling produces:
+ *
+ *     deepen=64  → +66 MB / 7.4 s      deepen=512  → +132 MB / 21.1 s
+ *     deepen=128 → +77 MB / 10.4 s     deepen=1024 → +512 MB and climbing
+ *     deepen=256 → +42 MB / 6.6 s
+ *
+ * i.e. commit density varies ~4x between adjacent rungs (this repo's history
+ * has a band of huge committed build artifacts), so a fixed commit ladder
+ * overshoots badly exactly where the bytes are. Steering on elapsed time keeps
+ * every rung inside the window regardless of what the history holds.
+ *
+ * Target is a FRACTION of the fetch ceiling: comfortably done before the
+ * ceiling, with room for the link to be slower than the last rung suggested.
+ */
+const DEEPEN_TARGET_FRACTION = 0.25;
+const DEEPEN_GROW_BELOW_FRACTION = 0.5; // grow only when well inside target
 /** Default cap on rungs climbed per call, so one tick can make real headway
  *  without pinning the git-sync routine open indefinitely. */
 const DEFAULT_MAX_STEPS = 12;
@@ -348,6 +369,7 @@ export async function bootstrapFromPeer(
     }
 
     const before = await readShallowBoundary(localRepoPath);
+    const rungStartedAt = Date.now();
     res = await fetchOverDuplex(localRepoPath, stream, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
       timeoutMs: opts.timeoutMs,
       noTags: true,
@@ -368,8 +390,24 @@ export async function bootstrapFromPeer(
     progressed = true;
     if (phase === 'deepen') {
       const after = await readShallowBoundary(localRepoPath);
-      if (after === before) forceUnshallow = true; // stuck — escalate
-      else deepenNext = await writeDeepenStep(localRepoPath, runGit, deepenNext * 2);
+      if (after === before) {
+        forceUnshallow = true; // deepen can't make headway — escalate
+      } else {
+        // Steer on how long the rung actually took (see the control-law note
+        // above): grow only when it finished well inside the target, shrink
+        // when it ran over, otherwise hold. A rung that lands but takes most
+        // of the window is already at the link's limit — doubling it there is
+        // how the ladder overshoots into a rung that can never complete.
+        const elapsed = Date.now() - rungStartedAt;
+        const target = (opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS) * DEEPEN_TARGET_FRACTION;
+        const scaled =
+          elapsed < target * DEEPEN_GROW_BELOW_FRACTION
+            ? deepenNext * 2
+            : elapsed > target
+              ? Math.floor(deepenNext / 2)
+              : deepenNext;
+        deepenNext = await writeDeepenStep(localRepoPath, runGit, scaled);
+      }
     } else if (phase === 'unshallow') {
       forceUnshallow = false;
     }

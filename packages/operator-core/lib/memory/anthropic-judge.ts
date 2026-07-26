@@ -26,6 +26,59 @@ const MAX_TOKENS = 256;
 const TIMEOUT_MS = 5_000;
 
 /**
+ * Can a REAL judge be built, or would `createAnthropicJudge()` hand back the
+ * no-op branch? Cheap and synchronous BY DESIGN: it only asks whether a key
+ * resolves, and deliberately does NOT construct an Anthropic client — callers
+ * use it to decide whether the expensive work that FEEDS the judge is worth
+ * doing at all, so it must be far cheaper than that work.
+ *
+ * Why this exists (memory-write-latency-2026-07-26 P-007, EI-18746586784230719):
+ * `remember.ts` ran a full semantic neighbour search on EVERY write purely to
+ * feed the conflict judge — but this operator has no ANTHROPIC_API_KEY, so the
+ * judge was the instant no-op and the search fed nothing. Measured: that search
+ * was 85-95% of the write path (982ms at a 250-char body, 3,222ms at 3,000).
+ * The no-op branch is still the right behaviour for a keyless judge; what was
+ * wrong was that nothing could ASK about it before paying to feed it.
+ */
+export function conflictJudgeAvailable(opts?: { apiKey?: string }): boolean {
+  return Boolean((opts?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '').trim());
+}
+
+let _warnedJudgeUnavailable = false;
+
+/**
+ * One-time, leading-edge warning for the state where conflict-check is ENABLED
+ * but no judge can be built — i.e. the feature is configured on and silently
+ * doing nothing.
+ *
+ * The silence WAS the bug: a default-ON contradiction guard sat inert in this
+ * operator indefinitely because a keyless judge returns `{conflicts: []}`, which
+ * is byte-identical to a healthy "no conflicts found". Nothing logged, nothing
+ * surfaced. Leading-edge only, so a long-running operator logs one line rather
+ * than one per write. (The broader detector gap — the feature being classified
+ * as ops config instead of a FLAGS capability — is filed as EI-18747066020546067.)
+ */
+export function warnConflictJudgeUnavailableOnce(): void {
+  if (_warnedJudgeUnavailable) return;
+  _warnedJudgeUnavailable = true;
+  // NODE_ENV guard mirrors op-deadline.ts / injection.ts — the repo's
+  // fail-on-console treats a console.warn under vitest as a test failure.
+  if (process.env.NODE_ENV === 'test') return;
+  console.warn(
+    '[memory] conflict-check is ENABLED (PAPERCUSP_MEMORY_CONFLICT_CHECK) but no ANTHROPIC_API_KEY ' +
+      'resolves in this process, so the judge is a no-op and no contradiction can ever be detected. ' +
+      'The neighbour search that feeds it is being SKIPPED rather than paid for. ' +
+      'Set a key (gateway-routed) to enable it for real, or set PAPERCUSP_MEMORY_CONFLICT_CHECK=off ' +
+      'to make the intent explicit.',
+  );
+}
+
+/** Test-only: reset the one-time warn latch. */
+export function resetConflictJudgeWarnForTest(): void {
+  _warnedJudgeUnavailable = false;
+}
+
+/**
  * Build the Anthropic-backed judge. Returns a no-op judge when no
  * API key is present (caller still calls it; it just returns empty
  * conflicts).

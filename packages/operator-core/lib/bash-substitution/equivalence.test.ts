@@ -347,21 +347,52 @@ describe('service pattern boundaries', () => {
     });
 
     /**
-     * The finding, as an assertion. Being in `SUPERVISED_PROCESSES` is NOT the
-     * same as being answerable: a supervision row carries flap/restart counters
-     * and no up-or-down field, and a stopped unit is indistinguishable from a
-     * failed probe (both leave `secondsSinceStart` undefined). The two failure
-     * reasons stay distinct because the remedy differs — these need a PROBE
-     * (P-013), the others need registration first.
+     * ⚠ INVERTED DELIBERATELY by WI-6149 (D-010 item 4) — read this before
+     * "fixing" it back.
+     *
+     * What stood here asserted that a supervised-but-unprobed unit is NOT
+     * covered, "because a supervision row carries flap/restart counters and no
+     * up-or-down field, and a stopped unit is indistinguishable from a failed
+     * probe". That sentence described the tool as it was BEFORE D-010 item 2:
+     * `activeState` (systemd verbatim) + `healthy` (the reconciler's own oracle)
+     * are now on every systemd-user supervision row, and a probe failure is
+     * distinguishable — it omits the fields entirely.
+     *
+     * `systemctl is-active <unit>` asks systemd for `ActiveState`. The tool
+     * returns that same string. That is a faithful answer, so it counts. The
+     * REMAINING gap for these units — nothing confirms they are actually
+     * SERVING — is a different question, owned by `curlHealthProbe`, and folding
+     * it in here would enforce an advisory against a question the agent did not
+     * ask (the same reasoning that keeps `systemctl status` out of this pair).
+     *
+     * This is the second time this pair carried a failure reason that had gone
+     * stale under it; `pairs/service-model-drift.test.ts` is the guard for that
+     * class.
      */
-    it('does not cover a supervised-but-unprobed unit, and says why', () => {
-      // WI-6146 gave `papercup-staging-api` a real probe, so it is no longer an
-      // example of this class — see the covered-case assertion below. The
-      // inference gateway still is: supervised, never probed.
+    it('DOES cover a supervised-but-unprobed unit via supervision[].activeState', () => {
       const result = systemctlIsActive.cover('systemctl --user is-active papercup-inference-gateway.service');
-      expect(result.covered).toBe(false);
-      expect(result.reason).toContain('SUPERVISED_PROCESSES');
-      expect(result.reason).toContain('no up/down field');
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('inference-gateway');
+      expect(result.expression).toContain('activeState');
+    });
+
+    /**
+     * WI-6149: the episodic case, asserted separately because it is the one where
+     * `is-active`'s own answer MISLEADS and the tool's is better. The federation
+     * gate is a timer-driven oneshot: `systemctl is-active` prints "inactive"
+     * (exit 3) for a perfectly healthy gate, while the supervision row says
+     * `activeState:'inactive'` AND `healthy:true` AND `episodic:true`.
+     */
+    it('covers the episodic federation gate, including its .timer', () => {
+      for (const unit of ['papercup-live-federation-gate.service', 'papercup-live-federation-gate.timer']) {
+        const result = systemctlIsActive.cover(`systemctl --user is-active ${unit}`);
+        expect(result.covered, `${unit} should be answerable`).toBe(true);
+        expect(result.expression).toContain('healthy');
+      }
+      // The `.timer` must resolve to its OWN row, not the service's.
+      expect(
+        systemctlIsActive.cover('systemctl --user is-active papercup-live-federation-gate.timer').expression,
+      ).toContain('live-federation-gate-timer');
     });
 
     /**

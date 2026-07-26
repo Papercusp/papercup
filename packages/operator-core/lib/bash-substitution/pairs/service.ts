@@ -17,10 +17,15 @@
  *       desktop · bg-host-ticker · bg-host-code · substrate-sidecar (portless)
  *   • `supervision[]` — one row per `SUPERVISED_PROCESSES` entry, carrying
  *     `flapState` / `restartsLast10m` / `consecutiveProbeFailures` /
- *     `secondsSinceStart` — restart CHURN — PLUS, for `systemd-user` rows, an
- *     `active?: boolean` derived from systemd `ActiveState`: `false` means
- *     confirmed DOWN, OMITTED means the probe genuinely could not tell. A
- *     missing `active` must never be read as "down".
+ *     `secondsSinceStart` — restart CHURN — PLUS, for `systemd-user` rows,
+ *     systemd's `ActiveState` verbatim as `activeState`, the `healthy` verdict
+ *     (WI-6149), and the raw `active` boolean. OMITTED means the probe genuinely
+ *     could not tell and must never be read as "down".
+ *     ⚠ The churn fields are currently ALWAYS zero/'ok' for every unit: they are
+ *     read from the reconciler's module singleton, and the reconciler has never
+ *     been armed (EI-18746253391734322 — no `supervision-reconcile` routines
+ *     row). `activeState`/`healthy`/`active` ARE real (the tool overlay execs
+ *     systemctl per call). Do not score coverage against the churn fields.
  *
  * ⚠ HISTORY, because the original verdict rests on it: this block used to carry
  * NO up-or-down field at all, and a stopped unit was indistinguishable from a
@@ -31,11 +36,14 @@
  *
  * The practical consequence TODAY: `papercup-dev-api` (→ `operator`),
  * `papercup-staging-api` (→ `staging-api`, added by WI-6146), `papercup-bg-host`
- * (→ `bg-host-ticker`) and `papercup-embed-sidecar` (→ `embed-sidecar`) have a
+ * (→ `bg-host-ticker`), `papercup-embed-sidecar` (→ `embed-sidecar`) and
+ * `papercup-oddsmith-sidecar` (→ `oddsmith-sidecar`, added by WI-6149) have a
  * liveness answer from a PROBE. `papercup-inference-gateway`,
  * `papercup-mcp-proxy` and `papercup-live-federation-gate` remain supervised but
- * unprobed — they now get a determinate `active` from systemd, but no HTTP
- * probe, so nothing confirms they are actually SERVING.
+ * unprobed — they get a determinate `activeState` + `healthy` from systemd, which
+ * IS a faithful answer to `is-active` (WI-6149 scores them covered on that
+ * basis — see `SUPERVISED_BUT_UNPROBED`), but no HTTP probe, so nothing confirms
+ * they are actually SERVING. That serving gap belongs to `curlHealthProbe`.
  *
  * ⚠ MODEL DRIFT: the constants below are a hand-written MODEL of that tool, and
  * nothing in the equivalence machinery reads the real `HEALTH_ENDPOINTS`. The
@@ -190,6 +198,50 @@ function supervisionNameFor(unit: string): string {
 }
 
 /**
+ * WI-6149 (D-010 item 4): why each DELIBERATELY-excluded unit is excluded.
+ *
+ * A generic "outside the registry" reason is not good enough here, because the
+ * reason string is what the registry stores and what an agent reads — and these
+ * four units are not oversights awaiting registration, they are four DIFFERENT
+ * structural impossibilities, each settled with a measurement. Telling an agent
+ * "not registered" invites the next one to register it; telling it "this is a
+ * timer-driven oneshot, liveness is the wrong question" does not.
+ *
+ * The reason CODES are duplicated from `service-health.ts`'s `NON_PROBED_UNITS`
+ * rather than imported, for the same reason `PROBED_PORTS` duplicates
+ * `HEALTH_ENDPOINTS`: this file is a MODEL, and a shared constant would let the
+ * model track a tool change silently instead of forcing a re-score.
+ * `service-model-drift.test.ts` asserts the two sets agree.
+ *
+ * A key ending in `*` is a PREFIX match — the green-checkpoint units carry a
+ * per-run random suffix, which is the whole reason they are here.
+ */
+export const EXCLUSION_REASON: Readonly<Record<string, string>> = {
+  'papercup-green-checkpoint-manual-*':
+    'is a per-run TRANSIENT unit (systemd-run --unit= with a random suffix), so no static registry can ever name it — "is my checkpoint run still going?" is run-scoped, not health-scoped',
+  'papercusp-db-backup':
+    'is a timer-driven ONESHOT (measured: 152s active per 3600s), deliberately excluded — `inactive` is its healthy state, and the last-run RESULT it is really being asked about is served by papercup-backup-health + STATUS.json + papercusp-db-backup-alert, not by a liveness probe',
+  auditd:
+    'is a SYSTEM-scope unit; the supervision registry and its reconciler are `systemctl --user` only (SupervisionLayer has no systemd-system member), so it cannot be represented without a new layer + a second exec path',
+  pgbouncer:
+    'is a SYSTEM-scope unit; the supervision registry and its reconciler are `systemctl --user` only (SupervisionLayer has no systemd-system member), so it cannot be represented without a new layer + a second exec path',
+  fail2ban:
+    'is NOT INSTALLED on this host (LoadState=not-found) — probing an absent unit is the permanent phantom-DOWN class that got :3001 and :4321 removed (EI-188 / EI-276)',
+  crowdsec:
+    'is NOT INSTALLED on this host (LoadState=not-found) — probing an absent unit is the permanent phantom-DOWN class that got :3001 and :4321 removed (EI-188 / EI-276)',
+};
+
+/** The documented exclusion reason for a unit, or null when it is genuinely unknown. */
+export function exclusionReasonFor(unit: string): string | null {
+  const exact = EXCLUSION_REASON[unit];
+  if (exact) return exact;
+  for (const [key, reason] of Object.entries(EXCLUSION_REASON)) {
+    if (key.endsWith('*') && unit.startsWith(key.slice(0, -1))) return reason;
+  }
+  return null;
+}
+
+/**
  * WI-6149: units named by an atom BEYOND the first — `systemctl` accepts a unit
  * LIST (`is-active fail2ban crowdsec`) and `systemctlUnit` only ever returns the
  * head. Returns the tail (empty for the normal single-unit shape). Applies the
@@ -307,6 +359,13 @@ export const systemctlIsActive: SubstitutionPair = {
         covered: true,
         expression: `dev:service_health → supervision.find(s => s.name === '${supervisionNameFor(unit)}').{activeState,healthy}`,
       };
+    }
+    // WI-6149: a DELIBERATE exclusion reports WHY it can never be registered —
+    // an unexplained "not registered" reads as an oversight and invites the next
+    // agent to try registering it.
+    const excluded = exclusionReasonFor(unit);
+    if (excluded) {
+      return { covered: false, reason: `${unit} ${excluded}; keep using systemctl` };
     }
     return {
       covered: false,

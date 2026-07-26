@@ -219,8 +219,12 @@ describe('HEALTH_ENDPOINTS', () => {
   // The live set we DO watch — a guard so a retired surface can't quietly creep
   // back in (any new entry here is a deliberate edit + a failing test to update).
   it('watches exactly the live dev services', () => {
+    // WI-6149 (D-010 item 4) added `oddsmith-sidecar` — the one unit of that
+    // item's four candidates that is structurally eligible for a probe (persistent
+    // + fixed port). The other three are recorded, with the measurement that
+    // excluded each, in `NON_PROBED_UNITS`.
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
-      ['operator', 'scout', 'staging-api', 'vite'].sort(),
+      ['oddsmith-sidecar', 'operator', 'scout', 'staging-api', 'vite'].sort(),
     );
   });
 
@@ -275,6 +279,9 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
         'desktop-shell',
         'live-federation-gate',
         'live-federation-gate-timer',
+        // WI-6149 (D-010 item 4) — probed on :46229, report-only like bg-host
+        // because the unit is already Restart=always at the systemd level.
+        'oddsmith-sidecar',
       ].sort(),
     );
   });
@@ -308,12 +315,15 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
 
   it('filters by autoRestart', () => {
     const reportOnly = supervisedProcesses({ autoRestart: false }).map((e) => e.name).sort();
-    expect(reportOnly).toEqual(['bg-host', 'live-federation-gate'].sort());
+    // WI-6149: oddsmith-sidecar joins the report-only set for the SAME reason
+    // bg-host is in it — the unit is already Restart=always under systemd, so a
+    // registry restart lever would be a second restarter racing systemd's own.
+    expect(reportOnly).toEqual(['bg-host', 'live-federation-gate', 'oddsmith-sidecar'].sort());
   });
 
   it('combines both filters', () => {
     expect(supervisedProcesses({ layer: 'systemd-user', autoRestart: false }).map((e) => e.name).sort()).toEqual(
-      ['bg-host', 'live-federation-gate'].sort(),
+      ['bg-host', 'live-federation-gate', 'oddsmith-sidecar'].sort(),
     );
   });
 
@@ -323,11 +333,13 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
   // The exact-list form is deliberately brittle: adding a probe is a real
   // behaviour change (a new alarm source), so it should require a conscious
   // edit here rather than sliding in. `staging-api` was added on purpose by
-  // WI-6146 / P-013 (D-010) — it is NOT a P-001 registry side effect, which is
-  // what the intent-level assertion below actually pins.
+  // WI-6146 / P-013 (D-010) and `oddsmith-sidecar` by WI-6149 (D-010 item 4) —
+  // NEITHER is a P-001 registry side effect, which is what the intent-level
+  // assertion below actually pins. (oddsmith-sidecar is in BOTH lists, and that
+  // is the point: it took two separate, deliberate edits.)
   it('does not alter HEALTH_ENDPOINTS (additive-only, no behavior change)', () => {
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
-      ['operator', 'scout', 'staging-api', 'vite'].sort(),
+      ['oddsmith-sidecar', 'operator', 'scout', 'staging-api', 'vite'].sort(),
     );
   });
 

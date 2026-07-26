@@ -38,8 +38,15 @@
  * mechanically forced to agree.
  */
 import { describe, it, expect } from 'vitest';
-import { HEALTH_ENDPOINTS, SUPERVISED_PROCESSES } from '../../service-health';
-import { PROBED_PORTS, UNIT_TO_PROBE, SUPERVISED_BUT_UNPROBED, listeningPorts } from './service';
+import { HEALTH_ENDPOINTS, SUPERVISED_PROCESSES, NON_PROBED_UNITS, DOWN_CONFIRM_TICKS } from '../../service-health';
+import {
+  PROBED_PORTS,
+  UNIT_TO_PROBE,
+  SUPERVISED_BUT_UNPROBED,
+  SUPERVISION_ROW_NAME,
+  EXCLUSION_REASON,
+  listeningPorts,
+} from './service';
 import devListeningPorts from '../../agent-tools/dev/listening_ports';
 import { LISTENING_SOCKETS_DEFAULT_LIMIT, SS_ARGV } from '../../listening-sockets';
 import { expectArgSurface, expectExpressionUsesRealArgs } from './model-drift-helpers';
@@ -238,6 +245,78 @@ describe('service.ts equivalence model tracks the real dev:service_health (WI-61
         '`limit` arg description. A description quoting a number that no longer exists is the file-read ' +
         'advisoryText drift in a different costume.',
     ).toBe('number');
+  });
+
+  /**
+   * ── WI-6149 (D-010 item 4): the unit-COVERAGE model ────────────────────────
+   *
+   * Item 4's deliverable is a set of per-unit DECISIONS (one addition, four
+   * documented exclusions). A decision recorded only in prose rots exactly like
+   * the `listeningPorts` advisory did, so each decision gets a detector.
+   */
+  it('SUPERVISION_ROW_NAME resolves every unprobed unit to a REAL supervision row name', () => {
+    // cover() emits `supervision.find(s => s.name === '<row>')` for these. If the
+    // row name is wrong the expression is unevaluatable — a wrong expression on a
+    // correct `covered`, which is the failure mode item 3 named as the quieter
+    // half of D-001 and which no verdict latch can see.
+    const realNames = new Set(SUPERVISED_PROCESSES.map((p) => p.name));
+    const problems: string[] = [];
+    for (const unit of SUPERVISED_BUT_UNPROBED) {
+      const row = SUPERVISION_ROW_NAME[unit];
+      if (row === undefined) {
+        problems.push(`${unit} has no SUPERVISION_ROW_NAME entry, so cover() would emit the UNIT name as a supervision[].name`);
+      } else if (!realNames.has(row)) {
+        problems.push(`${unit} → '${row}', which is not a name in SUPERVISED_PROCESSES`);
+      }
+    }
+    expect(problems, `WI-6149 supervision-row mapping has drifted:\n  - ${problems.join('\n  - ')}`).toEqual([]);
+  });
+
+  it('the model’s EXCLUSION_REASON set agrees with the tool’s NON_PROBED_UNITS', () => {
+    // The exclusion RATIONALE is duplicated (model vs tool) for the same reason
+    // PROBED_PORTS is. This is the bridge that makes the duplication safe: if
+    // someone probes a previously-excluded unit and updates only one side, the
+    // other side keeps telling agents to shell out for something now covered —
+    // the exact WI-6146 staleness shape.
+    const modelled = Object.keys(EXCLUSION_REASON).sort();
+    const real = Object.keys(NON_PROBED_UNITS).sort();
+    expect(
+      modelled,
+      `pairs/service.ts EXCLUSION_REASON and service-health.ts NON_PROBED_UNITS disagree about which units are ` +
+        `deliberately excluded. Whichever side is stale is emitting a reason string that no longer matches the ` +
+        `registry.\n  model: ${modelled.join(', ')}\n  tool:  ${real.join(', ')}`,
+    ).toEqual(real);
+  });
+
+  it('every deliberately-excluded unit really is absent from the probe list AND the registry', () => {
+    // The exclusion has to be HONOURED, not merely documented: an entry in both
+    // NON_PROBED_UNITS and the registry would mean the file argues against itself,
+    // and cover() would report "keep using systemctl" for a unit it now covers.
+    const probedNames = new Set(HEALTH_ENDPOINTS.map((s) => s.name));
+    const registryUnits = new Set(SUPERVISED_PROCESSES.map((p) => p.unit).filter((u): u is string => Boolean(u)));
+    const contradictions = Object.keys(NON_PROBED_UNITS).filter(
+      (unit) => probedNames.has(unit) || registryUnits.has(unit) || registryUnits.has(`${unit}.service`),
+    );
+    expect(
+      contradictions,
+      `These units are documented as deliberately NOT probed while also being probed/registered:\n  - ${contradictions.join('\n  - ')}`,
+    ).toEqual([]);
+  });
+
+  it('oddsmith-sidecar is modelled as PROBED and its probe is flap-damped (the WI-6149 addition)', () => {
+    // The named, non-generic assertion for item 4's one ADDITION — mirroring the
+    // staging-api assertion below, and for the same reason.
+    expect(PROBED_PORTS['46229']).toBe('oddsmith-sidecar');
+    expect(UNIT_TO_PROBE['papercup-oddsmith-sidecar']).toBe('oddsmith-sidecar');
+    expect(HEALTH_ENDPOINTS.some((s) => s.name === 'oddsmith-sidecar')).toBe(true);
+    // Damping is not cosmetic here: the unit restarts ~22×/day (measured), so an
+    // undamped probe manufactures phantom DOWNs. Removing the DOWN_CONFIRM_TICKS
+    // entry must red.
+    expect(
+      DOWN_CONFIRM_TICKS['oddsmith-sidecar'],
+      'oddsmith-sidecar lost its flap damping. It restarts ~22×/day (agents’ raw `systemctl --user restart` + ' +
+        'Restart=always), so an undamped probe re-introduces the phantom-DOWN broadcasts WI-6146 removed.',
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it('staging-api specifically is modelled as PROBED (the WI-6146 regression this file was written for)', () => {

@@ -26,7 +26,8 @@ import { getMemoryBackend } from '../backend';
 import { anchorMetadata } from '../anchors';
 import { detectPossibleSecrets } from '../secret-detect';
 import { conflictCheckEnabled, checkConflicts } from '../conflict-check';
-import { createAnthropicJudge } from '../anthropic-judge';
+import { createAnthropicJudge, conflictJudgeAvailable } from '../anthropic-judge';
+import { neighbourSearchQuery } from '../../agent-tools/memory/remember';
 import { expandRefsForEmbed } from '../ref-expand';
 import { journalPendingWrite, markJournalCommitted } from '../write-journal';
 import { isMemoryPaused } from '../memory-pause';
@@ -111,14 +112,20 @@ async function traceOnce(i: number): Promise<{ stages: Stage[]; total: number }>
   await timed('backend.available() (connectivity probe)', stages,
     () => backend.available(), (v) => `ok=${v.ok}`);
 
-  // The handler runs this neighbour search when EITHER dedup (opt-in, default
-  // off) OR the conflict-check (default ON) is enabled — so on live config it
-  // runs on every write, purely to feed the conflict judge.
+  // Mirrors remember.ts's gate EXACTLY (P-007): the neighbour search runs only
+  // when something can CONSUME it — dedup opt-in, or conflict-check with a REAL
+  // judge. Before P-007 this was `dedupEnabled() || conflictCheckEnabled()`, so
+  // on live config it ran on every write purely to feed a no-op judge.
+  // Keep this in sync with the handler, or the trace stops measuring the real path.
   let neighbors: Array<{ id: string; text: string; score?: number }> = [];
-  const neighbourSearchRuns = conflictCheckEnabled() || process.env.PAPERCUSP_MEMORY_DEDUP === 'on';
-  if (neighbourSearchRuns) {
+  const dedupWanted = process.env.PAPERCUSP_MEMORY_DEDUP === 'on';
+  const conflictWanted = conflictCheckEnabled();
+  const judgeAvailable = conflictJudgeAvailable();
+  const conflictUsable = conflictWanted && judgeAvailable;
+  if (dedupWanted || conflictUsable) {
     neighbors = await timed('backend.search() (dedup/conflict neighbours)', stages,
-      () => backend.search(content, { scope: scopeKey, limit: DEDUP_TOP_K }),
+      // P-008: length-capped query, exactly as the handler passes it.
+      () => backend.search(neighbourSearchQuery(content), { scope: scopeKey, limit: DEDUP_TOP_K }),
       (v) => `${v.length} neighbours`);
     // lexicalSimilarity is what the dedup judgement uses (EI-10544) — time the
     // CPU cost so it is attributed rather than hidden inside the search stage.
@@ -132,7 +139,12 @@ async function traceOnce(i: number): Promise<{ stages: Stage[]; total: number }>
       }),
       (v) => `${v.conflicts.length} conflicts; ANTHROPIC_API_KEY=${process.env.ANTHROPIC_API_KEY ? 'set' : 'ABSENT (judge is a no-op)'}`);
   } else {
-    stages.push({ name: 'backend.search() (dedup/conflict neighbours)', ms: 0, note: 'SKIPPED (both gates off)' });
+    const why = conflictWanted && !judgeAvailable
+      ? 'SKIPPED (P-007: conflict-check ON but no usable judge — nothing can consume it)'
+      : 'SKIPPED (dedup off and conflict-check off)';
+    stages.push({ name: 'backend.search() (dedup/conflict neighbours)', ms: 0, note: why });
+    stages.push({ name: 'lexicalSimilarity scan (sync)', ms: 0, note: 'n/a — no neighbours' });
+    stages.push({ name: 'checkConflicts (Anthropic Haiku judge)', ms: 0, note: 'n/a — no neighbours' });
   }
 
   const embedText = await timed('expandRefsForEmbed (ref → title lookups)', stages,

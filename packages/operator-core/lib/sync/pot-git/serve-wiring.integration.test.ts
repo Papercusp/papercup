@@ -49,6 +49,7 @@ import { insertHiveIfAbsent } from '../../hive-store';
 import { defaultRunGit, ensurePotGitRepo } from './storage';
 import { fetchOverDuplex } from './fetch-transport';
 import { wireHiveGitServe, openHiveGitFetchDuplex } from './serve-wiring';
+import { scopeRepoWireKey } from './scope-repo';
 import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
 
 const WORKSPACE_ID = `ws-serve-wiring-${randomUUID().slice(0, 8)}`;
@@ -264,4 +265,66 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     expectFastNamedRefusal(res, Date.now() - t0, /serve refused: bad-repo-key/);
   });
 
+  /**
+   * WI-6184 — the LAST unguarded hang in the serve path.
+   *
+   * `handleReq`'s async body ended in a bare `.catch(() => {})`. Any throw
+   * inside it — and several call sites are deliberately NOT wrapped, e.g. the
+   * `cfg.resolvePeerDevicePubkey(socket)` hook exercised here — was swallowed
+   * with NO frame sent back. The requester learned nothing and sat out its
+   * FULL fetch ceiling (120 s in prod) on a failure the serving side knew
+   * about instantly. Now it answers `refuse('serve-error')`.
+   *
+   * This test needs its own wiring because the shared server above passes no
+   * `resolvePeerDevicePubkey` at all (that path refuses cleanly with
+   * `scope-repo-no-verified-peer`, which is a DIFFERENT branch and would not
+   * catch this bug).
+   */
+  it('REGRESSION (WI-6184): a THROWING serve hook answers refuse(serve-error) instead of hanging the peer', async () => {
+    const badSockPath = join(root, 'serve-error.sock');
+    let hookCalls = 0;
+    const badServer = createServer({ allowHalfOpen: true }, (srvConn) => {
+      srvConn.on('error', () => {});
+      wireHiveGitServe(new SecretStream(false, srvConn), TOPIC, {
+        potHomeSlug: HIVE,
+        workspaceId: WORKSPACE_ID,
+        resolvePeerDevicePubkey: () => {
+          hookCalls++;
+          throw new Error('boom: peer-identity resolver blew up');
+        },
+      });
+    });
+    await new Promise<void>((r) => badServer.listen(badSockPath, () => r()));
+    const badSocket = await new Promise<Socket>((resolve, reject) => {
+      const s = connect({ path: badSockPath, allowHalfOpen: true });
+      s.once('connect', () => resolve(s));
+      s.once('error', reject);
+    });
+    badSocket.on('error', () => {});
+    const badNoise = new SecretStream(true, badSocket);
+    await badNoise.opened;
+
+    try {
+      // A scope-family repoKey routes through the hook that throws.
+      const duplex = await openHiveGitFetchDuplex(badNoise, TOPIC, {
+        repoKey: scopeRepoWireKey({ kind: 'fleet', ownerGithubUserId: 7, slug: 'boom-scope' }),
+      });
+      const t0 = Date.now();
+      const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/never3'], {
+        timeoutMs: 15_000,
+      });
+      // The hook really did throw — otherwise this test proves nothing.
+      expect(hookCalls).toBeGreaterThan(0);
+      // Named, and FAST: `code !== 0` alone would also pass on a full-ceiling
+      // timeout, i.e. on exactly the bug this guards.
+      expectFastNamedRefusal(res, Date.now() - t0, /serve refused: serve-error/);
+    } finally {
+      try {
+        badSocket.destroy();
+      } catch {
+        /* ignore */
+      }
+      await new Promise<void>((r) => badServer.close(() => r()));
+    }
+  });
 });

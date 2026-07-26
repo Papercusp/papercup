@@ -67,13 +67,34 @@ const ROOT = repoRoot();
 const SCN_PATH = join(ROOT, SCN_REL);
 const scn = readFileSync(SCN_PATH, 'utf8');
 
-/** The unattested-device scenario body — the only part of the file this guard governs. */
+/**
+ * The unattested-device scenario body — the only part of the file this guard governs.
+ *
+ * ANCHOR ON THE CORE, NOT THE WRAPPER (WI-5064 follow-up). The shipping leg is now two
+ * functions: `_scn_attestation_unattested_device_core()` — the ~200-line implementation this
+ * guard actually governs — plus a thin `scn_attestation_unattested_device()` wrapper that
+ * guarantees B's device_attestations are RESTORED on every exit path (revocation_kcut(90)
+ * reads the column this leg empties). A plain `indexOf('scn_attestation_unattested_device()')`
+ * finds the WRAPPER, which is 5 lines long, so this guard silently degraded to scanning a stub
+ * and 10 of its 12 assertions went red without a single contract regression. Prefer the core;
+ * fall back to the undecorated name for a pre-wrapper file.
+ */
 function unattestedLegBody(): string {
-  const start = scn.indexOf('scn_attestation_unattested_device()');
-  expect(start, 'scn_attestation_unattested_device() must exist').toBeGreaterThan(-1);
+  const core = scn.indexOf('_scn_attestation_unattested_device_core()');
+  const start = core >= 0 ? core : scn.indexOf('scn_attestation_unattested_device()');
+  expect(start, 'the unattested-device leg (core or undecorated) must exist').toBeGreaterThan(-1);
   const end = scn.indexOf('matrix_register attestation_unattested_device', start);
   expect(end, 'the leg must still be registered after its definition').toBeGreaterThan(start);
-  return scn.slice(start, end);
+  const body = scn.slice(start, end);
+  // A TEXT-EXTRACTION guard must fail LOUDLY when it stops finding the thing it governs —
+  // scanning the wrong (or an emptied) region is exactly how this guard reported ten false
+  // regressions. The real leg is ~200 lines; anything close to a stub means the implementation
+  // moved and the anchors above need updating, NOT that the contract broke.
+  expect(
+    body.length,
+    'extracted leg body is implausibly small — the anchors are pointing at a stub/wrapper, not the implementation',
+  ).toBeGreaterThan(2000);
+  return body;
 }
 
 /** Verdict branches that gate on `reasons` (the recency window) instead of the diffed set. */
