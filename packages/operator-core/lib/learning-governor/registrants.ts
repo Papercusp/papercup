@@ -131,6 +131,8 @@ export async function recordGymTickToGovernor(
       await d.recordSpend(input.sql, {
         workspaceId: input.workspaceId,
         loopId: gymLoopId(input.ran.harnessSlug),
+        // per-hive by construction — the harness slug IS the pot (P-004).
+        potSlug: input.ran.harnessSlug,
         costUsd: input.ran.spentUsd,
         runRef: input.ran.runRef ?? null,
         note: 'gym autoloop cycle',
@@ -171,18 +173,30 @@ export async function recordScoutTickToGovernor(
   try {
     if (!(await d.enabled())) return { applied: false, reason: 'flag-off' };
     const sql = await d.getSql();
+    // P-004 (pot-scope-all-learnings): the loop keys by the POT the scout learns
+    // for, not the raw install slug — the workspace-brain scout previously minted
+    // `blender:papercusp-workspace` / `blender:@singleton` registrants. Lazy
+    // import + catch mirrors getSql above; an unresolvable pot degrades to the
+    // install slug so a degraded process still budgets consistently.
+    const potSlug = await import('../learning/pot-scope')
+      .then((m) =>
+        m.resolveLearningPotSlug({ workspaceId: input.workspaceId, harnessSlug: input.harnessSlug }),
+      )
+      .catch(() => null);
     await d.register(
       sql,
       scoutRegistrationInput({
         workspaceId: input.workspaceId,
         harnessSlug: input.harnessSlug,
+        potSlug,
         perCycleBudgetUsd: input.perCycleBudgetUsd,
       }),
     );
     if (input.fired && input.fired.costUsd > 0) {
       await d.recordSpend(sql, {
         workspaceId: input.workspaceId,
-        loopId: scoutLoopId(input.harnessSlug),
+        loopId: scoutLoopId(potSlug ?? input.harnessSlug),
+        potSlug,
         costUsd: input.fired.costUsd,
         runRef: input.fired.cycleId ?? null,
         note: 'scout ideation cycle',

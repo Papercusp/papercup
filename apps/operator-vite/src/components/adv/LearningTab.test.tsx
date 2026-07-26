@@ -797,17 +797,21 @@ describe("LearningTab — Gym view", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(
-      screen.getByText("No gym experiments in this workspace yet"),
-    ).toBeTruthy();
+    // WI-5809: the empty state NAMES the selected pot (lhive='' resolves to the
+    // first list entry) rather than claiming to speak for the whole workspace.
+    expect(screen.getByText("No gym activity for alpha-hive yet")).toBeTruthy();
   });
 
-  it("falls back to the workspace-wide gym rollup when the hive-scoped read has an autoloop but NO experiments (owner report 2026-07-19)", () => {
+  // WI-5809 (owner report 2026-07-25): NO CROSS-TENANT FALLBACK. This used to
+  // assert the opposite — that an empty pot-scoped read fell back to the
+  // workspace-wide rollup. That fallback is how selecting Oddsmith rendered
+  // PAPERCUSP's gym experiments, so it was removed from BOTH the server
+  // (`learning.gym` resolver) and this view. A selected pot now shows only its
+  // own data, or an honest empty state naming it.
+  it("does NOT fall back to the workspace-wide rollup when the pot-scoped read is empty (WI-5809 — no cross-tenant leak)", () => {
     nuqsState.lview = "gym";
     nuqsState.lhive = "papercusp";
-    // The `papercusp` Hive: 1 autoloop config, 0 proposals, 0 archiveSeeds, and
-    // NO scopeFallback (the config kept the server's own fallback from firing).
-    // Previously this rendered "No gym experiments" while the workspace held 3.
+    // The `papercusp` pot: 1 autoloop config, 0 proposals, 0 archiveSeeds.
     gymResult = {
       data: [
         {
@@ -823,7 +827,8 @@ describe("LearningTab — Gym view", () => {
       error: null,
       invalidate: vi.fn(),
     };
-    // The workspace-wide read (hive-less args) DOES have experiments.
+    // The workspace-wide read (hive-less args) DOES have experiments — and the
+    // view must still NOT reach for them.
     gymWideResult = {
       data: [
         {
@@ -838,8 +843,11 @@ describe("LearningTab — Gym view", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(screen.queryByText(/No gym experiments/)).toBeNull();
-    expect(screen.getByText("Recent challengers")).toBeTruthy();
+    // The honest, pot-named empty state — not another tenant's challengers.
+    expect(screen.getByText("No gym activity for papercusp yet")).toBeTruthy();
+    expect(screen.queryByText("Recent challengers")).toBeNull();
+    // The gym read stays scoped to the selected pot: no second hive-less fetch.
+    expect(seenArgs["learning.gym"]).toEqual({ hive: "papercusp" });
   });
 
   it("shows loading — NOT the empty state — before the gym query has resolved (undefined snapshot)", () => {
@@ -859,11 +867,13 @@ describe("LearningTab — Gym view", () => {
     expect(screen.queryByText(/No gym experiments/)).toBeNull();
   });
 
-  // WI-5420: the server flags scopeFallback:true when the requested Hive's own
-  // gym-scoped read was empty and it fell back to the workspace-wide rollup —
-  // the view must say so, not silently render the fallback data as if it were
-  // this Hive's own.
-  it("shows the scope-fallback note when the server flags scopeFallback", () => {
+  // WI-5420 flagged `scopeFallback: true` when the server fell back to the
+  // workspace-wide rollup, and this view rendered a note disclosing it. WI-5809
+  // deleted the fallback itself — showing tenant A's rows under tenant B's lens
+  // is a correctness bug that a disclosure note does not make correct — so the
+  // server never sets the flag any more. A legacy/cached payload that still
+  // carries it must render as ordinary scoped data, with no cross-tenant note.
+  it("renders a legacy scopeFallback payload as ordinary scoped data — no cross-tenant note (WI-5809)", () => {
     gymResult = {
       data: [{ proposals: [{ id: "p1", status: "pending" }], autoloops: [], scopeFallback: true }],
       loading: false,
@@ -872,20 +882,9 @@ describe("LearningTab — Gym view", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(
-      screen.getByText(
-        "Showing gym experiments from all pot — none are scoped to this pot yet.",
-      ),
-    ).toBeTruthy();
-  });
-
-  it("omits the scope-fallback note when the data is genuinely scoped (no flag)", () => {
-    render(<LearningTab />);
-    expect(
-      screen.queryByText(
-        "Showing gym experiments from all pot — none are scoped to this pot yet.",
-      ),
-    ).toBeNull();
+    expect(screen.getByText("Recent challengers")).toBeTruthy();
+    expect(screen.queryByText(/none are scoped to this pot yet/)).toBeNull();
+    expect(screen.queryByText(/Showing gym experiments from all/)).toBeNull();
   });
 });
 

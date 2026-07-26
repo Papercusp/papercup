@@ -39,6 +39,8 @@ export type LearningEnforcement = 'governor' | 'native';
 export interface LearningLoopRegistration {
   workspaceId: string;
   loopId: string;
+  /** The pot the loop learns FOR (pot-scope-all-learnings P-004); null = pre-pot legacy or genuinely pot-less. */
+  potSlug: string | null;
   displayName: string;
   budgetKind: LearningBudgetKind;
   /** NULL = unbudgeted ⇒ the unattended path refuses (D-004). */
@@ -272,6 +274,8 @@ export interface GymAutoloopLike {
 export interface RegistrationInput {
   workspaceId: string;
   loopId: string;
+  /** The pot the loop learns FOR (pot-scope-all-learnings P-004). */
+  potSlug: string | null;
   displayName: string;
   budgetKind: LearningBudgetKind;
   budgetUsd: number | null;
@@ -291,6 +295,8 @@ export function gymRegistrationInput(cfg: GymAutoloopLike): RegistrationInput {
   return {
     workspaceId: cfg.workspaceId,
     loopId: gymLoopId(cfg.harnessSlug),
+    // gym autoloops are per-hive by construction — the harness slug IS the pot.
+    potSlug: cfg.harnessSlug,
     displayName: `Gym autoloop (${cfg.harnessSlug})`,
     budgetKind: 'lifetime',
     budgetUsd: cfg.budgetUsd,
@@ -310,12 +316,22 @@ export function gymRegistrationInput(cfg: GymAutoloopLike): RegistrationInput {
 export function scoutRegistrationInput(opts: {
   workspaceId: string;
   harnessSlug: string;
+  /**
+   * The resolved pot the scout learns for (pot-scope-all-learnings P-004). When
+   * present it is ALSO the loop-id grain — `blender:<pot>` — so the workspace-brain
+   * scout ('papercusp-workspace' / '@singleton' install slugs) keys by its home pot
+   * instead of minting workspace-shaped registrants. Null (unresolvable) falls back
+   * to the install slug so a degraded process still budgets/ledgers consistently.
+   */
+  potSlug?: string | null;
   perCycleBudgetUsd: number;
 }): RegistrationInput {
+  const scope = opts.potSlug ?? opts.harnessSlug;
   return {
     workspaceId: opts.workspaceId,
-    loopId: scoutLoopId(opts.harnessSlug),
-    displayName: `Scout cadence (${opts.harnessSlug})`,
+    loopId: scoutLoopId(scope),
+    potSlug: opts.potSlug ?? null,
+    displayName: `Scout cadence (${scope})`,
     budgetKind: 'per-cycle',
     budgetUsd: opts.perCycleBudgetUsd,
     priority: SCOUT_REGISTRANT_PRIORITY,

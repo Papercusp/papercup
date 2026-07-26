@@ -13,6 +13,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 function bet(over: Partial<PredictionRow>): PredictionRow {
   return {
+    potSlug: null,
     id: 'b1',
     workspaceId: 'ws',
     predictor: 'su-a',

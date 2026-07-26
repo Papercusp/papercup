@@ -21,6 +21,12 @@
  *   1. An EXPLICIT `potSlug` from the caller — it knows best; never second-guessed.
  *   2. The pot that OWNS the given harness (`potHomeSlugForHarness`) — the harness
  *      is the member sub-grain, the pot/hive is the tenancy unit (owner's model).
+ *      A hive HOME resolves to itself HERE (the registry/identity read recognizes
+ *      it) — there is deliberately NO "the harness is its own scope" fallback
+ *      below this step: live scout_ticks data (2026-07-26) showed that fallback
+ *      minting fake pots out of the '@singleton' workspace-brain sentinel and
+ *      ephemeral 'capacity-storm-*' drill installs. A slug the registry does not
+ *      recognize as pot-owned is NOT a pot.
  *   3. The process's home pot env (`PAPERCUSP_POT_HOME_SLUG`) — set for pot-scoped
  *      hosts and agent subprocesses.
  *   4. `null` — and null is a REAL answer, not a failure to paper over.
@@ -83,11 +89,12 @@ export async function resolveLearningPotSlug(input: LearningPotScopeInput): Prom
       );
       if (owner) return owner;
     } catch {
-      // Registry unavailable (sidecar/test process with no org-PG) — fall through.
+      // Registry unavailable (sidecar/test process with no org-PG) — fall through
+      // to the env home pot. A hive home passed here still resolves to itself in
+      // any process where the registry answers (potHomeSlugForHarness returns the
+      // home for its own slug); degrading to env/null beats minting a fake pot
+      // out of a sentinel or drill install (see the module doc's step 2).
     }
-    // A harness that resolves to no pot IS its own scope when it is itself a pot;
-    // callers pass hive home slugs here routinely.
-    return harness;
   }
 
   return clean(process.env.PAPERCUSP_POT_HOME_SLUG) ?? null;

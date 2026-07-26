@@ -37,12 +37,41 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, withWorkspace: H.withWorkspace };
 });
 
-// EI-16183: the handler resolves its workspace via activeWorkspaceId() (process-global
-// — request-ALS → PAPERCUSP_WORKSPACE_ID → registry default), uncontrolled here. Pin it
-// deterministically rather than depending on the real machine's workspace-registry file.
+// WI-5825: the handler resolves its (workspace_id, harness_slug) key through
+// resolvePlanScope — the SAME authority the plan readers use — never via the
+// ambient activeWorkspaceId() and never off the raw ctx slug. This fake models the
+// two things that authority does and that the ambient path got wrong:
+//   1. the workspace is a property OF THE HARNESS (registry/projects), not of
+//      whatever workspace happens to be "current" in this process, and
+//   2. a MEMBER harness collapses to its Hive HOME, because plans are Hive-scoped.
+// Deliberately NON-'default' so a regression to a DEFAULT_WORKSPACE_ID literal —
+// or to activeWorkspaceId(), which these tests no longer control — fails here.
+const HOME_WS = 'ws-of-home';
+const MEMBER_HARNESS = 'member-harn';
+const MEMBER_HIVE_HOME = 'hive-home-harn';
+const wsOf = (harness: string) => (harness === MEMBER_HIVE_HOME ? 'ws-of-hive' : `ws-of-${harness}`);
+
+vi.mock('../source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../source')>();
+  const { operatorHomeHarnessSlug: home } = await import('../../../harness/operator-home-harness');
+  return {
+    ...actual,
+    resolvePlanScope: async (opts: { harnessSlug?: string } = {}) => {
+      const raw = opts.harnessSlug?.trim();
+      if (!raw || raw === '*' || raw === 'all' || raw === home()) {
+        return { workspaceId: HOME_WS, harnessSlug: home() };
+      }
+      const collapsed = raw === MEMBER_HARNESS ? MEMBER_HIVE_HOME : raw;
+      return { workspaceId: wsOf(collapsed), harnessSlug: collapsed };
+    },
+  };
+});
+
+// The ambient workspace is deliberately pinned to something WRONG: if the handler
+// ever reads it again, the assertions below catch it immediately.
 vi.mock('../../../workspace-registry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../workspace-registry')>();
-  return { ...actual, activeWorkspaceId: () => actual.DEFAULT_WORKSPACE_ID };
+  return { ...actual, activeWorkspaceId: () => 'ambient-WRONG-workspace' };
 });
 
 import tool from '../set-priority';
@@ -85,7 +114,7 @@ describe('plans:set-priority', () => {
     expect(sqlText).toContain('op_priority');
     // Params: [priority, op_updated_at, workspace_id, harness_slug, plan_slug].
     expect(values[0]).toBe(3);
-    expect(values[2]).toBe(DEFAULT_WORKSPACE_ID);
+    expect(values[2]).toBe(wsOf('myharn'));
     expect(values[3]).toBe('myharn');
     expect(values[4]).toBe('my-plan-2026-06-01');
 
@@ -109,6 +138,30 @@ describe('plans:set-priority', () => {
     const res = await run({ slug: 'p', priority: 1, harness: 'all' });
     expect(H.state.txCalls[0].values[3]).toBe(home);
     expect(res.data.results[0].harnessSlug).toBe(home);
+  });
+
+  it('WI-5825 regression (gen 1+2): the workspace comes from the plan-scope resolver, NEVER the ambient one or a DEFAULT_WORKSPACE_ID literal', async () => {
+    await run({ slug: 'p', priority: 1, harness: 'myharn' });
+    const wsParam = H.state.txCalls[0].values[2];
+    // The row's tenant is a property of the HARNESS...
+    expect(wsParam).toBe(wsOf('myharn'));
+    // ...not of whatever workspace is "current" in this process (gen 2),
+    // and not the 'default' literal that matched zero real rows (gen 1).
+    expect(wsParam).not.toBe('ambient-WRONG-workspace');
+    expect(wsParam).not.toBe(DEFAULT_WORKSPACE_ID);
+  });
+
+  it('WI-5825 regression (gen 3): a MEMBER harness is keyed on its Hive HOME — the same collapse the readers apply', async () => {
+    const res = await run({ slug: 'p', priority: 1, harness: MEMBER_HARNESS });
+    const { values } = H.state.txCalls[0];
+    // Plans are Hive-scoped: the row lives under the home, so a writer that
+    // kept the raw ctx slug would UPDATE a row no reader ever looks at.
+    expect(values[3]).toBe(MEMBER_HIVE_HOME);
+    expect(values[3]).not.toBe(MEMBER_HARNESS);
+    // ...and the workspace travels with the collapsed harness, not the raw one.
+    expect(values[2]).toBe(wsOf(MEMBER_HIVE_HOME));
+    // The result reports the key actually written, so a caller can see it.
+    expect(res.data.results[0].harnessSlug).toBe(MEMBER_HIVE_HOME);
   });
 
   it('refuses when neither an arg nor a ctx harness scope is present', async () => {

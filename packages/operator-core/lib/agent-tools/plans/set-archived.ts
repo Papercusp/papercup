@@ -30,7 +30,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { resolvePlanWriteScope } from './_ctx-opts';
+import { resolvePlanWriteScope } from './_write-scope';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { bulkContent, runBulk } from '../_bulk';
 

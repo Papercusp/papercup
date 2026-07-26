@@ -170,6 +170,7 @@
     "mem0ai": "^3.0.3",
     "motion": "^12.38.0",
     "nuqs": "^2.8.9",
+    "ollama": "^0.5.14",
     "openwakeword-js": "^0.1.27",
     "opusscript": "^0.1.1",
     "postgres": "^3.4.9",

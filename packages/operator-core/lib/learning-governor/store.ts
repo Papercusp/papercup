@@ -36,6 +36,7 @@ function mapLoop(r: Row): LearningLoopRegistration {
   return {
     workspaceId: str(r.workspace_id),
     loopId: str(r.loop_id),
+    potSlug: strOrNull(r.pot_slug),
     displayName: str(r.display_name),
     budgetKind: str(r.budget_kind) as LearningBudgetKind,
     budgetUsd: numOrNull(r.budget_usd),
@@ -53,6 +54,8 @@ export interface LearningSpendEvent {
   id: string;
   workspaceId: string;
   loopId: string;
+  /** The pot the spend learned FOR (pot-scope-all-learnings P-004); null = pre-pot legacy or pot-less. */
+  potSlug: string | null;
   costUsd: number;
   signalOrigin: string;
   runRef: string | null;
@@ -65,6 +68,7 @@ function mapEvent(r: Row): LearningSpendEvent {
     id: str(r.id),
     workspaceId: str(r.workspace_id),
     loopId: str(r.loop_id),
+    potSlug: strOrNull(r.pot_slug),
     costUsd: Number(r.cost_usd),
     signalOrigin: str(r.signal_origin),
     runRef: strOrNull(r.run_ref),
@@ -80,6 +84,8 @@ function mapEvent(r: Row): LearningSpendEvent {
 export interface RegisterLearningLoopInput {
   workspaceId: string;
   loopId: string;
+  /** The pot the loop learns FOR (P-004). Sets/overwrites when passed (null included); undefined preserves. */
+  potSlug?: string | null;
   /** Defaults to loopId on first registration; preserved when omitted thereafter. */
   displayName?: string;
   budgetKind?: LearningBudgetKind;
@@ -102,6 +108,7 @@ export async function registerLearningLoop(
   const merged = {
     workspaceId: q.workspaceId,
     loopId: q.loopId,
+    potSlug: q.potSlug !== undefined ? q.potSlug : existing?.potSlug ?? null,
     displayName: q.displayName ?? existing?.displayName ?? q.loopId,
     budgetKind: q.budgetKind ?? existing?.budgetKind ?? 'lifetime',
     budgetUsd: q.budgetUsd !== undefined ? q.budgetUsd : existing?.budgetUsd ?? null,
@@ -113,10 +120,11 @@ export async function registerLearningLoop(
   };
   const rows = (await sql`
     INSERT INTO harness_shared.learning_governor_loops
-      (workspace_id, loop_id, display_name, budget_kind, budget_usd, spent_usd, priority, enabled, enforcement, meta)
-    VALUES (${merged.workspaceId}, ${merged.loopId}, ${merged.displayName}, ${merged.budgetKind}, ${merged.budgetUsd},
+      (workspace_id, loop_id, pot_slug, display_name, budget_kind, budget_usd, spent_usd, priority, enabled, enforcement, meta)
+    VALUES (${merged.workspaceId}, ${merged.loopId}, ${merged.potSlug}, ${merged.displayName}, ${merged.budgetKind}, ${merged.budgetUsd},
       ${merged.spentUsd}, ${merged.priority}, ${merged.enabled}, ${merged.enforcement}, ${merged.meta as never})
     ON CONFLICT (workspace_id, loop_id) DO UPDATE SET
+      pot_slug = EXCLUDED.pot_slug,
       display_name = EXCLUDED.display_name, budget_kind = EXCLUDED.budget_kind, budget_usd = EXCLUDED.budget_usd,
       spent_usd = EXCLUDED.spent_usd, priority = EXCLUDED.priority, enabled = EXCLUDED.enabled,
       enforcement = EXCLUDED.enforcement, meta = EXCLUDED.meta, updated_at = now()
@@ -184,6 +192,8 @@ export async function governorCheck(
 export interface RecordLearningSpendInput {
   workspaceId: string;
   loopId: string;
+  /** The pot the spend learned FOR (P-004); omitted/null ⇒ recorded pot-less. */
+  potSlug?: string | null;
   costUsd: number;
   /** Provenance (P-002/D-002 vocabulary). Default 'organic'. */
   signalOrigin?: 'organic' | 'drill' | 'replay' | 'shadow';
@@ -205,8 +215,8 @@ export async function recordLearningSpend(sql: Sql, q: RecordLearningSpendInput)
   const run = async (tx: Sql | TransactionSql): Promise<LearningSpendEvent> => {
     const rows = (await tx`
       INSERT INTO harness_shared.learning_spend_events
-        (workspace_id, loop_id, cost_usd, signal_origin, run_ref, note)
-      VALUES (${q.workspaceId}, ${q.loopId}, ${q.costUsd}, ${q.signalOrigin ?? 'organic'},
+        (workspace_id, loop_id, pot_slug, cost_usd, signal_origin, run_ref, note)
+      VALUES (${q.workspaceId}, ${q.loopId}, ${q.potSlug ?? null}, ${q.costUsd}, ${q.signalOrigin ?? 'organic'},
         ${q.runRef ?? null}, ${q.note ?? null})
       RETURNING *`) as Row[];
     if (q.accumulate !== false) {

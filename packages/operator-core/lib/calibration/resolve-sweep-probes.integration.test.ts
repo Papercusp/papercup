@@ -37,6 +37,7 @@ const savedEnv: Record<string, string | undefined> = {};
 /** A minimal matured bet — overlaid per case. createdAt is the recapture cutoff. */
 function bet(over: Partial<PredictionRow>): PredictionRow {
   return {
+    potSlug: null,
     id: 'b1',
     workspaceId: WS,
     predictor: 'su-a',

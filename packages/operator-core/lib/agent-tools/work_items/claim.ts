@@ -36,6 +36,40 @@ interface ClaimItem {
 }
 
 /**
+ * WI-5826: the warning a by-id claim MUST carry when the claimed row is already terminal.
+ *
+ * Claiming a finished item by id is deliberately ALLOWED (EI-8972 — "a completed row is STILL
+ * directly claimable by id; the floor only gates self-select"): naming a finished item is how you
+ * reopen it, inherit ownership, or attach follow-up work. What was missing is any SIGNAL — the
+ * tool returned a bare ok:true on a state='done' row, so an agent could not distinguish fresh work
+ * from finished work. Confirmed live 2026-07-26: work_items:claim{id:'EI-18645423267952485'} came
+ * back ok:true on a row already done with terminalCompletionRef stamped, and was caught only
+ * because that agent happened to read the returned workItem closely.
+ *
+ * EI-529 saw this class and mitigated it with a checkpointWarning, but that fires only when a
+ * prior CHECKPOINT happens to exist; a completed item without one — the common case — still looked
+ * like fresh work. This keys on the item's own terminal state instead, so it cannot be missed.
+ *
+ * Pure + exported so the guarantee is directly testable: the claim must keep SUCCEEDING (EI-8972's
+ * decision) AND keep WARNING (this fix), and a future edit must not be able to silently drop one.
+ */
+export function terminalClaimWarning(
+  workItem: { state?: string | null; terminalCompletionRef?: string | null } | null | undefined,
+): string | null {
+  const state = String(workItem?.state ?? '').trim();
+  if (!state || !ANY_FAMILY_TERMINAL_STATES.includes(state.toLowerCase())) return null;
+  const ref = workItem?.terminalCompletionRef;
+  return (
+    `⚠ THIS ITEM IS ALREADY ${state.toUpperCase()}` +
+    (ref ? ` (completed: "${ref}")` : '') +
+    '. The claim SUCCEEDED — claiming a finished item by id is allowed on purpose (reopen / inherit ' +
+    'ownership / attach follow-up) — but this is NOT fresh work. Do NOT rebuild it: read the ' +
+    'completion first and verify against the tree. If you wanted new work, release this and use ' +
+    'scheduler:get_next instead.'
+  );
+}
+
+/**
  * Claim ONE item, returning the self-describing result. On the compare-and-claim
  * loss, re-read + classify (EI-2197) so the agent gets an accurate, actionable
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
@@ -92,6 +126,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
   }
   const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness });
   if (workItem) {
+    // WI-5826: see terminalClaimWarning — a by-id claim of a finished row stays ALLOWED
+    // (EI-8972) but can no longer be mistaken for fresh work.
+    const terminalWarning = terminalClaimWarning(workItem);
     // EI-529: this is the NAMED-assignee dispatch path (a leader/dispatcher assigning a
     // SPECIFIC item to a SPECIFIC agent) — exactly the shape the report's "brief dispatch
     // re-assigns already-completed work" pattern hit. Surface a prior holder's checkpoint
@@ -110,8 +147,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
           checkpointAgeMs: hint.checkpointAgeMs,
           checkpointWarning:
             'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
+          ...(terminalWarning ? { terminalWarning } : {}),
         }
-      : { ok: true, id: it.id, workItem };
+      : { ok: true, id: it.id, workItem, ...(terminalWarning ? { terminalWarning } : {}) };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
   const current = await getWorkItem(it.id, it.harness);

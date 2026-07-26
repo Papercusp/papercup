@@ -32,6 +32,7 @@ function item(id: string): ScoredItem {
 
 function bet(over: Partial<PredictionRow>): PredictionRow {
   return {
+    potSlug: null,
     id: 'b1',
     workspaceId: 'ws',
     predictor: 'su-sharp',

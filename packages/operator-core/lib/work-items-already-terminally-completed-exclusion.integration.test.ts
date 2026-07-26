@@ -141,6 +141,37 @@ describe('claimNextWorkItem SKIPS an already-genuinely-terminally-completed row 
     expect(claimed?.assignee).toBe('p2p-fleet');
   });
 
+  // WI-5826: the by-id escape hatch above is deliberate, but for a long time it was also
+  // SILENT — work_items:claim returned a bare ok:true on a finished row, so an agent could not
+  // tell fresh work from finished work. Confirmed live 2026-07-26 (a fleet member claimed a
+  // state='done' row by id and only noticed because they read the returned workItem closely).
+  // Both halves are pinned HERE, together, so a future change cannot quietly drop one: the
+  // claim must keep SUCCEEDING (EI-8972's decision, asserted above) AND must keep WARNING.
+  it('the deliberate by-id claim of a completed row is LOUD — a terminalWarning is attached', async () => {
+    const { terminalClaimWarning } = await import('./agent-tools/work_items/claim');
+    await seedIssue('WI-completed-warn', {
+      createdTs: 100,
+      terminalOwner: 'su-peer',
+      terminalCompletionRef: 'Duplicate of WI-3543',
+    });
+
+    // The escape hatch still works — this must NOT become a refusal.
+    const claimed = await wi.claimWorkItem('WI-completed-warn', 'p2p-fleet', { harness: H });
+    expect(claimed?.id).toBe('WI-completed-warn');
+
+    // …and the claim can no longer be mistaken for fresh work.
+    const warning = terminalClaimWarning(claimed);
+    expect(warning).toBeTruthy();
+    expect(String(warning)).toMatch(/ALREADY/i);
+    expect(String(warning)).toContain('Duplicate of WI-3543');
+    expect(String(warning)).toMatch(/NOT fresh work/i);
+
+    // A live (non-terminal) item must stay silent — the warning must not cry wolf on real work.
+    await seedIssue('WI-live-row', { createdTs: 101 });
+    const live = await wi.claimWorkItem('WI-live-row', 'p2p-fleet', { harness: H });
+    expect(terminalClaimWarning(live)).toBeNull();
+  });
+
   it('a normal unclaimed row with no terminal columns set is NOT excluded', async () => {
     await seedIssue('WI-normal', { createdTs: 100 });
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-1' });
