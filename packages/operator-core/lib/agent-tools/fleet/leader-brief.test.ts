@@ -479,6 +479,92 @@ describe('computeIdleWithClaimableAlert (EI-18681259560385029 — the summary-le
   });
 });
 
+// EI-18703234178947959 — the live incident (2026-07-26, fleet bug-drain-200k, 19 members):
+// leader-brief reported `claimable_now: 2` + `idleWithClaimableAlert` and told the leader to
+// wake all 19 members to "re-run scheduler:get_next", while THAT VERY ORACLE returned
+// `windDown:true` for the same fleet (owner pause standing since 2026-07-21). The 2 rows were
+// real backlog — real backlog OUTSIDE the paused fleet's scope. Idle members were COMPLYING
+// with the stand-down; the brief diagnosed compliance as starvation, once per polling tick.
+describe('a PAUSED (winding-down) fleet never gets a wake/bench suggestion (EI-18703234178947959)', () => {
+  const idle = {
+    stalled: false,
+    verdict: 'waiting' as const,
+    parkedOn: [],
+    doing: null,
+    load: 0,
+    queued: [],
+  };
+
+  it('THE REGRESSION: idle + 2 claimable + fleet paused ⇒ no "wake it" suggestion at all', () => {
+    // Unpaused, this is the EI-18681259560385029 shape and MUST still fire (guard against
+    // over-suppression: the pause is the only thing that may silence it).
+    expect(computeBenchSuggestion(idle, 2)?.kind).toBe('idle-with-claimable');
+    expect(computeBenchSuggestion(idle, 2, null, true)).toBeUndefined();
+  });
+
+  it('suppresses the laneless-idle branches too — bench/widen-the-spec are equally moot while paused', () => {
+    // Verified-drained, gated, and unknown-queue all reach the same idle branch.
+    expect(computeBenchSuggestion(idle, 0, { matchedByFilter: 0, excluded: {} }, true)).toBeUndefined();
+    expect(
+      computeBenchSuggestion(idle, 0, { matchedByFilter: 108, excluded: { claimHold: 38 } }, true),
+    ).toBeUndefined();
+    expect(computeBenchSuggestion(idle, null, null, true)).toBeUndefined();
+  });
+
+  it('still reports a member that HOLDS a claim and looks wedged — that blocks the stand-down', () => {
+    const held = {
+      id: 'WI-1',
+      itemKind: 'bug',
+      title: 'in progress',
+      status: 'open',
+      rank: 0,
+      rankWriter: null,
+      activity: 'alive' as const,
+    };
+    const s = computeBenchSuggestion(
+      { stalled: true, verdict: 'speaking', parkedOn: [], doing: held },
+      2,
+      null,
+      true,
+    );
+    expect(s?.kind).toBe('stalled-no-mcp');
+  });
+
+  it('an unread control state (absent/false) is NOT a pause — a real starvation signal survives', () => {
+    for (const notPaused of [undefined, null, false]) {
+      expect(computeBenchSuggestion(idle, 2, null, notPaused)?.kind).toBe('idle-with-claimable');
+    }
+  });
+
+  it('projectMember threads the pause through end-to-end', () => {
+    const agent = baseAgent({ verdict: 'waiting', monitorState: 'waiting' });
+    expect(projectMember(agent, NOW, 2).benchSuggestion?.kind).toBe('idle-with-claimable');
+    expect(projectMember(agent, NOW, 2, null, true).benchSuggestion).toBeUndefined();
+  });
+
+  it('suppresses BOTH summary alerts while paused — defence-in-depth behind the member gate', () => {
+    // The exact numbers from the incident (2 claimable, idle members) — must stay silent.
+    expect(
+      computeIdleWithClaimableAlert({ claimableCount: 2, idleMemberCount: 19, fleetPaused: true }),
+    ).toBeUndefined();
+    expect(
+      computeFloorStarvedFleetAlert({
+        claimable: 0,
+        matchedByFilter: 108,
+        idleMemberCount: 5,
+        fleetPaused: true,
+      }),
+    ).toBeUndefined();
+    // …and both still fire on the same inputs when the fleet is ACTIVE.
+    expect(
+      computeIdleWithClaimableAlert({ claimableCount: 2, idleMemberCount: 19, fleetPaused: false }),
+    ).toBeDefined();
+    expect(
+      computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: 108, idleMemberCount: 5 }),
+    ).toBeDefined();
+  });
+});
+
 describe('computeStrandedFleetAlert (EI-15055 — the whole-fleet-asleep-on-available-supply shape)', () => {
   it('fires on the exact incident shape: zero fleet-wide load, ≥1 parked member, ≥1 unowned critical', () => {
     const alert = computeStrandedFleetAlert({ totalLoad: 0, parkedCount: 7, unownedCriticalCount: 8 });

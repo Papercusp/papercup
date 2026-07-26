@@ -189,6 +189,30 @@ export function computeBenchSuggestion(
    *   matchedByFilter === 0 with claimableCount === 0 → genuinely drained.
    */
   laneGating?: { matchedByFilter: number; excluded?: Record<string, number> } | null,
+  /**
+   * EI-18703234178947959: the fleet's OWN durable control state — true when it is
+   * `winding-down` (fleet:pause / fleet:wind-down, mig 575). Every idle-member branch
+   * below diagnoses idleness as a FAULT and prescribes a remedy (wake it / bench it /
+   * widen the spec), which is exactly backwards for a paused fleet: an idle member IS
+   * the compliant response to the stand-down its owner ordered, and the claim path
+   * (`fleetControlWindDownRefusal` → get_next's `windDown:true`) will refuse it work no
+   * matter how many times it is woken.
+   *
+   * Live 2026-07-26, fleet bug-drain-200k: this brief reported `claimable_now: 2` +
+   * `idleWithClaimableAlert` and told the leader to wake all 19 members to "re-run
+   * scheduler:get_next", while that very oracle returned `windDown:true` (owner pause
+   * standing since 2026-07-21). The 2 rows were real backlog — just real backlog
+   * OUTSIDE this fleet's paused scope. Following the advice burns 19 wake-cycles
+   * re-discovering the pause, once per polling tick, indefinitely.
+   *
+   * Deliberately does NOT suppress the `stalled-no-mcp` branch above: a member that
+   * still HOLDS a claim and looks wedged during a pause is a genuine fault — indeed it
+   * is precisely what blocks the stand-down from completing.
+   *
+   * `undefined`/absent reads as "not paused" (today's behavior), never a false
+   * suppression — an unread control state must not silence a real starvation signal.
+   */
+  fleetPaused?: boolean | null,
 ): LeaderBriefMember['benchSuggestion'] {
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
@@ -249,6 +273,10 @@ export function computeBenchSuggestion(
   // event (excluded above).
   if (a.verdict == null) return undefined;
   if (a.verdict === 'dead' || a.verdict === 'booted' || a.verdict === 'joined') return undefined;
+  // EI-18703234178947959: a PAUSED fleet's idle member is compliant, not starving —
+  // see the `fleetPaused` parameter doc. Every branch below would misdiagnose it and
+  // prescribe a remedy the claim path itself refuses to honor.
+  if (fleetPaused) return undefined;
   if (a.load === 0 && (a.queued?.length ?? 0) === 0 && !a.doing) {
     // EI-18681259560385029: the ORIGINAL text asserted "likely idle-cycling a drained or
     // scoped-out lane" UNCONDITIONALLY — a confident diagnosis of a fact it never checked.
@@ -428,7 +456,18 @@ export function computeSpecStarvedFleetAlert(input: {
 export function computeIdleWithClaimableAlert(input: {
   claimableCount: number | null;
   idleMemberCount: number;
+  /** EI-18703234178947959: the fleet's own control state is winding-down (owner-paused).
+   *  Suppresses the alert entirely — see the defence-in-depth note below. */
+  fleetPaused?: boolean | null;
 }): { reason: string } | undefined {
+  // EI-18703234178947959: never tell a leader to wake members of an owner-PAUSED fleet.
+  // The rows counted here are real backlog, but backlog OUTSIDE this fleet's paused
+  // scope: the claim path refuses it (`windDown:true`), so every wake this alert
+  // prescribes is spent re-discovering the pause. Defence-in-depth — `idleMemberCount`
+  // is already 0 for a paused fleet because computeBenchSuggestion suppresses the idle
+  // branches at source, so this is the second, independent guard that keeps the alert
+  // false-positive-proof if a future caller ever feeds it a differently-derived count.
+  if (input.fleetPaused) return undefined;
   if (input.claimableCount == null || input.claimableCount <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
   return {
@@ -474,7 +513,12 @@ export function computeFloorStarvedFleetAlert(input: {
   matchedByFilter: number | null;
   idleMemberCount: number;
   excluded?: Record<string, number> | null;
+  /** EI-18703234178947959: same suppression as the sibling above — a paused fleet's
+   *  idle members are complying, and this alert's remedies (clear the floor / widen the
+   *  spec / wind the fleet down) are all moot or already done. */
+  fleetPaused?: boolean | null;
 }): { reason: string } | undefined {
+  if (input.fleetPaused) return undefined;
   if (input.claimable == null || input.claimable !== 0) return undefined;
   if (input.matchedByFilter == null || input.matchedByFilter <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
@@ -636,6 +680,9 @@ export function projectMember(
   /** EI-18689489507862177: pre-floor match + per-floor exclusions, so the bench
    *  suggestion can tell a GATED lane from a drained one. Absent = not read. */
   laneGating?: { matchedByFilter: number; excluded?: Record<string, number> } | null,
+  /** EI-18703234178947959: the fleet's own control_state is winding-down (owner-paused),
+   *  so an idle member is compliant and carries no bench suggestion. Absent = not paused. */
+  fleetPaused?: boolean | null,
 ): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   return {
@@ -661,7 +708,7 @@ export function projectMember(
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
     ...(a.parkedOn && a.parkedOn.length > 0 ? { parkedOn: a.parkedOn } : {}),
     ...(() => {
-      const suggestion = computeBenchSuggestion(a, claimableCount, laneGating);
+      const suggestion = computeBenchSuggestion(a, claimableCount, laneGating, fleetPaused);
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
   };
@@ -810,9 +857,25 @@ export default defineTool({
       assignee: ownerId,
     });
     const fleetClaimableCount = fleetLaneHealth?.claimable ?? null;
+    // EI-18703234178947959: the fleet's OWN durable control state (mig 575) — the same
+    // `winding-down` bit `fleetControlWindDownRefusal` floors every member's claim on.
+    // Read it BEFORE projecting members so a paused fleet never emits a wake-me/bench-me
+    // suggestion for a member that is correctly standing down. Fail-soft to NOT-paused:
+    // a registry hiccup must never silence a genuine starvation alert.
+    const fleetPause = await (async (): Promise<{ paused: boolean; reason: string | null }> => {
+      try {
+        const { getFleet } = await import('../../agent-fleets-store');
+        const rec = await getFleet(workspaceId, fleet);
+        return rec?.controlState === 'winding-down'
+          ? { paused: true, reason: rec.controlReason ?? null }
+          : { paused: false, reason: null };
+      } catch {
+        return { paused: false, reason: null };
+      }
+    })();
     const nowMs = Date.now();
     const members = grouped.map((a) =>
-      projectMember(a, nowMs, fleetClaimableCount, fleetLaneHealth),
+      projectMember(a, nowMs, fleetClaimableCount, fleetLaneHealth, fleetPause.paused),
     );
     const self = resolveSelfRef(ctx);
     const markedMembers = markSelfRows(members, self, 'agentId');
@@ -863,6 +926,12 @@ export default defineTool({
       // as unowned_criticals above) — >0 means near-complete work stranded by a
       // release/reap, the cheapest claimable win on this brief.
       orphaned_in_flight: orphanedInFlight.length,
+      // EI-18703234178947959: this fleet's own control_state is winding-down (fleet:pause /
+      // fleet:wind-down). Emitted EXPLICITLY rather than left implicit, because it is the
+      // reason the idle-member alerts above read 0/false: idle members are COMPLYING with
+      // the pause, so "no alert" here means "no action needed", not "nothing was checked".
+      // Lift with fleet:resume; until then the claim path refuses these members work.
+      fleet_paused: fleetPause.paused,
     };
     const totalLoad = members.reduce((sum, m) => sum + m.load, 0);
     // EI-15055: loud fleet-wide zero-wip-with-supply alert — see computeStrandedFleetAlert.
@@ -880,6 +949,7 @@ export default defineTool({
     const idleWithClaimableAlert = computeIdleWithClaimableAlert({
       claimableCount: fleetClaimableCount,
       idleMemberCount: summary.idle_with_claimable,
+      fleetPaused: fleetPause.paused,
     });
     // EI-18689489507862177: the GATED-lane twin of the alert above. `idle_with_claimable`
     // is 0 by construction in this state (its bench branch requires claimableCount > 0), so
@@ -890,6 +960,7 @@ export default defineTool({
       matchedByFilter: fleetLaneHealth?.matchedByFilter ?? null,
       idleMemberCount: summary.laneless_idle,
       excluded: fleetLaneHealth?.excluded ?? null,
+      fleetPaused: fleetPause.paused,
     });
     let specStarvedAlert: { reason: string } | undefined;
     try {
@@ -927,6 +998,11 @@ export default defineTool({
           ? { idleWithClaimableAlertReason: idleWithClaimableAlert.reason }
           : {}),
         ...(floorStarvedAlert ? { floorStarvedAlertReason: floorStarvedAlert.reason } : {}),
+        // EI-18703234178947959: the owner's own stated pause reason, verbatim, so the
+        // leader reads WHY the fleet is standing down without a second registry lookup.
+        ...(fleetPause.paused && fleetPause.reason
+          ? { fleetPausedReason: fleetPause.reason }
+          : {}),
       },
     };
   },
