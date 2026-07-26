@@ -26,6 +26,7 @@
  */
 
 import postgres from 'postgres';
+import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import {
   recomputeWatchdogKeys,
   deriveToolErrorWatchdogKey,
@@ -41,6 +42,13 @@ const url =
 async function main(): Promise<void> {
   const execute = process.argv.includes('--execute');
   const sql = postgres(url, { max: 1, connect_timeout: 3, idle_timeout: 1, onnotice: () => {} });
+  // EI-18698602043482898: this script builds its OWN raw postgres() client
+  // (not getOrgPg()), so it needs the hybrid jsonb serializer applied
+  // explicitly — without it, `setWatchdogKey`'s `${JSON.stringify(x)}::jsonb`
+  // bind below double-encodes into a jsonb scalar string instead of an
+  // object (verified live against the same call shape via operator-cli.ts's
+  // savePrefs). See connection.ts's `restoreRawJsonbSerializer` doc.
+  restoreRawJsonbSerializer(sql);
 
   // EI-<n> ids are GLOBALLY allocated, so we read + update rows by issue_id across
   // every workspace — each row is migrated IN PLACE (its workspace_id is unchanged),
