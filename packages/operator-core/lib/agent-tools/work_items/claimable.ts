@@ -11,9 +11,18 @@
  * own miss-diagnosis, so every guidance surface pointed agents at raw `dev:pg_query`
  * (still SQL) — and three surfaces disagreed (8 vs 2 vs 0). This tool wraps the SAME
  * `aggregateIssueClaimExclusions` oracle that `scheduler:get_next`'s miss-path and the
- * fleet drain-stamp already call, plus its companion `listIssueClaimableRows` (built on
- * one shared inner subquery + one shared all-floors-pass predicate), so the count, the
- * row list, and what `get_next` would actually hand out structurally cannot diverge.
+ * fleet drain-stamp already call, plus its companions `listIssueClaimableRows` and
+ * `sampleIssueClaimExclusions` (all three built on one shared inner subquery + one shared
+ * all-floors-pass predicate), so the count, the row list, the sample, and what `get_next`
+ * would actually hand out cannot diverge in what they MEAN.
+ *
+ * ...and they are read at ONE INSTANT, which is a separate guarantee this originally
+ * lacked (WI-5947). The shared predicate makes the three reads semantically identical; it
+ * does not make three round-trips atomic. Against a table the fleet is actively claiming
+ * from, a row counted by the first query could be gone by the second — surfacing as
+ * `claimableCount:1, returned:0` under a limit of 50, which downstream read as a defect in
+ * the claim path and instructed an agent to file a bug that did not exist. All three now go
+ * through `readIssueClaimability`, one read-only REPEATABLE READ transaction.
  *
  * READ-ONLY: reports claimability; it never claims. Take one with work_items:claim /
  * work_items:claim_next / scheduler:get_next.
@@ -22,11 +31,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import {
-  aggregateIssueClaimExclusions,
-  listIssueClaimableRows,
-  sampleIssueClaimExclusions,
-} from '../../scheduler/get-next';
+import { readIssueClaimability } from '../../scheduler/get-next';
 import {
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
@@ -187,13 +192,18 @@ export default defineTool({
     const states = args.states ?? specStates;
     const limit = args.limit ?? 20;
 
-    const breakdown = await aggregateIssueClaimExclusions(filter, { harness, states, assignee });
-    const claimable = args.breakdownOnly
-      ? []
-      : await listIssueClaimableRows(filter, { harness, states, assignee, spec }, limit);
-    const excludedSample = args.sampleExcluded
-      ? await sampleIssueClaimExclusions(filter, { harness, states, assignee }, args.sampleExcluded)
-      : undefined;
+    // ONE read-only REPEATABLE READ snapshot for the counts, the row list, AND the
+    // excluded sample (WI-5947). Issued as separate round-trips these observe different
+    // snapshots of a concurrently-mutating table, and the response presents them as a
+    // single verdict — which is how `claimableCount:1, returned:0` (under a limit of 50)
+    // reached a caller and was read as a claim-path defect. A read failure THROWS here
+    // rather than degrading to a partial or zeroed reading: "could not measure" must not
+    // masquerade as "measured none" when the answer drives a drain/wind-down call.
+    const { breakdown, rows: claimable, sample: excludedSample } = await readIssueClaimability(
+      filter,
+      { harness, states, assignee, spec },
+      { limit, breakdownOnly: args.breakdownOnly, sampleLimit: args.sampleExcluded },
+    );
 
     const payload = {
       ok: true as const,

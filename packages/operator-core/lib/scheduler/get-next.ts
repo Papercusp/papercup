@@ -668,7 +668,13 @@ export interface IssueClaimExclusionBreakdown {
  *  claimable RIGHT NOW. Defined ONCE so the survivors COUNT
  *  ({@link aggregateIssueClaimExclusions}'s `claimable`) and the survivors ROW LIST
  *  ({@link listIssueClaimableRows}) apply the byte-identical bar — add/remove a floor and
- *  both move together. Pure column identifiers, no bound values, so `sql.unsafe` is safe. */
+ *  both move together. Pure column identifiers, no bound values, so `sql.unsafe` is safe.
+ *
+ *  SCOPE OF THAT GUARANTEE (WI-5947): identical-bar is a SEMANTIC guarantee, per snapshot.
+ *  It does NOT make two separate round-trips atomic — against a concurrently-mutating table
+ *  they observe different snapshots and legitimately disagree. Callers that present the
+ *  count and the list together as one verdict MUST read them through
+ *  {@link readIssueClaimability}, which puts them in one REPEATABLE READ transaction. */
 const ALL_ISSUE_CLAIM_FLOORS_PASS =
   `ok_untaken AND ok_claim_hold AND ok_needs_human AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
@@ -757,9 +763,12 @@ export async function aggregateIssueClaimExclusions(
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
+    /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
+     *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
+    client?: OrgSql;
   },
 ): Promise<IssueClaimExclusionBreakdown> {
-  const sql = getOrgPg().sql;
+  const sql = opts.client ?? getOrgPg().sql;
   const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
   // Mirror diagnoseClaimNextMiss's own resolution — the issue-family scope workspace,
   // never the caller's harness-scoped workspaceId (they can legitimately differ).
@@ -860,9 +869,14 @@ export interface IssueClaimExclusionSample {
  * feature sub-category, e.g. infra/security — instead of the real family discriminator
  * `item_kind`; EI-18682848605075155). Wraps the SAME {@link issueClaimCandidateSubquery} +
  * floor predicates {@link aggregateIssueClaimExclusions} counts, materialized ONCE via a
- * `WITH` CTE and sampled per floor, so a sampled id can never disagree with what the counts
- * say is excluded, and adding/removing a floor there automatically applies here too.
+ * `WITH` CTE and sampled per floor, so a sampled id applies the identical bar to what the
+ * counts call excluded, and adding/removing a floor there automatically applies here too.
  * READ-ONLY, no claim side-effect — this is purely a diagnostic companion to the counts.
+ *
+ * ⚠ That agreement is PER SNAPSHOT (WI-5947). Called on its own this is a SEPARATE
+ * round-trip from the counts, so under concurrent claims a sampled id CAN disagree with the
+ * counts it is shown beside. To present the two together, read both through
+ * {@link readIssueClaimability} — one REPEATABLE READ transaction over all of them.
  */
 export async function sampleIssueClaimExclusions(
   filter: FilterNode | undefined,
@@ -871,10 +885,13 @@ export async function sampleIssueClaimExclusions(
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
+    /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
+     *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
+    client?: OrgSql;
   },
   sampleLimit: number,
 ): Promise<IssueClaimExclusionSample> {
-  const sql = getOrgPg().sql;
+  const sql = opts.client ?? getOrgPg().sql;
   const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
   const issueWs = issuesScopeWorkspace();
   const operatorScopeSlug = `operator:${issueWs}`;
@@ -977,10 +994,16 @@ export interface IssueClaimableRow {
  * under this spec would see as claimable RIGHT NOW, ordered the way `get_next` would hand
  * them out (via {@link compileRank} over the same spec). Wraps the SAME
  * {@link issueClaimCandidateSubquery} + the SAME {@link ALL_ISSUE_CLAIM_FLOORS_PASS} bar the
- * survivors COUNT uses, so `rows.length` (uncapped) === the oracle's `claimable` count — the
- * list and the count structurally cannot disagree, nor drift from the floors. Read-only; NO
- * claim side-effect (this is the diagnostic read `work_items:claimable` exposes, never a
- * claim path).
+ * survivors COUNT uses, so within ONE snapshot `rows.length` (uncapped) === the oracle's
+ * `claimable` count — the list and the count cannot drift from each other or from the floors.
+ * Read-only; NO claim side-effect (this is the diagnostic read `work_items:claimable`
+ * exposes, never a claim path).
+ *
+ * ⚠ "Within one snapshot" is load-bearing (WI-5947). Issued as its OWN round-trip this
+ * observes a LATER snapshot than a separately-issued count, and under fleet churn the two
+ * genuinely disagree (observed live: `claimableCount:1, returned:0` under a limit of 50).
+ * Any caller reporting the count and the list together must go through
+ * {@link readIssueClaimability}.
  */
 export async function listIssueClaimableRows(
   filter: FilterNode | undefined,
@@ -993,10 +1016,13 @@ export async function listIssueClaimableRows(
      *  DEFAULT_CLAIM_SPEC's fixed feature_order→created ordering). Reusing compileRank
      *  makes the listing order match what get_next under this spec would actually claim. */
     spec?: ClaimSpec;
+    /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
+     *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
+    client?: OrgSql;
   },
   limit: number,
 ): Promise<IssueClaimableRow[]> {
-  const sql = getOrgPg().sql;
+  const sql = opts.client ?? getOrgPg().sql;
   const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
   const issueWs = issuesScopeWorkspace();
   const operatorScopeSlug = `operator:${issueWs}`;
@@ -1053,6 +1079,95 @@ export async function listIssueClaimableRows(
     featureOrder: r.feature_order == null ? null : Number(r.feature_order),
     createdTs: r.created_ts == null ? null : Number(r.created_ts),
   }));
+}
+
+/** The whole claimability reading — counts, survivor rows, and (optionally) the per-floor
+ *  excluded sample — as observed at ONE instant. Returned by {@link readIssueClaimability}. */
+export interface IssueClaimabilityReading {
+  breakdown: IssueClaimExclusionBreakdown;
+  /** Survivors, capped at the caller's `limit`. Empty when `breakdownOnly`. */
+  rows: IssueClaimableRow[];
+  /** Only when `sampleLimit` was passed. */
+  sample?: IssueClaimExclusionSample;
+}
+
+/**
+ * Read the FULL claimability picture — {@link aggregateIssueClaimExclusions}'s counts,
+ * {@link listIssueClaimableRows}' survivor rows, and optionally
+ * {@link sampleIssueClaimExclusions}' per-floor id sample — inside ONE read-only
+ * REPEATABLE READ transaction, so all three observe the SAME snapshot.
+ *
+ * WHY (WI-5947): sharing the inner subquery + the floor predicate makes the three reads
+ * SEMANTICALLY identical; it does NOT make them ATOMIC, which is the property their
+ * docstrings were actually asserting. Issued as three separate round-trips against a
+ * concurrently-mutating table, a peer's claim landing BETWEEN them is counted by one and
+ * absent from the next — observed live on 2026-07-26 as `claimableCount:1, returned:0`
+ * under a limit of 50 (a limit of 50 cannot truncate one row). That impossible-looking pair
+ * is then read as a defect in the claim path: `scheduler:get_next` reported a
+ * "CLAIM-PATH/READ-PATH DIVERGENCE" and instructed the agent to file a claim-path bug that
+ * did not exist. One snapshot removes the race at the source, and makes the "cannot
+ * diverge" guarantee TRUE rather than aspirational.
+ *
+ * REPEATABLE READ (not SERIALIZABLE): these are pure reads, so a stable snapshot is the
+ * entire requirement — and a read-only REPEATABLE READ transaction cannot raise a
+ * serialization failure, so this adds a consistency guarantee without adding a retry path.
+ * A stalled read surfaces as a bounded statement_timeout error rather than hanging: the
+ * admin pool deliberately carries NO statement_timeout (migrations run on it).
+ *
+ * The reading is ALL-OR-NOTHING BY DESIGN: if the transaction fails, this throws. It never
+ * degrades to unsynchronized reads or to a synthesised zero — "could not measure" must stay
+ * distinguishable from "measured none", because the caller's whole purpose is deciding
+ * whether a lane is drained, and a fabricated 0 is indistinguishable from a real drain.
+ */
+export async function readIssueClaimability(
+  filter: FilterNode | undefined,
+  opts: {
+    harness: string;
+    states?: readonly string[];
+    assignee?: string;
+    rigAvailable?: boolean;
+    spec?: ClaimSpec;
+    /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
+    client?: OrgSql;
+  },
+  readOpts: {
+    /** Max survivor rows to return. Ignored when `breakdownOnly`. */
+    limit: number;
+    /** Skip the row list entirely (counts only). */
+    breakdownOnly?: boolean;
+    /** When set, also sample up to this many excluded ids PER FLOOR. */
+    sampleLimit?: number;
+    /** Per-statement cap for the snapshot txn, ms (default 15000). */
+    statementTimeoutMs?: number;
+  },
+): Promise<IssueClaimabilityReading> {
+  const sql = opts.client ?? getOrgPg().sql;
+  const stmtMs = Math.max(100, Math.trunc(readOpts.statementTimeoutMs ?? 15_000));
+  const shared = {
+    harness: opts.harness,
+    states: opts.states,
+    assignee: opts.assignee,
+    rigAvailable: opts.rigAvailable,
+  };
+
+  return (await sql.begin(async (tx) => {
+    // Both must precede the first DATA statement of the transaction: PG rejects
+    // SET TRANSACTION once a query has run, which would silently leave the reads on
+    // READ COMMITTED — i.e. exactly the unsynchronized behaviour this removes.
+    await tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');
+    await tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`);
+    const client = tx as unknown as OrgSql;
+
+    const breakdown = await aggregateIssueClaimExclusions(filter, { ...shared, client });
+    const rows = readOpts.breakdownOnly
+      ? []
+      : await listIssueClaimableRows(filter, { ...shared, spec: opts.spec, client }, readOpts.limit);
+    const sample = readOpts.sampleLimit
+      ? await sampleIssueClaimExclusions(filter, { ...shared, client }, readOpts.sampleLimit)
+      : undefined;
+
+    return { breakdown, rows, ...(sample ? { sample } : {}) };
+  })) as IssueClaimabilityReading;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -69,7 +69,6 @@ You share a live coordination substrate with other agents, routed by **topic**:
   question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
   `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
   status). Need a specific person? `coord:send` them directly — it wakes them.
-  Need a decision only the owner can make? `coord:ask-owner`.
 - **File what you discover.** A real problem outside the current validation scope
   → `work_items:create { kind:'bug', title, severity, topics }` (the engineer-issue surface,
   distinct from the validator pipeline's per-feature findings); it becomes

@@ -96,7 +96,6 @@ in sync, routed by **topic**:
   question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
   `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
   status). Need a specific person? `coord:send` them directly — it wakes them.
-  Need a decision only the owner can make? `coord:ask-owner`.
 - **File what you discover.** A real defect or gap you surface while planning →
   `work_items:create { kind:'bug', title, severity, topics }`; `topics:tag` routes a plan to its
   area so its owners see it.

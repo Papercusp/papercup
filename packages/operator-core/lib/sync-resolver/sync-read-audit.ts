@@ -108,6 +108,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'operatorTurns.byConversation': null,
   'operatorTurns.page': null,
   'planItems.byPlan': null,
+  'plans.attentionItem': null, // a specific attention item id (slim-plans-attention-sync-payload-2026-07-26 P-004) — no stable fixture
   'plansDrafts.bySlug': null,
   'projectSpecRevisions.byProject': null,
   'snapshotsConsolidated.bySlug': null,
