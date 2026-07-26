@@ -44,7 +44,7 @@ Hundreds of rows in one result usually means hundreds of DOM nodes mounted on fi
 
 **On a loopback/desktop deployment, transfer is never the explanation** — 479KB over loopback is ~5ms. The real costs are (a) server compute in the resolver, (b) paying it twice (defect 1), (c) client parse + render (defects 2–3). WI-5412's resolver spent ~0.4s shipping 7,146 topic-tag ids OUT of Postgres and back IN via `ANY(...)` (`listIssues`' topic filter — now an `EXISTS` join, ~180ms).
 
-**Discipline:** never explain slowness without a staged measurement. `curl -w %{time_total}` the `rest-query-batch` endpoint per query, then time the resolver's stages in a tsx script. The 2026-07-18 measurement contradicted the intuited explanation in under ten minutes.
+**Discipline:** never explain slowness without a staged measurement. `curl -w %{time_total}` the `rest-query` endpoint per query (it was `rest-query-batch` until the batcher was dropped on 2026-07-26), then time the resolver's stages in a tsx script. The 2026-07-18 measurement contradicted the intuited explanation in under ten minutes.
 
 ## The library guard (auto-on in development)
 

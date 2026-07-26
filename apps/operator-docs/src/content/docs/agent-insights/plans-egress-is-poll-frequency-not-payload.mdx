@@ -193,9 +193,12 @@ pc-admin-plans-ui` via the shared plans-read dispatcher):
   server-side (`attention-shape.ts` `shapePlansAttention(data, tier)`, built for MCP ctx-tiers) —
   expose an opt-in `?tier=trimmed` on the `/admin/plans/:verb` proxy and have pui pass it
   (its panes render top-N items, not 1.18MB); and/or move `refetch_all`'s plans reads onto the
-  delta-negotiated batch endpoint. Beware `apps/tui/src/models.rs` typed parsing when changing
-  the shape.
+  delta-negotiated sync endpoint. Beware `apps/tui/src/models.rs` typed parsing when changing
+  the shape. **Update 2026-07-26:** the batch endpoint named above is deprecated and client-less
+  (drop-sync-batcher-2026-07-25) — the same delta negotiation lives on `GET /rest-query`
+  (`?delta=<cursor>`, `?delta=` cold), so target that, not `rest-query-batch`.
 - Meta-gotcha that stalled this diagnosis: `libs/generic/sync/src/transports/polling/batch-fetcher.ts`
+  (deleted 2026-07-26; the delta wiring now lives in its replacement, `query-fetcher.ts`)
   contained a raw NUL byte (cache-key delimiter), so ripgrep classified it BINARY and every
   content search skipped it — the delta wiring looked absent when it wasn't. Fixed to the
   escaped form (backslash-u0000) 2026-07-03; if a file's matches mysteriously don't appear,

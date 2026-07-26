@@ -1009,12 +1009,20 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(500);
+      // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
+      // varies under load; a fixed 500ms sleep flakes on a busy box (the
+      // 2026-07-26 red-test watchdog catch, EI-18679045634730262: this file's
+      // other tests already use this poll instead of a fixed sleep for the
+      // same reason).
+      const bootDeadline = Date.now() + 5_000;
+      while (Date.now() < bootDeadline && !captured.includes('BOOT:')) {
+        await sleep(20);
+      }
       expect(existsSync(sock)).toBe(true);
       expect(captured).toContain('BOOT:');
 
       // The terminal closes: stdin hits EOF/close. The host must tear down promptly
-      // (well inside this test's 15s budget — not the child's 20s safety net).
+      // (well inside this test's budget — not the child's 20s safety net).
       (stdin as EventEmitter).emit('close');
 
       const code = await done;
@@ -1023,7 +1031,7 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
     },
-    15_000,
+    20_000,
   );
 
   it(
@@ -1061,7 +1069,15 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(500);
+      // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
+      // varies under load; a fixed 500ms sleep flakes on a busy box (the
+      // 2026-07-26 red-test watchdog catch, EI-18679045634730262: this file's
+      // other tests already use this poll instead of a fixed sleep for the
+      // same reason).
+      const bootDeadline = Date.now() + 5_000;
+      while (Date.now() < bootDeadline && !captured.includes('BOOT:')) {
+        await sleep(20);
+      }
       expect(existsSync(sock)).toBe(true);
       expect(captured).toContain('BOOT:');
 
@@ -1075,7 +1091,7 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
     },
-    15_000,
+    20_000,
   );
 });
 

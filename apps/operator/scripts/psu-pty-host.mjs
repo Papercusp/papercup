@@ -2434,11 +2434,13 @@ export function hostThroughPty(o) {
       // immediately (mid-turn), and osc writes the display, not the input line.
       const releaseInject = msg.gated ? await injectMutex.acquire() : null;
       try {
+        process.stderr.write(`TRACE-A gated=${msg.gated} mode=${msg.mode}\n`);
         if (msg.gated) {
           // (1) Human keystroke gate (P-013): don't corrupt a line the user is
           // mid-typing. Only meaningful when there IS a bridged terminal a human
           // could be typing into.
           if (bridgeTty) await idleGate.waitIdle();
+          process.stderr.write(`TRACE-B idleGate done\n`);
           // (2) Agent mid-turn gate (coord-wake-mid-turn-2026-06-30 /
           // clean-boundary-only-kill WI-1818, D-006): don't write a wake `turn`
           // into a TUI that is still generating (wedges it, needs ESC), and —
@@ -2450,6 +2452,7 @@ export function hostThroughPty(o) {
           // gating it on bridgeTty left reset/recycle unguarded whenever the host
           // ran without a bridged terminal.
           const atPrompt = await agentBusyGate.waitAtPrompt();
+          process.stderr.write(`TRACE-C busyGate done deferred=${atPrompt.deferred}\n`);
           if (atPrompt.deferred) {
             // Agent stayed mid-turn past the cap. DROP the live inject/kill rather
             // than wedge the turn or lose in-flight work — the wake is already
@@ -2694,9 +2697,11 @@ export function hostThroughPty(o) {
         // WI-2930: a turn/reset submit targets the agent's stdin and must be
         // verified like the compact writes above (raw = control bytes and osc =
         // display bytes have no submit to verify).
+        process.stderr.write(`TRACE-D pre-verifySubmitted mode=${msg.mode}\n`);
         if (msg.mode === 'turn' || msg.mode === 'reset') {
           await verifySubmitted(`${msg.mode} inject`);
         }
+        process.stderr.write(`TRACE-E post-verifySubmitted\n`);
         return { ok: true, reason: 'delivered' };
       } catch (err) {
         // P-001a: an error path must clear the coalesce slot too (claim is
