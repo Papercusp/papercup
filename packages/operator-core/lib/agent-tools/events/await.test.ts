@@ -425,11 +425,18 @@ describe('EI-13846 — default the `work-item:claimable` payload_filter to the c
       revision: 2,
       updatedBy: 'su-leader',
       updatedAt: '2026-07-19T00:00:00Z',
+      harnessSlug: 'papercusp',
       fleetSlug: 'bug-drain-200k',
     });
     const out = await call({ event: 'work-item:claimable' });
     expect(getClaimSpecRecord).toHaveBeenCalledWith({ cupId: 'su-awaiter', workspaceId: 'ws-x' });
-    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: { kind: { equals: 'bug' } } });
+    // EI-18674502503888023: the filter-tree derivation alone can never carry `harness` (it is
+    // not spec vocabulary — see claim-spec.ts ITEM_FIELDS), so the record's own harnessSlug
+    // column must be ANDed in explicitly, or a same-kind item from ANY OTHER harness in the
+    // workspace would satisfy this "scoped" await.
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { all: [{ kind: { equals: 'bug' } }, { harness: { equals: 'papercusp' } }] },
+    });
     expect(out.auto_scoped_payload_filter).toBe(true);
     expect(out.payload_filter_source).toMatchObject({ source: 'fleet', specId: 'bug-drain-200k', revision: 2 });
     expect(out.unscoped_claimable_await).toBeUndefined();
@@ -450,17 +457,33 @@ describe('EI-13846 — default the `work-item:claimable` payload_filter to the c
     expect(out.auto_scoped_payload_filter).toBeUndefined();
   });
 
-  it("a spec that exists but doesn't narrow over the payload's fields also WARNS unscoped (never silently drops the narrowing)", async () => {
+  it("a spec that exists but doesn't narrow over the payload's fields also WARNS unscoped (never silently drops the narrowing) when it ALSO carries no harness scope", async () => {
     vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
       source: 'cup',
       spec: { specId: 's1', revision: 1, view: { filter: { field: 'priority', op: '>', value: 5 } } } as never,
       revision: 1,
       updatedBy: 'su-x',
       updatedAt: '2026-07-19T00:00:00Z',
+      harnessSlug: null,
     });
     const out = await call({ event: 'work-item:claimable' });
     expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: null });
     expect(out.unscoped_claimable_await).toBe(true);
+  });
+
+  it('EI-18674502503888023 regression: a spec whose filter tree narrows on nothing payload-relevant but whose record IS harness-bound still scopes on harness alone, instead of falling through to fully unscoped', async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
+      source: 'cup',
+      spec: { specId: 's1', revision: 1, view: { filter: { field: 'priority', op: '>', value: 5 } } } as never,
+      revision: 1,
+      updatedBy: 'su-x',
+      updatedAt: '2026-07-19T00:00:00Z',
+      harnessSlug: 'papercusp',
+    });
+    const out = await call({ event: 'work-item:claimable' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: { harness: { equals: 'papercusp' } } });
+    expect(out.auto_scoped_payload_filter).toBe(true);
+    expect(out.unscoped_claimable_await).toBeUndefined();
   });
 
   it('a claim-spec read failure/timeout never blocks registration — falls back to unscoped', async () => {

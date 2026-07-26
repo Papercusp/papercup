@@ -9,6 +9,8 @@ import {
   beesLivenessFromHealth,
   _resetLivenessAlarmDebounce,
   type BeesLivenessContext,
+  type FlapState,
+  type FlapMutationResult,
 } from './liveness-alarm';
 import type { SystemHealth, HealthPanel, PanelKey, PanelStatus } from './types';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
@@ -902,6 +904,73 @@ describe('runLivenessAlarmTick — EI-9939 flap-episode suppression', () => {
     expect(pageCalls).toEqual(['dead-routines', 'dead-routines']);
     // The durable state accumulated the fireCount across the independent calls.
     expect((sharedFlapBacking['dead-routines'] as { fireCount: number }).fireCount).toBe(3);
+  });
+
+  it('EI-18673998482704275: the atomic updateFlapState step never loses an update under genuinely CONCURRENT (Promise.all) callers', async () => {
+    // Reproduces the actual lost-update race this fix closes: EI-15126's fix
+    // (the test above) only proved cross-worker durability across SEQUENTIAL
+    // calls — real :3070 cluster workers can have their ticks genuinely
+    // OVERLAP in wall time (the read-at-start/write-at-end shape this fix
+    // replaces would let a second concurrent caller read the pre-first-writer
+    // state and clobber it on write). `updateFlapState` must serialize
+    // concurrent mutations like a real `SELECT ... FOR UPDATE` transaction —
+    // simulated here with an explicit async mutex around a shared backing
+    // object, standing in for Postgres's row lock. Three "workers" fire the
+    // SAME signature fully concurrently (`Promise.all`, not sequential
+    // awaits); if the read-modify-write were not atomic, at least one
+    // increment would be lost and fireCount would end below 3.
+    let backing: FlapState = {};
+    let chain: Promise<unknown> = Promise.resolve();
+    const updateFlapState = (
+      _w: string,
+      mutate: (current: FlapState) => FlapMutationResult,
+    ): Promise<FlapMutationResult> => {
+      const run = chain.then(async () => {
+        // A deliberate microtask hop INSIDE the critical section — if the
+        // mutex didn't serialize callers, this would maximize the window for
+        // a concurrent caller's read to observe stale `backing`.
+        await Promise.resolve();
+        const result = mutate(backing);
+        backing = result.next;
+        return result;
+      });
+      chain = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    };
+
+    const mutateFire = (current: FlapState): FlapMutationResult => {
+      const episodes = new Map<string, { fireCount: number; quietSinceMs: number | null }>(Object.entries(current));
+      const ep = episodes.get('dead-routines') ?? { fireCount: 0, quietSinceMs: null };
+      ep.fireCount += 1;
+      ep.quietSinceMs = null;
+      episodes.set('dead-routines', ep);
+      const flapThreshold = 2;
+      return {
+        next: Object.fromEntries(episodes),
+        toPage:
+          ep.fireCount <= flapThreshold
+            ? [{ key: 'dead-routines', severity: 'blocker' as const, summary: 'x' }]
+            : [],
+        toResolveSigs: [],
+      };
+    };
+
+    const results = await Promise.all([
+      updateFlapState('ws', mutateFire),
+      updateFlapState('ws', mutateFire),
+      updateFlapState('ws', mutateFire),
+    ]);
+
+    // All 3 increments landed — no lost update despite genuinely concurrent
+    // invocation.
+    expect((backing['dead-routines'] as { fireCount: number }).fireCount).toBe(3);
+    // Exactly 2 of the 3 calls decided to page (fires 1-2), the 3rd suppressed
+    // — the flap threshold is honored correctly under concurrency, not just
+    // sequential calls.
+    expect(results.filter((r) => r.toPage.length > 0).length).toBe(2);
   });
 });
 

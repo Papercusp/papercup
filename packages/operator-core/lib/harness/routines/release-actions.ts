@@ -1193,7 +1193,9 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
   // is a NEW candidate — keying on sha re-notified the human + re-spawned a fixer every
   // hour for the SAME failure. The signature is stable across candidates; only a CHANGED
   // failure set re-dispatches. Falls back to the candidate sha when none was extracted.
-  const signature = gateFailureSignature(failingTests, candidate) ?? undefined;
+  // `candidate` is non-null here, so the shared helper's null case is unreachable — the
+  // `?? candidate` keeps that provable to the type checker rather than widening `signature`.
+  const signature = gateFailureSignature(failingTests, candidate) ?? candidate;
   const rows = (await sql.unsafe(
     `SELECT metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,

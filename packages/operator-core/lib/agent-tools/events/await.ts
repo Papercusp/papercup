@@ -467,9 +467,24 @@ export default defineTool({
       );
       const record = probe.value;
       if (record && record.source !== 'default') {
-        const derived = claimSpecFilterToClaimablePayloadFilter(record.spec.view.filter);
-        if (derived) {
-          effectivePayloadFilter = derived;
+        // EI-18674502503888023 / EI-18674151670359202 / EI-18674160393981819: the spec's
+        // `view.filter` tree can NEVER carry a `harness` leaf (D-002 — harness scoping is a
+        // resolver-level floor, not spec vocabulary; see ITEM_FIELDS in claim-spec.ts), so
+        // `claimSpecFilterToClaimablePayloadFilter` alone can only narrow on kind/id/title/
+        // plan/tags. A harness-bound fleet spec (the common case — every fleet:launch-on-plan
+        // fleet stores its `harness_slug` on the very same cup_claim_specs row) was silently
+        // left UNSCOPED on harness, so this auto-scope fired on any matching-kind item from
+        // ANY harness in the workspace — observed live: a papercusp fleet member woken by a
+        // brand-new bug in an unrelated harness (oddsmith-hive), burning a full wake for
+        // nothing. Fix: AND in an explicit `harness` leaf from the claim-spec record's own
+        // `harnessSlug` column (independent of the filter-tree translation) whenever it is
+        // set, on top of whatever the filter tree itself narrows.
+        const derived = claimSpecFilterToClaimablePayloadFilter(record.spec.view.filter) ?? null;
+        const harnessLeaf = record.harnessSlug ? { harness: { equals: record.harnessSlug } } : null;
+        const combined =
+          derived && harnessLeaf ? { all: [derived, harnessLeaf] } : (harnessLeaf ?? derived);
+        if (combined) {
+          effectivePayloadFilter = combined;
           autoScopedFrom = { source: record.source, specId: record.spec.specId, revision: record.revision };
         } else {
           unscopedClaimableWarning = true;

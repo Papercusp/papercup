@@ -70,6 +70,7 @@ import {
   FEATURE_NON_REQUEUE_STATES,
   staleReclaimRequeueCap,
 } from './work-item-dispatch-states';
+import { SESSION_END_MARKER } from './agent-tools/activity/lifecycle-markers';
 
 type Db = Sql | TransactionSql;
 
@@ -223,11 +224,40 @@ function isRequeueableReclaimedStatus(status: string | null | undefined): boolea
 }
 
 /**
+ * EI-18674157526367861: an owner is also live when it has a RECENT `liveTurn` —
+ * the SAME agent_activity-derived signal `presence-wakeability.ts`'s
+ * `fetchWakeability` uses for leader-brief/fleet:assignments/coord:presence
+ * (the P-002/P-005 "unified" liveness oracle). `harness_shared.agent_activity`
+ * is appended on EVERY tool call across EVERY CLI — native Bash/Read/Write/Edit
+ * included, not just papercusp-su MCP dispatch — whereas `coord_presence.heartbeat_at`
+ * (the ONLY signal `liveHolderFragment` checked pre-fix) is bumped only by
+ * coord:declare-intent/coord:inbox and a throttled (1/45s) MCP-dispatch touch. An
+ * agent whose recent tool-call mix is dominated by native tools (e.g. monitoring a
+ * long detached background run via repeated Bash/Read) can go past the grace window
+ * without a single MCP call, so coord_presence goes stale while it is demonstrably
+ * still driving its turn — and the DEAD leg wrongly reaped its claim (observed live:
+ * WI-5837's assignee/taken_at/last_progress_at all went null out from under an
+ * alive, actively-progressing holder). Mirrors fetchWakeability's exact rule: recent
+ * activity that is not (only) a trailing `■ session ended` marker.
+ */
+export function activeTurnHolderFragment(sql: Db, graceSec: number) {
+  return sql`
+      SELECT owner_id AS alias
+        FROM harness_shared.agent_activity
+       WHERE created_at > now() - make_interval(secs => ${graceSec})
+       GROUP BY owner_id
+      HAVING max(created_at) FILTER (WHERE kind = 'lifecycle' AND summary = ${SESSION_END_MARKER}) IS NULL
+          OR max(created_at) > max(created_at) FILTER (WHERE kind = 'lifecycle' AND summary = ${SESSION_END_MARKER})`;
+}
+
+/**
  * The mig-225 alias-aware "live holder" set as an embeddable postgres fragment —
  * owners with a FRESH coord_presence heartbeat, UNION every alias (spawn_id /
  * session_owner / run_id) of a RUNNING/RESTARTING nursery row with a fresh
- * heartbeat. Shared by BOTH the feature reaper and the issue reaper (P-005) so
- * their liveness rule can NEVER diverge — embed it in a `WITH live_holder AS (…)`.
+ * heartbeat, UNION every owner with a recent unified-oracle `liveTurn`
+ * (EI-18674157526367861 — see {@link activeTurnHolderFragment}). Shared by BOTH
+ * the feature reaper and the issue reaper (P-005) so their liveness rule can
+ * NEVER diverge — embed it in a `WITH live_holder AS (…)`.
  */
 export function liveHolderFragment(sql: Db, graceSec: number) {
   return sql`
@@ -244,7 +274,12 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
        WHERE n.status IN ('running', 'restarting')
          AND n.heartbeat_at IS NOT NULL
          AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
-         AND a.alias IS NOT NULL AND a.alias <> ''`;
+         AND a.alias IS NOT NULL AND a.alias <> ''
+      UNION
+      -- …plus every owner with a recent unified-oracle liveTurn (EI-18674157526367861):
+      -- the SAME source leader-brief/fleet:assignments/coord:presence already trust,
+      -- so a holder they call alive can never be reaped here as dead.
+      ${activeTurnHolderFragment(sql, graceSec)}`;
 }
 
 /**

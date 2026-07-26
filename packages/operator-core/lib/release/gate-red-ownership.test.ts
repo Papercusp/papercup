@@ -1,5 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { describeGateRedOwnership } from './gate-red-ownership';
+import {
+  describeGateRedOwnership,
+  gateFailureSignature,
+  type GateRedOwnershipState,
+} from './gate-red-ownership';
+
+describe('gateFailureSignature — the one derivation the dispatcher and the renderer share', () => {
+  it('is order-independent, so the same failure set on a later run keys the same', () => {
+    // This is the property the whole dedup rests on: the gate does not promise a stable
+    // order for failingTests, and if the key changed with the order, a re-detected failure
+    // would look like a NEW one and re-dispatch a second fixer every hour.
+    expect(gateFailureSignature(['b.test.ts', 'a.test.ts'], 'sha1')).toBe(
+      gateFailureSignature(['a.test.ts', 'b.test.ts'], 'sha1'),
+    );
+  });
+
+  it('is candidate-independent when tests are named — a red survives hourly new candidates', () => {
+    expect(gateFailureSignature(['a.test.ts'], 'sha-old')).toBe(gateFailureSignature(['a.test.ts'], 'sha-new'));
+  });
+
+  it('falls back to the candidate only when the verdict named no tests', () => {
+    expect(gateFailureSignature([], 'sha1')).toBe('sha1');
+    expect(gateFailureSignature(null, 'sha1')).toBe('sha1');
+    expect(gateFailureSignature(null, null)).toBeNull();
+  });
+
+  it('does not mutate its input', () => {
+    const input = ['b.test.ts', 'a.test.ts'];
+    gateFailureSignature(input, null);
+    expect(input).toEqual(['b.test.ts', 'a.test.ts']);
+  });
+});
 
 const NOW = 1_800_000_000_000;
 const mins = (n: number) => NOW - n * 60_000;
@@ -133,17 +164,66 @@ describe('describeGateRedOwnership — surfacing the owner the dispatcher alread
     expect(o.label).toContain('just now');
   });
 
-  it('every not-covered state opens with UNOWNED and every covered state with OWNED — the scannable invariant', () => {
+  it('reports STALE VERDICT ahead of any ownership answer, and says not to chase the named tests', () => {
+    // The 02:19 case, verbatim in shape: a fixer looks like it is on this signature, but the
+    // verdict itself predates the current candidate — so the failures it names may already
+    // be fixed. Answering "unowned, go claim it" here is what sent agents at an already-green
+    // leg; the staleness has to win over the ownership answer, not be reported beside it.
+    const o = describeGateRedOwnership({
+      ownerSignature: 'lint:identity-leak',
+      currentSignature: 'lint:identity-leak',
+      dispatchedAtMs: mins(30),
+      spawnId: 'spawn-9',
+      fixerAlive: false, // would be 'owner-gone' (=> "claim it") if staleness did not win
+      verdictStale: true,
+      nowMs: NOW,
+    });
+    expect(o.state).toBe('verdict-stale');
+    expect(o.covered).toBe(true); // stand down — but because there may be nothing here
+    expect(o.label).toMatch(/^STALE VERDICT/);
+    expect(o.label).toMatch(/Do NOT diagnose/);
+    expect(o.label).toMatch(/release:checkpoint-run/);
+  });
+
+  it('ignores verdictStale:false / undefined — a fresh verdict answers ownership normally', () => {
+    const fresh = describeGateRedOwnership({
+      ownerSignature: 'x',
+      currentSignature: 'x',
+      fixerAlive: true,
+      verdictStale: false,
+      nowMs: NOW,
+    });
+    expect(fresh.state).toBe('owned-live');
+  });
+
+  it('every state opens with its own scannable prefix — the whole point is a one-glance verdict', () => {
+    // Was "covered ⇒ OWNED, else UNOWNED". 'verdict-stale' is covered (stand down) but is
+    // NOT owned by anyone, so a two-way prefix rule can no longer express it. Asserting the
+    // state→prefix map directly is stronger anyway: it pins each label's opening word rather
+    // than a boolean derived from it, and a new state must add a row here to pass.
+    const expectedPrefix: Record<GateRedOwnershipState, string> = {
+      'verdict-stale': 'STALE VERDICT',
+      unowned: 'UNOWNED',
+      'stale-signature': 'UNOWNED',
+      'owner-gone': 'UNOWNED',
+      'owned-live': 'OWNED',
+      'owned-unknown': 'OWNED',
+    };
     const cases: Array<Parameters<typeof describeGateRedOwnership>[0]> = [
       { currentSignature: 'x', nowMs: NOW },
       { ownerSignature: 'a', currentSignature: 'b', nowMs: NOW },
       { ownerSignature: 'x', currentSignature: 'x', fixerAlive: false, nowMs: NOW },
       { ownerSignature: 'x', currentSignature: 'x', fixerAlive: true, nowMs: NOW },
       { ownerSignature: 'x', currentSignature: 'x', fixerAlive: null, nowMs: NOW },
+      { ownerSignature: 'x', currentSignature: 'x', fixerAlive: true, verdictStale: true, nowMs: NOW },
     ];
+    const seen = new Set<GateRedOwnershipState>();
     for (const c of cases) {
       const o = describeGateRedOwnership(c);
-      expect(o.label.startsWith(o.covered ? 'OWNED' : 'UNOWNED'), o.label).toBe(true);
+      seen.add(o.state);
+      expect(o.label.startsWith(expectedPrefix[o.state]), `${o.state}: ${o.label}`).toBe(true);
     }
+    // Every declared state is actually exercised above — otherwise the map silently rots.
+    expect([...seen].sort()).toEqual(Object.keys(expectedPrefix).sort());
   });
 });

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { PipelinePosition } from './git-pipeline-position';
 import type { DeployStatus } from './release-deploy-launch';
-import { buildReleaseTrace, classifyReleaseWake, type ReleaseTraceInput } from './release-trace';
+import {
+  buildReleaseTrace,
+  classifyReleaseWake,
+  type ReleaseTraceGate,
+  type ReleaseTraceInput,
+} from './release-trace';
 
 const sha = 'a'.repeat(40);
 const green = sha;
@@ -203,6 +208,76 @@ describe('buildReleaseTrace', () => {
     expect(out.gate.failingTests).toEqual(['x.test.ts']);
     expect(out.constraints.map((c) => c.code)).toContain('no-force-past-red');
     expect(out.nextVerb?.name).toBe('testing:flakiness');
+  });
+
+  // EI-18672078222841101 — the stampede. Three agents read a red here within 15 minutes and
+  // each was told to go classify the failures, with nothing saying a fixer already held them.
+  describe('a red that someone already owns', () => {
+    const redGate = (redOwner?: ReleaseTraceGate['redOwner']) => ({
+      state: 'gate-red' as const,
+      authoritative: true,
+      consecutiveReds: 2,
+      failingTests: ['x.test.ts'],
+      fireStale: false,
+      fireStaleReason: null,
+      verdictStale: false,
+      verdictStaleReason: null,
+      redOwner,
+    });
+    const onStaging = position({
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+    });
+
+    it('sends a reader to await the outcome instead of opening a second diagnosis', () => {
+      const out = buildReleaseTrace(
+        input({
+          position: onStaging,
+          gate: redGate({
+            state: 'owned-live',
+            covered: true,
+            spawnId: 'spawn-77',
+            ownerSignature: 'x.test.ts',
+            ageMs: 20 * 60_000,
+            label: 'OWNED — release-fixer spawn-77 has been on this exact failure since 20m ago and is alive.',
+          }),
+        }),
+      );
+      expect(out.nextVerb?.name).toBe('checkpoint:await');
+      expect(out.nextVerb?.reason).toContain('spawn-77');
+      // The red is still a blocker and force is still refused — this narrows WHO investigates,
+      // it does not soften the gate.
+      expect(out.constraints.map((c) => c.code)).toContain('gate-red');
+      expect(out.constraints.map((c) => c.code)).toContain('no-force-past-red');
+      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).toContain('spawn-77');
+    });
+
+    it('still sends a reader to diagnose when the recorded fixer is CONFIRMED GONE', () => {
+      // The property that keeps "a red gate is everyone's problem" intact: an uncovered red
+      // must still recruit whoever reads it, or this fix trades a stampede for a stalled gate.
+      const out = buildReleaseTrace(
+        input({
+          position: onStaging,
+          gate: redGate({
+            state: 'owner-gone',
+            covered: false,
+            spawnId: 'spawn-77',
+            ownerSignature: 'x.test.ts',
+            ageMs: 90 * 60_000,
+            label: 'UNOWNED — release-fixer spawn-77 was dispatched 2h ago but is CONFIRMED GONE.',
+          }),
+        }),
+      );
+      expect(out.nextVerb?.name).toBe('testing:flakiness');
+      expect(out.nextVerb?.reason).toContain('CONFIRMED GONE');
+    });
+
+    it('renders byte-identically to before when no ownership is supplied', () => {
+      const without = buildReleaseTrace(input({ position: onStaging, gate: redGate(undefined) }));
+      const nulled = buildReleaseTrace(input({ position: onStaging, gate: redGate(null) }));
+      expect(without.nextVerb?.name).toBe('testing:flakiness');
+      expect(JSON.stringify(nulled.constraints)).toBe(JSON.stringify(without.constraints));
+      expect(without.constraints.find((c) => c.code === 'gate-red')?.summary).not.toMatch(/OWNED|UNOWNED/);
+    });
   });
   it('suppresses stale failing-test authority and asks for a fresh checkpoint', () => {
     const gate = {

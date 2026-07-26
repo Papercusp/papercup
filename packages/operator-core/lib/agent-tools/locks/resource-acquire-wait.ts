@@ -29,6 +29,7 @@ import {
   readResourceLockStatus,
   readResourceQueue,
   tryAcquireResource,
+  tryReleaseResource,
   type ResourceHolder,
 } from './su-lock-store';
 import { inWorkspaceTxn } from './in-workspace-txn';
@@ -37,6 +38,59 @@ import { subscribeWorkspace } from './workspace-listener';
 /** Per-iteration ceiling: re-poll status at least this often even if the
  *  LISTEN connection silently dropped a wake. */
 const WAIT_CEILING_MS = 5_000;
+
+/**
+ * EI-18674647773291145: is `pid` DEFINITIVELY dead on THIS host? `process.kill(pid,
+ * 0)` sends no signal, just probes existence/permission. ESRCH = no such process —
+ * the only outcome we treat as dead. EPERM (exists, different user) or anything
+ * else is treated as ALIVE — we must never force-reclaim a lock we can't prove is
+ * abandoned; a false "dead" verdict would let two live holders race the resource.
+ */
+function isPidDefinitivelyDead(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'ESRCH';
+  }
+}
+
+/**
+ * EI-18674647773291145: reclaim (force-release) any EXCLUSIVE holder among
+ * `holders` whose owner string resolves, via `hostLocalOwnerPid`, to a PID that is
+ * verifiably dead on this host. Scoped by the holder's own `lock_id` (never a bare
+ * owner-match delete), so this can never race-delete a FRESH lease the same owner
+ * string re-acquired between the read and this delete. Returns true iff at least
+ * one stale holder was actually reclaimed (the caller's cue to retry the acquire).
+ */
+async function reclaimDeadExclusiveHolders(
+  coordinationDomain: string,
+  owner: string,
+  holders: ResourceHolder[],
+  hostLocalOwnerPid: (owner: string) => number | null,
+  onStaleHolderReclaimed?: (info: { holder: ResourceHolder; pid: number }) => void | Promise<void>,
+): Promise<boolean> {
+  let reclaimedAny = false;
+  for (const holder of holders) {
+    if (holder.mode !== 'exclusive') continue;
+    const pid = hostLocalOwnerPid(holder.owner);
+    if (pid == null || !isPidDefinitivelyDead(pid)) continue;
+    const released = await inWorkspaceTxn(coordinationDomain, owner, (tx) =>
+      tryReleaseResource(tx, { coordinationDomain, owner: holder.owner, lockId: holder.lock_id }),
+    ).catch(() => null);
+    if (released && released.released > 0) {
+      reclaimedAny = true;
+      if (onStaleHolderReclaimed) {
+        try {
+          await onStaleHolderReclaimed({ holder, pid });
+        } catch {
+          /* best-effort — a logging failure must never break the reclaim */
+        }
+      }
+    }
+  }
+  return reclaimedAny;
+}
 
 type ConflictReason =
   | 'unknown_resource'
@@ -59,6 +113,23 @@ export interface ExclusiveWaitParams {
   /** Fired once when the exclusive enters 'draining' (shared holders present),
    *  with those holders — the hook the tool uses to broadcast drain-start. */
   onDrainStart?: (holders: ResourceHolder[]) => void | Promise<void>;
+  /**
+   * EI-18674647773291145: when the no-wait acquire (`maxWaitSec: 0`) is blocked by
+   * another owner's exclusive, this optionally extracts a HOST-LOCAL pid embedded in
+   * that holder's owner string (e.g. deploy-cli's `release-deploy:<pid>:<uuid>`,
+   * EI-13729). A holder whose pid resolves and is verifiably DEAD on this host is
+   * reclaimed (force-released) and the acquire retried ONCE — turning a crashed
+   * holder's full TTL block into a sub-second self-heal instead of a silent outage
+   * for the resource's entire TTL. Return null for an owner string this convention
+   * doesn't apply to (e.g. a different caller's identity shape) — no-op for those,
+   * same behaviour as omitting this field entirely. Only consulted on the no-wait
+   * (`maxWaitSec <= 0`) path; a waiting caller already has its own TTL/drain recovery.
+   */
+  hostLocalOwnerPid?: (owner: string) => number | null;
+  /** Fired once per stale holder actually reclaimed via `hostLocalOwnerPid` — the
+   *  caller's hook to log/record it LOUDLY. A leaked lock silently self-healing is
+   *  still a defect worth surfacing, never just a quiet internal retry. */
+  onStaleHolderReclaimed?: (info: { holder: ResourceHolder; pid: number }) => void | Promise<void>;
 }
 
 export type ExclusiveWaitResult =

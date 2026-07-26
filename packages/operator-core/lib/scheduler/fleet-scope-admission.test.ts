@@ -1017,4 +1017,74 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(payload.body).not.toMatch(/Re-steer the member's claim spec or route the work elsewhere\./);
     });
   });
+
+  // EI-18674160393981819: a harness-scoped fleet's claim spec typically narrows on
+  // kind/plan/tags only — harness scoping comes from the caller's OWN `args.harness`, never
+  // from a spec leaf (the claimable payload's `harness` field is payload-only per
+  // claim-spec-payload-filter.ts). Without folding the caller's harness into the derived
+  // payload_filter, the miss advice recommended an events:await that fired on every OTHER
+  // harness's claimable bug too (observed live: a papercusp-scoped fleet woken by an
+  // oddsmith-hive bug). fleetScopedMiss must AND the caller's harness into `payloadFilter`
+  // whenever it is passed, regardless of what the spec's own view.filter narrows on.
+  describe('EI-18674160393981819: payloadFilter is scoped to the caller\'s own harness', () => {
+    const kindOnlyScope = {
+      ownerId: 'su-member',
+      fleetSlug: 'nonp2p-bug-drain',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'nonp2p-bug-drain-0725',
+          revision: 5,
+          view: { filter: { field: 'kind' as const, op: 'in' as const, value: ['bug'] } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+        },
+        revision: 5,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+
+    it('ANDs the caller harness into a spec-derived payloadFilter (kind-only spec, the real nonp2p-bug-drain shape)', () => {
+      const miss = fleetScopedMiss(kindOnlyScope, [], { harness: 'papercusp' });
+      expect(miss.payloadFilter).toEqual({
+        all: [{ harness: { equals: 'papercusp' } }, { kind: { in: ['bug'] } }],
+      });
+    });
+
+    it('falls back to a harness-only filter when the spec narrows on nothing payload-filterable', () => {
+      const noFilterScope = {
+        ...kindOnlyScope,
+        record: {
+          ...kindOnlyScope.record,
+          spec: { ...kindOnlyScope.record.spec, view: {} },
+        },
+      };
+      const miss = fleetScopedMiss(noFilterScope, [], { harness: 'papercusp' });
+      expect(miss.payloadFilter).toEqual({ all: [{ harness: { equals: 'papercusp' } }] });
+    });
+
+    it('omits payloadFilter entirely when no harness is known AND the spec narrows on nothing payload-filterable (no unsound narrowing)', () => {
+      const noFilterScope = {
+        ...kindOnlyScope,
+        record: {
+          ...kindOnlyScope.record,
+          spec: { ...kindOnlyScope.record.spec, view: {} },
+        },
+      };
+      const miss = fleetScopedMiss(noFilterScope, []);
+      expect(miss.payloadFilter).toBeUndefined();
+    });
+
+    it('a cross-harness claimable event never matches the derived filter (the actual regression: an oddsmith-hive bug woke a papercusp fleet)', async () => {
+      const { evaluateDataCondition } = await import('@papercusp/rules');
+      const miss = fleetScopedMiss(kindOnlyScope, [], { harness: 'papercusp' });
+      const crossHarnessPayload = { id: 'WI-5854', kind: 'bug', harness: 'oddsmith-hive' };
+      const sameHarnessPayload = { id: 'WI-1', kind: 'bug', harness: 'papercusp' };
+      expect(evaluateDataCondition(miss.payloadFilter!, crossHarnessPayload)).toBe(false);
+      expect(evaluateDataCondition(miss.payloadFilter!, sameHarnessPayload)).toBe(true);
+    });
+  });
 });

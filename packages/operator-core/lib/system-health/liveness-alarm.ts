@@ -715,27 +715,16 @@ export type FlapState = Record<string, FlapEpisode>;
  */
 let hermeticFlapStateFallback: FlapState = {};
 
-async function defaultReadFlapState(ws: string): Promise<FlapState> {
-  try {
-    const { readOperatorState } = await import('../operator-state-pg');
-    const state = await readOperatorState<FlapState>('operator_liveness_flap_state', ws);
-    return state ?? {};
-  } catch {
-    return {}; // fail-soft: never crash the request worker, never fabricate a false episode
-  }
-}
-
-async function defaultWriteFlapState(ws: string, state: FlapState): Promise<void> {
-  try {
-    const { writeOperatorState } = await import('../operator-state-pg');
-    await writeOperatorState('operator_liveness_flap_state', state, ws);
-  } catch {
-    /* best-effort: a lost write just re-derives from the next tick's fires */
-  }
-}
-
 /**
  * EI-18673998482704275 — atomic flap-decision read-modify-write (lost-update fix).
+ *
+ * Superseded here: the separate `readOperatorState`/`writeOperatorState` pair
+ * this alarm used to call at tick-start/tick-end (a plain, NON-atomic
+ * read-modify-write) is exactly the shape that caused the race described
+ * below — `defaultUpdateFlapState` replaces it with a single atomic
+ * transaction. `deps.readFlapState`/`deps.writeFlapState` remain as a
+ * backward-compat injection seam ONLY (see `updateFlapState`'s wiring in
+ * `runLivenessAlarmTick`) for existing tests that inject them directly.
  *
  * EI-15126 (above) made the flap-episode STORE durable + cross-worker, but
  * `runLivenessAlarmTick` still read it once at tick start (`flapEpisodes`) and
