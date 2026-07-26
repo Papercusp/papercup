@@ -9,11 +9,16 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import {
   computeDeployStatus,
+  computeDeployInFlight,
+  parseSystemctlShow,
+  readDeployInFlight,
+  readDeployStatus,
   buildDeployCliArgs,
   buildSystemdRunArgv,
   launchDetachedDeploy,
   DEPLOY_UNIT,
 } from './release-deploy-launch';
+import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
 
@@ -326,5 +331,251 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
   it('gate_health.failingTests (WI-4533) is threaded through unchanged', () => {
     const s = computeDeployStatus(mkSnap({ failingTests: ['lib/a.test.ts', 'lib/b.test.ts'] }, {}, []));
     expect(s.gate.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+  });
+});
+
+/**
+ * EI-18724155280048738 — the missing "is a deploy running right now?" state.
+ *
+ * The incident: `op:trigger` returned a transport error (CONNECTION_CLOSED against PgBouncer
+ * :6432) while the handler had in fact run to completion and launched the deploy — audit_log
+ * records launched:true for that very trigger. The sanctioned recovery ("don't retry blind,
+ * check with `ps`") then FALSE-NEGATIVES, because `systemd-run` returns as soon as the unit is
+ * started while the deploy-cli process tree takes ~20s more to appear. `op:status` reported
+ * `green-deployable` throughout — indistinguishable from "the trigger did nothing" — so the
+ * operator triggered a second time against the shared release checkout.
+ *
+ * These lock the discriminator that cannot false-negative: the transient systemd unit, which
+ * exists from the instant systemd-run exits 0.
+ */
+function fakeShowSpawn(stdout: string, closeCode = 0) {
+  const calls: { cmd: string; argv: string[] }[] = [];
+  const fn = ((cmd: string, argv: string[]) => {
+    calls.push({ cmd, argv });
+    const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter };
+    child.stdout = new EventEmitter();
+    queueMicrotask(() => {
+      if (stdout) child.stdout.emit('data', Buffer.from(stdout));
+      child.emit('close', closeCode);
+    });
+    return child as unknown;
+  }) as unknown as typeof import('node:child_process').spawn & { calls: typeof calls };
+  (fn as unknown as { calls: typeof calls }).calls = calls;
+  return fn;
+}
+
+/** The real shape of `systemctl --user show papercup-auto-deploy` while a deploy runs. */
+const RUNNING_SHOW = [
+  'ActiveState=active',
+  'SubState=running',
+  'ExecMainStartTimestamp=Sun 2026-07-26 12:09:43 EDT',
+  '',
+].join('\n');
+
+describe('parseSystemctlShow', () => {
+  it('parses Key=Value lines and ignores blanks', () => {
+    expect(parseSystemctlShow(RUNNING_SHOW)).toEqual({
+      ActiveState: 'active',
+      SubState: 'running',
+      ExecMainStartTimestamp: 'Sun 2026-07-26 12:09:43 EDT',
+    });
+  });
+
+  it('keeps `=` inside a value (a timestamp/path is not split twice)', () => {
+    expect(parseSystemctlShow('X=a=b')).toEqual({ X: 'a=b' });
+  });
+});
+
+describe('computeDeployInFlight', () => {
+  it('active + running ⇒ in flight, with the log path to watch', () => {
+    const f = computeDeployInFlight({
+      props: parseSystemctlShow(RUNNING_SHOW),
+      logPath: '/tmp/l.log',
+      logMtimeMs: 42,
+    });
+    expect(f.active).toBe(true);
+    expect(f.activeState).toBe('active');
+    expect(f.subState).toBe('running');
+    expect(f.unit).toBe(DEPLOY_UNIT);
+    expect(f.logPath).toBe('/tmp/l.log');
+    expect(f.logMtimeMs).toBe(42);
+    expect(f.source).toBe('systemd');
+  });
+
+  it('activating counts as in flight — THE window `ps` misses (unit started, child not yet spawned)', () => {
+    const f = computeDeployInFlight({
+      props: { ActiveState: 'activating', SubState: 'start' },
+      logPath: '/tmp/l.log',
+      logMtimeMs: null,
+    });
+    expect(f.active).toBe(true);
+  });
+
+  it('deactivating still counts — the deploy restarts :3070 late, so it is not settled yet', () => {
+    const f = computeDeployInFlight({ props: { ActiveState: 'deactivating' }, logPath: '/l', logMtimeMs: null });
+    expect(f.active).toBe(true);
+  });
+
+  it('inactive (the --collect unit was garbage-collected) ⇒ not in flight', () => {
+    const f = computeDeployInFlight({ props: { ActiveState: 'inactive', SubState: 'dead' }, logPath: '/l', logMtimeMs: 1 });
+    expect(f.active).toBe(false);
+  });
+
+  it('failed ⇒ not in flight (the deploy is over; its outcome is reported elsewhere)', () => {
+    const f = computeDeployInFlight({ props: { ActiveState: 'failed' }, logPath: '/l', logMtimeMs: 1 });
+    expect(f.active).toBe(false);
+  });
+
+  it('parses systemd ExecMainStartTimestamp to a real instant', () => {
+    const f = computeDeployInFlight({ props: parseSystemctlShow(RUNNING_SHOW), logPath: '/l', logMtimeMs: null });
+    expect(f.startedAtMs).toBe(Date.parse('2026-07-26T16:09:43Z'));
+  });
+
+  it('an UNPARSEABLE timestamp degrades startedAtMs to null WITHOUT disturbing `active`', () => {
+    // A host in a zone V8 cannot parse must not yield a wrong instant — and must never cost us
+    // the in-flight verdict, which is the field the double-trigger actually hinges on.
+    const f = computeDeployInFlight({
+      props: { ActiveState: 'active', ExecMainStartTimestamp: 'Sun 2026-07-26 12:09:43 XYZ' },
+      logPath: '/l',
+      logMtimeMs: null,
+    });
+    expect(f.startedAtMs).toBeNull();
+    expect(f.active).toBe(true);
+  });
+
+  it('systemd unreadable ⇒ source flags UNKNOWN rather than silently asserting "idle"', () => {
+    const f = computeDeployInFlight({ props: null, logPath: '/l', logMtimeMs: 7 });
+    expect(f.source).toBe('systemd-unavailable');
+    expect(f.active).toBe(false);
+    expect(f.activeState).toBeNull();
+    expect(f.logMtimeMs).toBe(7);
+  });
+});
+
+describe('readDeployInFlight', () => {
+  it('queries the transient unit by name for the three properties it needs', async () => {
+    const fn = fakeShowSpawn(RUNNING_SHOW);
+    const f = await readDeployInFlight({ spawnFn: fn, logMtimeMs: () => null });
+    const call = (fn as unknown as { calls: { cmd: string; argv: string[] }[] }).calls[0];
+    expect(call.cmd).toBe('systemctl');
+    expect(call.argv).toEqual([
+      '--user',
+      'show',
+      DEPLOY_UNIT,
+      '--property=ActiveState',
+      '--property=SubState',
+      '--property=ExecMainStartTimestamp',
+    ]);
+    expect(f.active).toBe(true);
+  });
+
+  it('a non-zero systemctl exit degrades to UNKNOWN, never throws', async () => {
+    const f = await readDeployInFlight({ spawnFn: fakeShowSpawn('', 1), logMtimeMs: () => null });
+    expect(f.source).toBe('systemd-unavailable');
+    expect(f.active).toBe(false);
+  });
+
+  it('a spawn error (no systemd on the box) degrades to UNKNOWN, never throws', async () => {
+    const fn = (() => {
+      const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter };
+      child.stdout = new EventEmitter();
+      queueMicrotask(() => child.emit('error', new Error('ENOENT')));
+      return child as unknown;
+    }) as unknown as typeof import('node:child_process').spawn;
+    const f = await readDeployInFlight({ spawnFn: fn, logMtimeMs: () => null });
+    expect(f.source).toBe('systemd-unavailable');
+  });
+});
+
+describe('EI-18724155280048738: an in-flight deploy must be distinguishable from a no-op trigger', () => {
+  const inFlight = (over: Partial<DeployInFlight> = {}): DeployInFlight => ({
+    active: true,
+    unit: DEPLOY_UNIT,
+    activeState: 'active',
+    subState: 'running',
+    startedAtMs: Date.parse('2026-07-26T16:09:43Z'),
+    logPath: `/tmp/${DEPLOY_UNIT}.log`,
+    logMtimeMs: null,
+    source: 'systemd',
+    ...over,
+  });
+
+  it('THE REGRESSION: green code ahead + a deploy RUNNING no longer reports plain green-deployable', () => {
+    const snap = mkSnap({ consecutiveReds: 0, fireStale: false }, { deployedBehindGreenPin: 2 });
+    // Before the fix this was 'green-deployable' with canTriggerGreen:true — the exact reading
+    // that invited a second trigger 20s into a live deploy.
+    expect(computeDeployStatus(snap).state).toBe('green-deployable');
+    const s = computeDeployStatus(snap, inFlight());
+    expect(s.state).toBe('deploy-in-flight');
+    expect(s.canTriggerGreen).toBe(false);
+  });
+
+  it('the recommendation names the unit, the log to watch, and forbids a second trigger', () => {
+    const s = computeDeployStatus(mkSnap({}, { deployedBehindGreenPin: 2 }), inFlight());
+    expect(s.recommendation).toContain(DEPLOY_UNIT);
+    expect(s.recommendation).toContain(`/tmp/${DEPLOY_UNIT}.log`);
+    expect(s.recommendation).toMatch(/do NOT trigger another/i);
+    // and it must warn off the discriminator that caused the incident
+    expect(s.recommendation).toMatch(/\bps\b/);
+  });
+
+  it('deploy-in-flight OUTRANKS every parked state — each of them reads as "nothing is happening"', () => {
+    const cases: [string, GitPipelineSnapshot][] = [
+      ['green ahead', mkSnap({}, { deployedBehindGreenPin: 2 })],
+      ['gate red', mkSnap({ consecutiveReds: 3 }, { deployedBehindGreenPin: 0 })],
+      ['staging buffered', mkSnap({}, { deployedBehindGreenPin: 0, greenPinBehindStaging: 4 })],
+      ['up to date', mkSnap({}, { deployedBehindGreenPin: 0 })],
+    ];
+    for (const [label, snap] of cases) {
+      expect(computeDeployStatus(snap, inFlight()).state, label).toBe('deploy-in-flight');
+    }
+  });
+
+  it('an in-flight deploy makes canTriggerGreen false even with green code ahead', () => {
+    const s = computeDeployStatus(mkSnap({}, { deployedBehindGreenPin: 5 }), inFlight());
+    expect(s.canTriggerGreen).toBe(false);
+  });
+
+  it('a FINISHED unit restores the normal decision tree (no sticky in-flight)', () => {
+    const s = computeDeployStatus(
+      mkSnap({}, { deployedBehindGreenPin: 2 }),
+      inFlight({ active: false, activeState: 'inactive' }),
+    );
+    expect(s.state).toBe('green-deployable');
+    expect(s.canTriggerGreen).toBe(true);
+  });
+
+  it('deployInFlight rides on the status object for the tool to surface', () => {
+    expect(computeDeployStatus(mkSnap({}, {}), inFlight()).deployInFlight?.active).toBe(true);
+  });
+
+  it('BACK-COMPAT: the pure one-arg call (staleness watchdog) is unchanged and reports null', () => {
+    const s = computeDeployStatus(mkSnap({}, { deployedBehindGreenPin: 2 }));
+    expect(s.deployInFlight).toBeNull();
+    expect(s.state).toBe('green-deployable');
+    expect(s.canTriggerGreen).toBe(true);
+  });
+});
+
+describe('readDeployStatus wiring', () => {
+  it('populates deployInFlight from the probe and lets it drive the state', async () => {
+    const s = await readDeployStatus({
+      loadSnapshot: async () => mkSnap({}, { deployedBehindGreenPin: 2 }),
+      loadInFlight: async () =>
+        computeDeployInFlight({ props: parseSystemctlShow(RUNNING_SHOW), logPath: '/l', logMtimeMs: null }),
+    });
+    expect(s.deployInFlight?.active).toBe(true);
+    expect(s.state).toBe('deploy-in-flight');
+  });
+
+  it('a THROWING probe never fails the status read — it degrades to null', async () => {
+    const s = await readDeployStatus({
+      loadSnapshot: async () => mkSnap({}, { deployedBehindGreenPin: 2 }),
+      loadInFlight: async () => {
+        throw new Error('systemd exploded');
+      },
+    });
+    expect(s.deployInFlight).toBeNull();
+    expect(s.state).toBe('green-deployable');
   });
 });

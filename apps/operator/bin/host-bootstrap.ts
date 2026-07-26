@@ -1145,7 +1145,7 @@ export function runBootstrap(): void {
       // drop-in never took effect and every loaded boot mass-timed-out at 30s.
       const result = await bootSubstrateWithFallback({});
       console.log(
-        `[hyperbee-substrate] boot complete in ${Date.now() - t0}ms — attempted=${result.attempted} booted=${result.booted} alreadyBooted=${result.alreadyBooted} failed=${result.failed}`,
+        `[hyperbee-substrate] boot complete in ${Date.now() - t0}ms — attempted=${result.attempted} booted=${result.booted} alreadyBooted=${result.alreadyBooted} failed=${result.failed} deferred=${result.deferred}`,
       );
       if (result.failed > 0) {
         for (const r of result.results) {

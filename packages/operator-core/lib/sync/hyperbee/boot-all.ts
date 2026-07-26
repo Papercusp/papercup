@@ -1081,11 +1081,19 @@ async function resolveActivationDeferrals(
       const bySlug = new Map(reg.projects.map((pr) => [pr.slug, pr]));
       for (const slug of slugs) {
         const pr = bySlug.get(slug);
+        // UNKNOWN PROVENANCE ⇒ ACTIVATE. A pair the registry has no entry for
+        // (a caller-injected discovery seam, a registry/discovery disagreement)
+        // is one we know NOTHING about — not one we know to be idle. Judging it
+        // on absent facts would read "no pending rows, no presence, doesn't
+        // federate" and defer it, which is the fail-CLOSED direction this whole
+        // module refuses. Omitting it from `entries` leaves it out of
+        // `decision.defer`, so it boots.
+        if (!pr) continue;
         entries.push({
           workspaceId: wsId,
           harnessSlug: slug,
-          harnessKind: pr?.harness_kind,
-          hiveSlug: pr?.hive_slug,
+          harnessKind: pr.harness_kind,
+          hiveSlug: pr.hive_slug,
         });
       }
     }
