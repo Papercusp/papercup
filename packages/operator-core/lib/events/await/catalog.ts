@@ -570,6 +570,64 @@ export function findRequiredParamPrefixMatch(
   return undefined;
 }
 
+/**
+ * EI-18701276960172209 — a catalog-based "did you mean…?" suggestion for a key
+ * that matches NO family ({@link keyMatchesCatalog} false). A self-declared
+ * announced gate is deliberately exempted from the orphan-await guard above (an
+ * announced-but-unfired gate is normally legitimate — a hand-minted pair-emit key
+ * is expected to have no catalog entry yet), but that exemption also hid the live
+ * incident this closes: an agent declared `green-gate-verdict` expecting the
+ * green-checkpoint pipeline to fire it, when the REAL catalogued keys were
+ * `release:green:<pipeline>` / `green-checkpoint:red:<pipeline>` — nothing was
+ * ever going to emit the invented name, and nothing said so.
+ *
+ * Deliberately NOT a fuzzy edit-distance search (that machinery already exists
+ * for near-identical typos via {@link findNearMissKeys} in ./store, which compares
+ * against other ACTIVE rows, not the static catalog). This is a much cheaper,
+ * good-enough heuristic for the common case: split both the awaited key and each
+ * family's prefix into lowercase alnum tokens, and suggest any family that shares
+ * at least one token of length >= 4 (short tokens like "id"/"ws" are too generic
+ * to mean anything). `green-gate-verdict` → tokens {green, gate, verdict}; the
+ * `release:green` family's prefix tokenizes to {release, green} → shared "green"
+ * → suggested. Returns up to `limit` matched family PREFIXES (not full templates),
+ * deduped, in registry order — never throws, worst case is an empty array.
+ */
+export function findCatalogNearMiss(
+  key: string,
+  entries: readonly EventCatalogEntry[] = EVENT_CATALOG,
+  limit = 3,
+): string[] {
+  const tokenize = (s: string): Set<string> =>
+    new Set(
+      String(s ?? '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 4),
+    );
+  const keyTokens = tokenize(key);
+  if (keyTokens.size === 0) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const e of entries) {
+    const prefix = familyKeyPrefix(e);
+    if (!prefix || seen.has(prefix)) continue;
+    const prefixTokens = tokenize(prefix);
+    let overlaps = false;
+    for (const t of prefixTokens) {
+      if (keyTokens.has(t)) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (overlaps) {
+      seen.add(prefix);
+      out.push(prefix);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * INSTALLED TIER (cupboard-public-release-2026-07-12 P-006, D-003).
  *

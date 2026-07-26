@@ -181,6 +181,67 @@ export const DARK_FLAGS = new Map([]);
     expect(mismatch.evidence.partitionExcerpts.join(' ')).toContain('11,730 rows');
     expect(mismatch.evidence.partitionExcerpts.join(' ')).toContain('2026-06-22');
   });
+
+  // ── WI-6045: the SECOND claim-of-darkness form ────────────────────────────────────
+  // Until this, claimedDefault() keyed only on a literal "DEFAULT OFF". An entry that
+  // asserted its darkness purely as membership ("Listed in KNOWN_DARK_FLAGS") classified
+  // as null and was SKIPPED — so the guard never even asked the question about it.
+
+  it('THE WI-6045 CASE: a comment claiming darkness ONLY as "Listed in KNOWN_DARK_FLAGS" (no literal DEFAULT OFF) is now classified, not skipped', () => {
+    // Verbatim shape of the real PRESENCE_GOSSIP comment that slipped past the guard.
+    const src = `
+export const FLAGS = {
+  // CUTOVER flag: every peer must carry the gossip READER before a
+  // writer flips (a gossip-only announcer is invisible to a log-only reader), so it ships
+  // dark until both dogfood machines updated; owner flips after a 2-machine verify.
+  // Listed in KNOWN_DARK_FLAGS (cutover).
+  PRESENCE_GOSSIP: "papercusp-presence-gossip",
+} as const;
+export const DARK_FLAGS = new Map([]);
+`;
+    const entries = parseFlagEntries(src);
+    // Before WI-6045 this was null (skipped). It must now read as a dark claim.
+    expect(claimedDefault(entries[0])).toBe('off');
+    const mismatches = findMismatches(entries, extractDarkFlagKeys(src));
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]).toMatchObject({ key: 'PRESENCE_GOSSIP', kind: 'claims-dark-but-not-listed' });
+  });
+
+  it('a membership claim that AGREES with DARK_FLAGS stays consistent (the new rule does not fire on correct entries)', () => {
+    const src = `
+export const FLAGS = {
+  // ships dark until the two-machine proof lands. Listed in KNOWN_DARK_FLAGS (cutover).
+  GATED: "papercusp-gated",
+} as const;
+export const DARK_FLAGS = new Map([
+  [FLAGS.GATED, { case: 'cutover', reason: 'awaiting the two-machine proof' }],
+]);
+`;
+    const entries = parseFlagEntries(src);
+    expect(claimedDefault(entries[0])).toBe('off');
+    expect(findMismatches(entries, extractDarkFlagKeys(src))).toEqual([]);
+  });
+
+  it('does NOT false-positive on the UNQUOTED negative narration "was never actually added to the DARK_FLAGS map"', () => {
+    // The precision guard specific to this rule. The repo's correction convention often
+    // narrates the map in the NEGATIVE, and unlike the WI-3855 case at the top of this
+    // file that narration is NOT always inside quotes — so normalize()'s quote-stripping
+    // cannot save us here. Anchoring the pattern on "listed in" is what keeps this green:
+    // a looser "mentions DARK_FLAGS" rule would flip this correct, default-ON entry to a
+    // bogus 'off' claim and red the build.
+    const src = `
+export const FLAGS = {
+  // DEFAULT ON (WI-3855, 2026-07-11: this comment's own claim was never actually added
+  // to the DARK_FLAGS map, so the 2026-06-29 P-011 inversion silently made it live
+  // default-ON — confirmed SAFE as-is, not a drive-by flip).
+  CORRECTED: "papercusp-corrected",
+} as const;
+export const DARK_FLAGS = new Map([]);
+`;
+    const entries = parseFlagEntries(src);
+    expect(claimedDefault(entries[0])).toBe('on');
+    expect(findMismatches(entries, extractDarkFlagKeys(src))).toEqual([]);
+  });
 });
 
 describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {

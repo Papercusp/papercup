@@ -1188,9 +1188,21 @@ export const FLAGS = {
   // OFF = today's log-append announce loop (wire-presence.ts), byte-identical. ON = the
   // announce loop broadcasts device-signed gossip frames; pot:leave publishes a signed
   // del tombstone frame. CUTOVER flag: every peer must carry the gossip READER before a
-  // writer flips (a gossip-only announcer is invisible to a log-only reader), so it ships
-  // dark until both dogfood machines updated; owner flips after a 2-machine verify.
-  // Listed in KNOWN_DARK_FLAGS (cutover).
+  // writer flips (a gossip-only announcer is invisible to a log-only reader).
+  // DEFAULT ON — GRADUATED 2026-07-16 (LIVE-1 P-059 drill; see the graduation note in the
+  // DARK_FLAGS block below). The cutover gate was MET: both dogfood machines (tower + mac
+  // VM) on reader-carrying builds (G3 verified static + live), and the 2-machine presence-
+  // federation verify ran on the tower↔VM rig per
+  // docs/plans/CUTOVER-presence-gossip-2026-07-16.md. Live-confirmed 2026-07-26:
+  // operator_flag_overrides carries papercusp-presence-gossip=true for papercusp-workspace
+  // (set 2026-07-16), so the derived default and the live override AGREE. Rollback = flip
+  // OFF + a presence-loop reboot (the reader stays wired either way).
+  // ⚠ This comment used to end "so it ships dark until both dogfood machines updated;
+  // owner flips after a 2-machine verify. Listed in KNOWN_DARK_FLAGS (cutover)" and was
+  // left stale by that graduation, claiming a DARK_FLAGS membership the flag no longer has
+  // (WI-6045). Note for anyone reading the cutover doc: its "Live-verified 2026-07-16:
+  // papercusp-presence-gossip = OFF" line is a PRE-FLIP baseline inside a "why this
+  // matters" rationale section, not current status — reconciling that cost real time.
   PRESENCE_GOSSIP: "papercusp-presence-gossip",
   // cross-machine-coord-parity-and-trust-2026-07-01 P-021 live cutover (WI-1491):
   // switches lockAuthorityFor/lockAuthorityForHive's winner-selection algorithm from

@@ -20,6 +20,7 @@ import {
   keyMatchesCatalog,
   mergeInstalledEventCatalog,
   findRequiredParamPrefixMatch,
+  findCatalogNearMiss,
   type EventCatalogEntry,
 } from '../../events/await/catalog';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
@@ -404,6 +405,46 @@ export default defineTool({
       if (evidence.value && evidence.value.fires > 0) {
         emitterEvidence = evidence.value;
         unknownEventKey = false;
+      }
+    }
+
+    // ── EI-18701276960172209 (the "green-gate-verdict" incident): a SELF- (or
+    // peer-) DECLARED gate is exempted from the orphan-await guard above (an
+    // announced-but-unfired gate is normally legitimate — a hand-minted pair-emit
+    // key has no catalog entry yet, by design), but that exemption silently hid a
+    // dead wait: an agent declared `green-gate-verdict`, expecting the
+    // green-checkpoint pipeline to fire it, when the pipeline actually emits
+    // `release:green:<pipeline>` — NOTHING was ever going to fire the invented
+    // key, and nothing said so. "Announced" only proves someone WANTS this key to
+    // fire; it does not prove anything ever WILL. So: cross-check the catalog +
+    // fire history for an announced gate too, but phrase it as an advisory about
+    // the GATE, never as "this will time out" (an intentional pair-emit gate that
+    // simply hasn't fired YET is not a bug). Advisory only — never blocks
+    // registration, and skipped once the emitter-evidence check above already ran
+    // for THIS key (it can't have, since that only runs when `!announcedGate`).
+    let noKnownEmitterForAnnouncedGate: { catalogNearMiss: string[] } | null = null;
+    if (!patternAwait && announcedGate) {
+      const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+      const probe = await withBoundedTimeout(
+        (async () => {
+          const installed = await readInstalledUnitEvents({
+            harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+          });
+          return mergeInstalledEventCatalog(installed).entries as readonly EventCatalogEntry[];
+        })(),
+        { fallback: null, timeoutMs: 1_500, label: 'events-await:announcedGateEmitterCheck' },
+      );
+      // A null probe (timeout/discovery failure) ⇒ cannot be sure ⇒ say nothing.
+      if (probe.value && !keyMatchesCatalog(eventKey, probe.value)) {
+        const evidence = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
+          fallback: null,
+          timeoutMs: 1_000,
+          label: 'events-await:announcedGateFireEvidence',
+        });
+        // No catalog family AND no live fire history ⇒ genuinely no known emitter.
+        if (!evidence.value || evidence.value.fires === 0) {
+          noKnownEmitterForAnnouncedGate = { catalogNearMiss: findCatalogNearMiss(eventKey, probe.value) };
+        }
       }
     }
 

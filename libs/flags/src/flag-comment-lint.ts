@@ -43,6 +43,21 @@
  *      together (e.g. a flag's comment references a sibling flag's own default).
  *      Precision over recall: an unresolvable case is left to human review instead of
  *      being force-classified.
+ *
+ *   4. DARKNESS IS CLAIMED IN **TWO** ESTABLISHED FORMS IN THIS FILE, AND BOTH COUNT
+ *      (WI-6045). The obvious one is the literal declaration "DEFAULT OFF". The other
+ *      is a bare membership assertion — "Listed in KNOWN_DARK_FLAGS" — used by entries
+ *      that describe the gate in prose instead of declaring a default, e.g.
+ *        ... it ships dark until both dogfood machines updated; owner flips after a
+ *        2-machine verify. Listed in KNOWN_DARK_FLAGS (cutover).
+ *      Recognising only the first form left a real blind spot: PRESENCE_GOSSIP carried
+ *      exactly that text with NO literal "DEFAULT OFF", so it classified as null and
+ *      the lint never looked at it — while the flag had in fact been graduated OUT of
+ *      DARK_FLAGS (2026-07-16) and was live default-ON. The comment, not the code, was
+ *      the stale side; but the guard is supposed to ASK the question either way, and it
+ *      silently skipped it. Note the asymmetry that keeps this precise: a membership
+ *      claim is only ever evidence of 'off' — the absence of one implies nothing, so
+ *      there is no corresponding "claims light" form to add here.
  */
 
 export interface FlagCommentEntry {
@@ -130,12 +145,25 @@ function normalize(comment: string): string {
 const DEFAULT_OFF_RE = /\bDEFAULT[\s-]+OFF\b/i;
 const DEFAULT_ON_RE = /\bDEFAULT[\s-]+ON\b/i;
 
+/** The second claim-of-darkness form (module doc, normalization step 4): a present-tense
+ *  assertion of DARK_FLAGS membership, e.g. "Listed in KNOWN_DARK_FLAGS (cutover)".
+ *
+ *  Deliberately anchored on "listed in" rather than a bare mention of DARK_FLAGS, because
+ *  the repo's OWN correction convention narrates the map in the NEGATIVE while explaining a
+ *  past fix — "…was never actually added to the DARK_FLAGS map, so P-011 derived it live
+ *  default-ON". That narration is frequently UNQUOTED (so `normalize()`'s quote-stripping
+ *  does not remove it) and appears in entries that are correctly default-ON. A looser
+ *  pattern would flip every one of those to a false 'off' claim and red the build on
+ *  entries that are entirely fine. */
+const LISTED_DARK_RE = /\blisted in\s+(?:the\s+)?(?:KNOWN_)?DARK_FLAGS\b/i;
+
 /** The entry's own claimed default, per the module doc's conservative parsing rules.
  *  Returns null (unclassifiable / ambiguous — skip, never assert) when the normalized
- *  comment contains both an unquoted "DEFAULT ON" and "DEFAULT OFF", or neither. */
+ *  comment claims both 'on' and 'off', or neither. */
 export function claimedDefault(entry: FlagCommentEntry): ClaimedDefault {
   const normalized = normalize(entry.comment);
-  const hasOff = DEFAULT_OFF_RE.test(normalized);
+  // Either established form counts as claiming dark; see module doc step 4.
+  const hasOff = DEFAULT_OFF_RE.test(normalized) || LISTED_DARK_RE.test(normalized);
   const hasOn = DEFAULT_ON_RE.test(normalized);
   if (hasOff === hasOn) return null; // both or neither ⇒ unclassifiable, skip
   return hasOff ? 'off' : 'on';
