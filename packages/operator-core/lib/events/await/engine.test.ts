@@ -47,6 +47,11 @@ const h = vi.hoisted(() => ({
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
   // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.
   listEventKeySubscribers: vi.fn(async (): Promise<Array<{ subscriber_id: string; delivery_mode: string }>> => []),
+  // EI-18673058981655804: the coord-deafness read-watermark the redundant-inbox-wake
+  // suppression check consults. Empty by default (no read on record) — the same
+  // fail-open default as the real fail-soft path, so existing tests that don't care
+  // about this never suppress anything.
+  lastInboxReadAtBatch: vi.fn(async (_ownerIds: string[]): Promise<Map<string, string>> => new Map()),
 }));
 
 vi.mock('./store', () => h.store);
@@ -56,8 +61,12 @@ vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({ listEvent
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
+vi.mock('../../agent-tools/coordination/inbox-read-freshness', () => ({
+  lastInboxReadAtBatch: h.lastInboxReadAtBatch,
+}));
 
-const { emitAwaitedEvent, pumpWakeDeliveries, cancelSupersededCandidateAwaits } = await import('./engine');
+const { emitAwaitedEvent, pumpWakeDeliveries, cancelSupersededCandidateAwaits, isInboxWakeGroupRedundant } =
+  await import('./engine');
 
 function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
   return {
@@ -613,6 +622,215 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     );
     expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
     expect(stats.failed).toBe(1);
+  });
+});
+
+describe('isInboxWakeGroupRedundant (EI-18673058981655804: redundant-inbox-wake suppression, pure core)', () => {
+  const inboxKey = 'coord:inbox-wake:su-a';
+
+  it('true: a non-urgent inbox-wake delivery created at/before the last read', () => {
+    expect(
+      isInboxWakeGroupRedundant(
+        [{ eventKey: inboxKey, createdAt: new Date(1000).toISOString(), urgent: false }],
+        new Date(2000).toISOString(),
+      ),
+    ).toBe(true);
+    // Equal timestamps also count as covered (<=).
+    expect(
+      isInboxWakeGroupRedundant(
+        [{ eventKey: inboxKey, createdAt: new Date(2000).toISOString(), urgent: false }],
+        new Date(2000).toISOString(),
+      ),
+    ).toBe(true);
+  });
+
+  it('false: no read on record at all (fail-open)', () => {
+    expect(
+      isInboxWakeGroupRedundant([{ eventKey: inboxKey, createdAt: new Date(1000).toISOString(), urgent: false }], null),
+    ).toBe(false);
+    expect(
+      isInboxWakeGroupRedundant(
+        [{ eventKey: inboxKey, createdAt: new Date(1000).toISOString(), urgent: false }],
+        undefined,
+      ),
+    ).toBe(false);
+  });
+
+  it('false: the message is NEWER than the last read (genuinely new mail)', () => {
+    expect(
+      isInboxWakeGroupRedundant(
+        [{ eventKey: inboxKey, createdAt: new Date(5000).toISOString(), urgent: false }],
+        new Date(2000).toISOString(),
+      ),
+    ).toBe(false);
+  });
+
+  it('false: an urgent delivery is never suppressed even if covered', () => {
+    expect(
+      isInboxWakeGroupRedundant(
+        [{ eventKey: inboxKey, createdAt: new Date(1000).toISOString(), urgent: true }],
+        new Date(2000).toISOString(),
+      ),
+    ).toBe(false);
+  });
+
+  it('false: a non-inbox-wake key in the group (a genuine events:await) is never suppressed', () => {
+    expect(
+      isInboxWakeGroupRedundant(
+        [{ eventKey: 'release:green:papercusp', createdAt: new Date(1000).toISOString(), urgent: false }],
+        new Date(2000).toISOString(),
+      ),
+    ).toBe(false);
+  });
+
+  it('false: a MIXED group — one covered inbox-wake + one genuine event — is never suppressed', () => {
+    expect(
+      isInboxWakeGroupRedundant(
+        [
+          { eventKey: inboxKey, createdAt: new Date(1000).toISOString(), urgent: false },
+          { eventKey: 'release:green:papercusp', createdAt: new Date(1000).toISOString(), urgent: false },
+        ],
+        new Date(2000).toISOString(),
+      ),
+    ).toBe(false);
+  });
+
+  it('false: an empty group', () => {
+    expect(isInboxWakeGroupRedundant([], new Date(2000).toISOString())).toBe(false);
+  });
+});
+
+describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake suppression', () => {
+  it('suppresses a single inbox-wake delivery already covered by the subscriber\'s last read — no turn spent', async () => {
+    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 30,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        createdAt: new Date(1000).toISOString(),
+      }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(30, 'suppressed-redundant', 1);
+    expect(stats.delivered).toBe(1);
+    expect(stats.suppressed).toBe(1);
+    expect(stats.deferred).toBe(0);
+  });
+
+  it('does NOT suppress when the inbox-wake message postdates the last read (genuinely new mail)', async () => {
+    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(1000).toISOString()]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 31,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        createdAt: new Date(5000).toISOString(),
+      }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(31, 'resume', 1);
+    expect(stats.suppressed).toBe(0);
+    expect(stats.delivered).toBe(1);
+  });
+
+  it('does NOT suppress when there is no read on record (fail-open, unchanged status quo)', async () => {
+    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map()); // no watermark for su-a
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 32,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        createdAt: new Date(1000).toISOString(),
+      }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('does NOT suppress a non-inbox-wake key even when it would otherwise look covered', async () => {
+    // No plausible "last read" concept applies to an ordinary events:await key — the
+    // cheap pre-check must gate this before any watermark lookup even happens.
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 33,
+        subscriberId: 'su-a',
+        eventKey: 'release:green:papercusp',
+        createdAt: new Date(1000).toISOString(),
+      }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.lastInboxReadAtBatch).not.toHaveBeenCalled();
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('does NOT suppress an urgent inbox-wake delivery even when covered', async () => {
+    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 34,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        createdAt: new Date(1000).toISOString(),
+        urgent: true,
+      }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(stats.suppressed).toBe(0);
+  });
+
+  it('a MIXED coalesced group (one covered inbox-wake + one genuine event) still fires — never suppressed', async () => {
+    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 35,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        createdAt: new Date(1000).toISOString(),
+      }),
+      workRow({
+        id: 36,
+        subscriberId: 'su-a',
+        eventKey: 'release:green:papercusp',
+        createdAt: new Date(2000).toISOString(),
+      }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(stats.suppressed).toBe(0);
+    expect(stats.delivered).toBe(1);
+    expect(stats.coalesced).toBe(1);
+  });
+
+  it('suppresses a coalesced GROUP of multiple inbox-wake deliveries all covered — siblings settle without a turn', async () => {
+    h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(9000).toISOString()]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 37,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        createdAt: new Date(1000).toISOString(),
+      }),
+      workRow({
+        id: 38,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        createdAt: new Date(2000).toISOString(),
+      }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).not.toHaveBeenCalled();
+    // Newest (id 38) is the headline settled channel='suppressed-redundant'; id 37 coalesces into it.
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(38, 'suppressed-redundant', 2);
+    expect(h.store.markDeliveriesCoalesced).toHaveBeenCalledWith([37], 38);
+    expect(stats.suppressed).toBe(1);
+    expect(stats.delivered).toBe(1);
+    expect(stats.coalesced).toBe(1);
   });
 });
 

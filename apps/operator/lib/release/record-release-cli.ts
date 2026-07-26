@@ -503,7 +503,7 @@ export function scanArtifacts(
         // entries with 245-byte ones — a Mac tester downloading resource-fork
         // metadata. Same rule as isSpannedInstaller: a download that cannot install
         // is worse than an absent one, because the page looks complete.
-        if (name.startsWith('.__MUTATION__')) continue;
+        if (name.startsWith('._')) continue;
         const kind = classifyArtifact(name);
         if (!kind) continue;
         const full = path.join(dir, name);

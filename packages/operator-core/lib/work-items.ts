@@ -3093,6 +3093,15 @@ export async function setWorkItemClaimHold(
       ],
     )
     .catch((err: unknown) => {
+      // Swallow "relation does not exist" (Postgres 42P01) quietly — many lightweight test
+      // fixtures (createFreshPgDb + a hand-picked DDL subset, not the full baseline) never
+      // create harness_shared.audit_log, and this write is genuinely fire-and-forget/optional
+      // (never blocks or fails the actual hold). A vitest-fail-on-console guard elsewhere in
+      // the suite fails a test on ANY console.warn, so warning here on an EXPECTED-missing
+      // table in a test fixture would regress every claim-hold test using that fixture; still
+      // warn on anything else (a real prod audit-write failure stays visible).
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === '42P01') return;
       console.warn('[setWorkItemClaimHold] audit write failed:', (err as Error)?.message);
     });
   return { id, harness: located[0].harness_slug ?? null, hold, applicable: true };

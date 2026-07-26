@@ -39,13 +39,13 @@ export default defineTool({
   name: 'work_items:claimable',
   profile: 'engineer',
   description:
-    "The authoritative \"what issue-family work can I claim RIGHT NOW\" read — bug/change/task rows that survive the spec filter AND all ~12 real claim floors, via the SAME oracle scheduler:get_next runs (NOT `status='open'`, which overcounts ~13×). READ-ONLY: never claims. Returns { ok, harness, claimableCount, matchedByFilter, returned, claimable:[{ id, kind, title, status, severity, plan, featureOrder, createdTs }], excludedBreakdown, spec }. `claimableCount` is the trustworthy count a drain/wind-down call hinges on; `excludedBreakdown` buckets OVERLAP (a row can be stranded by several floors) so they do NOT sum. An unrecognized `spec` (neither a live fleet slug nor a live specId) returns `{ ok:false, error, candidates }` — never a silent fallback to the whole backlog.",
+    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses (not `status='open'`, which overcounts ~13×). READ-ONLY: never claims. Returns { ok, harness, claimableCount, matchedByFilter, returned, claimable:[{ id, kind, title, status, severity, plan, featureOrder, createdTs }], excludedBreakdown, spec }. `claimableCount` is the trustworthy drain/wind-down number; `excludedBreakdown` buckets OVERLAP (rows can hit several floors) so they don't sum. An unrecognized `spec` (no matching fleet/specId) returns `{ ok:false, error, candidates }` — never a silent whole-backlog fallback.",
   guidance: {
-    when: "You need to know how many / which issue-family items (bugs/changes/tasks) are ACTUALLY claimable in a harness — before a wind-down/drain call, a backlog read, or picking work. This is the SSOT; use it instead of raw SQL on work_items or the claimable view.",
+    when: "You need how many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a wind-down/drain call, a backlog read, or picking work. SSOT; use instead of raw SQL on work_items or the claimable view.",
     notWhen:
-      "You want to TAKE an item → work_items:claim / work_items:claim_next / scheduler:get_next (those claim; this only reports). Feature-family (F-…) claimability or a full backlog incl. gated rows → work_items:list.",
+      "Taking an item → work_items:claim / claim_next / scheduler:get_next (this only reports). Feature-family (F-…) claimability or a full backlog incl. gated rows → work_items:list.",
     chaining:
-      "work_items:claimable → work_items:claim { id } (take a surfaced row) · or scheduler:get_next (let the queue hand you the top-ranked one).",
+      "work_items:claimable → work_items:claim { id } (take a surfaced row) · or scheduler:get_next (top-ranked pick).",
     seeAlso: [
       'scheduler:get_next (claims the single top-ranked eligible item — same floors)',
       'work_items:observe (claimability of specific ids you already have)',
@@ -53,7 +53,7 @@ export default defineTool({
     byRole: {
       mug: {
         when:
-          "Before draining/winding a fleet down, confirm claimableCount===0 here (the drain-stamp records this same oracle). A non-zero count with a bare `status='open'` justification means the drain is premature.",
+          "Before winding a fleet down, confirm claimableCount===0 here (the drain-stamp records this oracle). A count justified only by `status='open'` means the drain is premature.",
       },
     },
   },

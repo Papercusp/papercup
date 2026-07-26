@@ -647,6 +647,54 @@ export function extractFailingTestNames(out: string): string[] {
   return [...set].sort().slice(0, 50);
 }
 
+/** Max failing case names quoted per file in an isolation log line — keeps one
+ *  pathological file (a 200-case suite) from burying the rest of the verdict. */
+export const ISOLATION_MAX_NAMED_CASES = 3;
+
+/** EI-18673560248447615: the failing CASE names attributed to the FILE they failed in.
+ *
+ *  `extractFailingTestNames` returns a FLAT list across the whole run, which is fine for
+ *  the canary but useless to the isolation loop — that loop reasons one file at a time and
+ *  needs to name the cases for THAT file. Without this, the checkpoint log says a file
+ *  "still failed" and (since EI-18669336904251384) that load was not the cause, but never
+ *  WHAT failed: the case name lives only in the separate multi-thousand-line full-suite log
+ *  under ~/.papercusp/checkpoint-logs/. Reading `× keeps audited active surfaces free of
+ *  direct cyan literals 173ms` on the isolation line itself ends triage immediately.
+ *
+ *  Parses vitest's per-file rollup structure: a `❯ <file> (N tests | M failed)` header
+ *  followed by that file's case rows. Bare `❯ <group>` lines (nested describes, no
+ *  `(N tests | …)` suffix) are NOT file headers and must not re-key the accumulator. */
+export function extractFailingCasesByFile(out: string): Map<string, string[]> {
+  const byFile = new Map<string, string[]>();
+  let current: string | null = null;
+  for (const rawLine of stripAnsi(out).split('\n')) {
+    const fileHeader = /^\s*❯\s+(\S+)\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/.exec(rawLine);
+    if (fileHeader) {
+      current = fileHeader[1];
+      if (!byFile.has(current)) byFile.set(current, []);
+      continue;
+    }
+    if (!current) continue;
+    const failedCase = /^\s*×\s+(.+?)(?:\s+\d+ms)?\s*$/.exec(rawLine);
+    if (failedCase) {
+      const names = byFile.get(current)!;
+      const name = failedCase[1].trim();
+      if (!names.includes(name)) names.push(name);
+    }
+  }
+  return byFile;
+}
+
+/** Render the failing cases for one file as a log suffix, or '' when none were parsed
+ *  (a build break, a non-vitest red, or output shapes this parser doesn't cover — the
+ *  caller's line must still read correctly with nothing appended). */
+export function describeFailingCases(cases: string[] | undefined): string {
+  if (!cases || cases.length === 0) return '';
+  const shown = cases.slice(0, ISOLATION_MAX_NAMED_CASES);
+  const more = cases.length - shown.length;
+  return ` — failed case(s): ${shown.map((c) => `"${c}"`).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`;
+}
+
 /* ── stale-candidate re-triage ────────────────────────────────────────────────
  *
  * The gate judges a QUIET commit (≥240s old), never the tip — so on a tree this
@@ -1146,6 +1194,9 @@ export async function attemptFlakeAbsorption(
   const now = opts.now ?? (() => Date.now());
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   try {
+    // EI-18673560248447615: parsed once up front so every log line below can NAME the
+    // cases that failed, instead of sending the reader to the separate full-suite log.
+    const casesByFile = extractFailingCasesByFile(fullOutput);
     const originalFailing = parseFailingFilesByWorkspace(fullOutput);
     if (originalFailing.length === 0) {
       return keep('isolation: no parseable failing test files (build break / non-vitest red) — gate stays red');
@@ -1195,7 +1246,7 @@ export async function attemptFlakeAbsorption(
               ? `(took ${result.durationMs}ms — consistent with ambient host load starving the isolated re-run)`
               : `(finished in ${result.durationMs}ms — too fast to be load-starved; likely a real break or a stale candidate, NOT ambient load)`;
         log(
-          `isolation: ${f.workspace}::${f.file} still failing after attempt ${attempt} ${attribution} — retrying (${retryDeadline - now()}ms of retry budget remaining)`,
+          `isolation: ${f.workspace}::${f.file} still failing after attempt ${attempt} ${attribution}${describeFailingCases(casesByFile.get(f.file))} — retrying (${retryDeadline - now()}ms of retry budget remaining)`,
         );
         await sleep(retryDelayMs);
         result = await runOnce(f);
@@ -1209,8 +1260,14 @@ export async function attemptFlakeAbsorption(
       log(note);
       return { absorbedToGreen: true, flakeSuspects: decision.flakeAbsorbed, note };
     }
+    // EI-18673560248447615: this note is the gate's VERDICT line — the one an agent reads
+    // to decide whether a red is theirs. Naming the failing cases here is what turns
+    // "some file broke, go read a 5000-line log" into an actionable verdict.
+    const namedStillFailing = decision.stillFailing.map(
+      (label) => `${label}${describeFailingCases(casesByFile.get(label.split('::')[1] ?? label))}`,
+    );
     return keep(
-      `isolation: ${decision.stillFailing.length} file(s) STILL FAILED in isolation — real break, gate stays red: ${decision.stillFailing.join(', ')}`,
+      `isolation: ${decision.stillFailing.length} file(s) STILL FAILED in isolation — real break, gate stays red: ${namedStillFailing.join('; ')}`,
     );
   } catch (e) {
     // Any unexpected fault in the absorption attempt defaults to the ORIGINAL verdict.

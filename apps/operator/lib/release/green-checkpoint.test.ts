@@ -12,6 +12,9 @@ import {
   quietCutSecFromEnv,
   extractFailingTests,
   extractFailingTestNames,
+  extractFailingCasesByFile,
+  describeFailingCases,
+  ISOLATION_MAX_NAMED_CASES,
   stripAnsi,
   classifyRedAgainstTip,
   autoRefireCapFromEnv,
@@ -1139,6 +1142,54 @@ describe('extractFailingTestNames (human-facing case names)', () => {
 
   it('stays empty on a green run', () => {
     expect(extractFailingTestNames('Tests 1200 passed')).toEqual([]);
+  });
+});
+
+describe('extractFailingCasesByFile / describeFailingCases (EI-18673560248447615)', () => {
+  // The REAL shape from the 2026-07-26T02-26-57Z full-suite log, whose failing case
+  // name was reachable only by opening that separate ~5000-line file.
+  const realWorldOut = [
+    '\x1b[31m ❯\x1b[39m app/_lints/design-primitives.test.ts \x1b[2m(\x1b[22m\x1b[2m28 tests\x1b[22m\x1b[2m | \x1b[22m\x1b[31m1 failed\x1b[39m\x1b[2m)\x1b[22m\x1b[33m 1996\x1b[2mms\x1b[22m\x1b[39m',
+    '     \x1b[33m\x1b[2m✓\x1b[22m\x1b[39m blocks new native <select> controls in app UI \x1b[33m 513\x1b[2mms\x1b[22m\x1b[39m',
+    '\x1b[31m     \x1b[31m×\x1b[31m keeps audited active surfaces free of direct cyan literals\x1b[39m\x1b[32m 173\x1b[2mms\x1b[22m\x1b[39m',
+  ].join('\n');
+
+  it('attributes the failing case to the file it failed in', () => {
+    const byFile = extractFailingCasesByFile(realWorldOut);
+    expect(byFile.get('app/_lints/design-primitives.test.ts')).toEqual([
+      'keeps audited active surfaces free of direct cyan literals',
+    ]);
+  });
+
+  it('does NOT let a nested describe row (no "(N tests | M failed)" suffix) re-key the file', () => {
+    const out = [
+      ' ❯ lib/a.test.ts (5 tests | 2 failed) 100ms',
+      '   ❯ someDescribe > nested group',
+      '     × first broken case 10ms',
+      '     × second broken case 12ms',
+      ' ❯ lib/b.test.ts (3 tests | 1 failed) 40ms',
+      '     × b case 5ms',
+    ].join('\n');
+    const byFile = extractFailingCasesByFile(out);
+    expect(byFile.get('lib/a.test.ts')).toEqual(['first broken case', 'second broken case']);
+    expect(byFile.get('lib/b.test.ts')).toEqual(['b case']);
+  });
+
+  it('ignores case rows that appear before any file header', () => {
+    expect(extractFailingCasesByFile('     × orphan case 3ms').size).toBe(0);
+  });
+
+  it('renders nothing when no cases were parsed, so the caller line still reads correctly', () => {
+    expect(describeFailingCases(undefined)).toBe('');
+    expect(describeFailingCases([])).toBe('');
+  });
+
+  it('quotes the case names and caps a pathological suite with a +N more', () => {
+    const many = Array.from({ length: ISOLATION_MAX_NAMED_CASES + 4 }, (_, i) => `case ${i}`);
+    const rendered = describeFailingCases(many);
+    expect(rendered).toContain('"case 0"');
+    expect(rendered).toContain(`(+4 more)`);
+    expect(rendered.match(/"/g)!.length).toBe(ISOLATION_MAX_NAMED_CASES * 2);
   });
 });
 
