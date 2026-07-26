@@ -17,6 +17,11 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     input: { path: null, sha },
     repoRoot: '/repo',
     submodule: null,
+    // EI-18715870370005934 made this REQUIRED on PipelinePosition. `null` is the
+    // semantically correct value here, not just a compiler-silencer: these fixtures
+    // describe a superproject path, so no gitlink substitution happened and the sha
+    // asked about IS the sha the positions describe.
+    submodulePin: null,
     targetSha: sha,
     targetShortSha: sha.slice(0, 9),
     targetSubject: 'test',
