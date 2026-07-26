@@ -28,6 +28,12 @@ import {
 } from './harness/git-sync/pipeline-events';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './release/gate-verdict-freshness';
+import {
+  describeGateRedOwnership,
+  gateFailureSignature,
+  type GateRedOwnership,
+} from './release/gate-red-ownership';
+import { releaseFixerSpawnAlive } from './release/fixer-liveness';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 
 /** The operator's own integration harness (its git-sync/release routines). */
@@ -107,6 +113,16 @@ export interface GitPipelineSnapshot {
     lastFixerStatus: string | null;
     lastFixerAtMs: number | null;
     lastFixerCandidate: string | null;
+    /** EI-18672078222841101: WHO, if anyone, already owns this red — the question every
+     *  recipient of a gate-red alert asks first and that no read surface answered. The
+     *  three `lastFixer*` fields above look like they answer it and do not: they are keyed
+     *  by CANDIDATE, and while the gate is red staging advances hourly so every checkpoint
+     *  is a new candidate. Only the SIGNATURE says whether the recorded fixer is on THIS
+     *  failure, and only spawn liveness says whether it is still working. Both already
+     *  existed (P-012 `last_fixer.signature`, `releaseFixerSpawnAlive`) and were used
+     *  solely to suppress duplicate fixer dispatch — never shown to the agents who then
+     *  duplicated the diagnosis by hand. `null` on a green gate. */
+    redOwner: GateRedOwnership | null;
     /** P-009: workspaces that have flaked ≥3× in the gate (failed-then-passed-on-
      *  retry) — chronically flaky, quarantine candidates. */
     flakyWorkspaces: string[];
@@ -419,6 +435,38 @@ export async function gitPipelineSnapshot(
     firstRedAtMs: num(gateHealth.firstRedAt),
   });
 
+  // EI-18672078222841101: resolve WHO owns this red, from state the system already keeps.
+  // Only for an actually-red gate — a green gate has no ownership question, and asking one
+  // would put a misleading "UNOWNED" on every healthy read.
+  //
+  // The liveness query runs ONLY when the recorded fixer holds the CURRENT signature: a
+  // mismatch is already decisive ('stale-signature' — that fixer is on a different failure),
+  // so the round-trip would buy nothing. On a green gate it never runs at all. Failure is
+  // soft: `null` renders as 'owned-unknown' (presumed covered), the same assumption the
+  // dispatcher makes for a record it cannot resolve — never a fabricated liveness value.
+  let redOwner: GateRedOwnership | null = null;
+  if (effectiveGate.consecutiveReds > 0) {
+    const currentSignature = gateFailureSignature(
+      effectiveGate.failingTests,
+      typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
+    );
+    const ownerSignature = typeof lastFixer?.signature === 'string' ? lastFixer.signature : null;
+    const spawnId = typeof lastFixer?.spawnId === 'string' ? lastFixer.spawnId : null;
+    let fixerAlive: boolean | null = null;
+    if (!gcVerdictStale && ownerSignature && currentSignature && ownerSignature === currentSignature) {
+      fixerAlive = await releaseFixerSpawnAlive(sql, spawnId).catch(() => null);
+    }
+    redOwner = describeGateRedOwnership({
+      ownerSignature,
+      currentSignature,
+      dispatchedAtMs: num(lastFixer?.at),
+      spawnId,
+      fixerAlive,
+      verdictStale: gcVerdictStale,
+      nowMs: Date.now(),
+    });
+  }
+
   // P-001: "judging vs idle" — probe the live checkpoint unit ONLY when opted in
   // (the dev.gitPipeline derived-read producer; see the interface note). Best-effort:
   // a probe failure yields null (not probed), never a broken snapshot.
@@ -478,6 +526,7 @@ export async function gitPipelineSnapshot(
       lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
       lastFixerAtMs: num(lastFixer?.at),
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,
+      redOwner,
       // WI-4533: the gate's OWN verdict about what is failing (see the type's note) — never the
       // names behind a streak already proven reset (they'd misdirect a fixer at passing tests).
       failingTests: effectiveGate.failingTests,

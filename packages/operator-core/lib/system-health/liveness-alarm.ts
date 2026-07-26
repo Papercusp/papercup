@@ -1240,8 +1240,11 @@ export async function runLivenessAlarmTick(
   // 1. Auto-resolve-on-recovery: every open infra-liveness escalation whose
   //    signal is no longer firing. On the first post-deploy tick this drains the
   //    recovered backlog (gateway/accounts/no-bees-while-idle) so the pile clears.
+  //    EI-18673998482704275: this loop no longer touches `flapEpisodes` directly —
+  //    it only records WHICH blocker signatures genuinely transitioned; the flap
+  //    accounting for them happens atomically below, alongside the fire loop's.
   const resolved: string[] = [];
-  const recoveredBlockerSigs: string[] = [];
+  const transitionedBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
     // WI-4181: only a resolve that actually TRANSITIONED the row (wrote the
@@ -1267,45 +1270,20 @@ export async function runLivenessAlarmTick(
       }
     }
     if (transitioned && recs.some((r) => r.severity === 'blocker')) {
-      // EI-9939: a signature already classified as FLAPPING (>flapThreshold
-      // fires seen this episode) does NOT get its own recovery broadcast —
-      // that would just be the other half of the flap-storm this exists to
-      // stop. Mark it quiet-since-now instead; the settle sweep below decides
-      // whether/when it earns exactly one final all-clear. A non-flapping
-      // signature (≤flapThreshold fires) keeps today's byte-identical
-      // behavior: broadcast the recovery immediately.
-      const ep = flapEpisodes.get(sig);
-      if (ep && ep.fireCount > flapThreshold) {
-        ep.quietSinceMs = now;
-      } else {
-        recoveredBlockerSigs.push(sig);
-      }
+      transitionedBlockerSigs.push(sig);
     }
     // Drop the in-memory cooldown so a genuine re-occurrence after recovery
     // re-fires immediately ("re-fire only after auto-resolve").
     lastAlertedAt.delete(sig);
   }
-  // EI-9939 settle sweep: a previously-flapping signature that has stayed
-  // quiet (no re-fire) for a FULL flap window is genuinely settled — send the
-  // one final recovery broadcast now (it supersedes every earlier alert
-  // sharing this condition_key, per coord:inbox's annotateResolvedConditions,
-  // so a reader who only saw the FIRST fire still learns it cleared) and reset
-  // the episode so a later genuine re-occurrence is treated as a fresh first
-  // fire rather than staying suppressed forever.
-  for (const [sig, ep] of flapEpisodes) {
-    if (ep.quietSinceMs === null) continue;
-    if (now - ep.quietSinceMs < flapWindowMs) continue;
-    recoveredBlockerSigs.push(sig);
-    flapEpisodes.delete(sig);
-  }
-  // WI-4023: pair the fleet-facing all-clear with the auto-resolve above — see the
-  // paging note on the fire loop for why this is needed (a durable escalation row
-  // alone is not an active page, so its recovery deserves the same fleet visibility).
-  await pageResolved(recoveredBlockerSigs);
 
   // 2. Fire each NEW signal — durably deduped (skip a signature that already has
-  //    an open escalation) then in-memory cooldown-debounced.
+  //    an open escalation) then in-memory cooldown-debounced. The escalation row
+  //    itself is opened unconditionally here (WI-4181 dedup only); whether it ALSO
+  //    pages the fleet is decided atomically below, together with the resolve
+  //    step's recovery-broadcast decision.
   const fired: AlarmSignal[] = [];
+  const newBlockerSignals: AlarmSignal[] = [];
   for (const s of signals) {
     if (openBySig.has(s.key)) continue; // an open escalation already covers this signature
     const prev = lastAlertedAt.get(s.key);
@@ -1350,25 +1328,72 @@ export async function runLivenessAlarmTick(
     // threshold unread. git-sync-stall-watchdog.ts already pages on its own alarms
     // (notifyAttention + broadcastSevereEvent) — this brings the SAME active paging
     // to every `blocker`-severity infra-liveness signal, not just git-sync's.
-    if (s.severity === 'blocker') {
-      // EI-9939: classify this fire against its (possibly still-open) flap
-      // episode BEFORE deciding whether to page. Fires 1 and 2 of a fresh or
-      // reopened episode always page (byte-identical to pre-EI-9939
-      // behavior); the 3rd+ fire of the SAME still-open episode is a flap and
-      // is suppressed here (the durable escalation above is written
-      // regardless — this only gates the fleet-wide broadcast). The episode
-      // has no fixed expiry — see the FlapEpisode doc comment for why.
-      const ep = flapEpisodes.get(s.key) ?? { fireCount: 0, quietSinceMs: null };
+    if (s.severity === 'blocker') newBlockerSignals.push(s);
+  }
+
+  // EI-18673998482704275: ATOMICALLY decide the flap accounting for BOTH the
+  // resolve step (§1) and the fire step (§2) in a single read-modify-write —
+  // see `defaultUpdateFlapState`'s doc comment for why this must be atomic
+  // (a lost-update race across concurrent cluster workers otherwise lets a
+  // genuinely-flapping condition re-broadcast every fire/resolve cycle
+  // forever, never actually engaging the EI-9939 suppression).
+  const { toPage, toResolveSigs } = await updateFlapState(ws, (current) => {
+    const episodes = new Map<string, FlapEpisode>(Object.entries(current));
+    const toResolveSigsInner: string[] = [];
+    for (const sig of transitionedBlockerSigs) {
+      // EI-9939: a signature already classified as FLAPPING (>flapThreshold
+      // fires seen this episode) does NOT get its own recovery broadcast —
+      // that would just be the other half of the flap-storm this exists to
+      // stop. Mark it quiet-since-now instead; the settle sweep below decides
+      // whether/when it earns exactly one final all-clear. A non-flapping
+      // signature (≤flapThreshold fires) keeps today's byte-identical
+      // behavior: broadcast the recovery immediately.
+      const ep = episodes.get(sig);
+      if (ep && ep.fireCount > flapThreshold) {
+        ep.quietSinceMs = now;
+      } else {
+        toResolveSigsInner.push(sig);
+      }
+    }
+    // EI-9939 settle sweep: a previously-flapping signature that has stayed
+    // quiet (no re-fire) for a FULL flap window is genuinely settled — send the
+    // one final recovery broadcast now (it supersedes every earlier alert
+    // sharing this condition_key, per coord:inbox's annotateResolvedConditions,
+    // so a reader who only saw the FIRST fire still learns it cleared) and reset
+    // the episode so a later genuine re-occurrence is treated as a fresh first
+    // fire rather than staying suppressed forever.
+    for (const [sig, ep] of episodes) {
+      if (ep.quietSinceMs === null) continue;
+      if (now - ep.quietSinceMs < flapWindowMs) continue;
+      toResolveSigsInner.push(sig);
+      episodes.delete(sig);
+    }
+    // EI-9939: classify each newly-fired blocker against its (possibly
+    // still-open) flap episode BEFORE deciding whether to page. Fires 1 and 2
+    // of a fresh or reopened episode always page (byte-identical to
+    // pre-EI-9939 behavior); the 3rd+ fire of the SAME still-open episode is a
+    // flap and is suppressed here (the durable escalation opened in §2 above
+    // is written regardless — this only gates the fleet-wide broadcast). The
+    // episode has no fixed expiry — see the FlapEpisode doc comment for why.
+    const toPageInner: AlarmSignal[] = [];
+    for (const s of newBlockerSignals) {
+      const ep = episodes.get(s.key) ?? { fireCount: 0, quietSinceMs: null };
       ep.fireCount += 1;
       ep.quietSinceMs = null; // firing again cancels any pending settle
-      flapEpisodes.set(s.key, ep);
-      if (ep.fireCount <= flapThreshold) await page(s, ws);
+      episodes.set(s.key, ep);
+      if (ep.fireCount <= flapThreshold) toPageInner.push(s);
     }
-  }
-  // EI-15126: persist this tick's (possibly mutated) flap-episode state so the
-  // NEXT tick — by any worker — sees it, closing the cross-worker gap that let
-  // the fleet-wide suppression above never actually engage in production.
-  await writeFlapState(ws, Object.fromEntries(flapEpisodes)).catch(() => {});
+    return { next: Object.fromEntries(episodes), toPage: toPageInner, toResolveSigs: toResolveSigsInner };
+  });
+
+  // WI-4023: pair the fleet-facing all-clear with the auto-resolve above — see the
+  // paging note on the fire loop for why this is needed (a durable escalation row
+  // alone is not an active page, so its recovery deserves the same fleet visibility).
+  await pageResolved(toResolveSigs);
+  // WI-4023 (root-cause fix, 2026-07-11): active-page every blocker fire this tick's
+  // atomic flap decision surfaced (fires 1-2 of an episode; the 3rd+ is suppressed).
+  for (const s of toPage) await page(s, ws);
+
   return { fired, signals, resolved };
 }
 

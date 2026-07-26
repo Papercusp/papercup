@@ -7,6 +7,7 @@
  */
 import type { PipelinePosition } from './git-pipeline-position';
 import type { DeployStatus } from './release-deploy-launch';
+import type { GateRedOwnership } from './release/gate-red-ownership';
 import { classifyReleaseParity } from './release-parity';
 
 export interface ReleaseTraceGate {
@@ -18,6 +19,12 @@ export interface ReleaseTraceGate {
   fireStaleReason: string | null;
   verdictStale: boolean;
   verdictStaleReason: string | null;
+  /** EI-18672078222841101: who already owns this red (see `GateRedOwnership`). Optional so
+   *  an unwired/legacy caller renders exactly as before. This is the surface that matters
+   *  most: `release:trace` is what an agent reads when it decides whether to investigate,
+   *  and on 2026-07-26 it told three agents about a red while saying nothing about the
+   *  fixer already dispatched for it. */
+  redOwner?: GateRedOwnership | null;
 }
 
 export interface ReleaseTraceAwait {
@@ -167,7 +174,11 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
     add(
       'gate-red',
       true,
-      `The authoritative gate is red (${gate.consecutiveReds}); fix the named failures before treating the target as tested.`,
+      `The authoritative gate is red (${gate.consecutiveReds}); fix the named failures before treating the target as tested.` +
+        // EI-18672078222841101: the blocker used to stop at "fix the named failures", which
+        // every reader correctly reads as an instruction to go fix them — and which three
+        // agents acted on simultaneously because nothing here said one of them already had.
+        (gate.redOwner ? ` ${gate.redOwner.label}` : ''),
     );
     add(
       'no-force-past-red',
@@ -247,10 +258,25 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
       };
     }
     if (gate.consecutiveReds > 0) {
+      // EI-18672078222841101: this recommendation is the single highest-leverage line in the
+      // whole trace — it is what an agent does next. Sending every reader of a red gate to
+      // `testing:flakiness` is right when nobody is on it and wasteful when someone is: on
+      // 2026-07-26 three agents ran the identical diagnosis within 15 minutes. When the
+      // system already knows a live fixer holds THIS signature, wait for its verdict instead
+      // of opening a parallel investigation of it.
+      if (gate.redOwner?.covered) {
+        return {
+          name: 'checkpoint:await',
+          args: { pipeline, candidateSha: targetSha },
+          reason: `${gate.redOwner.label} Await this red's outcome rather than opening a second diagnosis of it.`,
+        };
+      }
       return {
         name: 'testing:flakiness',
         args: {},
-        reason: 'Classify the exact gate failures before fixing them; do not deploy past an authoritative red.',
+        reason:
+          'Classify the exact gate failures before fixing them; do not deploy past an authoritative red.' +
+          (gate.redOwner ? ` ${gate.redOwner.label}` : ''),
       };
     }
     return {

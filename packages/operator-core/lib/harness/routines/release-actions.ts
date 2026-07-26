@@ -33,7 +33,6 @@ import {
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from '../../release/gate-red-ownership';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
-import { STALE_MS } from '../../liveness';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
 
