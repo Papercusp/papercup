@@ -22,12 +22,21 @@
 import { hostname } from 'node:os';
 
 import postgres from 'postgres';
+import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
-  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: 2, prepare: false });
+  if (!pool) {
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('llm-testing-ledger'),
+      max: 2,
+      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
+      idle_timeout: poolIdleTimeoutSec(),
+      prepare: false,
+    });
+  }
   return pool;
 }
 

@@ -94,4 +94,35 @@ describe('MugHeartbeat render', () => {
     render(<MugHeartbeat />);
     expect(screen.getByText('Paused')).toBeTruthy();
   });
+
+  // EI-18720190420789040: the dot's `--pulse` modifier drives an `animation: …
+  // infinite` CSS rule. This component is default-mounted chrome (Mug is the
+  // default-open sidebar tab on the default `/adv` landing route), so applying
+  // it to 'parked' — the pot's ordinary, indefinitely-long steady state — was
+  // a genuinely continuous forever-running animation, measured to cost ~4.7
+  // sustained CPU cores under software (GPU-less) rendering. Pulse must be
+  // scoped to the bounded 'running' window (a real wake just happened) only.
+  it('does NOT pulse while merely parked/alive (steady state, not "just woke")', () => {
+    H.result = {
+      data: [row({ lastWakeAt: iso(-5 * 60_000), nextFireAt: iso(4 * 60_000) })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    const { container } = render(<MugHeartbeat />);
+    expect(screen.getByText('Alive · parked')).toBeTruthy();
+    expect(container.querySelector('.pc-qh__dot--pulse')).toBeNull();
+  });
+
+  it('DOES pulse in the brief window right after a wake ("running")', () => {
+    H.result = {
+      data: [row({ lastWakeAt: iso(-30_000), nextFireAt: iso(300_000) })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    const { container } = render(<MugHeartbeat />);
+    expect(screen.getByText('Running')).toBeTruthy();
+    expect(container.querySelector('.pc-qh__dot--pulse')).not.toBeNull();
+  });
 });

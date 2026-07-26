@@ -119,7 +119,20 @@ export default function MugHeartbeat({ homeSlug }: { homeSlug?: string }) {
     <TooltipPrimitive.Provider delayDuration={250}>
       <section className={`pc-qh pc-qh--${tone}`} aria-label={`${t('brain')} status`}>
         <div className="pc-qh__top">
-          <span className={`pc-qh__dot pc-qh__dot--${tone}${state === 'running' || state === 'parked' ? ' pc-qh__dot--pulse' : ''}`} aria-hidden />
+          {/* EI-18720190420789040: pulse ONLY on 'running' (the brief "she just
+              woke" window, bounded by RUNNING_MS above) — never on 'parked',
+              which is the pot's ordinary steady state and can persist
+              indefinitely. This component is default-mounted chrome (Mug is
+              the default-open sidebar tab on the default `/adv` landing
+              route), so an `animation: … infinite` applied to 'parked' drove a
+              genuinely continuous, forever-running CSS animation on the
+              common case — measured to cost ~4.7 sustained CPU cores under
+              software (GPU-less) rendering, where every animated frame forces
+              a full compositor re-rasterization. Scoping the pulse to the
+              bounded 'running' window preserves the "impossible to miss when
+              she just ran" intent (the comment above) without animating
+              forever while merely parked-and-alive. */}
+          <span className={`pc-qh__dot pc-qh__dot--${tone}${state === 'running' ? ' pc-qh__dot--pulse' : ''}`} aria-hidden />
           <Coffee size={13} aria-hidden />
           <span className="pc-qh__state">{label}</span>
           {row?.slug && (

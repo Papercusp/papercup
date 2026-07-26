@@ -5,13 +5,22 @@
  * Ported from app/api/admin/llm-tests/runs/route.ts. `auth: 'public'`.
  */
 import postgres from 'postgres';
+import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from '../../../resource-profile';
 import { getHarnessAdminUrl } from '../../../embedded-pg-discovery';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
-  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: sharedUtilityPoolMax(), prepare: false });
+  if (!pool) {
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('llm-tests-runs-route'),
+      max: sharedUtilityPoolMax(),
+      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
+      idle_timeout: poolIdleTimeoutSec(),
+      prepare: false,
+    });
+  }
   return pool;
 }
 

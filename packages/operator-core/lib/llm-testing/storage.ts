@@ -9,6 +9,7 @@
  */
 
 import postgres from 'postgres';
+import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from '../resource-profile';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 
@@ -30,7 +31,13 @@ type JSONValueCompat = Parameters<ReturnType<typeof postgres>['json']>[0];
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
   if (!pool) {
-    pool = postgres(getHarnessAdminUrl(), { max: sharedUtilityPoolMax(), prepare: false });
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('llm-testing-storage'),
+      max: sharedUtilityPoolMax(),
+      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
+      idle_timeout: poolIdleTimeoutSec(),
+      prepare: false,
+    });
   }
   return pool;
 }

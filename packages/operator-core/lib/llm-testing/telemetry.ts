@@ -10,6 +10,7 @@
  */
 
 import postgres from 'postgres';
+import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from '../resource-profile';
 
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
@@ -18,7 +19,15 @@ import type { ContinueChainRow, ToolInvocationRow } from '@papercusp/testing-she
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
-  if (!pool) pool = postgres(getHarnessAdminUrl(), { max: sharedUtilityPoolMax(), prepare: false });
+  if (!pool) {
+    pool = postgres(getHarnessAdminUrl(), {
+      ...longLivedPoolConnectionOptions('llm-testing-telemetry'),
+      max: sharedUtilityPoolMax(),
+      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
+      idle_timeout: poolIdleTimeoutSec(),
+      prepare: false,
+    });
+  }
   return pool;
 }
 

@@ -70,15 +70,20 @@ export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
   recentRestartNote?: string;
   /**
    * EI-18700974567040702: ground-truth liveness for a systemd-user unit, read
-   * directly from `probeServiceStart`'s MainPID — a DETERMINATE answer, not a
-   * flap/churn signal. `true` = a live MainPID; `false` = systemd confirms
-   * MainPID 0 (the unit is genuinely DOWN right now); omitted = not a
+   * directly from `probeServiceStart`'s `ActiveState` — a DETERMINATE answer,
+   * not a flap/churn signal. `true` = systemd reports `active`; `false` =
+   * systemd reports it is NOT active (inactive/failed/activating/…, the unit
+   * is genuinely DOWN right now, or not yet fully up); omitted = not a
    * systemd-user unit, OR the probe itself could not determine an answer
    * (non-linux, no systemd, transient exec error) — an honest "unknown" that
-   * must never be conflated with `false`. Previously `MainPID 0` and "probe
-   * failed" were BYTE-IDENTICAL in this payload (both just left the entry
-   * untouched), so a caller could not tell "this service is down" from "I
-   * couldn't check" — this field is the fix.
+   * must never be conflated with `false`. Deliberately keyed on `ActiveState`
+   * rather than `MainPID`: a `.timer` unit has NO MainPID concept at all (it
+   * runs no process itself), so a MainPID-only signal falsely read a healthy,
+   * `active`/`waiting` timer as down. `ActiveState` is reported for every
+   * systemd unit TYPE, so it is the one signal that generalizes. Previously
+   * "down" and "probe failed" were BYTE-IDENTICAL in this payload (both just
+   * left the entry untouched), so a caller could not tell one from the other
+   * — this field is the fix.
    */
   active?: boolean;
 };
@@ -105,15 +110,18 @@ export async function overlaySystemdRestartRecency(
       if (!unit) return entry;
       const info = await probeFn(unit).catch(() => ({ ok: false }) as ServiceStartInfo);
       if (!info.ok) return entry; // probe genuinely couldn't determine an answer — honest "unknown", untouched
-      // EI-18700974567040702: MainPID 0 is a DETERMINATE "down" from systemd itself, not a
-      // probe failure — it must not be dropped alongside the `!info.ok` case above (that was
-      // the bug: both left the entry byte-identical, so "down" and "couldn't check" were
-      // indistinguishable). Report it explicitly and stop — there is no start time to overlay.
-      if (info.mainPid === 0) return { ...entry, active: false };
-      if (info.secondsSinceStart === undefined) return { ...entry, active: true };
+      // EI-18700974567040702: `ActiveState` is a DETERMINATE liveness answer from systemd
+      // itself, not a probe failure — it must not be dropped alongside the `!info.ok` case
+      // above (that was the bug: a stopped unit and a failed probe were byte-identical).
+      // `undefined` here means even ActiveState couldn't be read (a probe edge case) — leave
+      // the entry untouched rather than guess. Keyed on ActiveState, NOT MainPID, because a
+      // `.timer` unit has no MainPID concept at all — see the field's own doc comment above.
+      if (info.activeState === undefined) return entry;
+      const active = info.activeState === "active";
+      if (!active || info.secondsSinceStart === undefined) return { ...entry, active };
       const withRecency: SupervisionStatusEntryWithRecency = {
         ...entry,
-        active: true,
+        active,
         secondsSinceStart: info.secondsSinceStart,
       };
       if (info.secondsSinceStart < RECENT_RESTART_WINDOW_SEC) {
