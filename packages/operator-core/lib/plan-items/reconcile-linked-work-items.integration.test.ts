@@ -40,8 +40,17 @@ const h2 = vi.hoisted(() => ({
     if (wi) wi.state = state;
     return wi ?? null;
   }),
+  // EI-18732669095544832: the lane-sync GATE leg (applyLaneGateToWorkItem)
+  // flips state through setWorkItemStateWithAliasInfo, not plain
+  // setWorkItemState — needed once tests below exercise resyncPlanItemLaneNow.
+  setWorkItemStateWithAliasInfo: vi.fn(async (id: string, state: string) => {
+    const wi = h2.items.get(id);
+    if (wi) wi.state = state;
+    return wi ? { workItem: wi } : null;
+  }),
 }));
 const setWorkItemState = h2.setWorkItemState;
+const setWorkItemStateWithAliasInfo = h2.setWorkItemStateWithAliasInfo;
 // EI-18653945816361859: recording stubs for the stale-lane-hold clear path —
 // mergeWorkItemPayload / setWorkItemClaimHold apply directly to the in-memory
 // stub so a subsequent activeExternalBlockers/readWorkItemHeldOpenBy read (the
@@ -69,6 +78,7 @@ vi.mock('../work-items', async () => {
     readWorkItemHeldOpenBy: actual.readWorkItemHeldOpenBy,
     getWorkItem: (id: string) => h2.items.get(id) ?? null,
     setWorkItemState: h2.setWorkItemState,
+    setWorkItemStateWithAliasInfo: h2.setWorkItemStateWithAliasInfo,
     mergeWorkItemPayload: h4.mergeWorkItemPayload,
     setWorkItemClaimHold: h4.setWorkItemClaimHold,
   };
@@ -79,9 +89,20 @@ vi.mock('../work-items', async () => {
 // fail-open behaviour and leaving all prior assertions unaffected; only the
 // new "EI-8970" describe block below overrides it per-test.
 const h3 = vi.hoisted(() => ({
-  getPlanRow: vi.fn(async (_slug: string, _opts?: unknown) => null as { items: { id: string; status: string }[] } | null),
+  getPlanRow: vi.fn(
+    async (_slug: string, _opts?: unknown) =>
+      null as { items: { id: string; status: string; blockedBy?: string[] }[] } | null,
+  ),
 }));
-vi.mock('../agent-tools/plans/source', () => ({ getPlanRow: h3.getPlanRow }));
+// EI-18732669095544832: `classifyPlanLane` (the new resyncPlanItemLaneNow's lane
+// classifier) also imports `planItemsForRow` off this SAME module — a real, pure
+// function with no I/O. Only `getPlanRow` needs mocking (the stale-read guard's
+// re-read target); passing through the real `planItemsForRow` via importActual
+// keeps that lane-classification path exercised for real instead of undefined.
+vi.mock('../agent-tools/plans/source', async () => {
+  const actual = await vi.importActual<typeof import('../agent-tools/plans/source')>('../agent-tools/plans/source');
+  return { ...actual, getPlanRow: h3.getPlanRow };
+});
 
 const {
   reconcileLinkedWorkItemsForPlanItem,
@@ -128,6 +149,7 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items`;
   h2.items.clear();
   setWorkItemState.mockClear();
+  setWorkItemStateWithAliasInfo.mockClear();
   h3.getPlanRow.mockReset();
   h3.getPlanRow.mockResolvedValue(null);
 });
@@ -576,5 +598,107 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
     expect(result.reconciled).toEqual([]);
     expect(result.skippedInFlight).toEqual(['F-active']);
     expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+});
+
+describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocked-by (EI-18732669095544832)', () => {
+  beforeEach(() => {
+    h4.mergeWorkItemPayload.mockClear();
+    h4.setWorkItemClaimHold.mockClear();
+  });
+
+  it('CLEARING a blocked-by edge un-parks the linked work-item RIGHT NOW (the reported bug)', async () => {
+    // Repro shape: P-011 was `blocked-by: P-010`; the lane sync GATED WI-6096 for
+    // it (an `active` plan-lane external blocker + state:'blocked'). The caller
+    // just cleared the edge (blockedBy: [] on P-011) — resyncPlanItemLaneNow must
+    // reflect that immediately, not 15 minutes later.
+    await edge({ plan: 'pblk', item: 'P-011', srcRef: 'WI-6096' });
+    const ref = planLaneBlockerRef('pblk', 'P-011');
+    const { blockers } = updateExternalBlockerHistory(
+      {},
+      { kind: 'gate', capability: 'live-dependency', ref, summary: 'parked' },
+      'system:plan-item-lane-sync',
+    );
+    stub({
+      id: 'WI-6096',
+      harness: 'sheets',
+      state: 'blocked',
+      family: 'issue',
+      lastProgressAt: null,
+      payload: { externalBlockers: blockers },
+    });
+    h3.getPlanRow.mockResolvedValue({
+      items: [
+        { id: 'P-010', status: 'done', blockedBy: [] },
+        { id: 'P-011', status: 'todo', blockedBy: [] }, // cleared
+      ],
+    });
+
+    const result = await resyncPlanItemLaneNow('pblk', 'P-011', null);
+
+    expect(result).not.toBeNull();
+    expect(result!.ungated).toEqual(['WI-6096']);
+    expect(h4.setWorkItemClaimHold).toHaveBeenCalledWith(
+      'WI-6096',
+      false,
+      expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+    );
+  });
+
+  it('ADDING a blocked-by edge parks the linked work-item RIGHT NOW (the symmetric mirror case)', async () => {
+    await edge({ plan: 'pblk2', item: 'P-021', srcKind: 'feature', srcRef: 'sheets#F-xyz' });
+    stub({ id: 'F-xyz', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue({
+      items: [
+        { id: 'P-020', status: 'todo', blockedBy: [] },
+        { id: 'P-021', status: 'todo', blockedBy: ['P-020'] }, // just added, unresolved
+      ],
+    });
+
+    const result = await resyncPlanItemLaneNow('pblk2', 'P-021', null);
+
+    expect(result).not.toBeNull();
+    expect(result!.gated).toEqual(['F-xyz']);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'F-xyz',
+      'blocked',
+      expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+    );
+  });
+
+  it('never clobbers independent in-flight progress even when the lane just went blocked', async () => {
+    await edge({ plan: 'pblk3', item: 'P-031', srcKind: 'feature', srcRef: 'sheets#F-active2' });
+    stub({
+      id: 'F-active2',
+      harness: 'sheets',
+      state: 'wip',
+      family: 'feature',
+      lastProgressAt: '2026-07-20T00:00:00Z',
+    });
+    h3.getPlanRow.mockResolvedValue({
+      items: [
+        { id: 'P-030', status: 'todo', blockedBy: [] },
+        { id: 'P-031', status: 'todo', blockedBy: ['P-030'] },
+      ],
+    });
+
+    const result = await resyncPlanItemLaneNow('pblk3', 'P-031', null);
+
+    expect(result).not.toBeNull();
+    expect(result!.gated).toEqual([]);
+    expect(result!.skippedInFlight).toEqual(['F-active2']);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('is a fail-closed no-op when the plan cannot be resolved (getPlanRow → null)', async () => {
+    await edge({ plan: 'pnoplan', item: 'P-001', srcRef: 'WI-x' });
+    stub({ id: 'WI-x', harness: 'sheets', state: 'blocked', family: 'issue', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue(null);
+
+    const result = await resyncPlanItemLaneNow('pnoplan', 'P-001', null);
+
+    expect(result).toBeNull();
+    expect(h4.setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 });

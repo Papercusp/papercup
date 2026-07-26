@@ -255,6 +255,25 @@
   font-size: 10.5px;
 }
 
+/* ── plan filter (P-004) ──────────────────────────────────────────────────── */
+
+/* Rides at the end of the fleet strip, pushed to the far edge so the two axes
+   read as two controls rather than one long run of chips. `flex: none` because
+   .hud__fleets scrolls horizontally: without it the box would be the thing
+   that compresses when the chips overflow. */
+.hud__planfilter {
+  margin-left: auto;
+  padding-left: 10px;
+  flex: none;
+}
+
+/* A ceiling, not a fixed size — same rule as the launcher's pickers above: the
+   closed box ellipsizes a long slug while the dropdown panel sizes itself, so
+   the full plan name stays readable in the list. */
+.hud__planfilter-box {
+  max-width: 210px;
+}
+
 /* ── columns ──────────────────────────────────────────────────────────────── */
 
 .hud__cols {

@@ -134,11 +134,20 @@ function pgrepPattern(atom: string): string | null {
  *
  * `ps\b` does not match `psql` — `s` and `q` are both word characters, so there
  * is no boundary between them — which keeps this pair off the postgres family.
+ *
+ * The verb anchor requires a SHELL-ARGUMENT boundary — whitespace or end of
+ * atom — rather than a bare `\b`. `atomize` is documented as not a shell
+ * parser, so an inlined script payload (`python3 -c "ps=json.load(...)"`)
+ * splits into pseudo-verb atoms headed by short identifiers, and a bare `\b`
+ * sits happily between `ps` and `=` (both are non-word-adjacent: `s` is a word
+ * char, `=` is not). `(?=\s|$)` still matches every real `ps`/`pgrep`
+ * invocation (always followed by a flag/arg or nothing) while refusing an
+ * atom where a same-named identifier is immediately assigned to (EI-18733363666718163).
  */
 export const psProcessQuery: SubstitutionPair = {
   id: 'process.ps-pgrep',
   intentLabel: 'host-job-liveness-query',
-  bashPattern: /^(?:ps|pgrep)\b(?![^\n]*\b(?:run\.sh|omp|claude|paperclip|pty|next)\b)/,
+  bashPattern: /^(?:ps|pgrep)(?=\s|$)(?![^\n]*\b(?:run\.sh|omp|claude|paperclip|pty|next)\b)/,
   toolName: 'dev:processes',
   advisoryText:
     'dev:processes lists only agent-kind processes (run.sh/omp/claude/paperclip/pty/next) and has no pid or name selector — it cannot answer "is my job still running". Keep using ps/pgrep for that.',

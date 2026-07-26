@@ -36,6 +36,8 @@ import HudBoard from './HudBoard';
 import HudEntityColumns from './HudEntityColumns';
 import {
   ALL_FLEETS,
+  ALL_PLANS,
+  NO_PLAN_TOKEN,
   buildHudBoard,
   HUD_COLUMNS,
   type HudAsk,
@@ -84,6 +86,14 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   );
   const [fleetParam, setFleetParam] = useQueryState(
     'hudfleet',
+    parseAsArrayOf(parseAsString).withDefault([]),
+  );
+  /* P-004 — the plan axis. An ARRAY param like `hudfleet`, not a scalar, so the
+     two filters have one URL contract rather than two: the model already takes
+     `plans` as an array (same shape as `fleets`), and a later multi-select
+     control would then be a control change with no URL migration. */
+  const [planParam, setPlanParam] = useQueryState(
+    'hudplan',
     parseAsArrayOf(parseAsString).withDefault([]),
   );
   const [allAgents, setAllAgents] = useQueryState(
@@ -168,14 +178,24 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     [fleetParam],
   );
 
+  /* The no-plan group travels as NO_PLAN_TOKEN for the same reason the solo
+     fleet travels as "solo": a URL array cannot carry a null. Unlike the fleet
+     path, the token has exactly one definition (see NO_PLAN_TOKEN's docblock)
+     — it is imported here, not re-spelled. */
+  const selectedPlans = useMemo(
+    () => planParam.map((p) => (p === NO_PLAN_TOKEN ? null : p)),
+    [planParam],
+  );
+
   const board = useMemo(
     () =>
       buildHudBoard(entries, asks, {
         nowMs,
         suOnly: !allAgents,
         fleets: selectedFleets,
+        plans: selectedPlans,
       }),
-    [entries, asks, nowMs, allAgents, selectedFleets],
+    [entries, asks, nowMs, allAgents, selectedFleets, selectedPlans],
   );
 
   const onToggleFleet = useCallback(
@@ -190,6 +210,20 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       );
     },
     [setFleetParam],
+  );
+
+  /* Single-select: picking a plan REPLACES the selection, the "All plans" row
+     clears it. Deliberately not a toggle — re-picking the row you are already
+     filtered to reads as "yes, this one", not "undo". */
+  const onSelectPlan = useCallback(
+    (slug: string | null) => {
+      if (slug === ALL_PLANS) {
+        void setPlanParam([]);
+        return;
+      }
+      void setPlanParam([slug ?? NO_PLAN_TOKEN]);
+    },
+    [setPlanParam],
   );
 
   const openLabel = useMemo(
@@ -288,6 +322,8 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         board={board}
         selectedFleets={selectedFleets}
         onToggleFleet={onToggleFleet}
+        selectedPlans={selectedPlans}
+        onSelectPlan={onSelectPlan}
         focusColumn={(focusColumn as HudColumnId | null) ?? null}
         onFocusColumn={(id) => void setFocusColumn(id)}
         suOnly={!allAgents}

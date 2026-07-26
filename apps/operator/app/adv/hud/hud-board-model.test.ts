@@ -16,6 +16,7 @@ import {
   deriveBadges,
   deriveColumn,
   deriveFleetRollups,
+  derivePlanRollups,
   formatAge,
   HUD_DEFAULT_THRESHOLDS,
   isInfrastructureAwait,
@@ -452,6 +453,52 @@ describe('deriveFleetRollups', () => {
   });
 });
 
+describe('derivePlanRollups (P-004)', () => {
+  const mk = (over: Partial<HudRosterEntry>) => toHudSession(entry(over), undefined, OPTS);
+
+  it('groups by plan and counts per column', () => {
+    const rollups = derivePlanRollups([
+      mk({ ownerId: 'su-aaaaaaaa-1', currentPlanSlug: 'alpha' }),
+      mk({ ownerId: 'su-bbbbbbbb-2', currentPlanSlug: 'alpha' }),
+      mk({
+        ownerId: 'su-cccccccc-3',
+        currentPlanSlug: 'alpha',
+        openAwait: { eventKey: 'g', note: null, sinceIso: iso(1000), expiresIso: null },
+      }),
+    ]);
+    expect(rollups).toHaveLength(1);
+    expect(rollups[0].total).toBe(3);
+    expect(rollups[0].byColumn.blocked).toBe(1);
+    expect(rollups[0].warning).toBe('1 blocked');
+  });
+
+  it('stays silent when a plan is healthy', () => {
+    const [g] = derivePlanRollups([mk({ currentPlanSlug: 'alpha' })]);
+    expect(g.warning).toBeNull();
+  });
+
+  // A plan has no leader, so the fleet rollup's "no leader" warning must NOT
+  // come along for the ride — it would be chrome that lies.
+  it('never invents a leaderless warning for a plan', () => {
+    const [g] = derivePlanRollups([mk({ currentPlanSlug: 'alpha', fleetRole: 'member' })]);
+    expect(g.warning).toBeNull();
+  });
+
+  it('makes the unbound sessions their own filterable group, sorted last', () => {
+    const rollups = derivePlanRollups([
+      mk({ ownerId: 'su-11111111-a', currentPlanSlug: null }),
+      mk({ ownerId: 'su-22222222-b', currentPlanSlug: 'calm' }),
+      mk({
+        ownerId: 'su-33333333-c',
+        currentPlanSlug: 'busy',
+        openAwait: { eventKey: 'g', note: null, sinceIso: iso(1000), expiresIso: null },
+      }),
+    ]);
+    expect(rollups.map((r) => r.label)).toEqual(['busy', 'calm', 'no plan']);
+    expect(rollups[2].planSlug).toBeNull();
+  });
+});
+
 describe('buildHudBoard', () => {
   it('filters to su sessions by default so nursery cups cannot rebuild the firehose', () => {
     const board = buildHudBoard(
@@ -480,6 +527,55 @@ describe('buildHudBoard', () => {
     expect(buildHudBoard(roster, [], { nowMs: NOW, fleets: ['atlas'] }).total).toBe(1);
     expect(buildHudBoard(roster, [], { nowMs: NOW, fleets: [null] }).total).toBe(1);
     expect(buildHudBoard(roster, [], { nowMs: NOW, fleets: [] }).total).toBe(2);
+  });
+
+  it('filters by plan, with null selecting the unbound group', () => {
+    const roster = [
+      entry({ ownerId: 'su-aaaaaaaa-1', currentPlanSlug: 'alpha' }),
+      entry({ ownerId: 'su-bbbbbbbb-2', currentPlanSlug: null }),
+    ];
+    expect(buildHudBoard(roster, [], { nowMs: NOW, plans: ['alpha'] }).total).toBe(1);
+    expect(buildHudBoard(roster, [], { nowMs: NOW, plans: [null] }).total).toBe(1);
+    expect(buildHudBoard(roster, [], { nowMs: NOW, plans: [] }).total).toBe(2);
+  });
+
+  // P-004's "driven by the fleets currently in view", as an assertion: the plan
+  // options are derived from the FLEET-filtered set, so selecting a fleet
+  // narrows what the plan picker offers.
+  it('derives the plan options from the fleet-filtered sessions', () => {
+    const roster = [
+      entry({ ownerId: 'su-aaaaaaaa-1', fleetSlug: 'atlas', currentPlanSlug: 'alpha' }),
+      entry({ ownerId: 'su-bbbbbbbb-2', fleetSlug: 'borealis', currentPlanSlug: 'beta' }),
+    ];
+    expect(buildHudBoard(roster, [], { nowMs: NOW }).plans.map((p) => p.label))
+      .toEqual(['alpha', 'beta']);
+    expect(buildHudBoard(roster, [], { nowMs: NOW, fleets: ['atlas'] }).plans.map((p) => p.label))
+      .toEqual(['alpha']);
+  });
+
+  /* The other half of that ordering, and the one a refactor is most likely to
+     break: the options are derived BEFORE the plan filter narrows the board.
+     Derive them after and the picker eats its own list — the control collapses
+     to the single row already selected and the only way to reach another plan
+     is to clear the filter first. */
+  it('keeps every in-view plan on offer while one of them is selected', () => {
+    const roster = [
+      entry({ ownerId: 'su-aaaaaaaa-1', currentPlanSlug: 'alpha' }),
+      entry({ ownerId: 'su-bbbbbbbb-2', currentPlanSlug: 'beta' }),
+    ];
+    const board = buildHudBoard(roster, [], { nowMs: NOW, plans: ['alpha'] });
+    expect(board.total).toBe(1);
+    expect(board.plans.map((p) => p.label)).toEqual(['alpha', 'beta']);
+
+    // Non-vacuity, by fixture rather than by breaking the source: this is what
+    // `plans` WOULD hold if it were derived one line later, from the sessions
+    // that survive the filter. The assertion above passes only because the two
+    // differ, so a refactor that moves the derivation reds this test.
+    const ifDerivedAfterTheFilter = derivePlanRollups(
+      board.columns.flatMap((c) => c.sessions),
+    ).map((p) => p.label);
+    expect(ifDerivedAfterTheFilter).toEqual(['alpha']);
+    expect(board.plans.map((p) => p.label)).not.toEqual(ifDerivedAfterTheFilter);
   });
 
   it('emits every column even when empty, with an all-clear message', () => {

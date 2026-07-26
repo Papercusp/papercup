@@ -14,15 +14,49 @@
  *   - loading / error / empty states are distinguishable rather than all
  *     collapsing to a blank grid.
  */
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import HudBoard from './HudBoard';
-import { ALL_FLEETS, buildHudBoard, type HudRosterEntry } from './hud-board-model';
+import {
+  ALL_FLEETS,
+  ALL_PLANS,
+  buildHudBoard,
+  type HudRosterEntry,
+} from './hud-board-model';
 
 vi.mock('@/app/harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+/* The plan filter (P-004) is a real Combobox, so this suite renders the real
+   one — only its Radix Popover is stubbed, exactly as Combobox's own suite does
+   it: in anchor mode the anchor is inline and the panel exists only while open,
+   which is all the component depends on. Stubbing the Combobox itself instead
+   would leave the wiring this file exists to prove (options in, sentinel out)
+   untested on both sides. */
+vi.mock('@/app/harness/Popover', () => ({
+  Popover: ({
+    open,
+    anchor,
+    children,
+  }: {
+    open: boolean;
+    anchor: React.ReactNode;
+    children: React.ReactNode;
+  }) => (
+    <div>
+      {anchor}
+      {open ? <div data-testid="popover-panel">{children}</div> : null}
+    </div>
+  ),
+}));
+
+// cmdk scrolls its active item into view; jsdom has no such method.
+beforeEach(() => {
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = vi.fn();
+  }
+});
 afterEach(cleanup);
 
 const NOW = Date.parse('2026-07-25T12:00:00.000Z');
@@ -72,6 +106,8 @@ function renderBoard(
     board: buildHudBoard(roster, [], { nowMs: NOW }),
     selectedFleets: [],
     onToggleFleet: vi.fn(),
+    selectedPlans: [],
+    onSelectPlan: vi.fn(),
     focusColumn: null,
     onFocusColumn: vi.fn(),
     suOnly: true,
@@ -313,5 +349,87 @@ describe('HudBoard', () => {
     fireEvent.click(nudge);
     expect(p.onSelectTab).toHaveBeenCalledWith('items');
     expect(screen.getByRole('status').textContent).toContain('Work items tab');
+  });
+
+  /* ── plan filter (P-004) ───────────────────────────────────────────────── */
+
+  const planned = () => [
+    entry({ ownerId: 'su-1111', currentPlanSlug: 'alpha-plan', pendingWakes: 1 }),
+    entry({ ownerId: 'su-2222', currentPlanSlug: 'alpha-plan' }),
+    entry({ ownerId: 'su-3333', currentPlanSlug: 'beta-plan' }),
+    entry({ ownerId: 'su-4444', currentPlanSlug: null }),
+  ];
+
+  const openPlanFilter = () => {
+    const box = screen.getByRole('combobox', { name: 'Filter by plan' });
+    fireEvent.focus(box);
+    return box;
+  };
+
+  it('offers every plan in view, with its own count and health note', () => {
+    renderBoard(planned());
+    openPlanFilter();
+    const panel = within(screen.getByTestId('popover-panel'));
+    // The clear row leads and counts the WHOLE in-view set, not the filtered one.
+    expect(panel.getByText('All plans')).toBeTruthy();
+    expect(panel.getByText('4 sessions in view')).toBeTruthy();
+    // Per-plan counts, and the same one-line warning a fleet chip carries.
+    expect(panel.getByText('2 sessions · 1 needs you')).toBeTruthy();
+    // beta-plan and the unbound group, one session each — singular, not "1 sessions".
+    expect(panel.getAllByText('1 session').length).toBe(2);
+    // Sessions bound to no plan are a filterable group, not an omission.
+    expect(panel.getByText('no plan')).toBeTruthy();
+  });
+
+  it('reports a chosen plan, the no-plan group, and the shared ALL_PLANS sentinel', () => {
+    const { props } = renderBoard(planned());
+
+    openPlanFilter();
+    fireEvent.click(within(screen.getByTestId('popover-panel')).getByText('beta-plan'));
+    expect(props.onSelectPlan).toHaveBeenCalledWith('beta-plan');
+
+    openPlanFilter();
+    fireEvent.click(within(screen.getByTestId('popover-panel')).getByText('no plan'));
+    // `null`, not the token: the token is a URL/DOM encoding, and the callback
+    // speaks the model's language (same contract as onToggleFleet's solo group).
+    expect(props.onSelectPlan).toHaveBeenCalledWith(null);
+
+    openPlanFilter();
+    fireEvent.click(within(screen.getByTestId('popover-panel')).getByText('All plans'));
+    // Asserted against the imported constant, never a re-typed literal — the
+    // ALL_FLEETS drift this file already guards against is a whitespace-ish
+    // sentinel that a copy can corrupt invisibly.
+    expect(props.onSelectPlan).toHaveBeenCalledWith(ALL_PLANS);
+  });
+
+  // The control is the ONE place the filter's state is visible once the panel
+  // is shut. If it kept showing its placeholder while a plan was selected, the
+  // board would silently be a subset with nothing on screen saying so.
+  it('shows the active plan in the closed box, and the placeholder when clear', () => {
+    const filtered = renderBoard(planned(), { selectedPlans: ['alpha-plan'] });
+    const box = screen.getByRole('combobox', { name: 'Filter by plan' }) as HTMLInputElement;
+    expect(box.value).toBe('alpha-plan');
+    filtered.unmount();
+    cleanup();
+
+    renderBoard(planned());
+    const clear = screen.getByRole('combobox', { name: 'Filter by plan' }) as HTMLInputElement;
+    expect(clear.value).toBe('');
+    expect(clear.getAttribute('placeholder')).toBe('All plans');
+  });
+
+  // Both axes share one row, and neither suppresses the other — the row's
+  // guard used to be `board.fleets.length > 0` alone.
+  it('keeps the fleet chips and the plan filter in the same filter row', () => {
+    renderBoard([entry({ currentPlanSlug: 'alpha-plan', fleetSlug: 'atlas', fleetRole: 'leader' })]);
+    const row = document.querySelector('.hud__fleets');
+    expect(row).toBeTruthy();
+    expect(within(row as HTMLElement).getByRole('button', { name: /all fleets/ })).toBeTruthy();
+    expect(within(row as HTMLElement).getByRole('combobox', { name: 'Filter by plan' })).toBeTruthy();
+  });
+
+  it('hides the plan filter on a non-session tab', () => {
+    renderBoard(planned(), { tab: 'plans', entityView: <div data-testid="entity-view" /> });
+    expect(screen.queryByRole('combobox', { name: 'Filter by plan' })).toBeNull();
   });
 });

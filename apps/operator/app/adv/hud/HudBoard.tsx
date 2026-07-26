@@ -222,10 +222,46 @@ function FleetChip({
   );
 }
 
+/**
+ * The plan filter's rows (P-004).
+ *
+ * Built as Combobox options rather than a second chip strip because plan slugs
+ * are long (`hud-session-launcher-and-board-tabs-2026-07-26` is 44 chars) and
+ * numerous — a chip per plan would wrap the filter row several times deep on a
+ * narrow HUD rail. D-002 anticipated exactly this: the P-003 Combobox was built
+ * "deliberately generic so P-004 (plan filter) … reuse[s] it rather than
+ * growing more bespoke pickers". Behaviour still mirrors the fleet filter: the
+ * options are derived from what is in view, each carries its count and the same
+ * one-line health note, and there is an always-present row that clears it.
+ */
+function planFilterOptions(plans: HudBoardData['plans']): ComboboxOption[] {
+  const inView = plans.reduce((n, p) => n + p.total, 0);
+  return [
+    {
+      value: ALL_PLANS,
+      label: 'All plans',
+      // `board.total` would be the POST-filter count and would read as "1
+      // session" while the list beneath it offers nine. Sum the rollups, which
+      // are pre-filter by construction (see buildHudBoard).
+      detail: `${inView} session${inView === 1 ? '' : 's'} in view`,
+    },
+    ...plans.map((p): ComboboxOption => ({
+      value: p.planSlug ?? NO_PLAN_TOKEN,
+      label: p.label,
+      detail: `${p.total} session${p.total === 1 ? '' : 's'}${p.warning ? ` · ${p.warning}` : ''}`,
+      // A human half-remembers "the HUD plan" or "hud tabs", not the date
+      // suffix; cmdk scores keywords equally with the label.
+      keywords: p.planSlug ? p.planSlug.split('-') : ['unbound', 'no plan'],
+    })),
+  ];
+}
+
 export default function HudBoard({
   board,
   selectedFleets,
   onToggleFleet,
+  selectedPlans,
+  onSelectPlan,
   focusColumn,
   onFocusColumn,
   suOnly,
@@ -244,6 +280,14 @@ export default function HudBoard({
     ? board.columns.filter((c) => c.id === focusColumn)
     : board.columns;
   const onSessions = tab === 'sessions';
+
+  const planOptions = useMemo(() => planFilterOptions(board.plans), [board.plans]);
+  /* The control is single-select, so it shows the first selection; `ALL_PLANS`
+     is the Combobox's `emptyValue`, which makes the box render its placeholder
+     rather than the row's label while nothing is filtered. */
+  const planValue = selectedPlans.length === 0
+    ? ALL_PLANS
+    : (selectedPlans[0] ?? NO_PLAN_TOKEN);
 
   return (
     <div className="hud">
@@ -325,29 +369,57 @@ export default function HudBoard({
         <span className="hud__spacer" />
       </div>
 
-      {board.fleets.length > 0 ? (
+      {/* One filter row, two axes. The plan picker sits beside the fleet chips
+          rather than in its own row because the relationship is the point:
+          which fleets you have selected is what determines the plans on offer
+          (see buildHudBoard). Guarded on EITHER axis having rows — today both
+          derivations bucket every session (an agent with no fleet lands in the
+          solo group, one with no plan in the unbound group), so the two are
+          non-empty together; the OR is so that a future narrowing of one axis
+          cannot silently take the other's control off screen with it. */}
+      {board.fleets.length > 0 || board.plans.length > 0 ? (
         <div className="hud__fleets">
-          <Tooltip label="Show every fleet">
-            <button
-              type="button"
-              className="hud__fleet"
-              aria-pressed={selectedFleets.length === 0}
-              onClick={() => onToggleFleet(ALL_FLEETS)}
-            >
-              <span className="hud__fleet-row">
-                <span>all fleets</span>
-                <span className="hud__fleet-n">{board.total}</span>
-              </span>
-            </button>
-          </Tooltip>
-          {board.fleets.map((f) => (
-            <FleetChip
-              key={f.fleetSlug ?? SOLO_FLEET_KEY}
-              fleet={f}
-              selected={selectedFleets.includes(f.fleetSlug)}
-              onToggle={onToggleFleet}
-            />
-          ))}
+          {board.fleets.length > 0 ? (
+            <>
+              <Tooltip label="Show every fleet">
+                <button
+                  type="button"
+                  className="hud__fleet"
+                  aria-pressed={selectedFleets.length === 0}
+                  onClick={() => onToggleFleet(ALL_FLEETS)}
+                >
+                  <span className="hud__fleet-row">
+                    <span>all fleets</span>
+                    <span className="hud__fleet-n">{board.total}</span>
+                  </span>
+                </button>
+              </Tooltip>
+              {board.fleets.map((f) => (
+                <FleetChip
+                  key={f.fleetSlug ?? SOLO_FLEET_KEY}
+                  fleet={f}
+                  selected={selectedFleets.includes(f.fleetSlug)}
+                  onToggle={onToggleFleet}
+                />
+              ))}
+            </>
+          ) : null}
+          {board.plans.length > 0 ? (
+            <span className="hud__planfilter">
+              <Combobox
+                ariaLabel="Filter by plan"
+                triggerClassName="hud__planfilter-box"
+                testId="hud-plan-filter"
+                value={planValue}
+                emptyValue={ALL_PLANS}
+                placeholder="All plans"
+                emptyLabel="No plan matches"
+                options={planOptions}
+                onChange={(v) => onSelectPlan(v === NO_PLAN_TOKEN ? null : v)}
+                align="end"
+              />
+            </span>
+          ) : null}
         </div>
       ) : null}
 

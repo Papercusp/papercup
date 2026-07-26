@@ -283,6 +283,20 @@ describe('process pattern boundaries (a not-a-substitute verdict)', () => {
     expect(psProcessQuery.expectedVerdict).toBe('not-a-substitute');
     expect(maxTierFor(psProcessQuery.expectedVerdict)).toBe('observe');
   });
+
+  /**
+   * EI-18733363666718163. `atomize` is not a shell parser, so an inlined
+   * script payload (`python3 -c "..."`) splits into pseudo-verb atoms headed
+   * by short identifiers — including one that happens to start with `ps`.
+   * A bare `\b` anchor sits between `ps` and `=` (both are non-word-adjacent),
+   * so it used to claim a python assignment as a process-liveness query. The
+   * anchor now requires a shell-argument boundary (whitespace or end of atom).
+   */
+  it('does not false-positive on a python assignment that starts with ps/pgrep', () => {
+    expect(claims("ps=json.load(sys.stdin)['status']")).toBe(false);
+    expect(claims('pgrep=some_other_value')).toBe(false);
+    expect(claims('pshell --foo')).toBe(false);
+  });
 });
 
 /**
