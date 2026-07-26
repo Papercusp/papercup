@@ -65,6 +65,45 @@ describe('lock authority — real shared_presence query (integration)', () => {
     expect(rows[0].last_seen_ms).toBeGreaterThan(0);
   });
 
+  it('WI-6032: queryPresenceRows is workspace-blind by default (documents the bug) — same harness_slug across two workspaces is one pool', async () => {
+    await seed([
+      { ws: 'tenant-a', gh: 1, ml: 'm1', pubkey: 'aaa', secondsAgo: 2 },
+      { ws: 'tenant-b', gh: 2, ml: 'm2', pubkey: 'mmm', secondsAgo: 2 },
+    ]);
+    const rows = await queryPresenceRows(db.sql as never, HARNESS);
+    expect(rows.map((r) => r.device_pubkey).sort()).toEqual(['aaa', 'mmm']);
+  });
+
+  it('WI-6032: passing workspaceId scopes queryPresenceRows to that tenant only', async () => {
+    await seed([
+      { ws: 'tenant-a', gh: 1, ml: 'm1', pubkey: 'aaa', secondsAgo: 2 },
+      { ws: 'tenant-b', gh: 2, ml: 'm2', pubkey: 'mmm', secondsAgo: 2 },
+    ]);
+    const a = await queryPresenceRows(db.sql as never, HARNESS, undefined, 'tenant-a');
+    expect(a.map((r) => r.device_pubkey)).toEqual(['aaa']);
+    const b = await queryPresenceRows(db.sql as never, HARNESS, undefined, 'tenant-b');
+    expect(b.map((r) => r.device_pubkey)).toEqual(['mmm']);
+    const none = await queryPresenceRows(db.sql as never, HARNESS, undefined, 'tenant-c');
+    expect(none).toEqual([]);
+  });
+
+  it('WI-6032: lockAuthorityFor({workspaceId}) elects only within that tenant — cross-tenant peer never wins', async () => {
+    await seed([
+      // 'aaa' is the lexicographic min OVERALL but lives in tenant-b, a DIFFERENT
+      // tenant from self. Scoping to tenant-a must elect self, not 'aaa'.
+      { ws: 'tenant-b', gh: 1, ml: 'm1', pubkey: 'aaa', secondsAgo: 2 },
+      { ws: 'tenant-a', gh: 2, ml: 'm2', pubkey: 'mmm', secondsAgo: 2 },
+    ]);
+    const r = await lockAuthorityFor(HARNESS, {
+      fetchPresenceRows: (h, staleMs, workspaceId) => queryPresenceRows(db.sql as never, h, staleMs, workspaceId),
+      resolveSelf: async () => ({ githubUserId: 2, devicePubkey: 'mmm' }),
+      useHrwRendezvous: false,
+      workspaceId: 'tenant-a',
+    });
+    expect(r.isSelf).toBe(true);
+    expect(r.liveCount).toBe(1);
+  });
+
   it('selects argmin(device_pubkey) over live peers — self is min → isSelf', async () => {
     await seed([
       { gh: 1, ml: 'm1', pubkey: 'aaa', secondsAgo: 2 },

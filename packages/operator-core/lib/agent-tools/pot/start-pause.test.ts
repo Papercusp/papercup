@@ -98,7 +98,9 @@ describe('pot:start (P-005 / D-006)', () => {
     expect(out.started).toBe(true);
     expect(setPotStarted).toHaveBeenCalledWith('ws-1', 'my-pot', true);
     // ENSURE — never clobber the Mug's runtime tuning (P-002 / D-001).
-    expect(armDefaults).toHaveBeenCalledWith('ws-1', { mode: 'ensure' });
+    // installSlug (EI-13608) is threaded through so the built-in work_items:create
+    // default can fold in the owner's createWakeSuppressPlans, if any.
+    expect(armDefaults).toHaveBeenCalledWith('ws-1', { mode: 'ensure', installSlug: 'my-pot' });
     expect(setDefaultWakeMode).toHaveBeenCalledWith('auto');
     expect(requestUrgentPotWake).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'my-pot', workspaceId: 'ws-1' }),

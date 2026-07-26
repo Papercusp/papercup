@@ -106,10 +106,18 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
     expect(calls).toHaveLength(1);
     expect(calls[0].text).toMatch(/harness_slug =/);
     expect(calls[0].text).toMatch(/last_seen_at\s*>=\s*now\(\)\s*-\s*make_interval/);
-    // values = [harnessSlug, looseWindowSecs]; loose cutoff = 2×90s = 180s.
-    expect(calls[0].values).toEqual(['h', 180]);
+    // values = [harnessSlug, workspaceId(null,IS-NULL branch), workspaceId(null,eq branch), looseWindowSecs];
+    // loose cutoff = 2×90s = 180s. workspaceId omitted → both null (WI-6032 no-op predicate).
+    expect(calls[0].values).toEqual(['h', null, null, 180]);
     // BIGINT→string columns are still coerced to numbers.
     expect(out).toEqual([{ device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: 123 }]);
+  });
+
+  it('WI-6032: harness query filters on workspace_id when passed', async () => {
+    const { sql, calls } = recordingSql([]);
+    await queryPresenceRows(sql, 'h', 90_000, 'ws-1');
+    expect(calls[0].text).toMatch(/workspace_id = /);
+    expect(calls[0].values).toEqual(['h', 'ws-1', 'ws-1', 180]);
   });
 
   it('hive query adds the same loose predicate, scoped on hive_slug', async () => {
@@ -117,13 +125,20 @@ describe('queryPresenceRows / queryPresenceRowsForHive — LOOSE last_seen_at pr
     await queryPresenceRowsForHive(sql, 'my-hive', 10_000);
     expect(calls[0].text).toMatch(/pot_slug =/);
     expect(calls[0].text).toMatch(/last_seen_at\s*>=\s*now\(\)\s*-\s*make_interval/);
-    expect(calls[0].values).toEqual(['my-hive', 20]); // 2×10s
+    expect(calls[0].values).toEqual(['my-hive', null, null, 20]); // 2×10s, workspaceId omitted
+  });
+
+  it('WI-6032: hive query filters on workspace_id when passed', async () => {
+    const { sql, calls } = recordingSql([]);
+    await queryPresenceRowsForHive(sql, 'my-hive', 10_000, 'ws-2');
+    expect(calls[0].text).toMatch(/workspace_id = /);
+    expect(calls[0].values).toEqual(['my-hive', 'ws-2', 'ws-2', 20]);
   });
 
   it('defaults the loose window to 2× the DEFAULT staleness window when staleMs is omitted', async () => {
     const { sql, calls } = recordingSql([]);
     await queryPresenceRows(sql, 'h');
-    expect(calls[0].values[1]).toBe((2 * DEFAULT_AUTHORITY_STALE_MS) / 1000); // 180
+    expect(calls[0].values[3]).toBe((2 * DEFAULT_AUTHORITY_STALE_MS) / 1000); // 180
   });
 
   it('the loose pre-filter never changes the argmin — selection is byte-identical to the un-pre-filtered set', async () => {
