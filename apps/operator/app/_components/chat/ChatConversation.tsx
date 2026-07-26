@@ -205,6 +205,17 @@ export interface ChatConversationProps {
   /** Hide the input form entirely (e.g. OracleDock's chatwoot tab swaps it out). */
   hideInput?: boolean;
 
+  /**
+   * Optional slim informational row rendered UNDER the composer form
+   * (gui-chat-session-controls-2026-07-25 P-007). Used by SessionChatModal to
+   * surface the roster-driven session status (modes, context/compaction,
+   * fleet, claims, plan, open await) below the reply box. Purely
+   * informational — this component adds no behavior around it, same
+   * passthrough pattern as composerExtra/renderAvatar. Omit to render
+   * nothing (the default, unchanged for every other caller).
+   */
+  footer?: ReactNode;
+
   /** Extra className appended to the `.oracle-body` div (e.g. animation classes). */
   bodyClassName?: string;
   /** Inline style for the `.oracle-body` div (e.g. display: none on tab swap). */
@@ -251,6 +262,7 @@ export function ChatConversation(props: ChatConversationProps) {
     hideInput,
     bodyClassName,
     bodyStyle,
+    footer,
     onLoadEarlier,
     hasMoreEarlier,
     loadingEarlier,
@@ -642,6 +654,7 @@ export function ChatConversation(props: ChatConversationProps) {
           </button>
         </form>
       )}
+      {footer}
     </>
   );
 }

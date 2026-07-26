@@ -24474,6 +24474,39 @@ body:has(.operator-panel) {
   font-size: 13px;
 }
 
+/* Session status footer (gui-chat-session-controls-2026-07-25 P-007) — a
+ * slim, purely-informational row under the composer form. Reuses the HUD's
+ * .hud__handle/.hud__chip/.hud__plan chip look (hud.css) rather than
+ * inventing a second chip style. */
+.oracle-session-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.1);
+  font-size: 11px;
+}
+
+.oracle-session-footer-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.oracle-session-footer-ctx {
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+.oracle-session-footer-intent {
+  color: var(--fg-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .oracle-tab-add.is-open {
   color: var(--fg);
   border-color: rgb(from var(--accent-strong) r g b / 0.34);

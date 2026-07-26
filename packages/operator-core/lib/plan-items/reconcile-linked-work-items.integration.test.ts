@@ -223,6 +223,38 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     expect(setWorkItemState).toHaveBeenCalledWith('F-mirror-1', 'passed', expect.anything());
   });
 
+  // EI-18677799334390930: when the triggering plans:set-status call resolved an
+  // attributable actor, the reconciler's completionRef names them — so a leader
+  // reading a `no-evidence`-flagged reconcile close can route a correction to the
+  // real actor instead of broadcasting "who flipped this plan item?" to the fleet.
+  it('stamps the triggering actor onto the completionRef when available (EI-18677799334390930)', async () => {
+    stub({ id: 'WI-attributed', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-005', srcRef: 'WI-attributed' });
+
+    await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-005', triggeredBy: 'su-abc123' });
+
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'WI-attributed',
+      'resolved',
+      expect.objectContaining({
+        by: 'system:plan-item-reconcile',
+        completionRef: expect.stringContaining('(plan item flipped by su-abc123)'),
+      }),
+    );
+  });
+
+  it('leaves the completionRef unattributed when no triggering actor was resolved (the periodic sweep case)', async () => {
+    stub({ id: 'WI-unattributed', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-P22', srcRef: 'WI-unattributed' });
+
+    await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-P22' });
+
+    const call = setWorkItemState.mock.calls.find((c) => c[0] === 'WI-unattributed');
+    expect(call?.[2]).toEqual(
+      expect.objectContaining({ completionRef: expect.not.stringContaining('flipped by') }),
+    );
+  });
+
   // NOTE: the payload.plan_item STAMP backstop path (mirroring
   // findConvertedWorkItemByStamp's already-proven jsonb-string-scalar unwrap,
   // convert.integration.test.ts) is exercised by findAllLinkedWorkItems's

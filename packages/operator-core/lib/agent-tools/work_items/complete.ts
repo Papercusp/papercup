@@ -44,6 +44,7 @@ import {
   SETTLED_WORK_ITEM_STATES,
 } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
+import { isBackedLiveDroveUiClaim } from '../../completion-audit';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -416,13 +417,35 @@ async function completeOne(
   let aliased: boolean | undefined;
   let requestedState: string | undefined;
   let appliedState: string | null | undefined;
-  if (effectiveState) {
+
+  // WI-5891 (leader audit follow-up to WI-5874/P-001): a completion that intends to
+  // CLOSE the item while claiming `verifiedHow: 'live-drove-ui'` must cite a real
+  // artifact (a screenshot/capture path, or a recorded tauri-agent-tools capture/
+  // screenshot/check invocation) — the exact gap that let P-001 close on this label
+  // citing only two vitest runs, with no screenshot anywhere on the host. Checked
+  // BEFORE the state write is attempted, so an unbacked claim never partially
+  // transitions the item (nothing to roll back) — the completion record itself is
+  // still built + returned below (EI-24: the narrative is never lost), it just
+  // cannot land the CLOSE. This is a deliberate, narrow exception to this file's
+  // usual record-and-warn discipline — see isBackedLiveDroveUiClaim's doc comment.
+  const closeIntentRequested = Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+  const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
+  const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceForGate);
+
+  if (unbackedLiveDroveUiClose) {
+    stateError =
+      `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
+      'artifact (a screenshot/capture image path, or a recorded tauri-agent-tools capture/screenshot/check ' +
+      "invocation) in testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past " +
+      "its own author: unit tests verify structure, not pixels. Either cite the artifact, or honestly set " +
+      "verifiedHow to 'unit'/'manual'/'integration' and re-send.";
+  } else if (effectiveState) {
     try {
       const res = await setWorkItemStateWithAliasInfo(it.id, effectiveState, {
         harness: it.harness,
         by: ident.ownerId,
         completionRef: it.completion.summary,
-        completionEvidence: completionEvidenceFromRecord(it.completion),
+        completionEvidence: completionEvidenceForGate,
       });
       workItem = res.workItem ?? existing;
       aliasNote = res.aliasNote;
@@ -482,7 +505,7 @@ async function completeOne(
   // extraction as the state write (completionEvidenceFromRecord) as the one source
   // of truth, so "did this completion record verification" can never disagree
   // between the two call sites.
-  const hasTests = completionEvidenceFromRecord(it.completion) !== undefined;
+  const hasTests = completionEvidenceForGate !== undefined;
   const hasDeferred = Array.isArray(it.completion.deferred) && it.completion.deferred.length > 0;
   // EI-13687: when `completion` arrived as a bare string, hasTests/hasDeferred are
   // UNCONDITIONALLY false (the coercion can only ever populate `summary`) — so give
@@ -672,7 +695,7 @@ export default defineTool({
   description:
     "Finish one OR many work-items with a STRUCTURED completion record (whatLanded/migrations/tests/deferred) — the system renders + broadcasts it, never narrate in prose. A terminal `state` converges the whole finish: item state + plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning` (see seeAlso for idempotency + batch-result semantics).",
   guidance: {
-    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. Duplicate? set `completion.duplicateOf` to the surviving id.',
+    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. A CLOSE claiming `verifiedHow:\'live-drove-ui\'` with no cited screenshot/tauri-agent-tools artifact in testsRun/testResult/filesChanged is REJECTED (WI-5891). Duplicate? set `completion.duplicateOf` to the surviving id.',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.',
     chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox.',
     seeAlso: [

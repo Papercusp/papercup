@@ -50,7 +50,16 @@ import { ChatActionBar } from './ChatActionBar';
 import { LocalCardHost } from './LocalCardHost';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 import type { ChatMessage } from './ChatConversation';
-import { shortHandle, type HudRosterEntry } from '../../adv/hud/hud-board-model';
+import {
+  contextPct,
+  deriveBadges,
+  formatAge,
+  HUD_DEFAULT_THRESHOLDS,
+  isInfrastructureAwait,
+  shortHandle,
+  type HudBadge,
+  type HudRosterEntry,
+} from '../../adv/hud/hud-board-model';
 // OtherDetail's styles (pc-items__*, pc-tier/pc-kind badges) — global CSS, so
 // importing it here (as InboxPane already does) makes this modal
 // self-sufficient wherever it's mounted.
@@ -123,6 +132,98 @@ export async function sendToSessionOwner(ownerId: string, body: string): Promise
   });
   const text = await r.text();
   if (!r.ok) throw new Error(`coord:send → ${r.status}: ${text.slice(0, 200)}`);
+}
+
+/** Same tone→class mapping HudBoard.tsx uses for its badge chips (P-007) —
+ *  duplicated rather than imported: HudBoard.tsx is a page-level component,
+ *  not a shared chip-rendering module, and the mapping is 4 lines. */
+const FOOTER_CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
+  neutral: '',
+  accent: 'hud__chip--accent',
+  good: 'hud__chip--good',
+  warn: 'hud__chip--warn',
+  bad: 'hud__chip--bad',
+};
+
+function footerChipClass(b: HudBadge): string {
+  const tone = FOOTER_CHIP_TONE_CLASS[b.tone];
+  if (b.kind !== 'mode') return `hud__chip ${tone}`;
+  return `hud__chip ${tone} hud__chip--mode${b.ownerDirected ? ' hud__chip--mode-owner' : ''}`;
+}
+
+/**
+ * P-007: the session status row rendered under the composer — built ENTIRELY
+ * from the SAME advRoster.list entry the identity chip (P-012) already
+ * fetches (no new query, no new endpoint). INFORMATIONAL only (D-002): no
+ * click handlers, no write path — mode CONTROL lives in the chat action bar
+ * (Lane B's P-004), not here. `objective` = the roster's declared `intent`;
+ * model/effort are NOT on the roster entry and are omitted rather than
+ * guessed at.
+ */
+function SessionFooter({ entry }: { entry: HudRosterEntry }) {
+  // A live ticking clock so context/age readings stay current without a new
+  // fetch — same pattern + tick cadence as HudView.tsx's board clock.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const pct = contextPct(entry.contextTokens, entry.compactionLimit);
+  // deriveBadges' own ctx chip is threshold-gated (only once it's getting
+  // full); the footer shows the number unconditionally below, so drop the
+  // derived duplicate rather than double-render it.
+  const badges = useMemo(
+    () => deriveBadges(entry, { nowMs, thresholds: HUD_DEFAULT_THRESHOLDS }).filter((b) => b.id !== 'ctx'),
+    [entry, nowMs],
+  );
+  const awaitText =
+    entry.openAwait && !isInfrastructureAwait(entry.openAwait)
+      ? entry.openAwait.note?.trim() || `Waiting on ${entry.openAwait.eventKey}`
+      : null;
+
+  return (
+    <div className="oracle-session-footer" data-testid="session-chat-footer">
+      <div className="oracle-session-footer-row">
+        <span className="hud__handle">{shortHandle(entry.ownerId)}</span>
+        {entry.fleetRole === 'leader' ? <span className="hud__chip hud__chip--accent">LEAD</span> : null}
+        {entry.fleetSlug ? (
+          <span
+            className="hud__chip"
+            style={entry.fleetColor ? ({ '--hud-fleet': entry.fleetColor } as React.CSSProperties) : undefined}
+          >
+            {entry.fleetSlug}
+          </span>
+        ) : null}
+        {entry.currentPlanSlug ? <span className="hud__plan">{entry.currentPlanSlug}</span> : null}
+        {pct != null ? (
+          <span
+            className="oracle-session-footer-ctx"
+            title={`${entry.contextTokens ?? '?'} / ${entry.compactionLimit ?? '?'} tokens`}
+          >
+            ctx {pct}%
+          </span>
+        ) : null}
+      </div>
+      {entry.intent?.trim() ? (
+        <div className="oracle-session-footer-intent">{entry.intent.trim()}</div>
+      ) : null}
+      {badges.length > 0 || awaitText ? (
+        <div className="hud__chips">
+          {awaitText ? (
+            <span className="hud__chip hud__chip--warn" title={entry.openAwait?.eventKey}>
+              ⏳ {awaitText}
+            </span>
+          ) : null}
+          {badges.map((b) => (
+            <span key={b.id} className={footerChipClass(b)} title={b.title}>
+              {b.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /** The live half — only mounted once a streamUrl exists, so the shared
@@ -207,6 +308,7 @@ function LiveSessionChat({
       error={sendError}
       agentName={agentName}
       renderAvatar={renderAvatar}
+      footer={rosterEntry ? <SessionFooter entry={rosterEntry} /> : null}
     />
   );
 }

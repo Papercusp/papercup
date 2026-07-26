@@ -75,15 +75,9 @@ export type StallEiEpisode = Omit<ReplicationStallEpisode, 'kind'> & {
 export function replicationStallEiTitle(episode: {
   harnessSlug: string;
   logKeyHex: string;
-  kind:
-    | 'no_replicator'
-    | 'frozen'
-    | 'connected_never_replicated'
-    | 'drain_stalled'
-    | 'drain_backlog_stalled'
-    | 'drain_backlog_aged'
-    | 'drain_orphan_tail'
-    | 'drain_row_quarantined';
+  // Track StallEiEpisode's union instead of restating it: a new episode kind
+  // added upstream must not un-assign this fn from the escalator's stableTitle.
+  kind: StallEiEpisode['kind'];
 }): string {
   return (
     `[replication-liveness] ${episode.kind}: harness=${episode.harnessSlug} ` +

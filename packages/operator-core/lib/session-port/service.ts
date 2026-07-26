@@ -149,7 +149,9 @@ export async function assertNoPortableAuthority(source: AdvSessionRow): Promise<
     active.fleetSlug ? `fleet ${active.fleetSlug}` : null,
     active.loopArmed ? 'armed loop' : null,
     active.claims.length ? `${active.claims.length} active claim(s)` : null,
-    active.modes.some((mode) => mode === 'auto' || mode === 'drain') ? `mode ${active.modes.join(',')}` : null,
+    active.modes.some((m) => m.mode === 'auto' || m.mode === 'drain')
+      ? `mode ${active.modes.map((m) => m.mode).join(',')}`
+      : null,
   ].filter(Boolean);
   if (reasons.length) throw new Error(`source carries live operational authority (${reasons.join('; ')}); port refused`);
 }

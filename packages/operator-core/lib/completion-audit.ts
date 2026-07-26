@@ -31,7 +31,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
+import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence } from './coord-lifecycle/records';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -60,8 +60,23 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  *    undiscovered write path slipped past the gate — this audit is how a leader finds
  *    the NEXT one instead of hand-verifying source for every plain `no-completion-record`
  *    hit (most of which are the benign, expected system dedup flips).
+ *
+ *  - `geometry-unverified` (WI-5891, the P-014/WI-5874 audit follow-up) — a terminal row
+ *    whose `filesChanged` touches a layout-bearing file ({@link touchesLayoutBearingFiles}:
+ *    `*.css`/`*.tsx`/`*.jsx`) while `verifiedHow` is `'unit'` or ABSENT. This is the
+ *    detection-only sibling of {@link isBackedLiveDroveUiClaim}'s hard completion-boundary
+ *    reject: WI-5874/P-001 shipped a real, visible WebKitGTK layout regression closed
+ *    with `verifiedHow:'live-drove-ui'` citing only two vitest runs and no screenshot —
+ *    structure-passing, pixel-failing. This bucket names that exact shape so a leader
+ *    audit (`work_items:list { audit: 'geometry-unverified' }`) surfaces it going
+ *    forward, the same way `no-evidence` surfaces a bare-assertion close today.
  */
-export const COMPLETION_AUDITS = ['no-evidence', 'no-completion-record', 'no-completion-record-suspicious'] as const;
+export const COMPLETION_AUDITS = [
+  'no-evidence',
+  'no-completion-record',
+  'no-completion-record-suspicious',
+  'geometry-unverified',
+] as const;
 export type CompletionAudit = (typeof COMPLETION_AUDITS)[number];
 
 /**
@@ -103,6 +118,43 @@ export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
 export const RECONCILER_SYSTEM_ACTOR = 'system:plan-item-reconcile' as const;
 
 /**
+ * WI-5891 — layout/geometry-bearing file extensions for the `geometry-unverified`
+ * audit bucket. A `.css` file is unambiguously layout-bearing; `.tsx`/`.jsx` are
+ * included too because `filesChanged` carries only PATHS (no diff content to check
+ * for an actual `className`/`style` edit more precisely) — deliberately biased
+ * toward flagging a touched component file rather than missing a real geometry
+ * change. This is the OPPOSITE bias from {@link looksLikeCitedProseEvidence} (which
+ * leans toward NOT flagging): an audit DETECTION bucket is cheap to over-flag (a
+ * wasted read) but expensive to under-flag (a shipped pixel regression), so the two
+ * heuristics in this module correctly point in opposite directions for their
+ * respective jobs.
+ */
+const LAYOUT_BEARING_FILE_RE = /\.(?:css|tsx|jsx)$/i;
+
+/** Pure — does this changed-file list touch a layout/geometry-bearing file? */
+export function touchesLayoutBearingFiles(filesChanged: readonly string[] | null | undefined): boolean {
+  if (!filesChanged?.length) return false;
+  return filesChanged.some((f) => LAYOUT_BEARING_FILE_RE.test(f.trim()));
+}
+
+/** `verifiedHow` values that count as a genuine pixel/behavior check for a layout-bearing
+ *  change. Everything else (`'unit'`, or the field absent) leaves the change's actual
+ *  geometry unverified — the `geometry-unverified` audit fires exactly on that gap. */
+const GEOMETRY_VERIFIED_HOW_VALUES = ['integration', 'live-drove-ui', 'manual', 'already-passing'] as const;
+
+/** The `geometry-unverified` WHERE fragment, parameterized on the two jsonb-path
+ *  expressions the two callers below alias differently (unaliased vs `ei.`). */
+function geometryUnverifiedWhereSql(sql: OrgSql, filesChangedExpr: unknown, verifiedHowExpr: unknown) {
+  return sql`(
+    EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(COALESCE(${filesChangedExpr as string}, '[]'::jsonb)) AS f
+       WHERE f ~* '\\.(css|tsx|jsx)$'
+    )
+    AND NOT (COALESCE(${verifiedHowExpr as string}, '') = ANY(${GEOMETRY_VERIFIED_HOW_VALUES as unknown as string[]}))
+  )`;
+}
+
+/**
  * The audit's WHERE fragment. Callers AND it with their own terminal-state predicate
  * (the two families spell their state column differently — `status` vs `state`).
  *
@@ -115,6 +167,13 @@ export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
   if (audit === 'no-completion-record') return sql`terminal_completion_ref IS NULL`;
   if (audit === 'no-completion-record-suspicious') {
     return sql`terminal_completion_ref IS NULL AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+  }
+  if (audit === 'geometry-unverified') {
+    return geometryUnverifiedWhereSql(
+      sql,
+      sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->'filesChanged'`),
+      sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'verifiedHow'`),
+    );
   }
   // EI-18677799334390930: a reconcile-sourced close (RECONCILER_SYSTEM_ACTOR) is ALWAYS
   // flagged here, independent of the `_completionEvidence` key check — it never carries
@@ -132,6 +191,13 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
   if (audit === 'no-completion-record') return sql`${ref} IS NULL`;
   if (audit === 'no-completion-record-suspicious') {
     return sql`${ref} IS NULL AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+  }
+  if (audit === 'geometry-unverified') {
+    return geometryUnverifiedWhereSql(
+      sql,
+      sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->'filesChanged'`),
+      sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'verifiedHow'`),
+    );
   }
   // EI-18677799334390930: same always-flag rule as auditPredicateSql above.
   return sql`(NOT (COALESCE(${col}, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY}) OR ${owner} = ${RECONCILER_SYSTEM_ACTOR})`;
@@ -194,6 +260,59 @@ export function looksLikeCitedProseEvidence(ref: string | null | undefined): boo
   const text = ref.trim();
   if (text.length < PROSE_EVIDENCE_MIN_LENGTH) return false;
   return PROSE_EVIDENCE_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * WI-5891 — the COMPLETION-BOUNDARY hard gate the fleet leader's P-014 audit asked
+ * for, as the enforceable half of the WI-5874/P-001 incident: `verifiedHow:
+ * 'live-drove-ui'` was claimed while citing only two vitest runs, with no screenshot
+ * artifact anywhere on the host — unit tests verify STRUCTURE, and this bug was
+ * structure-passing, pixel-failing. A doc paragraph asking agents to remember to
+ * screenshot next time does not bind (proven the same hour it was written); this
+ * does, because `work_items:complete` calls it before it lets a close land.
+ *
+ * Unlike every other check in this module (and everything else in
+ * `work_items:complete`, EI-24's "record-and-warn, never hard-reject" discipline),
+ * THIS one is a genuine reject: a `live-drove-ui` claim that cites nothing real is
+ * refused, not just flagged. That is a deliberate, narrow exception — scoped to
+ * exactly one closed enum value making one specific, checkable factual claim ("I
+ * drove the running UI"), not a general tightening of the completion contract.
+ *
+ * "Cites something real" is checked against the free-text fields an agent naturally
+ * writes an artifact reference into (`testsRun`, `testResult`) and `filesChanged` (a
+ * screenshot saved alongside the change) — see {@link citesScreenshotArtifact} for the
+ * patterns. Pure + synchronous so the gate and its own unit test can never drift.
+ */
+const SCREENSHOT_ARTIFACT_PATTERNS: readonly RegExp[] = [
+  // An image artifact path — a screenshot/capture output file.
+  /[\w./-]+\.(?:png|jpe?g|webp|gif)\b/i,
+  // A tauri-agent-tools invocation recorded in the run (capture/screenshot/check subcommands
+  // — see /internal/docs/testing/agent-e2e), e.g. "tauri-agent-tools capture --out shot.png".
+  /\btauri-agent-tools\b[^\n]{0,80}\b(?:capture|screenshot|check)\b/i,
+  // A bare "screenshot"/"capture" mention paired with an image path in the same clause.
+  /\b(?:screenshot|capture)\b[^\n]{0,80}\.(?:png|jpe?g|webp|gif)\b/i,
+];
+
+/** Does this piece of completion text cite a real screenshot/capture artifact? */
+export function citesScreenshotArtifact(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const t = text.trim();
+  if (!t) return false;
+  return SCREENSHOT_ARTIFACT_PATTERNS.some((re) => re.test(t));
+}
+
+/**
+ * Is a `verifiedHow: 'live-drove-ui'` claim BACKED by a real artifact citation?
+ * Returns `true` (nothing to enforce) for every OTHER `verifiedHow` value, including
+ * absent — this gate is scoped narrowly to the one enum member making the specific
+ * factual claim "I drove the running UI and looked at it".
+ */
+export function isBackedLiveDroveUiClaim(evidence: CompletionVerificationEvidence | null | undefined): boolean {
+  if (!evidence || evidence.verifiedHow !== 'live-drove-ui') return true;
+  if (citesScreenshotArtifact(evidence.testsRun)) return true;
+  if (citesScreenshotArtifact(evidence.testResult)) return true;
+  if (evidence.filesChanged?.some((f) => citesScreenshotArtifact(f))) return true;
+  return false;
 }
 
 /**

@@ -1,9 +1,20 @@
 /**
  * GET /api/zero-harness/rest-query?name=...&args=<json>
  *
- * Single-query REST endpoint with gzip when accepted.
+ * Single-query REST endpoint with gzip when accepted. This is THE sync read
+ * path: every `useSyncQuery` / prefetch / `fetchSyncQuery` lands here, one
+ * request per query, bounded by the client's concurrency gate
+ * (libs/generic/sync/src/transports/polling/fetch-gate.ts).
  *
- * Ported from app/api/zero-harness/rest-query/route.ts. `auth: 'public'`.
+ * `auth: 'loopback'` (drop-sync-batcher-2026-07-25 P-001). It was `'public'`
+ * while `rest-query-batch` — which carried all real sync traffic — was
+ * `'loopback'`; moving every consumer onto this route at `'public'` would have
+ * silently downgraded the whole sync surface from loopback-gated to public.
+ * Nothing legitimate lost access: the desktop webview reaches the sidecar over
+ * Tauri IPC (loopback), the dev browser is `localhost:3055`, and the mobile
+ * client uses the separately device-authed `/device/rest-query`.
+ *
+ * Ported from app/api/zero-harness/rest-query/route.ts.
  */
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '../../../sync-resolver';
 import { resourceDeltaConfig } from '../../../sync-resolver/resource-delta-config';
@@ -14,7 +25,7 @@ import { serializeJsonResponse } from '../../../cpu-task-worker';
 export default defineTool({
   method: 'GET',
   path: '/zero-harness/rest-query',
-  auth: 'public',
+  auth: 'loopback',
   // Pure sync-transport, polled ~every 3s — exempt from route_invocations
   // telemetry so the table doesn't flood (plan Q7: sampleRate 0 for pure
   // sync transports).

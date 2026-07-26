@@ -14,6 +14,24 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { computeNextFireAt } from '../../harness/routines/cron';
 import { runControlMutation } from '../../gateway-control/control-harness';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+
+/**
+ * Best-effort caller ownerId for the pause-attribution stamp. A ctx-supplied
+ * ownerId wins (some in-process callers thread it directly); otherwise derive
+ * it (grade-idea's D-012 pattern — resolveAgentIdentity THROWS on an
+ * unattributable ctx, and an attribution miss must degrade to the role string,
+ * never block the pause).
+ */
+function pausedByFrom(ctx: unknown, role: string): string {
+  const explicit = (ctx as { ownerId?: unknown } | undefined)?.ownerId;
+  if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+  try {
+    return resolveAgentIdentity((ctx ?? {}) as ResolveIdentityCtx).ownerId;
+  } catch {
+    return `role:${role}`;
+  }
+}
 
 interface RoutineSnap {
   triggerConfig: Record<string, unknown>;
@@ -206,7 +224,7 @@ export default defineTool({
           if (args.active === false) {
             metadata.pause = {
               reason: args.reason,
-              pausedBy: ctx.ownerId ?? `role:${ctx.role}`,
+              pausedBy: pausedByFrom(ctx, ctx.role),
               pausedAtMs: Date.now(),
             };
           } else if (args.active === true && prev.metadata.pause) {

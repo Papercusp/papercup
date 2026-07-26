@@ -19,7 +19,7 @@
 # Nothing checked FRESHNESS or SUCCESS — the same cannot-discriminate class as a gate
 # whose pass-branch fires on exactly the condition it exists to catch.
 #
-# TWO independent signals, either can fire:
+# THREE independent signals, any can fire:
 #   (a) FRESHNESS — the newest dump artifact is older than BACKUP_MAX_AGE_H. This is
 #       the signal that would have caught the 30-day death on day one. It holds even if
 #       the run log has been rotated away, because it judges the ARTIFACT, not the log.
@@ -27,11 +27,21 @@
 #       FAILED" runs with no intervening "backup OK". This fires EARLY (within an hour or
 #       two of the breakage) rather than waiting for the artifact to age past the freshness
 #       bar, and it catches the case where an artifact is fresh but a LATER dump began failing.
+#   (c) STRANDED TMP — a "*.tmp" pg_dump staging directory under BACKUP_DUMP_DIR/pg/ older
+#       than BACKUP_STALE_TMP_MAX_H. This is the recurrence guard for EI-18678678853631218
+#       (2026-07-26): a failed pg_dump -Fd leaves a 0700 postgres-owned "$db.tmp" that a
+#       marsh-office `rm -rf` cannot remove on the failure path. Because pg_dump -Fd refuses
+#       a non-empty target, ONE stranded .tmp silently fails every subsequent hourly run for
+#       that database forever — (a) and (b) both eventually catch that (the artifact goes
+#       stale / the log fills with FAILs), but this signal names the ACTUAL mechanism
+#       directly instead of making the on-call rediscover it from a generic staleness alarm.
+#       db-backup.sh's own rm_tmp() now falls back to `sudo -n rm -rf` and should prevent
+#       this from ever recurring — this check is the independent verifier that it did.
 #
 # CONVERGED 2026-07-12 (EI-10733): the backup path is now db-backup.sh (pg_dump -Fd -j,
 # per-DB, TOC-validated) — NOT the old pre-snapshot.sh `timeout 60 pg_dumpall | gzip`
 # that produced pg-5432.sql.gz. This probe was repointed at db-backup.sh's artifacts +
-# run log accordingly; the two-signal design is unchanged, only what it judges.
+# run log accordingly; the signal design is unchanged, only what it judges.
 #
 # DETECTION + ESCALATION ONLY — this script never re-runs a dump, kills a process, or
 # touches the backup config. Recovery is a human/agent call made off the filed EI. Same
@@ -58,6 +68,9 @@
 #                                                              deliberately not gated.
 #   BACKUP_MAX_AGE_H     (default 6)   — artifact older than this ⇒ alarm (dumps run ~hourly)
 #   BACKUP_MAX_FAILS     (default 3)   — this many trailing FAILED runs with no "OK" ⇒ alarm
+#   BACKUP_STALE_TMP_MAX_H (default 2) — a "*.tmp" pg_dump staging dir under
+#                                        BACKUP_DUMP_DIR/pg/ older than this ⇒ alarm
+#                                        (EI-18678678853631218 recurrence guard — see above)
 #   BACKUP_HOOK_LOG      (default $BACKUP_DUMP_DIR/db-backup.log) — db-backup.sh's run log
 #   OPERATOR_MCP_URL     (default http://127.0.0.1:3070/api/mcp?superuser=1)
 #   BACKUP_NO_FILE       (default 0)   — set 1 to skip EI filing (log-only / dry-run)
@@ -79,9 +92,9 @@ set -uo pipefail
 # and exit path are untouched — only the FILING is withheld, so a test still gets the truth.
 # BACKUP_ALERT_FORCE=1 files anyway, for the rare case a non-default threshold should.
 if [ -z "${BACKUP_ALERT_FORCE:-}" ] \
-   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ]; } \
+   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ]; } \
    && [ "${BACKUP_NO_FILE:-0}" != 1 ]; then
-  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
+  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
   BACKUP_NO_FILE=1
 fi
 
@@ -89,6 +102,7 @@ BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
 BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg/papercusp pg/restart}"
 BACKUP_MAX_AGE_H="${BACKUP_MAX_AGE_H:-6}"
 BACKUP_MAX_FAILS="${BACKUP_MAX_FAILS:-3}"
+BACKUP_STALE_TMP_MAX_H="${BACKUP_STALE_TMP_MAX_H:-2}"
 BACKUP_HOOK_LOG="${BACKUP_HOOK_LOG:-$BACKUP_DUMP_DIR/db-backup.log}"
 OPERATOR_MCP_URL="${OPERATOR_MCP_URL:-http://127.0.0.1:3070/api/mcp?superuser=1}"
 BACKUP_NO_FILE="${BACKUP_NO_FILE:-0}"
@@ -191,6 +205,36 @@ if [ "${1:-}" = "--self-test" ]; then
   check "fresh artifact, production defaults: green, no marker" \
         no  no
   printf '  ---- %d passed, %d failed\n' "$p" "$f"
+
+  # ── EI-18678678853631218 recurrence guard: signal (c), stranded .tmp ──────
+  # A separate helper (not `check`, which fixes the pg/<db> shape) so a stranded .tmp is
+  # exercised independently of the freshness artifacts above.
+  check_tmp() {
+    local name="$1" stale="$2" want_marker="$3"; shift 3
+    rm -rf "${t:?}/state" "$t/dump/pg"; mkdir -p "$t/state" "$t/dump/pg/papercusp" "$t/dump/pg/restart" "$t/dump/pg/papercusp.tmp"
+    : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
+    if [ "$stale" = yes ]; then touch -d '3 hours ago' "$t/dump/pg/papercusp.tmp"; fi
+    env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        "$@" bash "$self" >/dev/null 2>&1
+    local got_marker=no
+    [ -f "$t/state/stale-tmp" ] && got_marker=yes
+    if [ "$got_marker" = "$want_marker" ]; then
+      printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted marker=%s, got marker=%s\n' "$name" "$want_marker" "$got_marker"; f=$((f+1))
+    fi
+  }
+  # 5. A .tmp older than the threshold fires (dry-run: marker still withheld, per bug #1's rule).
+  check_tmp "stranded .tmp older than threshold on a REAL run: marker set" \
+        yes yes BACKUP_ALERT_FORCE=1
+  check_tmp "stranded .tmp older than threshold, dry-run: NO marker" \
+        yes no  BACKUP_NO_FILE=1
+  # 6. A fresh .tmp (still within one cycle — a dump legitimately in progress) is silent.
+  check_tmp "fresh .tmp (in-progress dump), production defaults: green, no marker" \
+        no  no
+  printf '  ---- %d passed, %d failed (post stranded-tmp block)\n' "$p" "$f"
   [ "$f" -eq 0 ] || exit 1
   exit 0
 fi
@@ -269,6 +313,37 @@ This fires EARLY, before the artifact ages past the freshness bar — precisely 
 Read the per-DB error in $BACKUP_HOOK_LOG (db-backup.sh logs 'db FAIL (...)' per database) and $BACKUP_DUMP_DIR/STATUS.json (failed[]). db-backup.sh only accepts a dump that passes pg_restore -l, so a FAILED run means the dump errored or produced an unreadable archive — read the actual pg_dump error, do NOT blindly raise PC_BACKUP_TIMEOUT_SEC. Also check for an orphaned pg_dump backend holding AccessShareLock on ~593 tables, which can wedge the release pipeline for hours (EI-10730): SELECT pid, application_name, backend_start FROM pg_stat_activity WHERE application_name LIKE 'pg_dump%'."
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (consecutive fails) — skipping duplicate filing."
+    else
+      file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
+    fi
+  else
+    rm -f "$RED_MARKER"
+  fi
+fi
+
+# ── (c) STRANDED TMP — the EI-18678678853631218 recurrence guard ───────────
+# A "*.tmp" pg_dump -Fd staging directory under $BACKUP_DUMP_DIR/pg/ that survives past
+# one dump cycle means the failure-path cleanup could not remove it (0700 postgres-owned,
+# `rm -rf` as marsh-office denied) — and because pg_dump -Fd refuses a non-empty target,
+# that ONE stranded .tmp silently fails every later run of that database. db-backup.sh's
+# rm_tmp() now falls back to `sudo -n rm -rf`, so this should never fire; if it does, the
+# fallback itself is failing (e.g. a sudoers change) and needs a human, not just a retry.
+PG_DIR="$BACKUP_DUMP_DIR/pg"
+if [ -d "$PG_DIR" ]; then
+  STALE_TMPS="$(find "$PG_DIR" -mindepth 1 -maxdepth 1 -name '*.tmp' -mmin "+$(( BACKUP_STALE_TMP_MAX_H * 60 ))" 2>/dev/null || true)"
+  RED_MARKER="$STATE_DIR/stale-tmp"
+  if [ -n "$STALE_TMPS" ]; then
+    log "stranded tmp(s) found (older than ${BACKUP_STALE_TMP_MAX_H}h): $STALE_TMPS"
+    TITLE="DB backup has a STRANDED .tmp staging dir — a database is silently failing every run"
+    BODY="EI-18678678853631218 recurrence-guard probe: the following pg_dump -Fd staging director$([ "$(printf '%s\n' "$STALE_TMPS" | grep -c .)" = 1 ] && echo y || echo ies) under '$PG_DIR' predate the current run by more than ${BACKUP_STALE_TMP_MAX_H}h:
+
+$STALE_TMPS
+
+pg_dump -Fd refuses to write into a non-empty target, so as long as a stale '.tmp' sits here the database it belongs to fails EVERY hourly run — silently, unless (a)/(b) above happen to also fire. This is the EI-18678678853631218 failure shape: a failed dump's 0700 postgres-owned '.tmp' cannot be removed by a plain \`rm -rf\` running as marsh-office on the failure path.
+
+CHECK FIRST: db-backup.sh's rm_tmp() (added 2026-07-26) should already fall back to \`sudo -n rm -rf\` for exactly this case — if a .tmp is still stranded, that fallback itself is failing (e.g. a sudoers/NOPASSWD change, disk-full on the delete). Read \$BACKUP_DUMP_DIR/db-backup.log for 'WARN could not remove stale tmp' to confirm, then fix the sudoers/perms gap. Manual recovery: \`sudo rm -rf <path>\` once, to let the next hourly run proceed."
+    if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
+      log "RED already tracked (stranded tmp) — skipping duplicate filing."
     else
       file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
     fi

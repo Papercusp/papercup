@@ -96,6 +96,22 @@ describe('newlyDonePlanItem — reads the fanned PER-ITEM shape (EI-6960)', () =
     expect(newlyDonePlanItem(perItemEvent({ ok: true, oldStatus: 'wip', newStatus: 'done' }))).toBeNull();
   });
 
+  it('omits triggeredBy when the ctx carries no attributable identity (the plain test ctx)', () => {
+    // The shared `ctx` fixture above has no isSuperuser/isPowerUser/principal/
+    // sigVerifiedSpawn — resolveAgentIdentity throws for it, and that must not
+    // break the reconcile — it just means no attribution is available.
+    const result = newlyDonePlanItem(perItemEvent(done('p1', 'P-006')));
+    expect(result).not.toBeNull();
+    expect(result).not.toHaveProperty('triggeredBy');
+  });
+
+  it('EI-18677799334390930: resolves triggeredBy from an attributable ctx (superuser)', () => {
+    const suCtx = { ...ctx, isSuperuser: true, uiClientId: 'su-abc123' } as unknown as UnifiedToolContext;
+    const event = { ...perItemEvent(done('p1', 'P-007')), ctx: suCtx };
+    const result = newlyDonePlanItem(event);
+    expect(result).toEqual({ planSlug: 'p1', itemId: 'P-007', harnessSlug: 'papercusp', triggeredBy: 'su-abc123' });
+  });
+
   it('is null on the RAW bulk-envelope carrier (it has no top-level newStatus/slug)', () => {
     // The old rule read this shape; the engine never matches the carrier, and the
     // per-item reader correctly declines it — so no accidental bulk-level fire.

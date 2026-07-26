@@ -113,6 +113,14 @@ interface Props {
    * own around it, it's a pure passthrough (same pattern as onDrillIn).
    */
   renderAvatar?: (msg: ChatMessage) => ReactNode | null | undefined;
+
+  /**
+   * Optional informational row rendered under the composer
+   * (gui-chat-session-controls-2026-07-25 P-007). Pure passthrough to
+   * ChatConversation's `footer` prop — same pattern as renderAvatar. Omit
+   * to render nothing.
+   */
+  footer?: ReactNode;
 }
 
 const STARTING_PROMPTS = [
@@ -137,7 +145,7 @@ export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
   conversationId, workspaceId, agentName = 'Papercup', onDrillIn,
-  renderAvatar,
+  renderAvatar, footer,
 }: Props) {
   // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
   // consume a staged seed on mount (the usual path — the chat body was
@@ -319,6 +327,7 @@ export function OperatorChat({
       renderToolCard={renderToolCard}
       renderReport={renderReport}
       renderAvatar={renderAvatar}
+      footer={footer}
       onLoadEarlier={onLoadEarlier}
       hasMoreEarlier={hasMoreEarlier}
       loadingEarlier={loadingEarlier}

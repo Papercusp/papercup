@@ -176,7 +176,10 @@ export const SYNC_TRIGGERED_SWEEPS: SyncTriggeredSweep[] = [
 async function resolveFlagArmed(flagKey: string): Promise<boolean | null> {
   try {
     const { getFlag } = await import('@papercusp/flags/server');
-    return (await getFlag(flagKey, 'papercusp')) === true;
+    // The sweep rows carry the key as a plain string; getFlag takes the FLAGS
+    // union. An unknown key just reads as not-enabled — 'null beats a guess'
+    // already governs the failure path, so the narrowing cast is safe here.
+    return (await getFlag(flagKey as Parameters<typeof getFlag>[0], 'papercusp')) === true;
   } catch {
     return null; // unknown beats a guess
   }

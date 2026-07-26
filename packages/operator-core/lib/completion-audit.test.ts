@@ -18,9 +18,13 @@ import { describe, it, expect } from 'vitest';
 import {
   auditPredicateSql,
   auditPredicateSqlFor,
+  citesScreenshotArtifact,
   COMPLETION_AUDITS,
+  isBackedLiveDroveUiClaim,
   KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES,
   looksLikeCitedProseEvidence,
+  RECONCILER_SYSTEM_ACTOR,
+  touchesLayoutBearingFiles,
 } from './completion-audit';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 
@@ -140,6 +144,26 @@ describe('completion-audit predicates (EI-10867)', () => {
     it('the aliased form matches its unaliased twin', () => {
       const plain = frag(auditPredicateSql(recordingSql(), 'no-completion-record-suspicious'));
       const aliased = frag(auditPredicateSqlFor(recordingSql(), 'no-completion-record-suspicious', 'ei'));
+      expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+    });
+  });
+
+  // EI-18677799334390930: a plan-item-reconcile close mirrors an ADJACENT plan
+  // item's status onto a work-item and is never independently verified — the
+  // `no-evidence` audit must ALWAYS catch it, even if a future caller adds a
+  // well-meaning `_completionEvidence` stamp to that write path.
+  describe("'no-evidence' also ALWAYS flags a reconcile-sourced close (EI-18677799334390930)", () => {
+    it('ORs in terminal_owner = RECONCILER_SYSTEM_ACTOR alongside the evidence-key check', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'no-evidence'));
+      expect(f.text).toContain('terminal_owner');
+      expect(f.text).toContain('?'); // still jsonb key-existence, ORed with the actor check
+      expect(f.params).toContain(RECONCILER_SYSTEM_ACTOR);
+      expect(f.params).toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
+    });
+
+    it('the aliased form matches the unaliased twin (modulo alias)', () => {
+      const plain = frag(auditPredicateSql(recordingSql(), 'no-evidence'));
+      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'no-evidence', 'ei'));
       expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
     });
   });
