@@ -87,6 +87,13 @@ export default defineTool({
     const completeness = rubricCompleteness(rubric);
     // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+    // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.
+    void import('../../sync-sse')
+      .then((m) => {
+        m.notifySyncInvalidate('rubrics.list');
+        m.notifySyncInvalidate('rubrics.trend');
+      })
+      .catch(() => {});
     return {
       content: [
         { type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck }) },

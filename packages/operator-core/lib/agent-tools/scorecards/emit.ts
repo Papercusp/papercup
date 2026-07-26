@@ -111,6 +111,17 @@ export async function emitScorecard(
         },
       },
     });
+    if (result.created) {
+      // Push-on-write (push-audit 2026-07-26): the Verify stage's scorecard
+      // list + rubric trend + release-readiness strip all fold this filing in.
+      void import('../../sync-sse')
+        .then((m) => {
+          m.notifySyncInvalidate('scorecards.list');
+          m.notifySyncInvalidate('rubrics.trend');
+          m.notifySyncInvalidate('learning.releaseReadiness');
+        })
+        .catch(() => {});
+    }
     return {
       ok: true as const,
       created: result.created,

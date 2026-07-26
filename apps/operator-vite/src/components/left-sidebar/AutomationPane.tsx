@@ -1,47 +1,75 @@
 /**
- * AutomationPane — the shared body behind the Blender (learning), Docs and
- * Agents tabs.
+ * AutomationPane — the shared body behind the Agents and System tabs.
  *
  * WHY (owner ask 2026-07-25): cron-spawned agents were consuming the owner's
  * weekly Claude limit with no surface to see or stop them. They are EPHEMERAL —
  * spawn, take a few turns, exit — so the agents-running roster reads empty while
- * spend is continuous, and there was nothing to click. This pane is that surface:
- * every scheduled routine in a category, which ones can COST TOKENS, and a
- * one-click pause for each (and for the whole pane).
+ * spend is continuous, and there was nothing to click. This pane is that surface.
  *
- * LAYOUT (owner ask 2026-07-25 round 2 — "make Blender and Docs more closely
- * model the Mug tab"): this pane is now built from the SAME three-part structure
- * MugTab uses, because the owner reads them as siblings in one rail:
- *   1. a header BAR — icon · title · subtitle · scope chip · whole-pane action,
- *   2. a titled SECTION holding the routine list.
- * Before this it was one long scroll with no header identity at all.
+ * WHY IT LOOKS LIKE THIS (owner ask 2026-07-26, mockup C): the pane rendered 877
+ * rows in one flat list and the owner could not read it — "the whole list is much
+ * too confusing … the loops also shows loops that havent been active in weeks".
+ * Three things were wrong, and the fix for each lives in a different layer:
  *
- * Writes go through the audited run-tool bridge (`routines:set`), and — like every
- * other pane in this rail — the pane INVALIDATES ITS OWN READ after its own write
- * rather than waiting for the server's SSE push (see OverwatchTab's header comment
- * for what depending on that push costs).
+ *   1. It mixed models with plumbing. "Is everything in the agents tab an LLM?" —
+ *      no: 55 of 140 non-loop schedules spawn a model, 85 are git commits, GC and
+ *      probes. That split is now the TAB split (`lens`), derived from `target_role`
+ *      in lib/automation/routine-classification.
+ *   2. It listed per-pot fan-out as peer rows — `git-sync` ×19, `hive-wake` ×16.
+ *      Collapsed upstream by `collapseFanOut`; a row now carries `installs[]`.
+ *   3. It sorted by taxonomy, so the ~90 live rows were buried under 750 dead loop
+ *      rows. This file's job: sort by STATE, not subject. Needs-you first, then
+ *      what is running, and everything dormant folded behind one line with a count.
+ *
+ * NOTHING IS HIDDEN, only folded — the owner mandate ("WE NEED ALL ROUTINES
+ * SURFACED TO THE USER … THERE CAN BE NO ROUTINES THAT DONT GET SURFACED THERE",
+ * 2026-07-25) holds: every bucket shows its count and opens in one click, and the
+ * two lenses partition every row by construction.
+ *
+ * The browse-by-family view (the old subject grouping) is still here, one click
+ * away in the header — the same Working/Runs pattern the /adv Agents panel uses.
+ *
+ * Writes go through the audited run-tool bridge, and — like every other pane in
+ * this rail — the pane INVALIDATES ITS OWN READ after its own write rather than
+ * waiting for the server's SSE push (see OverwatchTab's header for what depending
+ * on that push costs).
  *
  * ⚠ THERE IS NO SPEND SECTION HERE, deliberately (owner correction 2026-07-25:
  * "Why is the spend tab inside blender? is that showing only blender related
  * spend? It looks like not."). It wasn't — and could not be. Spend is recorded per
- * agent ROLE with no FK back to the routine that spawned the agent, so the old
- * per-pane lane just filtered roles by hand: Blender claimed
- * ['scout','gym','worker','mug','kettle'] while Agents claimed
- * ['worker','mug','kettle','release-fixer','cup'], and the same worker/mug/kettle
- * dollars were counted in BOTH panes and presented as each one's own. Cost now
- * lives in exactly one honest place, the workspace-wide SpendTab. Do not add a
- * per-pane spend readout back: any role filter here is a guess rendered as fact.
- * See lib/automation/catalog.ts.
+ * agent ROLE with no FK back to the routine that spawned the agent, so any
+ * per-routine cost number is a guess rendered as fact. Cost lives in exactly one
+ * honest place, the workspace-wide SpendTab. See lib/automation/catalog.ts.
  */
 import { useMemo, useState } from 'react';
 import type { ComponentType } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+import { parseAsArrayOf, parseAsString, parseAsStringLiteral, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, CalendarClock, Coins, Lock, Pause, Play, Shield, ShieldOff } from 'lucide-react';
+import {
+  AlertTriangle,
+  CalendarClock,
+  ChevronDown,
+  ChevronRight,
+  Coins,
+  Layers,
+  ListTree,
+  Lock,
+  Pause,
+  Play,
+  Shield,
+  ShieldOff,
+  Zap,
+} from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import {
+  AGENT_FAMILY_ORDER,
+  FAMILY_LABEL,
+  SYSTEM_FAMILY_ORDER,
+  type RoutineFamily,
+} from '@papercusp/operator-core/lib/automation/routine-classification';
 import type {
   AutomationCatalog,
-  AutomationCategory,
   AutomationGymArm,
   AutomationLaneArm,
   AutomationRoutine,
@@ -50,9 +78,38 @@ import type {
 /** budgetEdit key for the workspace-ceiling row (not a pot/lane arm — its own save path). */
 const SCOUT_CEILING_KEY = 'scout/workspace-ceiling';
 
-/** Fire a routine control tool through the gated/audited run-tool bridge (mirrors OverwatchTab). */
-async function runRoutineTool(
-  name: 'routines:set' | 'routines:group-set' | 'gym:arm' | 'governor:arm' | 'learning:set-scout-budget',
+/**
+ * Which half of the split a pane renders.
+ *
+ * `llm` claims every row that can bill a model, PLUS `unknown` — an unclassified
+ * `target_role` must never quietly land in the free pane. `system` claims the rest.
+ * Together they are a total partition of the catalog, which is what replaced the
+ * old category-per-pane wiring (where `infra` was in nobody's list and 40 routines
+ * were surfaced nowhere).
+ */
+export type PaneLens = 'llm' | 'system';
+
+export function rowsForLens(rows: readonly AutomationRoutine[], lens: PaneLens): AutomationRoutine[] {
+  return rows.filter((r) => (lens === 'llm' ? r.spend !== 'none' : r.spend === 'none'));
+}
+
+const VIEWS = ['attention', 'family'] as const;
+type PaneView = (typeof VIEWS)[number];
+
+type BucketId = 'attention' | 'running' | 'dormant';
+
+interface Bucket {
+  id: BucketId;
+  label: string;
+  rows: AutomationRoutine[];
+  /** Folded buckets render as ONE summary line until opened. */
+  foldedByDefault: boolean;
+  tone: 'warn' | 'spend' | 'good' | 'mute';
+}
+
+/** Fire a routine/flag control through the gated + audited run-tool bridge. */
+async function runControlTool(
+  name: 'routines:set' | 'flags:set' | 'gym:arm' | 'governor:arm' | 'learning:set-scout-budget',
   args: Record<string, unknown>,
 ): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
@@ -74,7 +131,7 @@ async function runRoutineTool(
   }
 }
 
-function agoLabel(iso: string | null): string {
+export function agoLabel(iso: string | null): string {
   if (!iso) return 'never';
   const ms = Date.now() - Date.parse(iso);
   if (!Number.isFinite(ms)) return '—';
@@ -88,19 +145,52 @@ function agoLabel(iso: string | null): string {
 }
 
 /**
- * The header's headline status — what the owner needs to know before reading a
- * single row: how many of this pane's scheduled agents can spend money right now.
- * Pure.
+ * `su-a0e1afb5-a7f3-…` → `su-a0e1a`. A loop's name is `loop-<ownerId>`, i.e. a raw
+ * UUID, and the owner named one verbatim when asking for this change — a row you
+ * cannot say out loud is a row you cannot act on.
+ */
+export function shortOwner(ownerId: string): string {
+  const m = /^([a-z]+)-([0-9a-f]{5})/i.exec(ownerId);
+  return m ? `${m[1]}-${m[2]}` : ownerId.slice(0, 12);
+}
+
+/** What the row calls itself: a loop by its owning session, everything else by name. */
+export function rowLabel(r: AutomationRoutine): string {
+  if (r.kind === 'loop' && r.ownerId) {
+    const pot = r.installs[0];
+    return pot ? `${shortOwner(r.ownerId)} · ${pot}` : shortOwner(r.ownerId);
+  }
+  return r.name;
+}
+
+/**
+ * The row's second line — cadence, or the honest substitute.
  *
- * ⚠ This counter is about MONEY, not about running-ness — it only ever looks at
- * `spawnsAgent` rows. The zero case therefore must NOT say "All paused": seen
- * live on the Docs pane (2026-07-25), it read "All paused" while
- * knowledge-pack-delivery had fired 75m earlier and knowledge-pack-hygiene 15h
- * earlier — both genuinely running, neither a spender. "All paused" is the one
- * phrasing that invites the false global reading; "None can spend" keeps the
- * column's single money meaning, stays parallel with the `N can spend` and
- * `None scheduled` branches, and still avoids the robotic literal "0 can spend"
- * this branch was originally written to dodge.
+ * A `triggered` row names its TRIGGER ("after each git-sync") rather than showing
+ * a cadence it does not have; a stalled loop explains itself with its owner's last
+ * activity, which is almost always the reason it stalled.
+ */
+export function rowMeta(r: AutomationRoutine): string {
+  if (r.kind === 'triggered') return r.triggerLabel ?? 'on an event';
+  if (r.liveness === 'stalled') {
+    if (r.kind === 'loop') {
+      return r.ownerLastActiveAt
+        ? `stalled · owner last active ${agoLabel(r.ownerLastActiveAt)}`
+        : 'stalled · owner gone';
+    }
+    return `stalled · last ran ${agoLabel(r.lastFiredAt)}`;
+  }
+  return r.cadence ?? 'event-driven';
+}
+
+/**
+ * The header's headline status: how many of this pane's rows can spend money right
+ * now.
+ *
+ * ⚠ This counter is about MONEY, not running-ness — it only looks at spenders. The
+ * zero case must NOT say "All paused": seen live on the Docs pane (2026-07-25) it
+ * read "All paused" while two routines were genuinely running, neither a spender.
+ * "None can spend" keeps the column's single money meaning.
  */
 export function scheduleLaneValue(rows: readonly AutomationRoutine[]): string {
   if (rows.length === 0) return 'None scheduled';
@@ -110,30 +200,72 @@ export function scheduleLaneValue(rows: readonly AutomationRoutine[]): string {
   return spenders > 0 ? 'None can spend' : `${rows.length} scheduled`;
 }
 
+/** The lane value for a deterministic pane — health, not money. */
+export function systemLaneValue(rows: readonly AutomationRoutine[]): string {
+  if (rows.length === 0) return 'None scheduled';
+  const attention = rows.filter((r) => r.needsAttention).length;
+  if (attention > 0) return `${attention} need${attention === 1 ? 's' : ''} you`;
+  return `${rows.filter((r) => r.liveness === 'running').length} running`;
+}
+
 /**
  * The Arming section's headline — how many spend gates are OPEN right now.
- * Distinct from `scheduleLaneValue` on purpose: that one counts schedules that
- * can fire, this one counts pots/lanes allowed to SPEND when something fires.
- * Pure.
+ * Distinct from `scheduleLaneValue` on purpose: that counts schedules that can
+ * fire, this counts pots/lanes allowed to SPEND when something fires.
  */
-export function armingLaneValue(gymPots: readonly AutomationGymArm[], lanes: readonly AutomationLaneArm[]): string {
+export function armingLaneValue(
+  gymPots: readonly AutomationGymArm[],
+  lanes: readonly AutomationLaneArm[],
+): string {
   const total = gymPots.length + lanes.length;
   if (total === 0) return 'None registered';
   const armed = gymPots.filter((g) => g.enabled).length + lanes.filter((l) => l.enabled).length;
   return armed > 0 ? `${armed} armed` : 'All disarmed';
 }
 
-/** "$12.89 of $50" / "$0 · no budget" — one honest money label per arming row. Pure. */
+/** "$12.89 of $50" / "$0 · no budget" — one honest money label per arming row. */
 export function armBudgetLabel(spentUsd: number, budgetUsd: number | null): string {
   const money = (n: number) => `$${n >= 100 ? Math.round(n) : n.toFixed(2).replace(/\.00$/, '')}`;
   return budgetUsd === null ? `${money(spentUsd)} · no budget` : `${money(spentUsd)} of ${money(budgetUsd)}`;
 }
 
 /**
+ * Sort rows into the three state buckets the pane renders.
+ *
+ * The one asymmetry between lenses is whether RUNNING is expanded. In the Agents
+ * pane every running row costs money and there are ~20 of them, so each is worth a
+ * line. In the System pane there are ~30 and they are free — the owner only cares
+ * that they are fine, so they collapse to a single "✓ N running" line and promote
+ * themselves into Needs-you the moment one breaks. That is the whole reason a
+ * separate System tab earns its place: not a room of its own, but a room you never
+ * have to enter.
+ */
+export function bucketRows(rows: readonly AutomationRoutine[], lens: PaneLens): Bucket[] {
+  const byName = (a: AutomationRoutine, b: AutomationRoutine) => a.name.localeCompare(b.name);
+  const attention = rows.filter((r) => r.needsAttention).sort(byName);
+  const running = rows
+    .filter((r) => !r.needsAttention && r.liveness === 'running')
+    .sort((a, b) => Number(b.spawnsAgent) - Number(a.spawnsAgent) || byName(a, b));
+  const dormant = rows.filter((r) => !r.needsAttention && r.liveness === 'dormant').sort(byName);
+
+  return [
+    { id: 'attention', label: 'Needs you', rows: attention, foldedByDefault: false, tone: 'warn' },
+    {
+      id: 'running',
+      label: lens === 'llm' ? 'Spending now' : 'Running',
+      rows: running,
+      foldedByDefault: lens === 'system',
+      tone: lens === 'llm' ? 'spend' : 'good',
+    },
+    { id: 'dormant', label: 'Dormant', rows: dormant, foldedByDefault: true, tone: 'mute' },
+  ];
+}
+
+/**
  * The pane's ONE pause/start control. Every start/stop switch in this pane —
- * per-routine and per-arming-row — renders through here, so there is a single
- * place to get the transport idiom right (rounds 2 and 3 each restyled only the
- * control in front of them and left the other looking like something else).
+ * per-routine and per-arming-row — renders through here, so there is a single place
+ * to get the transport idiom right (rounds 2 and 3 each restyled only the control in
+ * front of them and left the other looking like something else).
  *
  * Two rules live in this component rather than in CSS, because both are easy to
  * undo by accident:
@@ -207,8 +339,8 @@ function TransportToggle({
 
 export interface AutomationPaneProps {
   active: boolean;
-  /** Which categories this pane owns. Blender → ['learning'], Docs → ['docs']. */
-  categories: readonly AutomationCategory[];
+  /** Which half of the split this pane renders. */
+  lens: PaneLens;
   title: string;
   /** One-line identity beside the title (the Mug bar's subtitle slot). */
   subtitle: string;
@@ -219,7 +351,7 @@ export interface AutomationPaneProps {
 
 export default function AutomationPane({
   active,
-  categories,
+  lens,
   title,
   subtitle,
   icon: Icon,
@@ -237,29 +369,39 @@ export default function AutomationPane({
   // Draft state is render-local (mid-edit), so useState is correct here, not nuqs.
   const [budgetEdit, setBudgetEdit] = useState<{ key: string; value: string } | null>(null);
 
+  // Which view, and which folds are open — both user-meaningful, so both in the URL
+  // (and therefore agent-driveable via ui:get_state / ui:dispatch). Namespaced by
+  // lens so the two panes do not fight over one param.
+  const [view, setView] = useQueryState(
+    `${lens}View`,
+    parseAsStringLiteral(VIEWS).withDefault('attention'),
+  );
+  const [open, setOpen] = useQueryState(
+    `${lens}Open`,
+    parseAsArrayOf(parseAsString).withDefault([]),
+  );
+
   // useSyncQuery always yields an ARRAY (SyncQueryResult<T>.data is T[]); the
   // resolver returns a single catalog row, so unwrap it.
   const data = cat.data?.[0] ?? null;
 
-  const rows: AutomationRoutine[] = useMemo(() => {
-    if (!data) return [];
-    return data.routines
-      .filter((r) => categories.includes(r.category))
-      // Agent-spawning (costly) first, then active, then name — the owner is here
-      // to find what is spending money, so it must never be below the noise.
-      .sort(
-        (a, b) =>
-          Number(b.spawnsAgent) - Number(a.spawnsAgent) ||
-          Number(b.active) - Number(a.active) ||
-          a.name.localeCompare(b.name),
-      );
-  }, [data, categories]);
+  const rows: AutomationRoutine[] = useMemo(
+    () => (data ? rowsForLens(data.routines, lens) : []),
+    [data, lens],
+  );
 
-  // What "Pause all" can ACTUALLY stop. Counting uncontrollable schedules here
-  // would put a number on the button that the click cannot deliver — the pane
-  // must never again promise an action it can't perform. The lane value above
-  // still counts every spender, controllable or not, so the owner sees the true
-  // spend picture even where the switch lives elsewhere.
+  const buckets = useMemo(() => bucketRows(rows, lens), [rows, lens]);
+  const families = lens === 'llm' ? AGENT_FAMILY_ORDER : SYSTEM_FAMILY_ORDER;
+
+  const isOpen = (b: Bucket) => (b.foldedByDefault ? open.includes(b.id) : !open.includes(`-${b.id}`));
+  const toggleBucket = (b: Bucket) => {
+    const key = b.foldedByDefault ? b.id : `-${b.id}`;
+    void setOpen(open.includes(key) ? open.filter((x) => x !== key) : [...open, key]);
+  };
+
+  // What "Pause all" can ACTUALLY stop. Counting uncontrollable schedules would put
+  // a number on the button the click cannot deliver — the pane must never again
+  // promise an action it can't perform.
   const activeSpawning = rows.filter((r) => r.active && r.spawnsAgent && r.controllable).length;
 
   async function toggleRoutine(r: AutomationRoutine) {
@@ -268,19 +410,34 @@ export default function AutomationPane({
     setBusy(key);
     setErr(null);
     try {
-      await runRoutineTool('routines:set', {
-        name: r.name,
-        installSlug: r.installSlug,
-        active: nextActive,
-        // routines:set requires `reason` when pausing (EI-18654017982759582 — an
-        // unattributed pause has twice stayed silently off for days). This pane's
-        // whole point is a ONE-CLICK pause (see header comment), so a text prompt
-        // would defeat the design — attribute it to the pane itself instead of
-        // leaving the click to structurally fail every time (EI-18680916805234639,
-        // 3/14 = 21% of routines:set calls in a 24h window, all coord_owner_id
-        // 'loopback' from this exact call site).
-        ...(nextActive ? {} : { reason: `Paused via Automation pane (${title})` }),
-      });
+      if (r.control === 'flag') {
+        // The row's switch IS a feature flag (doc-steward-dispatch →
+        // papercusp-doc-steward). Before this it rendered a padlock, so the one
+        // control that genuinely existed was the one the pane refused to offer.
+        const flagKey = r.flagKey;
+        if (!flagKey) throw new Error(`${r.name} is flag-controlled but carries no flag key`);
+        await runControlTool('flags:set', {
+          key: flagKey,
+          enabled: nextActive,
+          reason: `Toggled from the ${title} pane`,
+        });
+      } else {
+        // Fan-out: one row can stand for many installs (git-sync ×19), so the
+        // click has to reach every one of them or the button lies about its scope.
+        for (const installSlug of r.installs) {
+          await runControlTool('routines:set', {
+            name: r.name,
+            installSlug,
+            active: nextActive,
+            // routines:set requires `reason` when pausing (EI-18654017982759582 — an
+            // unattributed pause has twice stayed silently off for days). This pane's
+            // whole point is a ONE-CLICK pause, so a text prompt would defeat the
+            // design — attribute it to the pane itself instead of leaving the click
+            // to structurally fail every time (EI-18680916805234639).
+            ...(nextActive ? {} : { reason: `Paused via the ${title} pane` }),
+          });
+        }
+      }
       cat.invalidate?.();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -293,21 +450,20 @@ export default function AutomationPane({
     setBusy('__all__');
     setErr(null);
     try {
-      // No group-set here: this pane's categories are an owner-facing grouping that
-      // does NOT map 1:1 to a routine group_slug (a docs routine can be filed under
-      // health). Pausing each member by name is the only way the button does exactly
-      // what its label says — and it never touches a routine outside this pane.
-      // `controllable` guard: a non-routine schedule has no switch this tool can
-      // throw, so including it would make the loop throw on a row it can never
-      // change and abort the rest of the batch.
+      // Pausing each member by name is the only way the button does exactly what
+      // its label says, and it never touches a row outside this pane. The
+      // `controllable` guard matters: a non-routine schedule has no switch this
+      // tool can throw, so including it would throw on a row it can never change
+      // and abort the rest of the batch.
       for (const r of rows.filter((x) => x.controllable && x.spawnsAgent && x.active !== nextActive)) {
-        await runRoutineTool('routines:set', {
-          name: r.name,
-          installSlug: r.installSlug,
-          active: nextActive,
-          // Same reason-on-pause requirement as toggleRoutine above.
-          ...(nextActive ? {} : { reason: `Paused via Automation pane "Pause all" (${title})` }),
-        });
+        for (const installSlug of r.installs) {
+          await runControlTool('routines:set', {
+            name: r.name,
+            installSlug,
+            active: nextActive,
+            ...(nextActive ? {} : { reason: `Paused via "Pause all" in the ${title} pane` }),
+          });
+        }
       }
       cat.invalidate?.();
     } catch (e) {
@@ -317,11 +473,11 @@ export default function AutomationPane({
     }
   }
 
-  // ── Arming (spend gates) — Blender only ────────────────────────────────────
-  // The schedule rows above gate WHEN things fire; these gate whether a fire may
-  // SPEND. Rendered only for the learning category (the owner ask that created
-  // this section: "it should be in the blender tab").
-  const showArming = categories.includes('learning');
+  // ── Arming (spend gates) — the LLM pane only ───────────────────────────────
+  // The schedule rows gate WHEN things fire; these gate whether a fire may SPEND.
+  // Moved here from the retired Blender tab: a spend gate belongs beside the things
+  // that spend, and it has no meaning at all in the deterministic pane.
+  const showArming = lens === 'llm';
   const arming = data?.arming ?? null;
 
   async function runArm(
@@ -332,7 +488,7 @@ export default function AutomationPane({
     setBusy(key);
     setErr(null);
     try {
-      await runRoutineTool(tool, args);
+      await runControlTool(tool, args);
       cat.invalidate?.();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -342,7 +498,11 @@ export default function AutomationPane({
   }
 
   /** Commit a budget draft: '' clears the budget (null), otherwise a finite ≥0 number. */
-  async function saveBudget(row: { key: string; tool: 'gym:arm' | 'governor:arm'; idArgs: Record<string, unknown> }): Promise<void> {
+  async function saveBudget(row: {
+    key: string;
+    tool: 'gym:arm' | 'governor:arm';
+    idArgs: Record<string, unknown>;
+  }): Promise<void> {
     if (!budgetEdit || budgetEdit.key !== row.key) return;
     const raw = budgetEdit.value.trim();
     const budgetUsd = raw === '' ? null : Number(raw);
@@ -354,7 +514,7 @@ export default function AutomationPane({
     await runArm(row.key, row.tool, { ...row.idArgs, budgetUsd });
   }
 
-  /** Commit the workspace-ceiling draft: '' clears the override (env/default resumes), otherwise a finite ≥0 number sets it. */
+  /** Commit the workspace-ceiling draft: '' clears the override, otherwise a finite ≥0 number sets it. */
   async function saveScoutCeiling(): Promise<void> {
     if (!budgetEdit || budgetEdit.key !== SCOUT_CEILING_KEY) return;
     const raw = budgetEdit.value.trim();
@@ -372,6 +532,85 @@ export default function AutomationPane({
 
   if (!active) return null;
 
+  const renderRow = (r: AutomationRoutine) => {
+    const key = `${r.kind}/${r.name}`;
+    return (
+      <div
+        key={key}
+        role="listitem"
+        className={`pc-auto__row${r.active ? ' is-active' : ''}${r.needsAttention ? ' is-attention' : ''}`}
+        data-testid={`automation-row-${r.name}`}
+      >
+        <div className="pc-auto__row-main">
+          <span className="pc-auto__name" title={`${r.name} · ${r.installs.join(', ')}`}>
+            {rowLabel(r)}
+          </span>
+          <span className="pc-auto__meta">
+            {rowMeta(r)}
+            {r.installs.length > 1 && (
+              <Tooltip label={`Installed on ${r.installs.length} pots: ${r.installs.join(', ')}`}>
+                <span className="pc-auto__pill" data-testid={`automation-installs-${r.name}`}>
+                  <Layers size={9} aria-hidden /> ×{r.installs.length}
+                </span>
+              </Tooltip>
+            )}
+            {r.kind === 'triggered' && (
+              <Tooltip label="Fires on an event, not a clock — it has no schedule to pause">
+                <span className="pc-auto__pill pc-auto__pill--trigger">
+                  <Zap size={9} aria-hidden /> triggered
+                </span>
+              </Tooltip>
+            )}
+            {r.spend === 'llm' && (
+              <Tooltip label={r.spendWhy ?? 'Spawns a model-backed agent — it costs tokens when it fires'}>
+                <span className="pc-auto__tokenflag">
+                  <Coins size={10} aria-hidden /> tokens
+                </span>
+              </Tooltip>
+            )}
+            {r.spend === 'unknown' && (
+              <Tooltip label="No handler is registered for this routine's target_role — it fires and silently does nothing. Filed as a bug.">
+                <span className="pc-auto__pill pc-auto__pill--unknown">no handler</span>
+              </Tooltip>
+            )}
+          </span>
+          <span className="pc-auto__when">last {agoLabel(r.lastFiredAt)}</span>
+        </div>
+        {r.controllable || r.control === 'flag' ? (
+          <TransportToggle
+            on={r.active}
+            busy={busy === `${r.installSlug}/${r.name}`}
+            disabled={busy !== null}
+            label={`${r.active ? 'Pause' : 'Start'} ${r.name}`}
+            testId={`automation-toggle-${r.name}`}
+            onClick={() => void toggleRoutine(r)}
+          />
+        ) : (
+          /* Listed for visibility, but genuinely not switchable from here. The
+             marker names WHY — the old padlock meant four different things at
+             once ("it's a DBOS workflow" / "a managed timer" / "a git-sync hook" /
+             "its switch is a flag"), and the flag case has now been given a real
+             control above, so what remains here is only the truly uncontrollable. */
+          <Tooltip
+            label={
+              r.kind === 'triggered'
+                ? `Runs on its trigger (${r.triggerLabel ?? 'an event'}) — there is no schedule to pause`
+                : `Runs as a ${r.source} schedule, not a routine — paused from its own subsystem`
+            }
+          >
+            <span
+              className="pc-auto__nocontrol"
+              data-testid={`automation-nocontrol-${r.name}`}
+              aria-label={`${r.name} cannot be paused from this pane`}
+            >
+              <Lock size={11} aria-hidden />
+            </span>
+          </Tooltip>
+        )}
+      </div>
+    );
+  };
+
   return (
     <TooltipPrimitive.Provider delayDuration={250}>
       <div className="pc-auto" data-testid={`automation-pane-${title.toLowerCase()}`}>
@@ -385,11 +624,11 @@ export default function AutomationPane({
           {/* These are SCHEDULES, not per-pot agents — say so, for the same reason
               the Mug + Kettle headers now do (owner question 2026-07-25: "what do
               those pot labels mean if they operate at the workspace level?"). */}
-          <Tooltip label="Scheduled agents run for the whole workspace, not one pot">
+          <Tooltip label="Scheduled work runs for the whole workspace, not one pot">
             <span className="pc-auto__scope">workspace</span>
           </Tooltip>
           <span className="pc-auto__spacer" />
-          {activeSpawning > 0 ? (
+          {showArming && activeSpawning > 0 ? (
             <Tooltip label={`Pause all ${activeSpawning} token-spending ${title} agent${activeSpawning === 1 ? '' : 's'}`}>
               <button
                 type="button"
@@ -409,6 +648,7 @@ export default function AutomationPane({
               </button>
             </Tooltip>
           ) : (
+            showArming &&
             rows.some((r) => r.spawnsAgent && r.controllable) && (
               <Tooltip label={`Resume the scheduled ${title} agents`}>
                 <button
@@ -437,255 +677,300 @@ export default function AutomationPane({
         )}
         {cat.error && <div className="pc-auto__err" role="alert">{String(cat.error)}</div>}
 
-        {/* 2 — the routine section (mirrors pc-queen__panel + pc-queen__section) */}
         <div className="pc-auto__panel">
           <p className="pc-auto__blurb">{blurb}</p>
-          <section className="pc-auto__section">
-            <div className="pc-auto__section-head">
-              <CalendarClock size={12} aria-hidden />
-              <span className="pc-auto__section-title">Scheduled agents</span>
-              <span className="pc-auto__count" data-testid="automation-status">
-                {scheduleLaneValue(rows)}
-              </span>
-            </div>
 
-              {cat.loading && !data && <div className="pc-auto__placeholder">Loading…</div>}
-
-              {data && rows.length === 0 && (
-                <div className="pc-auto__placeholder">
-                  No scheduled agents in this category. Nothing here is consuming tokens.
-                </div>
-              )}
-
-              {rows.length > 0 && (
-                <div className="pc-auto__list" role="list">
-                  {rows.map((r) => {
-                    const key = `${r.installSlug}/${r.name}`;
-                    return (
-                      <div
-                        key={key}
-                        role="listitem"
-                        className={`pc-auto__row${r.active ? ' is-active' : ''}`}
-                        data-testid={`automation-row-${r.name}`}
-                      >
-                        <div className="pc-auto__row-main">
-                          <span className="pc-auto__name" title={key}>
-                            {r.name}
-                          </span>
-                          <span className="pc-auto__meta">
-                            {r.cadence ?? 'event-driven'}
-                            {r.spawnsAgent && (
-                              <Tooltip label="This routine spawns a model-backed agent — it costs tokens when it fires">
-                                <span className="pc-auto__tokenflag">
-                                  <Coins size={10} aria-hidden /> tokens
-                                </span>
-                              </Tooltip>
-                            )}
-                          </span>
-                          <span className="pc-auto__when">last {agoLabel(r.lastFiredAt)}</span>
-                        </div>
-                        {r.controllable ? (
-                          <TransportToggle
-                            on={r.active}
-                            busy={busy === key}
-                            disabled={busy !== null}
-                            label={`${r.active ? 'Pause' : 'Start'} ${r.name}`}
-                            testId={`automation-toggle-${r.name}`}
-                            onClick={() => void toggleRoutine(r)}
-                          />
-                        ) : (
-                          /* Listed for visibility, but NOT pausable from here:
-                             `routines:set` writes harness_shared.routines and
-                             nothing else, so a DBOS workflow / managed timer /
-                             in-process sweep has no switch on this surface.
-                             Render a plain marker, never a button — this pane's
-                             original sin was offering controls that could not
-                             act, and an inert-but-clickable toggle would repeat
-                             that lie in a new place. */
-                          <Tooltip
-                            label={`Runs as a ${r.source} schedule, not a routine — visible here but paused from its own subsystem`}
-                          >
-                            <span
-                              className="pc-auto__nocontrol"
-                              data-testid={`automation-nocontrol-${r.name}`}
-                              aria-label={`${r.name} cannot be paused from this pane`}
-                            >
-                              <Lock size={11} aria-hidden />
-                            </span>
-                          </Tooltip>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-          </section>
-
-          {/* 3 — the Arming section (P-011, Blender only): the SPEND gates.
-              A schedule row above can be active while its pot/lane here is
-              disarmed — the routine fires and spends nothing. This section is
-              the switch the owner asked for ("it should be in the blender
-              tab"): per-pot gym arming (gym:arm writes BOTH the autoloop config
-              and the gym:<slug> governor row) and per-lane governor arming
-              (governor:arm). */}
-          {showArming && arming && (arming.gymPots.length > 0 || arming.lanes.length > 0 || arming.scoutCeiling != null) && (
-            <section className="pc-auto__section" data-testid="automation-arming">
-              <div className="pc-auto__section-head">
-                <Shield size={12} aria-hidden />
-                <span className="pc-auto__section-title">Arming — spend gates</span>
-                <span className="pc-auto__count" data-testid="automation-arming-status">
-                  {armingLaneValue(arming.gymPots, arming.lanes)}
-                </span>
-              </div>
-              <div className="pc-auto__list" role="list">
-                {arming.scoutCeiling && (
-                  <div
-                    role="listitem"
-                    className="pc-auto__row is-active"
-                    data-testid="arming-row-scout-workspace-ceiling"
-                  >
-                    <div className="pc-auto__row-main">
-                      <span
-                        className="pc-auto__name"
-                        title="Workspace-wide learning spend ceiling — caps ALL Blender/Scout spend above the per-pot and per-lane budgets below. 0 = no learning spend allowed. Empty reverts to the built-in default."
-                      >
-                        workspace ceiling
-                      </span>
-                      <span className="pc-auto__meta">
-                        {budgetEdit?.key === SCOUT_CEILING_KEY ? (
-                          <input
-                            className="pc-auto__budget-input"
-                            style={{ width: 64, font: 'inherit' }}
-                            autoFocus
-                            inputMode="decimal"
-                            aria-label="Workspace learning spend ceiling (USD; empty reverts to the default)"
-                            value={budgetEdit.value}
-                            onChange={(e) => setBudgetEdit({ key: SCOUT_CEILING_KEY, value: e.target.value })}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') void saveScoutCeiling();
-                              if (e.key === 'Escape') setBudgetEdit(null);
-                            }}
-                            onBlur={() => setBudgetEdit(null)}
-                            data-testid="arming-budget-input-scout-workspace-ceiling"
-                          />
-                        ) : (
-                          <Tooltip label="Click to edit the workspace ceiling (Enter saves, Esc cancels; empty reverts to the default)">
-                            <button
-                              type="button"
-                              className="pc-auto__budget"
-                              style={{ all: 'unset', cursor: 'pointer' }}
-                              disabled={busy !== null}
-                              onClick={() =>
-                                setBudgetEdit({
-                                  key: SCOUT_CEILING_KEY,
-                                  value:
-                                    arming.scoutCeiling!.overrideUsd === null
-                                      ? ''
-                                      : String(arming.scoutCeiling!.overrideUsd),
-                                })
-                              }
-                              data-testid="arming-budget-scout-workspace-ceiling"
-                            >
-                              <Coins size={10} aria-hidden /> ${arming.scoutCeiling.effectiveUsd} ceiling
-                            </button>
-                          </Tooltip>
-                        )}
-                      </span>
-                      <span className="pc-auto__when">
-                        {arming.scoutCeiling.overrideUsd === null ? 'default' : 'override'}
-                      </span>
-                    </div>
-                  </div>
+          {/* View switch — state-ordered by default, subject-ordered on request. */}
+          <div className="pc-auto__views" role="tablist" aria-label={`${title} view`}>
+            {VIEWS.map((v) => (
+              <button
+                key={v}
+                type="button"
+                role="tab"
+                aria-selected={view === v}
+                className="pc-auto__viewbtn"
+                onClick={() => void setView(v)}
+                data-testid={`automation-view-${v}`}
+              >
+                {v === 'attention' ? (
+                  <>
+                    <CalendarClock size={10} aria-hidden /> By state
+                  </>
+                ) : (
+                  <>
+                    <ListTree size={10} aria-hidden /> By family
+                  </>
                 )}
-                {[
-                  ...arming.gymPots.map((g) => ({
-                    key: `gym/${g.harnessSlug}`,
-                    tool: 'gym:arm' as const,
-                    idArgs: { harness: g.harnessSlug },
-                    name: `gym · ${g.harnessSlug}`,
-                    hint: `Gym autoloop for the ${g.harnessSlug} pot — arming writes the autoloop config AND its governor row together`,
-                    enabled: g.enabled,
-                    budgetUsd: g.budgetUsd,
-                    spentUsd: g.spentUsd,
-                    meta: g.status,
-                  })),
-                  ...arming.lanes.map((l) => ({
-                    key: `lane/${l.loopId}`,
-                    tool: 'governor:arm' as const,
-                    idArgs: { loopId: l.loopId },
-                    name: l.displayName,
-                    hint: l.loopId + (l.potSlug ? ` · pot ${l.potSlug}` : ''),
-                    enabled: l.enabled,
-                    budgetUsd: l.budgetUsd,
-                    spentUsd: l.spentUsd,
-                    meta: l.enforcement,
-                  })),
-                ].map((row) => (
-                  <div
-                    key={row.key}
-                    role="listitem"
-                    className={`pc-auto__row${row.enabled ? ' is-active' : ''}`}
-                    data-testid={`arming-row-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
-                  >
-                    <div className="pc-auto__row-main">
-                      <span className="pc-auto__name" title={row.hint}>
-                        {row.name}
-                      </span>
-                      <span className="pc-auto__meta">
-                        {budgetEdit?.key === row.key ? (
-                          <input
-                            className="pc-auto__budget-input"
-                            style={{ width: 64, font: 'inherit' }}
-                            autoFocus
-                            inputMode="decimal"
-                            aria-label={`Budget for ${row.name} (USD; empty clears)`}
-                            value={budgetEdit.value}
-                            onChange={(e) => setBudgetEdit({ key: row.key, value: e.target.value })}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') void saveBudget(row);
-                              if (e.key === 'Escape') setBudgetEdit(null);
-                            }}
-                            onBlur={() => setBudgetEdit(null)}
-                            data-testid={`arming-budget-input-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
-                          />
-                        ) : (
-                          <Tooltip label="Click to edit the budget (Enter saves, Esc cancels; empty clears the cap)">
-                            <button
-                              type="button"
-                              className="pc-auto__budget"
-                              style={{ all: 'unset', cursor: 'pointer' }}
-                              disabled={busy !== null}
-                              onClick={() =>
-                                setBudgetEdit({ key: row.key, value: row.budgetUsd === null ? '' : String(row.budgetUsd) })
-                              }
-                              data-testid={`arming-budget-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
-                            >
-                              <Coins size={10} aria-hidden /> {armBudgetLabel(row.spentUsd, row.budgetUsd)}
-                            </button>
-                          </Tooltip>
-                        )}
-                      </span>
-                      <span className="pc-auto__when">{row.meta}</span>
-                    </div>
-                    {/* kind="shield": these rows ARM/DISARM a spend gate, they do
-                        not start or pause a schedule. They used to borrow the
-                        play/pause glyph, so ▶ and ⏸ meant two unrelated verbs in
-                        one pane. The shield keeps ▶/⏸ meaning exactly one thing
-                        here — start or pause a scheduled agent. */}
-                    <TransportToggle
-                      kind="shield"
-                      on={row.enabled}
-                      busy={busy === row.key}
-                      disabled={busy !== null}
-                      label={`${row.enabled ? 'Disarm' : 'Arm'} ${row.name}`}
-                      testId={`arming-toggle-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
-                      onClick={() => void runArm(row.key, row.tool, { ...row.idArgs, enabled: !row.enabled })}
-                    />
-                  </div>
-                ))}
-              </div>
-            </section>
+              </button>
+            ))}
+          </div>
+
+          {cat.loading && !data && <div className="pc-auto__placeholder">Loading…</div>}
+
+          {data && rows.length === 0 && (
+            <div className="pc-auto__placeholder">
+              {lens === 'llm'
+                ? 'No scheduled agents. Nothing here is consuming tokens.'
+                : 'No system schedules registered.'}
+            </div>
           )}
+
+          {data && rows.length > 0 && view === 'attention' && (
+            <>
+              {buckets.map((b) => {
+                const opened = isOpen(b);
+                if (b.rows.length === 0 && b.id !== 'attention') return null;
+                return (
+                  <section
+                    key={b.id}
+                    className={`pc-auto__section pc-auto__section--${b.tone}`}
+                    data-testid={`automation-bucket-${b.id}`}
+                  >
+                    <button
+                      type="button"
+                      className="pc-auto__section-head pc-auto__section-head--btn"
+                      aria-expanded={opened}
+                      onClick={() => toggleBucket(b)}
+                      data-testid={`automation-bucket-toggle-${b.id}`}
+                    >
+                      <span className="pc-auto__section-inner">
+                        {opened ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
+                        <span className="pc-auto__section-title">{b.label}</span>
+                        <span className="pc-auto__count" data-testid={`automation-bucket-count-${b.id}`}>
+                          {b.id === 'attention' && b.rows.length === 0
+                            ? 'all clear'
+                            : b.id === 'running' && !opened
+                              ? `${b.rows.length} running · last ${agoLabel(
+                                  b.rows.map((r) => r.lastFiredAt).filter(Boolean).sort().at(-1) ?? null,
+                                )}`
+                              : b.rows.length}
+                        </span>
+                      </span>
+                    </button>
+                    {opened && b.rows.length > 0 && (
+                      <div className="pc-auto__list" role="list">
+                        {b.rows.map(renderRow)}
+                      </div>
+                    )}
+                  </section>
+                );
+              })}
+            </>
+          )}
+
+          {data && rows.length > 0 && view === 'family' && (
+            <>
+              {families.map((fam: RoutineFamily) => {
+                const famRows = rows.filter((r) => r.family === fam);
+                if (famRows.length === 0) return null;
+                const opened = !open.includes(`-fam:${fam}`);
+                const attention = famRows.filter((r) => r.needsAttention).length;
+                return (
+                  <section key={fam} className="pc-auto__section" data-testid={`automation-family-${fam}`}>
+                    <button
+                      type="button"
+                      className="pc-auto__section-head pc-auto__section-head--btn"
+                      aria-expanded={opened}
+                      onClick={() =>
+                        void setOpen(
+                          opened ? [...open, `-fam:${fam}`] : open.filter((x) => x !== `-fam:${fam}`),
+                        )
+                      }
+                    >
+                      <span className="pc-auto__section-inner">
+                        {opened ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
+                        <span className="pc-auto__section-title">{FAMILY_LABEL[fam]}</span>
+                        <span className="pc-auto__count">
+                          {attention > 0
+                            ? `${attention} need${attention === 1 ? 's' : ''} you`
+                            : `${famRows.filter((r) => r.liveness === 'running').length} of ${famRows.length} running`}
+                        </span>
+                      </span>
+                    </button>
+                    {opened && (
+                      <div className="pc-auto__list" role="list">
+                        {famRows
+                          .slice()
+                          .sort(
+                            (a, b) =>
+                              Number(b.needsAttention) - Number(a.needsAttention) ||
+                              a.name.localeCompare(b.name),
+                          )
+                          .map(renderRow)}
+                      </div>
+                    )}
+                  </section>
+                );
+              })}
+            </>
+          )}
+
+          {/* The Arming section (P-011, LLM pane only): the SPEND gates. A schedule
+              row above can be active while its pot/lane here is disarmed — the
+              routine fires and spends nothing. */}
+          {showArming &&
+            arming &&
+            (arming.gymPots.length > 0 || arming.lanes.length > 0 || arming.scoutCeiling != null) && (
+              <section className="pc-auto__section" data-testid="automation-arming">
+                <div className="pc-auto__section-head">
+                  <Shield size={12} aria-hidden />
+                  <span className="pc-auto__section-title">Arming — spend gates</span>
+                  <span className="pc-auto__count" data-testid="automation-arming-status">
+                    {armingLaneValue(arming.gymPots, arming.lanes)}
+                  </span>
+                </div>
+                <div className="pc-auto__list" role="list">
+                  {arming.scoutCeiling && (
+                    <div
+                      role="listitem"
+                      className="pc-auto__row is-active"
+                      data-testid="arming-row-scout-workspace-ceiling"
+                    >
+                      <div className="pc-auto__row-main">
+                        <span
+                          className="pc-auto__name"
+                          title="Workspace-wide learning spend ceiling — caps ALL Blender/Scout spend above the per-pot and per-lane budgets below. 0 = no learning spend allowed. Empty reverts to the built-in default."
+                        >
+                          workspace ceiling
+                        </span>
+                        <span className="pc-auto__meta">
+                          {budgetEdit?.key === SCOUT_CEILING_KEY ? (
+                            <input
+                              className="pc-auto__budget-input"
+                              style={{ width: 64, font: 'inherit' }}
+                              autoFocus
+                              inputMode="decimal"
+                              aria-label="Workspace learning spend ceiling (USD; empty reverts to the default)"
+                              value={budgetEdit.value}
+                              onChange={(e) => setBudgetEdit({ key: SCOUT_CEILING_KEY, value: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') void saveScoutCeiling();
+                                if (e.key === 'Escape') setBudgetEdit(null);
+                              }}
+                              onBlur={() => setBudgetEdit(null)}
+                              data-testid="arming-budget-input-scout-workspace-ceiling"
+                            />
+                          ) : (
+                            <Tooltip label="Click to edit the workspace ceiling (Enter saves, Esc cancels; empty reverts to the default)">
+                              <button
+                                type="button"
+                                className="pc-auto__budget"
+                                style={{ all: 'unset', cursor: 'pointer' }}
+                                disabled={busy !== null}
+                                onClick={() =>
+                                  setBudgetEdit({
+                                    key: SCOUT_CEILING_KEY,
+                                    value:
+                                      arming.scoutCeiling!.overrideUsd === null
+                                        ? ''
+                                        : String(arming.scoutCeiling!.overrideUsd),
+                                  })
+                                }
+                                data-testid="arming-budget-scout-workspace-ceiling"
+                              >
+                                <Coins size={10} aria-hidden /> ${arming.scoutCeiling.effectiveUsd} ceiling
+                              </button>
+                            </Tooltip>
+                          )}
+                        </span>
+                        <span className="pc-auto__when">
+                          {arming.scoutCeiling.overrideUsd === null ? 'default' : 'override'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {[
+                    ...arming.gymPots.map((g) => ({
+                      key: `gym/${g.harnessSlug}`,
+                      tool: 'gym:arm' as const,
+                      idArgs: { harness: g.harnessSlug },
+                      name: `gym · ${g.harnessSlug}`,
+                      hint: `Gym autoloop for the ${g.harnessSlug} pot — arming writes the autoloop config AND its governor row together`,
+                      enabled: g.enabled,
+                      budgetUsd: g.budgetUsd,
+                      spentUsd: g.spentUsd,
+                      meta: g.status,
+                    })),
+                    ...arming.lanes.map((l) => ({
+                      key: `lane/${l.loopId}`,
+                      tool: 'governor:arm' as const,
+                      idArgs: { loopId: l.loopId },
+                      name: l.displayName,
+                      hint: l.loopId + (l.potSlug ? ` · pot ${l.potSlug}` : ''),
+                      enabled: l.enabled,
+                      budgetUsd: l.budgetUsd,
+                      spentUsd: l.spentUsd,
+                      meta: l.enforcement,
+                    })),
+                  ].map((row) => (
+                    <div
+                      key={row.key}
+                      role="listitem"
+                      className={`pc-auto__row${row.enabled ? ' is-active' : ''}`}
+                      data-testid={`arming-row-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
+                    >
+                      <div className="pc-auto__row-main">
+                        <span className="pc-auto__name" title={row.hint}>
+                          {row.name}
+                        </span>
+                        <span className="pc-auto__meta">
+                          {budgetEdit?.key === row.key ? (
+                            <input
+                              className="pc-auto__budget-input"
+                              style={{ width: 64, font: 'inherit' }}
+                              autoFocus
+                              inputMode="decimal"
+                              aria-label={`Budget for ${row.name} (USD; empty clears)`}
+                              value={budgetEdit.value}
+                              onChange={(e) => setBudgetEdit({ key: row.key, value: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') void saveBudget(row);
+                                if (e.key === 'Escape') setBudgetEdit(null);
+                              }}
+                              onBlur={() => setBudgetEdit(null)}
+                              data-testid={`arming-budget-input-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
+                            />
+                          ) : (
+                            <Tooltip label="Click to edit the budget (Enter saves, Esc cancels; empty clears the cap)">
+                              <button
+                                type="button"
+                                className="pc-auto__budget"
+                                style={{ all: 'unset', cursor: 'pointer' }}
+                                disabled={busy !== null}
+                                onClick={() =>
+                                  setBudgetEdit({
+                                    key: row.key,
+                                    value: row.budgetUsd === null ? '' : String(row.budgetUsd),
+                                  })
+                                }
+                                data-testid={`arming-budget-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
+                              >
+                                <Coins size={10} aria-hidden /> {armBudgetLabel(row.spentUsd, row.budgetUsd)}
+                              </button>
+                            </Tooltip>
+                          )}
+                        </span>
+                        <span className="pc-auto__when">{row.meta}</span>
+                      </div>
+                      {/* kind="shield": these rows ARM/DISARM a spend gate, they do
+                          not start or pause a schedule. They used to borrow the
+                          play/pause glyph, so ▶ and ⏸ meant two unrelated verbs in
+                          one pane. The shield keeps ▶/⏸ meaning exactly one thing
+                          here — start or pause a scheduled agent. */}
+                      <TransportToggle
+                        kind="shield"
+                        on={row.enabled}
+                        busy={busy === row.key}
+                        disabled={busy !== null}
+                        label={`${row.enabled ? 'Disarm' : 'Arm'} ${row.name}`}
+                        testId={`arming-toggle-${row.key.replace(/[^a-zA-Z0-9-]/g, '-')}`}
+                        onClick={() => void runArm(row.key, row.tool, { ...row.idArgs, enabled: !row.enabled })}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
         </div>
       </div>
     </TooltipPrimitive.Provider>

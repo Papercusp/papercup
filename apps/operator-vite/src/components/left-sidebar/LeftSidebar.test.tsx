@@ -107,7 +107,7 @@ describe('<LeftSidebar> shell', () => {
   // t('overwatch')); the useLexicon mock above echoes the key, so they render as
   // the bare key names (restore-pot-lexicon P-005 — the classic pack shows
   // Pots / Papercup / Brain / Kettle at runtime).
-  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Blender · Docs · Agents · Spend', () => {
+  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Agents · System · Spend', () => {
     // The shared useFlag mock answers every flag, so this turns BOTH gated tabs
     // (overwatch + sentinel) on — the full rail is what the owner's ordering
     // describes; the gated-off subset is covered by the flag tests below.
@@ -120,9 +120,11 @@ describe('<LeftSidebar> shell', () => {
       'operator',
       'brain',
       'overwatch',
-      'Blender',
-      'Docs',
+      // The scheduled-work rail, split by whether a fire RUNS A MODEL (owner ask
+      // 2026-07-26). These two REPLACE the former Blender + Docs tabs, whose rows
+      // redistributed into the split.
       'Agents',
+      'System',
       // Cost is ONE workspace-wide tab at the end of the rail, not a lane inside
       // each automation pane (owner correction 2026-07-25).
       'Spend',
@@ -151,9 +153,8 @@ describe('<LeftSidebar> shell', () => {
       'sentinel',
       'queen',
       'overwatch',
-      'blender',
-      'docs',
       'agents',
+      'system',
       'spend',
       'conversations',
     ]);

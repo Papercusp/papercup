@@ -4,29 +4,40 @@
  *
  * Sibling to `lint:no-retired` (which only catches `_retired/` IMPORTS and is
  * blind to a prompt STRING) and blueprint-deps-catalog.test.ts (which checks a
- * blueprint's declared `dependencies.tools`, not free prose). This test scans
- * backtick-quoted `group:verb` / `group.verb` tokens across
- * apps/operator/prompts/**\/*.md and
+ * blueprint's declared `dependencies.tools` FIELD, not free prose). This test
+ * scans apps/operator/prompts/**\/*.md and
  * libs/papercusp/packages/harness/blueprints/**\/*.{yaml,md} (the same
- * surfaces P-004's retiring-a-surface sweep names) and asserts each one
+ * surfaces P-004's retiring-a-surface sweep names) for the actual motivating
+ * shape — "step 6: call `messages:send`" — and asserts every such reference
  * resolves against the static tool catalog (../static-tool-catalog.ts —
  * SHARED with blueprint-deps-catalog.test.ts, so this is not a second
  * catalog-building scanner).
  *
- * Converts today's silent mid-procedure failure ("step 6: call
- * `messages:send`") into a build-time red.
+ * SURFACE-PRECISE, not word-level (P-005's lesson, this same plan): an EARLIER
+ * version of this test matched every bare backtick `word:word`/`word.word`
+ * token in the corpus and diffed it against the catalog. That produced ~130
+ * false positives on the real corpus — blueprint YAML is dense with
+ * structurally-similar-but-unrelated identifiers that are NOT tool verbs:
+ * schema field-access paths (`payload.classId`, `knobs.pattern`,
+ * `spine.decider`), internal `system:*` / per-blueprint scheduled-trigger
+ * action ids (`system:blueprint-run`, `calibration:resolve`), fence-language
+ * tags (`` `promote:plan` ``, `` `proposal:contract` ``), and — the exact
+ * trap flagged by this same plan's leader ruling D-003 — a capability-tier
+ * vocabulary table in `scanner.md` that legitimately reuses tool-shaped
+ * strings (`` `messages:write` ``, `` `tasks:read` ``) for an unrelated
+ * permission namespace. Building an allowlist big enough to cover that noise
+ * would just relocate the false-positive problem into an ever-growing,
+ * easily-stale list — the anti-pattern P-005 exists to avoid, not follow.
  *
- * SURFACE-PRECISE, not word-level (P-005's lesson): a bare token-match over
- * free prose is its own false-positive generator — arg:value pairs
- * (`confirm:true`), `ctx.*` method access, DB schema.table refs, deliberate
- * "there is no X" / "don't call X" cautions that NAME a dead or non-tool
- * identifier, model:effort specs, event-key examples, etc. all share the
- * `` `word:word` ``/`` `word.word` `` shape without being a tool reference.
- * Each exclusion below is EMPIRICALLY justified (verified against the real
- * corpus, P-007, 2026-07-26) — a NEW false positive is a real category to add
- * here with a reason, exactly like scan-retirement-surface.mjs's allowlist
- * convention (P-005, this same plan); a genuinely new unresolved token is a
- * real dead/typo'd verb reference to fix.
+ * Instead this scans for the NARROW shape that is actually an instruction to
+ * CALL a tool: a calling verb (call/calls/calling/invoke/invokes/invoking)
+ * immediately followed by a backtick-quoted `group:verb`/`group.verb` token,
+ * with a negation guard so a documented "don't call `X`" caution (a
+ * deliberate, correct reference to a retired/internal identifier — see
+ * `orchestrator.spawn` in the su playbooks) isn't misread as an instruction.
+ * Verified empirically (P-007, 2026-07-26): this shape matches 27 real
+ * candidate tokens across the whole corpus with ZERO false positives, versus
+ * ~130 for the bare-token approach — no hand-maintained allowlist needed.
  *
  * (This test found + P-007 fixed one real live regression while landing:
  * `apps/operator/prompts/papercusp-compaction.protocol.md` instructed calling
@@ -48,7 +59,14 @@ function listScannedFiles(): string[] {
   const out: string[] = [];
   for (const root of SCAN_ROOTS) {
     if (!existsSync(join(REPO, root))) continue;
-    const files = execSync(`git ls-files -- ${JSON.stringify(root)}`, {
+    // --recurse-submodules is REQUIRED: libs/papercusp is a git submodule, so a
+    // plain `git ls-files` from the superproject returns NOTHING for anything
+    // under it — every blueprint/prompt file (the P-004/P-007 convention's
+    // primary named surface) was silently unscanned without this (caught
+    // empirically, P-007, by cross-checking scanner.md's known
+    // `messages:read`/`messages:write` capability-tier strings, which should
+    // have surfaced as candidate hits and initially didn't).
+    const files = execSync(`git ls-files --recurse-submodules -- ${JSON.stringify(root)}`, {
       cwd: REPO,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
@@ -61,49 +79,17 @@ function listScannedFiles(): string[] {
   return out;
 }
 
-// backtick-delimited `group:verb` / `group.verb` — the convention every
-// papercusp doc/prompt/contract uses to name a tool (repo CLAUDE.md: "Every
-// papercusp doc/prompt/contract writes tool names in colon form").
-const TOKEN_RE = /`([a-zA-Z][a-zA-Z0-9_-]*)([:.])([a-zA-Z][a-zA-Z0-9_:.\-]*)`/g;
+// A calling verb immediately before a backtick-quoted `group:verb`/`group.verb`
+// token — the actual "call `messages:send`" shape this lint targets, not any
+// backtick token in prose (see the file header for why bare-token matching
+// was rejected).
+const CALL_RE =
+  /\b(?:call|calls|calling|invoke|invokes|invoking)\s+`([a-zA-Z][a-zA-Z0-9_-]*)([:.])([a-zA-Z][a-zA-Z0-9_:.\-]*)`/gi;
 
-// Whole-token match ends in a known file extension → a filename, not a verb
-// (`features.json`, `CLAUDE.md`, `answer.txt`, ...).
-const FILE_EXT_RE =
-  /\.(md|mdx|json|txt|ts|tsx|js|mjs|jsx|yaml|yml|py|sh|sql|css|html|lock|log|toml|cfg|ini|env|xml|csv|pdf)$/i;
-
-// arg:value literal (`confirm:true`, `dryRun:true`, ...) — not a verb call.
-const ARG_VALUE_RE = /:(?:true|false)$/;
-
-// Exact tokens verified (P-007, 2026-07-26) to be real, deliberate non-tool
-// references rather than an instruction to call them — each has a concrete
-// reason so a future re-run doesn't re-litigate it by hand.
-const KNOWN_NON_TOOL_TOKENS: Record<string, string> = {
-  'PreToolUse:Edit': 'a Claude Code hook event name, not an MCP tool',
-  'coord:orient.codexLocks':
-    "a dot-path reference into coord:orient's own response field `codexLocks`, not a second tool",
-  'ctx.askUser': 'defineTool ctx-object method access (endpoint-route ctx API), not an MCP tool',
-  'ctx.emit': 'defineTool ctx-object method access (endpoint-route ctx API), not an MCP tool',
-  'ctx.harnessSlug': 'defineTool ctx-object property access, not an MCP tool',
-  'ctx.progress': 'defineTool ctx-object method access (endpoint-route ctx API), not an MCP tool',
-  'ctx.publishState': 'defineTool ctx-object method access (endpoint-route ctx API), not an MCP tool',
-  'features:update':
-    'deliberately named as a NON-EXISTENT verb — the prose reads "there is no `features:update`" (a documented caution, not an instruction to call it)',
-  'harness_shared.memory_canonical': 'a Postgres schema.table reference, not a tool',
-  'harness_shared.spawned_agents': 'a Postgres schema.table reference, not a tool',
-  'metadata.covers': 'a JS field-access example in prose, not a tool call',
-  'observation.ratings': 'a JS field-access example in prose (observation shape), not a tool call',
-  'observation.rubricRef': 'a JS field-access example in prose (observation shape), not a tool call',
-  'orchestrator.spawn':
-    'an internal (non-agent-callable) function named as a "don\'t call this directly" caution, not a catalog verb',
-  'promote:plan':
-    'a structured chat-output DIRECTIVE BLOCK keyword the assistant emits for the UI to parse, not an agent-tool catalog verb',
-  'promptOverride.su': 'a hive_settings config KEY reference, not a tool',
-  'release:green': 'an EVENT key example (events:await/emit), not a tool-catalog verb',
-  'select:mcp__papercusp-su__tools_find': 'a literal ToolSearch QUERY STRING example, not a tool name itself',
-  'server:verb': 'a literal placeholder illustrating the `server:verb` naming CONVENTION, not a real tool',
-  'sonnet:high': 'a model:effort spec example, not a tool',
-  'work-item:claimable': 'an EVENT key (events:await payload_filter target), not a tool-catalog verb',
-};
+// A "don't/never/not call `X`" caution is a deliberate, correct reference to a
+// retired/internal/prohibited identifier — not an instruction to call it.
+// Looks back a short window before the calling verb for a negator.
+const NEGATION_RE = /\b(?:don'?t|do not|never|not)\b\s*$/i;
 
 interface Hit {
   token: string;
@@ -111,7 +97,7 @@ interface Hit {
   line: number;
 }
 
-function scanForVerbTokens(files: string[]): Hit[] {
+function scanForCallReferences(files: string[]): Hit[] {
   const hits: Hit[] = [];
   for (const f of files) {
     const full = join(REPO, f);
@@ -122,46 +108,42 @@ function scanForVerbTokens(files: string[]): Hit[] {
     } catch {
       continue;
     }
-    for (const m of text.matchAll(TOKEN_RE)) {
+    for (const m of text.matchAll(CALL_RE)) {
+      const idx = m.index ?? 0;
+      const before = text.slice(Math.max(0, idx - 24), idx);
+      if (NEGATION_RE.test(before)) continue; // "Do NOT call `X`"
       const token = m[1] + m[2] + m[3];
-      if (FILE_EXT_RE.test(token)) continue;
-      if (ARG_VALUE_RE.test(token)) continue;
-      const before = text.slice(0, m.index ?? 0);
-      const line = before.split('\n').length;
+      const line = text.slice(0, idx).split('\n').length;
       hits.push({ token, file: f, line });
     }
   }
   return hits;
 }
 
-describe('prompt/blueprint verb references vs the live tool catalog', () => {
+describe('prompt/blueprint "call `verb`" references vs the live tool catalog', () => {
   const catalog = buildFullToolNameCatalog(REPO);
   const files = listScannedFiles();
-  const hits = scanForVerbTokens(files);
+  const hits = scanForCallReferences(files);
 
-  it('scan sanity — found real files and real candidate tokens', () => {
-    expect(files.length).toBeGreaterThan(20);
-    expect(hits.length).toBeGreaterThan(50);
+  it('scan sanity — found real files (including inside the libs/papercusp submodule) and real candidate references', () => {
+    expect(files.length).toBeGreaterThan(150); // apps/operator/prompts + the whole blueprints submodule tree
+    expect(files.some((f) => f.startsWith('libs/papercusp/'))).toBe(true);
+    expect(hits.length).toBeGreaterThan(15);
     expect(catalog.size).toBeGreaterThan(100);
   });
 
-  it('every KNOWN_NON_TOOL_TOKENS entry still occurs in the corpus (prune stale allowlist entries)', () => {
-    const seen = new Set(hits.map((h) => h.token));
-    const stale = Object.keys(KNOWN_NON_TOOL_TOKENS).filter((tok) => !seen.has(tok));
-    expect(
-      stale,
-      `these allowlist entries no longer occur anywhere in the scanned corpus — remove them: ${stale.join(', ')}`,
-    ).toEqual([]);
-  });
-
-  it('every prompt/blueprint verb reference resolves against the live tool catalog', () => {
-    const unresolved = hits.filter((h) => !catalog.has(h.token) && !(h.token in KNOWN_NON_TOOL_TOKENS));
-    const message =
-      `${unresolved.length} prompt/blueprint reference(s) name a verb absent from the live tool catalog ` +
-      `(a retired/renamed/typo'd tool — the exact WI-6097-style silent mid-procedure failure this lint exists to catch):\n` +
-      unresolved.map((h) => `  ${h.file}:${h.line}  \`${h.token}\``).join('\n') +
-      `\n\nEach is either a genuine dead reference to fix, or a NEW non-tool false positive to add to ` +
-      `KNOWN_NON_TOOL_TOKENS above with a reason (surface-precise convention, P-005).`;
-    expect(unresolved, message).toEqual([]);
+  it('every "call `verb`" reference resolves against the live tool catalog', () => {
+    const unresolved = hits.filter((h) => !catalog.has(h.token));
+    const lines = [
+      `${unresolved.length} prompt/blueprint reference(s) instruct calling a verb absent from the live tool `,
+      `catalog (a retired/renamed/typo'd tool — the exact WI-6097-style silent mid-procedure failure this lint `,
+      `exists to catch):`,
+      ...unresolved.map((h) => `  ${h.file}:${h.line}  [${h.token}]`),
+      ``,
+      `Each is either a genuine dead reference to fix, or (rare, given the narrow calling-verb shape this scans `,
+      `for) a new false positive — extend the CALL_RE/NEGATION_RE shape above with a reason rather than `,
+      `hand-listing the token (surface-precise convention, P-005: narrowing the SHAPE beats growing an allowlist).`,
+    ];
+    expect(unresolved, lines.join('\n')).toEqual([]);
   });
 });

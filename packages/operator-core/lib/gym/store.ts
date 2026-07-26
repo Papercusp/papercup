@@ -251,6 +251,15 @@ export async function copyRunAnalyticsToDurable(
     }
   });
 
+  // Push-on-write for the Learning tab's Gym view (owner report 2026-07-26:
+  // the pane sat "as of 2h ago" through three cycles — learning.gym had NO
+  // producer, so new durable rows never reached an open pane). pg_notify
+  // fans out cross-process, so this works from the gym CLI and bg-host alike;
+  // fire-and-forget so an SSE hiccup never fails the durable copy.
+  void import('../sync-sse')
+    .then((m) => m.notifySyncInvalidate('learning.gym'))
+    .catch(() => {});
+
   return { tasks: tasks.length, variants: variants.length, runs: runs.length, scores: scores.length, cycles: cycles.length };
 }
 

@@ -215,6 +215,11 @@ export async function recordProposal(sql: Sql, input: RecordProposalInput): Prom
        dev_anchor_delta = EXCLUDED.dev_anchor_delta, cost_delta = EXCLUDED.cost_delta,
        probe_status = EXCLUDED.probe_status, cycle = EXCLUDED.cycle
      WHERE gym_proposals.status = 'pending'`;
+  // Push-on-write for the Learning tab's Gym view (owner report 2026-07-26 —
+  // learning.gym had no producer; pg_notify fans out cross-process).
+  void import('../sync-sse')
+    .then((m) => m.notifySyncInvalidate('learning.gym'))
+    .catch(() => {});
   return id;
 }
 
@@ -643,6 +648,10 @@ export async function setAutoloop(sql: Sql, q: SetAutoloopInput): Promise<GymAut
        enabled = EXCLUDED.enabled, budget_usd = EXCLUDED.budget_usd, spent_usd = EXCLUDED.spent_usd,
        status = EXCLUDED.status, last_cycle = EXCLUDED.last_cycle, last_cycle_at = EXCLUDED.last_cycle_at,
        updated_at = EXCLUDED.updated_at`;
+  // Push-on-write: the Gym view's autoloop pill (RUNNING/spend) reads this row.
+  void import('../sync-sse')
+    .then((m) => m.notifySyncInvalidate('learning.gym'))
+    .catch(() => {});
   return merged;
 }
 

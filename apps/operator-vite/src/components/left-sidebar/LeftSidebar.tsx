@@ -37,7 +37,7 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Network, Coffee, Thermometer, CupSoda, KeyRound, Blend, FileText, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Network, Coffee, Thermometer, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -70,21 +70,23 @@ const OverwatchTab = lazy(() => import('./OverwatchTab'));
 // sidebar is the quick live-override surface; full workspace settings hold the
 // defaults. Flag-gated (PAPERCUP); hidden until the role is live.
 const PapercupTab = lazy(() => import('./PapercupTab'));
-// 🌀 Blender — the LEARNING agents' schedule + pause controls (owner ask
-// 2026-07-25). Cron-spawned learning agents (blueprint singletons, gym cycle,
-// improvement pipeline) were consuming the owner's weekly Claude limit with NO
-// owner-facing surface: they are ephemeral (spawn → a few turns → exit), so the
-// agents-running roster reads empty while spend is continuous. This is where
-// they become visible and stoppable.
-const BlenderTab = lazy(() => import('./BlenderTab'));
-// 📄 Docs — the same treatment for the documentation agents (doc regeneration,
-// knowledge-pack delivery/hygiene).
-const DocsTab = lazy(() => import('./DocsTab'));
-// 🤖 Agents — the catch-all: every scheduled spender that is neither a learning
-// loop nor a docs agent (supervision, health sweeps, armed continuation loops).
-// Without it the "no unknown token usage" goal is unmet — 13 spending routines
-// lived outside Blender+Docs on the day these panes were built.
+// 🤖 Agents + ⚙ System — the scheduled-work rail, split by whether a fire RUNS A
+// MODEL (owner ask 2026-07-26: "its an 'agents' tab, only the actual llm runs
+// should show there, other things that run in a schedule lets make a new tab for
+// all the routines that are deterministic").
+//
+// These two REPLACE the former Blender (🌀 learning) and Docs (📄 documentation)
+// tabs, whose rows redistributed into the split — the learning pipeline and doc
+// repair are model runs and live in Agents; knowledge-pack maintenance and the doc
+// freshness sweep are deterministic and live in System. Subject was never the axis
+// the owner needed; "does this spend money" was. The Blender's Arming (spend-gate)
+// section moved into Agents, beside the things it gates.
+//
+// The lenses partition the catalog by construction (`spend !== 'none'` vs
+// `=== 'none'`), so a routine cannot fall between them — which is how the old
+// category wiring lost 40 rows to an `infra` category no pane claimed.
 const AgentsTab = lazy(() => import('./AgentsTab'));
+const SystemTab = lazy(() => import('./SystemTab'));
 // 💬 Conversations — the curated conversation stream (Q&A, group decisions,
 // agent chats, work-item mail) at rail width (WI-5754, owner ask 2026-07-25).
 // It is the SAME four SSE-cached reads /adv's Conversations tab consumes — see
@@ -110,13 +112,15 @@ const SpendTab = lazy(() => import('./SpendTab'));
 // brand nouns resolve through the flag-gated pack — classic/public shows Pot,
 // Brain, Operator, Fleet; the-hive skin shows Hive, Queen, Sentinel, Colony.
 // Overwatch has no TermKey (D-002) so it stays literal in both packs.
-// ORDER IS OWNER-SET (2026-07-25): Accounts · Pots · Papercup · Mug · Kettle ·
-// Blender · Docs · Agents · Spend. The owner reads the rail left-to-right as
-// "who am I / what am I running / who talks to me" (Accounts → Pots → Papercup)
-// before the autonomous machinery (Mug → Kettle → the three scheduled-agent
-// panes). Tab IDS ARE FROZEN — `?lst=<id>` deep links, ui:dispatch, and the
-// collapsed rail buttons key on them — so reordering only moves array entries;
-// never rename an id to match a new position.
+// ORDER IS OWNER-SET (2026-07-25, split 2026-07-26): Accounts · Pots · Papercup ·
+// Mug · Kettle · Agents · System · Spend. The owner reads the rail left-to-right
+// as "who am I / what am I running / who talks to me" (Accounts → Pots → Papercup)
+// before the autonomous machinery (Mug → Kettle → the two scheduled-work panes).
+// Tab IDS ARE FROZEN — `?lst=<id>` deep links, ui:dispatch, and the collapsed rail
+// buttons key on them — so reordering only moves array entries; never rename an id
+// to match a new position. (`blender` and `docs` are RETIRED ids: their panes were
+// dissolved into the Agents/System split. A stale `?lst=blender` deep link now
+// falls through to the default tab rather than resolving.)
 const TABS = [
   { id: 'accounts', label: (_t: BoundLexicon) => 'Accounts', icon: KeyRound, tip: (_t: BoundLexicon) => 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
   // (The Fleet + Peers tabs MOVED to the op-chat sidebar — owner ask 2026-07-17
@@ -132,12 +136,13 @@ const TABS = [
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
   { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
   { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
-  // 🌀 Blender + 📄 Docs sit immediately after the Kettle (overwatch) tab — owner
-  // placement 2026-07-25. Literal labels in both lexicon packs: they name concrete
-  // automation surfaces, not cup-cast brand nouns, so there is no TermKey to resolve.
-  { id: 'blender', label: (_t: BoundLexicon) => 'Blender', icon: Blend, tip: (_t: BoundLexicon) => 'Learning agents — scheduled self-improvement loops, and what they cost', render: (a: boolean) => <BlenderTab active={a} /> },
-  { id: 'docs', label: (_t: BoundLexicon) => 'Docs', icon: FileText, tip: (_t: BoundLexicon) => 'Documentation agents — doc regeneration & knowledge-pack schedules', render: (a: boolean) => <DocsTab active={a} /> },
-  { id: 'agents', label: (_t: BoundLexicon) => 'Agents', icon: Bot, tip: (_t: BoundLexicon) => 'Every other scheduled agent — supervision, health sweeps, armed loops', render: (a: boolean) => <AgentsTab active={a} /> },
+  // 🤖 Agents + ⚙ System sit immediately after the Kettle (overwatch) tab, in the
+  // slots Blender + Docs held — owner placement 2026-07-25, split 2026-07-26.
+  // Agents leads: it is the one that costs money. Literal labels in both lexicon
+  // packs — they name concrete automation surfaces, not cup-cast brand nouns, so
+  // there is no TermKey to resolve.
+  { id: 'agents', label: (_t: BoundLexicon) => 'Agents', icon: Bot, tip: (_t: BoundLexicon) => 'Scheduled work that RUNS A MODEL — loops, wakes, learning, doc repair. Everything here can spend money', render: (a: boolean) => <AgentsTab active={a} /> },
+  { id: 'system', label: (_t: BoundLexicon) => 'System', icon: Cog, tip: (_t: BoundLexicon) => 'Deterministic scheduled work — git sync, release gate, GC, health probes. None of it spends money', render: (a: boolean) => <SystemTab active={a} /> },
   { id: 'spend', label: (_t: BoundLexicon) => 'Spend', icon: Coins, tip: (_t: BoundLexicon) => 'What every agent in this workspace cost over the last 7 days', render: (a: boolean) => <SpendTab active={a} /> },
   // 💬 Conversations sits LAST (owner ask 2026-07-25). Appending rather than
   // inserting keeps the owner-set order of every tab before it untouched — the

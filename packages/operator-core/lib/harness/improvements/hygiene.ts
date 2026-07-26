@@ -335,7 +335,11 @@ export async function runObservationRetention(
 
   // The Observations pane reads `learning.observations`; nudge it after a prune.
   void import('../../sync-sse')
-    .then((m) => m.notifySyncInvalidate('learning.observations'))
+    .then((m) => {
+      m.notifySyncInvalidate('learning.observations');
+      // The Observations pane's count strip reads its own name (push-audit 2026-07-26).
+      m.notifySyncInvalidate('learning.observations.counts');
+    })
     .catch(() => {});
   // Push-on-write for the Health tab's observations panel
   // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —

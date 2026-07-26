@@ -295,16 +295,22 @@ export async function refreshDerivedReads(ctx: {
   for (const producer of producers) {
     const harnessSlug = producer.scope === 'workspace' ? GLOBAL_SCOPE : ctx.harnessSlug;
 
+    // One indexed-row read: freshness gate (non-force) AND the prior payload's
+    // md5, so a refresh whose payload actually CHANGED can push-invalidate the
+    // panes reading this key (push-audit 2026-07-26 — snapshots refreshed on
+    // ttl but never notified, so long-open panes served "as of 2h ago" data
+    // until a remount; the owner hit this on learning.releaseReadiness et al).
+    const existing = (await sql`
+      SELECT computed_at, producer_version, md5(payload::text) AS payload_md5
+        FROM harness_shared.derived_read_snapshots
+       WHERE workspace_id = ${ctx.workspaceId}
+         AND harness_slug = ${harnessSlug}
+         AND key = ${producer.key}
+       LIMIT 1
+    `) as Array<{ computed_at: string | number | null; producer_version: number | null; payload_md5: string | null }>;
+    const row = existing[0];
+
     if (!ctx.force) {
-      const existing = (await sql`
-        SELECT computed_at, producer_version
-          FROM harness_shared.derived_read_snapshots
-         WHERE workspace_id = ${ctx.workspaceId}
-           AND harness_slug = ${harnessSlug}
-           AND key = ${producer.key}
-         LIMIT 1
-      `) as Array<{ computed_at: string | number | null; producer_version: number | null }>;
-      const row = existing[0];
       const fresh =
         row &&
         Number(row.producer_version ?? 1) === producer.producerVersion &&
@@ -326,7 +332,7 @@ export async function refreshDerivedReads(ctx: {
     try {
       const payload = await producer.compute({ workspaceId: ctx.workspaceId, harnessSlug });
       const computeMs = Date.now() - startedAt;
-      await sql`
+      const written = (await sql`
         INSERT INTO harness_shared.derived_read_snapshots
           (workspace_id, harness_slug, key, payload, computed_at, compute_ms, producer_version, error, error_at, updated_at)
         VALUES (${ctx.workspaceId}, ${harnessSlug}, ${producer.key},
@@ -340,7 +346,17 @@ export async function refreshDerivedReads(ctx: {
           error = NULL,
           error_at = NULL,
           updated_at = EXCLUDED.updated_at
-      `;
+        RETURNING md5(payload::text) AS payload_md5
+      `) as Array<{ payload_md5: string | null }>;
+      // Push only when the payload actually changed (both md5s are PG-computed
+      // over jsonb::text, so the comparison is canonical). A no-op refresh —
+      // the common case for slow-moving producers — stays silent.
+      const changed = !row || written[0]?.payload_md5 !== row.payload_md5;
+      if (changed) {
+        void import('../sync-sse')
+          .then((m) => m.notifySyncInvalidate(producer.key))
+          .catch(() => {});
+      }
       outcomes.push({
         key: producer.key,
         harnessSlug,

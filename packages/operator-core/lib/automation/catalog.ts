@@ -89,6 +89,13 @@ export interface AutomationRoutine {
   liveness: RoutineLiveness;
   /** Where this row's on/off switch lives — replaces the ambiguous `controllable: false` padlock. */
   control: RoutineControl;
+  /**
+   * When `control === 'flag'`, the feature-flag key that IS this row's armed state
+   * (e.g. `papercusp-doc-steward`). The pane wires its toggle to `flags:set` for
+   * these — before this they rendered an inert padlock, so the one row with a real
+   * switch was the one the pane refused to offer a control for.
+   */
+  flagKey: string | null;
   /** Does this row want the owner's attention right now? */
   needsAttention: boolean;
   /**
@@ -449,6 +456,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       family: routineFamily(r.name, kind),
       liveness,
       control,
+      flagKey: null,
       needsAttention: routineNeedsAttention({ liveness, control, active, spend }),
       installs: [r.install_slug],
       ownerId: r.target_owner_id,
@@ -518,6 +526,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
           family: routineFamily(row.name, kind),
           liveness,
           control,
+          flagKey: typeof row.detail?.flag === 'string' ? row.detail.flag : null,
           needsAttention: routineNeedsAttention({ liveness, control, active, spend }),
           installs: [row.installSlug ?? row.source],
           ownerId: null,

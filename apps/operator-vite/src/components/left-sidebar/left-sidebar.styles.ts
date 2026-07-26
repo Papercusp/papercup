@@ -1496,6 +1496,70 @@ body.has-left-sidebar .pc-header {
 .pc-auto__section-title { font-size: 11px; font-weight: 760; color: var(--fg, #e7f7ff); }
 .pc-auto__count { margin-left: auto; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); text-align: right;
   font-variant-numeric: tabular-nums; }
+
+/* ── STATE BUCKETS (agents-system-pane-split-2026-07-26, mockup C) ──────────────
+   The pane sorts by state, not subject: Needs-you / Spending-now (or Running) /
+   Dormant. A bucket header is a BUTTON — clicking it folds the bucket — and the
+   count stays visible while folded, because nothing here is hidden, only folded
+   (the owner mandate "no routines that dont get surfaced" survives as a fold with
+   a count and a one-click open, not as a filter that drops rows).
+
+   ⚠ The layout lives on .pc-auto__section-inner, NOT on the <button>. WebKitGTK —
+   the Tauri webview this actually ships in — IGNORES flex set on a <button>
+   element, so a flex row declared on the button is silently dropped on the real
+   desktop while looking perfect in Chromium (EI-18135716653974462 / WI-5581). Same
+   rule as .pc-auto__toggle and .pc-auto__lane. Do not "simplify" this back onto
+   the button, and do not verify it in a browser — a browser cannot see the bug. */
+.pc-auto__section-head--btn { all: unset; display: block; width: 100%; cursor: pointer;
+  border-radius: 6px; }
+.pc-auto__section-head--btn:focus-visible { outline: 2px solid var(--accent, #38bdf8);
+  outline-offset: 2px; }
+.pc-auto__section-inner { display: flex; align-items: center; gap: 6px; width: 100%; }
+.pc-auto__section-inner svg { color: var(--fg-mute, #7f9bb4); flex: 0 0 auto; }
+.pc-auto__section-head--btn:hover .pc-auto__section-title { color: var(--accent, #38bdf8); }
+
+/* Tone carries the bucket's meaning at a glance — a left rule, not a fill, so the
+   rows inside keep their own tint. Semantic hues only; the accent stays the
+   accent. */
+.pc-auto__section--warn { border-left: 2px solid var(--warn, #f59e0b); }
+.pc-auto__section--spend { border-left: 2px solid var(--accent, #38bdf8); }
+.pc-auto__section--good { border-left: 2px solid var(--good, #22c55e); }
+.pc-auto__section--mute { border-left: 2px solid var(--border, rgba(125, 211, 252, 0.14)); }
+.pc-auto__section--warn .pc-auto__section-title { color: var(--warn, #f59e0b); }
+
+/* A row the owner has to act on: stalled, or a flag-gated row that is off, or one
+   whose target_role has no registered handler. Tinted so it reads from across the
+   pane without anyone parsing a label. */
+.pc-auto__row.is-attention { opacity: 1;
+  background: color-mix(in srgb, var(--warn, #f59e0b), transparent 90%);
+  box-shadow: inset 2px 0 0 var(--warn, #f59e0b); }
+
+/* ── VIEW SWITCH — by state (default) vs by family ──────────────────────────── */
+.pc-auto__views { display: flex; gap: 4px; }
+.pc-auto__viewbtn { display: flex; align-items: center; gap: 4px; flex: 1;
+  justify-content: center; padding: 3px 6px; border-radius: 6px; font-size: 10px;
+  font-weight: 600; color: var(--fg-mute, #7f9bb4); cursor: pointer;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+  background: var(--bg-2, rgba(255, 255, 255, 0.035)); }
+.pc-auto__viewbtn:hover { color: var(--fg, #e7f7ff);
+  border-color: color-mix(in srgb, var(--accent), transparent 64%); }
+.pc-auto__viewbtn[aria-selected='true'] { color: var(--fg, #e7f7ff);
+  border-color: color-mix(in srgb, var(--accent), transparent 42%);
+  background: color-mix(in srgb, var(--accent), transparent 90%); }
+
+/* ── ROW PILLS — install fan-out, trigger kind, unregistered handler ───────────
+   The "×19" pill is the collapsed per-pot fan-out (git-sync is ONE routine
+   installed on 19 pots, not 19 schedules); "triggered" marks a row fired by an
+   event rather than a clock; "no handler" marks a target_role nobody registered —
+   a routine that fires and silently does nothing. All three are distinct from
+   .pc-auto__tokenflag, which is about money. */
+.pc-auto__pill { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto;
+  font-size: 9px; font-weight: 600; padding: 0 4px; border-radius: 4px;
+  color: var(--fg-mute, #7f9bb4); background: var(--bg-3, rgba(255, 255, 255, 0.05)); }
+.pc-auto__pill--trigger { color: var(--accent, #38bdf8);
+  background: color-mix(in srgb, var(--accent, #38bdf8), transparent 88%); }
+.pc-auto__pill--unknown { color: var(--bad, #f43f5e);
+  background: color-mix(in srgb, var(--bad, #f43f5e), transparent 88%); }
 .pc-auto__spend-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px;
   align-items: baseline; font-size: 11px; }
 .pc-auto__spend-role { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg, #e7f7ff); }

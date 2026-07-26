@@ -64,6 +64,15 @@ export default defineTool({
         // EI-10514: schema-validate embedded replication-drill SQL against live PG at the
         // highest-stakes gate (ratifying makes it THE shared standard) — non-blocking.
         const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+        // Push-on-write (push-audit 2026-07-26): ratification flips governance
+        // state the Rubrics pane + readiness strip both display.
+        void import('../../sync-sse')
+          .then((m) => {
+            m.notifySyncInvalidate('rubrics.list');
+            m.notifySyncInvalidate('rubrics.trend');
+            m.notifySyncInvalidate('learning.releaseReadiness');
+          })
+          .catch(() => {});
         return { ok: true as const, rubricId, rubric, completeness, replicationSqlCheck };
       },
       { keyOf: (rubricId) => ({ rubricId }) },

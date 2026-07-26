@@ -1,55 +1,51 @@
 /**
- * AgentsTab — everything about agents, in two lanes.
+ * AgentsTab — everything that RUNS A MODEL, in two lanes.
+ *
+ * WHY THIS IS THE LLM HALF (owner, 2026-07-26): "Is everything in the agents tab an
+ * llm? its an 'agents' tab, only the actual llm runs should show there, other things
+ * that run in a schedule lets make a new tab for all the routines that are
+ * deterministic." They were right — of the 140 non-loop schedules the tab rendered,
+ * 55 spawn a model and 85 were git commits, GC, canary probes and outbox drains,
+ * carrying equal visual weight to the things spending the weekly Claude limit.
+ *
+ * The split is now the tab boundary and it is derived, not curated: a row lands here
+ * iff `spend !== 'none'`, computed from its `target_role` in
+ * lib/automation/routine-classification. Everything else is the System tab. The two
+ * lenses partition the catalog by construction, so the owner mandate ("no routines
+ * that dont get surfaced") cannot be violated by a category nobody claimed — which
+ * is exactly how `infra` once hid 40 routines.
  *
  * LANES (owner ask 2026-07-25: "The agents tab should have two subtabs the same
- * way the mugtab has the 'now' and 'work' subtab, for 'routines' and
- * 'dynamic'"), built from the SAME `pc-auto__lane*` strip the Mug uses, so the
- * two panes read as siblings in one rail:
+ * way the mugtab has the 'now' and 'work' subtab"), built from the SAME
+ * `pc-auto__lane*` strip the Mug uses so the panes read as siblings in one rail:
  *
- *   • ROUTINES — the scheduled-agent catalog (AutomationPane): every routine in
- *     supervision / health / agent-loops, which of them can spend tokens, and a
- *     pause for each. This is the lane the tab opened on before, so it stays the
- *     default.
- *   • DYNAMIC — the LIVE agent roster (owner: "the agents tab used to have a
- *     list of all active agents, what happened to it? Bring that back"). That
- *     roster is SwarmTab, which left this rail for the op-chat sidebar under
- *     WI-5162; the pane itself never went anywhere, so this remounts it rather
- *     than growing a second roster that could disagree with the first about who
- *     is running.
+ *   • SCHEDULED — the model-backed schedules: armed continuation loops, the wake
+ *     family, the learning pipeline (formerly the Blender tab) and doc repair
+ *     (formerly the Docs tab). Ordered by STATE, not subject — see AutomationPane.
+ *   • DYNAMIC — the LIVE agent roster (owner: "the agents tab used to have a list of
+ *     all active agents, what happened to it? Bring that back"). That roster is
+ *     SwarmTab, which left this rail for the op-chat sidebar under WI-5162; the pane
+ *     itself never went anywhere, so this remounts it rather than growing a second
+ *     roster that could disagree with the first about who is running.
  *
- * The two lanes are the honest split of what "an agent" means here: a routine is
- * a SCHEDULE that will spawn one, a dynamic agent is one running right now. The
- * old single-lane tab could only ever show the first, which is why the roster
- * read as missing.
+ * The two lanes are the honest split of what "an agent" means: a schedule is a plan
+ * to spawn one, a dynamic agent is one running right now.
  *
  * ASK sits above both lanes (owner ask 2026-07-25: "the ask tab should be in the
- * agents pane not the conversations pane"). It is collapsed by default so it
- * costs one row of height in the compact Routines view, and belongs to neither
- * lane because addressing an agent is the tab's primary action, not a view.
+ * agents pane not the conversations pane"). It is collapsed by default so it costs
+ * one row of height, and belongs to neither lane because addressing an agent is the
+ * tab's primary action, not a view.
  */
 import { useMemo } from 'react';
 import { Bot, CalendarClock, Users } from 'lucide-react';
 import { parseAsStringLiteral, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { CATCH_ALL_PANE_CATEGORIES } from '@papercusp/operator-core/lib/automation/pane-categories';
 import type { AutomationCatalog } from '@papercusp/operator-core/lib/automation/catalog';
-import AutomationPane, { scheduleLaneValue } from './AutomationPane';
+import AutomationPane, { rowsForLens, scheduleLaneValue } from './AutomationPane';
 import AskAgentPane from './AskAgentPane';
 import SwarmTab from './SwarmTab';
 // Relative, not `@/…`: the `@` alias points at the operator (Next) tree.
 import { isRunningAgent, type RosterAgent } from '../adv/AgentsRunningPill';
-
-/**
- * The catch-all categories are DERIVED in the catalog, never listed here.
- *
- * This used to be the hand-written array `['supervision','health','agent-loops']`
- * under a comment claiming "no routine can exist without appearing in exactly one
- * of the three panes". That was false: `infra` was in nobody's list, so 40
- * routines — 39 of them ACTIVE, including git-sync, green-checkpoint and
- * hive-git-gc — were surfaced nowhere in the rail. Importing the derived list
- * means a category can never again be orphaned by omission.
- */
-const CATEGORIES = CATCH_ALL_PANE_CATEGORIES;
 
 export const AGENT_VIEWS = ['routines', 'dynamic'] as const;
 export type AgentView = (typeof AGENT_VIEWS)[number];
@@ -82,7 +78,7 @@ export default function AgentsTab({ active }: { active: boolean }) {
   });
 
   const routineValue = useMemo(() => {
-    const rows = (cat.data?.[0]?.routines ?? []).filter((r) => CATEGORIES.includes(r.category));
+    const rows = rowsForLens(cat.data?.[0]?.routines ?? [], 'llm');
     return cat.loading && rows.length === 0 ? '…' : scheduleLaneValue(rows);
   }, [cat.data, cat.loading]);
 
@@ -90,7 +86,7 @@ export default function AgentsTab({ active }: { active: boolean }) {
     () => (roster.data?.[0]?.active ?? []).filter(isRunningAgent).length,
     [roster.data],
   );
-  // Guard on the DERIVED count, not on `!roster.data`, to match the Routines lane
+  // Guard on the DERIVED count, not on `!roster.data`, to match the Scheduled lane
   // above. The sync layer can hand back a present-but-empty `data` while the first
   // real read is still in flight, and `!roster.data` is false the moment that
   // happens — so the old guard flashed a confident "0 running" (and SwarmTab's
@@ -100,7 +96,7 @@ export default function AgentsTab({ active }: { active: boolean }) {
   const dynamicValue = roster.loading && runningCount === 0 ? '…' : `${runningCount} running`;
 
   const lanes = [
-    { id: 'routines' as const, label: 'Routines', value: routineValue, icon: CalendarClock },
+    { id: 'routines' as const, label: 'Scheduled', value: routineValue, icon: CalendarClock },
     { id: 'dynamic' as const, label: 'Dynamic', value: dynamicValue, icon: Users },
   ];
 
@@ -156,16 +152,11 @@ export default function AgentsTab({ active }: { active: boolean }) {
         {view === 'routines' ? (
           <AutomationPane
             active={active}
-            categories={CATEGORIES}
+            lens="llm"
             title="Agents"
-            subtitle="Everything else on a schedule"
+            subtitle="Scheduled model runs"
             icon={Bot}
-            // Copy widened with the category set: this pane now also carries
-            // `infra` (git-sync, green-checkpoint, GC, release), which are pure
-            // system sweeps and spawn no agent. Saying "every other scheduled
-            // agent" while listing git-sync would misdescribe them — the whole
-            // point of the pane is telling what spends money from what doesn't.
-            blurb="Everything else that runs on a schedule — supervision, health sweeps, system infrastructure (git-sync, checkpoints, GC) and armed continuation loops. Only rows marked “tokens” spend money; the rest are free system sweeps."
+            blurb="Everything on a schedule that RUNS A MODEL — armed continuation loops, the wake family, the learning pipeline and doc repair. Every row here can spend money when it fires; the free system sweeps live in the System tab."
           />
         ) : (
           // The live roster, unchanged — same membership rule, same fleet

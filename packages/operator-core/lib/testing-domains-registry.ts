@@ -1600,7 +1600,7 @@ defineTestDomain({
     {
       id: 'selftests',
       label: 'Selftests',
-      description: 'The 7 previously-dark shell selftests (EI-18725214765732588), now wired into the aggregate runner + this registry.',
+      description: 'The previously-dark shell selftests (EI-18725214765732588), now wired into the aggregate runner + this registry, plus later additions guarding the same rig scripts.',
       runners: [
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/federation-asserts.selftest.sh'], label: 'federation port self-discovery' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-artifacts.selftest.sh'], label: 'release artifacts guard' },
@@ -1609,6 +1609,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh'], label: 'release local-leg reaper' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh'], label: 'local-matrix starvation downgrade' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh'], label: 'rig bank-logs' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-run-env.selftest.sh'], label: 'vm_run guest-env delivery (WI-6176)' },
       ],
     },
   ],

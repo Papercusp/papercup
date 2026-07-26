@@ -287,6 +287,8 @@ export async function applyPackInstall(
     .then((m) => {
       m.notifySyncInvalidate('learning.hive');
       m.notifySyncInvalidate('knowledgePacks.list');
+      // The Candidates pane reads its own name (push-audit 2026-07-26).
+      m.notifySyncInvalidate('knowledgePacks.candidates');
     })
     .catch(() => {});
 
@@ -352,6 +354,8 @@ export async function uninstallPack(
     .then((m) => {
       m.notifySyncInvalidate('learning.hive');
       m.notifySyncInvalidate('knowledgePacks.list');
+      // The Candidates pane reads its own name (push-audit 2026-07-26).
+      m.notifySyncInvalidate('knowledgePacks.candidates');
     })
     .catch(() => {});
 

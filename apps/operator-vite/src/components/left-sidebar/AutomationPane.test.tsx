@@ -27,7 +27,11 @@ vi.mock('nuqs', () => ({
     const setter = (H.nuqsSetters[key] ??= vi.fn((v: unknown) => {
       H.nuqsState[key] = v;
     }));
-    return [H.nuqsState[key] ?? 'schedule', setter];
+    // Per-key defaults matching the real parsers: `<lens>Open` is an ARRAY of open
+    // fold ids (a scalar default would blow up the `.filter()` in the toggle), and
+    // `<lens>View` defaults to the state-ordered view.
+    const fallback = key.endsWith('Open') ? [] : key.endsWith('View') ? 'attention' : 'schedule';
+    return [H.nuqsState[key] ?? fallback, setter];
   },
 }));
 
@@ -45,7 +49,22 @@ type Routine = {
   installSlug: string;
   category: string;
   cadence: string | null;
+  /** Derived from `target_role` upstream — `spend === 'llm'`. */
   spawnsAgent: boolean;
+  spend: 'llm' | 'none' | 'unknown';
+  spendWhy: string | null;
+  kind: 'scheduled' | 'triggered' | 'loop';
+  family: string;
+  /** `active` alone cannot say whether a row will run again — see routine-classification. */
+  liveness: 'running' | 'stalled' | 'dormant';
+  control: 'routine' | 'flag' | 'none';
+  flagKey: string | null;
+  needsAttention: boolean;
+  /** One routine can be installed on many pots; the row carries them all. */
+  installs: string[];
+  ownerId: string | null;
+  ownerLastActiveAt: string | null;
+  triggerLabel: string | null;
   active: boolean;
   lastFiredAt: string | null;
   /** Which of the five host scheduling mechanisms this row came from. */
@@ -55,25 +74,49 @@ type Routine = {
   controllable: boolean;
 };
 
-const routine = (over: Partial<Routine> = {}): Routine => ({
-  name: 'gym-cycle',
-  installSlug: 'papercusp',
-  category: 'learning',
-  cadence: 'every 6h',
-  spawnsAgent: true,
-  active: true,
-  lastFiredAt: '2026-07-25T18:00:00.000Z',
-  source: 'routines',
-  controllable: true,
-  ...over,
-});
+const routine = (over: Partial<Routine> = {}): Routine => {
+  const active = over.active ?? true;
+  return {
+    name: 'gym-cycle',
+    installSlug: 'papercusp',
+    category: 'learning',
+    cadence: 'every 6h',
+    spawnsAgent: true,
+    spend: 'llm',
+    spendWhy: 'Runs one bounded gym cycle',
+    kind: 'scheduled',
+    family: 'learning',
+    liveness: active ? 'running' : 'dormant',
+    control: 'routine',
+    flagKey: null,
+    needsAttention: false,
+    installs: [over.installSlug ?? 'papercusp'],
+    ownerId: null,
+    ownerLastActiveAt: null,
+    triggerLabel: null,
+    active,
+    lastFiredAt: '2026-07-25T18:00:00.000Z',
+    source: 'routines',
+    controllable: true,
+    ...over,
+  };
+};
 
 const catalog = {
   routines: [
     routine(),
     routine({ name: 'blueprint-singleton', active: false }),
-    routine({ name: 'tidy-cache', spawnsAgent: false, cadence: null }),
-    routine({ name: 'doc-sweep', category: 'docs' }),
+    // A deterministic row. It now lives in the OTHER lens, so the llm pane must not
+    // render it at all — that split is the point of the change.
+    routine({
+      name: 'tidy-cache',
+      spawnsAgent: false,
+      spend: 'none',
+      spendWhy: 'Prunes cache rows',
+      family: 'cleanup',
+      cadence: null,
+    }),
+    routine({ name: 'doc-sweep', category: 'docs', family: 'docs' }),
   ],
   spend7d: [
     { role: 'gym', modelClass: 'sonnet', turns: 1200, costUsd: 12.5 },
@@ -82,7 +125,7 @@ const catalog = {
   ],
 };
 
-function renderPane(overrideCatalog?: { routines: Routine[] }) {
+function renderPane(overrideCatalog?: { routines: Routine[] }, lens: 'llm' | 'system' = 'llm') {
   if (overrideCatalog) {
     H.catalogResult = {
       data: [{ ...catalog, ...overrideCatalog }],
@@ -93,11 +136,11 @@ function renderPane(overrideCatalog?: { routines: Routine[] }) {
   return render(
     <AutomationPane
       active
-      categories={['learning'] as never}
-      title="Blender"
-      subtitle="Learns and self-improves"
+      lens={lens}
+      title="Agents"
+      subtitle="Scheduled model runs"
       icon={Blend}
-      blurb="Learning agents that run on a schedule."
+      blurb="Scheduled work that runs a model."
     />,
   );
 }
@@ -142,33 +185,78 @@ describe('scheduleLaneValue', () => {
 describe('AutomationPane — Mug-modelled layout (owner ask 2026-07-25)', () => {
   it('renders the Mug-style header bar: title, subtitle and a workspace scope chip', () => {
     renderPane();
-    expect(screen.getByText('Blender')).toBeTruthy();
-    expect(screen.getByText('Learns and self-improves')).toBeTruthy();
+    expect(screen.getByText('Agents')).toBeTruthy();
+    expect(screen.getByText('Scheduled model runs')).toBeTruthy();
     // Same correction as the Mug/Kettle headers: these are workspace schedules,
     // never a per-pot control, so the chip must say so.
     expect(screen.getByText('workspace')).toBeTruthy();
   });
 
-  it('states the spend-capable count in the section header', () => {
+  /**
+   * THE LENS SPLIT (owner ask 2026-07-26): "its an 'agents' tab, only the actual
+   * llm runs should show there". A row belongs to exactly one pane, decided by
+   * whether firing it bills a model — so the deterministic `tidy-cache` must not
+   * appear in the llm pane at all, and must appear in the system pane.
+   */
+  it('renders only rows that can bill a model', () => {
     renderPane();
-    // Only the learning routines count (doc-sweep belongs to the Docs pane) and
-    // only the ACTIVE spenders: gym-cycle. blueprint-singleton is paused;
-    // tidy-cache spawns nothing.
-    expect(screen.getByTestId('automation-status').textContent).toBe('1 can spend');
+    const names = screen.getAllByTestId(/^automation-row-/).map((el) => el.getAttribute('data-testid'));
+    expect(names).toContain('automation-row-gym-cycle');
+    expect(names).not.toContain('automation-row-tidy-cache');
   });
 
-  it('lists only this pane’s categories, spending routines first', () => {
+  it('claims the deterministic rows for the system lens instead', () => {
+    // Running is folded in this lens, so the row is counted rather than listed —
+    // open it and the row is there.
+    H.nuqsState.systemOpen = ['running'];
+    renderPane(undefined, 'system');
+    const names = screen.getAllByTestId(/^automation-row-/).map((el) => el.getAttribute('data-testid'));
+    expect(names).toEqual(['automation-row-tidy-cache']);
+  });
+
+  /**
+   * STATE, NOT SUBJECT (mockup C). The owner opens this pane with two questions —
+   * is anything broken, and what is spending — so the buckets answer those in that
+   * order, and everything dormant folds behind one line with a count.
+   */
+  it('sorts rows into state buckets, running before dormant', () => {
     renderPane();
-    const names = screen
-      .getAllByTestId(/^automation-row-/)
-      .map((el) => el.getAttribute('data-testid'));
-    // gym-cycle (spawns + active) → blueprint-singleton (spawns, paused) →
-    // tidy-cache (no spawn). doc-sweep is another pane's category.
-    expect(names).toEqual([
-      'automation-row-gym-cycle',
-      'automation-row-blueprint-singleton',
-      'automation-row-tidy-cache',
-    ]);
+    expect(screen.getByTestId('automation-bucket-attention')).toBeTruthy();
+    expect(screen.getByTestId('automation-bucket-count-running').textContent).toContain('2');
+    // gym-cycle + doc-sweep are running; blueprint-singleton is paused.
+    expect(screen.getByTestId('automation-bucket-count-dormant').textContent).toBe('1');
+  });
+
+  it('folds the dormant bucket shut so 750 dead rows cannot bury the live ones', () => {
+    renderPane();
+    // Present and counted in the header, but its rows are not rendered until opened.
+    expect(screen.getByTestId('automation-bucket-dormant')).toBeTruthy();
+    expect(screen.queryByTestId('automation-row-blueprint-singleton')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('automation-bucket-toggle-dormant'));
+    expect(H.nuqsSetters.llmOpen).toHaveBeenCalledWith(['dormant']);
+  });
+
+  it('says "all clear" rather than 0 when nothing needs the owner', () => {
+    renderPane();
+    expect(screen.getByTestId('automation-bucket-count-attention').textContent).toBe('all clear');
+  });
+
+  /**
+   * The bucket that earns the System tab its place: ~30 healthy sweeps read as ONE
+   * line until one breaks. In the llm pane the same bucket stays open, because
+   * every row in it costs money and there are only ~20.
+   */
+  it('leaves Running OPEN in the llm lens — every row there costs money', () => {
+    renderPane();
+    expect(screen.getByTestId('automation-row-gym-cycle')).toBeTruthy();
+  });
+
+  it('folds Running SHUT in the system lens, summarising it in one line', () => {
+    renderPane(undefined, 'system');
+    expect(screen.queryByTestId('automation-row-tidy-cache')).toBeNull();
+    // The fold still reports what it is hiding, and when it last ran.
+    expect(screen.getByTestId('automation-bucket-count-running').textContent).toMatch(/1 running · last/);
   });
 
   /**
@@ -182,7 +270,12 @@ describe('AutomationPane — Mug-modelled layout (owner ask 2026-07-25)', () => 
     renderPane();
     expect(screen.queryByText(/\$/)).toBeNull();
     expect(screen.queryByText(/turns/)).toBeNull();
-    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+    // The only tabs here are the two VIEW switches (by state / by family). There is
+    // no spend lane, which is what this regression exists to hold.
+    expect(screen.queryAllByRole('tab').map((t) => t.getAttribute('data-testid'))).toEqual([
+      'automation-view-attention',
+      'automation-view-family',
+    ]);
   });
 });
 
@@ -198,12 +291,13 @@ describe('AutomationPane — controls', () => {
     fireEvent.click(screen.getByTestId('automation-pause-all'));
     await waitFor(() => expect(H.invalidated).toContain('automation.catalog'));
 
-    // Only the ACTIVE spender is written — never a routine outside this pane, and
-    // never one already in the target state.
+    // Only ACTIVE spenders are written — never a row outside this lens
+    // (tidy-cache is deterministic), and never one already in the target state
+    // (blueprint-singleton is already paused).
     const sent = fetchMock.mock.calls.map(
       ([, init]) => JSON.parse((init as { body: string }).body) as { name: string; args: { name: string } },
     );
-    expect(sent.map((s) => s.args.name)).toEqual(['gym-cycle']);
+    expect(sent.map((s) => s.args.name).sort()).toEqual(['doc-sweep', 'gym-cycle']);
     expect(sent[0].name).toBe('routines:set');
     vi.unstubAllGlobals();
   });
@@ -520,6 +614,8 @@ describe('AutomationPane — the pause/start control', () => {
   });
 
   it('offers START on a paused routine', () => {
+    // A paused row lands in the folded Dormant bucket, so open it to reach the row.
+    H.nuqsState.llmOpen = ['dormant'];
     renderPane({ routines: [routine({ name: 'gym-cycle', active: false })] });
     const btn = screen.getByTestId('automation-toggle-gym-cycle');
     expect(btn.getAttribute('data-glyph')).toBe('play');
@@ -532,6 +628,8 @@ describe('AutomationPane — the pause/start control', () => {
     // triangle and two hairline bars, which is the single biggest reason these
     // never read as pause/start buttons. The fill is load-bearing, not decorative.
     for (const active of [true, false]) {
+      // The paused pass lands in the folded Dormant bucket — open it to reach the row.
+      H.nuqsState.llmOpen = active ? [] : ['dormant'];
       renderPane({ routines: [routine({ name: 'gym-cycle', active })] });
       const svg = screen.getByTestId('automation-toggle-gym-cycle').querySelector('svg');
       expect(svg).not.toBeNull();
