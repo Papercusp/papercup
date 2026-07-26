@@ -21,6 +21,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../agent-tools/coordination/identity.js';
 import { COORD_ROLES } from '../agent-tools/coordination/roles.js';
 import { requireCoordOp } from './registry.js';
+import { askArgs } from './ops/compose.js';
 
 /**
  * The roles allowed to POST into a vote/deliberate thread: the standard coord
@@ -105,18 +106,39 @@ defineTool({
 // coord-op + the `deliberate` blueprint's `op: coord:ask` rung keep their name —
 // that's a separate (blueprint-DSL) namespace the agent never sees.
 const askOp = requireCoordOp('coord:ask');
+// EI-18682693723293580: the underlying `coord:ask` OP's historical default
+// (`timeout_s: 120`, polled every 2s — see compose.ts) is fine for the
+// `deliberate`/`vote` blueprint rung, which runs as a durable DBOS step with
+// no foreground time budget. It is WRONG for this agent-facing tool: a caller
+// inside `code:run` (foreground, ~55s hard cap) that omits `timeout_s` used to
+// ALWAYS script_timeout here — the write (open thread + escalate) had already
+// landed, but the tool call itself could never return in time, leaving the
+// caller holding a live double-post risk with no cheap way to check what
+// landed. This tool therefore declares its OWN args schema, identical to the
+// op's except `timeout_s` DEFAULTS TO 0 (return immediately after the
+// question is opened — no poll loop at all, see the timeout_s<=0 fast path in
+// askOp.run). The answer, once given, arrives the normal non-blocking way:
+// the asker's inbox, or `events:await { event: 'conversation:answered:<id>' }`
+// if they want to block deliberately (that wait belongs to the CALLER's own
+// turn/loop, not hidden inside this tool call).
+const askOwnerArgs = askArgs.extend({
+  timeout_s: askArgs.shape.timeout_s.default(0).describe(
+    'Seconds to poll for the owner\'s answer before returning (default 0 — return immediately once the question is opened; conversation_id lets you check back later or events:await on conversation:answered:<conversation_id>). Only pass a positive value from an INTERACTIVE (non-code:run) session where you genuinely want this call to block — a foreground code:run script has an ~55s hard cap and WILL script_timeout if this polls anywhere near it.',
+  ),
+});
 defineTool({
   name: 'coord:ask-owner',
   description:
-    'Ask the OWNER (the human) a question and wait a bounded time for an answer (opens a question thread + lands it in the human inbox). Returns { answered, answer }. For asking PEERS knowledge-first, use coord:ask instead.',
+    'Ask the OWNER (the human) a question. By default returns IMMEDIATELY once the question is opened (opens a question thread + lands it in the human inbox) — pass timeout_s > 0 to instead poll and block for that long. Returns { answered, answer, conversation_id }. For asking PEERS knowledge-first, use coord:ask instead.',
   guidance: {
-    when: 'You need the owner\'s (human\'s) input on a decision and can wait briefly, but want to proceed (e.g. fall through to a vote) if they don\'t respond in time.',
-    notWhen: 'A peer question or a knowledge lookup — use coord:ask (knowledge-first: searches existing knowledge, then routes to topic subscribers). A blocking decision that MUST have a human answer — use coord:escalate (severity: blocker).',
+    when: 'You need the owner\'s (human\'s) input on a decision. Default call (no timeout_s) opens the question and returns at once with a conversation_id — safe to call from anywhere, including code:run; check back later via conversations:get or events:await { event: \'conversation:answered:<conversation_id>\' }.',
+    notWhen:
+      'A peer question or a knowledge lookup — use coord:ask (knowledge-first: searches existing knowledge, then routes to topic subscribers). A blocking decision that MUST have a human answer — use coord:escalate (severity: blocker). Calling from inside code:run with an explicit timeout_s > 0 — code:run\'s own ~55s foreground cap will fire first and script_timeout the call (the question is still opened by then; do not blindly re-ask — check conversations:get for what already landed).',
   },
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: askOp.argsSchema,
+  args: askOwnerArgs,
   async handler(args, ctx) {
     const result = await askOp.run(args, ctxFor({ rawCtx: ctx }));
     return jsonText(result);

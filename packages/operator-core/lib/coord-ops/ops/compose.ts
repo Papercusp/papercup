@@ -86,11 +86,18 @@ registerCoordOp(deliberateOp);
 
 // ── coord:ask (bare ask-owner — a simple op, D-009) ─────────────────────────────
 
-const askArgs = z.object({
+// Exported (not just local) so the agent-facing `coord:ask-owner` tool wrapper
+// (agent-tools.ts) can build its OWN args schema off the same shape with a
+// different `timeout_s` default — see the EI-18682693723293580 note on
+// `askOp.run` below for why the tool must not inherit this op's historical
+// 120s-blocking default.
+export const askArgs = z.object({
   question: z.string().min(1),
   body: z.string().optional(),
-  /** Bounded wait for the owner's answer (default 120s). */
-  timeout_s: z.number().positive().default(120),
+  /** Bounded wait for the owner's answer. Used as-is by the `deliberate`/`vote`
+   *  blueprint rung (a durable DBOS step, not foreground-time-boxed); the
+   *  agent-facing tool overrides this default to 0 (see agent-tools.ts). */
+  timeout_s: z.number().nonnegative().default(120),
   poll_ms: z.number().int().positive().default(2000),
   topics: z.array(z.string()).optional(),
 });
@@ -124,7 +131,16 @@ export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> 
       });
 
     const askerId = ctx.identity.ownerId;
-    const maxPolls = Math.min(MAX_POLLS, Math.max(1, Math.ceil((a.timeout_s * 1000) / a.poll_ms)));
+    // EI-18682693723293580: `timeout_s: 0` (the agent-facing tool's new default)
+    // must mean ZERO polling — a single immediate read, no `sleep` at all —
+    // not "at least one 2s poll cycle" (the old `Math.max(1, …)` floor forced
+    // that even at timeout_s=0, which is harmless standalone but defeats the
+    // whole point of a code:run-safe non-blocking default: a caller that
+    // asked for an instant return still paid a guaranteed sleep(poll_ms)).
+    const maxPolls =
+      a.timeout_s <= 0
+        ? 0
+        : Math.min(MAX_POLLS, Math.max(1, Math.ceil((a.timeout_s * 1000) / a.poll_ms)));
     let ans = await ctx.caps.readAnswer({ conversationId: thread.conversation_id, askerId });
     for (let poll = 0; poll < maxPolls && !ans.answered; poll++) {
       await ctx.caps.sleep(a.poll_ms);

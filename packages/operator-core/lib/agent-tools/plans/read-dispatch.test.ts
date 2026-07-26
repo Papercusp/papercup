@@ -70,10 +70,36 @@ describe('callPlansReadRaw UI display projection (P-005)', () => {
     expect(data.items[0].item.text).toMatch(/…$/);
   });
 
-  it('leaves plans:attention data unprojected (WI-5078 — bodies must survive)', async () => {
-    const att = { groups: [{ key: 'g', items: [{ id: 'a', body: 'z'.repeat(2000) }] }] };
+  it('applies the plans:attention slim by default (clips body, drops actions)', async () => {
+    // SUPERSEDES the old "attention is left unprojected" pin — attention got the
+    // list/detail split in slim-plans-attention-sync-payload-2026-07-26 P-003.
+    const att = {
+      groups: [
+        { key: 'g', items: [{ id: 'a', body: 'z'.repeat(2000), actions: [{ id: 'answer' }] }] },
+      ],
+    };
     H.nextResult = att;
     const r = await callPlansReadRaw('attention', {});
+    const item = (r.data as { groups: Array<{ items: Array<Record<string, unknown>> }> }).groups[0]
+      .items[0];
+    expect((item.body as string).length).toBe(280);
+    expect(item.bodyTruncated).toBe(true);
+    expect(item).not.toHaveProperty('actions');
+  });
+
+  it('uiProjection:false returns the FULL attention payload — the detail read (P-004)', async () => {
+    // This is what plans.attentionItem relies on: the detail pane must get the
+    // whole body + actions back. WI-5078 still applies underneath — the dispatch
+    // must STILL request payloadTier:'full' on this path, or the hard ceiling
+    // hands back item-less group summaries and the detail resolver finds nothing.
+    const att = {
+      groups: [
+        { key: 'g', items: [{ id: 'a', body: 'z'.repeat(2000), actions: [{ id: 'answer' }] }] },
+      ],
+    };
+    H.nextResult = att;
+    const r = await callPlansReadRaw('attention', {}, { uiProjection: false });
     expect(r.data).toEqual(att);
+    expect(H.calls[H.calls.length - 1].body.payloadTier).toBe('full');
   });
 });

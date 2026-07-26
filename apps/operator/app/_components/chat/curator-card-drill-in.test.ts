@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { drillInRefToInbox, resolveInboxDrillIn, type DrillInItem } from './curator-card-drill-in';
+import {
+  drillInRefToInbox,
+  resolveInboxDrillIn,
+  resolveWorkingTabDrillIn,
+  resolvePlanItemDrillIn,
+  type DrillInItem,
+  type WorkingTabDrillItem,
+  type PlanItemDrillItem,
+} from './curator-card-drill-in';
 
 describe('drillInRefToInbox (deterministic-status-cards P-003/D-004)', () => {
   it('maps escalation:<id> → the coord-escalation attention id (inbox selection)', () => {
@@ -56,5 +64,66 @@ describe('resolveInboxDrillIn (WI-5342 — resolve against live items)', () => {
   it('a ref with no matching inbox item opens the pane without a selection', () => {
     expect(resolveInboxDrillIn('health:some-panel', items)).toEqual({ selId: null, filter: null });
     expect(resolveInboxDrillIn('', items)).toEqual({ selId: null, filter: null });
+  });
+});
+
+describe('resolveWorkingTabDrillIn (chat-ref-pills-2026-07-26 P-002)', () => {
+  const items: WorkingTabDrillItem[] = [{ id: 'WI-5927' }, { id: 'EI-42' }, { id: 'F-100' }];
+
+  it('a live WI- ref resolves to ?sel + the Working tab panel type', () => {
+    expect(resolveWorkingTabDrillIn('WI-5927', items)).toEqual({ sel: 'WI-5927', panelType: 'adv:work-items' });
+  });
+
+  it('a live EI- and F- ref both resolve the same way', () => {
+    expect(resolveWorkingTabDrillIn('EI-42', items)).toEqual({ sel: 'EI-42', panelType: 'adv:work-items' });
+    expect(resolveWorkingTabDrillIn('F-100', items)).toEqual({ sel: 'F-100', panelType: 'adv:work-items' });
+  });
+
+  it('an unknown/unresolvable ref returns null sel and null panelType (render plain text)', () => {
+    expect(resolveWorkingTabDrillIn('WI-9999', items)).toEqual({ sel: null, panelType: null });
+    expect(resolveWorkingTabDrillIn('', items)).toEqual({ sel: null, panelType: null });
+  });
+
+  it('reuses resolveInboxDrillIn matching — does not select on a mere itemRef-shaped ref', () => {
+    // resolveWorkingTabDrillIn only supplies { id }, itemRef is always null,
+    // so a ref that would only match via itemRef in the inbox surface finds
+    // nothing here — proof this delegates rather than re-implementing a
+    // second, more permissive matcher.
+    expect(resolveWorkingTabDrillIn('wi:papercusp#F-1', items)).toEqual({ sel: null, panelType: null });
+  });
+});
+
+describe('resolvePlanItemDrillIn (chat-ref-pills-2026-07-26 P-006)', () => {
+  const items: PlanItemDrillItem[] = [
+    { id: 'P-003', planSlug: 'chat-ref-pills-2026-07-26' },
+    { id: 'P-006', planSlug: 'chat-ref-pills-2026-07-26' },
+    { id: 'P-003', planSlug: 'gui-chat-session-controls-2026-07-25' },
+  ];
+
+  it('a live P-ref scoped to the message plan_slug resolves to "<planSlug>::<itemId>"', () => {
+    expect(resolvePlanItemDrillIn('P-003', 'chat-ref-pills-2026-07-26', items)).toEqual({
+      sel: 'chat-ref-pills-2026-07-26::P-003',
+    });
+  });
+
+  it('the SAME P-NNN id resolves to the OTHER plan when scoped there — proves scoping, not global match', () => {
+    expect(resolvePlanItemDrillIn('P-003', 'gui-chat-session-controls-2026-07-25', items)).toEqual({
+      sel: 'gui-chat-session-controls-2026-07-25::P-003',
+    });
+  });
+
+  it('no message plan_slug context → null sel, never a guessed plan (render plain text)', () => {
+    expect(resolvePlanItemDrillIn('P-003', null, items)).toEqual({ sel: null });
+    expect(resolvePlanItemDrillIn('P-003', undefined, items)).toEqual({ sel: null });
+    expect(resolvePlanItemDrillIn('P-003', '', items)).toEqual({ sel: null });
+  });
+
+  it('a P-ref with no live item on the scoped plan returns null sel (not present on THAT plan)', () => {
+    expect(resolvePlanItemDrillIn('P-999', 'chat-ref-pills-2026-07-26', items)).toEqual({ sel: null });
+  });
+
+  it('an empty ref returns null sel even with plan context', () => {
+    expect(resolvePlanItemDrillIn('', 'chat-ref-pills-2026-07-26', items)).toEqual({ sel: null });
+    expect(resolvePlanItemDrillIn('   ', 'chat-ref-pills-2026-07-26', items)).toEqual({ sel: null });
   });
 });

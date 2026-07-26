@@ -14,6 +14,7 @@ import {
   NEGATIVE_RESULT_FACT_TTL_SEC,
   type DeprecateLearningsInput,
 } from './deprecate-learnings';
+import { FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 import type { CaptureImprovementInput, CaptureImprovementResult } from './capture-core';
 import type { StructuredObservation } from './observation-types';
 
@@ -219,8 +220,13 @@ describe('buildNegativeResultFact (F1-3 — the federated dead-end op)', () => {
     expect(fact.shareable).toBe(true); // still opt-in; simply won't route until hived
   });
 
-  it('budgets long prose into the 500-char fact cap and the 120-char key cap', () => {
-    const long = 'x'.repeat(600);
+  // Asserts against FACT_BODY_MAX_CHARS rather than a literal ON PURPOSE: this
+  // pin hardcoded 500 and silently went stale the moment the cap moved to 1200
+  // (WI-5945), reddening the green gate for every agent. The invariant under
+  // test is "the builder budgets prose into WHATEVER the cap is" — not the
+  // cap's current value — so bind it to the constant it is really about.
+  it('budgets long prose into the fact cap and the 120-char key cap', () => {
+    const long = 'x'.repeat(FACT_BODY_MAX_CHARS * 2);
     const fact = buildNegativeResultFact(
       {
         ...base,
@@ -230,7 +236,10 @@ describe('buildNegativeResultFact (F1-3 — the federated dead-end op)', () => {
       'h',
     );
     expect(fact.key.length).toBeLessThanOrEqual(120);
-    expect(fact.body.length).toBeLessThanOrEqual(500);
+    expect(fact.body.length).toBeLessThanOrEqual(FACT_BODY_MAX_CHARS);
+    // The budgeter must actually USE the room, not trivially pass by emitting a
+    // stub — otherwise this guard would survive the builder being gutted.
+    expect(fact.body.length).toBeGreaterThan(FACT_BODY_MAX_CHARS * 0.5);
     expect(fact.body).toContain('Stalled:');
   });
 });
