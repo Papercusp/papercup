@@ -450,7 +450,13 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       -- rig test touching a getWorkItem / setWorkItemPriority issue-family path)
       -- deterministically red from the moment 588 landed. The rig never writes an
       -- issue-family feature_order; the column only needs to EXIST for the SELECT.
-      ADD COLUMN IF NOT EXISTS feature_order integer;
+      ADD COLUMN IF NOT EXISTS feature_order integer,
+      -- Same EI-10579 drift class, next instance: agent-protocol-authority-semantics
+      -- -2026-07-26 P-004/D-009 added the bare `authority` column and ISSUE_COLS
+      -- (issues-engineer.ts) now selects it unconditionally, so the rig's REAL
+      -- engineer_issues table 42703'd on every getWorkItem issue-family probe.
+      -- Real column is `text` NULL; the rig never writes it, it only must EXIST.
+      ADD COLUMN IF NOT EXISTS authority text;
   `);
 
   // WI-1644 (part 4): migration 432 (work-item-completion-integrity, POST-379 —
