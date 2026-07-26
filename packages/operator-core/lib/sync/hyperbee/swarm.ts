@@ -1433,6 +1433,41 @@ export function extractConnectionPath(socket: unknown): PeerConnectionPath {
 }
 
 /**
+ * WI-5980 — flatten the branch/candidate diagnostics to TOP-LEVEL SCALAR keys for
+ * the churn / never-came-up log lines.
+ *
+ * `console.*` renders objects via util.inspect at DEPTH 2. `path.addresses4` (an
+ * array of objects) and `path.punchStats` sit one level deeper than that, so
+ * logging them nested inside `path` prints `[Object]` — the fields would be
+ * emitted and still unreadable, which is the worst kind of instrumentation
+ * failure because the log looks like it worked. Emitting them as SIBLINGS of
+ * `path` keeps them at depth 1, and keeps each value a scalar so the triage
+ * parsers that scrape these records stay line-oriented.
+ *
+ * Absent-stays-absent, as everywhere else here: a field the socket never exposed
+ * is omitted rather than rendered as a confident `false`/`0`.
+ */
+export function flattenPathDiagnostics(path: PeerConnectionPath): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (path.punchPath !== undefined) out.punchPath = path.punchPath;
+  if (path.addressFromFallback !== undefined) out.addrFromFallback = path.addressFromFallback;
+  if (path.addresses4AllBogon !== undefined) out.addrs4AllBogon = path.addresses4AllBogon;
+  if (path.remoteHolepunchable !== undefined) out.remoteHolepunchable = path.remoteHolepunchable;
+  if (path.firewall !== undefined) out.firewall = path.firewall;
+  if (path.addresses4) {
+    out.addrs4 =
+      path.addresses4
+        .map((a) => `${a.host ?? '?'}:${a.port ?? '?'}${a.bogon ? '(bogon)' : ''}`)
+        .join(' ') || '(none)';
+  }
+  if (path.punchStats) {
+    const p = path.punchStats;
+    out.punchStats = `open=${p.open ?? '?'} consistent=${p.consistent ?? '?'} random=${p.random ?? '?'}`;
+  }
+  return out;
+}
+
+/**
  * EI-18682571591024156 — the UDX wire counters for one connection: the ONLY
  * evidence that the data path actually came up.
  *
@@ -1782,6 +1817,9 @@ export async function joinHarnessSwarm(
         // `bytesTransmitted` IS the never-came-up signature (WI-5863), and it was
         // previously unavailable at every layer.
         path: closePath,
+        // WI-5980: which branch resolved the address, flattened to depth 1 so
+        // util.inspect cannot swallow it (see flattenPathDiagnostics).
+        ...flattenPathDiagnostics(closePath),
         wire: closeWire,
       });
       // EI-18684689702957309: hyperswarm itself destroys a socket with this
@@ -1816,6 +1854,11 @@ export async function joinHarnessSwarm(
             ageMs: closeAgeMs,
             precededByError: churnSawError,
             path: closePath,
+            // WI-5980: the branch that chose this (unreachable) address, flattened
+            // to depth 1 so util.inspect cannot swallow it. On this record in
+            // particular `addrFromFallback` + `addrs4AllBogon` say whether the
+            // address was a real advertisement or a guess at the packet source.
+            ...flattenPathDiagnostics(closePath),
             wire: closeWire,
           },
         );

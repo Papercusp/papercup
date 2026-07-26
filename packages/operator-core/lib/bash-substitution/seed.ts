@@ -3,10 +3,16 @@
  * (plan `bash-to-tool-substitution-2026-07-26`, P-018).
  *
  * D-002 makes the TABLE the single source of truth that both PreToolUse hooks
- * and the CLAUDE.md routing generator read. But the VERDICT is not a fact a
- * human types — it is derived by the P-004 harness from frozen samples of real
- * commands. So this seeder is the one place those two meet: it recomputes every
- * verdict from the committed fixtures and upserts the result.
+ * read at runtime. But the VERDICT is not a fact a human types — it is derived
+ * by the P-004 harness from frozen samples of real commands. So this seeder is
+ * the one place those two meet: it recomputes every verdict from the committed
+ * fixtures and upserts the result.
+ *
+ * (The CLAUDE.md routing generator, P-019, therefore reads `ALL_PAIRS` rather
+ * than the table: the pairs are UPSTREAM of both, so generating from them keeps
+ * the prose, the seeded rows and the enforcement descended from one artifact —
+ * and, unlike a DB read, it works with no Postgres, so its drift check can be a
+ * hard build gate instead of an advisory one. See scripts/gen-tool-routing.ts.)
  *
  * That direction matters. Rows are DERIVED, never hand-authored, so the table
  * can never drift from the evidence: widen a tool, update its envelope, re-run

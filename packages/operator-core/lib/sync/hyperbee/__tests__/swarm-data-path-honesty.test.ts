@@ -31,6 +31,7 @@ import type Corestore from 'corestore';
 import {
   joinHarnessSwarm,
   extractConnectionPath,
+  flattenPathDiagnostics,
   readWireStats,
   dataPathProven,
   type HyperswarmLike,
@@ -175,6 +176,118 @@ describe('EI-18682571591024156 — pure readers keep absent readings absent', ()
   it('grades the data path only on positive evidence', () => {
     expect(dataPathProven(readWireStats({ rawStream: NEVER_CAME_UP }))).toBe(false);
     expect(dataPathProven(readWireStats({ rawStream: { bytesReceived: 1 } }))).toBe(true);
+  });
+});
+
+/**
+ * WI-5980 — WHY the address was wrong, not just that the data path died.
+ *
+ * hyperdht picks the first NON-BOGON entry of `addresses4` and otherwise falls
+ * back to `serverAddress`, which is only ever the OBSERVED SOURCE of an inbound
+ * packet (connect.js:139-140) — never a declared listener. On an all-private-
+ * subnet deployment every candidate is a bogon, so the fallback is the ONLY
+ * path and we dial an address the peer may not own. Separately, the
+ * `punches.open` branch (connect.js:219-227) fires `onsocket()` with NO
+ * round-trip confirmation and returns before any holepunch is attempted.
+ *
+ * These are the fields that tell those apart, and the absent-vs-zero rule binds
+ * harder here than anywhere: a fabricated `addressFromFallback: false` would
+ * quietly deny the exact mechanism this exists to measure, and a fabricated
+ * `punchPath: 'open'` would invent the finding outright.
+ */
+describe('WI-5980 — the address-resolution branch is recorded, and absent stays absent', () => {
+  const OPEN_FASTPATH_FALLBACK = {
+    udxRelayed: true,
+    udxPunchPath: 'open',
+    udxAddressFromFallback: true,
+    udxAddresses4AllBogon: true,
+    udxAddresses4: [
+      { host: '10.99.0.12', port: 49737, bogon: true },
+      { host: '192.168.1.9', port: 40001, bogon: true },
+    ],
+    udxRemoteHolepunchable: false,
+    udxFirewall: 2,
+    udxPunchStats: { open: 7, consistent: 1, random: 0 },
+  };
+
+  it('surfaces the branch, the candidates, and their per-entry bogon verdicts', () => {
+    const path = extractConnectionPath({ ...OPEN_FASTPATH_FALLBACK });
+    expect(path.present).toBe(true);
+    expect(path.punchPath).toBe('open');
+    expect(path.addressFromFallback).toBe(true);
+    expect(path.addresses4AllBogon).toBe(true);
+    expect(path.remoteHolepunchable).toBe(false);
+    expect(path.firewall).toBe(2);
+    expect(path.punchStats).toEqual({ open: 7, consistent: 1, random: 0 });
+    // The per-entry verdict is the evidence that the fallback was FORCED rather
+    // than chosen — without it, "we fell back" and "there was nothing to fall
+    // back from" are indistinguishable.
+    expect(path.addresses4).toEqual([
+      { host: '10.99.0.12', port: 49737, bogon: true },
+      { host: '192.168.1.9', port: 40001, bogon: true },
+    ]);
+  });
+
+  it('records the holepunch branch distinctly from the unverified open branch', () => {
+    // 'holepunch' means a punch was actually ATTEMPTED. An 'open' record is a
+    // punch that never happened, so pooling the two would corrupt any holepunch
+    // failure rate computed from these logs.
+    expect(extractConnectionPath({ udxPunchPath: 'holepunch' }).punchPath).toBe('holepunch');
+  });
+
+  it('does NOT synthesise addressFromFallback:false when the reading is absent', () => {
+    const path = extractConnectionPath({ udxRelayed: true });
+    expect(path.present).toBe(true);
+    expect(path.addressFromFallback).toBeUndefined();
+    expect(path.addresses4AllBogon).toBeUndefined();
+    expect(path.punchPath).toBeUndefined();
+    expect(path.addresses4).toBeUndefined();
+    expect(path.remoteHolepunchable).toBeUndefined();
+    expect(path.punchStats).toBeUndefined();
+  });
+
+  it('refuses an unrecognised punchPath rather than passing it through', () => {
+    // Only the two branches hyperdht actually has are admissible; anything else
+    // is an unreadable or future shape and must stay absent.
+    expect(extractConnectionPath({ udxPunchPath: 'relayed' }).punchPath).toBeUndefined();
+    expect(extractConnectionPath({ udxPunchPath: true }).punchPath).toBeUndefined();
+    expect(extractConnectionPath({ udxPunchPath: 'open' }).punchPath).toBe('open');
+  });
+
+  it('keeps these fields out of the result entirely for a bare socket', () => {
+    // Guards the exact-shape assertion above: a socket with none of these props
+    // must still deep-equal { present: false }, not gain undefined-valued keys.
+    expect(extractConnectionPath({})).toEqual({ present: false });
+  });
+
+  it('flattens the diagnostics to SCALARS so util.inspect cannot swallow them', () => {
+    // console.* inspects at depth 2. Nested inside `path`, addresses4/punchStats
+    // would render as `[Object]` — emitted but unreadable. Every value here must
+    // therefore be a primitive, which is what makes them survive the log.
+    const flat = flattenPathDiagnostics(extractConnectionPath({ ...OPEN_FASTPATH_FALLBACK }));
+    for (const [key, value] of Object.entries(flat)) {
+      expect(typeof value, `${key} must be a scalar to survive util.inspect`).not.toBe('object');
+    }
+    expect(flat.punchPath).toBe('open');
+    expect(flat.addrFromFallback).toBe(true);
+    expect(flat.addrs4AllBogon).toBe(true);
+    expect(flat.addrs4).toBe('10.99.0.12:49737(bogon) 192.168.1.9:40001(bogon)');
+    expect(flat.punchStats).toBe('open=7 consistent=1 random=0');
+  });
+
+  it('omits absent diagnostics from the flattened form rather than defaulting them', () => {
+    // The flattener must not reintroduce the absent-vs-zero trap the extractor
+    // avoids: no key at all beats `addrFromFallback: false`.
+    expect(flattenPathDiagnostics(extractConnectionPath({ udxRelayed: true }))).toEqual({});
+    expect(flattenPathDiagnostics({ present: false })).toEqual({});
+  });
+
+  it('renders an EMPTY candidate list distinguishably from an absent one', () => {
+    // "hyperdht offered no addresses" and "we could not read the addresses" are
+    // different findings and must not both render as nothing.
+    const empty = flattenPathDiagnostics(extractConnectionPath({ udxAddresses4: [] }));
+    expect(empty.addrs4).toBe('(none)');
+    expect(flattenPathDiagnostics(extractConnectionPath({})).addrs4).toBeUndefined();
   });
 });
 
