@@ -182,6 +182,54 @@ export interface AssertFactInput {
   potHomeSlug?: string | null;
 }
 
+/**
+ * EI-18681964809855890: the TTL default a confidence tier implies when the
+ * caller omits an explicit `ttlSec` — 'provisional'/'suspected' facts decay
+ * far faster than the ordinary 7d default so a hedge can't quietly calcify
+ * into settled fact via TTL refresh. Returns undefined for null/undefined/
+ * 'verified' (falls through to the caller's own default — FACT_DEFAULT_TTL_SEC
+ * in {@link assertFact}, or WALL_DEFAULT_TTL_SEC for a wall slot), preserving
+ * exact pre-existing behavior for every caller that never sets confidence.
+ * PURE — no IO, unit-tested without PG.
+ */
+export function defaultTtlSecForConfidence(confidence: FactConfidence | null | undefined): number | undefined {
+  if (confidence === 'provisional') return FACT_PROVISIONAL_DEFAULT_TTL_SEC;
+  if (confidence === 'suspected') return FACT_SUSPECTED_DEFAULT_TTL_SEC;
+  return undefined; // null / undefined / 'verified' — ordinary default applies
+}
+
+/**
+ * EI-18681964809855890: bare EMPIRICAL-CERTAINTY language in a fact body that
+ * carries no `confidence` tag — the write-time nudge for "never write a
+ * peer's provisional evidence to a durable surface at higher confidence than
+ * they stated it" (the rule the incident violated). Warn-only, mirrors the
+ * existing provenanceLint contract (never blocks the write); the tool layer
+ * folds this into the response only when it fires. PURE — no IO.
+ *
+ * Deliberately narrow (a handful of unhedged-certainty words) rather than a
+ * general sentiment classifier — false positives on a genuinely verified fact
+ * are harmless noise (the caller sees a suggestion, not a block), but a
+ * classifier broad enough to catch every phrasing would fire on ordinary
+ * prose constantly and train agents to ignore it.
+ */
+const UNHEDGED_CERTAINTY_RE = /\b(verified|confirmed|confirms|proven|proves)\b/i;
+
+export function certaintyLanguageWithoutConfidence(
+  body: string,
+  confidence: FactConfidence | null | undefined,
+): string | null {
+  if (confidence) return null; // an explicit tag of ANY tier already answers the question
+  const m = UNHEDGED_CERTAINTY_RE.exec(body);
+  if (!m) return null;
+  return (
+    `confidence_lint: this fact's body asserts certainty ("${m[0]}") but no \`confidence\` was set. ` +
+    `EI-18681964809855890: a peer's single unreplicated run rendered at IDENTICAL authority to a verified ` +
+    `measurement once cost four agents a false regression chase. Pass confidence:'verified' if you replicated ` +
+    `this yourself, 'provisional' for a single/unreplicated data point, or 'suspected' for a hunch / second-hand ` +
+    `hedge — never write a peer's provisional evidence at higher confidence than they stated it.`
+  );
+}
+
 /** Validate scope/ref pairing per D-001. Returns an error string or null. */
 export function validateFactScope(scope: string, scopeRef?: string | null): string | null {
   if (!(FACT_SCOPES as readonly string[]).includes(scope)) {
@@ -380,7 +428,14 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     );
   }
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
-  const ttl = input.ttlSec && input.ttlSec > 0 ? input.ttlSec : FACT_DEFAULT_TTL_SEC;
+  // EI-18681964809855890: an explicit ttlSec always wins; otherwise a
+  // provisional/suspected confidence tier shortens the default (see
+  // defaultTtlSecForConfidence) before falling back to FACT_DEFAULT_TTL_SEC.
+  const ttl =
+    input.ttlSec && input.ttlSec > 0
+      ? input.ttlSec
+      : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
+  const confidence = input.confidence ?? null;
   // The arbiter is mig 461's 5-column identity (per-source partitioning, H6):
   // a LOCAL assert always writes the source_hive-NULL ('') partition, so the
   // coalesce(source_hive,'') dimension must be IN the inference spec — the old

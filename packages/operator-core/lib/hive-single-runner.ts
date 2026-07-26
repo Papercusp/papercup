@@ -90,8 +90,14 @@ export async function checkHiveSingleRunner(
   deps: HiveSingleRunnerDeps = {},
 ): Promise<HiveSingleRunnerVerdict> {
   const resolveHive = deps.resolveHive ?? potHomeSlugForHarness;
+  // WI-6032 (P-005): scope the election to THIS workspace — we already have it
+  // (the caller's own `workspaceId` param), so it is a genuine, non-ambient
+  // caller-known value, not a guess (see LockAuthorityDeps.workspaceId). An
+  // explicit `authorityDeps.workspaceId` override (tests) still wins.
   const authority =
-    deps.hiveAuthority ?? ((slug: string) => lockAuthorityForHive(slug, deps.authorityDeps ?? {}));
+    deps.hiveAuthority ??
+    ((slug: string) =>
+      lockAuthorityForHive(slug, { ...deps.authorityDeps, workspaceId: deps.authorityDeps?.workspaceId ?? workspaceId }));
   try {
     const potSlug = await resolveHive(workspaceId, harnessSlug);
     if (!potSlug) return { run: true, reason: 'not-in-hive' };

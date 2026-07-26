@@ -96,8 +96,11 @@ export async function checkSteeringLease(
   deps: SteeringLeaseDeps = {},
 ): Promise<SteeringLeaseVerdict> {
   const resolveHive = deps.resolveHive ?? testDeps?.resolveHive ?? potHomeSlugForHarness;
+  // WI-6032 (P-005): scope the election to THIS workspace — `workspaceId` is the
+  // caller's own param, a genuine caller-known value (see
+  // LockAuthorityDeps.workspaceId), not an ambient/guessed one.
   const authority =
-    deps.hiveAuthority ?? testDeps?.hiveAuthority ?? ((slug: string) => lockAuthorityForHive(slug));
+    deps.hiveAuthority ?? testDeps?.hiveAuthority ?? ((slug: string) => lockAuthorityForHive(slug, { workspaceId }));
   const resolveQueenHome =
     deps.resolveQueenHome ??
     testDeps?.resolveQueenHome ??

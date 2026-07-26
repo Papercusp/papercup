@@ -1,8 +1,8 @@
 diff --git a/node_modules/hyperdht/lib/connect.js b/node_modules/hyperdht/lib/connect.js
-index 86afb4e..69dc640 100644
+index 86afb4e..f7f4353 100644
 --- a/node_modules/hyperdht/lib/connect.js
 +++ b/node_modules/hyperdht/lib/connect.js
-@@ -217,17 +217,105 @@ async function holepunch(c, opts) {
+@@ -217,17 +217,122 @@ async function holepunch(c, opts) {
  
    const relayed = diffAddress(serverAddress, relayAddress)
  
@@ -31,23 +31,40 @@ index 86afb4e..69dc640 100644
 +  //     address the peer does not serve UDX on, and it is 100% of the observed
 +  //     failures (317/317 dead records). NO NAT IS INVOLVED — see below.
 +  //
-+  // WHY THAT OBSERVED SOURCE IS THE WRONG SOCKET (not a NAT remap — a firewalled
-+  // node simply SENDS from a different socket than it LISTENS on):
-+  //   dht-rpc binds TWO udx sockets — io.js:230 serverSocket (the real UDX stream
-+  //   listener) and io.js:261 clientSocket. DHT egress picks between them with
-+  //   `this.firewalled ? this.clientSocket : this.serverSocket` (io.js:291 and
-+  //   :321). A node with no public reflexive address stays firewalled, so its
-+  //   handshake leaves via clientSocket, the relay observes THAT source, and we
-+  //   end up dialing the peer's DHT client socket: bound (so no ICMP refusal —
-+  //   the dial just hangs) but never serving UDX streams. Hence packetsReceived=0
-+  //   and death at ~13s.
++  // WHY THAT OBSERVED SOURCE IS A DEAD ADDRESS — CORRECTED 2026-07-26 (WI-5980).
++  // The text here previously said we dial the peer's DHT clientSocket, "bound (so
++  // no ICMP refusal — the dial just hangs)". BOTH HALVES WERE WRONG, and the way
++  // they were wrong is worth keeping on the record:
++  //   - MEASURED by raw UDP probe from inside a rig frame: the dialed port answers
++  //     ECONNREFUSED (ICMP port-unreachable) — NOTHING IS BOUND THERE. The peer's
++  //     clientSocket IS bound, and was never dialed once across 50 distinct dead
++  //     ports, so it is not the clientSocket either.
++  //   - "bound" had been INFERRED from the surfaced 'connection timed out'. That
++  //     inference is invalid: UDX does not act on ICMP, it retransmits and expires
++  //     (rtoCount~7, retransmits~10, death at ~13s), so a timeout is exactly what
++  //     an UNBOUND destination looks like through this transport. Probe the port
++  //     directly before concluding something is listening on it.
++  //
++  // WHAT THE ADDRESS ACTUALLY IS: a SocketPool transient. socket-pool.js:115
++  // createSocket() + :121 bind(0) mints a FRESH ephemeral port per SocketRef;
++  // holepuncher.js acquires one at :14/:108/:273; `reusable` defaults false
++  // (socket-pool.js:113) so _close (:158-180) closes it once idle + unreferenced.
++  // The relay observes that per-attempt socket and router.js:165 stamps it as
++  // `peerAddress: req.from`. Hence a DIFFERENT dialed port on every attempt — 50
++  // distinct across 94 dead records here, 111 across 221 connections on a second
++  // independent corpus — and never one the peer still holds.
 +  //
 +  // AND THE REAL LISTENER WAS RIGHT THERE: connect.js:483 builds addresses4 from
-+  // localAddresses(c.dht.io.serverSocket) — the genuine UDX listener — but on an
-+  // all-private overlay (e.g. 10.99.0.x) every such entry is a BOGON, so
-+  // getFirstRemoteAddress (:204-211) skips ALL of them and falls back to the
-+  // wrong-socket address. The bogon filter is correct for the public internet and
-+  // catastrophic on a private overlay: it discards the one correct answer it had.
++  // localAddresses(c.dht.io.serverSocket) — the genuine UDX listener, invariant at
++  // a single port in both directions. It is NOT discarded by getFirstRemoteAddress:
++  // that runs only at :292, inside the branch that marks udxPunchPath 'open'
++  // (:308), and these connections do not take it (they are 'holepunch', :317 —
++  // which is also why udxAddressFromFallback is structurally ABSENT rather than
++  // false; do not read that absence as a value). What ACTUALLY discarded the real
++  // listener is the LAN shortcut at :330, which required client and server to be
++  // the SAME host — so two distinct hosts on one private /24 never qualified, and
++  // the branch only ever helped loopback. Broadened to a same-/24 test, restricted
++  // to non-routable space; see samePrivateIPv4Subnet24 below.
 +  // Note udxAddresses4AllBogon is false for an EMPTY array by construction (it
 +  // requires length > 0), and c.lan gates whether localAddrs are included at all,
 +  // so read udxAddresses4's LENGTH alongside the flag.
@@ -108,7 +125,23 @@ index 86afb4e..69dc640 100644
    const onabort = () => {
      c.session.destroy()
      maybeDestroyEncryptedSocket(c, HOLEPUNCH_ABORTED())
-@@ -477,6 +565,18 @@ async function connectThroughNode(c, address, socket) {
+@@ -239,7 +344,14 @@ async function holepunch(c, opts) {
+   }
+ 
+   // TODO: would be better to just try local addrs in the background whilst continuing with other strategies...
+-  if (c.lan && relayed && clientAddress.host === serverAddress.host) {
++  // WI-5980: host-EQUALITY was too strict. Two DISTINCT hosts on one private /24
++  // (e.g. 10.99.0.11 -> 10.99.0.12) is the ordinary container/overlay topology, and
++  // this shortcut is the only path that dials the peer's REAL advertised listener
++  // instead of the transient punch-socket address (see the corrected note above).
++  // Strictly WIDENING: the original equality test is kept as a disjunct, so no case
++  // that fires today can regress. Deliberately /24-only — NOT "any private address",
++  // which would be a broader and currently unevidenced change.
++  if (c.lan && relayed && (clientAddress.host === serverAddress.host || samePrivateIPv4Subnet24(clientAddress.host, serverAddress.host))) {
+     const serverAddresses = payload.addresses4.filter(onlyNonReserved)
+ 
+     if (serverAddresses.length > 0) {
+@@ -477,6 +589,18 @@ async function connectThroughNode(c, address, socket) {
      payload
    }
  
@@ -127,6 +160,45 @@ index 86afb4e..69dc640 100644
    c.payload = new SecurePayload(hs.holepunchSecret)
  
    c.onsocket = function (socket, port, host) {
+@@ -863,6 +987,38 @@ function onlyNonReserved(addr) {
+   return !isReserved(addr.host)
+ }
+ 
++// WI-5980: same-/24 test for the LAN shortcut at the holepunch site above.
++// TWO conditions, both deliberate:
++//   1. a literal IPv4 /24 prefix match — NOT a bare "are both private?" test, which
++//      would fire between hosts that merely happen to be private without sharing a
++//      link, and which the evidence for this change does not cover;
++//   2. BOTH hosts non-routable. This is NARROWER than a bare /24 match, on purpose.
++//      The branch this gates ABORTS the connection when its ping fails (it calls
++//      maybeDestroyEncryptedSocket and returns rather than falling through to the
++//      holepunch), so any pair admitted here that is NOT actually on one link loses
++//      a connection that holepunching would otherwise have rescued. Two peers behind
++//      one CGNAT /24 are exactly that hazard: same prefix, no direct path. Restricting
++//      to non-routable space keeps the shortcut to topologies where a shared /24 does
++//      imply a shared link — which is the evidenced case (10.99.0.11 <-> 10.99.0.12).
++// Non-IPv4 / malformed input returns false, so the caller's host-equality disjunct
++// stays the only path for IPv6 and this change remains strictly widening.
++function samePrivateIPv4Subnet24(a, b) {
++  if (typeof a !== 'string' || typeof b !== 'string') return false
++
++  const x = a.split('.')
++  const y = b.split('.')
++  if (x.length !== 4 || y.length !== 4) return false
++
++  for (let i = 0; i < 4; i++) {
++    if (!/^\d{1,3}$/.test(x[i]) || !/^\d{1,3}$/.test(y[i])) return false
++    if (Number(x[i]) > 255 || Number(y[i]) > 255) return false
++  }
++
++  if (x[0] !== y[0] || x[1] !== y[1] || x[2] !== y[2]) return false
++
++  return isBogon(a) && isBogon(b)
++}
++
+ function isRelay(relaySocket, socket, port, host) {
+   const stream = relaySocket.rawStream
+   if (!stream) return false
 diff --git a/node_modules/hyperdht/lib/server.js b/node_modules/hyperdht/lib/server.js
 index 0433c8a..58de4b7 100644
 --- a/node_modules/hyperdht/lib/server.js

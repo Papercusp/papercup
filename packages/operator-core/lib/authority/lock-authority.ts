@@ -116,12 +116,13 @@ interface LivePeerRow {
 export interface LockAuthorityDeps {
   /** Fetch presence rows for a harness. `staleMs` is the (TS) staleness window so
    *  the impl can apply a LOOSE SQL pre-filter (P-006); the authoritative freshness
-   *  cut still happens in TS. Impls may ignore it (e.g. test stubs). */
-  fetchPresenceRows?: (harnessSlug: string, staleMs: number) => Promise<LivePeerRow[]>;
+   *  cut still happens in TS. Impls may ignore it (e.g. test stubs). `workspaceId`
+   *  (EI-18698… WI-6032/P-005) is forwarded from {@link LockAuthorityDeps.workspaceId}. */
+  fetchPresenceRows?: (harnessSlug: string, staleMs: number, workspaceId?: string) => Promise<LivePeerRow[]>;
   /** Fetch presence rows for a HIVE (P-009 — `WHERE hive_slug = ?`). Used by
    *  {@link lockAuthorityForHive}; `staleMs` threads the same LOOSE SQL pre-filter
    *  as the harness path. Freshness filtered in TS. */
-  fetchHivePresenceRows?: (potSlug: string, staleMs: number) => Promise<LivePeerRow[]>;
+  fetchHivePresenceRows?: (potSlug: string, staleMs: number, workspaceId?: string) => Promise<LivePeerRow[]>;
   /** Resolve THIS peer's swarm identity, or null if it has none. */
   resolveSelf?: () => Promise<SelfSwarmIdentity | null>;
   /** Current epoch ms (injectable clock). */
@@ -170,6 +171,37 @@ export interface LockAuthorityDeps {
    * Omit → today's behavior (presence + staleness + eviction only).
    */
   eligibleDevices?: ReadonlySet<string>;
+  /**
+   * WI-6032 / shared-hive-cross-machine-scale-10k-2026-06-29 P-005: scope the
+   * presence query to ONE workspace. `queryPresenceRows`/`queryPresenceRowsForHive`
+   * filter `WHERE harness_slug = ? AND pot_slug = ?` with NO `workspace_id`
+   * predicate — `shared_presence`'s own indexes both LEAD with `workspace_id`
+   * (`shared_presence_recent_idx`, `shared_presence_pot_recent_idx`), so an
+   * unscoped query can neither use its index nor guarantee it only elects among
+   * peers that are genuinely the same tenant's swarm. Two workspaces that happen
+   * to register a harness/hive under the SAME slug (a collision, not a shared
+   * entity) would otherwise be folded into ONE cross-tenant authority election.
+   *
+   * OPT-IN, not defaulted — pass it explicitly from a caller that KNOWS the
+   * correct workspace for this election. Do NOT thread this from ambient/request
+   * context: an ambient-resolved WRONG workspace returns an EMPTY presence set,
+   * which resolves the authority to `{isSelf:true}` — i.e. every machine believes
+   * it is the authority. That is split-brain, strictly worse than today's
+   * over-broad (but merely duplicative, never self-electing) query. Prefer
+   * failing loud (throw) over guessing when a caller needs workspace scoping but
+   * cannot resolve it confidently.
+   *
+   * ⚠ Do NOT thread this into the FILE-CLAIM lock authority path
+   * (file-lock-routing.ts / locks:acquire·release) — `readIdentity()` deliberately
+   * omits workspaceId there (D-015, agent-tools/locks/identity.ts): a file lock is
+   * keyed by physical repo checkout, and TWO workspaces importing the SAME harness
+   * must serialize on the SAME authority by design. Workspace-scoping that path
+   * would silently break cross-workspace file-lock sharing, not fix a bug.
+   *
+   * Omit → today's behavior (no workspace predicate; unchanged for every existing
+   * caller until it opts in).
+   */
+  workspaceId?: string;
 }
 
 /**
@@ -210,6 +242,7 @@ export async function queryPresenceRows(
   sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
   harnessSlug: string,
   staleMs: number = DEFAULT_AUTHORITY_STALE_MS,
+  workspaceId?: string,
 ): Promise<LivePeerRow[]> {
   // P-006: prune long-dead peers in SQL so Postgres does not materialize EVERY
   // presence row ever seen for the harness (an unbounded scan at 256 peers). The
@@ -219,6 +252,9 @@ export async function queryPresenceRows(
   // drop a row the TS filter would have kept, even under app↔DB clock skew, so the
   // argmin-over-fresh-rows result is byte-identical; only dead rows are excluded.
   const looseWindowSecs = (2 * staleMs) / 1000;
+  // WI-6032 (P-005): `workspaceId` OPTIONAL — omitted preserves today's harness-only
+  // scope byte-identically; passed, it also makes `shared_presence_recent_idx`
+  // (workspace_id, harness_slug, last_seen_at DESC) usable. See LockAuthorityDeps.workspaceId.
   const rows = (await sql`
     SELECT device_pubkey,
            github_user_id,
@@ -226,6 +262,7 @@ export async function queryPresenceRows(
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
     WHERE harness_slug = ${harnessSlug}
+      AND (${workspaceId ?? null}::text IS NULL OR workspace_id = ${workspaceId ?? null})
       AND device_pubkey <> ''
       AND last_seen_at >= now() - make_interval(secs => ${looseWindowSecs})
   `) as Array<{
@@ -242,9 +279,13 @@ export async function queryPresenceRows(
   }));
 }
 
-async function defaultFetchPresenceRows(harnessSlug: string, staleMs: number): Promise<LivePeerRow[]> {
+async function defaultFetchPresenceRows(
+  harnessSlug: string,
+  staleMs: number,
+  workspaceId?: string,
+): Promise<LivePeerRow[]> {
   const { sql } = getOrgPg();
-  return queryPresenceRows(sql as never, harnessSlug, staleMs);
+  return queryPresenceRows(sql as never, harnessSlug, staleMs, workspaceId);
 }
 
 /**
@@ -256,12 +297,14 @@ export async function queryPresenceRowsForHive(
   sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
   potSlug: string,
   staleMs: number = DEFAULT_AUTHORITY_STALE_MS,
+  workspaceId?: string,
 ): Promise<LivePeerRow[]> {
   // P-006: same LOOSE (2× staleness window) SQL pre-filter as the harness path —
   // Postgres prunes long-dead Swarms instead of scanning every hive row ever seen,
   // while staying strictly wider than the TS freshness cut so the Hive argmin is
   // unchanged. See {@link queryPresenceRows} for the full rationale.
   const looseWindowSecs = (2 * staleMs) / 1000;
+  // WI-6032 (P-005): `workspaceId` OPTIONAL — see queryPresenceRows / LockAuthorityDeps.workspaceId.
   const rows = (await sql`
     SELECT device_pubkey,
            github_user_id,
@@ -269,6 +312,7 @@ export async function queryPresenceRowsForHive(
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
     WHERE pot_slug = ${potSlug}
+      AND (${workspaceId ?? null}::text IS NULL OR workspace_id = ${workspaceId ?? null})
       AND device_pubkey <> ''
       AND last_seen_at >= now() - make_interval(secs => ${looseWindowSecs})
   `) as Array<{
@@ -285,9 +329,13 @@ export async function queryPresenceRowsForHive(
   }));
 }
 
-async function defaultFetchHivePresenceRows(potSlug: string, staleMs: number): Promise<LivePeerRow[]> {
+async function defaultFetchHivePresenceRows(
+  potSlug: string,
+  staleMs: number,
+  workspaceId?: string,
+): Promise<LivePeerRow[]> {
   const { sql } = getOrgPg();
-  return queryPresenceRowsForHive(sql as never, potSlug, staleMs);
+  return queryPresenceRowsForHive(sql as never, potSlug, staleMs, workspaceId);
 }
 
 async function defaultResolveSelf(): Promise<SelfSwarmIdentity | null> {
@@ -390,7 +438,7 @@ export async function lockAuthorityFor(
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
   const [rows, self, useHrw] = await Promise.all([
-    fetchRows(harnessSlug, staleMs),
+    fetchRows(harnessSlug, staleMs, deps.workspaceId),
     resolveSelf(),
     resolveUseHrwRendezvous(deps),
   ]);
@@ -459,7 +507,7 @@ export async function lockAuthorityForHive(
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
   const [rows, self, useHrw] = await Promise.all([
-    fetchRows(potSlug, staleMs),
+    fetchRows(potSlug, staleMs, deps.workspaceId),
     resolveSelf(),
     resolveUseHrwRendezvous(deps),
   ]);
