@@ -1139,9 +1139,9 @@ export default function AdvShell({
           margin-bottom: -1px;
           margin-left: 2px;
           padding: 9px 12px 10px;
-          border: 1px solid rgba(125, 211, 252, 0.28);
+          border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.28));
           border-radius: 10px 10px 0 0;
-          background: linear-gradient(180deg, rgba(125, 211, 252, 0.06), rgba(3, 10, 20, 0.98));
+          background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 94%), rgba(3, 10, 20, 0.98));
           color: var(--fg-dim, #b9d4e8);
           font-size: 11.5px;
           font-weight: 600;
@@ -1156,8 +1156,8 @@ export default function AdvShell({
         }
         .pc-advshell__more-trigger--active {
           color: var(--fg, #e7f7ff);
-          background: rgba(125, 211, 252, 0.18);
-          border-color: rgba(125, 211, 252, 0.55);
+          background: color-mix(in srgb, var(--accent), transparent 82%);
+          border-color: var(--border-strong, rgba(125, 211, 252, 0.55));
         }
         .pc-advshell__more-panel {
           width: min(280px, 92vw);
@@ -1192,7 +1192,7 @@ export default function AdvShell({
           color: var(--fg-mute, #7f9bb4);
           font-size: 10px;
           font-weight: 760;
-          letter-spacing: 0.02em;
+          letter-spacing: 0;
           text-transform: uppercase;
         }
         .pc-advshell__more-item {
@@ -1208,7 +1208,7 @@ export default function AdvShell({
         }
         .pc-advshell__more-item svg:first-child { color: var(--h-main-tab-accent); }
         .pc-advshell__more-item[data-selected='true'] {
-          background: rgba(125, 211, 252, 0.14);
+          background: color-mix(in srgb, var(--accent), transparent 86%);
           color: var(--fg, #e7f7ff);
         }
         .pc-advshell__more-item[data-active] { color: var(--fg, #e7f7ff); font-weight: 650; }
@@ -1258,7 +1258,10 @@ function AdvMoreMenu({
   activeTab: AdvTabId;
   onSelect: (id: AdvTabId) => void;
 }) {
-  const byId = useMemo(() => new Map(tabs.map((t) => [t.id, t])), [tabs]);
+  // Keyed explicitly by the full AdvTabId (not the narrower Exclude<…,'prs'>
+  // TS would otherwise infer from `tabs`): recentIds/group.tabIds are typed
+  // AdvTabId, and a Map<K,V>.get() argument must be assignable to K.
+  const byId = useMemo(() => new Map<AdvTabId, AdvTabDef>(tabs.map((t) => [t.id, t])), [tabs]);
   const recentTabs = recentIds.map((id) => byId.get(id)).filter((t): t is AdvTabDef => !!t);
 
   return (

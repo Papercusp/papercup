@@ -133,6 +133,7 @@ vi.mock('../../fleet/assignments', () => ({
   orphanedClaims: vi.fn(() => []),
   stalledClaims: vi.fn(() => []),
   summarizeOrphan: vi.fn((r: unknown) => r),
+  isReclaimCandidate: vi.fn(() => false),
 }));
 
 import fleetAssignmentsTool from './assignments';

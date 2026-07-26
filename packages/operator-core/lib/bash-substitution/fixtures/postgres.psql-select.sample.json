@@ -1,0 +1,128 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair postgres.psql-select",
+  "extractedAt": "2026-07-26T01:23:00Z",
+  "totalAtoms": 106,
+  "totalSessions": 10,
+  "sample": [
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T10:16:31.677Z",
+      "atom": "psql \"postgresql://harness_admin:harness_admin_pwd@localhost:18532/papercusp\" -tA -c \"select 1"
+    },
+    {
+      "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
+      "ts": "2026-07-25T21:21:48.510Z",
+      "atom": "psql \"postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp\" -P pager=off -c \"SELECT tick_at, install_slug, cardinality(seen_keys) AS n_seen, cardinality(captured) AS n_captured, captured FROM harness_shared.watchdog_ticks WHERE install_slug='papercusp' AND tick_at > '2026-07-25 21:16:34+00' ORDER BY tick_at ASC LIMIT 20"
+    },
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T05:05:05.136Z",
+      "atom": "psql \"postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp\" -c \"SELECT * FROM harness_shared.schema_migrations ORDER BY id DESC LIMIT 5"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T22:11:38.786Z",
+      "atom": "psql \"postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp\" -c \"select id, author, left(body, 3000) from harness_shared.coord_thread_posts where id in (53666, 53662, 53663) order by id"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T11:36:28.651Z",
+      "atom": "psql \"postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp\" -c \"select name, active, reschedule_interval_sec, next_fire_at, last_fired_at, now() as now from harness_shared.routines where name ilike '%fed%gate%' or name ilike '%live-fed%' or name ilike '%matrix%'"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-20T16:57:02.678Z",
+      "atom": "psql \"postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp\" -t -A -c \"select body from harness_shared.coord_thread_posts where thread_id like '%WI-5137%' order by created_at desc limit 1"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-20T16:45:43.891Z",
+      "atom": "psql \"postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp\" -t -A -c \"select id, state, assigned_to, updated_at from harness_shared.work_items where id='WI-5652'"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T22:17:29.986Z",
+      "atom": "psql \"postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp\" -t -c \"select body from harness_shared.engineer_issues where issue_id='WI-5715'"
+    },
+    {
+      "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
+      "ts": "2026-07-20T18:19:59.504Z",
+      "atom": "psql \"postgresql://harness_admin@127.0.0.1:18533/papercusp\" -tA -c \"SELECT id,harness_slug,table_name,op,key,drained_at,ts,op_hlc FROM harness_shared.substrate_outbox WHERE table_name='plan_item_assignments' ORDER BY id"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T05:25:30.259Z",
+      "atom": "psql \"postgresql://harness_admin@localhost:18632/papercusp\" -c \"SELECT id, table_name, op, key, ts, op_hlc, drained_at FROM harness_shared.substrate_outbox WHERE key LIKE 'health-tab-v2-2026-07-12:P-01%' ORDER BY id"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T05:25:06.880Z",
+      "atom": "psql \"postgresql://harness_admin@localhost:18632/papercusp\" -t -c \"SELECT pg_get_functiondef('harness_shared._wi5441_debug_upd_fn'::regproc)"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T05:07:26.744Z",
+      "atom": "psql \"postgresql://postgres@127.0.0.1:18532/papercusp\" -c \"select tgname, tgenabled from pg_trigger where tgrelid='harness_shared.plan_item_assignments'::regclass"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-20T18:08:22.622Z",
+      "atom": "psql \"postgresql://postgres@127.0.0.1:18532/papercusp\" -tA -c \"SELECT jsonb_pretty(p) FROM harness_shared.harness_registry, jsonb_array_elements(payload->'projects') p WHERE p->>'slug'='hello-world'"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T05:09:30.682Z",
+      "atom": "psql \"postgresql://postgres@127.0.0.1:18632/papercusp\" -c \"select * from harness_shared.plan_item_assignments where plan_slug='plan-mx-seed'"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T05:09:00.966Z",
+      "atom": "psql \"postgresql://postgres@127.0.0.1:18632/papercusp\" -c \"select plan_slug,item_id,origin,created_at from harness_shared.plan_item_assignments"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-20T18:04:27.832Z",
+      "atom": "psql \"postgresql://postgres@127.0.0.1:18632/papercusp\" -tA -c \"SELECT harness_slug,plan_slug,origin FROM harness_shared.harness_plans WHERE plan_slug LIKE 'plan-mx-%'"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-20T18:04:27.832Z",
+      "atom": "psql \"postgresql://postgres@127.0.0.1:18632/papercusp\" -tA -c \"SELECT workspace_id,harness_slug,plan_slug,item_id,origin FROM harness_shared.plan_item_assignments WHERE plan_slug LIKE 'plan-mx-%'"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T04:46:48.805Z",
+      "atom": "psql -h 127.0.0.1 -p 18632 -U postgres -d papercusp -c \"select datname, setconfig from pg_db_role_setting join pg_database on pg_database.oid = pg_db_role_setting.setdatabase"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T04:46:07.451Z",
+      "atom": "psql -h 127.0.0.1 -p 18632 -U postgres -d papercusp -c \"select pg_get_functiondef('harness_shared.capture_substrate_outbox'::regproc)"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T04:46:48.805Z",
+      "atom": "psql -h 127.0.0.1 -p 18632 -U postgres -d papercusp -c \"select rolname, rolconfig from pg_roles where rolconfig is not null"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T04:46:07.451Z",
+      "atom": "psql -h 127.0.0.1 -p 18632 -U postgres -d papercusp -c \"select tgname, tgenabled, tgrelid::regclass from pg_trigger where tgname like 'capture_substrate_outbox%' and tgrelid = 'harness_shared.plan_item_assignments'::regclass"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-19T04:46:07.451Z",
+      "atom": "psql -h 127.0.0.1 -p 18632 -U postgres -d papercusp -c \"select workspace_id, harness_slug, table_name, op, key, ts, drained_at from harness_shared.substrate_outbox where workspace_id='default' and harness_slug='hello-world' and table_name='plan_item_assignments' order by id"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-21T02:06:31.888Z",
+      "atom": "psql -h localhost -U harness_admin -d papercusp -c \"select created_at, category, left(summary,200) from harness_shared.messages_consolidated where category='hive-owner-health' or summary ilike '%owner key MISSING%' order by created_at desc limit 15"
+    },
+    {
+      "sid": "su-10aa1083-b92f-46c9-b340-ccf4455f801d",
+      "ts": "2026-07-17T10:16:38.510Z",
+      "atom": "psql -h localhost -U postgres -d papercusp -c \"SELECT count(*) FROM harness_shared.work_items WHERE status='needs-human' OR (item_kind IN ('bug','change','task') AND COALESCE(payload,'{}'::jsonb)->>'needsHuman'='true')"
+    }
+  ]
+}

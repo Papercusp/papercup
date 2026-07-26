@@ -856,6 +856,11 @@ import './work_items/claim';
 // one round-trip — the #1 measured agent flow; also closes the get→claim race.
 import './work_items/pickup';
 import './work_items/release';
+// The "announced consequence" rail (WI-5974): request a live peer release a work-item
+// with an explicit deadline + consequence, instead of a bare force-release refusal with
+// no sanctioned path forward.
+import './work_items/request_release';
+import './work_items/decline_release_request';
 // Park a work-item resumably: checkpoint + release + broadcast in one verb
 // (modes-and-intake-ux-2026-07-05 P-004 — the named form of "parked with a
 // complete resume checkpoint").

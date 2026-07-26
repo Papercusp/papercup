@@ -15,7 +15,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { pgReadQuery, explainReadQuery, PgReadQueryError } from './pg-read-query';
+import { pgReadQuery, explainReadQuery, PgReadQueryError, describeRelation, listRelations } from './pg-read-query';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -151,5 +151,77 @@ describe('explainReadQuery (real PG)', () => {
   it('rejects a write statement (guard 1, same as pgReadQuery)', async () => {
     const r = await explainReadQuery('DELETE FROM harness_shared.harness_plans', { client: db.adminSql });
     expect(r.ok).toBe(false);
+  });
+});
+
+/**
+ * describeRelation / listRelations — the `\d` equivalent (plan
+ * bash-to-tool-substitution-2026-07-26, P-011).
+ *
+ * `\d` is a psql CLIENT meta-command with no SQL form, so before this it could
+ * not be expressed through dev:pg_query at all. The bash audit measured 88 such
+ * atoms — the single largest psql residue — which is why this is a tool gap and
+ * not a routing problem.
+ */
+describe('describeRelation / listRelations (real PG)', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('describes a schema-qualified table: columns, indexes, constraints', async () => {
+    const d = await describeRelation('harness_shared.harness_plans', { client: db.adminSql });
+    expect(d).not.toBeNull();
+    expect(d!.relation).toBe('harness_shared.harness_plans');
+    expect(d!.kind).toBe('table');
+    expect(d!.columns.length).toBeGreaterThan(0);
+    // Columns arrive in ordinal order with resolved types, like `\d`.
+    expect(d!.columns.map((c) => c.name)).toContain('slug');
+    for (const col of d!.columns) {
+      expect(col.type).not.toBe('');
+      expect(typeof col.nullable).toBe('boolean');
+    }
+    // A table with a primary key must report it as a constraint.
+    expect(d!.constraints.some((c) => c.type === 'PRIMARY KEY')).toBe(true);
+    expect(d!.indexes.length).toBeGreaterThan(0);
+  });
+
+  it('resolves a BARE table name to the same relation a query would use', async () => {
+    const bare = await describeRelation('harness_plans', { client: db.adminSql });
+    expect(bare?.relation).toBe('harness_shared.harness_plans');
+  });
+
+  it('returns null for a missing relation rather than an empty description', async () => {
+    // An empty description would read as "this table has no columns", which is
+    // a far more confusing answer than "no such relation".
+    expect(await describeRelation('no_such_table_xyz', { client: db.adminSql })).toBeNull();
+  });
+
+  it('renders NOT NULL constraints by name, not as a bare catalog code', async () => {
+    // PG 17+ materialises NOT NULL as a pg_constraint row with contype 'n';
+    // without the mapping over half a table's constraints render as "n".
+    const d = await describeRelation('harness_shared.harness_plans', { client: db.adminSql });
+    for (const c of d!.constraints) {
+      expect(c.type).not.toMatch(/^[a-z]$/);
+    }
+  });
+
+  it('lists relations matching a glob (the \\dt equivalent)', async () => {
+    const rows = await listRelations('harness_shared.*plan*', { client: db.adminSql });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.relation.includes('plan'))).toBe(true);
+    expect(rows.map((r) => r.relation)).toContain('harness_shared.harness_plans');
+  });
+
+  it('excludes system schemas from a wildcard listing', async () => {
+    const rows = await listRelations('*', { client: db.adminSql, limit: 2000 });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.some((r) => r.relation.startsWith('pg_catalog.'))).toBe(false);
+    expect(rows.some((r) => r.relation.startsWith('information_schema.'))).toBe(false);
   });
 });

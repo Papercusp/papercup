@@ -244,6 +244,110 @@ describe('orphanedClaims', () => {
   });
 });
 
+// ── WI-5975: absence rendered as absence; liveness outranks progress-recency ────
+//
+// The incident: a leader read a held item as an ORPHAN from lastProgressAt:null
+// plus ~2.5h of no visible activity, moved to reassign it, and was refused — the
+// holder was ALIVE and completed the item minutes later. Two conditions rendered
+// identically (never-checkpointed vs measured-stale), and a live holder's claim
+// landed in the same reclaimable bucket as a dead holder's.
+describe('summarizeOrphan — WI-5975', () => {
+  const heldByLive = workClaim({
+    agentId: 'su-holder',
+    workItemId: 'WI-5923',
+    holderAlive: true,
+    stalled: true,
+    lastProgressAt: null,
+    claimAcquiredTs: '2026-07-26T04:00:00.000Z',
+  });
+
+  it('renders a never-checkpointed claim distinctly from a measured-stale one', () => {
+    expect(summarizeOrphan(heldByLive).progress).toBe('never-checkpointed');
+    expect(summarizeOrphan(heldByLive).last_progress_at).toBeNull();
+
+    const stale = workClaim({
+      agentId: 'su-holder',
+      workItemId: 'WI-1',
+      holderAlive: true,
+      stalled: true,
+      lastProgressAt: '2026-07-26T01:00:00.000Z',
+    });
+    expect(summarizeOrphan(stale).progress).toBe('stale-since');
+    expect(summarizeOrphan(stale).last_progress_at).toBe('2026-07-26T01:00:00.000Z');
+  });
+
+  it('never emits a bare null for the progress signal', () => {
+    // The whole defect: a null that reads like a measurement. Whatever the
+    // inputs, `progress` is always an explicit, self-describing discriminator.
+    for (const lastProgressAt of [null, '2026-07-26T01:00:00.000Z']) {
+      for (const holderAlive of [true, false]) {
+        const s = summarizeOrphan(workClaim({ agentId: 'su-x', holderAlive, lastProgressAt }));
+        expect(s.progress).toMatch(/^(never-checkpointed|stale-since)$/);
+      }
+    }
+  });
+
+  // THE regression canary for the incident, stated as the acceptance criterion:
+  // a live holder can never be rendered as an orphan.
+  it('a LIVE holder is never an orphan, however old the progress signal is', () => {
+    const s = summarizeOrphan(heldByLive, { sessionState: 'live', lastToolCallAt: '2026-07-26T06:29:58.000Z' });
+    expect(s.verdict).toBe('held-by-live-agent');
+    expect(s.action).toBe('ask');
+    expect(isReclaimCandidate(s)).toBe(false);
+    expect(s.holder_last_tool_call_at).toBe('2026-07-26T06:29:58.000Z');
+  });
+
+  it('the oracle OUTRANKS the row heartbeat in both directions', () => {
+    // Warm-dead: heartbeat still fresh, oracle says ended ⇒ genuinely reclaimable.
+    const warmDead = summarizeOrphan({ ...heldByLive, holderAlive: true }, { sessionState: 'ended' });
+    expect(warmDead.verdict).toBe('orphan');
+    expect(warmDead.action).toBe('reclaim');
+
+    // Cold-but-live: heartbeat lapsed, oracle says live ⇒ ASK, never reclaim.
+    const coldLive = summarizeOrphan({ ...heldByLive, holderAlive: false }, { sessionState: 'live' });
+    expect(coldLive.verdict).toBe('held-by-live-agent');
+    expect(coldLive.action).toBe('ask');
+  });
+
+  it.each<[Exclude<SessionState, 'live'>]>([
+    ['parked'],
+    ['draining'],
+    ['suspect'],
+    ['ended'],
+    ['recorded'],
+  ])('sessionState %s is not live ⇒ orphan/reclaim', (sessionState) => {
+    expect(summarizeOrphan(heldByLive, { sessionState }).verdict).toBe('orphan');
+  });
+
+  it('falls back to the row heartbeat when no oracle verdict is available', () => {
+    // Degrade to the OLD behaviour rather than manufacture a confident verdict
+    // from missing input — the same failure mode this bug is about.
+    expect(summarizeOrphan(heldByLive, null).verdict).toBe('held-by-live-agent');
+    expect(summarizeOrphan(heldByLive, { sessionState: null }).verdict).toBe('held-by-live-agent');
+    expect(summarizeOrphan({ ...heldByLive, holderAlive: false }).verdict).toBe('orphan');
+  });
+
+  it('omits holder_last_tool_call_at entirely when unknown (absence stays absent)', () => {
+    expect('holder_last_tool_call_at' in summarizeOrphan(heldByLive)).toBe(false);
+    expect('holder_last_tool_call_at' in summarizeOrphan(heldByLive, { sessionState: 'live' })).toBe(false);
+    expect(summarizeOrphan(heldByLive, { sessionState: 'live', lastToolCallAt: null }).holder_last_tool_call_at).toBeNull();
+  });
+
+  it('keeps the pre-existing wire fields intact', () => {
+    const s = summarizeOrphan(heldByLive);
+    expect(s).toMatchObject({ source: 'work_item_claim', agent: 'su-holder', id: 'WI-5923' });
+  });
+
+  // Pins the structurally-declared HolderActivity union to the real oracle type,
+  // so the data-layer copy cannot drift from presence-wakeability's SessionState.
+  it('HolderActivity.sessionState accepts exactly the oracle SessionState union', () => {
+    const states: SessionState[] = ['live', 'parked', 'draining', 'suspect', 'ended', 'recorded'];
+    const asHolder: HolderActivity[] = states.map((sessionState) => ({ sessionState }));
+    const backToOracle: (SessionState | null | undefined)[] = asHolder.map((h) => h.sessionState);
+    expect(backToOracle).toEqual(states);
+  });
+});
+
 // ── agent-activity-liveness-truth P-005: the single derived truth ───────────────
 // (reuses the `workClaim` row builder defined above for the P-021 work-list tests)
 

@@ -88,10 +88,14 @@ function fakeSocket(opts: {
   wire?: WireCounters | null;
   udx?: Record<string, unknown> | null;
   remoteHost?: string;
-}): { socket: unknown; close: () => void } {
+}): { socket: unknown; close: () => void; emitError: (e: unknown) => void } {
   const closeHandlers: Array<() => void> = [];
+  const errorHandlers: Array<(e: unknown) => void> = [];
   const socket: Record<string, unknown> = {
-    on: () => socket,
+    on: (ev: string, fn: (e: unknown) => void) => {
+      if (ev === 'error') errorHandlers.push(fn);
+      return socket;
+    },
     once: (ev: string, fn: () => void) => {
       if (ev === 'close') closeHandlers.push(fn);
       return socket;
@@ -106,6 +110,11 @@ function fakeSocket(opts: {
     socket,
     close() {
       for (const fn of closeHandlers) fn();
+    },
+    /** Hyperswarm emits 'error' on the socket before destroying it; the close
+     *  handler reads whatever error preceded the teardown. */
+    emitError(e: unknown) {
+      for (const fn of errorHandlers) fn(e);
     },
   };
 }
@@ -251,6 +260,75 @@ describe('EI-18682571591024156 — a data path that never came up is reported LO
 
     expect(dead).toHaveLength(0);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  /**
+   * EI-18686573849858243 / EI-18684689702957309 regression — the loud warn must
+   * NOT fire for hyperswarm's OWN duplicate-connection dedupe.
+   *
+   * THE BUG THIS PINS. Hyperswarm destroys the LOSING side of a race-connected
+   * duplicate with the exact error `Duplicate connection` (`ERR_DUPLICATE` in
+   * node_modules/hyperswarm/index.js) the instant it spots two live connections
+   * to one peer. By construction that socket never carries a byte — so it trips
+   * `dataPathProven() === false` and, unguarded, fired the loud unconditional
+   * warn. That is a benign, EXPECTED outcome of ordinary reconnect churn, not
+   * WI-5863's "false success" defect (whose signature is a 13000ms+ death, not a
+   * 1–19ms teardown). Unguarded it (a) red-ed swarm-chaos.test.ts under
+   * vitest-fail-on-console 13× in a row, 23/23 warns from this one cause, and
+   * (b) fed `onDataPathNeverUp` → boot-history `replication_stalled`, inflating
+   * any stall count read from that log under churn.
+   */
+  it('stays silent for hyperswarm\'s own duplicate-connection teardown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { swarm, emit } = fakeSwarm();
+    const dead: DataPathNeverUpInfo[] = [];
+    await joinHarnessSwarm({
+      store: fakeStore(),
+      topic: topic32(),
+      swarm,
+      refreshMs: 0,
+      onDataPathNeverUp: (info) => dead.push(info),
+    });
+
+    // The real chaos-churn shape: zero bytes EVER crossed, because hyperswarm
+    // killed the losing side of the dedupe race before any data could flow.
+    const { socket, close, emitError } = fakeSocket({
+      wire: { bytesTransmitted: 0, bytesReceived: 0, packetsReceived: 0 },
+      udx: PUNCHED_UDX,
+    });
+    emit(socket, undefined);
+    emitError(new Error('Duplicate connection'));
+    close();
+
+    // Benign dedupe ⇒ neither the loud warn nor the defect callback (which would
+    // otherwise land a bogus `replication_stalled` in boot-history).
+    expect(warn).not.toHaveBeenCalled();
+    expect(dead).toHaveLength(0);
+  });
+
+  it('still warns for a genuinely dead data path preceded by an UNRELATED error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { swarm, emit } = fakeSwarm();
+    const dead: DataPathNeverUpInfo[] = [];
+    await joinHarnessSwarm({
+      store: fakeStore(),
+      topic: topic32(),
+      swarm,
+      refreshMs: 0,
+      onDataPathNeverUp: (info) => dead.push(info),
+    });
+
+    // The guard must be NARROW: only hyperswarm's dedupe is exempt. A socket that
+    // died of RTO exhaustion (WI-5863's actual signature) must stay loud, or the
+    // fix for the false positive would silence the real defect it was built for.
+    const { socket, close, emitError } = fakeSocket({ wire: NEVER_CAME_UP, udx: PUNCHED_UDX });
+    emit(socket, undefined);
+    emitError(new Error('ETIMEDOUT'));
+    close();
+
+    expect(dead).toHaveLength(1);
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/data path NEVER came up/i);
   });
 
   it('stays silent when the counters are UNREADABLE (unknown is not a failure)', async () => {

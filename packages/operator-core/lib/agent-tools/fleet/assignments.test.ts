@@ -23,6 +23,7 @@ import {
   VERDICT_STALL_MS,
   type MemberVerdict,
 } from './assignments';
+import fleetAssignmentsTool from './assignments';
 import { shapeFleetAssignments } from './assignments-shape';
 import type { AgentAssignment } from '../../fleet/assignments';
 import type { PlanItemCoverage, CoverageLevel } from '../../plan-item-coverage';
@@ -843,5 +844,68 @@ describe('decorateCoordDeafness — P-001 (coord-delivery-residual-gaps-2026-07-
       BUDGET,
     );
     expect(agents[0].coordHook).toBeUndefined();
+  });
+});
+
+// ── WI-5975: the reclaim NUDGE must not fire on live-held claims ───────────────
+//
+// The tool's seeAlso used to sum orphaned_claims + stalled_claims and tell the
+// leader to go free N claims. Measured on the live fleet while fixing this: all
+// 9 claims flagged `stalled` were held by agents heartbeating 2-58s ago, and 6
+// of the 9 had never checkpointed at all — so the prompt actively recommended
+// releasing work out from under agents that were mid-task.
+describe('fleet:assignments seeAlso — WI-5975 reclaim nudge', () => {
+  const seeAlso = fleetAssignmentsTool.guidance?.seeAlso as (result: {
+    content?: { type: string; text: string }[];
+  }) => (string | { tool: string; reason: string })[];
+
+  it('is wired as a result-aware callback (guard: a renamed field must fail loudly)', () => {
+    expect(typeof seeAlso).toBe('function');
+  });
+
+  const asJson = (summary: Record<string, number>) => ({
+    content: [{ type: 'text', text: JSON.stringify({ ok: true, summary }) }],
+  });
+  const asToon = (summary: Record<string, number>) => ({
+    content: [
+      {
+        type: 'text',
+        text: ['ok: true', 'summary:', ...Object.entries(summary).map(([k, v]) => `  ${k}: ${v}`)].join('\n'),
+      },
+    ],
+  });
+  const releasePointer = (out: ReturnType<typeof seeAlso>) =>
+    out.find((e) => typeof e === 'object' && e.tool === 'work_items:release');
+
+  it('does NOT advise releasing when every flagged claim has a live holder', () => {
+    const summary = {
+      orphaned_claims: 0,
+      stalled_claims: 9,
+      reclaimable_claims: 0,
+      held_by_live_agent: 9,
+    };
+    expect(releasePointer(seeAlso(asJson(summary)))).toBeUndefined();
+    // …and on the TOON transport, where the regex fallback reads the count.
+    expect(releasePointer(seeAlso(asToon(summary)))).toBeUndefined();
+  });
+
+  it('DOES advise releasing genuinely-orphaned claims, counting only those', () => {
+    const summary = {
+      orphaned_claims: 2,
+      stalled_claims: 9,
+      reclaimable_claims: 2,
+      held_by_live_agent: 9,
+    };
+    for (const result of [asJson(summary), asToon(summary)]) {
+      const p = releasePointer(seeAlso(result));
+      expect(p).toBeDefined();
+      // 2 — not the pre-fix 11 (orphaned + stalled).
+      expect((p as { reason: string }).reason).toContain('2 orphaned');
+    }
+  });
+
+  it('always keeps the two static adjacent-lens pointers', () => {
+    const out = seeAlso(asJson({ reclaimable_claims: 0 }));
+    expect(out.filter((e) => typeof e === 'string')).toHaveLength(2);
   });
 });

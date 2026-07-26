@@ -36,6 +36,7 @@
  * accepts `'unknown'` even though it isn't a real `HarnessStatus` key).
  */
 import type { AnchorHTMLAttributes, CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { STATUS, type HarnessStatus } from '../../harness/theme';
 import type { WorkRefKind } from './parse-work-refs';
 
@@ -144,31 +145,33 @@ export function WorkRefPill({
   if (href) {
     const handleClick: AnchorHTMLAttributes<HTMLAnchorElement>['onClick'] = (event) => onActivate?.(event);
     return (
-      <a
-        href={href}
-        onClick={handleClick}
-        aria-label={accessibleLabel}
-        title={title ?? undefined}
-        className={className}
-        style={pillStyle(meta, size, true)}
-      >
-        <PillContent id={id} dotColor={meta.solid} dotSize={dotSize} />
-      </a>
+      <Tooltip label={title}>
+        <a
+          href={href}
+          onClick={handleClick}
+          aria-label={accessibleLabel}
+          className={className}
+          style={pillStyle(meta, size, true)}
+        >
+          <PillContent id={id} dotColor={meta.solid} dotSize={dotSize} />
+        </a>
+      </Tooltip>
     );
   }
 
   if (onActivate) {
     return (
-      <button
-        type="button"
-        onClick={onActivate}
-        aria-label={accessibleLabel}
-        title={title ?? undefined}
-        className={className}
-        style={pillStyle(meta, size, true)}
-      >
-        <PillContent id={id} dotColor={meta.solid} dotSize={dotSize} />
-      </button>
+      <Tooltip label={title}>
+        <button
+          type="button"
+          onClick={onActivate}
+          aria-label={accessibleLabel}
+          className={className}
+          style={pillStyle(meta, size, true)}
+        >
+          <PillContent id={id} dotColor={meta.solid} dotSize={dotSize} />
+        </button>
+      </Tooltip>
     );
   }
 
@@ -176,13 +179,14 @@ export function WorkRefPill({
   // degrade for a ref nobody has wired navigation for yet (mirrors P-006's
   // "no plan context → plain text, never a guessed link" stance).
   return (
-    <span
-      aria-label={accessibleLabel}
-      title={title ?? undefined}
-      className={className}
-      style={pillStyle(meta, size, false)}
-    >
-      <PillContent id={id} dotColor={meta.solid} dotSize={dotSize} />
-    </span>
+    <Tooltip label={title}>
+      <span
+        aria-label={accessibleLabel}
+        className={className}
+        style={pillStyle(meta, size, false)}
+      >
+        <PillContent id={id} dotColor={meta.solid} dotSize={dotSize} />
+      </span>
+    </Tooltip>
   );
 }

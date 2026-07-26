@@ -657,6 +657,92 @@ const staleClaimSweepCheck: PeriodicCheck = {
   },
 };
 
+// Every 60s: resolve DUE `work_items:request_release` deadlines (WI-5974) — the
+// "announced consequence" rail. A request left unanswered past its deadline fires the
+// ANNOUNCED onSilence action (reclaim/escalate/nothing); one that was resolved early
+// (holder released or declined — release.ts / decline_release_request.ts) never reaches
+// here (findDueReleaseRequests only returns unresolved rows). CAS-guarded per row
+// (resolveWorkItemReleaseRequest), so a row raced by a concurrent holder-response is
+// silently skipped, never double-fired.
+const releaseRequestSweepCheck: PeriodicCheck = {
+  name: 'release-request-sweep',
+  intervalMs: 60_000,
+  tick: async () => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const sql = getOrgPg().sql;
+    const { findDueReleaseRequests, resolveWorkItemReleaseRequest } = await import('../work-items-release-request');
+    const { releaseWorkItem, commentWorkItem } = await import('../work-items');
+    const { sendMessage } = await import('../agent-tools/coordination/messages');
+    const { notifyAttention } = await import('../attention-notify');
+
+    const due = await findDueReleaseRequests(sql, { nowMs: Date.now() });
+    for (const row of due) {
+      const { request: req } = row;
+      const resolution =
+        req.onSilence === 'reclaim' ? 'consequence-reclaim' : req.onSilence === 'escalate' ? 'consequence-escalate' : 'consequence-nothing';
+      // CAS FIRST — only the tick that wins the compare-and-resolve acts. A row a peer
+      // resolved (holder released/declined) in the same window is a no-op here.
+      const resolved = await resolveWorkItemReleaseRequest(row.id, { harness: row.harness ?? undefined, resolution }).catch(() => null);
+      if (!resolved) continue;
+
+      const deadlineIso = new Date(resolved.deadlineAt).toISOString();
+      const noteBody =
+        `⏰ Release request from ${resolved.by} → ${resolved.holder} EXPIRED unanswered ` +
+        `(deadline ${deadlineIso}) — announced onSilence:"${resolved.onSilence}" fired: ${resolution}. ` +
+        `Original reason: ${resolved.reason}`;
+      await commentWorkItem(row.id, noteBody, 'release-request-sweep', { harness: row.harness ?? undefined }).catch(() => {});
+      console.warn(`[release-request-sweep] ${row.id}: ${resolution} (requested by ${resolved.by}, holder ${resolved.holder})`);
+
+      if (req.onSilence === 'reclaim') {
+        // The announcement + expired deadline IS the authority basis here — deliberately
+        // NOT routed through release-force-guard's live-holder authority check (WI-4198):
+        // that guard exists to stop a SURPRISE force; this is the opposite, a force that
+        // was announced in advance with an explicit deadline the holder had the chance to
+        // contest (by releasing or declining) and did not.
+        const released = await releaseWorkItem(row.id, { harness: row.harness ?? undefined }).catch(() => null);
+        await sendMessage(
+          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
+          {
+            to: [resolved.holder, resolved.by],
+            summary: `${row.id}: release request went unanswered past its deadline — RECLAIMED per the announced consequence (requested by ${resolved.by}).`,
+            harnessSlug: row.harness ?? undefined,
+            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution },
+          },
+        ).catch(() => {});
+        if (!released) console.warn(`[release-request-sweep] ${row.id}: reclaim fired but release itself failed (already free / raced)`);
+      } else if (req.onSilence === 'escalate') {
+        await notifyAttention({
+          kind: 'intervention',
+          title: `release request timed out — ${row.id}`,
+          body: `${resolved.by} requested ${resolved.holder} release ${row.id} (reason: ${resolved.reason}) — no response by the deadline. Escalating per the announced consequence.`,
+          importance: 'high',
+          harnessSlug: row.harness ?? undefined,
+          data: { workItem: row.id, holder: resolved.holder, requestedBy: resolved.by },
+        }).catch(() => {});
+        await sendMessage(
+          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
+          {
+            to: [resolved.holder, resolved.by],
+            summary: `${row.id}: release request went unanswered past its deadline — ESCALATED per the announced consequence (item stays with ${resolved.holder}).`,
+            harnessSlug: row.harness ?? undefined,
+            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution },
+          },
+        ).catch(() => {});
+      } else {
+        await sendMessage(
+          { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },
+          {
+            to: [resolved.holder, resolved.by],
+            summary: `${row.id}: release request went unanswered past its deadline — no consequence configured (onSilence:"nothing"); item stays with ${resolved.holder}.`,
+            harnessSlug: row.harness ?? undefined,
+            extra: { auto: true, lifecycle: 'release_request_consequence', work_item: row.id, resolution },
+          },
+        ).catch(() => {});
+      }
+    }
+  },
+};
+
 // Every 2min: composite learning-infra health tick (consume-edges P-003/D-002) —
 // LLM-spine + runner spawn + gym circuit → ONE status; owner notification on the
 // transition to offline. Flag-gated (LEARNING_INFRA_HEALTH); transition-only.
@@ -835,6 +921,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     completionRefVerifyCheck,
     spawnReclaimSweepCheck,
     staleClaimSweepCheck,
+    releaseRequestSweepCheck,
     learningInfraHealthCheck,
     steeringChurnSweepCheck,
     federationDrainReconcileCheck,

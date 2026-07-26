@@ -113,4 +113,24 @@ export default [
       'papercusp/no-org-pool-sql-json': 'error',
     },
   },
+  {
+    // WI-5977: a field read directly off JSON.parse(...) must not be
+    // defaulted to a falsy value (`?? false` / `|| 0` / `|| ''`) — it
+    // collapses "the key was never sent" and "the key was sent as that
+    // value" into one reading, the exact shape behind ~10 separate
+    // incidents in one p2p-release session (udxRelayed-absent-read-as-false,
+    // bytesReceived-absent-read-as-0, …). `warn`, not `error`, for this
+    // first landing — conservative rollout (see the rule file's own risk
+    // note) until the false-positive rate on the real tree is measured; a
+    // codebase-wide `error` here could redden the shared lint gate for the
+    // whole fleet on a pattern not yet proven low-noise. See
+    // `tools/eslint-rules/no-parse-boundary-falsy-default.js`.
+    files: ['packages/**/*.ts', 'apps/**/*.ts', 'libs/**/*.ts'],
+    plugins: {
+      papercusp: papercuspRules,
+    },
+    rules: {
+      'papercusp/no-parse-boundary-falsy-default': 'warn',
+    },
+  },
 ];

@@ -17,7 +17,9 @@ import { describe, expect, it } from 'vitest';
 
 import { atomize, atomHead, normalizeAtom } from './atomize';
 import { auditPair, deriveVerdict, matchingAtoms, maxTierFor, MIN_SAMPLE_SIZE } from './equivalence';
-import { FILE_READ_PAIRS, catFileRead, headFileRead, sedRangeRead, tailFileRead } from './pairs/file-read';
+import { ALL_PAIRS } from './pairs';
+import { catFileRead, headFileRead, sedRangeRead, tailFileRead } from './pairs/file-read';
+import { psqlDescribe, psqlSelectRead } from './pairs/postgres';
 import type { CorpusFixture } from './corpus';
 import type { SampledCommand } from './types';
 
@@ -73,7 +75,7 @@ describe('verdict derivation (D-008 — total coverage or it is not equivalent)'
   });
 });
 
-describe.each(FILE_READ_PAIRS)('pair $id', (pair) => {
+describe.each(ALL_PAIRS)('pair $id', (pair) => {
   const fixture = loadFixture(pair.id);
 
   it(`carries a sample of at least ${MIN_SAMPLE_SIZE} real commands`, () => {
@@ -170,5 +172,50 @@ describe('file-read pattern boundaries', () => {
     expect(result.covered).toBe(true);
     expect(result.expression).toContain('offset: 110');
     expect(result.expression).toContain('limit: 91');
+  });
+});
+
+describe('postgres pattern boundaries', () => {
+  const claims = (pair: (typeof ALL_PAIRS)[number], atom: string) =>
+    matchingAtoms(pair, [{ sid: 's', ts: 't', atom }]).length === 1;
+
+  const OPERATOR = 'psql "postgresql://harness_admin:pwd@localhost:5432/papercusp"';
+
+  it('claims a SELECT against the operator database', () => {
+    expect(claims(psqlSelectRead, `${OPERATOR} -c "SELECT count(*) FROM harness_shared.work_items"`)).toBe(true);
+  });
+
+  /**
+   * The most important guard in this file. `dev:pg_query` has NO database
+   * selector, so nudging a non-operator psql call toward it would silently
+   * query the WRONG DATABASE and return plausible rows instead of an error —
+   * strictly worse than the raw psql it replaced.
+   */
+  it('never claims a query against another database', () => {
+    expect(claims(psqlSelectRead, 'psql "$ODDS_DB" -c "SELECT 1"')).toBe(false);
+    expect(claims(psqlSelectRead, 'psql "$PGURL/oddsmith_028_rehearsal" -c "SELECT 1"')).toBe(false);
+    expect(claims(psqlSelectRead, 'psql -h localhost -U harness_admin -d wi5635_scratch -c "SELECT 1"')).toBe(false);
+  });
+
+  it('never claims a write, a heredoc, or a -f script', () => {
+    expect(claims(psqlSelectRead, `${OPERATOR} -c "INSERT INTO t VALUES (1)"`)).toBe(false);
+    expect(claims(psqlSelectRead, `${OPERATOR} -c "CREATE TABLE t (id int)"`)).toBe(false);
+    expect(claims(psqlSelectRead, `${OPERATOR} <<'SQL'`)).toBe(false);
+    expect(claims(psqlSelectRead, `${OPERATOR} -1 -f packages/db/sql/028.sql`)).toBe(false);
+  });
+
+  it('claims the relation-describing meta-commands', () => {
+    expect(psqlDescribe.cover(`${OPERATOR} -c "\\d harness_shared.agent_facts"`).expression).toContain(
+      'describe: "harness_shared.agent_facts"',
+    );
+    expect(psqlDescribe.cover(`${OPERATOR} -c "\\dt harness_shared.*"`).covered).toBe(true);
+    expect(psqlDescribe.cover(`${OPERATOR} -c "\\d+ work_items"`).covered).toBe(true);
+  });
+
+  it('excludes non-relation object classes, which describe does not cover', () => {
+    // `\df` lists FUNCTIONS — a different object class, not a missing corner of
+    // relation description. Claiming it would promise something describe cannot do.
+    expect(claims(psqlDescribe, `${OPERATOR} -c "\\df+ harness_shared.some_fn"`)).toBe(false);
+    expect(claims(psqlDescribe, `${OPERATOR} -c "\\du"`)).toBe(false);
   });
 });

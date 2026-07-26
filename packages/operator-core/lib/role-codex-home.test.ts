@@ -399,6 +399,78 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(second.configPath, 'utf8')).toContain('client=s2');
   });
 
+  describe('EI-11366 identity-split collision guard', () => {
+    it('with no isOwnerLive wired, a same-sessionKey rebuild under a different sid stays byte-identical to today (no default liveness check)', async () => {
+      const { writeSuCodexHome } = await loadMod();
+      writeSuCodexHome({ sessionKey: 'k2', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'OLD', sid: 's1' });
+      // No isOwnerLive passed — the guard must be a complete no-op (default off).
+      const second = writeSuCodexHome({ sessionKey: 'k2', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'NEW', sid: 's2' });
+      expect(readFileSync(second.agentsPath, 'utf8')).toContain('NEW');
+    });
+
+    it('REFUSES to rebuild a sessionKey whose home is still the LIVE Codex home of a different sid', async () => {
+      const { writeSuCodexHome } = await loadMod();
+      writeSuCodexHome({ sessionKey: 'k3', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'FIRST', sid: 'su-adf046e9' });
+      const isOwnerLive = vi.fn((sid: string) => sid === 'su-adf046e9');
+      expect(() =>
+        writeSuCodexHome({
+          sessionKey: 'k3',
+          mcpUrl: 'http://x/api/mcp?superuser=1',
+          promptText: 'SECOND',
+          sid: 'su-0efdd444',
+          isOwnerLive,
+        }),
+      ).toThrow(/refusing to rebuild/);
+      expect(isOwnerLive).toHaveBeenCalledWith('su-adf046e9');
+      // The refusal must be a true refusal — the original home is untouched.
+      const home = join(fakeHome, '.papercusp', 'su-codex-homes', 'session-k3');
+      expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain('FIRST');
+    });
+
+    it('proceeds (rebuilds) when isOwnerLive reports the prior owner is DEAD', async () => {
+      const { writeSuCodexHome } = await loadMod();
+      writeSuCodexHome({ sessionKey: 'k4', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'FIRST', sid: 's1' });
+      const isOwnerLive = vi.fn(() => false);
+      const second = writeSuCodexHome({
+        sessionKey: 'k4',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'SECOND',
+        sid: 's2',
+        isOwnerLive,
+      });
+      expect(readFileSync(second.agentsPath, 'utf8')).toContain('SECOND');
+    });
+
+    it('re-preparing the SAME sid never consults isOwnerLive (same-session rebuild is always allowed)', async () => {
+      const { writeSuCodexHome } = await loadMod();
+      writeSuCodexHome({ sessionKey: 'k5', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'FIRST', sid: 's1' });
+      const isOwnerLive = vi.fn(() => true); // would refuse if (wrongly) consulted
+      const second = writeSuCodexHome({
+        sessionKey: 'k5',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'SECOND',
+        sid: 's1',
+        isOwnerLive,
+      });
+      expect(readFileSync(second.agentsPath, 'utf8')).toContain('SECOND');
+      expect(isOwnerLive).not.toHaveBeenCalled();
+    });
+
+    it('stamps a .owner-sid sentinel every write, so a first-ever write at a fresh sessionKey never has a prior owner to check', async () => {
+      const { writeSuCodexHome } = await loadMod();
+      const isOwnerLive = vi.fn(() => true);
+      const out = writeSuCodexHome({
+        sessionKey: 'k6',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'FIRST',
+        sid: 's1',
+        isOwnerLive,
+      });
+      expect(isOwnerLive).not.toHaveBeenCalled(); // nothing existed at this key yet
+      expect(readFileSync(join(out.codexHome, '.owner-sid'), 'utf8')).toBe('s1');
+    });
+  });
+
   it('inherits user Codex skills/plugins/prompts and trusted workspace state into the isolated home', async () => {
     const { mkdirSync } = await import('node:fs');
     const realCodex = join(fakeHome, '.codex');

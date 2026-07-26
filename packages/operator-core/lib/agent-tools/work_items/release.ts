@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { releaseWorkItem, setWorkItemClaimHold, getWorkItem } from '../../work-items';
+import { releaseWorkItem, setWorkItemClaimHold, getWorkItem, commentWorkItem } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import {
   assessForceRelease,
@@ -20,6 +20,7 @@ import {
   recordForceReleaseAudit,
   type ForceReleaseBasis,
 } from './release-force-guard';
+import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../../work-items-release-request';
 
 const itemSpec = z.object({
   id: z.string().min(1),
@@ -173,6 +174,41 @@ export default defineTool({
             reason: forced.reason,
             harness: workItem.harness ?? null,
           });
+        }
+        // WI-5974: a release RESOLVES any pending work_items:request_release against
+        // this item early — no need to wait out the announced deadline. `forced` means
+        // this release happened via the EXISTING WI-4198 authority basis (holder-not-live
+        // / queen / leads-holder-fleet), not the holder responding, so it resolves as
+        // "superseded" rather than "holder-released". `workItem.payload` is the row AS
+        // RETURNED by the release UPDATE — release never touches `payload`, so any
+        // `release_request_*` keys are still current. Best-effort: never fail the
+        // release itself over this.
+        try {
+          const pendingReq = readWorkItemReleaseRequest(workItem.payload);
+          if (pendingReq && !pendingReq.resolved) {
+            const resolution = forced ? 'superseded' : 'holder-released';
+            const resolved = await resolveWorkItemReleaseRequest(it.id, { harness: workItem.harness ?? harness, resolution });
+            if (resolved) {
+              const { sendMessage: notifyRequester } = await import('../coordination/messages');
+              await notifyRequester(ident, {
+                to: [resolved.by],
+                summary:
+                  resolution === 'holder-released'
+                    ? `✅ ${it.id}: ${ident.ownerId} released the item you requested (reason: ${resolved.reason.slice(0, 140)}) — no reclaim needed.`
+                    : `✅ ${it.id}: released via a different authorized path before your request's deadline — no reclaim needed.`,
+                harnessSlug: workItem.harness ?? undefined,
+                extra: { auto: true, lifecycle: 'release_request_resolved', work_item: it.id, resolution },
+              }).catch(() => {});
+              await commentWorkItem(
+                it.id,
+                `✅ Release request from ${resolved.by} resolved early (${resolution}) by ${ident.ownerId}'s release — no consequence needed.`,
+                ident.ownerId,
+                { harness: workItem.harness ?? harness },
+              ).catch(() => {});
+            }
+          }
+        } catch {
+          /* best-effort — never fail the release itself over release-request bookkeeping */
         }
         const claimHold = it.claimHold ?? args.claimHold;
         if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced };

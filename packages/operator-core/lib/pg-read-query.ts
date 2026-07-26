@@ -621,6 +621,10 @@ const CONSTRAINT_TYPE: Record<string, string> = {
   c: 'CHECK',
   x: 'EXCLUDE',
   t: 'TRIGGER',
+  // PG 17+ materialises NOT NULL as a real pg_constraint row (contype 'n').
+  // Without this the describe output showed a bare "n" for over half the
+  // constraints on a typical table.
+  n: 'NOT NULL',
 };
 
 interface RelationRow {

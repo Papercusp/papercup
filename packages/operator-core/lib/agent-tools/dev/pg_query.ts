@@ -19,25 +19,39 @@ import {
   extractPgErrorInfo,
   buildTenantScopeAdvisory,
   describeReferencedTableColumns,
+  describeRelation,
+  listRelations,
   PG_READ_QUERY_DEFAULT_MAX_ROWS,
   PG_READ_QUERY_HARD_MAX_ROWS,
 } from '../../pg-read-query';
+
+/** A successful JSON payload in the MCP content shape. */
+function jsonResult(payload: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+}
+
+/** An error payload in the MCP content shape. */
+function jsonError(reason: string, message: string) {
+  return {
+    isError: true,
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: message, reason }) }],
+  };
+}
 
 export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (the canonical store behind plans, work-items, issues, observations, tool_invocations, scorecards, recipes, …). Read-only enforced; statement_timeout 5s; rows capped.',
+    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (canonical store behind plans, work-items, issues, tool_invocations, scorecards, recipes, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Read-only enforced; 5s statement_timeout; rows capped.',
   capability: 'intel:read',
   guidance: {
     when:
-      "A GENUINELY ad-hoc / analytic read of PG-CANONICAL state — a one-off group-by, join, or slice you will not run again. A HOT read with a stable shape belongs behind a TOOL that wraps the SQL so it cannot drift, and most already do: claimable issue work → work_items:claimable (a raw status='open' overcounts ~13×); a work-item slice → work_items:list; the plan directory, recency, or plan COUNTS → plans:list (createdSince/updatedSince/order/limit/groupBy); plan items → plans:items; prose → search:*; code graph → gitnexus:query. Reach here only when no tool exposes the shape (and still don't jq a whole `*:list`).",
+      "A genuinely ad-hoc / analytic read of PG-canonical state — a one-off group-by/join/slice you won't run again. NOT the default way to read canonical state: most hot reads already have a stable-shape tool (work_items:claimable, work_items:list, plans:list/plans:items, search:*, gitnexus:query). Reach here only when no tool covers the shape.",
     notWhen:
-      "A read a tool above already covers — hand-written claimability + plan queries are the documented footguns, and a predicate missing workspace_id/harness_slug on a multi-tenant table silently matches another tenant. Writing the same query twice ⇒ it should be a tool. Also not to CHANGE state: use the write verbs (audit + sync invalidation); writes are rejected here anyway.",
+      'A read a documented tool above already covers (hand-written claimability/plan queries are the classic footgun, and a predicate missing workspace_id/harness_slug can match another tenant), or to CHANGE state — writes are rejected here.',
     chaining:
-      'Alias any duplicate output column names (the result is wrapped in a subquery for the row cap, and PG rejects duplicate subquery columns). Pass `maxRows` to widen the cap up to ' +
-      String(PG_READ_QUERY_HARD_MAX_ROWS) +
-      '; if `truncated` is true, add a tighter WHERE / LIMIT rather than raising the cap blindly.',
+      'Check a table\'s shape first with `describe: "schema.table"` (or a glob) instead of `psql -c "\\d …"`. ' +
+      'Alias duplicate output columns (the row cap wraps the query in a subquery). Pass `maxRows` to widen the cap; if `truncated`, tighten WHERE/LIMIT instead of raising it blindly.',
     seeAlso: [
       'work_items:claimable (what issue-family work is claimable RIGHT NOW — the SSOT claim floors as a tool; a raw status=open query is not claimability)',
       'plans:list (plan directory, recency filters, and groupBy/aggregateOnly counts — instead of hand-written SQL over harness_plans)',
@@ -77,12 +91,43 @@ export default defineTool({
       .describe('statement_timeout in ms (default 5000, max 30000).'),
   }),
   async handler(args, ctx) {
+    // `describe` is the `\d` path (P-011): a psql CLIENT meta-command has no
+    // SQL form, so it cannot ride through pgReadQuery's statement path at all.
+    if (args.describe) {
+      if (args.sql) {
+        return jsonError('conflicting_args', 'Pass either `sql` or `describe`, not both.');
+      }
+      try {
+        // A glob (or bare `*`) means "list what matches" rather than "describe one".
+        if (/[*?]/.test(args.describe)) {
+          const relations = await listRelations(args.describe);
+          return jsonResult({ pattern: args.describe, relationCount: relations.length, relations });
+        }
+        const description = await describeRelation(args.describe);
+        if (!description) {
+          const near = await listRelations(`*${args.describe.replace(/^.*\./, '')}*`, { limit: 10 }).catch(() => []);
+          return jsonError(
+            'relation_not_found',
+            `No relation matching "${args.describe}".` + (near.length ? ` Did you mean: ${near.map((r) => r.relation).join(', ')}?` : ''),
+          );
+        }
+        return jsonResult(description);
+      } catch (err) {
+        return jsonError('describe_failed', extractPgErrorInfo(err).message ?? String(err));
+      }
+    }
+
+    if (!args.sql) {
+      return jsonError('missing_args', 'Pass `sql` (a read-only SELECT) or `describe` (a relation to inspect).');
+    }
+    const sql = args.sql;
+
     try {
-      const result = await pgReadQuery(args.sql, { maxRows: args.maxRows, timeoutMs: args.timeoutMs });
+      const result = await pgReadQuery(sql, { maxRows: args.maxRows, timeoutMs: args.timeoutMs });
       // P-005(b): tenant-scope advisory on a filtered read of a multi-tenant
       // table with no workspace_id/harness_slug predicate — the silent
       // wrong-tenant match footgun. Advisory only; never blocks the result.
-      const advisory = await buildTenantScopeAdvisory(args.sql, {
+      const advisory = await buildTenantScopeAdvisory(sql, {
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.harnessSlug,
       }).catch(() => null);
@@ -116,7 +161,7 @@ export default defineTool({
       // CANONICAL column lists so the retry takes one round trip, not a
       // guessing loop (a fresh post-compaction context has no query memory).
       if (info.code === '42703') {
-        const described = await describeReferencedTableColumns(args.sql).catch(() => []);
+        const described = await describeReferencedTableColumns(sql).catch(() => []);
         if (described.length) {
           payload.knownColumns = Object.fromEntries(described.map((d) => [d.table, d.columns]));
         }

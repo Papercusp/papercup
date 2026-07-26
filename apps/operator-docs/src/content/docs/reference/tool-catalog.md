@@ -12,7 +12,7 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**692 MCP tools** across **139 groups**.
+**702 MCP tools** across **140 groups**.
 
 ## Groups
 
@@ -60,23 +60,24 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `decision_ledger` | 2 | `list` `summary` | `intel:read` |
 | `deploy` | 6 | `await` `harness` `pot` `status` `teardown` `teardown_pot` | `coord:write` `harness:read` `harness:write` |
 | `deploys` | 1 | `vintage` | `intel:read` |
-| `dev` | 30 | `activity` `audit` `build_status` `claude_session` `code_run_adoption` `coord_categorize` `dogfood_substrate_status` `event_emitter` `harnesses` `ipc_echo` `limit_failure_rate` `omp_session` `orient_dedup_rate` `pg_active_queries` `pg_health` `pg_query` `pg_table_sizes` `pipeline_position` `processes` `rate_governor_status` `resolve_owner` `restart` `service_health` `session_detail` `sessions` `state_counter` `telemetry` `tool_cooccurrence` `why` `worker_chunk_loop_metrics` | `audit:read` `harness:read` `intel:read` `locks:write` `tasks:read` |
+| `dev` | 31 | `activity` `audit` `build_status` `claude_session` `code_run_adoption` `coord_categorize` `dogfood_substrate_status` `event_emitter` `harnesses` `ipc_echo` `limit_failure_rate` `omp_session` `orient_dedup_rate` `pg_active_queries` `pg_health` `pg_query` `pg_table_sizes` `pipeline_position` `processes` `rate_governor_status` `resolve_owner` `restart` `service_health` `session_detail` `sessions` `stall_waker_status` `state_counter` `telemetry` `tool_cooccurrence` `why` `worker_chunk_loop_metrics` | `audit:read` `harness:read` `intel:read` `locks:write` `tasks:read` |
 | `discovery` | 2 | `pots` `set_pot` | `discovery:read` `discovery:write` |
 | `docs` | 4 | `author` `get` `outline` `search` | `docs:read` `docs:write` |
 | `egress` | 4 | `health` `list` `provision` `release` | `harness:read` `harness:write` |
-| `events` | 7 | `await` `cancel` `catalog` `emit` `graph` `status` `unsubscribe` | `coord:read` `coord:write` `events:read` |
+| `events` | 8 | `await` `cancel` `catalog` `emit` `graph` `lost-wake-check` `status` `unsubscribe` | `coord:read` `coord:write` `events:read` |
 | `exec_sandbox` | 1 | `set_policy` | `operator:write` |
 | `experiment` | 3 | `catalog` `results` `run` | `harness:read` `harness:write` |
 | `facts` | 3 | `assert` `list` `retract` | `coord:read` `coord:write` |
 | `features` | 5 | `get` `history` `list_related` `search` `tag_vocabulary` | `features:read` |
 | `flags` | 3 | `get` `list` `set` | `audit:write` `intel:read` |
-| `fleet` | 31 | `admit` `assignments` `await-drained` `bench` `cancel` `capacity` `create` `cup_mail` `delivery` `drain` `governor` `headcount-target` `join` `kill` `launch-on-plan` `leader-brief` `leave` `list` `opus_budget` `pause` `place_batch` `recolor` `request_remote_spawn` `resume` `sandbox_deps` `selected_cup` `status` `supervise` `take-leadership` `tree` `wind-down` | `capability:terminal` `coord:read` `coord:write` `fleet:create` `fleet:headcount-target` `fleet:join` `fleet:leave` `fleet:list` `fleet:pause` `fleet:recolor` `fleet:request_remote_spawn` `fleet:resume` |
+| `fleet` | 33 | `admit` `assignments` `await-drained` `bench` `cancel` `capacity` `create` `cup_mail` `delivery` `drain` `governor` `headcount-target` `join` `kill` `launch-on-plan` `leader-brief` `leave` `list` `opus_budget` `pause` `place_batch` `recolor` `reconfigure-member` `request_remote_spawn` `respawn-member` `resume` `sandbox_deps` `selected_cup` `status` `supervise` `take-leadership` `tree` `wind-down` | `capability:terminal` `coord:read` `coord:write` `fleet:create` `fleet:headcount-target` `fleet:join` `fleet:leave` `fleet:list` `fleet:pause` `fleet:recolor` `fleet:reconfigure-member` `fleet:request_remote_spawn` |
 | `gates` | 2 | `canary-check` `degenerate-check` | `coord:read` |
 | `gateway` | 7 | `egress_mode` `local_backend_list` `local_backend_register` `local_backend_remove` `owner_report` `reload` `status` | `harness:read` `harness:write` |
 | `generators` | 1 | `publish` | `coord:write` |
 | `git-sync` | 2 | `await` `run` | `coord:write` `operator:write` |
 | `goals` | 2 | `get` `list` | `goals:read` |
-| `gym` | 3 | `judge` `set-gates` `signals` | `harness:read` `operator:write` |
+| `governor` | 1 | `arm` | `operator:write` |
+| `gym` | 4 | `arm` `judge` `set-gates` `signals` | `harness:read` `operator:write` |
 | `harness` | 15 | `configure` `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `migrate-config-json` `overview` `pending_reviews` `phase_path` `status` | `coord:read` `harness:read` `harness:write` |
 | `harness_docs` | 8 | `anchor` `ingest` `list` `record` `regenerate` `retire` `set_overlay` `verify` | `docs:read` `docs:write` |
 | `health` | 2 | `ack` `unack` | `operator:write` |
@@ -110,11 +111,11 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `pending_events` | 1 | `list` | `pending_events:read` |
 | `plan-item` | 1 | `await` | `coord:write` |
 | `plan_items` | 11 | `adopt_name` `assign` `claim` `convert` `heartbeat` `join_group` `leave_group` `my_items` `release` `status` `unassign` | `coord:read` `coord:write` |
-| `plans` | 47 | `add-decision` `add-item` `apply-plan-block` `arm-schedule` `attention` `backfill-revisions` `disarm-schedule` `edit` `export` `get` `get-item` `get-template-data` `items` `launch` `lint` `list` `new` `pause` `promote` `ratify-decision` `resume` `revision-diff` `revision-transcript` `revisions` `run-now` `run-transcript` `runs` `search` `set-content` `set-content-chunk` `set-decision-body` `set-frontmatter` `set-frontmatter-field` `set-importance` `set-initiative` `set-item-blocked-by` `set-item-phase` `set-now` `set-plan-status` `set-priority` `set-run-status` `set-schedule` `set-status` `set-template-data` `start` `summarize-revision` `transfer-owner` | `coord:write` `plans:read` `plans:write` |
+| `plans` | 48 | `add-decision` `add-item` `apply-plan-block` `arm-schedule` `attention` `backfill-revisions` `disarm-schedule` `edit` `export` `get` `get-item` `get-template-data` `items` `launch` `lint` `list` `new` `pause` `promote` `ratify-decision` `resume` `revision-diff` `revision-transcript` `revisions` `run-now` `run-transcript` `runs` `search` `set-archived` `set-content` `set-content-chunk` `set-decision-body` `set-frontmatter` `set-frontmatter-field` `set-importance` `set-initiative` `set-item-blocked-by` `set-item-phase` `set-now` `set-plan-status` `set-priority` `set-run-status` `set-schedule` `set-status` `set-template-data` `start` `summarize-revision` `transfer-owner` | `coord:write` `plans:read` `plans:write` |
 | `platform` | 4 | `contribute` `dogfood_verify` `enable` `fork_gc` | `harness:read` `harness:write` |
 | `plugins` | 4 | `fire_event` `invoke_action` `runtime_status` `tui_panes` | `plugins:read` `plugins:write` |
 | `pot` | 31 | `add-member` `ask` `asks` `ban_member` `beacon_consent` `control_policy` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `get-steering` `leave` `list` `membership_decide` `membership_pending` `moderation_queue` `moderation_resolve` `mug_efficiency` `obliterate` `pause` `report` `request_work` `set-steering` `start` `status` `survey` `takedown` `update` `wake` | `harness:read` `harness:write` `intel:write` `operator:write` `routines:write` `work_items:read` `work_items:write` |
-| `pot_git` | 1 | `integration_requests` | `audit:write` |
+| `pot_git` | 2 | `integration_requests` `secrets_exemptions` | `audit:write` |
 | `probe` | 3 | `emit` `get` `record-hop` | `coord:read` `coord:write` |
 | `processes` | 1 | `kill` | `processes:kill` |
 | `projects` | 4 | `get` `list` `spec_revision` `spec_revisions` | `projects:read` |
@@ -124,7 +125,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `rationale` | 2 | `feed` `reproject` | `coord:read` `coord:write` |
 | `recipes` | 7 | `candidates` `get` `list` `merge` `run` `search` `sweep` | `capability:bash` `intel:write` `recipes:read` |
 | `release` | 5 | `checkpoint-config` `checkpoint-run` `cut` `deploy` `trace` | `intel:read` `operator:write` |
-| `resource` | 1 | `delegate` | `operator:write` |
+| `resource` | 2 | `delegate` `offers` | `harness:read` `operator:write` |
 | `review` | 1 | `approve` | `harness:write` |
 | `roles` | 4 | `firing_on` `get` `known` `list` | `roles:read` |
 | `routines` | 3 | `group-set` `list` `set` | `operator:read` `operator:write` |
@@ -156,4 +157,4 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `watchdog` | 1 | `status` | `coord:read` |
 | `wiki` | 1 | `backlinks` | `wiki:read` |
 | `work-item` | 1 | `await` | `coord:write` |
-| `work_items` | 35 | `amend` `burn_down` `checkpoint` `claim` `claim_next` `claim_replica` `co_locate` `comment` `complete` `completion_stats` `create` `expand` `get` `hold_open` `judge_redundancy` `link` `list` `observe` `park` `pickup` `promote` `reclaim_config` `record_replica_result` `redundancy_status` `release` `reorder` `search` `set_blocker` `set_live_verified` `set_priority` `set_redundancy` `set_state` `subscribe` `tag` `update` | `operator:write` `work_items:read` `work_items:write` |
+| `work_items` | 36 | `amend` `burn_down` `checkpoint` `claim` `claim_next` `claim_replica` `claimable` `co_locate` `comment` `complete` `completion_stats` `create` `expand` `get` `hold_open` `judge_redundancy` `link` `list` `observe` `park` `pickup` `promote` `reclaim_config` `record_replica_result` `redundancy_status` `release` `reorder` `search` `set_blocker` `set_live_verified` `set_priority` `set_redundancy` `set_state` `subscribe` `tag` `update` | `operator:write` `work_items:read` `work_items:write` |

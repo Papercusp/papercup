@@ -1,0 +1,522 @@
+<title>Pause / Start buttons — Blender · Docs · Agents</title>
+<style>
+  :root {
+    --page-bg: #f2f5f8;
+    --page-panel: #ffffff;
+    --page-fg: #16222f;
+    --page-dim: #4d6076;
+    --page-mute: #7d8fa3;
+    --page-line: #dbe3ec;
+    --page-accent: #0b7ea8;
+    --page-bad: #b4442f;
+    --page-ok: #1c7a56;
+    --stage-shadow: 0 1px 2px rgba(16, 34, 51, .07), 0 12px 34px -18px rgba(16, 34, 51, .3);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #0a1119;
+      --page-panel: #101b26;
+      --page-fg: #e3edf5;
+      --page-dim: #a9bece;
+      --page-mute: #74899c;
+      --page-line: #1e2f3f;
+      --page-accent: #56c7f0;
+      --page-bad: #f08a72;
+      --page-ok: #4fc79a;
+      --stage-shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 14px 38px -20px rgba(0, 0, 0, .8);
+    }
+  }
+  :root[data-theme="light"] {
+    --page-bg: #f2f5f8; --page-panel: #ffffff; --page-fg: #16222f; --page-dim: #4d6076;
+    --page-mute: #7d8fa3; --page-line: #dbe3ec; --page-accent: #0b7ea8;
+    --page-bad: #b4442f; --page-ok: #1c7a56;
+    --stage-shadow: 0 1px 2px rgba(16, 34, 51, .07), 0 12px 34px -18px rgba(16, 34, 51, .3);
+  }
+  :root[data-theme="dark"] {
+    --page-bg: #0a1119; --page-panel: #101b26; --page-fg: #e3edf5; --page-dim: #a9bece;
+    --page-mute: #74899c; --page-line: #1e2f3f; --page-accent: #56c7f0;
+    --page-bad: #f08a72; --page-ok: #4fc79a;
+    --stage-shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 14px 38px -20px rgba(0, 0, 0, .8);
+  }
+
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 22px 90px; display: flex; flex-direction: column; gap: 34px; }
+
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--page-mute); margin: 0;
+  }
+  h1 { font-size: clamp(26px, 3.4vw, 36px); line-height: 1.12; margin: 6px 0 0; text-wrap: balance; letter-spacing: -.017em; }
+  h2 { font-size: 19px; margin: 0; letter-spacing: -.01em; }
+  h3 { font-size: 14px; margin: 0; letter-spacing: -.005em; }
+  p { margin: 0; max-width: 68ch; }
+  .lede { color: var(--page-dim); font-size: 16.5px; margin-top: 12px; }
+  a { color: var(--page-accent); }
+
+  .card {
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: 12px;
+    padding: 22px;
+    display: flex; flex-direction: column; gap: 18px;
+    box-shadow: var(--stage-shadow);
+  }
+  .card-head { display: flex; flex-direction: column; gap: 6px; }
+  .card-head p { color: var(--page-dim); font-size: 14.5px; }
+
+  .verdict {
+    display: flex; gap: 10px; align-items: flex-start;
+    border-left: 3px solid var(--page-bad);
+    padding: 2px 0 2px 13px;
+  }
+  .verdict.good { border-left-color: var(--page-ok); }
+  .verdict p { font-size: 14.5px; color: var(--page-dim); }
+  .verdict strong { color: var(--page-fg); }
+
+  /* ── The stage: a fixed frost-dark slab, because that IS the app.
+        A dark-UI control cannot be judged on a white ground. ───────── */
+  .stage {
+    --bg: #07101d; --bg-1: #0b1220;
+    --bg-2: rgba(255,255,255,.045); --bg-3: rgba(255,255,255,.075);
+    --fg: #e7f7ff; --fg-dim: #b9d4e8; --fg-mute: #7f9bb4;
+    --border: rgba(125,211,252,.15); --border-strong: rgba(125,211,252,.32);
+    --accent: #38bdf8; --accent-ink: #051827;
+    --good: #34d399; --warn: #fbbf24; --bad: #fb7185;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; overflow-x: auto;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .stage-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .spec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .spec-label {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  }
+  .tag {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 999px; border: 1px solid currentColor; opacity: .95;
+  }
+  .tag--now { color: var(--page-bad); }
+  .tag--a { color: var(--page-accent); }
+  .tag--b { color: var(--page-ok); }
+  .spec-note { font-size: 13px; color: var(--page-dim); }
+
+  /* ── Verbatim reproduction of the shipped left-sidebar.styles.ts rules ── */
+  .pc-auto__list { display: flex; flex-direction: column; gap: 2px; }
+  .pc-auto__row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px;
+    background: var(--bg-2); opacity: .55; }
+  .pc-auto__row.is-active { opacity: 1; }
+  .pc-auto__row-main { display: grid; grid-template-columns: minmax(0,1fr) auto;
+    align-items: baseline; column-gap: 6px; min-width: 0; flex: 1; }
+  .pc-auto__name { font-size: 11.5px; font-weight: 600; color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pc-auto__meta { grid-column: 1; display: flex; align-items: center; gap: 5px;
+    font-size: 10px; line-height: 1.25; color: var(--fg-mute); min-width: 0; white-space: nowrap; }
+  .pc-auto__tokenflag { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; flex: 0 0 auto;
+    color: var(--warn); background: color-mix(in srgb, var(--warn), transparent 88%);
+    padding: 0 4px; border-radius: 4px; }
+  .pc-auto__when { grid-column: 2; grid-row: 1; justify-self: end; flex: 0 0 auto;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 9.5px; color: var(--fg-mute); opacity: .8; white-space: nowrap; }
+
+  /* CURRENT — shipped today, verbatim */
+  .pc-auto__toggle { display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: 26px; height: 24px; border-radius: 7px; cursor: pointer;
+    font: inherit; font-size: 11.5px; font-weight: 720; color: var(--fg);
+    background: color-mix(in srgb, var(--good), transparent 88%);
+    border: 1px solid color-mix(in srgb, var(--good), transparent 60%); }
+  .pc-auto__toggle.is-on { background: color-mix(in srgb, var(--accent), transparent 88%);
+    border-color: color-mix(in srgb, var(--accent), transparent 54%); }
+  .pc-auto__toggle:hover { color: var(--fg);
+    border-color: color-mix(in srgb, var(--accent), transparent 48%);
+    background: color-mix(in srgb, var(--accent), transparent 90%); }
+
+  /* PROPOSED — shared chassis. Layout lives on an inner span so WebKitGTK
+     can't drop it; the <button> itself is display:block. */
+  .tp { display: block; flex: none; width: 24px; height: 24px; padding: 0;
+    border-radius: 999px; cursor: pointer; font: inherit;
+    background: var(--bg-3); border: 1px solid var(--border-strong); color: var(--fg-dim);
+    transition: background .12s ease, border-color .12s ease, color .12s ease; }
+  .tp > span { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+  .tp svg { display: block; }
+  .tp[data-glyph="play"] svg { transform: translateX(.5px); }   /* optical centring */
+  .tp:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Option A — quiet at rest, intent on hover */
+  .tp--a:hover[data-glyph="play"]  { color: var(--good); background: color-mix(in srgb, var(--good), transparent 84%); border-color: color-mix(in srgb, var(--good), transparent 46%); }
+  .tp--a:hover[data-glyph="pause"] { color: var(--warn); background: color-mix(in srgb, var(--warn), transparent 84%); border-color: color-mix(in srgb, var(--warn), transparent 46%); }
+
+  /* Option B — always tinted */
+  .tp--b[data-glyph="play"]  { color: var(--good); background: color-mix(in srgb, var(--good), transparent 86%); border-color: color-mix(in srgb, var(--good), transparent 50%); }
+  .tp--b[data-glyph="pause"] { color: var(--warn); background: color-mix(in srgb, var(--warn), transparent 88%); border-color: color-mix(in srgb, var(--warn), transparent 56%); }
+  .tp--b:hover[data-glyph="play"]  { background: color-mix(in srgb, var(--good), transparent 78%); border-color: color-mix(in srgb, var(--good), transparent 38%); }
+  .tp--b:hover[data-glyph="pause"] { background: color-mix(in srgb, var(--warn), transparent 80%); border-color: color-mix(in srgb, var(--warn), transparent 44%); }
+
+  /* Busy: the circle survives */
+  .tp--busy { cursor: default; color: var(--fg-mute); }
+  .tp--busy .ring { width: 11px; height: 11px; border-radius: 999px;
+    border: 1.6px solid color-mix(in srgb, var(--fg-mute), transparent 62%);
+    border-top-color: var(--accent); animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .tp--busy .ring { animation-duration: 2.4s; } }
+
+  /* Zoom rig — 4× so the glyph difference is unmissable */
+  .zoom { display: flex; align-items: center; gap: 34px; flex-wrap: wrap; padding: 10px 4px; }
+  .zoom-cell { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .zoom-stage { width: 96px; height: 96px; display: flex; align-items: center; justify-content: center; }
+  .zoom-stage > * { transform: scale(4); transform-origin: center; }
+  .zoom-cap { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 10.5px; letter-spacing: .04em; color: var(--fg-mute); text-align: center; }
+
+  /* WebKitGTK demo */
+  .gtk { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .btn-flex, .btn-block {
+    width: 26px; height: 24px; border-radius: 7px; font: inherit; color: var(--fg);
+    background: color-mix(in srgb, var(--accent), transparent 88%);
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 54%);
+  }
+  .btn-flex { display: inline-flex; align-items: center; justify-content: center; }
+  .btn-block { display: block; }             /* what WebKitGTK falls back to */
+  .btn-block svg { display: inline; vertical-align: baseline; }
+
+  /* Header actions */
+  .pc-auto__action { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    flex-shrink: 0; white-space: nowrap; font-size: 11.5px; font-weight: 720;
+    padding: 5px 9px; border-radius: 7px; cursor: pointer; color: var(--fg);
+    background: color-mix(in srgb, var(--accent), transparent 88%);
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 54%); }
+  .pc-auto__action--danger { background: color-mix(in srgb, var(--good), transparent 86%);
+    border-color: color-mix(in srgb, var(--good), transparent 58%); }
+  .act { display: block; padding: 5px 10px 5px 7px; border-radius: 999px; font: inherit;
+    font-size: 11.5px; font-weight: 720; cursor: pointer; color: var(--fg);
+    background: var(--bg-3); border: 1px solid var(--border-strong); }
+  .act > span { display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .act .dot { display: flex; align-items: center; justify-content: center;
+    width: 17px; height: 17px; border-radius: 999px; flex: none; }
+  .act--pause .dot { color: var(--warn); background: color-mix(in srgb, var(--warn), transparent 80%); }
+  .act--play  .dot { color: var(--good); background: color-mix(in srgb, var(--good), transparent 78%); }
+  .act--play .dot svg { transform: translateX(.5px); }
+  .act:hover { border-color: color-mix(in srgb, var(--accent), transparent 44%); background: var(--bg-4, rgba(255,255,255,.12)); }
+
+  .row-strip { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .qa { display: grid; gap: 10px; }
+  .qa-item { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; }
+  .qa-num { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px;
+    color: var(--page-mute); padding-top: 2px; }
+  .qa p { font-size: 14.5px; color: var(--page-dim); }
+  .qa strong { color: var(--page-fg); }
+  .foot { color: var(--page-mute); font-size: 13px; border-top: 1px solid var(--page-line); padding-top: 18px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .89em;
+    background: color-mix(in srgb, var(--page-accent), transparent 92%); padding: 1px 5px; border-radius: 4px; }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Left rail · Blender · Docs · Agents</p>
+    <h1>The pause / start buttons</h1>
+    <p class="lede">
+      All three tabs render one shared component — <code>AutomationPane.tsx</code> — so there is a single
+      control to fix, not three. Everything below is the real CSS at real size, on the real frost ground.
+      Hover anything; it behaves as it would ship.
+    </p>
+  </header>
+
+  <!-- 1 ─────────────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>1 · The row toggle, at the size you actually see it</h2>
+      <p>One routine row from the Scheduled agents list, rendered three ways. Top row is running (offers pause), bottom is paused (offers start).</p>
+    </div>
+
+    <div class="stage">
+      <div class="stage-grid">
+
+        <div class="spec">
+          <div class="spec-label"><span class="tag tag--now">Shipping now</span></div>
+          <div class="pc-auto__list">
+            <div class="pc-auto__row is-active">
+              <div class="pc-auto__row-main">
+                <span class="pc-auto__name">scout-ideation-sweep</span>
+                <span class="pc-auto__meta">every 30m <span class="pc-auto__tokenflag">tokens</span></span>
+                <span class="pc-auto__when">last 12m ago</span>
+              </div>
+              <button type="button" class="pc-auto__toggle is-on" aria-label="Pause scout-ideation-sweep">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>
+              </button>
+            </div>
+            <div class="pc-auto__row">
+              <div class="pc-auto__row-main">
+                <span class="pc-auto__name">gym-autoloop-tick</span>
+                <span class="pc-auto__meta">every 15m <span class="pc-auto__tokenflag">tokens</span></span>
+                <span class="pc-auto__when">last 4h ago</span>
+              </div>
+              <button type="button" class="pc-auto__toggle" aria-label="Resume gym-autoloop-tick">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+              </button>
+            </div>
+          </div>
+          <p class="spec-note">Hollow outline glyphs in a rounded chip. Blue means pause, green means start — but hover turns <em>both</em> blue.</p>
+        </div>
+
+        <div class="spec">
+          <div class="spec-label"><span class="tag tag--a">Option A · quiet</span></div>
+          <div class="pc-auto__list">
+            <div class="pc-auto__row is-active">
+              <div class="pc-auto__row-main">
+                <span class="pc-auto__name">scout-ideation-sweep</span>
+                <span class="pc-auto__meta">every 30m <span class="pc-auto__tokenflag">tokens</span></span>
+                <span class="pc-auto__when">last 12m ago</span>
+              </div>
+              <button type="button" class="tp tp--a" data-glyph="pause" aria-label="Pause scout-ideation-sweep"><span>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>
+              </span></button>
+            </div>
+            <div class="pc-auto__row">
+              <div class="pc-auto__row-main">
+                <span class="pc-auto__name">gym-autoloop-tick</span>
+                <span class="pc-auto__meta">every 15m <span class="pc-auto__tokenflag">tokens</span></span>
+                <span class="pc-auto__when">last 4h ago</span>
+              </div>
+              <button type="button" class="tp tp--a" data-glyph="play" aria-label="Start gym-autoloop-tick"><span>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+              </span></button>
+            </div>
+          </div>
+          <p class="spec-note">Neutral circle at rest, so the glyph carries the meaning. Hover reveals intent — green to start, amber to pause.</p>
+        </div>
+
+        <div class="spec">
+          <div class="spec-label"><span class="tag tag--b">Option B · always tinted</span></div>
+          <div class="pc-auto__list">
+            <div class="pc-auto__row is-active">
+              <div class="pc-auto__row-main">
+                <span class="pc-auto__name">scout-ideation-sweep</span>
+                <span class="pc-auto__meta">every 30m <span class="pc-auto__tokenflag">tokens</span></span>
+                <span class="pc-auto__when">last 12m ago</span>
+              </div>
+              <button type="button" class="tp tp--b" data-glyph="pause" aria-label="Pause scout-ideation-sweep"><span>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>
+              </span></button>
+            </div>
+            <div class="pc-auto__row">
+              <div class="pc-auto__row-main">
+                <span class="pc-auto__name">gym-autoloop-tick</span>
+                <span class="pc-auto__meta">every 15m <span class="pc-auto__tokenflag">tokens</span></span>
+                <span class="pc-auto__when">last 4h ago</span>
+              </div>
+              <button type="button" class="tp tp--b" data-glyph="play" aria-label="Start gym-autoloop-tick"><span>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+              </span></button>
+            </div>
+          </div>
+          <p class="spec-note">Colour always on: green start, amber pause. Louder, scans from further away, and a busy pane gets busier.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 ─────────────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>2 · Why it doesn't read — the glyph, at 4×</h2>
+      <p>Same icons, same pixels, magnified. This is the whole complaint in one picture.</p>
+    </div>
+
+    <div class="stage">
+      <div class="zoom">
+        <div class="zoom-cell">
+          <div class="zoom-stage">
+            <button type="button" class="pc-auto__toggle is-on" tabindex="-1" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>
+            </button>
+          </div>
+          <div class="zoom-cap">now · pause<br>hollow bars</div>
+        </div>
+        <div class="zoom-cell">
+          <div class="zoom-stage">
+            <button type="button" class="pc-auto__toggle" tabindex="-1" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+            </button>
+          </div>
+          <div class="zoom-cap">now · start<br>hollow triangle</div>
+        </div>
+        <div class="zoom-cell">
+          <div class="zoom-stage">
+            <button type="button" class="tp tp--b" data-glyph="pause" tabindex="-1" aria-hidden="true"><span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>
+            </span></button>
+          </div>
+          <div class="zoom-cap">proposed · pause<br>solid bars</div>
+        </div>
+        <div class="zoom-cell">
+          <div class="zoom-stage">
+            <button type="button" class="tp tp--b" data-glyph="play" tabindex="-1" aria-hidden="true"><span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+            </span></button>
+          </div>
+          <div class="zoom-cap">proposed · start<br>solid triangle</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="verdict">
+      <p><strong>The glyphs are outlines.</strong> They're lucide <code>&lt;Play&gt;</code> / <code>&lt;Pause&gt;</code> drawn stroke-only —
+      a hollow triangle and two hairline bars. Every transport control anyone has ever used is <em>solid</em>.
+      At 12px a hollow outline reads as a small mark, not a button face. The fix is one prop —
+      <code>fill="currentColor"</code> — same icon set, no hand-rolled SVG.</p>
+    </div>
+  </section>
+
+  <!-- 3 ─────────────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>3 · A second, invisible bug — the glyph isn't centred on your desktop</h2>
+      <p>Both controls set <code>display: inline-flex</code> on the <code>&lt;button&gt;</code> element itself. WebKitGTK — the Tauri webview you actually look at — ignores that and falls back to block layout. Chromium honours it, which is why it looks fine in a browser and wrong in the app.</p>
+    </div>
+
+    <div class="stage">
+      <div class="gtk">
+        <div class="spec">
+          <div class="spec-label">Chromium — flex honoured</div>
+          <div class="row-strip">
+            <button type="button" class="btn-flex" tabindex="-1" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg></button>
+            <span class="spec-note" style="color:var(--fg-mute)">glyph dead-centre</span>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="spec-label">WebKitGTK — flex dropped</div>
+          <div class="row-strip">
+            <button type="button" class="btn-block" tabindex="-1" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg></button>
+            <span class="spec-note" style="color:var(--fg-mute)">glyph sits high and left</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="verdict">
+      <p><strong>This is a known, documented class of bug in this repo</strong> — EI-18135716653974462 / WI-5581, and the design lint
+      already flags it as warn-only across ~130 sites. The HUD board hit exactly this and you screenshotted the regression.
+      The fix is the same one that board took: <code>display: block</code> on the button, layout on an inner <code>&lt;span&gt;</code>.
+      Both proposed options above already do it.</p>
+    </div>
+  </section>
+
+  <!-- 4 ─────────────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>4 · The header buttons, and the busy state</h2>
+      <p><em>Pause all</em> / <em>Resume all</em> in the pane header — same outline glyphs, same flex-on-button problem, plus a colour that argues with the rows.</p>
+    </div>
+
+    <div class="stage">
+      <div class="stage-grid">
+        <div class="spec">
+          <div class="spec-label"><span class="tag tag--now">Shipping now</span></div>
+          <div class="row-strip">
+            <button type="button" class="pc-auto__action pc-auto__action--danger">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg> Pause all
+            </button>
+            <button type="button" class="pc-auto__action">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg> Resume all
+            </button>
+          </div>
+          <p class="spec-note">Green here means <em>stop</em>. Green on a row below means <em>start</em>. Same pane, same colour, opposite verbs.</p>
+        </div>
+
+        <div class="spec">
+          <div class="spec-label"><span class="tag tag--a">Proposed</span></div>
+          <div class="row-strip">
+            <button type="button" class="act act--pause"><span>
+              <span class="dot"><svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg></span>
+              Pause all
+            </span></button>
+            <button type="button" class="act act--play"><span>
+              <span class="dot"><svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg></span>
+              Resume all
+            </span></button>
+          </div>
+          <p class="spec-note">The glyph gets its own tinted disc, so the button reads as a transport control with a label — and colour now means one thing.</p>
+        </div>
+      </div>
+
+      <div style="height:16px"></div>
+
+      <div class="stage-grid">
+        <div class="spec">
+          <div class="spec-label"><span class="tag tag--now">Busy, now</span></div>
+          <div class="row-strip">
+            <span class="pc-auto__toggle is-on" style="cursor:default">…</span>
+            <span class="spec-note" style="color:var(--fg-mute)">the glyph is replaced by a text ellipsis — mid-click, it stops looking like a button at all</span>
+          </div>
+        </div>
+        <div class="spec">
+          <div class="spec-label"><span class="tag tag--a">Busy, proposed</span></div>
+          <div class="row-strip">
+            <span class="tp tp--busy"><span><span class="ring"></span></span></span>
+            <span class="spec-note" style="color:var(--fg-mute)">the circle survives; only the glyph swaps for a spinner</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 ─────────────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>5 · One more thing I found</h2>
+    </div>
+    <div class="verdict">
+      <p>In the Blender tab the <strong>Arming — spend gates</strong> rows reuse this exact toggle, but their verb is
+      <em>Arm / Disarm</em>, not start/pause. So the same ▶ / ⏸ glyph means two unrelated things in one pane.
+      I'd give arming its own mark — a shield — on the same circular chassis, so ▶ / ⏸ here always means
+      "start or pause a schedule".</p>
+    </div>
+    <div class="stage">
+      <div class="row-strip">
+        <button type="button" class="tp tp--b" data-glyph="pause" style="color:var(--good);background:color-mix(in srgb,var(--good),transparent 86%);border-color:color-mix(in srgb,var(--good),transparent 50%)" aria-label="Disarm gym · papercusp"><span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+        </span></button>
+        <span class="spec-note" style="color:var(--fg-mute)">armed — click to disarm</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 ─────────────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>What I need from you</h2>
+    </div>
+    <div class="qa">
+      <div class="qa-item">
+        <span class="qa-num">01</span>
+        <p><strong>Option A or Option B?</strong> A is a quiet neutral circle that colours on hover — calmer in a long list.
+        B is always tinted green/amber — scans from further away, but a pane with twenty routines becomes a Christmas tree.</p>
+      </div>
+      <div class="qa-item">
+        <span class="qa-num">02</span>
+        <p><strong>Should the header buttons change too,</strong> or is green-means-stop there something you deliberately want kept?
+        You approved that green a day ago, so I won't touch it without you saying so.</p>
+      </div>
+    </div>
+    <p class="foot">
+      Scope: <code>AutomationPane.tsx</code> · <code>left-sidebar.styles.ts</code> · <code>AutomationPane.test.tsx</code>.
+      One shared component covers Blender, Docs and Agents. I'd verify the result in a real Tauri window I spawn myself,
+      not Chromium — section 3 is exactly the bug a browser check would miss.
+    </p>
+  </section>
+
+</div>

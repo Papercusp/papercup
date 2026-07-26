@@ -116,26 +116,37 @@ export const psqlSelectRead: SubstitutionPair = {
 export const psqlDescribe: SubstitutionPair = {
   id: 'postgres.psql-describe',
   intentLabel: 'operator-db-describe',
+  // Only the RELATION-describing meta-commands: `\d`, `\d+`, `\dt`, `\dv`,
+  // `\di`, `\dm`. `\df` (functions), `\dn` (schemas) and `\du` (roles) address
+  // object classes that are not relations, so per D-008 they fall OUTSIDE the
+  // pattern rather than dragging the verdict down — describing them is a
+  // separate capability, not a missing corner of this one.
   bashPattern: new RegExp(
-    String.raw`^psql\s+(?![^\n]*[$\`])[^\n]*(?:\/papercusp\b|-d\s+papercusp\b)[^\n]*-c\s+["']?\s*\\d`,
+    String.raw`^psql\s+(?![^\n]*[$\`])[^\n]*(?:\/papercusp\b|-d\s+papercusp\b)[^\n]*-c\s+["']?\s*\\d(?:[tvim]|\+)*(?:\s|["']|$)`,
     'i',
   ),
   toolName: 'dev:pg_query',
   advisoryText:
-    'dev:pg_query { describe: "schema.table" } returns columns, indexes and constraints — the `\\d` equivalent, without a psql round-trip.',
+    'dev:pg_query { describe: "schema.table" } returns columns, indexes and constraints — the `\\d` equivalent; a `*` glob lists matching relations, like `\\dt`.',
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const sql = extractCommandArg(atom);
     if (!sql) return { covered: false, reason: 'no -c meta-command' };
-    const match = /^\s*\\d\+?\s+(\S+)/.exec(sql);
-    if (!match) {
-      // Bare `\d` (list every relation) and `\dt`/`\di` family variants.
-      if (/^\s*\\d[a-z+]*\s*$/.test(sql)) {
-        return { covered: true, expression: 'dev:pg_query { describe: "*" } // relation listing' };
-      }
-      return { covered: false, reason: `unsupported psql meta-command "${sql.slice(0, 30)}"` };
+
+    const match = /^\s*\\d((?:[tvim]|\+)*)\s*(\S*)/.exec(sql);
+    if (!match) return { covered: false, reason: `unsupported psql meta-command "${sql.slice(0, 30)}"` };
+
+    const [, modifiers, target] = match;
+    // `\df`/`\dn`/`\du` should never reach here (excluded by the pattern), but
+    // an envelope that silently passed them would produce a false equivalence.
+    if (/[^tvim+]/.test(modifiers)) {
+      return { covered: false, reason: `meta-command \\d${modifiers} addresses a non-relation object class` };
     }
-    return { covered: true, expression: `dev:pg_query { describe: "${match[1]}" }` };
+    if (!target) {
+      return { covered: true, expression: 'dev:pg_query { describe: "*" } // lists all relations' };
+    }
+    // A glob (`\dt harness_shared.*`) maps onto describe's listing mode.
+    return { covered: true, expression: `dev:pg_query { describe: "${target}" }` };
   },
 };
 
