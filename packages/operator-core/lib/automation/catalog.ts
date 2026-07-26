@@ -1,6 +1,8 @@
 /**
- * Automation catalog — the read model behind the owner-facing automation panes
- * (Blender = learning agents, Docs = documentation agents).
+ * Automation catalog — the read model behind the owner-facing automation panes:
+ * **Agents** (everything that runs a model) and **System** (everything that does
+ * not). Both render from this one catalog; the pane a row lands in is decided by
+ * its `spend`, so the split cannot leave a row homeless.
  *
  * WHY THIS EXISTS (2026-07-25, owner ask): the owner's weekly Claude limit was
  * being consumed by cron-spawned agents with NO owner-facing surface to see or
@@ -9,8 +11,18 @@
  * a few turns → exit), so nothing is ever listed while spend is continuous.
  * See /internal/docs/agent-insights/attributing-claude-token-spend.
  *
- * This module joins the two halves the owner needs in one place:
+ * WHY IT LOOKS LIKE THIS (2026-07-26, agents-system-pane-split): the first version
+ * grouped by CATEGORY — learning / docs / supervision / health / infra — and fed
+ * three panes (Blender, Docs, Agents, the latter two now retired). The owner's
+ * question "is everything in the agents tab an llm?" exposed the axis as wrong: of
+ * 140 non-loop schedules, 55 spawn a model and 85 are git commits, GC and probes.
+ * Category is a label; SPEND is the thing worth splitting on, and it derives from
+ * `target_role` (see ./routine-classification).
+ *
+ * This module joins the halves the owner needs in one place:
  *   - WHAT IS SCHEDULED — `harness_shared.routines` (cadence, active, last/next fire)
+ *     plus the four non-routines sources via `collectScheduleInventory`
+ *   - WHETHER IT SPENDS — derived per row from `target_role`
  *   - WHAT IT COSTS     — `harness_shared.agent_usage_samples` rolled up by role
  *
  * ⚠ DELIBERATELY NOT JOINED: routine → cost. `agent_usage_samples.account_id` is
@@ -39,6 +51,7 @@ export type { AutomationCategory } from './pane-categories';
 import type { AutomationCategory } from './pane-categories';
 import { AUTOMATION_CATEGORIES } from './pane-categories';
 import {
+  isClockDriven,
   routineFamily,
   routineKind,
   routineLiveness,
@@ -340,7 +353,7 @@ function inventorySpend(row: { category: string; source: string; detail?: Record
 export function collapseFanOut(rows: readonly AutomationRoutine[]): AutomationRoutine[] {
   const byKey = new Map<string, AutomationRoutine[]>();
   for (const r of rows) {
-    const key = `${r.kind} ${r.name}`;
+    const key = `${r.kind}\x00${r.name}`;
     const bucket = byKey.get(key);
     if (bucket) bucket.push(r);
     else byKey.set(key, [r]);
@@ -430,10 +443,12 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
     const kind = routineKind({ name: r.name });
     const spend = spendForTargetRole(r.target_role);
     const active = r.active === true;
-    // A row is clock-driven when something schedules its next fire: a cron, or a
-    // loop's reschedule interval. Only such a row can be STALLED — a row with no
-    // clock has no next fire by design.
-    const clockDriven = Boolean(cron) || r.reschedule_interval_sec != null;
+    const clockDriven = isClockDriven({
+      source: 'routines',
+      kind,
+      cron,
+      rescheduleIntervalSec: r.reschedule_interval_sec,
+    });
     const liveness = routineLiveness({ active, nextFireAt: iso(r.next_fire_at), clockDriven });
     const control: RoutineControl = 'routine';
     return {
@@ -504,7 +519,10 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
         const liveness = routineLiveness({
           active,
           nextFireAt: row.nextFire,
-          clockDriven: kind !== 'triggered' && Boolean(row.nextFire || row.cadence),
+          // Keys on nextFire ALONE for a non-routines row — never on the cadence.
+          // See isClockDriven's header for why (P-008: 17 healthy System sweeps
+          // reported as needing attention the first time the pane ran for real).
+          clockDriven: isClockDriven({ source: 'other', kind, nextFireAt: row.nextFire }),
         });
         return {
           name: row.name,

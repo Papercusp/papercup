@@ -411,7 +411,7 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     } catch {
       /* best-effort */
     }
-    const { log, suppressed } = shouldLogRefusal(`${reason} ${v.repoKey} ${peerTag(state)}`, Date.now());
+    const { log, suppressed } = shouldLogRefusal(`${reason}\x00${v.repoKey}\x00${peerTag(state)}`, Date.now());
     if (log) {
       potGitLog(
         'warn',

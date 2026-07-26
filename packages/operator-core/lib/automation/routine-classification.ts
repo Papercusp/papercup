@@ -239,6 +239,36 @@ export interface RoutineLivenessInput {
  */
 export const STALLED_OVERDUE_MS = 60 * 60 * 1000;
 
+/**
+ * Can this row's staleness be judged at all?
+ *
+ * Only a row whose SOURCE can report a next fire may ever read `stalled`. The two
+ * sources differ, and conflating them is a real, shipped bug (P-008):
+ *
+ *   • `routines` rows are backed by a scheduler that writes `next_fire_at`, so a
+ *     cron (or a loop's reschedule interval) with no next fire is genuinely broken.
+ *   • Every OTHER source — DBOS workflows, managed timers, in-process sweeps,
+ *     external-process timers — reports a human CADENCE ("every 30s") while usually
+ *     having no next fire to report, because there is no scheduler row to read one
+ *     from. Judging those by cadence marked 17 perfectly healthy System sweeps as
+ *     needing the owner's attention the first time the pane was opened for real.
+ *
+ * So: cadence is NOT evidence of a readable clock. Only a next fire is.
+ */
+export function isClockDriven(input: {
+  source: 'routines' | 'other';
+  kind: RoutineKind;
+  cron?: string | null;
+  rescheduleIntervalSec?: number | null;
+  nextFireAt?: string | null;
+}): boolean {
+  if (input.kind === 'triggered') return false;
+  if (input.source === 'routines') {
+    return Boolean(input.cron) || input.rescheduleIntervalSec != null;
+  }
+  return Boolean(input.nextFireAt);
+}
+
 export function routineLiveness({
   active,
   nextFireAt,

@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_FAMILY_ORDER,
+  isClockDriven,
   SENTINEL_TARGET_ROLES,
   STALLED_OVERDUE_MS,
   SYSTEM_FAMILY_ORDER,
@@ -152,8 +153,66 @@ describe('routineLiveness', () => {
     expect(routineLiveness({ active: true, nextFireAt: null, clockDriven: false, now })).toBe('running');
   });
 
+  /**
+   * REGRESSION (caught in the live shell, agents-system-pane-split P-008): the
+   * System pane opened claiming 17 healthy sweeps needed the owner's attention.
+   *
+   * A DBOS workflow / managed timer / in-process sweep reports a human CADENCE
+   * ("every 30s") but usually cannot report a NEXT FIRE — there is no scheduler row
+   * to read one from. catalog.ts had derived `clockDriven` from `nextFire || cadence`,
+   * so every one of those rows arrived here as clock-driven-with-no-next-fire and
+   * came back `stalled`. The caller now keys on nextFire alone for non-routines rows;
+   * this pins the behaviour that makes that correct.
+   *
+   * Every unit test passed while this was broken, because the bug was in what the
+   * CALLER passed, not in this function. The live render is what found it.
+   */
+  it('is only ever stalled for a row that can actually report a next fire', () => {
+    // The shape a managed timer arrives in: no next fire, and no way to produce one.
+    expect(routineLiveness({ active: true, nextFireAt: null, clockDriven: false, now })).toBe('running');
+    // Whereas a routines row with a real cron genuinely has one, and its absence is a fault.
+    expect(routineLiveness({ active: true, nextFireAt: null, clockDriven: true, now })).toBe('stalled');
+  });
+
   it('treats an unparseable next fire as stalled', () => {
     expect(routineLiveness({ active: true, nextFireAt: 'infinity', clockDriven: true, now })).toBe('stalled');
+  });
+});
+
+/**
+ * REGRESSION SUITE (agents-system-pane-split P-008). Every unit test in this file
+ * passed while the System pane was, in the real shell, announcing that 17 healthy
+ * sweeps needed the owner's attention — because the defect was in what the CALLER
+ * computed, not in `routineLiveness`. Extracting that computation is what makes it
+ * testable; these are the cases that were wrong.
+ */
+describe('isClockDriven — who can be judged late', () => {
+  it('judges a routines row by its cron or reschedule interval', () => {
+    expect(isClockDriven({ source: 'routines', kind: 'scheduled', cron: '0 */5 * * * *' })).toBe(true);
+    expect(isClockDriven({ source: 'routines', kind: 'loop', rescheduleIntervalSec: 300 })).toBe(true);
+    expect(isClockDriven({ source: 'routines', kind: 'scheduled', cron: null })).toBe(false);
+  });
+
+  // The shipped bug: these report a human cadence and no next fire, and were being
+  // judged by the cadence — so every one of them read as stalled.
+  it('judges a NON-routines row by its next fire alone, never its cadence', () => {
+    expect(isClockDriven({ source: 'other', kind: 'scheduled', nextFireAt: null })).toBe(false);
+    expect(
+      isClockDriven({ source: 'other', kind: 'scheduled', nextFireAt: '2026-07-26T18:00:00.000Z' }),
+    ).toBe(true);
+  });
+
+  it('never judges a triggered row, whatever its source', () => {
+    expect(isClockDriven({ source: 'routines', kind: 'triggered', cron: '0 * * * * *' })).toBe(false);
+    expect(
+      isClockDriven({ source: 'other', kind: 'triggered', nextFireAt: '2026-07-26T18:00:00.000Z' }),
+    ).toBe(false);
+  });
+
+  // End-to-end shape of the regression: a managed timer must come out RUNNING.
+  it('leaves a managed timer with a cadence and no next fire reading as running', () => {
+    const clockDriven = isClockDriven({ source: 'other', kind: 'scheduled', nextFireAt: null });
+    expect(routineLiveness({ active: true, nextFireAt: null, clockDriven })).toBe('running');
   });
 });
 

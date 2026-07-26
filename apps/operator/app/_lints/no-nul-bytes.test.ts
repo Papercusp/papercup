@@ -22,55 +22,59 @@
  * instead of shipping a dead code path.
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const OPERATOR_ROOT = resolve(__dirname, '../..');
-const APPS_ROOT = resolve(OPERATOR_ROOT, '..');
+const REPO_ROOT = resolve(__dirname, '../../../..');
 
-const SOURCE_DIRS = [join(OPERATOR_ROOT, 'app'), join(APPS_ROOT, 'operator-vite/src')];
+/**
+ * WHOLE TRACKED TREE, not a directory list (EI-18744004858454166).
+ *
+ * This lint was originally scoped to `apps/operator/app` + `apps/operator-vite/src`
+ * — the two dirs the HUD bug lived in. That scope is exactly why it then MISSED
+ * the next four instances: three in `packages/operator-core/lib/**` and one in
+ * the very agent-insights doc that documents this class. A class guard whose
+ * scope is the site of the last incident only ever catches the last incident.
+ *
+ * `git ls-files` is used rather than a directory walk because it is the same
+ * definition of "our source" that review and CI use: it skips node_modules,
+ * build output and untracked scratch for free, and it cannot silently drift out
+ * of date the way a hand-maintained SOURCE_DIRS list did.
+ */
+const TEXT_FILE_RE = /\.(?:tsx?|jsx?|mjs|cjs|css|md|mdx|json|ya?ml|sql|sh|toml)$/;
 
-const SKIP_DIR_NAMES = new Set(['node_modules', '.next', 'test-results', 'dist', 'build']);
-
-/** Text sources only — a NUL is expected and fine inside a real binary asset. */
-const TEXT_FILE_RE = /\.(?:tsx?|jsx?|css|md|mdx|json|ya?ml)$/;
+/** A NUL is legitimate inside a deliberate binary/encoding fixture. */
+const SKIP_RE = /(?:^|\/)(?:fixtures?|__fixtures__|snapshots?|__snapshots__)\//;
 
 const NUL = String.fromCharCode(0);
 
-function walk(dir: string, out: string[] = []): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return out;
-  }
-  for (const name of entries) {
-    if (SKIP_DIR_NAMES.has(name)) continue;
-    const full = join(dir, name);
-    let st;
-    try {
-      st = statSync(full);
-    } catch {
-      continue;
-    }
-    if (st.isDirectory()) walk(full, out);
-    else if (TEXT_FILE_RE.test(name)) out.push(full);
-  }
-  return out;
+function trackedTextFiles(): string[] {
+  const out = execFileSync('git', ['ls-files', '-z'], {
+    cwd: REPO_ROOT,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return out
+    .toString('utf8')
+    .split(NUL)
+    .filter((p) => p && TEXT_FILE_RE.test(p) && !SKIP_RE.test(p));
 }
 
 describe('source integrity', () => {
-  it('contains no raw NUL bytes in operator text sources', () => {
+  it('contains no raw NUL bytes in tracked text sources', () => {
     const offenders: string[] = [];
 
-    for (const dir of SOURCE_DIRS) {
-      for (const file of walk(dir)) {
-        const text = readFileSync(file, 'utf8');
-        if (!text.includes(NUL)) continue;
-        const line = text.split('\n').findIndex((l) => l.includes(NUL)) + 1;
-        offenders.push(`${relative(APPS_ROOT, file)}:${line}`);
+    for (const rel of trackedTextFiles()) {
+      let text: string;
+      try {
+        text = readFileSync(resolve(REPO_ROOT, rel), 'utf8');
+      } catch {
+        continue; // deleted-but-tracked, submodule gitlink, unreadable
       }
+      if (!text.includes(NUL)) continue;
+      const line = text.split('\n').findIndex((l) => l.includes(NUL)) + 1;
+      offenders.push(`${rel}:${line}`);
     }
 
     expect(
@@ -81,7 +85,14 @@ describe('source integrity', () => {
           'A NUL here is corruption, not intent — it makes the file "binary" to grep/diff ' +
           'and survives typecheck, so it breaks behaviour silently. Re-write the affected ' +
           'literal (a whitespace-ish sentinel belongs in ONE exported constant, imported ' +
-          'everywhere else) rather than pasting the byte back.',
+          'everywhere else) rather than pasting the byte back.\n\n' +
+          'If you MEANT a NUL — the common case is a composite Map key joined on a ' +
+          'delimiter that cannot occur in the data — keep the intent but write the ESCAPE: ' +
+          '`${a}\\x00${b}`, never the raw byte. They are byte-identical at runtime; only ' +
+          'the escape leaves the file greppable.\n\n' +
+          'NOTE: you cannot fix this with the Edit tool — the Read tool renders a NUL as a ' +
+          'SPACE, so there is no exact text to match and the edit fails "not found". ' +
+          'Repair mechanically: node scripts/check-no-nul-in-source.mjs --fix',
     ).toEqual([]);
   });
 });

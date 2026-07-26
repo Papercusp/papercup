@@ -173,7 +173,6 @@ describe('collapseFanOut', () => {
     family: 'git-release',
     liveness: 'running',
     control: 'routine',
-    flagKey: null,
     needsAttention: false,
     installs: [over.installSlug],
     ownerId: null,
