@@ -126,7 +126,8 @@ as catastrophic residue, because the word also matched the live `coord:*`
 plane (`coord/messages.ts`, `coord_event_log`, `coord-inbox-bus`); even the
 full identifier `messages:send` matched an unrelated Google FCM endpoint URL
 in `device-push-dispatcher.ts`. Use
-**`node scripts/scan-retirement-surface.mjs`** instead: write a small JSON
+**`npm run scan:retirement-surface -- --surface <config.json>`**
+(`node scripts/scan-retirement-surface.mjs`) instead: write a small JSON
 surface config naming the exact identifiers being retired (tool names,
 table/view names, op-codes — see the header comment in the script for the
 shape and `scripts/retirement-surfaces/work-item-mail-2026-07-26.json` for a
@@ -143,6 +144,42 @@ the exact re-wiring steps + the last-active commit, and cut a
 `git tag <name>-retired-<date>` restore point; (4) add a row to the table
 above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the
 RESTORE.md steps.
+
+⚠ **When the retired surface is (or is reached through) an agent-facing
+TOOL/verb, code removal alone is not "done" — DECLARATION and PROMPT
+surfaces must be swept too, or the retirement is silent-broken instead of
+clean.** Removing the implementation leaves two classes of dangling
+reference that step (0)'s scan config must also name as identifiers: a
+**blueprint `dependencies.tools` list** that still declares the retired verb
+hard-reds `blueprint-deps-catalog.test.ts`
+(`packages/operator-core/lib/__tests__/`) at commit time — loud, at least; a
+**prompt** (`<role>.md` / `<role>.persona.md` / `<role>.tools.md`, or a
+blueprint's own `prompts/*.md`) that still *instructs* an agent to call it
+fails silently, only when some spawned agent actually reaches that step
+mid-procedure. WI-6097 (retiring work-item-mail) is the reason this line
+exists — its code sweep was clean but never checked these two surfaces.
+Before calling a tool/verb retirement done:
+- **Include `libs/papercusp/packages/harness/blueprints/**/*.{yaml,md}` and
+  `apps/operator/prompts/**/*.md` in the step (0) scan config** alongside the
+  code paths — both the `dependencies.tools` declarations and prose telling
+  an agent to call the retired verb. Triage every hit the same way: a
+  same-shaped but genuinely unrelated `capability`/permission-tier vocabulary
+  string (e.g. a generic `<namespace>:read`/`<namespace>:write` tier label
+  that isn't actually a callable tool name) is a false positive, not a fix
+  target — allowlist it, don't "correct" it into something wrong.
+- **Re-run `blueprint-deps-catalog.test.ts`** — it validates every built-in
+  blueprint's `dependencies.tools` against the live static tool catalog and
+  will hard-red a dangling declaration.
+- **Don't stop at the bundled/packaged sidecar copies**
+  (`apps/operator/dist-sidecar/`,
+  `papercusp-desktop/src-tauri/{sidecar,env-sidecars}/`) — they are
+  generated, gitignored build output mirroring the canonical
+  `libs/papercusp/packages/harness/blueprints` / `apps/operator/prompts`
+  sources, so hand-editing them is pointless (the next build overwrites
+  them), but a *stale, unregenerated* copy can still ship a dead verb to a
+  packaged desktop agent between builds. Fix the canonical source, then
+  rebuild (`papercusp-desktop/bin/build-desktop-sidecar.sh`) before treating
+  the retirement as verified end-to-end on desktop.
 
 ⚠ **`libs/zero-harness` and `libs/papercusp-db` have NOT had step (1) applied.**
 Unlike the `_retired/`-moved surfaces, both are still members of the root

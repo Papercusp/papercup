@@ -39,7 +39,7 @@
  *   cd packages/operator-core && npx vitest run lib/live-federation-gate-admission-pressure.test.ts
  */
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -80,9 +80,16 @@ const PRESSURE_LINES = (some: Record<string, number>) =>
   `full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n`;
 
 /**
- * Run the REAL §1 chain from the shipping script. `log` is stubbed to an observable marker
- * and the two skip-path side effects (`check_staleness`, `skip_cleanup`) to markers — those
- * are I/O edges, not the logic under test. Returns the chain's stdout + exit code.
+ * Run the REAL §1 chain from the shipping script.
+ *
+ * STREAM FIDELITY MATTERS HERE, so the `log` stub writes to STDERR exactly as the real
+ * `log()` does. That is not pedantry: this unit's journal carries stdout only — verified
+ * empirically, the entire 13:39-14:25 run emitted ZERO `[live-fed-gate …]` lines to journald
+ * while its stdout verdict landed fine — so an admission decision written only via `log()` is
+ * invisible to anyone watching the service. A stub that folded stderr into stdout would hide
+ * exactly that defect, which is how it survived until now.
+ *
+ * `check_staleness` / `skip_cleanup` are stubbed to markers — I/O edges, not the logic here.
  */
 function runAdmission(opts: {
   /** omit to simulate a kernel with no PSI (file absent) */
@@ -105,24 +112,29 @@ function runAdmission(opts: {
     `PRESSURE_GATE=${opts.pressureGate ?? 30}`,
     `LOAD_GATE=${opts.loadGate ?? 108}`,
     `GATE_FORCE=${opts.force ? 1 : 0}`,
-    'log() { echo "LOG: $*"; }',
-    'check_staleness() { echo "CALLED: check_staleness"; }',
-    'skip_cleanup() { echo "CALLED: skip_cleanup"; }',
+    'log() { echo "LOG: $*" >&2; }', // stderr, exactly like the real log()
+    'check_staleness() { echo "CALLED: check_staleness" >&2; }',
+    'skip_cleanup() { echo "CALLED: skip_cleanup" >&2; }',
     extractAdmissionChain(),
     'echo "REACHED: past-admission"',
   ].join('\n');
 
   let stdout = '';
+  let stderr = '';
   let code = 0;
   try {
-    stdout = execFileSync('bash', ['-c', script], { encoding: 'utf8', timeout: 30_000 });
-  } catch (err: unknown) {
-    const e = err as { stdout?: string; status?: number };
-    stdout = e.stdout ?? '';
-    code = e.status ?? -1;
+    const out = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 30_000 });
+    stdout = out.stdout ?? '';
+    stderr = out.stderr ?? '';
+    code = out.status ?? -1;
+  } catch {
+    /* spawnSync does not throw on a nonzero exit; a throw here is a harness failure */
   }
   return {
     stdout,
+    stderr,
+    /** everything an operator watching journald would actually see */
+    journal: stdout,
     code,
     admitted: stdout.includes('REACHED: past-admission'),
     skipLine: stdout.split('\n').find((l) => l.startsWith('GATE: SKIPPED')) ?? '',
@@ -135,11 +147,28 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
       // loadavg 149.81 > LOAD_GATE 108 — the old gate skipped here. PSI says the box is not
       // actually stalled (deferential nice-10 work yields), so the run must now proceed.
       const r = runAdmission({ loadavg: 149.81, pressure: { avg10: 3.25, avg60: 2.33 } });
-      expect(r.admitted, `expected admission, got:\n${r.stdout}`).toBe(true);
+      expect(r.admitted, `expected admission, got:\n${r.stdout}\n---stderr---\n${r.stderr}`).toBe(
+        true,
+      );
       expect(r.skipLine).toBe('');
-      // and the loadavg is still reported, so a forensic reader keeps the number
-      expect(r.stdout).toMatch(/admission OK: cpu-pressure-some-avg60 2\.33 <= gate 30/);
-      expect(r.stdout).toContain('host loadavg 149.81');
+      expect(r.stderr).toMatch(/admission OK: cpu-pressure-some-avg60 2\.33 <= gate 30/);
+    });
+
+    it('makes the PROCEED decision visible in the journal — stdout, not just log()/stderr', () => {
+      // The regression this pins: log() writes to stderr and stderr does NOT reach this
+      // unit's journal (verified — the whole 13:39-14:25 run emitted zero "[live-fed-gate …]"
+      // lines to journald). So an admission decision recorded only via log() leaves an
+      // operator watching the service with "Starting", 45 minutes of silence, then a verdict,
+      // and no way to know what admission decided or on what numbers.
+      const r = runAdmission({ loadavg: 149.81, pressure: { avg60: 2.33 } });
+      const line = r.journal.split('\n').find((l) => l.startsWith('ADMISSION: PROCEED'));
+      expect(line, `no ADMISSION line on stdout; stdout was:\n${r.stdout}`).toBeTruthy();
+      expect(line).toContain('cpu-pressure-some-avg60 2.33 <= 30');
+      // it carries the host loadavg too, so a forensic reader keeps the number
+      expect(line).toContain('host loadavg 149.81');
+      // and it must NOT squat the verdict namespace consumers pattern-match
+      expect(line!.startsWith('GATE: ')).toBe(false);
+      expect(r.journal).not.toMatch(/^GATE: /m);
     });
 
     it('SKIPS a genuinely CPU-contended box, naming the pressure signal', () => {
@@ -147,8 +176,8 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
       expect(r.admitted).toBe(false);
       expect(r.code).toBe(0); // a skip is not a failure
       expect(r.skipLine).toContain('cpu-pressure-some-avg60 61.5 > 30');
-      expect(r.stdout).toContain('CALLED: check_staleness');
-      expect(r.stdout).toContain('CALLED: skip_cleanup');
+      expect(r.stderr).toContain('CALLED: check_staleness');
+      expect(r.stderr).toContain('CALLED: skip_cleanup');
     });
 
     it('falls back to LOAD_GATE — and only then — when the kernel exposes no PSI', () => {
@@ -158,7 +187,7 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
 
       const low = runAdmission({ loadavg: 12 });
       expect(low.admitted, `expected admission, got:\n${low.stdout}`).toBe(true);
-      expect(low.stdout).toMatch(/admission OK: loadavg-fallback-no-psi 12 <= gate 108/);
+      expect(low.stderr).toMatch(/admission OK: loadavg-fallback-no-psi 12 <= gate 108/);
     });
 
     it('treats a malformed / non-PSI pressure file as "no signal", never as zero pressure', () => {
@@ -175,18 +204,14 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
         'PRESSURE_GATE=30',
         'LOAD_GATE=108',
         'GATE_FORCE=0',
-        'log() { echo "LOG: $*"; }',
+        'log() { echo "LOG: $*" >&2; }',
         'check_staleness() { :; }',
         'skip_cleanup() { :; }',
         extractAdmissionChain(),
         'echo "REACHED: past-admission"',
       ].join('\n');
-      let stdout = '';
-      try {
-        stdout = execFileSync('bash', ['-c', script], { encoding: 'utf8', timeout: 30_000 });
-      } catch (err: unknown) {
-        stdout = (err as { stdout?: string }).stdout ?? '';
-      }
+      const out = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 30_000 });
+      const stdout = out.stdout ?? '';
       expect(stdout).not.toContain('REACHED: past-admission');
       expect(stdout).toContain('loadavg-fallback-no-psi 149.81 > 108');
     });
@@ -194,8 +219,8 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
     it('GATE_FORCE=1 still overrides the pressure skip (attended validation)', () => {
       const r = runAdmission({ loadavg: 40, pressure: { avg60: 61.5 }, force: true });
       expect(r.admitted).toBe(true);
-      expect(r.stdout).toContain('GATE_FORCE=1');
-      expect(r.stdout).toContain('storm downgrade still armed');
+      expect(r.stderr).toContain('GATE_FORCE=1');
+      expect(r.stderr).toContain('storm downgrade still armed');
     });
 
     it('keeps the historical `GATE: SKIPPED (` token journal readers grep for', () => {

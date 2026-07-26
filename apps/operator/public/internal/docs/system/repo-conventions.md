@@ -107,14 +107,68 @@ write tests for it, wire new code to it, or "revive" it without an explicit ask.
 | Mug/Kettle left-rail tabs (`MugTab` queen steering panel + `OverwatchTab` kettle supervisor panel + their private sub-components `MugHeartbeat`/`ModelTiersOverride`/`ThrottleSection`/`AutonomySurfacing`/`HiveSteeringTree`/`hive-steering-tree.ts`, with tests)                                                                                                                                                                         | `_retired/mug-kettle-rail-tabs/`                                                                                                                   | Retired 2026-07-14 (WI-4778, owner decision: *"I don't like there being a kettle and mug chat at all"* — Papercup is the ONE persona). Their decision-INPUT reads render in the chat sidebar's full-height **Pot Health view** (`PotHealthPane`, 🫖 header toggle / `?opcv=pot`); the steering WRITE controls they carried have no other GUI — the owner steers by talking to Papercup (`pot:set-steering` / `kettle:start`/`kettle:pause` tools). **Stays live:** `ModelOverride` + `useModelOverride` (PapercupTab uses them), `resolveHomeHive` (extracted to `left-sidebar/resolve-home-hive.ts`), and the interleaved `pc-queen__*` style primitives PapercupTab consumes.                                                                                                                                                                        | `_retired/mug-kettle-rail-tabs/RESTORE.md`                                                                                       |
 | Chat sidebar's human Inbox face (`InboxPane.tsx` + test + `inbox-pane.css`, `?opcv=inbox`)                                                                                                                                                                                                                                                                                                                                                 | `_retired/inbox-pane/`                                                                                                                             | Retired 2026-07-26 (`hud-consolidation-2026-07-26` D-001, owner directive: *"remove the inbox pane from the left-hand toolbar and re-wire everything that opened the inbox to open the conversation in the HUD tab"*). Gated on P-002 first proving the HUD board covers every ask the Inbox covered, including attention items with no `ownerAgentId` (`HudBoard.tsx`'s `.hud__unattributed` lane). P-004 rewired the curator-card drill-in from `opcv=inbox` to `router.push('/adv?tab=hud&hudsession=<ownerAgentId>')` — the SAME `SessionChatModal` open-path `HudView.tsx` already uses. **Stays live:** the data layer (`use-inbox-pending.ts` — `useInboxAttention`/`useInboxPendingCount`/`usePlansNeedingYouCount`/`scopeInboxItems`), which the HUD board consumes directly, and `chat-seed.ts` (shared with `OperatorChat.tsx`'s composer). | `_retired/inbox-pane/RESTORE.md`                                                                                                 |
 
-**Convention for retiring-but-keeping a surface:** (1) move it under `_retired/`
-— this drops it from the `apps/*` / `packages/*` workspace globs so npm, the
-affected-test runner, knip, and nx stop treating it as live (the structural
-signal that fools agents, not a prose note); (2) remove its root `package.json`
-scripts and banner any deploy config — **preserve, don't delete**; (3) add a
-`RESTORE.md` in the moved directory with the exact re-wiring steps + the
-last-active commit, and cut a `git tag <name>-retired-<date>` restore point;
-(4) add a row to the table above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the RESTORE.md steps.
+**Convention for retiring-but-keeping a surface:** (0) FIRST, scan for the
+surface's live references — **don't grep a bare word.** WI-6097 (retiring the
+work-item-mail surface) grepped `messages` and got 68-113 files back that read
+as catastrophic residue, because the word also matched the live `coord:*`
+plane (`coord/messages.ts`, `coord_event_log`, `coord-inbox-bus`); even the
+full identifier `messages:send` matched an unrelated Google FCM endpoint URL
+in `device-push-dispatcher.ts`. Use
+**`npm run scan:retirement-surface -- --surface <config.json>`**
+(`node scripts/scan-retirement-surface.mjs`) instead: write a small JSON
+surface config naming the exact identifiers being retired (tool names,
+table/view names, op-codes — see the header comment in the script for the
+shape and `scripts/retirement-surfaces/work-item-mail-2026-07-26.json` for a
+worked example), run it, and triage every hit — a genuine reference to
+re-point/remove, or a false positive you add to the config's `allowlist` (with
+a reason) so a re-run doesn't re-flag it. This also gives the sweep a durable,
+re-runnable completion check instead of a one-off manual grep. Then: (1) move
+it under `_retired/` — this drops it from the `apps/*` / `packages/*`
+workspace globs so npm, the affected-test runner, knip, and nx stop treating
+it as live (the structural signal that fools agents, not a prose note); (2)
+remove its root `package.json` scripts and banner any deploy config —
+**preserve, don't delete**; (3) add a `RESTORE.md` in the moved directory with
+the exact re-wiring steps + the last-active commit, and cut a
+`git tag <name>-retired-<date>` restore point; (4) add a row to the table
+above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the
+RESTORE.md steps.
+
+⚠ **When the retired surface is (or is reached through) an agent-facing
+TOOL/verb, code removal alone is not "done" — DECLARATION and PROMPT
+surfaces must be swept too, or the retirement is silent-broken instead of
+clean.** Removing the implementation leaves two classes of dangling
+reference that step (0)'s scan config must also name as identifiers: a
+**blueprint `dependencies.tools` list** that still declares the retired verb
+hard-reds `blueprint-deps-catalog.test.ts`
+(`packages/operator-core/lib/__tests__/`) at commit time — loud, at least; a
+**prompt** (`<role>.md` / `<role>.persona.md` / `<role>.tools.md`, or a
+blueprint's own `prompts/*.md`) that still *instructs* an agent to call it
+fails silently, only when some spawned agent actually reaches that step
+mid-procedure. WI-6097 (retiring work-item-mail) is the reason this line
+exists — its code sweep was clean but never checked these two surfaces.
+Before calling a tool/verb retirement done:
+
+* **Include `libs/papercusp/packages/harness/blueprints/**/*.{yaml,md}` and
+  `apps/operator/prompts/**/*.md` in the step (0) scan config** alongside the
+  code paths — both the `dependencies.tools` declarations and prose telling
+  an agent to call the retired verb. Triage every hit the same way: a
+  same-shaped but genuinely unrelated `capability`/permission-tier vocabulary
+  string (e.g. a generic `<namespace>:read`/`<namespace>:write` tier label
+  that isn't actually a callable tool name) is a false positive, not a fix
+  target — allowlist it, don't "correct" it into something wrong.
+* **Re-run `blueprint-deps-catalog.test.ts`** — it validates every built-in
+  blueprint's `dependencies.tools` against the live static tool catalog and
+  will hard-red a dangling declaration.
+* **Don't stop at the bundled/packaged sidecar copies**
+  (`apps/operator/dist-sidecar/`,
+  `papercusp-desktop/src-tauri/{sidecar,env-sidecars}/`) — they are
+  generated, gitignored build output mirroring the canonical
+  `libs/papercusp/packages/harness/blueprints` / `apps/operator/prompts`
+  sources, so hand-editing them is pointless (the next build overwrites
+  them), but a *stale, unregenerated* copy can still ship a dead verb to a
+  packaged desktop agent between builds. Fix the canonical source, then
+  rebuild (`papercusp-desktop/bin/build-desktop-sidecar.sh`) before treating
+  the retirement as verified end-to-end on desktop.
 
 ⚠ **`libs/zero-harness` and `libs/papercusp-db` have NOT had step (1) applied.**
 Unlike the `_retired/`-moved surfaces, both are still members of the root

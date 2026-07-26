@@ -566,6 +566,25 @@ export default defineTool({
           .then((m) => m.detectBgJobCheckpointClaim(checkpointHint!.checkpoint))
           .catch(() => ({ detected: false as const }))
       : { detected: false as const };
+    // agent-trap-guards-2026-07-26 P-003b: this is the primary self-pull surface, so
+    // it's the port that matters most for surfacing a plan's governing Decisions at
+    // CLAIM time — a cross-lane ruling recorded via plans:add-decision is auditable
+    // and re-readable, but only for a claimant who thinks to go look. Fail-soft +
+    // omitted entirely when null (no plan_item, unresolved slug, or zero decisions —
+    // the common case for most plans).
+    let planDecisions: import('../../plan-decisions-claim-port').ClaimTimePlanDecisionsBrief | null = null;
+    if (res?.workItem) {
+      const wi = res.workItem as { payload?: unknown; harness?: string | null };
+      planDecisions = await import('../../plan-decisions-claim-port')
+        .then((m) =>
+          m.getClaimTimePlanDecisions({
+            workItem: { payload: wi.payload },
+            harness: wi.harness ?? args.harness,
+            workspaceId: ident.workspaceId,
+          }),
+        )
+        .catch(() => null);
+    }
     // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
     // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
     // for claimable work are mutually exclusive, and a pre-claim await left armed (e.g. this claim
@@ -676,6 +695,13 @@ export default defineTool({
                         checkpointWarning:
                           'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
                         ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
+                      }
+                    : {}),
+                  ...(planDecisions
+                    ? {
+                        planDecisions: planDecisions.decisions,
+                        planDecisionsNote:
+                          `${planDecisions.decisions.length} governing decision(s) recorded on plan '${planDecisions.planSlug}' — read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${planDecisions.planSlug}', heading:'Decisions' } for full bodies).`,
                       }
                     : {}),
                 }

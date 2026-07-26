@@ -190,6 +190,30 @@ scrolls away — and carry it forward in every status report.
 > the owner, but the default is resolve-don't-relay; the human-session specifics
 > live in the PSU engineer playbook (EI-148).
 
+## A cross-lane ruling is a plan Decision, recorded the moment it forms
+
+Any agent — not only a fleet leader — who settles a trade-off, ratifies a scope, or issues a
+ruling OTHER lanes must follow records it as a plan Decision **at the moment it forms**:
+`plans:add-decision { slug, title, body }` (via the structured `### D-NNN` form the tool
+produces — a hand-authored `- **D-NNN**` bullet in a plan body is NOT parsed as a decision by
+`@papercusp/plan-parser`, so it never surfaces through the mechanisms below). Never record a
+governing ruling only as a coord message: a message is not addressable after delivery, so a
+peer who received a wrong paraphrase has no way back to the source. A decision is.
+
+This is not a paperwork nicety — it changes outcomes. Observed live on `agent-trap-guards-2026-07-26`:
+a fleet member re-read a leader's recorded decision, discovered its own earlier report to the
+leader had been wrong on most of the sites it touched, self-corrected unprompted, and swept up
+several more instances of the same error. A coord message cannot produce that outcome.
+
+Two mechanisms make this cheap in practice:
+
+- **At claim time**, `scheduler:get_next` / `work_items:claim` inline a claimed item's plan's
+  current decisions as `planDecisions` in the tool result — no extra round-trip. Read it before
+  building; a ruling that governs your item may be sitting right there.
+- **When relaying a ruling over coord**, name the decision id (`<planSlug>#D-NNN`) rather than
+  only paraphrasing it, so the recipient can re-read the authoritative body
+  (`plans:get { slug, heading:'Decisions' }`) instead of trusting your summary.
+
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only
 
 - The canonical shared checkout (the repo root you are working in) **always has

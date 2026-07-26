@@ -592,6 +592,48 @@ export async function listPlanFiles(
     }));
 }
 
+/**
+ * The `items` column, rebuilt from the normalized `harness_shared.plan_items`
+ * rows instead of read from the legacy `harness_plans.items` jsonb blob.
+ *
+ * Emits the IDENTICAL jsonb shape the column held, ordered by `seq`, so nothing
+ * downstream of {@link rowFromDb} changes — and therefore neither does any of
+ * the readers behind {@link planItemsForRow}, which is the whole reason this
+ * cutover is one seam rather than ~20 call-site edits.
+ *
+ * Shape parity was verified against live data before this replaced the column,
+ * not assumed: `importance` is non-null on every row, and while `phase` is null
+ * on 154 rows the jsonb always carried the key explicitly as `null` — which is
+ * exactly what `jsonb_build_object` emits. `COALESCE(..., '[]')` preserves the
+ * contract that a plan with no rows yields an empty array, which is what makes
+ * `planItemsForRow` fall through to parsing `content` (the ~57 federated rows
+ * whose projection never filled the derived index).
+ *
+ * Defined ONCE and interpolated at every SELECT site: the shape must not drift
+ * between them, and Phase 3's column drop then touches a single place.
+ *
+ * ⚠ The outer plan table MUST be aliased `p` at the call site. `pi` carries the
+ * same three key columns, so an unqualified reference would bind to the INNER
+ * table and silently correlate every plan against itself.
+ */
+function planItemsColumn(tx: Sql) {
+  return tx`COALESCE((
+                 SELECT jsonb_agg(jsonb_build_object(
+                          'id', pi.item_id,
+                          'text', pi.item_text,
+                          'status', pi.status,
+                          'importance', pi.importance,
+                          'blockedBy', to_jsonb(pi.blocked_by),
+                          'decisionRefs', to_jsonb(pi.decision_refs),
+                          'phase', pi.phase
+                        ) ORDER BY pi.seq)
+                   FROM harness_shared.plan_items pi
+                  WHERE pi.workspace_id = p.workspace_id
+                    AND pi.harness_slug = p.harness_slug
+                    AND pi.plan_slug = p.plan_slug
+               ), '[]'::jsonb)`;
+}
+
 /** Fetch one plan's raw row (PG), or null when it doesn't exist. */
 export async function getPlanRow(
   slug: string,
@@ -605,10 +647,12 @@ export async function getPlanRow(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next, promote_policy,
+               archived, is_legacy, updated_at,
+               ${planItemsColumn(tx)} AS items,
+               now_state, now_next, promote_policy,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data
-          FROM harness_shared.harness_plans
+          FROM harness_shared.harness_plans p
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND plan_slug = ${slug}
       `;
@@ -627,8 +671,10 @@ export async function getPlanRow(
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, now_state, now_next
-            FROM harness_shared.harness_plans
+                 archived, is_legacy, updated_at,
+                 ${planItemsColumn(tx)} AS items,
+                 now_state, now_next
+            FROM harness_shared.harness_plans p
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
              AND plan_slug = ${slug}
         `;
@@ -769,10 +815,12 @@ export async function listPlanRows(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
+               archived, is_legacy, updated_at,
+               ${planItemsColumn(tx)} AS items,
+               now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data
-          FROM harness_shared.harness_plans
+          FROM harness_shared.harness_plans p
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
          ORDER BY plan_slug ASC
@@ -791,8 +839,10 @@ export async function listPlanRows(
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, now_state, now_next
-            FROM harness_shared.harness_plans
+                 archived, is_legacy, updated_at,
+                 ${planItemsColumn(tx)} AS items,
+                 now_state, now_next
+            FROM harness_shared.harness_plans p
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            ${archivedFilter}
            ORDER BY plan_slug ASC
@@ -917,7 +967,10 @@ export async function listPlanIndexRows(
       // includeItems:false yields an empty array rather than NULL so `row.items.length`
       // stays safe; the heavy fragment emits typed NULLs so the row shape — and therefore
       // rowFromDb — is identical whether or not the caller opted in.
-      const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
+      const itemsCol =
+        opts.includeItems === false
+          ? tx`'[]'::jsonb AS items`
+          : tx`${planItemsColumn(tx)} AS items`;
       const heavyCols = opts.heavyFields
         ? tx`now_state, template_data,`
         : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
@@ -928,7 +981,7 @@ export async function listPlanIndexRows(
                archived, is_legacy, updated_at, ${itemsCol}, ${heavyCols} now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template
-          FROM harness_shared.harness_plans
+          FROM harness_shared.harness_plans p
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
          ${statusFilter}
@@ -960,8 +1013,10 @@ export async function listPlanIndexRows(
           SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, now_state, now_next
-            FROM harness_shared.harness_plans
+                 archived, is_legacy, updated_at,
+                 ${planItemsColumn(tx)} AS items,
+                 now_state, now_next
+            FROM harness_shared.harness_plans p
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            ${archivedFilter}
            ${statusFilter}
@@ -1053,7 +1108,10 @@ export async function listPlanIndexRowsForWorkspace(
             : tx`ORDER BY harness_slug ASC, plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
       // P-006 payload projection — identical to listPlanIndexRows above; see its docstring.
-      const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
+      const itemsCol =
+        opts.includeItems === false
+          ? tx`'[]'::jsonb AS items`
+          : tx`${planItemsColumn(tx)} AS items`;
       const heavyCols = opts.heavyFields
         ? tx`now_state, template_data,`
         : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
@@ -1064,7 +1122,7 @@ export async function listPlanIndexRowsForWorkspace(
                archived, is_legacy, updated_at, ${itemsCol}, ${heavyCols} now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template
-          FROM harness_shared.harness_plans
+          FROM harness_shared.harness_plans p
          WHERE workspace_id = ${workspaceId}
          ${archivedFilter}
          ${statusFilter}
@@ -1096,8 +1154,10 @@ export async function listPlanIndexRowsForWorkspace(
           SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, now_state, now_next
-            FROM harness_shared.harness_plans
+                 archived, is_legacy, updated_at,
+                 ${planItemsColumn(tx)} AS items,
+                 now_state, now_next
+            FROM harness_shared.harness_plans p
            WHERE workspace_id = ${workspaceId}
            ${archivedFilter}
            ${statusFilter}
@@ -1220,10 +1280,12 @@ export async function listPlanRowsMatchingAnyToken(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
+               archived, is_legacy, updated_at,
+               ${planItemsColumn(tx)} AS items,
+               now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data
-          FROM harness_shared.harness_plans
+          FROM harness_shared.harness_plans p
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
            AND (content ILIKE ANY(${patterns}::text[]) OR plan_slug ILIKE ANY(${patterns}::text[]))
@@ -1245,8 +1307,10 @@ export async function listPlanRowsMatchingAnyToken(
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
-                 archived, is_legacy, updated_at, items, now_state, now_next
-            FROM harness_shared.harness_plans
+                 archived, is_legacy, updated_at,
+                 ${planItemsColumn(tx)} AS items,
+                 now_state, now_next
+            FROM harness_shared.harness_plans p
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            ${archivedFilter}
              AND (content ILIKE ANY(${patterns}::text[]) OR plan_slug ILIKE ANY(${patterns}::text[]))
