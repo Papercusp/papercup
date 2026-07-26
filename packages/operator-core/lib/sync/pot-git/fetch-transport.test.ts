@@ -10,8 +10,9 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough } from 'node:stream';
-import { serveUploadPack } from './fetch-transport';
+import { Duplex, PassThrough } from 'node:stream';
+import { execFileSync } from 'node:child_process';
+import { serveUploadPack, fetchOverDuplex } from './fetch-transport';
 import { scopeRepoPath, type ScopeId } from './scope-repo';
 import { authorizeScopeRepoServe } from './scope-serve-gate';
 
@@ -33,6 +34,58 @@ function freshRoot(): string {
   process.env.PAPERCUSP_HIVE_GIT_ROOT = tmpRoot;
   return tmpRoot;
 }
+
+/**
+ * WI-6184: the fetch timeout message must be SELF-DIAGNOSING.
+ *
+ * A bare "fetch timed out after 120000ms" cannot distinguish the two failures
+ * that produce it, and they have OPPOSITE causes:
+ *   peer→us 0B   ⇒ the serving side answered NOTHING (a swallowed throw, a
+ *                  refusal that never sent its frame, a req never received) —
+ *                  investigate the PEER.
+ *   peer→us > 0  ⇒ the peer answered and the stream then stalled — investigate
+ *                  the TRANSPORT.
+ * On the 2-machine rig every cold-join burned the full 120s ceiling reporting
+ * only the bare form, which is why the cause stayed invisible across five
+ * diagnosis wakes. This asserts the forensic tail is present and correct.
+ *
+ * A LIVE-but-silent duplex is the deliberate fixture: it must NOT be destroyed
+ * (that path fail-fasts by design and would never reach the ceiling), so the
+ * write callback is invoked while nothing is ever pushed back. `timedOut` is
+ * asserted UNCONDITIONALLY — an `if (res.timedOut)` guard here would let the
+ * test pass vacuously if the fetch ever stopped timing out.
+ */
+describe('fetchOverDuplex — timeout forensics', () => {
+  it('names what it was waiting on when a live-but-silent peer never answers', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'hg-fetch-timeout-'));
+    try {
+      execFileSync('git', ['init', '--quiet', '--bare', repo]);
+      // Alive, writable, never readable: the peer that accepts our request and
+      // says nothing back.
+      const silent = new Duplex({
+        read() {},
+        write(_chunk, _enc, cb) {
+          cb();
+        },
+      });
+      const res = await fetchOverDuplex(repo, silent, ['+refs/heads/work:refs/heads/never'], {
+        timeoutMs: 4_000,
+      });
+      expect(res.timedOut, `expected the ceiling to fire; got: ${res.stderr}`).toBe(true);
+      expect(res.code).toBe(-1);
+      // The forensic tail — each field, so a partial regression is caught.
+      expect(res.stderr).toMatch(/fetch timed out after 4000ms/);
+      expect(res.stderr).toMatch(/us→peer \d+B/);
+      expect(res.stderr).toMatch(/bridge=(yes|no)/);
+      expect(res.stderr).toMatch(/gitChild=(spawned|none)/);
+      // The load-bearing assertion: this peer sent nothing, and the message
+      // must say so rather than leaving the reader to guess.
+      expect(res.stderr).toMatch(/peer→us 0B/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('serveUploadPack — scope-repo serve gate', () => {
   it('refuses a scope-family path with NO grant (pre-spawn, code -1)', async () => {

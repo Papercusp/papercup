@@ -41,7 +41,7 @@ import { describe, it, expect } from 'vitest';
 import { HEALTH_ENDPOINTS, SUPERVISED_PROCESSES } from '../../service-health';
 import { PROBED_PORTS, UNIT_TO_PROBE, SUPERVISED_BUT_UNPROBED, listeningPorts } from './service';
 import devListeningPorts from '../../agent-tools/dev/listening_ports';
-import { LISTENING_SOCKETS_DEFAULT_LIMIT } from '../../listening-sockets';
+import { LISTENING_SOCKETS_DEFAULT_LIMIT, SS_ARGV } from '../../listening-sockets';
 import { expectArgSurface, expectExpressionUsesRealArgs } from './model-drift-helpers';
 
 /**
@@ -202,13 +202,20 @@ describe('service.ts equivalence model tracks the real dev:service_health (WI-61
     // reports non-LISTEN sockets, every one of those 9 misses becomes coverable
     // and this pair must be re-derived. Nothing else in the suite would notice,
     // because cover() reaches its refusals without consulting the tool at all.
-    const described = JSON.stringify(devListeningPorts.guidance ?? {});
+    //
+    // Asserted against the real `ss` ARGV rather than the guidance prose: a
+    // prose check passes for a tool whose behaviour has completely changed, so
+    // it is a detector in name only. `-l` is the actual mechanism.
+    const flagCluster = SS_ARGV.filter((a) => a.startsWith('-')).join('');
     expect(
-      /LISTEN/.test(described),
-      `dev:listening_ports no longer documents a LISTEN-only scope. The listeningPorts pair refuses 9 of its 24 ` +
-        `sampled atoms with the reason "reports LISTEN sockets only" — if that stopped being true, those refusals ` +
-        `are now wrong and the verdict should have moved off needs-widening.`,
+      flagCluster.includes('l'),
+      `listening-sockets.ts no longer passes -l to ss (argv is now ${JSON.stringify(SS_ARGV)}), so it returns ` +
+        `sockets in states other than LISTEN. The listeningPorts pair refuses 9 of its 24 sampled atoms with the ` +
+        `reason "reports LISTEN sockets only" — those refusals are now WRONG, and the needs-widening verdict that ` +
+        `rests entirely on them must be re-derived (expect it to move toward equivalent).`,
     ).toBe(true);
+    // -t likewise: the pair refuses UDP atoms on the same basis.
+    expect(flagCluster.includes('t'), `ss argv lost -t, so the TCP-only refusals are stale too.`).toBe(true);
   });
 
   it('advisoryText names the real tool and does not resurrect the "no tool form" claim', () => {

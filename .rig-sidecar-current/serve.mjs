@@ -513,9 +513,9 @@ async function detectPowerSourceLinux(req) {
   return "unknown";
 }
 async function detectPowerSourceDarwin(req) {
-  const { execFile: execFile56 } = req("node:child_process");
-  const { promisify: promisify57 } = req("node:util");
-  const { stdout } = await promisify57(execFile56)("pmset", ["-g", "batt"], { timeout: 2e3 });
+  const { execFile: execFile57 } = req("node:child_process");
+  const { promisify: promisify58 } = req("node:util");
+  const { stdout } = await promisify58(execFile57)("pmset", ["-g", "batt"], { timeout: 2e3 });
   if (/AC Power/i.test(stdout)) return "ac";
   if (/Battery Power/i.test(stdout)) return "battery";
   return "unknown";
@@ -394195,6 +394195,10 @@ upload-pack timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms`;
     child.stdout.pipe(duplex);
     child.on("error", (e4) => {
       stderr += String(e4);
+      try {
+        duplex.end();
+      } catch {
+      }
       finish(-1);
     });
     child.on("close", (code4) => {
@@ -394213,6 +394217,9 @@ function fetchOverDuplex(localRepoPath, duplex, refspecs, opts = {}) {
     let timedOut = false;
     let tmpDir = null;
     let child = null;
+    let bytesFromPeer = 0;
+    let bytesToPeer = 0;
+    let bridgeConnected = false;
     duplex.on("error", (err12) => {
       if (settled2) return;
       stderr += `
@@ -394242,7 +394249,7 @@ duplex error: ${err12 instanceof Error ? err12.message : String(err12)}`;
     const timer6 = setTimeout(() => {
       timedOut = true;
       stderr += `
-fetch timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms`;
+fetch timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms (peer\u2192us ${bytesFromPeer}B, us\u2192peer ${bytesToPeer}B, bridge=${bridgeConnected ? "yes" : "no"}, gitChild=${child ? "spawned" : "none"})`;
       try {
         child?.kill("SIGKILL");
       } catch {
@@ -394264,6 +394271,13 @@ fetch timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms`;
       });
       conn.pipe(duplex);
       duplex.pipe(conn);
+      bridgeConnected = true;
+      duplex.on("data", (c10) => {
+        bytesFromPeer += typeof c10 === "string" ? Buffer.byteLength(c10) : c10.length;
+      });
+      conn.on("data", (c10) => {
+        bytesToPeer += typeof c10 === "string" ? Buffer.byteLength(c10) : c10.length;
+      });
     });
     void (async () => {
       try {
@@ -394836,11 +394850,48 @@ function failAllSessions(state7) {
   state7.serverSessions.clear();
   state7.clientSessions.clear();
 }
+function potGitLog(level, msg2) {
+  if (process.env.VITEST) return;
+  if (level === "warn") console.warn(msg2);
+  else console.info(msg2);
+}
+function shouldLogRefusal(key12, now2) {
+  const prev = refuseLogLast.get(key12);
+  if (prev && now2 - prev.at < REFUSE_LOG_WINDOW_MS) {
+    prev.suppressed++;
+    return { log: false, suppressed: prev.suppressed };
+  }
+  const suppressed = prev?.suppressed ?? 0;
+  refuseLogLast.set(key12, { at: now2, suppressed: 0 });
+  if (refuseLogLast.size > 512) {
+    for (const [k4, e4] of refuseLogLast) {
+      if (now2 - e4.at >= REFUSE_LOG_WINDOW_MS) refuseLogLast.delete(k4);
+      if (refuseLogLast.size <= 256) break;
+    }
+  }
+  return { log: true, suppressed };
+}
+function peerTag(state7) {
+  try {
+    const pk2 = state7.serverConfig?.resolvePeerDevicePubkey?.(state7.socket);
+    return pk2 ? pk2.slice(0, 8) : "unverified";
+  } catch {
+    return "unverified";
+  }
+}
 function handleReq(state7, v8) {
+  const startedAt2 = Date.now();
   const refuse3 = (reason) => {
     try {
       state7.messages?.refuse.send({ id: v8.id, reason });
     } catch {
+    }
+    const { log: log5, suppressed } = shouldLogRefusal(`${reason}\0${v8.repoKey}\0${peerTag(state7)}`, Date.now());
+    if (log5) {
+      potGitLog(
+        "warn",
+        `[pot-git] serve REFUSED reason=${reason} repo=${v8.repoKey} peer=${peerTag(state7)} id=${v8.id}` + (suppressed > 0 ? ` (+${suppressed} identical suppressed in the last ${REFUSE_LOG_WINDOW_MS / 1e3}s)` : "")
+      );
     }
   };
   void (async () => {
@@ -394902,11 +394953,23 @@ function handleReq(state7, v8) {
     );
     state7.serverSessions.set(v8.id, duplex);
     try {
-      await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs, scopeServeGrant });
+      const res = await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs, scopeServeGrant });
+      const ms3 = Date.now() - startedAt2;
+      const detail = `repo=${v8.repoKey} peer=${peerTag(state7)} id=${v8.id} code=${res.code}${res.timedOut ? " timedOut=true" : ""} ${ms3}ms`;
+      if (res.code === 0) potGitLog("info", `[pot-git] serve OK ${detail}`);
+      else potGitLog("warn", `[pot-git] serve FAILED ${detail} stderr=${res.stderr.trim().slice(0, 300)}`);
     } finally {
       state7.serverSessions.delete(v8.id);
     }
-  })().catch(() => {
+  })().catch((e4) => {
+    try {
+      state7.messages?.refuse.send({ id: v8.id, reason: "serve-error" });
+    } catch {
+    }
+    potGitLog(
+      "warn",
+      `[pot-git] serve ERROR repo=${v8.repoKey} peer=${peerTag(state7)} id=${v8.id} after ${Date.now() - startedAt2}ms: ${e4 instanceof Error ? e4.stack ?? e4.message : String(e4)}`
+    );
   });
 }
 function handleRefuse(state7, v8) {
@@ -395056,7 +395119,7 @@ async function openHiveGitFetchDuplex(socket, topic, req) {
   }
   return duplex;
 }
-var import_protomux, import_compact_encoding, reqEncoding, refuseEncoding, dataEncoding, endEncoding, FrameDuplex, stateByMuxer, serveConfigByMuxer, potGitPairedMuxers;
+var import_protomux, import_compact_encoding, reqEncoding, refuseEncoding, dataEncoding, endEncoding, FrameDuplex, stateByMuxer, serveConfigByMuxer, potGitPairedMuxers, REFUSE_LOG_WINDOW_MS, refuseLogLast;
 var init_serve_wiring = __esm({
   "../../packages/operator-core/lib/sync/pot-git/serve-wiring.ts"() {
     "use strict";
@@ -395173,6 +395236,8 @@ var init_serve_wiring = __esm({
     stateByMuxer = /* @__PURE__ */ new WeakMap();
     serveConfigByMuxer = /* @__PURE__ */ new WeakMap();
     potGitPairedMuxers = /* @__PURE__ */ new WeakSet();
+    REFUSE_LOG_WINDOW_MS = 3e4;
+    refuseLogLast = /* @__PURE__ */ new Map();
   }
 });
 
@@ -424687,10 +424752,10 @@ function isWindowsDesktopHost() {
   return cachedIsWindowsDesktopHost;
 }
 async function execPowershell(bin, script) {
-  const { execFile: execFile56 } = await import("node:child_process");
-  const { promisify: promisify57 } = await import("node:util");
-  const execFileAsync12 = promisify57(execFile56);
-  const { stdout } = await execFileAsync12(bin, ["-NoProfile", "-NonInteractive", "-Command", script], {
+  const { execFile: execFile57 } = await import("node:child_process");
+  const { promisify: promisify58 } = await import("node:util");
+  const execFileAsync13 = promisify58(execFile57);
+  const { stdout } = await execFileAsync13(bin, ["-NoProfile", "-NonInteractive", "-Command", script], {
     timeout: PS_TIMEOUT_MS,
     encoding: "utf8",
     windowsHide: true
@@ -428400,7 +428465,8 @@ var init_source = __esm({
 // ../../packages/operator-core/lib/scheduler/plan-item-lane-guard.ts
 var plan_item_lane_guard_exports = {};
 __export(plan_item_lane_guard_exports, {
-  planItemLaneBlockReason: () => planItemLaneBlockReason
+  planItemLaneBlockReason: () => planItemLaneBlockReason,
+  resolvePlanItemStamp: () => resolvePlanItemStamp
 });
 function findOwnerGateMarker(text46) {
   if (!text46) return null;
@@ -447917,7 +447983,7 @@ var require_mock_interceptor = __commonJS({
 var require_mock_client = __commonJS({
   "../../node_modules/undici/lib/mock/mock-client.js"(exports2, module2) {
     "use strict";
-    var { promisify: promisify57 } = __require("node:util");
+    var { promisify: promisify58 } = __require("node:util");
     var Client2 = require_client();
     var { buildMockDispatch } = require_mock_utils();
     var {
@@ -447965,7 +448031,7 @@ var require_mock_client = __commonJS({
         this[kDispatches] = [];
       }
       async [kClose]() {
-        await promisify57(this[kOriginalClose])();
+        await promisify58(this[kOriginalClose])();
         this[kConnected] = 0;
         this[kMockAgent][Symbols.kClients].delete(this[kOrigin]);
       }
@@ -448178,7 +448244,7 @@ var require_mock_call_history = __commonJS({
 var require_mock_pool = __commonJS({
   "../../node_modules/undici/lib/mock/mock-pool.js"(exports2, module2) {
     "use strict";
-    var { promisify: promisify57 } = __require("node:util");
+    var { promisify: promisify58 } = __require("node:util");
     var Pool2 = require_pool();
     var { buildMockDispatch } = require_mock_utils();
     var {
@@ -448226,7 +448292,7 @@ var require_mock_pool = __commonJS({
         this[kDispatches] = [];
       }
       async [kClose]() {
-        await promisify57(this[kOriginalClose])();
+        await promisify58(this[kOriginalClose])();
         this[kConnected] = 0;
         this[kMockAgent][Symbols.kClients].delete(this[kOrigin]);
       }
@@ -491977,7 +492043,7 @@ var require_pg_pool = __commonJS({
     function throwOnDoubleRelease() {
       throw new Error("Release called on client which has already been released to the pool.");
     }
-    function promisify57(Promise2, callback) {
+    function promisify58(Promise2, callback) {
       if (callback) {
         return { callback, result: void 0 };
       }
@@ -492115,7 +492181,7 @@ var require_pg_pool = __commonJS({
           const err12 = new Error("Cannot use a pool after calling end on the pool");
           return cb2 ? cb2(err12) : this.Promise.reject(err12);
         }
-        const response = promisify57(this.Promise, cb2);
+        const response = promisify58(this.Promise, cb2);
         const result27 = response.result;
         if (this._isFull() || this._idle.length) {
           if (this._idle.length) {
@@ -492300,7 +492366,7 @@ var require_pg_pool = __commonJS({
       }
       query(text46, values2, cb2) {
         if (typeof text46 === "function") {
-          const response2 = promisify57(this.Promise, text46);
+          const response2 = promisify58(this.Promise, text46);
           setImmediate(function() {
             return response2.callback(new Error("Passing a function as the first parameter to pool.query is not supported"));
           });
@@ -492310,7 +492376,7 @@ var require_pg_pool = __commonJS({
           cb2 = values2;
           values2 = void 0;
         }
-        const response = promisify57(this.Promise, cb2);
+        const response = promisify58(this.Promise, cb2);
         cb2 = response.callback;
         this.connect((err12, client2) => {
           if (err12) {
@@ -492355,7 +492421,7 @@ var require_pg_pool = __commonJS({
           return cb2 ? cb2(err12) : this.Promise.reject(err12);
         }
         this.ending = true;
-        const promised = promisify57(this.Promise, cb2);
+        const promised = promisify58(this.Promise, cb2);
         this._endCallback = promised.callback;
         this._pulseQueue();
         return promised.result;
@@ -535796,6 +535862,300 @@ var init_work_group = __esm({
   }
 });
 
+// ../../packages/operator-core/lib/plan-items/compile-brief.ts
+function clip2(s5, max2) {
+  const t14 = s5.replace(/\s+/g, " ").trim();
+  if (max2 <= 1) return t14.length ? "\u2026" : "";
+  return t14.length <= max2 ? t14 : `${t14.slice(0, max2 - 1)}\u2026`;
+}
+function decisionsForItem(parsed, itemId) {
+  const item = (parsed?.items ?? []).find((i4) => i4.id === itemId);
+  const refs = item?.decisionRefs ?? [];
+  if (refs.length === 0) return [];
+  const byId = new Map((parsed?.decisions ?? []).map((d3) => [d3.id, d3]));
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const r4 of refs) {
+    if (seen.has(r4) || !byId.has(r4)) continue;
+    seen.add(r4);
+    const d3 = byId.get(r4);
+    out.push({ id: d3.id, title: d3.title, body: d3.body });
+  }
+  return out;
+}
+function compilePlanItemBrief(input2) {
+  const max2 = input2.maxChars ?? DEFAULT_MAX;
+  const decisions2 = input2.decisions ?? [];
+  const focusState = input2.planFocus?.state?.trim() ?? "";
+  const focusNext = input2.planFocus?.next?.trim() ?? "";
+  const hasEnrichment = decisions2.length > 0 || focusState !== "" || focusNext !== "";
+  if (!hasEnrichment) return "";
+  const sections = [];
+  const itemText = (input2.itemText ?? "").trim();
+  const head = `## Task \u2014 ${input2.itemId}${input2.planTitle ? ` \xB7 ${clip2(input2.planTitle, 80)}` : ""}`;
+  sections.push(itemText ? `${head}
+${itemText}` : head);
+  if (focusState || focusNext) {
+    const lines = ["## Plan focus"];
+    if (focusState) lines.push(clip2(focusState, 400));
+    if (focusNext) lines.push(`Next: ${clip2(focusNext, 200)}`);
+    sections.push(lines.join("\n"));
+  }
+  if (decisions2.length > 0) {
+    const perDecision = Math.max(120, Math.floor(max2 / 2 / decisions2.length));
+    const rendered = decisions2.map(
+      (d3) => `- ${d3.id} \u2014 ${clip2(d3.title, 100)}: ${clip2(d3.body, perDecision)}`
+    );
+    sections.push(["## Decisions bearing on this item", ...rendered].join("\n"));
+  }
+  const full = sections.join("\n\n");
+  return full.length <= max2 ? full : `${full.slice(0, max2 - 1)}\u2026`;
+}
+var DEFAULT_MAX;
+var init_compile_brief = __esm({
+  "../../packages/operator-core/lib/plan-items/compile-brief.ts"() {
+    "use strict";
+    DEFAULT_MAX = 2e3;
+  }
+});
+
+// ../../packages/operator-core/lib/plan-items/convert.ts
+var convert_exports = {};
+__export(convert_exports, {
+  IMPLEMENTS_REL: () => IMPLEMENTS_REL,
+  TERMINAL_WORK_ITEM_STATES: () => TERMINAL_WORK_ITEM_STATES,
+  convertPlanItem: () => convertPlanItem,
+  findConvertedWorkItemByStamp: () => findConvertedWorkItemByStamp,
+  findCoverageWorkItems: () => findCoverageWorkItems,
+  findImplementingWorkItem: () => findImplementingWorkItem,
+  listConvertedPlanItemRefs: () => listConvertedPlanItemRefs,
+  looksLikeResidualClosure: () => looksLikeResidualClosure,
+  planItemTitle: () => planItemTitle
+});
+async function findImplementingWorkItem(planSlug, itemId) {
+  const { sql: sql5 } = getOrgPg();
+  const rows = await sql5`
+    SELECT src_kind, src_ref
+      FROM harness_shared.coord_links
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND rel = ${IMPLEMENTS_REL}
+       AND dst_kind = ${PLAN_ITEM_KIND}
+       AND dst_ref = ${planItemRef(planSlug, itemId)}
+     ORDER BY created_at DESC`;
+  for (const r4 of rows) {
+    if (r4.src_kind === "issue") {
+      const wi2 = await getWorkItem(r4.src_ref);
+      if (wi2) return wi2;
+    } else if (r4.src_kind === "feature") {
+      const i4 = r4.src_ref.indexOf("#");
+      if (i4 > 0) {
+        const wi2 = await getWorkItem(r4.src_ref.slice(i4 + 1), r4.src_ref.slice(0, i4));
+        if (wi2) return wi2;
+      }
+    }
+  }
+  return null;
+}
+async function findConvertedWorkItemByStamp(planSlug, itemId, harnessSlug2) {
+  const { sql: sql5 } = getOrgPg();
+  const pj = (col) => sql5`(CASE WHEN jsonb_typeof(${sql5.unsafe(col)}) = 'string'
+              THEN (${sql5.unsafe(col)} #>> '{}')::jsonb ELSE ${sql5.unsafe(col)} END)`;
+  const stampMatch = (col) => sql5`${pj(col)}->'plan_item'->>'plan_slug' = ${planSlug}
+    AND ${pj(col)}->'plan_item'->>'item_id' = ${itemId}`;
+  const featureRows = await sql5`
+    SELECT feature_id, harness_slug
+      FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${harnessSlug2} AND payload IS NOT NULL AND ${stampMatch("payload")}
+     ORDER BY updated_ts DESC NULLS LAST`;
+  for (const r4 of featureRows) {
+    const wi2 = await getWorkItem(r4.feature_id, r4.harness_slug);
+    if (wi2) return wi2;
+  }
+  const issueRows = await sql5`
+    SELECT issue_id
+      FROM harness_shared.engineer_issues
+     WHERE payload IS NOT NULL AND ${stampMatch("payload")}
+     ORDER BY updated_at DESC NULLS LAST`;
+  for (const r4 of issueRows) {
+    const wi2 = await getWorkItem(r4.issue_id);
+    if (wi2) return wi2;
+  }
+  return null;
+}
+async function findCoverageWorkItems(planSlug, itemId) {
+  const { sql: sql5 } = getOrgPg();
+  const rows = await sql5`
+    SELECT src_kind, src_ref
+      FROM harness_shared.coord_links
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND rel = 'relates'
+       AND dst_kind = ${PLAN_ITEM_KIND}
+       AND dst_ref = ${planItemRef(planSlug, itemId)}
+     ORDER BY created_at DESC`;
+  const out = [];
+  for (const r4 of rows) {
+    if (r4.src_kind === "issue") {
+      const wi2 = await getWorkItem(r4.src_ref);
+      if (wi2) out.push(wi2);
+    } else if (r4.src_kind === "feature") {
+      const i4 = r4.src_ref.indexOf("#");
+      if (i4 > 0) {
+        const wi2 = await getWorkItem(r4.src_ref.slice(i4 + 1), r4.src_ref.slice(0, i4));
+        if (wi2) out.push(wi2);
+      }
+    }
+  }
+  return out;
+}
+function looksLikeResidualClosure(text46) {
+  return /\b(split[- ]?off|carved[- ]?off|residual|deferred|not (?:fully |entirely )?met|partial(?:ly)? (?:done|complete|addressed)|left (?:open|unresolved|unmet)|unmet acceptance|acceptance (?:criteri\w*|ask)\b[^.]*(?:not met|unmet))\b/i.test(
+    text46
+  );
+}
+async function listConvertedPlanItemRefs(workspaceId = DEFAULT_COORD_WORKSPACE) {
+  const { sql: sql5 } = getOrgPg();
+  const rows = await sql5`
+    SELECT DISTINCT dst_ref
+      FROM harness_shared.coord_links
+     WHERE workspace_id = ${workspaceId}
+       AND rel = ${IMPLEMENTS_REL}
+       AND dst_kind = ${PLAN_ITEM_KIND}`;
+  return new Set(rows.map((r4) => r4.dst_ref));
+}
+function planItemTitle(text46, max2 = 140) {
+  const oneLine5 = text46.replace(/\s+/g, " ").trim();
+  return oneLine5.length <= max2 ? oneLine5 : `${oneLine5.slice(0, max2 - 1)}\u2026`;
+}
+async function convertPlanItem(opts) {
+  const kind2 = opts.kind ?? "task";
+  if (!isWorkItemKind(kind2)) return { status: "refused", reason: `unknown work_item kind '${kind2}'` };
+  const read = await readPlanBySlug(opts.planSlug, {
+    harnessSlug: opts.harnessSlug,
+    workspaceId: opts.workspaceId
+  });
+  if (!read) return { status: "refused", reason: `plan '${opts.planSlug}' not found` };
+  const items = read.row.items.length > 0 ? read.row.items.map((i4) => ({ id: i4.id, status: i4.status, text: i4.text })) : read.parsed.items.map((i4) => ({ id: i4.id, status: i4.storedStatus, text: i4.text ?? null }));
+  const item = items.find((i4) => i4.id === opts.itemId);
+  if (!item) {
+    return { status: "refused", reason: `plan item ${opts.itemId} not found in '${opts.planSlug}'` };
+  }
+  if (item.status === "done" || item.status === "dropped") {
+    return { status: "refused", reason: `plan item ${opts.itemId} is already ${item.status}` };
+  }
+  const claimRes = await claimPlanItem({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+    planSlug: opts.planSlug,
+    itemId: opts.itemId,
+    owner: opts.owner,
+    ownerLabel: opts.ownerLabel,
+    ownerName: opts.ownerName,
+    ownerUser: opts.ownerUser,
+    intent: opts.intent ?? `convert-at-pickup \u2192 work_item[kind=${kind2}]`,
+    livenessMode: opts.livenessMode,
+    ttlSec: opts.ttlSec
+  });
+  if (claimRes.status !== "claimed") return claimRes;
+  const stamp = {
+    plan_slug: opts.planSlug,
+    item_id: opts.itemId,
+    harness_slug: opts.harnessSlug
+  };
+  const planItem = { plan: opts.planSlug, item: opts.itemId, status: item.status, text: item.text };
+  let existing = await findImplementingWorkItem(opts.planSlug, opts.itemId);
+  let edgeMissing = false;
+  if (!existing) {
+    existing = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug);
+    edgeMissing = existing !== null;
+  }
+  if (existing && !TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
+    let resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? void 0 });
+    if (!resumed) {
+      await releaseWorkItem(existing.id, { harness: existing.harness ?? void 0 });
+      resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? void 0 });
+    }
+    if (edgeMissing) {
+      const wiForLink = resumed ?? existing;
+      await linkWorkItem(
+        wiForLink.id,
+        { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, opts.itemId) },
+        IMPLEMENTS_REL,
+        { harness: wiForLink.harness ?? void 0, by: opts.owner }
+      );
+    }
+    return {
+      status: "resumed",
+      workItem: resumed ?? existing,
+      claim: claimRes.claim,
+      mode: claimRes.mode,
+      viaAssignment: claimRes.viaAssignment,
+      planItem,
+      priorHolderWarning: claimRes.priorHolderWarning
+    };
+  }
+  const title = opts.title ?? (item.text ? planItemTitle(item.text) : `${opts.planSlug} ${opts.itemId}`);
+  const effectiveBrief = opts.brief ?? (opts.compileBriefIfMissing ? compilePlanItemBrief({
+    itemId: opts.itemId,
+    itemText: item.text ?? "",
+    planTitle: read.parsed.frontmatter?.title ?? null,
+    planFocus: read.parsed.now ? { state: read.parsed.now.state, next: read.parsed.now.next } : null,
+    decisions: decisionsForItem(read.parsed, opts.itemId)
+  }) || void 0 : void 0);
+  const created = await createWorkItem({
+    kind: kind2,
+    title,
+    summary: item.text ?? void 0,
+    harness: opts.harnessSlug,
+    payload: {
+      plan_item: stamp,
+      ...opts.planRun ? { plan_run: opts.planRun } : {},
+      ...effectiveBrief ? { brief: effectiveBrief } : {}
+    },
+    // queen-steering-panel P-008: stamp the source plan slug on the minted work-item
+    // so the Queen's survey can HARD-filter the frontier by the owner's eligible-plans
+    // (surveyHive scopeFilter). Feature-family kinds write the source_plan_slug column;
+    // issue-family kinds ignore it (no frontier row). Scheduled-run work items group
+    // under the TEMPLATE slug (the stable plan identity) so that filter works
+    // unchanged; the specific run rides payload.plan_run (scheduled-recurring-plans D-016).
+    sourcePlanSlug: opts.planRun?.templateSlug ?? opts.planSlug,
+    createdBy: opts.owner,
+    // Issue-family kinds take the assignee at creation; feature-family is
+    // claimed right after (no assignee column on insert).
+    assignee: opts.owner
+  });
+  const claimed = await claimWorkItem(created.id, opts.owner, { harness: created.harness ?? void 0 });
+  await linkWorkItem(
+    created.id,
+    { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, opts.itemId) },
+    IMPLEMENTS_REL,
+    { harness: created.harness ?? void 0, by: opts.owner }
+  );
+  return {
+    status: "converted",
+    workItem: claimed ?? created,
+    claim: claimRes.claim,
+    mode: claimRes.mode,
+    viaAssignment: claimRes.viaAssignment,
+    planItem,
+    priorHolderWarning: claimRes.priorHolderWarning
+  };
+}
+var IMPLEMENTS_REL, TERMINAL_WORK_ITEM_STATES;
+var init_convert = __esm({
+  "../../packages/operator-core/lib/plan-items/convert.ts"() {
+    "use strict";
+    init_src6();
+    init_event_log2();
+    init_source();
+    init_issue_blocks_merge();
+    init_work_items();
+    init_liveness2();
+    init_compile_brief();
+    IMPLEMENTS_REL = "implements";
+    TERMINAL_WORK_ITEM_STATES = /* @__PURE__ */ new Set(["passed", "resolved", "closed", "done", "deprecated", "dropped"]);
+  }
+});
+
 // ../../packages/operator-core/lib/plan-items/liveness.ts
 var liveness_exports = {};
 __export(liveness_exports, {
@@ -535804,6 +536164,7 @@ __export(liveness_exports, {
   mergedPlanItemStates: () => mergedPlanItemStates,
   myItemsWithState: () => myItemsWithState,
   myItemsWithStateForIdentities: () => myItemsWithStateForIdentities,
+  notifyImplementingWorkItemHolderOfCollision: () => notifyImplementingWorkItemHolderOfCollision,
   priorHolderStillLive: () => priorHolderStillLive,
   resetHarnessSharedResolver: () => resetHarnessSharedResolver,
   setHarnessSharedResolver: () => setHarnessSharedResolver
@@ -535843,6 +536204,39 @@ async function sessionStateForOwner(ownerId) {
     return verdicts.get(ownerId)?.sessionState ?? null;
   } catch {
     return null;
+  }
+}
+async function notifyImplementingWorkItemHolderOfCollision(opts) {
+  try {
+    const [{ findImplementingWorkItem: findImplementingWorkItem2, TERMINAL_WORK_ITEM_STATES: TERMINAL_WORK_ITEM_STATES5 }, { sendMessage: sendMessage2 }] = await Promise.all([
+      Promise.resolve().then(() => (init_convert(), convert_exports)),
+      Promise.resolve().then(() => (init_messages3(), messages_exports2))
+    ]);
+    const wi2 = await findImplementingWorkItem2(opts.planSlug, opts.itemId);
+    if (!wi2 || !wi2.assignee || wi2.assignee === opts.owner) return;
+    if (TERMINAL_WORK_ITEM_STATES5.has(wi2.state)) return;
+    const identity2 = {
+      ownerId: "system:plan-item-claim-collision",
+      ownerLabel: "system:plan-item-claim-collision",
+      source: "static-client",
+      workspaceId: opts.workspaceId,
+      userId: null
+    };
+    await sendMessage2(identity2, {
+      to: [wi2.assignee],
+      summary: `Plan item ${opts.planSlug}#${opts.itemId} \u2014 your work-item ${wi2.id} implements it \u2014 was just claimed by ${opts.ownerLabel ?? opts.owner}. Holding the linked work-item is not holding the plan item: you may be mid-execution on an item that is no longer (solely) yours. Coordinate with them before continuing to avoid duplicated work.`,
+      category: "plan-item-claim-collision",
+      harnessSlug: opts.harnessSlug,
+      extra: {
+        auto: true,
+        lifecycle: "plan-item-claim-collision",
+        plan_slug: opts.planSlug,
+        item_id: opts.itemId,
+        work_item_id: wi2.id,
+        claimed_by: opts.owner
+      }
+    });
+  } catch {
   }
 }
 async function claimPlanItem(opts) {
@@ -535898,7 +536292,10 @@ async function claimPlanItem(opts) {
     livenessMode: mode,
     ttlSec: opts.ttlSec
   });
-  if (res.ok) return { status: "claimed", claim: res.claim, mode, viaAssignment, priorHolderWarning };
+  if (res.ok) {
+    await notifyImplementingWorkItemHolderOfCollision(opts);
+    return { status: "claimed", claim: res.claim, mode, viaAssignment, priorHolderWarning };
+  }
   return { status: "conflict", conflict: res.conflict };
 }
 function disposition(assignment, liveClaim) {
@@ -540263,300 +540660,6 @@ var init_agent_launch_core = __esm({
   }
 });
 
-// ../../packages/operator-core/lib/plan-items/compile-brief.ts
-function clip2(s5, max2) {
-  const t14 = s5.replace(/\s+/g, " ").trim();
-  if (max2 <= 1) return t14.length ? "\u2026" : "";
-  return t14.length <= max2 ? t14 : `${t14.slice(0, max2 - 1)}\u2026`;
-}
-function decisionsForItem(parsed, itemId) {
-  const item = (parsed?.items ?? []).find((i4) => i4.id === itemId);
-  const refs = item?.decisionRefs ?? [];
-  if (refs.length === 0) return [];
-  const byId = new Map((parsed?.decisions ?? []).map((d3) => [d3.id, d3]));
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const r4 of refs) {
-    if (seen.has(r4) || !byId.has(r4)) continue;
-    seen.add(r4);
-    const d3 = byId.get(r4);
-    out.push({ id: d3.id, title: d3.title, body: d3.body });
-  }
-  return out;
-}
-function compilePlanItemBrief(input2) {
-  const max2 = input2.maxChars ?? DEFAULT_MAX;
-  const decisions2 = input2.decisions ?? [];
-  const focusState = input2.planFocus?.state?.trim() ?? "";
-  const focusNext = input2.planFocus?.next?.trim() ?? "";
-  const hasEnrichment = decisions2.length > 0 || focusState !== "" || focusNext !== "";
-  if (!hasEnrichment) return "";
-  const sections = [];
-  const itemText = (input2.itemText ?? "").trim();
-  const head = `## Task \u2014 ${input2.itemId}${input2.planTitle ? ` \xB7 ${clip2(input2.planTitle, 80)}` : ""}`;
-  sections.push(itemText ? `${head}
-${itemText}` : head);
-  if (focusState || focusNext) {
-    const lines = ["## Plan focus"];
-    if (focusState) lines.push(clip2(focusState, 400));
-    if (focusNext) lines.push(`Next: ${clip2(focusNext, 200)}`);
-    sections.push(lines.join("\n"));
-  }
-  if (decisions2.length > 0) {
-    const perDecision = Math.max(120, Math.floor(max2 / 2 / decisions2.length));
-    const rendered = decisions2.map(
-      (d3) => `- ${d3.id} \u2014 ${clip2(d3.title, 100)}: ${clip2(d3.body, perDecision)}`
-    );
-    sections.push(["## Decisions bearing on this item", ...rendered].join("\n"));
-  }
-  const full = sections.join("\n\n");
-  return full.length <= max2 ? full : `${full.slice(0, max2 - 1)}\u2026`;
-}
-var DEFAULT_MAX;
-var init_compile_brief = __esm({
-  "../../packages/operator-core/lib/plan-items/compile-brief.ts"() {
-    "use strict";
-    DEFAULT_MAX = 2e3;
-  }
-});
-
-// ../../packages/operator-core/lib/plan-items/convert.ts
-var convert_exports = {};
-__export(convert_exports, {
-  IMPLEMENTS_REL: () => IMPLEMENTS_REL,
-  TERMINAL_WORK_ITEM_STATES: () => TERMINAL_WORK_ITEM_STATES,
-  convertPlanItem: () => convertPlanItem,
-  findConvertedWorkItemByStamp: () => findConvertedWorkItemByStamp,
-  findCoverageWorkItems: () => findCoverageWorkItems,
-  findImplementingWorkItem: () => findImplementingWorkItem,
-  listConvertedPlanItemRefs: () => listConvertedPlanItemRefs,
-  looksLikeResidualClosure: () => looksLikeResidualClosure,
-  planItemTitle: () => planItemTitle
-});
-async function findImplementingWorkItem(planSlug, itemId) {
-  const { sql: sql5 } = getOrgPg();
-  const rows = await sql5`
-    SELECT src_kind, src_ref
-      FROM harness_shared.coord_links
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
-       AND rel = ${IMPLEMENTS_REL}
-       AND dst_kind = ${PLAN_ITEM_KIND}
-       AND dst_ref = ${planItemRef(planSlug, itemId)}
-     ORDER BY created_at DESC`;
-  for (const r4 of rows) {
-    if (r4.src_kind === "issue") {
-      const wi2 = await getWorkItem(r4.src_ref);
-      if (wi2) return wi2;
-    } else if (r4.src_kind === "feature") {
-      const i4 = r4.src_ref.indexOf("#");
-      if (i4 > 0) {
-        const wi2 = await getWorkItem(r4.src_ref.slice(i4 + 1), r4.src_ref.slice(0, i4));
-        if (wi2) return wi2;
-      }
-    }
-  }
-  return null;
-}
-async function findConvertedWorkItemByStamp(planSlug, itemId, harnessSlug2) {
-  const { sql: sql5 } = getOrgPg();
-  const pj = (col) => sql5`(CASE WHEN jsonb_typeof(${sql5.unsafe(col)}) = 'string'
-              THEN (${sql5.unsafe(col)} #>> '{}')::jsonb ELSE ${sql5.unsafe(col)} END)`;
-  const stampMatch = (col) => sql5`${pj(col)}->'plan_item'->>'plan_slug' = ${planSlug}
-    AND ${pj(col)}->'plan_item'->>'item_id' = ${itemId}`;
-  const featureRows = await sql5`
-    SELECT feature_id, harness_slug
-      FROM harness_shared.harness_features_consolidated
-     WHERE harness_slug = ${harnessSlug2} AND payload IS NOT NULL AND ${stampMatch("payload")}
-     ORDER BY updated_ts DESC NULLS LAST`;
-  for (const r4 of featureRows) {
-    const wi2 = await getWorkItem(r4.feature_id, r4.harness_slug);
-    if (wi2) return wi2;
-  }
-  const issueRows = await sql5`
-    SELECT issue_id
-      FROM harness_shared.engineer_issues
-     WHERE payload IS NOT NULL AND ${stampMatch("payload")}
-     ORDER BY updated_at DESC NULLS LAST`;
-  for (const r4 of issueRows) {
-    const wi2 = await getWorkItem(r4.issue_id);
-    if (wi2) return wi2;
-  }
-  return null;
-}
-async function findCoverageWorkItems(planSlug, itemId) {
-  const { sql: sql5 } = getOrgPg();
-  const rows = await sql5`
-    SELECT src_kind, src_ref
-      FROM harness_shared.coord_links
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
-       AND rel = 'relates'
-       AND dst_kind = ${PLAN_ITEM_KIND}
-       AND dst_ref = ${planItemRef(planSlug, itemId)}
-     ORDER BY created_at DESC`;
-  const out = [];
-  for (const r4 of rows) {
-    if (r4.src_kind === "issue") {
-      const wi2 = await getWorkItem(r4.src_ref);
-      if (wi2) out.push(wi2);
-    } else if (r4.src_kind === "feature") {
-      const i4 = r4.src_ref.indexOf("#");
-      if (i4 > 0) {
-        const wi2 = await getWorkItem(r4.src_ref.slice(i4 + 1), r4.src_ref.slice(0, i4));
-        if (wi2) out.push(wi2);
-      }
-    }
-  }
-  return out;
-}
-function looksLikeResidualClosure(text46) {
-  return /\b(split[- ]?off|carved[- ]?off|residual|deferred|not (?:fully |entirely )?met|partial(?:ly)? (?:done|complete|addressed)|left (?:open|unresolved|unmet)|unmet acceptance|acceptance (?:criteri\w*|ask)\b[^.]*(?:not met|unmet))\b/i.test(
-    text46
-  );
-}
-async function listConvertedPlanItemRefs(workspaceId = DEFAULT_COORD_WORKSPACE) {
-  const { sql: sql5 } = getOrgPg();
-  const rows = await sql5`
-    SELECT DISTINCT dst_ref
-      FROM harness_shared.coord_links
-     WHERE workspace_id = ${workspaceId}
-       AND rel = ${IMPLEMENTS_REL}
-       AND dst_kind = ${PLAN_ITEM_KIND}`;
-  return new Set(rows.map((r4) => r4.dst_ref));
-}
-function planItemTitle(text46, max2 = 140) {
-  const oneLine5 = text46.replace(/\s+/g, " ").trim();
-  return oneLine5.length <= max2 ? oneLine5 : `${oneLine5.slice(0, max2 - 1)}\u2026`;
-}
-async function convertPlanItem(opts) {
-  const kind2 = opts.kind ?? "task";
-  if (!isWorkItemKind(kind2)) return { status: "refused", reason: `unknown work_item kind '${kind2}'` };
-  const read = await readPlanBySlug(opts.planSlug, {
-    harnessSlug: opts.harnessSlug,
-    workspaceId: opts.workspaceId
-  });
-  if (!read) return { status: "refused", reason: `plan '${opts.planSlug}' not found` };
-  const items = read.row.items.length > 0 ? read.row.items.map((i4) => ({ id: i4.id, status: i4.status, text: i4.text })) : read.parsed.items.map((i4) => ({ id: i4.id, status: i4.storedStatus, text: i4.text ?? null }));
-  const item = items.find((i4) => i4.id === opts.itemId);
-  if (!item) {
-    return { status: "refused", reason: `plan item ${opts.itemId} not found in '${opts.planSlug}'` };
-  }
-  if (item.status === "done" || item.status === "dropped") {
-    return { status: "refused", reason: `plan item ${opts.itemId} is already ${item.status}` };
-  }
-  const claimRes = await claimPlanItem({
-    workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug,
-    planSlug: opts.planSlug,
-    itemId: opts.itemId,
-    owner: opts.owner,
-    ownerLabel: opts.ownerLabel,
-    ownerName: opts.ownerName,
-    ownerUser: opts.ownerUser,
-    intent: opts.intent ?? `convert-at-pickup \u2192 work_item[kind=${kind2}]`,
-    livenessMode: opts.livenessMode,
-    ttlSec: opts.ttlSec
-  });
-  if (claimRes.status !== "claimed") return claimRes;
-  const stamp = {
-    plan_slug: opts.planSlug,
-    item_id: opts.itemId,
-    harness_slug: opts.harnessSlug
-  };
-  const planItem = { plan: opts.planSlug, item: opts.itemId, status: item.status, text: item.text };
-  let existing = await findImplementingWorkItem(opts.planSlug, opts.itemId);
-  let edgeMissing = false;
-  if (!existing) {
-    existing = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug);
-    edgeMissing = existing !== null;
-  }
-  if (existing && !TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
-    let resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? void 0 });
-    if (!resumed) {
-      await releaseWorkItem(existing.id, { harness: existing.harness ?? void 0 });
-      resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? void 0 });
-    }
-    if (edgeMissing) {
-      const wiForLink = resumed ?? existing;
-      await linkWorkItem(
-        wiForLink.id,
-        { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, opts.itemId) },
-        IMPLEMENTS_REL,
-        { harness: wiForLink.harness ?? void 0, by: opts.owner }
-      );
-    }
-    return {
-      status: "resumed",
-      workItem: resumed ?? existing,
-      claim: claimRes.claim,
-      mode: claimRes.mode,
-      viaAssignment: claimRes.viaAssignment,
-      planItem,
-      priorHolderWarning: claimRes.priorHolderWarning
-    };
-  }
-  const title = opts.title ?? (item.text ? planItemTitle(item.text) : `${opts.planSlug} ${opts.itemId}`);
-  const effectiveBrief = opts.brief ?? (opts.compileBriefIfMissing ? compilePlanItemBrief({
-    itemId: opts.itemId,
-    itemText: item.text ?? "",
-    planTitle: read.parsed.frontmatter?.title ?? null,
-    planFocus: read.parsed.now ? { state: read.parsed.now.state, next: read.parsed.now.next } : null,
-    decisions: decisionsForItem(read.parsed, opts.itemId)
-  }) || void 0 : void 0);
-  const created = await createWorkItem({
-    kind: kind2,
-    title,
-    summary: item.text ?? void 0,
-    harness: opts.harnessSlug,
-    payload: {
-      plan_item: stamp,
-      ...opts.planRun ? { plan_run: opts.planRun } : {},
-      ...effectiveBrief ? { brief: effectiveBrief } : {}
-    },
-    // queen-steering-panel P-008: stamp the source plan slug on the minted work-item
-    // so the Queen's survey can HARD-filter the frontier by the owner's eligible-plans
-    // (surveyHive scopeFilter). Feature-family kinds write the source_plan_slug column;
-    // issue-family kinds ignore it (no frontier row). Scheduled-run work items group
-    // under the TEMPLATE slug (the stable plan identity) so that filter works
-    // unchanged; the specific run rides payload.plan_run (scheduled-recurring-plans D-016).
-    sourcePlanSlug: opts.planRun?.templateSlug ?? opts.planSlug,
-    createdBy: opts.owner,
-    // Issue-family kinds take the assignee at creation; feature-family is
-    // claimed right after (no assignee column on insert).
-    assignee: opts.owner
-  });
-  const claimed = await claimWorkItem(created.id, opts.owner, { harness: created.harness ?? void 0 });
-  await linkWorkItem(
-    created.id,
-    { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, opts.itemId) },
-    IMPLEMENTS_REL,
-    { harness: created.harness ?? void 0, by: opts.owner }
-  );
-  return {
-    status: "converted",
-    workItem: claimed ?? created,
-    claim: claimRes.claim,
-    mode: claimRes.mode,
-    viaAssignment: claimRes.viaAssignment,
-    planItem,
-    priorHolderWarning: claimRes.priorHolderWarning
-  };
-}
-var IMPLEMENTS_REL, TERMINAL_WORK_ITEM_STATES;
-var init_convert = __esm({
-  "../../packages/operator-core/lib/plan-items/convert.ts"() {
-    "use strict";
-    init_src6();
-    init_event_log2();
-    init_source();
-    init_issue_blocks_merge();
-    init_work_items();
-    init_liveness2();
-    init_compile_brief();
-    IMPLEMENTS_REL = "implements";
-    TERMINAL_WORK_ITEM_STATES = /* @__PURE__ */ new Set(["passed", "resolved", "closed", "done", "deprecated", "dropped"]);
-  }
-});
-
 // ../../packages/operator-core/lib/external-blockers.ts
 function externalBlockerCapabilityPolicy(capability) {
   return { capability, ...CAPABILITY_POLICIES[capability] };
@@ -542984,9 +543087,9 @@ function classifyRuntimeProbe(agentBin, err12) {
   };
 }
 async function probeAgentBinResolvable(agentBin) {
-  const { execFile: execFile56 } = await import("node:child_process");
+  const { execFile: execFile57 } = await import("node:child_process");
   return await new Promise((resolvePromise) => {
-    execFile56("bash", ["-lc", `command -v ${agentBin}`], { timeout: 5e3 }, (err12) => {
+    execFile57("bash", ["-lc", `command -v ${agentBin}`], { timeout: 5e3 }, (err12) => {
       resolvePromise(classifyRuntimeProbe(agentBin, err12));
     });
   });
@@ -555789,6 +555892,7 @@ var read_items_exports = {};
 __export(read_items_exports, {
   IMPROVEMENT_TOPIC: () => IMPROVEMENT_TOPIC,
   OBSERVATION_TOPIC: () => OBSERVATION_TOPIC,
+  countObservationFilingsSince: () => countObservationFilingsSince,
   issueToCandidate: () => issueToCandidate,
   readImprovementItems: () => readImprovementItems,
   readObservationItems: () => readObservationItems
@@ -555877,6 +555981,15 @@ async function readImprovementItems(opts = {}, deps5 = defaultDeps8) {
 async function readObservationItems(opts = {}, deps5 = defaultDeps8) {
   return readByTopic(OBSERVATION_TOPIC, opts, deps5);
 }
+async function countObservationFilingsSince(createdBy, sinceIso, deps5 = defaultCountDeps) {
+  if (!createdBy) return 0;
+  return deps5.countIssues({
+    topic: OBSERVATION_TOPIC,
+    signalOrigins: ORGANIC_ONLY,
+    createdBy,
+    ...sinceIso ? { createdAfter: sinceIso } : {}
+  });
+}
 async function readByTopic(topic, opts, deps5) {
   const origins = opts.origins ?? ORGANIC_ONLY;
   const issues = await deps5.listIssues({
@@ -555896,7 +556009,7 @@ async function readByTopic(topic, opts, deps5) {
   }
   return originGated.map(issueToCandidate);
 }
-var IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, defaultDeps8;
+var IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, defaultDeps8, defaultCountDeps;
 var init_read_items = __esm({
   "../../packages/operator-core/lib/harness/improvements/read-items.ts"() {
     "use strict";
@@ -555906,6 +556019,7 @@ var init_read_items = __esm({
     IMPROVEMENT_TOPIC = "papercusp-improvement";
     OBSERVATION_TOPIC = "papercusp-observation";
     defaultDeps8 = { listIssues };
+    defaultCountDeps = { countIssues };
   }
 });
 
@@ -566931,6 +567045,7 @@ async function applyPackInstall(opts, deps5 = {}) {
   void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => {
     m6.notifySyncInvalidate("learning.hive");
     m6.notifySyncInvalidate("knowledgePacks.list");
+    m6.notifySyncInvalidate("knowledgePacks.candidates");
   }).catch(() => {
   });
   return {
@@ -566968,6 +567083,7 @@ async function uninstallPack(opts, deps5 = {}) {
   void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => {
     m6.notifySyncInvalidate("learning.hive");
     m6.notifySyncInvalidate("knowledgePacks.list");
+    m6.notifySyncInvalidate("knowledgePacks.candidates");
   }).catch(() => {
   });
   return { ok: true, packId: opts.packId, removed, kept };
@@ -579015,11 +579131,10 @@ async function collectBees(ctx) {
 }
 async function collectWorkItems(ctx) {
   return panelSafe("workItems", async () => {
-    const { listWorkItems: listWorkItems2 } = await Promise.resolve().then(() => (init_work_items(), work_items_exports));
-    const items = await listWorkItems2({ limit: 2e3 });
-    const byState = {};
-    for (const it3 of items) byState[it3.state] = (byState[it3.state] ?? 0) + 1;
+    const { countWorkItemsByState: countWorkItemsByState2 } = await Promise.resolve().then(() => (init_work_items(), work_items_exports));
+    const byState = await countWorkItemsByState2();
     const n7 = (s5) => byState[s5] ?? 0;
+    const total = Object.values(byState).reduce((a3, b6) => a3 + b6, 0);
     const inProgress = n7("wip") + n7("in-progress") + n7("validating") + n7("reviewing");
     let recovery = null;
     try {
@@ -579028,7 +579143,7 @@ async function collectWorkItems(ctx) {
     } catch {
     }
     const data2 = {
-      total: items.length,
+      total,
       byState,
       todo: n7("todo"),
       inProgress,
@@ -583828,9 +583943,9 @@ async function probeBgHostCodeDrift(now2 = Date.now()) {
     };
   }
   try {
-    const { execFile: execFile56 } = await import("node:child_process");
-    const { promisify: promisify57 } = await import("node:util");
-    const run7 = promisify57(execFile56);
+    const { execFile: execFile57 } = await import("node:child_process");
+    const { promisify: promisify58 } = await import("node:util");
+    const run7 = promisify58(execFile57);
     const unit = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || "papercup-bg-host";
     const { stdout: pidOut } = await run7("systemctl", ["--user", "show", "-p", "MainPID", "--value", `${unit}.service`], { timeout: 3e3 });
     const pid = Number(pidOut.trim());
@@ -587361,9 +587476,9 @@ Review the runbook: update the paths if the code moved, or set frontmatter \`sta
 }
 async function listTrackedFiles(root4) {
   try {
-    const { execFile: execFile56 } = await import("node:child_process");
-    const { promisify: promisify57 } = await import("node:util");
-    const run7 = promisify57(execFile56);
+    const { execFile: execFile57 } = await import("node:child_process");
+    const { promisify: promisify58 } = await import("node:util");
+    const run7 = promisify58(execFile57);
     const { stdout } = await run7("git", ["-C", root4, "ls-files", "--recurse-submodules"], {
       maxBuffer: 64 * 1024 * 1024
     });
@@ -616416,8 +616531,8 @@ import { dirname as dirname44, join as join120 } from "node:path";
 import { fileURLToPath as fileURLToPath20 } from "node:url";
 import { promisify as promisify11 } from "node:util";
 async function defaultRunGitLog(paths, sinceDays) {
-  const execFile56 = promisify11(execFileCb);
-  const { stdout } = await execFile56("git", PROMPT_SCAN_GIT_ARGS(paths, sinceDays), {
+  const execFile57 = promisify11(execFileCb);
+  const { stdout } = await execFile57("git", PROMPT_SCAN_GIT_ARGS(paths, sinceDays), {
     cwd: REPO_ROOT4,
     maxBuffer: 16 * 1024 * 1024
   });
@@ -688438,7 +688553,10 @@ async function runObservationRetention(opts = {}, deps5 = defaultObservationRete
   };
   if (opts.dryRun || planned.length === 0) return result27;
   result27.pruned = await deps5.deleteIssues(planned);
-  void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => m6.notifySyncInvalidate("learning.observations")).catch(() => {
+  void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => {
+    m6.notifySyncInvalidate("learning.observations");
+    m6.notifySyncInvalidate("learning.observations.counts");
+  }).catch(() => {
   });
   void Promise.resolve().then(() => (init_compute(), compute_exports)).then((m6) => m6.refreshHealthPanel("observations")).catch(() => {
   });
@@ -691915,6 +692033,79 @@ var init_gc_plan_runs_action = __esm({
   }
 });
 
+// ../../packages/operator-core/lib/harness/routines/gc-dead-loops.ts
+async function gcDeadLoops(opts = {}) {
+  const sql5 = opts.sql ?? getOrgPg().sql;
+  const ws2 = opts.workspaceId ?? activeWorkspaceId();
+  const retentionDays = Number.isFinite(opts.retentionDays) && opts.retentionDays > 0 ? opts.retentionDays : DEAD_LOOP_RETENTION_DAYS_DEFAULT;
+  const maxPerRun = Number.isFinite(opts.maxPerRun) && opts.maxPerRun > 0 ? opts.maxPerRun : DEAD_LOOP_MAX_PER_RUN_DEFAULT;
+  const dryRun = opts.dryRun === true;
+  const cutoff = `${retentionDays} days`;
+  const candidates = await sql5`
+    SELECT r.id, r.name
+      FROM harness_shared.routines r
+      LEFT JOIN harness_shared.coord_presence p
+             ON p.owner_id = r.target_owner_id
+            AND p.workspace_id = r.workspace_id
+     WHERE r.workspace_id = ${ws2}
+       AND r.name LIKE 'loop-%'
+       AND r.target_owner_id IS NOT NULL
+       AND r.active = false
+       AND (p.last_active_at IS NULL OR p.last_active_at < now() - ${cutoff}::interval)
+       AND (r.last_fired_at IS NULL OR r.last_fired_at < now() - ${cutoff}::interval)
+       AND r.created_at < now() - ${cutoff}::interval
+     ORDER BY r.last_fired_at ASC NULLS FIRST
+     LIMIT ${maxPerRun}`;
+  const sample = candidates.slice(0, 5).map((c10) => c10.name);
+  if (dryRun || candidates.length === 0) {
+    return { reaped: candidates.length, sample, dryRun, retentionDays };
+  }
+  const ids = candidates.map((c10) => c10.id);
+  const deleted = await sql5`
+    DELETE FROM harness_shared.routines
+     WHERE workspace_id = ${ws2}
+       AND id = ANY(${ids})
+       AND name LIKE 'loop-%'
+       AND active = false
+    RETURNING id`;
+  return { reaped: deleted.length, sample, dryRun: false, retentionDays };
+}
+var DEAD_LOOP_RETENTION_DAYS_DEFAULT, DEAD_LOOP_MAX_PER_RUN_DEFAULT;
+var init_gc_dead_loops = __esm({
+  "../../packages/operator-core/lib/harness/routines/gc-dead-loops.ts"() {
+    "use strict";
+    init_src6();
+    init_workspace_registry();
+    DEAD_LOOP_RETENTION_DAYS_DEFAULT = 14;
+    DEAD_LOOP_MAX_PER_RUN_DEFAULT = 500;
+  }
+});
+
+// ../../packages/operator-core/lib/harness/routines/gc-dead-loops-action.ts
+var init_gc_dead_loops_action = __esm({
+  "../../packages/operator-core/lib/harness/routines/gc-dead-loops-action.ts"() {
+    "use strict";
+    init_system_actions();
+    init_gc_dead_loops();
+    registerSystemAction("gc-dead-loops", async (ctx) => {
+      const cfg = ctx.triggerConfig ?? {};
+      const retentionDays = Number(cfg.retention_days);
+      const maxPerRun = Number(cfg.max_per_run);
+      const result27 = await gcDeadLoops({
+        workspaceId: ctx.workspaceId,
+        dryRun: cfg.dry_run === true,
+        ...Number.isFinite(retentionDays) && retentionDays > 0 ? { retentionDays } : {},
+        ...Number.isFinite(maxPerRun) && maxPerRun > 0 ? { maxPerRun } : {}
+      });
+      if (result27.reaped > 0) {
+        console.log(
+          `[gc-dead-loops] ${result27.dryRun ? "would reap" : "reaped"} ${result27.reaped} dead loop routine(s) (owner silent > ${result27.retentionDays}d), e.g. ${result27.sample.join(", ")}`
+        );
+      }
+    });
+  }
+});
+
 // ../../packages/operator-core/lib/derived-reads/registry.ts
 var registry_exports3 = {};
 __export(registry_exports3, {
@@ -692024,16 +692215,16 @@ async function refreshDerivedReads(ctx) {
   const producers = listDerivedReadProducers().filter((p3) => !ctx.only || ctx.only.includes(p3.key)).sort((a3, b6) => a3.ttlMs - b6.ttlMs);
   for (const producer of producers) {
     const harnessSlug2 = producer.scope === "workspace" ? GLOBAL_SCOPE2 : ctx.harnessSlug;
+    const existing = await sql5`
+      SELECT computed_at, producer_version, md5(payload::text) AS payload_md5
+        FROM harness_shared.derived_read_snapshots
+       WHERE workspace_id = ${ctx.workspaceId}
+         AND harness_slug = ${harnessSlug2}
+         AND key = ${producer.key}
+       LIMIT 1
+    `;
+    const row = existing[0];
     if (!ctx.force) {
-      const existing = await sql5`
-        SELECT computed_at, producer_version
-          FROM harness_shared.derived_read_snapshots
-         WHERE workspace_id = ${ctx.workspaceId}
-           AND harness_slug = ${harnessSlug2}
-           AND key = ${producer.key}
-         LIMIT 1
-      `;
-      const row = existing[0];
       const fresh = row && Number(row.producer_version ?? 1) === producer.producerVersion && Date.now() - (Number(row.computed_at ?? 0) || 0) < producer.ttlMs;
       if (fresh) {
         outcomes.push({
@@ -692051,7 +692242,7 @@ async function refreshDerivedReads(ctx) {
     try {
       const payload = await producer.compute({ workspaceId: ctx.workspaceId, harnessSlug: harnessSlug2 });
       const computeMs = Date.now() - startedAt2;
-      await sql5`
+      const written = await sql5`
         INSERT INTO harness_shared.derived_read_snapshots
           (workspace_id, harness_slug, key, payload, computed_at, compute_ms, producer_version, error, error_at, updated_at)
         VALUES (${ctx.workspaceId}, ${harnessSlug2}, ${producer.key},
@@ -692065,7 +692256,13 @@ async function refreshDerivedReads(ctx) {
           error = NULL,
           error_at = NULL,
           updated_at = EXCLUDED.updated_at
+        RETURNING md5(payload::text) AS payload_md5
       `;
+      const changed = !row || written[0]?.payload_md5 !== row.payload_md5;
+      if (changed) {
+        void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => m6.notifySyncInvalidate(producer.key)).catch(() => {
+        });
+      }
       outcomes.push({
         key: producer.key,
         harnessSlug: harnessSlug2,
@@ -693481,7 +693678,15 @@ var init_role_principal_caps = __esm({
       // dev:rate_governor_status, change_ledger), the plan state (plans:read), recent app
       // notifications (notifications:read → notifications:recent), activity (activity:read),
       // and search (search:read) to ground its nudges. PLUS messages:write so it can forward a
-      // directive to a specific agent (messages:send). DELIBERATELY WITHOUT work_items:write /
+      // directive to a specific agent — dispatched as execute-action `op:'send_directive'`, which
+      // performs a coord send and returns a stable `msg_id`. (The old `messages:send` mail verb is
+      // RETIRED — _retired/work-item-mail/ — so do not describe this grant in terms of it.)
+      // ⚠ DO NOT "SWEEP" `messages:write` BELOW. It is a live CAPABILITY name, not a retired tool
+      // verb: operator-suggestion-schema.ts pins `capability: z.literal('messages:write')` in
+      // SuggestionSchema's `action:'send_directive'` arm, so removing the grant on line ~109 breaks
+      // EVERY operator directive card. Capability names and tool verbs are both spelled
+      // `namespace:verb` and are DIFFERENT surfaces — see agent-trap-guards-2026-07-26#D-003.
+      // DELIBERATELY WITHOUT work_items:write /
       // harness:write / plans:write / routines:write / cup:spawn / processes:kill: it NUDGES
       // the Queen to re-place, it never re-places/edits/restarts (D-001/D-002). The capability
       // ENVELOPE (capability-envelope/policy.ts ROLE_ENVELOPES.overwatch) ALSO denies
@@ -778186,38 +778391,52 @@ var init_service = __esm({
       id: "service.listening-ports",
       intentLabel: "listening-socket-query",
       bashPattern: /^(?:ss|netstat)(?:\s+-|\s*$)|^lsof\b[^\n]*\s-{1,2}i/,
-      toolName: "dev:service_health",
-      advisoryText: "dev:service_health returns no listening sockets and no owning pid \u2014 its per-service `url` is the address it probed, not proof of a bound listener. There is no tool form for ss/lsof/netstat today (P-013 tracks adding one); keep using them.",
+      toolName: "dev:listening_portz",
+      advisoryText: 'dev:listening_ports { port } answers "what is bound here and which process owns it" \u2014 the structured ss/lsof/netstat answer, including a same-uid pid + command. Read ownerVisible before pid: a socket owned by ANOTHER user reports ownerVisible:false, which means bound-but-unreadable, not free. It reports TCP LISTEN only, so keep using bash for established connections and for a single call spanning several ports.',
       routing: {
-        want: "what is listening on a port / which process owns it",
-        use: "`dev:service_health` \u2014 REJECTED for this intent (see P-009); it returns no sockets and no pids",
-        insteadOf: "`ss -ltnp` / `lsof -nP -iTCP:<port> -sTCP:LISTEN` \u2014 no tool form; keep using bash"
+        want: "what is listening on a TCP port / which process owns it",
+        use: "`dev:listening_ports { port }` (or `{ pid }` for the reverse lookup) \u2014 structured rows with pid, command and ownerVisible",
+        insteadOf: "`ss -ltnp` / `lsof -nP -iTCP:<port> -sTCP:LISTEN` / `netstat -tlnp`. \u26A0 LISTEN sockets only \u2014 an established-connection query (`ss -tn`, `netstat -an`) or one lsof call spanning several ports still needs bash"
       },
-      expectedVerdict: "not-a-substitute",
+      expectedVerdict: "needs-widening",
       cover(atom) {
-        const wantsOwner = /(?:^|\s)-[a-zA-Z]*p[a-zA-Z]*\b/.test(atom) || /^lsof\b/.test(atom);
-        const portMatch = /(?:iTCP:|:)(\d{2,5})\b/.exec(atom);
-        const port = portMatch?.[1];
-        if (wantsOwner) {
+        const isLsof = /^lsof\b/.test(atom);
+        const listenOnly = isLsof ? /-sTCP:LISTEN\b/.test(atom) : /(?:^|\s)-[a-zA-Z]*l[a-zA-Z]*\b/.test(atom);
+        if (!listenOnly) {
           return {
             covered: false,
-            reason: "asks which PROCESS owns the socket; dev:service_health returns no pid or command for any service"
+            reason: isLsof ? "no -sTCP:LISTEN, so it also lists ESTABLISHED connections on the port; dev:listening_ports reports LISTEN sockets only" : "no -l flag \u2014 this asks for connections in every state; dev:listening_ports reports LISTEN sockets only"
           };
         }
-        if (!port) {
+        if (/(?:^|\s)-[a-zA-Z]*u[a-zA-Z]*\b/.test(atom) || /iUDP/i.test(atom)) {
+          return { covered: false, reason: "asks about UDP; dev:listening_ports reports TCP sockets only" };
+        }
+        if (/\b(?:dst|src)\s+\S/.test(atom)) {
           return {
             covered: false,
-            reason: "asks for the socket table itself; dev:service_health returns per-service probe results, never a socket list"
+            reason: "filters by peer address (dst/src); dev:listening_ports filters only by port or pid"
           };
         }
-        const probed = PROBED_PORTS[port];
-        if (!probed) {
+        const selectors = atom.match(/(?:iTCP:|sport\s*=\s*:)([^\s'"]+)/g) ?? [];
+        const operands = [...new Set(selectors.map((t14) => t14.replace(/^(?:iTCP:|sport\s*=\s*:)/, "")))];
+        const literalPorts = operands.filter((o3) => /^\d{2,5}$/.test(o3));
+        if (operands.length > 1) {
           return {
             covered: false,
-            reason: `asks about :${port}, which dev:service_health does not probe \u2014 and it returns no socket table to look it up in`
+            reason: `spans ${operands.length} ports (${operands.join(", ")}) in one call; dev:listening_ports takes a single scalar \`port\``
           };
         }
-        return { covered: true, expression: `dev:service_health \u2192 services.find(s => s.name === '${probed}').up` };
+        if (/(?:^|\s)-p\s+\S/.test(atom) && isLsof) {
+          return { covered: true, expression: "dev:listening_ports { pid } \u2192 sockets[].port" };
+        }
+        if (operands.length === 1) {
+          const shown = literalPorts.length === 1 ? literalPorts[0] : `<${operands[0]}>`;
+          return {
+            covered: true,
+            expression: `dev:listening_ports { port: ${shown} } \u2192 sockets[0].{pid,command,ownerVisible}`
+          };
+        }
+        return { covered: true, expression: "dev:listening_ports {} \u2192 sockets[] (the whole LISTEN table, one row per port+address+command)" };
       }
     };
     SERVICE_PAIRS = [systemctlIsActive, curlHealthProbe, listeningPorts];
@@ -794203,9 +794422,9 @@ async function openForkPr(opts) {
   };
 }
 async function defaultPush(args26) {
-  const { execFile: execFile56 } = await import("node:child_process");
-  const { promisify: promisify57 } = await import("node:util");
-  const run7 = promisify57(execFile56);
+  const { execFile: execFile57 } = await import("node:child_process");
+  const { promisify: promisify58 } = await import("node:util");
+  const run7 = promisify58(execFile57);
   const remoteUrl = buildCloneUrl(args26.forkFullName, args26.token);
   try {
     await run7("git", ["-C", args26.repoPath, "push", remoteUrl, `${args26.branch}:${args26.branch}`]);
@@ -795514,6 +795733,8 @@ async function recordProposal(sql5, input2) {
        dev_anchor_delta = EXCLUDED.dev_anchor_delta, cost_delta = EXCLUDED.cost_delta,
        probe_status = EXCLUDED.probe_status, cycle = EXCLUDED.cycle
      WHERE gym_proposals.status = 'pending'`;
+  void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => m6.notifySyncInvalidate("learning.gym")).catch(() => {
+  });
   return id2;
 }
 async function listProposals(sql5, q4) {
@@ -795754,6 +795975,8 @@ async function setAutoloop(sql5, q4) {
        enabled = EXCLUDED.enabled, budget_usd = EXCLUDED.budget_usd, spent_usd = EXCLUDED.spent_usd,
        status = EXCLUDED.status, last_cycle = EXCLUDED.last_cycle, last_cycle_at = EXCLUDED.last_cycle_at,
        updated_at = EXCLUDED.updated_at`;
+  void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => m6.notifySyncInvalidate("learning.gym")).catch(() => {
+  });
   return merged;
 }
 function makeLoopProposalRecorder(sql5, ctx) {
@@ -797053,7 +797276,7 @@ async function routeCrossHiveEnvelope(env2, opts, ports) {
   const { ref: ref2 } = await ports.createWorkRequest(env2);
   return { admitted: true, reason: adm.reason, action: "work_item", ref: ref2 };
 }
-function peerTag(pubkey) {
+function peerTag2(pubkey) {
   return pubkey.slice(0, 8);
 }
 function makeLiveBoundaryPorts(opts) {
@@ -797061,7 +797284,7 @@ function makeLiveBoundaryPorts(opts) {
     async openAsk(env2) {
       const res = await openConversation(opts.identity, {
         kind: "question",
-        title: `[cross-Hive ask \xB7 ${peerTag(env2.fromHivePubkey)}] ${env2.subject}`,
+        title: `[cross-Hive ask \xB7 ${peerTag2(env2.fromHivePubkey)}] ${env2.subject}`,
         body: env2.body,
         ...opts.harness ? { harness_slug: opts.harness } : {}
       });
@@ -797070,10 +797293,10 @@ function makeLiveBoundaryPorts(opts) {
     async createWorkRequest(env2) {
       const wi2 = await createWorkItem({
         kind: "change",
-        title: `[cross-Hive request \xB7 ${peerTag(env2.fromHivePubkey)}] ${env2.subject}`,
+        title: `[cross-Hive request \xB7 ${peerTag2(env2.fromHivePubkey)}] ${env2.subject}`,
         summary: env2.body,
         ...opts.harness ? { harness: opts.harness } : {},
-        createdBy: `hive:${peerTag(env2.fromHivePubkey)}`
+        createdBy: `hive:${peerTag2(env2.fromHivePubkey)}`
       });
       return { ref: wi2.id };
     }
@@ -822391,6 +822614,8 @@ function extractTargetSlug(action) {
       return null;
     case "scaffold_harness":
       return action.projectSlug ?? null;
+    case "send_directive":
+      return action.to?.[0] ?? null;
     default:
       return null;
   }
@@ -822639,6 +822864,42 @@ async function doAddDirectiveSummary(callerSlug, action) {
     result: { id: rows[0].id, directiveId: action.directiveId, source }
   };
 }
+async function doSendDirective(_callerSlug, action) {
+  const to2 = Array.isArray(action.to) ? action.to.filter((t14) => typeof t14 === "string" && t14.trim().length > 0) : [];
+  if (to2.length === 0) {
+    return { ok: false, actionId: "", error: "validation_error", detail: "send_directive: to (non-empty string[]) required" };
+  }
+  const kind2 = action.kind ?? "Directive";
+  const subject = typeof action.subject === "string" ? action.subject.trim() : "";
+  const body = typeof action.body === "string" ? action.body.trim() : "";
+  if (!subject && !body) {
+    return { ok: false, actionId: "", error: "validation_error", detail: "send_directive: subject or body required" };
+  }
+  const summary = subject ? `[${kind2}] ${subject}` : `[${kind2}]`;
+  let env2;
+  try {
+    env2 = await sendMessage(SEND_DIRECTIVE_IDENTITY, {
+      to: to2,
+      summary,
+      body: body || void 0,
+      category: "operator-directive",
+      extra: {
+        directiveKind: kind2,
+        ...subject ? { directiveSubject: subject } : {},
+        ...action.reason ? { reason: action.reason } : {}
+      }
+    });
+  } catch (e4) {
+    return { ok: false, actionId: "", error: "internal", detail: `coord send failed: ${String(e4?.message ?? e4).slice(0, 500)}` };
+  }
+  return {
+    ok: true,
+    actionId: "",
+    // `msg_id` is the stable id the panel now reads in place of the retired
+    // mail surface's `messageId`.
+    result: { msg_id: env2.msg_id, to: env2.to, ts: env2.ts }
+  };
+}
 async function doCreateFeature(callerSlug, action) {
   if (!action.harness_slug || typeof action.harness_slug !== "string") {
     return { ok: false, actionId: "", error: "validation_error", detail: "harness_slug required" };
@@ -822797,6 +823058,17 @@ function validateActionShape(action) {
       }
       break;
     }
+    case "send_directive": {
+      if (!Array.isArray(a3.to) || a3.to.length === 0 || !a3.to.every((t14) => typeof t14 === "string" && t14.trim())) {
+        return { ok: false, actionId: "", error: "validation_error", detail: "send_directive: to (non-empty string[]) required" };
+      }
+      const hasSubject = typeof a3.subject === "string" && a3.subject.trim().length > 0;
+      const hasBody = typeof a3.body === "string" && a3.body.trim().length > 0;
+      if (!hasSubject && !hasBody) {
+        return { ok: false, actionId: "", error: "validation_error", detail: "send_directive: subject or body required" };
+      }
+      break;
+    }
     default:
       break;
   }
@@ -822816,6 +823088,8 @@ async function dispatchAction(callerSlug, action) {
       return doResumeProject(callerSlug, action);
     case "add_directive_summary":
       return doAddDirectiveSummary(callerSlug, action);
+    case "send_directive":
+      return doSendDirective(callerSlug, action);
     default:
       return { ok: false, actionId: "", error: "validation_error", detail: `unknown op: ${action.op}` };
   }
@@ -822855,7 +823129,7 @@ async function executeAction(callerSlug, body) {
   }
   return result27;
 }
-var execFileP6, REPLAY_VERIFY, MAX_SPAWN_DEPTH, FEATURE_ID_RE4;
+var execFileP6, REPLAY_VERIFY, MAX_SPAWN_DEPTH, SEND_DIRECTIVE_IDENTITY, FEATURE_ID_RE4;
 var init_execute_action = __esm({
   "../../packages/operator-core/lib/execute-action.ts"() {
     "use strict";
@@ -822864,9 +823138,17 @@ var init_execute_action = __esm({
     init_workspace_registry();
     init_scaffold_harness_schema();
     init_operator_api_base();
+    init_messages3();
     execFileP6 = promisify23(execFile20);
     REPLAY_VERIFY = process.env.PAPERCUSP_REPLAY_VERIFY === "1";
     MAX_SPAWN_DEPTH = Number(process.env.PAPERCUSP_MAX_SPAWN_DEPTH ?? 8);
+    SEND_DIRECTIVE_IDENTITY = {
+      ownerId: "system:operator-directive",
+      ownerLabel: "operator \xB7 directive",
+      source: "principal",
+      workspaceId: null,
+      userId: null
+    };
     FEATURE_ID_RE4 = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
   }
 });
@@ -825833,6 +826115,176 @@ var init_processes = __esm({
   }
 });
 
+// ../../packages/operator-core/lib/reserved-service-ports.ts
+function isReservedServicePort(port) {
+  return RESERVED_SERVICE_PORTS.has(port);
+}
+var RESERVED_SERVICE_PORTS;
+var init_reserved_service_ports = __esm({
+  "../../packages/operator-core/lib/reserved-service-ports.ts"() {
+    "use strict";
+    RESERVED_SERVICE_PORTS = /* @__PURE__ */ new Set([
+      3055,
+      // Vite SPA dev server
+      3056,
+      // green operator PTY WS (papercup-dev-api 20-pty-ws.conf)
+      3057,
+      // marketplace-api.service
+      3060,
+      // staging operator PTY WS (papercup-staging-api 20-pty-ws.conf)
+      3070,
+      // GREEN operator (release checkout)
+      3170,
+      // staging operator (integration tree)
+      3270,
+      // desktop session's own working-tree operator (dev-operator-ifneeded.sh)
+      3274
+      // desktop session operator PTY WS (3270 + 4)
+    ]);
+  }
+});
+
+// ../../packages/operator-core/lib/listening-sockets.ts
+import { execFile as execFile22 } from "node:child_process";
+import { promisify as promisify25 } from "node:util";
+function splitHostPort(local) {
+  const bracketed = /^\[(.*)\]:(\d+)$/.exec(local);
+  if (bracketed) return { address: bracketed[1], port: Number(bracketed[2]) };
+  const idx = local.lastIndexOf(":");
+  if (idx <= 0) return null;
+  const port = Number(local.slice(idx + 1));
+  if (!Number.isInteger(port)) return null;
+  return { address: local.slice(0, idx), port };
+}
+function parseSsOutput(stdout) {
+  const rows = [];
+  for (const line2 of stdout.split("\n")) {
+    const trimmed = line2.trim();
+    if (!trimmed) continue;
+    const m6 = SS_ROW.exec(trimmed);
+    if (!m6) continue;
+    const [, state7, local, , processCol] = m6;
+    if (state7.toUpperCase() !== "LISTEN") continue;
+    const hostPort = splitHostPort(local);
+    if (!hostPort) continue;
+    const owner = processCol ? PROCESS_ENTRY.exec(processCol) : null;
+    rows.push({
+      port: hostPort.port,
+      address: hostPort.address,
+      family: hostPort.address.includes(":") ? "ipv6" : "ipv4",
+      pid: owner ? Number(owner[2]) : null,
+      pids: owner ? [Number(owner[2])] : [],
+      listeners: 1,
+      command: owner ? owner[1] : null,
+      ownerVisible: Boolean(owner),
+      reserved: isReservedServicePort(hostPort.port)
+    });
+  }
+  return groupReusePort(rows);
+}
+function groupReusePort(rows) {
+  const byKey = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key12 = `${row.port}\0${row.address}\0${row.command ?? ""}`;
+    const existing = byKey.get(key12);
+    if (!existing) {
+      byKey.set(key12, { ...row, pids: [...row.pids] });
+      continue;
+    }
+    existing.listeners += 1;
+    for (const pid of row.pids) if (!existing.pids.includes(pid)) existing.pids.push(pid);
+  }
+  return [...byKey.values()];
+}
+async function listListeningSockets(opts = {}) {
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync9("ss", ["-tlnpH"], { timeout: 5e3, maxBuffer: 4 * 1024 * 1024 }));
+  } catch (err12) {
+    const code4 = err12.code;
+    throw new ListeningSocketsError(
+      code4 === "ENOENT" ? "`ss` is not available on this host, so the listen table cannot be read." : `could not read the listen table: ${err12 instanceof Error ? err12.message : String(err12)}`
+    );
+  }
+  const all3 = parseSsOutput(stdout);
+  const matchedRows = all3.filter(
+    (s5) => (opts.port === void 0 || s5.port === opts.port) && // Match ANY listener in the group, not just the representative pid —
+    // otherwise a `pid` filter for worker 12 of a cluster finds nothing.
+    (opts.pid === void 0 || s5.pids.includes(opts.pid))
+  );
+  const limit = opts.limit ?? LISTENING_SOCKETS_DEFAULT_LIMIT;
+  return {
+    sockets: matchedRows.slice(0, limit),
+    matched: matchedRows.length,
+    totalListening: all3.length,
+    truncated: matchedRows.length > limit,
+    ownerHidden: matchedRows.filter((s5) => !s5.ownerVisible).length
+  };
+}
+var execFileAsync9, LISTENING_SOCKETS_DEFAULT_LIMIT, ListeningSocketsError, PROCESS_ENTRY, SS_ROW;
+var init_listening_sockets = __esm({
+  "../../packages/operator-core/lib/listening-sockets.ts"() {
+    "use strict";
+    init_reserved_service_ports();
+    execFileAsync9 = promisify25(execFile22);
+    LISTENING_SOCKETS_DEFAULT_LIMIT = 60;
+    ListeningSocketsError = class extends Error {
+    };
+    PROCESS_ENTRY = /\("([^"]*)",pid=(\d+)/;
+    SS_ROW = /^(\S+)\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(.*))?$/;
+  }
+});
+
+// ../../packages/operator-core/lib/agent-tools/dev/listening_ports.ts
+var listening_ports_default;
+var init_listening_ports = __esm({
+  "../../packages/operator-core/lib/agent-tools/dev/listening_ports.ts"() {
+    "use strict";
+    init_zod();
+    init_src15();
+    init_listening_sockets();
+    listening_ports_default = defineTool({
+      name: "dev:listening_ports",
+      profile: "engineer",
+      description: "What is listening on a TCP port and WHICH PROCESS owns it \u2014 the `ss -tlnp` / `lsof -iTCP:<port> -sTCP:LISTEN` / `netstat -tlnp` answer, structured. Filter by `port` (what owns this port) or by `pid` (which ports does this process listen on). Owner resolution is same-uid only: a socket owned by another user is reported as listening with ownerVisible:false, which is NOT the same as nothing being bound.",
+      capability: "intel:read",
+      guidance: {
+        when: "You need to know whether something is bound to a port and who owns it \u2014 diagnosing EADDRINUSE, finding the pid squatting a port, confirming a server you started actually bound, or checking which ports a pid opened. Works for ANY port, including ephemeral ones you just allocated.",
+        notWhen: 'NOT for "is my service healthy" \u2014 dev:service_health probes the known endpoints and is the right tool for a registered service. This reports only TCP sockets in LISTEN state: no UDP, no established connections, no traffic.',
+        returns: "{ sockets[], matched, totalListening, truncated, ownerHidden }. Each socket: { port, address, family, pid, pids[], listeners, command, ownerVisible, reserved }.\n\nOne row per (port, address, command), NOT per socket: a SO_REUSEPORT cluster binds one socket per worker (the operator on :3070 has 16), so `pids` lists every listener and `listeners` counts them. `pid` is the representative \u2014 filtering by `pid` matches any worker in the group.\n\nREAD ownerVisible BEFORE pid. The kernel reveals a socket owner only to the same uid, so:\n  \u2022 listening + ownerVisible:true  \u2192 `pid`/`command` are the real owner.\n  \u2022 listening + ownerVisible:false \u2192 the port IS bound, by ANOTHER USER (root system services, Postgres on :5432, \u2026). pid/command are null because they are unreadable, NOT because the port is free. Do not report it as unowned.\n  \u2022 no row at all \u2192 nothing is listening on that port.\nOn this host ~60% of listening sockets fall in the middle case, so conflating it with the third is a confident wrong answer. `reserved:true` marks a RESERVED_SERVICE_PORTS core-service port \u2014 never squat it. `ownerHidden` counts matched rows in the middle case.",
+        seeAlso: [
+          "dev:service_health (is a KNOWN service healthy \u2014 probes the endpoint registry)",
+          "dev:processes (the agent-kind process inventory; not a general ps)",
+          "capability:bash_output (did MY background job finish, and what did it print)"
+        ]
+      },
+      requirePrincipal: false,
+      agentRoles: ["operator", "architect", "debugger", "cup"],
+      args: external_exports.object({
+        prt: external_exports.number().int().positive().max(65535).optional().describe("DRILL \u2014 renamed from port, restore"),
+        pid: external_exports.number().int().positive().optional().describe("Only sockets owned by this pid (same-uid processes only)."),
+        limit: external_exports.number().int().positive().max(500).optional().describe(`Max rows (default ${LISTENING_SOCKETS_DEFAULT_LIMIT}). This host has ~240 listening sockets.`)
+      }),
+      async handler(args26) {
+        try {
+          const result27 = await listListeningSockets({ port: args26.port, pid: args26.pid, limit: args26.limit });
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ok: true, ...result27 }, null, 2) }]
+          };
+        } catch (err12) {
+          const message2 = err12 instanceof ListeningSocketsError ? err12.message : String(err12);
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ ok: false, reason: "listen_table_unreadable", message: message2 }) }
+            ],
+            isError: true
+          };
+        }
+      }
+    });
+  }
+});
+
 // ../../packages/operator-core/lib/agent-tools/dev/session_detail.ts
 var session_detail_default;
 var init_session_detail = __esm({
@@ -828742,8 +829194,8 @@ var init_settings_set = __esm({
 
 // ../../packages/operator-core/lib/preflight-binaries.ts
 import { existsSync as existsSync113 } from "node:fs";
-import { execFile as execFile22 } from "node:child_process";
-import { promisify as promisify25 } from "node:util";
+import { execFile as execFile23 } from "node:child_process";
+import { promisify as promisify26 } from "node:util";
 async function tryProbe(path79, timeoutMs = 3e3) {
   try {
     await exec2(path79, ["--version"], { timeout: timeoutMs });
@@ -828803,13 +829255,13 @@ var exec2;
 var init_preflight_binaries = __esm({
   "../../packages/operator-core/lib/preflight-binaries.ts"() {
     "use strict";
-    exec2 = promisify25(execFile22);
+    exec2 = promisify26(execFile23);
   }
 });
 
 // ../../packages/operator-core/lib/endpoint-route/routes/desktop/setup-status.ts
-import { execFile as execFile23 } from "node:child_process";
-import { promisify as promisify26 } from "node:util";
+import { execFile as execFile24 } from "node:child_process";
+import { promisify as promisify27 } from "node:util";
 import net6 from "node:net";
 async function probePostgres() {
   const useEmbedded = process.env.PAPERCUSP_USE_EMBEDDED_PG === "1";
@@ -828951,7 +829403,7 @@ var init_setup_status = __esm({
     init_agent_auth_detect();
     init_preflight_binaries();
     init_src15();
-    exec3 = promisify26(execFile23);
+    exec3 = promisify27(execFile24);
     setup_status_default = defineTool({
       method: "GET",
       path: "/desktop/setup-status",
@@ -828998,15 +829450,15 @@ var init_status8 = __esm({
 });
 
 // ../../packages/operator-core/lib/agent-tools/setup/set_git_identity.ts
-import { execFile as execFile24 } from "node:child_process";
-import { promisify as promisify27 } from "node:util";
+import { execFile as execFile25 } from "node:child_process";
+import { promisify as promisify28 } from "node:util";
 var exec4, set_git_identity_default;
 var init_set_git_identity = __esm({
   "../../packages/operator-core/lib/agent-tools/setup/set_git_identity.ts"() {
     "use strict";
     init_zod();
     init_src15();
-    exec4 = promisify27(execFile24);
+    exec4 = promisify28(execFile25);
     set_git_identity_default = defineTool({
       name: "setup:set_git_identity",
       profile: "engineer",
@@ -835237,8 +835689,8 @@ var init_list_desktops = __esm({
 });
 
 // ../../packages/operator-core/lib/agent-tools/dev/systemd-service-probe.ts
-import { execFile as execFile25 } from "node:child_process";
-import { promisify as promisify28 } from "node:util";
+import { execFile as execFile26 } from "node:child_process";
+import { promisify as promisify29 } from "node:util";
 function resolveUnitName(unit) {
   return KNOWN_UNIT_SUFFIXES.test(unit) ? unit : `${unit}.service`;
 }
@@ -835284,7 +835736,7 @@ var run2, KNOWN_UNIT_SUFFIXES;
 var init_systemd_service_probe = __esm({
   "../../packages/operator-core/lib/agent-tools/dev/systemd-service-probe.ts"() {
     "use strict";
-    run2 = promisify28(execFile25);
+    run2 = promisify29(execFile26);
     KNOWN_UNIT_SUFFIXES = /\.(service|timer|socket|target|mount|path|slice)$/;
   }
 });
@@ -842171,13 +842623,7 @@ function suIdeateObsThreshold() {
   return Number.isFinite(raw2) && raw2 > 0 ? Math.floor(raw2) : 10;
 }
 async function countObservationsSinceDefault(ownerId, sinceMs) {
-  const rows = await readObservationItems({});
-  return rows.filter((r4) => {
-    if (r4.createdBy !== ownerId) return false;
-    if (sinceMs == null) return true;
-    const ms3 = r4.createdAt ? Date.parse(r4.createdAt) : Number.NaN;
-    return Number.isFinite(ms3) && ms3 > sinceMs;
-  }).length;
+  return countObservationFilingsSince(ownerId, sinceMs == null ? null : new Date(sinceMs).toISOString());
 }
 async function computeIdeateOverdue(input2, deps5 = defaultIdeateHintDeps) {
   const nowMs = input2.nowMs ?? Date.now();
@@ -842277,12 +842723,7 @@ function computeCaptureMissHint(input2) {
   };
 }
 async function countLaneFilingsSinceDefault(ownerId, sinceMs) {
-  const rows = await readObservationItems({});
-  return rows.filter((r4) => {
-    if (r4.createdBy !== ownerId) return false;
-    const ms3 = r4.createdAt ? Date.parse(r4.createdAt) : Number.NaN;
-    return Number.isFinite(ms3) && ms3 > sinceMs;
-  }).length;
+  return countObservationFilingsSince(ownerId, new Date(sinceMs).toISOString());
 }
 async function gatherSignalTextDefault(ownerId, harness) {
   let scope = harness;
@@ -849297,7 +849738,7 @@ var init_novelty_precheck = __esm({
 });
 
 // ../../packages/operator-core/lib/scout/generation-watermark.ts
-import { execFile as execFile26 } from "node:child_process";
+import { execFile as execFile27 } from "node:child_process";
 function parseSystemdTimestamp(value) {
   const v8 = (value ?? "").trim();
   if (!v8 || v8 === "n/a") return null;
@@ -849314,7 +849755,7 @@ function parseSystemdTimestamp(value) {
 }
 function readBgHostActiveEnterMs(unit = BG_HOST_UNIT) {
   return new Promise((resolve82) => {
-    execFile26(
+    execFile27(
       "systemctl",
       ["--user", "show", unit, "-p", "ActiveEnterTimestamp", "--value"],
       { env: { ...process.env, TZ: "UTC" }, timeout: 5e3 },
@@ -849331,7 +849772,7 @@ function resolveStagingRoot() {
 }
 function resolveStagingHeadAsOf(atIso, opts = {}) {
   return new Promise((resolve82) => {
-    execFile26(
+    execFile27(
       "git",
       ["log", "-1", `--before=${atIso}`, "--format=%H"],
       { cwd: opts.cwd ?? resolveStagingRoot(), timeout: 5e3 },
@@ -855187,8 +855628,8 @@ var init_group_set = __esm({
 });
 
 // ../../packages/operator-core/lib/agent-tools/git_sync/run.ts
-import { execFile as execFile27 } from "node:child_process";
-import { promisify as promisify29 } from "node:util";
+import { execFile as execFile28 } from "node:child_process";
+import { promisify as promisify30 } from "node:util";
 async function headSha2(repoDir) {
   try {
     const { stdout } = await execFileP7("git", ["rev-parse", "HEAD"], { cwd: repoDir, timeout: HEAD_SHA_TIMEOUT_MS });
@@ -855208,7 +855649,7 @@ var init_run10 = __esm({
     init_operator_notes();
     init_git_sync_action();
     init_bounded_timeout();
-    execFileP7 = promisify29(execFile27);
+    execFileP7 = promisify30(execFile28);
     GIT_SYNC_RUN_BUDGET_MS = 45e3;
     HEAD_SHA_TIMEOUT_MS = 5e3;
     run_default3 = defineTool({
@@ -858029,7 +858470,7 @@ async function collectScheduleInventory(deps5 = {}) {
       nextFire: null,
       lastError: null,
       groupSlug: null,
-      detail: { source: s5.source, ...s5.trigger ? { trigger: s5.trigger } : {}, ...s5.flag ? { flag: s5.flag } : {}, note: s5.note }
+      detail: { source: s5.source, spends: s5.spends, ...s5.trigger ? { trigger: s5.trigger } : {}, ...s5.flag ? { flag: s5.flag } : {}, note: s5.note }
     });
   }
   return rows.sort(
@@ -858078,6 +858519,7 @@ var init_schedule_inventory = __esm({
         // detection is unconditional
         source: "packages/operator-core/lib/harness/docs/sweep-after-sync.ts",
         trigger: "git-sync-action.ts \u2192 runDocFreshnessSweepAfterSync",
+        spends: "none",
         note: "Detects drifted docs by comparing HEAD against each doc's anchored code. Free \u2014 no agent spawn."
       },
       {
@@ -858086,6 +858528,7 @@ var init_schedule_inventory = __esm({
         armed: null,
         flag: "papercusp-doc-steward",
         source: "packages/operator-core/lib/harness/docs/doc-steward-dispatch.ts",
+        spends: "llm",
         note: "Spawns an LLM doc-steward agent to re-sync drifted docs. Owner-authority dark flag \u2014 OFF means drift is still detected, just not auto-repaired."
       }
     ];
@@ -862804,6 +863247,11 @@ var init_propose = __esm({
         });
         const completeness = rubricCompleteness(rubric);
         const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+        void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => {
+          m6.notifySyncInvalidate("rubrics.list");
+          m6.notifySyncInvalidate("rubrics.trend");
+        }).catch(() => {
+        });
         return {
           content: [
             { type: "text", text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck }) }
@@ -862868,6 +863316,11 @@ var init_amend = __esm({
         }
         const completeness = rubricCompleteness(rubric);
         const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+        void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => {
+          m6.notifySyncInvalidate("rubrics.list");
+          m6.notifySyncInvalidate("rubrics.trend");
+        }).catch(() => {
+        });
         return {
           content: [
             { type: "text", text: JSON.stringify({ ok: true, rubric, completeness, replicationSqlCheck }) }
@@ -862924,6 +863377,12 @@ var init_ratify = __esm({
             }
             const completeness = rubricCompleteness(rubric);
             const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
+            void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => {
+              m6.notifySyncInvalidate("rubrics.list");
+              m6.notifySyncInvalidate("rubrics.trend");
+              m6.notifySyncInvalidate("learning.releaseReadiness");
+            }).catch(() => {
+            });
             return { ok: true, rubricId, rubric, completeness, replicationSqlCheck };
           },
           { keyOf: (rubricId) => ({ rubricId }) }
@@ -863325,6 +863784,14 @@ async function emitScorecard2(args26, input2) {
         }
       }
     });
+    if (result27.created) {
+      void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => {
+        m6.notifySyncInvalidate("scorecards.list");
+        m6.notifySyncInvalidate("rubrics.trend");
+        m6.notifySyncInvalidate("learning.releaseReadiness");
+      }).catch(() => {
+      });
+    }
     return {
       ok: true,
       created: result27.created,
@@ -864558,6 +865025,39 @@ var init_checkpoint_bg_job_claim = __esm({
   }
 });
 
+// ../../packages/operator-core/lib/scheduler/plan-item-claim-collision.ts
+async function planItemClaimCollision(workItem2) {
+  if (!workItem2.assignee) return null;
+  const stamp = await resolvePlanItemStamp(workItem2);
+  if (!stamp) return null;
+  try {
+    const { resolvePlanScope: resolvePlanScope2 } = await Promise.resolve().then(() => (init_source(), source_exports));
+    const { workspaceId, harnessSlug: harnessSlug2 } = await resolvePlanScope2({ harnessSlug: workItem2.harness ?? void 0 });
+    for (const itemId of stamp.item_ids) {
+      const claim2 = await getClaim2(workspaceId, harnessSlug2, stamp.plan_slug, itemId);
+      if (claim2 && !claim2.expired && claim2.owner !== workItem2.assignee) {
+        return {
+          planSlug: stamp.plan_slug,
+          itemId,
+          claimedBy: claim2.owner,
+          claimedByLabel: claim2.ownerLabel,
+          note: `plan item ${stamp.plan_slug}#${itemId} \u2014 which this work-item implements \u2014 is now held by a LIVE claim from ${claim2.ownerLabel ?? claim2.owner}, not this work-item's assignee. Holding the linked work-item is not holding the plan item: coordinate with them before continuing to avoid duplicated work.`
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+var init_plan_item_claim_collision = __esm({
+  "../../packages/operator-core/lib/scheduler/plan-item-claim-collision.ts"() {
+    "use strict";
+    init_plan_item_lane_guard();
+    init_claims();
+  }
+});
+
 // ../../packages/operator-core/lib/agent-tools/work_items/get.ts
 var WORK_ITEMS_GET_SOFT_TTL_MS, get_default18;
 var init_get19 = __esm({
@@ -864574,14 +865074,21 @@ var init_get19 = __esm({
     init_checkpoint_bg_job_claim();
     init_presence5();
     init_plan_item_lane_guard();
+    init_plan_item_claim_collision();
     init_completion_audit();
     WORK_ITEMS_GET_SOFT_TTL_MS = 2e4;
     get_default18 = defineTool({
       name: "work_items:get",
       profile: "engineer",
-      description: "Fetch one OR many work-items by id (WI-/F-/EI-\u2026) \u2014 `id` for one or `ids` for several (1\u2013100). `harness` disambiguates a repeated feature id. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, auditProseEvidenceLikely?, error? }], counts } \u2014 correlate by id, not position. Conditional fields (present only when they apply): `planItemBlocked` = the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }) \u2014 check before unblocking; `checkpoint` = in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less); `checkpointStale` = the assignee kept working after that checkpoint; `checkpointBgJobWarning` = the checkpoint cites a background job/task as evidence \u2014 that bookkeeping can die silently across a process boundary, so verify the pid/completion-marker before trusting it; `auditProseEvidenceLikely` = structured completion evidence is empty but a `terminalCompletionRef` exists, so the real proof is likely PROSE in completion.summary \u2014 read it before reopening a close as bare.",
+      // P-011 prompt-weight budget counts description + when + notWhen + chaining
+      // and NOT returns/seeAlso. The conditional-field reference below therefore
+      // lives in `guidance.returns`: it was in `description`, which pushed this tool
+      // to 1774 chars and breached the 1600 HARD CAP, reddening the fleet gate. It
+      // is documentation of the RESPONSE, so `returns` is also where it belongs.
+      description: "Fetch one OR many work-items by id (WI-/F-/EI-\u2026) \u2014 `id` for one or `ids` for several (1\u2013100). `harness` disambiguates a repeated feature id. Returns { ok, results:[\u2026], counts } \u2014 correlate by id, NOT position. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
       guidance: {
         when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
+        returns: "{ ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, auditProseEvidenceLikely?, error? }], counts } \u2014 correlate by id, not position.\n\nConditional fields, present only when they apply:\n\u2022 `planItemBlocked` \u2014 the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n\u2022 `planItemClaimCollision` \u2014 holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing \u2014 you may be duplicating work.\n\u2022 `checkpoint` \u2014 in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n\u2022 `checkpointStale` \u2014 the assignee kept working after that checkpoint.\n\u2022 `checkpointBgJobWarning` \u2014 the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n\u2022 `auditProseEvidenceLikely` \u2014 structured completion evidence is empty but a `terminalCompletionRef` exists, so the real proof is likely PROSE in completion.summary. Read it before reopening a close as bare.",
         notWhen: "Browsing or filtering the queue \u2192 work_items:list / work_items:search (they already return many rows).",
         chaining: "work_items:list \u2192 work_items:get { ids:[\u2026] } for detail on the ones you care about.",
         seeAlso: [
@@ -864641,6 +865148,7 @@ var init_get19 = __esm({
               if (staleness.stale) checkpointStale = staleness;
             }
             const planItemBlocked = await planItemLaneBlockReason(workItem2).catch(() => null);
+            const claimCollision = await planItemClaimCollision(workItem2).catch(() => null);
             const auditProseEvidenceLikely = !workItem2.terminalCompletionEvidence && workItem2.terminalCompletionRef ? looksLikeCitedProseEvidence(workItem2.terminalCompletionRef) : void 0;
             const checkpointBgJobWarning = checkpoint ? detectBgJobCheckpointClaim(checkpoint).reason : void 0;
             return {
@@ -864653,6 +865161,7 @@ var init_get19 = __esm({
               ...checkpointStale ? { checkpointStale } : {},
               ...checkpointBgJobWarning ? { checkpointBgJobWarning } : {},
               ...planItemBlocked ? { planItemBlocked } : {},
+              ...claimCollision ? { planItemClaimCollision: claimCollision } : {},
               ...auditProseEvidenceLikely !== void 0 ? { auditProseEvidenceLikely } : {}
             };
           },
@@ -870572,6 +871081,47 @@ var init_observe = __esm({
   }
 });
 
+// ../../packages/operator-core/lib/plan-decisions-claim-port.ts
+var plan_decisions_claim_port_exports = {};
+__export(plan_decisions_claim_port_exports, {
+  getClaimTimePlanDecisions: () => getClaimTimePlanDecisions
+});
+async function getClaimTimePlanDecisions(opts) {
+  const planSlug = planSlugOfWorkItem(opts.workItem);
+  if (!planSlug) return null;
+  try {
+    const row = await getPlanRow(planSlug, {
+      ...opts.harness ? { harnessSlug: opts.harness } : {},
+      ...opts.workspaceId ? { workspaceId: opts.workspaceId } : {}
+    });
+    if (!row) return null;
+    const decisions2 = parsePlan(row.content).decisions;
+    if (!decisions2.length) return null;
+    return {
+      planSlug,
+      decisions: decisions2.slice(0, MAX_DECISIONS).map((d3) => ({
+        id: d3.id,
+        title: d3.title,
+        snippet: clampSnippet(d3.body, SNIPPET_CHARS2)
+      }))
+    };
+  } catch {
+    return null;
+  }
+}
+var SNIPPET_CHARS2, MAX_DECISIONS;
+var init_plan_decisions_claim_port = __esm({
+  "../../packages/operator-core/lib/plan-decisions-claim-port.ts"() {
+    "use strict";
+    init_claim_spec_match();
+    init_source();
+    init_parser4();
+    init_ref_hydrate();
+    SNIPPET_CHARS2 = 240;
+    MAX_DECISIONS = 8;
+  }
+});
+
 // ../../packages/operator-core/lib/agent-tools/scheduler/get_next.ts
 function getNextTimeoutResult(budgetMs = GET_NEXT_BUDGET_MS) {
   return {
@@ -870867,6 +871417,17 @@ var init_get_next2 = __esm({
           checkpointHint = await Promise.resolve().then(() => (init_work_item_checkpoint(), work_item_checkpoint_exports)).then((m6) => m6.getClaimTimeCheckpointHint({ harness: wi2.harness ?? null, workItemId: wi2.id, workspaceId: ident3.workspaceId ?? void 0 })).catch(() => null);
         }
         const bgJobWarning = checkpointHint ? await Promise.resolve().then(() => (init_checkpoint_bg_job_claim(), checkpoint_bg_job_claim_exports)).then((m6) => m6.detectBgJobCheckpointClaim(checkpointHint.checkpoint)).catch(() => ({ detected: false })) : { detected: false };
+        let planDecisions = null;
+        if (res?.workItem) {
+          const wi2 = res.workItem;
+          planDecisions = await Promise.resolve().then(() => (init_plan_decisions_claim_port(), plan_decisions_claim_port_exports)).then(
+            (m6) => m6.getClaimTimePlanDecisions({
+              workItem: { payload: wi2.payload },
+              harness: wi2.harness ?? args26.harness,
+              workspaceId: ident3.workspaceId
+            })
+          ).catch(() => null);
+        }
         if (res?.workItem) {
           await cancelClaimableAwaits(ident3.ownerId).catch(() => 0);
         }
@@ -870923,6 +871484,10 @@ var init_get_next2 = __esm({
                     checkpointAgeMs: checkpointHint.checkpointAgeMs,
                     checkpointWarning: "A PRIOR holder left an in-flight checkpoint on this item \u2014 it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).",
                     ...bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}
+                  } : {},
+                  ...planDecisions ? {
+                    planDecisions: planDecisions.decisions,
+                    planDecisionsNote: `${planDecisions.decisions.length} governing decision(s) recorded on plan '${planDecisions.planSlug}' \u2014 read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${planDecisions.planSlug}', heading:'Decisions' } for full bodies).`
                   } : {}
                 } : invalidHarnessKnownSlugs ? {
                   ok: false,
@@ -892031,10 +892596,10 @@ var init_revisions_list = __esm({
 });
 
 // ../../packages/operator-core/lib/agent-tools/plans/git-history.ts
-import { execFile as execFile28, execFileSync as execFileSync15 } from "node:child_process";
+import { execFile as execFile29, execFileSync as execFileSync15 } from "node:child_process";
 import { existsSync as existsSync123 } from "node:fs";
 import * as path45 from "node:path";
-import { promisify as promisify30 } from "node:util";
+import { promisify as promisify31 } from "node:util";
 function resolveRepoRoot() {
   const cwd = process.cwd();
   try {
@@ -892118,7 +892683,7 @@ var exec5, PLAN_GIT_SLUG_RE, PLAN_GIT_HASH_RE, PLANS_DIR_REL2, DEFAULT_HISTORY_L
 var init_git_history = __esm({
   "../../packages/operator-core/lib/agent-tools/plans/git-history.ts"() {
     "use strict";
-    exec5 = promisify30(execFile28);
+    exec5 = promisify31(execFile29);
     PLAN_GIT_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$/;
     PLAN_GIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
     PLANS_DIR_REL2 = "apps/operator/docs/plans";
@@ -906554,6 +907119,7 @@ var init_agent_tools2 = __esm({
     init_state_counter();
     init_event_emitter();
     init_processes();
+    init_listening_ports();
     init_session_detail();
     init_resolve_owner();
     init_tool_cooccurrence();
@@ -907183,7 +907749,7 @@ __export(git_pipeline_hives_exports, {
   bridgeStateFromMetadata: () => bridgeStateFromMetadata,
   gitPipelineHiveRows: () => gitPipelineHiveRows
 });
-import { execFile as execFile29 } from "node:child_process";
+import { execFile as execFile30 } from "node:child_process";
 import { existsSync as existsSync132 } from "node:fs";
 function bridgeStateFromMetadata(gb2, memberSlug) {
   if (!gb2 || typeof gb2 !== "object") return null;
@@ -907224,7 +907790,7 @@ async function loadBridgeState(memberSlugs) {
 function revListCount(root4, from, to2) {
   return new Promise((resolve82) => {
     if (!root4 || !existsSync132(root4)) return resolve82(null);
-    execFile29(
+    execFile30(
       "git",
       ["-C", root4, "rev-list", "--count", `${from}..${to2}`],
       { timeout: 5e3 },
@@ -917895,7 +918461,7 @@ var require_uri_parser = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.parseUri = parseUri;
-    exports2.splitHostPort = splitHostPort;
+    exports2.splitHostPort = splitHostPort2;
     exports2.combineHostPort = combineHostPort;
     exports2.uriToString = uriToString;
     var URI_REGEX = /^(?:([A-Za-z0-9+.-]+):)?(?:\/\/([^/]*)\/)?(.+)$/;
@@ -917911,7 +918477,7 @@ var require_uri_parser = __commonJS({
       };
     }
     var NUMBER_REGEX = /^\d+$/;
-    function splitHostPort(path79) {
+    function splitHostPort2(path79) {
       if (path79.startsWith("[")) {
         const hostEnd = path79.indexOf("]");
         if (hostEnd === -1) {
@@ -990138,14 +990704,14 @@ var init_gym_db_init = __esm({
 });
 
 // ../../packages/operator-core/lib/gym/gym-pg-orphan-sweep.ts
-import { execFile as execFile30 } from "node:child_process";
-import { promisify as promisify31 } from "node:util";
+import { execFile as execFile31 } from "node:child_process";
+import { promisify as promisify32 } from "node:util";
 async function sweepOrphanedGymPgContainers(opts) {
   const maxAgeMs = opts.maxAgeMs ?? DEFAULT_ORPHAN_MAX_AGE_MS;
   const result27 = { swept: [], errors: [] };
   let ids;
   try {
-    const { stdout } = await execFileAsync9("docker", [
+    const { stdout } = await execFileAsync10("docker", [
       "ps",
       "-a",
       "--filter",
@@ -990163,7 +990729,7 @@ async function sweepOrphanedGymPgContainers(opts) {
   if (!ids.length) return result27;
   let inspected;
   try {
-    const { stdout } = await execFileAsync9("docker", ["inspect", ...ids]);
+    const { stdout } = await execFileAsync10("docker", ["inspect", ...ids]);
     inspected = JSON.parse(stdout);
   } catch (err12) {
     result27.errors.push({ id: "(docker inspect)", error: String(err12) });
@@ -990177,7 +990743,7 @@ async function sweepOrphanedGymPgContainers(opts) {
     if (!Number.isFinite(createdMs)) continue;
     if (now2 - createdMs < maxAgeMs) continue;
     try {
-      await execFileAsync9("docker", ["rm", "-f", c10.Id]);
+      await execFileAsync10("docker", ["rm", "-f", c10.Id]);
       result27.swept.push(c10.Id);
     } catch (err12) {
       result27.errors.push({ id: c10.Id, error: String(err12) });
@@ -990185,11 +990751,11 @@ async function sweepOrphanedGymPgContainers(opts) {
   }
   return result27;
 }
-var execFileAsync9, DEFAULT_ORPHAN_MAX_AGE_MS;
+var execFileAsync10, DEFAULT_ORPHAN_MAX_AGE_MS;
 var init_gym_pg_orphan_sweep = __esm({
   "../../packages/operator-core/lib/gym/gym-pg-orphan-sweep.ts"() {
     "use strict";
-    execFileAsync9 = promisify31(execFile30);
+    execFileAsync10 = promisify32(execFile31);
     DEFAULT_ORPHAN_MAX_AGE_MS = 2 * 60 * 60 * 1e3;
   }
 });
@@ -990341,14 +990907,14 @@ import { execFile as execFileCb2 } from "node:child_process";
 import { randomBytes as randomBytes23 } from "node:crypto";
 import { rm as rmCb } from "node:fs";
 import { basename as basename29 } from "node:path";
-import { promisify as promisify32 } from "node:util";
+import { promisify as promisify33 } from "node:util";
 async function ensureGymPipelinePrincipals(sql5, workspaceIds) {
   const ids = [...new Set(workspaceIds.filter((w4) => w4.length > 0))];
   for (const workspaceId of ids) {
     for (const [name3, caps] of Object.entries(GYM_PIPELINE_ROLE_CAPS)) {
       await sql5`
         INSERT INTO harness_shared.system_principals (workspace_id, name, bearer_hash, capabilities)
-        VALUES (${workspaceId}, ${name3}, ${randomBytes23(32).toString("hex")}, ${JSON.stringify(caps)}::jsonb)
+        VALUES (${workspaceId}, ${name3}, ${randomBytes23(32).toString("hex")}, ${sql5.json([...caps])})
         ON CONFLICT (workspace_id, name) DO UPDATE SET capabilities = EXCLUDED.capabilities`;
     }
   }
@@ -990450,8 +991016,8 @@ var init_runner_ports = __esm({
   "../../packages/operator-core/lib/gym/runner-ports.ts"() {
     "use strict";
     init_clone();
-    execFileP8 = promisify32(execFileCb2);
-    rmP = promisify32(rmCb);
+    execFileP8 = promisify33(execFileCb2);
+    rmP = promisify33(rmCb);
     SAFE_SLUG = /^[a-z0-9]+$/;
     GYM_PIPELINE_ROLE_CAPS = {
       // The implementation agent — edits + runs tests in its throwaway clone, and must
@@ -990977,6 +991543,8 @@ async function copyRunAnalyticsToDurable(src, dst, scope) {
               decision = EXCLUDED.decision, gate_results = EXCLUDED.gate_results, budget_spent_usd = EXCLUDED.budget_spent_usd`;
     }
   });
+  void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => m6.notifySyncInvalidate("learning.gym")).catch(() => {
+  });
   return { tasks: tasks.length, variants: variants2.length, runs: runs2.length, scores: scores.length, cycles: cycles2.length };
 }
 async function compareVariants(sql5, variantA, variantB, rubricHash2) {
@@ -991035,7 +991603,7 @@ var init_store16 = __esm({
 import { execFile as execFileCb3 } from "node:child_process";
 import { mkdirSync as mkdirSync29, writeFileSync as writeFileSync26 } from "node:fs";
 import { join as join233 } from "node:path";
-import { promisify as promisify33 } from "node:util";
+import { promisify as promisify34 } from "node:util";
 function createGymStore(sql5) {
   return {
     async upsertVariant(v8) {
@@ -991173,7 +991741,7 @@ var init_ab_runner_real = __esm({
     init_distill2();
     init_rate_pause_events();
     init_store16();
-    execFileP9 = promisify33(execFileCb3);
+    execFileP9 = promisify34(execFileCb3);
   }
 });
 
@@ -995568,8 +996136,8 @@ var init_hive_git_gc_action = __esm({
 });
 
 // ../../packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts
-import { execFile as execFile31 } from "node:child_process";
-import { promisify as promisify34 } from "node:util";
+import { execFile as execFile32 } from "node:child_process";
+import { promisify as promisify35 } from "node:util";
 async function execSystemctlUser(args26) {
   const { stdout } = await execFileP10("systemctl", ["--user", ...args26], { timeout: 1e4 });
   return stdout;
@@ -995597,7 +996165,7 @@ var init_supervision_reconcile_action = __esm({
     init_src8();
     init_messages3();
     init_unit_reconciler();
-    execFileP10 = promisify34(execFile31);
+    execFileP10 = promisify35(execFile32);
     SUPERVISION_IDENTITY = {
       ownerId: "supervision-reconciler",
       ownerLabel: "supervision-reconciler",
@@ -995966,6 +996534,7 @@ var init_register_system_actions = __esm({
     init_session_dir_gc_action();
     init_telemetry_retention_action();
     init_gc_plan_runs_action();
+    init_gc_dead_loops_action();
     init_precompute_derived_reads_action();
     init_doc_anchor_reconcile_action();
     init_idle_session_reaper_action();
@@ -997613,7 +998182,7 @@ async function recordPotThroughputTick(opts) {
         });
       }
     }
-    void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => m6.notifySyncInvalidate("learning.potThroughput")).catch(() => {
+    void Promise.resolve().then(() => (init_sync_sse(), sync_sse_exports)).then((m6) => m6.notifySyncInvalidate("learning.hiveThroughput")).catch(() => {
     });
     return { recorded: true, metrics: metrics2, breaches };
   } catch (e4) {
@@ -999475,7 +1000044,7 @@ __export(worktree_coverage_watchdog_exports, {
   parseWorktreeListPorcelain: () => parseWorktreeListPorcelain,
   startWorktreeCoverageWatchdog: () => startWorktreeCoverageWatchdog
 });
-import { execFile as execFile32 } from "node:child_process";
+import { execFile as execFile33 } from "node:child_process";
 function findUncoveredDirtyWorktrees(worktrees, canonicalPath, patterns = KNOWN_UNCOVERED_WORKTREE_PATTERNS) {
   return worktrees.filter((wt3) => {
     if (!wt3.dirty) return false;
@@ -999485,7 +1000054,7 @@ function findUncoveredDirtyWorktrees(worktrees, canonicalPath, patterns = KNOWN_
 }
 function defaultRunGit3(args26, cwd) {
   return new Promise((resolve82, reject2) => {
-    execFile32("git", args26, { cwd, timeout: 3e4 }, (err12, stdout, stderr) => {
+    execFile33("git", args26, { cwd, timeout: 3e4 }, (err12, stdout, stderr) => {
       if (err12) reject2(new Error(stderr?.toString().trim() || err12.message));
       else resolve82(stdout.toString());
     });
@@ -1002883,8 +1003452,8 @@ var init_urgent_wake2 = __esm({
 });
 
 // ../../packages/operator-core/lib/pot-eval/outcome-metrics.ts
-import { execFile as execFile33 } from "node:child_process";
-import { promisify as promisify35 } from "node:util";
+import { execFile as execFile34 } from "node:child_process";
+import { promisify as promisify36 } from "node:util";
 import { existsSync as existsSync138 } from "node:fs";
 import path54 from "node:path";
 function detectFabrication(truth) {
@@ -1002940,13 +1003509,13 @@ var init_outcome_metrics = __esm({
     "use strict";
     init_signals();
     init_src35();
-    execFileP11 = promisify35(execFile33);
+    execFileP11 = promisify36(execFile34);
   }
 });
 
 // ../../packages/operator-core/lib/pot-eval/ground-truth.ts
-import { execFile as execFile34 } from "node:child_process";
-import { promisify as promisify36 } from "node:util";
+import { execFile as execFile35 } from "node:child_process";
+import { promisify as promisify37 } from "node:util";
 function escapeRegExp4(s5) {
   return s5.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1003041,7 +1003610,7 @@ var execFileP12;
 var init_ground_truth = __esm({
   "../../packages/operator-core/lib/pot-eval/ground-truth.ts"() {
     "use strict";
-    execFileP12 = promisify36(execFile34);
+    execFileP12 = promisify37(execFile35);
   }
 });
 
@@ -1003342,8 +1003911,8 @@ __export(live_ops_exports, {
 import { cp as cp4, rm as rm19 } from "node:fs/promises";
 import { tmpdir as tmpdir24 } from "node:os";
 import { join as join241 } from "node:path";
-import { execFile as execFile35 } from "node:child_process";
-import { promisify as promisify37 } from "node:util";
+import { execFile as execFile36 } from "node:child_process";
+import { promisify as promisify38 } from "node:util";
 async function readMemberSpawnRows(sql5, member, workspaceId) {
   const rows = await sql5`
     SELECT spawn_id, feature_id, status, started_at, finished_at, duration_ms
@@ -1003558,7 +1004127,7 @@ var init_live_ops = __esm({
     init_mug_wake_efficiency();
     init_cup_wake_efficiency();
     init_live_capture();
-    execFileP13 = promisify37(execFile35);
+    execFileP13 = promisify38(execFile36);
     IN_FLIGHT_PLACEMENT_STATUSES = ["working", "recovering"];
   }
 });
@@ -1006094,10 +1006663,10 @@ __export(hive_repo_init_exports, {
   detectGithubCredentials: () => detectGithubCredentials,
   publishHiveRepo: () => publishHiveRepo
 });
-import { execFile as execFile36 } from "node:child_process";
+import { execFile as execFile37 } from "node:child_process";
 import { existsSync as existsSync140 } from "node:fs";
 import { join as join242 } from "node:path";
-import { promisify as promisify38 } from "node:util";
+import { promisify as promisify39 } from "node:util";
 async function commitInitialHiveRepo(opts) {
   const branch = opts.branch ?? DEFAULT_INTEGRATION_BRANCH;
   if (!existsSync140(join242(opts.path, ".git"))) return { committed: false, branch };
@@ -1006244,7 +1006813,7 @@ var execFileP14, HIVE_BOT_NAME, HIVE_BOT_EMAIL, DEFAULT_INTEGRATION_BRANCH;
 var init_hive_repo_init = __esm({
   "../../packages/operator-core/lib/harness/hive-repo-init.ts"() {
     "use strict";
-    execFileP14 = promisify38(execFile36);
+    execFileP14 = promisify39(execFile37);
     HIVE_BOT_NAME = "Papercusp Hive";
     HIVE_BOT_EMAIL = "hive@papercusp.local";
     DEFAULT_INTEGRATION_BRANCH = "staging";
@@ -1006848,7 +1007417,7 @@ import { existsSync as existsSync142 } from "node:fs";
 import { mkdir as mkdir33, readFile as readFile36, rm as rm20, writeFile as writeFile25 } from "node:fs/promises";
 import { homedir as homedir70 } from "node:os";
 import { join as join244, resolve as resolve54 } from "node:path";
-import { promisify as promisify39 } from "node:util";
+import { promisify as promisify40 } from "node:util";
 function initialSteps() {
   const out = {};
   for (const id2 of ALL_STEP_IDS) out[id2] = { id: id2, status: "pending" };
@@ -1007221,9 +1007790,9 @@ async function defaultWriteState(slug6, state7) {
   await writeFile25(joinStatePath(slug6), JSON.stringify(state7, null, 2) + "\n", "utf8");
 }
 async function defaultExecFile(file2, args26, opts) {
-  return execFile37(file2, args26, { ...opts ?? {}, encoding: "utf8" });
+  return execFile38(file2, args26, { ...opts ?? {}, encoding: "utf8" });
 }
-var execFile37, JoinStepError;
+var execFile38, JoinStepError;
 var init_join_shared_harness = __esm({
   "../../packages/operator-core/lib/harness/join-shared-harness.ts"() {
     "use strict";
@@ -1007232,7 +1007801,7 @@ var init_join_shared_harness = __esm({
     init_two_channel_verifier();
     init_join_steps();
     init_clone_url();
-    execFile37 = (...a3) => promisify39(_execFile3)(...a3);
+    execFile38 = (...a3) => promisify40(_execFile3)(...a3);
     JoinStepError = class extends Error {
       constructor(stepId, code4, message2) {
         super(message2);
@@ -1010656,8 +1011225,8 @@ __export(papercup_pane_input_exports, {
   isExitedPaneScreen: () => isExitedPaneScreen,
   writeToSentinelPane: () => writeToSentinelPane
 });
-import { execFile as execFile38 } from "node:child_process";
-import { promisify as promisify40 } from "node:util";
+import { execFile as execFile39 } from "node:child_process";
+import { promisify as promisify41 } from "node:util";
 import { existsSync as existsSync145, readFileSync as readFileSync93, statSync as statSync43 } from "node:fs";
 import { homedir as homedir73 } from "node:os";
 import { join as join249 } from "node:path";
@@ -1010755,7 +1011324,7 @@ var exec6, SENTINEL_WARMUP_MS, ANSI, VOICE_TURN_PREFIX;
 var init_papercup_pane_input = __esm({
   "../../packages/operator-core/lib/papercup/papercup-pane-input.ts"() {
     "use strict";
-    exec6 = promisify40(execFile38);
+    exec6 = promisify41(execFile39);
     SENTINEL_WARMUP_MS = 8e3;
     ANSI = /\x1b\[[0-9;]*m/g;
     VOICE_TURN_PREFIX = "[voice]";
@@ -1010910,6 +1011479,7 @@ __export(work_items_exports, {
   compareByHeadOfLine: () => compareByHeadOfLine,
   compareByRecency: () => compareByRecency,
   countWorkItems: () => countWorkItems,
+  countWorkItemsByState: () => countWorkItemsByState,
   createWorkItem: () => createWorkItem,
   crossMachineRigExclusionSql: () => crossMachineRigExclusionSql,
   diagnoseClaimNextMiss: () => diagnoseClaimNextMiss,
@@ -1011246,6 +1011816,50 @@ async function countWorkItems(filter2 = {}) {
     });
   }
   return total;
+}
+async function countWorkItemsByState(filter2 = {}) {
+  const { sql: sql5 } = getOrgPg();
+  const wantFeature = (!filter2.kind || familyOf(filter2.kind) === "feature") && !filter2.assignedBy;
+  const wantIssue = !filter2.kind || familyOf(filter2.kind) === "issue";
+  const byState = {};
+  const add3 = (state7, n7) => {
+    const k4 = state7 ?? "unknown";
+    byState[k4] = (byState[k4] ?? 0) + n7;
+  };
+  if (wantFeature) {
+    const ws2 = activeWorkspaceId();
+    const rows = await sql5`
+      SELECT status AS state, count(*)::int AS n
+        FROM harness_shared.harness_features_consolidated
+       WHERE ${featureFamilyKindClause(sql5, ws2)}
+         AND workspace_id = ${ws2}
+         AND ${filter2.harness ? sql5`harness_slug = ${filter2.harness}` : sql5`TRUE`}
+         AND ${filter2.kind && familyOf(filter2.kind) === "feature" ? sql5`item_kind = ${filter2.kind}` : sql5`TRUE`}
+         AND ${filter2.state ? sql5`status = ${filter2.state}` : sql5`TRUE`}
+         AND ${filter2.assignee ? sql5`taken_by = ${filter2.assignee}` : sql5`TRUE`}
+         AND ${filter2.parent ? sql5`parent_id = ${filter2.parent}` : filter2.includeChildren ? sql5`TRUE` : sql5`(parent_id IS NULL OR parent_id = '')`}
+         AND ${filter2.admissibleOnly ? sql5`(
+                 ${autoPickableWhereSql(sql5, ws2)}
+                 AND ${claimHoldExclusionSql(sql5, "payload")}
+                 AND ${reservedPlanLaneExclusionSql(sql5, "", "payload")}
+               )` : sql5`TRUE`}
+       GROUP BY status`;
+    for (const r4 of rows) add3(r4.state, r4.n);
+  }
+  if (wantIssue && !filter2.parent) {
+    const issueStates = await countIssuesByState({
+      kind: filter2.kind && familyOf(filter2.kind) === "issue" ? filter2.kind : void 0,
+      kinds: filter2.kind && familyOf(filter2.kind) === "issue" ? void 0 : ISSUE_FAMILY_KINDS,
+      scope: filter2.harness ? `harness:${filter2.harness}` : void 0,
+      state: filter2.state || void 0,
+      assignee: filter2.assignee,
+      assignedBy: filter2.assignedBy,
+      admissibleOnly: filter2.admissibleOnly,
+      excludeObservationLane: filter2.admissibleOnly ? true : !filter2.includeObservations
+    });
+    for (const [state7, n7] of Object.entries(issueStates)) add3(state7, n7);
+  }
+  return byState;
 }
 async function getWorkItem(id2, harness) {
   const issue2 = await getIssue(id2);
@@ -1016752,9 +1017366,9 @@ __export(upstream_repo_context_exports, {
 });
 async function defaultGit(repoPath, args26) {
   try {
-    const { execFile: execFile56 } = await import("node:child_process");
-    const { promisify: promisify57 } = await import("node:util");
-    const run7 = promisify57(execFile56);
+    const { execFile: execFile57 } = await import("node:child_process");
+    const { promisify: promisify58 } = await import("node:util");
+    const run7 = promisify58(execFile57);
     const { stdout } = await run7("git", ["-C", repoPath, ...args26], { timeout: 1e4 });
     const out = String(stdout).trim();
     return out || null;
@@ -1017743,9 +1018357,9 @@ ${run7.stderr ?? ""}`;
         }
       },
       ensureFeatureBranch: async ({ repoPath, featureBranch }) => {
-        const { execFile: execFile56 } = await import("node:child_process");
-        const { promisify: promisify57 } = await import("node:util");
-        const run7 = promisify57(execFile56);
+        const { execFile: execFile57 } = await import("node:child_process");
+        const { promisify: promisify58 } = await import("node:util");
+        const run7 = promisify58(execFile57);
         await run7("git", ["-C", repoPath, "branch", "-f", featureBranch, "HEAD"]);
       },
       openForkPr: async (opts) => {
@@ -1024157,6 +1024771,7 @@ __export(issues_engineer_exports, {
   claimIssue: () => claimIssue,
   commentIssue: () => commentIssue,
   countIssues: () => countIssues,
+  countIssuesByState: () => countIssuesByState,
   countObservationsByKind: () => countObservationsByKind,
   createIssue: () => createIssue,
   deleteIssues: () => deleteIssues,
@@ -1024395,6 +1025010,8 @@ async function listIssues(filter2 = {}) {
        AND ${filter2.assignedBy ? sql5`assigned_by = ${filter2.assignedBy}` : sql5`TRUE`}
        AND ${filter2.severity ? sql5`severity = ${filter2.severity}` : sql5`TRUE`}
        AND ${filter2.signalOrigins ? sql5`signal_origin = ANY(${filter2.signalOrigins}::text[])` : sql5`TRUE`}
+       AND ${filter2.createdBy ? sql5`created_by = ${filter2.createdBy}` : sql5`TRUE`}
+       AND ${filter2.createdAfter ? sql5`created_at > ${filter2.createdAfter}::timestamptz` : sql5`TRUE`}
        AND ${filter2.topic ? sql5`EXISTS (
                SELECT 1 FROM harness_shared.coord_links cl
                 WHERE cl.workspace_id = ${coordScopeWorkspace()}
@@ -1024437,6 +1025054,8 @@ async function countIssues(filter2 = {}) {
          AND ${filter2.assignedBy ? sql5`ei.assigned_by = ${filter2.assignedBy}` : sql5`TRUE`}
          AND ${filter2.severity ? sql5`ei.severity = ${filter2.severity}` : sql5`TRUE`}
          AND ${filter2.signalOrigins ? sql5`ei.signal_origin = ANY(${filter2.signalOrigins}::text[])` : sql5`TRUE`}
+         AND ${filter2.createdBy ? sql5`ei.created_by = ${filter2.createdBy}` : sql5`TRUE`}
+         AND ${filter2.createdAfter ? sql5`ei.created_at > ${filter2.createdAfter}::timestamptz` : sql5`TRUE`}
          AND ${filter2.admissibleOnly ? issueAdmissibleWhereSql(sql5, true) : sql5`TRUE`}
          AND ${filter2.audit ? sql5`(ei.state = ANY(${ISSUE_TERMINAL_STATES}::text[]) AND ${auditPredicateSqlFor(sql5, filter2.audit, "ei")})` : sql5`TRUE`}
          AND ${filter2.excludeObservationLane ? sql5`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql5`TRUE`}`;
@@ -1024453,10 +1025072,63 @@ async function countIssues(filter2 = {}) {
        AND ${filter2.assignedBy ? sql5`assigned_by = ${filter2.assignedBy}` : sql5`TRUE`}
        AND ${filter2.severity ? sql5`severity = ${filter2.severity}` : sql5`TRUE`}
        AND ${filter2.signalOrigins ? sql5`signal_origin = ANY(${filter2.signalOrigins}::text[])` : sql5`TRUE`}
+       AND ${filter2.createdBy ? sql5`created_by = ${filter2.createdBy}` : sql5`TRUE`}
+       AND ${filter2.createdAfter ? sql5`created_at > ${filter2.createdAfter}::timestamptz` : sql5`TRUE`}
        AND ${filter2.admissibleOnly ? issueAdmissibleWhereSql(sql5, false) : sql5`TRUE`}
        AND ${filter2.audit ? sql5`(state = ANY(${ISSUE_TERMINAL_STATES}::text[]) AND ${auditPredicateSql(sql5, filter2.audit)})` : sql5`TRUE`}
        AND ${filter2.excludeObservationLane ? sql5`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql5`TRUE`}`;
   return rows[0]?.n ?? 0;
+}
+async function countIssuesByState(filter2 = {}) {
+  const { sql: sql5 } = getOrgPg();
+  const kindSet = filter2.kind ? [filter2.kind] : filter2.kinds ?? ISSUE_KINDS;
+  const rows = filter2.topic ? await sql5`
+      SELECT ei.state AS state, count(DISTINCT ei.issue_id)::int AS n
+        FROM harness_shared.engineer_issues ei
+        JOIN harness_shared.coord_links cl
+          ON cl.workspace_id = ${coordScopeWorkspace()}
+         AND cl.rel = 'tagged'
+         AND cl.src_kind = ${ISSUE_KIND}
+         AND cl.src_ref = ei.issue_id
+         AND cl.dst_kind = 'topic'
+         AND cl.dst_ref = ${filter2.topic}
+       WHERE ei.workspace_id = ${issuesScopeWorkspace()}
+         AND ei.kind = ANY(${kindSet}::text[])
+         AND ${filter2.state ? sql5`ei.state = ${filter2.state}` : sql5`TRUE`}
+         AND ${filter2.scope ? sql5`ei.scope = ${filter2.scope}` : sql5`TRUE`}
+         AND ${filter2.assignee ? sql5`ei.assignee = ${filter2.assignee}` : sql5`TRUE`}
+         AND ${filter2.assignedBy ? sql5`ei.assigned_by = ${filter2.assignedBy}` : sql5`TRUE`}
+         AND ${filter2.severity ? sql5`ei.severity = ${filter2.severity}` : sql5`TRUE`}
+         AND ${filter2.signalOrigins ? sql5`ei.signal_origin = ANY(${filter2.signalOrigins}::text[])` : sql5`TRUE`}
+         AND ${filter2.createdBy ? sql5`ei.created_by = ${filter2.createdBy}` : sql5`TRUE`}
+         AND ${filter2.createdAfter ? sql5`ei.created_at > ${filter2.createdAfter}::timestamptz` : sql5`TRUE`}
+         AND ${filter2.admissibleOnly ? issueAdmissibleWhereSql(sql5, true) : sql5`TRUE`}
+         AND ${filter2.audit ? sql5`(ei.state = ANY(${ISSUE_TERMINAL_STATES}::text[]) AND ${auditPredicateSqlFor(sql5, filter2.audit, "ei")})` : sql5`TRUE`}
+         AND ${filter2.excludeObservationLane ? sql5`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql5`TRUE`}
+       GROUP BY ei.state` : await sql5`
+      SELECT state, count(*)::int AS n
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${issuesScopeWorkspace()}
+         AND kind = ANY(${kindSet}::text[])
+         AND ${filter2.state ? sql5`state = ${filter2.state}` : sql5`TRUE`}
+         AND ${filter2.scope ? sql5`scope = ${filter2.scope}` : sql5`TRUE`}
+         AND ${filter2.assignee ? sql5`assignee = ${filter2.assignee}` : sql5`TRUE`}
+         AND ${filter2.assignedBy ? sql5`assigned_by = ${filter2.assignedBy}` : sql5`TRUE`}
+         AND ${filter2.severity ? sql5`severity = ${filter2.severity}` : sql5`TRUE`}
+         AND ${filter2.signalOrigins ? sql5`signal_origin = ANY(${filter2.signalOrigins}::text[])` : sql5`TRUE`}
+         AND ${filter2.createdBy ? sql5`created_by = ${filter2.createdBy}` : sql5`TRUE`}
+         AND ${filter2.createdAfter ? sql5`created_at > ${filter2.createdAfter}::timestamptz` : sql5`TRUE`}
+       AND ${filter2.createdBy ? sql5`created_by = ${filter2.createdBy}` : sql5`TRUE`}
+       AND ${filter2.createdAfter ? sql5`created_at > ${filter2.createdAfter}::timestamptz` : sql5`TRUE`}
+         AND ${filter2.admissibleOnly ? issueAdmissibleWhereSql(sql5, false) : sql5`TRUE`}
+         AND ${filter2.audit ? sql5`(state = ANY(${ISSUE_TERMINAL_STATES}::text[]) AND ${auditPredicateSql(sql5, filter2.audit)})` : sql5`TRUE`}
+         AND ${filter2.excludeObservationLane ? sql5`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql5`TRUE`}
+       GROUP BY state`;
+  const out = {};
+  for (const row of rows) {
+    out[row.state ?? "unknown"] = (out[row.state ?? "unknown"] ?? 0) + row.n;
+  }
+  return out;
 }
 async function countObservationsByKind(filter2 = {}) {
   const { sql: sql5 } = getOrgPg();
@@ -1024480,6 +1025152,8 @@ async function countObservationsByKind(filter2 = {}) {
          AND ${filter2.assignedBy ? sql5`ei.assigned_by = ${filter2.assignedBy}` : sql5`TRUE`}
          AND ${filter2.severity ? sql5`ei.severity = ${filter2.severity}` : sql5`TRUE`}
          AND ${filter2.signalOrigins ? sql5`ei.signal_origin = ANY(${filter2.signalOrigins}::text[])` : sql5`TRUE`}
+         AND ${filter2.createdBy ? sql5`ei.created_by = ${filter2.createdBy}` : sql5`TRUE`}
+         AND ${filter2.createdAfter ? sql5`ei.created_at > ${filter2.createdAfter}::timestamptz` : sql5`TRUE`}
          AND ${filter2.admissibleOnly ? issueAdmissibleWhereSql(sql5, true) : sql5`TRUE`}
          AND ${filter2.audit ? sql5`(ei.state = ANY(${ISSUE_TERMINAL_STATES}::text[]) AND ${auditPredicateSqlFor(sql5, filter2.audit, "ei")})` : sql5`TRUE`}
       GROUP BY kind`;
@@ -1024501,6 +1025175,8 @@ async function countObservationsByKind(filter2 = {}) {
        AND ${filter2.assignedBy ? sql5`assigned_by = ${filter2.assignedBy}` : sql5`TRUE`}
        AND ${filter2.severity ? sql5`severity = ${filter2.severity}` : sql5`TRUE`}
        AND ${filter2.signalOrigins ? sql5`signal_origin = ANY(${filter2.signalOrigins}::text[])` : sql5`TRUE`}
+       AND ${filter2.createdBy ? sql5`created_by = ${filter2.createdBy}` : sql5`TRUE`}
+       AND ${filter2.createdAfter ? sql5`created_at > ${filter2.createdAfter}::timestamptz` : sql5`TRUE`}
        AND ${filter2.admissibleOnly ? issueAdmissibleWhereSql(sql5, false) : sql5`TRUE`}
        AND ${filter2.audit ? sql5`(state = ANY(${ISSUE_TERMINAL_STATES}::text[]) AND ${auditPredicateSql(sql5, filter2.audit)})` : sql5`TRUE`}
     GROUP BY kind`;
@@ -1026520,8 +1027196,8 @@ var init_plugin_enables_pg = __esm({
 
 // ../../packages/operator-core/lib/harness-fs-watcher.ts
 import { promises as fs71, existsSync as existsSync154, statSync as statSync46 } from "node:fs";
-import { execFile as execFile39 } from "node:child_process";
-import { promisify as promisify41 } from "node:util";
+import { execFile as execFile40 } from "node:child_process";
+import { promisify as promisify42 } from "node:util";
 import { join as join257, basename as basename31, dirname as dirname75 } from "node:path";
 function isWatcherIgnored(p3) {
   return WATCHER_IGNORED_RE.test(p3);
@@ -1026916,7 +1027592,7 @@ var init_harness_fs_watcher = __esm({
     init_harness_registry();
     init_workspace_registry();
     init_harness_phases();
-    execFileP15 = promisify41(execFile39);
+    execFileP15 = promisify42(execFile40);
     hps = generated_exports.harnessProposalsSharedInHarnessShared;
     RECONCILE_INTERVAL_MS = 6e4 * getResourceProfile2().backgroundCadenceMultiplier;
     DEBOUNCE_MS2 = 200;
@@ -1031044,35 +1031720,6 @@ var init_device_voice_dispatch = __esm({
   }
 });
 
-// ../../packages/operator-core/lib/reserved-service-ports.ts
-function isReservedServicePort(port) {
-  return RESERVED_SERVICE_PORTS.has(port);
-}
-var RESERVED_SERVICE_PORTS;
-var init_reserved_service_ports = __esm({
-  "../../packages/operator-core/lib/reserved-service-ports.ts"() {
-    "use strict";
-    RESERVED_SERVICE_PORTS = /* @__PURE__ */ new Set([
-      3055,
-      // Vite SPA dev server
-      3056,
-      // green operator PTY WS (papercup-dev-api 20-pty-ws.conf)
-      3057,
-      // marketplace-api.service
-      3060,
-      // staging operator PTY WS (papercup-staging-api 20-pty-ws.conf)
-      3070,
-      // GREEN operator (release checkout)
-      3170,
-      // staging operator (integration tree)
-      3270,
-      // desktop session's own working-tree operator (dev-operator-ifneeded.sh)
-      3274
-      // desktop session operator PTY WS (3270 + 4)
-    ]);
-  }
-});
-
 // ../../packages/operator-core/lib/device-voice-ws.ts
 function getMobileVoicePort() {
   return mvState.chosenPort;
@@ -1032515,13 +1033162,13 @@ __export(env_tree_prepare_exports, {
   WORKING_TREE_ENV_ID: () => WORKING_TREE_ENV_ID,
   prepareEnvWorktree: () => prepareEnvWorktree
 });
-import { execFile as execFile40 } from "node:child_process";
+import { execFile as execFile41 } from "node:child_process";
 import { existsSync as existsSync156 } from "node:fs";
 import { join as join261 } from "node:path";
 function defaultRunGit4(args26, cwd) {
   return new Promise((resolve82) => {
     try {
-      execFile40(
+      execFile41(
         "git",
         args26,
         { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 12e4 },
@@ -1036614,9 +1037261,9 @@ async function pinLinuxTutorialToDock(desktopId, markerPath3) {
       return false;
     } catch {
     }
-    const { execFile: execFile56 } = await import("node:child_process");
-    const { promisify: promisify57 } = await import("node:util");
-    const pexec4 = promisify57(execFile56);
+    const { execFile: execFile57 } = await import("node:child_process");
+    const { promisify: promisify58 } = await import("node:util");
+    const pexec4 = promisify58(execFile57);
     let current6 = "";
     try {
       const { stdout } = await pexec4("gsettings", ["get", "org.gnome.shell", "favorite-apps"]);
@@ -1037252,8 +1037899,8 @@ __export(omp_integration_exports, {
 import * as fs74 from "node:fs/promises";
 import * as path65 from "node:path";
 import * as os26 from "node:os";
-import { execFile as execFile41 } from "node:child_process";
-import { promisify as promisify42 } from "node:util";
+import { execFile as execFile42 } from "node:child_process";
+import { promisify as promisify43 } from "node:util";
 function resolveOmpPaths(home) {
   const ompAgentDir = path65.join(home, ".omp", "agent");
   return {
@@ -1037609,7 +1038256,7 @@ var init_omp_integration = __esm({
     init_papercusp_files();
     init_mcp_base_url();
     import_yaml21 = __toESM(require_dist2(), 1);
-    exec7 = promisify42(execFile41);
+    exec7 = promisify43(execFile42);
     LEGACY_BLOCK_BEGIN = "<!-- BEGIN papercusp-su playbook (managed by install-standalone-mcp.sh) -->";
     LEGACY_BLOCK_END = "<!-- END papercusp-su playbook -->";
     OMP_GATEWAY_PROVIDER_ID2 = "papercusp-gateway";
@@ -1040122,7 +1040769,7 @@ import { execFile as execFileCb4 } from "node:child_process";
 import { mkdtemp as mkdtempCb, rm as rmCb2 } from "node:fs";
 import { tmpdir as tmpdir25 } from "node:os";
 import { join as join270 } from "node:path";
-import { promisify as promisify43 } from "node:util";
+import { promisify as promisify44 } from "node:util";
 function isPinnedCommit2(commit) {
   return /^[0-9a-f]{7,40}$/.test(commit);
 }
@@ -1040198,9 +1040845,9 @@ var execFileP16, mkdtempP, rmP2, defaultGitExec, HARNESS_SCAFFOLD_EXCLUDES, clon
 var init_clone3 = __esm({
   "../../packages/operator-core/lib/external-bench/clone.ts"() {
     "use strict";
-    execFileP16 = promisify43(execFileCb4);
-    mkdtempP = promisify43(mkdtempCb);
-    rmP2 = promisify43(rmCb2);
+    execFileP16 = promisify44(execFileCb4);
+    mkdtempP = promisify44(mkdtempCb);
+    rmP2 = promisify44(rmCb2);
     defaultGitExec = async (args26, cwd) => {
       const { stdout } = await execFileP16("git", args26, { cwd, maxBuffer: 64 * 1024 * 1024 });
       return stdout;
@@ -1040667,7 +1041314,7 @@ import { execFile as execFileCb5 } from "node:child_process";
 import { mkdtemp as mkdtempCb2, rm as rmCb3, copyFile as copyFileCb, readFile as readFileCb } from "node:fs";
 import { tmpdir as tmpdir26 } from "node:os";
 import { basename as basename34, join as join271 } from "node:path";
-import { promisify as promisify44 } from "node:util";
+import { promisify as promisify45 } from "node:util";
 function gaiaBrief(task) {
   const hasFile = typeof task.graderMeta?.["filePath"] === "string" && task.graderMeta["filePath"].length > 0;
   const fileName2 = String(task.graderMeta?.["fileName"] ?? "").trim();
@@ -1040746,11 +1041393,11 @@ var execFileP17, mkdtempP2, rmP3, copyFileP, readFileP, GAIA_MEMBER_BLUEPRINT, G
 var init_gaia_backlog_support = __esm({
   "../../packages/operator-core/lib/external-bench/gaia-backlog-support.ts"() {
     "use strict";
-    execFileP17 = promisify44(execFileCb5);
-    mkdtempP2 = promisify44(mkdtempCb2);
-    rmP3 = promisify44(rmCb3);
-    copyFileP = promisify44(copyFileCb);
-    readFileP = promisify44(readFileCb);
+    execFileP17 = promisify45(execFileCb5);
+    mkdtempP2 = promisify45(mkdtempCb2);
+    rmP3 = promisify45(rmCb3);
+    copyFileP = promisify45(copyFileCb);
+    readFileP = promisify45(readFileCb);
     GAIA_MEMBER_BLUEPRINT = "gaia-agent";
     GAIA_ANSWER_FILE = "answer.txt";
   }
@@ -1053321,7 +1053968,7 @@ var init_scheduler3 = __esm({
 
 // ../../packages/operator-core/lib/endpoint-route/routes/backups/healthcheck.ts
 import { statfs as statfs3 } from "node:fs";
-import { promisify as promisify45 } from "node:util";
+import { promisify as promisify46 } from "node:util";
 var statfsP, STALE_THRESHOLD_SEC, healthcheck_default;
 var init_healthcheck = __esm({
   "../../packages/operator-core/lib/endpoint-route/routes/backups/healthcheck.ts"() {
@@ -1053330,7 +1053977,7 @@ var init_healthcheck = __esm({
     init_scheduler3();
     init_workspace_registry();
     init_src15();
-    statfsP = promisify45(statfs3);
+    statfsP = promisify46(statfs3);
     STALE_THRESHOLD_SEC = 30 * 60;
     healthcheck_default = defineTool({
       method: "GET",
@@ -1055848,8 +1056495,8 @@ var init_load_all = __esm({
 });
 
 // ../../packages/operator-core/lib/harness-insights/github-facts.ts
-import { execFile as execFile42 } from "node:child_process";
-import { promisify as promisify46 } from "node:util";
+import { execFile as execFile43 } from "node:child_process";
+import { promisify as promisify47 } from "node:util";
 function cleanTopics2(topics2) {
   if (!Array.isArray(topics2)) return [];
   return topics2.filter((t14) => typeof t14 === "string" && t14.length > 0).slice(0, 8);
@@ -1056137,7 +1056784,7 @@ var init_github_facts = __esm({
     init_octokit_client();
     init_harness_core();
     init_ttl_map();
-    execFileP18 = promisify46(execFile42);
+    execFileP18 = promisify47(execFile43);
     LANG_COLORS = {
       TypeScript: "#3178c6",
       JavaScript: "#f1e05a",
@@ -1057555,8 +1058202,8 @@ var init_viewer = __esm({
 });
 
 // ../../packages/operator-core/lib/endpoint-route/routes/harness/prs.ts
-import { execFile as execFile43 } from "node:child_process";
-import { promisify as promisify47 } from "node:util";
+import { execFile as execFile44 } from "node:child_process";
+import { promisify as promisify48 } from "node:util";
 async function gitOriginRemote(projectPath) {
   try {
     const { stdout } = await execFileP19(
@@ -1057752,7 +1058399,7 @@ var init_prs = __esm({
     init_contribution_admission();
     init_workspace_registry();
     init_src6();
-    execFileP19 = promisify47(execFile43);
+    execFileP19 = promisify48(execFile44);
     HIVE_PR_FANOUT_CONCURRENCY = 4;
     listPrs = defineTool({
       method: "GET",
@@ -1058568,10 +1059215,10 @@ var init_sync_with_main_types = __esm({
 });
 
 // ../../packages/operator-core/lib/endpoint-route/routes/harness/sync.ts
-import { execFile as execFile44 } from "node:child_process";
-import { promisify as promisify48 } from "node:util";
+import { execFile as execFile45 } from "node:child_process";
+import { promisify as promisify49 } from "node:util";
 import { existsSync as existsSync169 } from "node:fs";
-var execFileAsync10, syncStatus, syncWithMain, abortRebase, sync_default;
+var execFileAsync11, syncStatus, syncWithMain, abortRebase, sync_default;
 var init_sync3 = __esm({
   "../../packages/operator-core/lib/endpoint-route/routes/harness/sync.ts"() {
     "use strict";
@@ -1058579,7 +1059226,7 @@ var init_sync3 = __esm({
     init_harness_core();
     init_user_tree_types();
     init_sync_with_main_types();
-    execFileAsync10 = promisify48(execFile44);
+    execFileAsync11 = promisify49(execFile45);
     syncStatus = defineTool({
       method: "GET",
       path: "/harness/:slug/sync-status",
@@ -1058608,7 +1059255,7 @@ var init_sync3 = __esm({
           return Response.json(snap2);
         }
         try {
-          await execFileAsync10("git", ["-C", treePath, "fetch", "origin", "main", "--quiet"], {
+          await execFileAsync11("git", ["-C", treePath, "fetch", "origin", "main", "--quiet"], {
             timeout: 15e3
           });
         } catch (err12) {
@@ -1058623,7 +1059270,7 @@ var init_sync3 = __esm({
         let behindCount = 0;
         try {
           const branchRef = contributorBranchRef(githubUserId);
-          const { stdout } = await execFileAsync10(
+          const { stdout } = await execFileAsync11(
             "git",
             ["-C", treePath, "rev-list", "--count", `${branchRef}..origin/main`],
             { timeout: 5e3 }
@@ -1058668,21 +1059315,21 @@ var init_sync3 = __esm({
           return Response.json({ error: "user worktree not provisioned" }, { status: 422 });
         }
         try {
-          await execFileAsync10("git", ["-C", treePath, "fetch", "origin", "main", "--quiet"], {
+          await execFileAsync11("git", ["-C", treePath, "fetch", "origin", "main", "--quiet"], {
             timeout: 15e3
           });
         } catch (err12) {
           return Response.json({ outcome: "fetch_failed", error: String(err12).slice(0, 200) });
         }
         try {
-          await execFileAsync10("git", ["-C", treePath, "rebase", "origin/main"], {
+          await execFileAsync11("git", ["-C", treePath, "rebase", "origin/main"], {
             timeout: 3e4
           });
           return Response.json({ outcome: "clean" });
         } catch {
           let conflicted = [];
           try {
-            const { stdout } = await execFileAsync10(
+            const { stdout } = await execFileAsync11(
               "git",
               ["-C", treePath, "diff", "--name-only", "--diff-filter=U"],
               { timeout: 5e3 }
@@ -1058714,7 +1059361,7 @@ var init_sync3 = __esm({
           return Response.json({ error: "user worktree not provisioned" }, { status: 422 });
         }
         try {
-          await execFileAsync10("git", ["-C", treePath, "rebase", "--abort"], { timeout: 1e4 });
+          await execFileAsync11("git", ["-C", treePath, "rebase", "--abort"], { timeout: 1e4 });
         } catch {
         }
         return Response.json({ ok: true });
@@ -1060635,8 +1061282,8 @@ var init_state_views = __esm({
 // ../../packages/operator-core/lib/endpoint-route/routes/harness/notes-diff.ts
 import { existsSync as existsSync176, readdirSync as readdirSync42, statSync as statSync55 } from "node:fs";
 import { readdir as readdir27, readFile as readFile47 } from "node:fs/promises";
-import { execFile as execFile45 } from "node:child_process";
-import { promisify as promisify49 } from "node:util";
+import { execFile as execFile46 } from "node:child_process";
+import { promisify as promisify50 } from "node:util";
 import { join as join300 } from "node:path";
 function noteByIdRoute(routePath, subdir) {
   return defineTool({
@@ -1060665,7 +1061312,7 @@ var init_notes_diff = __esm({
     init_harness_core();
     init_harness_phases();
     init_src15();
-    execFileP20 = promisify49(execFile45);
+    execFileP20 = promisify50(execFile46);
     getScoperResult = defineTool({
       method: "GET",
       path: "/harness/:slug/scoper-result/:invocationId",
@@ -1060768,8 +1061415,8 @@ __export(feature_views_exports, {
   getFeatureTimeline: () => getFeatureTimeline
 });
 import { existsSync as existsSync177, readdirSync as readdirSync43, readFileSync as readFileSync113, statSync as statSync56 } from "node:fs";
-import { execFile as execFile46 } from "node:child_process";
-import { promisify as promisify50 } from "node:util";
+import { execFile as execFile47 } from "node:child_process";
+import { promisify as promisify51 } from "node:util";
 import { join as join301 } from "node:path";
 async function getFeatureTimeline(slug6, rawFeatureId) {
   const project2 = await resolveProject(slug6);
@@ -1060860,7 +1061507,7 @@ var init_feature_views = __esm({
     init_workspace_registry();
     init_harness_phases();
     init_src15();
-    execFileP21 = promisify50(execFile46);
+    execFileP21 = promisify51(execFile47);
     getLineage = defineTool({
       method: "GET",
       path: "/harness/:slug/feature/:id/lineage",
@@ -1062110,7 +1062757,7 @@ var init_user_actions = __esm({
 // ../../packages/operator-core/lib/endpoint-route/routes/harness/scoper-actions.ts
 import { existsSync as existsSync181 } from "node:fs";
 import { mkdir as mkdir41, rename as rename8, writeFile as writeFile33 } from "node:fs/promises";
-import { execFile as execFile47 } from "node:child_process";
+import { execFile as execFile48 } from "node:child_process";
 import { join as join306 } from "node:path";
 var dbcFor2, productReview, replan, cleanup2, scoper_actions_default;
 var init_scoper_actions = __esm({
@@ -1062186,7 +1062833,7 @@ var init_scoper_actions = __esm({
           }
         })();
         return new Promise((resolve82) => {
-          execFile47("bash", ["-c", `MAX_ITERATIONS=0 node ${tsxBin2()} ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
+          execFile48("bash", ["-c", `MAX_ITERATIONS=0 node ${tsxBin2()} ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
             cwd: project2.path,
             env: {
               ...process.env,
@@ -1062243,7 +1062890,7 @@ var init_scoper_actions = __esm({
 
 // ../../packages/operator-core/lib/endpoint-route/routes/harness/archives.ts
 import { existsSync as existsSync182, readdirSync as readdirSync45, statSync as statSync58 } from "node:fs";
-import { execFile as execFile48 } from "node:child_process";
+import { execFile as execFile49 } from "node:child_process";
 import { mkdir as mkdir42, rm as rm26, unlink as unlink10 } from "node:fs/promises";
 import { join as join307 } from "node:path";
 async function clearHarnessFeaturesForReset(slug6) {
@@ -1062277,7 +1062924,7 @@ var init_archives = __esm({
         const archiveName = `${ts5}.tar.gz`;
         const archivePath = join307(archivesDir, archiveName);
         return new Promise((resolve82) => {
-          execFile48("tar", ["czf", archivePath, "-C", dir, "--exclude=archives", "--exclude=./archives", "."], {
+          execFile49("tar", ["czf", archivePath, "-C", dir, "--exclude=archives", "--exclude=./archives", "."], {
             cwd: project2.path,
             maxBuffer: 8 * 1024 * 1024
           }, async (err12, _stdout, stderr) => {
@@ -1062342,7 +1062989,7 @@ var init_archives = __esm({
         const dir = harnessDir(project2);
         const preSnapName = `${Date.now()}-pre-restore.tar.gz`;
         return new Promise((resolve82) => {
-          execFile48("tar", ["czf", join307(dir, "archives", preSnapName), "-C", dir, "--exclude=archives", "--exclude=./archives", "."], {
+          execFile49("tar", ["czf", join307(dir, "archives", preSnapName), "-C", dir, "--exclude=archives", "--exclude=./archives", "."], {
             cwd: project2.path,
             maxBuffer: 8 * 1024 * 1024
           }, (err1, _o2, e1) => {
@@ -1062360,7 +1063007,7 @@ var init_archives = __esm({
                 resolve82(Response.json({ ok: false, error: `pre-restore cleanup failed: ${String(e4).slice(0, 300)}` }, { status: 500 }));
                 return;
               }
-              execFile48("tar", ["xzf", archivePath, "-C", dir], {
+              execFile49("tar", ["xzf", archivePath, "-C", dir], {
                 cwd: project2.path,
                 maxBuffer: 8 * 1024 * 1024
               }, (err22, _o22, e22) => {
@@ -1062382,7 +1063029,7 @@ var init_archives = __esm({
 // ../../packages/operator-core/lib/endpoint-route/routes/harness/supervisor-actions.ts
 import { existsSync as existsSync183 } from "node:fs";
 import { appendFile as appendFile3, unlink as unlink11 } from "node:fs/promises";
-import { execFile as execFile49 } from "node:child_process";
+import { execFile as execFile50 } from "node:child_process";
 import { join as join308 } from "node:path";
 var supervisor, resolveEscalation2, supervisor_actions_default;
 var init_supervisor_actions = __esm({
@@ -1062409,7 +1063056,7 @@ var init_supervisor_actions = __esm({
         const script = harnessPath2("bin", "supervisor.sh");
         if (!existsSync183(script)) return Response.json({ error: "supervisor.sh not found" }, { status: 500 });
         return new Promise((resolve82) => {
-          execFile49("bash", [script], {
+          execFile50("bash", [script], {
             cwd: project2.path,
             maxBuffer: 4 * 1024 * 1024,
             env: { ...process.env, CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? "omp -p" }
@@ -1064999,7 +1065646,7 @@ var init_commit_reproject = __esm({
 // ../../packages/operator-core/lib/blueprint/commit-reproject-real.ts
 import { mkdirSync as mkdirSync48, writeFileSync as writeFileSync39 } from "node:fs";
 import { execFile as execFileCb6 } from "node:child_process";
-import { promisify as promisify51 } from "node:util";
+import { promisify as promisify52 } from "node:util";
 async function realGitCommit(harnessDir2, relPaths, message2) {
   try {
     await execFileP22("git", ["-C", harnessDir2, "rev-parse", "--is-inside-work-tree"]);
@@ -1065055,7 +1065702,7 @@ var init_commit_reproject_real = __esm({
     init_blueprint();
     init_project_to_pg();
     init_commit_reproject();
-    execFileP22 = promisify51(execFileCb6);
+    execFileP22 = promisify52(execFileCb6);
   }
 });
 
@@ -1065493,8 +1066140,8 @@ var init_completion_ref_recheck = __esm({
 
 // ../../packages/operator-core/lib/endpoint-route/routes/harness/git.ts
 import { existsSync as existsSync191, readFileSync as readFileSync118, statSync as statSync61 } from "node:fs";
-import { execFile as execFile50, spawn as spawn47 } from "node:child_process";
-import { promisify as promisify52 } from "node:util";
+import { execFile as execFile51, spawn as spawn47 } from "node:child_process";
+import { promisify as promisify53 } from "node:util";
 import { join as join323 } from "node:path";
 function phaseFromReq10(req) {
   return phasePhaseLabel(new URL(req.url).searchParams.get("phase") ?? void 0);
@@ -1065658,7 +1066305,7 @@ var init_git2 = __esm({
     init_harness_core();
     init_harness_phases();
     init_src15();
-    execFileP23 = promisify52(execFile50);
+    execFileP23 = promisify53(execFile51);
     __gitLogCache = /* @__PURE__ */ new Map();
     PATCH_DEFAULT_EXCLUDES = [
       ":(exclude,glob).papercusp/**",
@@ -1072904,10 +1073551,10 @@ __export(viewer_identity_exports, {
   getViewerOwnerEmail: () => getViewerOwnerEmail
 });
 import { execFile as _execFile4 } from "node:child_process";
-import { promisify as promisify53 } from "node:util";
+import { promisify as promisify54 } from "node:util";
 async function resolveGitEmail() {
   try {
-    const { stdout } = await execFile51("git", ["config", "user.email"], { timeout: 3e3 });
+    const { stdout } = await execFile52("git", ["config", "user.email"], { timeout: 3e3 });
     const email3 = stdout.trim().toLowerCase();
     return email3.length > 0 ? email3 : null;
   } catch {
@@ -1072921,11 +1073568,11 @@ async function getViewerOwnerEmail() {
 function __resetViewerIdentityForTests() {
   cached18 = void 0;
 }
-var execFile51, cached18;
+var execFile52, cached18;
 var init_viewer_identity = __esm({
   "../../packages/operator-core/lib/agent-tools/plans/viewer-identity.ts"() {
     "use strict";
-    execFile51 = promisify53(_execFile4);
+    execFile52 = promisify54(_execFile4);
   }
 });
 
@@ -1073122,7 +1073769,7 @@ var init_load_tokens = __esm({
 });
 
 // ../../packages/operator-core/lib/automation/pane-categories.ts
-var AUTOMATION_CATEGORIES, BLENDER_PANE_CATEGORIES, DOCS_PANE_CATEGORIES, NAMED_PANE_CATEGORIES, CATCH_ALL_PANE_CATEGORIES;
+var AUTOMATION_CATEGORIES;
 var init_pane_categories = __esm({
   "../../packages/operator-core/lib/automation/pane-categories.ts"() {
     "use strict";
@@ -1073134,13 +1073781,133 @@ var init_pane_categories = __esm({
       "infra",
       "agent-loops"
     ];
-    BLENDER_PANE_CATEGORIES = ["learning"];
-    DOCS_PANE_CATEGORIES = ["docs"];
-    NAMED_PANE_CATEGORIES = [
-      ...BLENDER_PANE_CATEGORIES,
-      ...DOCS_PANE_CATEGORIES
-    ];
-    CATCH_ALL_PANE_CATEGORIES = AUTOMATION_CATEGORIES.filter((c10) => !NAMED_PANE_CATEGORIES.includes(c10));
+  }
+});
+
+// ../../packages/operator-core/lib/automation/routine-classification.ts
+function spendForTargetRole(targetRole) {
+  if (!targetRole) return "unknown";
+  return TARGET_ROLE_SPEND[targetRole]?.spend ?? "unknown";
+}
+function spendReasonForTargetRole(targetRole) {
+  if (!targetRole) return null;
+  return TARGET_ROLE_SPEND[targetRole]?.why ?? null;
+}
+function isLoopRoutine(name3) {
+  return /^loop-/i.test(name3);
+}
+function routineKind({ name: name3, syncTriggered }) {
+  if (isLoopRoutine(name3)) return "loop";
+  if (syncTriggered) return "triggered";
+  return "scheduled";
+}
+function routineLiveness({
+  active: active5,
+  nextFireAt,
+  clockDriven,
+  now: now2 = Date.now()
+}) {
+  if (!active5) return "dormant";
+  if (!clockDriven) return "running";
+  if (!nextFireAt) return "stalled";
+  const next = Date.parse(nextFireAt);
+  if (!Number.isFinite(next)) return "stalled";
+  return next < now2 - STALLED_OVERDUE_MS ? "stalled" : "running";
+}
+function routineNeedsAttention(input2) {
+  if (input2.liveness === "stalled") return true;
+  if (input2.control === "flag" && !input2.active) return true;
+  if (input2.spend === "unknown" && input2.active) return true;
+  return false;
+}
+function routineFamily(name3, kind2) {
+  if (kind2 === "loop") return "loops";
+  if (WAKE_FAMILY.test(name3)) return "wake";
+  if (DOCS_FAMILY.test(name3)) return "docs";
+  if (LEARNING_FAMILY.test(name3)) return "learning";
+  if (GIT_RELEASE_FAMILY.test(name3)) return "git-release";
+  if (CLEANUP_FAMILY.test(name3)) return "cleanup";
+  if (FEDERATION_FAMILY.test(name3)) return "federation";
+  return "health";
+}
+var TARGET_ROLE_SPEND, STALLED_OVERDUE_MS, DOCS_FAMILY, WAKE_FAMILY, LEARNING_FAMILY, GIT_RELEASE_FAMILY, CLEANUP_FAMILY, FEDERATION_FAMILY;
+var init_routine_classification = __esm({
+  "../../packages/operator-core/lib/automation/routine-classification.ts"() {
+    "use strict";
+    TARGET_ROLE_SPEND = {
+      // ── spends ───────────────────────────────────────────────────────────────
+      // ⚠ `system:scout-cycle` and `system:template-gym` are deliberately ABSENT.
+      // Both are live `target_role` values in harness_shared.routines — template-gym on
+      // an ACTIVE row — but neither is registered at boot: `registerScoutCycleAction()`
+      // is exported and never called, and nothing registers template-gym at all, so the
+      // tick logs "no handler registered … skipping" and the routine silently does
+      // nothing while presenting as running. Classifying them here would launder that
+      // bug into a normal row; leaving them out makes them `unknown`, which routes them
+      // to Needs-you. Filed as EI-18741229858124453 (template-gym) and
+      // EI-18741240128927188 (scout-cycle) — when either is wired, the registry
+      // cross-check will demand its classification.
+      "system:blueprint-run": { spend: "llm", why: "Launches a blueprint agent (the Mug/Cup hive launch path)" },
+      "system:plan-run": { spend: "llm", why: "Mints a plan run and dispatches its items to agents" },
+      "system:overwatch-launch": { spend: "llm", why: "Launches the overwatch (Kettle) session" },
+      "system:gym-cycle": { spend: "llm", why: "Runs one bounded gym cycle" },
+      "system:improvement-implement": { spend: "llm", why: "Returns durableSpawns \u2014 dispatches an implementer agent" },
+      "system:hive-canary": { spend: "llm", why: "Queues a canary feature the autonomous pipeline carries end to end" },
+      "system:unguarded-halt-rescue": { spend: "llm", why: "Wakes halted sessions, and a wake bills a turn" },
+      "system:loop-wake": { spend: "llm", why: "Delivers a wake to the loop's owning session" },
+      // ── free system work ─────────────────────────────────────────────────────
+      "system:git-sync": { spend: "none", why: "Commits and pushes the tree" },
+      "system:foreign-git-sync": { spend: "none", why: "Syncs a foreign (member) clone" },
+      "system:green-checkpoint": { spend: "none", why: "Runs the gate suite and fast-forwards main" },
+      "system:release-trigger": { spend: "none", why: "Deploys the green commit" },
+      "system:pr-poll": { spend: "none", why: "Polls GitHub for PR state" },
+      "system:cargo-test": { spend: "none", why: "Runs the Rust test suite" },
+      "system:gate-watcher-tick": { spend: "none", why: "Reads gate state" },
+      "system:gate-canary-sweep": { spend: "none", why: "Sweeps stale gate canaries" },
+      "system:autoloop-release-readiness-monitor": { spend: "none", why: "Reads release-readiness state" },
+      "system:doc-anchor-reconcile": { spend: "none", why: "Reconciles doc anchors against HEAD (sha compare)" },
+      "system:knowledge-pack-delivery": { spend: "none", why: "Copies pack items into pools \u2014 no authoring" },
+      "system:knowledge-pack-hygiene": { spend: "none", why: "Rule-based stale/contradiction sweep over pack rows" },
+      "system:hive-git-gc": { spend: "none", why: "Garbage-collects hive git objects" },
+      "system:gc-plan-runs": { spend: "none", why: "Prunes finished plan-run rows" },
+      "system:gc-dead-loops": { spend: "none", why: "Reaps loop rows whose owning session is long gone" },
+      "system:session-dir-gc": { spend: "none", why: "Deletes isolation dirs of ended sessions" },
+      "system:telemetry-retention": { spend: "none", why: "Applies telemetry retention windows" },
+      "system:idle-session-reaper": { spend: "none", why: "Reaps idle session rows" },
+      "system:hetzner-orphan-frame-reaper": { spend: "none", why: "Reaps orphaned remote frames" },
+      "system:test-webview-reaper": { spend: "none", why: "Reaps leaked test webviews" },
+      "system:bee-transcript-cap": { spend: "none", why: "Truncates oversized transcripts" },
+      "system:precompute-derived-reads": { spend: "none", why: "Refreshes derived read tables" },
+      "system:interactive-usage-ingest": { spend: "none", why: "Tails local transcripts into usage samples (SQL/FS only)" },
+      "system:token-weekly-report": { spend: "none", why: "Aggregates usage into a report (SQL/FS only)" },
+      "system:unclaimed-work-digest": { spend: "none", why: "Read-only: lists unclaimed items and posts a digest" },
+      "system:improvement-human-digest": { spend: "none", why: "Ranks the human queue and sends it \u2014 no model" },
+      "system:improvement-triage": { spend: "none", why: "Records routing metadata; explicitly never dispatches" },
+      "system:improvement-watchdog": { spend: "none", why: "SQL pass that files work items" },
+      "system:improvement-invalid-args-miner": { spend: "none", why: "Mines tool_invocations for invalid args (SQL)" },
+      "system:claim-integrity-sweep": { spend: "none", why: "Checks claim invariants in SQL" },
+      "system:claim-discipline-watch": { spend: "none", why: "Injects a nudge into an existing turn \u2014 never wakes" },
+      "system:coord-invariant-monitor": { spend: "none", why: "Checks coord substrate invariants in SQL" },
+      "system:coord-probe-canary": { spend: "none", why: "Runs a verb-cycle probe pair" },
+      "system:plan-item-orphan-reconcile": { spend: "none", why: "Reconciles orphaned plan items" },
+      "system:supervision-reconcile": { spend: "none", why: "Reconciles supervision rows" },
+      "system:fleet-headcount-governor": { spend: "none", why: "Caps fleet headcount \u2014 throttles spend, never causes it" },
+      "system:autonomy-trust-scan": { spend: "none", why: "Scores autonomy trust from recorded dispositions" },
+      "system:hive-canary-sla": { spend: "none", why: "Checks yesterday\u2019s canaries against their deadline" },
+      "system:cross-hive-outbox-drain": { spend: "none", why: "Drains durable cross-hive outboxes" },
+      "system:p2p-work-intake": { spend: "none", why: "Ingests federated work items" },
+      "system:p2p-foreign-supervision": { spend: "none", why: "Supervises foreign harness rows" },
+      "system:sweep-orphaned-foreign-harnesses": { spend: "none", why: "Sweeps orphaned foreign harnesses" },
+      "system:p2p-perf-tier1": { spend: "none", why: "Nightly p2p bench" },
+      "system:p2p-perf-tier2": { spend: "none", why: "Weekly p2p bench" },
+      "system:wake-brain": { spend: "none", why: "Retired tombstone \u2014 the handler is a no-op" }
+    };
+    STALLED_OVERDUE_MS = 60 * 60 * 1e3;
+    DOCS_FAMILY = /doc|^knowledge-pack-/i;
+    WAKE_FAMILY = /(^|-)wake($|-)/i;
+    LEARNING_FAMILY = /^improvement-|^bp-singleton-|^gym|^template-gym$|^pot-eval-battery$|^scout|prospector|^oddsmith-|^scan$/i;
+    GIT_RELEASE_FAMILY = /git-sync|checkpoint|release|deploy|^pr-poll$|^cargo-test$|^gate-/i;
+    CLEANUP_FAMILY = /gc$|^gc-|reaper|retention|^bee-transcript-cap$|precompute|^knowledge-pack-/i;
+    FEDERATION_FAMILY = /^p2p-|hive|foreign|outbox|federation/i;
   }
 });
 
@@ -1073148,16 +1073915,17 @@ var init_pane_categories = __esm({
 var catalog_exports = {};
 __export(catalog_exports, {
   AUTOMATION_CATEGORIES: () => AUTOMATION_CATEGORIES,
-  BLENDER_PANE_CATEGORIES: () => BLENDER_PANE_CATEGORIES,
-  CATCH_ALL_PANE_CATEGORIES: () => CATCH_ALL_PANE_CATEGORIES,
-  DOCS_PANE_CATEGORIES: () => DOCS_PANE_CATEGORIES,
   classifyRoutine: () => classifyRoutine,
+  collapseFanOut: () => collapseFanOut,
   cronCadence: () => cronCadence,
   getAutomationCatalog: () => getAutomationCatalog,
+  loopCadence: () => loopCadence,
   routineSpawnsAgent: () => routineSpawnsAgent
 });
-function routineSpawnsAgent(name3) {
-  return AGENT_SPAWNING_PATTERNS.some((re6) => re6.test(name3));
+function routineSpawnsAgent() {
+  throw new Error(
+    "routineSpawnsAgent() is retired \u2014 spend derives from target_role. Use spendForTargetRole() from lib/automation/routine-classification."
+  );
 }
 function classifyRoutine(name3, groupSlug) {
   if (DOCS_PATTERNS.some((re6) => re6.test(name3))) return "docs";
@@ -1073185,26 +1073953,106 @@ function cronCadence(cron) {
   if (/^\d+$/.test(hour2 ?? "")) return "daily";
   return cron;
 }
+function loopCadence(intervalSec) {
+  if (intervalSec == null || !Number.isFinite(intervalSec) || intervalSec <= 0) return null;
+  if (intervalSec % 3600 === 0) return `every ${intervalSec / 3600}h`;
+  if (intervalSec % 60 === 0) return `every ${intervalSec / 60}m`;
+  return `every ${Math.round(intervalSec)}s`;
+}
+function inventorySpend(row) {
+  if (row.category === "sync-triggered") {
+    const declared = row.detail?.spends;
+    if (declared === "llm") return { spend: "llm", why: "Dispatches an agent when its trigger fires" };
+    if (declared === "none") return { spend: "none", why: "Runs inline on its trigger \u2014 no agent spawn" };
+    return { spend: "unknown", why: null };
+  }
+  return { spend: "none", why: `Host ${row.source} machinery \u2014 runs inline, no agent spawn seam` };
+}
+function collapseFanOut(rows) {
+  const byKey = /* @__PURE__ */ new Map();
+  for (const r4 of rows) {
+    const key12 = `${r4.kind}\0${r4.name}`;
+    const bucket = byKey.get(key12);
+    if (bucket) bucket.push(r4);
+    else byKey.set(key12, [r4]);
+  }
+  const worst = (xs2) => xs2.some((x4) => x4.liveness === "stalled") ? "stalled" : xs2.some((x4) => x4.liveness === "running") ? "running" : "dormant";
+  const maxIso = (xs2) => xs2.filter((x4) => Boolean(x4)).sort().at(-1) ?? null;
+  const minIso = (xs2) => xs2.filter((x4) => Boolean(x4)).sort().at(0) ?? null;
+  const out = [];
+  for (const group of byKey.values()) {
+    const head = group[0];
+    if (group.length === 1) {
+      out.push(head);
+      continue;
+    }
+    const active5 = group.some((g4) => g4.active);
+    const liveness = worst(group);
+    out.push({
+      ...head,
+      active: active5,
+      liveness,
+      needsAttention: routineNeedsAttention({
+        liveness,
+        control: head.control,
+        active: active5,
+        spend: head.spend
+      }),
+      // Sorted so the row is stable across reads regardless of SQL ordering.
+      installs: group.map((g4) => g4.installSlug).sort(),
+      lastFiredAt: maxIso(group.map((g4) => g4.lastFiredAt)),
+      nextFireAt: minIso(group.map((g4) => g4.nextFireAt)),
+      // Controllable only if every install is — a partially-controllable row would
+      // offer a switch that silently misses some pots.
+      controllable: group.every((g4) => g4.controllable)
+    });
+  }
+  return out;
+}
 async function getAutomationCatalog() {
   const { sql: sql5 } = getOrgPg();
   const ws2 = activeWorkspaceId();
   const iso10 = (d3) => d3 && !Number.isNaN(new Date(d3).getTime()) ? new Date(d3).toISOString() : null;
   const rows = await sql5`
-    SELECT name, install_slug, group_slug, trigger_config, active, last_fired_at, next_fire_at
-      FROM harness_shared.routines
-     WHERE workspace_id = ${ws2}
-     ORDER BY active DESC, name ASC`;
+    SELECT r.name, r.install_slug, r.group_slug, r.trigger_config, r.target_role,
+           r.target_owner_id, r.reschedule_interval_sec, r.active,
+           r.last_fired_at, r.next_fire_at,
+           p.last_active_at AS owner_last_active_at
+      FROM harness_shared.routines r
+      LEFT JOIN harness_shared.coord_presence p
+             ON p.owner_id = r.target_owner_id
+            AND p.workspace_id = r.workspace_id
+     WHERE r.workspace_id = ${ws2}
+     ORDER BY r.active DESC, r.name ASC`;
   const routines2 = rows.map((r4) => {
     const cron = typeof r4.trigger_config?.cron === "string" ? r4.trigger_config.cron : null;
+    const kind2 = routineKind({ name: r4.name });
+    const spend = spendForTargetRole(r4.target_role);
+    const active5 = r4.active === true;
+    const clockDriven = Boolean(cron) || r4.reschedule_interval_sec != null;
+    const liveness = routineLiveness({ active: active5, nextFireAt: iso10(r4.next_fire_at), clockDriven });
+    const control = "routine";
     return {
       name: r4.name,
       installSlug: r4.install_slug,
       group: r4.group_slug,
       category: classifyRoutine(r4.name, r4.group_slug),
       cron,
-      cadence: cronCadence(cron),
-      active: r4.active === true,
-      spawnsAgent: routineSpawnsAgent(r4.name),
+      cadence: cronCadence(cron) ?? loopCadence(r4.reschedule_interval_sec),
+      active: active5,
+      spend,
+      spendWhy: spendReasonForTargetRole(r4.target_role),
+      spawnsAgent: spend === "llm",
+      kind: kind2,
+      family: routineFamily(r4.name, kind2),
+      liveness,
+      control,
+      flagKey: null,
+      needsAttention: routineNeedsAttention({ liveness, control, active: active5, spend }),
+      installs: [r4.install_slug],
+      ownerId: r4.target_owner_id,
+      ownerLastActiveAt: iso10(r4.owner_last_active_at),
+      triggerLabel: null,
       lastFiredAt: iso10(r4.last_fired_at),
       nextFireAt: iso10(r4.next_fire_at),
       source: "routines",
@@ -1073215,26 +1074063,48 @@ async function getAutomationCatalog() {
   try {
     const { collectScheduleInventory: collectScheduleInventory2 } = await Promise.resolve().then(() => (init_schedule_inventory(), schedule_inventory_exports));
     const inventory = await collectScheduleInventory2();
-    external = inventory.filter((row) => row.source !== "routines").map((row) => ({
-      name: row.name,
-      installSlug: row.installSlug ?? row.source,
-      group: row.groupSlug,
-      category: classifyRoutine(row.name, row.groupSlug),
-      cron: null,
-      cadence: row.cadence || null,
-      // `armed` is null for sources that cannot report it; treat unknown as
-      // running, because claiming a live sweep is "off" is the worse error.
-      active: row.armed !== false,
-      spawnsAgent: routineSpawnsAgent(row.name),
-      lastFiredAt: row.lastFire,
-      nextFireAt: row.nextFire,
-      source: row.source,
-      controllable: false
-    }));
+    external = inventory.filter((row) => row.source !== "routines").map((row) => {
+      const syncTriggered = row.category === "sync-triggered";
+      const kind2 = routineKind({ name: row.name, syncTriggered });
+      const active5 = row.armed !== false;
+      const { spend, why: spendWhy } = inventorySpend(row);
+      const control = typeof row.detail?.flag === "string" ? "flag" : "none";
+      const liveness = routineLiveness({
+        active: active5,
+        nextFireAt: row.nextFire,
+        clockDriven: kind2 !== "triggered" && Boolean(row.nextFire || row.cadence)
+      });
+      return {
+        name: row.name,
+        installSlug: row.installSlug ?? row.source,
+        group: row.groupSlug,
+        category: classifyRoutine(row.name, row.groupSlug),
+        cron: null,
+        cadence: syncTriggered ? null : row.cadence || null,
+        active: active5,
+        spend,
+        spendWhy,
+        spawnsAgent: spend === "llm",
+        kind: kind2,
+        family: routineFamily(row.name, kind2),
+        liveness,
+        control,
+        flagKey: typeof row.detail?.flag === "string" ? row.detail.flag : null,
+        needsAttention: routineNeedsAttention({ liveness, control, active: active5, spend }),
+        installs: [row.installSlug ?? row.source],
+        ownerId: null,
+        ownerLastActiveAt: null,
+        triggerLabel: syncTriggered ? row.cadence || "on an event" : null,
+        lastFiredAt: row.lastFire,
+        nextFireAt: row.nextFire,
+        source: row.source,
+        controllable: false
+      };
+    });
   } catch {
     external = [];
   }
-  const allRoutines = [...routines2, ...external];
+  const allRoutines = collapseFanOut([...routines2, ...external]);
   const categories = AUTOMATION_CATEGORIES.map((category) => {
     const inCat = allRoutines.filter((x4) => x4.category === category);
     return {
@@ -1073321,7 +1074191,7 @@ async function getAutomationCatalog() {
     generatedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
 }
-var AGENT_SPAWNING_PATTERNS, DOCS_PATTERNS, LEARNING_NAME_PATTERNS;
+var DOCS_PATTERNS, LEARNING_NAME_PATTERNS;
 var init_catalog7 = __esm({
   "../../packages/operator-core/lib/automation/catalog.ts"() {
     "use strict";
@@ -1073330,32 +1074200,7 @@ var init_catalog7 = __esm({
     init_workspace_registry();
     init_pane_categories();
     init_pane_categories();
-    AGENT_SPAWNING_PATTERNS = [
-      /^bp-singleton-/i,
-      // blueprint learning singletons (scout, red-queen, regret, …)
-      /^gym-cycle$/i,
-      /^template-gym$/i,
-      /^pot-eval-battery$/i,
-      /^improvement-(implement|triage|watchdog|human-digest|invalid-args-miner)$/i,
-      // `wake` as a whole word ANYWHERE in the name — not an anchored suffix. The
-      // dominant spender observed on 2026-07-25 was `wake-brain` ($706/7d on opus),
-      // which a `/wake$/` suffix match silently misses while still matching its
-      // siblings `overwatch-wake` / `pot-wake` — i.e. the pane would have flagged the
-      // cheap ones and hidden the expensive one.
-      /(^|-)wake($|-)/i,
-      /^loop-su-/i,
-      // agent-armed continuation loops
-      // The post-git-sync doc repair. It spawns an LLM doc-steward per drift batch
-      // (555 lifetime spawns, ~$40/day before it was gated), so it MUST carry the
-      // token flag — the detection half beside it is free, and the owner has to be
-      // able to tell them apart at a glance.
-      /^doc-steward/i,
-      /prospector-cadence$/i,
-      /^hive-canary$/i,
-      /^autonomy-trust-scan$/i,
-      /^coord-invariant-monitor$/i,
-      /^claim-discipline-watch$/i
-    ];
+    init_routine_classification();
     DOCS_PATTERNS = [/doc/i, /^knowledge-pack-/i];
     LEARNING_NAME_PATTERNS = [
       /^improvement-/i,
@@ -1081046,105 +1081891,6 @@ var init_rest_query = __esm({
           const msg2 = err12?.message ?? String(err12);
           return Response.json({ error: msg2, name: name3 }, { status: 500 });
         }
-      }
-    });
-  }
-});
-
-// ../../packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query-batch.ts
-async function withSlotTimeout(name3, p3, timeoutMs = SLOT_TIMEOUT_MS) {
-  let timer6;
-  try {
-    return await Promise.race([
-      p3,
-      new Promise((_resolve, reject2) => {
-        timer6 = setTimeout(
-          () => reject2(
-            new Error(
-              `query "${name3}" exceeded ${timeoutMs}ms \u2014 slot timed out so the rest of the batch could return`
-            )
-          ),
-          timeoutMs
-        );
-      })
-    ]);
-  } finally {
-    if (timer6) clearTimeout(timer6);
-  }
-}
-var SLOT_TIMEOUT_MS, rest_query_batch_default;
-var init_rest_query_batch = __esm({
-  "../../packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query-batch.ts"() {
-    "use strict";
-    init_sync_resolver();
-    init_resource_delta_config();
-    init_src12();
-    init_src15();
-    init_cpu_task_worker();
-    SLOT_TIMEOUT_MS = 8e3;
-    rest_query_batch_default = defineTool({
-      method: "POST",
-      path: "/zero-harness/rest-query-batch",
-      auth: "loopback",
-      // Pure sync-transport, polled ~every 3s — exempt from route_invocations
-      // telemetry so the table doesn't flood (plan Q7: sampleRate 0 for pure
-      // sync transports).
-      sampleRate: 0,
-      async handler(req) {
-        let body;
-        try {
-          body = await req.json();
-        } catch {
-          return Response.json({ error: "invalid body (not JSON)" }, { status: 400 });
-        }
-        const list14 = body?.queries;
-        if (!Array.isArray(list14) || list14.length === 0) {
-          return Response.json({ error: "body.queries must be a non-empty array" }, { status: 400 });
-        }
-        if (list14.length > 200) {
-          return Response.json({ error: "batch too large (max 200)" }, { status: 400 });
-        }
-        if (req.signal.aborted) {
-          return new Response(null, { status: 499 });
-        }
-        const version6 = String(Date.now());
-        const results = await Promise.all(
-          list14.map(async (q4) => {
-            if (!q4 || typeof q4.name !== "string") {
-              return { error: "missing query name" };
-            }
-            try {
-              const v22 = await withSlotTimeout(q4.name, resolveNamedQueryV2(q4.name, q4.args ?? {}));
-              if (v22 === NAME_NOT_FOUND) {
-                return { error: `unknown queryName: ${q4.name}` };
-              }
-              const dcfg = q4.delta !== void 0 ? resourceDeltaConfig(q4.name) : void 0;
-              if (dcfg && Array.isArray(v22)) {
-                const field = dcfg.itemKeyField;
-                const neg = negotiateRowsDelta({
-                  cursor: q4.delta || void 0,
-                  rows: v22,
-                  itemKey: (r4) => String(r4[field]),
-                  itemKeyField: field,
-                  schemaVersion: dcfg.schemaVersion
-                });
-                const meta3 = { mode: neg.mode, cursor: neg.cursor, checksum: neg.checksum, itemKeyField: neg.itemKeyField };
-                return neg.mode === "delta" ? { changes: neg.changes, version: version6, delta: meta3 } : { rows: neg.rows, version: version6, delta: meta3 };
-              }
-              return { rows: v22, version: version6 };
-            } catch (err12) {
-              return { error: err12?.message ?? String(err12) };
-            }
-          })
-        );
-        if (req.signal.aborted) {
-          return new Response(null, { status: 499 });
-        }
-        const responseBody = await serializeJsonResponse({ results }, list14.length);
-        return new Response(responseBody, {
-          status: 200,
-          headers: { "content-type": "application/json; charset=utf-8" }
-        });
       }
     });
   }
@@ -1139784,8 +1140530,8 @@ var init_route_invocations = __esm({
 });
 
 // ../../packages/operator-core/lib/agent-bin-detect.ts
-import { execFile as execFile52, spawnSync as spawnSync15 } from "node:child_process";
-import { promisify as promisify54 } from "node:util";
+import { execFile as execFile53, spawnSync as spawnSync15 } from "node:child_process";
+import { promisify as promisify55 } from "node:util";
 function which(bin) {
   const r4 = spawnSync15("which", [bin], { encoding: "utf8" });
   return r4.status === 0 && r4.stdout.trim() ? r4.stdout.trim() : null;
@@ -1139793,11 +1140539,11 @@ function which(bin) {
 function detectBinaries() {
   return { claude: which("claude"), codex: which("codex"), omp: which("omp"), pi: which("pi") };
 }
-var execFileAsync11;
+var execFileAsync12;
 var init_agent_bin_detect = __esm({
   "../../packages/operator-core/lib/agent-bin-detect.ts"() {
     "use strict";
-    execFileAsync11 = promisify54(execFile52);
+    execFileAsync12 = promisify55(execFile53);
   }
 });
 
@@ -1143210,10 +1143956,10 @@ var init_consent = __esm({
 // ../../packages/operator-core/lib/provision/single-user.ts
 import { promises as fs101 } from "node:fs";
 import { join as join367 } from "node:path";
-import { execFile as execFile53 } from "node:child_process";
+import { execFile as execFile54 } from "node:child_process";
 function execFileP24(bin, args26, timeoutMs = 2e3) {
   return new Promise((resolve82, reject2) => {
-    execFile53(bin, args26, { timeout: timeoutMs }, (err12, stdout) => {
+    execFile54(bin, args26, { timeout: timeoutMs }, (err12, stdout) => {
       if (err12) reject2(err12);
       else resolve82(stdout.toString());
     });
@@ -1143653,8 +1144399,8 @@ var init_agent_login_envelope = __esm({
 });
 
 // ../../packages/operator-core/lib/endpoint-route/routes/desktop/git-identity.ts
-import { execFile as execFile54 } from "node:child_process";
-import { promisify as promisify55 } from "node:util";
+import { execFile as execFile55 } from "node:child_process";
+import { promisify as promisify56 } from "node:util";
 async function readConfig2(scope, key12) {
   try {
     const { stdout } = await exec9("git", ["config", `--${scope}`, "--get", key12], { timeout: 3e3 });
@@ -1143669,7 +1144415,7 @@ var init_git_identity = __esm({
   "../../packages/operator-core/lib/endpoint-route/routes/desktop/git-identity.ts"() {
     "use strict";
     init_src15();
-    exec9 = promisify55(execFile54);
+    exec9 = promisify56(execFile55);
     get45 = defineTool({
       method: "GET",
       path: "/desktop/git-identity",
@@ -1143814,8 +1144560,8 @@ var init_local_model_status = __esm({
 
 // ../../packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts
 import { existsSync as existsSync221 } from "node:fs";
-import { execFile as execFile55 } from "node:child_process";
-import { promisify as promisify56 } from "node:util";
+import { execFile as execFile56 } from "node:child_process";
+import { promisify as promisify57 } from "node:util";
 import net13 from "node:net";
 async function checkBinary(bin, args26 = ["--version"]) {
   try {
@@ -1143947,7 +1144693,7 @@ var init_preflight = __esm({
     "use strict";
     init_paths();
     init_src15();
-    exec10 = promisify56(execFile55);
+    exec10 = promisify57(execFile56);
     CORS_HEADERS5 = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -1146690,9 +1147436,9 @@ var require_get_stream = __commonJS({
     "use strict";
     var { constants: BufferConstants } = __require("buffer");
     var stream2 = __require("stream");
-    var { promisify: promisify57 } = __require("util");
+    var { promisify: promisify58 } = __require("util");
     var bufferStream = require_buffer_stream();
-    var streamPipelinePromisified = promisify57(stream2.pipeline);
+    var streamPipelinePromisified = promisify58(stream2.pipeline);
     var MaxBufferError = class extends Error {
       constructor() {
         super("maxBuffer exceeded");
@@ -1157343,7 +1158089,7 @@ var init_testing_domains_registry = __esm({
         {
           id: "selftests",
           label: "Selftests",
-          description: "The 7 previously-dark shell selftests (EI-18725214765732588), now wired into the aggregate runner + this registry.",
+          description: "The previously-dark shell selftests (EI-18725214765732588), now wired into the aggregate runner + this registry, plus later additions guarding the same rig scripts.",
           runners: [
             { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/federation-asserts.selftest.sh"], label: "federation port self-discovery" },
             { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/release-artifacts.selftest.sh"], label: "release artifacts guard" },
@@ -1157351,7 +1158097,9 @@ var init_testing_domains_registry = __esm({
             { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh"], label: "live-federation-gate reaper" },
             { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh"], label: "release local-leg reaper" },
             { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh"], label: "local-matrix starvation downgrade" },
-            { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh"], label: "rig bank-logs" }
+            { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh"], label: "rig bank-logs" },
+            { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/vm-run-env.selftest.sh"], label: "vm_run guest-env delivery (WI-6176)" },
+            { kind: "shell", cmd: "bash", args: ["papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh"], label: "seat-offer b\u2192a failure discriminator (WI-6179)" }
           ]
         }
       ]
@@ -1172040,7 +1172788,6 @@ var init_routes = __esm({
     init_intent_result();
     init_sse();
     init_rest_query();
-    init_rest_query_batch();
     init_catchall();
     init_catchall2();
     init_transport2();
@@ -1172558,7 +1173305,6 @@ var init_routes = __esm({
       ...flatten2(intent_result_default),
       ...flatten2(sse_default),
       ...flatten2(rest_query_default),
-      ...flatten2(rest_query_batch_default),
       ...flatten2(catchall_default),
       ...flatten2(catchall_default2),
       ...flatten2(log_event_default),

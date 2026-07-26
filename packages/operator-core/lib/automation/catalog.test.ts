@@ -173,6 +173,7 @@ describe('collapseFanOut', () => {
     family: 'git-release',
     liveness: 'running',
     control: 'routine',
+    flagKey: null,
     needsAttention: false,
     installs: [over.installSlug],
     ownerId: null,
@@ -183,6 +184,11 @@ describe('collapseFanOut', () => {
     source: 'routines',
     controllable: true,
     ...over,
+    // `Partial<AutomationRoutine>` widens every key with `| undefined`, so spreading
+    // `over` last re-opens the required `flagKey: string | null` to `undefined`.
+    // Re-normalize after the spread: an explicit override still wins, an absent one
+    // falls back to the declared default rather than landing as `undefined`.
+    flagKey: over.flagKey ?? null,
   });
 
   it('collapses one routine installed on many pots into a single row', () => {

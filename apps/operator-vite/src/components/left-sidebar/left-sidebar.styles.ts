@@ -1560,6 +1560,16 @@ body.has-left-sidebar .pc-header {
   background: color-mix(in srgb, var(--accent, #38bdf8), transparent 88%); }
 .pc-auto__pill--unknown { color: var(--bad, #f43f5e);
   background: color-mix(in srgb, var(--bad, #f43f5e), transparent 88%); }
+
+/* The stalled-loop roll-up inside Needs-you — one line standing for N identical
+   problems with one remedy. Same button-layout rule as everything else here: the
+   flex row lives on the INNER span, never on the <button> (WebKitGTK drops it). */
+.pc-auto__rollup { all: unset; display: block; width: 100%; cursor: pointer; }
+.pc-auto__rollup:focus-visible { outline: 2px solid var(--accent, #38bdf8); outline-offset: 2px; }
+.pc-auto__rollup-inner { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.pc-auto__rollup-inner svg { color: var(--warn, #f59e0b); flex: 0 0 auto; }
+.pc-auto__rollup-inner .pc-auto__meta { min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
 .pc-auto__spend-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px;
   align-items: baseline; font-size: 11px; }
 .pc-auto__spend-role { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg, #e7f7ff); }

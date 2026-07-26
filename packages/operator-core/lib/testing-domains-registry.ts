@@ -1611,6 +1611,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh'], label: 'rig bank-logs' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-run-env.selftest.sh'], label: 'vm_run guest-env delivery (WI-6176)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh'], label: 'seat-offer b→a failure discriminator (WI-6179)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh'], label: 'LEG4 attestation precondition + both-frames restore (WI-5064)' },
       ],
     },
   ],

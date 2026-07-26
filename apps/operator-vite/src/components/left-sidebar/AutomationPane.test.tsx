@@ -243,6 +243,74 @@ describe('AutomationPane — Mug-modelled layout (owner ask 2026-07-25)', () => 
   });
 
   /**
+   * Measured live 2026-07-26: 19 of 19 needs-you rows were stalled loops. Listed
+   * individually they push "Spending now" off the first screen — the same burial
+   * this pane was rebuilt to end, recreated in miniature. They are one class with
+   * one remedy, so they roll up.
+   */
+  describe('stalled-loop roll-up', () => {
+    const stalledLoop = (n: number) =>
+      routine({
+        name: `loop-su-dead${n}`,
+        kind: 'loop',
+        family: 'loops',
+        liveness: 'stalled',
+        needsAttention: true,
+        ownerId: `su-dead${n}abc`,
+        ownerLastActiveAt: '2026-07-21T15:28:00.000Z',
+        cadence: 'every 5m',
+      });
+
+    it('collapses three or more stalled loops into one summary line', () => {
+      renderPane({ routines: [stalledLoop(1), stalledLoop(2), stalledLoop(3)] });
+      const rollup = screen.getByTestId('automation-stalled-loops-rollup');
+      expect(rollup.textContent).toContain('3 stalled loops');
+      expect(screen.queryByTestId('automation-row-loop-su-dead1')).toBeNull();
+    });
+
+    it('expands to the individual loops on click', () => {
+      H.nuqsState.llmOpen = ['attn-loops'];
+      renderPane({ routines: [stalledLoop(1), stalledLoop(2), stalledLoop(3)] });
+      expect(screen.getByTestId('automation-row-loop-su-dead1')).toBeTruthy();
+    });
+
+    // Below the threshold there is nothing to gain from a roll-up, and an
+    // indirection costs more than it saves.
+    it('lists one or two stalled loops directly', () => {
+      renderPane({ routines: [stalledLoop(1), stalledLoop(2)] });
+      expect(screen.queryByTestId('automation-stalled-loops-rollup')).toBeNull();
+      expect(screen.getByTestId('automation-row-loop-su-dead1')).toBeTruthy();
+    });
+
+    // Other needs-you rows are DISTINCT problems with distinct fixes — they must
+    // never be swept into the loop roll-up.
+    it('keeps non-loop attention rows individually listed beside the roll-up', () => {
+      renderPane({
+        routines: [
+          stalledLoop(1),
+          stalledLoop(2),
+          stalledLoop(3),
+          routine({ name: 'template-gym', spend: 'unknown', needsAttention: true }),
+        ],
+      });
+      expect(screen.getByTestId('automation-stalled-loops-rollup')).toBeTruthy();
+      expect(screen.getByTestId('automation-row-template-gym')).toBeTruthy();
+    });
+
+    // A loop is named by its owning SESSION, not by the UUID the owner cannot say
+    // out loud — the row they quoted verbatim when asking for this change.
+    it('names a loop by its owning session and pot, not its raw uuid', () => {
+      H.nuqsState.llmOpen = ['attn-loops'];
+      renderPane({ routines: [stalledLoop(1), stalledLoop(2), stalledLoop(3)] });
+      const row = screen.getByTestId('automation-row-loop-su-dead1');
+      expect(row.textContent).toContain('su-dead1');
+      expect(row.textContent).not.toContain('loop-su-dead1');
+      // And it explains WHY it is stalled.
+      expect(row.textContent).toContain('owner last active');
+    });
+  });
+
+  /**
    * The bucket that earns the System tab its place: ~30 healthy sweeps read as ONE
    * line until one breaks. In the llm pane the same bucket stays open, because
    * every row in it costs money and there are only ~20.
@@ -498,16 +566,18 @@ describe('AutomationPane — Arming section (P-011)', () => {
     expect(screen.getByTestId('arming-row-lane-red-queen')).toBeTruthy();
   });
 
-  it('does NOT render for a pane that does not own the learning category', () => {
+  // Spend gates belong beside the things that spend. The deterministic pane has
+  // nothing to gate, so rendering an arming section there would be meaningless.
+  it('does NOT render in the deterministic (system) pane', () => {
     H.catalogResult = { data: [{ ...catalog, arming }], loading: false, error: null };
     render(
       <AutomationPane
         active
-        categories={['docs'] as never}
-        title="Docs"
-        subtitle="Keeps documentation fresh"
+        lens="system"
+        title="System"
+        subtitle="Runs without a model"
         icon={Blend}
-        blurb="Docs agents."
+        blurb="Deterministic scheduled work."
       />,
     );
     expect(screen.queryByTestId('automation-arming')).toBeNull();

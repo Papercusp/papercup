@@ -359,6 +359,16 @@ function failAllSessions(state: ChannelState): void {
 const REFUSE_LOG_WINDOW_MS = 30_000;
 const refuseLogLast = new Map<string, { at: number; suppressed: number }>();
 
+/** Emit a plane diagnostic. Suppressed under vitest — the repo runs
+ *  `vitest-fail-on-console`, so an unconditional diagnostic would fail every
+ *  suite that exercises a refusal path (live-caught: serve-wiring's 3 refusal
+ *  tests). Same guard swarm.ts's data-path sampler uses for the same reason. */
+function potGitLog(level: 'info' | 'warn', msg: string): void {
+  if (process.env.VITEST) return;
+  if (level === 'warn') console.warn(msg);
+  else console.info(msg);
+}
+
 /** True when this refusal should be logged now; folds any suppressed repeats
  *  from the current window into the returned count so a storm reports as one
  *  line with a tally instead of N lines. */
@@ -403,7 +413,8 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     }
     const { log, suppressed } = shouldLogRefusal(`${reason} ${v.repoKey} ${peerTag(state)}`, Date.now());
     if (log) {
-      console.warn(
+      potGitLog(
+        'warn',
         `[pot-git] serve REFUSED reason=${reason} repo=${v.repoKey} peer=${peerTag(state)} id=${v.id}` +
           (suppressed > 0 ? ` (+${suppressed} identical suppressed in the last ${REFUSE_LOG_WINDOW_MS / 1000}s)` : ''),
       );
@@ -507,8 +518,8 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       const detail =
         `repo=${v.repoKey} peer=${peerTag(state)} id=${v.id} code=${res.code}` +
         `${res.timedOut ? ' timedOut=true' : ''} ${ms}ms`;
-      if (res.code === 0) console.info(`[pot-git] serve OK ${detail}`);
-      else console.warn(`[pot-git] serve FAILED ${detail} stderr=${res.stderr.trim().slice(0, 300)}`);
+      if (res.code === 0) potGitLog('info', `[pot-git] serve OK ${detail}`);
+      else potGitLog('warn', `[pot-git] serve FAILED ${detail} stderr=${res.stderr.trim().slice(0, 300)}`);
     } finally {
       state.serverSessions.delete(v.id);
     }
@@ -527,7 +538,8 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     } catch {
       /* best-effort — the channel may already be gone */
     }
-    console.warn(
+    potGitLog(
+      'warn',
       `[pot-git] serve ERROR repo=${v.repoKey} peer=${peerTag(state)} id=${v.id}` +
         ` after ${Date.now() - startedAt}ms: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`,
     );

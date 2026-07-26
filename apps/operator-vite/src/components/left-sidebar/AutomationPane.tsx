@@ -393,6 +393,27 @@ export default function AutomationPane({
   const buckets = useMemo(() => bucketRows(rows, lens), [rows, lens]);
   const families = lens === 'llm' ? AGENT_FAMILY_ORDER : SYSTEM_FAMILY_ORDER;
 
+  /**
+   * Stalled LOOPS are collapsed into one summary row inside Needs-you.
+   *
+   * Measured against live data (2026-07-26): 19 of the Agents pane's 19 needs-you
+   * rows were stalled loops — armed, never firing again, owning session long gone.
+   * Rendered individually they push "Spending now" off the first screen, which
+   * recreates in miniature the exact problem this pane was rebuilt to fix. They are
+   * a homogeneous class with ONE remedy, so they read better as a single line that
+   * expands than as nineteen near-identical rows.
+   *
+   * Everything else in Needs-you stays individually listed — those are distinct
+   * problems with distinct fixes.
+   */
+  const attentionSplit = useMemo(() => {
+    const attn = buckets.find((b) => b.id === 'attention')?.rows ?? [];
+    const stalledLoops = attn.filter((r) => r.kind === 'loop' && r.liveness === 'stalled');
+    const others = attn.filter((r) => !(r.kind === 'loop' && r.liveness === 'stalled'));
+    return { stalledLoops, others, grouped: stalledLoops.length > 2 };
+  }, [buckets]);
+  const loopsExpanded = open.includes('attn-loops');
+
   const isOpen = (b: Bucket) => (b.foldedByDefault ? open.includes(b.id) : !open.includes(`-${b.id}`));
   const toggleBucket = (b: Bucket) => {
     const key = b.foldedByDefault ? b.id : `-${b.id}`;
@@ -749,7 +770,45 @@ export default function AutomationPane({
                     </button>
                     {opened && b.rows.length > 0 && (
                       <div className="pc-auto__list" role="list">
-                        {b.rows.map(renderRow)}
+                        {b.id === 'attention' && attentionSplit.grouped ? (
+                          <>
+                            {attentionSplit.others.map(renderRow)}
+                            {/* The stalled-loop roll-up. One line, one remedy, and
+                                the count is the point — see attentionSplit. */}
+                            <div role="listitem" className="pc-auto__row is-attention">
+                              <button
+                                type="button"
+                                className="pc-auto__rollup"
+                                aria-expanded={loopsExpanded}
+                                onClick={() =>
+                                  void setOpen(
+                                    loopsExpanded
+                                      ? open.filter((x) => x !== 'attn-loops')
+                                      : [...open, 'attn-loops'],
+                                  )
+                                }
+                                data-testid="automation-stalled-loops-rollup"
+                              >
+                                <span className="pc-auto__rollup-inner">
+                                  {loopsExpanded ? (
+                                    <ChevronDown size={11} aria-hidden />
+                                  ) : (
+                                    <ChevronRight size={11} aria-hidden />
+                                  )}
+                                  <span className="pc-auto__name">
+                                    {attentionSplit.stalledLoops.length} stalled loops
+                                  </span>
+                                  <span className="pc-auto__meta">
+                                    armed but never firing — owning sessions gone
+                                  </span>
+                                </span>
+                              </button>
+                            </div>
+                            {loopsExpanded && attentionSplit.stalledLoops.map(renderRow)}
+                          </>
+                        ) : (
+                          b.rows.map(renderRow)
+                        )}
                       </div>
                     )}
                   </section>

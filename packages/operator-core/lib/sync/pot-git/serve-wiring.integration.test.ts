@@ -197,35 +197,71 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     expect(cat.code).toBe(0);
   });
 
-  it('a legacy-mode hive REFUSES — never serves a byte (mode re-checked live, no re-seed needed)', async () => {
+  /**
+   * WI-6184 recurrence guard: A REFUSAL MUST NEVER PRESENT AS A TIMEOUT.
+   *
+   * `expect(res.code).not.toBe(0)` alone is NOT enough — it passes identically
+   * whether the peer refused in 20ms or said nothing at all and the client sat
+   * out its full ceiling. That indistinguishability is the whole defect class
+   * this guard exists to catch: on the 2-machine rig every cold-join burned the
+   * FULL 120s ceiling and reported a bare ":failed" with no reason, because a
+   * throw inside `handleReq` was swallowed with no frame sent (serve-wiring.ts's
+   * trailing `.catch`) and because `serveUploadPack`'s spawn-error path never
+   * ended the duplex. Both are fixed; these assertions FAIL if either regresses.
+   *
+   * So every refusal path asserts all three: it did not time out, it named its
+   * reason on the wire, and it returned fast (a refuse frame is one round-trip —
+   * orders of magnitude under the ceiling, with generous headroom for CI load).
+   */
+  const REFUSAL_FAST_MS = 10_000;
+  const expectFastNamedRefusal = (
+    res: { code: number; stderr: string; timedOut: boolean },
+    elapsedMs: number,
+    reason: RegExp,
+  ): void => {
+    expect(res.code, res.stderr).not.toBe(0);
+    // The refusal must arrive as a `refuse` FRAME, not as silence-then-ceiling.
+    expect(res.timedOut, `refusal presented as a TIMEOUT: ${res.stderr}`).toBe(false);
+    expect(res.stderr).not.toMatch(/timed out/);
+    expect(res.stderr).toMatch(reason);
+    expect(elapsedMs, `refusal took ${elapsedMs}ms — expected a fast refuse frame`).toBeLessThan(
+      REFUSAL_FAST_MS,
+    );
+  };
+
+  it('a legacy-mode hive REFUSES fast, naming mode-legacy — never serves a byte, never a timeout', async () => {
     await setPotGitMode(WORKSPACE_ID, HIVE, 'legacy');
     try {
       const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: 'repo-1' });
+      const t0 = Date.now();
       const res = await fetchOverDuplex(
         clientRepo,
         duplex,
         ['+refs/heads/work:refs/heads/other-legacy-attempt'],
         { timeoutMs: 15_000 },
       );
-      expect(res.code).not.toBe(0);
+      expectFastNamedRefusal(res, Date.now() - t0, /serve refused: mode-legacy/);
     } finally {
       await setPotGitMode(WORKSPACE_ID, HIVE, 'bridged');
     }
   });
 
-  it('refuses an unknown repoKey', async () => {
+  it('refuses an unknown repoKey fast, naming no-such-repo', async () => {
     const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: 'not-a-real-repo' });
+    const t0 = Date.now();
     const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/never'], {
       timeoutMs: 15_000,
     });
-    expect(res.code).not.toBe(0);
+    expectFastNamedRefusal(res, Date.now() - t0, /serve refused: no-such-repo/);
   });
 
-  it('refuses a path-traversal repoKey (defense in depth — never touches the fs outside the root)', async () => {
+  it('refuses a path-traversal repoKey fast, naming bad-repo-key (never touches the fs outside the root)', async () => {
     const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: '../../etc' });
+    const t0 = Date.now();
     const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/never2'], {
       timeoutMs: 15_000,
     });
-    expect(res.code).not.toBe(0);
+    expectFastNamedRefusal(res, Date.now() - t0, /serve refused: bad-repo-key/);
   });
+
 });

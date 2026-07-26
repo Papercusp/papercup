@@ -138,8 +138,8 @@ describe('collectScheduleInventory', () => {
       getInProcessChecks: () => ({ checks: [], armed: false }),
       getExternalProcess: () => [],
       getSyncTriggered: () => [
-        { name: 'doc-freshness-sweep', cadence: 'after each git-sync', armed: true, source: 'a.ts', note: 'free' },
-        { name: 'doc-steward-dispatch', cadence: 'after each git-sync', armed: false, flag: 'papercusp-doc-steward', source: 'b.ts', note: 'spawns' },
+        { name: 'doc-freshness-sweep', cadence: 'after each git-sync', armed: true, source: 'a.ts', spends: 'none', note: 'free' },
+        { name: 'doc-steward-dispatch', cadence: 'after each git-sync', armed: false, flag: 'papercusp-doc-steward', source: 'b.ts', spends: 'llm', note: 'spawns' },
       ],
     });
     expect(rows.map((r) => r.name)).toEqual(['doc-freshness-sweep', 'doc-steward-dispatch']);
