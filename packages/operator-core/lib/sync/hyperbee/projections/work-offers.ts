@@ -27,6 +27,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { listHiveMembers, loadRevokedHivePubkeys } from '../../../hive-membership-store';
+import { bumpRefusedOpCounter } from '../../../p2p/receipts';
 import { verifyEd25519 } from '../../../identity/ed25519';
 import {
   parseWorkOfferRecordJson,
@@ -90,33 +91,72 @@ export function isWorkOfferWireRow(input: unknown): input is WorkOfferWireRow {
  * bytes verifies under a signer device that is attested to the record's
  * PUBLISHER and not revoked. Fails CLOSED on every edge; never throws.
  */
+/**
+ * WHY a REASON and not a boolean (WI-6207). This gate has nine distinct
+ * rejection paths and used to collapse all of them into `false`, which
+ * `writeToPg` then turned into a bare `return` — no log, no counter, no row.
+ * The consequence was not cosmetic: an offer that ARRIVED on this frame and was
+ * dropped here became byte-for-byte indistinguishable, in the logs AND in the
+ * database, from an offer that never arrived at all. The live-federation gate's
+ * seat_offer leg reports exactly that ambiguity as "seat-offer never
+ * materialized", and it got read as a broken b→a link for weeks (WI-6178) while
+ * the sibling projection — p2p-receipts.ts — had had a `refuse()` helper the
+ * whole time that logs the reason and bumps p2p_refused_op_counters. Same
+ * substrate, same direction, one observable and one not. This names the reason
+ * so the drop is visible in both places; the security behaviour is unchanged
+ * (every one of these still drops, fail-closed).
+ */
+export type WorkOfferDropReason =
+  /** record_json is not a parseable/valid signed record (closed schema). */
+  | 'malformed_record'
+  /** the signed record does not match this row's columns (cuckoo row). */
+  | 'record_row_mismatch'
+  /** the signature field is not decodable base64. */
+  | 'bad_signature_encoding'
+  /** the signing device pubkey is on the hive's revoked set. */
+  | 'signer_revoked'
+  /** the signing device is not attested to the record's publisher — the path a
+   *  roster-convergence race takes, and the one most often mistaken for
+   *  "the offer never arrived". */
+  | 'signer_unattested'
+  /** Ed25519 verification failed over the canonical signed bytes. */
+  | 'signature_invalid'
+  /** membership/revocation resolution threw — fail closed. */
+  | 'resolution_failed'
+  /** an injected verifier returned a bare `false` (no reason available). */
+  | 'unspecified'
+  /** the upsert's LWW compare matched no row: a strictly-older redelivery. */
+  | 'lww_superseded';
+
+/** `true` ⇒ apply. A reason ⇒ drop, and SAY WHICH. A plain `false` is still
+ *  accepted from an injected test seam and normalizes to 'unspecified'. */
 export type VerifyWorkOfferFn = (
   opts: WorkOffersProjectionOpts,
   row: WorkOfferWireRow,
-) => Promise<boolean>;
+) => Promise<boolean | WorkOfferDropReason>;
 
 async function realVerifyWorkOffer(
   opts: WorkOffersProjectionOpts,
   row: WorkOfferWireRow,
-): Promise<boolean> {
+): Promise<true | WorkOfferDropReason> {
   try {
     // (a) Structural + no-cuckoo: the signed record must BE this row.
     const record = parseWorkOfferRecordJson(row.record_json);
-    if (!record) return false;
-    if (record.publisherGithubUserId !== row.publisher_github_user_id) return false;
-    if (record.offerId !== row.offer_id) return false;
-    if (record.recordVersion !== row.record_version) return false;
+    if (!record) return 'malformed_record';
+    if (record.publisherGithubUserId !== row.publisher_github_user_id) return 'record_row_mismatch';
+    if (record.offerId !== row.offer_id) return 'record_row_mismatch';
+    if (record.recordVersion !== row.record_version) return 'record_row_mismatch';
     // P-001: DB NULL ⇔ wire '' (mirrors toWorkOfferValue's `?? ''`).
-    if ((record.fleetSlug ?? '') !== row.fleet_slug) return false;
-    if ((record.potSlug ?? '') !== row.pot_slug) return false;
-    if (record.kind !== row.offer_kind) return false;
-    if (record.status !== row.status) return false;
+    if ((record.fleetSlug ?? '') !== row.fleet_slug) return 'record_row_mismatch';
+    if ((record.potSlug ?? '') !== row.pot_slug) return 'record_row_mismatch';
+    if (record.kind !== row.offer_kind) return 'record_row_mismatch';
+    if (record.status !== row.status) return 'record_row_mismatch';
 
     let sig: Buffer;
     try {
       sig = Buffer.from(row.signature, 'base64');
     } catch {
-      return false;
+      return 'bad_signature_encoding';
     }
     const bytes = workOfferStoreSignedBytes({
       workspaceId: opts.workspaceId,
@@ -128,17 +168,49 @@ async function realVerifyWorkOffer(
     // (b) A publisher-attested, non-revoked DEVICE key signed it. Fresh
     // membership read per op — security path, no TTL cache.
     const revoked = await loadRevokedHivePubkeys(opts.workspaceId, opts.harnessSlug, opts.sql);
-    if (revoked.has(row.signer_device_pubkey)) return false;
+    if (revoked.has(row.signer_device_pubkey)) return 'signer_revoked';
     const members = await listHiveMembers(opts.workspaceId, opts.harnessSlug, opts.sql);
     const publisherMember = members.find((m) => m.githubUserId === record.publisherGithubUserId);
     const signerAttestedToPublisher = !!publisherMember?.deviceAttestations?.some(
       (a) => a?.device_pubkey === row.signer_device_pubkey,
     );
-    if (!signerAttestedToPublisher) return false;
-    return verifyEd25519(bytes, row.signer_device_pubkey, sig);
+    if (!signerAttestedToPublisher) return 'signer_unattested';
+    return verifyEd25519(bytes, row.signer_device_pubkey, sig) ? true : 'signature_invalid';
   } catch {
-    return false; // any resolution failure ⇒ drop (fail closed)
+    return 'resolution_failed'; // any resolution failure ⇒ drop (fail closed)
   }
+}
+
+/**
+ * The observable-drop helper — deliberately a mirror of p2p-receipts.ts's
+ * `refuse()` (log line + p2p_refused_op_counters bump), so the two inbound P2P
+ * projections report a non-apply the SAME way and a leg can assert on either
+ * with one query shape. Reason keys are namespaced `offer-apply:<reason>`
+ * alongside the existing `receipt-apply:<reason>` family.
+ *
+ * Best-effort by construction: the counter bump is fire-and-forget and its own
+ * failure is swallowed by bumpRefusedOpCounter (which logs it). Evidence must
+ * never be able to fail an apply path.
+ */
+function dropOffer(
+  opts: WorkOffersProjectionOpts,
+  reason: WorkOfferDropReason,
+  row: WorkOfferWireRow,
+  provenance?: ProvenanceContext,
+): void {
+  if (opts.onDroppedOffer) {
+    opts.onDroppedOffer(reason, row);
+    return;
+  }
+  console.warn(
+    `[work-offers] DROPPED inbound offer op (${reason}): publisher=${row.publisher_github_user_id} ` +
+      `offer=${row.offer_id} kind=${row.offer_kind} status=${row.status} ` +
+      `hive=${row.harness_slug} origin=${provenance?.origin ?? 'local'} v=${row.record_version}`,
+  );
+  void bumpRefusedOpCounter(
+    { workspaceId: opts.workspaceId, potSlug: row.harness_slug, reason: `offer-apply:${reason}` },
+    opts.sql as Parameters<typeof bumpRefusedOpCounter>[1],
+  ).catch(() => {});
 }
 
 export interface WorkOffersProjectionOpts {
@@ -153,6 +225,12 @@ export interface WorkOffersProjectionOpts {
    * neuter it (→ always true) and a forged record applies = RED.
    */
   verifyRecord?: VerifyWorkOfferFn;
+  /**
+   * Test/observability seam mirroring p2p-receipts' `onRefusedApply`: when set,
+   * it REPLACES the warn+counter reporting so a test can assert the reason
+   * without a live counters table. Production leaves it unset.
+   */
+  onDroppedOffer?: (reason: WorkOfferDropReason, row: WorkOfferWireRow) => void;
 }
 
 function composeKey(row: WorkOfferWireRow): string {
@@ -173,8 +251,15 @@ async function writeToPg(
   if (row.harness_slug !== opts.harnessSlug) return;
 
   // SECURITY GATE: verify signature + attestation before applying. Forged → drop.
+  // WI-6207: a drop is now OBSERVABLE (reason + counter). Unchanged behaviour —
+  // everything that dropped before still drops, it just no longer does so silently.
   const verify = opts.verifyRecord ?? realVerifyWorkOffer;
-  if (!(await verify(opts, row))) return;
+  const verdict = await verify(opts, row);
+  if (verdict !== true) {
+    // An injected seam may still return a bare `false`; normalize it.
+    dropOffer(opts, typeof verdict === 'string' ? verdict : 'unspecified', row, provenance);
+    return;
+  }
 
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
@@ -217,6 +302,22 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() (mirrors lwwPick exactly).
     WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.p2p_work_offers.fed_hlc, harness_shared.p2p_work_offers.fed_ts)
   `;
+
+  // WI-6207: the LWW guard above can match ZERO rows — a strictly-older
+  // redelivery loses the fed_order_key compare and no row is written. That is the
+  // CORRECT outcome, but it was the third silent non-apply in this file: an
+  // operator looking for the offer sees no row and no log, exactly as if it had
+  // never arrived. (An EQUAL order key passes the `>=`, so count=0 means strictly
+  // superseded, not a redundant redelivery.) Report it like any other non-apply.
+  //
+  // Deliberately NOT `(count ?? 0) === 0` — the spawn hook below can safely read an
+  // UNKNOWN count as "did not land" because that only skips an optional action,
+  // whereas here it would MANUFACTURE evidence of a supersede that may not have
+  // happened. An absent count means "the driver did not tell us", which is not a
+  // finding. Only an explicit numeric 0 is.
+  if (typeof upsertResult.count === 'number' && upsertResult.count === 0) {
+    dropOffer(opts, 'lww_superseded', row, provenance);
+  }
 
   // P-009 honor hook (the WI-1940 reaper pattern): a landed REMOTE-origin open
   // 'spawn_request' asks THIS host to spawn from its own delegated seats — hand

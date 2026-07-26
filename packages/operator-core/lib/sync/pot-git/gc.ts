@@ -11,7 +11,13 @@
  * the summary instead of throwing away the whole pass.
  */
 
-import { defaultRunGit, listNamespaces, type NamespaceRef, type RunGit } from './storage';
+import {
+  defaultRunGit,
+  listNamespaces,
+  sweepStalePackTmpFiles,
+  type NamespaceRef,
+  type RunGit,
+} from './storage';
 import { SIGREFS_REF } from './sigrefs';
 import { STAGING_REF, WORK_REF } from './integrator';
 
@@ -30,6 +36,9 @@ export interface PotGitGcResult {
   deletedRefs: string[];
   errors: string[];
   keptRefs: string[];
+  /** EI-18745600910177355: orphaned `index-pack` temp packs reclaimed. */
+  reclaimedTmpPacks: number;
+  reclaimedTmpPackBytes: number;
 }
 
 function isNamespaceHex(value: string): boolean {
@@ -145,6 +154,19 @@ export async function gcHiveGitRepo(
   const deletedRefs: string[] = [];
   const keptRefs: string[] = [];
   const errors: string[] = [];
+  let reclaimedTmpPacks = 0;
+  let reclaimedTmpPackBytes = 0;
+
+  // EI-18745600910177355: `git gc --prune=now` below does NOT touch
+  // `index-pack`'s orphaned `tmp_pack_*` files — it only prunes temp names it
+  // wrote itself. Every SIGKILLed pot-git fetch leaks one, up to the full repo
+  // size each (21 GB observed in a single rig store). A retention pass that
+  // leaves the largest garbage on disk isn't retention, so sweep them here too.
+  const swept = await sweepStalePackTmpFiles(repoPath).catch(() => null);
+  if (swept && swept.removed.length > 0) {
+    reclaimedTmpPackBytes = swept.bytesReclaimed;
+    reclaimedTmpPacks = swept.removed.length;
+  }
 
   for (const namespaceHex of await listNamespaces(repoPath, runGit)) {
     if (archiveNamespaces.has(namespaceHex)) {
@@ -181,5 +203,12 @@ export async function gcHiveGitRepo(
     errors.push(`git gc: ${gc.stderr.trim() || `exit ${gc.code}`}`);
   }
 
-  return { archivedNamespaces, deletedRefs, errors, keptRefs };
+  return {
+    archivedNamespaces,
+    deletedRefs,
+    errors,
+    keptRefs,
+    reclaimedTmpPacks,
+    reclaimedTmpPackBytes,
+  };
 }

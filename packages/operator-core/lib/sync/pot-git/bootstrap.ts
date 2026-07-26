@@ -30,11 +30,59 @@
  *
  * Fail-soft: never throws; a failed bootstrap returns ok:false and is safely
  * re-runnable against the same or ANY OTHER member peer.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * RESUMABILITY (WI-6189, 2026-07-26) — why this is a LADDER, not one fetch
+ *
+ * The original shape was a single `git fetch` of the whole wildcard refspec.
+ * That is unusable for a real pot: the papercusp pot-home store is **2.5 GB**,
+ * while a pot-git channel's life is measured in SECONDS (23–36 channel closes
+ * per minute, sustained, on the P-302 rig). A killed `git fetch` writes NOTHING
+ * durable — `index-pack` discards a partial pack — so every tick restarted from
+ * zero and the joiner sat at 0 refs indefinitely, forever, while leaking a
+ * multi-GB `tmp_pack_*` per attempt (EI-18745600910177355).
+ *
+ * This must be fixed EVEN IF the churn (EI-18740968796318403) is fully solved:
+ * on any real p2p link a transfer this size WILL be interrupted — laptops
+ * sleep, wifi roams, NATs rebind, peers restart. A cold-join that cannot
+ * survive an interruption can never converge for a large repo.
+ *
+ * The fix is to make progress DURABLE PER RUNG, using git's own shallow
+ * machinery — every rung's objects and refs are committed to the local ODB
+ * before the next rung starts, and a rung that dies costs only that rung:
+ *
+ *   rung 1 (`tip`)     `--depth=1`   — every namespace ref at its tip only.
+ *                                      78 MB for papercusp vs 2.5 GB full.
+ *   rung 2..n (`deepen`) `--deepen=N` — extend history by N commits per tip.
+ *   rung n+1 (`seed`)                 — history complete (repo no longer
+ *                                      shallow) ⇒ seed `refs/namespaces/*`.
+ *
+ * ADAPTIVE RUNG SIZE: N doubles after every rung that lands and halves after
+ * every rung that dies, persisted in the repo's own git config so it survives
+ * process restarts. The ladder therefore self-tunes to whatever the link
+ * actually sustains — fast on a good link, and still converging on a link that
+ * can only move a few commits per window — with no operator tuning.
+ *
+ * SEEDING IS STILL ALL-OR-NOTHING AT THE END. A half-transferred history must
+ * never become a `refs/namespaces/*` ref: the announcement/integrator layers
+ * would then treat a shallow, incomplete line as a peer's real state. So the
+ * quarantine area doubles as the durable resume checkpoint — it is KEPT across
+ * ticks while the ladder is climbing, and dropped only once the namespaces are
+ * seeded. That also keeps `runBootstrapLeg`'s "warm" self-gate honest: no
+ * member namespace exists until the join genuinely finished.
  */
 
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { type TransportResult, fetchOverDuplex } from './fetch-transport';
-import { type RunGit, defaultRunGit, deviceNamespaceKey, listNamespaces } from './storage';
+import {
+  type RunGit,
+  defaultRunGit,
+  deviceNamespaceKey,
+  listNamespaces,
+  sweepStalePackTmpFiles,
+} from './storage';
 
 /** update-ref's "the ref must NOT exist" old-value (create-only CAS). */
 const ZERO_SHA = '0'.repeat(40);
@@ -48,9 +96,40 @@ export const BOOTSTRAP_QUARANTINE_PREFIX = 'refs/bootstrap-quarantine';
  *  namespace, and only when the namespace does not exist locally. */
 export const ALL_NAMESPACES_QUARANTINE_REFSPEC = `+refs/namespaces/*:${BOOTSTRAP_QUARANTINE_PREFIX}/*`;
 
+/** Which rung of the resumable ladder a call attempted. See the module doc. */
+export type BootstrapPhase = 'tip' | 'deepen' | 'unshallow' | 'seed';
+
+/** Git-config key holding the adaptive deepen rung size, persisted on the
+ *  local repo so the ladder's tuning survives process restarts. */
+const DEEPEN_CONFIG_KEY = 'papercusp.bootstrapDeepen';
+/** Rung-size bounds + starting point for the adaptive `--deepen` ladder. */
+export const MIN_DEEPEN_COMMITS = 16;
+export const INITIAL_DEEPEN_COMMITS = 64;
+export const MAX_DEEPEN_COMMITS = 8192;
+/** Default cap on rungs climbed per call, so one tick can make real headway
+ *  without pinning the git-sync routine open indefinitely. */
+const DEFAULT_MAX_STEPS = 12;
+
 export interface BootstrapResult extends TransportResult {
-  /** True when the fetch AND every seed ref-write succeeded. */
+  /** True when the WHOLE ladder finished: history complete AND every seed
+   *  ref-write succeeded. Unchanged meaning for callers — a joiner is only
+   *  "bootstrapped" once its namespaces exist. */
   ok: boolean;
+  /** True when this call moved the ladder forward (at least one rung landed),
+   *  even if the join is not finished yet. `ok:false, progressed:true` is the
+   *  HEALTHY in-progress state of a large cold-join — distinct from a real
+   *  failure (`ok:false, progressed:false`), which callers must not conflate. */
+  progressed: boolean;
+  /** The rung this call ended on. */
+  phase: BootstrapPhase;
+  /** Rungs that landed during this call. */
+  steps: number;
+  /** Durable resume checkpoint depth: quarantine refs currently on disk. */
+  quarantineRefs: number;
+  /** Whether the local store still holds a truncated history. */
+  shallow: boolean;
+  /** The `--deepen` size the NEXT rung will request (post-adaptation). */
+  deepenNext: number;
   /** Device namespace keys (hex) present locally AFTER the bootstrap —
    *  UNVERIFIED until the caller runs the G-4 sigrefs reconciliation. */
   namespaces: string[];
@@ -86,12 +165,53 @@ async function readQuarantine(repoPath: string, runGit: RunGit): Promise<Quarant
   return out;
 }
 
-/** Best-effort delete of every quarantine ref (start-of-run stale debris from
- *  a crashed prior bootstrap, and end-of-run cleanup). */
+/** Best-effort delete of every quarantine ref.
+ *
+ * WI-6189: called ONLY once the ladder has finished and the namespaces are
+ * seeded. It used to also run at the START of every bootstrap ("stale debris
+ * from a crashed run") — which is precisely what made a cold-join
+ * unresumable: the quarantine refs left by a partial transfer ARE the durable
+ * checkpoint the next rung negotiates from, so wiping them threw away every
+ * byte a dying channel had managed to deliver. Quarantine is force-updated
+ * (`+`) and read only as a seed source, so carrying it across ticks — even
+ * across a switch to a DIFFERENT serving peer — is safe. */
 async function dropQuarantine(repoPath: string, runGit: RunGit): Promise<void> {
   for (const q of await readQuarantine(repoPath, runGit)) {
     await runGit(['update-ref', '-d', `${BOOTSTRAP_QUARANTINE_PREFIX}/${q.key}/${q.rest}`], repoPath);
   }
+}
+
+/** Authoritative shallow check — `git rev-parse --is-shallow-repository`
+ *  rather than probing for the `shallow` file, which git may leave behind
+ *  empty. Fail-soft: an unreadable repo reports NOT shallow, which routes the
+ *  caller to the seed path where real errors surface with context. */
+async function isShallowRepo(repoPath: string, runGit: RunGit): Promise<boolean> {
+  const r = await runGit(['rev-parse', '--is-shallow-repository'], repoPath);
+  return r.code === 0 && r.stdout.trim() === 'true';
+}
+
+/** The shallow BOUNDARY (the set of commits whose parents we don't have), used
+ *  to detect a deepen rung that landed but moved nothing — the signal that the
+ *  ladder is stuck and must escalate to `--unshallow`. */
+async function readShallowBoundary(repoPath: string): Promise<string> {
+  try {
+    return (await readFile(join(repoPath, 'shallow'), 'utf8')).trim();
+  } catch {
+    return '';
+  }
+}
+
+async function readDeepenStep(repoPath: string, runGit: RunGit): Promise<number> {
+  const r = await runGit(['config', '--get', DEEPEN_CONFIG_KEY], repoPath);
+  const n = r.code === 0 ? Number.parseInt(r.stdout.trim(), 10) : Number.NaN;
+  if (!Number.isFinite(n) || n <= 0) return INITIAL_DEEPEN_COMMITS;
+  return Math.min(Math.max(n, MIN_DEEPEN_COMMITS), MAX_DEEPEN_COMMITS);
+}
+
+async function writeDeepenStep(repoPath: string, runGit: RunGit, n: number): Promise<number> {
+  const clamped = Math.min(Math.max(n, MIN_DEEPEN_COMMITS), MAX_DEEPEN_COMMITS);
+  await runGit(['config', DEEPEN_CONFIG_KEY, String(clamped)], repoPath);
+  return clamped;
 }
 
 /**
@@ -124,20 +244,138 @@ async function dropQuarantine(repoPath: string, runGit: RunGit): Promise<void> {
 export async function bootstrapFromPeer(
   localRepoPath: string,
   duplex: Duplex,
-  opts: { timeoutMs?: number; runGit?: RunGit; selfDevicePubkey?: string } = {},
+  opts: {
+    timeoutMs?: number;
+    runGit?: RunGit;
+    selfDevicePubkey?: string;
+    /** WI-6189: dial a FRESH per-fetch stream for each rung beyond the first.
+     *  A pot-git duplex serves exactly ONE `git fetch` (upload-pack exits and
+     *  the stream is ended), so climbing the ladder within a single call needs
+     *  a way to open the next one. Resolve to `null` when no channel is
+     *  available — the ladder then stops with its progress intact rather than
+     *  failing. Omit entirely and this call climbs exactly one rung, which is
+     *  still durable; the next tick continues. */
+    dial?: () => Promise<Duplex | null>;
+    /** Max rungs to climb in this call (default {@link DEFAULT_MAX_STEPS}). */
+    maxSteps?: number;
+  } = {},
 ): Promise<BootstrapResult> {
   const runGit = opts.runGit ?? defaultRunGit;
-  await dropQuarantine(localRepoPath, runGit); // stale debris from a crashed run
+  // EI-18745600910177355: reclaim partial packs SIGKILLed fetches leaked
+  // (21 GB observed on the rig). Runs before the ladder so a long-running
+  // joiner reclaims disk on every tick, not only on a gc pass.
+  await sweepStalePackTmpFiles(localRepoPath).catch(() => ({ removed: [], bytesReclaimed: 0 }));
 
   const preExisting = new Set(await listNamespaces(localRepoPath, runGit));
-  const res = await fetchOverDuplex(localRepoPath, duplex, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
-    timeoutMs: opts.timeoutMs,
+  const maxSteps = Math.max(1, opts.maxSteps ?? DEFAULT_MAX_STEPS);
+
+  let res: TransportResult = { code: 0, stderr: '', timedOut: false };
+  let phase: BootstrapPhase = 'seed';
+  let steps = 0;
+  let progressed = false;
+  let deepenNext = await readDeepenStep(localRepoPath, runGit);
+  let pending: Duplex | null = duplex;
+  // Escalation latch: a deepen rung that LANDS but leaves the shallow boundary
+  // untouched means `--deepen` can no longer make headway (git has handed us
+  // everything it will hand us at that granularity). One `--unshallow` rung
+  // then finishes the job. Without this the ladder could spin forever landing
+  // no-op rungs.
+  let forceUnshallow = false;
+
+  /** Close a duplex we accepted but never spent a rung on, so a caller's dialed
+   *  stream is not left open when the ladder short-circuits (already complete,
+   *  or out of budget). Never throws. */
+  const releasePending = (): void => {
+    const p = pending;
+    pending = null;
+    if (!p || p.destroyed) return;
+    try {
+      p.end();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const partial = async (over: Partial<BootstrapResult> = {}): Promise<BootstrapResult> => ({
+    ...res,
+    ok: false,
+    progressed,
+    phase,
+    steps,
+    quarantineRefs: (await readQuarantine(localRepoPath, runGit)).length,
+    shallow: await isShallowRepo(localRepoPath, runGit),
+    deepenNext,
+    namespaces: await listNamespaces(localRepoPath, runGit),
+    skippedExisting: [],
+    skippedSelf: null,
+    ...over,
   });
-  if (res.code !== 0) {
-    await dropQuarantine(localRepoPath, runGit);
-    return { ...res, ok: false, namespaces: [], skippedExisting: [], skippedSelf: null };
+
+  for (;;) {
+    const quarantined = await readQuarantine(localRepoPath, runGit);
+    const shallow = await isShallowRepo(localRepoPath, runGit);
+    // Phase machine. `tip` only when there is no checkpoint at all; otherwise
+    // keep extending the checkpoint we already paid for.
+    phase =
+      quarantined.length === 0 ? 'tip' : forceUnshallow ? 'unshallow' : shallow ? 'deepen' : 'seed';
+    if (phase === 'seed') {
+      releasePending();
+      break;
+    }
+    if (steps >= maxSteps) {
+      releasePending();
+      return partial(); // budget spent; progress is durable
+    }
+
+    const stream = pending ?? (opts.dial ? await opts.dial().catch(() => null) : null);
+    pending = null;
+    // No channel for this rung: stop cleanly. Everything already fetched stays
+    // on disk and the next tick resumes from it.
+    if (!stream || stream.destroyed) {
+      if (steps === 0 && stream) {
+        // The FIRST duplex was already dead — the pre-WI-3583 decoy-stub path.
+        // Run the fetch anyway so fetchOverDuplex produces its documented
+        // fail-soft diagnosis (`duplex already destroyed …`) instead of a
+        // silent no-op, preserving the old contract for that case.
+        res = await fetchOverDuplex(localRepoPath, stream, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
+          timeoutMs: opts.timeoutMs,
+          depth: 1,
+          noTags: true,
+        });
+        return partial();
+      }
+      return partial();
+    }
+
+    const before = await readShallowBoundary(localRepoPath);
+    res = await fetchOverDuplex(localRepoPath, stream, [ALL_NAMESPACES_QUARANTINE_REFSPEC], {
+      timeoutMs: opts.timeoutMs,
+      noTags: true,
+      ...(phase === 'tip'
+        ? { depth: 1 }
+        : phase === 'deepen'
+          ? { deepen: deepenNext }
+          : { unshallow: true }),
+    });
+    if (res.code !== 0) {
+      // The rung died. Everything EARLIER rungs delivered stays on disk — that
+      // is the whole point. Back the rung size off so the retry asks for a
+      // bite this link can actually swallow.
+      if (phase === 'deepen') deepenNext = await writeDeepenStep(localRepoPath, runGit, Math.floor(deepenNext / 2));
+      return partial();
+    }
+    steps++;
+    progressed = true;
+    if (phase === 'deepen') {
+      const after = await readShallowBoundary(localRepoPath);
+      if (after === before) forceUnshallow = true; // stuck — escalate
+      else deepenNext = await writeDeepenStep(localRepoPath, runGit, deepenNext * 2);
+    } else if (phase === 'unshallow') {
+      forceUnshallow = false;
+    }
   }
 
+  // ── Ladder complete: history is whole. Seed the namespaces. ──
   // Group by namespace — seeding is all-or-nothing PER NAMESPACE.
   const byKey = new Map<string, QuarantineRef[]>();
   for (const q of await readQuarantine(localRepoPath, runGit)) {
@@ -188,5 +426,18 @@ export async function bootstrapFromPeer(
   await dropQuarantine(localRepoPath, runGit);
 
   const namespaces = await listNamespaces(localRepoPath, runGit);
-  return { ...res, stderr, ok, namespaces, skippedExisting: [...skipped].sort(), skippedSelf };
+  return {
+    ...res,
+    stderr,
+    ok,
+    progressed: progressed || ok,
+    phase: 'seed',
+    steps,
+    quarantineRefs: 0,
+    shallow: false,
+    deepenNext,
+    namespaces,
+    skippedExisting: [...skipped].sort(),
+    skippedSelf,
+  };
 }

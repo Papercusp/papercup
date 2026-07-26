@@ -191,6 +191,12 @@ export interface FetchOverDuplexOptions {
    *  ODB + refs, so an interrupted ladder resumes from where it stopped
    *  instead of restarting. Mutually exclusive with {@link depth}. */
   deepen?: number;
+  /** WI-6189: `--unshallow` — convert a shallow store to a complete one in a
+   *  single transfer. The ladder's LAST-RESORT rung, used only when a `--deepen`
+   *  rung lands without moving the shallow boundary (git will hand over no more
+   *  at that granularity). Unbounded in size, so never the default path.
+   *  Requires an already-shallow repo. */
+  unshallow?: boolean;
   /** Suppress git's automatic tag-following. The bootstrap ladder sets this:
    *  auto-followed tags land OUTSIDE the requested refspec (in `refs/tags/*`),
    *  dragging in history nobody asked for and making a shallow rung's transfer
@@ -381,6 +387,7 @@ export function fetchOverDuplex(
         if (opts.noTags) ladderArgs.push('--no-tags');
         if (opts.depth !== undefined) ladderArgs.push(`--depth=${opts.depth}`);
         else if (opts.deepen !== undefined) ladderArgs.push(`--deepen=${opts.deepen}`);
+        else if (opts.unshallow) ladderArgs.push('--unshallow');
         child = spawn(
           'git',
           [

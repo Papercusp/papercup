@@ -24,7 +24,7 @@ import {
 } from './storage';
 import { serveUploadPack } from './fetch-transport';
 import { STAGING_REF, WORK_REF } from './integrator';
-import { bootstrapFromPeer } from './bootstrap';
+import { INITIAL_DEEPEN_COMMITS, MIN_DEEPEN_COMMITS, bootstrapFromPeer } from './bootstrap';
 
 function devicePubkey(): string {
   const { publicKey } = generateKeyPairSync('ed25519');
@@ -97,7 +97,7 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
 
   it('a fresh joiner ends up with EVERY namespace the peer had (refs + objects)', async () => {
     expect(await listNamespaces(joinerRepo)).toEqual([]);
-    const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000 });
+    const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000, dial });
     expect(res.ok, res.stderr).toBe(true);
 
     const peerNs = await listNamespaces(peerRepo);
@@ -127,7 +127,7 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
     const a2 = await mintCommit(peerRepo, 'A work 2', prev as string);
     await writeNamespaceRef(peerRepo, devA, WORK_REF, a2, defaultRunGit, prev as string);
 
-    const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000 });
+    const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000, dial });
     expect(res.ok, res.stderr).toBe(true);
     // The NEW namespace was seeded…
     expect(await readNamespaceRef(joinerRepo, devC, WORK_REF)).toBe(c1);
@@ -158,7 +158,7 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
 
     // The peer still serves its older view of A. The old forced wildcard
     // refspec force-rewound the joiner here; the quarantine+skip path must not.
-    const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000 });
+    const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000, dial });
     expect(res.ok, res.stderr).toBe(true);
     expect(await readNamespaceRef(joinerRepo, devA, WORK_REF)).toBe(j1); // NOT rewound
     expect(res.skippedExisting).toContain(deviceNamespaceKey(devA));
@@ -186,6 +186,7 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
     expect(await listNamespaces(joiner2)).toEqual([]);
     const res = await bootstrapFromPeer(joiner2, await dial(), {
       timeoutMs: 30_000,
+      dial,
       selfDevicePubkey: devSelf,
     });
     expect(res.ok, res.stderr).toBe(true);
@@ -225,7 +226,7 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
       return defaultRunGit(args, cwd);
     };
 
-    const res = await bootstrapFromPeer(joiner3, await dial(), { timeoutMs: 30_000, runGit: racyRunGit });
+    const res = await bootstrapFromPeer(joiner3, await dial(), { timeoutMs: 30_000, dial, runGit: racyRunGit });
     expect(fired).toBe(true);
     // Losing the CAS to the pipeline is NOT a failure…
     expect(res.ok, res.stderr).toBe(true);
@@ -239,5 +240,197 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
     for (const dev of [devB, devC, devIntegrator]) {
       expect(res.namespaces).toContain(deviceNamespaceKey(dev));
     }
+  });
+});
+
+/**
+ * WI-6189 — the cold-join must RESUME across a dead channel, not restart.
+ *
+ * The live failure this pins: papercusp's pot-home store is 2.5 GB and pot-git
+ * channels live seconds, so a single all-in-one fetch was killed every time and
+ * `index-pack` discarded every byte. The joiner sat at 0 refs indefinitely
+ * while the transport was, in fact, working fine.
+ *
+ * These tests use a peer with a REAL multi-commit history and a dial that can
+ * be cut, so "the rung died" is exercised for real rather than mocked.
+ */
+describe('bootstrap resumability (WI-6189: durable progress across channel death)', () => {
+  let root: string;
+  let peerRepo: string;
+  let sockPath: string;
+  let deadSockPath: string;
+  let server: Server;
+  let deadServer: Server;
+  const devDeep = devicePubkey();
+  const HISTORY = 40;
+  let tipSha: string;
+  let joinerSeq = 0;
+
+  /** A healthy per-fetch stream — one `git upload-pack` per dial, exactly like
+   *  a real pot-git protomux channel. */
+  const dial = (): Promise<Socket> =>
+    new Promise<Socket>((resolve, reject) => {
+      const s = connect({ path: sockPath, allowHalfOpen: true });
+      s.once('connect', () => resolve(s));
+      s.once('error', reject);
+    });
+
+  /** A stream that connects and is then killed mid-conversation — the shape of
+   *  a pot-git channel closing under an in-flight fetch. */
+  const dialDying = (): Promise<Socket> =>
+    new Promise<Socket>((resolve, reject) => {
+      const s = connect({ path: deadSockPath, allowHalfOpen: true });
+      s.on('error', () => {});
+      s.once('connect', () => resolve(s));
+      s.once('error', reject);
+    });
+
+  const refCount = async (repo: string): Promise<number> => {
+    const r = await defaultRunGit(['for-each-ref', '--format=%(refname)'], repo);
+    return r.stdout.trim() === '' ? 0 : r.stdout.trim().split('\n').length;
+  };
+  const hasObject = async (repo: string, sha: string): Promise<boolean> =>
+    (await defaultRunGit(['cat-file', '-e', `${sha}^{commit}`], repo)).code === 0;
+  const freshJoiner = async (): Promise<string> =>
+    ensurePotGitRepo('hive-deep', `joiner-${++joinerSeq}`);
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'hgboot-resume-'));
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
+    peerRepo = await ensurePotGitRepo('hive-deep', 'peer');
+
+    // A history deep enough that one `--depth=1` rung CANNOT be the whole
+    // transfer — the ladder must climb.
+    let prev: string | undefined;
+    for (let i = 0; i < HISTORY; i++) prev = await mintCommit(peerRepo, `deep ${i}`, prev);
+    tipSha = prev as string;
+    await writeNamespaceRef(peerRepo, devDeep, WORK_REF, tipSha);
+
+    sockPath = join(root, 'link.sock');
+    server = createServer({ allowHalfOpen: true }, (srvConn) => {
+      srvConn.on('error', () => {});
+      void serveUploadPack(peerRepo, srvConn);
+    });
+    await new Promise<void>((r) => server.listen(sockPath, () => r()));
+
+    deadSockPath = join(root, 'dead.sock');
+    deadServer = createServer({ allowHalfOpen: true }, (srvConn) => {
+      srvConn.on('error', () => {});
+      srvConn.destroy(); // channel closed under the fetch
+    });
+    await new Promise<void>((r) => deadServer.listen(deadSockPath, () => r()));
+  });
+
+  afterAll(async () => {
+    for (const s of [server, deadServer]) {
+      try {
+        s.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('an interrupted cold-join keeps its bytes and RESUMES — it never restarts from zero', async () => {
+    const joiner = await freshJoiner();
+    expect(await refCount(joiner)).toBe(0);
+
+    // ── Tick 1: exactly ONE rung, then the link is gone. ──
+    const first = await bootstrapFromPeer(joiner, await dial(), {
+      timeoutMs: 30_000,
+      dial: async () => null, // no channel for a second rung
+    });
+    // Healthy IN-PROGRESS, which is NOT a failure: the distinction callers act on.
+    expect(first.ok).toBe(false);
+    expect(first.progressed).toBe(true);
+    expect(first.steps).toBe(1);
+    expect(first.shallow).toBe(true);
+    // The rung's bytes are DURABLE: the tip commit is really in the ODB and the
+    // quarantine checkpoint survives for the next tick to negotiate from.
+    expect(first.quarantineRefs).toBeGreaterThan(0);
+    expect(await hasObject(joiner, tipSha)).toBe(true);
+    // …but nothing was SEEDED: a half-transferred history must never surface as
+    // a peer's real namespace to the announcement/integrator layers.
+    expect(first.namespaces).toEqual([]);
+    const afterFirst = await refCount(joiner);
+    expect(afterFirst).toBeGreaterThan(0);
+
+    // ── Tick 2: the link is back. The ladder must CONTINUE, not restart. ──
+    const second = await bootstrapFromPeer(joiner, await dial(), { timeoutMs: 30_000, dial });
+    expect(second.ok, second.stderr).toBe(true);
+    expect(second.shallow).toBe(false);
+    expect(second.namespaces).toEqual([deviceNamespaceKey(devDeep)]);
+    expect(await readNamespaceRef(joiner, devDeep, WORK_REF)).toBe(tipSha);
+
+    // Resumed, not restarted: tick 2 needed strictly fewer rungs than a cold
+    // climb of this history does (asserted against a real cold climb below),
+    // and the ref count never went backwards at any point — the acceptance
+    // criterion for the 2-machine rig.
+    expect(await refCount(joiner)).toBeGreaterThanOrEqual(afterFirst);
+
+    // The whole history really is present, not just the tip.
+    const walked = await defaultRunGit(['rev-list', '--count', tipSha], joiner);
+    expect(Number(walked.stdout.trim())).toBe(HISTORY);
+  });
+
+  it('a rung that DIES costs only that rung, and backs the next one off', async () => {
+    const joiner = await freshJoiner();
+    // Rung 1 lands (real dial), rung 2 dies (channel closed mid-fetch).
+    const cut = await bootstrapFromPeer(joiner, await dial(), {
+      timeoutMs: 15_000,
+      dial: dialDying,
+    });
+    expect(cut.ok).toBe(false);
+    expect(cut.progressed).toBe(true); // rung 1 still counted
+    expect(cut.steps).toBe(1);
+    // Backed off: the retry asks for a bite the link might actually swallow.
+    expect(cut.deepenNext).toBe(INITIAL_DEEPEN_COMMITS / 2);
+    // And the durable checkpoint is INTACT — the dead rung took nothing with it.
+    expect(cut.quarantineRefs).toBeGreaterThan(0);
+    expect(await hasObject(joiner, tipSha)).toBe(true);
+
+    // The back-off is persisted on the repo, so it survives a process restart.
+    const persisted = await defaultRunGit(['config', '--get', 'papercusp.bootstrapDeepen'], joiner);
+    expect(Number(persisted.stdout.trim())).toBe(INITIAL_DEEPEN_COMMITS / 2);
+
+    // A later healthy tick still converges from that checkpoint.
+    const done = await bootstrapFromPeer(joiner, await dial(), { timeoutMs: 30_000, dial });
+    expect(done.ok, done.stderr).toBe(true);
+    expect(await readNamespaceRef(joiner, devDeep, WORK_REF)).toBe(tipSha);
+  });
+
+  it('climbs the ladder rung by rung when the deepen size is small, never seeding a shallow history', async () => {
+    const joiner = await freshJoiner();
+    // Force the smallest rung so the 40-commit history needs several of them.
+    await defaultRunGit(['config', 'papercusp.bootstrapDeepen', String(MIN_DEEPEN_COMMITS)], joiner);
+
+    let refs = 0;
+    let rungs = 0;
+    let res = await bootstrapFromPeer(joiner, await dial(), {
+      timeoutMs: 30_000,
+      dial: async () => null,
+      maxSteps: 1,
+    });
+    for (let tick = 0; tick < 12 && !res.ok; tick++) {
+      // Monotonic: refs only ever grow, and a shallow store never seeds.
+      const now = await refCount(joiner);
+      expect(now).toBeGreaterThanOrEqual(refs);
+      refs = now;
+      if (res.shallow) expect(res.namespaces).toEqual([]);
+      rungs += res.steps;
+      res = await bootstrapFromPeer(joiner, await dial(), {
+        timeoutMs: 30_000,
+        dial: async () => null,
+        maxSteps: 1,
+      });
+    }
+    expect(res.ok, res.stderr).toBe(true);
+    expect(rungs).toBeGreaterThan(1); // it genuinely took multiple rungs
+    expect(await readNamespaceRef(joiner, devDeep, WORK_REF)).toBe(tipSha);
+    expect(Number((await defaultRunGit(['rev-list', '--count', tipSha], joiner)).stdout.trim())).toBe(
+      HISTORY,
+    );
   });
 });

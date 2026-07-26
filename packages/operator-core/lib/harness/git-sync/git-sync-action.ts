@@ -1742,7 +1742,22 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         continue;
       }
       liveAttempts++;
-      outcome = await bootstrapFromPeer(repoPath, duplex, { selfDevicePubkey });
+      // WI-6189: hand the ladder a re-dial so ONE tick can climb several rungs
+      // against this same peer — each rung is a separate `git fetch` and a
+      // pot-git duplex serves exactly one. A dial that fails or comes back dead
+      // resolves to null, which stops the ladder cleanly with its progress
+      // already durable on disk.
+      outcome = await bootstrapFromPeer(repoPath, duplex, {
+        selfDevicePubkey,
+        dial: async () => {
+          const next = await openHiveGitDuplexToDevice(
+            Buffer.from(topicHex, 'hex'),
+            peerDevicePubkeyBase64,
+            { repoKey, peerGithubUserId: actor?.githubUserId },
+          ).catch(() => null);
+          return next && !next.destroyed ? next : null;
+        },
+      });
       // Surface WHY a LIVE dial then failed — otherwise the tick log only ever
       // shows the generic ":failed" + fetch-transport's "duplex already
       // destroyed before fetch began", and the ACTUAL cause (the peer's serve
@@ -1756,9 +1771,16 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // whichever on `duplex.errored` (set synchronously by .destroy(err), so
       // no event-timing race). Fail-soft: absent/undefined ⇒ bare ":failed".
       const dialErr = (duplex as { errored?: Error | null }).errored;
+      // WI-6189: a ladder that climbed rungs without finishing is HEALTHY
+      // IN-PROGRESS, not a failure — reporting it as ":failed" is what made a
+      // large cold-join look permanently broken when it was in fact advancing.
       dialLog.push(
         `${peerDevicePubkeyBase64.slice(0, 8)}:${
-          outcome.ok ? 'ok' : `failed${dialErr?.message ? `(${dialErr.message})` : ''}`
+          outcome.ok
+            ? 'ok'
+            : outcome.progressed
+              ? `progress(${outcome.phase} +${outcome.steps} rungs, ${outcome.quarantineRefs} refs staged${outcome.shallow ? ', still shallow' : ''})`
+              : `failed${dialErr?.message ? `(${dialErr.message})` : ''}`
         }`,
       );
       // EI-15333: a definitive no-such-repo refusal (not a generic/transient
@@ -1767,7 +1789,10 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       if (!outcome.ok && dialErr?.message?.includes('no-such-repo')) {
         noSuchRepoBackoffUntil.set(backoffKey, Date.now() + NO_SUCH_REPO_BACKOFF_MS);
       }
-      if (outcome.ok) break;
+      // Stop on a finished join, and ALSO on real durable progress: the rungs
+      // this tick climbed are on disk, so re-dialing a second peer now would
+      // only stack another fetch ceiling for work the next tick resumes anyway.
+      if (outcome.ok || outcome.progressed) break;
     }
     await patchRoutineMetadata(slug, {
       bootstrap: {
@@ -1775,6 +1800,15 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         ok: outcome?.ok ?? false,
         namespaceCount: outcome?.namespaces.length ?? 0,
         skippedExisting: outcome?.skippedExisting.length ?? 0,
+        // WI-6189 ladder telemetry — the burn-down a watcher needs to tell a
+        // converging cold-join from a stalled one WITHOUT a cross-machine log
+        // read: staged refs should only ever grow, and `shallow` flips false
+        // on the last rung before the namespaces appear.
+        phase: outcome?.phase ?? null,
+        rungs: outcome?.steps ?? 0,
+        quarantineRefs: outcome?.quarantineRefs ?? 0,
+        shallow: outcome?.shallow ?? null,
+        deepenNext: outcome?.deepenNext ?? null,
       },
     });
     if (!outcome) {
@@ -1785,6 +1819,14 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // exact requested device key sat registered).
       console.warn(
         `[git-sync] ${slug}: bootstrap-tick: no live dial path to any candidate member device (topic ${topicHex.slice(0, 12)}…, dialed: ${dialLog.join(', ')})`,
+      );
+    } else if (outcome.progressed && !outcome.ok) {
+      // WI-6189: in-progress, not broken. Logged at info so a converging
+      // multi-tick cold-join reads as burn-down rather than a repeating error.
+      console.log(
+        `[git-sync] ${slug}: bootstrap-tick advanced (dialed: ${dialLog.join(', ')}): ` +
+          `+${outcome.steps} rung(s) → ${outcome.quarantineRefs} refs staged, ` +
+          `${outcome.shallow ? `still shallow (next deepen ${outcome.deepenNext})` : 'history complete, seeding next tick'}`,
       );
     } else if (!outcome.ok) {
       console.warn(

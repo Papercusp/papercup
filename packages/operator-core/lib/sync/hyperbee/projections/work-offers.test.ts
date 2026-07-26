@@ -123,26 +123,32 @@ describe('realVerifyWorkOffer', () => {
     expect(await realVerifyWorkOffer(opts, signedRow())).toBe(true);
   });
 
-  it('drops a forged signature (attested signer, bytes do not verify)', async () => {
+  // WI-6207: each drop must NAME which of the nine gates rejected the op, not
+  // return a bare `false`. Asserting the exact reason here is what keeps the
+  // reasons honest — a refactor that collapses two gates into one loses the
+  // distinction between "this frame does not know B's device yet" (a roster
+  // convergence race) and "someone forged a signature", and those demand
+  // opposite responses from whoever reads the counter.
+  it('drops a forged signature (attested signer, bytes do not verify) — signature_invalid', async () => {
     attestPublisherDevice();
     const row = signedRow();
     row.signature = Buffer.from('forged!').toString('base64');
-    expect(await realVerifyWorkOffer(opts, row)).toBe(false);
+    expect(await realVerifyWorkOffer(opts, row)).toBe('signature_invalid');
   });
 
-  it('drops an unattested signer (valid signature by a non-publisher device)', async () => {
+  it('drops an unattested signer (valid signature by a non-publisher device) — signer_unattested', async () => {
     attestPublisherDevice();
     const row = signedRow({}, {}, otherKp, otherKp.pubkeyBase64);
-    expect(await realVerifyWorkOffer(opts, row)).toBe(false);
+    expect(await realVerifyWorkOffer(opts, row)).toBe('signer_unattested');
   });
 
-  it('drops a revoked signer even when attested + signature-valid', async () => {
+  it('drops a revoked signer even when attested + signature-valid — signer_revoked', async () => {
     attestPublisherDevice();
     loadRevokedMock.mockResolvedValue(new Set([devicePubkey]));
-    expect(await realVerifyWorkOffer(opts, signedRow())).toBe(false);
+    expect(await realVerifyWorkOffer(opts, signedRow())).toBe('signer_revoked');
   });
 
-  it('drops cuckoo rows — signed record must match the row columns exactly', async () => {
+  it('drops cuckoo rows — signed record must match the row columns exactly — record_row_mismatch', async () => {
     attestPublisherDevice();
     for (const rowOver of [
       { publisher_github_user_id: PUBLISHER + 1 },
@@ -152,15 +158,41 @@ describe('realVerifyWorkOffer', () => {
       { status: 'cancelled' },
       { record_version: 9 },
     ] satisfies Partial<WorkOfferWireRow>[]) {
-      expect(await realVerifyWorkOffer(opts, signedRow({}, rowOver))).toBe(false);
+      expect(await realVerifyWorkOffer(opts, signedRow({}, rowOver))).toBe('record_row_mismatch');
     }
   });
 
-  it('drops a record whose json fails the closed schema (junk never materializes)', async () => {
+  it('drops a record whose json fails the closed schema (junk never materializes) — malformed_record', async () => {
     attestPublisherDevice();
     const row = signedRow();
     row.record_json = '{"kind":"seat"}';
-    expect(await realVerifyWorkOffer(opts, row)).toBe(false);
+    expect(await realVerifyWorkOffer(opts, row)).toBe('malformed_record');
+  });
+
+  it('a membership-resolution failure fails CLOSED and says so — resolution_failed', async () => {
+    // The catch-all path. It is the one an operator is most likely to hit for a
+    // reason that is nobody's fault (frame degraded / PG unavailable mid-run), and
+    // the one it is most important not to confuse with a forgery.
+    attestPublisherDevice();
+    listHiveMembersMock.mockRejectedValue(new Error('frame a PG unavailable'));
+    expect(await realVerifyWorkOffer(opts, signedRow())).toBe('resolution_failed');
+  });
+
+  it('never returns a bare false — every rejection carries a reason', async () => {
+    // The regression guard for the actual defect: collapsing any gate back to a
+    // boolean would make writeToPg report 'unspecified' and re-blind the leg.
+    attestPublisherDevice();
+    const cases: WorkOfferWireRow[] = [
+      (() => { const r = signedRow(); r.signature = Buffer.from('x').toString('base64'); return r; })(),
+      signedRow({}, {}, otherKp, otherKp.pubkeyBase64),
+      signedRow({}, { offer_id: 'seat-other' }),
+      (() => { const r = signedRow(); r.record_json = '{"kind":"seat"}'; return r; })(),
+    ];
+    for (const row of cases) {
+      const verdict = await realVerifyWorkOffer(opts, row);
+      expect(typeof verdict).toBe('string');
+      expect(verdict).not.toBe('unspecified');
+    }
   });
 });
 
@@ -180,11 +212,17 @@ describe('writeToPg gate (TEETH) + demux + disposition invariant + delete', () =
     const forged = signedRow();
     forged.signature = Buffer.from('forged!').toString('base64');
 
-    // Default gate (no attestation resolvable) ⇒ no write.
+    // Default gate (no attestation resolvable) ⇒ no write. WI-6207: and the drop
+    // is REPORTED with its reason rather than vanishing (captured via the seam so
+    // this test still asserts only the gate).
+    const dropped: string[] = [];
     const closed = fakeTemplateSql();
-    const gated = buildWorkOffersProjection({ ...opts, sql: closed.sql });
+    const gated = buildWorkOffersProjection({
+      ...opts, sql: closed.sql, onDroppedOffer: (reason) => dropped.push(reason),
+    });
     await gated.writeToPg(forged, undefined);
     expect(closed.calls.length).toBe(0);
+    expect(dropped).toEqual(['signer_unattested']); // no member resolvable at all here
 
     // Neutered gate ⇒ the SAME forged row applies — the verifier is load-bearing.
     const open = fakeTemplateSql();
@@ -273,9 +311,66 @@ describe('P-009 spawn-request honor hook (WI-1940 pattern)', () => {
     await p1.writeToPg(signedRow(spawnReqOver), undefined); // origin defaults 'local'
     await p1.writeToPg(signedRow(), { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'h' } as never); // kind seat
     const skipped = fakeAppliedSql(0); // LWW guard filtered the upsert
-    const p2 = buildWorkOffersProjection({ ...opts, sql: skipped.sql, verifyRecord: async () => true });
+    const dropped: string[] = [];
+    const p2 = buildWorkOffersProjection({
+      ...opts, sql: skipped.sql, verifyRecord: async () => true,
+      onDroppedOffer: (reason) => dropped.push(reason),
+    });
     await p2.writeToPg(signedRow(spawnReqOver), { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'h' } as never);
     expect(honorSpawnMock).not.toHaveBeenCalled();
+    // WI-6207: an LWW-superseded upsert is the third silent non-apply in this file —
+    // no row, no log, no counter, indistinguishable from "never arrived". Now reported.
+    expect(dropped).toEqual(['lww_superseded']);
+  });
+
+  it('WI-6207: an UNKNOWN row count is NOT reported as superseded (absent evidence is not evidence)', async () => {
+    // fakeTemplateSql resolves a plain [] with no `count` — i.e. the driver told us
+    // nothing. Reporting that as lww_superseded would manufacture a finding, which
+    // is the same class of defect as the silence it replaced.
+    const dropped: string[] = [];
+    const { sql } = fakeTemplateSql();
+    const p = buildWorkOffersProjection({
+      ...opts, sql, verifyRecord: async () => true,
+      onDroppedOffer: (reason) => dropped.push(reason),
+    });
+    await p.writeToPg(signedRow(), { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'h' } as never);
+    expect(dropped).toEqual([]);
+  });
+
+  it('WI-6207: a bare `false` from an injected verifier still drops, reported as unspecified', async () => {
+    const dropped: string[] = [];
+    const { sql, calls } = fakeAppliedSql(1);
+    const p = buildWorkOffersProjection({
+      ...opts, sql, verifyRecord: async () => false,
+      onDroppedOffer: (reason) => dropped.push(reason),
+    });
+    await p.writeToPg(signedRow(), undefined);
+    expect(calls.length).toBe(0);
+    expect(dropped).toEqual(['unspecified']);
+  });
+
+  it('WI-6207: with no seam, a drop bumps p2p_refused_op_counters as offer-apply:<reason> AND warns', async () => {
+    // The production path, end to end: this is the assertion that makes the next
+    // live-federation seat_offer failure diagnosable by SQL — the same read the
+    // WI-6179 discriminator performs — instead of being written off as environmental.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      attestPublisherDevice();
+      const unattested = signedRow({}, {}, otherKp, otherKp.pubkeyBase64);
+      const { sql, calls } = fakeAppliedSql(1);
+      const p = buildWorkOffersProjection({ ...opts, sql });
+      await p.writeToPg(unattested, { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'h' } as never);
+      await new Promise((resolve) => setTimeout(resolve, 0)); // the bump is fire-and-forget
+      expect(calls.filter((c) => /INSERT INTO harness_shared\.p2p_work_offers/.test(c.text)).length).toBe(0);
+      const counter = calls.find((c) => /p2p_refused_op_counters/.test(c.text));
+      expect(counter).toBeTruthy();
+      expect(counter!.vals).toContain('offer-apply:signer_unattested');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('DROPPED inbound offer op (signer_unattested)'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('a throwing honor hook never unwinds the landed write (best-effort, warns loudly)', async () => {
