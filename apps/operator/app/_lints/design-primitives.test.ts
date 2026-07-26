@@ -668,6 +668,27 @@ describe('design primitive lint', () => {
       },
     );
   });
+
+  // ENFORCED SUBSET (gui-chat-session-controls-2026-07-25 P-001, WI-5874): the
+  // rule above stays warn-only fleet-wide for ~130 pre-existing sites, but the
+  // HUD board (/adv/HUD) was JUST migrated off flex-on-<button> — a plain
+  // `<button>` displaying its rail+body on top of each other in the real
+  // Tauri/WebKitGTK webview (owner-screenshotted regression, chromium-only
+  // "verified" the first time it shipped). Nothing stops enforcing the rule on
+  // files we've just cleaned, so this specific class of bug can never re-ship
+  // here silently again — a new offender in this folder hard-fails instead of
+  // only logging.
+  const HUD_ENFORCED_PATH_PREFIX = 'operator/app/adv/hud/';
+
+  it('ENFORCES no display:flex/grid on a <button> selector in the HUD board (just migrated off it)', () => {
+    const hudOffenders = unexpectedFlexOrGridOnButtonSelectors().filter((offender) =>
+      offender.startsWith(HUD_ENFORCED_PATH_PREFIX),
+    );
+    expectNoUnexpected(
+      'display:flex/grid on a <button> selector (HUD, enforced subset)',
+      hudOffenders,
+    );
+  });
 });
 
 // ── Warn-first lint rollout (catch-test-lags-migration-at-the-author #4, Part B) ───────

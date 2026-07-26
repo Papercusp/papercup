@@ -95,37 +95,41 @@ function SessionCard({
       onClick={() => onOpen(session.ownerId)}
       aria-label={`${session.handle} — ${session.reason}`}
     >
-      <span className="hud__rail" aria-hidden="true" />
-      <span className="hud__card-b">
-        <span className="hud__card-h">
-          <span className={`hud__dot hud__dot--${session.column}`} aria-hidden="true" />
-          <span className="hud__handle">{session.handle}</span>
-          {session.isLeader ? <span className="hud__chip hud__chip--accent">LEAD</span> : null}
-          <span className="hud__age">{formatAge(session.sinceSec)}</span>
-        </span>
-
-        {/* The reason IS the content — for Blocked/Stalled it is the finding,
-            not a label. Intent is the reason for a working session. */}
-        <span className="hud__reason">{session.reason}</span>
-
-        {session.planSlug ? <span className="hud__plan">{session.planSlug}</span> : null}
-
-        {chips.length > 0 ? (
-          <span className="hud__chips">
-            {chips.map((b) =>
-              b.title ? (
-                <Tooltip key={b.id} label={b.title}>
-                  <span className={chipClass(b)}>{b.label}</span>
-                </Tooltip>
-              ) : (
-                <span key={b.id} className={chipClass(b)}>
-                  {b.label}
-                </span>
-              ),
-            )}
-            {overflow > 0 ? <span className="hud__chip">+{overflow}</span> : null}
+      {/* Flex row lives on this inner span, never the <button> itself — see
+          the WebKitGTK note on .hud__card in hud.css. */}
+      <span className="hud__card-row">
+        <span className="hud__rail" aria-hidden="true" />
+        <span className="hud__card-b">
+          <span className="hud__card-h">
+            <span className={`hud__dot hud__dot--${session.column}`} aria-hidden="true" />
+            <span className="hud__handle">{session.handle}</span>
+            {session.isLeader ? <span className="hud__chip hud__chip--accent">LEAD</span> : null}
+            <span className="hud__age">{formatAge(session.sinceSec)}</span>
           </span>
-        ) : null}
+
+          {/* The reason IS the content — for Blocked/Stalled it is the finding,
+              not a label. Intent is the reason for a working session. */}
+          <span className="hud__reason">{session.reason}</span>
+
+          {session.planSlug ? <span className="hud__plan">{session.planSlug}</span> : null}
+
+          {chips.length > 0 ? (
+            <span className="hud__chips">
+              {chips.map((b) =>
+                b.title ? (
+                  <Tooltip key={b.id} label={b.title}>
+                    <span className={chipClass(b)}>{b.label}</span>
+                  </Tooltip>
+                ) : (
+                  <span key={b.id} className={chipClass(b)}>
+                    {b.label}
+                  </span>
+                ),
+              )}
+              {overflow > 0 ? <span className="hud__chip">+{overflow}</span> : null}
+            </span>
+          ) : null}
+        </span>
       </span>
     </button>
   );
@@ -150,12 +154,16 @@ function FleetChip({
       onClick={() => onToggle(fleet.fleetSlug)}
       style={fleet.fleetColor ? ({ '--hud-fleet': fleet.fleetColor } as React.CSSProperties) : undefined}
     >
-      <span className="hud__fleet-swatch" aria-hidden="true" />
-      <span>{fleet.label}</span>
-      <span className="hud__fleet-n">{fleet.total}</span>
-      {/* Present only when something is wrong, so the strip stays quiet when
-          the fleet is healthy — an absent warning is itself information. */}
-      {fleet.warning ? <span className="hud__fleet-warn">· {fleet.warning}</span> : null}
+      {/* Flex row on the inner span — see the WebKitGTK note on .hud__fleet
+          in hud.css. */}
+      <span className="hud__fleet-row">
+        <span className="hud__fleet-swatch" aria-hidden="true" />
+        <span>{fleet.label}</span>
+        <span className="hud__fleet-n">{fleet.total}</span>
+        {/* Present only when something is wrong, so the strip stays quiet when
+            the fleet is healthy — an absent warning is itself information. */}
+        {fleet.warning ? <span className="hud__fleet-warn">· {fleet.warning}</span> : null}
+      </span>
     </button>
   );
 }
@@ -191,7 +199,11 @@ export default function HudBoard({
                   aria-pressed={focusColumn === c.id}
                   onClick={() => onFocusColumn(focusColumn === c.id ? null : c.id)}
                 >
-                  <b>{c.sessions.length}</b> {c.label.toLowerCase()}
+                  {/* Flex row on the inner span — see the WebKitGTK note on
+                      .hud__count in hud.css. */}
+                  <span className="hud__count-row">
+                    <b>{c.sessions.length}</b> {c.label.toLowerCase()}
+                  </span>
                 </button>
               </Tooltip>
             );
@@ -213,7 +225,7 @@ export default function HudBoard({
             aria-pressed={!suOnly}
             onClick={onToggleSuOnly}
           >
-            {suOnly ? 'su sessions' : 'all agents'}
+            <span className="hud__count-row">{suOnly ? 'su sessions' : 'all agents'}</span>
           </button>
         </Tooltip>
       </div>
@@ -227,8 +239,10 @@ export default function HudBoard({
               aria-pressed={selectedFleets.length === 0}
               onClick={() => onToggleFleet(ALL_FLEETS)}
             >
-              <span>all fleets</span>
-              <span className="hud__fleet-n">{board.total}</span>
+              <span className="hud__fleet-row">
+                <span>all fleets</span>
+                <span className="hud__fleet-n">{board.total}</span>
+              </span>
             </button>
           </Tooltip>
           {board.fleets.map((f) => (

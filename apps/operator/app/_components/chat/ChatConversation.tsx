@@ -29,6 +29,8 @@
 import { useCallback, useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
 import { ArrowUpRight, Coffee, CupSoda, Thermometer } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { ChatMessage, ChatToolCall } from './chat-types';
 
 // ChatMessage / ChatToolCall were lifted to ./chat-types.ts while this
@@ -56,6 +58,44 @@ export const AGENT_MARKS: Record<string, ChatIconComponent> = {
   kettle: Thermometer,
   papercup: CupSoda,
 };
+
+/**
+ * Markdown is a hard break on a single `\n` (2026-07-25 owner screenshot: a
+ * standard markdown parser collapses a lone newline into a space, then
+ * re-wraps — chat turns rely on single newlines as real line breaks). The
+ * two-trailing-spaces-before-`\n` token is the CommonMark hard-break, so we
+ * inject it rather than pulling in a whole extra remark plugin for one rule.
+ */
+function withHardBreaks(text: string): string {
+  return text.replace(/\n/g, '  \n');
+}
+
+const MESSAGE_MARKDOWN_COMPONENTS = {
+  // Paragraphs render as inline blocks inside the message bubble — a bare
+  // <p> carries the browser's default 1em vertical margins, which reads as
+  // a stray gap above/below a one-line chat message.
+  p: ({ children }: { children?: ReactNode }) => <p className="oracle-msg-md-p">{children}</p>,
+  a: ({ children, href }: { children?: ReactNode; href?: string }) => (
+    <a href={href} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  ),
+};
+
+/**
+ * Message content renderer (WI gui-chat-session-controls-2026-07-25 P-009):
+ * chat turns are plain-text markdown from the agent (bold, links, lists),
+ * but the surface printed it literally (`**bold**`, a bare URL). Reuses the
+ * same react-markdown + remark-gfm pairing HowItWorksHereCard already uses
+ * for README rendering — no new markdown stack.
+ */
+function ChatMessageContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MESSAGE_MARKDOWN_COMPONENTS}>
+      {withHardBreaks(content)}
+    </ReactMarkdown>
+  );
+}
 
 /**
  * Discord's ↑-to-edit-last, adapted for an agent chat (discord-shortcuts
@@ -509,7 +549,11 @@ export function ChatConversation(props: ChatConversationProps) {
                           )}
                           {reportCard
                             ? <div className="oracle-msg-report">{reportCard}</div>
-                            : m.content && <div className="oracle-msg-content">{m.content}</div>}
+                            : m.content && (
+                              <div className="oracle-msg-content">
+                                <ChatMessageContent content={m.content} />
+                              </div>
+                            )}
                           {cardSlots.map(({ index, node }) => (
                             <div key={`tool-card-${index}`}>{node}</div>
                           ))}

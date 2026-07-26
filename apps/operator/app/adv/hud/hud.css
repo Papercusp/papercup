@@ -38,10 +38,14 @@
   flex-wrap: wrap;
 }
 
+/* WebKitGTK (the Tauri webview) renders <button> contents through an
+   anonymous box that IGNORES flex/grid set directly on the button element —
+   Chromium honours it, WebKit doesn't, so the layout only breaks in the
+   desktop app. The button itself resets to display:block; the actual flex
+   row lives on an inner span (.hud__count-row) instead. Same pattern as
+   .hud__card / .hud__fleet below and apps/operator-vite's AdvOverviewTab. */
 .hud__count {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  display: inline-block;
   padding: 3px 9px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -52,6 +56,12 @@
   font: inherit;
   font-size: 11px;
   line-height: 1.5;
+}
+
+.hud__count-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .hud__count b {
@@ -84,10 +94,10 @@
   flex-wrap: nowrap;
 }
 
+/* Same WebKitGTK button-flex collapse as .hud__count above: the button resets
+   to display:block, the flex row moves to an inner .hud__fleet-row span. */
 .hud__fleet {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
+  display: inline-block;
   padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: 9999px;
@@ -98,6 +108,12 @@
   white-space: nowrap;
   font-family: inherit;
   line-height: 1.5;
+}
+
+.hud__fleet-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .hud__fleet:hover { border-color: var(--border-strong); color: var(--fg); }
@@ -204,9 +220,13 @@
 
 /* ── card ─────────────────────────────────────────────────────────────────── */
 
+/* Same WebKitGTK button-flex collapse as .hud__count / .hud__fleet above
+   (owner-screenshotted regression 2026-07-25): the button resets to
+   display:block, the rail+body flex row lives on the inner .hud__card-row
+   span instead. WebKit ignores flex/grid set directly on <button>; Chromium
+   doesn't, which is why a plain browser view never showed the bug. */
 .hud__card {
-  display: flex;
-  gap: 7px;
+  display: block;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -216,6 +236,11 @@
   color: inherit;
   cursor: pointer;
   width: 100%;
+}
+
+.hud__card-row {
+  display: flex;
+  gap: 7px;
 }
 
 .hud__card:hover { border-color: var(--border-strong); background: var(--bg-raised); }

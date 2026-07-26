@@ -82,6 +82,23 @@ describe('ChatConversation', () => {
     expect(screen.getByText('You')).toBeTruthy();
   });
 
+  it('renders markdown (bold, links, line breaks) instead of literal asterisks (gui-chat-session-controls-2026-07-25 P-009)', () => {
+    renderChat({
+      messages: [
+        { role: 'assistant', content: '**bold** and https://example.com/path plain text\nsecond line' },
+      ],
+    });
+    // Bold text renders as a real <strong>, not literal "**bold**".
+    const strong = screen.getByText('bold');
+    expect(strong.tagName).toBe('STRONG');
+    // A bare URL autolinks (remark-gfm) to a real anchor, opened in a new tab.
+    const link = screen.getByRole('link', { name: 'https://example.com/path' }) as HTMLAnchorElement;
+    expect(link.href).toBe('https://example.com/path');
+    expect(link.target).toBe('_blank');
+    // A single \n is a real line break, not collapsed into a space.
+    expect(screen.getByText(/second line/).closest('.oracle-msg-content')?.textContent).toContain('second line');
+  });
+
   it('pins the transcript to the latest message on first render (WI-4692)', () => {
     // Regression guard for the virtualized-scroll strand: the mount pin must
     // go through the virtualizer's measurement-aware scrollToIndex targeting

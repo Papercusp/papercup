@@ -46,9 +46,43 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  *    `set_state` close that bypassed the completion path altogether (this was the OLD
  *    `no-evidence` predicate). Rarer, and mostly pre-gate legacy rows — but a real and
  *    separate defect, so it keeps its own name instead of being silently dropped.
+ *
+ *  - `no-completion-record-suspicious` (EI-18676290701611705) — the ACTIONABLE subset
+ *    of `no-completion-record`: a bare-ref terminal row credited to someone who is NOT
+ *    one of the small, audited `skipCompletionGate` system identities. A NULL ref is
+ *    EXPECTED and benign for those five (the whole design point — see each bypass
+ *    site's own doc comment); by construction, every OTHER caller already went through
+ *    the completion-integrity gate, which REJECTS an empty completionRef on a terminal
+ *    transition. So this combination — terminal, no ref, NOT a recognized system bypass
+ *    — should be structurally impossible. Its existence (EI-18673480587329034: a MAJOR,
+ *    human-verified bug closed by a real agent with both `completion` and
+ *    `terminal_completion_ref` empty, and no matching bypass identity) means an
+ *    undiscovered write path slipped past the gate — this audit is how a leader finds
+ *    the NEXT one instead of hand-verifying source for every plain `no-completion-record`
+ *    hit (most of which are the benign, expected system dedup flips).
  */
-export const COMPLETION_AUDITS = ['no-evidence', 'no-completion-record'] as const;
+export const COMPLETION_AUDITS = ['no-evidence', 'no-completion-record', 'no-completion-record-suspicious'] as const;
 export type CompletionAudit = (typeof COMPLETION_AUDITS)[number];
+
+/**
+ * The exact `by` identities the audited `skipCompletionGate` bypasses stamp — kept here,
+ * beside the predicate that reads them, so the two can never drift apart (the module's
+ * own discipline for `_completionEvidence` applied to this key too). One entry per
+ * skipCompletionGate:true call site (grep the repo for that literal to keep this list
+ * exhaustive when a new bypass is added):
+ *  - 'watchdog-auto-close' (harness/improvements/auto-close.ts)
+ *  - 'improvement-hygiene' (harness/improvements/hygiene.ts)
+ *  - 'watchdog-orphan-superseded' (harness/improvements/orphaned-dispatch.ts)
+ *  - 'hive-bee-exit' (fleet/bee-completion-reconcile.ts)
+ *  - 'autonomy-revert' (autonomy/tripwire/revert-executor.ts)
+ */
+export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
+  'watchdog-auto-close',
+  'improvement-hygiene',
+  'watchdog-orphan-superseded',
+  'hive-bee-exit',
+  'autonomy-revert',
+];
 
 /**
  * The audit's WHERE fragment. Callers AND it with their own terminal-state predicate
@@ -60,18 +94,23 @@ export type CompletionAudit = (typeof COMPLETION_AUDITS)[number];
  * out of the audit.
  */
 export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
-  return audit === 'no-completion-record'
-    ? sql`terminal_completion_ref IS NULL`
-    : sql`NOT (COALESCE(payload, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY})`;
+  if (audit === 'no-completion-record') return sql`terminal_completion_ref IS NULL`;
+  if (audit === 'no-completion-record-suspicious') {
+    return sql`terminal_completion_ref IS NULL AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+  }
+  return sql`NOT (COALESCE(payload, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY})`;
 }
 
 /** Same fragment, for a query that aliases the table (e.g. `ei.payload`). */
 export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias: string) {
   const col = sql.unsafe(`${alias}.payload`);
   const ref = sql.unsafe(`${alias}.terminal_completion_ref`);
-  return audit === 'no-completion-record'
-    ? sql`${ref} IS NULL`
-    : sql`NOT (COALESCE(${col}, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY})`;
+  const owner = sql.unsafe(`${alias}.terminal_owner`);
+  if (audit === 'no-completion-record') return sql`${ref} IS NULL`;
+  if (audit === 'no-completion-record-suspicious') {
+    return sql`${ref} IS NULL AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+  }
+  return sql`NOT (COALESCE(${col}, '{}'::jsonb) ? ${TERMINAL_COMPLETION_EVIDENCE_KEY})`;
 }
 
 /**

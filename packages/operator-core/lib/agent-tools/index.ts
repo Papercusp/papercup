@@ -770,6 +770,9 @@ import './pot/control-policy';
 import './release/checkpoint-config';
 // live-configurability-audit-2026-06-20 P-022 — runtime Scout workspace spend-ceiling override:
 import './learning/set-scout-budget';
+// self-learning-public-release-readiness P-011 — Blender-pane arming bridge (both spend-gating layers):
+import './gym/arm';
+import './learning/governor-arm';
 // live-configurability-audit-2026-06-20 P-018 — runtime per-(tool,role) quota overrides:
 import './quota/set-tool';
 // live-configurability-audit-2026-06-20 P-019 — runtime §G auth/sandbox dials (DARK, owner-authority):

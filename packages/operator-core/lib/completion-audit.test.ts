@@ -19,6 +19,7 @@ import {
   auditPredicateSql,
   auditPredicateSqlFor,
   COMPLETION_AUDITS,
+  KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES,
   looksLikeCitedProseEvidence,
 } from './completion-audit';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
@@ -97,6 +98,50 @@ describe('completion-audit predicates (EI-10867)', () => {
     const plain = frag(auditPredicateSql(recordingSql(), 'no-completion-record'));
     const aliased = frag(auditPredicateSqlFor(recordingSql(), 'no-completion-record', 'ei'));
     expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+  });
+
+  // EI-18676290701611705 — the ACTIONABLE subset of no-completion-record: excludes the
+  // small, audited set of skipCompletionGate system identities (a NULL ref there is
+  // EXPECTED, not a bug), so a hit here means an undiscovered write path bypassed the
+  // completion-integrity gate.
+  describe("'no-completion-record-suspicious' (EI-18676290701611705)", () => {
+    it('still requires terminal_completion_ref IS NULL (a strict subset of no-completion-record)', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'no-completion-record-suspicious'));
+      expect(f.text).toContain('terminal_completion_ref IS NULL');
+    });
+
+    it('excludes rows whose terminal_owner is one of the known system-bypass identities', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'no-completion-record-suspicious'));
+      expect(f.text).toContain('terminal_owner');
+      expect(f.text).toContain('NOT');
+      expect(f.params).toEqual([KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES]);
+    });
+
+    it('the known-identity list carries every documented skipCompletionGate `by` value (grep-verified against the 5 call sites)', () => {
+      expect(KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES).toEqual(
+        expect.arrayContaining([
+          'watchdog-auto-close',
+          'improvement-hygiene',
+          'watchdog-orphan-superseded',
+          'hive-bee-exit',
+          'autonomy-revert',
+        ]),
+      );
+    });
+
+    it('a NULL terminal_owner is ALSO suspicious (no completion AND no credited actor at all)', () => {
+      // The predicate must not accidentally treat "nobody" as "a recognized system actor" —
+      // NULL is neither IN nor NOT IN a value list under SQL's three-valued logic, so this
+      // must be handled explicitly (the `owner IS NULL OR NOT (owner = ANY(...))` shape).
+      const f = frag(auditPredicateSql(recordingSql(), 'no-completion-record-suspicious'));
+      expect(f.text).toContain('terminal_owner IS NULL');
+    });
+
+    it('the aliased form matches its unaliased twin', () => {
+      const plain = frag(auditPredicateSql(recordingSql(), 'no-completion-record-suspicious'));
+      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'no-completion-record-suspicious', 'ei'));
+      expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+    });
   });
 
   it('every declared audit produces a predicate (no silently-unhandled enum member)', () => {
