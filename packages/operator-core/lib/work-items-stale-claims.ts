@@ -25,14 +25,34 @@
  * completion signal (the holder is DEAD, work is genuinely incomplete); the
  * →`passed` polarity belongs to WI-222's clean-rc=0-exit path only (D-006).
  *
- * EI-6992: the above (`todo`/`blocked`) is the FEATURE-family vocabulary only.
- * Since SCHEDULER_ISSUES_CLAIMABLE (P-007) put issue-family (bug/change/task)
- * claims through this SAME sweep, an issue-family row is reclaimed by clearing
- * `taken_by`/`taken_at` ONLY — its `status` (open|resolved|closed) is never
- * touched, since claimability there is orthogonal to status (see the
- * `freed-issue` StaleClaimAction). Writing the feature literals onto an issue
- * row was live, ongoing data corruption before this fix (~450-650+ drifted
- * rows found live).
+ * EI-6992 (2026-06, SUPERSEDED by WI-6039 below): the above (`todo`/`blocked`)
+ * was the FEATURE-family vocabulary only, so when SCHEDULER_ISSUES_CLAIMABLE
+ * (P-007) put issue-family (bug/change/task) claims through this SAME sweep,
+ * an issue-family row's `status` (open|resolved|closed at the time) was left
+ * untouched on reclaim — writing the feature literals onto an issue row had
+ * been live, ongoing data corruption (~450-650+ drifted rows found live).
+ *
+ * WI-6039 (2026-07-26): EI-6992's "issue-family claimability is orthogonal to
+ * status" premise did not survive work-item-status-full-unify, which made
+ * `wip` (and `blocked`/`needs-human`) real, agent-settable issue-family states
+ * (`work_items:claim` / `:set_state{state:'wip'}` auto-claims a bug/change/task
+ * into `wip` today) while ALSO making `open` the one claimable token (not "any
+ * non-terminal status + taken_by IS NULL"). So EI-6992's untouched-status
+ * reclaim silently reintroduced the EXACT class of bug it was written to fix,
+ * just the opposite polarity: instead of writing an invalid status onto an
+ * issue row, it left a dead-holder's issue row frozen at `wip` FOREVER —
+ * unclaimable (status isn't `open`) AND undetectable (no holder left to flag
+ * as orphaned/stalled). Confirmed live: 31 rows stuck this way, oldest since
+ * 2026-05-02, one of which hid a 6-day autonomous-loop canary outage
+ * (EI-18170538694255356) because the very BUG REPORT of that outage fell into
+ * this same hole the moment it was filed. FIX: both families now go through
+ * the identical mid-flight-requeue CASE (`wip` is not in
+ * `WORK_ITEM_NON_REQUEUE_STATES` for either) — a stranded issue-family claim
+ * resets to the unified claimable token `open` (never the retired feature
+ * literal `todo`, so this does NOT reintroduce EI-6992's original corruption;
+ * `open`/`blocked` are valid states for BOTH families under the unified
+ * vocabulary). `freed-issue` is no longer a reachable classification — see its
+ * own doc below.
  *
  * Liveness rule — deliberately identical to migration 225's alias-aware
  * holder resolution (EI-311), so the sweep and the view can never disagree:
@@ -130,19 +150,21 @@ export type StaleClaimAction =
   | 'freed-terminal'
   /** Row was `blocked` — only `taken_by` cleared; its own signal path handles it. */
   | 'freed-blocked'
-  /** EI-6992: an issue-family (bug/change/task) row — only `taken_by`/`taken_at` cleared,
-   *  `status` is NEVER touched. Issue-family claimability is orthogonal to status
-   *  (governed by `taken_by` alone; `open` already means "claimable" whether held or
-   *  not) — the feature-vocabulary `requeue → 'todo'` / `dead-letter → 'blocked'`
-   *  targets are BOTH outside the issue vocab (open|resolved|closed) and would corrupt
-   *  the row (confirmed live: this reaper had been writing `status='todo'` onto dead-
-   *  held issue-family rows, the dominant source of the "~450-650 rows drifted" EI-6992
-   *  reported — the item's own suspected culprit, work-items.ts's CREATE path, was
-   *  independently verified correct). Issue-family also has no `blocked`-equivalent
-   *  hold state today (a separate, deliberately-deferred design gap — see EI-6992 /
-   *  WI-1682), so there is no cap/dead-letter analog here; a repeatedly-dying holder's
-   *  issue claim is freed every sweep with no poison-item protection until that design
-   *  lands. */
+  /** HISTORICAL / NO LONGER PRODUCED (WI-6039, 2026-07-26). EI-6992 (2026-06) used
+   *  this label for "an issue-family (bug/change/task) row — only `taken_by`/
+   *  `taken_at` cleared, `status` NEVER touched", on the premise that issue-family
+   *  claimability was orthogonal to status. That premise did not survive
+   *  work-item-status-full-unify (issue-family rows now really do sit at `wip`
+   *  while claimed, and claimability now specifically requires `status='open'`),
+   *  which turned "never touch status" into an active bug: a dead holder's
+   *  issue-family claim froze at `wip` forever, unclaimable AND undetectable
+   *  (confirmed live: 31 stuck rows, one of which hid a 6-day canary outage).
+   *  Both families now run through the SAME mid-flight-requeue logic, so an
+   *  issue-family row lands on `requeued`/`dead-lettered`/`freed-todo`/
+   *  `freed-blocked`/`freed-terminal` exactly like a feature-family row in the
+   *  same state — this member is kept only so an external consumer pattern-
+   *  matching on the old label doesn't hit a missing-case error; `classify()`
+   *  never returns it anymore. */
   | 'freed-issue';
 
 export interface ReleasedClaim {
@@ -180,13 +202,18 @@ interface ReleasedRow {
   reason: ClaimReason;
 }
 
-const ISSUE_FAMILY_ITEM_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
-
-/** Classify a freed row from its former/new status + counter. Issue-family (EI-6992)
- *  is checked FIRST — its status is never touched by this reaper (see `freed-issue`),
- *  so it must never fall into the feature-vocabulary branches below. */
+/** Classify a freed row from its former/new status + counter. WI-6039: issue-family
+ *  (bug/change/task) used to short-circuit to `freed-issue` here unconditionally (its
+ *  status was never touched — see the historical EI-6992 rationale on `freed-issue`,
+ *  now STALE per the reclaim-SQL comment above). Since the reclaim SQL now applies the
+ *  SAME mid-flight-requeue logic to both families, classification must too — a
+ *  'wip' issue-family row is genuinely `requeued`/`dead-lettered` now, not merely
+ *  `freed-issue`. `freed-issue` no longer has a dedicated code path; a
+ *  terminal/blocked/needs-human/already-open issue-family row still lands on the
+ *  SAME labels ('freed-terminal'/'freed-blocked'/'freed-todo') a feature-family row
+ *  in the same state would — which is the correct behavior, not a regression: those
+ *  labels already meant "freed, no status change", true for either family. */
 function classify(row: ReleasedRow, cap: number): StaleClaimAction {
-  if (ISSUE_FAMILY_ITEM_KINDS.has(row.item_kind)) return 'freed-issue';
   if (isRequeueableReclaimedStatus(row.former_status)) {
     return row.requeue_count >= cap ? 'dead-lettered' : 'requeued';
   }
@@ -470,24 +497,32 @@ export async function reclaimStaleWorkItemClaims(
     UPDATE harness_shared.work_items f
        SET taken_by = NULL,
            taken_at = NULL,
-           -- EI-6992: issue-family (bug/change/task) NEVER has its requeue_count or
-           -- status touched — see the 'freed-issue' StaleClaimAction doc for why (the
-           -- feature-vocabulary requeue/dead-letter targets ('todo'/'blocked') are
-           -- outside the issue vocab open|resolved|closed and were corrupting these
-           -- rows). Clearing taken_by/taken_at alone is the complete, correct reclaim
-           -- for an issue-family claim.
+           -- WI-6039 (fixes the EI-6992 special-case, now STALE): EI-6992 special-cased
+           -- issue-family (bug/change/task) to NEVER have status/requeue_count touched,
+           -- reasoning "issue-family claimability is orthogonal to status" — true under
+           -- the OLD open|resolved|closed vocabulary, but FALSE since
+           -- work-item-status-full-unify made 'wip' (and 'blocked'/'needs-human') real,
+           -- agent-settable issue-family states (work_items:claim / :set_state{state:'wip'}
+           -- auto-claims a bug/change/task into 'wip' today). That made this special-case
+           -- an ACTIVE BUG: a dead holder's issue-family claim froze at status='wip' with
+           -- taken_by cleared forever — unclaimable (claimability requires status='open',
+           -- not merely taken_by IS NULL) AND undetectable (nothing holds it, so no
+           -- orphan/stall reclaim logic has anything to act on). Confirmed live: 31 rows
+           -- stuck this way, oldest since 2026-05-02, one of which hid a 6-day canary
+           -- outage (EI-18170538694255356) because the very report of the outage fell
+           -- into this same hole. FIX: apply the SAME mid-flight requeue logic to BOTH
+           -- families — 'wip' is not in WORK_ITEM_NON_REQUEUE_STATES for either, so
+           -- it now correctly resets to the unified claimable token 'open' (NEVER the
+           -- retired feature literal 'todo' — that was EI-6992's actual original bug,
+           -- and this fix does not reintroduce it: 'open'/'blocked' are valid states for
+           -- BOTH families under the unified vocabulary). A terminal/blocked/needs-human/
+           -- already-open row is unaffected either way (nonRequeue already covers both
+           -- families' terminal + parked tokens).
            requeue_count = CASE
-             WHEN d.item_kind IN ('bug', 'change', 'task') THEN d.former_requeue_count
-             -- Requeueable (mid-flight) rows bump the counter; everything else holds.
              WHEN d.former_status <> ALL(${nonRequeue}::text[])
                THEN d.former_requeue_count + 1
              ELSE d.former_requeue_count END,
-           -- Mid-flight → open, or → blocked once the (incremented) counter hits
-           -- the cap (dead-letter). Terminal / blocked / already-claimable rows keep status.
-           -- work-item-status-full-unify P-004/P-005: requeue target is the unified claimable
-           -- token 'open' (was 'todo') so a requeued feature is claimable under the ['open'] floor.
            status = CASE
-             WHEN d.item_kind IN ('bug', 'change', 'task') THEN d.former_status
              WHEN d.former_status <> ALL(${nonRequeue}::text[])
                THEN (CASE WHEN d.former_requeue_count + 1 >= ${cap} THEN 'blocked' ELSE 'open' END)
              ELSE d.former_status END,

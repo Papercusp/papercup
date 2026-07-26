@@ -278,15 +278,17 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect((await statusOf('F-014')).taken_by).toBeNull();
   });
 
-  // EI-6992: a 'task' item_kind is ISSUE-family (familyOf('task') === 'issue'), so in
-  // real production use it only ever carries the issue vocabulary (open/resolved/
-  // closed — written by createIssue/setIssueState), never the feature vocabulary
-  // (todo/wip/done) these tests used to seed. The reaper must NEVER touch an
-  // issue-family row's status — only clear taken_by/taken_at — regardless of what
-  // that status is; see the `freed-issue` StaleClaimAction doc for why (the reaper
-  // was previously writing feature-vocabulary literals onto these rows, silently
-  // corrupting them out of their valid open|resolved|closed vocabulary).
-  it('releases an orphaned issue-family (task) row from the canonical work_items table WITHOUT touching its status', async () => {
+  // EI-6992 (2026-06) had the reaper NEVER touch an issue-family row's status, on the
+  // premise that issue-family claimability was orthogonal to status (open/resolved/
+  // closed only). WI-6039 (2026-07-26) supersedes this: work-item-status-full-unify
+  // made `wip` a real, agent-settable issue-family state, and claimability now
+  // requires status='open' specifically — so "never touch status" left a dead
+  // holder's `wip` issue-family claim stuck FOREVER (unclaimable + undetectable;
+  // confirmed live, 31 rows, one hiding a 6-day canary outage). These tests now
+  // assert the CORRECTED behavior: an already-`open` or terminal row is still left
+  // alone (nothing to fix there), but a genuinely mid-flight (`wip`) row IS requeued
+  // back to `open`, exactly like a feature-family row would be.
+  it('releases an orphaned issue-family (task) row that was already `open` — nothing to requeue, status unchanged', async () => {
     await seedTaskItem('WI-TASK-1', 'su-dead-task-holder', 30, 'open');
     await markKnown('su-dead-task-holder');
     const r = await reclaimStaleWorkItemClaims(sql);
@@ -298,12 +300,49 @@ describe('reclaimStaleWorkItemClaims', () => {
       new_status: 'open',
       former_taken_by: 'su-dead-task-holder',
       reason: 'dead',
-      action: 'freed-issue',
+      action: 'freed-todo',
     });
     expect(await workItemStatusOf('WI-TASK-1')).toMatchObject({ status: 'open', requeue_count: 0, taken_by: null });
   });
 
-  it('a dead-held issue-family (task) row keeps its status verbatim — never requeued to the feature `todo`/`wip` vocabulary, and requeue_count never increments', async () => {
+  // WI-6039 (fixes the class EI-6992 accidentally reintroduced): the live incident —
+  // a bee claims a bug/change/task (status -> 'wip'), then dies. Before this fix the
+  // reaper cleared taken_by but left status='wip' forever: unclaimable (claimability
+  // requires status='open') AND undetectable (no holder left for any orphan/stall
+  // check to act on). This is the exact shape of EI-18170538694255356, the canary-
+  // outage report that itself fell into this hole.
+  it('a dead-held issue-family (task) row stuck at `wip` IS requeued back to `open` (the WI-6039 fix)', async () => {
+    await seedTaskItem('WI-TASK-WIP-1', 'su-dead-task-holder-wip', 30, 'wip');
+    await markKnown('su-dead-task-holder-wip');
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(1);
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'WI-TASK-WIP-1',
+      item_kind: 'task',
+      former_status: 'wip',
+      new_status: 'open',
+      reason: 'dead',
+      action: 'requeued',
+    });
+    expect(await workItemStatusOf('WI-TASK-WIP-1')).toMatchObject({ status: 'open', requeue_count: 1, taken_by: null });
+  });
+
+  it('a repeatedly-dying issue-family (task) claim dead-letters to `blocked` once the requeue cap is hit — same as feature-family', async () => {
+    await seedTaskItem('WI-TASK-WIP-2', 'su-dead-task-holder-wip-2', 30, 'wip', 2);
+    await markKnown('su-dead-task-holder-wip-2');
+    const r = await reclaimStaleWorkItemClaims(sql, { requeueCap: 3 });
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'WI-TASK-WIP-2',
+      item_kind: 'task',
+      former_status: 'wip',
+      new_status: 'blocked',
+      action: 'dead-lettered',
+      requeue_count: 3,
+    });
+    expect(await workItemStatusOf('WI-TASK-WIP-2')).toMatchObject({ status: 'blocked', requeue_count: 3, taken_by: null });
+  });
+
+  it('a dead-held issue-family (task) row that was already `open` keeps requeue_count untouched (nothing to bump)', async () => {
     await seedTaskItem('WI-TASK-2', 'su-dead-task-holder-2', 30, 'open', 2);
     await markKnown('su-dead-task-holder-2');
     const r = await reclaimStaleWorkItemClaims(sql);
@@ -312,7 +351,7 @@ describe('reclaimStaleWorkItemClaims', () => {
       item_kind: 'task',
       former_status: 'open',
       new_status: 'open',
-      action: 'freed-issue',
+      action: 'freed-todo',
       requeue_count: 2,
     });
     expect(await workItemStatusOf('WI-TASK-2')).toMatchObject({ status: 'open', requeue_count: 2, taken_by: null });
@@ -327,9 +366,23 @@ describe('reclaimStaleWorkItemClaims', () => {
       item_kind: 'task',
       former_status: 'resolved',
       new_status: 'resolved',
-      action: 'freed-issue',
+      action: 'freed-terminal',
     });
     expect(await workItemStatusOf('WI-TASK-3')).toMatchObject({ status: 'resolved', taken_by: null });
+  });
+
+  it('a `blocked` issue-family (change) row is freed but its status is untouched (its own delegator-notify path handles it)', async () => {
+    await seedTaskItem('WI-TASK-4', 'su-dead-task-holder-4', 30, 'blocked');
+    await markKnown('su-dead-task-holder-4');
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'WI-TASK-4',
+      item_kind: 'task',
+      former_status: 'blocked',
+      new_status: 'blocked',
+      action: 'freed-blocked',
+    });
+    expect(await workItemStatusOf('WI-TASK-4')).toMatchObject({ status: 'blocked', taken_by: null });
   });
 
   it('a mid-flight NULL-taken_at dead-holder claim is requeued → todo (EI-2534)', async () => {

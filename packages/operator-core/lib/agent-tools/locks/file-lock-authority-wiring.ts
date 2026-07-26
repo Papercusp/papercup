@@ -24,9 +24,34 @@
  * second Swarm appears (the hardware-gated cross-machine path). The authority handlers
  * registered here are likewise never invoked without an inbound peer RPC.
  *
- * Deliberately NOT covered (documented residual): the locks:acquire WAIT / wake_on_grant
- * queue stays machine-local — cross-machine waiter-queue coherence is a further step. Only
- * the fast-path acquire + release route to the authority (the per-edit hot path).
+ * Deliberately NOT covered: the locks:acquire WAIT / wake_on_grant queue stays
+ * machine-local. Only the fast-path acquire + release route to the authority (the per-edit
+ * hot path).
+ *
+ * RATIFIED as intentional EVENTUAL behavior — not a deferral (WI-6047, plan
+ * shared-hive-cross-machine-scale-10k-2026-06-29 P-006, which posed exactly this fork:
+ * route waiters through the per-Hive authority, OR document it as intentional). This note
+ * previously read "cross-machine waiter-queue coherence is a further step", which left the
+ * question open and kept re-surfacing. The decision, and why it is safe:
+ *
+ *  1. CORRECTNESS IS UNAFFECTED. acquire + release DO route to the elected authority
+ *     (half 2 above), so grant decisions are authority-serialized across machines. A
+ *     machine-local WAITER QUEUE cannot produce a double-grant — only the WAKE is local.
+ *  2. LIVENESS IS BOUNDED. A sleeping waiter's ticket stays grant-eligible for
+ *     WAKE_QUEUE_WINDOW_SEC (acquire.ts, default 1800s), and a grant to an agent that
+ *     never wakes is itself bounded by the lock TTL lease backstop (D-004 #3).
+ *  3. IT FAILS LOUD, NOT SILENT — the leg that settles it. When a queue wait lapses
+ *     expired/cancelled/missing, lock-grant-bridge.ts STILL fires the waiter's event with
+ *     granted:false and "queue wait ended WITHOUT a grant ... re-queue or pivot". A
+ *     cross-machine waiter is therefore never left hanging on a grant it cannot see; it is
+ *     woken with a terminal, actionable result.
+ *
+ * So the residual costs a cross-machine waiter added LATENCY (it waits out its window
+ * rather than being woken promptly by the remote release), with git-merge as the
+ * correctness backstop. Routing the waiter queue through the authority is materially more
+ * machinery (queue coherence, grant hand-off, cancellation) than that latency buys —
+ * revisit only if a real workload shows two machines contending the SAME file, which a
+ * single-box N=1 deployment cannot exhibit. Nothing here forecloses doing it later.
  */
 
 import { realpathSync } from 'node:fs';

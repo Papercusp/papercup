@@ -18,6 +18,7 @@ import {
   deriveCupLiveness,
   evaluatePlacement,
   checkpointDeclaresTerminal,
+  readPlanItemStamp,
   evaluateStalePlacementEscalation,
   evaluateTerminalPlacementReconcile,
   buildOpenPlacementSummary,
@@ -590,6 +591,95 @@ describe('evaluatePlacement — EI-15232 stale-open checkpoint reconcile (ZERO r
   it('a cursed row stays latched — the reconcile branch sits AFTER the cursed latch (no per-tick storm)', () => {
     const d = evaluatePlacement(obs({ ...staleOpen, placementStatus: 'cursed', failCount: 3 }), CFG);
     expect(d.kind).toBe('latched');
+  });
+});
+
+describe('readPlanItemStamp (WI-6038)', () => {
+  it('reads a plain-object payload.plan_item stamp', () => {
+    expect(readPlanItemStamp({ plan_item: { plan_slug: 'my-plan-2026-07-01', item_id: 'P-003' } })).toEqual({
+      planSlug: 'my-plan-2026-07-01',
+      itemId: 'P-003',
+    });
+  });
+
+  it('reads a JSON-stringified-scalar payload (the createWorkItem ::jsonb-cast-of-a-string quirk)', () => {
+    const stringified = JSON.stringify({ plan_item: { plan_slug: 'my-plan', item_id: 'P-001' } });
+    expect(readPlanItemStamp(stringified)).toEqual({ planSlug: 'my-plan', itemId: 'P-001' });
+  });
+
+  it('returns null for a missing / malformed / unstamped payload', () => {
+    for (const p of [null, undefined, {}, { plan_item: null }, { plan_item: {} }, { plan_item: { plan_slug: 'x' } }, 'not json', 42]) {
+      expect(readPlanItemStamp(p)).toBeNull();
+    }
+  });
+});
+
+// WI-6038 — pot-placement-watchdog still false-paged the Mug to re-place ALREADY-DONE
+// work items even after EI-15232 closed the checkpoint-lag class: a SECOND, independent
+// lag source recurs the exact same symptom. A unit minted from (or stamped to) a plan
+// item carries `payload.plan_item`; when that plan item reaches done/dropped, the unit's
+// OWN terminal flip is only ever applied by the separate PERIODIC orphan-reconcile sweep
+// (reconcileOrphanedPlanItemWorkItems), which can lag the plan item's actual completion
+// by a long time. Live-verified 2026-07-26: 5 units (WI-4138/4650/4654/4655/4957) whose
+// linked plan items completed 2026-07-11..07-15 sat non-terminal until that sweep finally
+// caught up MINUTES after this watchdog's own 30s tick evaluated the exact same units
+// (cup long dead, unit not-yet-terminal) and fired a "re-place or recover" page for work
+// that was, in substance, already finished. The fix mirrors EI-15232's shape exactly: a
+// unit whose linked plan item already declares terminal reconciles the state (self-heals
+// via the same reconciler), it does NOT re-place / recover-page.
+describe('evaluatePlacement — WI-6038 plan-item-linked orphan-reconcile lag (ZERO re-place pages)', () => {
+  const planLag = { hasLiveHolder: false, planItemDeclaresTerminal: true } as const;
+
+  it('a unit whose linked plan item is already done/dropped → plan-item-reconcile (NOT recover)', () => {
+    const d = evaluatePlacement(obs({ ...planLag }), CFG);
+    expect(d.kind).toBe('plan-item-reconcile');
+    // The recurrence guard: it must NEVER take a re-place-page path.
+    expect(['recover', 'breaker']).not.toContain(d.kind);
+  });
+
+  it('takes precedence over the reaper-reclaim / dormancy / zombie loss attributions', () => {
+    for (const over of [
+      { servingCupReclaimedWhileActive: true },
+      { postDormancySweep: true },
+      { servingCupMadeNoToolCalls: true },
+    ]) {
+      const d = evaluatePlacement(obs({ ...planLag, ...over }), CFG);
+      expect(d.kind).toBe('plan-item-reconcile');
+    }
+  });
+
+  it('never bumps a curse counter, even at the last strike before the breaker', () => {
+    const d = evaluatePlacement(obs({ ...planLag, failCount: CFG.breakerThreshold - 1 }), CFG);
+    expect(d.kind).toBe('plan-item-reconcile');
+  });
+
+  it('a genuine loss (no plan-item terminal signal) still recovers — the fix does not blunt real recovery', () => {
+    const d = evaluatePlacement(obs({ hasLiveHolder: false, planItemDeclaresTerminal: false }), CFG);
+    expect(d.kind).toBe('recover');
+  });
+
+  it('a live holder / terminal unit still wins over a plan-item-lag signal', () => {
+    expect(evaluatePlacement(obs({ ...planLag, hasLiveHolder: true }), CFG).kind).toBe('healthy');
+    expect(evaluatePlacement(obs({ ...planLag, unitTerminal: true }), CFG).kind).toBe('completed');
+  });
+
+  it('a deliberately parked unit still short-circuits first (a park is its own signal path)', () => {
+    expect(evaluatePlacement(obs({ ...planLag, unitParked: true }), CFG).kind).toBe('parked');
+  });
+
+  it('stays debounced while already recovering within the window (at most one nudge per window)', () => {
+    const d = evaluatePlacement(obs({ ...planLag, placementStatus: 'recovering', lastRecoveryAtMs: NOW - 60_000 }), CFG);
+    expect(d.kind).toBe('debounced');
+  });
+
+  it('a cursed row stays latched — the reconcile branch sits AFTER the cursed latch (no per-tick storm)', () => {
+    const d = evaluatePlacement(obs({ ...planLag, placementStatus: 'cursed', failCount: 3 }), CFG);
+    expect(d.kind).toBe('latched');
+  });
+
+  it('a cup checkpoint declaring terminal takes precedence when BOTH lag signals are present (checked first)', () => {
+    const d = evaluatePlacement(obs({ ...planLag, checkpointDeclaresTerminal: true }), CFG);
+    expect(d.kind).toBe('checkpoint-reconcile');
   });
 });
 
