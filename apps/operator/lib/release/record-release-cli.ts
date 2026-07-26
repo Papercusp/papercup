@@ -412,11 +412,57 @@ export function isSpannedInstaller(dir: string, name: string): boolean {
     .some((f) => new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d+\\.bin$`, 'i').test(f));
 }
 
+/**
+ * Where cargo BUILDS the linux bundle — honoring the box-global `[build] target-dir`
+ * (this dev box: `~/.cargo-target`) exactly the way the old default did.
+ *
+ * This is where the linux artifacts are BORN, and — since 2026-07-09 — no longer
+ * where they LIVE: see `collectedLinuxBundleRoot`. Kept as a scan root so a raw
+ * `tauri build` that never went through bin/build-linux-local.sh is still found.
+ */
+export function cargoTargetBundleRoot(): string {
+  return path.join(
+    process.env.CARGO_TARGET_DIR ?? `${process.env.HOME}/.cargo-target`,
+    'release/bundle',
+  );
+}
+
+/**
+ * Where the linux artifacts actually END UP: `bin/build-linux-local.sh` COLLECTS
+ * (mv, same-filesystem rename) the finished .deb/.AppImage/.sig out of cargo's real
+ * target dir and into `src-tauri/target/release/bundle`, so all three legs share one
+ * tree. Must stay equal to that script's `DEST_BUNDLE` — asserted by the
+ * producer/consumer guard in record-release-cli.test.ts.
+ */
+export function collectedLinuxBundleRoot(desktopRoot: string): string {
+  return path.join(desktopRoot, 'src-tauri', 'target', 'release', 'bundle');
+}
+
+/**
+ * EI-18103803991060000 — the linux root moved and the recorder never followed.
+ *
+ * `build-linux-local.sh` MOVES the finished linux artifacts out of
+ * `$CARGO_TARGET_DIR/release/bundle` into `src-tauri/target/release/bundle`, leaving
+ * behind only tauri's INTERMEDIATE staging dirs (`deb/Papercusp GUI_0.0.12_amd64/`
+ * with no .deb) and an EMPTY `appimage/`. The recorder still scanned only the dir the
+ * bytes were moved OUT of, so it found zero linux artifacts — and, because a missing
+ * root is deliberately not an error and the completeness alert is deliberately
+ * NON-FATAL (a partial cut is legal), it recorded a linux-less release and exited 0.
+ * Scanning a wrong directory was indistinguishable from a deliberate partial cut.
+ *
+ * Both roots are scanned now, so it is correct whichever way the leg was built.
+ * `scanArtifacts` dedups by filename, so an overlap (a checkout where cargo already
+ * targets the source tree) records each artifact once.
+ */
 export function releaseBundleRoots(linuxBundleDir: string, desktopRoot: string): string[] {
   return [
-    linuxBundleDir,
-    path.join(desktopRoot, 'src-tauri', 'target', 'universal-apple-darwin', 'release', 'bundle'),
-    path.join(desktopRoot, 'src-tauri', 'target', 'windows-vm', 'bundle'),
+    ...new Set([
+      linuxBundleDir,
+      collectedLinuxBundleRoot(desktopRoot),
+      cargoTargetBundleRoot(),
+      path.join(desktopRoot, 'src-tauri', 'target', 'universal-apple-darwin', 'release', 'bundle'),
+      path.join(desktopRoot, 'src-tauri', 'target', 'windows-vm', 'bundle'),
+    ]),
   ];
 }
 
@@ -858,13 +904,17 @@ export function buildRunOpts(argv: string[]): RecordOpts {
   const changelogMd = changelogFile ? fs.readFileSync(changelogFile, 'utf8') : null;
   const cutAtRaw = arg(argv, '--cut-at');
   const sinceRaw = arg(argv, '--since');
-  const bundleDir =
-    arg(argv, '--bundle') ??
-    process.env.PAPERCUSP_BUNDLE_DIR ??
-    path.join(process.env.CARGO_TARGET_DIR ?? `${process.env.HOME}/.cargo-target`, 'release/bundle');
   // The mac + windows legs land in the desktop app's own target tree, NOT in
   // CARGO_TARGET_DIR — so they need their own roots (see `releaseBundleRoots`).
   const desktopRoot = arg(argv, '--desktop-root') ?? resolveDesktopRoot();
+  // The PRIMARY linux root is where build-linux-local.sh collects the artifacts to,
+  // NOT where cargo built them (EI-18103803991060000). This also decides the default
+  // `--out`, so the generated site lands beside the real artifacts — and matches
+  // bin/publish-release-history.sh's default SITE_DIR, which uploads it.
+  const bundleDir =
+    arg(argv, '--bundle') ??
+    process.env.PAPERCUSP_BUNDLE_DIR ??
+    collectedLinuxBundleRoot(desktopRoot);
   const bundleDirs = releaseBundleRoots(bundleDir, desktopRoot);
   // Mobile (Android/iOS) artifacts live in the separate papercup-rust-mobile repo.
   // Optional: null root → no mobile artifacts recorded (a legal desktop-only cut).

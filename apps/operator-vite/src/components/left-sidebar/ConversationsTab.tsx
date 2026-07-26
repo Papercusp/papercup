@@ -208,6 +208,10 @@ function QuestionDetail({ id, summary }: { id: string; summary?: UnifiedConversa
     args: { id },
     enabled: !!id,
     staleTime: 30_000,
+    // WI-5851: a click opened this pane and the owner is watching it load,
+    // so this read must not be coalesced into the background poll wave —
+    // that is what made a 4ms query take 2.7-3.3s.
+    priority: 'interactive',
   });
   // usePollingQuery keeps previous data warm, so a just-switched selection can
   // hand back the PREVIOUS conversation's detail mislabeled as this one. Only
@@ -372,6 +376,10 @@ function DeliberationDetailBody({ id, summary }: { id: string; summary?: Unified
     args: { id },
     enabled: !!id,
     staleTime: 30_000,
+    // WI-5851: a click opened this pane and the owner is watching it load,
+    // so this read must not be coalesced into the background poll wave —
+    // that is what made a 4ms query take 2.7-3.3s.
+    priority: 'interactive',
   });
   const raw = q.data?.[0];
   const detail = raw && raw.thread?.thread_id === id ? raw : undefined;
@@ -442,6 +450,10 @@ function AgentChatDetailBody({ id, summary }: { id: string; summary?: UnifiedCon
     args: { id },
     enabled: !!id,
     staleTime: 30_000,
+    // WI-5851: a click opened this pane and the owner is watching it load,
+    // so this read must not be coalesced into the background poll wave —
+    // that is what made a 4ms query take 2.7-3.3s.
+    priority: 'interactive',
   });
   const raw = q.data?.[0] ?? null;
   const detail = raw && raw.id === id ? raw : null;
@@ -505,6 +517,10 @@ function MessageDetailBody({ id, summary }: { id: string; summary?: UnifiedConve
     args: { id },
     enabled: !!id,
     staleTime: 30_000,
+    // WI-5851: a click opened this pane and the owner is watching it load,
+    // so this read must not be coalesced into the background poll wave —
+    // that is what made a 4ms query take 2.7-3.3s.
+    priority: 'interactive',
   });
   const raw = q.data?.[0] ?? null;
   const detail = raw && raw.id === id ? raw : null;

@@ -101,6 +101,19 @@ export interface CheckpointDeps {
   /** Re-run EXACTLY these failing files at `ref`, for the stale-candidate re-triage.
    *  Optional: absent ⇒ every red is treated as real (today's behaviour). */
   runTestsAtRef?(ref: string, files: FailingFile[]): Promise<{ pass: boolean; summary: string }>;
+  /** EI-18669342433807110: called right before a stale-candidate auto-refire RECURSES (which can
+   *  run a full suite again, minutes, before this process returns) — merges a marker into
+   *  `gate_health` so a concurrent reader (coord:orient, dev:why) can tell the cached red for
+   *  `info.fromCandidate` is being re-verified RIGHT NOW instead of dispatching someone at tests
+   *  this very run may be about to disprove. Optional / best-effort: existing test stubs need not
+   *  provide it; realCheckpointDeps wires it to release/in-flight-retriage.ts's merge write. */
+  recordInFlightRetriage?(info: {
+    fromCandidate: string;
+    refiringCandidate: string;
+    refireAttempt: number;
+    maxRefires: number;
+    failingFiles: string[];
+  }): Promise<void>;
   /** Age of the deployed release pin + how far it trails tip, for the staleness alarm.
    *  Optional: absent ⇒ alarm never fires. */
   deployStaleness?(): Promise<{ pinAgeMs: number; commitsBehind: number } | null>;
@@ -1999,6 +2012,19 @@ export async function runGreenCheckpoint(
         await deps.broadcast(
           `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${failingFiles.length} file(s) pass at tip)`,
         ).catch(() => {});
+        // EI-18669342433807110: the recursive re-fire below can run a full suite again (minutes)
+        // before this process returns anything — mark the refire IN FLIGHT now so a concurrent
+        // reader doesn't spend that whole window seeing a plain cached red with no hint a fresh
+        // verdict is imminent.
+        await deps
+          .recordInFlightRetriage?.({
+            fromCandidate: candidate,
+            refiringCandidate: tip,
+            refireAttempt: (opts.refireAttempts ?? 0) + 1,
+            maxRefires: autoRefireCapFromEnv(),
+            failingFiles,
+          })
+          .catch(() => {});
         return runGreenCheckpoint(cfg, deps, {
           ...opts,
           candidate: tip,
@@ -2414,6 +2440,22 @@ export function realCheckpointDeps(
     async checkTreeDrift() {
       const { checkLockTreeDrift } = await import('@papercusp/operator-core/lib/boot-integrity-preflight');
       return checkLockTreeDrift({ rootDir: cfg.checkpointRoot });
+    },
+    // EI-18669342433807110: real wiring for the in-flight-refire marker. Mirrors
+    // recordOwnVerdict's own gate below (see the CLI entrypoint) — only the run our launcher
+    // stamped as the record target writes gate_health at all; an un-stamped run (old-CLI/new-
+    // routine skew, or a manual run with no target) silently no-ops, exactly like the final
+    // verdict write does.
+    async recordInFlightRetriage(info) {
+      try {
+        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return; // not the record-target-designated run — nothing to mark.
+        const { recordInFlightRetriage: write } = await import('@papercusp/operator-core/lib/release/in-flight-retriage');
+        await write(target, info);
+      } catch {
+        /* best-effort diagnostic — never let this break the checkpoint run */
+      }
     },
     async setupTree(ref) {
       // P-019: the SCRIPT lives in the TOOLING tree (papercusp), not cfg.integrationRoot

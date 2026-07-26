@@ -28,7 +28,17 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
-import { getWorkItem, setWorkItemClaimHold, readWorkItemHeldOpenBy } from '../../work-items';
+import { getWorkItem, setWorkItemClaimHold, readWorkItemClaimHoldProvenance } from '../../work-items';
+
+/** EI-18672701535825889 suggestion #5: a reason naming a deliberate policy-tier human gate
+ *  (a `D-NNN` decision id, or the triage gate's own `triageDecision:"gate"` marker, or the
+ *  literal phrase "policy-tier") must not be liftable by a bare `force:true` — the exact
+ *  near-miss this item documents was a force-adjacent clear of a security gate on a false
+ *  "unattributed" reading. `ownerOverride:true` is a second, distinct, audited assertion. */
+function looksLikePolicyGate(reason: string | null): boolean {
+  if (!reason) return false;
+  return /\bD-\d{3}\b/i.test(reason) || /triageDecision\s*[:=]\s*["']?gate["']?/i.test(reason) || /policy-tier/i.test(reason);
+}
 
 export default defineTool({
   name: 'work_items:hold_open',
@@ -58,7 +68,14 @@ export default defineTool({
       id: z.string().min(1).describe('the work-item id to hold open (or clear)'),
       reason: z.string().min(1).max(500).optional().describe('why it must stay open — stamped as held_open_reason + broadcast (required unless clear:true)'),
       clear: z.boolean().optional().describe('true lifts the hold instead of setting it'),
-      force: z.boolean().optional().describe('clear ANOTHER agent\'s hold (leader override only; default false refuses with not_holder)'),
+      force: z.boolean().optional().describe('clear ANOTHER agent\'s hold (leader override only; default false refuses with not_holder) — checked against BOTH claim-hold provenance conventions (held_open_by lease AND claim_hold_by durable park)'),
+      ownerOverride: z
+        .boolean()
+        .optional()
+        .describe(
+          'REQUIRED (in addition to force) to clear a hold whose reason names a policy-tier gate (a D-NNN decision id, ' +
+            'triageDecision:"gate", or "policy-tier") — force:true alone refuses it (EI-18672701535825889).',
+        ),
       harness: z.string().max(80).optional().describe('harness the item lives under (else resolved from the item)'),
     })
     .refine((a) => a.clear === true || Boolean(a.reason), { message: 'pass { reason } to hold, or { clear:true } to lift' }),
@@ -72,15 +89,32 @@ export default defineTool({
     });
     const item = await getWorkItem(args.id, hintHarness).catch(() => null);
     if (!item) return fail({ error: `work_item '${args.id}' not found` });
-    const prior = readWorkItemHeldOpenBy(item.payload);
+    // EI-18672701535825889: check BOTH claim-hold provenance conventions — a row held ONLY via
+    // the durable-park convention (claim_hold_by, no held_open_by) previously slipped through
+    // this guard entirely (readWorkItemHeldOpenBy alone returned null ⇒ `prior` falsy ⇒ no
+    // not_holder check, no force required), silently clearing another agent's park.
+    const provenance = readWorkItemClaimHoldProvenance(item.payload);
+    const prior = provenance.heldOpen ?? provenance.parked;
     if (args.clear) {
-      if (prior && prior.by !== ident.ownerId && !args.force) {
-        return fail({
-          error: 'not_holder',
-          heldBy: prior.by,
-          reason: prior.reason,
-          hint: `Held open by ${prior.by}, not you — coordinate with the holder (coord:send) or pass force:true (leader override).`,
-        });
+      if (prior && prior.by !== ident.ownerId) {
+        if (looksLikePolicyGate(prior.reason) && !args.ownerOverride) {
+          return fail({
+            error: 'policy_gate_requires_owner_override',
+            heldBy: prior.by,
+            reason: prior.reason,
+            convention: provenance.heldOpen ? 'held_open (lease)' : 'claim_hold (durable park)',
+            hint: `${args.id} is held for a policy-tier reason ("${(prior.reason ?? '').slice(0, 160)}") — force:true alone is refused for a policy gate. Pass ownerOverride:true only with genuine owner sign-off (EI-18672701535825889).`,
+          });
+        }
+        if (!args.force) {
+          return fail({
+            error: 'not_holder',
+            heldBy: prior.by,
+            reason: prior.reason,
+            convention: provenance.heldOpen ? 'held_open (lease)' : 'claim_hold (durable park)',
+            hint: `Held by ${prior.by} (${provenance.heldOpen ? 'held_open lease' : 'claim_hold durable park'}), not you — coordinate with the holder (coord:send) or pass force:true (leader override).`,
+          });
+        }
       }
       const cleared = await setWorkItemClaimHold(args.id, false, { harness: item.harness ?? undefined });
       if (!cleared) return fail({ error: 'clear_failed' });

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { WorkItem } from '../../work-items';
 
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  // EI-18672701535825889: keep the real readWorkItemClaimHoldProvenance (+ its readers) —
+  // burn_down's claim-hold reason enrichment depends on it, and a bare-object mock silently
+  // leaves it `undefined`, TypeErroring on the very row this fix is about.
+  ...(await importOriginal<object>()),
   listWorkItems: vi.fn(),
   getWorkItem: vi.fn(),
 }));
@@ -110,6 +114,38 @@ describe('work_items:burn_down', () => {
       parked: 2,
       unclaimed: 1,
     });
+  });
+
+  it('EI-18672701535825889: claim-hold reason surfaces BOTH provenance conventions, and flags a genuine unattributed hold distinctly', () => {
+    const result = buildBurnDownResult(
+      [
+        item({ id: 'WI-lease', payload: { _claimHold: true, held_open_by: 'su-alice', held_open_reason: 'verifying evidence' } }),
+        item({ id: 'WI-park', payload: { _claimHold: true, claim_hold_by: 'su-bob', claim_hold_reason: 'D-003 policy-tier gate' } }),
+        item({
+          id: 'WI-both',
+          payload: {
+            _claimHold: true,
+            held_open_by: 'su-carol',
+            held_open_reason: 'active work',
+            claim_hold_by: 'su-dan',
+            claim_hold_reason: 'also parked earlier',
+          },
+        }),
+        item({ id: 'WI-unattributed', payload: { _claimHold: true } }),
+      ],
+      new Set(),
+      { harness: 'papercusp' },
+    );
+
+    const byId = new Map(result.parked.map((r) => [r.id, r.reason]));
+    expect(byId.get('WI-lease')).toBe('held open by su-alice: verifying evidence');
+    expect(byId.get('WI-park')).toBe('durably parked by su-bob: D-003 policy-tier gate');
+    expect(byId.get('WI-both')).toBe(
+      'held open by su-carol: active work; durably parked by su-dan: also parked earlier',
+    );
+    // The near-miss this item documents: a row with NEITHER field is the only genuine
+    // "unattributed, safe to triage" case — everything else must say who + why.
+    expect(byId.get('WI-unattributed')).toMatch(/UNATTRIBUTED/);
   });
 
   it('parks needs-human and actively blocked rows instead of counting them unclaimed (WI-4759)', () => {

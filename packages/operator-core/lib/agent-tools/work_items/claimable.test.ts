@@ -15,8 +15,8 @@ vi.mock('../../scheduler/get-next', () => ({
   listIssueClaimableRows: vi.fn(),
 }));
 vi.mock('../../scheduler/claim-spec-store', () => ({
-  getClaimSpecRecord: vi.fn(),
-  fleetSpecBeeKey: (slug: string) => `fleet:${slug}`,
+  resolveFleetClaimSpec: vi.fn(),
+  listFleetClaimSpecCandidates: vi.fn(),
   resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
 }));
 vi.mock('../coordination/identity', () => ({
@@ -24,11 +24,12 @@ vi.mock('../coordination/identity', () => ({
 }));
 
 import { aggregateIssueClaimExclusions, listIssueClaimableRows } from '../../scheduler/get-next';
-import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
+import { resolveFleetClaimSpec, listFleetClaimSpecCandidates } from '../../scheduler/claim-spec-store';
 
 const aggM = vi.mocked(aggregateIssueClaimExclusions);
 const listM = vi.mocked(listIssueClaimableRows);
-const recM = vi.mocked(getClaimSpecRecord);
+const recM = vi.mocked(resolveFleetClaimSpec);
+const candM = vi.mocked(listFleetClaimSpecCandidates);
 
 const tool = (await import('./claimable')).default;
 
@@ -68,6 +69,7 @@ beforeEach(() => {
   aggM.mockResolvedValue(BREAKDOWN as never);
   listM.mockResolvedValue(ROWS as never);
   recM.mockResolvedValue(null as never);
+  candM.mockResolvedValue([] as never);
 });
 
 describe('work_items:claimable handler', () => {
@@ -97,35 +99,89 @@ describe('work_items:claimable handler', () => {
     expect(aggM.mock.calls[0]![0]).toEqual({ field: 'kind', op: 'in', value: ['bug', 'task'] });
   });
 
-  it('a fleet spec scopes the lane by its filter/states/rank + reports its provenance', async () => {
+  it('a fleet spec (by SLUG) scopes the lane by its filter/states/rank + reports its provenance', async () => {
     recM.mockResolvedValue({
-      source: 'cup',
-      spec: { specId: 'bug-drain', revision: 4, view: { filter: { field: 'plan', op: '=', value: 'x' } }, states: ['open'] },
-      revision: 4,
-      updatedBy: null,
-      updatedAt: null,
-      harnessSlug: null,
+      fleetSlug: 'myfleet',
+      matchedBy: 'fleet-slug',
+      record: {
+        source: 'fleet',
+        spec: { specId: 'bug-drain', revision: 4, view: { filter: { field: 'plan', op: '=', value: 'x' } }, states: ['open'] },
+        revision: 4,
+        updatedBy: null,
+        updatedAt: null,
+        harnessSlug: null,
+        fleetSlug: 'myfleet',
+      },
     } as never);
     const out = await run({ harness: 'papercup', spec: 'myfleet' });
-    // resolved via the fleet sentinel bee key under the caller's claim-spec workspace.
-    expect(recM).toHaveBeenCalledWith({ cupId: 'fleet:myfleet', workspaceId: 'ws-1' });
+    // resolved via the shared fleet/specId resolver under the caller's claim-spec workspace.
+    expect(recM).toHaveBeenCalledWith({ spec: 'myfleet', workspaceId: 'ws-1' });
     // the spec's own filter scopes the oracle + lister; the spec + its states ride through.
     expect(aggM.mock.calls[0]![0]).toEqual({ field: 'plan', op: '=', value: 'x' });
     expect(aggM.mock.calls[0]![1]).toEqual(expect.objectContaining({ states: ['open'] }));
     expect(listM.mock.calls[0]![1]).toEqual(
       expect.objectContaining({ spec: expect.objectContaining({ specId: 'bug-drain' }) }),
     );
-    expect(out.spec).toEqual({ specId: 'bug-drain', revision: 4, source: 'cup' });
+    expect(out.spec).toEqual({
+      specId: 'bug-drain',
+      revision: 4,
+      source: 'fleet',
+      fleetSlug: 'myfleet',
+      matchedBy: 'fleet-slug',
+    });
+  });
+
+  it('a fleet spec resolved by its own specId (not the fleet slug) still scopes the lane + reports matchedBy', async () => {
+    recM.mockResolvedValue({
+      fleetSlug: 'p2p-release',
+      matchedBy: 'spec-id',
+      record: {
+        source: 'fleet',
+        spec: { specId: 'p2p-release-lane', revision: 12, view: { filter: { field: 'plan', op: '=', value: 'y' } }, states: ['open'] },
+        revision: 12,
+        updatedBy: null,
+        updatedAt: null,
+        harnessSlug: null,
+        fleetSlug: 'p2p-release',
+      },
+    } as never);
+    const out = await run({ harness: 'papercup', spec: 'p2p-release-lane' });
+    expect(recM).toHaveBeenCalledWith({ spec: 'p2p-release-lane', workspaceId: 'ws-1' });
+    expect(aggM.mock.calls[0]![0]).toEqual({ field: 'plan', op: '=', value: 'y' });
+    expect(out.spec).toEqual({
+      specId: 'p2p-release-lane',
+      revision: 12,
+      source: 'fleet',
+      fleetSlug: 'p2p-release',
+      matchedBy: 'spec-id',
+    });
+  });
+
+  it('an unrecognized `spec` (neither namespace matches) ERRORS with candidates — never falls back to the whole backlog', async () => {
+    recM.mockResolvedValue(null as never);
+    candM.mockResolvedValue([{ fleetSlug: 'p2p-release', specId: 'p2p-release-lane', revision: 12 }] as never);
+    const out = await run({ harness: 'papercup', spec: 'bogus-spec' });
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/no fleet or claim-spec named 'bogus-spec'/);
+    expect(out.candidates).toEqual([{ fleetSlug: 'p2p-release', specId: 'p2p-release-lane', revision: 12 }]);
+    // never widened to the unfiltered lane — the oracle/lister were never even called.
+    expect(aggM).not.toHaveBeenCalled();
+    expect(listM).not.toHaveBeenCalled();
   });
 
   it('spec ∧ kind AND-combine into one filter tree', async () => {
     recM.mockResolvedValue({
-      source: 'fleet',
-      spec: { specId: 's', revision: 1, view: { filter: { field: 'plan', op: '=', value: 'x' } }, states: ['open'] },
-      revision: 1,
-      updatedBy: null,
-      updatedAt: null,
-      harnessSlug: null,
+      fleetSlug: 'f',
+      matchedBy: 'fleet-slug',
+      record: {
+        source: 'fleet',
+        spec: { specId: 's', revision: 1, view: { filter: { field: 'plan', op: '=', value: 'x' } }, states: ['open'] },
+        revision: 1,
+        updatedBy: null,
+        updatedAt: null,
+        harnessSlug: null,
+        fleetSlug: 'f',
+      },
     } as never);
     await run({ harness: 'papercup', spec: 'f', kind: 'bug' });
     expect(aggM.mock.calls[0]![0]).toEqual({

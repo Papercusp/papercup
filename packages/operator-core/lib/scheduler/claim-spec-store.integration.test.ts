@@ -31,6 +31,8 @@ const {
   resolveClaimSpecWorkspace,
   fleetSpecBeeKey,
   countActiveClaimsForBee,
+  resolveFleetClaimSpec,
+  listFleetClaimSpecCandidates,
 } =
   await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
@@ -166,6 +168,69 @@ describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_cla
     const rec = await getClaimSpecRecord({ cupId: fleetKey }, db.sql);
     expect(rec.source).toBe('cup'); // the sentinel row itself IS the "cup" row for this key
     expect(rec.updatedBy).toBe('leader-z');
+  });
+});
+
+describe('resolveFleetClaimSpec (EI-18672834165659298 — resolve BOTH the fleet-slug and specId namespaces)', () => {
+  it('resolves via the literal fleet SLUG (the sentinel bee_id)', async () => {
+    await setClaimSpec(
+      { cupId: fleetSpecBeeKey('drain-fleet-slug'), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-slug-lane' }, updatedBy: 'leader-a' },
+      db.sql,
+    );
+    const resolved = await resolveFleetClaimSpec({ spec: 'drain-fleet-slug' }, db.sql);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.matchedBy).toBe('fleet-slug');
+    expect(resolved!.fleetSlug).toBe('drain-fleet-slug');
+    expect(resolved!.record.spec.specId).toBe('drain-fleet-slug-lane');
+    expect(resolved!.record.source).toBe('fleet');
+  });
+
+  it('resolves via the spec\'s own specId when the caller passes THAT instead of the fleet slug (the field-reported bug)', async () => {
+    await setClaimSpec(
+      { cupId: fleetSpecBeeKey('p2p-release'), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'p2p-release-lane' }, updatedBy: 'leader-b' },
+      db.sql,
+    );
+    // caller passes the specId ('p2p-release-lane'), NOT the fleet slug ('p2p-release') —
+    // this is the exact trap the bug report describes (the specId is the more discoverable
+    // value: it's what get_next's own refusal text prints).
+    const resolved = await resolveFleetClaimSpec({ spec: 'p2p-release-lane' }, db.sql);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.matchedBy).toBe('spec-id');
+    expect(resolved!.fleetSlug).toBe('p2p-release');
+    expect(resolved!.record.spec.specId).toBe('p2p-release-lane');
+  });
+
+  it('an UNRECOGNIZED spec (neither namespace matches) returns null — never DEFAULT_CLAIM_SPEC', async () => {
+    const resolved = await resolveFleetClaimSpec({ spec: 'totally-bogus-spec-xyz' }, db.sql);
+    expect(resolved).toBeNull();
+  });
+
+  it('a per-BEE (non-fleet) spec is never matched by specId — the lookup is scoped to fleet: sentinels only', async () => {
+    // A regular bee (not a fleet sentinel) with a spec whose specId happens to collide.
+    await setClaimSpec({ cupId: 'su-plain-bee', spec: { ...DEFAULT_CLAIM_SPEC, specId: 'plain-bee-spec-id' } }, db.sql);
+    const bySlug = await resolveFleetClaimSpec({ spec: 'su-plain-bee' }, db.sql);
+    expect(bySlug).toBeNull(); // 'su-plain-bee' is not a fleet: sentinel bee_id
+    const bySpecId = await resolveFleetClaimSpec({ spec: 'plain-bee-spec-id' }, db.sql);
+    expect(bySpecId).toBeNull(); // the specId lookup only scans bee_id LIKE 'fleet:%' rows
+  });
+});
+
+describe('listFleetClaimSpecCandidates (the "unrecognized spec" error diagnostic)', () => {
+  it('lists fleet slug + specId pairs for every fleet-sentinel row', async () => {
+    await setClaimSpec(
+      { cupId: fleetSpecBeeKey('cand-fleet-1'), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'cand-fleet-1-lane' } },
+      db.sql,
+    );
+    await setClaimSpec(
+      { cupId: fleetSpecBeeKey('cand-fleet-2'), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'cand-fleet-2-lane' } },
+      db.sql,
+    );
+    const candidates = await listFleetClaimSpecCandidates({}, db.sql);
+    const slugs = candidates.map((c) => c.fleetSlug);
+    expect(slugs).toContain('cand-fleet-1');
+    expect(slugs).toContain('cand-fleet-2');
+    const c1 = candidates.find((c) => c.fleetSlug === 'cand-fleet-1');
+    expect(c1?.specId).toBe('cand-fleet-1-lane');
   });
 });
 
