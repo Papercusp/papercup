@@ -108,6 +108,24 @@ export interface OpenAwait {
   expiresIso: string | null;
 }
 
+/**
+ * One standing mode on a session, as the GUI needs it.
+ *
+ * The roster USED to flatten agent_modes down to a bare id (`['auto']`) even
+ * though the batched read already returns the full row — so a card could say
+ * "AUTO" but never "…because you put it there". Provenance is what makes the
+ * chip actionable: an owner-directed mode is sticky (a peer agent cannot
+ * override it), a self-set one is the agent's own posture.
+ */
+export interface AdvRosterMode {
+  /** Registry mode id — 'auto' | 'cold-auto' | 'ideate' | 'drain' | 'grade'. */
+  mode: string;
+  /** True when the human owner armed it (agent_modes.owner_directed). */
+  ownerDirected: boolean;
+  /** When it was set (agent_modes.set_at) — the "in this mode for how long" clock. */
+  since: string | null;
+}
+
 export interface RosterEntry {
   // ── presence (always present — the primary roster) ──
   ownerId: string;
@@ -131,10 +149,10 @@ export interface RosterEntry {
    *  loop row targeting this ownerId). A loop-armed agent counts as "live" (it keeps
    *  working on a cadence) even when its presence has gone idle between wakes. */
   loopArmed: boolean;
-  /** OFFICIAL standing modes (harness_shared.agent_modes ids, e.g. ['auto','ideate']) —
-   *  the mode-rail state for the GUI mode chips (EI-7626). Distinct from `mode` below,
-   *  which is the psu LAUNCH-time flag on the adv_sessions row. Empty when none set. */
-  modes: string[];
+  /** OFFICIAL standing modes (harness_shared.agent_modes) — the mode-rail state for the
+   *  GUI mode chips (EI-7626). Distinct from `mode` below, which is the psu LAUNCH-time
+   *  flag on the adv_sessions row. Empty when none set. */
+  modes: AdvRosterMode[];
   /** The machine this agent runs on. For a LOCAL agent: this machine's fingerprint;
    *  for a FEDERATED (cross-machine, shared-hive) agent: its announced machine_label.
    *  The key the roster groups/tabs by. */
@@ -380,8 +398,8 @@ export async function runningSpawnLivenessByOwner(
  */
 async function agentModesByOwner(
   presence: Array<{ ownerId: string; workspaceId: string }>,
-): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>();
+): Promise<Map<string, AdvRosterMode[]>> {
+  const out = new Map<string, AdvRosterMode[]>();
   try {
     const { getModesForOwners } = await import('./modes/store');
     const byWs = new Map<string, string[]>();
@@ -395,7 +413,18 @@ async function agentModesByOwner(
       [...byWs.entries()].map(async ([ws, owners]) => {
         const m = await getModesForOwners(ws, owners);
         for (const [owner, rows] of m) {
-          if (rows.length) out.set(owner, rows.map((r) => r.mode));
+          // Carry provenance through — the read already paid for it, and the
+          // chip is only actionable with it (owner-set is sticky vs self-set).
+          if (rows.length) {
+            out.set(
+              owner,
+              rows.map((r) => ({
+                mode: r.mode,
+                ownerDirected: Boolean(r.ownerDirected),
+                since: r.setAt ?? null,
+              })),
+            );
+          }
         }
       }),
     );
@@ -452,7 +481,7 @@ export function mergeRosterEntries(
   fleetByOwner: Map<string, FleetInfo> = new Map(),
   runInfoByOwner: Map<string, { runId: string; harness: string }> = new Map(),
   loopArmedOwners: Set<string> = new Set(),
-  modesByOwner: Map<string, string[]> = new Map(),
+  modesByOwner: Map<string, AdvRosterMode[]> = new Map(),
   /**
    * Trailing OPTIONS bag for every join added from here on. Deliberately an
    * object rather than a 14th positional: this signature is already at twelve

@@ -630,6 +630,126 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree():
         if re.match(_GIT + r'stash\b(?!\s+(?:list|show|drop|branch|clear))', _s):
             deny(_git_deny.format(op='git stash'))
 
+# ── Shell-write file-target guard (EI-18664655909328670) ───────────────────
+# `cat >> file` / `echo > file` / `tee file` / `sed -i file` / `cp x file` write
+# tree files through a side door the Edit/Write PreToolUse hooks never see: no
+# file lock is claimed (a peer editing the same file races unserialized), and
+# when the session cwd has silently drifted, the redirect/tee/cp does not
+# error — it CREATES A STRAY FILE with zero signal, and a subsequent test run
+# against the real path then reports green, actively confirming the wrong
+# conclusion. Repro'd live 2026-07-25: an agent believed cwd was a package
+# subdir, appended via `cat >> tools/conversations-list.test.ts <<EOF`, cwd had
+# actually drifted to the repo root (which also has a `tools/`), and the
+# redirect silently created `papercusp/tools/conversations-list.test.ts` — an
+# un-gitignored stray one git-sync tick from being committed, caught only by a
+# manual diff against `git show HEAD:`.
+#
+# Detect a write target that resolves INSIDE the canonical shared staging tree
+# and BLOCK it, pointing at Edit/Write instead — those tools already claim the
+# lock and validate the worktree, so this closes the side door rather than
+# reimplementing locking here.
+#
+# UNCONDITIONAL (not gated on PAPERCUSP_AGENT_SESSION or cwd-in-tree): this
+# hook only ever mediates Claude/Codex's own Bash tool, never the owner's raw
+# terminal, and the gate keys on the resolved TARGET path — so it cannot
+# over-block real terminal work, only a Bash-tool write that lands in the tree.
+#
+# LITERAL PATHS ONLY: a target containing shell expansion ($VAR, $(...),
+# backticks, `~`, a glob) is left alone — unsafe to resolve without actually
+# running the shell, so fail-open there rather than guess.
+def _canonical_tree_root():
+    try:
+        _ws_root = os.path.realpath(
+            os.environ.get('PAPERCUSP_WORKSPACE_ROOT')
+            or os.path.expanduser('~/papercupai-workspace'))
+        return os.path.realpath(
+            os.environ.get('PAPERCUSP_CANONICAL_TREE')
+            or os.path.join(_ws_root, 'papercusp'))
+    except Exception:
+        return None
+
+
+def _resolve_write_target(raw_target, cwd):
+    if not raw_target or any(ch in raw_target for ch in ('$', '`', '~', '*', '?', '[')):
+        return None
+    if raw_target.startswith('/dev/') or raw_target in ('&1', '&2'):
+        return None
+    try:
+        return os.path.realpath(
+            raw_target if os.path.isabs(raw_target) else os.path.join(cwd, raw_target))
+    except Exception:
+        return None
+
+
+def _shell_write_guard():
+    _canon = _canonical_tree_root()
+    if not _canon:
+        return
+    try:
+        _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
+    except Exception:
+        return
+    _clean = _strip_shell_quotes(command)
+    _targets = []  # (raw_target, human-readable construct name)
+
+    # `>`/`>>` redirects. The lookahead excludes fd-duplication/comparison
+    # forms (`2>&1`, `>=`, `2>&2`) so those never get misread as file targets.
+    for _m in re.finditer(r'\d*(>{1,2})(?![&=])\s*([^\s;&|()<>]+)', _clean):
+        _targets.append((_m.group(2), 'shell redirect (`%s`)' % _m.group(1)))
+
+    # `tee [-a] FILE...`
+    for _m in re.finditer(r'\btee\b([^;&|\n]*)', _clean):
+        for _tok in _m.group(1).split():
+            if not _tok.startswith('-'):
+                _targets.append((_tok, '`tee`'))
+
+    # `sed -i[.bak] ... FILE...` / `sed --in-place ... FILE...` — quote-
+    # stripping already erased a quoted script, so treat every remaining
+    # non-flag token as a target candidate (harmless if one is actually the
+    # unquoted script text: a real target among them still triggers the deny).
+    for _m in re.finditer(r'\bsed\b([^;&|\n]*)', _clean):
+        _seg = _m.group(1)
+        if not re.search(r'(?:^|\s)-i\S*|--in-place\b', _seg):
+            continue
+        for _tok in _seg.split():
+            if not _tok.startswith('-'):
+                _targets.append((_tok, '`sed -i`'))
+
+    # `cp SRC... DEST` — the last positional (non-flag) token is the
+    # destination. Skipped for a recursive/archive copy (`-r`/`-R`/`-a`/
+    # `--recursive`/`--archive`): a directory copy has no single-file
+    # Edit/Write substitute, so there is nothing safe to redirect this to.
+    for _m in re.finditer(r'\bcp\b([^;&|\n]*)', _clean):
+        _toks = _m.group(1).split()
+        if any(re.match(r'-[a-zA-Z]*[rRa][a-zA-Z]*$|--recursive$|--archive$', t)
+               for t in _toks if t.startswith('-')):
+            continue
+        _pos = [t for t in _toks if not t.startswith('-')]
+        if len(_pos) >= 2:
+            _targets.append((_pos[-1], '`cp`'))
+
+    for _raw, _construct in _targets:
+        _resolved = _resolve_write_target(_raw, _cwd)
+        if _resolved and (_resolved == _canon or _resolved.startswith(_canon + os.sep)):
+            deny(
+                'shell-write guard (EI-18664655909328670): this %s targets `%s`, which '
+                'resolves INSIDE the shared staging tree. Raw shell writes to tree files '
+                'skip the file-lock hook entirely, and if your session cwd has silently '
+                'drifted they create a stray file with no error (a follow-up test run '
+                'then reports green against the wrong path — exactly how a near-miss '
+                'stray got one tick from being committed on 2026-07-25). Use the Edit or '
+                'Write tool instead — they claim the lock and validate the worktree for '
+                'you (for a copy: Read the source, then Write the destination). '
+                'Genuinely a scratch/log file? Write it outside the tree '
+                '(~/.papercusp/scratch or /tmp).' % (_construct, _raw)
+            )
+
+
+try:
+    _shell_write_guard()
+except Exception:
+    pass  # guard must never wedge a command
+
 # ── Heavy-command admission control (WI-3821) ──────────────────────────────
 # Fleet size now organically oversubscribes the 128-core box: each agent's
 # vitest/tsc/test:affected is ALREADY per-suite worker-capped (affected-tests.mjs

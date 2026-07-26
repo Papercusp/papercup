@@ -79,6 +79,16 @@
  * item (about to be claimed) or one already assigned to the caller still writes
  * normally. A caller that wants to leave a note on an item it doesn't hold has
  * work_items:comment for that.
+ *
+ * EI-18665443723911343: the single-shorthand `append`/`confirmShrink` booleans
+ * intermittently rejected a caller's `true`/`false` with "expected boolean, received
+ * string", while the byte-identical value sent through `items:[{ ... }]` parsed fine
+ * on the same session, minutes apart — a rejected write on the exact surface whose job
+ * is surviving a context boundary. Fix: `looseBoolean()` preprocesses the two literal
+ * strings `"true"`/`"false"` to their boolean value ahead of the zod boolean check, on
+ * both the shorthand and the `items[]` fields, so the two paths accept identical input.
+ * Deliberately NOT `z.coerce.boolean()` — that coerces via `Boolean(x)`, which would
+ * turn the string `"false"` into `true`.
  */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
@@ -95,6 +105,27 @@ import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
 function shortHash(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
+
+/**
+ * EI-18665443723911343: the single-shorthand `append`/`confirmShrink` booleans were
+ * observed rejecting a caller-supplied `true`/`false` STRING ("expected boolean,
+ * received string") on the exact same tool call shape that accepts a real boolean —
+ * while the identical value sent through `items:[{ ... }]` parsed fine. Rather than
+ * chase the intermittent string-vs-boolean arrival (client/transport serialization,
+ * outside this tool's control) at its source, make the shorthand booleans tolerant of
+ * their own literal string form: a plain `z.coerce.boolean()` is NOT safe here (JS
+ * `Boolean("false")` is `true` — it would silently invert a caller's explicit
+ * `"false"`), so this preprocesses ONLY the exact strings `"true"`/`"false"` to their
+ * boolean value and leaves every other input (including a real boolean, or a typo'd
+ * string) to fail the normal boolean check untouched.
+ */
+function looseBoolean() {
+  return z.preprocess((v) => {
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    return v;
+  }, z.boolean().optional());
 }
 
 /** Hard cap on a stored checkpoint (matches the `checkpoint` arg's max). */
@@ -118,22 +149,16 @@ const itemSpec = z.object({
   /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint. */
   checkpoint: z.string().max(32000).nullish().describe('compressed in-flight state; blank/omitted ⇒ clear'),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
-  append: z
-    .boolean()
-    .optional()
-    .describe(
-      'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
-        'of replacing it. Reads the current checkpoint first via the same path a future pickup uses. Requires a ' +
-        'non-blank `checkpoint` (append + clear is contradictory — rejected, not silently treated as a clear). ' +
-        'Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would overflow it.',
-    ),
-  confirmShrink: z
-    .boolean()
-    .optional()
-    .describe(
-      'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
-        'more than half is BLOCKED (`shrink_blocked`) by default. Pass true to confirm the replace is intentional.',
-    ),
+  append: looseBoolean().describe(
+    'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
+      'of replacing it. Reads the current checkpoint first via the same path a future pickup uses. Requires a ' +
+      'non-blank `checkpoint` (append + clear is contradictory — rejected, not silently treated as a clear). ' +
+      'Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would overflow it.',
+  ),
+  confirmShrink: looseBoolean().describe(
+    'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
+      'more than half is BLOCKED (`shrink_blocked`) by default. Pass true to confirm the replace is intentional.',
+  ),
 });
 
 export default defineTool({
@@ -169,17 +194,13 @@ export default defineTool({
       checkpoint: z.string().max(32000).nullish().describe('single shorthand: compressed in-flight state; blank/omitted ⇒ clear'),
       items: z.array(itemSpec).min(1).max(100).optional().describe('checkpoint many work-items at once — each { id, checkpoint?, harness?, append? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
-      append: z
-        .boolean()
-        .optional()
-        .describe(
-          'single shorthand default for `append` (EI-9036): join `checkpoint` onto the existing stored checkpoint ' +
-            'instead of replacing it. Also the default applied to any `items[]` entry that omits its own `append`.',
-        ),
-      confirmShrink: z
-        .boolean()
-        .optional()
-        .describe('single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.'),
+      append: looseBoolean().describe(
+        'single shorthand default for `append` (EI-9036): join `checkpoint` onto the existing stored checkpoint ' +
+          'instead of replacing it. Also the default applied to any `items[]` entry that omits its own `append`.',
+      ),
+      confirmShrink: looseBoolean().describe(
+        'single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.',
+      ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',

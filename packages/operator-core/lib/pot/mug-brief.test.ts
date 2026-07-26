@@ -409,22 +409,73 @@ test('renderMugBrief — over-cap lists are digested with a "+N more" overflow l
   assert.match(out, /…\+15 more \(work_items:list to drill down\)/);
 });
 
-test('renderMugBrief — text caps prevent prompt-admission blowups from long lines and carry-notes', () => {
-  const longTitle = `Investigate ${'very-long-title '.repeat(80)}`;
-  const longReason = `because ${'very-long-reason '.repeat(80)}`;
-  const many = Array.from({ length: 12 }, (_, i) =>
-    ranked({ id: `wi-${i}`, harness: 'papercup', title: longTitle }, 20 - i, [longReason]),
-  );
+// EI-18666217180294576 (D-002 follow-up): `frontier` is now a PROTECTED
+// section (see below) so it is never sacrificed to the total-budget cut —
+// this test exercises the total cap against genuinely ELASTIC content
+// (`changeFeed`, an ambient digest) instead, so "respects the total cap"
+// still holds for the content that's actually supposed to absorb the cut.
+test('renderMugBrief — text caps prevent prompt-admission blowups from long lines and elastic sections', () => {
+  const longLine = `- because ${'very-long-reason '.repeat(80)}`;
+  const manyChangeFeed = Array.from({ length: 20 }, (_, i) => `${longLine} (${i})`);
   const out = renderMugBrief({
-    floor: { frontier: many },
+    floor: { frontier: [], changeFeed: manyChangeFeed },
     carryNote: 'carry '.repeat(300),
     textCaps: { totalChars: 1_200, lineChars: 160, carryNoteChars: 120 },
   });
 
   assert.ok(out.length <= 1_200, `brief length ${out.length} should respect total cap`);
   assert.match(out, /line truncated/);
-  assert.match(out, /brief truncated to 1200 chars/);
-  assert.doesNotMatch(out, new RegExp('very-long-title '.repeat(20)));
+  assert.match(out, /ambient line\(s\) omitted/);
+  assert.doesNotMatch(out, new RegExp('very-long-reason '.repeat(20)));
+});
+
+// ── EI-18666217180294576: the Mug wake-brief blind-tail-slice bug ──
+// Root cause #1 (per-line fairness): a pre-rendered MULTI-LINE block (e.g. the
+// standing-facts fold — one physical line per fact) was pushed as a SINGLE
+// `out` element, so the per-line cap truncated the WHOLE block as if it were
+// one line — silently dropping most facts even though each individual fact
+// easily fit. Root cause #2 (section-aware budget): the old total-budget cut
+// blind-sliced the TAIL of the joined string with no regard for which section
+// that tail belonged to. Both are fixed together; these tests pin the fix as
+// the recurrence guard the original report asked for.
+test('renderMugBrief — EI-18666217180294576: a many-entry standing-facts fold survives verbatim, per-line fairness (not clipped as one blob)', () => {
+  const facts = Array.from(
+    { length: 15 },
+    (_, i) => `• [role:mug] fact-${i} is a standing conclusion that must survive verbatim (expires ~5d)`,
+  );
+  const factsFold = `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${facts.join('\n')}`;
+  const out = renderMugBrief({
+    floor: { frontier: [] },
+    factsFold,
+    // Elastic content big enough to force a total-budget cut on its own.
+    carryJournal: Array.from({ length: 30 }, (_, i) => ({ at: 0, note: `ambient trajectory note ${i} `.repeat(10) })),
+    memoryFold: `### Background recall\n${'ambient fuzzy recall filler. '.repeat(200)}`,
+    textCaps: { totalChars: 2_000, lineChars: 900, carryNoteChars: 700 },
+  });
+
+  // Every individual fact renders verbatim — the old bug clipped the fold to
+  // ~2 facts (whatever fit in one 900-char "line").
+  for (const fact of facts) {
+    assert.ok(out.includes(fact), `expected fact to survive verbatim: ${fact}`);
+  }
+  // The cut landed on the elastic content instead, and it's announced, not silent.
+  assert.match(out, /ambient line\(s\) omitted/);
+});
+
+test('renderMugBrief — EI-18666217180294576: even when PROTECTED content alone exceeds the total budget, the cut is a visible countable marker, never a silent byte-slice', () => {
+  const facts = Array.from({ length: 40 }, (_, i) => `• [role:mug] fact-${i} ${'x'.repeat(80)} (expires ~5d)`);
+  const factsFold = `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${facts.join('\n')}`;
+  const out = renderMugBrief({
+    floor: { frontier: [] },
+    factsFold,
+    textCaps: { totalChars: 1_000, lineChars: 900, carryNoteChars: 120 },
+  });
+
+  assert.match(out, /PROTECTED line\(s\) also omitted/);
+  // Render order is preserved — the earliest facts survive, never a byte-level
+  // mid-line slice.
+  assert.ok(out.includes(facts[0]), 'the first fact should survive intact');
+  assert.doesNotMatch(out, /…\[line truncated;/);
 });
 
 test('renderMugBrief — carry-note is capped even when the full brief has room', () => {

@@ -256,16 +256,87 @@ function truncateText(value: string, maxChars: number, label = 'truncated'): str
   return `${value.slice(0, maxChars - marker.length).trimEnd()}${marker}`;
 }
 
-function capRenderedBrief(lines: readonly string[], caps: MugBriefTextCaps): string {
+/**
+ * Render the capped brief from `out` (elastic, may be silently trimmed on a
+ * tight budget) plus `protectedIdx` (indices of `out` that must survive the
+ * total-budget cut — steering directive / standing facts / frontier /
+ * placement rows; EI-18666217180294576).
+ *
+ * Two independent bugs are fixed here, both required to restore the "a
+ * standing fact always survives" contract:
+ *
+ * 1. PER-LINE FAIRNESS: a caller may `out.push(multiLineBlock)` — e.g. the
+ *    pre-rendered standing-facts fold is ONE `out` element containing many
+ *    embedded `\n`-joined fact lines. The old code ran `truncateText` over
+ *    each `out` element as if it were a single display line, so a 15-fact
+ *    fold (~20k chars) got clipped to `lineChars` (900) as a WHOLE BLOCK —
+ *    dropping ~14 facts even though each individual fact easily fits. Fix:
+ *    split every element on its OWN embedded newlines first, so the per-line
+ *    cap applies to actual physical lines, never to a whole multi-entry block
+ *    masquerading as one.
+ * 2. SECTION-AWARE BUDGET: when the flattened brief still exceeds
+ *    `totalChars`, the old code blind-sliced the TAIL of the joined string —
+ *    whatever rendered last (frequently binding content, depending on section
+ *    order) silently vanished with no indication of what was lost. Fix: cut
+ *    ELASTIC lines first (from the end, preserving render order for what
+ *    survives), and only reach into PROTECTED lines if elastic alone can't
+ *    make budget — and even then, drop with a visible, countable marker
+ *    (`…[N line(s) omitted]`), never a byte-level slice. A protected/standing
+ *    line that survives always survives VERBATIM; nothing is ever silently
+ *    half-written.
+ */
+function capRenderedBrief(lines: readonly string[], caps: MugBriefTextCaps, protectedIdx?: ReadonlySet<number>): string {
   const lineChars = Math.max(80, Math.floor(caps.lineChars));
   const totalChars = Math.max(1_000, Math.floor(caps.totalChars));
-  let text = lines.map((line) => truncateText(line, lineChars, 'line truncated')).join('\n');
-  if (text.length <= totalChars) return text;
 
-  const marker = `\n\n…[brief truncated to ${totalChars} chars; drill down with pot:survey / coord:inbox / curation:feed as needed]`;
-  if (marker.length >= totalChars) return marker.slice(0, totalChars);
-  text = text.slice(0, totalChars - marker.length).trimEnd();
-  return `${text}${marker}`;
+  type PLine = { text: string; protected: boolean };
+  const physical: PLine[] = [];
+  lines.forEach((raw, idx) => {
+    const isProtected = protectedIdx?.has(idx) ?? false;
+    for (const part of raw.split('\n')) {
+      physical.push({ text: truncateText(part, lineChars, 'line truncated'), protected: isProtected });
+    }
+  });
+
+  const joinedLen = (arr: readonly PLine[]) => arr.reduce((n, l, i) => n + l.text.length + (i > 0 ? 1 : 0), 0);
+  if (joinedLen(physical) <= totalChars) return physical.map((l) => l.text).join('\n');
+
+  // Reserve headroom for the marker(s) we may need to append.
+  const reserve = 260;
+  const kept = physical.slice();
+  let droppedElastic = 0;
+  let droppedElasticChars = 0;
+  for (let i = kept.length - 1; i >= 0 && joinedLen(kept) > totalChars - reserve; i--) {
+    if (!kept[i].protected) {
+      droppedElasticChars += kept[i].text.length;
+      droppedElastic++;
+      kept.splice(i, 1);
+    }
+  }
+
+  const markers: string[] = [];
+  if (droppedElastic > 0) {
+    markers.push(
+      `…[${droppedElastic} ambient line(s) omitted (${droppedElasticChars} chars) — carry-journal/background-recall/digest content trimmed first; drill down with pot:survey / coord:inbox / curation:feed as needed]`,
+    );
+  }
+
+  // Elastic content alone wasn't enough — protected content itself exceeds the
+  // budget (rare: only when standing facts / steering / frontier / placements
+  // are themselves huge). Drop from the end, but ALWAYS with a countable marker.
+  let droppedProtected = 0;
+  while (joinedLen(kept) + markers.reduce((n, m) => n + m.length + 2, 0) > totalChars && kept.length > 0) {
+    kept.pop();
+    droppedProtected++;
+  }
+  if (droppedProtected > 0) {
+    markers.push(
+      `…[${droppedProtected} PROTECTED line(s) also omitted — standing facts/frontier/steering/placements exceeded the total budget even alone; facts:list / pot:survey to see everything]`,
+    );
+  }
+
+  const text = kept.map((l) => l.text).join('\n');
+  return markers.length > 0 ? `${text}\n\n${markers.join('\n')}` : text;
 }
 
 /** Append a capped list section; emits a "+N more" overflow line when truncated. */
@@ -290,6 +361,14 @@ export function renderMugBrief(input: MugBriefInput): string {
   const textCaps = { ...DEFAULT_MUG_BRIEF_TEXT_CAPS, ...input.textCaps };
   const f = input.floor;
   const out: string[] = [];
+  // Indices into `out` that must survive capRenderedBrief's total-budget cut
+  // (EI-18666217180294576): standing facts, the owner steering directive, the
+  // frontier, and the open-placements section — marked via `protectFrom`
+  // immediately after each of those blocks finishes pushing.
+  const protectedIdx = new Set<number>();
+  const protectFrom = (startLen: number): void => {
+    for (let i = startLen; i < out.length; i++) protectedIdx.add(i);
+  };
 
   out.push('## Your wake brief — precomputed survey snapshot');
   out.push(
@@ -323,8 +402,10 @@ export function renderMugBrief(input: MugBriefInput): string {
   // truncation victims.
   const factsFold = (input.factsFold ?? '').trim();
   if (factsFold) {
+    const factsStart = out.length;
     out.push('');
     out.push(factsFold);
+    protectFrom(factsStart);
   }
   // EI-3419: this substrate is WORKSPACE-scoped (one shared store across every
   // pot this Mug operates — see potScope() in carry-note.ts), not scoped to
@@ -405,6 +486,7 @@ export function renderMugBrief(input: MugBriefInput): string {
   // Pot is actually steered (gatherOwnerSteering returns undefined otherwise +
   // normalizes away expired pauses), so an un-steered Pot sees no section.
   const os = f.ownerSteering;
+  const steeringStart = out.length;
   if (os) {
     out.push('');
     out.push('### Owner steering directive (AUTHORITATIVE — honor before placement)');
@@ -501,9 +583,11 @@ export function renderMugBrief(input: MugBriefInput): string {
       out.push(...throttle);
     }
   }
+  protectFrom(steeringStart);
 
   // FRONTIER — ready-to-place, ranked. Always present (the heading even when empty
   // so "nothing ready" is an explicit, trustworthy signal, not an omission).
+  const frontierStart = out.length;
   out.push('');
   out.push('### Frontier — ready to place (ranked)');
   if (f.frontier.length === 0) {
@@ -529,6 +613,7 @@ export function renderMugBrief(input: MugBriefInput): string {
   if (f.frontierBlocked && f.frontierBlocked > 0) {
     out.push(`(+${f.frontierBlocked} lane(s) held back by unsatisfied blocked_by — not yet placeable)`);
   }
+  protectFrom(frontierStart);
   // RECONCILE lane (EI-13695): attempted items a dead cup left un-converged — the
   // false-fresh class. These are deliberately NOT in the frontier above: converge
   // each one (its checkpoint head says how), never blind-place a cup on it.
@@ -555,6 +640,7 @@ export function renderMugBrief(input: MugBriefInput): string {
   // Open placements — the completion mandate (drive to terminal). The watchdog's
   // already-computed state; surfaced so she clears recoveries each wake (D-004).
   const op = f.openPlacements;
+  const placementsStart = out.length;
   if (op && op.recovering + op.cursed + op.stranded + op.workingTracked > 0) {
     out.push('');
     out.push('### Placements — drive to terminal (your completion mandate)');
@@ -586,6 +672,7 @@ export function renderMugBrief(input: MugBriefInput): string {
       );
     }
   }
+  protectFrom(placementsStart);
 
   section(
     out,
@@ -633,7 +720,7 @@ export function renderMugBrief(input: MugBriefInput): string {
   // (mug-memory-hybrid L1 sections render EARLY, right after Woke-by — see the
   // position-fix comment there. Nothing memory-related renders in the tail.)
 
-  return capRenderedBrief(out, textCaps);
+  return capRenderedBrief(out, textCaps, protectedIdx);
 }
 
 /**

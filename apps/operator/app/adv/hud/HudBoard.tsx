@@ -39,8 +39,23 @@ const CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
 };
 
 /** Chips are capped so a busy card can't grow unbounded; the model already
- *  orders them by decision value, so the survivors are the useful ones. */
+ *  orders them by decision value, so the survivors are the useful ones.
+ *  Mode chips are exempt (see SessionCard) — this caps the derived stats. */
 const MAX_CHIPS = 4;
+
+/**
+ * A chip's classes: tone, plus the mode modifiers.
+ *
+ * A standing mode is a different KIND of thing from a statistic — it is the
+ * posture the agent is operating under — so it reads as a mode chip rather than
+ * borrowing the accent tone it happens to share with LEAD. Owner-directed modes
+ * get a second modifier: you armed that one, and a peer agent cannot override it.
+ */
+function chipClass(b: HudBadge): string {
+  const tone = CHIP_TONE_CLASS[b.tone];
+  if (b.kind !== 'mode') return `hud__chip ${tone}`;
+  return `hud__chip ${tone} hud__chip--mode${b.ownerDirected ? ' hud__chip--mode-owner' : ''}`;
+}
 
 export interface HudBoardProps {
   board: HudBoardData;
@@ -64,8 +79,14 @@ function SessionCard({
   session: HudSession;
   onOpen: (ownerId: string) => void;
 }) {
-  const chips = session.badges.slice(0, MAX_CHIPS);
-  const overflow = session.badges.length - chips.length;
+  // Mode chips are never truncated: they are the agent's standing posture (is my
+  // silence fine, or am I the thing blocking it?), and an agent stacking
+  // auto+ideate+grade would otherwise spend the whole cap on modes and hide its
+  // claims and asks. Only the derived stats compete for MAX_CHIPS.
+  const modeChips = session.badges.filter((b) => b.kind === 'mode');
+  const statChips = session.badges.filter((b) => b.kind !== 'mode');
+  const chips = [...modeChips, ...statChips.slice(0, MAX_CHIPS)];
+  const overflow = statChips.length - Math.min(statChips.length, MAX_CHIPS);
   return (
     <button
       type="button"
@@ -94,10 +115,10 @@ function SessionCard({
             {chips.map((b) =>
               b.title ? (
                 <Tooltip key={b.id} label={b.title}>
-                  <span className={`hud__chip ${CHIP_TONE_CLASS[b.tone]}`}>{b.label}</span>
+                  <span className={chipClass(b)}>{b.label}</span>
                 </Tooltip>
               ) : (
-                <span key={b.id} className={`hud__chip ${CHIP_TONE_CLASS[b.tone]}`}>
+                <span key={b.id} className={chipClass(b)}>
                   {b.label}
                 </span>
               ),

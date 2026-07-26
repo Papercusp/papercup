@@ -18,7 +18,14 @@ import { listDueCronRoutines } from '@papercusp/db-org';
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-arm';
-const HARNESS = 'papercup';
+// NOT 'papercup' — migration 656 (papercup-to-papercusp-migration, WI-5720) added a
+// BEFORE INSERT/UPDATE trigger that silently rewrites harness_slug='papercup' to
+// 'papercusp' on harness_plans (the retired slug can no longer land in the table).
+// Using the retired slug here made every read/write in this file target a different
+// row than the one actually stored, so schedule_active always read back false
+// (EI-18666642183718242) — a fixture bug exposed by the new canonicalization
+// trigger, not a real armPlanSchedule defect. Use the canonical slug.
+const HARNESS = 'papercusp';
 const SLUG = 'monitor-z';
 const SCHED = { kind: 'rrule' as const, rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00.000Z', concurrency: 'skip' as const };
 

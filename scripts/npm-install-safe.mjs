@@ -18,6 +18,18 @@
  * checkout (papercup-release, papercup-checkpoint, ...) gets its own lock and
  * is never blocked by this one.
  *
+ * EI-18666853411437489 — the mutex stops CONCURRENT installs from corrupting npm's
+ * reify bookkeeping, but it cannot detect corruption that ALREADY exists (from an
+ * earlier bare `npm install`, or another checkout's run). That failure is silent:
+ * npm prints "up to date", exits 0, and leaves a declared dependency un-extracted;
+ * the first symptom is a confusing "cannot find module" / Rolldown "failed to
+ * resolve" in some unrelated build or gate, often 10+ minutes later. So a successful
+ * install is now VERIFIED before the lock is released — every directly-declared
+ * dependency must actually resolve on disk — with ONE bounded auto-repair (a full
+ * root `npm install --legacy-peer-deps`, which is exactly what cleared it by hand
+ * during the incident) before failing loudly. Set PAPERCUSP_SKIP_DEP_VERIFY=1 to
+ * skip the verification.
+ *
  * Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)
  *        node scripts/npm-install-safe.mjs ci
  *        node scripts/npm-install-safe.mjs install --legacy-peer-deps
@@ -28,8 +40,37 @@ import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withFsMutex } from './lib/fs-mutex.mjs';
+import { findUnextractedDepsWithRetry, formatMissing } from './check-declared-deps-extracted.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+const REPAIR_ARGS = ['install', '--legacy-peer-deps'];
+
+/**
+ * Verify (post-install, still holding the lock) that every directly-declared
+ * dependency actually landed on disk; repair once if not.
+ *
+ * @returns {Promise<0|1>} 0 = healthy (possibly after repair), 1 = still broken.
+ */
+export async function verifyDepsExtracted({ repoRoot = REPO_ROOT, runNpm, deps = {} } = {}) {
+  const spawn = runNpm ?? ((args) => spawnSync('npm', args, { cwd: repoRoot, stdio: 'inherit' }).status ?? 1);
+
+  const first = await findUnextractedDepsWithRetry({ repoRoot, deps });
+  if (first.missing.length === 0) return 0;
+
+  console.error(formatMissing(first.missing));
+  console.error(`NPM_INSTALL_SAFE repairing: npm ${REPAIR_ARGS.join(' ')} (one bounded attempt, still holding the lock)`);
+  spawn(REPAIR_ARGS);
+
+  const second = await findUnextractedDepsWithRetry({ repoRoot, deps });
+  if (second.missing.length === 0) {
+    console.log('NPM_INSTALL_SAFE repaired: every directly-declared dependency now resolves on disk');
+    return 0;
+  }
+  console.error(formatMissing(second.missing));
+  console.error('NPM_INSTALL_SAFE_FATAL: dependencies are STILL un-extracted after a repair install — this is not a race. Do not treat a downstream "cannot find module" as a code bug until this is clear.');
+  return 1;
+}
 
 export function repoLockName() {
   // realpath so the `papercup` -> `papercusp` symlink and the canonical path
@@ -50,7 +91,10 @@ export function main(argv = process.argv.slice(2)) {
       console.log(`NPM_INSTALL_SAFE running: npm ${npmArgs.join(' ')} (lock=${lockName})`);
       const result = spawnSync('npm', npmArgs, { cwd: REPO_ROOT, stdio: 'inherit' });
       if (result.error) throw result.error;
-      return result.status ?? 1;
+      const status = result.status ?? 1;
+      // A FAILED npm run reports its own error — never mask it with a dep verdict.
+      if (status !== 0 || process.env.PAPERCUSP_SKIP_DEP_VERIFY === '1') return status;
+      return verifyDepsExtracted({ repoRoot: REPO_ROOT });
     },
     {
       onWaiting: ({ owner, elapsedMs }) => {

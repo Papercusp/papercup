@@ -695,7 +695,11 @@ export function renderCarryBriefColdExtras(brief: CarryBrief): string {
       return `  • ${h.id}${title}${ckpt}`;
     });
     sections.push(
-      `You still HOLD these work-items (the full checkpoint re-injects on the item's next invocation; refresh it before ending):\n${lines.join('\n')}`,
+      `You HELD these work-items as of just before this respawn (the full checkpoint re-injects on the item's next invocation; refresh it before ending). ` +
+        `CAUTION (EI-18665023147548277): this brief was built BEFORE your old session's SessionEnd/Stop lifecycle event fired — that event unconditionally ` +
+        `releases every claim you held (session-death-claim-release-2026-07-11), so a claim listed here CAN already be released by the time you read this. ` +
+        `Do not trust "HOLD" at face value: re-verify with work_items:get (or coord:orient { afterCompaction: true }, which re-queries live) and re-claim ` +
+        `(work_items:claim) before editing if assignee is not you:\n${lines.join('\n')}`,
     );
   }
   if (brief.facts.length > 0) {

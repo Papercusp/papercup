@@ -352,7 +352,7 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
 describe('renderCarryBriefColdExtras — the cold-anchor sections after the note', () => {
   it('renders held items with capped checkpoints, facts, awaits, and the fleet pointer', async () => {
     const out = renderCarryBriefColdExtras(await buildCarryBrief('su-abc', fullOpts()));
-    expect(out).toContain('You still HOLD these work-items');
+    expect(out).toContain('You HELD these work-items');
     expect(out).toContain('WI-3319 — Shared carry-brief builder');
     expect(out).toContain('checkpoint: wired request-compaction; watchdog next');
     expect(out).toContain('zombie-pids-wall: 3 zombie PIDs await owner OK to kill');
@@ -361,6 +361,14 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('Fleet: you are in "bug-drain" as leader');
     // The loop note is the injection core, NOT part of the extras.
     expect(out).not.toContain('ship P-004');
+    // EI-18665023147548277: the held-items block is built BEFORE the old session's
+    // SessionEnd/Stop lifecycle event fires and releases every claim it held — so a
+    // "HOLD" listed here can already be stale by the time the successor reads it.
+    // The caution must say so explicitly and point at the live re-verify path,
+    // never assert the hold as settled fact.
+    expect(out).toContain('CAUTION (EI-18665023147548277)');
+    expect(out).toContain('re-verify with work_items:get');
+    expect(out).toContain('re-claim');
   });
 
   it('returns "" when the brief carries nothing beyond the loop note', () => {
@@ -397,7 +405,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('⛔ OPEN WALLS');
     expect(out).toContain('  • zombie PIDs await owner OK — re-check: ps -p 95902');
     expect(out).toContain('  • capital arming pending owner');
-    expect(out.indexOf('OPEN WALLS')).toBeLessThan(out.indexOf('You still HOLD'));
+    expect(out.indexOf('OPEN WALLS')).toBeLessThan(out.indexOf('You HELD'));
   });
 
   it('caps a long checkpoint and flags a missing one', () => {
@@ -430,7 +438,7 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
     expect(out).toContain('Armed loop @papercusp (active, every 120s)');
     expect(out).toContain('written 5m ago');
     expect(out).toContain('ship P-004'); // the note itself, verbatim
-    expect(out.indexOf('Armed loop')).toBeLessThan(out.indexOf('You still HOLD'));
+    expect(out.indexOf('Armed loop')).toBeLessThan(out.indexOf('You HELD'));
   });
 
   it('a loop with no note says so instead of rendering an empty block', async () => {
@@ -534,7 +542,7 @@ describe('owner directives in the brief (EI-11484)', () => {
       }),
     );
     const out = renderCarryBriefColdExtras(brief);
-    expect(out.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(out.indexOf('You still HOLD'));
+    expect(out.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(out.indexOf('You HELD'));
   });
 
   it('the focus line carries directive IDS as pointers, ahead of walls', async () => {

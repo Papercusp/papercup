@@ -33,6 +33,7 @@ import {
   makeInjectMutex,
   makeStaleFireGuard,
   isCarryRespawnStale,
+  isCarryRespawnSuperseded,
   ACTIVITY_PERSIST_MS,
   MAX_CONTROL_PAYLOAD_BYTES,
   controlPayloadWithinLimit,
@@ -366,6 +367,41 @@ describe('isCarryRespawnStale (EI-18109211232286833 — age-based carry-respawn 
     expect(isCarryRespawnStale(justNow)).toBe(false);
     expect(isCarryRespawnStale(justNow - 20 * 60_000)).toBe(false); // 20m < 30m ⇒ still fresh
     expect(isCarryRespawnStale(justNow - 31 * 60_000)).toBe(true); // 31m > 30m ⇒ stale
+  });
+});
+
+describe('isCarryRespawnSuperseded (EI-18665672258948707 — a later respawn already fired on this host)', () => {
+  it('is NOT superseded when the host has never respawned (lastRespawnAtMs falsy)', () => {
+    expect(isCarryRespawnSuperseded(1_000, 0)).toBe(false);
+    expect(isCarryRespawnSuperseded(1_000, undefined)).toBe(false);
+    expect(isCarryRespawnSuperseded(1_000, null)).toBe(false);
+  });
+
+  it('is NOT superseded when the message with no receivedAtMs (opt-in guard, same convention as isCarryRespawnStale)', () => {
+    expect(isCarryRespawnSuperseded(undefined, 5_000)).toBe(false);
+    expect(isCarryRespawnSuperseded(null, 5_000)).toBe(false);
+  });
+
+  it('is NOT superseded when the message was received AFTER the last respawn (it is the newer one)', () => {
+    expect(isCarryRespawnSuperseded(5_000, 1_000)).toBe(false);
+  });
+
+  it('is NOT superseded at exact equality (a message received at the same instant as the last respawn is not "later")', () => {
+    expect(isCarryRespawnSuperseded(5_000, 5_000)).toBe(false);
+  });
+
+  it('IS superseded when a respawn already fired AFTER the message was received — the exact EI-18665672258948707 repro (a queued carry-respawn outlived a later, real respawn)', () => {
+    const receivedAtMs = 1_000; // this envelope arrived first...
+    const lastRespawnAtMs = 2_000; // ...but a DIFFERENT respawn already delivered since then
+    expect(isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs)).toBe(true);
+  });
+
+  it('is orthogonal to age: a FRESH (well within maxAgeMs) message can still be superseded', () => {
+    const now = 1_000_000;
+    const receivedAtMs = now - 5_000; // 5s old — nowhere near the 30-minute staleness cap
+    const lastRespawnAtMs = now - 1_000; // a respawn fired 1s ago, after this message arrived
+    expect(isCarryRespawnStale(receivedAtMs, { maxAgeMs: 1_800_000, now })).toBe(false);
+    expect(isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs)).toBe(true);
   });
 });
 

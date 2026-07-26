@@ -16,6 +16,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 
 import { useCallback, useMemo } from 'react';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
+import { modeChipLabel, modeChipTitle } from '@papercusp/operator-core/lib/modes/registry';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
 import { Select } from '@/app/harness/Select';
 import { useLexicon } from '@/lib/useLexicon';
@@ -47,9 +48,10 @@ export interface RosterEntry {
   revoked: boolean;
   /** OS process alive? null = unknown. Non-stale + false = zombie (P-008). */
   pidAlive: boolean | null;
-  /** Official standing modes (agent_modes ids, e.g. ['auto','ideate']) — EI-7626.
-   *  Optional: absent on payloads from an operator predating the field. */
-  modes?: string[];
+  /** Official standing modes with provenance (adv-roster's AdvRosterMode) — EI-7626.
+   *  Optional: absent on payloads from an operator predating the field; a bare
+   *  string is tolerated for one predating the provenance upgrade. */
+  modes?: Array<{ mode: string; ownerDirected?: boolean; since?: string | null } | string>;
   hasLaunchRecord: boolean;
   advSessionId: number | null;
   currentPlanSlug: string | null;
@@ -286,15 +288,21 @@ function RosterRow({
         {e.feature ? (
           <span className="pc-roster__chip pc-roster__chip--feature">{e.feature}</span>
         ) : null}
-        {(e.modes ?? []).map((m) => (
-          <span
-            key={m}
-            className="pc-roster__chip pc-roster__chip--mode"
-            title="official standing mode (mode:set / agent_modes)"
-          >
-            {m}
-          </span>
-        ))}
+        {/* Same registry-derived label + hover as the HUD card's mode chip: one
+            source for what a mode means, so the two surfaces can't drift into
+            describing the same mode differently (or, as before, not at all). */}
+        {(e.modes ?? []).map((raw) => {
+          const m = typeof raw === 'string' ? { mode: raw } : raw;
+          return (
+            <span
+              key={m.mode}
+              className="pc-roster__chip pc-roster__chip--mode"
+              title={modeChipTitle(m.mode, { ownerDirected: m.ownerDirected })}
+            >
+              {modeChipLabel(m.mode)}
+            </span>
+          );
+        })}
         <span className="pc-roster__label" title={e.ownerId}>
           {e.label ? agentDisplayLabel(e.label, lex) : e.ownerId.slice(0, 14)}
         </span>

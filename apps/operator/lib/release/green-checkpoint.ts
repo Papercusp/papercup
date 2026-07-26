@@ -199,6 +199,18 @@ export interface CheckpointDeps {
    *  test stubs need not provide it; realCheckpointDeps wires it to the real
    *  applyPendingMigrationsNow(). */
   ensureMigrationsCurrent?(): Promise<{ applied: number; failed: { file: string; error: string }[] } | null>;
+  /** EI-18666996942859193: both-directions package-lock.json ⇄ node_modules diff on the
+   *  checkpoint tree, run right after `setupTree` / before `runGreen` — so a drifted tree
+   *  ("N required package(s) missing from node_modules") surfaces as its own DISTINCT,
+   *  self-explaining log line, instead of the only symptom being an unrelated-looking
+   *  failing test file (exactly what cost two agents hours on 2026-07-25: the failing file
+   *  was `lib/memory/session-extraction-llm.test.ts`, which says nothing about a missing
+   *  `ollama` package). Purely diagnostic — it never itself holds the gate; a real missing
+   *  package still shows up as its own real test failures, this just NAMES the root cause
+   *  alongside them. Optional so existing test stubs need not provide it; realCheckpointDeps
+   *  wires it to `checkLockTreeDrift()` (packages/operator-core/lib/boot-integrity-preflight),
+   *  scoped to `cfg.checkpointRoot` (the tree this run actually judges). */
+  checkTreeDrift?(): Promise<{ ok: boolean; missing: string[]; extraneous: string[]; skipped: boolean; error?: string } | null>;
   log(s: string): void;
   /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
    *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
@@ -1756,6 +1768,36 @@ export async function runGreenCheckpoint(
       deps.log(`migration preflight skipped (${e instanceof Error ? e.message : e})`);
     }
   }
+  // EI-18666996942859193: tree-drift preflight — name a drifted checkpoint tree as its
+  // own distinct signal BEFORE judging, so a red caused by it reads as "tree drift" up
+  // front rather than only as an arbitrary-looking failing test file (see
+  // CheckpointDeps.checkTreeDrift doc — this is what the 2026-07-25 8-missing-package
+  // incident cost two agents hours misdiagnosing). Purely diagnostic: never blocks or
+  // alters the advance/hold decision, same discipline as the migration preflight above.
+  if (deps.checkTreeDrift) {
+    try {
+      const drift = await deps.checkTreeDrift();
+      if (drift && !drift.skipped) {
+        if (drift.missing.length > 0) {
+          deps.log(
+            `tree-drift preflight: ${drift.missing.length} package(s) required by package-lock.json are MISSING from ` +
+              `node_modules in the checkpoint tree: ${drift.missing.join(', ')} — this run will likely fail on an ` +
+              `unrelated-looking MODULE_NOT_FOUND; fix with \`npm install\` in the tree this was copied from`,
+          );
+        }
+        if (drift.extraneous.length > 0) {
+          deps.log(
+            `tree-drift preflight: ${drift.extraneous.length} node_modules director${drift.extraneous.length === 1 ? 'y is' : 'ies are'} ` +
+              `extraneous (not in package-lock.json, will be pruned on next install): ${drift.extraneous.join(', ')}`,
+          );
+        }
+      } else if (drift?.skipped) {
+        deps.log(`tree-drift preflight skipped (${drift.error ?? 'unknown reason'})`);
+      }
+    } catch (e) {
+      deps.log(`tree-drift preflight failed (${e instanceof Error ? e.message : e})`);
+    }
+  }
   const { green, summary, failingTests, flakeSuspects, failingFiles = [], logPath, isolationNote } = await deps.runGreen(
     cfg.checkpointRoot,
     lastReady,
@@ -2329,6 +2371,14 @@ export function realCheckpointDeps(
     async ensureMigrationsCurrent() {
       const { applyPendingMigrationsNow } = await import('@papercusp/operator-core/lib/db-boot-migrate');
       return applyPendingMigrationsNow();
+    },
+    // EI-18666996942859193: real wiring for the tree-drift preflight (see
+    // CheckpointDeps.checkTreeDrift doc) — scoped to `cfg.checkpointRoot`, the ISOLATED
+    // tree this run actually judges (a hardlink copy of the integration tree taken by
+    // setupTree, which has already run by the time this is called).
+    async checkTreeDrift() {
+      const { checkLockTreeDrift } = await import('@papercusp/operator-core/lib/boot-integrity-preflight');
+      return checkLockTreeDrift({ rootDir: cfg.checkpointRoot });
     },
     async setupTree(ref) {
       // P-019: the SCRIPT lives in the TOOLING tree (papercusp), not cfg.integrationRoot

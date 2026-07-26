@@ -20,6 +20,10 @@
  */
 
 import type { Liveness } from '@papercusp/operator-core/lib/liveness';
+// Mode chip label + hover come from the registry (pure data, zero imports of its
+// own — safe in the SPA bundle) so the five official modes are explained here
+// without this file keeping its own copy of what each one means.
+import { modeChipLabel, modeChipTitle } from '@papercusp/operator-core/lib/modes/registry';
 
 /**
  * Sentinel for the "all fleets" chip. Not a real slug (slugs are kebab and never
@@ -36,6 +40,18 @@ export const ALL_FLEETS = ' all';
 
 /** Grouping key for sessions belonging to no fleet. Same rule: one definition. */
 export const SOLO_FLEET_KEY = ' solo';
+
+/** One standing mode as the roster delivers it (adv-roster's AdvRosterMode). */
+export interface HudMode {
+  mode: string;
+  ownerDirected?: boolean;
+  since?: string | null;
+}
+
+/** Normalize the tolerated bare-string form to the object form. */
+export function toHudMode(m: HudMode | string): HudMode {
+  return typeof m === 'string' ? { mode: m } : m;
+}
 
 /** The open `events:await` shape as the roster carries it (adv-roster's OpenAwait).
  *  Re-declared structurally so this client module never imports the server file. */
@@ -63,7 +79,10 @@ export interface HudRosterEntry {
   lastActiveAt: string | null;
   intentDeclaredAt: string | null;
   loopArmed: boolean;
-  modes: string[];
+  /** Standing modes with provenance (adv-roster's AdvRosterMode). A bare string is
+   *  tolerated so a roster payload from an older operator still renders chips
+   *  instead of throwing — federation and a mid-deploy SSE push both produce one. */
+  modes: Array<HudMode | string>;
   pidAlive: boolean | null;
   claims: Array<{ id?: string; planSlug?: string | null; status?: string | null }>;
   declaredUnclaimed: boolean;
@@ -122,6 +141,11 @@ export interface HudBadge {
   tone: BadgeTone;
   /** Hover text — the full explanation the short label compresses. */
   title?: string;
+  /** 'mode' = a standing mode (rendered always, exempt from the chip cap);
+   *  'stat' (default) = a derived statistic, capped by the card. */
+  kind?: 'mode' | 'stat';
+  /** Mode chips only: the human owner armed it, so it is sticky against peers. */
+  ownerDirected?: boolean;
 }
 
 export interface HudSession {
@@ -413,19 +437,24 @@ export function deriveBadges(
 
   // Standing modes decide whether your silence is fine or is the thing blocking
   // this agent — the single most useful chip on the card.
-  for (const m of e.modes) {
+  //
+  // Label and hover come from the MODE REGISTRY, not from a hand-written map
+  // here: the map only covered auto/ideate/drain, so `cold-auto` and `grade`
+  // rendered a bare "Standing mode: grade" that explained nothing. Registry-derived
+  // means a mode added there is explained here the same day, with no edit.
+  //
+  // kind:'mode' is what keeps them out of the chip cap (HudBoard renders every
+  // mode chip and caps only the stats) — an agent in auto+ideate+grade used to
+  // spend the whole 4-chip budget on modes and hide its claims and asks.
+  for (const raw of e.modes) {
+    const m = toHudMode(raw);
     out.push({
-      id: `mode-${m}`,
-      label: m.toUpperCase(),
+      id: `mode-${m.mode}`,
+      kind: 'mode',
+      label: modeChipLabel(m.mode),
       tone: 'accent',
-      title:
-        m === 'auto'
-          ? 'AUTO mode — acts on its own judgement without asking'
-          : m === 'ideate'
-            ? 'IDEATE mode — inventing net-new capability, not just fixing'
-            : m === 'drain'
-              ? 'DRAIN mode — driving a work queue to terminal'
-              : `Standing mode: ${m}`,
+      ownerDirected: m.ownerDirected === true,
+      title: modeChipTitle(m.mode, { ownerDirected: m.ownerDirected }),
     });
   }
 

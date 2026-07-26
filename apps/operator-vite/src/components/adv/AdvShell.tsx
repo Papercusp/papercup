@@ -77,7 +77,10 @@ export const ADV_TABS: ReadonlyArray<{
   // glance you reach for immediately after the landing dashboard. Workspace-scoped
   // (it aggregates every session in the workspace, not one pot), so it also lives in
   // WORKSPACE_TAB_IDS. `/adv/HUD` redirects here rather than rendering its own page.
-  { id: 'hud', label: 'HUD', icon: Gauge, accent: CATEGORICAL.cyan400.hex, accentRgb: CATEGORICAL.cyan400.rgb },
+  // HUD accent: teal300 — reads distinct from its strip neighbors Overview
+  // (indigo400) and Create (amber500); cyan/sky shades are brand-reserved
+  // (design-primitives lint), so the original cyan400 pick was not usable.
+  { id: 'hud', label: 'HUD', icon: Gauge, accent: CATEGORICAL.teal300.hex, accentRgb: CATEGORICAL.teal300.rgb },
   // (Brainstorm tab removed — it lives in the Quick Panel popup now; P-010.)
   { id: 'plans', label: 'Create', icon: ListChecks, accent: CATEGORICAL.amber500.hex, accentRgb: CATEGORICAL.amber500.rgb },
   // Calendar — the schedulable time-surface for scheduled/recurring plans

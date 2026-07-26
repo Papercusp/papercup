@@ -233,7 +233,17 @@ ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "\${ARTIFACTS[@]}"`,
     label: 'Start macOS VM',
     section: 'simulators',
     description: 'Boots the macOS VM (QEMU + SPICE on :5930). ~60–120s to be SSH-ready. Skip if it\'s already up.',
-    command: `if pgrep -f "qemu.*mac_hdd_ng" >/dev/null; then echo "==> macOS VM already running (pid $(pgrep -f 'qemu.*mac_hdd_ng'))"; exit 0; fi; systemctl --user start papercup-vm-mac.service && echo "==> started papercup-vm-mac.service (boot-sonoma-durable.sh)"; echo "==> SPICE: remote-viewer spice://127.0.0.1:5930"; echo "==> tailing qemu log (Stop when SSH is ready)"; sleep 2; tail -n+1 -F $HOME/macos-vm/OSX-KVM/logs/qemu-current.log`,
+    // EI-18666147162251862: this used to be a bare `pgrep -f "qemu.*mac_hdd_ng"`. This
+    // command runs as `bash -lic '<the whole command string>'` (see admin/run.ts), so
+    // the invoking shell's OWN cmdline contains that pattern literally (it's the pgrep
+    // argument itself) — and `pgrep -f` matches every process system-wide, not just
+    // descendants, so it ALWAYS self-matched its own wrapper and reported "already
+    // running" even on a cold box, silently skipping the `systemctl --user start`
+    // below every single time. Confirmed reproducible: `bash -c 'pgrep -f
+    // "definitely-not-a-real-process-zzqq" >/dev/null && echo MATCHED'` prints MATCHED.
+    // scripts/proc-guard.mjs excludes the caller's own ancestor chain before matching,
+    // so it only reports a REAL external qemu process.
+    command: `if node "${PAPERCUSP_REPO}/scripts/proc-guard.mjs" check "qemu.*mac_hdd_ng"; then exit 0; fi; systemctl --user start papercup-vm-mac.service && echo "==> started papercup-vm-mac.service (boot-sonoma-durable.sh)"; echo "==> SPICE: remote-viewer spice://127.0.0.1:5930"; echo "==> tailing qemu log (Stop when SSH is ready)"; sleep 2; tail -n+1 -F $HOME/macos-vm/OSX-KVM/logs/qemu-current.log`,
   },
   {
     id: 'launch-ios-simulator',

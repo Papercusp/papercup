@@ -310,9 +310,57 @@ describe('deriveBadges', () => {
   });
 
   it('surfaces standing modes with an explanation of what they mean for the human', () => {
-    const b = deriveBadges(entry({ modes: ['auto', 'ideate'] }), OPTS);
+    const b = deriveBadges(
+      entry({ modes: [{ mode: 'auto' }, { mode: 'ideate' }] }),
+      OPTS,
+    );
     expect(b.map((x) => x.label)).toEqual(expect.arrayContaining(['AUTO', 'IDEATE']));
-    expect(b.find((x) => x.id === 'mode-auto')?.title).toContain('without asking');
+    expect(b.find((x) => x.id === 'mode-auto')?.title).toContain(modeById('auto')!.oneLiner);
+  });
+
+  // The hand-written label/title map this replaced covered auto/ideate/drain
+  // only, so `cold-auto` and `grade` rendered "Standing mode: grade" — a chip
+  // that names a thing and explains nothing. Deriving from the registry means a
+  // mode added there is explained the same day; this fails if that regresses.
+  it('explains EVERY registered mode, not just the three someone wrote copy for', () => {
+    for (const def of MODES) {
+      const chip = deriveBadges(entry({ modes: [{ mode: def.id }] }), OPTS).find(
+        (x) => x.id === `mode-${def.id}`,
+      );
+      expect(chip, def.id).toBeDefined();
+      expect(chip!.title, def.id).toContain(def.oneLiner);
+      expect(chip!.title, def.id).not.toContain('Standing mode:');
+      // 'cold-auto' must read as a label, not an id.
+      expect(chip!.label, def.id).toBe(def.id.toUpperCase().replace(/-/g, ' '));
+    }
+  });
+
+  // Provenance is the half that makes the chip actionable: "it is in AUTO because
+  // I put it there" (sticky against peers) vs "it put ITSELF in AUTO".
+  it('distinguishes an owner-armed mode from one the agent set itself', () => {
+    const owner = deriveBadges(entry({ modes: [{ mode: 'auto', ownerDirected: true }] }), OPTS)
+      .find((x) => x.id === 'mode-auto')!;
+    const self = deriveBadges(entry({ modes: [{ mode: 'auto', ownerDirected: false }] }), OPTS)
+      .find((x) => x.id === 'mode-auto')!;
+    expect(owner.ownerDirected).toBe(true);
+    expect(owner.title).toContain('Set by the owner');
+    expect(self.ownerDirected).toBe(false);
+    expect(self.title).toContain('set this itself');
+  });
+
+  // A payload from an operator predating the provenance upgrade (federation, or a
+  // mid-deploy SSE push) still carries bare strings. Render chips, don't throw.
+  it('tolerates the legacy bare-string mode payload', () => {
+    const b = deriveBadges(entry({ modes: ['drain'] }), OPTS);
+    const chip = b.find((x) => x.id === 'mode-drain');
+    expect(chip?.label).toBe('DRAIN');
+    expect(chip?.ownerDirected).toBe(false);
+  });
+
+  it('marks mode chips as modes so the card can exempt them from the chip cap', () => {
+    const b = deriveBadges(entry({ modes: [{ mode: 'auto' }], claims: [{ status: 'wip' }] }), OPTS);
+    expect(b.find((x) => x.id === 'mode-auto')?.kind).toBe('mode');
+    expect(b.find((x) => x.id === 'claims')?.kind).not.toBe('mode');
   });
 
   it('shows claim progress and turns good when the lane is complete', () => {

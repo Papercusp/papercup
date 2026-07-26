@@ -960,3 +960,89 @@ describe('tauri-agent-tools raw-JSON --token advisory (EI-15605)', () => {
     expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
   });
 });
+
+/**
+ * EI-18664655909328670 — shell-write file-target guard.
+ *
+ * Raw shell writes to tree files (`cat >>`, `echo >`, `tee`, `sed -i`, `cp`)
+ * bypass the Edit/Write PreToolUse hooks entirely: no file lock is claimed,
+ * and if the session cwd has silently drifted the write does not error — it
+ * silently CREATES a stray file (repro'd live 2026-07-25: an agent appended
+ * via `cat >> tools/conversations-list.test.ts` believing cwd was a package
+ * subdir; cwd had drifted to the repo root, which also has a `tools/`, so
+ * the redirect silently created a stray file there instead of erroring).
+ *
+ * UNCONDITIONAL like the exit-guard: it keys on the resolved TARGET path
+ * resolving inside the canonical tree, not on the agent marker or cwd, so
+ * every test below explicitly asserts this fires with NO agent marker too.
+ */
+describe('shell-write file-target guard (EI-18664655909328670)', () => {
+  const expectShellWriteDeny = (out: { stdout: string; status: number | null }) => {
+    const reason = denyReason(out);
+    expect(reason).toContain('EI-18664655909328670');
+    expect(reason).toMatch(/Edit or Write/);
+    return reason;
+  };
+
+  it('denies the exact cwd-drift repro: `cat >> file <<EOF` whose target resolves inside the canonical tree', () => {
+    const command = "cat >> tools/conversations-list.test.ts <<'EOF'\nsome appended content\nEOF";
+    const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('tools/conversations-list.test.ts');
+    expect(reason).toMatch(/shell redirect \(`>>`\)/);
+  });
+
+  it('denies a plain `echo > file` redirect into the tree', () => {
+    expectShellWriteDeny(
+      runGate(bashCmd('echo hi > apps/operator/generated.ts', { cwd: CANON }), CANON_ENV),
+    );
+  });
+
+  it('denies `tee` writing into the tree', () => {
+    const reason = expectShellWriteDeny(
+      runGate(bashCmd('echo hi | tee apps/operator/foo.txt', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toMatch(/`tee`/);
+  });
+
+  it('denies `sed -i` editing a tree file in place', () => {
+    const reason = expectShellWriteDeny(
+      runGate(bashCmd("sed -i 's/a/b/' apps/operator/foo.ts", { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toMatch(/`sed -i`/);
+  });
+
+  it('denies `cp` copying a file into the tree', () => {
+    const reason = expectShellWriteDeny(
+      runGate(bashCmd('cp /tmp/x.ts apps/operator/foo.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toMatch(/`cp`/);
+  });
+
+  it('fires WITH NO agent marker at all — unconditional, like the exit-guard', () => {
+    expectShellWriteDeny(runGate(bashCmd('echo hi >> apps/operator/foo.txt', { cwd: CANON }), CANON_ENV));
+  });
+
+  it.each([
+    ['redirect to /tmp (outside the tree)', 'echo hi > /tmp/scratch-out.txt'],
+    ['append outside the tree', 'echo hi >> /tmp/notes.txt'],
+    ['recursive `cp -r` (directory copy — no single-file substitute)', 'cp -r /tmp/somedir apps/operator/somedir'],
+    ['`cp -a` archive copy (same recursive exemption)', 'cp -a /tmp/somedir apps/operator/somedir'],
+    ['fd-duplication `2>&1` is not a file target', 'npm run build > /tmp/out.log 2>&1'],
+    ['arithmetic `>=` comparison is not a redirect', '(( a >= b ))'],
+    ['a quoted `>` inside a string is not a real redirect', 'echo "a > b was found"'],
+    ['a quoted `tee`-looking string is not an invocation', 'echo "please tee up the report"'],
+    ['a plain read-only command', 'git status'],
+    ['a redirect target using shell expansion is left alone (fail-open)', 'echo hi >> "$SOME_DIR/file.txt"'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('does not fire when the resolved target is OUTSIDE the canonical tree even with a relative path', () => {
+    expectAllow(runGate(bashCmd('cat >> notes.txt <<EOF\nhi\nEOF', { cwd: '/tmp/outside-canonical' }), CANON_ENV));
+  });
+
+  it('a deny gate still wins over anything else that would allow (structural: deny() exits before further checks)', () => {
+    const out = runGate(bashCmd('cat >> apps/operator/foo.ts <<EOF\nx\nEOF', { cwd: CANON }), CANON_ENV);
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});

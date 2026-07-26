@@ -1540,6 +1540,28 @@ export function isCarryRespawnStale(receivedAtMs, { maxAgeMs = CARRY_RESPAWN_MAX
   return now - receivedAtMs > maxAgeMs;
 }
 
+/** EI-18665672258948707: is a `carry-respawn` control message SUPERSEDED — has a
+ *  LATER respawn already fired on THIS host since the message first arrived?
+ *  Distinct from age-based staleness (isCarryRespawnStale above): the reported
+ *  failure was a queued carry-respawn whose CLIENT-side injectIntoHost() write
+ *  appeared to time out (a momentarily busy host lost the client's 2s
+ *  socket-close race) even though the server had already durably received +
+ *  queued the envelope. The calling agent, seeing `ok:false`, retried
+ *  session:request-compaction — the second attempt built a FRESH carry document
+ *  and delivered promptly, spawning a real successor that went on to do real
+ *  work. The FIRST envelope, still gate-waiting (or pending its one
+ *  carryRearm retry), was well within the 30-minute staleness cap and so was
+ *  delivered anyway 28 minutes later — killing the live, already-progressed
+ *  successor and replacing it with a stale snapshot from before that successor
+ *  ever existed. A superseded carry-respawn can never be the right one to
+ *  deliver, independent of its age, so this check is unconditional (no maxAgeMs
+ *  knob) and orthogonal to isCarryRespawnStale — a caller applies BOTH. Pure;
+ *  exported for unit tests. */
+export function isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs) {
+  if (receivedAtMs == null || !lastRespawnAtMs) return false;
+  return lastRespawnAtMs > receivedAtMs;
+}
+
 /** The ordered write STEPS the host performs against the pty for a decoded
  *  message. raw → ONE immediate verbatim write (force-interrupt byte). turn →
  *  TWO writes: the line text, then the submit Enter (CR) as a SEPARATE keystroke
@@ -1879,6 +1901,11 @@ export function hostThroughPty(o) {
   // (created before the teardown Promise) can close over them; they stay no-ops
   // until assigned, and a recycle cannot arrive before the socket is listening.
   let recycling = false;
+  // EI-18665672258948707: the moment (Date.now()) THIS host last successfully
+  // spawned a fresh child via recycleChild — the supersession clock a queued
+  // carry-respawn is checked against right before delivery (isCarryRespawnSuperseded).
+  // 0 = never respawned yet, so nothing can be superseded.
+  let lastRespawnAtMs = 0;
   let wireChildData = () => {};
   let wireChildExit = () => {};
   let recycleChild = async () => {};
@@ -2288,7 +2315,12 @@ export function hostThroughPty(o) {
       appendSharedDrillLedgerEvent(ownerId, kind, extra);
     },
     capMs: carryRearmCapMs,
-    isStale: (msg) => isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }),
+    // EI-18665672258948707: a carry-respawn that has been SUPERSEDED by a later
+    // respawn already delivered on this host is dropped unconditionally, same as
+    // age-based staleness — see isCarryRespawnSuperseded's doc block.
+    isStale: (msg) =>
+      isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }) ||
+      isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs),
   });
 
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
@@ -2501,18 +2533,35 @@ export function hostThroughPty(o) {
         // built, and one held this long by the busy-gate (+ its one
         // carryRearm re-arm) is no longer trustworthy even though it carries
         // no routineId/fireNumber for the stale-fire guard to catch.
-        if (
+        // EI-18665672258948707: SUPERSEDED GUARD, same placement — a later
+        // respawn may have already fired on this host (e.g. the client-side
+        // injectIntoHost() write for THIS message appeared to time out, the
+        // calling agent retried, and the retry's carry-respawn already delivered
+        // and spawned a real successor) while this message sat gate-waiting.
+        // Unconditional on age: a superseded carry-respawn is never the right one
+        // to deliver, however fresh. Checked separately from staleness so the
+        // event log records the true reason.
+        const superseded =
+          msg.mode === 'carry-respawn' && isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs);
+        const stale =
+          !superseded &&
           msg.mode === 'carry-respawn' &&
-          isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs })
-        ) {
-          const ageMs = Date.now() - msg.receivedAtMs;
-          const dropExtra = { mode: 'carry-respawn', reason: 'carry-stale', ageMs, maxAgeMs: carryRespawnMaxAgeMs };
+          isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs });
+        if (superseded || stale) {
+          const ageMs = msg.receivedAtMs != null ? Date.now() - msg.receivedAtMs : null;
+          const dropExtra = superseded
+            ? { mode: 'carry-respawn', reason: 'superseded', ageMs, lastRespawnAtMs }
+            : { mode: 'carry-respawn', reason: 'carry-stale', ageMs, maxAgeMs: carryRespawnMaxAgeMs };
           appendHostEvent(ownerId, 'respawn-carry-dropped', dropExtra);
           appendSharedDrillLedgerEvent(ownerId, 'respawn-carry-dropped', dropExtra);
           try {
             process.stderr.write(
-              `psu-pty-host: STALE carry-respawn DROPPED for ${ownerId} ` +
-                `(age ${ageMs}ms > ${carryRespawnMaxAgeMs}ms cap) — never delivered\n`,
+              superseded
+                ? `psu-pty-host: SUPERSEDED carry-respawn DROPPED for ${ownerId} ` +
+                    `(a later respawn already fired at ${lastRespawnAtMs}, this message arrived ` +
+                    `${msg.receivedAtMs}) — never delivered, would have discarded a live successor\n`
+                : `psu-pty-host: STALE carry-respawn DROPPED for ${ownerId} ` +
+                    `(age ${ageMs}ms > ${carryRespawnMaxAgeMs}ms cap) — never delivered\n`,
             );
           } catch {
             /* diagnostic only */
@@ -2996,6 +3045,12 @@ export function hostThroughPty(o) {
         // at prompt" and inject the carry before the fresh child has emitted a
         // single byte, even one that will stay busy from its first tick.
         activity.touchOutput();
+        // EI-18665672258948707: this respawn just genuinely happened — stamp the
+        // supersession clock NOW (before the event-log/emit calls below, which
+        // are not load-bearing for correctness) so any OTHER carry-respawn still
+        // gate-waiting or pending a carryRearm retry, whose receivedAtMs predates
+        // this instant, is recognized as superseded the next time it is checked.
+        lastRespawnAtMs = Date.now();
       } catch (e) {
         if (systemPromptAddendum) {
           if (priorDisableAutoCompact === undefined) delete env.DISABLE_AUTO_COMPACT;

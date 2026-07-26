@@ -487,6 +487,68 @@ describe('runGreenCheckpoint', () => {
     expect(calls).toContain('advance');
   });
 
+  it('EI-18666996942859193: an absent checkTreeDrift (existing stub) never blocks the run — unaffected call order', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    expect(deps.checkTreeDrift).toBeUndefined();
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, green: true });
+    expect(calls).not.toContain('checkTreeDrift');
+  });
+
+  it('EI-18666996942859193: checkTreeDrift runs AFTER setupTree and BEFORE runGreen when provided', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.checkTreeDrift = async () => {
+      calls.push('checkTreeDrift');
+      return { ok: true, missing: [], extraneous: [], skipped: false };
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, green: true });
+    const setupIdx = calls.indexOf('setup:' + c2.slice(0, 7));
+    const driftIdx = calls.indexOf('checkTreeDrift');
+    const runGreenIdx = calls.indexOf('runGreen');
+    expect(setupIdx).toBeGreaterThanOrEqual(0);
+    expect(driftIdx).toBeGreaterThan(setupIdx);
+    expect(runGreenIdx).toBeGreaterThan(driftIdx);
+  });
+
+  it('EI-18666996942859193: drift-reported MISSING packages are named in their own log line — diagnostic only, never blocks the advance', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    const lines: string[] = [];
+    deps.log = (s) => lines.push(s);
+    deps.checkTreeDrift = async () => ({ ok: false, missing: ['ollama', 'groq-sdk'], extraneous: [], skipped: false });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    // Diagnostic-only: the run still judges + advances normally on a green suite.
+    expect(r).toMatchObject({ advanced: true, green: true });
+    expect(calls).toContain('runGreen');
+    const driftLine = lines.find((l) => l.includes('tree-drift preflight') && l.includes('MISSING'));
+    expect(driftLine).toBeDefined();
+    expect(driftLine).toContain('ollama');
+    expect(driftLine).toContain('groq-sdk');
+  });
+
+  it('EI-18666996942859193: a THROWING checkTreeDrift is swallowed — the gate still runs + judges normally (never blocks on the preflight)', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.checkTreeDrift = async () => {
+      throw new Error('lockfile unreadable');
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, candidate: c2, green: true, reason: 'advanced' });
+    expect(calls).toContain('runGreen');
+    expect(calls).toContain('advance');
+  });
+
   it('EI-10800: AWAITS the release:green verdict emit on a green advance (global + pipeline-scoped)', async () => {
     // The bug: the green full-advance emit was a fire-and-forget `void import(...).then(emit)`
     // followed by an immediate return, so the short-lived checkpoint process tore down before

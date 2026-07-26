@@ -93,9 +93,6 @@ export const CATEGORICAL = {
   emerald400: { hex: '#34d399', rgb: '52, 211, 153' },
   yellow500:  { hex: '#eab308', rgb: '234, 179, 8' },
   orange500:  { hex: '#f97316', rgb: '249, 115, 22' },
-  // HUD's /adv tab accent — sits between Overview (indigo400) and Create
-  // (amber500) in the strip, so it needs a hue that reads distinct from both.
-  cyan400:    { hex: '#22d3ee', rgb: '34, 211, 238' },
   violet300:  { hex: '#c4b5fd', rgb: '196, 181, 253' },
   pink400:    { hex: '#f472b6', rgb: '244, 114, 182' },
   red400:     { hex: '#f87171', rgb: '248, 113, 113' },

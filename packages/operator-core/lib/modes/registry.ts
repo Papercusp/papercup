@@ -151,6 +151,43 @@ export function axisKeyFor(def: ModeDef): string {
   return def.axis === 'overlay' ? `overlay:${def.id}` : def.axis;
 }
 
+/**
+ * ── UI display helpers ──────────────────────────────────────────────────────
+ *
+ * The GUI shows standing modes as chips (the HUD session card, the Sessions
+ * roster). Both surfaces used to spell their own label + hover text, so only
+ * the three modes someone remembered to write ever got an explanation —
+ * `cold-auto` and `grade` fell through to a bare "Standing mode: grade".
+ *
+ * These derive BOTH from this registry, so a new mode is explained in every
+ * chip the moment its row lands here. They are pure string functions over pure
+ * data (this module imports nothing), which is what makes them safe to import
+ * from the SPA bundle — no PG, no node builtins.
+ */
+
+/** Short chip label for a mode id: `cold-auto` → `COLD AUTO`. */
+export function modeChipLabel(id: string): string {
+  return (modeById(id)?.id ?? id).toUpperCase().replace(/-/g, ' ');
+}
+
+/**
+ * Hover text for a mode chip: what the mode MEANS, then who armed it.
+ *
+ * Provenance is the half a human actually needs on a board: "this agent is in
+ * AUTO because I put it there" and "this agent put ITSELF in AUTO" call for
+ * different reactions, and `agent_modes.owner_directed` already records which.
+ */
+export function modeChipTitle(id: string, opts?: { ownerDirected?: boolean }): string {
+  const def = modeById(id);
+  const meaning = def ? `${def.title} — ${def.oneLiner}` : `Standing mode: ${id}`;
+  if (opts?.ownerDirected === undefined) return meaning;
+  return `${meaning}\n\n${
+    opts.ownerDirected
+      ? 'Set by the owner — peers cannot override it.'
+      : 'The agent set this itself (or a peer did) — an owner instruction overrides it.'
+  }`;
+}
+
 /** The one-line-per-mode index (P-008) — what always-present prompts carry. */
 export function modeIndexMarkdown(): string {
   const lines = MODES.map((m) => `- **${m.id}** (${m.axis}): ${m.oneLiner}`);

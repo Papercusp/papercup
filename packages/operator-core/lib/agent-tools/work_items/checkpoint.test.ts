@@ -341,6 +341,32 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(storedArg.endsWith(addendum)).toBe(true);
     });
 
+    it('EI-18665443723911343: the shorthand `append` accepts the literal string "true"/"false" identically to a real boolean', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      getWorkItemCheckpoint.mockResolvedValueOnce('prior note');
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      // Previously: "expected boolean, received string" on this exact shorthand shape,
+      // even though items:[{ ..., append: true }] accepted the identical value.
+      const r = await one({ id: 'WI-7', checkpoint: 'addendum via string append', append: 'true' as unknown as boolean });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'prior note\n\n---\naddendum via string append');
+    });
+
+    it('EI-18665443723911343: the string "false" is NOT truthy-coerced (unlike z.coerce.boolean/Boolean()) — plain replace, no append', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      setWorkItemCheckpoint.mockResolvedValue('brand new note');
+      const r = await one({ id: 'WI-7', checkpoint: 'brand new note', append: 'false' as unknown as boolean });
+      expect(r.ok).toBe(true);
+      // append:false behaves as no-append: a plain overwrite, not a join onto a prior
+      // checkpoint. (getWorkItemCheckpoint is still called once, for the post-write
+      // verify-read every write path goes through — that's unrelated to append mode.)
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'brand new note');
+    });
+
+    it('EI-18665443723911343: a non-boolean-ish string (not "true"/"false") still fails validation, unchanged', () => {
+      expect(() => parse({ id: 'WI-7', checkpoint: 'x', append: 'yes' })).toThrow();
+    });
+
     it('a per-item append:true overrides a batch-level append:false/omitted default, and vice versa', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       getWorkItemCheckpoint.mockResolvedValueOnce('existing');

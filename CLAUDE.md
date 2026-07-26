@@ -468,6 +468,20 @@ mid-install right now — `npm run test:file` detects it and prints a
 `TEST_FILE_MID_INSTALL_SUSPECTED` hint instead of leaving you to chase a phantom bug;
 wait for it to finish (or check `ps aux | grep 'npm install'`) and retry.
 
+⚠ **Hit a confusing "cannot find module" / Rolldown "failed to resolve" for a package
+that IS in `package.json`? Run `npm run doctor:deps` BEFORE you suspect a code bug.**
+Concurrent installs can leave npm's reify bookkeeping believing a dependency is
+resolved (it's in `package-lock.json`, and `node_modules/.package-lock.json` is
+newer) while the tarball was never extracted — so `npm install` prints "up to date",
+exits 0, and the first symptom is an unrelated build/gate failure 10+ minutes later
+(EI-18666853411437489: 8 declared `mem0ai` peers missing on disk blocked a gate; two
+agents each mis-diagnosed it as a code bug first). `doctor:deps`
+(`scripts/check-declared-deps-extracted.mjs`) checks in ~0.2s that every
+directly-declared dependency of every workspace actually resolves on disk, and
+`install:safe` now runs the same check automatically after a successful install
+(repairing once with a full `npm install --legacy-peer-deps`, then failing loudly)
+so the corruption surfaces at the install, not in someone else's build.
+
 ## Browser checks — use `verdict`
 
 Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
