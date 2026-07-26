@@ -737,10 +737,25 @@ export function sampleReplicationLiveness(
         const subCase = st.lastNonZeroPeersMs === null
           ? 'never_attached'
           : 'replicator_lost';
+        // EI-18726252562537043: this used to read "this log has NEVER attached
+        // a replicator" / "LOST its replicator and has not re-attached" —
+        // phrasing that names a LOCAL cause (our attachTo never ran) the
+        // observation does not establish. `peersCount` is `core.peers.length`,
+        // which requires the REMOTE to also open/serve this core on the
+        // connection; a verified unit probe (fact
+        // wi-5673-lead-peerscount-requires-remote-to-serve) showed a fully-
+        // attached local session sitting at peersCount=0 forever against a
+        // remote that never served the key. That local-fault wording sent a
+        // real investigation (WI-5673) down a dead end chasing our own attach
+        // path — see fact dead-end:wi-5673-root-cause-hypothesis-attach-race —
+        // and directly contradicted the "Common cause: ... PEER side" sentence
+        // later in this same `detail` string. Report the OBSERVATION (no
+        // replicator peer entry exists) and name both hypotheses; do not
+        // assert which side is at fault.
         const attachPhrase =
           subCase === 'never_attached'
-            ? 'this log has NEVER attached a replicator'
-            : 'this log LOST its replicator and has not re-attached';
+            ? 'no replicator has attached to this log — either this process never attached it, or (more commonly) the remote peer never opened/served this core on the connection'
+            : 'this log has no replicator attached and has not re-attached — either our side has not re-attached, or the remote stopped serving this core on the connection';
         const episode: ReplicationStallEpisode = {
           workspaceId,
           harnessSlug,

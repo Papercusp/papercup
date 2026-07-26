@@ -2254,7 +2254,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
     if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
     // EI-13317 / WI-5481: connected_never_replicated is the zombie-socket class
-    // (swarm shows live connections but this log NEVER attached a replicator). A
+    // (swarm shows live connections but this log has no replicator peer entry —
+    // EI-18726252562537043: that can be EITHER side, our attach or the remote
+    // never serving the core; do not assume it's our attach). A
     // per-log Corestore session re-attach CANNOT heal a dead socket — only a
     // forced rejoin (evict the zombie socket + fresh join, so corestore.replicate
     // re-attaches every log on the new connection) does. The ordinary ladder only

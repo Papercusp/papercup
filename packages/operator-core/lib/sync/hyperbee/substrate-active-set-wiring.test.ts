@@ -15,12 +15,16 @@ import {
   enableSubstrateEvictionTracking,
   getBootedHarness,
   handleOutboxNotifyForEvictedHarness,
+  handleRemoteWakeForDarkHarness,
+  isHarnessEngineResident,
   markHarnessActivationDeferred,
   deferredActivationCount,
   _resetEvictionTrackingForTests,
   _resetHandleMapForTests,
+  _setHandleForTests,
   _setRebootOnAccessForTests,
 } from './boot-all';
+import type { BootedHarnessHandle } from './boot';
 
 const WS = 'ws-test';
 const SLUG = 'deferred-harness';
@@ -114,5 +118,84 @@ describe('deferred-harness wake eligibility (P-010)', () => {
 
     getBootedHarness(WS, 'a');
     expect(deferredActivationCount()).toBe(1);
+  });
+});
+
+/**
+ * P-012 slice B (WI-6071) — the REMOTE wake path, the swarm-presence dual of the
+ * outbox-NOTIFY path above. substrate-eviction-policy's header always described
+ * the keepalive as "swarm presence + a LISTEN substrate_outbox watch", but only
+ * the LISTEN half existed, so every wake trigger was LOCAL-side and a remote
+ * push to a dark harness was unheard. These pin the third path to the SAME
+ * safety properties as the other two — it must fire for both dark populations,
+ * and must not fire spuriously.
+ */
+describe('remote-wake eligibility (P-012 slice B)', () => {
+  const fakeHandle = (): BootedHarnessHandle =>
+    ({ workspaceId: WS, harnessSlug: SLUG }) as unknown as BootedHarnessHandle;
+
+  it('wakes a DEFERRED harness on a peer frame — the never-booted case', () => {
+    enableSubstrateEvictionTracking();
+    markHarnessActivationDeferred(WS, SLUG);
+
+    expect(handleRemoteWakeForDarkHarness(WS, SLUG)).toBe(true);
+    expect(reboots).toEqual([{ workspaceId: WS, harnessSlug: SLUG }]);
+  });
+
+  it('does NOT wake a harness whose engine is resident — the peer has a live partner', () => {
+    enableSubstrateEvictionTracking();
+    markHarnessActivationDeferred(WS, SLUG);
+    _setHandleForTests(WS, SLUG, fakeHandle());
+
+    expect(handleRemoteWakeForDarkHarness(WS, SLUG)).toBe(false);
+    expect(reboots).toEqual([]);
+  });
+
+  it('does NOT wake a harness that was never evicted or deferred', () => {
+    enableSubstrateEvictionTracking();
+
+    expect(handleRemoteWakeForDarkHarness(WS, 'never-dark')).toBe(false);
+    expect(reboots).toEqual([]);
+  });
+
+  it('fires only ONCE across a burst of peer frames (eligibility is consumed)', () => {
+    enableSubstrateEvictionTracking();
+    markHarnessActivationDeferred(WS, SLUG);
+
+    expect(handleRemoteWakeForDarkHarness(WS, SLUG)).toBe(true);
+    expect(handleRemoteWakeForDarkHarness(WS, SLUG)).toBe(false);
+    expect(reboots).toHaveLength(1);
+  });
+
+  it('shares ONE eligibility with the local wake paths — a remote wake disarms them too', () => {
+    enableSubstrateEvictionTracking();
+    markHarnessActivationDeferred(WS, SLUG);
+
+    handleRemoteWakeForDarkHarness(WS, SLUG);
+    getBootedHarness(WS, SLUG);
+    handleOutboxNotifyForEvictedHarness(WS, SLUG);
+    expect(reboots).toHaveLength(1);
+  });
+
+  it('is inert while eviction tracking is off, so the eager path stays byte-identical', () => {
+    // tracking deliberately NOT enabled
+    markHarnessActivationDeferred(WS, SLUG);
+
+    expect(handleRemoteWakeForDarkHarness(WS, SLUG)).toBe(false);
+    expect(reboots).toEqual([]);
+  });
+
+  it('isHarnessEngineResident reports handle-map residency (the gossip residency probe)', () => {
+    expect(isHarnessEngineResident(WS, SLUG)).toBe(false);
+    _setHandleForTests(WS, SLUG, fakeHandle());
+    expect(isHarnessEngineResident(WS, SLUG)).toBe(true);
+    expect(isHarnessEngineResident(WS, 'other')).toBe(false);
+  });
+
+  it('residency is reported independently of eviction tracking', () => {
+    // The probe must answer truthfully even on the flag-OFF path — the gossip
+    // may be wired in a context where tracking was never enabled.
+    _setHandleForTests(WS, SLUG, fakeHandle());
+    expect(isHarnessEngineResident(WS, SLUG)).toBe(true);
   });
 });

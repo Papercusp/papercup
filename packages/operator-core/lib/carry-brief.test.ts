@@ -17,6 +17,8 @@ import {
   renderCarryBriefText,
   deriveCarryQueryHandles,
   renderCarryQueryHandlesBlock,
+  parseCitedRefStateTag,
+  detectTerminalCitedRefs,
   CARRY_BRIEF_FOCUS_MAX,
   CARRY_BRIEF_MAX_FACTS,
   CARRY_BRIEF_MAX_AWAITS,
@@ -270,6 +272,67 @@ describe('note-citation hydration + post-note delta (cold-carry-system-hardening
     );
     expect(brief.citedRefs).toBeUndefined();
     expect(brief.postNoteInbox).toBeUndefined();
+  });
+});
+
+describe('stale-note contradiction detector (EI-18726068732447732)', () => {
+  it('parseCitedRefStateTag extracts the id + state from a rendered cited-ref line', () => {
+    expect(parseCitedRefStateTag('WI-5391 [bug/open @b37b0]: "failover…"')).toEqual({
+      id: 'WI-5391',
+      state: 'open',
+    });
+    expect(parseCitedRefStateTag('↪ EI-18700974567040702 [bug/done]: "MainPID 0…"')).toEqual({
+      id: 'EI-18700974567040702',
+      state: 'done',
+    });
+    // No recognizable id/tag ⇒ null, never a throw or a false positive.
+    expect(parseCitedRefStateTag('some unrelated prose')).toBeNull();
+    expect(parseCitedRefStateTag('')).toBeNull();
+  });
+
+  it('detectTerminalCitedRefs flags only the terminal ones, derived from ANY_FAMILY_TERMINAL_STATES', () => {
+    const ids = detectTerminalCitedRefs([
+      'WI-5391 [bug/open @b37b0]: "failover…"',
+      'WI-5397 [bug/resolved]: "sha defect…"',
+      'WI-6054 [bug/done]: "MainPID 0…"',
+      'WI-9999 [feature/blocked]: "needs a decision…"',
+    ]);
+    expect(ids).toEqual(['WI-5397', 'WI-6054']);
+  });
+
+  it('renderCarryBriefText surfaces a loud contradiction banner + inline flag when a cited ref is terminal', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({
+          note: '## Next action\nverify then work_items:complete WI-6054 citing that line',
+          updatedAtMs: Date.now() - 60_000,
+        }),
+        hydrateNoteRefsFn: async () => ['WI-6054 [bug/done @su-397]: "already fixed + closed…"'],
+      }),
+    );
+    const text = renderCarryBriefText(brief);
+    expect(text).toContain('STALE-NOTE CONTRADICTION');
+    expect(text).toContain('WI-6054');
+    expect(text).toContain('already TERMINAL');
+    expect(text).toContain('⚠ TERMINAL ↪ WI-6054 [bug/done');
+  });
+
+  it('renderCarryBriefText stays quiet (no banner) when every cited ref is still active', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({
+          note: '## Next action\ncheck on WI-5391',
+          updatedAtMs: Date.now() - 60_000,
+        }),
+        hydrateNoteRefsFn: async () => ['WI-5391 [bug/open @b37b0]: "failover…"'],
+      }),
+    );
+    const text = renderCarryBriefText(brief);
+    expect(text).not.toContain('STALE-NOTE CONTRADICTION');
+    expect(text).not.toContain('⚠ TERMINAL');
+    expect(text).toContain('↪ WI-5391 [bug/open');
   });
 });
 

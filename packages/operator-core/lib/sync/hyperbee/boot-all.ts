@@ -1754,6 +1754,56 @@ export function handleOutboxNotifyForEvictedHarness(
   }
 }
 
+/**
+ * True when this harness's ENGINE is currently resident in THIS process.
+ *
+ * The residency probe substrate-wake-gossip injects: a live engine is already
+ * joined + replicating, so a wake frame on its topic is noise and must not fire
+ * a redundant boot. Exported (rather than letting the gossip reach into
+ * `handles`) so the handle map stays this module's private business — the same
+ * boundary `getBootedHarness` draws for consumers.
+ */
+export function isHarnessEngineResident(workspaceId: string, harnessSlug: string): boolean {
+  return handles.has(key(workspaceId, harnessSlug));
+}
+
+/**
+ * Re-boot-on-REMOTE-WAKE (P-012 slice B / WI-6071): the swarm-presence dual of
+ * `handleOutboxNotifyForEvictedHarness`. Called by the substrate-wake gossip
+ * when a peer frame lands on the federation topic of a harness whose engine is
+ * NOT resident — i.e. a member of this hive is online (or just wrote), and a
+ * dark member must come up to replicate with it.
+ *
+ * This closes the half of the eviction keepalive that was documented in
+ * substrate-eviction-policy's header but never built: the LISTEN outbox watch
+ * covers LOCAL writes, this covers REMOTE ones. Without it, every wake trigger
+ * was local-side, so a remote push to a dark harness was simply unheard — which
+ * is exactly why `deferFederatingHarnesses` had to default false and why a
+ * swarmed harness could never be evicted at all.
+ *
+ * Same no-op conditions and same wake path as the outbox-NOTIFY dual, so the
+ * two cannot drift:
+ *   - eviction tracking off (flag OFF ⇒ byte-identical eager path)
+ *   - the harness is currently booted (its resident engine handles the peer)
+ *   - the key is not wake-eligible (never evicted / never deferred)
+ *
+ * NOTE the deliberate boundary: this can only fire while some peer is
+ * CONCURRENTLY online. A write made while every member is dark reaches nobody
+ * until a peer returns — that store-and-forward case is P-013's relay tier, not
+ * this path (see substrate-wake-gossip's header).
+ */
+export function handleRemoteWakeForDarkHarness(
+  workspaceId: string,
+  harnessSlug: string,
+): boolean {
+  if (!evictionTrackingEnabled) return false;
+  const k = key(workspaceId, harnessSlug);
+  if (handles.has(k)) return false; // resident engine is already replicating
+  if (!takeWakeEligible(k)) return false;
+  rebootOnAccess(workspaceId, harnessSlug);
+  return true;
+}
+
 /** For tests. Clears the handle map WITHOUT closing — useful when the
  * handles were faked. Never call from production code. */
 export function _resetHandleMapForTests(): void {

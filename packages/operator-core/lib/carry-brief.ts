@@ -27,7 +27,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
-import { FEATURE_TERMINAL_STATES } from './work-item-dispatch-states';
+import { ANY_FAMILY_TERMINAL_STATES, FEATURE_TERMINAL_STATES } from './work-item-dispatch-states';
 import {
   getLoopCarryNoteWithMeta,
   renderCheckLine,
@@ -314,20 +314,60 @@ const POST_NOTE_INBOX_MAX_LINES = 3;
 const POST_NOTE_INBOX_LINE_CHARS = 150;
 
 /** Default P-002 hydrator: P-008 reuse end-to-end (detect → hydrate → render one-liners).
- *  Lazy imports keep the coordination edge off the brief's cold path; any failure ⇒ []. */
+ *  Lazy imports keep the coordination edge off the brief's cold path; any failure ⇒ [].
+ *
+ *  Returns BARE `label: "snippet"` strings (no leading glyph) — the seam's contract
+ *  (see carry-brief.test.ts's hydrateNoteRefsFn mocks) is that the RENDERER adds the
+ *  single `↪ ` prefix. This used to call ref-hydrate's `renderHydratedRef`, which
+ *  ALSO prefixes `↪ ` — doubling the glyph in every real (non-test) carry doc
+ *  ("↪ ↪ EI-… [bug/done]: …", found while fixing EI-18726068732447732). */
 async function defaultHydrateNoteRefs(noteText: string): Promise<string[]> {
   try {
-    const [{ detectBodyRefs, renderHydratedRef }, { hydrateRefs }] = await Promise.all([
+    const [{ detectBodyRefs }, { hydrateRefs }] = await Promise.all([
       import('./agent-tools/coordination/ref-hydrate'),
       import('./agent-tools/coordination/ref-hydrate-resolve'),
     ]);
     const refs = detectBodyRefs(noteText);
     if (refs.length === 0) return [];
     const hydrated = await hydrateRefs(refs);
-    return hydrated.filter((h) => h.ok).map((h) => renderHydratedRef(h));
+    return hydrated.filter((h) => h.ok).map((h) => (h.snippet ? `${h.label}: "${h.snippet}"` : h.label));
   } catch {
     return [];
   }
+}
+
+/** Parse a cited-ref line's bracketed `[kind/state]` tag — the shape
+ *  `defaultWorkItemResolver` / `bodyRefWorkItemResolver` emit as
+ *  `<id> [<kind>/<state>...]`. Regex-only (never throws); returns null for a
+ *  line with no recognizable id or tag (a custom hydrator, or a non-work-item
+ *  ref shape) so callers degrade to "not terminal" rather than misfire. */
+const CITED_REF_ID = /\b((?:WI|EI|F)-\d+)\b/;
+const CITED_REF_STATE_TAG = /\[[a-z0-9_]+\/([a-z0-9_-]+)/i;
+export function parseCitedRefStateTag(line: string): { id: string; state: string } | null {
+  const idMatch = CITED_REF_ID.exec(line);
+  const stateMatch = CITED_REF_STATE_TAG.exec(line);
+  if (!idMatch || !stateMatch) return null;
+  return { id: idMatch[1], state: stateMatch[1] };
+}
+
+/**
+ * Which of `citedRefs` cite a work-item whose LIVE state (as already resolved
+ * by the fold) is terminal — the P-002 stale-imperative contradiction detector
+ * (EI-18726068732447732): a cold carry-note's own prose can still instruct
+ * action ("complete WI-NNN", "verify then close it") on an id the SAME brief's
+ * fold already resolves as done/dropped/etc. The fold has the answer at render
+ * time; this just joins it against the ids the note cites instead of printing
+ * both and letting the reader reconcile them. Pure + derived from
+ * ANY_FAMILY_TERMINAL_STATES (never re-list the words) so it's independently
+ * unit-testable and can't drift from the canonical terminal vocabulary.
+ */
+export function detectTerminalCitedRefs(citedRefs: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const line of citedRefs) {
+    const tag = parseCitedRefStateTag(line);
+    if (tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state)) out.push(tag.id);
+  }
+  return out;
 }
 
 /** Default P-003 reader: directed non-own mail strictly after `sinceIso`, bounded.
@@ -829,9 +869,30 @@ export function renderCarryBriefText(
         // P-002: LIVE hydrations of the ids the note cites — a successor trusts
         // these over the note's phrasing (the note is a snapshot; these are now).
         if (brief.citedRefs && brief.citedRefs.length > 0) {
+          const terminalIds = detectTerminalCitedRefs(brief.citedRefs);
+          if (terminalIds.length > 0) {
+            // EI-18726068732447732: the note's own imperatives ("complete WI-NNN",
+            // "verify then close it") can target an id the fold below ALREADY
+            // resolves as terminal — flag the contradiction loudly, right at the
+            // point a reader would otherwise just follow the stale prose.
+            const idList = terminalIds.join(', ');
+            const plural = terminalIds.length > 1;
+            sections.push(
+              `⚠⚠ STALE-NOTE CONTRADICTION: the note above may still instruct action on ${idList} — ` +
+                `but the LIVE status below shows ${plural ? 'they are' : 'it is'} already TERMINAL. ` +
+                `Do NOT follow any instruction to complete/verify/close/work on ${plural ? 'them' : 'it'}; ` +
+                `treat ${plural ? 'them' : 'it'} as already resolved and re-orient before acting on the rest of the note.`,
+            );
+          }
           sections.push(
             `Cited in the note — LIVE status (trust these over the note's phrasing):\n` +
-              brief.citedRefs.map((l) => `  ↪ ${l}`).join('\n'),
+              brief.citedRefs
+                .map((l) => {
+                  const tag = parseCitedRefStateTag(l);
+                  const flagged = !!tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state);
+                  return `  ${flagged ? '⚠ TERMINAL ' : ''}↪ ${l}`;
+                })
+                .join('\n'),
           );
         }
         // P-003: the note PREDATES this mail — a cold successor must reconcile
