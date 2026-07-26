@@ -77,10 +77,11 @@ The coordination substrate keeps you in sync with other agents, routed by **topi
   { topic, mode }` (`digest` for high-churn); `topics:feed { topic }` shows
   every open issue/conversation/feature/plan in an area — read it as part of the
   READ-heavy scoping phase.
-- **Ask peers first — knowledge-first.** An open question about an area?
-  `coord:ask { question, topics }` is your default first move — answers from
-  existing knowledge or routes to the area's subscribers (the expert); ask peers
-  here before escalating to the owner (only escalate if still unclear after).
+- **Don't ask a peer for something you can look up.** Live state is a QUERY, not a
+  question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
+  `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
+  status). Need a specific person? `coord:send` them directly — it wakes them.
+  Need a decision only the owner can make? `coord:ask-owner`.
 - **File what you discover.** A real defect or gap you surface while scoping →
   `work_items:create { kind:'bug', title, severity, topics }`.
 

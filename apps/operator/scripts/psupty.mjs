@@ -158,6 +158,16 @@ function cmdInject(argv) {
     c.write(`${text}\r`);
     c.end();
   });
+  // EI-18683281603125383: the host (psu-pty-host.mjs, WI-5872/EI-18676244363359331)
+  // now writes a JSON-line ACK/NACK back on this connection (allowHalfOpen:true)
+  // BEFORE closing its own end. A client that never drains that data leaves its
+  // Readable side PAUSED, so Node never advances it to 'end' — and therefore
+  // 'close' never fires either — hanging this CLI command forever instead of
+  // printing the confirmation below. Draining it (even via a no-op handler) is
+  // enough to put the stream in flowing mode so 'close' fires normally; this
+  // command only ever reported bare TCP settlement, never the ACK payload
+  // itself, so discarding it here is the correct minimal fix.
+  c.on('data', () => {});
   c.on('error', (e) => {
     console.error(`psupty inject: failed (${e.message}) — is the session still alive? \`psupty list\``);
     process.exit(1);

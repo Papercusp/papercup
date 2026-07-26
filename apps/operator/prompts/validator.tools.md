@@ -65,11 +65,11 @@ You share a live coordination substrate with other agents, routed by **topic**:
 - **Subscribe your areas.** `topics:list`, then `topics:subscribe { topic, mode }`
   (`digest` for high-churn) so relevant updates inject into your context;
   `topics:feed { topic }` shows everything tagged an area.
-- **Ask peers first — knowledge-first.** Blocked on a question? `coord:ask
-  { question, topics }` is your default first move: it answers from existing
-  knowledge inline, or routes the question to the topic's subscribers (the
-  expert) — don't guess or grind alone, and ask peers here before escalating to
-  the owner (only escalate if it's still unclear after asking).
+- **Don't ask a peer for something you can look up.** Live state is a QUERY, not a
+  question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
+  `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
+  status). Need a specific person? `coord:send` them directly — it wakes them.
+  Need a decision only the owner can make? `coord:ask-owner`.
 - **File what you discover.** A real problem outside the current validation scope
   → `work_items:create { kind:'bug', title, severity, topics }` (the engineer-issue surface,
   distinct from the validator pipeline's per-feature findings); it becomes

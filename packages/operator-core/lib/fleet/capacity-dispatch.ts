@@ -72,6 +72,89 @@ export interface AccountPoolAvailability {
    * accounts", not an infra fix. Optional, same fail-safe-omit contract as `edgeThrottledCount`.
    */
   usageWalledCount?: number;
+  /**
+   * EI-18683773458136367: whether the edge-throttled accounts share ONE known egress identity (proxy
+   * URL / bound local IP) — the actual "down forward-proxy forcing every account onto one shared,
+   * already-throttled IP" signature that justifies an owner-gated infra escalation. `true` = confirmed
+   * shared identity; `false` = at least two edge-throttled accounts are confirmed on DISTINCT egress
+   * identities (disproves a shared-IP failure — the throttle is per-account, not a dead egress path);
+   * `undefined`/omitted = not enough identity data to conclude either way (legacy/unchanged phrasing,
+   * same fail-safe-omit contract as the other optional fields on this type).
+   */
+  edgeThrottledSharedEgress?: boolean;
+  /**
+   * EI-18683773458136367: whether at least one edge-throttled account's cooldown deadline is being
+   * RE-ARMED (its `edgeThrottleResetAt` advanced AND its penalty count climbed since the previous read)
+   * rather than expiring — the signature of a retry/backoff loop re-hitting the edge before the cooldown
+   * clears, a POLICY bug, not a dead egress path. `undefined` = no prior read to compare against yet.
+   */
+  edgeThrottledRearming?: boolean;
+}
+
+/** One account's edge-throttle state, as read at ONE point in time — the pure input to
+ *  {@link deriveEdgeThrottleEvidence}. Kept separate from `AccountStatusRow` so this stays testable
+ *  without importing the whole account-pool-store IO surface. */
+export interface EdgeThrottleAccountSample {
+  id: string;
+  edgeThrottled: boolean;
+  edgeThrottleResetAt?: number;
+  penaltyCount: number;
+  /** proxyUrl ?? localAddress, or undefined when the account's egress binding is unknown/default-shared. */
+  egressIdentity?: string;
+}
+
+/** Per-account state from the PREVIOUS read, carried by the caller (capacity.ts keeps this in a
+ *  process-local Map — this module stays pure and takes/returns snapshots explicitly). */
+export interface EdgeThrottleSnapshotEntry {
+  resetAt?: number;
+  penaltyCount: number;
+}
+
+/**
+ * PURE: derive the `edgeThrottledSharedEgress` / `edgeThrottledRearming` evidence from a set of
+ * per-account samples + the previous read's snapshot (EI-18683773458136367). Two independent,
+ * falsifiable signals — a bare edge-throttled COUNT proves neither on its own:
+ *  - sharedEgress: do the throttled accounts actually share ONE egress IP (the down-proxy signature)?
+ *  - rearming: is a throttled account's cooldown deadline advancing rather than expiring (a backoff loop)?
+ */
+export function deriveEdgeThrottleEvidence(
+  samples: EdgeThrottleAccountSample[],
+  prevSnapshot: ReadonlyMap<string, EdgeThrottleSnapshotEntry>,
+): {
+  sharedEgress?: boolean;
+  rearming?: boolean;
+  nextSnapshot: Map<string, EdgeThrottleSnapshotEntry>;
+} {
+  const throttled = samples.filter((s) => s.edgeThrottled);
+
+  let sharedEgress: boolean | undefined;
+  const knownIdentities = throttled.map((s) => s.egressIdentity).filter((x): x is string => !!x);
+  if (throttled.length >= 2 && knownIdentities.length >= 2) {
+    const distinct = new Set(knownIdentities);
+    if (distinct.size >= 2) {
+      sharedEgress = false; // proven distinct — at least two known, different identities
+    } else if (knownIdentities.length === throttled.length) {
+      sharedEgress = true; // every throttled account's identity is known AND identical
+    }
+    // else: some identities unknown and the known ones agree — not enough to conclude either way.
+  }
+
+  let anyComparable = false;
+  let anyRearming = false;
+  const nextSnapshot = new Map<string, EdgeThrottleSnapshotEntry>();
+  for (const s of throttled) {
+    const prev = prevSnapshot.get(s.id);
+    if (prev) {
+      anyComparable = true;
+      const resetAdvanced =
+        s.edgeThrottleResetAt != null && prev.resetAt != null && s.edgeThrottleResetAt > prev.resetAt;
+      const penaltyClimbed = s.penaltyCount > prev.penaltyCount;
+      if (resetAdvanced && penaltyClimbed) anyRearming = true;
+    }
+    nextSnapshot.set(s.id, { resetAt: s.edgeThrottleResetAt, penaltyCount: s.penaltyCount });
+  }
+
+  return { sharedEgress, rearming: anyComparable ? anyRearming : undefined, nextSnapshot };
 }
 
 export interface CapacityDispatchConfig {
@@ -418,6 +501,23 @@ export function buildCapacityReport(
     const wall = acct!.usageWalledCount ?? 0;
     if (edge === 0 && wall === 0) return null; // no breakdown supplied → unchanged generic phrasing
     if (edge > 0 && edge >= wall) {
+      // EI-18683773458136367: a bare edge-throttled COUNT proves neither "shared/down egress IP" nor
+      // "escalate to the owner" — both are falsifiable claims that need the shared-egress evidence
+      // below. `sharedEgress === false` (proven DISTINCT egress IPs among the throttled accounts) is
+      // the opposite of a down-proxy signature; asserting one there manufactured false owner escalations
+      // for a condition the owner cannot fix. Unknown/unsupplied evidence keeps the legacy phrasing
+      // (fail-safe-omit, same contract as the other optional fields on AccountPoolAvailability).
+      if (acct!.edgeThrottledSharedEgress === false) {
+        return acct!.edgeThrottledRearming === true
+          ? ` — ${edge}/${acct!.total} edge-throttled on DISTINCT egress IPs, cooldowns RE-ARMING rather ` +
+              `than expiring (deadline advancing while the penalty count climbs — a retry/backoff loop ` +
+              `re-hitting the edge before the cooldown clears). This is a POLICY/backoff bug, not a dead ` +
+              `egress path — fix the retry cadence; this is NOT an owner-gated infra issue, do not escalate.`
+          : ` — ${edge}/${acct!.total} edge-throttled on DISTINCT egress IPs (the opposite of a shared-IP ` +
+              `failure signature — a real down/shared proxy would show roughly uniform pressure across ` +
+              `accounts, not divergent per-account throttling). Investigate the per-account throttle cause ` +
+              `before escalating; do NOT assume a down egress proxy from this count alone.`;
+      }
       return (
         ` — DOMINANT CAUSE: ${edge}/${acct!.total} edge-throttled (a live per-IP/Cloudflare bare-429 ` +
         `cooldown, NOT account quota). This usually means the egress path itself is broken (a down/` +

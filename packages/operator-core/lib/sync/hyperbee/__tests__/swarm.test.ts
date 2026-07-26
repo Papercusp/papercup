@@ -233,7 +233,13 @@ describe('joinHarnessSwarm — happy path', () => {
     const cb = vi.fn();
     await joinHarnessSwarm({ store, topic: topic32(), swarm, onPeerConnected: cb });
     emit('connection', { pipe: vi.fn() }, { publicKey: Buffer.from('abcd', 'hex') });
-    expect(cb).toHaveBeenCalledWith('abcd');
+    // EI-18682571591024156: the callback now also receives a PeerSignallingInfo
+    // stating what the fire actually proves — SIGNALLING success, never a
+    // demonstrated data path (see swarm-data-path-honesty.test.ts).
+    expect(cb).toHaveBeenCalledWith(
+      'abcd',
+      expect.objectContaining({ signallingOnly: true, dataPathProven: null }),
+    );
   });
 
   it('swallows onPeerConnected throws (diagnostic callback)', async () => {
@@ -694,6 +700,51 @@ describe('joinHarnessSwarm — close', () => {
     };
     const h = await joinHarnessSwarm({ store, topic: topic32(), swarm });
     await expect(h.close()).resolves.toBeUndefined();
+  });
+
+  it('WI-5923: close() prefers the session-level destroy() over the process-wide swarm.leave() — never destroys a SIBLING harness/topic session sharing the same swarm', async () => {
+    // A real Hyperswarm session (what join() genuinely returns) exposes its own
+    // destroy() — this fake models that, PLUS leave(), to prove close() picks
+    // the refcounted one instead of the process-wide teardown. If close() ever
+    // regressed to calling swarm.leave(topic) again, this test fails on the
+    // `leaves` assertion below (leave() would be called once instead of never).
+    const state = { leaves: [] as Buffer[], destroyed: 0, listeners: new Map<string, Array<(...a: unknown[]) => void>>() };
+    const swarm: HyperswarmLike = {
+      join: () => ({
+        flushed: () => Promise.resolve(),
+        destroy: () => {
+          state.destroyed++;
+        },
+      }),
+      leave: (topic) => {
+        state.leaves.push(topic);
+      },
+      on: (event, listener) => {
+        const arr = state.listeners.get(event) ?? [];
+        arr.push(listener as (...a: unknown[]) => void);
+        state.listeners.set(event, arr);
+        return swarm;
+      },
+      off: () => undefined,
+    };
+    const { store } = fakeStore();
+    const h = await joinHarnessSwarm({ store, topic: topic32(), swarm });
+    await h.close();
+    expect(state.destroyed).toBe(1);
+    // The whole point of WI-5923: a sibling harness's session on the SAME
+    // swarm+topic must survive this close() — proven here by NEVER reaching
+    // for the process-wide leave() a real Hyperswarm would tear every session
+    // down with.
+    expect(state.leaves).toHaveLength(0);
+  });
+
+  it('WI-5923: close() falls back to swarm.leave() when join() returns no destroy() (a minimal test fake, unchanged behavior)', async () => {
+    const { swarm, state } = fakeSwarm();
+    const { store } = fakeStore();
+    const h = await joinHarnessSwarm({ store, topic: topic32(), swarm });
+    await h.close();
+    expect(state.leaves).toHaveLength(1);
+    expect(state.leaves[0].equals(topic32())).toBe(true);
   });
 });
 

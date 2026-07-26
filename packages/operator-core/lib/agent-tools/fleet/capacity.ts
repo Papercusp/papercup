@@ -16,7 +16,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { parsePriorityTierMap } from '@papercusp/papercusp-shared/agent';
 import { COORD_ROLES } from '../coordination/roles';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
-import { buildCapacityReport, type AccountPoolAvailability } from '../../fleet/capacity-dispatch';
+import {
+  buildCapacityReport,
+  deriveEdgeThrottleEvidence,
+  type AccountPoolAvailability,
+  type EdgeThrottleSnapshotEntry,
+} from '../../fleet/capacity-dispatch';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 // Re-exported so existing importers (tests, the queen-brief gather) can reach the read-model via either path.
@@ -26,15 +31,52 @@ export { buildCapacityReport, type CapacityReport } from '../../fleet/capacity-d
 const BEE_PROVIDER = 'claude';
 
 /**
+ * EI-18683773458136367: process-local memory of the LAST read's per-account edge-throttle state, so
+ * `deriveEdgeThrottleEvidence` can tell a re-arming cooldown (deadline advancing, penalty climbing —
+ * a backoff-loop bug) from one genuinely counting down. Deliberately ephemeral (in-memory, not
+ * persisted) — this is a live diagnostic heuristic over consecutive `fleet:capacity` reads within one
+ * process's lifetime, not a durable record; a restart just means the first post-restart read has no
+ * prior snapshot to compare against (rearming reports `undefined` until a second read lands).
+ */
+const lastEdgeThrottleSnapshot = new Map<string, EdgeThrottleSnapshotEntry>();
+
+/**
  * Best-effort snapshot of REAL account-pool availability for the bee provider (accounts:status), used to
  * cross-check the gateway's queue-slot dispatchBudget. Returns undefined on any read failure (fail-safe —
  * a missing cross-check leaves the report byte-identical to before this fix).
  */
 async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | undefined> {
   try {
+    const ws = activeWorkspaceId();
     const { accountStatus } = await import('../../deployment/account-pool-store');
-    const rows = (await accountStatus(activeWorkspaceId())).filter((r) => r.provider === BEE_PROVIDER);
+    const rows = (await accountStatus(ws)).filter((r) => r.provider === BEE_PROVIDER);
     if (rows.length === 0) return undefined;
+
+    // EI-18683773458136367: derive the shared-egress / re-arm evidence that gates whether the
+    // "down egress proxy, escalate to the owner" claim is actually supportable (see capacity-dispatch.ts).
+    const snapshotPrefix = `${ws ?? ''}::`;
+    const prevSnapshot = new Map(
+      [...lastEdgeThrottleSnapshot]
+        .filter(([key]) => key.startsWith(snapshotPrefix))
+        .map(([key, v]) => [key.slice(snapshotPrefix.length), v] as const),
+    );
+    const { sharedEgress, rearming, nextSnapshot } = deriveEdgeThrottleEvidence(
+      rows.map((r) => ({
+        id: r.id,
+        edgeThrottled: r.edgeThrottled,
+        edgeThrottleResetAt: r.edgeThrottleResetAt,
+        penaltyCount: r.rate.penaltyCount,
+        egressIdentity: r.egress?.proxyUrl ?? r.egress?.localAddress ?? undefined,
+      })),
+      prevSnapshot,
+    );
+    // Replace this workspace's slice wholesale — an account that drops out of throttle and later
+    // re-enters should NOT be compared against a stale, unrelated prior episode.
+    for (const key of [...lastEdgeThrottleSnapshot.keys()]) {
+      if (key.startsWith(snapshotPrefix)) lastEdgeThrottleSnapshot.delete(key);
+    }
+    for (const [id, v] of nextSnapshot) lastEdgeThrottleSnapshot.set(`${snapshotPrefix}${id}`, v);
+
     return {
       provider: BEE_PROVIDER,
       total: rows.length,
@@ -46,6 +88,8 @@ async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | 
       // one vague "walled/rate-paused/edge-throttled" phrase that reads as generic quota exhaustion.
       edgeThrottledCount: rows.filter((r) => r.edgeThrottled).length,
       usageWalledCount: rows.filter((r) => r.usageWalled).length,
+      edgeThrottledSharedEgress: sharedEgress,
+      edgeThrottledRearming: rearming,
     };
   } catch {
     return undefined;

@@ -9,6 +9,7 @@ import {
   DEFAULT_CAPACITY_DISPATCH_CONFIG as CFG,
   buildFleetSizingAdvisory,
   buildCapacityReport,
+  deriveEdgeThrottleEvidence,
 } from './capacity-dispatch';
 import { planBatchPlacement } from './batch-placement';
 import type { PlacementTask } from './placement-affinity';
@@ -279,6 +280,131 @@ test('EI-18664933641195210 — poolExhausted names USAGE-WALL as the dominant ca
   assert.equal(r.poolExhausted, true);
   assert.match(r.advice, /dominant cause: 5\/5 usage-walled/);
   assert.doesNotMatch(r.advice, /OWNER-GATED/, 'usage-wall dominant ⇒ no infra escalation language');
+});
+
+test('EI-18683773458136367 — poolExhausted does NOT claim a down/shared egress proxy or instruct escalation when the throttled accounts sit on DISTINCT egress IPs', () => {
+  // The real incident this regression pins: `accounts:status` showed edge-throttled accounts on THREE
+  // DISTINCT proxy IPs with divergent per-account 429 streaks — the opposite of the shared-IP failure
+  // signature the old static advice asserted. That advice manufactured a false owner-gated escalation
+  // for a condition that (per this fixture) is proven NOT to be a shared/down egress proxy.
+  const hr = {
+    reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+  };
+  const accountAvailability = {
+    provider: 'claude', total: 4, available: 1, usable: 0,
+    edgeThrottledCount: 3, usageWalledCount: 0,
+    edgeThrottledSharedEgress: false, // proven distinct — computed from real per-account egress identities
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.poolExhausted, true);
+  assert.match(r.advice, /EXHAUSTED/);
+  assert.match(r.advice, /3\/4 edge-throttled/);
+  assert.match(r.advice, /DISTINCT egress IPs/);
+  assert.doesNotMatch(r.advice, /DOMINANT CAUSE/, 'the confident causal claim only fires with shared-egress evidence');
+  assert.doesNotMatch(r.advice, /OWNER-GATED/, 'must not manufacture an owner escalation without shared-IP evidence');
+  assert.doesNotMatch(r.advice, /escalate/i, 'must not instruct escalation without shared-IP evidence');
+});
+
+test('EI-18683773458136367 — DISTINCT-egress edge-throttle ALSO re-arming ⇒ names the backoff-loop, still no escalation', () => {
+  const hr = {
+    reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+  };
+  const accountAvailability = {
+    provider: 'claude', total: 4, available: 1, usable: 0,
+    edgeThrottledCount: 3, usageWalledCount: 0,
+    edgeThrottledSharedEgress: false,
+    edgeThrottledRearming: true, // deadline advancing + penalty climbing since the previous read
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.match(r.advice, /RE-ARMING/);
+  assert.match(r.advice, /retry\/backoff loop/);
+  assert.doesNotMatch(r.advice, /OWNER-GATED/);
+  assert.match(r.advice, /do not escalate/i, 'must explicitly say NOT to escalate, not merely omit the word');
+});
+
+test('EI-18683773458136367 — shared-egress evidence UNKNOWN (not supplied) ⇒ unchanged legacy phrasing (fail-safe-omit)', () => {
+  // Regression guard for backward compat: omitting the new fields must reproduce byte-for-byte the
+  // same OWNER-GATED escalate language as before this fix (the EI-18664933641195210 test above).
+  const hr = {
+    reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 1,
+    priorityTiers: { healthyAccounts: 5, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 2 }] },
+  };
+  const accountAvailability = { provider: 'claude', total: 5, available: 2, usable: 0, edgeThrottledCount: 5, usageWalledCount: 1 };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.match(r.advice, /DOMINANT CAUSE/);
+  assert.match(r.advice, /OWNER-GATED/);
+});
+
+test('EI-18683773458136367 — deriveEdgeThrottleEvidence: identical known egress identities ⇒ sharedEgress true', () => {
+  const { sharedEgress } = deriveEdgeThrottleEvidence(
+    [
+      { id: 'a', edgeThrottled: true, penaltyCount: 5, egressIdentity: 'http://proxy1:3128' },
+      { id: 'b', edgeThrottled: true, penaltyCount: 3, egressIdentity: 'http://proxy1:3128' },
+      { id: 'c', edgeThrottled: false, penaltyCount: 0, egressIdentity: 'http://proxy2:3128' },
+    ],
+    new Map(),
+  );
+  assert.equal(sharedEgress, true);
+});
+
+test('EI-18683773458136367 — deriveEdgeThrottleEvidence: distinct known egress identities ⇒ sharedEgress false', () => {
+  const { sharedEgress } = deriveEdgeThrottleEvidence(
+    [
+      { id: 'a', edgeThrottled: true, penaltyCount: 26, egressIdentity: 'http://proxy1:3128' },
+      { id: 'b', edgeThrottled: true, penaltyCount: 4, egressIdentity: 'http://proxy2:3128' },
+      { id: 'c', edgeThrottled: true, penaltyCount: 1, egressIdentity: 'http://proxy3:3128' },
+    ],
+    new Map(),
+  );
+  assert.equal(sharedEgress, false);
+});
+
+test('EI-18683773458136367 — deriveEdgeThrottleEvidence: fewer than 2 throttled or unknown identities ⇒ sharedEgress undefined', () => {
+  assert.equal(
+    deriveEdgeThrottleEvidence([{ id: 'a', edgeThrottled: true, penaltyCount: 1 }], new Map()).sharedEgress,
+    undefined,
+    'only one throttled account — not enough to conclude shared vs distinct',
+  );
+  assert.equal(
+    deriveEdgeThrottleEvidence(
+      [
+        { id: 'a', edgeThrottled: true, penaltyCount: 1 }, // no egressIdentity known
+        { id: 'b', edgeThrottled: true, penaltyCount: 1, egressIdentity: 'http://proxy1:3128' },
+      ],
+      new Map(),
+    ).sharedEgress,
+    undefined,
+    'not enough known identities to conclude either way',
+  );
+});
+
+test('EI-18683773458136367 — deriveEdgeThrottleEvidence: rearming detected when resetAt advances AND penaltyCount climbs', () => {
+  const prev = new Map([['a', { resetAt: 1000, penaltyCount: 5 }]]);
+  const { rearming, nextSnapshot } = deriveEdgeThrottleEvidence(
+    [{ id: 'a', edgeThrottled: true, edgeThrottleResetAt: 2000, penaltyCount: 7 }],
+    prev,
+  );
+  assert.equal(rearming, true);
+  assert.equal(nextSnapshot.get('a')?.resetAt, 2000);
+});
+
+test('EI-18683773458136367 — deriveEdgeThrottleEvidence: NOT rearming when penaltyCount holds steady (cooldown genuinely counting down)', () => {
+  const prev = new Map([['a', { resetAt: 2000, penaltyCount: 7 }]]);
+  const { rearming } = deriveEdgeThrottleEvidence(
+    [{ id: 'a', edgeThrottled: true, edgeThrottleResetAt: 1500, penaltyCount: 7 }],
+    prev,
+  );
+  assert.equal(rearming, false);
+});
+
+test('EI-18683773458136367 — deriveEdgeThrottleEvidence: no prior snapshot ⇒ rearming undefined (first read, nothing to compare)', () => {
+  const { rearming } = deriveEdgeThrottleEvidence(
+    [{ id: 'a', edgeThrottled: true, edgeThrottleResetAt: 1000, penaltyCount: 1 }],
+    new Map(),
+  );
+  assert.equal(rearming, undefined);
 });
 
 test('EI-12282 — poolExhausted does NOT fire when real accounts ARE usable (no false alarm)', () => {

@@ -789,13 +789,11 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   the quiet floor, `full` only where you're actively working; subscribe
   `new_topic` to learn of new ones). `topics:feed { topic }` reads everything
   tagged an area.
-- **Ask peers knowledge-first — BEFORE the owner.** `coord:ask { question,
-  topics }` is your DEFAULT first move for any question you can't answer from
-  your own knowledge or the code: it answers inline on a knowledge hit, else
-  routes to the topic's subscribers (the expert who owns the area) — the answer
-  arrives via your inbox. Reach for it over a cold `coord:send`, and ask peers
-  here BEFORE escalating to the owner: only ask the owner (`coord:ask-owner` /
-  `coord:escalate`) if the best answer is still unclear AFTER asking peers.
+- **Don't ask a peer for something you can look up.** Live state is a QUERY, not a
+  question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
+  `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
+  status). Need a specific person? `coord:send` them directly — it wakes them.
+  Need a decision only the owner can make? `coord:ask-owner`.
 - **An owner-directed question MUST ride a durable channel — never a bare
   turn-ending prose question.** `coord:escalate` WITH structured options is
   preferred (renders as an answerable card the owner can act on from the

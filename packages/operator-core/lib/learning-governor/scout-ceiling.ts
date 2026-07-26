@@ -21,7 +21,7 @@
  * agrees, reading the learning_spend_events ledger (sumScoutSpendSince).
  *
  * Layering (mirrors registrants.ts):
- *   - the pure rule (sum + compare) is checkScoutWorkspaceCeiling in core.ts;
+ *   - the pure rule (compare) is scoutWorkspaceCeilingVerdict in core.ts;
  *   - the IO (listLearningLoops over the live admin pool) lives in store.ts;
  *   - THIS module is the flag-aware glue: governor flag OFF ⇒ the gate is a
  *     no-op (the kill-switch — scout's structural self-gates still bound it),
@@ -100,7 +100,7 @@ function allowVerdict(ceilingUsd: number): ScoutWorkspaceCeilingVerdict {
  *     + cadence/budget self-gates still bound every cycle. (Symmetric with the
  *     scout MIRROR, which also no-ops flag-off.)
  *   - ON ⇒ sum every `scout:<hive>` registrant's ledgered spend and apply the
- *     pure rule (checkScoutWorkspaceCeiling): refuse once the aggregate reaches
+ *     pure rule (scoutWorkspaceCeilingVerdict): refuse once the aggregate reaches
  *     the ceiling.
  *   - IO error ⇒ FAIL OPEN (allow), logged: a workspace SAFETY cap layered over
  *     already-bounded per-hive cycles must not freeze the whole fleet's scout on

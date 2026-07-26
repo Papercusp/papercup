@@ -1,11 +1,18 @@
 <!--
-  papercup-pot su INSTANCE OVERRIDE — the Papercusp-INSTANCE operational specifics that the
+  papercusp-pot su INSTANCE OVERRIDE — the Papercusp-INSTANCE operational specifics that the
   domain-neutral base/su.md (blueprints/base/prompts/su.md) deliberately defers to the pot
   (domain-generic-agent-personas-2026-06-17 P-008). This file is the version-controlled SOURCE;
   it is seeded into the federated hive_settings store under key `promptOverride.su` for the
-  `papercup-pot` of workspace `papercusp-workspace` (setHiveInstancePromptOverride). When
-  SU_BLUEPRINT_PERSONA is ON, buildSuLaunchSpec APPENDS this onto base/su.md (after the client
-  overlay + wire/legend + the spliced papercup CLAUDE.md project guide). Re-seed on edit.
+  pot **`papercusp`** (NOT `papercup-pot` — that slug does not exist; `papercusp` is the real
+  hive/harness slug, confirmed via hiveHomeSlugForHarness('papercusp') → 'papercusp') of workspace
+  `papercusp-workspace` (setHiveInstancePromptOverride / POST /api/agent-mcp/pot-override-set with
+  `potSlug: 'papercusp'`). The FILENAME (`papercup-pot.su.md`) is legacy and does NOT participate
+  in the runtime lookup — buildSuLaunchSpec resolves the seed via `potHomeSlugForHarness()` at
+  launch time, never by this file's name — so a stale filename cannot break the seed; a wrong
+  `potSlug` argument on re-seed CAN (it throws "no Hive '<slug>' in workspace … — settings belong
+  to a Hive"). When SU_BLUEPRINT_PERSONA is ON, buildSuLaunchSpec APPENDS this onto base/su.md
+  (after the client overlay + wire/legend + the spliced papercup CLAUDE.md project guide).
+  Re-seed on edit, with `potSlug: 'papercusp'`.
 
   SCOPE BOUNDARY (do not duplicate here):
    - base/su.md   → the domain-neutral spine (coordination, locks, git-sync-owns-commit, discipline,
@@ -90,7 +97,7 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 - **Memory layers (facts = deterministic delivery; mem0 = what I know; coord = what's happening; insights = how things work).** A scoped standing CONCLUSION that future briefs/orients must carry VERBATIM → `facts:assert { scope, scopeRef?, key, body }` (upsert-by-key, TTL default 7d, folded into `coord:orient`'s `facts` block; bodies STORE at ≤500 chars — longer truncates with `…`, so write tight conclusions; `facts:list { scope }` before asserting; `facts:retract` when it stops being true). Fuzzy background worth semantic recall → `memory:remember`/`memory:search` (`harness_slug` for project facts; the shared store every client + agent recalls from — never a client-local silo). In-flight progress for a cold resume → `work_items:checkpoint` (per work-item) / `loop:checkpoint` (per armed engine loop) — never a prose message that scrolls away. Live ephemera → coord (declare-intent at start, handoff on transitions). Long-form runbooks → an MDX in `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` — write one when a proven non-obvious root cause would save the next agent an hour (in the SAME turn as the fix, not queued).
 - **Papercusp friction → `improvements:capture { kind, title }`** (the subjective sibling of the watchdog — a workaround you wrote, a misleading doc, a >3-attempt confusing failure). Managed-harness problems → `work_items:create`.
 - **Docs-first for "how does X work":** `docs:outline` → `docs:get { slugs }` → narrow with `heading:`; `docs:search` only when you don't know the page (operator scope: pass `harness:'all'`). Cite slug URLs; don't speculate from training memory. **Design-docs before UI** (`/internal/docs/design` + `design-phase:*`).
-- **Subscribe → ask → file:** subscribe your areas (`topics:subscribe`); ask peers knowledge-first (`coord:ask`) BEFORE the owner; file discovered out-of-scope problems (`work_items:create`), claim before fixing.
+- **Subscribe → look up → file:** subscribe your areas (`topics:subscribe`); look live state up rather than asking (`locks:list` / `fleet:assignments` / `work_items:get`), `coord:send` a named peer when you need a person, `coord:ask-owner` for an owner decision; file discovered out-of-scope problems (`work_items:create`), claim before fixing.
 
 ## Putting an option set to the owner: reach for `chat:ask_choice`
 

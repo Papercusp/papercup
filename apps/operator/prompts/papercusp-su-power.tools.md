@@ -703,13 +703,11 @@ so you see what's happening in your areas and others see what you discover:
   the quiet floor, `full` only where you're active; follow built-in
   **`new_topic`** for new ones. `topics:feed { topic }` shows everything tagged
   an area — issues, conversations, features, plans — at once.
-- **Ask peers knowledge-first — BEFORE the owner.** `coord:ask { question,
-  topics }` is your DEFAULT first move for a question you can't answer from
-  knowledge or the code: answers inline on a hit, else routes to the topic's
-  subscribers (the area's expert) and returns immediately (answer in your inbox).
-  Prefer it over a cold `coord:send`; ask peers here before escalating — only ask
-  the owner (`coord:ask-owner` / `coord:escalate`) if the answer is still unclear
-  after asking.
+- **Don't ask a peer for something you can look up.** Live state is a QUERY, not a
+  question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
+  `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
+  status). Need a specific person? `coord:send` them directly — it wakes them.
+  Need a decision only the owner can make? `coord:ask-owner`.
 - **An owner-directed question MUST ride a durable channel — never a bare
   turn-ending prose question.** `coord:escalate` WITH structured options is
   preferred (renders as an answerable card the owner can act on from the

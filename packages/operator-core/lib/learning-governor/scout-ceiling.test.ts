@@ -1,13 +1,17 @@
 /**
  * scout-ceiling.test.ts — the P-051 workspace-wide scout spend ceiling gate
- * (per-hive-learning-loops-2026-06-14 / D-005). Pins, with injected deps + zero
- * PG/flags IO:
+ * (per-hive-learning-loops-2026-06-14 / D-005), WINDOWED since 2026-07-26 (the
+ * lifetime-sum froze scout permanently once a workspace had ever spent the cap).
+ * Pins, with injected deps + zero PG/flags IO:
  *   - flag OFF ⇒ the gate is a no-op ALLOW (the kill-switch);
  *   - UNDER cap ⇒ allow; OVER cap ⇒ refuse (workspace-ceiling-exceeded);
- *   - the ceiling SUMS across hives (aggregate `scout:<hive>` spend);
+ *   - the sum is WINDOWED — the gate asks the ledger for spend at/after
+ *     now − SCOUT_WORKSPACE_CEILING_WINDOW_MS, never lifetime;
  *   - the env override (PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD) is honored;
  *   - an IO error FAILS OPEN (allow) — a safety cap over already-bounded cycles
  *     must not freeze the fleet on a transient ledger-read failure.
+ * (The `blender:*`-only scoping of the sum lives in the SQL — sumScoutSpendSince,
+ * store.integration.test.ts — and in the pure rule's prefix filter, core.test.ts.)
  */
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -16,40 +20,28 @@ import {
   scoutWorkspaceCeilingGate,
   type ScoutCeilingDeps,
 } from './scout-ceiling';
-import { DEFAULT_SCOUT_WORKSPACE_CEILING_USD, scoutLoopId, type LearningLoopRegistration } from './core';
+import { DEFAULT_SCOUT_WORKSPACE_CEILING_USD, SCOUT_WORKSPACE_CEILING_WINDOW_MS } from './core';
 
 const SQL = {} as Sql;
+const NOW = 1_800_000_000_000;
 
-function reg(loopId: string, spentUsd: number): LearningLoopRegistration {
-  return {
-    workspaceId: 'w',
-    loopId,
-    displayName: loopId,
-    budgetKind: 'per-cycle',
-    budgetUsd: 0.5,
-    spentUsd,
-    priority: 60,
-    enabled: true,
-    enforcement: 'native',
-    meta: null,
-    registeredAt: 1,
-    updatedAt: 1,
-  };
-}
-
-function fakeDeps(opts: { enabled?: boolean; loops?: LearningLoopRegistration[]; ceilingUsd?: number } = {}): {
+function fakeDeps(
+  opts: { enabled?: boolean; totalUsd?: number; loopCount?: number; ceilingUsd?: number } = {},
+): {
   deps: ScoutCeilingDeps;
-  calls: { listed: number; logs: string[] };
+  calls: { summed: number; sinceMs: number[]; logs: string[] };
 } {
-  const calls = { listed: 0, logs: [] as string[] };
+  const calls = { summed: 0, sinceMs: [] as number[], logs: [] as string[] };
   const deps: ScoutCeilingDeps = {
     enabled: async () => opts.enabled ?? true,
     getSql: async () => SQL,
-    listLoops: async () => {
-      calls.listed += 1;
-      return opts.loops ?? [];
+    sumSpendSince: async (_sql, q) => {
+      calls.summed += 1;
+      calls.sinceMs.push(q.sinceMs);
+      return { totalUsd: opts.totalUsd ?? 0, loopCount: opts.loopCount ?? 1 };
     },
     ceilingUsd: () => opts.ceilingUsd ?? 10,
+    nowMs: () => NOW,
     log: (m) => calls.logs.push(m),
   };
   return { deps, calls };
@@ -81,38 +73,37 @@ describe('scoutWorkspaceCeilingGate', () => {
     const { deps, calls } = fakeDeps({ enabled: false });
     const v = await scoutWorkspaceCeilingGate({ workspaceId: 'w' }, deps);
     expect(v.allow).toBe(true);
-    expect(calls.listed).toBe(0); // the ledger read is short-circuited
+    expect(calls.summed).toBe(0); // the ledger read is short-circuited
+  });
+
+  it('asks the ledger for the WINDOWED sum — sinceMs = now − the accounting window, never lifetime', async () => {
+    const { deps, calls } = fakeDeps({ totalUsd: 1 });
+    await scoutWorkspaceCeilingGate({ workspaceId: 'w' }, deps);
+    expect(calls.sinceMs).toEqual([NOW - SCOUT_WORKSPACE_CEILING_WINDOW_MS]);
   });
 
   it('UNDER cap ⇒ proceed', async () => {
-    const { deps } = fakeDeps({ loops: [reg(scoutLoopId('a'), 1), reg(scoutLoopId('b'), 2)], ceilingUsd: 10 });
+    const { deps } = fakeDeps({ totalUsd: 3, loopCount: 2, ceilingUsd: 10 });
     const v = await scoutWorkspaceCeilingGate({ workspaceId: 'w' }, deps);
     expect(v.allow).toBe(true);
     expect(v.totalScoutSpentUsd).toBe(3);
   });
 
-  it('OVER cap ⇒ refuse + log (the ceiling SUMS across hives)', async () => {
-    const { deps, calls } = fakeDeps({
-      // Three hives, each individually small, sum past the workspace cap.
-      loops: [reg(scoutLoopId('a'), 4), reg(scoutLoopId('b'), 4), reg(scoutLoopId('c'), 4)],
-      ceilingUsd: 10,
-    });
+  it('OVER cap ⇒ refuse + log (aggregate windowed spend across hives)', async () => {
+    const { deps, calls } = fakeDeps({ totalUsd: 12, loopCount: 3, ceilingUsd: 10 });
     const v = await scoutWorkspaceCeilingGate({ workspaceId: 'w' }, deps);
     expect(v.allow).toBe(false);
     expect(v.reason).toBe('workspace-ceiling-exceeded');
     expect(v.totalScoutSpentUsd).toBe(12);
     expect(v.scoutLoopCount).toBe(3);
     expect(calls.logs.join('\n')).toMatch(/REFUSING new scout cycle/);
+    expect(calls.logs.join('\n')).toMatch(/in the last 24h/);
   });
 
-  it('gym + frontier registrant spend does NOT count toward the scout ceiling', async () => {
-    const { deps } = fakeDeps({
-      loops: [reg(scoutLoopId('a'), 3), reg('gym:a', 99), reg('frontier:transfer-harness', 99)],
-      ceilingUsd: 10,
-    });
+  it('exactly AT the cap ⇒ refuse (strictly-under semantics)', async () => {
+    const { deps } = fakeDeps({ totalUsd: 10, ceilingUsd: 10 });
     const v = await scoutWorkspaceCeilingGate({ workspaceId: 'w' }, deps);
-    expect(v.totalScoutSpentUsd).toBe(3);
-    expect(v.allow).toBe(true);
+    expect(v.allow).toBe(false);
   });
 
   it('FAILS OPEN (allow) + logs on an IO error — never freezes the fleet on a transient read failure', async () => {

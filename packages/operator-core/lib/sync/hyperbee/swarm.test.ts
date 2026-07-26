@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   countLiveConnections,
+  dataPathProven,
+  extractConnectionPath,
   parseDhtBootstrap,
   parseDhtHost,
   PEER_CAP_NEAR_RATIO,
+  readWireStats,
   reportPeerCapPressure,
   resolveDefaultMaxPeers,
   swarmConstructorOpts,
@@ -232,5 +235,110 @@ describe('reportPeerCapPressure — P-004 near-cap signal', () => {
   it('keeps PEER_CAP_NEAR_RATIO leaving headroom to act before the cap', () => {
     expect(PEER_CAP_NEAR_RATIO).toBeGreaterThan(0);
     expect(PEER_CAP_NEAR_RATIO).toBeLessThan(1);
+  });
+});
+
+// ─── extractConnectionPath / readWireStats / dataPathProven (WI-5863 / EI-18682571591024156) ──
+
+describe('extractConnectionPath', () => {
+  it('reports present:false for a socket with none of the udx* fields (unpatched hyperdht, or a fake)', () => {
+    expect(extractConnectionPath({})).toEqual({ present: false });
+    expect(extractConnectionPath(null)).toEqual({ present: false });
+    expect(extractConnectionPath(undefined)).toEqual({ present: false });
+  });
+
+  it('reads the dial path fields (connect.js half of the patch)', () => {
+    const path = extractConnectionPath({
+      udxRelayed: false,
+      udxServerAddress: { host: '10.99.0.11', port: 49737 },
+      udxClientAddress: '10.99.0.12:51000',
+    });
+    expect(path).toEqual({
+      present: true,
+      relayed: false,
+      serverAddress: '10.99.0.11:49737',
+      clientAddress: '10.99.0.12:51000',
+    });
+  });
+
+  it('reads the relayed-accept path fields (server.js half of the patch)', () => {
+    const path = extractConnectionPath({
+      udxRelayed: true,
+      udxRelayHost: '10.99.0.5',
+      udxRelayPort: 49737,
+    });
+    expect(path).toEqual({
+      present: true,
+      relayed: true,
+      relayHost: '10.99.0.5',
+      relayPort: 49737,
+    });
+  });
+
+  it('does NOT synthesize relayed:false for an absent reading (the absent-vs-zero trap)', () => {
+    // A direct-accept socket that only ever set nothing (e.g. an unpatched
+    // hyperdht, or a future accept path the patch missed) must come back
+    // present:false with `relayed` left undefined — never defaulted to false,
+    // which would be silently indistinguishable from a genuine "not relayed"
+    // reading from hyperdht itself.
+    const path = extractConnectionPath({ someUnrelatedField: 1 });
+    expect(path.present).toBe(false);
+    expect(path.relayed).toBeUndefined();
+  });
+});
+
+describe('readWireStats', () => {
+  it('reports present:false when there is no rawStream, or its counters are not numbers', () => {
+    expect(readWireStats({})).toEqual({ present: false });
+    expect(readWireStats({ rawStream: {} })).toEqual({ present: false });
+    expect(readWireStats({ rawStream: { bytesReceived: 'nope' } })).toEqual({ present: false });
+  });
+
+  it('reads numeric counters off socket.rawStream', () => {
+    const stats = readWireStats({
+      rawStream: {
+        bytesReceived: 0,
+        bytesTransmitted: 4921,
+        packetsReceived: 0,
+        rtoCount: 7,
+        retransmits: 10,
+      },
+    });
+    expect(stats).toEqual({
+      present: true,
+      bytesReceived: 0,
+      bytesTransmitted: 4921,
+      packetsReceived: 0,
+      rtoCount: 7,
+      retransmits: 10,
+    });
+  });
+
+  it('is explicit-presence even when the only readable counter is zero', () => {
+    // bytesReceived: 0 is a real, present measurement — must not collapse to
+    // the same shape as "we could not read it at all".
+    expect(readWireStats({ rawStream: { bytesReceived: 0 } })).toEqual({
+      present: true,
+      bytesReceived: 0,
+    });
+  });
+});
+
+describe('dataPathProven', () => {
+  it('is null when unreadable (present:false, or bytesReceived missing)', () => {
+    expect(dataPathProven({ present: false })).toBeNull();
+    expect(dataPathProven({ present: true })).toBeNull();
+  });
+
+  it('is false on positive evidence of the never-came-up signature (WI-5863)', () => {
+    // bytesReceived: 0 with bytesTransmitted nonzero — signalled fine, zero
+    // bytes ever came back.
+    expect(dataPathProven({ present: true, bytesReceived: 0, bytesTransmitted: 4921 })).toBe(
+      false,
+    );
+  });
+
+  it('is true only on positive evidence (bytes actually received)', () => {
+    expect(dataPathProven({ present: true, bytesReceived: 128 })).toBe(true);
   });
 });

@@ -46,12 +46,29 @@ function fakeIo() {
   };
 }
 
+// EI-18683281603125383: the server (psu-pty-host.mjs, WI-5872/EI-18676244363359331)
+// now writes a JSON-line ACK/NACK back on the connection (`allowHalfOpen:true`)
+// BEFORE calling `conn.end()`. A client that never attaches a 'data' listener
+// (nor calls .resume()/.pipe()) leaves its Readable side PAUSED — Node only
+// advances a paused stream to 'end' once something starts consuming it — so
+// with unconsumed ACK bytes sitting in the socket's internal buffer, 'end' (and
+// therefore 'close') never fires. That silently hung every helper below
+// forever the moment the server started acking (confirmed independent of any
+// pty/vitest/CPU-load involvement via a minimal bare `net` repro: a plain
+// allowHalfOpen server that writes+ends after a client with no 'data' listener
+// never sees 'close', deterministically, in <1s). Draining the payload (even
+// via a no-op 'data' handler) puts the stream in flowing mode so 'end'/'close'
+// fire normally; these helpers only ever cared about "did the connection settle",
+// never the ACK payload itself, so discarding it is the correct minimal fix —
+// production's own injectIntoHost() (psu-pty-discovery.ts) already reads this
+// same ACK for real and was unaffected.
 function rawInject(sock: string, data: string): Promise<void> {
   return new Promise((resolve) => {
     const c = net.connect(sock, () => {
       c.write(encodeControl({ mode: 'raw', data }));
       c.end();
     });
+    c.on('data', () => {});
     c.on('error', () => resolve());
     c.on('close', () => resolve());
   });
@@ -63,6 +80,7 @@ function controlInject(sock: string, mode: 'turn' | 'raw' | 'osc' | 'reset' | 'r
       c.write(encodeControl({ mode, data }));
       c.end();
     });
+    c.on('data', () => {});
     c.on('error', () => resolve());
     c.on('close', () => resolve());
   });
@@ -74,6 +92,7 @@ function envelopeInject(sock: string, envelope: Record<string, unknown>): Promis
       c.write(JSON.stringify({ v: 1, ...envelope }));
       c.end();
     });
+    c.on('data', () => {});
     c.on('error', () => resolve());
     c.on('close', () => resolve());
   });

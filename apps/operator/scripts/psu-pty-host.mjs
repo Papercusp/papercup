@@ -805,10 +805,43 @@ export function makeCarryRearmController({
   isStale = () => false,
 }) {
   const pending = new Set();
+  // EI-18681914950138372: a SEPARATE tracking set, covering the carry-respawn's
+  // FIRST delivery attempt — from the moment the host accepts the message
+  // through to that attempt's conclusion (delivered / dropped / handed off to
+  // a retry). `pending` (above) only covers the RETRY phase, which begins only
+  // once `schedule()` runs — i.e. only after the first busy-gate wait has
+  // already timed out. shouldDeferWakeForPendingRespawn's whole purpose is to
+  // stop a fresh wake `turn` from winning the inject-mutex FIFO race against
+  // this carry-respawn, but during that entire first wait (which can run the
+  // full busy-gate cap, e.g. minutes) `pending` is still empty — a wake
+  // arriving in that window sailed through the guard unfiltered, queued on the
+  // mutex BEFORE the eventual retry does, and won it every time (see
+  // beginFirstAttempt/endFirstAttempt call sites for the exact mechanics).
+  // `inFlight` closes that gap; `pendingCount()` below reports the union.
+  const inFlight = new Set();
   return {
-    /** Live count of drills awaiting their one-shot retry (diagnostics/tests). */
+    /** Live count of carry-respawns either awaiting their first delivery
+     *  attempt's outcome OR a re-armed retry (diagnostics/tests, and the input
+     *  to shouldDeferWakeForPendingRespawn). */
     pendingCount() {
-      return pending.size;
+      return pending.size + inFlight.size;
+    },
+    /** EI-18681914950138372: call the MOMENT a carry-respawn control message is
+     *  accepted by the host, before it enters its own busy-gate wait — marks it
+     *  in-flight so a wake arriving during that wait is correctly deferred. */
+    beginFirstAttempt(msg) {
+      const drillId = String(msg?.drillId || '');
+      inFlight.add(drillId || NON_DRILL_REARM_KEY);
+    },
+    /** EI-18681914950138372: call exactly once, when that first attempt has
+     *  fully concluded (delivered, dropped, errored, or handed off to
+     *  schedule() below) — safe to call unconditionally: schedule() always
+     *  adds to `pending` before this fires, so pendingCount() never dips to 0
+     *  mid-handoff, and a duplicate/idempotent delete on an already-cleared
+     *  key is a no-op. */
+    endFirstAttempt(msg) {
+      const drillId = String(msg?.drillId || '');
+      inFlight.delete(drillId || NON_DRILL_REARM_KEY);
     },
     /**
      * Schedule the one-shot retry for a busy-gate-refused carry-respawn drill.
@@ -1562,8 +1595,10 @@ export function isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs) {
   return lastRespawnAtMs > receivedAtMs;
 }
 
-/** EI-18679681961154136: should an incoming control message be DEFERRED
- *  because a carry-respawn re-arm retry is currently pending for this host?
+/** EI-18679681961154136 / EI-18681914950138372: should an incoming control
+ *  message be DEFERRED because a carry-respawn is currently in flight for this
+ *  host — either awaiting its FIRST delivery attempt's outcome, or a re-armed
+ *  RETRY?
  *
  *  makeCarryRearmController's production re-poll loop RELEASES the inject
  *  mutex between busy-gate-defer attempts on purpose (so ordinary wakes are
@@ -1573,11 +1608,20 @@ export function isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs) {
  *  rearm's own next attempt misses the window it was waiting for. Repeated
  *  indefinitely (a busy, well-connected agent keeps receiving wakes), the
  *  queued carry-respawn is starved forever — observed + diagnosed end-to-end
- *  on 2026-07-26. Only `mode:'turn'` is deferred here: reset/recycle/
- *  mcp-reconnect are explicit operator/owner actions, not routine wakes, and
- *  stay unaffected. The deferred wake loses nothing — it is already durable
- *  mail (coord/loop redeliver it) and is picked up on the next natural turn,
- *  exactly like an ordinary busy-gate refusal. Pure — exported for tests. */
+ *  on 2026-07-26 (EI-18679681961154136). The original fix covered only the
+ *  RETRY phase (`pending`, populated inside `schedule()`) — which starts only
+ *  once the FIRST busy-gate wait has already timed out. During that entire
+ *  first wait (up to the full busy-gate cap), a wake arriving sailed through
+ *  this check unfiltered, queued on the inject mutex BEFORE the eventual
+ *  retry did, and won every time (mutex is FIFO) — the same starvation, one
+ *  layer earlier (EI-18681914950138372, also 2026-07-26). `pendingRespawnCount`
+ *  now covers BOTH phases (see makeCarryRearmController's `inFlight` set +
+ *  beginFirstAttempt/endFirstAttempt), closing the gap end-to-end. Only
+ *  `mode:'turn'` is deferred here: reset/recycle/mcp-reconnect are explicit
+ *  operator/owner actions, not routine wakes, and stay unaffected. The
+ *  deferred wake loses nothing — it is already durable mail (coord/loop
+ *  redeliver it) and is picked up on the next natural turn, exactly like an
+ *  ordinary busy-gate refusal. Pure — exported for tests. */
 export function shouldDeferWakeForPendingRespawn(mode, pendingRespawnCount) {
   return mode === 'turn' && pendingRespawnCount > 0;
 }
@@ -2462,6 +2506,14 @@ export function hostThroughPty(o) {
       if (msg.mode === 'carry-respawn' && msg.receivedAtMs == null) {
         msg.receivedAtMs = Date.now();
       }
+      // EI-18681914950138372: mark this carry-respawn in-flight NOW, before it
+      // ever enters its own busy-gate wait below — this is what closes the
+      // starvation gap (see beginFirstAttempt's doc comment on
+      // makeCarryRearmController). Cleared exactly once, whichever way this
+      // attempt concludes, via the runGatedDelivery().finally() below.
+      if (msg.mode === 'carry-respawn') {
+        carryRearm.beginFirstAttempt(msg);
+      }
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
@@ -2859,16 +2911,27 @@ export function hostThroughPty(o) {
       // its own try/catch/finally above already handles every expected outcome
       // and durably records it; this outer .catch exists only so a genuinely
       // unexpected throw can never surface as an unhandled promise rejection.
-      void runGatedDelivery().catch((err) => {
-        try {
-          process.stderr.write(
-            `psu-pty-host: gated delivery pipeline threw for ${ownerId}: ` +
-              `${String((err && err.message) || err).slice(0, 300)}\n`,
-          );
-        } catch {
-          /* diagnostic only */
-        }
-      });
+      void runGatedDelivery()
+        .catch((err) => {
+          try {
+            process.stderr.write(
+              `psu-pty-host: gated delivery pipeline threw for ${ownerId}: ` +
+                `${String((err && err.message) || err).slice(0, 300)}\n`,
+            );
+          } catch {
+            /* diagnostic only */
+          }
+        })
+        .finally(() => {
+          // EI-18681914950138372: this attempt has concluded one way or another
+          // (delivered / dropped / errored / handed off to carryRearm.schedule's
+          // own `pending` tracking) — clear the in-flight marker exactly once.
+          // Safe even on hand-off: schedule() adds to `pending` synchronously
+          // before this can fire, so pendingCount() never dips to 0 mid-transfer.
+          if (msg.mode === 'carry-respawn') {
+            carryRearm.endFirstAttempt(msg);
+          }
+        });
       return { ok: true, reason: 'accepted' };
       })().catch((err) => ({
         ok: false,
