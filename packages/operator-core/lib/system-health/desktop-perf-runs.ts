@@ -14,7 +14,7 @@
  */
 
 import postgres from 'postgres';
-import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
+import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from '../resource-profile';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import type {
@@ -133,6 +133,8 @@ function db() {
     pool = postgres(getHarnessAdminUrl(), {
       ...longLivedPoolConnectionOptions('desktop-perf-runs'),
       max: sharedUtilityPoolMax(),
+      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
+      idle_timeout: poolIdleTimeoutSec(),
       prepare: false,
     });
   }

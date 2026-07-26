@@ -19,7 +19,7 @@
  */
 
 import postgres from 'postgres';
-import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
+import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import type { MergeCursorStore } from './read-merge';
 
@@ -32,6 +32,8 @@ function sql(): ReturnType<typeof postgres> {
     sharedSql = postgres(getHarnessAdminUrl(), {
       ...longLivedPoolConnectionOptions('pg-merge-cursor-store'),
       max: 2,
+      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
+      idle_timeout: poolIdleTimeoutSec(),
       prepare: false,
     });
   }

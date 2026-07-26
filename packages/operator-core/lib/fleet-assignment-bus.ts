@@ -105,6 +105,8 @@ async function ensureStarted(): Promise<void> {
       listenerSql = postgres(getHarnessAdminUrl(), {
         ...longLivedPoolConnectionOptions("fleet-assignment-bus"),
         max: 1,
+        // LISTEN: idle by design — never reap for idleness (would drop the subscription).
+        idle_timeout: 0,
       });
       await listenerSql.listen("fleet_assignment", onNotify);
     }

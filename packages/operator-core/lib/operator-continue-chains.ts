@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { sharedUtilityPoolMax } from './resource-profile';
 
 import postgres from 'postgres';
-import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
+import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { activeWorkspaceId } from './workspace-registry';
@@ -35,6 +35,8 @@ function db() {
     pool = postgres(getHarnessAdminUrl(), {
       ...longLivedPoolConnectionOptions('operator-continue-chains'),
       max: sharedUtilityPoolMax(),
+      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
+      idle_timeout: poolIdleTimeoutSec(),
       prepare: false,
     });
   return pool;

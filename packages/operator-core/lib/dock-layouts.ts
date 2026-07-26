@@ -9,7 +9,7 @@
  */
 
 import postgres from 'postgres';
-import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
+import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from './resource-profile';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
@@ -626,6 +626,9 @@ function db() {
     pool = postgres(getHarnessAdminUrl(), {
       ...longLivedPoolConnectionOptions('dock-layouts'),
       max: sharedUtilityPoolMax(),
+      // Transactional pool — drain idle backends (postgres-js would otherwise hold
+      // them open forever; see poolIdleTimeoutSec).
+      idle_timeout: poolIdleTimeoutSec(),
       prepare: false,
     });
   }

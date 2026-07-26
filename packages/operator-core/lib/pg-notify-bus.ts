@@ -91,6 +91,8 @@ export function createNotifyBus(channel: string, label: string = channel): Notif
         listenerSql = postgres(getHarnessAdminUrl(), {
           ...longLivedPoolConnectionOptions(`notify-bus:${label}`),
           max: 1,
+          // LISTEN: idle by design — never reap for idleness (would drop the subscription).
+          idle_timeout: 0,
         });
         await listenerSql.listen(channel, onNotify);
       }
