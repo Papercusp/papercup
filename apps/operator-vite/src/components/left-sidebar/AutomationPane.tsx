@@ -47,9 +47,12 @@ import type {
   AutomationRoutine,
 } from '@papercusp/operator-core/lib/automation/catalog';
 
+/** budgetEdit key for the workspace-ceiling row (not a pot/lane arm — its own save path). */
+const SCOUT_CEILING_KEY = 'scout/workspace-ceiling';
+
 /** Fire a routine control tool through the gated/audited run-tool bridge (mirrors OverwatchTab). */
 async function runRoutineTool(
-  name: 'routines:set' | 'routines:group-set' | 'gym:arm' | 'governor:arm',
+  name: 'routines:set' | 'routines:group-set' | 'gym:arm' | 'governor:arm' | 'learning:set-scout-budget',
   args: Record<string, unknown>,
 ): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
@@ -247,7 +250,7 @@ export default function AutomationPane({
 
   async function runArm(
     key: string,
-    tool: 'gym:arm' | 'governor:arm',
+    tool: 'gym:arm' | 'governor:arm' | 'learning:set-scout-budget',
     args: Record<string, unknown>,
   ): Promise<void> {
     setBusy(key);
@@ -273,6 +276,22 @@ export default function AutomationPane({
     }
     setBudgetEdit(null);
     await runArm(row.key, row.tool, { ...row.idArgs, budgetUsd });
+  }
+
+  /** Commit the workspace-ceiling draft: '' clears the override (env/default resumes), otherwise a finite ≥0 number sets it. */
+  async function saveScoutCeiling(): Promise<void> {
+    if (!budgetEdit || budgetEdit.key !== SCOUT_CEILING_KEY) return;
+    const raw = budgetEdit.value.trim();
+    if (raw !== '' && (!Number.isFinite(Number(raw)) || Number(raw) < 0)) {
+      setErr(`"${raw}" is not a valid ceiling — enter a dollar amount, or clear to revert to the default`);
+      return;
+    }
+    setBudgetEdit(null);
+    await runArm(
+      SCOUT_CEILING_KEY,
+      'learning:set-scout-budget',
+      raw === '' ? { op: 'clear' } : { op: 'set', workspaceCeilingUsd: Number(raw) },
+    );
   }
 
   if (!active) return null;
@@ -424,7 +443,7 @@ export default function AutomationPane({
               tab"): per-pot gym arming (gym:arm writes BOTH the autoloop config
               and the gym:<slug> governor row) and per-lane governor arming
               (governor:arm). */}
-          {showArming && arming && (arming.gymPots.length > 0 || arming.lanes.length > 0) && (
+          {showArming && arming && (arming.gymPots.length > 0 || arming.lanes.length > 0 || arming.scoutCeiling != null) && (
             <section className="pc-auto__section" data-testid="automation-arming">
               <div className="pc-auto__section-head">
                 <Shield size={12} aria-hidden />
@@ -434,6 +453,65 @@ export default function AutomationPane({
                 </span>
               </div>
               <div className="pc-auto__list" role="list">
+                {arming.scoutCeiling && (
+                  <div
+                    role="listitem"
+                    className="pc-auto__row is-active"
+                    data-testid="arming-row-scout-workspace-ceiling"
+                  >
+                    <div className="pc-auto__row-main">
+                      <span
+                        className="pc-auto__name"
+                        title="Workspace-wide learning spend ceiling — caps ALL Blender/Scout spend above the per-pot and per-lane budgets below. 0 = no learning spend allowed. Empty reverts to the built-in default."
+                      >
+                        workspace ceiling
+                      </span>
+                      <span className="pc-auto__meta">
+                        {budgetEdit?.key === SCOUT_CEILING_KEY ? (
+                          <input
+                            className="pc-auto__budget-input"
+                            style={{ width: 64, font: 'inherit' }}
+                            autoFocus
+                            inputMode="decimal"
+                            aria-label="Workspace learning spend ceiling (USD; empty reverts to the default)"
+                            value={budgetEdit.value}
+                            onChange={(e) => setBudgetEdit({ key: SCOUT_CEILING_KEY, value: e.target.value })}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void saveScoutCeiling();
+                              if (e.key === 'Escape') setBudgetEdit(null);
+                            }}
+                            onBlur={() => setBudgetEdit(null)}
+                            data-testid="arming-budget-input-scout-workspace-ceiling"
+                          />
+                        ) : (
+                          <Tooltip label="Click to edit the workspace ceiling (Enter saves, Esc cancels; empty reverts to the default)">
+                            <button
+                              type="button"
+                              className="pc-auto__budget"
+                              style={{ all: 'unset', cursor: 'pointer' }}
+                              disabled={busy !== null}
+                              onClick={() =>
+                                setBudgetEdit({
+                                  key: SCOUT_CEILING_KEY,
+                                  value:
+                                    arming.scoutCeiling!.overrideUsd === null
+                                      ? ''
+                                      : String(arming.scoutCeiling!.overrideUsd),
+                                })
+                              }
+                              data-testid="arming-budget-scout-workspace-ceiling"
+                            >
+                              <Coins size={10} aria-hidden /> ${arming.scoutCeiling.effectiveUsd} ceiling
+                            </button>
+                          </Tooltip>
+                        )}
+                      </span>
+                      <span className="pc-auto__when">
+                        {arming.scoutCeiling.overrideUsd === null ? 'default' : 'override'}
+                      </span>
+                    </div>
+                  </div>
+                )}
                 {[
                   ...arming.gymPots.map((g) => ({
                     key: `gym/${g.harnessSlug}`,

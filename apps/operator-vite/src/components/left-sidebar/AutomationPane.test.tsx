@@ -378,6 +378,7 @@ const arming = {
   lanes: [
     { loopId: 'red-queen', displayName: 'Red Queen', potSlug: 'papercusp', enabled: false, budgetUsd: null, spentUsd: 0, enforcement: 'governor' },
   ],
+  scoutCeiling: { overrideUsd: null, effectiveUsd: 400, envUsd: 400 },
 };
 
 describe('armingLaneValue / armBudgetLabel', () => {
@@ -447,5 +448,42 @@ describe('AutomationPane — Arming section (P-011)', () => {
     await waitFor(() => expect(H.invalidated).toContain('automation.catalog'));
     const sent = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
     expect(sent).toEqual([{ name: 'governor:arm', args: { loopId: 'red-queen', budgetUsd: 25 }, confirmed: true }]);
+  });
+
+  it('renders the workspace-ceiling row above the arms (P-012: effective value + default/override state)', () => {
+    renderPane({ arming } as never);
+    expect(screen.getByTestId('arming-row-scout-workspace-ceiling')).toBeTruthy();
+    expect(screen.getByTestId('arming-budget-scout-workspace-ceiling').textContent).toContain('$400 ceiling');
+    expect(screen.getByTestId('arming-row-scout-workspace-ceiling').textContent).toContain('default');
+  });
+
+  it('ceiling click-to-edit saves via learning:set-scout-budget on Enter (empty clears the override)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPane({ arming } as never);
+
+    fireEvent.click(screen.getByTestId('arming-budget-scout-workspace-ceiling'));
+    const input = screen.getByTestId('arming-budget-input-scout-workspace-ceiling');
+    fireEvent.change(input, { target: { value: '250' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(H.invalidated).toContain('automation.catalog'));
+    const sent = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(sent).toEqual([
+      { name: 'learning:set-scout-budget', args: { op: 'set', workspaceCeilingUsd: 250 }, confirmed: true },
+    ]);
+
+    fetchMock.mockClear();
+    fireEvent.click(screen.getByTestId('arming-budget-scout-workspace-ceiling'));
+    const input2 = screen.getByTestId('arming-budget-input-scout-workspace-ceiling');
+    fireEvent.change(input2, { target: { value: '' } });
+    fireEvent.keyDown(input2, { key: 'Enter' });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string))).toEqual([
+        { name: 'learning:set-scout-budget', args: { op: 'clear' }, confirmed: true },
+      ]),
+    );
   });
 });

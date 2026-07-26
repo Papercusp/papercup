@@ -506,13 +506,12 @@ export default defineTool({
     '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, ' +
     'current claims (doing/workItemIds/queuedCount/load), healthy loop state (monitoring|waiting|' +
     'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
-    'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
+    'messages (count/oldestAgeMs/newest), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (alive but not advancing, ' +
-    'or alive+idle, unclaimed, unparked — `kind` idle-with-claimable ⇒ wake, never bench), ' +
-    'and unownedCriticals (aged unassigned ' +
-    'criticals this fleet\'s spec would admit). Scoped to ONE fleet ' +
-    '(yours by default), not the whole workspace roster fleet:assignments returns. ' +
-    'Replaces a leader\'s hand-assembled presence+assignments+inbox scan each monitor wake.',
+    'or alive+idle — check its `kind` before benching), idleWithClaimableAlert, ' +
+    'and unownedCriticals (aged unassigned criticals the spec admits). Scoped to ONE fleet ' +
+    '(yours by default), not fleet:assignments\' whole-workspace roster. ' +
+    'Replaces the hand-assembled presence+assignments+inbox scan each monitor wake.',
   guidance: {
     when:
       "On a leader's repeating monitor tick: "
@@ -525,7 +524,7 @@ export default defineTool({
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
       'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it. ' +
-      '`idleWithClaimableAlert` → wake those members (never bench — the queue is not empty).',
+      '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',
   requirePrincipal: false,

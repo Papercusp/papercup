@@ -3340,6 +3340,66 @@ Add a new entry to `WATCHDOG_BEHAVIOR_CUTOVERS` for every future watchdog behavi
 
 A deploy that restarts `:3070` is not the same as “every process that runs this code got the fix.” Grep the import chain for every long-lived standalone host (bg-host, gateway, embed-sidecar) before declaring a cutover done, and restart each one explicitly. A session-outcome audit (no native compact\_boundary rows) proves sessions behaved — it does not prove the enforcer is current; you need both an outcome audit and an enforcer freshness check.
 
+# Benchmark over the transport that ships — loopback HTTP numbers do not transfer to Tauri IPC
+
+> A sync-layer redesign was planned on :3070 loopback-HTTP measurements. Re-measured inside the Tauri shell the optimum moved 2x (concurrency 12 -> 24) and the low setting REGRESSED past the design it replaced. How to measure the desktop transport, and the two confounds that will invert your result.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+Papercusp’s content layer is reachable two ways: plain **loopback HTTP** on `:3070`/`:3170`, and the **webview→sidecar IPC bridge** inside the Tauri shell. `curl` and any node script reach the first one. Only the shipping product uses the second.
+
+So the cheap way to benchmark anything in the sync path — loop a script against `:3070`, chart the numbers — measures a transport **no user is ever on**. That is exactly how `drop-sync-batcher-2026-07-25` was planned, and the numbers were not merely imprecise, they pointed at the wrong setting.
+
+## What actually differed
+
+[Section titled “What actually differed”](#what-actually-differed)
+
+The plan replaced a request batcher with individual requests through a bounded-concurrency gate, and had to pick a default max-in-flight. Same 106 sync queries, same code, both transports:
+
+|                         | loopback HTTP (`:3070`)    | Tauri IPC (shipping)     |
+| ----------------------- | -------------------------- | ------------------------ |
+| wall @ conc 6 → 24      | **flat** (1126ms → 1106ms) | **not flat** (see below) |
+| conc 12                 | —                          | 4981ms wall, p50 212ms   |
+| conc 24                 | —                          | 2922ms wall, p50 395ms   |
+| one bundle (old design) | 2676ms                     | 3000ms                   |
+
+Over loopback, wall time was flat across the whole range, which says *pick the low end — concurrency is free here and per-query latency is better there*. That reasoning is sound and the conclusion is wrong: over IPC the curve is steep, and at the low end (12) the new design’s wall **regresses past the batcher it was replacing** — the one outcome that would have made the whole change a net loss. The default had to be 24.
+
+Per-invoke overhead across the bridge is small (\~2ms; sequential median 18ms IPC vs 16ms raw) and the bridge is genuinely parallel — so the invoke leg is not the story. What changes is how the *server* behaves under a concurrent wave that arrives via a different path, contending for the same PG pool and event loop.
+
+## Measure it like this
+
+[Section titled “Measure it like this”](#measure-it-like-this)
+
+Attach to a running shell and drive it headlessly — no focus steal, no human. Full playbook in [testing/agent-e2e](/internal/docs/testing/agent-e2e); the short version:
+
+```bash
+cd papercusp-desktop && npm run dev      # or attach to an already-running shell
+tauri-agent-tools eval '<expression>'    # runs INSIDE the webview
+```
+
+Run your timing loop in that `eval`, not in a node script. The webview is the only place the IPC path exists.
+
+## The two confounds that will invert your result
+
+[Section titled “The two confounds that will invert your result”](#the-two-confounds-that-will-invert-your-result)
+
+Both of these bit during this measurement; the first produced a **published number that had to be retracted**.
+
+1. **Cold cache absorbs the whole cost of whichever condition runs first.** The first run showed the batcher winning by 2x (4895ms vs 9493ms) — pure ordering artifact. Condition A paid for every cold resolver, PG plan, and connection; B inherited a warm system. **Warm up first, then interleave the conditions round-robin**, several rounds, and compare medians. Interleaving inverted the result completely.
+
+2. **Wall time is not the user-visible metric.** At equal wall time, N individual requests and one bundle are *not* equivalent: the bundle paints nothing until its slowest member lands, so its effective p50 **is** its wall. Individual requests painted at p50 395ms against a 3000ms bundle — a \~7.6x better time-to-first-paint at parity on wall. Record both, and say which one the decision rests on.
+
+## The general rule
+
+[Section titled “The general rule”](#the-general-rule)
+
+**A benchmark inherits the transport it was taken over.** Before a measurement justifies a default, a design, or a deletion, check that it was taken over the path that ships. If it wasn’t, it is a hypothesis, not evidence — and a comment citing it will be obeyed by everyone who reads it afterwards.
+
+When both sets of numbers are worth keeping, keep both *and label them*, as `query-fetcher.ts` now does: the shipping number drives the default, the loopback number is marked non-transferable so nobody “restores” it later.
+
 # Best-effort PG writes swallow cast errors — pin the rows, and know jsonb int casts ERROR on fractions
 
 > jsonb_to_recordset(... AS x(col int)) raises 'invalid input syntax for type integer: "0.5"' instead of rounding — a fractional value in a payload silently kills the WHOLE statement. Inside a warn-and-continue try/catch (the scout lens-weight upsert pattern), that failure is invisible: tests pass on no-error, prod state just goes stale. Second occurrence of this exact class on the same seam (bytes.js Array serialization was the first). Rule: a best-effort write needs a test that asserts the ROWS LANDED, never just no-throw; and round/truncate explicitly before any jsonb int cast.
@@ -21701,6 +21761,60 @@ So the confusing part — a `cat-file` “not a git repository” that looks lik
 * [git-sync absorbs history rewrites](/internal/docs/agent-insights/git-sync-history-rewrite-absorbed) — the P-005 sibling semantics in the same test file.
 * [spawn env leaks into vitest](/internal/docs/agent-insights/spawn-env-leaks-into-vitest) — the other “passes locally, reds the green-checkpoint” class (env pollution, scrubbed by `setup-hermetic-env.ts`).
 * [vitest threads pool Node 25 coredump](/internal/docs/agent-insights/vitest-threads-pool-node25-coredump) — why the unit layer is `pool: 'forks'`, and another non-deterministic whole-run red that isn’t a test-logic defect.
+
+# Verify a guard bites by mutating a COPY, never the real file, in the shared tree (EI-18679874588795100)
+
+> Many plans instruct 'verify the guard bites by temporarily regressing the code' — the naive version edits the real source file in place, runs the test, and reverts in a `finally`. On this shared checkout that is unsafe: a killed/stalled background process (run_in_background dies silently, host overload, a compaction respawn) can strand the injected regression in a live, untracked-or-uncommitted file that git-sync will happily commit and every peer will inherit. Worse, `git diff` does not reliably catch this — a NEW file has no diff baseline to compare against. The fix: copy the module + its test into a scratch subdir inside the same package (so vitest config/aliases still resolve), rewrite the relative imports one level deeper, mutate the COPY, run vitest against the copy, then rm -rf the scratch dir. A kill at any point leaves only a stray directory; production is never touched. Also documents a second, unrelated trap hit in the same incident: a background script with no output for minutes was not necessarily hung — Python (and many interpreters) buffer stdout when it isn't a tty, so a silent log is indistinguishable from a stalled one; run such scripts with `python3 -u` / `stdbuf -oL` when you intend to watch their progress.
+
+## What happened
+
+[Section titled “What happened”](#what-happened)
+
+While implementing `drop-sync-batcher-2026-07-25` P-008 (“verify the guards BITE by temporarily regressing the code”), an agent ran a mutation-test script via `Bash { run_in_background: true }`. The script’s job was: edit a source file in place to inject a known-bad change (`createConcurrencyGate(1)`), run Vitest against it to confirm the guard’s test catches the regression, then revert the file in a `finally` block.
+
+The background task was killed or stalled mid-run. Its stdout stayed empty for minutes — indistinguishable from a hang, because Python buffers stdout when it isn’t attached to a tty (see the buffering trap below). The agent only discovered the problem by re-reading the file by hand: it was still carrying the injected regression, sitting in the **shared checkout** (`libs/generic/sync/src/transports/polling/query-fetcher.ts`) where the background git-sync routine would have committed it on its next tick, and every peer working from `staging` would have silently inherited a broken concurrency gate.
+
+## Why the usual safety net doesn’t catch this
+
+[Section titled “Why the usual safety net doesn’t catch this”](#why-the-usual-safety-net-doesnt-catch-this)
+
+The standard reflex — “check `git diff` before trusting the tree” — does not save you here. If the mutated file is new/untracked in your working context, or if you never think to look because the plan says “revert when done,” there is no diff baseline prompting a second look. A `finally` block only runs if the process gets the chance to reach it; a hard kill (OOM, host overload, a `run_in_background` task reaped by the Claude Code CLI — see \[\[native-bash-background-task-killed-under-host-overload]] — or a session compaction/respawn mid-script) skips it entirely, and the regression is left live with no visible signal that anything is wrong.
+
+## The durable fix: mutate a COPY, never the real file
+
+[Section titled “The durable fix: mutate a COPY, never the real file”](#the-durable-fix-mutate-a-copy-never-the-real-file)
+
+Never edit the real module in place to “temporarily” break it. Instead:
+
+1. **Copy the module + its test** into a scratch subdirectory inside the *same package* (so the existing `vitest.config` / path aliases still resolve without extra wiring) — e.g. `libs/generic/sync/src/transports/polling/__mutation_scratch__/`.
+2. **Rewrite the relative imports** in the copies one level deeper (the scratch dir adds a path segment).
+3. **Mutate the copy** with the intended regression.
+4. **Run Vitest against the copied test file** (`npm run test:file -- .../__mutation_scratch__/query-fetcher.test.ts`) and confirm it fails the way the guard is supposed to catch.
+5. **`rm -rf` the scratch directory** when done — no `finally`-dependent revert of a real file required.
+
+If the process is killed at *any* point in this sequence, the worst outcome is a stray scratch directory left in the tree — annoying, easily spotted, and harmless to production code. The real module is never touched, so there is nothing for git-sync to commit and nothing for a peer to inherit.
+
+Verified working end-to-end: 4/4 intended mutations were caught by their guards’ tests, and the real files were never modified at any point.
+
+## Secondary trap: a silent background script may not be hung
+
+[Section titled “Secondary trap: a silent background script may not be hung”](#secondary-trap-a-silent-background-script-may-not-be-hung)
+
+Separately from the mutation-safety issue: if you background a script whose progress you intend to watch via its stdout/log file, and the file stays empty far longer than expected, do not assume it means the process is stalled. Python (like many interpreters) switches to fully-buffered stdout the moment it isn’t a tty, so output can sit in an in-process buffer for the entire run and appear all at once at exit — a silent log file is indistinguishable from a hung process using only that signal. Launch such scripts unbuffered when you intend to monitor them live:
+
+```sh
+python3 -u your_script.py …          # -u: unbuffered stdout/stderr
+# or, for an arbitrary already-buffering binary:
+stdbuf -oL your_script …             # -oL: line-buffer stdout
+```
+
+Absent that, verify liveness by PID (`ps`/`pgrep`) rather than by “has it printed anything yet” — the same guidance as \[\[native-bash-background-task-killed-under-host-overload]] for a different root cause (buffering vs. an external kill), same actionable fix (don’t trust silence as a liveness signal).
+
+## Takeaway for plan authors
+
+[Section titled “Takeaway for plan authors”](#takeaway-for-plan-authors)
+
+Any plan step phrased as “verify the guard bites by temporarily regressing the code” is, as currently written, an instruction toward the unsafe in-place method — it should instead point here, or spell out the copy-and-mutate recipe directly, especially for plans executed by a multi-agent fleet sharing one checkout.
 
 # Green health check but memory handlers hang (native-addon ABI mismatch)
 
