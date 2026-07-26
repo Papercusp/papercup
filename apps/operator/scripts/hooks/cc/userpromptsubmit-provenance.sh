@@ -100,7 +100,11 @@ except OSError:
 
 now_ms = time.time() * 1000
 ttl = ttl_ms()
-live = lambda r: now_ms - r['ts'] <= ttl
+# EI-18680056073436345: honor a PER-ROW ttlMs override when present (lockstep
+# with turn-provenance.ts's `r.ttlMs ?? ttlMs`) — needed for injectors whose
+# delivery delay can exceed the global default (e.g. cli-schedule-wakeup, up
+# to 3600s for a ScheduleWakeup fire). Absent for every other origin.
+live = lambda r: now_ms - r['ts'] <= r.get('ttlMs', ttl)
 
 m = ENVELOPE_RE.match(prompt)
 if m:
