@@ -23,7 +23,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
-import type postgres from 'postgres';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
 import {
@@ -32,7 +31,8 @@ import {
   type GateVerdictTarget,
 } from '../../release/gate-verdict-target';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
-import { describeGateRedOwnership, type GateRedOwnership } from '../../release/gate-red-ownership';
+import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from '../../release/gate-red-ownership';
+import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 import { STALE_MS } from '../../liveness';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
@@ -740,8 +740,7 @@ export async function trackGateStall(
       // reassurance is the version of this bug that leaves a gate unowned instead of
       // triple-owned. Same signature derivation as the dispatcher (P-012: sorted failing
       // files, candidate as fallback) so the two cannot key on different things.
-      const currentSignature =
-        failingTests && failingTests.length > 0 ? failingTests.slice().sort().join(',') : (candidate ?? null);
+      const currentSignature = gateFailureSignature(failingTests, candidate);
       const ownership = describeGateRedOwnership({
         ownerSignature: lastFixer?.signature ?? null,
         currentSignature,
@@ -1029,29 +1028,13 @@ export function decideReleaseFixerDispatch(args: {
 }
 
 /**
- * Is the recorded release-fixer spawn still ALIVE — `running`/`restarting` with a
- * heartbeat inside the shared STALE_MS window (the SAME liveness definition the
- * fleet_assignment view + the stale-claim reconciler use, so they can't drift)?
- * Returns `null` when there's no spawn id to check (a DBOS-durable fire / legacy
- * record), which the decision treats as "presumed covered". Fail-soft: a query
- * error returns null (presumed covered) rather than hammering a re-dispatch.
+ * Re-exported from `../../release/fixer-liveness` — moved there so read-side surfaces (the
+ * pipeline snapshot / release:trace) can resolve fixer liveness WITHOUT importing this
+ * module, whose `registerSystemAction` calls run at import. Re-exported rather than
+ * relocated-and-updated-at-every-callsite so existing importers keep working, and so there
+ * stays exactly one definition shared by the dispatcher and the ownership renderer.
  */
-export async function releaseFixerSpawnAlive(sql: postgres.Sql, spawnId: string | null | undefined): Promise<boolean | null> {
-  if (!spawnId) return null;
-  const graceSec = Math.max(1, Math.round(STALE_MS / 1000));
-  try {
-    const rows = (await sql.unsafe(
-      `SELECT 1 FROM harness_shared.spawned_agents
-        WHERE spawn_id = $1 AND status IN ('running','restarting')
-          AND heartbeat_at IS NOT NULL AND (now() - heartbeat_at) < make_interval(secs => $2)
-        LIMIT 1`,
-      [spawnId, graceSec],
-    )) as unknown[];
-    return rows.length > 0;
-  } catch {
-    return null;
-  }
-}
+export { releaseFixerSpawnAlive };
 
 /**
  * EI-7443: render each CURRENTLY-failing test file's 7d flake stats (from
@@ -1211,7 +1194,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
   // is a NEW candidate — keying on sha re-notified the human + re-spawned a fixer every
   // hour for the SAME failure. The signature is stable across candidates; only a CHANGED
   // failure set re-dispatches. Falls back to the candidate sha when none was extracted.
-  const signature = failingTests && failingTests.length > 0 ? failingTests.slice().sort().join(',') : candidate;
+  const signature = gateFailureSignature(failingTests, candidate) ?? undefined;
   const rows = (await sql.unsafe(
     `SELECT metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,

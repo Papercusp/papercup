@@ -734,6 +734,77 @@ async function defaultWriteFlapState(ws: string, state: FlapState): Promise<void
   }
 }
 
+/**
+ * EI-18673998482704275 — atomic flap-decision read-modify-write (lost-update fix).
+ *
+ * EI-15126 (above) made the flap-episode STORE durable + cross-worker, but
+ * `runLivenessAlarmTick` still read it once at tick start (`flapEpisodes`) and
+ * wrote it back once at tick end, with the escalate()/resolve()/page()/
+ * pageResolved() I/O calls — each a real await point — running in between. On
+ * a `:3070` cluster (N independent request workers each running this tick on
+ * their own timer — see the doc comment on `startInfraLivenessAlarm`), two
+ * workers' ticks CAN overlap in wall time, especially under the exact
+ * "heavily-parallel fleet" load this alarm exists to catch: worker A reads
+ * fireCount=1, awaits its escalate() call, worker B reads the SAME
+ * fireCount=1 (A hasn't written yet), both independently compute
+ * fireCount=2 and page(), and whichever writes last clobbers the other's
+ * update — a classic lost-update race. The net effect is indistinguishable
+ * from the pre-EI-15126 bug this was supposed to fix: the fire/resolve
+ * counter never climbs past `flapThreshold`, so the 3rd+ fire of a genuinely
+ * flapping condition (e.g. `panel:infra` bouncing under load) never gets
+ * suppressed and keeps re-broadcasting a FIRING+RESOLVED pair every tick
+ * (observed live: EI-18673998482704275, 3 `panel:infra` RECOVERED broadcasts
+ * ~1-2min apart with no suppression ever engaging).
+ *
+ * The fix: isolate the flap-episode MUTATION (not the surrounding I/O) into
+ * one atomic read-modify-write step, `updateFlapState`. The mutator is a pure
+ * synchronous function — it decides `toPage` / `toResolveSigs` from the
+ * CURRENT durable state and returns the next state — so there is no await
+ * point between reading and writing it:
+ *   - production (`deps.readLast === undefined`): `updateOperatorState`
+ *     wraps the read+mutate+write in a single PG transaction with
+ *     `SELECT ... FOR UPDATE`, so a second concurrent worker's transaction
+ *     genuinely blocks until the first commits (see operator-state-pg.ts).
+ *   - hermetic (a test injects `readLast`): the fallback below runs the
+ *     read+mutate+write with NO intervening `await`, so JS run-to-completion
+ *     guarantees it can't be interleaved by a concurrent `Promise.all` caller
+ *     either — the same atomicity guarantee, without real PG.
+ * A caller that injects the legacy `readFlapState`/`writeFlapState` seam
+ * (existing tests) gets a fallback built from them, preserving their exact
+ * prior behavior — they call synchronously in sequence with no interleaving
+ * side-I/O in between, matching how those tests already exercise this path.
+ */
+export interface FlapMutationResult {
+  next: FlapState;
+  toPage: AlarmSignal[];
+  toResolveSigs: string[];
+}
+
+async function defaultUpdateFlapState(
+  ws: string,
+  mutate: (current: FlapState) => FlapMutationResult,
+): Promise<FlapMutationResult> {
+  let result: FlapMutationResult | null = null;
+  try {
+    const { updateOperatorState } = await import('../operator-state-pg');
+    await updateOperatorState<FlapState>(
+      'operator_liveness_flap_state',
+      {},
+      (current) => {
+        result = mutate(current);
+        return result.next;
+      },
+      ws,
+    );
+  } catch {
+    /* fail-soft: never crash the request worker; fall back to deciding against
+     * an empty baseline — matches readFlapState/writeFlapState's existing
+     * fail-soft philosophy (a lost read/write just re-derives next tick). */
+    result = null;
+  }
+  return result ?? mutate({});
+}
+
 /** The SETTLE duration: how long a signature must stay quiet (no re-fire)
  *  before a suppressed flap episode is considered genuinely over and earns
  *  its one final all-clear. 30min — matches the escalation debounce. */
@@ -824,6 +895,16 @@ export interface AlarmDeps {
   /** EI-15126: persist the (possibly mutated) flap-episode state for the next
    *  tick — by any worker. Default = `defaultWriteFlapState`. */
   writeFlapState?: (ws: string, state: FlapState) => Promise<void>;
+  /** EI-18673998482704275: ATOMIC read-modify-write for the flap-decision step —
+   *  see the doc comment on `defaultUpdateFlapState` above for why this must be
+   *  atomic (a lost-update race across concurrent cluster workers) and how each
+   *  default achieves it. Takes precedence over `readFlapState`/`writeFlapState`
+   *  when supplied; when only those legacy deps are injected (existing tests),
+   *  a fallback built from them preserves their exact prior sequential behavior. */
+  updateFlapState?: (
+    ws: string,
+    mutate: (current: FlapState) => FlapMutationResult,
+  ) => Promise<FlapMutationResult>;
 }
 
 async function defaultReadRoutineEngineLiveness(nowMs: number): Promise<RoutineEngineLiveness> {
@@ -994,17 +1075,42 @@ export async function runLivenessAlarmTick(
   // EI-15126: durable cross-worker flap-episode store — gated identically to
   // readBeeCapacity (deps.readLast === undefined ⇒ production, real PG;
   // otherwise the single-process hermetic fallback every existing test relies on).
-  const readFlapState =
-    deps.readFlapState ??
-    (deps.readLast === undefined ? defaultReadFlapState : async () => hermeticFlapStateFallback);
-  const writeFlapState =
-    deps.writeFlapState ??
-    (deps.readLast === undefined
-      ? defaultWriteFlapState
-      : async (_ws: string, state: FlapState) => {
-          hermeticFlapStateFallback = state;
-        });
-  const flapEpisodes = new Map<string, FlapEpisode>(Object.entries(await readFlapState(ws).catch(() => ({}))));
+  // EI-18673998482704275: the flap-episode MUTATION is now a single atomic
+  // read-modify-write (see defaultUpdateFlapState's doc comment) instead of a
+  // read-at-start/write-at-end pair straddling this tick's other await points
+  // — that gap was the lost-update race across concurrent cluster workers.
+  const updateFlapState: (
+    w: string,
+    mutate: (current: FlapState) => FlapMutationResult,
+  ) => Promise<FlapMutationResult> =
+    deps.updateFlapState ??
+    (deps.readFlapState || deps.writeFlapState
+      ? // A caller injected the legacy read/write seam directly (existing
+        // tests) — preserve its exact prior sequential semantics: read once,
+        // mutate synchronously, write once, no interleaving side-I/O between.
+        async (w, mutate) => {
+          const readFn = deps.readFlapState ?? (async () => hermeticFlapStateFallback);
+          const writeFn =
+            deps.writeFlapState ??
+            (async (_w: string, s: FlapState) => {
+              hermeticFlapStateFallback = s;
+            });
+          const current = await readFn(w).catch(() => ({}) as FlapState);
+          const result = mutate(current);
+          await writeFn(w, result.next).catch(() => {});
+          return result;
+        }
+      : deps.readLast === undefined
+        ? defaultUpdateFlapState
+        : // Hermetic default: read+mutate+write with NO await between them, so
+          // JS run-to-completion makes this critical section atomic even under
+          // a Promise.all-concurrent test caller — mirrors the real PG
+          // transaction's row-lock guarantee without needing real PG.
+          async (_w, mutate) => {
+            const result = mutate(hermeticFlapStateFallback);
+            hermeticFlapStateFallback = result.next;
+            return result;
+          });
 
   const cached = readLast(ws);
   const localSnapshotAgeMs = cached ? now - cached.evaluatedAt : null;

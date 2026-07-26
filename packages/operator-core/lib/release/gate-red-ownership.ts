@@ -30,8 +30,33 @@
  * taking the gate, it is to stop them from taking it THREE TIMES.
  */
 
+/**
+ * The P-012 failure signature: what the release-fixer dedup is keyed on. Sorted failing
+ * test files, falling back to the candidate sha when the verdict named no files.
+ *
+ * THIS EXISTS SO THE DERIVATION CANNOT DRIFT. It was inlined at the dispatcher
+ * (`maybeDispatchReleaseFixer`) and again at the stall-alert; a third copy was about to be
+ * added at the pipeline-snapshot read. Three hand-copies of a dedup key is how a renderer
+ * ends up quietly disagreeing with the dispatcher about whether two reds are "the same
+ * failure" — the exact class of bug this whole item is about. One definition, three callers.
+ *
+ * Sorted because the gate's `failingTests` order is not stable across runs, and the whole
+ * point of the key is that the SAME failure re-detected on a LATER candidate hashes the
+ * same (while the gate is red, staging advances hourly, so every checkpoint is a new sha).
+ */
+export function gateFailureSignature(
+  failingTests: readonly string[] | null | undefined,
+  candidate: string | null | undefined,
+): string | null {
+  if (failingTests && failingTests.length > 0) return failingTests.slice().sort().join(',');
+  return candidate ?? null;
+}
+
 /** The ownership states a red gate can be in, most-covered first. */
 export type GateRedOwnershipState =
+  /** The recorded verdict is not current, so there may be no live red here at all — and the
+   *  test names it carries must not be chased. Stand down until a fresh verdict lands. */
+  | 'verdict-stale'
   /** A fixer holds the CURRENT signature and is confirmed alive. Stand down. */
   | 'owned-live'
   /** A fixer holds the current signature; liveness is unknowable (durable/legacy fire, no
@@ -73,6 +98,19 @@ export interface GateRedOwnershipInput {
    *  Deliberately the SAME tri-state that `decideReleaseFixerDispatch` consumes, so this
    *  renderer can never disagree with the dispatcher about who is covering the gate. */
   fixerAlive?: boolean | null;
+  /**
+   * WI-4489/EI-18669342433807110: is the recorded verdict itself stale (a `skipped-locked`
+   * fire refreshes `last_fired_at` while writing no verdict, so `consecutiveReds` and
+   * `failingTests` can be hours old while the routine looks healthy)?
+   *
+   * This is here because a stale verdict is the OTHER way this alert wastes a fleet's time,
+   * and it is not hypothetical: at 02:19 on 2026-07-26 `release:trace` reported
+   * failingTests ["lint:identity-leak"] from a verdict on candidate 221dc407 while the live
+   * red was an entirely different leg. Two agents (me included) went and diagnosed the
+   * named-but-already-fixed leg. An unowned-looking red whose verdict predates the current
+   * candidate must not read as "free to claim" — there may be nothing there to claim.
+   */
+  verdictStale?: boolean;
   nowMs: number;
 }
 
@@ -103,6 +141,23 @@ export function describeGateRedOwnership(input: GateRedOwnershipInput): GateRedO
       : null;
   const ageMs = dispatchedAtMs != null ? Math.max(0, input.nowMs - dispatchedAtMs) : null;
   const who = spawnId ? `release-fixer ${spawnId}` : 'a release-fixer';
+
+  // Checked FIRST and before any ownership reasoning: if the verdict is not current then
+  // neither is `currentSignature`, so every answer below would be computed against names
+  // that may already be fixed. "Nobody owns it" and "there may be nothing to own" demand
+  // the same immediate response (stand down) but for opposite reasons — say which.
+  if (input.verdictStale === true) {
+    return {
+      state: 'verdict-stale',
+      covered: true,
+      spawnId,
+      ownerSignature,
+      ageMs,
+      label:
+        'STALE VERDICT — this red is from an older verdict and may already be fixed. Do NOT ' +
+        'diagnose the failures it names; get a fresh verdict (release:checkpoint-run) first.',
+    };
+  }
 
   if (!ownerSignature) {
     return {

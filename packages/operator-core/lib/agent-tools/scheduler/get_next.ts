@@ -352,7 +352,9 @@ export default defineTool({
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds)),
+            text: JSON.stringify(
+              fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { harness: args.harness }),
+            ),
           },
         ],
       };
@@ -381,6 +383,7 @@ export default defineTool({
                 fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
                   pausedReason: pause.reason,
                   claimableAwaitsCancelled,
+                  harness: args.harness,
                 }),
               ),
             },
@@ -624,7 +627,11 @@ export default defineTool({
                     knownHarnesses: invalidHarnessKnownSlugs,
                   }
                 : reconciliation.scope
-                  ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { cooldownDiag, issueBreakdown })
+                  ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
+                      cooldownDiag,
+                      issueBreakdown,
+                      harness: args.harness,
+                    })
                   : {
                     ok: false,
                     error: missDiagnosis.error,

@@ -127,6 +127,7 @@ export default defineTool({
         const miss = fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
           pausedReason: pause.reason,
           claimableAwaitsCancelled,
+          harness: args.harness,
         });
         return { content: [{ type: 'text' as const, text: JSON.stringify(args.count && args.count > 1 ? { ...miss, claimed: [] } : miss) }] };
       }
@@ -221,7 +222,10 @@ export default defineTool({
           workspaceId: ident.workspaceId,
           states: args.states,
         });
-        return fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { cooldownDiag });
+        return fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
+          cooldownDiag,
+          harness: args.harness,
+        });
       }
       const diag = await diagnoseClaimNextMiss({
         harness: args.harness,
