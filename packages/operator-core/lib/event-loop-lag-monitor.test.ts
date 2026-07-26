@@ -290,6 +290,159 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
       expect(log.mock.calls.some(([line]) => String(line).includes('top live allocation sites'))).toBe(true);
     }
   });
+
+  // WI-5820: the gate became a lazily-read predicate (so a FLAGS flip takes effect
+  // without a host restart, and a boot-time flag read cannot latch it off forever),
+  // and gained a safety cap so the regime that natively crash-looped :3070 8x on
+  // 2026-07-10 (WI-3797) is unreachable rather than merely unlikely.
+  describe('WI-5820 flag-gated + band-capped profiling', () => {
+    const profilesIn = async (dir: string): Promise<string[]> => {
+      try {
+        return (await fs.readdir(dir)).filter((f) => f.endsWith('.cpuprofile'));
+      } catch {
+        return []; // dir never created ⇒ nothing captured, which is the assertion
+      }
+    };
+
+    it('predicate gate returning false is inert — the lag warning still fires, no capture', async () => {
+      const dir = tmp('pred-off');
+      const log = vi.fn();
+      const gate = vi.fn(() => false);
+      handle = startEventLoopLagMonitor({
+        intervalMs: 60,
+        warnP95Ms: 20,
+        profileOnSaturation: gate,
+        profileDir: dir,
+        profileTriggerP95Ms: 20,
+        minProfileGapMs: 0,
+        log,
+      });
+      for (let i = 0; i < 4; i++) {
+        blockFor(40);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await new Promise((r) => setTimeout(r, 200));
+      expect(gate).toHaveBeenCalled(); // the gate IS consulted (not dead code)
+      expect(log).toHaveBeenCalled(); // symptom logging is unaffected
+      expect(await profilesIn(dir)).toHaveLength(0);
+    });
+
+    it('the gate is read LAZILY per window, not latched at construction — flipping it on later engages with no restart', async () => {
+      const dir = tmp('pred-flip');
+      let enabled = false;
+      const gate = vi.fn(() => enabled);
+      handle = startEventLoopLagMonitor({
+        intervalMs: 60,
+        warnP95Ms: 20,
+        profileOnSaturation: gate,
+        profileDir: dir,
+        profileTriggerP95Ms: 20,
+        profileDurationMs: 120,
+        minProfileGapMs: 0,
+        maxProfiles: 3,
+        log: vi.fn(),
+      });
+      for (let i = 0; i < 3; i++) {
+        blockFor(40);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await new Promise((r) => setTimeout(r, 150));
+      expect(await profilesIn(dir)).toHaveLength(0); // still off
+      const callsWhileOff = gate.mock.calls.length;
+      expect(callsWhileOff).toBeGreaterThan(0);
+
+      enabled = true; // simulate the /admin/features flip — no restart
+      for (let i = 0; i < 3; i++) {
+        blockFor(40);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      // Re-consulted after the flip — that is the lazy-read contract. (Whether a
+      // .cpuprofile lands is inspector-availability dependent, so it is not asserted.)
+      expect(gate.mock.calls.length).toBeGreaterThan(callsWhileOff);
+    });
+
+    it('a gate that THROWS never breaks lag monitoring and never captures', async () => {
+      const dir = tmp('pred-throw');
+      const log = vi.fn();
+      handle = startEventLoopLagMonitor({
+        intervalMs: 60,
+        warnP95Ms: 20,
+        profileOnSaturation: () => {
+          throw new Error('flag backend unreachable');
+        },
+        profileDir: dir,
+        profileTriggerP95Ms: 20,
+        minProfileGapMs: 0,
+        log,
+      });
+      for (let i = 0; i < 4; i++) {
+        blockFor(40);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await new Promise((r) => setTimeout(r, 200));
+      expect(log).toHaveBeenCalled(); // the gauge keeps working
+      expect(await profilesIn(dir)).toHaveLength(0);
+    });
+
+    // THE regression guard for WI-3797: above the cap we must not even ATTEMPT a
+    // capture, because the failure mode there is a native abort that no try/catch
+    // can contain — the process dies.
+    it('SAFETY CAP: a window at/above profileMaxP95Ms is never profiled, and the skip is logged', async () => {
+      const dir = tmp('cap');
+      const log = vi.fn();
+      const gate = vi.fn(() => true);
+      handle = startEventLoopLagMonitor({
+        intervalMs: 60,
+        warnP95Ms: 20,
+        profileOnSaturation: gate,
+        profileDir: dir,
+        profileTriggerP95Ms: 20,
+        // The blocks below are ~300ms, an ORDER OF MAGNITUDE above this cap, so
+        // every saturated window lands unambiguously above it. (A cap set close to
+        // the trigger would be flaky: a window whose p95 happened to land inside the
+        // narrow [trigger, cap) band would capture legitimately.)
+        profileMaxP95Ms: 50,
+        profileDurationMs: 120,
+        minProfileGapMs: 0,
+        log,
+      });
+      for (let i = 0; i < 4; i++) {
+        blockFor(300);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      expect(await profilesIn(dir)).toHaveLength(0);
+      // Not silent: the missing attribution is announced, with the cap that caused it.
+      const skip = log.mock.calls.find(([line]) => String(line).includes('SKIPPED'));
+      expect(skip).toBeTruthy();
+      expect(String(skip?.[0])).toMatch(/too saturated to profile safely/);
+      expect(skip?.[1]).toMatchObject({ profileMaxP95Ms: 50, reason: 'above-safety-cap' });
+    });
+
+    it('the default cap (3000ms) leaves the chronic band profilable — a sub-cap window still captures', async () => {
+      const dir = tmp('under-cap');
+      handle = startEventLoopLagMonitor({
+        intervalMs: 60,
+        warnP95Ms: 20,
+        profileOnSaturation: () => true,
+        profileDir: dir,
+        profileTriggerP95Ms: 20,
+        // profileMaxP95Ms omitted ⇒ 3000ms default; the ~40ms blocks are far below it.
+        profileDurationMs: 120,
+        minProfileGapMs: 0,
+        maxProfiles: 2,
+        log: vi.fn(),
+      });
+      for (let i = 0; i < 4; i++) {
+        blockFor(40);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      // Inspector availability varies by env, so assert the bound, not the presence.
+      expect((await profilesIn(dir)).length).toBeLessThanOrEqual(2);
+    });
+  });
 });
 
 describe('P-002 heap-snapshot-on-high-RSS (bg-host-freeze-eventloop-stall-2026-06-30)', () => {

@@ -51,6 +51,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
 import { compileFilter } from './get-next';
 import { observationLaneExclusionSql } from '../work-items';
+import { issuesScopeWorkspace } from '../issues-engineer';
 
 export interface SpecPoolEffect {
   /** Rows of the pool the spec's view.filter matches. */
@@ -77,13 +78,29 @@ export async function previewSpecPoolEffect(
   // so the WI-5212 pool-effect preview counts the SAME pool the real claim runs against.
   const states = [...(spec.states ?? ['open'])];
   const harness = opts.harness ?? null;
+  // EI-18675972728146330: the real issue-family claim path (issueClaimCandidateSubquery /
+  // aggregateIssueClaimExclusions, which backs work_items:claimable's matchedByFilter) admits
+  // BOTH `wi.harness_slug = harness` AND the operator-scope alias `operator:<issuesScopeWorkspace()>`
+  // — a harness-less/operator-authored row lands under that alias, not the bare harness slug.
+  // This preview was missing the alias branch entirely, so it silently EXCLUDED every
+  // operator-scoped row from both `pool` and `matched` — confirmed live on the
+  // nonp2p-bug-drain-0725 fleet spec: 78 papercusp-slug rows + 37 operator:papercusp-workspace-
+  // slug rows both count toward work_items:claimable's matchedByFilter (~115), but this
+  // function only ever counted the 78, undercounting the guard's own basis pool by ~30% and
+  // making its reported `matched`/`pool` disagree with the real claim path for no structural
+  // reason (the doc above promises "cannot drift" from `get_next` — this closes that gap).
+  const operatorScopeSlug = harness ? `operator:${issuesScopeWorkspace()}` : null;
   const filter = compileFilter(sql, spec.view.filter);
   const rows = (await sql`
     SELECT count(*)::int AS pool,
            (count(*) FILTER (WHERE ${filter}))::int AS matched
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${opts.workspaceId}
-       AND (${harness}::text IS NULL OR wi.harness_slug = ${harness})
+       AND (
+         ${harness}::text IS NULL
+         OR wi.harness_slug = ${harness}
+         OR wi.harness_slug = ${operatorScopeSlug}
+       )
        AND wi.status = ANY(${states}::text[])
        AND wi.taken_by IS NULL
        -- D-005: observation-lane rows are never claimable — the same NULL-safe floor

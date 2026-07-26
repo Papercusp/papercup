@@ -57,6 +57,16 @@
  * BASELINE is EMPTY and must stay that way. If this fires, strip the NAME from the
  * tag — do not add an exception to make the build pass. Adding your name to the
  * placeholder list below is the bug this gate exists to catch.
+ *
+ * SCANS UNTRACKED-BUT-NOT-IGNORED FILES TOO (EI-18676240686848444). A plain
+ * `git ls-files` only enumerates already-tracked content, so a brand-NEW file — the
+ * exact moment a leak is most likely to be typed — was invisible to this lint until
+ * the next `git add`, which meant a confident green that had scanned zero bytes of
+ * the file you actually just wrote. `--cached --others --exclude-standard` widens the
+ * enumeration to match: tracked content PLUS anything git would happily `add`, while
+ * still respecting .gitignore. This makes a local run a strict superset of what the
+ * gate later sees (the gate only ever sees committed content) — the safe direction
+ * for a pre-commit-shaped check to err in.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -67,14 +77,18 @@ import {
   renderLeak,
 } from './lib/identity-leak-patterns.mjs';
 
-const tracked = execFileSync('git', ['ls-files', '-z'], { maxBuffer: 1 << 28 })
+const files = execFileSync(
+  'git',
+  ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+  { maxBuffer: 1 << 28 },
+)
   .toString()
   .split('\0')
   .filter(Boolean)
   .filter((f) => !isSkippedPath(f));
 
 const findings = [];
-for (const file of tracked) {
+for (const file of files) {
   let text;
   try {
     text = readFileSync(file, 'utf8');

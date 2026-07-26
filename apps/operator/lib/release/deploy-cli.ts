@@ -138,8 +138,21 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
     }
 
     if (plan.noop) {
-      err('[deploy] release checkout already at target — nothing to deploy.');
+      err('[deploy] release checkout already at target AND the live process is serving it — nothing to deploy.');
       return 0;
+    }
+
+    // WI-5864: NOT logged-then-skipped like noop above — restartOnly proceeds
+    // into the normal deploy flow below (executeDeploy skips just the swap
+    // step); this line only makes the "why is a deploy running when the
+    // checkout already matches" case loud instead of looking like a full
+    // re-deploy for no reason.
+    if (plan.restartOnly) {
+      err(
+        `[deploy] checkout already at target (${plan.targetSha.slice(0, 8)}) but the live process is serving ` +
+          `${plan.servingSha ?? (plan.servingReachable ? 'a different build' : 'an UNCONFIRMED sha (health probe unreachable)')} — ` +
+          `restart-only deploy (no checkout swap).`,
+      );
     }
 
     // Safe default: refuse a non-green target unless explicitly forced (D-009).

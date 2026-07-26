@@ -46,6 +46,11 @@
  *
  * BASELINE is EMPTY and must stay that way. If this fires, remove/derive the
  * literal — never add an exception to make the build pass.
+ *
+ * SCANS UNTRACKED-BUT-NOT-IGNORED FILES TOO (EI-18676240686848444) — see the
+ * matching note in check-no-owner-name-tags.mjs. A brand-new file is invisible to a
+ * plain `git ls-files` until it is `git add`-ed, which is exactly the moment a leak
+ * is most likely to be typed; `--cached --others --exclude-standard` closes that gap.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
@@ -137,9 +142,15 @@ if (entries.length === 0) {
   process.exit(0);
 }
 
-let tracked;
+// Scans untracked-but-not-ignored files too (EI-18676240686848444): a plain
+// `git ls-files` misses a brand-new file until it is `git add`-ed, which is exactly
+// the moment a leak is most likely to be typed. `--cached --others --exclude-standard`
+// widens the enumeration to tracked content PLUS anything git would happily `add`,
+// while still respecting .gitignore — a strict superset of what the gate (committed
+// content only) later sees.
+let files;
 try {
-  tracked = execFileSync('git', ['ls-files', '-z'], { maxBuffer: 1 << 28 })
+  files = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { maxBuffer: 1 << 28 })
     .toString()
     .split('\0')
     .filter(Boolean)
@@ -150,7 +161,7 @@ try {
 }
 
 const findings = [];
-for (const file of tracked) {
+for (const file of files) {
   const vendor = isVendor(file);
   let text;
   try {
@@ -174,7 +185,7 @@ for (const file of tracked) {
 
 if (findings.length === 0) {
   console.log(
-    `✓ no bare build-box identity literal (${Object.keys(lits).join(', ')}) in ${tracked.length} tracked source files`,
+    `✓ no bare build-box identity literal (${Object.keys(lits).join(', ')}) in ${files.length} tracked + untracked-not-ignored source files`,
   );
   process.exit(0);
 }

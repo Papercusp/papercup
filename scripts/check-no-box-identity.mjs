@@ -29,6 +29,16 @@
  *
  * BASELINE is EMPTY and must stay that way. If this fires, fix the path — do not
  * add an exception to make the build pass.
+ *
+ * SCANS UNTRACKED-BUT-NOT-IGNORED FILES TOO (EI-18676240686848444). A plain
+ * `git ls-files` only enumerates already-tracked content, so a brand-NEW file — the
+ * exact moment a leak is most likely to be typed — was invisible to this lint until
+ * the next `git add`, which meant a confident green that had scanned zero bytes of
+ * the file you actually just wrote. `--cached --others --exclude-standard` widens the
+ * enumeration to match: tracked content PLUS anything git would happily `add`, while
+ * still respecting .gitignore. This makes a local run a strict superset of what the
+ * gate later sees (the gate only ever sees committed content) — the safe direction
+ * for a pre-commit-shaped check to err in.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -108,7 +118,11 @@ const stripTrailingDots = (user) => user.replace(/\.+$/, '');
  *  we need: it is not a GENERIC_USER, so we flag the line and print it. */
 const MUNGED_HOME = /(^|["'`/\s])-(home|Users)-([A-Za-z0-9._]+)(?=-)/g;
 
-const files = execFileSync('git', ['ls-files'], { encoding: 'utf8', maxBuffer: 64 << 20 })
+const files = execFileSync(
+  'git',
+  ['ls-files', '--cached', '--others', '--exclude-standard'],
+  { encoding: 'utf8', maxBuffer: 64 << 20 },
+)
   .split('\n')
   .filter((f) => f && !SKIP.some((rx) => rx.test(f)));
 
@@ -136,7 +150,7 @@ for (const f of files) {
 }
 
 if (findings.length === 0) {
-  console.log(`✓ no box-identity paths in ${files.length} tracked source files`);
+  console.log(`✓ no box-identity paths in ${files.length} tracked + untracked-not-ignored source files`);
   process.exit(0);
 }
 

@@ -208,10 +208,25 @@ function startRequestServers(): void {
   // that default to on-by-default, and it has now failed that validation by
   // crash-looping the whole green-release operator. Reverting to the
   // module's own documented default (explicit opt-in only) until the
-  // inspector-session crash itself is hardened. PAPERCUSP_LOOP_PROFILER=1 to
-  // re-enable explicitly (e.g. for a controlled, low-load debugging session).
+  // inspector-session crash itself is hardened.
+  //
+  // WI-5820 (owner-directed 2026-07-25) — that hardening is now HERE, and the gate
+  // is a real flag instead of an env var:
+  //   1. SAFETY CAP. The monitor's `profileMaxP95Ms` (default 3000ms) declines to
+  //      profile a window that is too saturated, so the tens-of-seconds regime
+  //      every WI-3797 crash actually landed in is structurally unreachable — the
+  //      profiler can no longer be invoked where it natively aborts. Measured over
+  //      12h on bg-host post-WI-5471: 2,937 windows, p95Ms max 1143ms, only 6
+  //      crossing the 600ms trigger — so the cap excludes nothing real.
+  //   2. RUNTIME KILL SWITCH. In July the only way to stop the crash loop was to
+  //      edit code and redeploy, because the gate was `process.env`. FLAGS.
+  //      LOOP_STALL_PROFILER flips in /admin/features in seconds. It is also read
+  //      LAZILY (per saturated window, not latched at boot) — getFlag is fragile
+  //      during host-boot, which is precisely how a boot-latched gate stays off
+  //      forever without anyone noticing.
+  // PAPERCUSP_LOOP_PROFILER remains honored for tests/dev only (see the monitor).
   startEventLoopLagMonitor({
-    profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER === '1' || process.env.PAPERCUSP_LOOP_PROFILER === 'true',
+    profileOnSaturation: () => getFlag(FLAGS.LOOP_STALL_PROFILER, 'operator-host'),
   });
 
   // P5-2: closed-loop concurrency feedback. Reads the lag monitor's loopPressure()

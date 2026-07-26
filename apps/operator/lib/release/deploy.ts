@@ -36,6 +36,7 @@ import { assessRisk, type RiskAssessment } from './risk-tier';
 import type { ReleaseConfig } from './release-config';
 import type { MigrateResult } from './migrate';
 import type { HealthResult } from './health-probe';
+import { fetchServingSha, type ServingShaProbe } from './health-probe';
 
 /**
  * Repo-relative path of the papercusp-desktop submodule gitlink in the
@@ -82,7 +83,30 @@ export interface DeployPlan {
   commitShas: string[];
   migrations: string[];
   warnings: string[];
+  /**
+   * WI-5864: true ONLY when the checkout is at target AND the LIVE serving
+   * process (per `servingSha`) is ALSO at target — a checkout match alone is
+   * NOT sufficient (see `restartOnly`). When `servingSha` can't be confirmed
+   * (`!servingReachable`), this is conservatively `false` — an unconfirmed
+   * match is never treated as "nothing to deploy".
+   */
   noop: boolean;
+  /** WI-5864: the sha the LIVE process (querying `cfg.operatorHealthUrl`) is
+   *  actually serving right now — a SHORT sha, or null when unconfirmed. */
+  servingSha: string | null;
+  /** WI-5864: true when the health probe for `servingSha` succeeded (2xx +
+   *  parsed) — false means "couldn't confirm", not "confirmed mismatched". */
+  servingReachable: boolean;
+  /**
+   * WI-5864: the checkout is ALREADY at target (no `swap` needed) but the
+   * live process is not (yet) serving it — either a confirmed mismatch or an
+   * unconfirmed serving sha. `executeDeploy` skips `snapshot`+`swap` and goes
+   * straight to preflight → migrate → restart → health → verify-paths. This
+   * is what makes a deploy that crashed between `swap` and `restart`
+   * SELF-HEALING on the very next tick instead of permanently noop: the
+   * checkout never needs to move again, only the process needs restarting.
+   */
+  restartOnly: boolean;
   /** Every changed path between the running release checkout and target is the
    *  papercusp-desktop submodule gitlink — a shell-only pointer bump the operator
    *  deploy can skip (D-003). false when nothing, or anything non-desktop, changed. */
@@ -196,12 +220,16 @@ function deployWarnings(facts: DeployWarningFacts): string[] {
 
 /**
  * Gather the deploy plan WITHOUT side effects — the release-manager reviews this
- * (diff + staged migrations) before go/no-go. Git-only, so it's cheap + safe.
+ * (diff + staged migrations) before go/no-go. Git-only + one cheap, non-retrying
+ * health read (`deps.fetchServingSha`, WI-5864) — still safe: the health read
+ * never throws and never blocks (a single `requestTimeoutMs`-bounded fetch).
  */
 export async function gatherPlan(
   cfg: ReleaseConfig,
   opts: { target?: string; force?: boolean } = {},
+  deps: { fetchServingSha?: (url: string) => Promise<ServingShaProbe> } = {},
 ): Promise<DeployPlan> {
+  const fetchServingShaFn = deps.fetchServingSha ?? ((url: string) => fetchServingSha(url));
   const targetRef = opts.target ?? cfg.releaseRef;
   const targetSha = await revParse(cfg.integrationRoot, targetRef);
   const readySha = (await refExists(cfg.integrationRoot, cfg.releaseRef))
@@ -247,6 +275,28 @@ export async function gatherPlan(
     migrationCount: migrations.length,
   });
 
+  // WI-5864: the checkout matching `targetSha` is necessary but NOT sufficient
+  // for "nothing to deploy" — the LIVE process may have crashed between `swap`
+  // and `restart` on a PRIOR attempt, leaving the checkout at target while the
+  // old process is still what's actually serving. Confirm against the live
+  // serving sha (a short sha — compare with startsWith, not ===) before
+  // declaring noop; an unconfirmed read is treated as a mismatch, never as a
+  // silent pass.
+  const checkoutAtTarget = currentReleaseSha === targetSha;
+  let servingSha: string | null = null;
+  let servingReachable = false;
+  if (checkoutAtTarget) {
+    // Only need this read when the checkout already matches — it's the ONLY
+    // case where the answer changes noop/restartOnly; skip the network call
+    // entirely otherwise (a real code delta is never noop regardless).
+    const probe = await fetchServingShaFn(cfg.operatorHealthUrl);
+    servingSha = probe.sha;
+    servingReachable = probe.reachable;
+  }
+  const servingAtTarget = checkoutAtTarget && servingReachable && !!servingSha && targetSha.startsWith(servingSha);
+  const noop = checkoutAtTarget && servingAtTarget;
+  const restartOnly = checkoutAtTarget && !servingAtTarget;
+
   return {
     target: targetRef,
     targetSha,
@@ -258,7 +308,10 @@ export async function gatherPlan(
     commitShas,
     migrations,
     warnings,
-    noop: currentReleaseSha === targetSha,
+    noop,
+    servingSha,
+    servingReachable,
+    restartOnly,
     desktopOnly,
     risk,
   };
@@ -308,7 +361,19 @@ export async function executeDeploy(
     let liveCutover = false;
     try {
       snapshot = await step('snapshot', () => deps.snapshot(`pre-deploy ${short(plan.targetSha)}`));
-      await step('swap', () => deps.runSetup(plan.targetSha));
+      // WI-5864: `restartOnly` means the checkout is ALREADY at target (a prior
+      // deploy attempt swapped it and then crashed before restarting) — running
+      // `runSetup` again would be redundant at best and, worse, would silently
+      // mask a rollback/manual-recovery signal that the tree isn't what we think.
+      // The whole point of this plan flag is that the ONLY remaining step is
+      // getting the live process to load what's already on disk.
+      if (plan.restartOnly) {
+        deps.log(
+          `restart-only: checkout already at ${short(plan.targetSha)} (serving ${plan.servingSha ?? 'unknown'}) — skipping swap, restarting into it`,
+        );
+      } else {
+        await step('swap', () => deps.runSetup(plan.targetSha));
+      }
       // PRE-CUTOVER boot check (P-001): confirm the swapped checkout can load its
       // module graph BEFORE touching live :3070. If a botched swap left node_modules
       // incomplete (→ MODULE_NOT_FOUND), we catch it here while the OLD process is

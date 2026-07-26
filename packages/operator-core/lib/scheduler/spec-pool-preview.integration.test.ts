@@ -19,6 +19,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { FLAG_DEFAULTS, type FlagKey } from '@papercusp/flags';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -35,6 +36,17 @@ vi.mock('@papercusp/db-org', async () => {
 vi.mock('../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
   return { ...actual, activeWorkspaceId: () => 'default' };
+});
+// EI-18675972728146330: previewSpecPoolEffect now resolves the operator-scope harness alias
+// via issuesScopeWorkspace(), which reads the ISSUES_PER_WORKSPACE flag — pin every OTHER key
+// to its production default so this stays deterministic (issues scoped to 'default', matching
+// WS below), same pattern as claim-issues-claimable.integration.test.ts.
+vi.mock('@papercusp/flags/server', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
+  return {
+    ...actual,
+    getFlag: async (key: FlagKey) => FLAG_DEFAULTS[key] ?? false,
+  };
 });
 
 const { previewSpecPoolEffect } = await import('./spec-pool-preview');
@@ -154,5 +166,23 @@ describe('previewSpecPoolEffect — neutral floors define the pool', () => {
     const wide = await previewSpecPoolEffect(spec(KIND_ALL), { workspaceId: WS });
     expect(wide.pool).toBe(2);
     expect(wide.harness).toBeNull();
+  });
+
+  it('EI-18675972728146330: admits the operator-scope harness alias, matching the real issue-family claim path — a harness-scoped preview no longer silently undercounts operator:<workspace> rows', async () => {
+    await seed('B-plain', { kind: 'bug', harness: H }); // bare harness slug
+    await seed('B-operator-alias', { kind: 'bug', harness: 'operator:default' }); // the alias aggregateIssueClaimExclusions also admits
+    await seed('B-elsewhere', { kind: 'bug', harness: 'some-other-harness' }); // neither slug — must stay excluded
+
+    const scoped = await previewSpecPoolEffect(spec(KIND_ALL), { workspaceId: WS, harness: H });
+    // Before this fix, `pool`/`matched` were both 1 (the alias row was silently dropped,
+    // undercounting the write-time collapse guard's own basis pool vs. what
+    // work_items:claimable's matchedByFilter — and the real scheduler:get_next claim path —
+    // actually admit; confirmed live 78-vs-115-row divergence on nonp2p-bug-drain-0725).
+    expect(scoped.pool).toBe(2);
+    expect(scoped.matched).toBe(2);
+
+    // A harness-less (workspace-wide) preview is unaffected — it already counted every row.
+    const wide = await previewSpecPoolEffect(spec(KIND_ALL), { workspaceId: WS });
+    expect(wide.pool).toBe(3);
   });
 });

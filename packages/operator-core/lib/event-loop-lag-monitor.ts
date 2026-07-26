@@ -318,6 +318,9 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
           return () => fixed;
         })();
   const profileTriggerP95Ms = opts.profileTriggerP95Ms ?? CRITICAL_P95_MS;
+  // WI-5820: upper edge of the safe profiling band (see profileMaxP95Ms doc).
+  const profileMaxP95Ms = opts.profileMaxP95Ms ?? 3000;
+  let lastProfileSkipLogAt = 0;
   const profileDurationMs = opts.profileDurationMs ?? 3000;
   const minProfileGapMs = opts.minProfileGapMs ?? 300_000;
   const maxProfiles = opts.maxProfiles ?? 20;
@@ -372,7 +375,28 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     }
     // F1: when saturated, capture a short CPU profile so the synchronous culprit
     // is identifiable. Rate-limited + single-flight; fully best-effort.
-    if (!profiling && s.p95Ms >= profileTriggerP95Ms && Date.now() - lastProfileAt >= minProfileGapMs) {
+    // WI-5820 safety cap: a window this saturated is the regime where the
+    // inspector session natively aborts (WI-3797) — decline, and SAY so, so the
+    // missing attribution is visible rather than silent. Rate-limited on the same
+    // gap as a real capture so a long extreme burst cannot log-storm.
+    if (
+      !profiling &&
+      s.p95Ms >= profileMaxP95Ms &&
+      Date.now() - lastProfileSkipLogAt >= minProfileGapMs
+    ) {
+      lastProfileSkipLogAt = Date.now();
+      log('[event-loop-lag] CPU profile SKIPPED — loop too saturated to profile safely', {
+        p95Ms: s.p95Ms,
+        profileMaxP95Ms,
+        reason: 'above-safety-cap',
+      });
+    }
+    if (
+      !profiling &&
+      s.p95Ms >= profileTriggerP95Ms &&
+      s.p95Ms < profileMaxP95Ms &&
+      Date.now() - lastProfileAt >= minProfileGapMs
+    ) {
       // Claim the single-flight slot and consume the rate-limit window BEFORE
       // resolving the (possibly async) gate — so a second tick cannot race in
       // behind us, and a gate that reads false costs at most one evaluation per

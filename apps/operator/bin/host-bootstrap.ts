@@ -950,10 +950,16 @@ export function runBootstrap(): void {
   if (backgroundWorkers) {
     try {
       startEventLoopLagMonitor({
-        // WI-3797 (2026-07-10): reverted to the module's own documented default
-        // (explicit opt-in only) — see the matching comment in hono-host.ts for
-        // the native Napi::Error crash-loop this caused under real sustained lag.
-        profileOnSaturation: process.env.PAPERCUSP_LOOP_PROFILER === '1' || process.env.PAPERCUSP_LOOP_PROFILER === 'true',
+        // WI-3797 (2026-07-10): this was reverted to explicit opt-in after a native
+        // Napi::Error crash-loop under sustained lag. WI-5820 (2026-07-25) re-enables
+        // it behind two guards — the monitor's profileMaxP95Ms safety cap (the
+        // crash regime is now unreachable) and a runtime-flippable FLAGS gate read
+        // lazily per saturated window. Full rationale + the measurements that sized
+        // the cap are in the matching comment in hono-host.ts.
+        // bg-host is the host this attribution is FOR: it is the one carrying the
+        // chronic ~230/h stall band that WI-5471 deferred and WI-323/WI-344 were
+        // dropped still waiting on.
+        profileOnSaturation: () => getFlag(FLAGS.LOOP_STALL_PROFILER, 'operator-host'),
         // P-002 (bg-host-freeze-eventloop-stall-2026-06-30) was ON by default so the
         // 3.3->46 GB RSS leak self-captured a .heapsnapshot at high RSS without manual
         // operator access. That leak was ROOT-CAUSED + FIXED 2026-07-01 (claude-sessions.ts

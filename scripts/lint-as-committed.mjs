@@ -102,7 +102,14 @@ export function parseArgs(argv) {
   }
 
   const nonLint = any ? [] : scripts.filter((s) => !s.startsWith('lint:'));
-  return { help: false, scripts, ref, keep, any, unknown, nonLint };
+  // Self-recursion is a real footgun, not a hypothetical: `lint:as-committed` starts
+  // with `lint:`, so a sweep over every lint:* script picks it up, and the inner run
+  // (invoked with no script arguments) exits 2 on its own usage guard. That surfaces
+  // as "FAIL lint:as-committed — exit 2", which reads exactly like a lint VIOLATION at
+  // the ref rather than "this is a runner, not a lint". Name it instead of letting the
+  // reader misdiagnose it.
+  const selfRecursive = scripts.filter((s) => s === 'lint:as-committed');
+  return { help: false, scripts, ref, keep, any, unknown, nonLint, selfRecursive };
 }
 
 /**
@@ -182,6 +189,15 @@ function main() {
   if (args.unknown.length > 0) {
     console.error(`lint-as-committed: unknown flag(s): ${args.unknown.join(', ')}\n`);
     process.stdout.write(USAGE);
+    process.exit(2);
+  }
+  if (args.selfRecursive.length > 0) {
+    console.error(
+      `lint-as-committed: 'lint:as-committed' is this runner, not a lint — refusing to run it against itself.\n` +
+        `  (It matches the lint:* prefix, so a sweep over every lint script picks it up; the inner run would\n` +
+        `   exit 2 on its own usage guard and report as a FAIL, which reads like a violation at the ref.)\n` +
+        `  Pass the lints you actually want checked.\n`,
+    );
     process.exit(2);
   }
   if (args.nonLint.length > 0) {

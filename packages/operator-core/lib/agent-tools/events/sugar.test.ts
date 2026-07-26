@@ -61,6 +61,21 @@ vi.mock("../../dev-deploy-state", () => ({
   })),
 }));
 
+// EI-18676050719521433: the deploy-already-landed latch probes these two —
+// mocked here so the rig stays hermetic (the real modules shell out to git).
+// Default: a snapshot/position pair describing a sha that is NOT yet deployed,
+// so every EXISTING deploy:await case keeps registering exactly as before.
+vi.mock("../../git-pipeline-stats", () => ({
+  gitPipelineSnapshot: vi.fn(async () => ({ deploy: { deployed: { sha: "not-target" } } })),
+}));
+vi.mock("../../git-pipeline-position", () => ({
+  gitPipelinePosition: vi.fn(async () => ({
+    targetSha: "abc123",
+    deployedSha: "not-target",
+    positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
+  })),
+}));
+
 // EI-13095: the work-item:await latches probe the live item — mocked here so the
 // rig stays hermetic (the real module pulls db-org). Default 'live'/'blocked' =
 // every existing case registers exactly as before.
@@ -74,6 +89,8 @@ await import("./sugar");
 import { registerAwait, cancelAwaitsForSubscribersOnKeys } from "../../events/await/store";
 import { devDeployState } from "../../dev-deploy-state";
 import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
+import { gitPipelineSnapshot } from "../../git-pipeline-stats";
+import { gitPipelinePosition } from "../../git-pipeline-position";
 import { checkpointPipelineName } from "./sugar";
 
 const checkpointTool = definedTools.find(
@@ -240,6 +257,68 @@ describe("checkpoint:await sugar", () => {
       .mocked(registerAwait)
       .mock.calls.map((c) => c[0].timeoutSec);
     expect(timeouts).toEqual([60, 60]);
+  });
+});
+
+describe("deploy:await already-deployed latch (EI-18676050719521433 — was purely edge-triggered)", () => {
+  const deployTool = definedTools.find((tool) => tool.name === "deploy:await");
+  if (!deployTool) throw new Error("deploy:await tool was not registered");
+  const callDeploy = async (args: Record<string, unknown>) => {
+    const res = await deployTool.handler(args as never, ctx);
+    return JSON.parse(res.content[0].text);
+  };
+
+  it("a sha ALREADY deployed answers already_deployed and registers NOTHING (the stranded-wait class)", async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValueOnce({
+      targetSha: "33bfb1e68de2bffd5c45c831762261ec426790f7",
+      deployedSha: "a5ba5521",
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    } as never);
+
+    const out = await callDeploy({ sha: "33bfb1e68de2bffd5c45c831762261ec426790f7" });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_deployed: true,
+      sha: "33bfb1e68de2bffd5c45c831762261ec426790f7",
+      deployedSha: "a5ba5521",
+    });
+    expect(out.advice).toContain("Do not wait");
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it("a sha NOT yet deployed still registers exactly as before (sibling case)", async () => {
+    // Default mock already answers positions.deployed:false.
+    const out = await callDeploy({ sha: "abc123" });
+
+    expect(out.already_deployed).toBeUndefined();
+    expect(
+      vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
+    ).toEqual(["release:deployed:abc123", "release:deploy-failed"]);
+  });
+
+  it("omitting sha entirely skips the probe and registers the global keys as before", async () => {
+    const out = await callDeploy({});
+
+    expect(gitPipelineSnapshot).not.toHaveBeenCalled();
+    expect(gitPipelinePosition).not.toHaveBeenCalled();
+    expect(out.already_deployed).toBeUndefined();
+    expect(
+      vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
+    ).toEqual(["release:deployed", "release:deploy-failed"]);
+  });
+
+  it("a probe failure/timeout fails OPEN — registers normally rather than blocking the await", async () => {
+    // withBoundedTimeout logs a console.warn on a caught rejection (expected here —
+    // we are deliberately exercising its fallback path, not a real bug).
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(gitPipelineSnapshot).mockRejectedValueOnce(new Error("git unavailable"));
+
+    const out = await callDeploy({ sha: "def456" });
+
+    expect(out.already_deployed).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+    warnSpy.mockRestore();
   });
 });
 

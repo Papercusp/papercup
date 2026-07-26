@@ -56,6 +56,48 @@ export interface DomainReadProbeResult {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+export interface ServingShaProbe {
+  /** false only on a transport failure or a non-2xx response — never thrown. */
+  reachable: boolean;
+  /** The LIVE process's own build sha (getBuildInfo().sha, WI-265) — null when
+   *  unreachable, non-2xx, or the field was absent/empty. This is a SHORT sha
+   *  (`git rev-parse --short HEAD` unless PAPERCUSP_BUILD_SHA is set) — compare
+   *  with `targetSha.startsWith(sha)`, never `===`, against a full-length sha. */
+  sha: string | null;
+  error?: string;
+}
+
+/**
+ * WI-5864 / EI-18674647773291145: a SINGLE, non-retrying read of "what sha is
+ * the LIVE process actually serving" — distinct from `probeHealth` above,
+ * which polls until healthy (the post-restart use case). This is the
+ * pre-deploy "is the checkout already at target the SAME as what's already
+ * running" read `gatherPlan` needs: `currentReleaseSha === targetSha` only
+ * tells you the ON-DISK checkout matches — it says nothing about whether the
+ * PROCESS actually serving traffic ever picked it up. A deploy that swapped
+ * the checkout and then crashed before `restart` leaves exactly that gap:
+ * checkout == target, serving sha == whatever was running before, and (pre-
+ * fix) `noop` computed from the checkout alone treated that as "nothing to
+ * deploy" — permanently, since nothing ever advances the checkout further.
+ * Never throws: a transport/parse failure yields `reachable:false, sha:null`,
+ * which callers must treat as "can't confirm the serving sha" (i.e. NOT a
+ * license to assume it matches).
+ */
+export async function fetchServingSha(
+  url: string,
+  opts: { requestTimeoutMs?: number } = {},
+): Promise<ServingShaProbe> {
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 5_000;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(requestTimeoutMs) });
+    if (!res.ok) return { reachable: false, sha: null, error: `status ${res.status}` };
+    const body = (await res.json()) as { sha?: string | null };
+    return { reachable: true, sha: typeof body.sha === 'string' && body.sha ? body.sha : null };
+  } catch (e) {
+    return { reachable: false, sha: null, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export interface ProbeOpts {
   timeoutMs?: number;
   intervalMs?: number;

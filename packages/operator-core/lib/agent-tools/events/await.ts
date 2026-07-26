@@ -23,7 +23,14 @@ import {
   type EventCatalogEntry,
 } from '../../events/await/catalog';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
-import { registerAwait, findAnnouncementsForKey, findNearMissKeys, cancelAwaitsForSubscribersOnKeys } from '../../events/await/store';
+import {
+  registerAwait,
+  findAnnouncementsForKey,
+  findNearMissKeys,
+  cancelAwaitsForSubscribersOnKeys,
+  probeKeyFireEvidence,
+  type KeyFireEvidence,
+} from '../../events/await/store';
 import { registerComposedAwait } from '../../events/await/compose';
 import { ComposedSpecError, type ComposedSpec } from '../../events/await/compose-spec';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -371,6 +378,34 @@ export default defineTool({
       if (probe.value) unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
     }
 
+    // ── EI-18676056143796303: the orphan guard knows catalog MEMBERSHIP, but it
+    // spoke about EMITTERS ("nothing in this system will ever fire it and this
+    // await can only TIME OUT"). For a family that emits but was never registered
+    // in the catalog, that verdict is flatly FALSE and maximally actionable in the
+    // wrong direction — the correct response to it is to abandon the park, and the
+    // live case was `coord:inbox-wake:<ownerId>`: the most-fired key in the system
+    // AND the mechanism that rescues a stranded agent. Believing the warning there
+    // strands you, which is exactly what the inbox-wake exists to prevent.
+    //
+    // The fire latch is DIRECT evidence to the contrary: this key (or a sibling in
+    // its family) demonstrably fired. When there is such evidence, the membership
+    // gap is a CATALOG bug, not a dead await — report it as that and drop the
+    // scary claim entirely. A genuine orphan has neither exact nor sibling history,
+    // so EI-10870's real case still warns. Bounded + fail-soft: an unavailable
+    // latch leaves the (softened) warning exactly as it was.
+    let emitterEvidence: KeyFireEvidence | null = null;
+    if (unknownEventKey) {
+      const evidence = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
+        fallback: null,
+        timeoutMs: 1_000,
+        label: 'events-await:keyFireEvidence',
+      });
+      if (evidence.value && evidence.value.fires > 0) {
+        emitterEvidence = evidence.value;
+        unknownEventKey = false;
+      }
+    }
+
     // ── EI-13095 (the WI-5075 stranded-await incident): the done-key LATCH.
     // `work-item:done:<id>` fires ONCE, at settle time, so a registration made
     // AFTER the item settled can only ever time out — the awaiter sleeps through
@@ -560,7 +595,18 @@ export default defineTool({
             ...(unknownEventKey
               ? {
                   unknown_event_key: true,
-                  unknown_event_key_advice: `NO REGISTERED EMITTER for "${eventKey}" — it matches no family in events:catalog and no announced gate, so nothing in this system will ever fire it and this await can only TIME OUT. If you mistyped a key, events:cancel and re-await the exact one (events:catalog lists them). If a peer is meant to emit it, have them DECLARE it first (events:emit { announce:true }) and await the key it returns. Registered anyway — this is a warning, not a refusal.`,
+                  unknown_event_key_advice: `NO KNOWN EMITTER for "${eventKey}" — it matches no family in events:catalog, no announced gate, and no key in its family ("${eventKey.split(':').slice(0, 2).join(':')}") has EVER fired on this host, so this await will most likely only TIME OUT. If you mistyped a key, events:cancel and re-await the exact one (events:catalog lists them). If a peer is meant to emit it, have them DECLARE it first (events:emit { announce:true }) and await the key it returns. Registered anyway — this is a warning, not a refusal.`,
+                }
+              : {}),
+            // EI-18676056143796303: the key emits but is missing from the catalog.
+            // Say so plainly — the await is FINE (do not cancel it); what is broken
+            // is the registry, and naming the gap is what gets it registered instead
+            // of re-teaching the next agent to distrust the orphan warning.
+            ...(emitterEvidence
+              ? {
+                  uncatalogued_event_key: true,
+                  uncatalogued_event_key_advice: `"${eventKey}" matches no family in events:catalog, BUT it has demonstrably fired before — ${emitterEvidence.exact ? 'this exact key has fired' : `${emitterEvidence.distinctKeys} key(s) in its family "${emitterEvidence.prefix}" have fired`}, ${emitterEvidence.fires} time(s) total, most recently ${emitterEvidence.lastFiredAt ?? 'unknown'}. So an emitter EXISTS and this await is fine — do NOT cancel it. The gap is in the catalog, not your await: the family is unregistered, which is a bug worth filing (it also means events:catalog cannot surface this key to anyone else).`,
+                  emitter_evidence: emitterEvidence,
                 }
               : {}),
             ...(requiredParamPrefixMismatch

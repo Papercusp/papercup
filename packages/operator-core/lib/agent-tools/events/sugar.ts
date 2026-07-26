@@ -33,6 +33,8 @@ import { devDeployState } from "../../dev-deploy-state";
 import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
 import { withBoundedTimeout } from "../../bounded-timeout";
 import { CHECKPOINT_MAX_RUNTIME_SEC } from "../../release-checkpoint-launch";
+import { gitPipelinePosition } from "../../git-pipeline-position";
+import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -152,11 +154,38 @@ async function defaultCheckpointPipeline(): Promise<string | undefined> {
   }
 }
 
+// ── EI-18676050719521433: the deploy-already-landed LATCH. `release:deployed:<sha>`
+// is emitted ONLY for the shas in the deploy BATCH that ships them
+// (apps/operator/lib/release/deploy.ts: plan.targetSha + each plan.commitShas) — a
+// sha deployed in an EARLIER batch, awaited AFTERWARD, can never re-fire that exact
+// key. Without an arm-time check the caller slept the FULL timeout holding its work-
+// item claim even though release:trace already knew the target had landed (live
+// case: su-29fe479d parked 2026-07-26T02:22Z on a sha release:trace confirmed was
+// already deployed; the wait could only ever time out). Same class as the
+// EI-9270 announced-gate latch and EI-13095 work-item:done latch elsewhere in this
+// file/events:await — probe NOW, answer already_deployed instead of registering a
+// dead-on-arrival wait. Best-effort + time-bounded: an unresolvable probe (timeout,
+// unknown sha) falls through to a normal registration, never blocks arming.
+async function deployAlreadyLiveProbe(
+  sha: string,
+): Promise<{ deployed: boolean; targetSha: string | null; deployedSha: string | null }> {
+  const snapshot = await gitPipelineSnapshot();
+  const position = await gitPipelinePosition(
+    { sha },
+    { loadSnapshot: () => Promise.resolve(snapshot), loadDeploy: () => Promise.resolve(snapshot.deploy) },
+  );
+  return {
+    deployed: !!position.targetSha && position.positions.deployed,
+    targetSha: position.targetSha,
+    deployedSha: position.deployedSha,
+  };
+}
+
 // ── deploy:await — "wake when my sha is live on :3070" ───────────────────────
 defineTool({
   name: "deploy:await",
   description:
-    "Sleep until a deploy lands (a staging sha reaches the live GREEN :3070 operator) instead of polling dev:pipeline_position. Arms awaits on BOTH release:deployed (success) and release:deploy-failed (failure) so you wake either way. Pass sha to target a specific commit; omit to wake on the next deploy of any sha. Then END YOUR TURN.",
+    "Sleep until a deploy lands (a staging sha reaches the live GREEN :3070 operator) instead of polling dev:pipeline_position. Arms awaits on BOTH release:deployed (success) and release:deploy-failed (failure) so you wake either way. Pass sha to target a specific commit; omit to wake on the next deploy of any sha. A targeted sha that is ALREADY live returns already_deployed immediately instead of registering a dead wait. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You left an edit in the tree and need it LIVE on :3070 before your next step — instead of re-polling dev:pipeline_position, arm this and end your turn.",
@@ -196,6 +225,25 @@ defineTool({
     const note =
       args.note ??
       `deploy:await${args.sha ? ` ${args.sha}` : ""} — blocked until the deploy lands (or fails)`;
+
+    if (args.sha) {
+      const probe = await withBoundedTimeout(deployAlreadyLiveProbe(args.sha), {
+        fallback: { deployed: false, targetSha: null, deployedSha: null },
+        timeoutMs: 3_000,
+        label: "deploy-await:alreadyDeployedLatch",
+      });
+      if (probe.value.deployed) {
+        return reply({
+          ok: true,
+          already_deployed: true,
+          event: keys[0],
+          sha: probe.value.targetSha,
+          deployedSha: probe.value.deployedSha,
+          advice: `${args.sha} is ALREADY deployed (live on :3070) — its exact "${keys[0]}" key is emitted only for shas in a FUTURE deploy batch, so it can never re-fire for this one. Do not wait; proceed with the work that needed it live now.`,
+        });
+      }
+    }
+
     return reply(await armAwaits(ctx, keys, note, args.timeout_sec));
   },
 });

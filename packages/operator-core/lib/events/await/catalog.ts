@@ -317,6 +317,93 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
     replacesPoll: 'busy-waiting / retrying cup:spawn on a loop after an over-ceiling (D-004) rejection',
   },
+  // ── Coordination / session lifecycle ──────────────────────────────────────
+  // EI-18676056143796303: these families have emitted for a long time but were
+  // never REGISTERED here, so the EI-10870 orphan guard reported an await on them
+  // as `unknown_event_key` — "nothing in this system will ever fire it and this
+  // await can only TIME OUT" — which is false and maximally actionable in the
+  // WRONG direction. The live case was `coord:inbox-wake:<ownerId>`: the single
+  // most-fired key in the whole system (8,989 fires across 118 owners at filing
+  // time), and the mechanism that rescues a stranded agent — an agent that
+  // believed the warning and re-parked on something else would strand itself,
+  // precisely the failure the inbox-wake exists to prevent. Every entry below was
+  // grounded against BOTH its emit site (cited in `emitter`) and a non-zero
+  // harness_shared.event_key_fires row, per this file's grounding rule.
+  {
+    family: 'inbox-wake',
+    keyTemplate: 'coord:inbox-wake:<ownerId>',
+    params: [{ name: 'ownerId', required: true, describe: "the agent ownerId to wake — only THAT owner ever watches this key (never a broadcast)" }],
+    describe:
+      'A directed message / dispatch landed for ONE agent — the always-armed park key every live session holds, and the key `coord:send { wake:true }` / `coord:dispatch` / `coord:wake-queue` fire to re-invoke a sleeping agent.',
+    emitter:
+      'inbox-wake fan (packages/operator-core/lib/agent-tools/coordination/inbox-wake.ts — inboxWakeKey/COORD_INBOX_WAKE_PREFIX) via coord:send{wake}, coord:dispatch, coord:wake-queue',
+    exists: true,
+    replacesPoll: 'coord:inbox re-polling for a directed message',
+  },
+  {
+    family: 'escalation-resolved',
+    keyTemplate: 'escalation:resolved:<msgId>',
+    params: [{ name: 'msgId', required: true, describe: 'the escalation / spawn-request msg_id you raised' }],
+    describe: 'An escalation you raised was RESOLVED (or a spawn request was approved) — wake instead of re-polling for the verdict.',
+    emitter:
+      'coord:resolve (packages/operator-core/lib/agent-tools/coordination/tools/resolve.ts) + spawn approve (packages/operator-core/lib/agent-tools/spawn/approve.ts)',
+    exists: true,
+    replacesPoll: 'coord:escalations re-polling for a verdict',
+  },
+  {
+    family: 'conversation-answered',
+    keyTemplate: 'conversation:answered:<conversationId>',
+    params: [{ name: 'conversationId', required: true, describe: 'the conversation id you are waiting on an answer for' }],
+    describe: 'A conversation you opened received an ANSWER.',
+    emitter: 'conversations:answer (packages/operator-core/lib/agent-tools/coordination/conversations.ts)',
+    exists: true,
+    replacesPoll: 'conversations:get re-polling for an answer',
+  },
+  {
+    family: 'handoff-accepted',
+    keyTemplate: 'handoff:accepted:<acceptMsgId>',
+    params: [{ name: 'acceptMsgId', required: true, describe: 'the accept msg_id the handoff returned' }],
+    describe: 'A work handoff you offered was ACCEPTED by the receiver.',
+    emitter: 'coord:handoff (packages/operator-core/lib/agent-tools/coordination/tools/handoff.ts)',
+    exists: true,
+    replacesPoll: 'coord:handoffs re-polling for pickup',
+  },
+  {
+    family: 'plan-draft-ready',
+    keyTemplate: 'plan:draft-ready:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the plan slug being drafted' }],
+    describe: 'An architect plan DRAFT finished and is ready to read/ratify.',
+    emitter: 'architect plan-block handler (packages/operator-core/lib/agent-tools/architect/plan-block-handler.ts)',
+    exists: true,
+    replacesPoll: 'plans:get re-polling for a draft to appear',
+  },
+  {
+    family: 'rate-limit-exhausted',
+    keyTemplate: 'rate-limit:exhausted:<accountId>',
+    params: [{ name: 'accountId', required: true, describe: 'the account id that tipped into sustained rate-limiting' }],
+    describe: 'An account tipped into SUSTAINED rate-limiting (distinct from the transient rate-limit:paused pause).',
+    emitter: 'account-pool-store (packages/operator-core/lib/deployment/account-pool-store.ts)',
+    exists: true,
+  },
+  // ── pot-git federation gossip ─────────────────────────────────────────────
+  {
+    family: 'pot-git-ref-announce',
+    keyTemplate: 'pot-git:ref-announce',
+    params: [],
+    describe: 'A federated peer ANNOUNCED a git ref (pot-git gossip). Global key — check the payload for the repo/ref/peer.',
+    emitter: 'pot-git ref-announce (packages/operator-core/lib/sync/pot-git/ref-announce.ts — REF_ANNOUNCE_EVENT_KEY)',
+    exists: true,
+    payloadFiltered: true,
+  },
+  {
+    family: 'pot-git-staging-advance',
+    keyTemplate: 'pot-git:staging-advance',
+    params: [],
+    describe: "A federated peer's signed staging-advance landed (pot-git gossip). Global key — check the payload for the device/epoch/sha.",
+    emitter: 'pot-git staging-advance (packages/operator-core/lib/sync/pot-git/staging-advance.ts — STAGING_ADVANCE_EVENT_KEY)',
+    exists: true,
+    payloadFiltered: true,
+  },
   // ── Rate limits (already emit) ────────────────────────────────────────────
   {
     family: 'rate-limit-reset',

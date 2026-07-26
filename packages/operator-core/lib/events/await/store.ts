@@ -1194,6 +1194,89 @@ export async function getKeyFireLatch(eventKey: string): Promise<KeyFireRow | nu
   return rows.length > 0 ? mapKeyFire(rows[0]) : null;
 }
 
+/**
+ * EI-18676056143796303 — EMITTER EVIDENCE for the EI-10870 orphan-await guard.
+ *
+ * The orphan guard can only check catalog MEMBERSHIP, but it phrased its verdict
+ * as knowledge about EMITTERS ("nothing in this system will ever fire it"). When a
+ * family is emitted but simply never got registered in the catalog, that verdict is
+ * flatly false — and it tells the agent to abandon a VALID park. The live case was
+ * `coord:inbox-wake:<ownerId>`, the single most-fired key in the system and the
+ * mechanism that rescues a stranded agent.
+ *
+ * The fire latch (`harness_shared.event_key_fires`, EI-13705) is direct evidence an
+ * emitter exists: a row means the key genuinely fired at least once. This reads it
+ * two ways, strongest first:
+ *   - EXACT: this precise key has fired before (`release:deployed:abc123`);
+ *   - PREFIX/SIBLING: some key sharing this key's first two segments has fired
+ *     (`coord:inbox-wake:su-NEW` has never fired, but 118 sibling owner keys have —
+ *     so the SHAPE demonstrably has an emitter, which is what the warning claims
+ *     does not exist).
+ *
+ * A genuine orphan (the EI-10870 case: `overwatch:surface-landed`, 0 fires ever,
+ * appears nowhere in the tree) matches NEITHER, so the warning still fires for the
+ * keys it was built for — this only removes the false positives.
+ *
+ * Two segments is the family granularity every builtin template uses before its
+ * first placeholder (`coord:inbox-wake`, `work-item:done`, `release:deployed`), so
+ * the prefix is the family, not a loose namespace match. A key with fewer than two
+ * segments probes itself exactly.
+ */
+export interface KeyFireEvidence {
+  /** The prefix the sibling probe used (the key's first two `:` segments). */
+  prefix: string;
+  /** This EXACT key has fired before. */
+  exact: boolean;
+  /** Distinct keys sharing the prefix that have ever fired (includes the exact key). */
+  distinctKeys: number;
+  /** Total fires across those keys. */
+  fires: number;
+  /** Most recent fire across those keys, ISO-ish timestamp, or null when none. */
+  lastFiredAt: string | null;
+}
+
+/** The family prefix an evidence probe uses: the key's first two `:` segments. */
+export function keyFireEvidencePrefix(eventKey: string): string {
+  const parts = String(eventKey ?? '').trim().split(':');
+  return parts.length <= 2 ? parts.join(':') : parts.slice(0, 2).join(':');
+}
+
+/**
+ * Has anything ever fired this key — or a sibling of its family? Returns
+ * `fires: 0` when there is no evidence at all (the genuine-orphan case).
+ * Read-only and index-backed (the latch's PK is `(workspace_id, event_key)`, so
+ * the prefix scan is a btree range read).
+ */
+export async function probeKeyFireEvidence(eventKey: string): Promise<KeyFireEvidence> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const key = String(eventKey ?? '').trim();
+  const prefix = keyFireEvidencePrefix(key);
+  const empty: KeyFireEvidence = { prefix, exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null };
+  if (!prefix) return empty;
+  // `prefix` is a literal key segment, never a caller-supplied LIKE pattern —
+  // escape the wildcards anyway so a key containing `%`/`_` cannot widen the scan.
+  const escaped = prefix.replace(/([\\%_])/g, '\\$1');
+  const rows = await sql`
+    SELECT count(*)::int                                             AS distinct_keys,
+           coalesce(sum(fire_count), 0)::bigint                      AS fires,
+           max(last_fired_at)                                        AS last_fired_at,
+           bool_or(event_key = ${key})                               AS exact
+      FROM harness_shared.event_key_fires
+     WHERE workspace_id = ${ws}
+       AND (event_key = ${prefix} OR event_key LIKE ${`${escaped}:%`} ESCAPE '\\')
+  `;
+  const row = rows[0];
+  if (!row) return empty;
+  return {
+    prefix,
+    exact: row.exact === true,
+    distinctKeys: Number(row.distinct_keys) || 0,
+    fires: Number(row.fires) || 0,
+    lastFiredAt: row.last_fired_at ? String(row.last_fired_at) : null,
+  };
+}
+
 /** Exact-key event history for events:status.  One call returns declarations,
  * waiter registrations, wake outcomes, and the unconditional fire latch so an
  * agent does not have to stitch four partially ordered surfaces together by
