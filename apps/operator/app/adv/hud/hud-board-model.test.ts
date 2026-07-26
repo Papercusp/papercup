@@ -256,9 +256,12 @@ describe('deriveColumn — precedence', () => {
 });
 
 describe('deriveBadges', () => {
-  it('marks the fleet leader', () => {
+  it('does NOT badge fleet leadership — that is identity, rendered beside the handle', () => {
+    // Emitting it here too rendered "LEAD" twice on every leader card and burnt
+    // one of the capped badge slots. `isLeader` on the session carries it.
     const b = deriveBadges(entry({ fleetRole: 'leader', fleetSlug: 'atlas' }), OPTS);
-    expect(b.find((x) => x.id === 'lead')?.label).toBe('LEAD');
+    expect(b.find((x) => x.id === 'lead')).toBeUndefined();
+    expect(toHudSession(entry({ fleetRole: 'leader' }), undefined, OPTS).isLeader).toBe(true);
   });
 
   it('surfaces standing modes with an explanation of what they mean for the human', () => {

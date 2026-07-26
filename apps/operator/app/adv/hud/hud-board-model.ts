@@ -369,9 +369,10 @@ export function deriveBadges(
 ): HudBadge[] {
   const out: HudBadge[] = [];
 
-  if (e.fleetRole === 'leader') {
-    out.push({ id: 'lead', label: 'LEAD', tone: 'accent', title: `Leader of fleet ${e.fleetSlug}` });
-  }
+  // NOTE: fleet leadership is deliberately NOT a badge. It is IDENTITY, not
+  // state, so the card renders it beside the handle (HudSession.isLeader) —
+  // emitting it here as well rendered "LEAD" twice on every leader card, and
+  // spent one of the capped badge slots on it. Keep identity out of this row.
 
   // Standing modes decide whether your silence is fine or is the thing blocking
   // this agent — the single most useful chip on the card.

@@ -1,4 +1,4 @@
-# Replication-liveness detector: live debugging + the per-join counter blind spot
+# Replication-liveness detector: live debugging, the per-join counter blind spot, and the pre-admission blind window
 URL: /internal/docs/agent-insights/replication-liveness-detector-live-debugging
 
 >-
@@ -92,3 +92,76 @@ sidecar child, and its console output lands in `serve.log` prefixed
 Related: the WI-183 stale-DHT-announce zombie-window mechanism (root cause the
 detector exists to catch) is written up on WI-183 / ledger row 13 of
 `shared-pot-release-testing/RELEASE-READINESS.md`.
+
+## The PRE-ADMISSION blind window — read this before blaming the grace
+
+Added 2026-07-25 (su-055ae, EI-18662944242304583). **The single most likely way
+you will misdiagnose a silent detector.**
+
+`sampleReplicationLiveness` is called at `boot.ts:2404`, inside
+`for (const log of admitted.values())` (`boot.ts:2363`). So with **zero admitted
+remote logs the sampler is never invoked and all three axes are dead code** —
+not quiet, *never executed*. Admission requires an announce; an announce
+requires a paired announce channel. Everything above is therefore invisible
+from down here, and "wedged" and "healthy" emit the identical observable
+(silence).
+
+**Do not reason about the grace until you have confirmed the log was being
+sampled at all.** Gate run 20260725-183831 was first filed as a grace defect
+("connections die at 13s, the grace is 15s, so the axis can never see them").
+That is wrong twice over:
+
+1. `connectedNeverReplSinceMs` (`replication-liveness.ts:203`) is a **per-LOG**
+   window, not per-connection. It is armed on the first sample with
+   `swarmConnections > 0` and *survives* connection churn — it resets only
+   after `SWARM_CHURN_TOLERANCE_MS` (60s) of **sustained** swarm=0. Churn
+   shorter than the grace does not hide anything; the churn tolerance exists
+   precisely so it can't.
+2. The real cause was that **nothing was ever admitted for 20.5 minutes**. The
+   detector fired correctly 15s after its first opportunity.
+
+Corollary for fixes: a new leg added to the zombie axis **cannot** catch a
+pre-admission failure, because it would live inside the loop that never runs.
+Detection for this window has to sit at the swarm layer — which is what
+`joinHarnessSwarm`'s escalation rung (c) now does
+(`DEFAULT_SUBSTRATE_UNPAIRED_ESCALATION_MS`, pinned by
+`swarm-unpaired-announce-escalation.test.ts`): live connections + N announce-
+channel open attempts + never once paired ⇒ loud signal + forced topic rejoin.
+
+### Diagnostic recipe: count the announce-channel STAGES
+
+This is what cracked it — stage counts separate "never reached" from "reached
+and failed" in one pass. On a frame's `serve.log`:
+
+```bash
+for p in "announce-debug] mux mux=" "announce-debug] create mux=" \
+         "announce-debug] open topic=" "announce-debug] recv topic=" \
+         "announce_admitted"; do
+  printf '%s\tfirst=%s\t%s\n' "$(grep -c "$p" serve.log)" \
+    "$(grep -o "^\[[0-9T:.Z-]*\].*$p" serve.log | head -1 | cut -c2-25)" "$p"
+done
+```
+
+Read it as a funnel — the stage where the count collapses to 0 is the fault:
+
+| stage               | meaning                                  | 20260725-183831 (frame a) |
+| ------------------- | ---------------------------------------- | ------------------------- |
+| `mux mux=`          | peer connections observed                | 188                       |
+| `create mux=`       | we created + `open()`d a channel         | 91                        |
+| `open topic=`       | Protomux `onopen` — channel **PAIRED**   | **0 until 23:07:16**      |
+| `recv topic=`       | any inbound frame                        | **0 until 23:07:16**      |
+| `announce_admitted` | admission (detector becomes able to run) | **0 until 23:07:16**      |
+
+188 connections, 91 open attempts, and not one frame in either direction for
+20.5 minutes = a dead data path behind sockets Hyperswarm reported as
+connected. `open topic=` collapsing while `create mux=` is healthy is the
+signature of this class. If instead `create mux=` is 0, look at
+`openAnnounceChannel`'s early return (a reader with neither `onAnnounce` nor
+`ourAnnounce` opens no channel at all).
+
+⚠ A connection dying at a fixed, repeatable sub-grace interval (\~13.0s here,
+`precededByError: 'connection timed out'`) is a **consequence** of the dead
+data path, not the cause of the silence: no ACK ever returns, so UDX gives up
+(hyperdht sets the stream keepAlive to 5000ms — `hyperdht/index.js:21`). The
+exact give-up arithmetic is in libudx's C, which is not vendored here. Don't
+tune a grace against it.

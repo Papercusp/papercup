@@ -1,7 +1,7 @@
 # Absorbing-state guards, and why your detector didn't notice
 URL: /internal/docs/agent-insights/absorbing-state-guards-and-self-report-detectors
 
-Four failure instances found independently on one day by four agents in different lanes, then recognised as one pattern. Three guard/detector shapes: (A) a guard whose baseline or latch advances ONLY through its own success cannot clear itself — the first failure is permanent; (B) when a component reports its own failure, a detector that infers the same condition from a downstream proxy instead is strictly weaker, because the proxy can be confounded; (C) a detector whose coverage is gated on the success it exists to detect the absence of reports healthy precisely when the thing has failed. The headline is C-and-B, not A: the guard bugs cost hours, the detector bugs cost DAYS.
+Six failure instances, four found independently on one day by four agents in different lanes, then recognised as one pattern. Five guard/detector shapes: (A) a guard whose baseline or latch advances ONLY through its own success cannot clear itself — the first failure is permanent; (B) when a component reports its own failure, a detector that infers the same condition from a downstream proxy instead is strictly weaker, because the proxy can be confounded; (C) a detector whose coverage is gated on the success it exists to detect the absence of reports healthy precisely when the thing has failed; (D) a correctly-written detector aimed at an EMPTY set reports a clean pass forever. The headline is the detectors, not the guards: the guard bugs cost hours, the detector bugs cost DAYS — and the Shape D instance had been blind for its entire life.
 
 ## Why this doc exists
 
@@ -370,6 +370,58 @@ EI-18660454282479136.
 The general form of (3): **any sweeper that can legitimately process zero units
 needs a second, independent opinion about whether zero was the right answer.**
 
+## Shape E — the detector switched off by the aggregate's health
+
+Checklist question 4 below already states the rule in its "contaminated signal"
+form: a signal kept fresh by something *other* than the mechanism you are
+watching cannot tell you about that mechanism. This shape is its nastier
+variant — the aggregate does not merely *contaminate* the detector's input, it
+**gates whether the detector runs at all**.
+
+### Instance 6 — the live-federation gate's `local-matrix` leg (EI-18657324526667507)
+
+`live-federation-gate.sh` has a `check_staleness()` that files a loud EI when no
+GREEN run has happened in `GATE_STALE_DAYS`. It opens with an early return while
+the gate-wide `last-green` is fresh — reasonable in isolation.
+
+But the gate is several legs, and the *cheap* `content-matrix` leg keeps
+`last-green` fresh on its own. The heavy `local-matrix` leg had three independent
+suppression paths (a `LOAD_GATE` defer, the `MATRIX_TTL_H` 144h cadence window,
+and a rig-busy pre-check) that each **exit 0**. So the leg could stop deciding
+anything, indefinitely, and the one detector that might have said so was
+*switched off by the sibling leg's success*. Measured live: `last-matrix-green`
+ABSENT — the leg had never once produced a verdict — while `last-run` was minutes
+old and 205 skip banks had accumulated. A verification waiting on it stalled for
+days behind an all-green gate.
+
+Note the asymmetry that makes this hard to see in review: the detector was
+correct on every RED path (it is called from all of them) and blind on exactly
+the GREEN one — the state nobody investigates.
+
+### The fix shape
+
+1. **Give the unit its own clock.** A `last-matrix-verdict` stamp — "when did
+   this leg last DECIDE anything" — kept deliberately separate from
+   `last-matrix-green` ("when was it last GOOD"). They differ in both directions:
+   a leg that only ever FAILs is still *running*, and a leg green last week but
+   suppressed ever since is stale. Do not reuse the success stamp as the liveness
+   stamp.
+2. **Only a real verdict clears it.** A downgrade that means "nothing was proven"
+   (here `SKIPPED-STARVATION`) must NOT stamp the clock, and a green *aggregate*
+   must not clear the unit's dedup file. Otherwise the aggregate re-acquires the
+   power to silence the unit.
+3. **Call it on the healthy path too — that is the load-bearing call.** Wiring it
+   into the paths that already report is free but proves nothing; the GREEN exit
+   is the one that was hiding the failure.
+4. **Derive the threshold from the cadence it watches.** `MATRIX_STALE_H =
+   MATRIX_TTL_H + grace`, not a second independent constant — otherwise raising
+   the cadence silently disarms its own detector, which is the same drift this
+   doc's Shape A warns about one level up.
+
+General form: **a detector scoped to an aggregate cannot report a unit inside it
+going dark.** Any unit with its own suppression paths needs its own liveness
+clock, checked on the aggregate's success path.
+
 ## The checklist
 
 When you write or review a guard, latch, watchdog, or watermark:
@@ -382,7 +434,10 @@ When you write or review a guard, latch, watchdog, or watermark:
 3. **Does the thing being watched report its own health?** If so, consume that
    report — do not infer it.
 4. **Is the signal you measure kept fresh by anything OTHER than the mechanism
-   you are watching?** If yes, it cannot tell you about that mechanism.
+   you are watching?** If yes, it cannot tell you about that mechanism. And its
+   sharper form (Shape E): does that signal *gate whether your detector runs at
+   all*? A detector scoped to an aggregate goes blind to any unit inside it that
+   stops running while a sibling keeps the aggregate healthy.
 5. **Does the escape hatch cover every instance of the guard?** An escape hatch
    present on two of three guards is absent from the one that wedges.
 6. **Does the detector enumerate the EXPECTED set or the ACHIEVED set?** If it

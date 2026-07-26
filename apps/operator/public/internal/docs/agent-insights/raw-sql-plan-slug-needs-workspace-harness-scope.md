@@ -37,6 +37,8 @@ resolves `{ workspaceId, harnessSlug }` via `resolvePlanScope` FIRST, then
 queries:
 
 ```sql
+-- sql-snippet-justified: quotes getPlanRow's OWN query to show how the tool scopes —
+-- the encapsulation being documented, not a query to hand-write.
 SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, ...
   FROM harness_shared.harness_plans
  WHERE workspace_id = $workspaceId AND harness_slug = $harnessSlug
@@ -57,6 +59,8 @@ suspected caching/staleness in the tool layer itself), the safe raw query is
 the exact same three-column `WHERE`, not a slug-only shortcut:
 
 ```sql
+-- sql-snippet-justified: the sanctioned second-opinion read when the TOOL layer itself
+-- is the suspect (caching/staleness) — deliberately not answerable by that same tool.
 SELECT plan_slug, version, content_hash, updated_at, workspace_id, harness_slug
   FROM harness_shared.harness_plans
  WHERE workspace_id = '<ws>' AND harness_slug = '<harness>' AND plan_slug = '<slug>';

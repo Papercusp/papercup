@@ -28,6 +28,8 @@ export interface CodeRecipeRow {
   title: string;
   description: string;
   script: string;
+  /** The pot that authored the recipe (P-002 pot-scope-all-learnings); null = pre-pot legacy or context-less system author. */
+  potSlug: string | null;
   authorRole: string | null;
   toolsUsed: string[];
   runCount: number;
@@ -57,6 +59,13 @@ export interface UpsertCodeRecipeInput {
   tags?: string[];
   /** The coord ownerId that authored the recipe (first-write attribution). */
   createdBy?: string | null;
+  /**
+   * The pot the authoring agent worked under — resolve via resolveLearningPotSlug
+   * (learning/pot-scope.ts) at the caller. Required so no writer forgets the scope;
+   * an explicit null means "genuinely context-less" (D-002), never "didn't look".
+   * First-write attribution: an update never steals the pot from the original author.
+   */
+  potSlug: string | null;
 }
 
 export interface RecordRecipeRunInput {

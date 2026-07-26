@@ -62,6 +62,8 @@ SELECT feature_id, tags, source_plan_slug
  WHERE workspace_id = '<ws>' AND harness_slug = '<h>' AND feature_id = 'WI-nnnn';
 
 -- issue-family: payload.tags is the one that counts
+-- sql-snippet-justified: shows the raw payload column BECAUSE the point is that the
+-- tool-level view disagrees with it — reading it through the tool would hide the bug.
 SELECT issue_id, payload -> 'tags'
   FROM harness_shared.engineer_issues
  WHERE workspace_id = '<ws>' AND issue_id = 'EI-nnnn';

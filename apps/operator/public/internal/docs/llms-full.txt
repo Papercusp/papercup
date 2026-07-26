@@ -150,6 +150,61 @@ While writing this up I concluded `SCOPED_SUPERUSER_CLAMP` had **zero consumers*
 * The Bash tool’s **cwd persists between calls** — `cd` to the repo root, or use absolute paths, before any recursive search.
 * **Never** send stderr to `/dev/null` on a search whose *emptiness* you intend to treat as evidence.
 
+# A hot read belongs behind a tool, not a SQL snippet in guidance
+
+> The claimability drift that gave three different answers to 'what is claimable' (8 vs 2 vs 0) was re-armed by GUIDANCE, not by code: docs and tool guidance told the next agent to hand-write the query, and the hand-written version disagreed with what the queue actually served. The governing principle: a read with a stable shape gets a TOOL that wraps the canonical SQL so it cannot drift; dev:pg_query is the escape hatch for a genuinely one-off analytic read. Enforced by lint:sql-guidance-justified — an agent-facing surface may not tell an agent to SELECT from a tool-covered table (work_items, harness_plans, engineer_issues, work_items_claimable) without stating why the tool doesn't fit.
+
+## The shape of the bug
+
+[Section titled “The shape of the bug”](#the-shape-of-the-bug)
+
+Three surfaces answered “how much work is claimable?” with 8, 2, and 0. None was lying: each ran a *different* hand-written query, because the real claim floors lived only in a SQL view plus the scheduler’s inline fragments — so every guidance surface pointed agents at raw `dev:pg_query` and each agent reconstructed the floors slightly differently.
+
+The fix everyone reaches for is to correct the docs. That is only half of it. **The docs were not wrong about the SQL — they were wrong to be SQL.** A snippet is a copy of the semantics, and a copy drifts the moment the original changes. Nobody edits the runbook when a thirteenth claim floor lands.
+
+## The principle
+
+[Section titled “The principle”](#the-principle)
+
+> A read with a **stable shape** gets a **tool** that wraps the canonical SQL, so it cannot diverge from what the system actually does. `dev:pg_query` is the escape hatch for a genuinely **one-off analytic** read — not the default way to read canonical state.
+
+The test is repetition, not complexity: **if you are writing the same query a second time, it should be a tool** (or one more arg on an existing tool — extend before you fork). A one-off join across `tool_invocations` to answer a question you will never ask again is exactly what the escape hatch is for; that is not what this is about.
+
+Concretely, the reads that already have tools:
+
+| you want                                | use                                                                                         |
+| --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| what issue-family work is claimable now | `work_items:claimable { harness }` — the SSOT floors, same oracle `scheduler:get_next` runs |
+| a filtered work-item / issue slice      | `work_items:list` (server-side filters)                                                     |
+| the plan directory, or recent plans     | `plans:list { updatedSince, createdSince, order, limit }`                                   |
+| plan COUNTS by status / harness / day   | `plans:list { groupBy, aggregateOnly }`                                                     |
+| pickable plan items across plans        | `plans:items { actionable: true }`                                                          |
+
+## The guard
+
+[Section titled “The guard”](#the-guard)
+
+`lint:sql-guidance-justified` (`scripts/check-sql-guidance-justified.mjs`, gating in CI) scans **agent-facing surfaces only** — a tool’s own `description:` / `guidance:` text, docs MDX, the prompt sources, `CLAUDE.md` — for a `SELECT … FROM` a tool-covered table (`work_items`, `work_items_claimable`, `harness_plans`, `engineer_issues`).
+
+Implementation SQL inside a tool is never flagged: that IS the encapsulation working. What is flagged is *telling an agent to run it*.
+
+A snippet that genuinely belongs — the counter-example a page is written to correct, a repair script no tool exposes — says so at the site, on the same line or within 3 lines above:
+
+```sql
+-- sql-snippet-justified: the WRONG query, quoted as the counter-example this page corrects.
+SELECT count(*) FROM harness_shared.work_items WHERE status = 'open';
+```
+
+A bare marker with no reason after the colon is rejected — justifying it is the entire rule, so an empty marker would just be a mute button.
+
+## Why the guard is worth its weight
+
+[Section titled “Why the guard is worth its weight”](#why-the-guard-is-worth-its-weight)
+
+Every incident is also a detector failure. The claimability fix landed a tool and repointed the guidance; without a guard, the *next* runbook re-introduces the snippet and the drift starts over — which is precisely how this class recurred the first time. The lint makes “should this be a tool?” a question the author has to answer once, at the moment they are writing the snippet, instead of a question the next agent discovers by getting a wrong number.
+
+See also: [judging claimable work — `status='open'` is not claimability](/internal/docs/agent-insights/judging-claimable-work-not-status-open), [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).
+
 # A re-firing watchdog signal whose fix is "already in the code" — check bg-host uptime first
 
 > A self-improvement / watchdog collector fix that is committed, tested, in main, AND deployed to :3070 can STILL keep firing its own signal, because the watchdog runs in the bg-host, which loads tsx once at boot with no file-watch. Before diagnosing a re-fire as a code defect, compare bg-host uptime against the fix's commit time.
@@ -365,7 +420,7 @@ When any of those hit, **check the version before you check your reasoning** —
 
 # Absorbing-state guards, and why your detector didn't notice
 
-> Four failure instances found independently on one day by four agents in different lanes, then recognised as one pattern. Three guard/detector shapes: (A) a guard whose baseline or latch advances ONLY through its own success cannot clear itself — the first failure is permanent; (B) when a component reports its own failure, a detector that infers the same condition from a downstream proxy instead is strictly weaker, because the proxy can be confounded; (C) a detector whose coverage is gated on the success it exists to detect the absence of reports healthy precisely when the thing has failed. The headline is C-and-B, not A: the guard bugs cost hours, the detector bugs cost DAYS.
+> Six failure instances, four found independently on one day by four agents in different lanes, then recognised as one pattern. Five guard/detector shapes: (A) a guard whose baseline or latch advances ONLY through its own success cannot clear itself — the first failure is permanent; (B) when a component reports its own failure, a detector that infers the same condition from a downstream proxy instead is strictly weaker, because the proxy can be confounded; (C) a detector whose coverage is gated on the success it exists to detect the absence of reports healthy precisely when the thing has failed; (D) a correctly-written detector aimed at an EMPTY set reports a clean pass forever. The headline is the detectors, not the guards: the guard bugs cost hours, the detector bugs cost DAYS — and the Shape D instance had been blind for its entire life.
 
 ## Why this doc exists
 
@@ -612,6 +667,33 @@ The watchdog built to catch a silently-stalled egress was itself silently stalle
 
 The general form of (3): **any sweeper that can legitimately process zero units needs a second, independent opinion about whether zero was the right answer.**
 
+## Shape E — the detector switched off by the aggregate’s health
+
+[Section titled “Shape E — the detector switched off by the aggregate’s health”](#shape-e--the-detector-switched-off-by-the-aggregates-health)
+
+Checklist question 4 below already states the rule in its “contaminated signal” form: a signal kept fresh by something *other* than the mechanism you are watching cannot tell you about that mechanism. This shape is its nastier variant — the aggregate does not merely *contaminate* the detector’s input, it **gates whether the detector runs at all**.
+
+### Instance 6 — the live-federation gate’s `local-matrix` leg (EI-18657324526667507)
+
+[Section titled “Instance 6 — the live-federation gate’s local-matrix leg (EI-18657324526667507)”](#instance-6--the-live-federation-gates-local-matrix-leg-ei-18657324526667507)
+
+`live-federation-gate.sh` has a `check_staleness()` that files a loud EI when no GREEN run has happened in `GATE_STALE_DAYS`. It opens with an early return while the gate-wide `last-green` is fresh — reasonable in isolation.
+
+But the gate is several legs, and the *cheap* `content-matrix` leg keeps `last-green` fresh on its own. The heavy `local-matrix` leg had three independent suppression paths (a `LOAD_GATE` defer, the `MATRIX_TTL_H` 144h cadence window, and a rig-busy pre-check) that each **exit 0**. So the leg could stop deciding anything, indefinitely, and the one detector that might have said so was *switched off by the sibling leg’s success*. Measured live: `last-matrix-green` ABSENT — the leg had never once produced a verdict — while `last-run` was minutes old and 205 skip banks had accumulated. A verification waiting on it stalled for days behind an all-green gate.
+
+Note the asymmetry that makes this hard to see in review: the detector was correct on every RED path (it is called from all of them) and blind on exactly the GREEN one — the state nobody investigates.
+
+### The fix shape
+
+[Section titled “The fix shape”](#the-fix-shape-4)
+
+1. **Give the unit its own clock.** A `last-matrix-verdict` stamp — “when did this leg last DECIDE anything” — kept deliberately separate from `last-matrix-green` (“when was it last GOOD”). They differ in both directions: a leg that only ever FAILs is still *running*, and a leg green last week but suppressed ever since is stale. Do not reuse the success stamp as the liveness stamp.
+2. **Only a real verdict clears it.** A downgrade that means “nothing was proven” (here `SKIPPED-STARVATION`) must NOT stamp the clock, and a green *aggregate* must not clear the unit’s dedup file. Otherwise the aggregate re-acquires the power to silence the unit.
+3. **Call it on the healthy path too — that is the load-bearing call.** Wiring it into the paths that already report is free but proves nothing; the GREEN exit is the one that was hiding the failure.
+4. **Derive the threshold from the cadence it watches.** `MATRIX_STALE_H = MATRIX_TTL_H + grace`, not a second independent constant — otherwise raising the cadence silently disarms its own detector, which is the same drift this doc’s Shape A warns about one level up.
+
+General form: **a detector scoped to an aggregate cannot report a unit inside it going dark.** Any unit with its own suppression paths needs its own liveness clock, checked on the aggregate’s success path.
+
 ## The checklist
 
 [Section titled “The checklist”](#the-checklist)
@@ -621,7 +703,7 @@ When you write or review a guard, latch, watchdog, or watermark:
 1. **Can this state advance without the success it gates?** If no, the first failure is permanent. Split the work, or add a path that advances on partial progress.
 2. **Is the clear reachable from every path?** Check reset, and every early `continue` / `return` before it.
 3. **Does the thing being watched report its own health?** If so, consume that report — do not infer it.
-4. **Is the signal you measure kept fresh by anything OTHER than the mechanism you are watching?** If yes, it cannot tell you about that mechanism.
+4. **Is the signal you measure kept fresh by anything OTHER than the mechanism you are watching?** If yes, it cannot tell you about that mechanism. And its sharper form (Shape E): does that signal *gate whether your detector runs at all*? A detector scoped to an aggregate goes blind to any unit inside it that stops running while a sibling keeps the aggregate healthy.
 5. **Does the escape hatch cover every instance of the guard?** An escape hatch present on two of three guards is absent from the one that wedges.
 6. **Does the detector enumerate the EXPECTED set or the ACHIEVED set?** If it iterates things that already succeeded, it is structurally blind to total failure — the case you most need it for.
 7. **Is the set it enumerates actually non-empty in production?** A correct enumeration pointed at the wrong scope reports a clean pass forever. If a zero-unit pass is possible, get a SECOND, independent opinion on whether zero was right — and make a wrong zero as loud as an alarm.
@@ -9270,6 +9352,8 @@ select last_fired_at, next_fire_at from harness_shared.routines where name = 'wa
 -- Counting only status='done' reads a HEALTHY loop as "zero completions" —
 -- an su burned a wake concluding the forward half was stalled when 9
 -- completions had landed that hour. Count the whole terminal set:
+-- sql-snippet-justified: loop-health forensics — no tool exposes a terminal-set
+-- count across the whole status family in a time window.
 select count(*) filter (where taken_by is not null) as taken,
        count(*) filter (where status in ('done','resolved','closed','passed')
              and updated_ts > extract(epoch from now())*1000 - 3600*1000) as done_1h
@@ -17089,6 +17173,7 @@ Any package whose `vitest.config.ts` carries an `esbuild: { jsx: 'automatic' }` 
 You want to know “how much work is claimable / is the fleet idle?” so you write the obvious query:
 
 ```sql
+-- sql-snippet-justified: the WRONG query, quoted as the counter-example this page corrects.
 SELECT count(*) FROM harness_shared.work_items
  WHERE item_kind IN ('bug','change','task') AND status = 'open';   -- ⚠ WRONG
 ```
@@ -17119,6 +17204,8 @@ Migration **654** (`work-item-claimability-clarity-2026-07-20` P-001) lands the 
 
 ```sql
 -- The claimable ISSUE-family backlog (fast — a cheap-floor prefilter + the full check):
+-- sql-snippet-justified: documents the SSOT view for a human at psql; agents call
+-- work_items:claimable, which wraps exactly this so the two cannot drift.
 SELECT count(*) FROM harness_shared.work_items_claimable WHERE harness_slug = 'papercusp';
 
 
@@ -28958,6 +29045,7 @@ Build it **on the account-routing system** — route through the inference gatew
 A raw `dev:pg_query` like:
 
 ```sql
+-- sql-snippet-justified: the under-scoped query this page exists to warn about.
 SELECT content, version, updated_at FROM harness_shared.harness_plans
 WHERE plan_slug = 'some-plan-slug'
 ```
@@ -28973,6 +29061,8 @@ This bit an agent investigating EI-6348 (plan store/file divergence): the raw re
 `getPlanRow` (`packages/operator-core/lib/agent-tools/plans/source.ts`) always resolves `{ workspaceId, harnessSlug }` via `resolvePlanScope` FIRST, then queries:
 
 ```sql
+-- sql-snippet-justified: quotes getPlanRow's OWN query to show how the tool scopes —
+-- the encapsulation being documented, not a query to hand-write.
 SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, ...
   FROM harness_shared.harness_plans
  WHERE workspace_id = $workspaceId AND harness_slug = $harnessSlug
@@ -28988,6 +29078,8 @@ Do the same for any raw SQL cross-check: resolve the workspace + harness slug fo
 If you genuinely need a second opinion on what `plans:get` returned (e.g. suspected caching/staleness in the tool layer itself), the safe raw query is the exact same three-column `WHERE`, not a slug-only shortcut:
 
 ```sql
+-- sql-snippet-justified: the sanctioned second-opinion read when the TOOL layer itself
+-- is the suspect (caching/staleness) — deliberately not answerable by that same tool.
 SELECT plan_slug, version, content_hash, updated_at, workspace_id, harness_slug
   FROM harness_shared.harness_plans
  WHERE workspace_id = '<ws>' AND harness_slug = '<harness>' AND plan_slug = '<slug>';
@@ -29906,6 +29998,8 @@ BEGIN
      AND owner = 'first-party-bundle';
 
 
+  -- sql-snippet-justified: a one-off seed-race REPAIR (guarded rename), not a read —
+  -- no tool exposes an atomic exists/not-exists precondition on a plan row.
   IF EXISTS (SELECT 1 FROM harness_shared.harness_plans WHERE plan_slug = '<old-id>')
      AND NOT EXISTS (SELECT 1 FROM harness_shared.harness_plans WHERE plan_slug = '<new-id>')
   THEN
@@ -30077,9 +30171,9 @@ The whole file fails to parse and `test:file` reports it as *unmatched* rather t
 
 **Corollary for arming (P-001).** A consumer loop needs BOTH budgets set to actually run: its own loop (distillation/selection spend) AND `frontier:replay-harness` (battery spend) — plus both flags. An armed consumer with a dark/unbudgeted replay loop fails its tests with “governed replay refused (replay-dark)” — that’s the designed refusal, not a bug.
 
-# Replication-liveness detector: live debugging + the per-join counter blind spot
+# Replication-liveness detector: live debugging, the per-join counter blind spot, and the pre-admission blind window
 
-> How to read the WI-1840 replication-liveness registry on a live sidecar (RPC, socket path, PG creds), and the detector blind-spot class that made it silent on its first live proof: per-join swarm-connection counters cannot see sockets that pre-date their registration.
+> Why the replication-liveness detector is SILENT — how to read the WI-1840 registry on a live sidecar (RPC, socket path, PG creds), and the two blind-spot classes behind a quiet detector: per-join swarm-connection counters that cannot see pre-existing sockets, and the pre-admission window where zero admitted logs means the sampler never runs at all (announce channel never pairs, no announce, no admission, no zombie/no_replicator/frozen axis). Includes the announce-channel stage-count funnel recipe and why connection churn shorter than the grace is NOT the cause.
 
 Written 2026-07-04 (su-b5d1c, plan `shared-pot-p2p-release-readiness-2026-07-03` P-004 / WI-1840, WI-183 class). Two things live here: the **diagnostic recipe** for the replication-liveness detector on a live frame, and the **blind-spot class** its first live proof exposed.
 
@@ -30136,6 +30230,50 @@ The registry lives in whichever process runs the merge loop — under `papercusp
 * The axis never fires when the substrate/swarm never came up (`swarmConnections` undefined) — genuinely-offline peers must not page.
 
 Related: the WI-183 stale-DHT-announce zombie-window mechanism (root cause the detector exists to catch) is written up on WI-183 / ledger row 13 of `shared-pot-release-testing/RELEASE-READINESS.md`.
+
+## The PRE-ADMISSION blind window — read this before blaming the grace
+
+[Section titled “The PRE-ADMISSION blind window — read this before blaming the grace”](#the-pre-admission-blind-window--read-this-before-blaming-the-grace)
+
+Added 2026-07-25 (su-055ae, EI-18662944242304583). **The single most likely way you will misdiagnose a silent detector.**
+
+`sampleReplicationLiveness` is called at `boot.ts:2404`, inside `for (const log of admitted.values())` (`boot.ts:2363`). So with **zero admitted remote logs the sampler is never invoked and all three axes are dead code** — not quiet, *never executed*. Admission requires an announce; an announce requires a paired announce channel. Everything above is therefore invisible from down here, and “wedged” and “healthy” emit the identical observable (silence).
+
+**Do not reason about the grace until you have confirmed the log was being sampled at all.** Gate run 20260725-183831 was first filed as a grace defect (“connections die at 13s, the grace is 15s, so the axis can never see them”). That is wrong twice over:
+
+1. `connectedNeverReplSinceMs` (`replication-liveness.ts:203`) is a **per-LOG** window, not per-connection. It is armed on the first sample with `swarmConnections > 0` and *survives* connection churn — it resets only after `SWARM_CHURN_TOLERANCE_MS` (60s) of **sustained** swarm=0. Churn shorter than the grace does not hide anything; the churn tolerance exists precisely so it can’t.
+2. The real cause was that **nothing was ever admitted for 20.5 minutes**. The detector fired correctly 15s after its first opportunity.
+
+Corollary for fixes: a new leg added to the zombie axis **cannot** catch a pre-admission failure, because it would live inside the loop that never runs. Detection for this window has to sit at the swarm layer — which is what `joinHarnessSwarm`’s escalation rung (c) now does (`DEFAULT_SUBSTRATE_UNPAIRED_ESCALATION_MS`, pinned by `swarm-unpaired-announce-escalation.test.ts`): live connections + N announce- channel open attempts + never once paired ⇒ loud signal + forced topic rejoin.
+
+### Diagnostic recipe: count the announce-channel STAGES
+
+[Section titled “Diagnostic recipe: count the announce-channel STAGES”](#diagnostic-recipe-count-the-announce-channel-stages)
+
+This is what cracked it — stage counts separate “never reached” from “reached and failed” in one pass. On a frame’s `serve.log`:
+
+```bash
+for p in "announce-debug] mux mux=" "announce-debug] create mux=" \
+         "announce-debug] open topic=" "announce-debug] recv topic=" \
+         "announce_admitted"; do
+  printf '%s\tfirst=%s\t%s\n' "$(grep -c "$p" serve.log)" \
+    "$(grep -o "^\[[0-9T:.Z-]*\].*$p" serve.log | head -1 | cut -c2-25)" "$p"
+done
+```
+
+Read it as a funnel — the stage where the count collapses to 0 is the fault:
+
+| stage               | meaning                                  | 20260725-183831 (frame a) |
+| ------------------- | ---------------------------------------- | ------------------------- |
+| `mux mux=`          | peer connections observed                | 188                       |
+| `create mux=`       | we created + `open()`d a channel         | 91                        |
+| `open topic=`       | Protomux `onopen` — channel **PAIRED**   | **0 until 23:07:16**      |
+| `recv topic=`       | any inbound frame                        | **0 until 23:07:16**      |
+| `announce_admitted` | admission (detector becomes able to run) | **0 until 23:07:16**      |
+
+188 connections, 91 open attempts, and not one frame in either direction for 20.5 minutes = a dead data path behind sockets Hyperswarm reported as connected. `open topic=` collapsing while `create mux=` is healthy is the signature of this class. If instead `create mux=` is 0, look at `openAnnounceChannel`’s early return (a reader with neither `onAnnounce` nor `ourAnnounce` opens no channel at all).
+
+⚠ A connection dying at a fixed, repeatable sub-grace interval (\~13.0s here, `precededByError: 'connection timed out'`) is a **consequence** of the dead data path, not the cause of the silence: no ACK ever returns, so UDX gives up (hyperdht sets the stream keepAlive to 5000ms — `hyperdht/index.js:21`). The exact give-up arithmetic is in libudx’s C, which is not vendored here. Don’t tune a grace against it.
 
 # Repo-less pot data layer: member-repo resolution, per-pot outbox-drain, dead-executor reaper
 
@@ -39389,6 +39527,8 @@ SELECT tick_at, known_open_keys, captured FROM harness_shared.watchdog_ticks
 
 
 -- What is the masking EI ACTUALLY about? (read the body, not the key)
+-- sql-snippet-justified: watchdog forensics keyed on payload->>'watchdogKey' —
+-- an internal dedup key no work-item tool filters on.
 SELECT issue_id, state, payload->>'watchdogKey', left(body,200)
   FROM harness_shared.engineer_issues
  WHERE payload->>'watchdogKey' = 'repeated-tool-error:memory:search:structural';
@@ -39937,6 +40077,8 @@ SELECT feature_id, tags, source_plan_slug
 
 
 -- issue-family: payload.tags is the one that counts
+-- sql-snippet-justified: shows the raw payload column BECAUSE the point is that the
+-- tool-level view disagrees with it — reading it through the tool would hide the bug.
 SELECT issue_id, payload -> 'tags'
   FROM harness_shared.engineer_issues
  WHERE workspace_id = '<ws>' AND issue_id = 'EI-nnnn';
@@ -39999,6 +40141,8 @@ If a write derives its target workspace from that bare `activeWorkspaceId()` (or
 Resolve the item’s ACTUAL workspace by id, ambient-independent, then scope the write to it:
 
 ```plaintext
+-- sql-snippet-justified: IMPLEMENTATION pattern for the write path itself (resolving an
+-- item's own workspace before writing) — it is what a tool must do, not a read to run.
 SELECT harness_slug, workspace_id
   FROM harness_shared.work_items
  WHERE feature_id = ${id} AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
