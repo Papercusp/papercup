@@ -18,6 +18,11 @@ import {
 } from './poll-suspect-alarm';
 import type { PollSuspect } from './dev-data';
 
+/** Shape of the toast object every `emitToast` dep receives — typing the two
+ *  `vi.fn()` mocks below that get their call args indexed (`mock.calls[0][0]`)
+ *  so TS doesn't infer an empty-tuple `[]` args type (TS2493/TS2532). */
+type ToastArg = { level: string; message: string; description: string };
+
 function suspect(overrides: Partial<PollSuspect>): PollSuspect {
   return {
     tool_name: 'x:y',
@@ -97,7 +102,7 @@ describe('formatPollSuspectToast', () => {
 describe('runPollSuspectScanOnce', () => {
   it('toasts + stamps NEW suspects, using the injected clock/map', async () => {
     const s = suspect({ tool_name: 'activity:recent' });
-    const emitToast = vi.fn(async () => {});
+    const emitToast = vi.fn(async (_t: ToastArg) => {});
     const lastAlertedAt = new Map<string, number>();
     const result = await runPollSuspectScanOnce({
       loadSuspects: async () => [s],
@@ -247,7 +252,7 @@ describe('runTimerRegistrationScanOnce', () => {
   it('toasts + persists a genuinely new timer once the known-set is non-empty', async () => {
     const known = timer({ name: 'system-health' });
     const fresh = timer({ name: 'brand-new-timer', source: 'managed' });
-    const emitToast = vi.fn(async () => {});
+    const emitToast = vi.fn(async (_t: ToastArg) => {});
     const persistKnownNames = vi.fn(async () => {});
     const result = await runTimerRegistrationScanOnce({
       loadCurrentTimers: async () => [known, fresh],
@@ -259,7 +264,7 @@ describe('runTimerRegistrationScanOnce', () => {
     expect(result.alerted).toEqual([fresh]);
     expect(result.seeded).toBe(false);
     expect(emitToast).toHaveBeenCalledTimes(1);
-    expect(emitToast.mock.calls[0]![0].description).toContain('brand-new-timer');
+    expect(emitToast.mock.calls[0][0].description).toContain('brand-new-timer');
     expect(persistKnownNames).toHaveBeenCalledWith([fresh]);
   });
 

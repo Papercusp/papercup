@@ -75,23 +75,41 @@ function extractAdvisoryBlock(): string {
 }
 
 const PROBE_FN = extractFn(matrix, 'rig_gate_cycle_holder');
+const HOLDER_PID_FN = extractFn(matrix, 'rig_gate_holder_pid');
+const ANCESTOR_FN = extractFn(matrix, 'rig_pid_is_self_or_ancestor');
 const ADVISORY = extractAdvisoryBlock();
+
+/**
+ * A pid that can NEVER be one of our ancestors: above the kernel's pid_max ceiling
+ * (4194304 on Linux), so no such process can exist. Using a small literal here would
+ * make the "peer cycle" cases flaky on a busy box — a real ancestor could happen to
+ * own that pid, and the run would silently assert the self-exemption path instead.
+ */
+const NON_ANCESTOR_PID = '4194305';
 
 // ── BEHAVIORAL harness ────────────────────────────────────────────────────────
 // Runs the REAL extracted shell out of the shipping script, with stderr folded into stdout so
 // the WARN lines are assertable. `hold` starts a genuine competing flock holder (a separate
 // process, so the lock conflict is unambiguous) and waits until it is actually held before the
 // probe runs.
-function runProbeCombined(opts: { hold: boolean; createLock?: boolean; env?: Record<string, string> }): string {
+function runProbeCombined(opts: {
+  hold: boolean;
+  createLock?: boolean;
+  env?: Record<string, string>;
+  /** Shell text for the holder pid. Default: a pid that cannot exist, so the probe
+   *  treats the cycle as a PEER. Pass `'$PPID'` to simulate our OWN parent cycle. */
+  holderPid?: string;
+}): string {
   const dir = mkdtempSync(join(tmpdir(), 'lm-gate-probe-'));
   const lock = join(dir, 'pcusp-live-fed-gate.lock');
+  const holderPid = opts.holderPid ?? NON_ANCESTOR_PID;
   const script = `
 exec 2>&1
 set -uo pipefail
 log() { echo "[log] $*" >&2; }
 GATE_LOCK_PATH=${JSON.stringify(lock)}
 ${opts.createLock === false ? '' : `: >"$GATE_LOCK_PATH"
-printf '%s\\n' '2026-07-26T00:00:00 pid=4242 ci:live-federation-gate' >"$GATE_LOCK_PATH.holder"`}
+printf '%s\\n' "2026-07-26T00:00:00 pid=${holderPid} ci:live-federation-gate" >"$GATE_LOCK_PATH.holder"`}
 ${
   opts.hold
     ? // stdio MUST be detached from our pipe: execFileSync waits for stdout EOF, and an
@@ -105,6 +123,8 @@ done`
     : 'HOLDER_PID=""'
 }
 ${PROBE_FN}
+${HOLDER_PID_FN}
+${ANCESTOR_FN}
 RIG_EXCLUSIVE="\${PCUSP_RIG_EXCLUSIVE:-1}"
 ${ADVISORY}
 echo "RIG_EXCLUSIVE=$RIG_EXCLUSIVE"
@@ -184,6 +204,37 @@ describe('local-matrix.sh: a targeted run cannot silently evict host cores out f
     expect(out).toContain('RIG_EXCLUSIVE=0');
     // Non-blocking: the run continues rather than queueing or failing.
     expect(out).not.toContain('FATAL');
+  });
+
+  // ── SELF-EXEMPTION leg (WI-6133) ────────────────────────────────────────────
+  // The probe shipped detecting its OWN parent. live-federation-gate.sh holds this
+  // lock for its whole cycle and then runs its local-matrix leg as a CHILD, so the
+  // gate stripped its own exclusive partition and ran its most timing-sensitive
+  // scenarios on a shared, loaded box — turning the gate into a false-red generator
+  // whose reds got misattributed to whatever code the run happened to carry.
+  it('does NOT degrade when the in-flight cycle is our OWN ancestor (it launched us)', () => {
+    const out = runProbeCombined({ hold: true, holderPid: '$PPID' });
+    expect(out, "our own parent cycle is not a peer to yield to").toContain('is THIS run's own ancestor');
+    expect(
+      out,
+      'degrading here strips the exclusive cores from the very run the gate launched to measure',
+    ).not.toContain('AFFINITY-ONLY');
+    expect(out, 'the gate must keep the isolation its own verdict depends on').toContain('RIG_EXCLUSIVE=1');
+  });
+
+  it('still degrades for a genuine PEER cycle — the self-exemption must not disarm the guard', () => {
+    const out = runProbeCombined({ hold: true, holderPid: NON_ANCESTOR_PID });
+    expect(out).toContain('CYCLE IS IN FLIGHT');
+    expect(out).toContain('AFFINITY-ONLY');
+    expect(out).toContain('RIG_EXCLUSIVE=0');
+  });
+
+  it('degrades (fail-safe) when the holder line carries no parseable pid', () => {
+    // An unknown/legacy holder must fall back to the original EI behaviour rather
+    // than being optimistically treated as "probably ours".
+    const out = runProbeCombined({ hold: true, holderPid: 'not-a-pid' });
+    expect(out, 'an unparseable holder must not be assumed to be our own cycle').toContain('AFFINITY-ONLY');
+    expect(out).toContain('RIG_EXCLUSIVE=0');
   });
 
   it('honours an EXPLICIT PCUSP_RIG_EXCLUSIVE=1 instead of silently overriding the caller', () => {

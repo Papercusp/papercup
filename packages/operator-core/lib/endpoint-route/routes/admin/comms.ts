@@ -4,17 +4,18 @@
  *
  * The coordination Q&A substrate (coord_conversations) + the coord firehose
  * (coord_event_log) already have surfaces (/api/admin/coordination/* and the
- * `dev.coordFeed` sync observer). But the OTHER communication types the agents
- * produce had no global view — they're per-harness or archive-only:
+ * `dev.coordFeed` sync observer). But the OTHER communication type the agents
+ * produce had no global view — it's per-harness or archive-only:
  *
  *   - agent-chats — `agent_chats_consolidated`: every multi-turn agent chat
  *     session (scoper/architect/worker/… transcripts, with tokens + cost). The
  *     `agent_chats:*` MCP tools are PER-HARNESS (require a slug); this is the
  *     cross-harness roll-up the Conversations tab needs.
- *   - messages — `messages_consolidated`: work-item-scoped agent↔agent messages
- *     (messages:send / messages:inbox), distinct from coord:send firehose msgs.
  *
- * These are read-only archive/consolidated tables, so this is a focused admin
+ * (The work-item mail surface — `messages_consolidated` / messages:send /
+ * messages:inbox — was retired; see retire-work-item-mail-surface-2026-07-26.)
+ *
+ * This is a read-only archive/consolidated table, so this is a focused admin
  * READ (one generic dispatcher), not a write surface — kept separate from the
  * MCP-re-dispatch in coordination.ts on purpose.
  */
@@ -109,19 +110,6 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
       return Response.json({ thread: thread[0] ?? null, posts });
     }
 
-    // ── work-item-scoped agent messages (messages:send / messages:inbox) ──
-    if (kind === 'messages' && verb === 'list') {
-      const [rows, totalRows] = await Promise.all([
-        sql`
-        SELECT id, harness_slug, from_slug, to_slug, to_role, kind, subject, body,
-               status, created_at, acknowledged_at, from_feature_id, to_feature_id
-          FROM harness_shared.messages_consolidated
-         ORDER BY created_at DESC NULLS LAST
-         LIMIT ${limit}`,
-        sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.messages_consolidated`,
-      ]);
-      return Response.json({ items: rows, total: totalRows[0]?.n ?? rows.length });
-    }
   } catch (e) {
     // Fail-soft: a missing table / cold DB returns an empty set, never a 500 that
     // breaks the tab.

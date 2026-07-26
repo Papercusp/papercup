@@ -13,7 +13,9 @@ import { describe, expect, it } from 'vitest';
 
 import { auditPair } from './equivalence';
 import {
+  atomsOf,
   compileRegistryPattern,
+  matchAtomsToSubstitutions,
   matchCommandToSubstitutions,
   normalizeRegistryFlags,
   strongestTier,
@@ -188,6 +190,51 @@ describe('every seeded pair survives the registry round-trip', () => {
       expect(claimed).toHaveLength(expected);
     });
   }
+});
+
+describe('matchAtomsToSubstitutions — the COUNTING grain (P-002)', () => {
+  it('returns EVERY matching atom, where the advisory path returns one', () => {
+    // The distinction the whole metric rests on: three reads are three reads to
+    // a counter, but one sentence to an agent.
+    const command = "sed -n '1,5p' a.ts && sed -n '6,9p' b.ts && sed -n '1,2p' c.ts";
+    expect(matchAtomsToSubstitutions(atomsOf(command), [row()])).toHaveLength(3);
+    expect(matchCommandToSubstitutions(command, [row()])).toHaveLength(1);
+  });
+
+  it('skips not-a-substitute rows, like the advisory path (D-007)', () => {
+    const atoms = atomsOf("sed -n '1,5p' a.ts");
+    expect(matchAtomsToSubstitutions(atoms, [row({ equivalenceVerdict: 'not-a-substitute' })])).toEqual([]);
+  });
+
+  it('never throws on a malformed pattern — a bad row costs a count, not the ingest', () => {
+    const atoms = atomsOf("sed -n '1,5p' a.ts");
+    expect(matchAtomsToSubstitutions(atoms, [row({ bashPattern: '([unclosed' })])).toEqual([]);
+  });
+
+  it('is empty for no atoms or no rows', () => {
+    expect(matchAtomsToSubstitutions([], [row()])).toEqual([]);
+    expect(matchAtomsToSubstitutions(atomsOf('ls'), [])).toEqual([]);
+  });
+
+  it('counts the same atom once per DISTINCT intent it matches, not once overall', () => {
+    const atoms = atomsOf("psql -d papercusp -c 'select 1'");
+    const hits = matchAtomsToSubstitutions(atoms, [
+      row({ intentLabel: 'operator-db-select', bashPattern: String.raw`^psql\b` }),
+      row({ intentLabel: 'operator-db-any', bashPattern: String.raw`^psql\s+-d` }),
+    ]);
+    expect(hits.map((h) => h.intentLabel).sort()).toEqual(['operator-db-any', 'operator-db-select']);
+  });
+});
+
+describe('atomsOf', () => {
+  it('applies the same length cap the advisory path uses', () => {
+    const long = `sed -n '1,2p' ${'x'.repeat(MAX_MATCHABLE_ATOM_LENGTH)}`;
+    expect(atomsOf(long)).toEqual([]);
+  });
+
+  it('is empty for a blank command', () => {
+    expect(atomsOf('   ')).toEqual([]);
+  });
 });
 
 describe('strongestTier', () => {

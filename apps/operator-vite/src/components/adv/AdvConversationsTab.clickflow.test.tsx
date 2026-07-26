@@ -11,8 +11,8 @@
 // pane. In particular, when the source detail query resolves EMPTY (a webview
 // race where the SSE cache answers before the row is materialized), the clicked
 // row's ANCHOR must stay visible — never a bare "Select a thread" that reads as
-// "the click did nothing" (the symptom the owner reported). MessagesView already had
-// this list-row fallback; ThreadsView/DeliberationsView/AgentChatsView did not.
+// "the click did nothing" (the symptom the owner reported). ThreadsView/
+// DeliberationsView/AgentChatsView did not have this list-row fallback.
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -94,7 +94,7 @@ beforeEach(() => {
   Object.assign(store, {
     conv: 'inbox', fkind: [], fadvanced: 'closed', fagent: '', fplan: '', fq: '', fmsg: null,
     cq: '', cvf: {}, conversation: null, cstate: 'open', ckind: 'all', ctopic: '', thread: null,
-    acharness: '', acrole: '', chat: null, msg: null, opc: null,
+    acharness: '', acrole: '', chat: null, opc: null,
   });
   snapCache.clear();
   syncResults = {
@@ -105,7 +105,6 @@ beforeEach(() => {
     }]),
     'conversations.deliberationList': ready(),
     'conversations.agentChatList': ready(),
-    'conversations.messageList': ready(),
     'dev.coordFeed': ready([]),
     [syncKey('conversations.questionDetail', { id: 'c-1' })]: ready([{
       id: 'c-1', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',

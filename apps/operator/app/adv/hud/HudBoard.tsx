@@ -23,14 +23,13 @@ import {
   ALL_FLEETS,
   SOLO_FLEET_KEY,
   formatAge,
-  HUD_ASK_KIND_LABEL,
-  type HudAsk,
   type HudBoard as HudBoardData,
   type HudBadge,
   type HudColumnId,
   type HudFleetRollup,
   type HudSession,
 } from './hud-board-model';
+import { HUD_TABS, HUD_TAB_LABEL, type HudTabId } from './hud-entity-board';
 import './hud.css';
 
 const CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
@@ -83,6 +82,22 @@ export interface HudBoardProps {
    * stub node.
    */
   headerAction?: ReactNode;
+  /**
+   * Which board is showing (hud-session-launcher-and-board-tabs-2026-07-26
+   * P-009). `sessions` renders everything below — the su-only toggle, the
+   * column counts, the fleet strip and the session columns. The other tabs
+   * render `entityView` instead: those controls are session CONCEPTS (a plan
+   * has no fleet, a work item has no context window), so showing them on a
+   * plans board would be chrome that lies.
+   */
+  tab: HudTabId;
+  onSelectTab: (tab: HudTabId) => void;
+  /**
+   * Body for the non-session tabs. A slot, for the same reason `headerAction`
+   * is one: this file stays presentation-only and testable without mocking a
+   * live plan-list fetch. HudView supplies the real `<HudEntityColumns />`.
+   */
+  entityView?: ReactNode;
 }
 
 function SessionCard({
@@ -150,50 +165,16 @@ function SessionCard({
 
 const MemoSessionCard = memo(SessionCard);
 
-/**
- * UnattributedAsk — a needs-human Decision with no `ownerAgentId` to key a
- * session card off of (hud-consolidation-2026-07-26 P-002, the coverage gate
- * that must pass before the sidebar Inbox can be retired). Deliberately NOT a
- * `<button>`/`onOpen` like SessionCard: there is no live agent session to
- * open a conversation with, so this renders as an informational card — kind
- * badge + title + age — rather than pretending an activation target exists.
- * A `planSlug`/`itemRef` are carried on the underlying HudAsk for a FUTURE
- * caller that wants to wire a destination (mirrors chat-ref-pills-2026-07-26's
- * D-002 seam: rendering and destination are separable concerns), but wiring
- * one is explicitly out of scope for this gate — the gate is about
- * VISIBILITY, not click-through parity with the Inbox.
- */
-function UnattributedAskCard({ ask }: { ask: HudAsk }) {
-  const kindLabel = HUD_ASK_KIND_LABEL[ask.kind] ?? ask.kind;
-  return (
-    <div className="hud__card hud__card--unattributed" aria-label={`${kindLabel} — ${ask.title}`}>
-      <span className="hud__card-row">
-        <span className="hud__rail" aria-hidden="true" />
-        <span className="hud__card-b">
-          <span className="hud__card-h">
-            <span className="hud__dot hud__dot--needs-you" aria-hidden="true" />
-            <span className="hud__chip hud__chip--accent">{kindLabel}</span>
-            <span className="hud__age">{formatAge(ageSecFromIso(ask.occurredAt))}</span>
-          </span>
-          <span className="hud__reason">{ask.title}</span>
-          {ask.planSlug ? <span className="hud__plan">{ask.planSlug}</span> : null}
-        </span>
-      </span>
-    </div>
-  );
-}
-
-const MemoUnattributedAskCard = memo(UnattributedAskCard);
-
-/** Local mirror of hud-board-model's private `ageSec` — that one is not
- *  exported (it takes an injected `nowMs`, which this presentational card has
- *  no reason to thread through props for a once-per-render age label). */
-function ageSecFromIso(iso: string | null): number | null {
-  if (!iso) return null;
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return null;
-  return Math.max(0, Math.round((Date.now() - t) / 1000));
-}
+/* The unattributed-ask card used to live here — a full-width strip above the
+   session columns, the coverage gate hud-consolidation-2026-07-26 P-002 put in
+   place before the sidebar Inbox could be retired (D-001).
+   `hud-session-launcher-and-board-tabs-2026-07-26` P-009 RE-HOMED it, it did
+   not delete it: the owner's ask was that "the section show[ing] the work items
+   above" become its own tab, so those asks now render as cards in the Work
+   items board's needs-you column (`askToCard` in hud-entity-board.ts, deduped
+   against the canonical work-item rows). The P-002 gate still holds — the asks
+   are visible, in a place that names them — and this file no longer carries a
+   second card renderer. */
 
 function FleetChip({
   fleet,
@@ -238,15 +219,48 @@ export default function HudBoard({
   loading,
   error,
   headerAction,
+  tab,
+  onSelectTab,
+  entityView,
 }: HudBoardProps) {
   const needsYou = board.counts['needs-you'];
   const unattributedCount = board.unattributed.length;
   const visibleColumns = focusColumn
     ? board.columns.filter((c) => c.id === focusColumn)
     : board.columns;
+  const onSessions = tab === 'sessions';
 
   return (
     <div className="hud">
+      {/* The tab strip owns its own row above the controls, not a slot inside
+          them: the controls BELONG to a tab (fleet chips are a session idea),
+          so nesting the switch among the things it switches would read as a
+          sibling filter rather than the axis it is. */}
+      <div className="hud__tabs" role="tablist" aria-label="HUD board">
+        {HUD_TABS.map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            className={`hud__tab${tab === id ? ' hud__tab--on' : ''}`}
+            aria-selected={tab === id}
+            onClick={() => onSelectTab(id)}
+          >
+            <span className="hud__tab-row">{HUD_TAB_LABEL[id]}</span>
+          </button>
+        ))}
+        <span className="hud__spacer" />
+        {/* The launcher stays OUTSIDE the tab bodies: launching a session is
+            not a thing you do to the sessions board, it is a thing you do from
+            the HUD, and hiding it behind a tab would make it unreachable from
+            the two tabs most likely to make you want it. */}
+        {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
+      </div>
+
+      {!onSessions ? (
+        entityView ?? null
+      ) : (
+      <>
       <div className="hud__top">
         {/* P-002 (owner asks 2026-07-26). First ask: "left align these buttons
             instead of right align" — a `hud__spacer` used to sit here, ahead of

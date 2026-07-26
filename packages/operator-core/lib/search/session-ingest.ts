@@ -60,6 +60,9 @@ import {
   type LineUsage,
   type UsageRollup,
 } from '../bash-substitution/usage-rollup';
+import { getSubstitutionRows } from '../bash-substitution/registry';
+import type { SubstitutionRow } from '../bash-substitution/match';
+import { activeWorkspaceId } from '../workspace-registry';
 
 /** How far back a source file's mtime may be and still get ingested. */
 const INGEST_WINDOW_DAYS = 45;
@@ -623,6 +626,7 @@ export async function readNewLines(
   classifyLine: (l: string) => LineSignal | null,
   lastInferenceId: string | null,
   usageOf?: (l: string) => LineUsage,
+  substitutionRows: SubstitutionRow[] = [],
 ): Promise<{
   turns: ParsedTurn[];
   newOffset: number;
@@ -723,7 +727,7 @@ export async function readNewLines(
           // happened to be running.
           try {
             const u = usageOf(line);
-            for (const obs of u.toolUses) addToolUse(usage, obs, null);
+            for (const obs of u.toolUses) addToolUse(usage, obs, null, substitutionRows);
             if (u.resultBytes > 0) addResultBytes(usage, u.resultBytes, dayOf(u.ts));
           } catch {
             // A metric must never cost an ingest. Skip this line's counts.
@@ -757,8 +761,11 @@ export async function readNewLines(
  * A metric is never allowed to damage the pipeline it measures, so it loses
  * rather than blocks, and the caller only counts the error.
  *
- * Idempotent per (workspace, source, session, day, tool, verb): counts are
- * ADDED on conflict, since each call carries only the delta this tick read.
+ * Idempotent per (workspace, source, session, day, tool, verb, intent_label):
+ * counts are ADDED on conflict, since each call carries only the delta this
+ * tick read. The conflict target MUST stay in lockstep with the table's primary
+ * key (migration 674 widened it with intent_label) — a narrower target would
+ * fold a bucket row into the per-call row and corrupt the headline count.
  */
 async function writeUsageRollup(
   sql: Sql,
@@ -771,18 +778,20 @@ async function writeUsageRollup(
   const days = rows.map((r) => r.day);
   const tools = rows.map((r) => r.toolName);
   const verbs = rows.map((r) => r.verb ?? '');
+  const intents = rows.map((r) => r.intentLabel ?? '');
   const calls = rows.map((r) => r.calls);
   const atoms = rows.map((r) => r.atoms);
   const bytes = rows.map((r) => r.resultBytes);
   await sql`
     INSERT INTO harness_shared.tool_usage_rollup
-      (workspace_id, source_kind, session_id, day, tool_name, verb, calls, atoms, result_bytes)
-    SELECT 'default', ${sourceKind}, ${sessionId}, d::date, t, v, c, a, b
+      (workspace_id, source_kind, session_id, day, tool_name, verb, intent_label, calls, atoms, result_bytes)
+    SELECT 'default', ${sourceKind}, ${sessionId}, d::date, t, v, i, c, a, b
       FROM UNNEST(
         ${sql.array(days)}::text[], ${sql.array(tools)}::text[], ${sql.array(verbs)}::text[],
+        ${sql.array(intents)}::text[],
         ${sql.array(calls)}::bigint[], ${sql.array(atoms)}::bigint[], ${sql.array(bytes)}::bigint[]
-      ) AS u(d, t, v, c, a, b)
-    ON CONFLICT (workspace_id, source_kind, session_id, day, tool_name, verb) DO UPDATE
+      ) AS u(d, t, v, i, c, a, b)
+    ON CONFLICT (workspace_id, source_kind, session_id, day, tool_name, verb, intent_label) DO UPDATE
       SET calls        = harness_shared.tool_usage_rollup.calls + EXCLUDED.calls,
           atoms        = harness_shared.tool_usage_rollup.atoms + EXCLUDED.atoms,
           result_bytes = harness_shared.tool_usage_rollup.result_bytes + EXCLUDED.result_bytes,
@@ -1340,6 +1349,29 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     const sinceMs = Date.now() - INGEST_WINDOW_DAYS * 24 * 3600 * 1000;
     const budget = { turns: MAX_TURNS_PER_TICK };
 
+    // P-002 / migration 674 — the substitution registry, fetched ONCE per sweep
+    // and matched per Bash command to attribute an intent bucket at ingest.
+    //
+    // ⚠ TWO DIFFERENT `workspace_id`s, and they are NOT interchangeable. The
+    // rollup (like session_turns) is written under the literal 'default' — the
+    // session-transcript CORPUS namespace, which is not a tenant. The registry
+    // rows live under the REAL tenant (activeWorkspaceId(), 'papercusp-workspace'
+    // here), the same id locks:check_command resolves. Reading the registry with
+    // 'default' returns zero rows and silently disables every bucket count while
+    // the ingest still looks perfectly healthy — so resolve the tenant, and let
+    // an empty result be loud rather than assumed (the counts simply do not
+    // appear, which the report's own emptyRegistry flag surfaces).
+    //
+    // Fail-soft: a registry read failure costs bucket attribution for this
+    // sweep, never the ingest (same contract as writeUsageRollup).
+    let substitutionRows: SubstitutionRow[] = [];
+    try {
+      substitutionRows = await getSubstitutionRows(activeWorkspaceId());
+    } catch (err) {
+      stats.errors += 1;
+      console.warn(`[session-ingest] substitution registry read failed (buckets skipped): ${(err as Error).message}`);
+    }
+
     for (const adapter of FILE_ADAPTERS) {
       if (budget.turns <= 0) break;
       let candidates: Array<{ path: string; size: number; mtimeMs: number }> = [];
@@ -1393,6 +1425,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           const { turns, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId, usage } =
             await readNewLines(
               cand.path, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id, adapter.usageOf,
+              substitutionRows,
             );
           if (newOffset === st.byte_offset) continue;
           const rows: TurnRow[] = turns.map((t, i) => ({

@@ -586,6 +586,39 @@ export default function LearningTab() {
       </Tabs.Root>
 
       <div className="pc-learning__controls">
+        {/* Pot lens FIRST in the row (owner ask 2026-07-26: left-aligned, was
+            pushed right) — scope reads before view picking. */}
+        {hiveAware ? (
+          <Tooltip
+            label={`Scope this view to one ${t("pot", { lower: true })}`}
+          >
+            <label className="pc-learning__hivepick">
+              <Brain size={12} aria-hidden />
+              <span className="pc-learning__hivepicklabel">
+                {t("pot", { lower: true })}
+              </span>
+              <Select
+                ariaLabel={`${t("pot")} lens`}
+                value={hive}
+                onChange={(next: string) => void setLhive(next)}
+                disabled={hives.length === 0}
+                placeholder={
+                  hives.length === 0
+                    ? `no ${t("pot", { plural: true, lower: true })} yet`
+                    : undefined
+                }
+                triggerStyle={{
+                  maxWidth: 200,
+                  opacity: hives.length === 0 ? 0.6 : undefined,
+                }}
+                options={hives.map((candidate) => ({
+                  value: candidate.slug,
+                  label: `${hiveHomeLabel(candidate.slug)}${candidate.remote ? " (joined)" : ""}`,
+                }))}
+              />
+            </label>
+          </Tooltip>
+        ) : null}
         {activeStageMeta && activeStageMeta.views.length > 1 ? (
           <Tabs.Root
             className="pc-learning__view-tabs"
@@ -649,38 +682,6 @@ export default function LearningTab() {
         )}
 
         <LearningInfraHealthChip />
-
-        {hiveAware ? (
-          <Tooltip
-            label={`Scope this view to one ${t("pot", { lower: true })}`}
-          >
-            <label className="pc-learning__hivepick">
-              <Brain size={12} aria-hidden />
-              <span className="pc-learning__hivepicklabel">
-                {t("pot", { lower: true })}
-              </span>
-              <Select
-                ariaLabel={`${t("pot")} lens`}
-                value={hive}
-                onChange={(next: string) => void setLhive(next)}
-                disabled={hives.length === 0}
-                placeholder={
-                  hives.length === 0
-                    ? `no ${t("pot", { plural: true, lower: true })} yet`
-                    : undefined
-                }
-                triggerStyle={{
-                  maxWidth: 200,
-                  opacity: hives.length === 0 ? 0.6 : undefined,
-                }}
-                options={hives.map((candidate) => ({
-                  value: candidate.slug,
-                  label: `${hiveHomeLabel(candidate.slug)}${candidate.remote ? " (joined)" : ""}`,
-                }))}
-              />
-            </label>
-          </Tooltip>
-        ) : null}
       </div>
 
       {/* P-009 lexicon gloss: the active view's one-liner, VISIBLE — a
@@ -5095,10 +5096,12 @@ export function LearningStyles() {
 
       .pc-learning__hivepick {
         display: inline-flex; align-items: center; gap: 6px;
-        margin-left: auto;
         padding: 5px 10px; font-size: 11.5px; font-weight: 600; border-radius: 8px;
         border: 1px solid var(--border); background: var(--bg-2); color: var(--fg-mute);
       }
+      /* Picker moved to the row START (owner ask 2026-07-26); the health chip
+         takes over the right edge so the row keeps a stable anchor there. */
+      .pc-learning__controls > .pc-lihealth { margin-left: auto; }
       .pc-learning__hivepicklabel { text-transform: uppercase; font-size: 10px; letter-spacing: 0; }
       .pc-learning__body { flex: 1; min-height: 240px; overflow: hidden; }
       .pc-learning__viewpane { height: 100%; min-height: 0; overflow: auto; }
