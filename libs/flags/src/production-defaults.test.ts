@@ -292,6 +292,34 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // to today (escalate-only). Well under DARK_FLAGS_HIGH_WATERMARK (29) as an
   // owner-authority case (does not count toward the parking watermark). Count 28 → 29.
   'papercusp-replication-liveness-staleness-auto-close',
+  // 2026-07-26 (shared-hive-cross-machine-scale-10k-2026-06-29 P-010, su-709bb) — THREE
+  // BUG-FIX corrections of the identical never-added-to-DARK_FLAGS class as
+  // WATCHDOG_AUTO_CLOSE / SUBSTRATE_SIDECAR / RECLAIM_STALLED / PSU_END_USER above, NOT new
+  // darkenings. What is new is WHY they went undetected for so long: flag-comment-lint —
+  // the guard built to catch exactly this class — only recognised the declaration written
+  // as "DEFAULT OFF". All three of these declare themselves in the REVERSED, natural-English
+  // form ("OFF (default)" / "When OFF (default)"), which matched no pattern, so each
+  // classified as null and was SILENTLY SKIPPED rather than checked. Fixed at the source
+  // (flag-comment-lint normalization step 5, which also folds in "defaults to OFF" and
+  // "DEFAULT: OFF"); these three are what that recovered recall immediately surfaced.
+  // Each is OFF ⇒ byte-identical-or-safer, and each had its live-ON state by ACCIDENT
+  // (a missing entry), never by decision. All three are owner-authority/cutover cases, so
+  // none counts toward the parking watermark. Count 29 → 32.
+  //  · papercusp-improvement-auto-implement — autonomy escalation (auto-implements captured
+  //    improvements via a spawned implementer agent + the release gate); its own comment sets
+  //    an explicit unmet precondition ("flip ON only once the work_items surface + the
+  //    release-gate cutover have landed"). OFF ⇒ the routine is a no-op; capture + triage
+  //    are unaffected.
+  //  · papercusp-lazy-substrate-boot — its own comment records an owner-ratified D-005/D-006
+  //    BINDING constraint to stage on :3170 first, because a wrong eviction silently stops a
+  //    harness syncing → fleet data divergence (the EI-126 102 GB class). OFF ⇒ eager
+  //    all-harness boot + no reaper (the long-standing, definitively-safe behavior).
+  //  · papercusp-capability-envelope-overrides — SECURITY surface; runtime per-role
+  //    deny/allow overrides merged OVER the baked ROLE_ENVELOPES at dispatch. OFF ⇒ the
+  //    sync-cache stays empty ⇒ byte-identical to the baked envelopes.
+  'papercusp-improvement-auto-implement',
+  'papercusp-lazy-substrate-boot',
+  'papercusp-capability-envelope-overrides',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -406,6 +434,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     expect(orphanSnapshot, `PRE_INVERSION_DEFAULT_OFF references unregistered flag(s)`).toEqual([]);
   });
 
+  // 2026-07-26 (P-010, su-709bb) — improvement-auto-implement + lazy-substrate-boot +
+  // capability-envelope-overrides: three BUG-FIX corrections surfaced by the
+  // flag-comment-lint recall fix (the guard could not see the reversed "OFF (default)"
+  // declaration form), not new darkenings. All owner-authority/cutover ⇒ no parking-watermark
+  // impact. See the block at the end of PRE_INVERSION_DEFAULT_OFF above. Count 29 → 32.
   it('the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)', () => {
     const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
