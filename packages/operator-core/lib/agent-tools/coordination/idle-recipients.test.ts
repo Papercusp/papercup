@@ -62,6 +62,8 @@ function loopStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
     lastWakeStatus: null,
     lastWakeAt: null,
     lastWakeError: null,
+    lastTurnAt: null,
+    turnsStalled: false,
     ...overrides,
   };
 }

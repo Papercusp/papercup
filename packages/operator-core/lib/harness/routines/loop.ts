@@ -569,6 +569,23 @@ export interface LoopStatus {
   /** The delivery ladder's captured error text for that wake, if any (e.g. a spawn
    *  failure) — null on a clean delivery or when no wake row exists. */
   lastWakeError: string | null;
+  /** EI-18712914572668391: ISO of the most recent Stop-hook 'ended' lifecycle marker for
+   *  this OWNER, UNSCOPED by fire window (unlike the internal per-fire completion check) —
+   *  the actual "a real turn last finished at…" signal. Null when this owner has never
+   *  completed a turn (or the row predates lifecycle tracking). Compare against
+   *  `lastFiredAt` to see whether fires are outpacing genuine turn production. */
+  lastTurnAt: string | null;
+  /** EI-18712914572668391: true when this loop keeps getting re-armed (fireCount climbing,
+   *  `stalled` reading false because it isn't currently PARKED) while `lastTurnAt` has not
+   *  kept pace — i.e. fires are being ATTEMPTED without turns actually being PRODUCED. This
+   *  is the case `stalled` alone cannot see: `stalled` only fires while parked (an in-flight
+   *  turn stuck past its dwell window); an ARMED loop has, by construction, already been
+   *  judged "settled" by the reconciler for its most recent fire — including via the WEAKER
+   *  presence-quiescence fallback, which can be satisfied without a genuine turn ever
+   *  completing. A monitor reading `stalled:false` while `turnsStalled:true` is the exact
+   *  "healthy reading while the thing it monitors is dead" failure this field exists to
+   *  surface. Requires ≥3 fires (never flags a freshly-armed loop) — see computeTurnsStalled. */
+  turnsStalled: boolean;
 }
 
 /**
@@ -592,6 +609,44 @@ export function computeLoopStall(input: {
   return { stalled: false, stalledSinceMs: null };
 }
 
+/** Minimum fires before `computeTurnsStalled` will ever flag a loop — a freshly-armed loop
+ *  (fire 1 or 2, still mid-flight) has no meaningful "fires vs turns" trend yet; flagging it
+ *  would just be noise on ordinary startup latency. */
+export const TURNS_STALLED_MIN_FIRE_COUNT = 3;
+
+/**
+ * Pure "fires outpacing turns" verdict (EI-18712524449804476 companion,
+ * EI-18712914572668391): distinguishes fires ATTEMPTED (fireCount, which climbs on every
+ * bare-interval re-arm regardless of whether a fire ever became a real turn) from turns
+ * actually PRODUCED (lastTurnAt — the most recent genuine Stop-hook 'ended' marker for the
+ * owner). Deliberately independent of `parked`/`computeLoopStall`: an ARMED loop has already
+ * been judged "settled" for its most recent fire by the reconciler (possibly via the WEAKER
+ * presence-quiescence fallback, which needs no genuine turn-completion text at all) — the
+ * parked-only check can never see this class. Conservative by design (favors false-negative
+ * over false-positive on a widely-consumed fleet-health signal): requires several fires
+ * first, and only fires when the gap between the most recent fire and the most recent real
+ * turn exceeds a generous multiple of the interval — the same "give it several real cycles"
+ * floor `stuckParkMs`/`quickRetryParkMs` already use elsewhere in this system.
+ */
+export function computeTurnsStalled(input: {
+  active: boolean;
+  fireCount: number;
+  lastFiredAtMs: number | null;
+  lastTurnAtMs: number | null;
+  intervalSec: number | null;
+  nowMs?: number;
+}): boolean {
+  if (!input.active) return false;
+  if (input.fireCount < TURNS_STALLED_MIN_FIRE_COUNT) return false;
+  if (input.lastFiredAtMs == null) return false;
+  const floorMs = Math.max(30 * 60_000, (input.intervalSec ?? 60) * 4 * 1000);
+  // No turn has EVER completed for this owner, yet several fires have landed — the
+  // strongest form of the signal (never masked by a stale-but-present lastTurnAt).
+  if (input.lastTurnAtMs == null) return true;
+  const gapMs = input.lastFiredAtMs - input.lastTurnAtMs;
+  return gapMs >= floorMs;
+}
+
 /**
  * Read an owner's loop status (NULL if none). A lean shape rather than the full
  * RoutineRow — and it correctly reads the parked sentinel: postgres-js parses
@@ -607,12 +662,21 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   const lastFiredMs = r.last_fired_at ? new Date(r.last_fired_at).getTime() : null;
   const completedMs = r.lifecycle_completed_at ? new Date(r.lifecycle_completed_at).getTime() : null;
   const presenceMs = r.presence_last_active_at ? new Date(r.presence_last_active_at).getTime() : null;
+  const lastTurnMs = r.last_turn_at ? new Date(r.last_turn_at).getTime() : null;
+  const fireCount = r.fire_count == null ? 0 : Number(r.fire_count);
   const stall = computeLoopStall({
     parked,
     parkedMs,
     intervalSec,
     hasCompletionSinceFire: completedMs != null,
     activeSinceFire: presenceMs != null && lastFiredMs != null && presenceMs > lastFiredMs,
+  });
+  const turnsStalled = computeTurnsStalled({
+    active: Boolean(r.active),
+    fireCount,
+    lastFiredAtMs: lastFiredMs,
+    lastTurnAtMs: lastTurnMs,
+    intervalSec,
   });
   return {
     name: r.name,
@@ -623,7 +687,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     carry: pt?.carry === 'cold' ? 'cold' : 'warm',
     continuation: pt?.continuation === 'gated' ? 'gated' : 'settle',
     mode: pt?.mode === 'monitor' ? 'monitor' : 'work',
-    fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
+    fireCount,
     parked,
     nextFireAt: r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null,
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,
@@ -639,6 +703,8 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastWakeStatus: r.last_wake_status ?? null,
     lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
     lastWakeError: r.last_wake_error ?? null,
+    lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
+    turnsStalled,
   };
 }
 
@@ -677,6 +743,19 @@ export async function getLoopStatuses(
            (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
              WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
                AND ag.summary = ${SESSION_END_MARKER} AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,
+           -- EI-18712914572668391: the most recent turn-completion marker for this owner,
+           -- UNSCOPED by `> r.last_fired_at` (unlike lifecycle_completed_at above, which only
+           -- answers "did THIS fire's turn settle yet"). This is what lets loop:status tell
+           -- fires ATTEMPTED (fire_count, keeps climbing on a bare-interval re-arm even when
+           -- delivery never becomes a real turn) apart from turns actually PRODUCED — an armed
+           -- (not parked) loop has, by construction, already been judged "settled" for its most
+           -- recent fire by the reconciler, so the parked-only stall check below can never see
+           -- a loop that keeps getting re-armed on a WEAK completion signal (e.g. stale/false
+           -- presence-quiescence) without ever producing a genuine Stop-hook 'ended' marker.
+           -- Same index shape as the subquery above (owner_id, kind, summary) — cheap.
+           (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
+             WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
+               AND ag.summary = ${SESSION_END_MARKER}) AS last_turn_at,
            (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
              WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at,
            lw.channel                                                    AS last_wake_channel,

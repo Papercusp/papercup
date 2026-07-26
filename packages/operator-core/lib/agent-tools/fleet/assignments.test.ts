@@ -322,6 +322,8 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     lastWakeStatus: null,
     lastWakeAt: null,
     lastWakeError: null,
+    lastTurnAt: new Date(NOW - 300_000).toISOString(),
+    turnsStalled: false,
     ...overrides,
   });
 

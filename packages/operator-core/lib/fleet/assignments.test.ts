@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  ACTIVE_TOOL_CALL_WINDOW_MS,
   deriveActivity,
   downgradeEndedHolders,
   groupByAgent,
@@ -337,6 +338,90 @@ describe('summarizeOrphan — WI-5975', () => {
   it('keeps the pre-existing wire fields intact', () => {
     const s = summarizeOrphan(heldByLive);
     expect(s).toMatchObject({ source: 'work_item_claim', agent: 'su-holder', id: 'WI-5923' });
+  });
+
+  // ── EI-18716042694888410: recent REAL work outranks session posture ──────────
+  //
+  // The incident: fleet:assignments reported summary.reclaimable_claims:4, every
+  // row verdict:orphan/action:reclaim/progress:never-checkpointed. All four
+  // holders were `parked` AND actively working — 803-2981 tool calls that day,
+  // two of them 22-23 calls in the last five MINUTES. The Mug persona says to
+  // act on summary.reclaimable_claims, so the documented procedure was to
+  // force-release work out from under four live workers.
+  //
+  // `lastToolCallAt` was fetched (lastToolCallAtByOwner, with its own partial
+  // index) and documented as the signal separating working-but-not-checkpointing
+  // from wedged — then attached to the payload and never read by the verdict.
+  describe('recent tool activity outranks a non-live sessionState', () => {
+    const NOW = Date.parse('2026-07-26T14:00:00.000Z');
+    const agoMs = (ms: number) => new Date(NOW - ms).toISOString();
+
+    it('a PARKED holder invoking tools right now is never reclaimable', () => {
+      const s = summarizeOrphan(
+        heldByLive,
+        { sessionState: 'parked', lastToolCallAt: agoMs(2 * 60_000) },
+        NOW,
+      );
+      expect(s.verdict).toBe('held-by-live-agent');
+      expect(s.action).toBe('ask');
+      expect(isReclaimCandidate(s)).toBe(false);
+    });
+
+    it.each<[Exclude<SessionState, 'live'>]>([
+      ['parked'],
+      ['draining'],
+      ['suspect'],
+      ['recorded'],
+    ])('%s + a fresh tool call ⇒ ask, not reclaim', (sessionState) => {
+      const s = summarizeOrphan(heldByLive, { sessionState, lastToolCallAt: agoMs(30_000) }, NOW);
+      expect(isReclaimCandidate(s)).toBe(false);
+    });
+
+    it('a genuinely wedged holder still crosses the window into reclaim', () => {
+      // The inverse, so the window is actually exercised rather than the guard
+      // degenerating into "never reclaim anything".
+      const s = summarizeOrphan(
+        heldByLive,
+        { sessionState: 'parked', lastToolCallAt: agoMs(6 * 60 * 60_000) },
+        NOW,
+      );
+      expect(s.verdict).toBe('orphan');
+      expect(s.action).toBe('reclaim');
+      expect(isReclaimCandidate(s)).toBe(true);
+    });
+
+    it('brackets the window boundary', () => {
+      const inside = summarizeOrphan(
+        heldByLive,
+        { sessionState: 'parked', lastToolCallAt: agoMs(ACTIVE_TOOL_CALL_WINDOW_MS - 1_000) },
+        NOW,
+      );
+      const outside = summarizeOrphan(
+        heldByLive,
+        { sessionState: 'parked', lastToolCallAt: agoMs(ACTIVE_TOOL_CALL_WINDOW_MS + 1_000) },
+        NOW,
+      );
+      expect(isReclaimCandidate(inside)).toBe(false);
+      expect(isReclaimCandidate(outside)).toBe(true);
+    });
+
+    it('ignores an unparseable or absent timestamp rather than presuming activity', () => {
+      // Absence must not read as liveness — the same failure mode as the null
+      // progress signal above.
+      for (const lastToolCallAt of [null, undefined, 'not-a-date']) {
+        const s = summarizeOrphan(heldByLive, { sessionState: 'parked', lastToolCallAt }, NOW);
+        expect(s.verdict).toBe('orphan');
+      }
+    });
+
+    it('does not let a far-future timestamp manufacture liveness', () => {
+      const s = summarizeOrphan(
+        heldByLive,
+        { sessionState: 'parked', lastToolCallAt: agoMs(-24 * 60 * 60_000) },
+        NOW,
+      );
+      expect(s.verdict).toBe('orphan');
+    });
   });
 
   // Pins the structurally-declared HolderActivity union to the real oracle type,

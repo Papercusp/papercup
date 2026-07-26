@@ -771,6 +771,30 @@ export interface HolderActivity {
   lastToolCallAt?: string | null;
 }
 
+/**
+ * EI-18716042694888410: how recent a tool invocation must be for its holder to
+ * count as WORKING regardless of `sessionState`.
+ *
+ * `sessionState` describes the SESSION's posture, not whether work is happening:
+ * an agent that is mid-task can read `parked` (between wakes, warm-continued,
+ * or relaunched under the same coord owner after a service reap) while invoking
+ * tools continuously. Treating that as abandonment is how a leader comes to
+ * force-release work out from under a live worker.
+ *
+ * 10 minutes is deliberately generous relative to a normal inter-call gap —
+ * this is a SAFETY floor on a destructive action, so it should err toward
+ * "still working". A genuinely wedged holder crosses it quickly.
+ */
+export const ACTIVE_TOOL_CALL_WINDOW_MS = 10 * 60 * 1000;
+
+/** Has this holder done real work recently enough to be presumed alive? */
+function isRecentlyActive(holder: HolderActivity | null | undefined, nowMs: number): boolean {
+  if (!holder?.lastToolCallAt) return false;
+  const t = Date.parse(holder.lastToolCallAt);
+  if (Number.isNaN(t)) return false;
+  return nowMs - t < ACTIVE_TOOL_CALL_WINDOW_MS && t <= nowMs + ACTIVE_TOOL_CALL_WINDOW_MS;
+}
+
 /** The wire shape an orphaned claim is reported in (fleet:assignments + /api/adv/roster). */
 export interface OrphanedClaimSummary {
   source: FleetAssignmentSource;
@@ -811,9 +835,15 @@ export interface OrphanedClaimSummary {
 export function summarizeOrphan(
   r: FleetAssignmentRow,
   holder?: HolderActivity | null,
+  nowMs: number = Date.now(),
 ): OrphanedClaimSummary {
+  // EI-18716042694888410: recent REAL work outranks session posture. `lastToolCallAt`
+  // was already fetched and documented as the working-vs-wedged discriminator, but the
+  // verdict consulted only `sessionState`, so an actively-invoking `parked` holder was
+  // reported orphan/reclaim. Fuse it: no tool-call signal ⇒ unchanged prior behaviour.
   const liveHolder =
-    holder?.sessionState != null ? holder.sessionState === 'live' : r.holderAlive === true;
+    isRecentlyActive(holder, nowMs) ||
+    (holder?.sessionState != null ? holder.sessionState === 'live' : r.holderAlive === true);
   return {
     source: r.source,
     agent: r.agentId,
