@@ -49,6 +49,23 @@ function finiteNumber(value: unknown): number | null {
  */
 export function planSlugOfWorkItem(item: WorkItem): string | null {
   const payload = record(item.payload);
+  // WI-5832 / EI-18666217180294576 follow-up (confirmed by direct code read against
+  // plan-items/convert.ts, NOT hypothetical): scheduled-recurring-plans (D-016) mint a
+  // plan-RUN work-item with `sourcePlanSlug: opts.planRun?.templateSlug ?? opts.planSlug`
+  // (written to the `source_plan_slug` COLUMN, which the SQL FIELD_MAP.plan compiler
+  // reads FIRST) while `payload.plan_item.plan_slug` gets the RUN's own (different)
+  // slug — the two are DELIBERATELY distinct identities by design, not a data bug. This
+  // evaluator used to fall through to `plan_item.plan_slug` without ever considering
+  // `payload.plan_run`, so on any plan-run item a `plan = '<template slug>'` claim-spec
+  // matched via the SQL admission path (get-next.ts, reads the column) but NOT via this
+  // JS evaluator (work_items:claim / by-id admission / the work-item:claimable event
+  // payload) — a real split-brain the moment the first scheduled-recurring plan fires
+  // (none has yet in production, which is why this was still dormant). Check
+  // `payload.plan_run.templateSlug` FIRST so both evaluators agree on the STABLE
+  // template identity for a plan-run item, exactly mirroring the column's write-time
+  // derivation above.
+  const planRun = record(payload.plan_run);
+  if (typeof planRun.templateSlug === 'string' && planRun.templateSlug) return planRun.templateSlug;
   const planItem = record(payload.plan_item ?? payload.planItem);
   return (
     (typeof planItem.plan_slug === 'string' && planItem.plan_slug) ||

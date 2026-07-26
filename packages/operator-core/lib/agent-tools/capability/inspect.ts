@@ -177,6 +177,11 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   // Mirror capability:bash: the dispatch wall-clock must exceed the max command timeout.
   timeoutSec: Math.floor(MAX_TIMEOUT_MS / 1000) + 30,
+  // EI-18666279107998059: same rationale as capability:bash — this handler awaits
+  // the same bash-jobs runner and never reads ctx.tx, so it must not hold the
+  // ambient workspace transaction open for the whole run. See
+  // ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   events: { output: z.string().describe('text/plain') },
   args: z.object({
     check: z

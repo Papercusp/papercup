@@ -210,4 +210,41 @@ describe('HudBoard', () => {
     fireEvent.click(toggle);
     expect(props.onToggleSuOnly).toHaveBeenCalled();
   });
+
+  // The chip cap exists so a busy card can't grow unbounded, but a mode is the
+  // agent's standing POSTURE — the thing that decides whether your silence is
+  // fine. An agent stacking modes used to spend the whole 4-chip budget on them
+  // (hiding its claims), and a heavily-chipped agent could lose the mode instead.
+  // Modes render always; only the derived stats compete for the cap.
+  it('never truncates mode chips, and caps only the stats around them', () => {
+    renderBoard([
+      entry({
+        modes: [
+          { mode: 'auto', ownerDirected: true },
+          { mode: 'ideate' },
+          { mode: 'grade' },
+        ],
+        claims: [{ status: 'done' }, { status: 'wip' }],
+        contextTokens: 180_000,
+        compactionLimit: 200_000,
+        loopArmed: true,
+        pendingWakes: 2,
+        wakeMode: 'manual',
+      }),
+    ]);
+    const chips = [...document.querySelectorAll('.hud__chip')].map((c) => c.textContent);
+    for (const label of ['AUTO', 'IDEATE', 'GRADE']) {
+      expect(chips, label).toContain(label);
+    }
+    const modeChips = document.querySelectorAll('.hud__chip--mode');
+    expect(modeChips.length).toBe(3);
+    // Owner-armed carries its own marker class; agent-set does not.
+    expect(document.querySelectorAll('.hud__chip--mode-owner').length).toBe(1);
+  });
+
+  it('labels a mode chip from the registry, so cold-auto is not rendered as an id', () => {
+    renderBoard([entry({ modes: [{ mode: 'cold-auto' }] })]);
+    const chip = [...document.querySelectorAll('.hud__chip--mode')][0];
+    expect(chip?.textContent).toBe('COLD AUTO');
+  });
 });

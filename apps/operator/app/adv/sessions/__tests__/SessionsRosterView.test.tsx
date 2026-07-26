@@ -262,7 +262,13 @@ describe('SessionsRosterView', () => {
   it('EI-7626: renders one --mode chip per official standing mode; none when modes is empty/absent', async () => {
     syncState.roster = {
       active: [
-        entry({ ownerId: 'a', label: 'worker-188', modes: ['auto', 'ideate'] }),
+        entry({
+          ownerId: 'a',
+          label: 'worker-188',
+          // The provenance-carrying shape (adv-roster's AdvRosterMode) plus the
+          // tolerated bare string an older operator's payload still sends.
+          modes: [{ mode: 'auto', ownerDirected: true }, 'ideate'],
+        }),
         entry({ ownerId: 'b', label: 'worker-189' }), // modes absent (older operator payload)
       ],
       ended: [],
@@ -271,10 +277,12 @@ describe('SessionsRosterView', () => {
       <SessionsRosterView planFilters={[]} onSelectAgent={vi.fn()} />,
     );
     await findByText('worker-188');
-    const chips = [...container.querySelectorAll('.pc-roster__chip--mode')].map(
-      (c) => c.textContent,
-    );
-    expect(chips).toEqual(['auto', 'ideate']);
+    const chipEls = [...container.querySelectorAll('.pc-roster__chip--mode')];
+    // Registry-derived labels — the same ones the HUD card shows, not raw ids.
+    expect(chipEls.map((c) => c.textContent)).toEqual(['AUTO', 'IDEATE']);
+    // …and the hover explains the mode instead of naming the table it came from.
+    expect(chipEls[0]?.getAttribute('title')).toContain('act on your own judgment');
+    expect(chipEls[0]?.getAttribute('title')).toContain('Set by the owner');
   });
 
   it('clicking a row calls onSelectAgent with the owner id (P-007 selection)', async () => {

@@ -701,6 +701,35 @@ describe('mergeRosterEntries — activity + loop-armed (WI-1488)', () => {
     expect(e.loopArmed).toBe(false);
   });
 
+  // Standing modes reach the GUI chips WITH provenance. The roster used to
+  // flatten agent_modes to a bare id even though the batched read already
+  // returned owner_directed/set_at, so a card could say "AUTO" but never
+  // "…because you put it there" — and owner-directed is exactly what decides
+  // whether a peer agent can override it.
+  it('carries mode provenance through to the roster entry', () => {
+    const [e, none] = mergeRosterEntries(
+      [presence({ ownerId: 'a' }), presence({ ownerId: 'b' })],
+      new Map(),
+      NOW,
+      new Map(),
+      new Map(),
+      new Map(),
+      'auto',
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Set(),
+      new Map([
+        ['a', [{ mode: 'auto', ownerDirected: true, since: iso(NOW - 60_000) }]],
+      ]),
+    );
+    expect(e.modes).toEqual([
+      { mode: 'auto', ownerDirected: true, since: iso(NOW - 60_000) },
+    ]);
+    expect(none.modes).toEqual([]);
+  });
+
   it('a loop-owned monitor is not declared-unclaimed between wakes', () => {
     const [monitor] = mergeRosterEntries(
       [presence({ ownerId: 'monitor', currentPlanSlug: 'watch-plan' })],

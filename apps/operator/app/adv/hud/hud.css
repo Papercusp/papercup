@@ -326,12 +326,12 @@
 }
 
 /* A standing mode (AUTO / IDEATE / DRAIN / …) — the posture the agent operates
-   under, not a statistic. Letter-spacing + weight separate it from the stat
-   chips beside it at a glance, WITHOUT another hue: the card already spends its
-   colour budget on column state and fleet rails. */
+   under, not a statistic. Weight separates it from the stat chips beside it
+   WITHOUT another hue: the card already spends its colour budget on column state
+   and fleet rails. (Tracking is deliberately not used — nonzero letter-spacing is
+   a design-system decision the primitives lint owns, not a per-surface tweak.) */
 .hud__chip--mode {
   font-weight: 600;
-  letter-spacing: 0.04em;
 }
 
 /* Owner-directed: YOU armed this mode, and a peer agent cannot override it.

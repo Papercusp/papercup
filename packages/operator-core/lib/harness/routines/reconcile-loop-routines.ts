@@ -340,12 +340,35 @@ export interface LifecycleDeathInfo {
  * and will retry on its own), but a human should see it rather than discover it via
  * session-archaeology. Advisory severity; may throw if the coord context is unavailable — the
  * caller swallows it (a lost escalation must never abort the reconcile pass).
+ *
+ * Exported (not just used as the `opts.escalateLifecycleDeath` default) so
+ * EI-18668025239634541's recurrence guard can call it directly and assert on
+ * the `conditionKey` (meta.subjectSignature) it passes to `openEscalation` —
+ * the exact thing that was missing and caused the leak.
  */
-async function defaultEscalateLifecycleDeath(info: LifecycleDeathInfo): Promise<void> {
+export async function defaultEscalateLifecycleDeath(info: LifecycleDeathInfo): Promise<void> {
   const mins = Math.round(info.verdict.rearmDelayMs / 60_000);
   await openEscalation(LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY, {
     severity: 'advisory',
-    summary: `Loop '${info.name}' wake died on a provider '${info.verdict.reason}' — re-arming in ~${mins}m instead of the bare interval.`,
+    // EI-18668025239634541: this call used to omit a conditionKey entirely, so
+    // dedup fell back to the prose SUMMARY — which embedded `~${mins}m`, a value
+    // that backs off between occurrences and therefore never repeats even for
+    // the SAME loop. Every reconcile pass over a loop stuck on a provider wall
+    // then leaked a fresh permanently-open escalation row (10 rows / 2.5h
+    // measured, 1.0x coalescing) instead of bumping repeatCount on one row.
+    // `meta.subjectSignature` is the stable conditionKey convention every other
+    // recurring watchdog in this codebase uses (see coordination/escalations.ts
+    // escalationDedupIdentity + coordination/tools/escalate.ts) — key it on the
+    // loop identity alone (installSlug + routineId), which does NOT vary across
+    // occurrences of the same underlying condition.
+    meta: { subjectSignature: `loop-lifecycle-death:${info.installSlug}:${info.routineId}` },
+    // Defense in depth (belt-and-suspenders with the conditionKey above): the
+    // volatile `~${mins}m` duration used to live here and nowhere else — if a
+    // future refactor ever drops the conditionKey again, the summary-derived
+    // dedup fallback should still coalesce instead of repeating this exact leak.
+    // The duration detail is preserved in `body` below, which isn't part of the
+    // dedup signature.
+    summary: `Loop '${info.name}' wake died on a provider '${info.verdict.reason}' — re-arming instead of the bare interval.`,
     body:
       `The loop-lifecycle-death watchdog (EI-13818) found that loop '${info.name}' (routine ${info.routineId}, ` +
       `harness ${info.installSlug}, owner ${info.targetOwnerId})'s most recently woken turn completed CLEANLY ` +

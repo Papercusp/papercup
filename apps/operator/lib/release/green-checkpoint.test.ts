@@ -30,6 +30,7 @@ import {
   attemptFlakeAbsorption,
   ISOLATION_MAX_FILES,
   ISOLATION_RETRY_MAX,
+  ISOLATION_LOAD_STARVATION_MIN_MS,
   acquireCheckpointRunLock,
   checkpointRunLockDir,
   createTerminationSignalHandler,
@@ -1785,6 +1786,64 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
       expect(out.absorbedToGreen).toBe(false);
       // exactly one attempt per file — no retry once the budget is already spent
       expect(calls).toBe(2);
+    });
+
+    // EI-18669336904251384: the retry-loop log must not assert "ambient host load"
+    // unconditionally — a MEASURED green-checkpoint incident (2026-07-25) showed the
+    // message firing for failures that completed in 11-32ms on an UNSATURATED host, while
+    // the real cause was a stale candidate whose fix had already landed at tip. Gate the
+    // wording on the isolation attempt's own measured duration.
+    it('a FAST failing attempt (< ISOLATION_LOAD_STARVATION_MIN_MS) is logged as NOT load-starved', async () => {
+      const logs: string[] = [];
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+        durationMs: 23, // measured incident magnitude (11-32ms)
+      });
+      await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, (s) => logs.push(s), { sleep: async () => {} });
+      const attributionLines = logs.filter((l) => l.includes('still failing after attempt'));
+      expect(attributionLines.length).toBeGreaterThan(0);
+      for (const line of attributionLines) {
+        expect(line).toContain('finished in 23ms');
+        expect(line).toContain('too fast to be load-starved');
+        expect(line).not.toContain('ambient host load, not just the checkpoint');
+      }
+    });
+
+    it('a SLOW failing attempt (>= ISOLATION_LOAD_STARVATION_MIN_MS) is logged as consistent with ambient load', async () => {
+      const logs: string[] = [];
+      const slowMs = ISOLATION_LOAD_STARVATION_MIN_MS + 5_000;
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+        durationMs: slowMs,
+      });
+      await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, (s) => logs.push(s), { sleep: async () => {} });
+      const attributionLines = logs.filter((l) => l.includes('still failing after attempt'));
+      expect(attributionLines.length).toBeGreaterThan(0);
+      for (const line of attributionLines) {
+        expect(line).toContain(`took ${slowMs}ms`);
+        expect(line).toContain('consistent with ambient host load');
+      }
+    });
+
+    it('a failing attempt with NO measured duration falls back to the unattributed wording', async () => {
+      const logs: string[] = [];
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+        // durationMs omitted (e.g. a hand-built test double, or a future caller that
+        // hasn't wired timing) — must not silently masquerade as load evidence.
+      });
+      await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, (s) => logs.push(s), { sleep: async () => {} });
+      const attributionLines = logs.filter((l) => l.includes('still failing after attempt'));
+      expect(attributionLines.length).toBeGreaterThan(0);
+      for (const line of attributionLines) {
+        expect(line).toContain('duration not measured');
+      }
     });
   });
 });

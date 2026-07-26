@@ -37,6 +37,15 @@
  * packed into source.tar.zst. Only tracked source is shipped, so only tracked source
  * is linted.
  *
+ * TWO FORMS, ONE SHARED DETECTOR (EI-18670349543629060)
+ * This rule originally matched only the BRACKET form `[owner:<name>]`. Agents also write
+ * the parenthetical section header `OWNER MANDATE (<Name>, <date>, verbatim): "…"`, which
+ * leaks the same person — three of the 11 leaks that froze `main` on 2026-07-26 were that
+ * form. Both matchers now live in scripts/lib/identity-leak-patterns.mjs, which is ALSO
+ * imported by the edit-time hook (apps/operator/scripts/hooks/cc/pretooluse-content-lint.mjs)
+ * so the advisory an author sees while typing cannot disagree with the gate that blocks
+ * them 40 commits later (EI-18670296139788697). Add a new leak form THERE, not here.
+ *
  * NOTE THIS FILE OBEYS ITS OWN RULE. It cannot spell a real contributor's name even to
  * illustrate the bug: this script is tracked source, so it is packed into the bundle and
  * scanned by the very audit described above — quoting the literal name here would fail
@@ -51,53 +60,18 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-
-/**
- * Names that identify NOBODY: the stand-ins a test fixture or doc example uses on
- * purpose, precisely because they name no real person. A fixture asserting that the
- * release scrubber strips `[owner:Jane …]` must be able to say `[owner:Jane …]`.
- *
- * This is a list of PLACEHOLDERS, not an allowlist of people. A real contributor's
- * name does not go here — strip it from the tag instead.
- */
-const PLACEHOLDER_NAMES = new Set([
-  'jane', 'john', 'jdoe', 'jane-doe', 'johndoe', 'alice', 'bob', 'carol', 'dave',
-  'someone', 'somebody', 'name', 'owner', 'user', 'example', 'test', 'testuser',
-  'placeholder', 'redacted', 'anon', 'anonymous', 'foo', 'bar',
-]);
-
-/** Not shipped / not source / regenerated — mirrors check-no-box-identity.mjs so the
- *  two rules agree on what "shipped" means. */
-const SKIP = [
-  /(^|\/)node_modules\//, /(^|\/)\.git\//, /(^|\/)dist(-\w+)?\//, /(^|\/)build\//,
-  /(^|\/)coverage\//, /(^|\/)_retired\//, /(^|\/)\.papercusp\//, /(^|\/)docs\.old\.\d+\//,
-  /(^|\/)agent-briefs\//, /^docs\/plans\//, /(^|\/)public\/internal\/docs\//,
-  /(^|\/)\.harness\//, /(^|\/)\.tmp(-[^/]*)?\//, /(^|\/)\.claude\//,
-  /(^|\/)__pycache__\//, /\.pyc$/,
-  /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|zst|gz|tgz|zip|pdf|mp[34]|wav|lock)$/i,
-  /(^|\/)package-lock\.json$/, /(^|\/)junit\.xml$/,
-  /^(HANDOFF|BRIEF|FLEET|SELF-BRIEF|LIVE)-.*\.md$/,
-  /^shared-pot-release-testing\//,
-  /(^|\/)\.papercusp-\w+\//, /\.(swp|swo|swn)$/,
-];
-
-/**
- * `[owner:<name>` — the named provenance tag. The sanctioned `[owner 2026-07-13]`
- * (no colon) and `[owner:<date>]` forms carry no name and do not match.
- * `[self-imposed]`, `[peer:su-…]`, `[inferred]` name no human and are untouched.
- */
-const OWNER_TAG = /\[owner:\s*([A-Za-z][A-Za-z0-9._'-]*)/gi;
-
-/** A peer tag cites a session id (`[peer:su-b0fbf…]`), never a person — not a leak. */
-const isSessionId = (n) => /^su-/i.test(n);
-/** A bare date after the colon (`[owner:2026-07-13]`) names nobody. */
-const isDateLike = (n) => /^\d/.test(n);
+import {
+  FIX_HINT,
+  findOwnerNameLeaks,
+  isSkippedPath,
+  renderLeak,
+} from './lib/identity-leak-patterns.mjs';
 
 const tracked = execFileSync('git', ['ls-files', '-z'], { maxBuffer: 1 << 28 })
   .toString()
   .split('\0')
   .filter(Boolean)
-  .filter((f) => !SKIP.some((re) => re.test(f)));
+  .filter((f) => !isSkippedPath(f));
 
 const findings = [];
 for (const file of tracked) {
@@ -107,20 +81,12 @@ for (const file of tracked) {
   } catch {
     continue; // unreadable / binary / vanished mid-run — not our class
   }
-  if (!text.includes('[owner:')) continue; // fast reject: the overwhelming majority
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    for (const m of lines[i].matchAll(OWNER_TAG)) {
-      const name = m[1];
-      const lower = name.toLowerCase();
-      if (PLACEHOLDER_NAMES.has(lower) || isSessionId(name) || isDateLike(name)) continue;
-      findings.push({ file, line: i + 1, name, text: lines[i].trim().slice(0, 120) });
-    }
-  }
+  // findOwnerNameLeaks() applies its own cheap FAST_REJECT before matching.
+  for (const hit of findOwnerNameLeaks(text)) findings.push({ file, ...hit });
 }
 
 if (findings.length === 0) {
-  console.log('✓ no named [owner:<name>] provenance tags in shipped source');
+  console.log('✓ no named owner-provenance tags in shipped source');
   process.exit(0);
 }
 
@@ -131,14 +97,8 @@ console.error(
     `platform leg runs.\n`
 );
 for (const f of findings) {
-  console.error(`  ${f.file}:${f.line}  [owner:${f.name} …]`);
+  console.error(`  ${f.file}:${f.line}  ${renderLeak(f)}`);
   console.error(`      ${f.text}`);
 }
-console.error(
-  `\nFIX: strip the NAME, keep the tier and the date.\n` +
-    `      [owner:Jane 2026-07-13]  ->  [owner 2026-07-13]\n` +
-    `The named form stays correct on CARRY SURFACES (work items, facts, checkpoints,\n` +
-    `plans) — those are internal and never packed into the bundle. Do NOT silence this\n` +
-    `by adding the name to PLACEHOLDER_NAMES: shipping that name is the bug.\n`
-);
+console.error(`\n${FIX_HINT}\n`);
 process.exit(1);

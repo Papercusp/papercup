@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { MODES, modeById } from '@papercusp/operator-core/lib/modes/registry';
 import {
   buildHudBoard,
   contextPct,

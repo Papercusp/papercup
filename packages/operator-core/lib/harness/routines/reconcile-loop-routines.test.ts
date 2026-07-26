@@ -12,7 +12,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { parseUsageResetMs } from '@papercusp/papercusp-shared/agent';
-import { reconcileLoopRoutines, classifyLoopLifecycleTurn } from './reconcile-loop-routines';
+import { reconcileLoopRoutines, classifyLoopLifecycleTurn, defaultEscalateLifecycleDeath } from './reconcile-loop-routines';
+
+// EI-18668025239634541 recurrence guard: mocked so the test below can assert on the
+// `meta.subjectSignature` (conditionKey) `defaultEscalateLifecycleDeath` passes through —
+// the exact field that was missing and caused every provider-kill occurrence to leak a
+// fresh permanently-open escalation instead of coalescing onto one row.
+vi.mock('../../agent-tools/coordination/escalations', () => ({
+  openEscalation: vi.fn(async () => undefined),
+}));
+import { openEscalation } from '../../agent-tools/coordination/escalations';
 
 /** Never-breach terminal-guard stub for tests that only care about the pre-existing
  *  stuck-backstop re-arm behavior (WI-1399 added a guard check ahead of every stuck-backstop
@@ -1108,5 +1117,91 @@ describe('reconcileLoopRoutines — ARMED-loop reachability sweep (EI-11407)', (
 
     expect(res.terminated).toEqual([]);
     expect(res.rearmed).toBe(0);
+  });
+});
+
+/**
+ * EI-18668025239634541 — recurrence guard for the loop-lifecycle-death escalation leak.
+ *
+ * ROOT CAUSE: `defaultEscalateLifecycleDeath` called `openEscalation` with NO conditionKey,
+ * so dedup fell back to the prose SUMMARY — which embedded `~${mins}m`, a value that backs
+ * off between occurrences (`rearmDelayMs`) and therefore never repeats even for the SAME
+ * loop. Every reconcile pass over a loop stuck on a provider wall leaked a fresh
+ * permanently-open escalation row instead of bumping repeatCount on one (measured: 10
+ * leaked rows / 10 occurrences / 2.5h, 1.0x coalescing — vs 4.8x coalescing everywhere a
+ * conditionKey IS supplied).
+ *
+ * A summary-equality assertion would NOT have caught this (the whole point of the bug is
+ * that the summary DIFFERS across occurrences) — this asserts on the actual dedup key
+ * (`meta.subjectSignature`) the fix introduces, exactly as the item requested.
+ */
+describe('defaultEscalateLifecycleDeath — stable conditionKey (EI-18668025239634541)', () => {
+  const baseInfo = {
+    routineId: 'rt-42',
+    targetOwnerId: 'su-test',
+    installSlug: 'papercusp',
+    name: 'loop-su-test',
+  };
+
+  it('passes an IDENTICAL non-empty conditionKey across two calls with DIFFERENT rearmDelayMs', async () => {
+    const mockOpenEscalation = vi.mocked(openEscalation);
+    mockOpenEscalation.mockClear();
+
+    await defaultEscalateLifecycleDeath({
+      ...baseInfo,
+      verdict: { reason: 'usage_limit', evidence: 'e1', rearmDelayMs: 5 * 60_000 },
+    });
+    await defaultEscalateLifecycleDeath({
+      ...baseInfo,
+      verdict: { reason: 'usage_limit', evidence: 'e2', rearmDelayMs: 47 * 60_000 },
+    });
+
+    expect(mockOpenEscalation).toHaveBeenCalledTimes(2);
+    const call1 = mockOpenEscalation.mock.calls[0]?.[1] as { meta?: { subjectSignature?: string } };
+    const call2 = mockOpenEscalation.mock.calls[1]?.[1] as { meta?: { subjectSignature?: string } };
+    const key1 = call1?.meta?.subjectSignature;
+    const key2 = call2?.meta?.subjectSignature;
+
+    expect(key1).toBeTruthy();
+    expect(key2).toBeTruthy();
+    expect(key1).toBe(key2); // THE regression this guards: must NOT vary with rearmDelayMs/mins.
+  });
+
+  it('keys the conditionKey on the loop identity (installSlug + routineId), distinguishing different loops', async () => {
+    const mockOpenEscalation = vi.mocked(openEscalation);
+    mockOpenEscalation.mockClear();
+
+    await defaultEscalateLifecycleDeath({
+      ...baseInfo,
+      routineId: 'rt-A',
+      verdict: { reason: 'usage_limit', evidence: 'e', rearmDelayMs: 60_000 },
+    });
+    await defaultEscalateLifecycleDeath({
+      ...baseInfo,
+      routineId: 'rt-B',
+      verdict: { reason: 'usage_limit', evidence: 'e', rearmDelayMs: 60_000 },
+    });
+
+    const keyA = (mockOpenEscalation.mock.calls[0]?.[1] as { meta?: { subjectSignature?: string } })?.meta
+      ?.subjectSignature;
+    const keyB = (mockOpenEscalation.mock.calls[1]?.[1] as { meta?: { subjectSignature?: string } })?.meta
+      ?.subjectSignature;
+    expect(keyA).toBeTruthy();
+    expect(keyB).toBeTruthy();
+    expect(keyA).not.toBe(keyB);
+  });
+
+  it('the summary itself no longer embeds the volatile duration (defense in depth for the dedup fallback)', async () => {
+    const mockOpenEscalation = vi.mocked(openEscalation);
+    mockOpenEscalation.mockClear();
+
+    await defaultEscalateLifecycleDeath({
+      ...baseInfo,
+      verdict: { reason: 'usage_limit', evidence: 'e', rearmDelayMs: 33 * 60_000 },
+    });
+
+    const input = mockOpenEscalation.mock.calls[0]?.[1] as { summary: string; body: string };
+    expect(input.summary).not.toMatch(/~?\d+m/); // no minutes count in the dedup-relevant summary
+    expect(input.body).toMatch(/~33m/); // the detail still lives in body, just not in summary
   });
 });

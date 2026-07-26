@@ -257,6 +257,31 @@ describe('surveyPot (P-012 regression)', () => {
     expect(survey.scope).toBe('members');
   });
 
+  it('dedups a plan surfaced under MULTIPLE survey slugs — a member slug resolving to the same underlying plan set must not double-count it (EI-18669294545467516)', async () => {
+    // Reproduces the real-world mechanism: a member harness slug (e.g. a
+    // hive-canary member) resolves upstream to its hive's HOME plan set, so
+    // listPlanRows returns the identical row for both the home slug and the
+    // member slug. Without a dedup keyed on plan identity, the flatten would
+    // push the SAME plan twice — inflating both survey.plans.length and
+    // counts.plans, and handing the placement ranker a duplicated candidate.
+    const dupRow = planRow({ planSlug: 'shared-plan', harnessSlug: 'papercup' });
+    const survey = await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({
+          projects: [{ slug: 'papercup', hive_slug: 'papercup-pot' }, { slug: 'papercup-pot' }],
+        }),
+        // Every survey slug resolves to the SAME plan row (byte-identical
+        // planSlug + harnessSlug) — the exact shape observed live.
+        listPlanRows: async () => [dupRow],
+        fetchFrontier: async () => [],
+      }),
+    });
+
+    const shared = survey.plans.filter((c) => c.id === 'shared-plan');
+    expect(shared).toHaveLength(1);
+    expect(survey.plans).toHaveLength(1);
+  });
+
   it('runs a workspace-wide survey (frontier scope []) when membership is not wired', async () => {
     let frontierScope: readonly string[] | null = null;
     const planSlugs: string[] = [];

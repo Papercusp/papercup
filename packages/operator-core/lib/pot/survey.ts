@@ -1201,8 +1201,21 @@ export async function surveyPot(
   const frontierRows = [...featureFrontierRows, ...escalatedIssueRows];
 
   const planCandidates: PlacementCandidate[] = [];
+  // EI-18669294545467516: planSlugs is a set of SURVEY slugs, not distinct
+  // harnesses — a member slug commonly resolves (via resolvePlanScope's
+  // "member harness resolves to its hive's home" behavior) to the SAME
+  // underlying plan rows as another slug in the same union. Without a dedup
+  // key here, an N-member pot reports every plan N times (counts.plans and
+  // the candidate list both inflate), handing the Mug's placement decider a
+  // wrong world model. Dedup on (harnessSlug, planSlug) — the plan's real
+  // identity — so a genuinely distinct cross-harness plan sharing a bare
+  // slug is never collapsed, only true repeats from the per-slug re-read.
+  const seenPlanKeys = new Set<string>();
   for (const rows of planRowsPerHarness) {
     for (const row of rows) {
+      const planKey = `${row.harnessSlug}::${row.planSlug}`;
+      if (seenPlanKeys.has(planKey)) continue;
+      seenPlanKeys.add(planKey);
       // mug-autonomy-and-selffeed C-1 (P-B1): an owner-EXPLICITLY-eligible plan is
       // surfaced even when unstarted (flagged needsStart) so the Mug can start +
       // decompose it. Only for plans in a non-empty eligiblePlans list — an un-steered

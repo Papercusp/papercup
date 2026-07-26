@@ -179,7 +179,10 @@ export function modeChipLabel(id: string): string {
  */
 export function modeChipTitle(id: string, opts?: { ownerDirected?: boolean }): string {
   const def = modeById(id);
-  const meaning = def ? `${def.title} — ${def.oneLiner}` : `Standing mode: ${id}`;
+  // Newline, not another dash: every registry title already carries its own
+  // em-dash ("AUTO — act, don't ask"), so joining with one read as
+  // "AUTO — act, don't ask — act on your own judgment…" on the live chip.
+  const meaning = def ? `${def.title}\n${def.oneLiner}` : `Standing mode: ${id}`;
   if (opts?.ownerDirected === undefined) return meaning;
   return `${meaning}\n\n${
     opts.ownerDirected

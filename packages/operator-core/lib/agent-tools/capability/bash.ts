@@ -48,6 +48,13 @@ export default defineTool({
   // Wall-clock dispatch timeout must exceed the max command timeout so a long
   // foreground command can complete (background mode is preferred for those).
   timeoutSec: Math.floor(MAX_TIMEOUT_MS / 1000) + 30,
+  // EI-18666279107998059: this handler awaits a child process for up to
+  // MAX_TIMEOUT_MS (minutes) and never reads ctx.tx — without this, the host's
+  // ambient workspace transaction sits idle for the whole exec and gets killed
+  // by Postgres's idle_in_transaction_session_timeout (60s), surfacing as a
+  // bare "write CONNECTION_CLOSED 127.0.0.1:6432" that correlates with call
+  // duration, not the command. See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   events: { output: z.string().describe('text/plain') },
   args: z.object({
     command: z.string().min(1).describe('The bash command to run (passed to `bash -c`).'),

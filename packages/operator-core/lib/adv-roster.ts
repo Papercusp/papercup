@@ -396,6 +396,13 @@ export async function runningSpawnLivenessByOwner(
  * merge the per-workspace batch reads. Best-effort — a modes-read failure
  * yields an empty map and the roster renders without mode chips.
  */
+/** ISO-8601 or null — tolerant of a raw PG timestamp string and of garbage. */
+function toIsoOrNull(v: string | Date | null | undefined): string | null {
+  if (!v) return null;
+  const ms = v instanceof Date ? v.getTime() : Date.parse(String(v));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
 async function agentModesByOwner(
   presence: Array<{ ownerId: string; workspaceId: string }>,
 ): Promise<Map<string, AdvRosterMode[]>> {
@@ -421,7 +428,11 @@ async function agentModesByOwner(
               rows.map((r) => ({
                 mode: r.mode,
                 ownerDirected: Boolean(r.ownerDirected),
-                since: r.setAt ?? null,
+                // Normalized to ISO: agent_modes.set_at arrives as a raw PG
+                // timestamp string ("2026-07-25 15:17:38.438801-04"), which no
+                // Date parser on the client is required to accept. Every other
+                // timestamp on this payload is ISO; this one has to match.
+                since: toIsoOrNull(r.setAt),
               })),
             );
           }

@@ -953,7 +953,24 @@ export interface IsolationResult {
   passed: boolean;
   /** true ⇒ the isolated re-run itself errored/timed out (verdict undetermined for this file). */
   errored?: boolean;
+  /** EI-18669336904251384: wall-clock duration of this attempt, in ms — the near-free
+   *  evidence that lets the retry-loop log tell "starved by ambient load" apart from "a
+   *  deterministic assertion that fails fast". Optional so a hand-built test fixture
+   *  (most of this file's unit tests) need not supply it; its absence just falls back to
+   *  the unattributed wording (see ISOLATION_LOAD_STARVATION_MIN_MS). */
+  durationMs?: number;
 }
+
+/** EI-18669336904251384: the minimum wall-clock time an isolated re-run attempt must have
+ *  taken before the retry-loop log may blame "ambient host load" for its failure. A real
+ *  process that was genuinely CPU-starved spends real time waiting for a scheduler slot —
+ *  it does not fail in single-digit-to-low-double-digit milliseconds. A failure that fast
+ *  is a deterministic assertion (a real break, or — as measured on 2026-07-25 — a stale
+ *  candidate whose fix already landed at tip), and asserting "ambient host load" for it is
+ *  false attribution that teaches the fleet to wait out a red that will never self-heal.
+ *  1s is comfortably above vitest's own process/import startup cost (seen at 130ms+ in this
+ *  file's own suite) so it never mis-fires on a merely-quick-but-real run. */
+export const ISOLATION_LOAD_STARVATION_MIN_MS = 1_000;
 
 export type FlakeVerdict =
   /** every originally-failing file PASSED in isolation ⇒ the red was pure load-flake. */
@@ -1150,8 +1167,22 @@ export async function attemptFlakeAbsorption(
       let result = await runOnce(f);
       let attempt = 1;
       while (!result.passed && attempt <= retryMax && now() < retryDeadline) {
+        // EI-18669336904251384: don't assert "ambient host load" unconditionally — a
+        // failure that finished in milliseconds was not starved, it ran to completion and
+        // failed deterministically (a real break, or a stale candidate whose fix already
+        // landed at tip). Only attribute to load when the measured duration is actually
+        // consistent with starvation; otherwise say plainly that load is not the likely
+        // cause, so a human/agent reading the log doesn't wait out a red that will never
+        // self-heal. Retrying is still safe either way — it can only ever ADD an
+        // absorption chance, never manufacture a false green.
+        const attribution =
+          result.durationMs === undefined
+            ? '(ambient host load, not just the checkpoint\'s own concurrency, can starve even an isolated re-run — duration not measured)'
+            : result.durationMs >= ISOLATION_LOAD_STARVATION_MIN_MS
+              ? `(took ${result.durationMs}ms — consistent with ambient host load starving the isolated re-run)`
+              : `(finished in ${result.durationMs}ms — too fast to be load-starved; likely a real break or a stale candidate, NOT ambient load)`;
         log(
-          `isolation: ${f.workspace}::${f.file} still failing after attempt ${attempt} (ambient host load, not just the checkpoint's own concurrency, can starve even an isolated re-run) — retrying (${retryDeadline - now()}ms of retry budget remaining)`,
+          `isolation: ${f.workspace}::${f.file} still failing after attempt ${attempt} ${attribution} — retrying (${retryDeadline - now()}ms of retry budget remaining)`,
         );
         await sleep(retryDelayMs);
         result = await runOnce(f);
@@ -2315,16 +2346,20 @@ export function realCheckpointDeps(
     const env = buildGreenCheckpointEnv(null);
     env.VITEST_MAX_FORKS = '1';
     env.VITEST_MAX_THREADS = '1';
+    // EI-18669336904251384: measure wall-clock duration so the retry-loop log can tell a
+    // real ambient-load starvation (slow) apart from a fast deterministic failure (real
+    // break / stale candidate) instead of blaming load unconditionally.
+    const startedAt = Date.now();
     try {
       const r = await exec(
         'npm',
         ['run', 'test', '--workspace', workspace, '--', '--no-file-parallelism', file],
         { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
       );
-      return { workspace, file, passed: r.code === 0 };
+      return { workspace, file, passed: r.code === 0, durationMs: Date.now() - startedAt };
     } catch (e) {
       log(`isolation: vitest re-run of ${workspace}::${file} threw (${e instanceof Error ? e.message : e})`);
-      return { workspace, file, passed: false, errored: true };
+      return { workspace, file, passed: false, errored: true, durationMs: Date.now() - startedAt };
     }
   };
   // WI-806: re-run ONE crashed WORKSPACE's whole suite at REDUCED concurrency (a single

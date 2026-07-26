@@ -18,7 +18,7 @@ import { describe, it, expect } from 'vitest';
 import type { WorkItem } from '../work-items';
 import type { ClaimSpec, FilterNode } from './claim-spec';
 import { positiveIdCohortIds, validateClaimSpec } from './claim-spec';
-import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter, matchesWorkItemClaimSpec } from './claim-spec-match';
+import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter, matchesWorkItemClaimSpec, planSlugOfWorkItem } from './claim-spec-match';
 
 function issueItem(overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'title'>): WorkItem {
   return {
@@ -67,6 +67,34 @@ const HARDENED_FENCE: FilterNode = {
     ],
   },
 };
+
+// WI-5832 / EI-18666217180294576 follow-up — scheduled-recurring-plans (D-016) mint a
+// plan-RUN item with `source_plan_slug` COLUMN = the STABLE template slug while
+// `payload.plan_item.plan_slug` carries the run's own (different) slug. The SQL
+// admission path (get-next.ts FIELD_MAP.plan) reads the column first and so resolves
+// the template slug; this JS evaluator must agree, not fall through to the run slug.
+describe('planSlugOfWorkItem — scheduled-recurring plan-run items (D-016) resolve the STABLE template slug, matching the SQL admission path', () => {
+  it('prefers payload.plan_run.templateSlug over payload.plan_item.plan_slug when both are present and differ', () => {
+    const item = issueItem({
+      id: 'WI-9001',
+      title: 'scheduled run item',
+      payload: {
+        plan_item: { plan_slug: 'nightly-sweep-2026-07-26', item_id: 'P-001' },
+        plan_run: { runId: 42, templateSlug: 'nightly-sweep' },
+      },
+    });
+    expect(planSlugOfWorkItem(item)).toBe('nightly-sweep');
+  });
+
+  it('falls through to payload.plan_item.plan_slug when there is no plan_run (the ordinary case, unaffected)', () => {
+    const item = issueItem({
+      id: 'WI-9002',
+      title: 'ordinary plan item',
+      payload: { plan_item: { plan_slug: 'agentic-docs-qa-2026-07-06', item_id: 'P-002' } },
+    });
+    expect(planSlugOfWorkItem(item)).toBe('agentic-docs-qa-2026-07-06');
+  });
+});
 
 describe('claimSpecSubjectFromWorkItem folds payload.filePath into paths (WI-5272)', () => {
   it('surfaces the quarantine-family payload.filePath convention as a paths entry', () => {
