@@ -11,8 +11,10 @@
  * lazy-import URLs (vditor, code-split routes); when it fetches one,
  * `host-spa.ts` 404s and the pane goes blank.
  *
- * The cure (in `vite.config.ts`) is `emptyOutDir:false` for watch builds, which
- * RETAINS old chunks so the running page keeps resolving the build it loaded.
+ * The cure (in `vite.config.ts`) is `emptyOutDir:false` — the DEFAULT regime for
+ * every build except an explicit `PAPERCUSP_RETAIN_DIST_CHUNKS=0` opt-out (see
+ * `shouldRetainDistChunks` below) — which RETAINS old chunks so the running page
+ * keeps resolving the build it loaded.
  * The only cost is that `dist/assets/` then grows without bound — that's what
  * this plugin handles: after each rebuild it deletes asset files that have been
  * sitting untouched longer than a TTL (default 60 min). Files written by the
@@ -60,22 +62,41 @@ export function resolveTtlMs(env: Record<string, string | undefined>): number {
 
 /**
  * Should this build RETAIN old hashed chunks (emptyOutDir:false + age-prune)
- * instead of emptying `dist/`? True for a `vite build --watch`, AND for a
- * ONE-SHOT build that opts in via `PAPERCUSP_RETAIN_DIST_CHUNKS=1`.
+ * instead of emptying `dist/`? **Retention is the DEFAULT.** Only an explicit
+ * `PAPERCUSP_RETAIN_DIST_CHUNKS=0` turns it off, and never for a `--watch`.
  *
- * Why the opt-in (WI-1484): the desktop dev bundle (:3270) is refreshed by a
- * one-shot `npm run build` on a ~2-min timer, NOT by a `--watch` singleton — so
- * the original `--watch`-only gate never fired for it, and each tick emptied
- * `dist/` and 404'd the lazy chunks an open webview was pinned to. The timer
- * sets this env so its rebuilds retain+prune like a watch build. A release/CI
- * build sets neither → stays clean-empty (and keeps the dist-wipe guard).
+ * Why the default is retain (plan `dist-chunk-retention-default-2026-07-26`,
+ * D-001): this used to be opt-IN (`=1`), and for weeks **nothing in the repo
+ * ever set it** — the mechanism built to stop stale-chunk 404s was never
+ * switched on by any caller, so the bug kept firing while the code claimed it
+ * was handled. Worse, `green-checkpoint` runs a one-shot SPA build on a timer
+ * against the LIVE WORKING TREE, so an automated job was emptying `dist/` and
+ * 404-ing the lazy chunks of every open webview on a schedule (owner hit it
+ * 2026-07-26). An opt-in that every future caller must remember is exactly the
+ * shape that failed; a safe default cannot be forgotten.
+ *
+ * Why inverting is safe: retention is a **no-op on a clean checkout** — there
+ * are no old chunks to retain — so the blast radius is limited to trees that
+ * get rebuilt repeatedly, which is precisely where live windows are. Growth is
+ * bounded by the TTL prune (`devDistPrunePlugin`), and `index.html` always
+ * points at the new chunks, so retained files are only extra.
+ *
+ * A `--watch` build ALWAYS retains and cannot opt out: emptying outDir under a
+ * live watcher is the original bug this whole mechanism exists to prevent.
+ *
+ * Who opts out (`=0`): a build whose `dist/` is PACKAGED into a shipped
+ * artifact — `papercusp-desktop/bin/build-desktop-sidecar.sh` `cp -a`s the whole
+ * dist into the desktop bundle, so retained chunks would ship as dead weight.
+ * A deploy's release-checkout build deliberately does NOT opt out: that
+ * checkout SERVES `:3070` to live windows, so it wants retention too.
  * Pure; exported for tests + reuse by vite.config.
  */
 export function shouldRetainDistChunks(
   argv: readonly string[],
   env: Record<string, string | undefined>,
 ): boolean {
-  return argv.includes('--watch') || env.PAPERCUSP_RETAIN_DIST_CHUNKS === '1';
+  if (argv.includes('--watch')) return true;
+  return env.PAPERCUSP_RETAIN_DIST_CHUNKS !== '0';
 }
 
 /**

@@ -22,14 +22,13 @@ const enableHmr = isDesktopHmrEnabled(process.env);
 // rebuild DELETES the prior hashed chunks, so a long-open Tauri webview 404s its
 // lazy imports ("Importing a module script failed" → dead error screen). We
 // therefore RETAIN old chunks (emptyOutDir:false) and prune them by age instead
-// (devDistPrunePlugin) whenever we're in a retain regime:
-//   - a `vite build --watch` (the classic dev shell), OR
-//   - a ONE-SHOT build that opts in via PAPERCUSP_RETAIN_DIST_CHUNKS=1 — the
-//     desktop dev bundle (:3270) is refreshed by a one-shot `npm run build`
-//     timer, NOT a watcher, so the old --watch-only gate never fired for it and
-//     each tick stranded the open webview (WI-1484). The timer now sets the env.
-// A release/CI build sets neither → clean-empty + the dist-wipe guard. See plan
-// `adv-build-churn-retain-chunks-2026-06-03` + WI-1484.
+// (devDistPrunePlugin). Retention is the DEFAULT for every build; only an
+// explicit PAPERCUSP_RETAIN_DIST_CHUNKS=0 opts out (and never for a --watch).
+// This was an opt-IN until 2026-07-26 and NOTHING in the repo ever set the flag,
+// so the cure shipped switched-off and the bug kept firing — see
+// shouldRetainDistChunks() in dev-dist-prune.ts for the full reasoning. Plans:
+// `adv-build-churn-retain-chunks-2026-06-03`, WI-1484,
+// `dist-chunk-retention-default-2026-07-26` (D-001).
 const retainDistChunks = shouldRetainDistChunks(process.argv, process.env);
 
 // EI-10539: a clean-empty build is STAGED — bin/vite-build-singleflight points

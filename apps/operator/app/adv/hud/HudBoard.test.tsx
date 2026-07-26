@@ -79,6 +79,12 @@ function renderBoard(
     onOpenSession: vi.fn(),
     loading: false,
     error: null,
+    tab: 'sessions',
+    onSelectTab: vi.fn(),
+    // A stub, not the real NewSessionLauncher — this file is presentation-only
+    // and the slot exists precisely so it stays testable without mocking a
+    // live plan-list fetch (see HudBoardProps.headerAction).
+    headerAction: <span data-testid="launcher" />,
     ...over,
   };
   return { props, ...render(<HudBoard {...props} />) };
@@ -250,5 +256,62 @@ describe('HudBoard', () => {
     renderBoard([entry({ modes: [{ mode: 'cold-auto' }] })]);
     const chip = [...document.querySelectorAll('.hud__chip--mode')][0];
     expect(chip?.textContent).toBe('COLD AUTO');
+  });
+
+  /* ── tabs (hud-session-launcher-and-board-tabs-2026-07-26 P-009) ────────── */
+
+  it('renders the three board tabs and reports a selection', () => {
+    const { props } = renderBoard([entry()]);
+    for (const label of ['Sessions', 'Plans', 'Work items']) {
+      expect(screen.getByRole('tab', { name: label })).toBeTruthy();
+    }
+    expect(screen.getByRole('tab', { name: 'Sessions' }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByRole('tab', { name: 'Plans' }));
+    expect(props.onSelectTab).toHaveBeenCalledWith('plans');
+  });
+
+  it('swaps the session controls for the entity view on a non-session tab', () => {
+    // The su-only toggle, the count chips and the fleet strip are session
+    // CONCEPTS — a plan has no fleet — so they must not survive the switch.
+    renderBoard([entry({ fleetSlug: 'atlas', fleetRole: 'leader' })], {
+      tab: 'plans',
+      entityView: <div data-testid="entity-view" />,
+    });
+    expect(screen.getByTestId('entity-view')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'su sessions' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /all fleets/ })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Working' })).toBeNull();
+    // …but the launcher does, because it is a HUD-wide control.
+    expect(screen.getByTestId('launcher')).toBeTruthy();
+  });
+
+  // Regression guard for the P-009 move: hud-consolidation P-002 made
+  // unattributed asks visible on this board as the gate for retiring the
+  // sidebar Inbox. They now render on the Work items tab, so the sessions
+  // board must still SAY they exist — a count nobody can reach is the same
+  // failure as no count at all.
+  it('keeps a reachable pointer to unattributed asks after moving them off this board', () => {
+    const board = buildHudBoard(
+      [entry()],
+      [
+        {
+          ownerAgentId: null,
+          title: 'Ratify the dark flag',
+          occurredAt: iso(60_000),
+          id: 'ask-1',
+          kind: 'dark-flag-ratification',
+          itemRef: null,
+          planSlug: null,
+          harnessSlug: null,
+        },
+      ],
+      { nowMs: NOW },
+    );
+    const props = { board, tab: 'sessions' as const };
+    const { props: p } = renderBoard([], props);
+    const nudge = screen.getByRole('button', { name: /unattributed ask/ });
+    fireEvent.click(nudge);
+    expect(p.onSelectTab).toHaveBeenCalledWith('items');
+    expect(screen.getByRole('status').textContent).toContain('Work items tab');
   });
 });

@@ -975,3 +975,49 @@ const coordPresenceReaperWorkflow = idempotentRegisterWorkflow('coordPresenceRea
   }),
 );
 DBOS.registerScheduled(coordPresenceReaperWorkflow, { name: 'coordPresenceReaper', crontab: '0 12 * * * *' });
+
+// Daily (04:50 UTC, tail of the 04:xx GC cluster — deliberately AFTER the retention
+// sweeps that CREATE the bloat): rebuild btree indexes that continuous retention churn
+// has inflated into mostly-empty pages (db-performance-remediation-2026-07-26 P-004).
+// VACUUM marks emptied index pages reusable but never returns them, so a pruned
+// high-churn table's indexes grow monotonically — route_invocations was measured at
+// 5.1 GB of index on 711 MB of heap before the first sweep, one index being 4117 MB at
+// 2122 bytes/row (it rebuilt to 99 MB in 5s). REINDEX ... CONCURRENTLY only, so reads and
+// writes keep running; the body additionally skips under a long-open transaction (which
+// would merely park the rebuild) or low disk, and drops orphaned *_ccnew duplicates left
+// behind by an interrupted reindex. Never throws (mirrors the other retention ticks): a
+// thrown step would mark the workflow permanently dead.
+async function dbIndexBloatReindexTick(): Promise<void> {
+  if (!(await retentionEnabled(FLAGS.DB_INDEX_BLOAT_REINDEX))) return;
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('db-index-bloat-reindex')) return;
+    try {
+      const { runIndexBloatReindexOnce } = await import('../db-index-bloat-reindex');
+      const { sql } = getOrgPg();
+      const r = await runIndexBloatReindexOnce(sql);
+      if (r.skipped) {
+        console.log(`[db-index-bloat-reindex] skipped: ${r.skipped}`);
+        return;
+      }
+      const okCount = r.reindexed.filter((x) => !x.error).length;
+      const failCount = r.reindexed.length - okCount;
+      if (okCount > 0 || r.orphansDropped.length > 0 || failCount > 0) {
+        const mb = (r.bytesReclaimed / (1024 * 1024)).toFixed(0);
+        console.log(
+          `[db-index-bloat-reindex] rebuilt ${okCount} index(es), reclaimed ${mb} MB` +
+            `${r.orphansDropped.length > 0 ? `, dropped ${r.orphansDropped.length} orphan(s)` : ''}` +
+            `${failCount > 0 ? `, ${failCount} failed` : ''}` +
+            `${r.truncated ? ' (truncated by budget)' : ''}`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[db-index-bloat-reindex] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'db-index-bloat-reindex' });
+}
+const dbIndexBloatReindexWorkflow = idempotentRegisterWorkflow('dbIndexBloatReindex', () =>
+  DBOS.registerWorkflow(dbIndexBloatReindexTick, {
+    name: 'dbIndexBloatReindex', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(dbIndexBloatReindexWorkflow, { name: 'dbIndexBloatReindex', crontab: '0 50 4 * * *' });

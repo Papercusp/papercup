@@ -16,6 +16,7 @@ import {
   parseTscErrors,
   syntaxBrokenFiles,
   countByFile,
+  parseExplicitFiles,
   decidePerFile,
   effectiveBaselineByFile,
   TSC_COMMAND,
@@ -92,6 +93,72 @@ describe('countByFile', () => {
       'lib/broken.ts': 1,
       '(unattributed)': 1,
     });
+  });
+});
+
+// EI-18731016038876755: --mine's git-status-derived scoping attributes EVERY dirty file on the
+// shared checkout to the caller, including a PEER's in-flight edit — there is no session-scoped
+// signal in `git status` to tell the two apart. `--files=` sidesteps the ambiguity: the caller
+// states exactly which files are theirs instead of the gate guessing from tree dirt.
+describe('parseExplicitFiles (EI-18731016038876755)', () => {
+  it('returns null when --files= is absent — falls through to existing --mine/bare behavior', () => {
+    expect(parseExplicitFiles([])).toBeNull();
+    expect(parseExplicitFiles(['--mine', '--update'])).toBeNull();
+  });
+
+  it('parses a comma-separated --files= list into a Set of trimmed paths', () => {
+    const s = parseExplicitFiles(['--files=lib/a.ts,lib/b.ts']);
+    expect(s).toEqual(new Set(['lib/a.ts', 'lib/b.ts']));
+  });
+
+  it('tolerates stray whitespace around entries', () => {
+    const s = parseExplicitFiles(['--files= lib/a.ts , lib/b.ts ']);
+    expect(s).toEqual(new Set(['lib/a.ts', 'lib/b.ts']));
+  });
+
+  it('drops empty entries from a trailing/double comma without erroring', () => {
+    const s = parseExplicitFiles(['--files=lib/a.ts,,lib/b.ts,']);
+    expect(s).toEqual(new Set(['lib/a.ts', 'lib/b.ts']));
+  });
+
+  it('a single file still yields a one-element Set (not null)', () => {
+    expect(parseExplicitFiles(['--files=lib/a.ts'])).toEqual(new Set(['lib/a.ts']));
+  });
+
+  it('finds --files= among other flags in any position', () => {
+    expect(parseExplicitFiles(['--update', '--files=lib/a.ts', '--mine'])).toEqual(new Set(['lib/a.ts']));
+  });
+});
+
+// Integration with the existing decidePerFile policy: an explicit file list is just another
+// `changedFiles` Set from decidePerFile's point of view — this is the shape runTscBaselineGate
+// wires it through as, proving --files= gets the SAME peer-drift-vs-attributed semantics --mine
+// already has, not a parallel/weaker code path.
+describe('parseExplicitFiles feeding decidePerFile (EI-18731016038876755)', () => {
+  const brokenFree: string[] = [];
+
+  it('a regression in a file NOT in the explicit list reports as peer drift, not attributed', () => {
+    const changedFiles = parseExplicitFiles(['--files=b.ts'])!;
+    const r = decidePerFile({
+      currentByFile: { 'a.ts': 3, 'b.ts': 1 },
+      baselineByFile: { 'a.ts': 2, 'b.ts': 1 },
+      brokenFiles: brokenFree,
+      changedFiles,
+    });
+    expect(r.verdict).toBe('ok-peer-drift');
+    expect(r.peerDrift!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
+  });
+
+  it('a regression in a file IN the explicit list fails, attributed', () => {
+    const changedFiles = parseExplicitFiles(['--files=a.ts'])!;
+    const r = decidePerFile({
+      currentByFile: { 'a.ts': 3, 'b.ts': 1 },
+      baselineByFile: { 'a.ts': 2, 'b.ts': 1 },
+      brokenFiles: brokenFree,
+      changedFiles,
+    });
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
   });
 });
 

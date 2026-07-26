@@ -34,9 +34,12 @@ function launch(env: Record<string, string>): ChildProcess {
       VITE_BUILD_LOCK: join(tmp, 'build.lock'),
       // Never let a test touch the app's real dist/.
       VITE_BUILD_OUT_ROOT: tmp,
-      // The rebuild timer exports this in the real environment; a test run that
-      // inherited it would silently take the retain (passthrough) path.
-      PAPERCUSP_RETAIN_DIST_CHUNKS: '',
+      // Retention is the DEFAULT now (dist-chunk-retention-default-2026-07-26),
+      // so the STAGING path these tests exercise is reached only via the explicit
+      // `=0` opt-out. Pinning it here also isolates the suite from whatever the
+      // ambient environment happens to set. The tests that care about the default
+      // regime override this back to '' / '1' themselves.
+      PAPERCUSP_RETAIN_DIST_CHUNKS: '0',
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -229,10 +232,9 @@ describe('vite-build-singleflight — a red build must not destroy the bundle (E
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
     seedWorkingBundle();
 
-    // The desktop rebuild timer sets PAPERCUSP_RETAIN_DIST_CHUNKS=1 and vite then
-    // runs with emptyOutDir:false — it never empties dist/, so it is already
-    // crash-safe, and staging it would throw away the very chunks an open webview
-    // is pinned to. It must build straight into dist/, as before.
+    // A retain build runs with emptyOutDir:false — it never empties dist/, so it
+    // is already crash-safe, and staging it would throw away the very chunks an
+    // open webview is pinned to. It must build straight into dist/, as before.
     const retain = launch({
       PAPERCUSP_RETAIN_DIST_CHUNKS: '1',
       VITE_BUILD_CMD: 'echo NEW-IN-PLACE > "$VITE_BUILD_OUT_ROOT/dist/index.html"; exit 0',
@@ -242,5 +244,40 @@ describe('vite-build-singleflight — a red build must not destroy the bundle (E
     expect(distIndex()).toBe('NEW-IN-PLACE');
     expect(existsSync(join(tmp, 'dist', 'assets', 'app-old.js'))).toBe(true); // retained
     expect(existsSync(join(tmp, 'dist.next'))).toBe(false); // never staged
+  }, 10_000);
+
+  // The load-bearing regression test for dist-chunk-retention-default-2026-07-26.
+  // The bug that shipped: retention was opt-IN, so a bare `npm run build` on the
+  // shared tree wiped every hashed chunk and 404'd the owner's open windows. A
+  // bare build must now RETAIN without anyone remembering an env var — if this
+  // ever goes back to staging-by-default, the whole class is armed again.
+  it('a BARE build (no env at all) retains by default — chunks survive, nothing is staged', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    const bare = launch({
+      PAPERCUSP_RETAIN_DIST_CHUNKS: '', // as if never set — NOT the '0' opt-out
+      VITE_BUILD_CMD: 'echo NEW-IN-PLACE > "$VITE_BUILD_OUT_ROOT/dist/index.html"; exit 0',
+    });
+    expect(await collect(bare).exited).toBe(0);
+
+    expect(distIndex()).toBe('NEW-IN-PLACE');
+    // The chunk an already-open window is pinned to is STILL THERE.
+    expect(existsSync(join(tmp, 'dist', 'assets', 'app-old.js'))).toBe(true);
+    expect(existsSync(join(tmp, 'dist.next'))).toBe(false);
+  }, 10_000);
+
+  it('warns loudly on the =0 opt-out, naming the consequence for open windows', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    const wiping = launch({
+      PAPERCUSP_RETAIN_DIST_CHUNKS: '0',
+      VITE_BUILD_CMD: 'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo NEW > "$PAPERCUSP_VITE_OUT_DIR/index.html"; exit 0',
+    });
+    const io = collect(wiping);
+    expect(await io.exited).toBe(0);
+    expect(io.stderr()).toContain('PAPERCUSP_RETAIN_DIST_CHUNKS=0');
+    expect(io.stderr()).toContain('Importing a module script failed');
   }, 10_000);
 });

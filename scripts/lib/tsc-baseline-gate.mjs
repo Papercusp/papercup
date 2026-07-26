@@ -87,6 +87,41 @@ export function gitChangedFiles(root) {
 }
 
 /**
+ * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
+ * files the caller changed THIS session, as an alternative to `--mine`'s implicit
+ * git-status-derived scoping.
+ *
+ * WHY: `gitChangedFiles` (above) attributes "mine" from working-tree dirt (`git status`), which
+ * on this concurrently-edited shared checkout includes every PEER's uncommitted edits too — not
+ * just the caller's own. Observed live: `--mine` reported a regression in a file the calling
+ * agent had never opened, because a peer had it mid-edit at that exact moment; re-running the
+ * gate a minute later (once the peer's edit settled) gave the opposite verdict on the identical
+ * command against the identical tree. `git status` cannot distinguish WHICH agent dirtied a
+ * file on a shared checkout — there is no session-scoped signal to read there.
+ *
+ * `--files=` sidesteps the ambiguity entirely: the caller states which files are theirs
+ * (e.g. from their own edit history / Edit-tool log this turn), and that explicit set is used
+ * VERBATIM instead of the git-status guess — no heuristic, no false attribution. Passing
+ * `--files=` also implies `--mine`-style scoping (a caller naming exact files obviously wants
+ * the check scoped to them), so `--mine` need not be passed alongside it.
+ *
+ * Returns `null` when the flag is absent (falls through to the existing `--mine`/bare behavior
+ * unchanged) — never an empty Set for "flag absent", so callers can tell "not scoped" apart from
+ * "scoped to zero files" (a malformed `--files=` with no content, which is now the caller's own
+ * bug to fix, not a silent no-op).
+ */
+export function parseExplicitFiles(argv) {
+  const flag = argv.find((a) => a.startsWith('--files='));
+  if (flag === undefined) return null;
+  const list = flag
+    .slice('--files='.length)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return new Set(list);
+}
+
+/**
  * Resolve the EFFECTIVE per-file baseline, inheriting cross-package files from their OWNING
  * package's baseline (EI-18649014117371738).
  *
@@ -248,7 +283,8 @@ export function runTscBaselineGate({
   foreignBaselines = [],
 }) {
   const updateFlag = argv.includes('--update');
-  const mineFlag = argv.includes('--mine');
+  const explicitFiles = parseExplicitFiles(argv);
+  const mineFlag = argv.includes('--mine') || explicitFiles !== null;
 
   let tscOutput = '';
   let tscThrew = false;
@@ -304,12 +340,14 @@ export function runTscBaselineGate({
     currentByFile,
     foreignBaselines: loadedForeign,
   });
-  const changedFiles = mineFlag ? gitChangedFiles(root) : null;
+  // EI-18731016038876755: an explicit --files= list is authoritative — the caller SAID which
+  // files are theirs, so never fall back to the git-status guess for the same run.
+  const changedFiles = explicitFiles ?? (mineFlag ? gitChangedFiles(root) : null);
 
   const result = decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles });
   console.log(
     `TSC ${label}: ${result.total} type errors across ${Object.keys(currentByFile).length} file(s) ` +
-      `(baseline total ${result.baselineTotal})${mineFlag ? ' [--mine]' : ''}`,
+      `(baseline total ${result.baselineTotal})${explicitFiles ? ' [--files]' : mineFlag ? ' [--mine]' : ''}`,
   );
   if (inherited.length > 0) {
     console.log(

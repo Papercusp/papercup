@@ -262,16 +262,12 @@ export default function HudBoard({
       ) : (
       <>
       <div className="hud__top">
-        {/* P-002 (owner asks 2026-07-26). First ask: "left align these buttons
-            instead of right align" — a `hud__spacer` used to sit here, ahead of
-            the launcher, pushing it and the su-sessions toggle to the far
-            right; it now trails the row so the slack falls on the right
-            instead. Follow-up ask: "move these to the left of the needs you and
-            the stuff that comes after that" — so the launch cluster leads the
-            header outright and the count chips follow it, rather than the
-            other way round. */}
-        {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
-
+        {/* P-002 (owner asks 2026-07-26) put the launch cluster at the head of
+            this row, ahead of the count chips. P-009 lifted it one level, into
+            the tab strip above — it is a HUD-wide control, not a sessions-board
+            one, and leaving it here would have made it vanish on the Plans and
+            Work items tabs. The ordering the owner asked for is preserved: the
+            launcher still leads, the counts still follow. */}
         <Tooltip
           label={
             suOnly
@@ -340,22 +336,18 @@ export default function HudBoard({
         </div>
       ) : null}
 
-      {/* hud-consolidation-2026-07-26 P-002: needs-human Decisions with no
-          owning agent (an unclaimed needs-human plan/work item, an
-          improvement/standing-approval/dark-flag awaiting triage, …) render
-          here rather than nowhere — see UnattributedAskCard's doc. */}
-      {board.unattributed.length > 0 ? (
-        <section className="hud__unattributed" aria-label="Unattributed asks">
-          <h3 className="hud__col-h">
-            Needs you — unattributed
-            <span className="n">{board.unattributed.length}</span>
-          </h3>
-          <div className="hud__unattributed-b">
-            {board.unattributed.map((a) => (
-              <MemoUnattributedAskCard key={a.id} ask={a} />
-            ))}
-          </div>
-        </section>
+      {/* The unattributed-ask strip that used to sit here now renders inside
+          the Work items tab — see the note where UnattributedAskCard was. A
+          pointer stays on the sessions board so the count is never simply
+          gone: an ask nobody can see is the failure P-002 existed to prevent. */}
+      {unattributedCount > 0 ? (
+        <p className="hud__nudge">
+          <button type="button" className="hud__count hud__count--hot" onClick={() => onSelectTab('items')}>
+            <span className="hud__count-row">
+              <b>{unattributedCount}</b> unattributed ask{unattributedCount === 1 ? '' : 's'} — open Work items
+            </span>
+          </button>
+        </p>
       ) : null}
 
       {error ? (
@@ -399,9 +391,11 @@ export default function HudBoard({
           ? `${needsYou} session${needsYou === 1 ? '' : 's'} waiting on you.`
           : 'Nothing is waiting on you.'}
         {unattributedCount > 0
-          ? ` ${unattributedCount} unattributed ask${unattributedCount === 1 ? '' : 's'} with no owning session.`
+          ? ` ${unattributedCount} unattributed ask${unattributedCount === 1 ? '' : 's'} with no owning session, on the Work items tab.`
           : ''}
       </p>
+      </>
+      )}
     </div>
   );
 }

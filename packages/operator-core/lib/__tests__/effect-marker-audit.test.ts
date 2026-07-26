@@ -51,7 +51,8 @@ const SUFFIX_MUTATORS = [
   'work_items:create', 'work_items:set_state', 'work_items:claim', 'work_items:complete',
   'plan_items:claim', 'plan_items:convert',
   'coord:send', 'coord:escalate', 'coord:handoff', 'coord:declare-intent', 'events:emit', 'watch:create',
-  'messages:send', 'messages:dismiss',
+  // 'messages:send' / 'messages:dismiss' removed — work-item mail surface retired
+  // 2026-07-26 (WI-6097, retire-work-item-mail-surface-2026-07-26).
   'memory:remember', 'memory:forget',
   'topics:create', 'agent_chats:create',
   'backup:restore', 'storage:prune', 'autoloop:control', 'discovery:set_pot',

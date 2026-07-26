@@ -475,6 +475,16 @@ rebuild_stale_native_addons
 # was missing from the deployed SPA while the server code was current). The
 # DEPLOY passes --build-spa so what :3070 serves is always built from the
 # deployed sha; the green-checkpoint tree skips it (nothing serves its SPA).
+# Deliberately does NOT set PAPERCUSP_RETAIN_DIST_CHUNKS=0: this build lands in
+# the RELEASE checkout, which is REUSED across deploys and is what SERVES :3070
+# to live desktop windows. A wiping build here yanks the hashed chunks those
+# windows are pinned to — the same stale-chunk 404 the retain default exists to
+# prevent — so the deploy build WANTS retention (growth is bounded by the TTL
+# prune, and index.html always points at the new chunks). The opt-out belongs
+# only to builds whose dist/ is PACKAGED into a shipped artifact; see
+# papercusp-desktop/bin/build-desktop-sidecar.sh and shouldRetainDistChunks()
+# in apps/operator-vite/dev-dist-prune.ts. Plan
+# `dist-chunk-retention-default-2026-07-26` P-002 — do not "fix" this by adding =0.
 if [ "$BUILD_SPA" = "1" ]; then
   log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
   (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build 1>/dev/null) || {

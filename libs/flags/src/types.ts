@@ -1821,6 +1821,22 @@ export const FLAGS = {
   // long-dead rows in the live roster). OFF ⇒ the reaper tick no-ops (today's behavior:
   // rows accumulate until the opportunistic 24h sweepStalePresence catches them).
   COORD_PRESENCE_REAPER: "papercusp-coord-presence-reaper",
+  // db-performance-remediation-2026-07-26 P-004: the INDEX-BLOAT REINDEX sweep — a daily
+  // scheduled DBOS workflow that REINDEX INDEX CONCURRENTLY's btree indexes which the
+  // continuous retention churn has inflated into mostly-empty pages. VACUUM marks those
+  // pages reusable but never returns them, so a pruned high-churn table's indexes grow
+  // monotonically: measured 2026-07-26, route_invocations carried 5.1 GB of index on
+  // 711 MB of heap and one index alone was 4117 MB at 2122 bytes/row (it rebuilt to
+  // 99 MB in 5s; the full first pass took the database 22 GB -> 14 GB in 33s). A one-off
+  // reindex is only a mitigation because retention keeps deleting ~2M rows/day — this
+  // routine is the durable fix. Candidates are chosen from a CHEAP catalog heuristic
+  // (btree only, >=64 MiB, >200 bytes/row, on a table with real delete churn); the sweep
+  // is CONCURRENTLY-only (never blocks reads/writes), skips under a long-open transaction
+  // or low disk, and also drops orphaned *_ccnew/*_ccold duplicates left by an interrupted
+  // reindex. DEFAULT ON (alpha flags-default-on: finished, tested, additive maintenance —
+  // rebuilding an index from its table risks no data). OFF => the tick no-ops and bloat
+  // re-accumulates until someone reindexes by hand.
+  DB_INDEX_BLOAT_REINDEX: "papercusp-db-index-bloat-reindex",
   // coord-delivery-residual-gaps-2026-07-11 P-004 (WI-4160): the delivery
   // ESCALATION LADDER kill-switch. One server-side rule — a DIRECTED message
   // (explicit to:[ownerId], never broadcast/@audience/system-sender) unread

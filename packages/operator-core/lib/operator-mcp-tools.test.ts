@@ -48,8 +48,13 @@ describe('ALL_AGENT_MCP_TOOLS', () => {
     }
   });
 
-  it('includes the messages:write capability for send_directive flow', () => {
-    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__messages:send');
+  // The work-item mail surface was retired 2026-07-26 (WI-6097,
+  // retire-work-item-mail-surface-2026-07-26). Inverted from a presence check
+  // into a regression guard so a re-introduction fails loudly here.
+  it('does NOT expose the retired work-item mail surface', () => {
+    for (const verb of ['send', 'inbox', 'outbox', 'dismiss']) {
+      expect(ALL_AGENT_MCP_TOOLS).not.toContain(`mcp__agentmcp__messages:${verb}`);
+    }
   });
 
   it('includes harness:list for the proactive scanner', () => {

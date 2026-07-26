@@ -94,24 +94,32 @@ LOG="${VITE_BUILD_LOG:-$OUT_ROOT/.vite-build.log}"
 # A retain-regime build never empties dist/ (vite.config: emptyOutDir:false), so
 # it is already crash-safe AND depends on the old chunks still being there.
 # Passthrough — do not stage it.
-RETAIN=0
-if [ "${PAPERCUSP_RETAIN_DIST_CHUNKS:-}" = "1" ] || [[ "$CMD" == *--watch* ]] || [[ "$CMD" == *" -w"* ]]; then
-  RETAIN=1
+#
+# MUST mirror shouldRetainDistChunks() in dev-dist-prune.ts exactly: this script
+# decides whether to STAGE, vite.config decides emptyOutDir, and if the two
+# disagree about the regime a staged build would silently lose the retention (a
+# fresh dist.next/ has none of the old chunks). Retention is the DEFAULT — only
+# an explicit `=0` opts out, and never for a watcher. See that function's comment
+# for why the old opt-in shape failed (plan dist-chunk-retention-default-2026-07-26).
+RETAIN=1
+if [ "${PAPERCUSP_RETAIN_DIST_CHUNKS:-}" = "0" ] && [[ "$CMD" != *--watch* ]] && [[ "$CMD" != *" -w"* ]]; then
+  RETAIN=0
 fi
 
 # A wiping build DELETES every old hashed chunk when it swaps dist.next/ over
 # dist/. Any desktop window opened before that swap is pinned to chunks that no
 # longer exist, so its next lazy import dead-ends on "Importing a module script
 # failed" — the owner hit exactly this on 2026-07-26 after an agent ran a plain
-# `npm run build` on the shared tree. The error card blames "the dev build
-# watcher", which sends the reader looking in the wrong place, so SAY IT HERE
-# instead: on a working tree with live windows you want the retain regime.
-# (Harmless on a fresh release checkout — there are no old chunks to retain.)
+# `npm run build` on the shared tree. That is why retention is now the DEFAULT
+# and reaching this branch takes a deliberate `PAPERCUSP_RETAIN_DIST_CHUNKS=0`.
+# It is still worth saying out loud, because the opt-out is correct for a
+# PACKAGING build (a shipped dist must be clean) and wrong for anything running
+# against a tree with live windows.
 if [ "$RETAIN" -eq 0 ]; then
-  echo "[vite-build-singleflight] NOTE: wiping build — old hashed chunks in dist/ will be DELETED on swap." >&2
-  echo "[vite-build-singleflight]       Any desktop window open right now will 404 its pinned lazy chunks" >&2
-  echo "[vite-build-singleflight]       (\"Importing a module script failed\"). On a live working tree, prefer:" >&2
-  echo "[vite-build-singleflight]         PAPERCUSP_RETAIN_DIST_CHUNKS=1 npm --prefix apps/operator-vite run build" >&2
+  echo "[vite-build-singleflight] NOTE: PAPERCUSP_RETAIN_DIST_CHUNKS=0 — wiping build. Old hashed chunks in" >&2
+  echo "[vite-build-singleflight]       dist/ will be DELETED on swap, so any desktop window open right now" >&2
+  echo "[vite-build-singleflight]       will 404 its pinned lazy chunks (\"Importing a module script failed\")." >&2
+  echo "[vite-build-singleflight]       Correct when PACKAGING a shipped bundle; drop the =0 on a live tree." >&2
 fi
 
 # Append-open: never truncate a live holder's pid record while we're still

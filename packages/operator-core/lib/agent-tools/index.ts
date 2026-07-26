@@ -115,6 +115,7 @@ import './ui/get_state';
 import './ui/dispatch';
 import './tui/dispatch';
 import './activity/report';
+import './activity/bash_substitution_report';
 import './activity/recent';
 // deterministic-context-carry-2026-07-14 P-013 — the bare tool-call log render.
 import './activity/tool-log';

@@ -65,19 +65,34 @@ describe('resolveTtlMs', () => {
   });
 });
 
+// Retention is the DEFAULT (plan `dist-chunk-retention-default-2026-07-26`, D-001).
+// It used to be opt-IN via `=1`, and for weeks NOTHING in the repo set that flag —
+// the cure shipped switched-off while the stale-chunk 404 kept firing. These tests
+// pin the inversion so it cannot silently regress to an opt-in again.
 describe('shouldRetainDistChunks', () => {
   it('retains for a `vite build --watch`', () => {
     expect(shouldRetainDistChunks(['node', 'vite', 'build', '--watch'], {})).toBe(true);
   });
 
-  it('retains for a one-shot build that opts in via PAPERCUSP_RETAIN_DIST_CHUNKS=1', () => {
-    expect(shouldRetainDistChunks(['node', 'vite', 'build'], { PAPERCUSP_RETAIN_DIST_CHUNKS: '1' })).toBe(true);
+  it('retains for a plain one-shot build — the default, no env needed', () => {
+    expect(shouldRetainDistChunks(['node', 'vite', 'build'], {})).toBe(true);
   });
 
-  it('empties (no retain) for a plain release/CI build — clean bundle + wipe guard', () => {
-    expect(shouldRetainDistChunks(['node', 'vite', 'build'], {})).toBe(false);
-    // Any value other than the exact opt-in string is treated as off.
+  it('empties ONLY for an explicit PAPERCUSP_RETAIN_DIST_CHUNKS=0 opt-out', () => {
     expect(shouldRetainDistChunks(['node', 'vite', 'build'], { PAPERCUSP_RETAIN_DIST_CHUNKS: '0' })).toBe(false);
-    expect(shouldRetainDistChunks(['node', 'vite', 'build'], { PAPERCUSP_RETAIN_DIST_CHUNKS: 'true' })).toBe(false);
+  });
+
+  it('treats any value other than the exact "0" opt-out as retain (fail safe)', () => {
+    // A typo'd/blank/legacy value must never silently disable retention — the
+    // failure mode of the old opt-in was precisely "the flag was never right".
+    for (const v of ['1', 'true', 'false', '', 'no', 'off']) {
+      expect(shouldRetainDistChunks(['node', 'vite', 'build'], { PAPERCUSP_RETAIN_DIST_CHUNKS: v })).toBe(true);
+    }
+  });
+
+  it('never lets a --watch build opt out — emptying under a live watcher is the original bug', () => {
+    expect(
+      shouldRetainDistChunks(['node', 'vite', 'build', '--watch'], { PAPERCUSP_RETAIN_DIST_CHUNKS: '0' }),
+    ).toBe(true);
   });
 });

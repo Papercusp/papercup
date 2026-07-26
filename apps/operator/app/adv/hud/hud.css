@@ -20,6 +20,49 @@
   color: var(--fg);
 }
 
+/* ── tab strip (hud-session-launcher-and-board-tabs-2026-07-26 P-009) ─────── */
+/* Sessions | Plans | Work items — the same five-column kanban over three
+   different entity types. flex:none for the same reason .hud__top declares it:
+   this is fixed chrome, and letting it shrink squashes the strip when the rows
+   below get tall. */
+.hud__tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  flex-wrap: wrap;
+  flex: none;
+}
+
+/* Same WebKitGTK button-flex collapse as .hud__count / .hud__card: the button
+   is display:inline-block and any flex row lives on an inner span. */
+.hud__tab {
+  display: inline-block;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-mute);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.hud__tab-row { display: inline-flex; align-items: center; gap: 6px; }
+
+.hud__tab:hover { color: var(--fg); border-color: var(--border); }
+.hud__tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.hud__tab--on {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgb(from var(--accent) r g b / 0.12);
+}
+
 /* ── header: counts + toggles ─────────────────────────────────────────────── */
 
 /* flex:none — this is fixed chrome, never the flexible region (.hud__cols is).
@@ -86,6 +129,32 @@
 .hud__count--hot b { color: var(--warn); }
 
 .hud__spacer { flex: 1 1 auto; }
+
+/* The entity tabs' own control row — the count chips plus a filter box. Same
+   chrome as .hud__top, minus the session-only toggles it has no business
+   showing (a plan has no fleet, a work item has no context window). */
+.hud__top--entity { gap: 8px; }
+
+.hud__search {
+  min-width: 160px;
+  max-width: 260px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.hud__search::placeholder { color: var(--fg-mute); }
+.hud__search:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The pointer left on the sessions board when unattributed asks exist — they
+   render on the Work items tab now, and a count you cannot reach is worse than
+   no count at all. */
+.hud__nudge { padding: 8px 14px 0; margin: 0; }
 
 /* ── header action slot ("+ New session") ────────────────────────────────── */
 /* hud-consolidation-2026-07-26 P-001: the launch control lives in
@@ -263,33 +332,34 @@
   line-height: 1.5;
 }
 
-/* ── unattributed asks (hud-consolidation-2026-07-26 P-002) ─────────────────
-   A single full-width strip above the columns, not a sixth column: these are
-   not sessions, so they don't belong in the 5-column session grid — but they
-   are needs-human Decisions, so they share the needs-you warn treatment. */
-.hud__unattributed {
-  flex: none;
-  padding: 0 14px 8px;
+/* (The `.hud__unattributed` strip that used to live here was removed by
+   hud-session-launcher-and-board-tabs-2026-07-26 P-009 — those asks are cards
+   in the Work items board's needs-you column now, styled by the shared
+   `.hud__card` rules below, so a second set of strip styles would only be a
+   promise to keep two looks in sync by hand.) */
+
+/* ── entity columns: Plans + Work items (P-009) ───────────────────────────── */
+/* Two of the five columns are new to this axis; the other three reuse the
+   session board's colours verbatim (see .hud__col--needs-you / --blocked). */
+.hud__col--done .hud__col-h { color: var(--fg-mute); }
+
+/* The card's secondary "why" line — a plan's next action, a work item's state.
+   Dimmer than the title above it, which is what carries the scan. */
+.hud__entity-why {
+  display: block;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--fg-mute);
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.hud__unattributed .hud__col-h {
-  color: var(--warn);
-  border-color: rgb(from var(--warn) r g b / 0.35);
-  background: rgb(from var(--warn) r g b / 0.08);
-}
-.hud__unattributed .hud__col-h .n { color: var(--warn); }
-
-.hud__unattributed-b {
-  border: 1px solid var(--border);
-  border-radius: 0 0 4px 4px;
-  background: var(--bg-2);
-  padding: 7px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 220px;
-  overflow-y: auto;
-}
+/* The per-column truncation note. Reuses .hud__empty's muted centered
+   treatment — it is the same kind of message (something about the column
+   itself, not a card in it). */
+.hud__more { padding: 6px 4px 2px; font-style: italic; }
 
 /* ── card ─────────────────────────────────────────────────────────────────── */
 
@@ -346,15 +416,19 @@
 .hud__card--blocked { border-color: rgb(from var(--bad) r g b / 0.35); }
 .hud__card--stalled { border-color: rgb(from var(--warn) r g b / 0.4); }
 
-/* Unattributed asks (hud-consolidation-2026-07-26 P-002) render as a plain
-   `<div>`, not a `<button>` — there is no session to open (see
-   UnattributedAskCard's doc) — so the pointer cursor + hover-lift `.hud__card`
-   implies elsewhere is reset to a neutral, non-interactive treatment. */
-.hud__card--unattributed {
-  cursor: default;
-  border-color: rgb(from var(--warn) r g b / 0.45);
-}
-.hud__card--unattributed:hover { border-color: rgb(from var(--warn) r g b / 0.45); background: var(--bg); }
+/* Plan / work-item cards render as a plain `<div>`, not a `<button>` — there
+   is no session to open and no destination wired yet (see HudEntityColumns'
+   doc) — so the pointer cursor + hover-lift `.hud__card` implies elsewhere is
+   reset to a neutral, non-interactive treatment. */
+.hud__card--entity { cursor: default; }
+.hud__card--entity:hover { border-color: var(--border); background: var(--bg); }
+/* …except where the column already claims a colour: an entity card in
+   needs-you/blocked keeps its border, which the hover reset above would
+   otherwise flatten (later rule, equal specificity). */
+.hud__card--entity.hud__card--needs-you,
+.hud__card--entity.hud__card--needs-you:hover { border-color: rgb(from var(--warn) r g b / 0.45); }
+.hud__card--entity.hud__card--blocked,
+.hud__card--entity.hud__card--blocked:hover { border-color: rgb(from var(--bad) r g b / 0.35); }
 
 /* The fleet rail: a per-card accent from DATA (fleetColor), falling back to a
    neutral so an unfleeted session still aligns with its neighbours. */
@@ -497,6 +571,11 @@
 .hud__dot--blocked { background: var(--bad); box-shadow: 0 0 0 3px rgb(from var(--bad) r g b / 0.15); }
 .hud__dot--stalled { background: var(--warn); }
 .hud__dot--parked { background: var(--border-strong); }
+/* The two entity-only columns (P-009). `ready` is queued-not-started, so it
+   reads as neutral-but-present; `done` is the same muted treatment `parked`
+   already carries — both mean "nothing to do here". */
+.hud__dot--ready { background: var(--fg-mute); }
+.hud__dot--done { background: var(--border-strong); }
 
 /* ── states ───────────────────────────────────────────────────────────────── */
 

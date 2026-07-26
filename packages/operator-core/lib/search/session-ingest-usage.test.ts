@@ -69,15 +69,15 @@ describe('readNewLines usage rollup (P-002)', () => {
 
     // One Bash CALL, carrying TWO atoms — the calls/atoms split the whole
     // metric rests on (a compound line is one call, several atoms).
-    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: null }))).toMatchObject({ calls: 1, atoms: 0 });
-    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: 'sed' }))).toMatchObject({ atoms: 1 });
-    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: 'head' }))).toMatchObject({ atoms: 1 });
+    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: null, intentLabel: null }))).toMatchObject({ calls: 1, atoms: 0 });
+    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: 'sed', intentLabel: null }))).toMatchObject({ atoms: 1 });
+    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: 'head', intentLabel: null }))).toMatchObject({ atoms: 1 });
 
     // A non-shell tool is counted as a call and contributes no verbs.
-    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Read', verb: null }))).toMatchObject({ calls: 1, atoms: 0 });
+    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Read', verb: null, intentLabel: null }))).toMatchObject({ calls: 1, atoms: 0 });
 
     // REGRESSION PIN: result bytes must be dated from the RECORD, not dropped.
-    expect(usage.get(usageKeyOf({ day: DAY, toolName: RESULT_BYTES_TOOL, verb: null }))?.resultBytes).toBe(10);
+    expect(usage.get(usageKeyOf({ day: DAY, toolName: RESULT_BYTES_TOOL, verb: null, intentLabel: null }))?.resultBytes).toBe(10);
   });
 
   it('stays empty when the adapter supplies no extractor (non-Claude clients)', async () => {
@@ -98,7 +98,7 @@ describe('readNewLines usage rollup (P-002)', () => {
     await writeFixture(FIXTURE_LINES.slice(0, 1), file);
 
     const tick1 = await readNewLines(file, 0, parseClaudeLine, classifyClaudeLine, null, extractLineUsage);
-    expect(tick1.usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: null }))?.calls).toBe(1);
+    expect(tick1.usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: null, intentLabel: null }))?.calls).toBe(1);
 
     await writeFixture(FIXTURE_LINES, file);
     const tick2 = await readNewLines(file, tick1.newOffset, parseClaudeLine, classifyClaudeLine, tick1.lastInferenceId, extractLineUsage);
@@ -106,8 +106,8 @@ describe('readNewLines usage rollup (P-002)', () => {
     // Each tick reports only ITS OWN delta — the rollup is summed on write
     // (ON CONFLICT ... calls + EXCLUDED.calls), so a tick re-reporting earlier
     // lines would double-count the whole window.
-    expect(tick2.usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: null }))).toBeUndefined();
-    expect(tick2.usage.get(usageKeyOf({ day: DAY, toolName: 'Read', verb: null }))?.calls).toBe(1);
+    expect(tick2.usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: null, intentLabel: null }))).toBeUndefined();
+    expect(tick2.usage.get(usageKeyOf({ day: DAY, toolName: 'Read', verb: null, intentLabel: null }))?.calls).toBe(1);
   });
 
   it('never throws on a malformed line, and still counts the good ones', async () => {
@@ -116,7 +116,7 @@ describe('readNewLines usage rollup (P-002)', () => {
     await writeFile(file, `{"type":"assistant",  BROKEN\n${JSON.stringify(FIXTURE_LINES[0])}\n`);
 
     const { usage } = await readNewLines(file, 0, parseClaudeLine, classifyClaudeLine, null, extractLineUsage);
-    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: null }))?.calls).toBe(1);
+    expect(usage.get(usageKeyOf({ day: DAY, toolName: 'Bash', verb: null, intentLabel: null }))?.calls).toBe(1);
   });
 
   it('yields an empty rollup for an empty file', async () => {

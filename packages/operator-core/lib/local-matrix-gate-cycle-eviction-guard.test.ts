@@ -214,7 +214,7 @@ describe('local-matrix.sh: a targeted run cannot silently evict host cores out f
   // whose reds got misattributed to whatever code the run happened to carry.
   it('does NOT degrade when the in-flight cycle is our OWN ancestor (it launched us)', () => {
     const out = runProbeCombined({ hold: true, holderPid: '$PPID' });
-    expect(out, "our own parent cycle is not a peer to yield to").toContain('is THIS run's own ancestor');
+    expect(out, 'our own parent cycle is not a peer to yield to').toContain("is THIS run's own ancestor");
     expect(
       out,
       'degrading here strips the exclusive cores from the very run the gate launched to measure',

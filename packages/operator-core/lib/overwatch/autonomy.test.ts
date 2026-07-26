@@ -7,13 +7,12 @@ import {
 } from './autonomy';
 
 // B-06: the overwatch DECISION gate / autonomy envelope (D-002). Pure, no IO.
-// auto = nudge (coord:send / messages:send) · observe (improvements:capture) ·
+// auto = nudge (coord:send) · observe (improvements:capture) ·
 // escalate (coord:escalate); everything else = structural ⇒ gated, escalate-only.
 describe('overwatch autonomy gate (B-06 / D-002)', () => {
   describe('classifyOverwatchAction', () => {
     const cases: Array<[string, OverwatchActionClass]> = [
       ['coord:send', 'nudge'],
-      ['messages:send', 'nudge'],
       ['improvements:capture', 'observe'],
       ['coord:escalate', 'escalate'],
       // EI-3588: overwatch's own wake-scheduling bookkeeping — never structural
@@ -50,12 +49,6 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       expect(d.escalateOnly).toBe(false);
       expect(d.action).toBe('coord:send');
       expect(d.reasons).toContain('overwatch-auto:nudge');
-    });
-
-    it('AUTO-decides messages:send (the other nudge verb)', () => {
-      const d = decideOverwatchAutonomy({ action: 'messages:send' });
-      expect(d.posture).toBe('auto');
-      expect(d.actionClass).toBe('nudge');
     });
 
     it('AUTO-decides an observation (improvements:capture)', () => {
@@ -108,7 +101,8 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
   describe('OVERWATCH_AUTO_VERBS contract (B-11 anchor)', () => {
     it('is exactly the C-2 write surface (nudge/observe/escalate) plus its own lifecycle bookkeeping (EI-3588), sorted', () => {
       expect([...OVERWATCH_AUTO_VERBS]).toEqual(
-        ['coord:escalate', 'coord:send', 'improvements:capture', 'kettle:declare-wake', 'messages:send'],
+        // 'messages:send' dropped — work-item mail surface retired 2026-07-26 (WI-6097).
+        ['coord:escalate', 'coord:send', 'improvements:capture', 'kettle:declare-wake'],
       );
     });
 

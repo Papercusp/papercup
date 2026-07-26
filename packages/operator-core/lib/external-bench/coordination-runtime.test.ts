@@ -104,15 +104,19 @@ test('hierarchical — leadDirective coordinates (not solves); the worker direct
 
 test('C4 coordination-call measurement — counts inter-agent comms, NOT work-acquisition', () => {
   // counts: direct messaging (coord:*), broadcast (topics:*), hand-off, blackboard reads/writes
-  for (const t of ['coord:send', 'coord:ask', 'coord:emit', 'topics:feed', 'topics:subscribe', 'messages:send', 'work_items:comment', 'work_items:amend', 'work_items:observe']) {
+  // ('messages:send' dropped — work-item mail surface retired 2026-07-26, WI-6097.
+  //  work_items:comment is its replacement and is already counted below.)
+  for (const t of ['coord:send', 'coord:ask', 'coord:emit', 'topics:feed', 'topics:subscribe', 'work_items:comment', 'work_items:amend', 'work_items:observe']) {
     assert.equal(isCoordinationToolCall(t), true, `${t} is coordination`);
   }
   // does NOT count: self-claim / work acquisition (present even in the no-coordination arm) + plain work
   for (const t of ['work_items:claim_next', 'fleet:assignments', 'work_items:get', 'work_items:complete', 'capability:edit', 'bash', 'Read']) {
     assert.equal(isCoordinationToolCall(t), false, `${t} is NOT coordination`);
   }
-  // the standard coordCalls computation: 4 coordination calls in a mixed trace.
-  const trace = ['Read', 'coord:send', 'capability:edit', 'work_items:claim_next', 'topics:feed', 'work_items:comment', 'messages:send', 'bash'];
-  assert.equal(countCoordinationCalls(trace), 4);
+  // the standard coordCalls computation: 3 coordination calls in a mixed trace
+  // (coord:send, topics:feed, work_items:comment — was 4 before the retired
+  // 'messages:send' was dropped from the trace, WI-6097).
+  const trace = ['Read', 'coord:send', 'capability:edit', 'work_items:claim_next', 'topics:feed', 'work_items:comment', 'bash'];
+  assert.equal(countCoordinationCalls(trace), 3);
   assert.equal(countCoordinationCalls([]), 0, 'a non-coordinating agent → 0 (the C4 red flag)');
 });

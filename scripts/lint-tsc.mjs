@@ -34,6 +34,11 @@
  * Usage:
  *   npm run lint:tsc              # CI gate: any file above its baseline fails, and is NAMED
  *   npm run lint:tsc -- --mine    # only fail on regressions in files YOU changed (git status)
+ *   npm run lint:tsc -- --files=path/a.ts,path/b.ts
+ *                                 # EI-18731016038876755: scope to EXACTLY these files instead of
+ *                                 # guessing from `git status` — the safe choice on a shared,
+ *                                 # concurrently-edited checkout where `--mine` can attribute a
+ *                                 # PEER's in-flight edit to you. Implies --mine-style scoping.
  *   npm run lint:tsc -- --update  # lower each improved file's baseline to current (never raises)
  *
  * Exit codes:
@@ -56,12 +61,21 @@ import {
   syntaxBrokenFiles,
   countByFile,
   gitChangedFiles,
+  parseExplicitFiles,
   decidePerFile,
   effectiveBaselineByFile,
   runTscBaselineGate,
 } from './lib/tsc-baseline-gate.mjs';
 
-export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, decidePerFile, effectiveBaselineByFile };
+export {
+  parseTscErrors,
+  syntaxBrokenFiles,
+  countByFile,
+  gitChangedFiles,
+  parseExplicitFiles,
+  decidePerFile,
+  effectiveBaselineByFile,
+};
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const baselineFile = resolve(ROOT, 'packages/operator-core/.tsc-baseline.json');
