@@ -353,7 +353,7 @@ describe('executeSpawnChild against real PG (scratch workspace)', () => {
     expect(done).toEqual({ notified: true, parent: 'papercup' });
 
     expect(send).toHaveBeenCalledTimes(1);
-    const [identity, options] = send.mock.calls[0] as [
+    const [identity, options] = send.mock.calls[0] as unknown as [
       { ownerId: string },
       { to: string[]; summary: string; body: string },
     ];

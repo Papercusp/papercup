@@ -5,7 +5,7 @@
  * decoration output → the leader-lean brief row) — unit-tested directly, no
  * PG/DI ceremony (mirrors deriveMemberVerdict/deriveContextPressure).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   computeBenchSuggestion,
   computeDormantAlert,
@@ -13,8 +13,10 @@ import {
   computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
   computeStrandedFleetAlert,
+  decorateComposedParkedOn,
   projectMember,
   reconcilePsuHostLiveness,
+  resolveComposedParkedOn,
   selectLeaderBriefMembers,
   topExcludedFloors,
   type DecoratedAgent,
@@ -824,5 +826,147 @@ describe('computeBenchSuggestion — GATED vs DRAINED (EI-18689489507862177)', (
   it('leaves the claimable>0 branch (EI-18681259560385029) untouched', () => {
     const s = computeBenchSuggestion(idleMember, 3, LIVE_GATED_LANE);
     expect(s?.kind).toBe('idle-with-claimable');
+  });
+});
+
+describe('resolveComposedParkedOn (pure, EI-18732218464905145 — the false-deadlock rendering fix)', () => {
+  it('collapses a composed root + its own leaf siblings into ONE entry, never as flat peers', () => {
+    const trees = new Map([
+      [96, { required: 1, leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'], expiresTs: '2026-07-26T18:36:37Z', onTimeout: 'wake' as const }],
+    ]);
+    const out = resolveComposedParkedOn(
+      ['work-item:status:WI-6088', 'work-item:status:WI-6095', 'composed-root:96'],
+      trees,
+    );
+    expect(out).toEqual([
+      {
+        kind: 'composed',
+        rootId: 96,
+        mode: 'any',
+        required: 1,
+        of: 2,
+        leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'],
+        expiresTs: '2026-07-26T18:36:37Z',
+        onTimeout: 'wake',
+      },
+    ]);
+  });
+
+  it('derives mode: all (required === leaf count), any (required 1), k-of-n (in between)', () => {
+    const of3 = (required: number) =>
+      resolveComposedParkedOn(
+        ['composed-root:1'],
+        new Map([[1, { required, leaves: ['a', 'b', 'c'], expiresTs: null, onTimeout: 'wake' as const }]]),
+      )[0] as { mode: string };
+    expect(of3(3).mode).toBe('all');
+    expect(of3(1).mode).toBe('any');
+    expect(of3(2).mode).toBe('k-of-n');
+  });
+
+  it('a plain (non-composed) parked key passes through unchanged, alongside a composed entry', () => {
+    const trees = new Map([[1, { required: 1, leaves: ['x'], expiresTs: null, onTimeout: 'wake' as const }]]);
+    const out = resolveComposedParkedOn(['lock:grant:t1', 'x', 'composed-root:1'], trees);
+    expect(out).toContain('lock:grant:t1');
+    expect(out).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'composed', rootId: 1 })]));
+    // 'x' is a leaf of root 1 — consumed into the composed entry, not duplicated as a flat string.
+    expect(out.filter((e) => e === 'x')).toHaveLength(0);
+  });
+
+  it('fails OPEN on an unresolved composed-root sentinel (no matching tree) — keeps the raw key visible', () => {
+    const out = resolveComposedParkedOn(['composed-root:404'], new Map());
+    expect(out).toEqual(['composed-root:404']);
+  });
+
+  it('empty input returns empty output', () => {
+    expect(resolveComposedParkedOn([], new Map())).toEqual([]);
+  });
+});
+
+describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
+  const node = (over: Partial<Record<string, unknown>> = {}) => ({
+    id: 96,
+    rootId: 96,
+    parentId: null,
+    subscriberId: 'su-1',
+    requiredCount: 1,
+    firedCount: 0,
+    firedAt: null,
+    spec: null,
+    wakeHandle: null,
+    note: null,
+    expiresTs: '2026-07-26T18:36:37Z',
+    timeoutBehavior: 'wake' as const,
+    cancelledAt: null,
+    ...over,
+  });
+  const leaf = (eventKey: string, id: number) => ({
+    id,
+    eventKey,
+    nodeId: 97,
+    rootId: 96,
+    memberFiredAt: null,
+    memberPayload: null,
+    firedAt: null,
+    cancelledAt: null,
+  });
+
+  it('resolves parkedOnResolved for an agent whose parkedOn holds a composed-root sentinel', async () => {
+    const listActiveComposedRoots = vi.fn(async () => [node()]);
+    const loadTreeLeaves = vi.fn(async () => [leaf('work-item:status:WI-6088', 1), leaf('work-item:status:WI-6095', 2)]);
+    const agents = [
+      { agentId: 'su-1', parkedOn: ['work-item:status:WI-6088', 'work-item:status:WI-6095', 'composed-root:96'] },
+    ];
+    await decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: loadTreeLeaves as never });
+    expect(listActiveComposedRoots).toHaveBeenCalledWith('su-1');
+    expect(loadTreeLeaves).toHaveBeenCalledWith(96);
+    expect(agents[0].parkedOnResolved).toEqual([
+      {
+        kind: 'composed',
+        rootId: 96,
+        mode: 'any',
+        required: 1,
+        of: 2,
+        leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'],
+        expiresTs: '2026-07-26T18:36:37Z',
+        onTimeout: 'wake',
+      },
+    ]);
+  });
+
+  it('skips the read entirely for an agent with no composed sentinel (no extra cost on the common case)', async () => {
+    const listActiveComposedRoots = vi.fn(async () => [node()]);
+    const agents = [{ agentId: 'su-1', parkedOn: ['lock:grant:t1'] }, { agentId: 'su-2', parkedOn: [] }];
+    await decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: vi.fn() as never });
+    expect(listActiveComposedRoots).not.toHaveBeenCalled();
+    expect(agents[0].parkedOnResolved).toBeUndefined();
+  });
+
+  it('a read failure fails soft — parkedOnResolved stays unset, never throws', async () => {
+    const listActiveComposedRoots = vi.fn(async () => {
+      throw new Error('pg down');
+    });
+    const agents = [{ agentId: 'su-1', parkedOn: ['composed-root:96'] }];
+    await expect(
+      decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: vi.fn() as never }),
+    ).resolves.toBeDefined();
+    expect(agents[0].parkedOnResolved).toBeUndefined();
+  });
+
+  it('projectMember prefers parkedOnResolved over the raw flat parkedOn end-to-end', () => {
+    const agent = baseAgent({
+      parkedOn: ['work-item:status:WI-6088', 'composed-root:96'],
+      parkedOnResolved: [
+        { kind: 'composed', rootId: 96, mode: 'any', required: 1, of: 2, leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'], expiresTs: '2026-07-26T18:36:37Z', onTimeout: 'wake' },
+      ],
+    });
+    const m = projectMember(agent, NOW);
+    expect(m.parkedOn).toEqual([
+      { kind: 'composed', rootId: 96, mode: 'any', required: 1, of: 2, leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'], expiresTs: '2026-07-26T18:36:37Z', onTimeout: 'wake' },
+    ]);
+  });
+
+  it('projectMember falls back to the raw flat parkedOn when nothing was resolved (unchanged pre-fix behavior)', () => {
+    const m = projectMember(baseAgent({ parkedOn: ['p2p-git:phase3-open'] }), NOW);
+    expect(m.parkedOn).toEqual(['p2p-git:phase3-open']);
   });
 });

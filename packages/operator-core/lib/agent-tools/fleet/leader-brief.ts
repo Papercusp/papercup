@@ -70,6 +70,9 @@ import {
   type UnownedCriticalCandidate,
   type OrphanedInFlightCandidate,
 } from '../../harness/improvements/unowned-critical-escalation';
+import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
+import type { TimeoutBehavior } from '../../events/await/types';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 export interface LeaderBriefMember {
   agentId: string;
@@ -106,8 +109,11 @@ export interface LeaderBriefMember {
   coordHook?: CoordDeafState;
   /** Directed messages to this member with no reply/ack yet — absent when none. */
   unanswered?: UnansweredDirectedSummary;
-  /** Active non-inbox-wake events:await keys — a deliberately-benched member. */
-  parkedOn?: string[];
+  /** Active non-inbox-wake events:await keys — a deliberately-benched member.
+   *  EI-18732218464905145: a composed (`spec`) registration renders as ONE
+   *  `ComposedParkEntry` (its any/all/k-of-n mode + its OWN deadline), never as
+   *  flat sibling strings alongside its own leaves — see resolveComposedParkedOn. */
+  parkedOn?: Array<string | ComposedParkEntry>;
   /** EI-9943: this member is alive/speaking (burning real turns) but its work
    *  is NOT advancing and it is not already benched — the "live-loop-polling
    *  on a peer's critical path" pattern (fleet p2p-ship, 2026-07-11/12: 3 of 5
@@ -676,6 +682,11 @@ export type DecoratedAgent = AgentAssignment & {
   wakeMode?: WakeMode;
   lastToolCallAt?: string | null;
   parkedOn?: string[];
+  /** EI-18732218464905145: the leader-legible collapse of `parkedOn` — set by
+   *  `decorateComposedParkedOn` when a raw key is a `composed-root:<id>` sentinel.
+   *  Absent (or equal to `parkedOn` verbatim) when the member holds no composed
+   *  await, or the resolution read failed (fails open to the raw flat list). */
+  parkedOnResolved?: Array<string | ComposedParkEntry>;
   contextPressure?: ContextPressureBucket | null;
   coordHook?: CoordDeafState | null;
   coordLastReadAgoSec?: number | null;
@@ -684,6 +695,142 @@ export type DecoratedAgent = AgentAssignment & {
   nextFireAt?: string | null;
   loopMode?: 'work' | 'monitor' | null;
 };
+
+/**
+ * EI-18732218464905145 (the WI-6095/EI-18731480441007330 false-deadlock incident):
+ * a composed `events:await { spec }` registration stores ONE root node (its own
+ * deadline/timeout-behavior, on `event_await_nodes`) plus N sibling LEAF rows on
+ * `event_awaits` (each with `expires_ts: NULL` by design — the root owns it), and
+ * an anchor `event_awaits` row keyed `composed-root:<rootId>` that
+ * `listParkedAwaitsForSubscribers` (the shared read behind `parkedOn` everywhere:
+ * fleet:assignments, coord:presence, this brief) returns as just another flat key.
+ * The result: a leader reading `parkedOn` sees the root sentinel and its leaves as
+ * N independent, seemingly-unbounded waits — exactly the misreading that produced a
+ * false "permanent unbreakable deadlock" diagnosis live on this fleet. This type is
+ * the single structured replacement: one entry per composed tree, carrying the
+ * `any`/`all`/`k-of-n` semantics and the EFFECTIVE deadline in the same place a
+ * leader already looks.
+ */
+export interface ComposedParkEntry {
+  kind: 'composed';
+  rootId: number;
+  /** Derived from requiredCount vs. leaf count — 'any' (require 1), 'all'
+   *  (require === total), or 'k-of-n' for anything in between. */
+  mode: 'any' | 'all' | 'k-of-n';
+  required: number;
+  of: number;
+  leaves: string[];
+  /** The root node's OWN deadline — never NULL for a real timed composed await,
+   *  unlike a leaf row's (always-NULL-by-design) expires_ts. */
+  expiresTs: string | null;
+  onTimeout: TimeoutBehavior;
+}
+
+/**
+ * PURE (no I/O — unit-tests without PG): collapse a member's raw flat `parkedOn`
+ * keys into the leader-legible form. A `composed-root:<id>` sentinel with a
+ * resolved tree in `composedTrees` becomes ONE `ComposedParkEntry`, and every raw
+ * key that is one of THAT tree's own leaves is dropped from the flat list (it is
+ * now represented inside the entry, not duplicated beside it) — closing the "the
+ * root is listed as a sibling of its own leaves" defect verbatim. A composed
+ * sentinel with NO matching tree (the async lookup failed, or raced a fire/cancel)
+ * is left as its raw string — fail OPEN, never silently drop information the raw
+ * read actually returned. Every other (ordinary, non-composed) key passes through
+ * unchanged.
+ */
+export function resolveComposedParkedOn(
+  rawKeys: readonly string[],
+  composedTrees: ReadonlyMap<
+    number,
+    { required: number; leaves: readonly string[]; expiresTs: string | null; onTimeout: TimeoutBehavior }
+  >,
+): Array<string | ComposedParkEntry> {
+  if (rawKeys.length === 0) return [];
+  const consumedLeafKeys = new Set<string>();
+  const composedEntries: Array<string | ComposedParkEntry> = [];
+  for (const key of rawKeys) {
+    const m = /^composed-root:(\d+)$/.exec(key);
+    if (!m) continue;
+    const rootId = Number(m[1]);
+    const tree = composedTrees.get(rootId);
+    if (!tree) {
+      composedEntries.push(key); // fail open: unresolved tree — keep the raw sentinel visible
+      continue;
+    }
+    for (const leaf of tree.leaves) consumedLeafKeys.add(leaf);
+    const of = tree.leaves.length;
+    const mode: ComposedParkEntry['mode'] = tree.required >= of && of > 0 ? 'all' : tree.required <= 1 ? 'any' : 'k-of-n';
+    composedEntries.push({
+      kind: 'composed',
+      rootId,
+      mode,
+      required: tree.required,
+      of,
+      leaves: [...tree.leaves],
+      expiresTs: tree.expiresTs,
+      onTimeout: tree.onTimeout,
+    });
+  }
+  const plainKeys = rawKeys.filter((key) => !/^composed-root:\d+$/.test(key) && !consumedLeafKeys.has(key));
+  return [...composedEntries, ...plainKeys];
+}
+
+/**
+ * Resolve composed-await park state for a batch of agents (best-effort, per-agent
+ * bounded, fail-soft): only agents whose raw `parkedOn` contains a
+ * `composed-root:<id>` sentinel are read at all — the common case (an ordinary,
+ * non-composed park, or no park) costs nothing extra. A read failure for one
+ * agent's tree never blocks the others, and never blocks the brief as a whole —
+ * it simply leaves that agent's `parkedOnResolved` unset, so `projectMember`
+ * falls back to the raw flat list exactly as before this fix. Mutates in place,
+ * matching `decorateParkedOn`'s own contract.
+ */
+export async function decorateComposedParkedOn<T extends { agentId: string } & Pick<DecoratedAgent, 'parkedOn' | 'parkedOnResolved'>>(
+  agents: T[],
+  deps: {
+    listActiveComposedRoots?: typeof listActiveComposedRoots;
+    loadTreeLeaves?: typeof loadTreeLeaves;
+  } = {},
+): Promise<T[]> {
+  const listRoots = deps.listActiveComposedRoots ?? listActiveComposedRoots;
+  const loadLeaves = deps.loadTreeLeaves ?? loadTreeLeaves;
+  const candidates = agents.filter((a) => (a.parkedOn ?? []).some((k) => /^composed-root:\d+$/.test(k)));
+  if (candidates.length === 0) return agents;
+  await Promise.all(
+    candidates.map(async (a) => {
+      try {
+        const rootsProbe = await withBoundedTimeout(listRoots(a.agentId), {
+          fallback: [],
+          timeoutMs: 1_500,
+          label: 'leader-brief:composedParkedOn:roots',
+        });
+        const treeMap = new Map<
+          number,
+          { required: number; leaves: readonly string[]; expiresTs: string | null; onTimeout: TimeoutBehavior }
+        >();
+        await Promise.all(
+          rootsProbe.value.map(async (root) => {
+            const leavesProbe = await withBoundedTimeout(loadLeaves(root.id), {
+              fallback: [],
+              timeoutMs: 1_500,
+              label: 'leader-brief:composedParkedOn:leaves',
+            });
+            treeMap.set(root.id, {
+              required: root.requiredCount,
+              leaves: leavesProbe.value.map((l) => l.eventKey),
+              expiresTs: root.expiresTs,
+              onTimeout: root.timeoutBehavior,
+            });
+          }),
+        );
+        a.parkedOnResolved = resolveComposedParkedOn(a.parkedOn ?? [], treeMap);
+      } catch {
+        /* best-effort — a resolution failure must never block the brief; parkedOn stays flat */
+      }
+    }),
+  );
+  return agents;
+}
 
 /**
  * PURE: scope the leader brief from the same presence-primary roster used by
@@ -756,7 +903,13 @@ export function projectMember(
     contextPressure: a.contextPressure ?? null,
     ...(a.coordHook ? { coordHook: a.coordHook } : {}),
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
-    ...(a.parkedOn && a.parkedOn.length > 0 ? { parkedOn: a.parkedOn } : {}),
+    ...(() => {
+      // EI-18732218464905145: prefer the composed-collapsed view when one was
+      // resolved; fall back to the raw flat list (unresolved / non-composed /
+      // resolution-failed) exactly as before this fix.
+      const parked = a.parkedOnResolved ?? a.parkedOn;
+      return parked && parked.length > 0 ? { parkedOn: parked } : {};
+    })(),
     ...(() => {
       const suggestion = computeBenchSuggestion(a, claimableCount, laneGating, fleetPaused);
       return suggestion ? { benchSuggestion: suggestion } : {};
@@ -878,6 +1031,9 @@ export default defineTool({
       /* host reconciliation never blocks the health brief */
     }
     await decorateParkedOn(grouped).catch(() => {});
+    // EI-18732218464905145: collapse a composed-await park (root + leaf sentinels)
+    // into ONE structured entry before projection — best-effort, never blocks.
+    await decorateComposedParkedOn(grouped).catch(() => {});
     await decorateLoopMonitorStates(grouped).catch(() => {});
     await decorateMemberVerdicts(grouped).catch(() => {});
     await decorateContextPressure(grouped).catch(() => {});

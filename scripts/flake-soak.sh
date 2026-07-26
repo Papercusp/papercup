@@ -18,8 +18,17 @@
 # flushes, React effect scheduling, RTL async) fire late, and same-tick
 # remount-vs-flush races resolve the losing way — the exact mechanism behind the
 # MugTab flake. systemd-run / cgroup delegation is deliberately NOT used: the
-# agent host blocks it (native-scheduler lockout hook), and taskset needs no
-# scheduler, no root, and no daemon.
+# native-scheduler lockout hook (apps/operator/scripts/hooks/cc/pretooluse-
+# bash-resource-gate.sh) denies EVERY agent-session `systemd-run` invocation
+# that asks for cgroup resource control — `--user --scope -p CPUQuota=...`
+# included, not just `--system` (verified live 2026-07-26: both denied
+# identically with PAPERCUSP_AGENT_SESSION=1 set; WI-6116). It is an
+# AGENT-SESSION guard, not a host-wide one: a non-agent process — e.g.
+# green-checkpoint's own `isolate` path — runs outside it and can use
+# `systemd-run --user` successfully. This script runs from an agent session,
+# so it is squarely in scope either way. taskset needs no scheduler, no root,
+# and no daemon, so it works unconditionally regardless of which side of that
+# guard is invoking it.
 #
 # CONTENTION — SOAK A SUITE, NOT A LONE FILE. The starvation only produces the
 # race if there is something to contend WITH. Measured on the real pre-fix MugTab

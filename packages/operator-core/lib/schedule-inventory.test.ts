@@ -196,6 +196,7 @@ describe('collectScheduleInventory', () => {
           instances: 1,
           fires: 5,
           shed: true,
+          classification: null,
         },
         {
           name: 'engine-death-sentinel',
@@ -209,6 +210,7 @@ describe('collectScheduleInventory', () => {
           instances: 1,
           fires: 2,
           shed: false,
+          classification: null,
         },
       ],
       getInProcessChecks: () => ({
@@ -309,6 +311,7 @@ describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', (
           instances: 1,
           fires: 0,
           shed: false,
+          classification: null,
         },
       ],
       getInProcessChecks: () => ({ checks: [{ name: 'service-health', intervalMs: 60_000 }], armed: true }),

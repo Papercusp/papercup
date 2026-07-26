@@ -220,8 +220,23 @@ describe('HEALTH_ENDPOINTS', () => {
   // back in (any new entry here is a deliberate edit + a failing test to update).
   it('watches exactly the live dev services', () => {
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
-      ['operator', 'scout', 'vite'].sort(),
+      ['operator', 'scout', 'staging-api', 'vite'].sort(),
     );
+  });
+
+  // WI-6146 / P-013 (D-010): :3170 is the staging operator CLAUDE.md tells every
+  // agent to probe after `dev:restart { target:'staging' }`. It had no tool form,
+  // so 80 curl atoms went to bash. It is a persistent systemd unit — so NOT
+  // onDemand (a sustained down is real) — but it IS flap-damped, because
+  // dev:restart restarts it several times a day on purpose.
+  it('probes the :3170 staging operator, damped rather than onDemand', () => {
+    const staging = HEALTH_ENDPOINTS.find((e) => e.name === 'staging-api');
+    expect(staging).toBeDefined();
+    expect(staging!.url).toContain(':3170');
+    expect(staging!.onDemand).toBeUndefined(); // a real outage must still alarm
+    expect(DOWN_CONFIRM_TICKS['staging-api']).toBe(STAGING_API_DOWN_CONFIRM_TICKS);
+    // it must join its existing supervision row rather than inventing a new name
+    expect(SUPERVISED_PROCESSES.some((e) => e.name === 'staging-api')).toBe(true);
   });
 
   // EI-6902: vite's dev-server can legitimately take several seconds to answer under
@@ -304,8 +319,28 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
 
   // P-001 is additive-only: it must not change HEALTH_ENDPOINTS or any existing
   // probe/tick behavior — the new registry is a separate, standalone export.
+  //
+  // The exact-list form is deliberately brittle: adding a probe is a real
+  // behaviour change (a new alarm source), so it should require a conscious
+  // edit here rather than sliding in. `staging-api` was added on purpose by
+  // WI-6146 / P-013 (D-010) — it is NOT a P-001 registry side effect, which is
+  // what the intent-level assertion below actually pins.
   it('does not alter HEALTH_ENDPOINTS (additive-only, no behavior change)', () => {
-    expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(['operator', 'scout', 'vite'].sort());
+    expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
+      ['operator', 'scout', 'staging-api', 'vite'].sort(),
+    );
+  });
+
+  it('HEALTH_ENDPOINTS is NOT derived from SUPERVISED_PROCESSES — supervision never auto-probes', () => {
+    // D-010's root constraint, as an executable assertion: being supervised does
+    // not make a unit answerable. If someone ever wires the registry straight
+    // into the probe list, this fails and they must confront the alarm surface.
+    const probed = new Set(HEALTH_ENDPOINTS.map((e) => e.name));
+    const supervisedUnprobed = SUPERVISED_PROCESSES.map((e) => e.name).filter((n) => !probed.has(n));
+    expect(supervisedUnprobed.length).toBeGreaterThan(0);
+    // inference-gateway / mcp-proxy remain supervised-but-unprobed (D-010 item 2).
+    expect(supervisedUnprobed).toContain('inference-gateway');
+    expect(supervisedUnprobed).toContain('mcp-proxy');
   });
 });
 

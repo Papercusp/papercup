@@ -164,9 +164,15 @@ So quote the **red-rate** — "0/12 under load" — never "the soak passed, it's
 Collapsing a probabilistic result into a binary reassurance is the exact move that let
 this flake survive two peer reports.
 
-Deliberately **not** used: `systemd-run` / cgroup CPU quotas. The agent host blocks
-them (native-scheduler lockout hook), and `taskset` needs no scheduler, no root, and
-no daemon.
+Deliberately **not** used: `systemd-run` / cgroup CPU quotas. The native-scheduler
+lockout hook denies EVERY agent-session `systemd-run` invocation that asks for cgroup
+resource control — `--user --scope -p CPUQuota=...` included, not just `--system`
+(verified live 2026-07-26: both denied identically; WI-6116). It is an
+AGENT-SESSION guard, not a host-wide one — a non-agent process (e.g.
+green-checkpoint's own `isolate` path) runs outside it and can use `systemd-run
+--user` successfully — but this soak lane runs from an agent session, so it is
+squarely in scope. `taskset` needs no scheduler, no root, and no daemon, so it works
+unconditionally regardless of which side of that guard is invoking it.
 
 > **Why not just `nice`?** `scripts/pc-heavy.sh` nices and holds a concurrency
 > semaphore; under an *already busy* box that starves the run enough to expose this

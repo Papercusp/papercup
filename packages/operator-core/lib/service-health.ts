@@ -740,12 +740,31 @@ export function diffHealth(
 export const DESKTOP_DOWN_CONFIRM_TICKS = 2;
 
 /**
- * WI-6146: `staging-api` is restarted on purpose by `dev:restart
- * { target:'staging' }` whenever an agent loads a server-side edit — measured
- * at 7 (2026-07-25: 11) restarts/day in `harness_shared.audit_log`, i.e. a
- * handful of seconds of expected downtime several times a day. Two ticks
- * distinguishes that blip from a real outage; a genuinely dead :3170 still
- * alarms one tick later.
+ * WI-6146: damping is LOAD-BEARING for `staging-api`, not a nicety — without
+ * it, adding the :3170 probe would have manufactured ~50 false DOWN
+ * broadcasts/day.
+ *
+ * `staging-api` is cycled by TWO independent restarters, and only the smaller
+ * one is visible in the audit log:
+ *   - `dev:restart { target:'staging' }` when an agent loads a server-side
+ *     edit — 7-11/day in `harness_shared.audit_log`.
+ *   - DOMINANT, and invisible to that query: `papercup-staging-sync.timer`
+ *     restarts the unit with a raw `systemctl --user restart` roughly every
+ *     5-6 min whenever `staging` has advanced, hard-cycling it (SIGKILL,
+ *     ~10-13s down). This is EI-13221's finding, and it is why
+ *     `RECENT_RESTART_WINDOW_SEC` below exists for the supervision block.
+ *
+ * So the real duty cycle is ~12s down per ~330s ≈ 3.6%. Against this file's
+ * 60s tick (`in-process-periodic.ts` serviceHealthCheck) a SINGLE-tick alarm
+ * would fire on ~3.6% of 1,440 daily ticks ≈ 50 phantom DOWNs — each one a
+ * coord broadcast to '*', a `service:down:staging-api` event, and a candidate
+ * watchdog EI. That is exactly the "chronic false-alarm that trains agents to
+ * ignore service-health reds" this file's HEALTH_ENDPOINTS NB warns about.
+ *
+ * Two ticks is PROVABLY sufficient here rather than merely better: consecutive
+ * ticks are 60s apart and the restart window is ≤13s, so two consecutive ticks
+ * cannot both land inside one restart. A genuinely dead :3170 stays down
+ * across ticks and still alarms, one tick (60s) later.
  */
 export const STAGING_API_DOWN_CONFIRM_TICKS = 2;
 

@@ -11,10 +11,10 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only.
-import {
-  findManagedSetIntervalCalls,
-  hasUnclassifiedCall,
-} from '../../../../scripts/check-timer-classification.mjs';
+// Kept on ONE line deliberately: tsc reports TS7016 at the module-SPECIFIER line, so on a
+// multi-line import the @ts-ignore above lands on `import {` and suppresses nothing (the
+// directive only covers the immediately-following line). Do not re-wrap this import.
+import { findManagedSetIntervalCalls, hasUnclassifiedCall } from '../../../../scripts/check-timer-classification.mjs';
 
 describe('timer-classification guard predicate (P-011)', () => {
   it('FLAGS a managedSetInterval(...) call with no classification', () => {
