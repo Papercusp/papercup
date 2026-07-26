@@ -857,7 +857,16 @@ describe('swarmConstructorOpts (P-001 — maxPeers cap)', () => {
   // 172.31.44.x tower↔VM drills), which swarmConstructorOpts folds in as
   // `bootstrap`/`dhtHost` — without clearing them these exact-shape assertions fail
   // on that box only (hit live 2026-07-03). Save/clear each, restore after.
-  const ENV_KEYS = [KEY, 'PAPERCUSP_DHT_BOOTSTRAP', 'PAPERCUSP_DHT_HOST'] as const;
+  // WI-6063: PAPERCUSP_SWARM_INBOUND_RESERVE joins the list for the same reason —
+  // it feeds `maxClientConnections` into these exact-shape assertions, so a box
+  // that exports it would fail them. Cleared here (and RESTORED in afterEach)
+  // rather than deleted inline in each test, which would not restore it.
+  const ENV_KEYS = [
+    KEY,
+    'PAPERCUSP_DHT_BOOTSTRAP',
+    'PAPERCUSP_DHT_HOST',
+    'PAPERCUSP_SWARM_INBOUND_RESERVE',
+  ] as const;
   const orig: Record<string, string | undefined> = {};
   beforeEach(() => {
     for (const k of ENV_KEYS) {
@@ -877,12 +886,19 @@ describe('swarmConstructorOpts (P-001 — maxPeers cap)', () => {
     // profile (resolveDefaultMaxPeers — cores/RAM), which is host/ordering-
     // dependent, so inject a known default to keep this env-parsing test stable.
     delete process.env[KEY];
-    expect(swarmConstructorOpts({ defaultMaxPeers: 256 })).toEqual({ maxPeers: 256 });
+    // WI-6063 added `maxClientConnections` (maxPeers minus the inbound reserve —
+    // clamp(floor(256/8), 8, 64) = 32 → 224). Asserted as part of the exact shape
+    // rather than loosened to `.maxPeers`, so the reserve stays pinned here too.
+    expect(swarmConstructorOpts({ defaultMaxPeers: 256 })).toEqual({
+      maxPeers: 256,
+      maxClientConnections: 224,
+    });
   });
 
   it('honors a positive PAPERCUSP_SWARM_MAX_PEERS override', () => {
     process.env[KEY] = '32';
-    expect(swarmConstructorOpts()).toEqual({ maxPeers: 32 });
+    // Reserve floors at 8 for a small budget: 32 - max(8, floor(32/8)) = 24.
+    expect(swarmConstructorOpts()).toEqual({ maxPeers: 32, maxClientConnections: 24 });
   });
 
   it('falls back to the provided default for non-numeric / non-positive values', () => {

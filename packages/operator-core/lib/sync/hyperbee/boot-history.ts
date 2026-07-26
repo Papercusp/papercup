@@ -336,6 +336,15 @@ const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
   // for admission events but missed for these. All three are edge-triggered / at-most-
   // once-per-lifecycle-event (a revoke call, a member grant, a gate install) — same sparse
   // profile as the admission/join/peer kinds above, never the hot per-op decrypt trace.
+  // WI-6063: per-topic dial throttling. Edge-triggered (transitions only), so it
+  // matches the sparse profile above — but it is included for a sharper reason
+  // than forensics-in-general: the fairness bound's failure mode is SILENT
+  // starvation, indistinguishable by observation from the bug it fixes. The
+  // in-memory ring dies with the process, so without this the ONLY durable
+  // evidence that a topic was (or was not) held back would be gone by the time
+  // anyone investigates "why did this hive never get peers". This is the record
+  // that makes the mechanism verifiable rather than merely asserted.
+  'peer_dial_throttled',
   'rekey_boundary_skipped',
   'rekey_boundary_applied',
   'rekey_grant_skipped',
