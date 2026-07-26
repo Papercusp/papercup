@@ -540,13 +540,29 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
       p.positions.committedLocal,
     )} · pushed-to-origin ${tick(p.positions.onStaging)}${dirty} — superproject→main→deploy chain not tracked for submodule paths.${pin}`;
   }
+  // EI-18719549079738452: a torn git-sync candidate (impl + its matching fixture
+  // landing as two separate commits) can red a scheduled run whose failure does
+  // not reproduce at tip — the retriage machinery (green-checkpoint.ts's
+  // classifyRedAgainstTip) recognizes this and works to auto-refire, but while
+  // that plays out `gate.consecutiveReds` reads 0 / `gate.stalled` reads false
+  // (the LAST *recorded* verdict was clean, or none has landed yet this cycle) —
+  // so the three branches above all fall through to '', and the summary reads
+  // as fully healthy while `main` sits behind the latest green pin. That silent
+  // combination is what turned a bounded, self-healing retriage window into an
+  // invisible ~2h stall on 2026-07-26 (the incident this note is named for) —
+  // nothing in the one-line summary told a reader "green" and "not advancing"
+  // were BOTH true at once. Name the combination instead of staying silent on it.
   const gateNote = !p.positions.inMain && p.gate.fireStale
     ? ` (green gate WEDGED — not firing: ${p.gate.fireStaleReason ?? 'stale'})`
     : !p.positions.inMain && p.gate.stalled
       ? ` (green gate STALLED: ${p.gate.consecutiveReds} reds)`
       : !p.positions.inMain && p.gate.consecutiveReds > 0
         ? ` (gate red: ${p.gate.consecutiveReds})`
-        : '';
+        : !p.positions.inMain && p.gate.consecutiveReds === 0 && p.verdictProvenance.mainFastForwarded === false
+          ? ` (gate reports 0 reds, but main has NOT fast-forwarded to the last green pin ${
+              p.verdictProvenance.lastGreenShortSha ?? '?'
+            } — may be an in-flight retriage/refire or another hold consecutiveReds doesn't capture; not necessarily broken, but don't read this as fully healthy)`
+          : '';
   return `${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
     p.positions.onStaging,
   )} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${

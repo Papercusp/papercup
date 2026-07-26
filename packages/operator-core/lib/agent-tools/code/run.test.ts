@@ -269,10 +269,20 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
     runWithWorkspaceIfConcreteMock.mockClear();
   });
 
-  it('fast path: a concrete-workspace (bee) ctx with no per-call override dispatches under the SAME ctx — zero extra tx', async () => {
+  it('fast path: a concrete-workspace (bee) ctx with no per-call override dispatches under the SAME binding — zero extra tx', async () => {
     const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false, tx: 'OUTER_TX', principal: 'OUTER_PRINCIPAL' };
-    const result = await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext);
-    expect(result).toBe(outerCtx); // reused verbatim — no rebind
+    const result = (await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext)) as Record<
+      string,
+      unknown
+    >;
+    // The invariant is "no REBIND work" — the same tx/principal/workspace, and no
+    // extra transaction or principal synthesis. It is deliberately NOT object
+    // identity: EI-18719561823587590 makes every inner ctx a copy carrying
+    // `transportCapExempt`, so an identity assertion here would pin the
+    // allocation rather than the binding it stands for.
+    expect(result.tx).toBe('OUTER_TX');
+    expect(result.principal).toBe('OUTER_PRINCIPAL');
+    expect(result.workspaceId).toBe('ws-bee');
     expect(withWorkspaceMock).not.toHaveBeenCalled();
     expect(synthesizeDispatchPrincipalMock).not.toHaveBeenCalled();
   });
@@ -298,8 +308,10 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
 
   it('an unscoped superuser ctx with NO per-call override stays unbound (documented EI-30 boundary, not this bug)', async () => {
     const outerCtx = { workspaceId: '*', role: 'su', isSuperuser: true };
-    const result = await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext);
-    expect(result).toBe(outerCtx); // nothing to hop to — fast path
+    const result = (await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext)) as {
+      workspaceId: string;
+    };
+    expect(result.workspaceId).toBe('*'); // nothing to hop to — fast path, still unscoped
     expect(withWorkspaceMock).not.toHaveBeenCalled();
   });
 
@@ -360,10 +372,16 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
     expect(result.contextTier).toBeUndefined();
   });
 
-  it('fast path: a ctx with no contextTier at all is still reused verbatim (no needless rebind)', async () => {
+  it('fast path: a ctx with no contextTier at all still dispatches under the same binding (no needless rebind)', async () => {
     const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false };
-    const result = await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext);
-    expect(result).toBe(outerCtx);
+    const result = (await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext)) as {
+      workspaceId: string;
+      contextTier?: string;
+    };
+    expect(result.workspaceId).toBe('ws-bee');
+    expect(result.contextTier).toBeUndefined();
+    expect(withWorkspaceMock).not.toHaveBeenCalled();
+    expect(synthesizeDispatchPrincipalMock).not.toHaveBeenCalled();
   });
 
   it('EI-30 hop: strips contextTier on the rebound ctx too', async () => {
@@ -389,6 +407,79 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       echoNext,
     )) as { contextTier?: string };
     expect(result.contextTier).toBeUndefined();
+  });
+});
+
+/**
+ * EI-18719561823587590: clearing `contextTier` (the EI-18699443874201617 fix above)
+ * only skips applyPayloadTier's STEP 1 tier shaping. Its STEP 2 HARD CEILING
+ * force-shapes any result over PAYLOAD_TIER_HARD_CEILING_CHARS regardless of the
+ * resolved tier, and its only exit is `explicitFullRequest`. So an inner result
+ * that merely ran LARGE was still silently row-truncated, and a script's
+ * `.filter()`/`.find()` over it searched a subset — a miss indistinguishable from
+ * real absence (measured on facts:list: 40 rows in, 8 rows visible to the script,
+ * the searched-for key among the 32 dropped). Because survival depends on ROW
+ * SIZE, the same script was correct on small data and silently wrong on large.
+ *
+ * bindInnerDispatch now marks every inner ctx `transportCapExempt` — the inner
+ * result never crosses the agent-facing transport (only the script's own returned
+ * value does, and that is shaped by the OUTER code:run call).
+ */
+describe('code:run → inner calls are exempt from the transport hard ceiling (EI-18719561823587590)', () => {
+  const readTool = { effect: 'read', expose: { mcp: { name: 'facts:list' } } } as never;
+  const crossWorkspaceTool = {
+    effect: 'read',
+    crossWorkspace: true,
+    expose: { mcp: { name: 'papercusp:list_workspaces' } },
+  } as never;
+  const echoNext = async (callCtx: unknown) => callCtx;
+
+  it('fast path: marks the inner ctx transportCapExempt', async () => {
+    const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false, tx: 'OUTER_TX' };
+    const result = (await bindInnerDispatch(readTool, 'facts:list', {}, outerCtx as never, echoNext)) as {
+      transportCapExempt?: boolean;
+    };
+    expect(result.transportCapExempt).toBe(true);
+  });
+
+  it('EI-30 hop: marks the rebound ctx transportCapExempt too', async () => {
+    const outerCtx = { workspaceId: '*', role: 'su', isSuperuser: true };
+    const result = (await bindInnerDispatch(
+      readTool,
+      'facts:list',
+      { workspace: 'ws-target' },
+      outerCtx as never,
+      echoNext,
+    )) as { transportCapExempt?: boolean; workspaceId: string };
+    expect(result.workspaceId).toBe('ws-target');
+    expect(result.transportCapExempt).toBe(true);
+  });
+
+  it('crossWorkspace path: marks the admin-tx ctx transportCapExempt too', async () => {
+    const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false };
+    const result = (await bindInnerDispatch(
+      crossWorkspaceTool,
+      'papercusp:list_workspaces',
+      {},
+      outerCtx as never,
+      echoNext,
+    )) as { transportCapExempt?: boolean };
+    expect(result.transportCapExempt).toBe(true);
+  });
+
+  /**
+   * The containment half, and the reason this is safe: the exemption must ride
+   * ONLY the inner call. The OUTER code:run result DOES cross the transport, so
+   * leaking the flag onto the caller's own ctx would uncap it — turning a
+   * silent-truncation bug into an over-cap transport failure. Pinned because the
+   * pre-fix code reused the outer ctx object verbatim on the fast path, where an
+   * in-place mutation would have been the obvious (and wrong) way to set this.
+   */
+  it('never mutates the OUTER ctx — the caller-facing result stays capped', async () => {
+    const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false, contextTier: 'trimmed' };
+    await bindInnerDispatch(readTool, 'facts:list', {}, outerCtx as never, echoNext);
+    expect((outerCtx as Record<string, unknown>).transportCapExempt).toBeUndefined();
+    expect(outerCtx.contextTier).toBe('trimmed'); // the outer session's own tier is untouched
   });
 });
 

@@ -314,8 +314,30 @@ export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx
   // request a narrower tier for one specific call by passing `payloadTier` in
   // that call's own args — extracted independently downstream (define-tool.ts's
   // `extractPayloadTier`) and takes precedence over this ctx-level default.
-  const baseCtx: UnifiedToolContext =
-    ctx.contextTier !== undefined ? { ...ctx, contextTier: undefined } : ctx;
+  //
+  // EI-18719561823587590: clearing `contextTier` is only HALF the job, and the
+  // other half is why this bug survived that fix. `applyPayloadTier` shapes in
+  // two independent steps: (1) tier shaping, which resolving to 'full' does
+  // skip, and (2) a HARD CEILING that force-applies the smallest shaper / the
+  // generic bounded projection to any result over
+  // PAYLOAD_TIER_HARD_CEILING_CHARS — REGARDLESS of the resolved tier. Step 2's
+  // only exit is `explicitFullRequest`, so an inner call whose result merely
+  // ran large was still silently row-truncated. That made in-script filtering —
+  // the idiom the batch-hint nudge actively recommends — search a SUBSET, with
+  // a `.find()` miss indistinguishable from real absence (measured: a 40-row
+  // facts:list surviving as 8 rows, and the needle among the 32 dropped).
+  // Because the row count depended on ROW SIZE, the same script was correct on
+  // small data and silently wrong on large.
+  //
+  // The ceiling protects the agent-facing TRANSPORT; an inner result never
+  // reaches it (only the script's own returned value does, and THAT is shaped
+  // by the outer code:run call under the caller's real ctx). So mark inner
+  // calls transport-cap-exempt — the same exemption WI-5078 already grants the
+  // in-process sync-resolver / admin-UI dispatch, for the same reason.
+  //
+  // Always COPY: this must never leak onto the outer `ctx`, whose own result
+  // does cross the transport.
+  const baseCtx: UnifiedToolContext = { ...ctx, contextTier: undefined, transportCapExempt: true };
 
   if (tool.crossWorkspace === true) {
     const { sql: adminTx } = getOrgPg();

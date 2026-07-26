@@ -694,11 +694,21 @@ export interface StalePausedRoutine {
  * per its own comment), and no ongoing path assigns group_slug to a freshly-seeded row —
  * so a legitimate PRODUCTION install's row can equally read group:null.
  *
- * EI-18718973731535914: a row whose age is past `opts.decommissionedMs` (default 7d) is
- * excluded ENTIRELY — even an unattributed (`reasonMissing`) one. Past that age this is no
- * longer a "pause someone forgot to explain", it is a routine nobody has touched in a week+
- * (a decommissioned/retired routine, e.g. `hive-wake`) — reporting it as a fresh stale-pause
- * alarm indefinitely is itself the false-alarm bug.
+ * EI-18718973731535914: a NON-critical row whose age is past `opts.decommissionedMs`
+ * (default 7d) is excluded ENTIRELY — even an unattributed (`reasonMissing`) one. Past
+ * that age this is no longer a "pause someone forgot to explain", it is a routine
+ * nobody has touched in a week+ (a decommissioned/retired routine, e.g. `hive-wake`) —
+ * reporting it as a fresh stale-pause alarm indefinitely is itself the false-alarm bug.
+ *
+ * This cutoff deliberately does NOT apply when `critical` is true (release-critical-
+ * named AND install-matching): the whole POINT of the critical path is to keep
+ * flagging a paused release-trigger/green-checkpoint no matter how long it sits —
+ * that is the literal WI-5839 motivating incident (release-trigger silently paused
+ * ~4 days, twice). A 7d cutoff that also silenced critical rows would make an 8+ day
+ * critical pause LESS visible than the original bug this subsystem exists to catch —
+ * exactly the failure mode a peer's reconciliation ask (EI-18718973731535914 follow-up)
+ * surfaced: don't let a fix for one false-alarm class quietly weaken the true-positive
+ * path it shares code with.
  */
 export function computeStalePausedRoutines(
   rows: ReadonlyArray<StalePausedRoutineInput>,
@@ -728,7 +738,7 @@ export function computeStalePausedRoutines(
       continue;
     }
     const ageMs = Math.max(0, now - anchorMs);
-    if (ageMs >= decommissionedMs) continue; // decommissioned, not a live stale-pause signal
+    if (!critical && ageMs >= decommissionedMs) continue; // decommissioned, not a live stale-pause signal (critical rows are NEVER exempted this way — see doc comment)
     const threshold = isReleaseCriticalNamed ? criticalMs : generalMs;
     if (reasonMissing || ageMs >= threshold) {
       out.push({ name: r.name, ageMs, reasonMissing, critical });

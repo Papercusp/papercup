@@ -311,6 +311,27 @@ describe('computeStalePausedRoutines — stale/unexplained routine pause detecto
       );
       expect(r).toEqual([]);
     });
+
+    it('does NOT exempt a CRITICAL, install-matching pause from reporting, however old — the decommissioned cutoff must never weaken the WI-5839 true-positive path (release-trigger silently paused for days)', () => {
+      const tenDaysMs = 10 * 24 * 60 * 60_000; // well past the 7d decommissioned cutoff
+      const r = computeStalePausedRoutines(
+        [{ name: 'release-trigger', updatedAtMs: now - tenDaysMs, installSlug: 'papercusp' }],
+        now,
+        { currentInstallSlug: 'papercusp' },
+      );
+      expect(r).toHaveLength(1);
+      expect(r[0]).toMatchObject({ name: 'release-trigger', critical: true });
+    });
+
+    it('DOES exclude a same-named critical routine on a DIFFERENT install once past the cutoff — only the CURRENT install critical pause is exempt from decommissioning', () => {
+      const tenDaysMs = 10 * 24 * 60 * 60_000;
+      const r = computeStalePausedRoutines(
+        [{ name: 'release-trigger', updatedAtMs: now - tenDaysMs, installSlug: 'some-other-hive' }],
+        now,
+        { currentInstallSlug: 'papercusp' },
+      );
+      expect(r).toEqual([]);
+    });
   });
 
   describe('EI-18694769501553335 — critical severity is scoped to the CURRENT install, not any row sharing the name', () => {
