@@ -225,6 +225,38 @@ describe('sweepStalePackTmpFiles (EI-18745600910177355: leaked partial packs)', 
     expect(await pathExists(realPack)).toBe(true);
   });
 
+  /**
+   * WI-6189, live-caught on the P-302 rig: a stranded `shallow.lock` is worse
+   * than a leaked pack. git takes it on every `--depth`/`--deepen` fetch, and a
+   * SIGKILLed rung leaves it behind — after which EVERY shallow fetch fails
+   * instantly with "Unable to create '…/shallow.lock': File exists". The
+   * cold-join ladder then never advances again, on any tick, forever. On a link
+   * that drops channels 23–36x/min that is the expected outcome, not a corner
+   * case, so the sweep must clear it or the whole feature self-wedges in
+   * production with every test still green.
+   */
+  it('clears a STRANDED shallow.lock (which permanently wedges the ladder), but not a live one', async () => {
+    const lockPath = join(repo, 'shallow.lock');
+    const setLock = async (ageMs: number): Promise<void> => {
+      await writeFile(lockPath, 'deadbeef\n');
+      const when = new Date(Date.now() - ageMs);
+      await utimes(lockPath, when, when);
+    };
+
+    // A lock a killed fetch left behind an hour ago: reclaim it.
+    await setLock(60 * 60_000);
+    const swept = await sweepStalePackTmpFiles(repo);
+    expect(swept.removed).toContain('shallow.lock');
+    expect(await pathExists(lockPath)).toBe(false);
+
+    // A lock a fetch may still be holding: leave it strictly alone.
+    await setLock(5_000);
+    const held = await sweepStalePackTmpFiles(repo);
+    expect(held.removed).not.toContain('shallow.lock');
+    expect(await pathExists(lockPath)).toBe(true);
+    await rm(lockPath, { force: true });
+  });
+
   it('is a no-op — never a throw — on a repo with no pack directory at all', async () => {
     const res = await sweepStalePackTmpFiles(join(root, 'does-not-exist'));
     expect(res).toEqual({ removed: [], bytesReclaimed: 0 });

@@ -18,9 +18,9 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..', '..');
-// 677 introduced the column and its CHECK (the value set lives there); 678 renamed the
-// column to `completion_authority` without touching the values (D-009). Both are read so
-// that editing either one out of step with this module fails here.
+// 677 introduced the column and its CHECK (the value set lives there). 678 attempted a
+// rename, was abandoned as impossible, and survives as comment-only documentation
+// (D-009). Both are read so that editing either out of step with this module fails here.
 const MIGRATION_VALUES = join(REPO_ROOT, 'libs/papercusp/libs/db/sql/677-work-item-authority-state.sql');
 const MIGRATION_RENAME = join(
   REPO_ROOT,
@@ -188,12 +188,19 @@ describe('schema/type drift guard', () => {
     expect(inSql.sort()).toEqual([...WORK_ITEM_COMPLETION_AUTHORITIES].sort());
   });
 
-  it('is named `completion_authority` in the schema, not `authority` (D-009)', () => {
-    // The rename is the entire point of 678: `authority` already means who-may-act on
-    // plan items. If someone reverts 678, or adds a later migration that renames the
-    // column back, this fails rather than silently reintroducing the homograph.
+  it('does not reintroduce the abandoned rename — the column is rename-proof (D-009)', () => {
+    // 678 originally tried to rename this column to `completion_authority` and had to be
+    // abandoned: harness_features_consolidated has ~2,485 dependent views, and renaming a
+    // column a view exposes requires DROP + CREATE of that view (CREATE OR REPLACE can
+    // only APPEND). The abandoned file is kept as comment-only documentation.
+    //
+    // This guards the specific way that lesson gets lost: someone reads D-009, agrees the
+    // homograph is bad, and re-adds the DROP. A DROP VIEW on either consolidated view is
+    // the thing that crash-loops the operator on boot, so fail here instead.
     const sql = readFileSync(MIGRATION_RENAME, 'utf8');
-    expect(sql).toMatch(/RENAME COLUMN authority TO completion_authority/);
-    expect(sql).toMatch(/completion_authority\s*\n?\s*FROM harness_shared\.work_items/);
+    expect(sql).not.toMatch(/RENAME COLUMN authority TO completion_authority/);
+    expect(sql.replace(/--[^\n]*/g, '')).not.toMatch(
+      /DROP\s+VIEW[\s\S]*?(harness_features_consolidated|engineer_issues)/i,
+    );
   });
 });

@@ -253,14 +253,42 @@ export async function sweepStalePackTmpFiles(
 ): Promise<{ removed: string[]; bytesReclaimed: number }> {
   const maxAgeMs = opts.maxAgeMs ?? STALE_PACK_TMP_MAX_AGE_MS;
   const now = opts.now ?? Date.now();
-  const packDir = join(repoPath, 'objects', 'pack');
   const removed: string[] = [];
   let bytesReclaimed = 0;
+
+  // WI-6189, live-caught on the rig: a killed fetch also strands `shallow.lock`,
+  // and that one is far worse than a leaked pack — it does not merely waste
+  // disk, it WEDGES the ladder permanently. git takes this lock to update the
+  // `shallow` file on every `--depth`/`--deepen` fetch, and SIGKILL (our
+  // timeout ceiling, or a pot-git channel dying mid-pack) leaves it behind; from
+  // then on EVERY shallow fetch fails instantly with
+  //   fatal: Unable to create '…/shallow.lock': File exists
+  // so a cold-join that had been making real progress stops dead and never
+  // resumes, on any tick, forever. On a link that drops channels 23–36x/min
+  // that outcome is not a corner case, it is the expected one — the ladder
+  // would have self-wedged in production while every test stayed green.
+  // Age-gated exactly like the packs, so a genuinely in-flight fetch's lock is
+  // never yanked out from under it.
+  for (const lock of ['shallow.lock']) {
+    const p = join(repoPath, lock);
+    try {
+      const st = await stat(p);
+      if (now - st.mtimeMs >= maxAgeMs) {
+        await unlink(p);
+        removed.push(lock);
+        bytesReclaimed += st.size;
+      }
+    } catch {
+      // absent (the normal case) or unreadable — nothing to do
+    }
+  }
+
+  const packDir = join(repoPath, 'objects', 'pack');
   let entries: string[];
   try {
     entries = await readdir(packDir);
   } catch {
-    return { removed, bytesReclaimed }; // no pack dir yet — nothing to sweep
+    return { removed, bytesReclaimed }; // no pack dir yet — nothing more to sweep
   }
   for (const name of entries) {
     // index-pack's own temp names. Anchored so a real `pack-*.pack`/`.idx`

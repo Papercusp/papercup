@@ -2,9 +2,15 @@
  * The COMPLETION-AUTHORITY axis for work-items.
  *
  * Plan: agent-protocol-authority-semantics-2026-07-26, P-003.
- * Schema: `harness_shared.work_items.completion_authority` (migration 677 added it,
- * 678 renamed it — see D-009), exposed on both family views. Writers land in P-004;
- * nothing in this module has a caller yet.
+ * Schema: `harness_shared.work_items.authority` (migration 677), exposed on both family
+ * views. Writers land in P-004; nothing in this module has a caller yet.
+ *
+ * The COLUMN is `authority` but the API surface is `completionAuthority` — a deliberate
+ * split, not an oversight. Renaming the column was attempted (678) and is not possible:
+ * `harness_features_consolidated` has 2,485 dependent views, and renaming a column a view
+ * exposes needs DROP + CREATE of that view. CREATE OR REPLACE can only APPEND a trailing
+ * column, which is how 677 landed safely and why 678 could not. See D-009 — on this
+ * schema, a column exposed through the consolidated views is effectively rename-proof.
  *
  * ── NOT THE OTHER `authority` (D-009) ────────────────────────────────────────
  * `authority` is already a load-bearing axis in this system, and it means something
