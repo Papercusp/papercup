@@ -97,9 +97,34 @@ export function parseSystemctlShowProperties(output: string): Record<string, str
  * (i.e. `failed`, `inactive`) counts as down. A unit `systemctl` doesn't report at all
  * (removed / never installed) is also down — surfaced separately as `unit-not-found`.
  */
-export function isUnitDown(status: SystemctlUnitStatus | undefined): boolean {
+export function isUnitDown(status: SystemctlUnitStatus | undefined, opts?: { episodic?: boolean }): boolean {
   if (!status) return true;
-  return !['active', 'activating', 'reloading', 'deactivating'].includes(status.active);
+  return isActiveStateDown(status.active, opts);
+}
+
+/**
+ * The SAME down-or-not decision, keyed on a bare systemd `ActiveState` string — for the
+ * callers that hold one WITHOUT a parsed `list-units` row (`dev:service_health`'s
+ * supervision overlay reads `ActiveState` straight from `systemctl show`). Exists so there
+ * is exactly ONE definition of "down" in the codebase: the tool that REPORTS liveness and
+ * the reconciler that ACTS on it must not be able to disagree, and before this they did —
+ * the tool called `activating` down while `isUnitDown` explicitly does not.
+ *
+ * `undefined` (no ActiveState readable) is an honest UNKNOWN and returns undefined rather
+ * than guessing; only `isUnitDown`'s "no row at all" case is a determinate down.
+ */
+export function isActiveStateDown(activeState: string, opts?: { episodic?: boolean }): boolean;
+export function isActiveStateDown(activeState: string | undefined, opts?: { episodic?: boolean }): boolean | undefined;
+export function isActiveStateDown(activeState: string | undefined, opts?: { episodic?: boolean }): boolean | undefined {
+  if (activeState === undefined) return undefined;
+  // WI-6149: an EPISODIC (timer-driven `Type=oneshot`) unit is `inactive` between its
+  // scheduled runs BY DESIGN, so the persistent-unit rule below would call a perfectly
+  // healthy hourly job "down" for ~96% of every hour. For these, DOWN means the last run
+  // FAILED. `activating` is still not-down (a run is in flight); `active` likewise.
+  // See `SupervisionEntry.episodic` for why this is a registry property and not a
+  // heuristic on the unit name.
+  if (opts?.episodic) return activeState === 'failed';
+  return !['active', 'activating', 'reloading', 'deactivating'].includes(activeState);
 }
 
 /**
@@ -283,7 +308,7 @@ export interface DecideInput {
 export function decideReconcile(input: DecideInput): { action: ReconcileAction; nextState: UnitFlapState } {
   const { entry, status, show, autoRestartFlagOn, now } = input;
   const state = { ...input.state };
-  const down = isUnitDown(status);
+  const down = isUnitDown(status, { episodic: entry.episodic });
 
   if (!down) {
     const wasDown = state.wasDown;
@@ -505,7 +530,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // Detection is INDEPENDENT of FLAGS.supervisorAutoRestart: when systemd (not us) is doing the
     // restarting, paging on the loop must still happen. Only evaluated while the unit currently
     // reads healthy — a unit we can see DOWN is already owned by the decide → restart → give-up path.
-    if (entry.autoRestart && !isUnitDown(status)) {
+    if (entry.autoRestart && !isUnitDown(status, { episodic: entry.episodic })) {
       const loop = checkSilentCrashLoop(show?.nRestarts, state.nRestartsObs, state.silentLoopEscalated, now);
       state.nRestartsObs = loop.nextObs;
       state.silentLoopEscalated = loop.nextEscalated;

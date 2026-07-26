@@ -1,0 +1,328 @@
+/**
+ * The AUTHORITY axis for work-item completion.
+ *
+ * Plan: agent-protocol-authority-semantics-2026-07-26, P-003.
+ * Schema: migration 677 (`harness_shared.work_items.authority`, exposed on both
+ * family views). Writers land in P-004; nothing in this module has a caller yet.
+ *
+ * ── THE PROBLEM ──────────────────────────────────────────────────────────────
+ * A terminal state conflates two orthogonal facts:
+ *
+ *   LIFECYCLE  "this item left the queue"                   → `status`
+ *   AUTHORITY  "the claim that it is finished is trustworthy" → this module
+ *
+ * Sharing one column makes an evidence-free assertion indistinguishable from a
+ * verified one, so the only available remedy was an audit that RE-OPENED bare
+ * assertions after the fact. D-003 rejects that shape: verify-after-the-fact is a
+ * correction layer over a value that can be wrong. Splitting the axis means an
+ * unverified assertion never reaches the authoritative state to begin with.
+ *
+ * Measured before the split (P-002): 65.6% of 14,663 terminal rows carried no
+ * structured verification evidence, and every one read as "done" to burn-down.
+ *
+ * ── WHY THIS IS CODE AND NOT A MARKDOWN TABLE ────────────────────────────────
+ * D-004 holds that load-bearing behavioural commitments belong in the harness, not
+ * in prose — and D-006 records the sharpest instance of the failure it describes:
+ * `work_items:set_state` carries "completionRef is REQUIRED alongside a terminal
+ * state" only inside a Zod `.describe()` string, while the field itself is
+ * `.optional()`. The rule reads as enforced and is not.
+ *
+ * A state table describing this axis in a doc would have exactly that defect. So the
+ * table below is the executable one: {@link AUTHORITY_TRANSITIONS} is the sole
+ * definition, {@link canTransition} is how callers ask, and the unit tests assert the
+ * table's own invariants. Prose that disagrees with this file is wrong by construction.
+ */
+
+import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
+
+/**
+ * How trustworthy a terminal claim is — orthogonal to lifecycle state.
+ *
+ * `proposed`      A completion was ASSERTED but carries no sufficient structured
+ *                 evidence. Lifecycle-terminal, authority-unsettled. Does NOT count
+ *                 toward burn-down. Stays owned by its closer, surfaced by nag and
+ *                 never re-queued into the claimable pool (D-007).
+ *
+ * `committed`     Asserted WITH sufficient evidence — `verifiedHow` plus at least one
+ *                 of `testsRun` / `testResult` (see {@link isSufficientEvidence}).
+ *                 Counts toward burn-down. The normal path for a good close.
+ *
+ * `validated`     RESERVED. A `committed` claim additionally corroborated by a signal
+ *                 INDEPENDENT of its closer — a green run located in the test-run
+ *                 ledger, a cited commit that provably exists, an owner ratification.
+ *                 Counts toward burn-down. **No writer ships in this phase**; see the
+ *                 honesty note on {@link AUTHORITY_TRANSITIONS}.
+ *
+ * `pending_human` The claim cannot be settled by agent or machine and awaits owner
+ *                 ratification. Does NOT count toward burn-down.
+ *
+ * `invalid`       A previously-recorded terminal claim was CONTRADICTED: the item was
+ *                 reopened, the fix did not hold, or a superseding item replaced it.
+ *                 Retains the fact that a bad close happened — information a reopen
+ *                 destroys today.
+ *
+ * `null` is NOT a sixth value. It is the absence of a judgement, and it means one of
+ * exactly two things, disambiguated by the row's lifecycle state:
+ *
+ *   non-terminal + null → the item is open; it owes no claim yet.
+ *   terminal     + null → a LEGACY close made under the pre-authority contract.
+ *                         Counts toward burn-down; never nagged, reopened, or
+ *                         reclassified. This is D-005 expressed structurally rather
+ *                         than as a policy someone has to remember.
+ */
+export type WorkItemAuthority = 'proposed' | 'validated' | 'committed' | 'pending_human' | 'invalid';
+
+export const WORK_ITEM_AUTHORITIES: readonly WorkItemAuthority[] = [
+  'proposed',
+  'validated',
+  'committed',
+  'pending_human',
+  'invalid',
+] as const;
+
+export function isWorkItemAuthority(v: unknown): v is WorkItemAuthority {
+  return typeof v === 'string' && (WORK_ITEM_AUTHORITIES as readonly string[]).includes(v);
+}
+
+/**
+ * Which principal class is entitled to make a given transition.
+ *
+ * `gate`          the completion gate at close time (`work_items:complete`, and after
+ *                 P-005 `work_items:set_state`) — the only actor that can mint an
+ *                 authority from nothing.
+ * `system`        an audited internal bypass identity (reaper, watchdog, hygiene pass).
+ *                 Per D-006 these are NOT a hole to close: they are 5 enumerated call
+ *                 sites with a maintained identity list
+ *                 (KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES, completion-audit.ts).
+ *                 A system close lands `committed`, never `proposed` — `proposed`
+ *                 means "an agent owes evidence", and nagging a reaper is pure noise.
+ * `owner`         owner or fleet-leader ratification.
+ * `corroboration` an independent confirmation source. RESERVED — see below.
+ */
+export type AuthorityActor = 'gate' | 'system' | 'owner' | 'corroboration';
+
+/** The `from` side of a transition; `null` = no judgement recorded yet. */
+export type AuthorityFrom = WorkItemAuthority | null;
+
+export interface AuthorityTransition {
+  from: AuthorityFrom;
+  to: WorkItemAuthority;
+  /** Principal classes permitted to make this transition. */
+  by: readonly AuthorityActor[];
+  /** Why this edge exists — the condition under which it fires. */
+  when: string;
+}
+
+/**
+ * THE STATE TABLE. Every legal transition, exhaustively.
+ *
+ * Read it as a lattice with one entry point and one sink:
+ *
+ *      (null) ──gate/system──> committed ──corroboration──> validated
+ *         │                        │                            │
+ *         ├──gate──> proposed ─────┤                            │
+ *         │             │          │                            │
+ *         ├──gate──> pending_human ┤                            │
+ *         │             │          │                            │
+ *         └─────────────┴──────────┴──> invalid <───────────────┘
+ *                                          │
+ *                       (re-close) ────────┘
+ *
+ * Deliberate NON-edges, each a design choice rather than an omission:
+ *
+ *  · `committed → pending_human` is ABSENT. An owner who disputes a committed close is
+ *    contradicting it, not deferring it: the honest edge is `committed → invalid`,
+ *    followed by a fresh close. Allowing the softer edge would let a disputed close sit
+ *    in a state that still reads as "awaiting paperwork" rather than "was wrong".
+ *
+ *  · `pending_human → proposed` is ABSENT. An owner asked to ratify either does
+ *    (`committed`) or does not (`invalid`). Bouncing it back to `proposed` would make
+ *    the owner's non-answer look like the closer's omission.
+ *
+ *  · Nothing returns to `null`. The absence of a judgement is not a state you can
+ *    re-enter — once the system has an opinion about a close, erasing it would
+ *    manufacture a legacy row, and legacy rows are exempt from nagging (D-005). That
+ *    exemption must not be reachable by a live code path.
+ *
+ * ── ON `validated` SHIPPING WITHOUT A WRITER ─────────────────────────────────
+ * Every other value is minted by the gate at close time. `validated` needs a
+ * corroboration source that does not exist yet, so no `corroboration` edge has a caller
+ * in this phase. It is declared now so the migration's CHECK constraint does not need
+ * rewriting later — but a value nothing can produce is dead surface, and dead surface
+ * that sits in an enum acquires imaginary meaning. Its first writer is a P-013
+ * deliverable; if P-013 does not land one, the honest move is to DROP it from the enum
+ * and the constraint, not to leave it as decoration.
+ */
+export const AUTHORITY_TRANSITIONS: readonly AuthorityTransition[] = [
+  // ── entry: the gate mints an authority at close time ───────────────────────
+  {
+    from: null,
+    to: 'committed',
+    by: ['gate', 'system'],
+    when: 'a terminal close carrying sufficient evidence, or an audited system close',
+  },
+  {
+    from: null,
+    to: 'proposed',
+    by: ['gate'],
+    when: 'a terminal close whose evidence is absent, partial, or below the minimum',
+  },
+  {
+    from: null,
+    to: 'pending_human',
+    by: ['gate', 'owner'],
+    when: 'a close on an owner-authority surface that only the owner can settle',
+  },
+
+  // ── the closer settles their own debt ──────────────────────────────────────
+  {
+    from: 'proposed',
+    to: 'committed',
+    by: ['gate'],
+    when: 'the closer re-completes the item supplying the evidence that was missing',
+  },
+  {
+    from: 'proposed',
+    to: 'pending_human',
+    by: ['owner'],
+    when: 'an under-evidenced close is escalated for owner ratification',
+  },
+
+  // ── the owner rules ────────────────────────────────────────────────────────
+  {
+    from: 'pending_human',
+    to: 'committed',
+    by: ['owner'],
+    when: 'the owner ratifies the completion',
+  },
+  {
+    from: 'pending_human',
+    to: 'invalid',
+    by: ['owner'],
+    when: 'the owner rejects the completion',
+  },
+
+  // ── corroboration (RESERVED — no caller in this phase) ─────────────────────
+  {
+    from: 'committed',
+    to: 'validated',
+    by: ['corroboration'],
+    when: 'an independent signal confirms the claim (test-run ledger, cited commit, ratification)',
+  },
+
+  // ── contradiction: any settled claim can turn out to be wrong ──────────────
+  {
+    from: 'proposed',
+    to: 'invalid',
+    by: ['gate', 'system', 'owner'],
+    when: 'the item is reopened or the claim is otherwise contradicted',
+  },
+  {
+    from: 'committed',
+    to: 'invalid',
+    by: ['gate', 'system', 'owner'],
+    when: 'the item is reopened, the fix did not hold, or a superseding item replaced it',
+  },
+  {
+    from: 'validated',
+    to: 'invalid',
+    by: ['gate', 'system', 'owner'],
+    when: 'even a corroborated claim can be contradicted by later evidence',
+  },
+
+  // ── re-close after a contradiction ─────────────────────────────────────────
+  {
+    from: 'invalid',
+    to: 'committed',
+    by: ['gate', 'system'],
+    when: 'the item is closed again, this time with sufficient evidence',
+  },
+  {
+    from: 'invalid',
+    to: 'proposed',
+    by: ['gate'],
+    when: 'the item is closed again without sufficient evidence',
+  },
+  {
+    from: 'invalid',
+    to: 'pending_human',
+    by: ['gate', 'owner'],
+    when: 'the re-close needs owner ratification',
+  },
+] as const;
+
+/** Is this transition legal, and (optionally) legal for this actor? */
+export function canTransition(from: AuthorityFrom, to: WorkItemAuthority, by?: AuthorityActor): boolean {
+  const edge = AUTHORITY_TRANSITIONS.find((t) => t.from === from && t.to === to);
+  if (!edge) return false;
+  return by === undefined || edge.by.includes(by);
+}
+
+/** Every authority reachable from `from` (optionally, by this actor). */
+export function transitionsFrom(from: AuthorityFrom, by?: AuthorityActor): readonly WorkItemAuthority[] {
+  return AUTHORITY_TRANSITIONS.filter((t) => t.from === from && (by === undefined || t.by.includes(by))).map(
+    (t) => t.to,
+  );
+}
+
+/**
+ * Does a terminal row count toward burn-down, claimable-drain, and "done" in a leader
+ * brief?
+ *
+ * The two authoritative values count. `null` on a TERMINAL row counts because it is a
+ * legacy close (D-005) — the single most consequential line in this module, since
+ * getting it wrong retroactively deletes ~9,600 rows of completion history.
+ *
+ * Callers must pass whether the row's lifecycle state is terminal; this module does not
+ * know the per-family terminal sets (feature: passed|deprecated, issue: resolved|closed).
+ */
+export function countsTowardBurnDown(authority: AuthorityFrom, isTerminal: boolean): boolean {
+  if (!isTerminal) return false;
+  if (authority === null) return true; // legacy pre-authority close — D-005
+  return authority === 'committed' || authority === 'validated';
+}
+
+/**
+ * Is a terminal row a LEGACY close — made before the authority contract existed, and
+ * therefore exempt from nagging, reopening, and reclassification (D-005)?
+ */
+export function isLegacyClose(authority: AuthorityFrom, isTerminal: boolean): boolean {
+  return isTerminal && authority === null;
+}
+
+/**
+ * The minimum evidence bar for `committed`.
+ *
+ * `verifiedHow` PLUS at least one of `testsRun` / `testResult`. Both halves are load-
+ * bearing:
+ *
+ *  · `verifiedHow` alone is a label. "unit" with nothing behind it asserts a category,
+ *    not a verification.
+ *  · `testsRun`/`testResult` alone is prose with no claim about what KIND of check it
+ *    was, which is precisely what a leader audit cannot triage in bulk.
+ *
+ * P-002 measured why the partial case must be rejected explicitly rather than assumed
+ * away: 4.2% of evidence-bearing rows already carry a `_completionEvidence` object with
+ * NO `verifiedHow` at all. An "is the object present?" test passes every one of them.
+ * `filesChanged` and `addedTests` are deliberately NOT sufficient — both describe what
+ * changed, neither asserts that anything was checked.
+ */
+export function isSufficientEvidence(evidence: CompletionVerificationEvidence | null | undefined): boolean {
+  if (!evidence) return false;
+  if (!evidence.verifiedHow) return false;
+  return Boolean(evidence.testsRun?.trim() || evidence.testResult?.trim());
+}
+
+/**
+ * The authority a gate-driven close lands in, given its evidence. The single decision
+ * P-004 wires into `work_items:complete` and `work_items:set_state`.
+ *
+ * Note what this does NOT do: it never returns `pending_human` (that is an owner-surface
+ * property of the ITEM, not of its evidence) and never returns `invalid` (a
+ * contradiction is a separate event, not a completion outcome).
+ */
+export function authorityForCompletion(
+  evidence: CompletionVerificationEvidence | null | undefined,
+): Extract<WorkItemAuthority, 'committed' | 'proposed'> {
+  return isSufficientEvidence(evidence) ? 'committed' : 'proposed';
+}

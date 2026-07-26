@@ -89,7 +89,65 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   // The name matches its SUPERVISED_PROCESSES entry so the probe and the
   // supervision row join, per this file's naming convention.
   { name: 'staging-api', url: 'http://127.0.0.1:3170/api/desktop/version' },
+  // WI-6149 / P-013 (D-010 item 4): the oddsmith sidecar — the single
+  // most-asked-about unprobed unit in the 7d corpus (73 `is-active` reads, plus
+  // 28 of the 32 raw `systemctl --user restart` atoms, which is why
+  // SERVICE_LIFECYCLE_WRITE_FINDING says the restart residue is "mostly a unit
+  // the tool cannot name"). It is the ONLY one of item 4's candidates that is
+  // structurally eligible — see NON_PROBED_UNITS below for the four measured
+  // reasons the others are not.
+  //
+  // Eligible because it is PERSISTENT and has a FIXED port: `Type=simple`,
+  // `Restart=always`, `UnitFileState=enabled`, and `ODDSMITH_HONO_PORT=46229`
+  // is pinned in the unit file (verified: `systemctl --user cat`), so a
+  // fixed-URL entry can express it. `/health` answers 200 in ~1.4ms.
+  //
+  // NOT `onDemand`: it is an enabled always-on unit, so a sustained down IS a
+  // real signal — it runs a live trading engine (`TRADING_PAPER_MODE=false`).
+  // Flap-damped instead, via DOWN_CONFIRM_TICKS — see
+  // ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS for the measured restart rate.
+  { name: 'oddsmith-sidecar', url: 'http://127.0.0.1:46229/health' },
 ];
+
+/**
+ * WI-6149 (D-010 item 4): units agents DO shell out to `systemctl is-active`
+ * for and that are deliberately NOT probed, each with the measurement that
+ * settled it. Recorded as data, not prose, so a future agent re-reading the
+ * corpus does not re-litigate a decision that was already made with evidence —
+ * and so `service-health-unit-coverage.test.ts` can assert the exclusions still
+ * hold rather than trusting a comment.
+ *
+ * The four reasons are STRUCTURAL, not preferences — each one is a different
+ * way a unit cannot be represented in this registry at all:
+ */
+export const NON_PROBED_UNITS: Readonly<Record<string, { atoms: number; reason: string }>> = {
+  // Name carries a per-run random suffix (`papercup-green-checkpoint-manual-1fxzuva`),
+  // minted by release-checkpoint-launch's `systemd-run --unit=…`. A static
+  // registry cannot name it, ever. The question ("is my manual checkpoint run
+  // still going?") is run-scoped, not health-scoped — it belongs to a release
+  // surface, not here.
+  'papercup-green-checkpoint-manual-*': { atoms: 29, reason: 'transient-unit-name' },
+  // `Type=oneshot` on an hourly timer: measured 17:00:16 → 17:02:48 = 152s
+  // active per 3600s (4.2%), i.e. `inactive` IS the healthy state 96% of the
+  // time. Liveness is the wrong question — 4 of its 13 atoms are `is-failed`,
+  // asking for the last-run RESULT, which is already served by
+  // papercup-backup-health.timer + STATUS.json + papercusp-db-backup-alert.
+  'papercusp-db-backup': { atoms: 13, reason: 'episodic-oneshot' },
+  // System-scope units, not `--user`. The reconciler execs `systemctl --user`
+  // exclusively and `SupervisionLayer` has no `systemd-system` member, so
+  // representing these needs a new layer + a second exec path. auditd has been
+  // up since the Jul 10 boot with NRestarts=0; 1 atom does not justify it.
+  // (NB pgbouncer is `Restart=no` — a real supervision gap, but the same
+  // structural blocker applies; filed separately rather than half-fixed here.)
+  auditd: { atoms: 1, reason: 'system-scope-unit' },
+  pgbouncer: { atoms: 1, reason: 'system-scope-unit' },
+  // NOT INSTALLED on this box: `systemctl show fail2ban.service` →
+  // `LoadState=not-found`. Probing an absent unit is precisely the permanent
+  // phantom-DOWN class the NB above records for :3001 and :4321 (EI-188 /
+  // EI-276). Never add these.
+  fail2ban: { atoms: 1, reason: 'unit-not-installed' },
+  crowdsec: { atoms: 1, reason: 'unit-not-installed' },
+};
 
 export interface ProbeResult {
   name: string;
@@ -581,6 +639,28 @@ export interface SupervisionEntry {
    *  processes systemd already restarts itself (bg-host: Restart=always) or
    *  that must never be restart-looped (the federation test gate). */
   autoRestart: boolean;
+  /**
+   * WI-6149 (D-010 item 4): this unit is TIMER-DRIVEN — a `Type=oneshot`
+   * service activated on a schedule, so `inactive` is its NORMAL idle state and
+   * "is it running right now?" is the WRONG health question. For an episodic
+   * entry, DOWN means `failed` (the last run errored), never `inactive`; see
+   * `isUnitDown`, which takes this as an option.
+   *
+   * Without this distinction the registry silently mis-answers: `inactive` is
+   * indistinguishable from `failed` to a persistent-unit oracle, so a healthy
+   * hourly oneshot reads as "confirmed DOWN" for ~96% of every hour. That was
+   * live and wrong for `live-federation-gate` before this field existed (see
+   * its entry below), and it is the specific hazard that ruled
+   * `papercusp-db-backup` and the oddsmith timers OUT of the registry —
+   * NON_PROBED_UNITS records the measurements.
+   *
+   * INVARIANT: episodic ⇒ `autoRestart: false`. Auto-restarting a oneshot does
+   * not heal anything — it RE-RUNS the job, once per reconciler tick, until the
+   * give-up threshold escalates. For `papercusp-db-backup` that would mean
+   * re-running a `pg_dump` every 60s. `service-health-unit-coverage.test.ts`
+   * asserts this.
+   */
+  episodic?: boolean;
 }
 
 /**
@@ -608,7 +688,19 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   { name: 'desktop-shell', layer: 'desktop-shell', criticality: 'critical', autoRestart: true },
   // A test gate, not a service — restarting it in a loop would re-run smokes.
   // Alert-only, mirrors the papercup-live-federation-gate HEALTH_ENDPOINTS-adjacent note.
-  { name: 'live-federation-gate', layer: 'systemd-user', unit: 'papercup-live-federation-gate', criticality: 'important', autoRestart: false },
+  //
+  // WI-6149 (D-010 item 4): `episodic: true`. This is a `Type=oneshot` unit on an
+  // hourly timer (measured: 24 `Started` events in 24h of journal), so `inactive`
+  // is its normal state between runs — and BEFORE this flag existed
+  // `dev:service_health` reported `active: false` for it, which its own tool
+  // description sells as "the unit is confirmed DOWN". VERIFIED live 2026-07-26:
+  // the supervision block returned `{ name:'live-federation-gate', active:false }`
+  // for a gate that had run successfully minutes earlier. It is also why arming
+  // the (never-armed — EI-18746253391734322) reconciler as-is would have emitted
+  // ~48 broadcasts/day for this one healthy unit: 24 down-transitions + 24
+  // recoveries. Its `.timer` below is NOT episodic — an armed timer is genuinely
+  // `active`/`waiting` continuously, so persistent semantics are correct there.
+  { name: 'live-federation-gate', layer: 'systemd-user', unit: 'papercup-live-federation-gate', criticality: 'important', autoRestart: false, episodic: true },
   // WI-5376: the gate's *timer* has been externally stopped twice (Jul 17 + Jul 18) with no
   // systemd-logged stop client and NO supervision watching it — the reconciler above only ever
   // tracked the `.service` (deliberately report-only, per the comment on it), so a stopped timer
@@ -627,6 +719,14 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // which is `static` and has no `[Install]` section — does NOT persist and WILL be undone).
   // `enable --now` to resume.
   { name: 'live-federation-gate-timer', layer: 'systemd-user', unit: 'papercup-live-federation-gate.timer', criticality: 'important', autoRestart: true },
+  // WI-6149 (D-010 item 4): the oddsmith sidecar — persistent, probed on :46229
+  // (see HEALTH_ENDPOINTS). `autoRestart: false` follows the `bg-host` precedent
+  // directly above: the unit is already `Restart=always` at the systemd level, so
+  // a registry restart lever would be a SECOND restarter racing systemd's own,
+  // not added resilience. `important` rather than `critical`: nothing in the
+  // papercusp fleet's own critical path depends on it — it is a hosted workload
+  // (its own embedded PG on :5544, its own DBOS engine).
+  { name: 'oddsmith-sidecar', layer: 'systemd-user', unit: 'papercup-oddsmith-sidecar', criticality: 'important', autoRestart: false },
 ];
 
 /**
@@ -775,9 +875,38 @@ export const STAGING_API_DOWN_CONFIRM_TICKS = 2;
  * Keyed by `ProbeResult.name` rather than hung off `EndpointSpec` because the
  * portless probes (`desktop`, bg-host-ticker, the sidecars) have no spec.
  */
+/**
+ * WI-6149 (D-010 item 4): `oddsmith-sidecar` cycles, so adding its probe
+ * without damping would manufacture false DOWNs — the same reasoning as
+ * `staging-api`, with the rate measured the same way (by enumerating the
+ * WRITERS, never from `harness_shared.audit_log`, which sees only `dev:restart`
+ * TOOL calls and undercounted staging-api's true rate ~25×).
+ *
+ * MEASURED from the unit's own journal, 2026-07-26:
+ *   - restart RATE: 22 `Started` events on Jul 25, 21 on Jul 26 — ~1/hour.
+ *     Writers are agents' raw `systemctl --user restart` (28 corpus atoms in 7d;
+ *     the unit is not a `dev:restart` target) plus systemd's own
+ *     `Restart=always` recoveries.
+ *   - down WINDOW per restart: ≤2s. systemd `Stopping → Started` is 0-1s, and
+ *     the listener is back within another ~1s (`Started 14:10:16` →
+ *     `hono host listening on http://127.0.0.1:46229` at `14:10:17`).
+ *
+ * So the undamped exposure is ~22 × 2s = 44s/day ≈ 0.05% of wall clock; against
+ * the 60s tick that is <1 phantom DOWN/day — far lower than staging-api's ~50,
+ * but each one is still a coord broadcast to '*' and a candidate watchdog EI, so
+ * it is worth eliminating rather than tolerating.
+ *
+ * Two ticks is PROVABLY sufficient, not merely better, by the same argument
+ * WI-6146 used: consecutive ticks are 60s apart and the restart window is ≤2s,
+ * so two consecutive ticks cannot both land inside one restart. A genuinely
+ * dead sidecar stays down across ticks and still alarms, 60s later.
+ */
+export const ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS = 2;
+
 export const DOWN_CONFIRM_TICKS: Readonly<Record<string, number>> = {
   desktop: DESKTOP_DOWN_CONFIRM_TICKS,
   'staging-api': STAGING_API_DOWN_CONFIRM_TICKS,
+  'oddsmith-sidecar': ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,
 };
 
 let downStreaks: Record<string, number> = {};

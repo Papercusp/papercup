@@ -9,7 +9,7 @@ import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { probeAll, supervisedProcesses, type ProbeResult } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
-import { supervisionSnapshot, type SupervisionStatusEntry, type SupervisionFlapState } from "../../supervision/unit-reconciler";
+import { supervisionSnapshot, isActiveStateDown, type SupervisionStatusEntry, type SupervisionFlapState } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
@@ -70,10 +70,8 @@ export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
   recentRestartNote?: string;
   /**
    * EI-18700974567040702: ground-truth liveness for a systemd-user unit, read
-   * directly from `probeServiceStart`'s `ActiveState` — a DETERMINATE answer,
-   * not a flap/churn signal. `true` = systemd reports `active`; `false` =
-   * systemd reports it is NOT active (inactive/failed/activating/…, the unit
-   * is genuinely DOWN right now, or not yet fully up); omitted = not a
+   * directly from `probeServiceStart`'s `ActiveState`. `true` = systemd reports
+   * `active`; `false` = systemd reports something else; omitted = not a
    * systemd-user unit, OR the probe itself could not determine an answer
    * (non-linux, no systemd, transient exec error) — an honest "unknown" that
    * must never be conflated with `false`. Deliberately keyed on `ActiveState`
@@ -84,8 +82,38 @@ export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
    * "down" and "probe failed" were BYTE-IDENTICAL in this payload (both just
    * left the entry untouched), so a caller could not tell one from the other
    * — this field is the fix.
+   *
+   * ⚠ WI-6149: `active: false` is NOT the same as "this unit is broken", and it
+   * used to be documented as exactly that. It is the LITERAL systemd read, so it
+   * is also false for a unit that is mid-start (`activating`) and for an
+   * `episodic` timer-driven unit that is simply idle between runs. Read
+   * `healthy` for the verdict; read `activeState` for the raw state.
    */
   active?: boolean;
+  /**
+   * WI-6149: systemd's `ActiveState` VERBATIM (active/activating/inactive/
+   * deactivating/reloading/failed). The boolean above is a lossy projection of
+   * this — it cannot distinguish "mid-restart" from "crashed" from "idle
+   * oneshot", which are three very different situations for a caller deciding
+   * whether to retry, page, or do nothing. Omitted exactly when `active` is.
+   */
+  activeState?: string;
+  /**
+   * WI-6149: the VERDICT — is this unit OK? Computed by the SAME oracle the
+   * reconciler acts on (`isUnitDown`, which owns the definition of down),
+   * rather than a second definition maintained here: `activating`/`reloading`/
+   * `deactivating` are not down (a transitional state is not a fault), and for
+   * an `episodic` unit only `failed` is. This is the field that answers both
+   * `systemctl is-active` and `systemctl is-failed`. Omitted when the probe
+   * could not determine a state at all.
+   */
+  healthy?: boolean;
+  /**
+   * WI-6149: this unit is timer-driven (`SupervisionEntry.episodic`) — being
+   * `inactive` is its NORMAL state between scheduled runs, so `active: false`
+   * here carries no alarm. Present only when true.
+   */
+  episodic?: boolean;
 };
 
 /**
@@ -101,12 +129,15 @@ export async function overlaySystemdRestartRecency(
   // (the snapshot shape) drops `unit` — only the source `SupervisionEntry`
   // registry carries it — so we look it up by name rather than widening the
   // reconciler's own snapshot type.
-  registry: { name: string; unit?: string }[] = supervisedProcesses(),
+  // WI-6149: the whole registry ROW is needed now, not just `unit` — `episodic`
+  // changes what "down" means for the entry (see `isActiveStateDown`).
+  registry: { name: string; unit?: string; episodic?: boolean }[] = supervisedProcesses(),
 ): Promise<SupervisionStatusEntryWithRecency[]> {
-  const unitByName = new Map(registry.map((r) => [r.name, r.unit]));
+  const rowByName = new Map(registry.map((r) => [r.name, r]));
   return Promise.all(
     entries.map(async (entry) => {
-      const unit = entry.layer === "systemd-user" ? unitByName.get(entry.name) : undefined;
+      const row = entry.layer === "systemd-user" ? rowByName.get(entry.name) : undefined;
+      const unit = row?.unit;
       if (!unit) return entry;
       const info = await probeFn(unit).catch(() => ({ ok: false }) as ServiceStartInfo);
       if (!info.ok) return entry; // probe genuinely couldn't determine an answer — honest "unknown", untouched
@@ -118,10 +149,20 @@ export async function overlaySystemdRestartRecency(
       // `.timer` unit has no MainPID concept at all — see the field's own doc comment above.
       if (info.activeState === undefined) return entry;
       const active = info.activeState === "active";
-      if (!active || info.secondsSinceStart === undefined) return { ...entry, active };
-      const withRecency: SupervisionStatusEntryWithRecency = {
+      // WI-6149: the VERDICT, from the reconciler's own oracle — never a second
+      // definition of "down" maintained here.
+      const episodic = row?.episodic === true;
+      const healthy = !isActiveStateDown(info.activeState, { episodic });
+      const stated: SupervisionStatusEntryWithRecency = {
         ...entry,
         active,
+        activeState: info.activeState,
+        healthy,
+        ...(episodic ? { episodic: true } : {}),
+      };
+      if (!active || info.secondsSinceStart === undefined) return stated;
+      const withRecency: SupervisionStatusEntryWithRecency = {
+        ...stated,
         secondsSinceStart: info.secondsSinceStart,
       };
       if (info.secondsSinceStart < RECENT_RESTART_WINDOW_SEC) {
@@ -186,7 +227,7 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe dev services now (:3070 operator, :3170 staging, :3055 vite, :3350 scout, Tauri desktop, bg-host ticker) and return the standard runtime fields { configured, effective, evidence, rootCause, nextVerb } alongside per-service latency/status/URL and supervisor flap state. Each HTTP-probed entry carries the exact `url` it hit — read it instead of guessing a port. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. `supervision[].active` (systemd-user entries only) is a determinate up/down read: `false` means the unit is confirmed DOWN, omitted means the probe genuinely could not tell — never treat a missing `active` as "down". First read for connection-refused, process-running-with-no-window, or "which port is the operator on" symptoms.',
+    'Probe dev services now (:3070 operator, :3170 staging, :3055 vite, :3350 scout, :46229 oddsmith-sidecar, Tauri desktop, bg-host ticker) and return per-service latency/status/URL plus supervisor flap state alongside the standard runtime fields. Each HTTP-probed entry carries the exact `url` it hit — read it instead of guessing a port. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. `supervision[]` (systemd-user) carries systemd\'s verbatim `activeState` plus `healthy`, the verdict — read `healthy`, not `active`: an `episodic` timer-driven unit is idle, not down, while inactive. Omitted = the probe could not tell, never "down". First read for connection-refused, process-running-with-no-window, or "which port is the operator on" symptoms.',
   guidance: {
     when: 'Confirm which dev services are up before testing against one; VERIFY A STAGING EDIT — after `dev:restart { target:\'staging\' }`, "staging-api" IS "then probe :3170"; find the canonical local URL/port for the operator or vite instead of guessing; diagnose a "connection refused" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the "bg-host-ticker" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).',
     notWhen:

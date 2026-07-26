@@ -337,12 +337,48 @@ export function fetchOverDuplex(
     }
 
     server.on('error', () => {});
+
+    // ── WI-6189: propagate a peer half-close to git, ALWAYS ──
+    // `duplex.pipe(conn)` forwards EOF only if the duplex's 'end' is still
+    // ahead of us. Two very common cases leave nothing to forward:
+    //   (a) the channel closed BEFORE git's ext helper connected (we're
+    //       awaiting mkdtemp/listen/spawn for a few ms — a pot-git channel
+    //       closing 23–36x/min lands in that window constantly), so 'end'
+    //       fired into the void and a later `.pipe()` never re-emits it;
+    //   (b) the channel was DESTROYED without an error, which emits 'close'
+    //       and no 'end' at all, so `pipe` has nothing to act on either.
+    // In both, the bridge sits waiting for bytes that can never arrive, git
+    // waits on the bridge, and the fetch burns its FULL ceiling (120 s in
+    // prod) before anyone learns the peer left. Latch the half-close and hand
+    // the EOF to the bridge by hand so git fails in milliseconds instead.
+    //
+    // Deliberately NOT `finish(-1)`: on a HEALTHY fetch the serving side also
+    // ends the duplex as soon as upload-pack exits, while our git is still
+    // indexing/resolving deltas. Aborting there would kill successful fetches.
+    // Handing git the EOF is correct in both cases — it then exits on its own,
+    // successfully if it already has the whole pack.
+    let bridgeConn: import('node:net').Socket | null = null;
+    let peerHalfClosed = false;
+    const propagateHalfClose = (): void => {
+      peerHalfClosed = true;
+      try {
+        bridgeConn?.end();
+      } catch {
+        /* ignore */
+      }
+    };
+    duplex.on('end', propagateHalfClose);
+    duplex.on('close', propagateHalfClose);
+
     // The bridge (git's ext helper) connects here; wire it to the caller's duplex.
     server.on('connection', (conn) => {
       conn.on('error', () => {});
       duplex.on('error', () => {});
+      bridgeConn = conn;
       conn.pipe(duplex);
       duplex.pipe(conn);
+      // Case (a)/(b) above: the peer was already gone when git got here.
+      if (peerHalfClosed || duplex.readableEnded || duplex.destroyed) propagateHalfClose();
       // WI-6184: counters only — see the declarations above for why an extra
       // 'data' listener on an already-piped stream is byte-safe.
       bridgeConnected = true;

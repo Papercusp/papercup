@@ -41,4 +41,27 @@ process.stdout.on('error', () => {});
 process.stdin.pipe(sock);
 sock.pipe(process.stdout);
 
+// WI-6189: peer EOF MUST reach git, or the fetch hangs until its ceiling.
+//
+// Two Node behaviours conspire to swallow it, and neither is obvious:
+//   1. `readable.pipe(process.stdout)` NEVER ends the destination — Node's
+//      pipe() explicitly excludes process.stdout/stderr from its end:true
+//      contract. So the "default end:true half-closes each direction" note
+//      above is simply not true for this leg.
+//   2. `allowHalfOpen:true` (load-bearing, see the header) means a FIN from the
+//      peer emits 'end' and NOT 'close' — so the `sock.on('close')` exit below
+//      never fires either.
+// Net effect: the peer goes away, git keeps blocking on a stdout that is never
+// closed, and the fetch dies only when the 120 s ceiling SIGKILLs it. With
+// pot-git channels closing 23–36x/min that made the cold-join ladder
+// un-climbable — every interrupted rung cost a full ceiling instead of ~10 ms.
+//
+// 'end' fires only after every byte the peer sent has been delivered to the
+// pipe, so flushing stdout and exiting cannot truncate the in-band pack: a
+// SUCCESSFUL fetch has the whole pack in flight before this ever runs. The
+// zero-length write's callback is the flush barrier.
+sock.on('end', () => {
+  process.stdout.write(Buffer.alloc(0), () => process.exit(0));
+});
+
 sock.on('close', () => process.exit(0));

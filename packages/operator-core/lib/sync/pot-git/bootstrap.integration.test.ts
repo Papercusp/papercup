@@ -378,11 +378,19 @@ describe('bootstrap resumability (WI-6189: durable progress across channel death
   it('a rung that DIES costs only that rung, and backs the next one off', async () => {
     const joiner = await freshJoiner();
     // Rung 1 lands (real dial), rung 2 dies (channel closed mid-fetch).
+    const startedAt = Date.now();
     const cut = await bootstrapFromPeer(joiner, await dial(), {
       timeoutMs: 15_000,
       dial: dialDying,
     });
     expect(cut.ok).toBe(false);
+    // WI-6189: the dead rung must fail FAST, not burn the ceiling. A peer that
+    // closes its channel CLEANLY (FIN, no error) used to leave git waiting on a
+    // bridge that would never speak again, so every such rung cost the full
+    // timeout — at 23–36 channel closes/min that alone makes the ladder
+    // un-climbable. `code !== 0` would pass either way, so assert the CLOCK.
+    expect(cut.timedOut).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
     expect(cut.progressed).toBe(true); // rung 1 still counted
     expect(cut.steps).toBe(1);
     // Backed off: the retry asks for a bite the link might actually swallow.

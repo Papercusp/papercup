@@ -7,7 +7,7 @@
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/storage.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
@@ -23,6 +23,8 @@ import {
   deleteNamespaceRef,
   listNamespaces,
   listNamespaceRefs,
+  pathExists,
+  sweepStalePackTmpFiles,
 } from './storage';
 
 /** A raw-32 Ed25519 pubkey as base64 (the wire form). */
@@ -166,5 +168,65 @@ describe('defaultRunGit timeoutMs override (github-bridge-ingress-timeout-too-sh
     const res = await defaultRunGit(['--version'], '/tmp');
     expect(res.code).toBe(0);
     expect(res.stdout).toContain('git version');
+  });
+});
+
+/**
+ * EI-18745600910177355 — orphaned `index-pack` temp packs.
+ *
+ * Every SIGKILLed pot-git fetch (timeout ceiling, or a channel closing
+ * mid-pack) leaves its partial `objects/pack/tmp_pack_*` behind, because
+ * SIGKILL is uncatchable so index-pack's own cleanup never runs. Nothing else
+ * removes them — `git gc` only prunes temp names it wrote itself. Measured on
+ * the P-302 rig VM: 13 orphans totalling 21 GB in a store holding 0 refs and
+ * 64 MB of real objects.
+ */
+describe('sweepStalePackTmpFiles (EI-18745600910177355: leaked partial packs)', () => {
+  let root: string;
+  let repo: string;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'hgsweep-'));
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
+    repo = await ensurePotGitRepo('hive-sweep', 'repo');
+  });
+
+  afterAll(async () => {
+    delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('reclaims STALE temp packs, and leaves an in-flight fetch and real packs alone', async () => {
+    const packDir = join(repo, 'objects', 'pack');
+    await mkdir(packDir, { recursive: true });
+    const write = async (name: string, bytes: number, ageMs: number): Promise<string> => {
+      const p = join(packDir, name);
+      await writeFile(p, Buffer.alloc(bytes, 1));
+      const when = new Date(Date.now() - ageMs);
+      await utimes(p, when, when);
+      return p;
+    };
+
+    const stale = await write('tmp_pack_AuYuz6', 4096, 60 * 60_000); // an hour dead
+    const staleIdx = await write('tmp_idx_AuYuz6', 512, 60 * 60_000);
+    // Still inside the fetch ceiling — this one may be a LIVE transfer, ours or
+    // another leg's, and pulling it would corrupt a fetch in progress.
+    const inFlight = await write('tmp_pack_LiveNow', 4096, 5_000);
+    // Not ours to touch, no matter how old.
+    const realPack = await write('pack-dead0000000000000000000000000000beef.pack', 4096, 60 * 60_000);
+
+    const res = await sweepStalePackTmpFiles(repo);
+
+    expect(res.removed.sort()).toEqual(['tmp_idx_AuYuz6', 'tmp_pack_AuYuz6']);
+    expect(res.bytesReclaimed).toBe(4096 + 512);
+    expect(await pathExists(stale)).toBe(false);
+    expect(await pathExists(staleIdx)).toBe(false);
+    expect(await pathExists(inFlight)).toBe(true);
+    expect(await pathExists(realPack)).toBe(true);
+  });
+
+  it('is a no-op — never a throw — on a repo with no pack directory at all', async () => {
+    const res = await sweepStalePackTmpFiles(join(root, 'does-not-exist'));
+    expect(res).toEqual({ removed: [], bytesReclaimed: 0 });
   });
 });

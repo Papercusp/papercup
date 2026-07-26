@@ -40,15 +40,30 @@ function argValue(name: string): string | undefined {
 const RUNS = Number(argValue('--runs') ?? 3);
 const KEEP = process.argv.includes('--keep');
 const DEDUP_TOP_K = 3;
+/** Body size to probe. The handler embeds the FULL body TWICE — once as the
+ *  neighbour-search QUERY (`backend.search(args.content, …)`) and once to store
+ *  it — so latency scales with content length. Real agent memories run
+ *  1–3KB, well above a toy probe string. */
+const CHARS = Number(argValue('--chars') ?? 250);
 
 /** Same shape the handler builds, with a unique body so each run is a genuine
  *  new write (a near-dup would exercise a different, cheaper path). */
 function sampleContent(i: number): string {
-  return (
+  const head =
     `[latency-trace ${new Date().toISOString()} #${i}] Papercusp memory write-path ` +
     `stage attribution probe for plan memory-write-latency-2026-07-26 P-001. ` +
-    `This row is written by write-latency-trace-cli.ts and removed unless --keep.`
-  );
+    `This row is written by write-latency-trace-cli.ts and removed unless --keep. `;
+  if (head.length >= CHARS) return head;
+  // Pad with varied prose (not a repeated token) so the embedder sees a
+  // realistic token distribution rather than a trivially compressible run.
+  const filler =
+    'The neighbour search embeds the entire memory body as its query vector, then the store ' +
+    'embeds the same body again, so a longer fact pays the embedder twice over. Agent-written ' +
+    'facts routinely carry file paths, work-item refs and multi-clause technical detail. ';
+  let out = head;
+  let n = 0;
+  while (out.length < CHARS) out += `${filler}[${n++}] `;
+  return out.slice(0, CHARS);
 }
 
 interface Stage { name: string; ms: number; note?: string }
@@ -145,10 +160,23 @@ async function traceOnce(i: number): Promise<{ stages: Stage[]; total: number }>
   const total = performance.now() - t0;
 
   if (!KEEP) {
-    for (const id of ids) await backend.forget(id).catch(() => {});
+    // Report cleanup failures LOUDLY — a silently-swallowed forget leaves probe
+    // rows in the live store, where they pollute every later neighbour search
+    // (and this CLI's own subsequent runs). Observed leaking 3 rows before this.
+    for (const id of ids) {
+      try {
+        await backend.forget(id);
+      } catch (err) {
+        console.warn(`  ! cleanup FAILED for memory ${id}: ${(err as Error)?.message ?? err} — remove it by hand`);
+      }
+    }
     if (journalId) {
-      const { sql } = getOrgPg();
-      await sql`DELETE FROM harness_shared.memory_write_journal WHERE id = ${journalId}`.catch(() => {});
+      try {
+        const { sql } = getOrgPg();
+        await sql`DELETE FROM harness_shared.memory_write_journal WHERE id = ${journalId}`;
+      } catch (err) {
+        console.warn(`  ! cleanup FAILED for journal row ${journalId}: ${(err as Error)?.message ?? err}`);
+      }
     }
   }
 

@@ -107,6 +107,10 @@ export const PROBED_PORTS: Record<string, string> = {
   // scores against a tool that no longer exists. `service-model-drift.test.ts`
   // is what forces that now — see the note on MODEL DRIFT below.
   '3170': 'staging-api',
+  // WI-6149 (D-010 item 4): the oddsmith sidecar's Hono port, pinned in its unit
+  // file as `ODDSMITH_HONO_PORT=46229`. Named in `curlHealthProbe`'s header as
+  // one of the unprobed ports the corpus curls — now probed.
+  '46229': 'oddsmith-sidecar',
 };
 
 /**
@@ -122,13 +126,37 @@ export const UNIT_TO_PROBE: Record<string, string> = {
   // papercup-staging-api` HAS a faithful tool expression. It moved out of
   // SUPERVISED_BUT_UNPROBED below.
   'papercup-staging-api': 'staging-api',
+  // WI-6149 (D-010 item 4): the single most-asked-about unit in this pair's
+  // corpus that had no answer at all (73 `is-active` atoms). Now probed on
+  // :46229 with 2-tick flap damping — see `ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS`.
+  'papercup-oddsmith-sidecar': 'oddsmith-sidecar',
 };
 
 /**
- * Units that ARE in `SUPERVISED_PROCESSES` but have no probe. The tool returns a
- * row for each — carrying flap/restart counters only — so it looks like an
- * answer and is not one. Separated from "unknown unit" in the failure reasons
- * because the remedy differs: these need a PROBE (P-013), not registration.
+ * Units that ARE in `SUPERVISED_PROCESSES` but have no HTTP probe.
+ *
+ * ⚠ WI-6149 RECLASSIFIED these as COVERED for THIS pair, and the reason matters
+ * because it moves the score. The old `cover()` reason claimed the tool "returns
+ * a supervision row with flap counters and no up/down field" — that sentence was
+ * already false when it was written: this file's own header records that
+ * `active` had been added by the tool overlay (D-010 item 2, WI-6146). The model
+ * carried a stale failure reason and scored against it, which is the same defect
+ * class as the false "there is no tool form" advisory item 3 removed from
+ * `listeningPorts`.
+ *
+ * The test that settles it is the pair's own scoping rule: does the tool answer
+ * THE QUESTION THE ATOM ASKED? `systemctl is-active <unit>` asks systemd for
+ * `ActiveState`; `supervision[].activeState` returns that same string verbatim
+ * for every registered systemd-user unit, plus `healthy` (the same oracle the
+ * reconciler acts on). That is a faithful, complete answer. "Nothing confirms it
+ * is actually SERVING" is a DIFFERENT question — `curlHealthProbe` owns it — and
+ * folding it in here would enforce an advisory against a question the agent did
+ * not ask, which is exactly the reasoning this file uses to exclude `systemctl
+ * status`. Consistency has to cut both ways.
+ *
+ * The set is KEPT (not deleted) because it is still the right distinction for the
+ * serving question, and because the remedy for these differs from an unregistered
+ * unit's: they need a PROBE, not registration.
  */
 export const SUPERVISED_BUT_UNPROBED = new Set([
   // NOTE: `papercup-staging-api` used to head this list. WI-6146 gave it a real
@@ -140,6 +168,48 @@ export const SUPERVISED_BUT_UNPROBED = new Set([
   'papercup-live-federation-gate',
   'papercup-live-federation-gate.timer',
 ]);
+
+/**
+ * WI-6149: the `supervision[].name` each unprobed-but-registered UNIT reports as.
+ * Needed so `cover()`'s `expression` names the field an agent would actually read
+ * — `supervision[]` is keyed by the registry's `name`, not by the systemd unit, and
+ * emitting the unit there would be a wrong expression on a correct `covered` (the
+ * quieter half of the D-001 failure mode, per `listeningPorts`' item-3 fix).
+ * `service-model-drift.test.ts` asserts this covers SUPERVISED_BUT_UNPROBED exactly
+ * and that every value is a real registry row name.
+ */
+export const SUPERVISION_ROW_NAME: Readonly<Record<string, string>> = {
+  'papercup-inference-gateway': 'inference-gateway',
+  'papercup-mcp-proxy': 'mcp-proxy',
+  'papercup-live-federation-gate': 'live-federation-gate',
+  'papercup-live-federation-gate.timer': 'live-federation-gate-timer',
+};
+
+function supervisionNameFor(unit: string): string {
+  return SUPERVISION_ROW_NAME[unit] ?? unit;
+}
+
+/**
+ * WI-6149: units named by an atom BEYOND the first — `systemctl` accepts a unit
+ * LIST (`is-active fail2ban crowdsec`) and `systemctlUnit` only ever returns the
+ * head. Returns the tail (empty for the normal single-unit shape). Applies the
+ * same token filter as `systemctlUnit`, so redirects/flags/globs never count as
+ * units; a `$(…)`/glob token stops the scan rather than being reported as a unit
+ * name, matching `systemctlUnit`'s own refusal to resolve one.
+ */
+export function additionalUnits(atom: string): string[] {
+  const match = /^systemctl\s+((?:--?\S+\s+)*)(\S+)\s*(.*)$/.exec(atom);
+  if (!match) return [];
+  const units: string[] = [];
+  for (const token of match[3].trim().split(/\s+/)) {
+    if (!token) continue;
+    if (token.startsWith('-')) continue;
+    if (/^[$|>&]/.test(token) || /^\d?>/.test(token)) continue;
+    if (token.includes('*')) break;
+    units.push(normalizeUnit(token));
+  }
+  return units.slice(1);
+}
 
 /** Strip `.service`, a trailing redirect, and quoting from a unit token. */
 function normalizeUnit(raw: string): string {
@@ -197,11 +267,11 @@ export const systemctlIsActive: SubstitutionPair = {
   bashPattern: /^systemctl\s+(?:--\S+\s+)*(?:is-active|is-failed)\b/,
   toolName: 'dev:service_health',
   advisoryText:
-    'dev:service_health reports up/down for what it probes (operator :3070, staging-api :3170, vite :3055, scout :3350, embed-sidecar :3384, plus the portless desktop/bg-host probes) — papercup-dev-api, papercup-staging-api, papercup-bg-host and papercup-embed-sidecar all have a real is-active answer there. Its supervision[] block additionally carries `active` (from systemd ActiveState) for systemd-user units: false means confirmed DOWN, OMITTED means the probe could not tell — never read a missing `active` as down. For the inference gateway, mcp-proxy, the federation gate, or any unit outside the registry, keep using systemctl.',
+    'dev:service_health answers is-active for EVERY unit in the supervision registry, two ways. Probed (up/down + latency): papercup-dev-api :3070, papercup-staging-api :3170, papercup-bg-host, papercup-embed-sidecar :3384, papercup-oddsmith-sidecar :46229, plus vite :3055 / scout :3350. Registered but unprobed (papercup-inference-gateway, papercup-mcp-proxy, papercup-live-federation-gate + its .timer): supervision[] carries systemd ActiveState verbatim as `activeState` plus `healthy` — read `healthy`, since an `episodic` timer-driven unit like the federation gate is idle, not down, while inactive. OMITTED means the probe could not tell; never read that as down. Keep using systemctl for a unit OUTSIDE the registry (papercusp-db-backup, a green-checkpoint-manual-* run, auditd/pgbouncer at system scope) — service-health.ts NON_PROBED_UNITS records why each is excluded.',
   routing: {
     want: 'whether a systemd unit is currently active',
-    use: '`dev:service_health` — for the probed set (operator/staging-api/vite/scout/embed-sidecar/bg-host); supervision[].active covers other systemd-user units',
-    insteadOf: '`systemctl --user is-active <unit>` — still required for units outside the supervision registry entirely',
+    use: '`dev:service_health` — services[].up for the probed set (operator/staging-api/vite/scout/embed-sidecar/oddsmith-sidecar/bg-host), supervision[].{activeState,healthy} for every other registered systemd-user unit',
+    insteadOf: '`systemctl --user is-active <unit>` — still required for a unit outside the supervision registry (papercusp-db-backup, green-checkpoint-manual-*, system-scope auditd/pgbouncer)',
   },
   expectedVerdict: 'needs-widening',
   cover(atom: string): CoverageResult {
@@ -212,14 +282,30 @@ export const systemctlIsActive: SubstitutionPair = {
         reason: 'names no resolvable unit (glob or shell substitution); dev:service_health takes no arguments and cannot be pointed at one',
       };
     }
+    // WI-6149: MULTI-UNIT in one call (`systemctl is-active fail2ban crowdsec`).
+    // `systemctlUnit` returns only the FIRST token, so without this branch the
+    // atom is scored — and its failure reason reported — against one of the two
+    // units it asked about, silently answering a narrower question than was
+    // asked. Same class as `listeningPorts`' multi-port branch, except this one
+    // IS observable in the frozen sample.
+    const extraUnits = additionalUnits(atom);
+    if (extraUnits.length > 0) {
+      return {
+        covered: false,
+        reason: `names ${extraUnits.length + 1} units in one call (${[unit, ...extraUnits].join(', ')}); dev:service_health takes no arguments and returns one fixed registry snapshot`,
+      };
+    }
     const probe = UNIT_TO_PROBE[unit];
     if (probe) {
       return { covered: true, expression: `dev:service_health → services.find(s => s.name === '${probe}').up` };
     }
+    // WI-6149: a registered systemd-user unit IS answered — see the note on
+    // SUPERVISED_BUT_UNPROBED for why this counts and what it deliberately does
+    // not claim.
     if (SUPERVISED_BUT_UNPROBED.has(unit)) {
       return {
-        covered: false,
-        reason: `${unit} is in SUPERVISED_PROCESSES but nothing probes it — dev:service_health returns a supervision row with flap counters and no up/down field`,
+        covered: true,
+        expression: `dev:service_health → supervision.find(s => s.name === '${supervisionNameFor(unit)}').{activeState,healthy}`,
       };
     }
     return {
