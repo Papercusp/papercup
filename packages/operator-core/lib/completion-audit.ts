@@ -42,10 +42,21 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  *    (`payload._completionEvidence` absent). The unit asserted done without ever
  *    stating HOW it was verified. This is the stale-done close, and the common case.
  *
- *  - `no-completion-record` — terminal with `terminal_completion_ref IS NULL`: a bare
- *    `set_state` close that bypassed the completion path altogether (this was the OLD
- *    `no-evidence` predicate). Rarer, and mostly pre-gate legacy rows — but a real and
- *    separate defect, so it keeps its own name instead of being silently dropped.
+ *  - `no-completion-record` — terminal with `terminal_completion_ref IS NULL` AND
+ *    `authority IS NULL`: a bare `set_state` close that bypassed the completion path
+ *    altogether (this was the OLD `no-evidence` predicate). Rarer, and mostly pre-gate
+ *    legacy rows — but a real and separate defect, so it keeps its own name instead of
+ *    being silently dropped.
+ *
+ *    The `authority IS NULL` conjunct is P-004
+ *    (agent-protocol-authority-semantics-2026-07-26). `work_items:complete` used to
+ *    auto-fill `terminal_completion_ref` from `completion.summary` on every close; P-004
+ *    DELETED that auto-fill and stamps an authority judgement instead. So from P-004
+ *    onward a perfectly well-formed completion has a NULL ref, and a ref-only predicate
+ *    would have flagged EVERY new close as "bypassed the completion path" — turning this
+ *    audit into a fleet-wide false-alarm generator against exactly the rows that went
+ *    through the gate most rigorously. A row carrying an authority judgement HAS a
+ *    completion record, by definition: the judgement is what the gate produced.
  *
  *  - `no-completion-record-suspicious` (EI-18676290701611705) — the ACTIONABLE subset
  *    of `no-completion-record`: a bare-ref terminal row credited to someone who is NOT
@@ -234,9 +245,9 @@ function intermittentUnderevidencedWhereSql(sql: OrgSql, titleExpr: unknown, tes
  * out of the audit.
  */
 export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
-  if (audit === 'no-completion-record') return sql`terminal_completion_ref IS NULL`;
+  if (audit === 'no-completion-record') return sql`terminal_completion_ref IS NULL AND authority IS NULL`;
   if (audit === 'no-completion-record-suspicious') {
-    return sql`terminal_completion_ref IS NULL AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+    return sql`terminal_completion_ref IS NULL AND authority IS NULL AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
   }
   if (audit === 'geometry-unverified') {
     return geometryUnverifiedWhereSql(
@@ -266,9 +277,10 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
   const col = sql.unsafe(`${alias}.payload`);
   const ref = sql.unsafe(`${alias}.terminal_completion_ref`);
   const owner = sql.unsafe(`${alias}.terminal_owner`);
-  if (audit === 'no-completion-record') return sql`${ref} IS NULL`;
+  const authority = sql.unsafe(`${alias}.authority`);
+  if (audit === 'no-completion-record') return sql`${ref} IS NULL AND ${authority} IS NULL`;
   if (audit === 'no-completion-record-suspicious') {
-    return sql`${ref} IS NULL AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+    return sql`${ref} IS NULL AND ${authority} IS NULL AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
   }
   if (audit === 'geometry-unverified') {
     return geometryUnverifiedWhereSql(

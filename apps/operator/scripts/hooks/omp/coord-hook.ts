@@ -1338,6 +1338,14 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
   // pattern decides which `git` atoms it claims; this set only decides which
   // ones pay the operator round-trip at all.
   'git',
+  // `service.listening-ports` → `dev:listening_ports`. The pair's own
+  // bashPattern (/^(?:ss|netstat)(?:\s+-|\s*$)|^lsof\b[^\n]*\s-{1,2}i/) decides
+  // which atoms it actually claims — notably only `lsof` calls carrying an
+  // `-i`/`--i` socket selector. This set only decides which heads pay the
+  // round-trip at all, so it lists the bare verbs.
+  'ss',
+  'netstat',
+  'lsof',
 ]);
 
 /** Resource-registry pre-filter — mirrors the shell hook's `_needs_check` regex.

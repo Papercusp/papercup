@@ -441,4 +441,50 @@ describe('bootstrap resumability (WI-6189: durable progress across channel death
       HISTORY,
     );
   });
+
+  it('stops on the WALL-CLOCK budget even with rungs left, climbs at least one, and stays resumable', async () => {
+    // WI-6189: `maxSteps` does not bound a tick's duration — the control law
+    // steers each rung toward 25% of the fetch ceiling, so 12 rungs outlasts
+    // git-sync's ~5-min cadence and the next fire collides on `shallow.lock`.
+    // The wall budget is what keeps a tick inside its cadence.
+    const joiner = await freshJoiner();
+    await defaultRunGit(['config', 'papercusp.bootstrapDeepen', String(MIN_DEEPEN_COMMITS)], joiner);
+
+    // Fake clock: every read jumps a full minute, so the budget is blown the
+    // moment the loop re-checks it — while the real ladder still has rungs and
+    // a live dial. Only the budget can be what stops this.
+    let clock = 0;
+    const fastForward = (): number => (clock += 60_000);
+
+    const budgeted = await bootstrapFromPeer(joiner, await dial(), {
+      timeoutMs: 30_000,
+      dial, // a WORKING dial — so "no channel" cannot be the reason it stops
+      maxWallMs: 60_000,
+      now: fastForward,
+    });
+
+    // Stopped early, but not before doing real work.
+    expect(budgeted.ok).toBe(false);
+    expect(budgeted.progressed).toBe(true);
+    expect(budgeted.steps).toBe(1); // the first rung ALWAYS runs...
+    expect(budgeted.steps).toBeLessThan(12); // ...and the rung cap was not what stopped it
+    // A shallow store never seeds — the warm gate stays honest mid-ladder.
+    if (budgeted.shallow) expect(budgeted.namespaces).toEqual([]);
+    // The checkpoint is durable: bytes fetched under the budget are kept.
+    expect(budgeted.quarantineRefs).toBeGreaterThan(0);
+
+    // A zero budget still climbs the first rung rather than making no progress.
+    const zero = await bootstrapFromPeer(joiner, await dial(), {
+      timeoutMs: 30_000,
+      dial,
+      maxWallMs: 1,
+      now: fastForward,
+    });
+    expect(zero.steps).toBe(1);
+
+    // And a normal tick resumes from that checkpoint and converges.
+    const done = await bootstrapFromPeer(joiner, await dial(), { timeoutMs: 30_000, dial });
+    expect(done.ok, done.stderr).toBe(true);
+    expect(await readNamespaceRef(joiner, devDeep, WORK_REF)).toBe(tipSha);
+  });
 });

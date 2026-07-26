@@ -72,6 +72,10 @@ import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, type CompletionAudit } from './completion-audit';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
+import {
+  isWorkItemCompletionAuthority,
+  type WorkItemCompletionAuthority,
+} from './work-item-completion-authority';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso } from './pg-timestamp';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
@@ -237,6 +241,23 @@ export interface WorkItem {
   terminalCompletionRef: string | null;
   /** Queryable structured verification evidence recorded beside terminalCompletionRef. */
   terminalCompletionEvidence: CompletionVerificationEvidence | null;
+  /**
+   * agent-protocol-authority-semantics-2026-07-26 P-004 — how TRUSTWORTHY this row's
+   * CURRENT terminal claim is, orthogonal to the lifecycle `state`. Written by the
+   * completion gate from the evidence supplied at close time
+   * (see `work-item-completion-authority.ts`).
+   *
+   * The DB column is bare `authority`; this API surface disambiguates as
+   * `completionAuthority` deliberately (D-009) — plan items carry an unrelated
+   * `authority: 'system' | 'owner'` axis meaning WHO MAY ACT, and the column cannot be
+   * renamed to match (a consolidated-view column is rename-proof: 2,485 dependent views).
+   *
+   * `null` is NOT a sixth value — it is the ABSENCE of a judgement, read against `state`:
+   * non-terminal + null = the item is open and owes no claim yet; terminal + null = a
+   * LEGACY close made before this contract, which counts toward burn-down and is never
+   * nagged or reclassified (D-005/D-008).
+   */
+  completionAuthority: WorkItemCompletionAuthority | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -373,6 +394,7 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     terminalOwner: i.terminalOwner,
     terminalCompletionRef: i.terminalCompletionRef,
     terminalCompletionEvidence: extractTerminalCompletionEvidence(i.payload),
+    completionAuthority: i.completionAuthority,
     // Federated issue-family rows are replicated facts owned by the authoring peer.
     // Surface the physical-row provenance so mutators can fail loud instead of
     // reporting "not found" after the engineer_issues view deliberately no-ops.
@@ -411,6 +433,8 @@ export interface FeatureRowDb {
   verified_author_github_user_id: number | string | null;
   terminal_owner: string | null;
   terminal_completion_ref: string | null;
+  /** P-004 — the completion-authority column (D-009: bare `authority` in the DB). */
+  authority: string | null;
 }
 export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
   const externalBlockers = readExternalBlockers(r.payload);
@@ -448,6 +472,10 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     terminalOwner: r.terminal_owner,
     terminalCompletionRef: r.terminal_completion_ref,
     terminalCompletionEvidence: extractTerminalCompletionEvidence(r.payload),
+    // A value outside the union can only arrive from a row written before the CHECK
+    // constraint, or by a hand-edit that evaded it — read it as "no judgement" rather
+    // than surfacing an unparseable token to every consumer.
+    completionAuthority: isWorkItemCompletionAuthority(r.authority) ? r.authority : null,
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
   };
@@ -464,7 +492,8 @@ function coerceGithubUserId(raw: number | string | null | undefined): number | n
 export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
   taken_at, last_progress_at,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
-  origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref`;
+  origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref,
+  authority`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
@@ -1338,6 +1367,9 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     terminalOwner: null,
     terminalCompletionRef: null,
     terminalCompletionEvidence: null, // freshly-inserted row never took a terminal transition (peer added this required field to the WorkItem type but missed this construction site)
+    // P-004: same reasoning — a row that has never been closed owes no authority
+    // judgement. non-terminal + null is the OPEN reading, not the legacy-close one.
+    completionAuthority: null,
     assignee: assignTo, // B-LOOP-4: created already-claimed when `assignee` was given
     // P-001: an atomic create+claim stamps taken_at=now() (the grace anchor); a fresh
     // row has no item-scoped progress yet, so last_progress_at stays null.
@@ -1609,6 +1641,15 @@ export async function setWorkItemState(
     completionEvidence?: CompletionVerificationEvidence;
     skipCompletionGate?: boolean;
     /**
+     * agent-protocol-authority-semantics-2026-07-26 P-004 — the completion-authority
+     * judgement the gate reached for THIS close (`authorityForCompletion(evidence)`).
+     * Supplying it SATISFIES the completion-integrity gate in place of `completionRef`:
+     * a caller that has judged its own evidence has done strictly more than assert a
+     * non-empty string, and the consequence of a weak judgement is now `proposed`
+     * (recorded, but not counted toward burn-down) rather than a rejection.
+     */
+    completionAuthority?: WorkItemCompletionAuthority;
+    /**
      * EI-7125 / WI-2573: fired synchronously when the REQUESTED state aliases
      * to a DIFFERENT canonical state before the write (e.g. issue-family
      * 'blocked'/'needs-human'/'in_progress'/'wip' all collapse to 'open' —
@@ -1661,16 +1702,26 @@ export async function setWorkItemState(
   // done") is NOT gated: that is a legitimate, common lifecycle move (see the
   // resolved→open fan-out test right below) and carries no double-placement
   // risk since no second session's work is being discarded.
+  //
+  // P-004 widened the second conjunct. This guard used to require `terminalCompletionRef`,
+  // which work_items:complete auto-filled on every close — so "has a completion ref" was a
+  // reliable proxy for "was genuinely completed". That auto-fill is now deleted, and a
+  // close made through the completion gate stamps an AUTHORITY instead. Left as-is, this
+  // guard would have stopped firing for every new completion the day P-004 landed, silently
+  // re-opening the EI-7422 hole (a stale-claim peer discarding finished work) — the exact
+  // class of collateral damage a "delete the auto-fill" change invites. Either signal means
+  // the same thing: someone recorded a real completion here.
   if (
     !opts.force &&
     wi.terminalOwner &&
-    wi.terminalCompletionRef &&
+    (wi.terminalCompletionRef || wi.completionAuthority) &&
     opts.by !== wi.terminalOwner &&
     isSettledWorkItemState(wi.state) &&
     !isSettledWorkItemState(state)
   ) {
     throw new Error(
-      `work_item '${id}' is already terminally completed (by ${wi.terminalOwner}: "${wi.terminalCompletionRef}") — ` +
+      `work_item '${id}' is already terminally completed (by ${wi.terminalOwner}: ` +
+        `"${wi.terminalCompletionRef ?? `authority:${wi.completionAuthority}`}") — ` +
         `reopening into '${state}' would silently discard that completion. To deliberately reopen it (e.g. the ` +
         `completion was wrong), use work_items:set_state { id: '${id}', state: '${state}', force: true } — ` +
         `NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530). ` +
@@ -1773,6 +1824,7 @@ export async function setWorkItemState(
     const updated = await setIssueState(id, state as IssueState, opts.by, opts.completionRef, {
       completionEvidence: opts.completionEvidence,
       skipCompletionGate: opts.skipCompletionGate,
+      completionAuthority: opts.completionAuthority,
     });
     result = updated ? issueToWorkItem(updated) : null;
   } else {
@@ -1783,9 +1835,19 @@ export async function setWorkItemState(
           `completion-integrity: work_item '${id}' → '${state}' rejected — a terminal transition requires an owner (by)`,
         );
       }
-      if (!opts.completionRef || !opts.completionRef.trim()) {
+      // P-004: EITHER a completionRef OR a completion-authority judgement satisfies the
+      // gate. The ref half is unchanged for the bare set_state path; the authority half
+      // is what work_items:complete now supplies, having DELETED the auto-fill that used
+      // to manufacture a ref from completion.summary — which is precisely why this gate
+      // could never fail for that path. The judgement is not a softer bar: an absent or
+      // partial evidence object now lands `proposed`, which does not count toward
+      // burn-down, instead of a `committed` close that reads as finished work.
+      if (!opts.completionRef?.trim() && !opts.completionAuthority) {
         throw new Error(
-          `completion-integrity: work_item '${id}' → '${state}' rejected — a terminal transition requires a completionRef`,
+          `completion-integrity: work_item '${id}' → '${state}' rejected — a terminal transition requires ` +
+            `either a completionRef or a completion-authority judgement. Prefer work_items:complete ` +
+            `{ id, state: '${state}', completion: { summary: '...', verifiedHow: '...', testResult: '...' } }, ` +
+            `which judges your evidence and stamps the authority for you.`,
         );
       }
     }
@@ -1810,6 +1872,10 @@ export async function setWorkItemState(
              updated_ts = ${Date.now()},
              terminal_owner = ${opts.by ?? null},
              terminal_completion_ref = ${opts.completionRef ?? null},
+             -- P-004: the authority judgement for THIS close. NULL when the caller
+             -- supplied none — a legacy-shaped close (D-008), which is the right reading
+             -- for the skipCompletionGate system paths and any writer not yet migrated.
+             authority = ${opts.completionAuthority ?? null},
              payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                             THEN payload
                             ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
@@ -1864,11 +1930,24 @@ export async function setWorkItemState(
   // payload.reopenHistory (bounded, newest-last) so the audit trail survives the
   // clear. Best-effort: the reopen itself already committed; a failed clear leaves
   // the pre-P-006 behavior (stamps linger) rather than failing the state change.
+  //
+  // P-004 adds the authority half. A reopen CONTRADICTS the completion that was
+  // recorded, and the state table has exactly one honest edge for that: → `invalid`.
+  // Note what is deliberately NOT done here: the authority is never cleared back to
+  // NULL. `null` on a terminal row means "legacy close, made before this contract" and
+  // is exempt from nagging and reclassification (D-005/D-008) — so a live code path that
+  // could write NULL would manufacture that exemption on demand, which is the one thing
+  // the state table forbids ("nothing returns to null").
+  //
+  // The converse is equally deliberate: a row whose authority is ALREADY null is a real
+  // legacy close, and it stays null through the reopen. Stamping it `invalid` would be
+  // retroactively judging a close made in good faith under the old rules — the exact
+  // reclassification D-005 exists to prevent.
   if (
     result &&
     isSettledWorkItemState(wi.state) &&
     !isSettledWorkItemState(result.state) &&
-    (wi.terminalOwner || wi.terminalCompletionRef)
+    (wi.terminalOwner || wi.terminalCompletionRef || wi.completionAuthority)
   ) {
     try {
       const { sql } = getOrgPg();
@@ -1882,12 +1961,19 @@ export async function setWorkItemState(
         prevState: wi.state,
         terminalOwner: wi.terminalOwner,
         terminalCompletionRef: wi.terminalCompletionRef,
+        completionAuthority: wi.completionAuthority,
       };
       const history = JSON.stringify({ reopenHistory: [...prevHistory.slice(-4), entry] });
+      // Only a close made UNDER the authority contract can be contradicted into
+      // 'invalid'; a legacy (null) close is left exactly as it was. See the block
+      // comment above — this ternary is D-005 expressed as a write, not a policy.
+      const reopenedAuthority: WorkItemCompletionAuthority | null =
+        wi.completionAuthority === null ? null : 'invalid';
       await sql`
         UPDATE harness_shared.work_items
            SET terminal_owner = NULL,
                terminal_completion_ref = NULL,
+               authority = ${reopenedAuthority},
                -- work-item-status-full-unify (P-003): a reopened item is no longer terminal,
                -- so its collapsed-nuance reason must clear too (else a later plain done/dropped
                -- would inherit a stale passed/resolved reason).
@@ -1899,6 +1985,8 @@ export async function setWorkItemState(
       // Reflect the clear in the returned row so callers see the truth this turn.
       (result as { terminalOwner?: string | null }).terminalOwner = null;
       (result as { terminalCompletionRef?: string | null }).terminalCompletionRef = null;
+      (result as { completionAuthority?: WorkItemCompletionAuthority | null }).completionAuthority =
+        reopenedAuthority;
     } catch {
       /* best-effort — see above */
     }
@@ -2157,8 +2245,12 @@ export interface CompletionIntegrityStats {
   harness: string;
   /** Every work-item (both families) currently sitting in a terminal state. */
   terminalTotal: number;
-  /** Terminal AND carrying both terminal_owner + terminal_completion_ref — the ONLY
-   *  rows the completion-integrity gate would have accepted without skipCompletionGate. */
+  /** Terminal AND carrying terminal_owner PLUS either a terminal_completion_ref or an
+   *  authority judgement — the ONLY rows the completion-integrity gate would have accepted
+   *  without skipCompletionGate. P-004 added the authority half: the gate now accepts a
+   *  judgement in place of the ref (and work_items:complete no longer supplies a ref at
+   *  all), so a ref-only test would report every post-P-004 completion as `dedupOrUnverified`
+   *  — a metric that measures the deleted auto-fill rather than completion integrity. */
   genuineCompletions: number;
   /** terminalTotal - genuineCompletions — watchdog/hygiene/revert dedup flips (or any
    *  other skipCompletionGate write, or a pre-migration-432 historical row with the
@@ -2182,7 +2274,7 @@ export async function getCompletionIntegrityStats(harness: string): Promise<Comp
         count(*) FILTER (
           WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
             AND terminal_owner IS NOT NULL AND terminal_owner <> ''
-            AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
+            AND ((terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> '') OR authority IS NOT NULL)
         ) AS genuine
       FROM harness_shared.harness_features_consolidated
       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${harness}`,
@@ -2192,7 +2284,7 @@ export async function getCompletionIntegrityStats(harness: string): Promise<Comp
         count(*) FILTER (
           WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
             AND terminal_owner IS NOT NULL AND terminal_owner <> ''
-            AND terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> ''
+            AND ((terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> '') OR authority IS NOT NULL)
         ) AS genuine
       FROM harness_shared.engineer_issues
       WHERE workspace_id = ${issuesScopeWorkspace()} AND scope = ${`harness:${harness}`}`,
@@ -3056,11 +3148,25 @@ export function loopIterationNoiseExclusionSql(sql: OrgSql) {
  * exclude it (like observation/needsHuman/federation-detector/loop-noise above) so an
  * all-already-completed backlog also reads `drained:true` instead of idling a drainer on
  * unpickable rows. Still directly claimable BY ID (e.g. to formally flip its `state`).
+ *
+ * P-004: the "was genuinely completed" signal is now EITHER a completion ref OR an
+ * authority judgement. work_items:complete used to auto-fill terminal_completion_ref on
+ * every close, which is what made the ref a reliable proxy; that auto-fill is deleted and
+ * the gate stamps `authority` instead. Keying on the ref alone would have quietly re-armed
+ * EI-8972 for every completion made after P-004 landed — a completed-but-not-flipped row
+ * sliding back into the claimable pool for a second agent to redo.
+ *
+ * `proposed` counts here just as `committed` does, and deliberately so: D-007 holds that an
+ * under-evidenced close stays OWNED BY ITS CLOSER and is nagged, never re-queued for a peer
+ * to pick up. Excluding it from the pool is exactly that rule.
  */
 export function alreadyTerminallyCompletedExclusionSql(sql: OrgSql) {
   return sql`(
     (wi.terminal_owner IS NULL OR wi.terminal_owner = '')
-    OR (wi.terminal_completion_ref IS NULL OR wi.terminal_completion_ref = '')
+    OR (
+      (wi.terminal_completion_ref IS NULL OR wi.terminal_completion_ref = '')
+      AND wi.authority IS NULL
+    )
   )`;
 }
 

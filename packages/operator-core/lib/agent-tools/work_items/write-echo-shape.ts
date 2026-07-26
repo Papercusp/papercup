@@ -11,8 +11,10 @@
  * additionally drops the `completion`/`outputPayload` echoes (pure replays of
  * the caller's OWN input — inherently recoverable, flagged once at the
  * envelope by `echo_note`, D-004). Outcome fields (ok/id/error/holder/hint/
- * stateError/stateWarning/verificationWarning/assigneeMismatchWarning/reflect)
- * always pass through verbatim.
+ * stateError/stateWarning/verificationWarning/authorityWarning/completionAuthority/
+ * assigneeMismatchWarning/reflect) always pass through verbatim — this shaper only
+ * ever touches `workItem`, `completion` and `outputPayload`, so a new outcome field
+ * needs no change here.
  */
 
 export const WRITE_ECHO_TIER_CAPS = {

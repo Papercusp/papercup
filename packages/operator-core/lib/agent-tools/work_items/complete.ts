@@ -45,6 +45,7 @@ import {
 } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 import { isBackedLiveDroveUiClaim } from '../../completion-audit';
+import { authorityForCompletion, countsTowardBurnDown } from '../../work-item-completion-authority';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -401,12 +402,21 @@ async function completeOne(
 
   // Optional explicit terminal transition. A failed state write must NEVER lose the
   // completion record (EI-24): catch, report it as `stateError`, still record + emit.
-  // Completion-integrity gate (WI-1403, contract C-1): a terminal `state` here rides
-  // the structured completion record itself as evidence — `completion.summary` is a
-  // required non-empty field, so it doubles as the gate's `completionRef` with zero
-  // extra caller ceremony (this is the natural, self-satisfying path to a terminal
-  // state; work_items:set_state is the bare lower-level op that needs its own explicit
-  // `completionRef`).
+  //
+  // agent-protocol-authority-semantics-2026-07-26 P-004 REPLACED what satisfies the
+  // completion-integrity gate here. It used to pass `completionRef: it.completion.summary`
+  // — and because `completion.summary` is a required non-empty field, that made the gate's
+  // "a terminal transition requires a completionRef" check unfailable BY CONSTRUCTION for
+  // every caller of this tool. A gate that cannot reject is not a gate; it is ceremony that
+  // reads like one, which is worse, because it made 65.6% of terminal rows (P-002, of
+  // 14,663) look gate-approved while carrying no verification evidence at all.
+  //
+  // What it passes instead is a JUDGEMENT about the evidence: `authorityForCompletion`
+  // returns `committed` only for verifiedHow PLUS one of testsRun/testResult, and
+  // `proposed` otherwise. Both are accepted by the gate — the close is always RECORDED —
+  // but only `committed` counts toward burn-down. That is D-003's restructure: an
+  // unverified assertion no longer reaches the authoritative state and gets corrected by a
+  // later audit; it never reaches it at all.
   let workItem = existing;
   let stateError: string | undefined;
   let aliasNote: string | undefined;
@@ -430,6 +440,12 @@ async function completeOne(
   // usual record-and-warn discipline — see isBackedLiveDroveUiClaim's doc comment.
   const closeIntentRequested = Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
   const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
+  // P-004: the whole decision, in one call. `completionEvidenceFromRecord` returning
+  // `undefined` (no evidence fields supplied at all) and returning a PARTIAL object
+  // (P-002 measured 4.2% of evidence-bearing rows carry no `verifiedHow`) both land
+  // `proposed` — the partial case is rejected explicitly rather than assumed away,
+  // because an "is the object present?" test passes every one of them.
+  const completionAuthority = authorityForCompletion(completionEvidenceForGate);
   const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceForGate);
 
   if (unbackedLiveDroveUiClose) {
@@ -444,8 +460,11 @@ async function completeOne(
       const res = await setWorkItemStateWithAliasInfo(it.id, effectiveState, {
         harness: it.harness,
         by: ident.ownerId,
-        completionRef: it.completion.summary,
+        // NO `completionRef` — see the block comment above. The summary is not lost:
+        // it is persisted on the completion record itself, which is where a reader
+        // should look for the narrative. What lands on the row is the judgement.
         completionEvidence: completionEvidenceForGate,
+        completionAuthority,
       });
       workItem = res.workItem ?? existing;
       aliasNote = res.aliasNote;
@@ -517,6 +536,28 @@ async function completeOne(
       ? shapeCoercedFromBareString
         ? `completion for ${it.id} was passed as a bare STRING and silently coerced to { summary: ${JSON.stringify(it.completion.summary)} } — every other field (testsRun, testResult, verifiedHow, addedTests, filesChanged, whatLanded, deferred, migrations) is EMPTY, not just unfilled, because a string can only ever populate \`summary\`. If you have structured evidence, RESEND as an object: work_items:complete({ id, state, completion: { summary, testsRun: '<what you ran>', testResult: '<pass/fail summary>', verifiedHow: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests: <boolean>, filesChanged: [...] } }) — or, if genuinely unverified, resend with \`deferred: ['<what you left undone + why>']\`.`
         : `recorded a completion for ${it.id} with neither \`tests\` nor \`deferred\` populated — a settled unit should state whether it was VERIFIED (fill \`tests\`: what you ran / how you checked it, e.g. "18 vitest green" or "n/a — docs only") or CONSCIOUSLY DEFERRED (fill \`deferred\`: what you left undone + why). Add one so the unit isn't silently unverified (flush-to-proceed: a unit settles only live-verified or explicitly deferred-with-reason).`
+      : undefined;
+
+  // P-004: the authority actually STAMPED on the row, or null when this call stamped
+  // none (no terminal `state`, or the state write was rejected). Reporting the computed
+  // judgement in either of those cases would tell the caller their close was graded when
+  // no close happened — the same class of lie the deleted auto-fill told.
+  const stampedAuthority =
+    !stateError && finalState && TERMINAL_WORK_ITEM_STATES.has(finalState) ? completionAuthority : null;
+  // The change is worthless if it is silent. An agent whose close just landed `proposed`
+  // must be TOLD, in the response to the call that did it, what it costs and what would
+  // have avoided it — otherwise the first they learn of it is a leader asking why their
+  // burn-down did not move. Names the two fields that flip it, because "supply evidence"
+  // is exactly the vague instruction the old gate got away with.
+  const authorityWarning =
+    stampedAuthority === 'proposed'
+      ? `${it.id} is CLOSED but its completion landed authority:'proposed' — recorded and out of the ` +
+        `claimable pool, but NOT counted toward burn-down, and it stays owned by you until it is settled. ` +
+        `\`committed\` requires \`verifiedHow\` ('unit'|'integration'|'live-drove-ui'|'manual'|'already-passing') ` +
+        `PLUS at least one of \`testsRun\` / \`testResult\`. \`filesChanged\` and \`addedTests\` do NOT qualify — ` +
+        `both say what changed, neither says anything was checked. To settle it, re-call ` +
+        `work_items:complete for this id with those fields filled; if the work genuinely cannot be verified, ` +
+        `say so in \`deferred\` and leave it proposed.`
       : undefined;
 
   // Fill provenance defaults so the rendered notification is complete (D-006).
@@ -678,8 +719,14 @@ async function completeOne(
           stateInferredFromCompletionStatus: `no top-level \`state\` was passed, but completion.status ('${inferredCloseState}') is this issue's own terminal vocabulary — inferred state:'${inferredCloseState}' and closed it (EI-12027). Pass top-level \`state\` explicitly to avoid relying on this inference.`,
         }
       : {}),
+    ...(authorityWarning ? { authorityWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
+    // Reported unconditionally on a real close (including `committed`) so the caller can
+    // see the judgement rather than infer it from the absence of a warning.
+    ...(stampedAuthority
+      ? { completionAuthority: stampedAuthority, countsTowardBurnDown: countsTowardBurnDown(stampedAuthority, true) }
+      : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
     workItem,
     completion,

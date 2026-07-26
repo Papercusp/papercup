@@ -131,6 +131,27 @@ const DEEPEN_GROW_BELOW_FRACTION = 0.5; // grow only when well inside target
  *  without pinning the git-sync routine open indefinitely. */
 const DEFAULT_MAX_STEPS = 12;
 
+/**
+ * WALL-CLOCK cap on the whole ladder call — the bound that actually keeps a
+ * tick inside its cadence. `maxSteps` alone does NOT: the rung-size control law
+ * deliberately steers each rung toward `DEEPEN_TARGET_FRACTION` of the fetch
+ * ceiling (30 s at the 120 s default), so at steady state 12 rungs is ~6 min —
+ * LONGER than git-sync's ~5-min tick. The ladder would then still be fetching
+ * when the next fire starts, and two concurrent shallow fetches on one repo
+ * collide on `shallow.lock`: the loser's whole tick is wasted, so the joiner
+ * converges at half rate exactly once the control law has warmed up. (Not a
+ * permanent wedge — the winner's git removes its own lock on exit; that only
+ * becomes the forever-wedge {@link sweepStalePackTmpFiles} clears when a fetch
+ * is SIGKILLed. But a silently halved convergence rate on a multi-GB cold join
+ * is bad enough, and it is invisible to every test that counts rungs.)
+ *
+ * Checked BETWEEN rungs, so the true worst case is this budget plus one rung
+ * (≤ `timeoutMs`): 150 s + 120 s = 4.5 min, still inside a 5-min cadence.
+ * Progress is durable either way — the quarantine refs ARE the checkpoint, so
+ * stopping on budget costs nothing but the next tick's resume.
+ */
+const DEFAULT_MAX_WALL_MS = 150_000;
+
 export interface BootstrapResult extends TransportResult {
   /** True when the WHOLE ladder finished: history complete AND every seed
    *  ref-write succeeded. Unchanged meaning for callers — a joiner is only
@@ -279,6 +300,11 @@ export async function bootstrapFromPeer(
     dial?: () => Promise<Duplex | null>;
     /** Max rungs to climb in this call (default {@link DEFAULT_MAX_STEPS}). */
     maxSteps?: number;
+    /** Wall-clock budget for the whole ladder (default
+     *  {@link DEFAULT_MAX_WALL_MS}). Checked between rungs. */
+    maxWallMs?: number;
+    /** Injectable clock, for tests. */
+    now?: () => number;
   } = {},
 ): Promise<BootstrapResult> {
   const runGit = opts.runGit ?? defaultRunGit;
@@ -289,6 +315,9 @@ export async function bootstrapFromPeer(
 
   const preExisting = new Set(await listNamespaces(localRepoPath, runGit));
   const maxSteps = Math.max(1, opts.maxSteps ?? DEFAULT_MAX_STEPS);
+  const now = opts.now ?? Date.now;
+  const maxWallMs = Math.max(1, opts.maxWallMs ?? DEFAULT_MAX_WALL_MS);
+  const ladderStartedAt = now();
 
   let res: TransportResult = { code: 0, stderr: '', timedOut: false };
   let phase: BootstrapPhase = 'seed';
@@ -343,9 +372,14 @@ export async function bootstrapFromPeer(
       releasePending();
       break;
     }
-    if (steps >= maxSteps) {
+    // Budget spent — on rungs OR on wall time. Either way progress is durable
+    // (the quarantine refs are the checkpoint) and the next tick resumes.
+    // `steps > 0` on the wall-time arm: never refuse to climb the FIRST rung,
+    // however little budget is left, or a tight budget turns into no progress
+    // at all instead of slower progress.
+    if (steps >= maxSteps || (steps > 0 && now() - ladderStartedAt >= maxWallMs)) {
       releasePending();
-      return partial(); // budget spent; progress is durable
+      return partial();
     }
 
     const stream = pending ?? (opts.dial ? await opts.dial().catch(() => null) : null);

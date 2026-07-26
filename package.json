@@ -106,6 +106,8 @@
     "gen:tool-catalog:check": "tsx scripts/gen-tool-catalog.ts --check",
     "gen:tool-routing": "tsx scripts/gen-tool-routing.ts",
     "gen:tool-routing:check": "tsx scripts/gen-tool-routing.ts --check",
+    "seed:substitutions": "tsx scripts/seed-substitution-registry.ts",
+    "seed:substitutions:check": "tsx scripts/seed-substitution-registry.ts --check",
     "gen:baseline": "tsx libs/papercusp/libs/db/scripts/build-reference-schema.ts /tmp/papercusp-reference-schema.raw.sql && tsx packages/operator-core/lib/db-tools/sanitize-baseline.ts /tmp/papercusp-reference-schema.raw.sql /tmp/000-baseline.sql",
     "gen:baseline:diff": "npm run gen:baseline && diff -u libs/papercusp/libs/db/sql/000-baseline.sql /tmp/000-baseline.sql",
     "scan:lexicon": "node scripts/scan-lexicon.mjs",

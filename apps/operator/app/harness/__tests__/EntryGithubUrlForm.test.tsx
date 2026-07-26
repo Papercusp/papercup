@@ -392,7 +392,10 @@ describe('new-hive mode', () => {
     expect(screen.getByTestId('invite-secret').textContent).toBe('s3cret-topic');
     const seeded = screen.getByTestId('seeded-learnings-line');
     expect(seeded.textContent).toContain('Started with 28 default learnings');
-    expect(seeded.querySelector('a')?.getAttribute('href')).toBe('/adv?tab=learning&lview=learnings&lhive=web-hive');
+    // Pot scope travels as the top-bar `?slug=` selector, NOT the retired `?lhive=`
+    // (owner directive 2026-07-26: the tab-level lhive picker is gone and one
+    // selection scopes every tab — see LearningTab.tsx "?lhive= is retired").
+    expect(seeded.querySelector('a')?.getAttribute('href')).toBe('/adv?tab=learning&lview=learnings&slug=web-hive');
     // The frontend sends no visibility — the backend derives invite from repo privacy.
     expect(postedBodies('/api/harness/pots/from-repo')[0]).not.toHaveProperty('visibility');
   });

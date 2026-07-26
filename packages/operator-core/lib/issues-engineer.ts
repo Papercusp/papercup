@@ -49,6 +49,10 @@ import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { auditPredicateSql, auditPredicateSqlFor, type CompletionAudit } from './completion-audit';
 import { dedupSignature } from './harness/improvements/digest';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
+import {
+  isWorkItemCompletionAuthority,
+  type WorkItemCompletionAuthority,
+} from './work-item-completion-authority';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
@@ -148,6 +152,13 @@ export interface EngineerIssue {
    *  or plan-item ref) recorded for the CURRENT terminal state. Both are required
    *  together — a terminal transition without either is rejected by setIssueState. */
   terminalCompletionRef: string | null;
+  /** agent-protocol-authority-semantics-2026-07-26 P-004 — how trustworthy this row's
+   *  CURRENT terminal claim is, orthogonal to `state`. The DB column is bare
+   *  `authority` on the shared `work_items` table this view is built over; the API
+   *  surface disambiguates as `completionAuthority` (D-009 — plan items carry an
+   *  unrelated `authority: system|owner` axis, and the column is rename-proof).
+   *  null = no judgement: open if non-terminal, a legacy close if terminal (D-008). */
+  completionAuthority: WorkItemCompletionAuthority | null;
   /** EI-10421: the SHARED backlog priority (`feature_order` on the `work_items` base
    *  row) — the Queen's steer-don't-dispatch lever, DISTINCT from `assigneeRank` (a
    *  per-assignee post-claim queue order). Issue-family items joined the dispatched
@@ -326,6 +337,8 @@ interface IssueRowDb {
   rank_updated_at: unknown;
   terminal_owner: string | null;
   terminal_completion_ref: string | null;
+  /** P-004 — the completion-authority column (D-009: bare `authority` in the DB). */
+  authority: string | null;
   feature_order: number | null;
   created_at: unknown;
   updated_at: unknown;
@@ -364,6 +377,9 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     rankUpdatedAt: tsIsoOrNull(r.rank_updated_at),
     terminalOwner: r.terminal_owner,
     terminalCompletionRef: r.terminal_completion_ref,
+    // A token outside the union can only come from a pre-CHECK row or a hand-edit that
+    // evaded it — read it as "no judgement" rather than leaking it to every consumer.
+    completionAuthority: isWorkItemCompletionAuthority(r.authority) ? r.authority : null,
     featureOrder: r.feature_order,
     createdAt: tsIso(r.created_at),
     updatedAt: tsIso(r.updated_at),
@@ -375,7 +391,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 export const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
-  terminal_completion_ref, feature_order, created_at, updated_at`;
+  terminal_completion_ref, authority, feature_order, created_at, updated_at`;
 
 /**
  * EI-10489: ISSUE_COLS (the runtime SELECT allowlist above) and IssueRowDb (its TS shape)
@@ -398,7 +414,7 @@ export const ISSUE_ROW_DB_KEYS = [
   'issue_id', 'kind', 'scope', 'title', 'body', 'severity', 'source', 'state', 'assignee',
   'assigned_by', 'assigned_at', 'last_progress_at', 'payload', 'origin', 'found_during',
   'linked_feature_id', 'created_by', 'signal_origin', 'assignee_rank', 'rank_writer',
-  'rank_updated_at', 'terminal_owner', 'terminal_completion_ref', 'feature_order',
+  'rank_updated_at', 'terminal_owner', 'terminal_completion_ref', 'authority', 'feature_order',
   'created_at', 'updated_at',
 ] as const;
 type IssueRowDbKeysUnion = (typeof ISSUE_ROW_DB_KEYS)[number];
@@ -1346,7 +1362,19 @@ export async function setIssueState(
   state: IssueState,
   by?: string,
   completionRef?: string,
-  opts: { completionEvidence?: CompletionVerificationEvidence; skipCompletionGate?: boolean } = {},
+  opts: {
+    completionEvidence?: CompletionVerificationEvidence;
+    skipCompletionGate?: boolean;
+    /**
+     * agent-protocol-authority-semantics-2026-07-26 P-004 — the completion-authority
+     * judgement the gate reached for THIS close (`authorityForCompletion(evidence)`).
+     * Supplying it SATISFIES the completion-integrity gate in place of `completionRef`:
+     * a caller that has judged its own evidence has done strictly more than assert a
+     * non-empty string, and the consequence of a weak judgement is now `proposed`
+     * (invisible to burn-down) rather than a rejection.
+     */
+    completionAuthority?: WorkItemCompletionAuthority;
+  } = {},
 ): Promise<EngineerIssue | null> {
   const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
   if (isTerminal && !opts.skipCompletionGate) {
@@ -1355,16 +1383,26 @@ export async function setIssueState(
         `completion-integrity: issue '${id}' → '${state}' rejected — a terminal transition requires an owner (by)`,
       );
     }
-    if (!completionRef || !completionRef.trim()) {
+    if (!completionRef?.trim() && !opts.completionAuthority) {
       // EI-7119: a bare rejection here sent callers on a 3-call round-trip (complete
       // without state → set_state without completionRef → rejected → re-complete with
       // both). Name the actual fix inline so the FIRST rejection is the last one.
+      //
+      // P-004 rewrote what this message promises. It used to say work_items:complete
+      // "supplies it from completion.summary automatically" — that auto-fill is GONE
+      // (it was what made this gate bind on a value that could never be absent). The
+      // honest instruction now is to supply real verification evidence, because that is
+      // what decides whether the close lands `committed` or `proposed`.
       throw new Error(
-        `completion-integrity: issue '${id}' → '${state}' rejected — a terminal transition requires a completionRef. ` +
-          `Pass one directly (set_state { id, state, completionRef: "..." }), or prefer ` +
-          `work_items:complete { id, state: "${state}", completion: { summary: "..." } } which supplies it ` +
-          `from completion.summary automatically — a prior work_items:complete WITHOUT \`state\` does NOT persist ` +
-          `anything this call can reuse, so re-call complete with both, not set_state alone.`,
+        `completion-integrity: issue '${id}' → '${state}' rejected — a terminal transition requires either a ` +
+          `completionRef or a completion-authority judgement. Prefer ` +
+          `work_items:complete { id, state: "${state}", completion: { summary: "...", verifiedHow: "...", ` +
+          `testResult: "..." } } — it judges your evidence and stamps the authority for you. ` +
+          `Note that summary ALONE now lands \`proposed\` (recorded, but not counted toward burn-down); ` +
+          `\`committed\` needs verifiedHow plus one of testsRun/testResult. ` +
+          `Or pass a ref directly (set_state { id, state, completionRef: "..." }). A prior ` +
+          `work_items:complete WITHOUT \`state\` does NOT persist anything this call can reuse, so re-call ` +
+          `complete with both, not set_state alone.`,
       );
     }
   }
@@ -1377,6 +1415,10 @@ export async function setIssueState(
            SET state = ${state}, origin = 'local', updated_at = now(),
                assignee = NULL, assigned_at = NULL,
                terminal_owner = ${by ?? null}, terminal_completion_ref = ${completionRef ?? null},
+               -- P-004: the authority judgement for THIS close. Left NULL when the caller
+               -- supplied none — a legacy-shaped close (D-008), which is exactly right for
+               -- the skipCompletionGate system paths and for any writer not yet migrated.
+               authority = ${opts.completionAuthority ?? null},
                payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                               THEN payload
                               ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)

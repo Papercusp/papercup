@@ -78,6 +78,49 @@ export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificati
 export const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
 
 /**
+ * EI-18736669939338784 — the key under which a SECOND (or third…) terminal close of an
+ * already-completed item is recorded, for both families, beside (never on top of)
+ * {@link TERMINAL_COMPLETION_EVIDENCE_KEY}.
+ *
+ * Why this exists: the terminal UPDATE stamps `terminal_owner` / `terminal_completion_ref`
+ * / `authority` unconditionally, and merges evidence with jsonb `||` — a TOP-LEVEL key
+ * merge, so an incoming `_completionEvidence` REPLACES the stored object wholesale rather
+ * than deep-merging it. A second closer therefore silently destroyed the first closer's
+ * record and was told `ok:true`. Observed live on WI-6112: a rich structured close
+ * (verifiedHow:'integration', 4 filesChanged, testsRun) was overwritten 1.9s later by a
+ * bare-string close from a different agent, leaving the row reading as an unverified
+ * assertion. 107 cross-owner overwrites in the preceding 30 days; 28 with that exact
+ * damage signature.
+ *
+ * The inversion that makes it dangerous: completion-integrity audits read whatever closed
+ * LAST, so absent this the WEAKER record wins by arriving later — a bare assertion erases
+ * a verification.
+ *
+ * Bounded, newest-last (same discipline as `payload.reopenHistory`).
+ */
+export const COMPLETION_ATTESTATIONS_KEY = '_completionAttestations';
+
+/**
+ * One non-authoritative terminal close recorded under {@link COMPLETION_ATTESTATIONS_KEY}.
+ *
+ * `outcome` says which side of the conflict this row was:
+ *  · `attested`   — THIS close did not become the row's authoritative record (it was not
+ *                   strictly richer than the one already stored). Nothing was destroyed.
+ *  · `superseded` — this close WAS the authoritative record and was replaced by a later,
+ *                   strictly-richer one; archived here so the upgrade is not a deletion.
+ */
+export interface CompletionAttestation {
+  at: string;
+  by: string | null;
+  /** The terminal state this closer asked for (may differ from the state that stands). */
+  state: string;
+  completionRef: string | null;
+  completionAuthority: string | null;
+  evidence: CompletionVerificationEvidence | null;
+  outcome: 'attested' | 'superseded';
+}
+
+/**
  * COMPLETION (D-004) — the single biggest token + signal win. A work_item
  * transitioning to done emits this instead of the agent hand-writing a
  * "DONE + tested, migration 137…" prose dump. Every field maps to a phrase

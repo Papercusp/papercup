@@ -1368,7 +1368,16 @@ _SUBST_ENV_RE = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+')
 # P-010 adds 'git' (the git-read family, `capability:git`). Reads only — the
 # pair's own pattern decides which `git` atoms it claims; this set only decides
 # which ones pay the operator round-trip at all.
-_SUBSTITUTION_HEADS = frozenset(('sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl', 'git'))
+#
+# 'ss'/'netstat'/'lsof' serve `service.listening-ports` → `dev:listening_ports`.
+# The pair's own bashPattern (/^(?:ss|netstat)(?:\s+-|\s*$)|^lsof\b[^\n]*\s-{1,2}i/)
+# decides which atoms it actually claims — notably only `lsof` calls carrying an
+# `-i`/`--i` socket selector. This set only decides which heads pay the operator
+# round-trip at all, so it lists the bare verbs.
+_SUBSTITUTION_HEADS = frozenset((
+    'sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl', 'git',
+    'ss', 'netstat', 'lsof',
+))
 
 
 def _substitution_prefilter_hit(cmd):

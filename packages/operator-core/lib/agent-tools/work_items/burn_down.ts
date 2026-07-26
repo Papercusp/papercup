@@ -18,6 +18,7 @@ import {
   type WorkItemKind,
 } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { countsTowardBurnDown } from '../../work-item-completion-authority';
 
 // EI-18653071581558556 — derived from the canonical cross-family union rather
 // than re-listed. This copy happened to be correct, but it was the third
@@ -78,6 +79,33 @@ export interface BurnDownResult {
     dropped: number;
     deltaSince: string | null;
     delta: number;
+    /**
+     * agent-protocol-authority-semantics-2026-07-26 P-004 — the terminal rows split by
+     * COMPLETION AUTHORITY, which is the axis that answers "how much of this actually
+     * counts as done?". `total` above counts LIFECYCLE terminality only: an item that
+     * left the queue. That is the number this tool has always reported, and it is exactly
+     * the number P-002 showed to be misleading — 65.6% of 14,663 terminal rows carried no
+     * verification evidence and every one of them read as done here.
+     *
+     * `counted` is the honest burn-down: `committed` + `validated` + `legacy`
+     * (see countsTowardBurnDown). `proposed` is the gap — closes recorded without
+     * sufficient evidence, which are OUT of the claimable pool and owned by their closer
+     * (D-007) but must not be reported as finished work.
+     *
+     * `legacy` is broken out rather than folded into `counted` silently because it is the
+     * one bucket that counts WITHOUT a judgement: pre-contract closes, deliberately never
+     * backfilled (D-005/D-008). Reporting it separately lets a leader see the contract
+     * boundary shrink over time instead of inferring it.
+     */
+    authority: {
+      counted: number;
+      committed: number;
+      validated: number;
+      proposed: number;
+      pendingHuman: number;
+      invalid: number;
+      legacy: number;
+    };
   };
   inFlight: BurnDownRow[];
   parked: BurnDownParkedRow[];
@@ -305,6 +333,7 @@ export function buildBurnDownResult(
     dropped: 0,
     deltaSince: opts.since ?? null,
     delta: 0,
+    authority: { counted: 0, committed: 0, validated: 0, proposed: 0, pendingHuman: 0, invalid: 0, legacy: 0 },
   };
   const inFlight: BurnDownRow[] = [];
   const parked: BurnDownParkedRow[] = [];
@@ -327,6 +356,15 @@ export function buildBurnDownResult(
       if (state in terminal && typeof terminal[state as keyof typeof terminal] === 'number') {
         (terminal[state as 'done' | 'passed' | 'resolved' | 'closed' | 'deprecated' | 'dropped']) += 1;
       }
+      // P-004: the authority split. `countsTowardBurnDown` is the SINGLE definition of
+      // what counts (it is also what treats a null authority on a terminal row as a
+      // legacy close) — this must never re-derive that rule inline, or the census and the
+      // contract can disagree about the same row.
+      const auth = item.completionAuthority;
+      if (countsTowardBurnDown(auth, true)) terminal.authority.counted += 1;
+      if (auth === null) terminal.authority.legacy += 1;
+      else if (auth === 'pending_human') terminal.authority.pendingHuman += 1;
+      else terminal.authority[auth] += 1;
       if (hasSince && Date.parse(item.updatedAt) > sinceMs) {
         terminal.delta += 1;
         closedRows.push({ id: item.id, kind: item.kind, title: item.title, state, harness: item.harness, ts: item.updatedAt });
