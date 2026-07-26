@@ -48,6 +48,15 @@ import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { mapWithConcurrency } from '../../gym/concurrency';
 import type { BootedHarnessFacts } from './substrate-eviction-policy';
+// P-012 slice B — the swarm-presence keepalive that lets a federating harness be
+// left dark. This import is one-way: substrate-wake-wiring reaches BACK into
+// this module only through lazy `await import`s, so there is no static cycle.
+import {
+  armSubstrateWakeKeepalive,
+  disarmSubstrateWakeKeepalive,
+  mayDeferOnWakeVerdict,
+  type ArmWakeVerdict,
+} from './substrate-wake-wiring';
 import { RemoteBootedHarnessHandle } from './remote-booted-harness';
 import { backgroundWorkersEnabled } from '../../background-workers';
 
@@ -919,7 +928,20 @@ export async function bootSingleHarness(
     if (evictionTrackingEnabled) {
       lastAccess.set(k, Date.now());
       evicted.delete(k);
+      // P-010: it is no longer being held dark on purpose either. Without this,
+      // a deferred harness that later boots normally stays in the set forever
+      // and `deferredActivationCount()` over-reports how much of the fleet is
+      // actually dark — the observability signal the whole activate-on-demand
+      // rollout is judged by.
+      deferredActivation.delete(k);
     }
+    // P-012 slice B: the engine is resident, so its OWN swarm join now covers
+    // the topic (with the corestore replication the keepalive deliberately does
+    // not hold). Drop the lightweight keepalive. Fire-and-forget + best-effort:
+    // a keepalive we fail to release is harmless (its frames find a resident
+    // engine and are dropped by the residency gate), so it must never delay or
+    // fail a boot.
+    void disarmSubstrateWakeKeepalive(workspaceId, harnessSlug).catch(() => {});
     // Stage 5 (feature-content federation): bring the send-side online — the
     // one-time backfill + outbox drain loop, plus the P-008 presence-announce
     // loop. Both are additive + best-effort (a failure must NEVER block the boot
@@ -1165,8 +1187,35 @@ export async function bootAllHarnessesForActiveWorkspace(
     // than relying on the caller's post-boot reaper start. Idempotent.
     enableSubstrateEvictionTracking();
     toBoot = [];
+    // P-012 slice B: a harness may only be left dark if SOMETHING can wake it.
+    // Local access + captured local writes were always covered; a REMOTE push
+    // was not, which is why `deferFederatingHarnesses` had to default false.
+    // Arm the swarm-presence keepalive FIRST and read its verdict per harness:
+    //   'not-needed' — private/local-only: no topic, no peers, nothing to miss;
+    //   'covered'    — joined its topic, a peer's frame will wake it;
+    //   'uncovered'  — it federates but we could NOT arm (PG down, malformed
+    //                  binding, no swarm). Leaving THAT dark is the EI-126
+    //                  divergence class, so it boots instead.
+    // Arming is I/O (a PG binding read), so it runs under the same bounded
+    // concurrency as booting rather than serially or as floating promises.
+    const deferCandidates = pairs.filter((p) => deferKeys.has(key(p.wsId, p.slug)));
+    const wakeVerdicts = new Map<string, ArmWakeVerdict>();
+    await mapWithConcurrency(deferCandidates, bootConcurrency, async (p) => {
+      wakeVerdicts.set(
+        key(p.wsId, p.slug),
+        await armSubstrateWakeKeepalive(p.wsId, p.slug, {
+          resolveSwarmBinding: opts.resolveSwarmBinding,
+        }),
+      );
+    });
+    let uncovered = 0;
     for (const p of pairs) {
-      if (deferKeys.has(key(p.wsId, p.slug))) {
+      const k = key(p.wsId, p.slug);
+      // A candidate with no recorded verdict is treated as UNCOVERED — the
+      // fail-CLOSED direction for deferral, matching how the activation policy
+      // treats unknown provenance (boot it rather than judge it on absent facts).
+      const mayDefer = deferKeys.has(k) && mayDeferOnWakeVerdict(wakeVerdicts.get(k) ?? 'uncovered');
+      if (mayDefer) {
         markHarnessActivationDeferred(p.wsId, p.slug);
         deferredResults.push({
           workspaceId: p.wsId,
@@ -1175,12 +1224,16 @@ export async function bootAllHarnessesForActiveWorkspace(
           deferReason: 'inactive',
         });
       } else {
+        if (deferKeys.has(k)) uncovered += 1;
         toBoot.push(p);
       }
     }
     console.log(
       `[boot-all] activate-on-demand: booting ${toBoot.length}/${pairs.length} harness(es); ` +
-        `${deferredResults.length} deferred (wake on access or captured write)`,
+        `${deferredResults.length} deferred (wake on access, captured write, or peer frame)` +
+        (uncovered > 0
+          ? `; ${uncovered} federating harness(es) booted because no remote wake could be armed`
+          : ''),
     );
   }
   const bootResults = await mapWithConcurrency(toBoot, bootConcurrency, ({ wsId, slug }) =>

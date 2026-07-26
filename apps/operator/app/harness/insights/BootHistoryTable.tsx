@@ -115,6 +115,15 @@ export interface BootHistoryTableProps {
   nowMs?: number;
 }
 
+// EI-18726542722265915: RichGrid's getRowId is 1-param — (row: TRow) => string —
+// every internal call site (rows.map(getRowId), getRowId(r), …) passes only the
+// row, never an index, so widening the prop's signature to 2-param would be
+// misleading (the index arg would always be undefined at every real call site
+// except this one). Instead thread the disambiguating index onto the row itself
+// before it reaches RichGrid, so getRowId stays a plain 1-param function while
+// keeping the same uniqueness guarantee for exact-duplicate entries.
+type BootHistoryRow = BootHistoryEntry & { _rowIndex: number };
+
 const KIND_MARK: Record<BootHistoryKind, string> = {
   boot_start: '·',
   boot_ok: '✓',
@@ -232,10 +241,10 @@ export function BootHistoryTable(props: BootHistoryTableProps): ReactNode {
   }
   return (
     <div style={{ height: Math.min(520, 32 + entries.length * 30 + 4) }} data-testid="boot-history-table">
-      <RichGrid<BootHistoryEntry>
+      <RichGrid<BootHistoryRow>
         columns={columns(now)}
-        rows={[...entries]}
-        getRowId={(e, i) => `${e.ts}-${e.workspaceId}-${e.harnessSlug}-${e.kind}-${i}`}
+        rows={entries.map((e, i) => ({ ...e, _rowIndex: i }))}
+        getRowId={(row) => `${row.ts}-${row.workspaceId}-${row.harnessSlug}-${row.kind}-${row._rowIndex}`}
         rowMinHeight={30}
         headerHeight={32}
         rowProps={({ row }) => ({ 'data-testid': `boot-history-row-${row.kind}` })}

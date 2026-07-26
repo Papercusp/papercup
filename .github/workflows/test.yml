@@ -91,6 +91,31 @@ jobs:
           CI: 'true'
         run: node scripts/affected-tests.mjs --integration
 
+      # papercusp-desktop tests (WI-6074). This submodule is NOT a member of the
+      # root package.json `workspaces` array, so `affected-tests.mjs` above can
+      # never select any of its tests — before this step, NOTHING in CI or the
+      # green-checkpoint gate ran a single papercusp-desktop test, and the whole
+      # workspace (the live-federation rig + release-leg scripts) was untested.
+      # It is present here because `actions/checkout` uses submodules: recursive.
+      #
+      # Both suites below are verified GREEN and verified HERMETIC by re-running
+      # them with docker/ssh/scp/rsync shadowed by exit-127 stubs on PATH: zero
+      # egress attempts, 7/7 selftests + 27/27 build-script guards still passing.
+      # They need no node_modules of their own (node: builtins + bash only),
+      # which matters because the root install does not cover this submodule.
+      #
+      # Deliberately NOT wired here:
+      #   test:rust   — needs a Rust toolchain this job does not install.
+      #   test:config — genuinely RED right now (WI-6075): the 2GB seed is being
+      #                 packaged into the GUI/base bundle, which that test exists
+      #                 to forbid. Wiring it before WI-6075 lands would red the
+      #                 gate for the whole fleet. Add it as part of WI-6075.
+      - name: Desktop tests (papercusp-desktop selftests + build-script guards)
+        working-directory: papercusp-desktop
+        run: |
+          npm run test:selftests
+          npm run test:shell
+
       # Plan-doc lint — fast read-only check against apps/operator/docs/plans/.
       # Fails the build on any error; warnings (e.g. missing ## Now)
       # surface in logs but don't gate. Legacy plans (no frontmatter)

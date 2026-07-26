@@ -238,4 +238,92 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
       secondAttached: true,
     });
   }, 30_000);
+
+  /**
+   * The one surviving leg of the clobber theory. The case above passes because
+   * the serve-side core was ALREADY OPEN when `replicate()` ran, and corestore
+   * eagerly attaches every open core at that moment — so the lazy
+   * `ondiscoverykey` callback (the thing `pair()` clobbers) is never consulted.
+   *
+   * A core that is on disk but NOT open can only be served through that lazy
+   * callback. If the second corestore's `pair()` really does strand the first,
+   * THIS is where it shows: same live connection, same handshake, but the
+   * requested core is answered by the wrong store's `_attachMaybe`.
+   */
+  it('COLD CORE CONTROL: with ONE corestore on the socket, a cold on-disk core IS served lazily', async () => {
+    const serveDir = makeStoreDir('ssc-coldctl-');
+    const warm = storeAt(serveDir);
+    await warm.ready();
+    const keyHex = await seedLog(warm, 'COLDCTL-1');
+    await warm.close();
+
+    const serveStore = storeAt(serveDir);
+    await serveStore.ready();
+    const fetchStore = makeStore('ssc-coldctl-fetch-');
+    await fetchStore.ready();
+
+    const [sockFetch, sockServe] = await noiseStreamPair();
+    serveStore.replicate(sockServe); // the ONLY store on this socket
+    fetchStore.replicate(sockFetch);
+    await waitFor(() => false, 250);
+
+    const remote = await openRemoteLog(fetchStore, keyHex);
+    const attached = await waitFor(() => (remote.peersCount?.() ?? 0) > 0, 4_000);
+    // eslint-disable-next-line no-console
+    console.log(`[WI-5673 cold CONTROL] attached=${attached} (peers=${remote.peersCount?.() ?? 0})`);
+
+    // This MUST pass — it is what isolates the failure below to the second
+    // corestore's pair() clobber rather than to cold cores being unservable.
+    expect(attached).toBe(true);
+    await remote.update();
+    expect(remote.length).toBe(1);
+  }, 30_000);
+
+  it('COLD CORE + a second corestore on the socket: PROVEN BROKEN — the log is unservable forever on a live connection (characterization; INVERT when fixed)', async () => {
+    const serveFirstDir = makeStoreDir('ssc-cold-1-');
+    const serveSecondDir = makeStoreDir('ssc-cold-2-');
+
+    // Write the log, then CLOSE the whole store so the core is cold on disk.
+    const warm = storeAt(serveFirstDir);
+    await warm.ready();
+    const keyFirst = await seedLog(warm, 'COLD-1');
+    await warm.close();
+
+    const serveFirst = storeAt(serveFirstDir);
+    await serveFirst.ready();
+    const serveSecond = storeAt(serveSecondDir);
+    await serveSecond.ready();
+    // serveSecond is the LAST to replicate, so it owns the hypercore/alpha
+    // notify slot — the core being requested belongs to serveFirst.
+    const keySecond = await seedLog(serveSecond, 'COLD-2');
+
+    const fetchStore = makeStore('ssc-cold-fetch-');
+    await fetchStore.ready();
+
+    const [sockFetch, sockServe] = await noiseStreamPair();
+    serveFirst.replicate(sockServe);
+    serveSecond.replicate(sockServe);
+    fetchStore.replicate(sockFetch);
+    await waitFor(() => false, 250);
+
+    const remoteCold = await openRemoteLog(fetchStore, keyFirst);
+    const coldAttached = await waitFor(() => (remoteCold.peersCount?.() ?? 0) > 0, 4_000);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[WI-5673 cold probe] coldAttached=${coldAttached} (peers=${remoteCold.peersCount?.() ?? 0}) ` +
+        `warmKeyOnSecondStore=${keySecond.slice(0, 8)}`,
+    );
+
+    // ⚠ CHARACTERIZATION OF A LIVE DEFECT — this asserts the BROKEN behaviour
+    // on purpose, so the shared green gate is not red-pinned by a known bug
+    // while the fix is designed. The three assertions above it are the controls
+    // that make this one mean "the second corestore's pair() clobber", and
+    // nothing else: same cold core + same wiring with ONE store attaches fine.
+    //
+    // WHEN THE FIX LANDS, INVERT THIS: `expect(coldAttached).toBe(true)` plus
+    // the update()/length/get() checks the COLD CORE CONTROL case already runs.
+    // A green here after a fix means the fix did NOT work.
+    expect(coldAttached).toBe(false);
+    expect(remoteCold.peersCount?.() ?? 0).toBe(0);
+  }, 30_000);
 });
