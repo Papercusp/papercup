@@ -69,6 +69,46 @@ describe('codeSmellsLikeCode + the task nudge (WI-2874)', () => {
   });
 });
 
+// EI-18655063958515097: "a residual split off a closing plan item silently leaves
+// the lane — no plan link, not claimable, parent reads done while its acceptance
+// ask is unmet". Non-blocking nudge (never refuses the create) when a residual-
+// smelling item is filed with no plan_item/targetPlanItem link.
+describe('residualLinkNudge (EI-18655063958515097)', () => {
+  it('nudges when a residual-smelling item is created with no plan_item link', async () => {
+    const b = await body({
+      kind: 'bug',
+      title: 'residual: the real second frame acceptance ask was not met, split off from P-413',
+    });
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[0].residualLinkNudge).toMatch(/plan_item/);
+  });
+
+  it('does NOT nudge when plan_item is already set (properly linked)', async () => {
+    const b = await body({
+      kind: 'bug',
+      title: 'residual: split off from P-413, real second frame not met',
+      plan_item: { slug: 'some-plan', item: 'P-413' },
+    });
+    expect(b.results[0].residualLinkNudge).toBeUndefined();
+  });
+
+  it('does NOT nudge on an ordinary (non-residual-smelling) item', async () => {
+    const b = await body({ kind: 'bug', title: 'fix the login race condition' });
+    expect(b.results[0].residualLinkNudge).toBeUndefined();
+  });
+
+  it('works in the bulk items:[…] path too', async () => {
+    const b = await body({
+      items: [
+        { kind: 'bug', title: 'split off the remaining acceptance criteria' },
+        { kind: 'bug', title: 'a totally unrelated fix' },
+      ],
+    });
+    expect(b.results[0].residualLinkNudge).toMatch(/plan_item/);
+    expect(b.results[1].residualLinkNudge).toBeUndefined();
+  });
+});
+
 describe('work_items:create handler (keyed-array)', () => {
   it('creates one inline and returns { ok, id, title, workItem }', async () => {
     const b = await body({ kind: 'bug', title: 'boom' });

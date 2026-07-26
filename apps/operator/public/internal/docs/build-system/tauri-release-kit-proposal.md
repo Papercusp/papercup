@@ -35,11 +35,11 @@ the whole design.
 The canonical tree is the **`papercup/papercusp-desktop/` git submodule**
 (v0.0.2). It builds three platform families, all driven from `bin/`:
 
-| Layer                                                     | Driver                                                                | Where it runs                                                                     |
-| --------------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Linux `.deb` / `.AppImage` / `.rpm` (x86\_64, opt. arm64) | `bin/release-local.sh` → `tauri build`                                | dev host, locally                                                                 |
-| macOS universal `.dmg`                                    | `bin/mac-vm-build.sh` → `tauri build --target universal-apple-darwin` | macOS VM over SSH (`:2222`)                                                       |
-| Windows `.msi` + NSIS `.exe`                              | `bin/build-windows-on-vm.sh` → `win-build.ps1`                        | Windows VM over SSH (`:2223`); WSL2 runtime distro from `scripts/build-rootfs.sh` |
+| Layer                                                     | Driver                                                                                               | Where it runs                                                                                         |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Linux `.deb` / `.AppImage` / `.rpm` (x86\_64, opt. arm64) | `bin/release-local.sh` → `tauri build`                                                               | dev host, locally                                                                                     |
+| macOS universal `.dmg`                                    | `bin/mac-vm-build.sh` → `tauri build --target universal-apple-darwin`                                | macOS VM over SSH (`:2222`)                                                                           |
+| Windows Inno Setup `.exe`                                 | `bin/build-windows-cross.sh` (WI-5651, 2026-07-20, retired the VM leg this row originally described) | cross-compiled on THIS Linux host — no VM, no SSH; WSL2 runtime distro from `scripts/build-rootfs.sh` |
 
 `bin/release-local.sh` is the spine. Its steps:
 

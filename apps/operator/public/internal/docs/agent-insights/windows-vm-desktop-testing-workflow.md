@@ -3,12 +3,31 @@ URL: /internal/docs/agent-insights/windows-vm-desktop-testing-workflow
 
 How to build, install, launch, observe and tear down the Windows desktop app in the local QEMU Windows 11 VM — schtasks launch, bk.log observation, wsl --exec (never `wsl --`), UNC discovery, and the WSL signal boundary.
 
+import { Aside } from '@astrojs/starlight/components';
+
+WI-5651 permanently retired the QEMU Windows 11 VM as a **build** mechanism —
+`bin/build-windows-on-vm.sh` (named throughout this doc) no longer exists.
+Windows is now cross-compiled on Linux by `bin/build-windows-cross.sh`
+(cargo-xwin + Inno Setup under wine; see `papercusp-desktop/SHIPPING.md` §
+Windows). The **install/launch/teardown testing recipe below** (schtasks
+launch, `bk.log` observation, `wsl --exec`, UNC discovery, the WSL signal
+boundary) was written for verifying a build produced BY that VM script, inside
+that same VM — it is preserved here because the WSL/schtasks/pty sharp edges
+it documents describe the SHIPPED APP's real behavior and likely still apply
+to testing a cross-built artifact, but **no one has re-verified this recipe
+against a `build-windows-cross.sh` artifact as of this note** (a fresh Windows
+VM/box would still be needed to install and exercise the cross-built
+installer — that part of the workflow is unaffected by how the artifact was
+produced). Treat the recipe below as a strong starting point, not a
+confirmed-current procedure.
+
 ## What
 
 The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`)
-is built and tested entirely on the local QEMU Windows 11 VM. The working
-recipe, assembled over \~14 fix iterations on 2026-06-11, with every sharp
-edge that cost an hour:
+was built and tested entirely on the local QEMU Windows 11 VM (see the
+superseded-mechanism callout above — the BUILD step has since moved off the
+VM). The working recipe, assembled over \~14 fix iterations on 2026-06-11, with
+every sharp edge that cost an hour:
 
 ## The recipe
 

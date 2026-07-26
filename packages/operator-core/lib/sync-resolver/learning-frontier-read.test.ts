@@ -10,7 +10,13 @@
 import { describe, expect, it } from 'vitest';
 import { FLAGS } from '@papercusp/flags';
 import { LEARNING_SINGLETONS } from '../blueprint/seed-learning-singletons';
-import { FRONTIER_LANE_FLAGS, governorRowMatchesLane } from './learning-frontier-read';
+import {
+  applyFrontierPotLens,
+  FRONTIER_LANE_FLAGS,
+  governorRowMatchesLane,
+  type FrontierGovernorInfo,
+  type FrontierLaneSnapshot,
+} from './learning-frontier-read';
 
 describe('FRONTIER_LANE_FLAGS', () => {
   it('covers every LEARNING_SINGLETONS lane (explicit null = deliberately ungated)', () => {
@@ -51,5 +57,60 @@ describe('governorRowMatchesLane', () => {
   it('does not match unrelated registrations', () => {
     expect(governorRowMatchesLane('gym:papercusp', 'scout')).toBe(false);
     expect(governorRowMatchesLane('gym:papercusp', 'regret')).toBe(false);
+  });
+});
+
+describe('applyFrontierPotLens (pot-scope-all-learnings P-005)', () => {
+  const lane = (blueprintId: string, potSlug: string | null): FrontierLaneSnapshot => ({
+    blueprintId,
+    alwaysOn: false,
+    status: 'firing',
+    active: true,
+    collision: false,
+    expectedMaterialized: true,
+    lastFiredAt: null,
+    daysSinceFire: null,
+    activityLastAt: null,
+    activitySource: null,
+    flagKey: null,
+    flagOn: null,
+    potSlug,
+    governor: null,
+    outcome: null,
+  });
+  const gov = (loopId: string, potSlug: string | null): FrontierGovernorInfo => ({
+    loopId,
+    potSlug,
+    budgetUsd: null,
+    spentUsd: 0,
+    budgetKind: 'monthly',
+    enabled: true,
+    enforcement: 'advisory',
+    priority: 0,
+  });
+
+  it('no lens ⇒ passes both lists through untouched', () => {
+    const lanes = [lane('scout', 'oddsmith'), lane('gym', null)];
+    const unmatched = [gov('regret:x', 'oddsmith'), gov('drill', null)];
+    expect(applyFrontierPotLens(lanes, unmatched, null)).toEqual({
+      lanes,
+      unmatchedGovernor: unmatched,
+    });
+  });
+
+  it("drops lanes registered to ANOTHER pot but keeps pot-less machinery lanes (they aren't tenant content)", () => {
+    const mine = lane('scout', 'oddsmith');
+    const theirs = lane('gym', 'papercusp');
+    const machinery = lane('iq-battery', null);
+    const { lanes } = applyFrontierPotLens([mine, theirs, machinery], [], 'oddsmith');
+    expect(lanes).toEqual([mine, machinery]);
+  });
+
+  it('filters unmatched governor rows STRICTLY — a null pot is excluded under any lens (D-002)', () => {
+    const mine = gov('regret:oddsmith', 'oddsmith');
+    const theirs = gov('regret:papercusp', 'papercusp');
+    const unattributed = gov('drill', null);
+    const { unmatchedGovernor } = applyFrontierPotLens([], [mine, theirs, unattributed], 'oddsmith');
+    expect(unmatchedGovernor).toEqual([mine]);
   });
 });

@@ -4184,16 +4184,25 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'learning.scout': {
-    argsSchema: z.object({ cycleId: z.string().optional() }).optional(),
+    argsSchema: z
+      .object({ cycleId: z.string().optional(), hive: z.string().max(120).optional() })
+      .optional(),
     resolve: async (args) => {
-      const { cycleId } = (args ?? {}) as { cycleId?: string };
+      const { cycleId, hive } = (args ?? {}) as { cycleId?: string; hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
       const { readScoutSnapshot } = await import('./learning-scout-read');
       try {
         const ws = activeWorkspaceId();
+        // Pot lens (P-005): the routed-ideas legs scope by member-harness slugs
+        // (the learning.improvements pattern); the tick leg scopes by pot_slug.
+        const memberSlugs = hive ? await resolveHiveMemberSlugs(hive, ws) : null;
         return await routeWithWorkspace(async (tx) => [
-          await readScoutSnapshot(tx, ws, { selectedCycleId: cycleId ?? null }),
+          await readScoutSnapshot(tx, ws, {
+            selectedCycleId: cycleId ?? null,
+            hive: hive ?? null,
+            hiveMemberSlugs: memberSlugs,
+          }),
         ]);
       } catch (err) {
         console.warn('[learning.scout] scout read failed:', err instanceof Error ? err.message : err);
@@ -4273,13 +4282,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // empty snapshot, never a 500. Returns a 1-element array (client reads
   // data[0]).
   'learning.frontier': {
-    resolve: async () => {
+    argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
+    resolve: async (args) => {
+      const { hive } = (args ?? {}) as { hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
       const { readFrontierSnapshot } = await import('./learning-frontier-read');
       try {
         const ws = activeWorkspaceId();
-        return await routeWithWorkspace(async (tx) => [await readFrontierSnapshot(tx, ws)]);
+        return await routeWithWorkspace(async (tx) => [
+          await readFrontierSnapshot(tx, ws, { hive: hive ?? null }),
+        ]);
       } catch (err) {
         console.warn('[learning.frontier] frontier read failed:', err instanceof Error ? err.message : err);
         return [{ lanes: [], unmatchedGovernor: [], generatedAt: new Date().toISOString() }];

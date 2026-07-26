@@ -54,6 +54,9 @@ export const FRONTIER_LANE_FLAGS: Record<string, FlagKey | null> = {
 /** The governor registration slice the grid renders (read-only). */
 export interface FrontierGovernorInfo {
   loopId: string;
+  /** The pot the registration is keyed to (migration 659 / P-004 re-key); null
+   *  for a pre-re-key row that the backfill could not attribute. */
+  potSlug: string | null;
   budgetUsd: number | null;
   spentUsd: number;
   budgetKind: string;
@@ -78,6 +81,9 @@ export interface FrontierLaneSnapshot {
   flagKey: string | null;
   /** Resolved flag state; null when the lane has no flag or the read degraded. */
   flagOn: boolean | null;
+  /** The lane's pot identity, via its matched governor registration; null when
+   *  the lane has no registration (pot-agnostic workspace machinery). */
+  potSlug: string | null;
   /** FB-01 governor registration (read-only), when one matches this lane. */
   governor: FrontierGovernorInfo | null;
   /** WI-5800: what this lane has produced; null when the lane has no outcome
@@ -273,7 +279,12 @@ export function governorRowMatchesLane(loopId: string, blueprintId: string): boo
   return loopId.includes(blueprintId);
 }
 
-export async function readFrontierSnapshot(sql: Sql, workspaceId: string): Promise<FrontierSnapshot> {
+export async function readFrontierSnapshot(
+  sql: Sql,
+  workspaceId: string,
+  opts: { hive?: string | null } = {},
+): Promise<FrontierSnapshot> {
+  const hive = typeof opts.hive === 'string' && opts.hive.trim() ? opts.hive.trim() : null;
   // Leg 1 — liveness, from the shared reader (never re-derived).
   let health: LearningLoopHealth[] = [];
   try {
@@ -308,6 +319,7 @@ export async function readFrontierSnapshot(sql: Sql, workspaceId: string): Promi
     const regs = await listLearningLoops(sql, { workspaceId });
     governorRows = regs.map((r) => ({
       loopId: r.loopId,
+      potSlug: r.potSlug ?? null,
       budgetUsd: r.budgetUsd,
       spentUsd: r.spentUsd,
       budgetKind: r.budgetKind,
@@ -345,14 +357,35 @@ export async function readFrontierSnapshot(sql: Sql, workspaceId: string): Promi
       activitySource: h.activitySource,
       flagKey,
       flagOn: flagKey == null ? null : (flagStates.get(flagKey) ?? null),
+      potSlug: gov?.potSlug ?? null,
       governor: gov,
       outcome: outcomes[h.blueprintId] ?? null,
     };
   });
 
+  const unmatched = governorRows.filter((g) => !matched.has(g.loopId));
   return {
-    lanes,
-    unmatchedGovernor: governorRows.filter((g) => !matched.has(g.loopId)),
+    ...applyFrontierPotLens(lanes, unmatched, hive),
     generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Pot lens (pot-scope-all-learnings P-005), pure so the contract is pinnable:
+ * a lane whose governor registration belongs to ANOTHER pot is dropped; a lane
+ * with no pot identity is workspace MACHINERY liveness and stays visible under
+ * every lens — hiding it would render most pot lenses as "every loop dead".
+ * Governor registrations are pot-scoped rows, so the unmatched list filters
+ * strictly (a null pot is excluded under any lens, D-002).
+ */
+export function applyFrontierPotLens(
+  lanes: FrontierLaneSnapshot[],
+  unmatchedGovernor: FrontierGovernorInfo[],
+  hive: string | null,
+): Pick<FrontierSnapshot, 'lanes' | 'unmatchedGovernor'> {
+  if (!hive) return { lanes, unmatchedGovernor };
+  return {
+    lanes: lanes.filter((l) => l.potSlug == null || l.potSlug === hive),
+    unmatchedGovernor: unmatchedGovernor.filter((g) => g.potSlug === hive),
   };
 }

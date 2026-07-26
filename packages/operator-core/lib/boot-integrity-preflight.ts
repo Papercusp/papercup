@@ -50,11 +50,27 @@ export const CRITICAL_BOOT_MODULES: readonly string[] = [
   //
   // WI-5801: `@typespec/ts-http-runtime/package.json` and `@azure/core-util/package.json`
   // used to sit here as sentinels for "mem0's transitive azure/typespec chain". They were
-  // REMOVED because mem0ai@3.0.3 depends only on axios/openai/uuid/zod — that chain is gone
-  // from the tree entirely, and neither package appears in package-lock.json or is declared
-  // by anything. So any `npm install` prunes them as extraneous, after which this preflight
-  // resolve-failed 2/9 and exited 78, refusing to boot a PERFECTLY HEALTHY tree. It took
-  // papercup-bg-host (routines/git-sync/substrate) into a crash-loop fleet-wide.
+  // REMOVED because at that moment neither was in node_modules, in package-lock.json, or
+  // declared by anything — so any `npm install` pruned them as extraneous, after which this
+  // preflight resolve-failed 2/9 and exited 78, refusing to boot a PERFECTLY HEALTHY tree.
+  // It took papercup-bg-host (routines/git-sync/substrate) into a crash-loop fleet-wide.
+  //
+  // CORRECTION (EI-18661577149752049, hours later the same day): the original note here said
+  // that chain was "gone from the tree entirely" because mem0ai@3.0.3 depends only on
+  // axios/openai/uuid/zod. That reasoned about mem0ai's DEPENDENCIES and missed its PEERS —
+  // the azure/typespec chain arrives via mem0ai's peerDependencies (@azure/identity,
+  // @azure/search-documents), which `mem0ai/oss` imports EAGERLY at module eval. Both are
+  // plain non-optional package-lock.json entries again. Keeping them OUT of this manifest
+  // is still correct — they must never gate boot — but do not rely on "that chain is gone".
+  // Why they were absent that day: an ABORTED `rm -rf node_modules && npm install` (it died
+  // on ENOTEMPTY mid-run, racing a concurrent writer) left the tree missing packages the
+  // LOCKFILE REQUIRES. Note that is the INVERSE of the prune above, and this manifest can
+  // detect neither: see EI-18666996942859193 — a both-directions package-lock ⇄ node_modules
+  // diff is the check that would have caught BOTH incidents, with no list to maintain.
+  //
+  // Do NOT "fix" a missing peer by adding it here (the dead release-fixer that night was
+  // about to add `ollama`). That just mints another sentinel — the very anti-pattern that
+  // caused this incident. Declare the peer in the package.json that owns it instead.
   //
   // That is precisely the false positive the manifest comment above warns about, and it is
   // the specific hazard of a SENTINEL: a sentinel's whole job is to be a package you do not

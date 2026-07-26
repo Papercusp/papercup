@@ -78,14 +78,22 @@ function ago(iso: string | null): string {
 }
 
 export function FrontierPanel({
+  hive = "",
+  hiveReady = true,
   onStatus,
 }: {
+  /** Pot lens (pot-scope-all-learnings P-005): lanes belonging to another pot
+   *  are filtered server-side; empty = workspace-wide (no lens). */
+  hive?: string;
+  /** WI-5412 gate: don't fetch until the tab's hive lens is resolved. */
+  hiveReady?: boolean;
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
 } = {}) {
   const sync = useSyncQuery<FrontierSnapshot>({
     queryName: "learning.frontier",
-    args: {},
+    args: hive ? { hive } : {},
     staleTime: 30_000,
+    enabled: hiveReady,
   });
   const snap = sync.data?.[0];
   const lanes = Array.isArray(snap?.lanes) ? snap.lanes : [];

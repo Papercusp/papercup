@@ -1,7 +1,7 @@
 # option_env! bakes at COMPILE time — and the compile happens on a build VM, so the env does not cross ssh
 URL: /internal/docs/agent-insights/compile-time-env-bake-does-not-cross-ssh
 
-PAPERCUSP_RELEASE_HOST is baked into the binary by option_env! at compile time. Mac and Windows compile on build VMs reached over ssh, where env does not travel — so cargo bakes an EMPTY string and the build SUCCEEDS. The app then polls nothing and the Tauri updater reports 'up to date' forever. Gate on the built bytes, not on the variable being set.
+PAPERCUSP_RELEASE_HOST is baked into the binary by option_env! at compile time. Mac compiles on a build VM reached over ssh (Windows no longer does — WI-5651 moved it to a local Linux cross-compile), where env does not travel — so cargo bakes an EMPTY string and the build SUCCEEDS. The app then polls nothing and the Tauri updater reports 'up to date' forever. Gate on the built bytes, not on the variable being set.
 
 `main.rs` resolves the update source like this:
 
@@ -13,7 +13,11 @@ std::env::var("PAPERCUSP_RELEASE_HOST")                       // runtime overrid
 
 A packaged install has no runtime env, so **the baked value is the only one that
 will ever exist in the field**. And `option_env!` reads the environment of the
-**cargo process** — which, for mac and windows, runs **on a build VM, over ssh**.
+**cargo process** — which, for mac, runs **on a build VM, over ssh** (WI-5651
+retired the Windows VM; `build-windows-cross.sh` now cross-compiles directly on
+the release host, no ssh hop, so this specific silent-empty-bake risk is
+Mac-only today — the guard below still checks both legs, and Windows staying
+in-process is a reason it's *less* exposed, not a reason to drop the check).
 
 **Environment does not cross ssh.** It arrives only if something explicitly puts it
 there:

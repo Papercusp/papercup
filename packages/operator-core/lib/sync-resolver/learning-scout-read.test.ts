@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Sql } from 'postgres';
+import { PLATFORM_POT_SLUG } from '../pot-membership';
 import {
   readScoutSnapshot,
   normalizeScoutTick,
@@ -731,5 +732,42 @@ describe('isUndefinedTable', () => {
     expect(isUndefinedTable(Object.assign(new Error('x'), { code: '42703' }))).toBe(false);
     expect(isUndefinedTable(new Error('x'))).toBe(false);
     expect(isUndefinedTable(null)).toBe(false);
+  });
+});
+
+describe('pot lens (pot-scope-all-learnings P-005)', () => {
+  /** Wrap fakeSql to record every tagged-template text — the hive predicates
+   *  arrive as their own fragment invocations, not inside the outer query. */
+  function recordingSql(texts: string[]): Sql {
+    const base = fakeSql({});
+    const fn = (strings: TemplateStringsArray | string[], ...vals: unknown[]) => {
+      if (Array.isArray(strings)) texts.push((strings as readonly string[]).join('¦'));
+      return (base as unknown as (s: unknown, ...v: unknown[]) => unknown)(strings, ...vals);
+    };
+    return fn as unknown as Sql;
+  }
+
+  it('threads the lens: tick leg filters pot_slug, routed legs filter member harnesses — and a non-platform pot gets NO null-harness escape hatch', async () => {
+    const texts: string[] = [];
+    await readScoutSnapshot(recordingSql(texts), 'ws-1', {
+      hive: 'oddsmith',
+      hiveMemberSlugs: ['oddsmith', 'odds-web'],
+    });
+    expect(texts.some((t) => t.includes('pot_slug ='))).toBe(true);
+    expect(texts.some((t) => t.includes('harness_slug IN'))).toBe(true);
+    expect(texts.some((t) => t.includes('harness_slug IS NULL'))).toBe(false);
+  });
+
+  it('the PLATFORM pot lens additionally includes NULL-harness routed rows (write-side resolveLearningPotSlug step-3 mirror)', async () => {
+    const texts: string[] = [];
+    await readScoutSnapshot(recordingSql(texts), 'ws-1', { hive: PLATFORM_POT_SLUG });
+    expect(texts.some((t) => t.includes('harness_slug IS NULL'))).toBe(true);
+  });
+
+  it('no hive ⇒ no pot predicates anywhere (workspace-wide read unchanged)', async () => {
+    const texts: string[] = [];
+    await readScoutSnapshot(recordingSql(texts), 'ws-1');
+    expect(texts.some((t) => t.includes('pot_slug ='))).toBe(false);
+    expect(texts.some((t) => t.includes('harness_slug IN'))).toBe(false);
   });
 });

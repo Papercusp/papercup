@@ -42,8 +42,10 @@ platform is correctly skipped rather than warned about (it is supposed to be abs
 
 This is the one that will fool you, and it fooled two agents in opposite directions.
 
-`build-windows-on-vm.sh` packs `sidecar/` **as-is** and never rebuilds it (L190),
-keeping `sidecar/**/node_modules` (L380). That looks exactly like a bug: the Windows
+`build-windows-cross.sh` (WI-5651 retired the VM-based `build-windows-on-vm.sh` that
+used to do this) packs `sidecar/` **as-is** and never rebuilds it — it fails early if
+`src-tauri/sidecar/apps` isn't already populated by `build-desktop-sidecar.sh` — keeping
+`sidecar/**/node_modules`. That looks exactly like a bug: the Windows
 app appears to get *linux* natives and a linux ELF `bin/node`.
 
 It is not a bug. **On Windows the sidecar runs inside WSL** — `main.rs`

@@ -1,9 +1,29 @@
 # Windows Authenticode code signing — the turnkey public-release runbook
 URL: /internal/docs/agent-insights/windows-authenticode-signing-runbook
 
-For a PUBLIC Windows release the NSIS installer + bundled .exe MUST be Authenticode-signed, or Windows SmartScreen/Defender flags it ('Windows protected your PC — unknown publisher') on every fresh machine and most users abandon at that screen. The build pipeline (build-windows-on-vm.sh → tauri build --bundles nsis) signs automatically WHEN an Authenticode cert is present in env/store — so this is gated only on the OWNER supplying a code-signing certificate: an OV cert (a .pfx + password, importable) or — strongly preferred — an EV cert (hardware token / cloud HSM) which grants INSTANT SmartScreen trust. An agent cannot obtain either. Mirrors the macOS Developer ID runbook.
+For a PUBLIC Windows release the Inno Setup installer + bundled .exe MUST be Authenticode-signed, or Windows SmartScreen/Defender flags it ('Windows protected your PC — unknown publisher') on every fresh machine and most users abandon at that screen. The build pipeline (build-windows-cross.sh, cross-compiled on Linux; osslsigncode) signs automatically WHEN an Authenticode cert is present in env — so this is gated only on the OWNER supplying a code-signing certificate: an OV cert (a .pfx + password, importable) or — strongly preferred — an EV cert (hardware token / cloud HSM) which grants INSTANT SmartScreen trust. An agent cannot obtain either. Mirrors the macOS Developer ID runbook. NOTE: written against the retired VM/signtool pipeline (WI-5651) — see the in-page superseded-mechanism callout.
 
 import { Aside } from '@astrojs/starlight/components';
+
+This runbook was written against the VM-based pipeline: `bin/build-windows-on-vm.sh`
+running `tauri build --bundles nsis` inside the QEMU Windows VM, signed via Windows
+`signtool` against a thumbprint in the VM's `CurrentUser\My` cert store. WI-5651
+retired that VM entirely — Windows is now cross-compiled on Linux by
+`bin/build-windows-cross.sh` (cargo-xwin + Inno Setup under wine), which signs via
+**`osslsigncode`** directly (no Windows cert store, no `signtool`), gated on
+`WINDOWS_CERT_BASE64` (a base64 PKCS#12 cert, **renamed** from this doc's
+`WINDOWS_CERT_PFX_BASE64`) + `WINDOWS_CERT_PASSWORD`. `WINDOWS_SIGN_DIGEST`
+(default `sha256`) and `WINDOWS_SIGN_TIMESTAMP_URL` (default digicert, RFC3161)
+carry the same names/defaults. Unset the cert var ⇒ unsigned build, same
+fail-open behavior as before. **Not re-verified under the new script:** the
+EV/hardware-token/cloud-HSM (`signCommand`/`azuresigntool`) path below —
+`osslsigncode` signs from a PKCS#12 blob and may not support a non-exportable
+HSM key the same way `signtool` did; confirm with the owner's actual EV
+provisioning before assuming it carries over unchanged. The OV/PFX mechanics,
+the SmartScreen/Defender rationale, and the "what the owner must provide" list
+below are otherwise still accurate — only the *build-side* signing procedure
+changed. See `bin/build-windows-cross.sh`'s own header comment (Gate 3) for the
+current authoritative env contract.
 
 The one **owner-action** blocker between the current Windows build and a
 confident **public** release — the exact parallel of the macOS Developer ID
@@ -97,9 +117,9 @@ lands — see below.
 A physical USB token can't be used by a headless VM build — choose cloud-HSM (or
 EV via a vendor cloud-signing service) for automation.
 
-## Per-build env (set before `bin/build-windows-on-vm.sh`)
+## Per-build env — VM-era shape (see the callout above for the current `build-windows-cross.sh` var names)
 
-The script reads these host-side and threads the signing config into the in-VM
+The VM script read these host-side and threaded the signing config into the in-VM
 build. Set **one** of the two paths:
 
 ```sh
@@ -156,14 +176,17 @@ A truly fresh Windows machine downloading the signed installer should then:
 
 ## Caveats specific to this app
 
-* **NSIS 2 GiB datablock cap.** The Windows payload is trimmed
-  (`code-server`, `bin/omp` excluded — see `build-windows-on-vm.sh`) so the
-  installer stays under the makensis \~2 GiB datablock limit; signing doesn't
-  change that, but keep an eye on payload growth.
-* **Sign the inner `.exe` too, not just the installer.** Tauri's
-  `certificateThumbprint`/`signCommand` config signs the app `.exe` and the NSIS
-  `*-setup.exe`; confirm both are signed (`signtool verify` each) — an unsigned
-  inner binary still triggers Defender on first run.
+* **Payload trimming.** The Windows payload is trimmed (`code-server`, `bin/omp`
+  excluded — see `build-desktop-sidecar.sh`) to control installer size; signing
+  doesn't change that, but keep an eye on payload growth. (The VM-era \~2 GiB
+  makensis datablock cap this point originally referenced no longer applies now
+  that Inno Setup, not NSIS, produces the installer — Inno's own span-slicing
+  handles a large payload instead.)
+* **Sign the inner `.exe` too, not just the installer.** `build-windows-cross.sh`
+  Authenticode-signs the app `.exe` and the Inno `*-setup.exe` separately
+  (`authenticode_sign`, called at both sites); confirm both are signed
+  (`osslsigncode verify` each) — an unsigned inner binary still triggers Defender
+  on first run.
 * **Don't run `release-local.sh` (tag/push/GitHub-release) from an agent** — the
   outward publish is owner-authority. This runbook covers building a *signed
   installer*; distribution is a separate owner step.

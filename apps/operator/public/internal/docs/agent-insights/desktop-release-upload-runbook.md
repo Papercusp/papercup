@@ -219,8 +219,11 @@ path," not "add one." (Plan: `desktop-build-speed-2026-07-16`.)
   overrides the `incremental = true` profile above, and running both just splits the
   hit-rate between two caches. sccache only helps a genuinely *cold* build (fresh checkout /
   reverted VM / rotated target) — which the warm-cache design + WI-5027 made rare — so it is
-  now gated behind `PAPERCUSP_USE_SCCACHE=1` (`bin/lib/sccache.sh` for the linux+mac legs,
-  the token-substitution twin in `bin/build-windows-on-vm.sh` for windows). The default cut
+  now gated behind `PAPERCUSP_USE_SCCACHE=1` (`bin/lib/sccache.sh` for the linux+mac legs;
+  Windows is cross-compiled on this same Linux box since WI-5651 retired the VM
+  — `bin/build-windows-cross.sh` has no sccache wiring of its own, confirmed by grep,
+  so it either inherits the linux-leg cache setup or runs uncached — re-verify before
+  relying on this for a Windows cut). The default cut
   keeps the incremental warm path; reach for `PAPERCUSP_USE_SCCACHE=1` only when you KNOW the
   target dir is cold. (Plan `desktop-build-speed-2026-07-16` D-006 / WI-5577 — it was briefly
   wired on-by-default, which silently disabled the incremental warm win.)

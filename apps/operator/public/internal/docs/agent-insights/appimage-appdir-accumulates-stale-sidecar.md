@@ -104,8 +104,10 @@ red herring for a *staging* dir feeding it. When a fresh-mtime artifact contains
 source lacks, walk UP the copy chain to find the dir that is never wiped. Audit every format:
 
 * **deb** — dpkg archives fresh each build → structurally safe.
-* **Windows** (`build-windows-on-vm.sh`) — explicitly wipes its `bundle/inno` output before
-  packing and packs a freshly-tarred pruned sidecar → structurally safe.
+* **Windows** (`build-windows-cross.sh`, cross-compiled on Linux — WI-5651 retired the
+  VM-based `build-windows-on-vm.sh` that used to own this) — explicitly wipes its
+  `bundle/inno` output before packing and packs a freshly-tarred pruned sidecar →
+  structurally safe.
 * **AppImage** — the offender above; safe only after wiping `target/release/{sidecar,seed,resources}`.
 * **macOS `.app`** — check whether `tauri build --bundles app` restages from a persistent
   `target/release/*` too. If a cut's `.app` looks clean only because a disk-reclaim happened to

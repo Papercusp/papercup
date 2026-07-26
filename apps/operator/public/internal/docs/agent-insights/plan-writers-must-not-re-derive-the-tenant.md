@@ -105,6 +105,34 @@ Two practical notes for running this against a real operator:
   synthesizes the `?superuser=1` ctx — i.e. the `'*'`/no-harness scope — which
   makes it the *best* live test of the resolver, not merely a convenient one.
 
+## ⚠ Your before/after control is probably tainted
+
+Proving "this red is pre-existing, not mine" is exactly the discipline this bug
+class demands — and in this repo the obvious way to do it **silently doesn't
+work**:
+
+```bash
+git show HEAD:path/to/file.ts > path/to/file.ts   # ❌ NOT a pristine baseline
+```
+
+git-sync commits the whole working tree on a schedule, so within a few minutes
+of your edit **HEAD already contains it**. I hit this exactly: git-sync
+committed my change at 20:54:35, my "pristine" control ran at 20:57:05, and the
+`git show HEAD:` restore handed me back my own code. The test failed, I read
+that as "pre-existing", and the control had proven nothing.
+
+Get a real baseline instead:
+
+```bash
+git log --oneline -3 -- path/to/file.ts        # find the commit carrying your change
+git show <that-commit>~1:path/to/file.ts       # the parent = genuinely pre-edit
+grep -c '<your new symbol>' path/to/file.ts    # VERIFY it's absent before trusting the run
+```
+
+Better still, when you can: **construct the old code directly** (save your
+version aside, patch the live file back to the old shape, run, restore). That
+never depends on what git thinks HEAD is.
+
 ## Make the next generation impossible
 
 Fixing the four call sites is not the fix; removing the second path is.

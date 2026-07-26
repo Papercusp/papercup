@@ -294,13 +294,18 @@ function stageStatus(
 }
 
 /** Sub-views whose data is scoped to ONE Hive (the tenancy unit, D-008) — they
- *  read the tab-level `?lhive=`. The rest are workspace-global (Benchmark,
- *  Scout, Knowledge — plus the EKG/RedQueen/scout-ledger panels inside them) and
- *  ignore it; Throughput already lists every hive, so it ignores it too. */
+ *  read the tab-level `?lhive=`. P-005 (pot-scope-all-learnings): Scout (ideas),
+ *  Frontier and Throughput joined the lens — their stores carry a pot, or
+ *  resolve one via registry membership. Still workspace-global: views whose
+ *  tables have no pot column (Benchmark, Knowledge, EKG/RedQueen, Bakeoff,
+ *  Experiments, Wake-efficiency, Signals, Observations, Rubrics, Analyze). */
 const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
   "improvements",
   "gym",
   "learnings",
+  "ideas",
+  "frontier",
+  "throughput",
 ]);
 
 export default function LearningTab() {
@@ -662,7 +667,9 @@ function LearningViewContent({
     return <AnalyzePanel onStatus={reportViewStatus} />;
   }
   if (view === "ideas") {
-    return <ScoutView onStatus={reportViewStatus} />;
+    return (
+      <ScoutView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />
+    );
   }
   if (view === "rubrics") {
     return (
@@ -710,9 +717,22 @@ function LearningViewContent({
     return <RedQueenPanel onStatus={reportViewStatus} />;
   if (view === "experiments")
     return <ExperimentsPanel onStatus={reportViewStatus} />;
-  if (view === "frontier") return <FrontierPanel onStatus={reportViewStatus} />;
+  if (view === "frontier")
+    return (
+      <FrontierPanel
+        hive={hive}
+        hiveReady={hiveReady}
+        onStatus={reportViewStatus}
+      />
+    );
   if (view === "throughput") {
-    return <ThroughputView onStatus={reportViewStatus} />;
+    return (
+      <ThroughputView
+        hive={hive}
+        hiveReady={hiveReady}
+        onStatus={reportViewStatus}
+      />
+    );
   }
   return <LearningsView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />;
 }
@@ -3024,20 +3044,29 @@ function formatDurationMs(ms: number | null | undefined): string {
  * split, read from hive_throughput_ticks (mig 261) via learning.hiveThroughput.
  */
 function ThroughputView({
+  hive = "",
+  hiveReady = true,
   onStatus,
 }: {
+  /** Pot lens (pot-scope-all-learnings P-005): scopes the tick metrics and the
+   *  soak verdicts to one pot; empty = every pot (no lens). */
+  hive?: string;
+  /** WI-5412 gate: don't fetch until the tab's hive lens is resolved. */
+  hiveReady?: boolean;
   onStatus?: (status: LearningViewStatus) => void;
 }) {
   const t = useLexicon();
   const sync = useSyncQuery<HiveThroughputSnapshot>({
     queryName: "learning.hiveThroughput",
-    args: {},
+    args: hive ? { hive } : {},
     staleTime: 30_000,
+    enabled: hiveReady,
   });
   const soak = useSyncQuery<PotSoakReportSnapshot>({
     queryName: "learning.soakReport",
-    args: {},
+    args: hive ? { hive } : {},
     staleTime: 60_000,
+    enabled: hiveReady,
   });
   const hives = sync.data?.[0]?.hives ?? [];
   const soakByHive = new Map(
@@ -3334,16 +3363,24 @@ function CadenceCard({
 
 // The ideation surface is mounted directly inside Improve → Ideas.
 export function ScoutView({
+  hive = "",
+  hiveReady = true,
   onStatus,
 }: {
+  /** Pot lens (pot-scope-all-learnings P-005): the routed-ideas legs scope by
+   *  the pot's member harnesses, the tick leg by pot_slug; empty = no lens. */
+  hive?: string;
+  /** WI-5412 gate: don't fetch until the tab's hive lens is resolved. */
+  hiveReady?: boolean;
   onStatus?: (status: LearningViewStatus) => void;
 } = {}) {
   const t = useLexicon();
   const RAIL_META = railMeta(t);
   const sync = useSyncQuery<ScoutSnapshot>({
     queryName: "learning.scout",
-    args: {},
+    args: hive ? { hive } : {},
     staleTime: 30_000,
+    enabled: hiveReady,
   });
   const snap = sync.data?.[0];
   const rails = snap?.railCounts ?? [];
