@@ -180,3 +180,143 @@ describe('P-014 admin-ui source propagation', () => {
     }
   });
 });
+
+// ── P-021: distillVitestRun — the agent-facing projection (plan D-021/D-022) ──
+
+const ROOT = '/repo';
+
+/** Build a `--reporter=json` payload without hand-writing the envelope each time. */
+function report(files: Array<Partial<{
+  name: string; status: string; startTime: number; endTime: number; message: string;
+  assertionResults: Array<Partial<{ status: string; fullName: string; title: string; failureMessages: unknown }>>;
+}>>): string {
+  return JSON.stringify({ testResults: files });
+}
+
+describe('distillVitestRun', () => {
+  it('counts per TEST, not per file, and sums across files', () => {
+    const out = distillVitestRun(report([
+      {
+        name: `${ROOT}/a.test.ts`, status: 'passed',
+        assertionResults: [{ status: 'passed' }, { status: 'passed' }, { status: 'skipped' }],
+      },
+      {
+        name: `${ROOT}/b.test.ts`, status: 'failed',
+        assertionResults: [{ status: 'passed' }, { status: 'failed', fullName: 'x > y', failureMessages: ['boom'] }],
+      },
+    ]), ROOT);
+
+    expect(out.files).toBe(2);
+    expect(out.passed).toBe(3);
+    expect(out.failed).toBe(1);
+    expect(out.skipped).toBe(1);
+  });
+
+  it('identifies a failing test by file + fullName + its first message', () => {
+    const out = distillVitestRun(report([{
+      name: `${ROOT}/pkg/b.test.ts`, status: 'failed',
+      assertionResults: [{
+        status: 'failed', fullName: 'suite > does the thing',
+        failureMessages: ['expected 1 to be 2', 'second message'],
+      }],
+    }]), ROOT);
+
+    expect(out.failures).toEqual([
+      { file: 'pkg/b.test.ts', test: 'suite > does the thing', message: 'expected 1 to be 2' },
+    ]);
+  });
+
+  it('falls back to title when fullName is absent', () => {
+    const out = distillVitestRun(report([{
+      name: `${ROOT}/a.test.ts`, status: 'failed',
+      assertionResults: [{ status: 'failed', title: 'bare title', failureMessages: ['nope'] }],
+    }]), ROOT);
+    expect(out.failures[0].test).toBe('bare title');
+  });
+
+  // THE load-bearing case: a file that throws at import produces NO failing
+  // assertion, so a naive per-test projection reports `failed: 0` for a red run.
+  it('surfaces a collection failure (failed file, zero assertions) as a failure', () => {
+    const out = distillVitestRun(report([{
+      name: `${ROOT}/broken.test.ts`, status: 'failed',
+      message: 'SyntaxError: Unterminated template literal',
+      assertionResults: [],
+    }]), ROOT);
+
+    expect(out.failed).toBe(1);
+    expect(out.failures).toEqual([{
+      file: 'broken.test.ts',
+      test: COLLECTION_FAILURE_TEST,
+      message: 'SyntaxError: Unterminated template literal',
+    }]);
+  });
+
+  it('does not double-count a failed file that DID report a failing assertion', () => {
+    const out = distillVitestRun(report([{
+      name: `${ROOT}/a.test.ts`, status: 'failed',
+      message: 'file-level noise',
+      assertionResults: [{ status: 'failed', fullName: 't', failureMessages: ['boom'] }],
+    }]), ROOT);
+
+    expect(out.failed).toBe(1);
+    expect(out.failures).toHaveLength(1);
+    expect(out.failures[0].test).toBe('t');
+  });
+
+  it('caps the failure LIST but keeps the failure COUNT complete', () => {
+    const asserts = Array.from({ length: 30 }, (_, i) => ({
+      status: 'failed', fullName: `t${i}`, failureMessages: [`m${i}`],
+    }));
+    const out = distillVitestRun(
+      report([{ name: `${ROOT}/a.test.ts`, status: 'failed', assertionResults: asserts }]),
+      ROOT,
+      { maxFailures: 5 },
+    );
+
+    expect(out.failed).toBe(30);
+    expect(out.failures).toHaveLength(5);
+    expect(out.failuresTruncated).toBe(true);
+  });
+
+  it('truncates an overlong failure message to the budget', () => {
+    const out = distillVitestRun(report([{
+      name: `${ROOT}/a.test.ts`, status: 'failed',
+      assertionResults: [{ status: 'failed', fullName: 't', failureMessages: ['x'.repeat(5000)] }],
+    }]), ROOT, { maxMessageChars: 100 });
+
+    expect(out.failures[0].message).toHaveLength(100);
+  });
+
+  it('reports wall-clock duration as the span across files, not their sum', () => {
+    const out = distillVitestRun(report([
+      { name: `${ROOT}/a.test.ts`, status: 'passed', startTime: 1000, endTime: 4000, assertionResults: [] },
+      { name: `${ROOT}/b.test.ts`, status: 'passed', startTime: 2000, endTime: 9000, assertionResults: [] },
+    ]), ROOT);
+
+    // Parallel files: span is 1000→9000, NOT 3000+7000.
+    expect(out.durationMs).toBe(8000);
+  });
+
+  it('returns null duration when the report carries no timings', () => {
+    const out = distillVitestRun(report([{ name: `${ROOT}/a.test.ts`, status: 'passed', assertionResults: [] }]), ROOT);
+    expect(out.durationMs).toBeNull();
+  });
+
+  // A distillation failure must never be reported as a TEST failure.
+  it('returns an empty run for malformed JSON rather than throwing', () => {
+    const out = distillVitestRun('not json {{{', ROOT);
+    expect(out).toMatchObject({ passed: 0, failed: 0, files: 0, failures: [], durationMs: null });
+  });
+
+  it('returns an empty run for a report with no testResults', () => {
+    expect(distillVitestRun(JSON.stringify({ ok: true }), ROOT).files).toBe(0);
+  });
+
+  it('skips entries with no usable file name', () => {
+    const out = distillVitestRun(report([
+      { status: 'passed', assertionResults: [{ status: 'passed' }] },
+      { name: `${ROOT}/a.test.ts`, status: 'passed', assertionResults: [{ status: 'passed' }] },
+    ]), ROOT);
+    expect(out.files).toBe(1);
+  });
+});

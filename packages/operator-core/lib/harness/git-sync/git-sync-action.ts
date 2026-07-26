@@ -71,7 +71,7 @@ import {
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
-import { bootstrapFromPeer } from '../../sync/pot-git/bootstrap';
+import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
 import { openHiveGitDuplexToDevice } from '../../sync/pot-git/peer-dial-registry';
 import { Duplex } from 'node:stream';
 import { listHiveMembers } from '../../hive-membership-store';

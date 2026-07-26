@@ -36,6 +36,7 @@ const {
   listNamespacesMock,
   ensurePotGitRepoMock,
   bootstrapFromPeerMock,
+  hasPendingQuarantineMock,
   resolveUsageActorMock,
   unsafeMock,
   getBootedHarnessMock,
@@ -51,6 +52,10 @@ const {
   ]),
   hiveGitRepoPathMock: vi.fn((potHomeSlug: string, repoKey: string) => `/repos/${potHomeSlug}/${repoKey}`),
   listNamespacesMock: vi.fn(async (_repoPath: string) => [] as string[]),
+  // WI-6189: staged-but-unfinished ladder work. Default false = "nothing left
+  // pending", which is the pre-ladder assumption every existing case here was
+  // written under, so those cases keep their original meaning.
+  hasPendingQuarantineMock: vi.fn(async (_repoPath: string) => false),
   // G-8 cold-start (WI-3496 rig finding): the leg must ensure the bare store
   // exists BEFORE any read against it — mirrors the real helper's return.
   ensurePotGitRepoMock: vi.fn(async (potHomeSlug: string, repoKey: string) => `/repos/${potHomeSlug}/${repoKey}`),
@@ -146,7 +151,10 @@ vi.mock('../../sync/pot-git/storage', async (importOriginal) => {
     deviceNamespaceKey: (b64: string) => Buffer.from(b64, 'base64').toString('hex'),
   };
 });
-vi.mock('../../sync/pot-git/bootstrap', () => ({ bootstrapFromPeer: bootstrapFromPeerMock }));
+vi.mock('../../sync/pot-git/bootstrap', () => ({
+  bootstrapFromPeer: bootstrapFromPeerMock,
+  hasPendingQuarantine: hasPendingQuarantineMock,
+}));
 vi.mock('../usage-actor', () => ({ resolveUsageActor: resolveUsageActorMock }));
 vi.mock('../../sync/hyperbee/boot-all', () => ({
   getBootedHarness: getBootedHarnessMock,
@@ -198,6 +206,8 @@ beforeEach(() => {
   hiveGitRepoPathMock.mockClear();
   listNamespacesMock.mockClear();
   bootstrapFromPeerMock.mockClear();
+  hasPendingQuarantineMock.mockClear();
+  hasPendingQuarantineMock.mockResolvedValue(false);
   resolveUsageActorMock.mockClear();
   unsafeMock.mockClear();
   getBootedHarnessMock.mockClear();
@@ -257,6 +267,57 @@ describe('runBootstrapLeg', () => {
     listNamespacesMock.mockResolvedValue([peerHex]);
     await runBootstrapLeg(SLUG, WS);
     expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
+    expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * WI-6189, live-caught on the P-302 rig 2026-07-26 in the tick right AFTER
+   * the first successful cold join.
+   *
+   * The resumable ladder made bootstrap incremental: it seeds all-or-nothing
+   * PER NAMESPACE, so a store can hold a fully-seeded peer namespace while a
+   * DIFFERENT device's history is still mid-ladder in quarantine. The warm gate
+   * predates that — it asked only "does a peer namespace exist?", which was
+   * equivalent back when bootstrap was all-or-nothing. Post-ladder it declares
+   * a PARTIAL join complete: the rig seeded 5 namespaces, still had 4 quarantine
+   * refs, and returned warm on every later tick — the ladder never ran again and
+   * the store stayed permanently shallow.
+   *
+   * That is the worst shape of failure this feature can have: not a visible
+   * error, but a partial cold-join that reports success and silently strands the
+   * rest of the history forever.
+   */
+  it('WI-6189: a seeded peer namespace does NOT mean warm while quarantine work is still pending', async () => {
+    const peerHex = Buffer.from(PEER_DEVICE, 'base64').toString('hex');
+    listNamespacesMock.mockResolvedValue([peerHex]); // one namespace fully seeded…
+    hasPendingQuarantineMock.mockResolvedValue(true); // …another still mid-ladder
+
+    await runBootstrapLeg(SLUG, WS);
+
+    // Must keep laddering — returning here is what strands the unfinished ones.
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-6189: a fail-soft quarantine probe falls back to warm rather than re-dialing forever', async () => {
+    // The probe shells out to git; if that throws we must not flip a genuinely
+    // warm store into re-dialing a peer on every single tick.
+    const peerHex = Buffer.from(PEER_DEVICE, 'base64').toString('hex');
+    listNamespacesMock.mockResolvedValue([peerHex]);
+    hasPendingQuarantineMock.mockRejectedValue(new Error('git exploded'));
+
+    await runBootstrapLeg(SLUG, WS);
+
+    expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
+  });
+
+  it('WI-6189: pending quarantine alone does NOT bypass the other gates (no attested peer ⇒ still a no-op)', async () => {
+    // Guards the obvious over-correction: the quarantine check must refine the
+    // warm gate, never become an independent reason to dial.
+    hasPendingQuarantineMock.mockResolvedValue(true);
+    listHiveMembersMock.mockResolvedValue([]);
+
+    await runBootstrapLeg(SLUG, WS);
+
     expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
   });
 
