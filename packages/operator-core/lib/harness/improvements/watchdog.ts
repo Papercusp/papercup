@@ -32,6 +32,7 @@ import postgres from 'postgres';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join as pathJoin, isAbsolute as pathIsAbsolute } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
@@ -719,23 +720,35 @@ export type FileParsesCleanlyCheck = (filePath: string) => Promise<boolean>;
  *      and an (optional) live re-parse of the file's CURRENT on-disk content
  *      succeeds, the earlier failure was near-certainly a torn read of a
  *      peer's in-flight write, not a regression — debounce it too.
+ *   3. A file that does not exist on disk RIGHT NOW, and was never a git
+ *      commit either — a scratch/transient test file (e.g. an ad-hoc probe
+ *      run locally to check a hypothesis) that failed repeatedly, then was
+ *      deleted before the next git-sync sweep ever captured it. Check #1
+ *      correctly reports "no commit in range" here (there is no commit,
+ *      ever), so it does NOT debounce this case, and the failure is rarely a
+ *      transform/parse crash so check #2 doesn't apply either — without this
+ *      third check the signal survives forever as an unfixable bug ticket
+ *      (there is no file left to fix). Unlike #2, this applies to EVERY
+ *      failure kind, not just transform-class ones — a missing file makes
+ *      any failure equally moot.
  *
  * Either way, debounce = drop the signal entirely for this tick; a genuine
  * regression keeps failing in a LATER tick once the file has settled, so this
  * only delays, never permanently suppresses, a real red test.
  *
  * Fails OPEN throughout: any signal missing a path/earliestAt/latestAt (a
- * collector that doesn't window a span), a `checkEdited` that throws, a
- * failure that doesn't read as a transform crash, no `checkParsesCleanly`
- * wired, or a `checkParsesCleanly` that throws/returns false, is all KEPT —
- * neither a git hiccup nor a re-parse hiccup may silently swallow a real
- * signal.
+ * collector that doesn't window a span), a `checkEdited`/`checkExists` that
+ * throws, a failure that doesn't read as a transform crash, no
+ * `checkParsesCleanly`/`checkExists` wired, or a `checkParsesCleanly` that
+ * throws/returns false, is all KEPT — neither a git hiccup, a filesystem
+ * hiccup, nor a re-parse hiccup may silently swallow a real signal.
  */
 export async function debounceRedTestSignals(
   signals: WatchdogSignal[],
   checkEdited: GitEditCheck,
   bufferMs = 10 * 60 * 1000,
   checkParsesCleanly?: FileParsesCleanlyCheck,
+  checkExists?: FileExistsCheck,
 ): Promise<WatchdogSignal[]> {
   const kept: WatchdogSignal[] = [];
   for (const s of signals) {
@@ -743,6 +756,15 @@ export async function debounceRedTestSignals(
     if (s.source !== 'red-test' || !path || !s.earliestAt || !s.latestAt) {
       kept.push(s);
       continue;
+    }
+    if (checkExists) {
+      let exists = true;
+      try {
+        exists = await checkExists(path);
+      } catch {
+        exists = true; // fail open — never suppress a real signal on an unverifiable check
+      }
+      if (!exists) continue;
     }
     const since = new Date(new Date(s.earliestAt).getTime() - bufferMs).toISOString();
     const until = new Date(new Date(s.latestAt).getTime() + bufferMs).toISOString();
@@ -863,6 +885,23 @@ export async function doesFileCurrentlyParseCleanly(filePath: string): Promise<b
   }
 }
 
+/** Callback shape for "does `filePath` exist on disk RIGHT NOW?" — dependency-injected
+ *  so the debounce decision stays unit-testable without touching the real filesystem.
+ *  `doesFileExistOnDisk` below is the real IO implementation wired in by
+ *  `collectRedTestSignals`. */
+export type FileExistsCheck = (filePath: string) => Promise<boolean>;
+
+/**
+ * Real IO `FileExistsCheck`: does `filePath` exist on disk right now (resolved against
+ * the repo root, same as `doesFileCurrentlyParseCleanly`)? A synchronous check is fine
+ * here — no size/content is read, just a stat.
+ */
+export async function doesFileExistOnDisk(filePath: string): Promise<boolean> {
+  const repoRoot = resolveRedTestRepoRoot();
+  const abs = pathIsAbsolute(filePath) ? filePath : pathJoin(repoRoot, filePath);
+  return existsSync(abs);
+}
+
 /**
  * red-test: a test file that failed ≥ N times in the window AND whose LATEST run
  * in the window is still a fail — i.e. repeatedly red and currently red, not a
@@ -906,7 +945,17 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
   // EI-18145972782668210: ALSO drop a transform/parse-class failure when the
   // file parses cleanly right now — catches the UNCOMMITTED-edit case the
   // git check above can't see (git-sync commits on a schedule, not per write).
-  return debounceRedTestSignals(signals, wasFilePathCommittedInRange, undefined, doesFileCurrentlyParseCleanly);
+  // (this ticket): ALSO drop any signal whose file no longer exists on disk —
+  // catches a scratch/transient test file that failed repeatedly and was
+  // deleted before ever being committed (neither debounce above can see it:
+  // there's no commit to find, and it's rarely a transform-class failure).
+  return debounceRedTestSignals(
+    signals,
+    wasFilePathCommittedInRange,
+    undefined,
+    doesFileCurrentlyParseCleanly,
+    doesFileExistOnDisk,
+  );
 }
 
 interface SmokeFailRow { harness_slug: string; failure_content: string | null; mtime_ms: number | string | null }

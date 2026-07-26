@@ -16,11 +16,24 @@
  *      would wedge every agent's edits fleet-wide; nagging on work items / plans /
  *      .papercusp (where the NAMED form is correct) teaches agents to ignore it.
  *
- * NOTE THIS FILE OBEYS THE RULE IT TESTS. It is tracked source, so it is packed into
- * source.tar.zst and scanned by the very lint under test. It therefore cannot spell a
- * real contributor's name even as a fixture: `Quillon` is a deliberately fictional name
- * chosen because it is NOT in PLACEHOLDER_NAMES (so it must be DETECTED), while `Jane`
- * IS a placeholder (so it must be IGNORED). Do not "fix" these to a real name.
+ * WHY THE FIXTURES ARE ASSEMBLED FROM FRAGMENTS — READ BEFORE "TIDYING" THEM
+ * This file is tracked source, so it is scanned by the very lint under test. A fixture
+ * written as a literal named tag therefore FAILS THE GATE and freezes `main` — this
+ * suite would become the outage it exists to prevent. Writing the first draft with
+ * literal fixtures produced exactly that: 11 findings, latent and invisible, because
+ * check-no-owner-name-tags.mjs scans `git ls-files` and a brand-new file is UNTRACKED —
+ * the lint reported clean right up until the commit that tracked it would have red-ed
+ * the gate. (That blind spot is itself the reason the edit-time hook checks the incoming
+ * edit rather than the tracked tree: it does not care whether the file is tracked yet.)
+ *
+ * So the name lives in NAME, built by concatenation, and every fixture interpolates it.
+ * `[owner:${NAME}` does not match the matcher — the character after the colon is `$`,
+ * not a letter — while the string the detector actually receives at runtime is the real
+ * leak. Keep it this way: inlining NAME re-arms the trap.
+ *
+ * `Quillon` is fictional and deliberately NOT in PLACEHOLDER_NAMES, so it must be
+ * DETECTED; `Jane` IS a placeholder, so it must be IGNORED. Never substitute a real
+ * contributor's name for either.
  */
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
@@ -30,6 +43,9 @@ import { runHookProcess } from './spawn-hook';
 const REPO_ROOT = join(__dirname, '..', '..', '..', '..', '..', '..');
 const HOOK = join(__dirname, '..', 'pretooluse-content-lint.mjs');
 const DETECTOR = join(REPO_ROOT, 'scripts', 'lib', 'identity-leak-patterns.mjs');
+
+/** Split so this file never contains a literal named tag — see the header. */
+const NAME = `Quill${'on'}`;
 
 type Leak = { line: number; name: string; form: 'bracket' | 'paren'; text: string };
 interface Detector {
@@ -41,7 +57,10 @@ interface Detector {
 const loadDetector = (): Promise<Detector> => import(DETECTOR) as Promise<Detector>;
 
 /** Run the hook with a synthetic PreToolUse payload and return its advisory text (or ''). */
-async function runHook(toolInput: Record<string, unknown>, tool = 'Edit'): Promise<{ text: string; status: number | null }> {
+async function runHook(
+  toolInput: Record<string, unknown>,
+  tool = 'Edit',
+): Promise<{ text: string; status: number | null }> {
   const res = await runHookProcess(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: tool, tool_input: toolInput }),
     env: process.env,
@@ -60,20 +79,20 @@ const SRC = 'packages/operator-core/lib/automation/pane-categories.ts';
 describe('identity-leak detector (shared by the gate lint and the edit-time hook)', () => {
   it('catches the BRACKET form the gate always caught', async () => {
     const { findOwnerNameLeaks } = await loadDetector();
-    const hits = findOwnerNameLeaks('[owner:Quillon 2026-07-25] scope directive');
-    expect(hits.map((h) => [h.form, h.name])).toEqual([['bracket', 'Quillon']]);
+    const hits = findOwnerNameLeaks(`[owner:${NAME} 2026-07-25] scope directive`);
+    expect(hits.map((h) => [h.form, h.name])).toEqual([['bracket', NAME]]);
   });
 
   // EI-18670349543629060: three of the 11 leaks that froze `main` were this form and
   // the bracket-only matcher saw none of them.
   it.each([
-    ['OWNER RULE', ' * OWNER RULE (Quillon, 2026-07-25): "in the ask fleet section"'],
-    ['OWNER MANDATE', ' * OWNER MANDATE (Quillon, 2026-07-25, verbatim): "WE NEED ALL"'],
-    ['no date', ' * OWNER ASK (Quillon): "do it"'],
+    ['OWNER RULE', ` * OWNER RULE (${NAME}, 2026-07-25): "in the ask fleet section"`],
+    ['OWNER MANDATE', ` * OWNER MANDATE (${NAME}, 2026-07-25, verbatim): "WE NEED ALL"`],
+    ['no date', ` * OWNER ASK (${NAME}): "do it"`],
   ])('catches the PARENTHETICAL form (%s)', async (_label, line) => {
     const { findOwnerNameLeaks } = await loadDetector();
     const hits = findOwnerNameLeaks(line);
-    expect(hits.map((h) => [h.form, h.name])).toEqual([['paren', 'Quillon']]);
+    expect(hits.map((h) => [h.form, h.name])).toEqual([['paren', NAME]]);
   });
 
   // Each of these can sit in an attribution slot. A false positive here would wedge
@@ -91,7 +110,15 @@ describe('identity-leak detector (shared by the gate lint and the edit-time hook
     ['ownerId identifier noise', 'const ownerId = ctx.ownerId; // owner asks (many) things'],
   ])('does NOT flag %s', async (_label, line) => {
     const { findOwnerNameLeaks } = await loadDetector();
-    expect(await Promise.resolve(findOwnerNameLeaks(line))).toEqual([]);
+    expect(findOwnerNameLeaks(line)).toEqual([]);
+  });
+
+  // The suite's own fixtures depend on this: interpolation must defeat the matcher, or
+  // the header's whole scheme is void and this file silently re-arms the gate trap.
+  it('does NOT flag the interpolated form this file uses for its own fixtures', async () => {
+    const { findOwnerNameLeaks } = await loadDetector();
+    expect(findOwnerNameLeaks('const s = `[owner:${NAME} 2026-07-25]`;')).toEqual([]);
+    expect(findOwnerNameLeaks('const s = ` * OWNER MANDATE (${NAME}, 2026-07-25)`;')).toEqual([]);
   });
 
   it('treats carry surfaces as out of scope, where the NAMED form is correct', async () => {
@@ -107,17 +134,17 @@ describe('pretooluse-content-lint hook — edit-time identity advisory', () => {
   it('warns on a parenthetical leak in shipped source', async () => {
     const { text, status } = await runHook({
       file_path: repoFile(SRC),
-      new_string: ' * OWNER MANDATE (Quillon, 2026-07-25, verbatim): "WE NEED ALL ROUTINES"',
+      new_string: ` * OWNER MANDATE (${NAME}, 2026-07-25, verbatim): "WE NEED ALL ROUTINES"`,
     });
     expect(text).toContain('identity-leak');
-    expect(text).toContain('Quillon');
+    expect(text).toContain(NAME);
     expect(text).toContain('FIX:');
     expect(status).toBe(0); // advisory, never a block
   });
 
   it('warns on a bracket leak in a non-.ts file (the curly-quote rule is .ts-only, this is not)', async () => {
     const { text } = await runHook(
-      { file_path: repoFile('docs/briefs/some-brief.md'), content: '[owner:Quillon 2026-07-25] directive' },
+      { file_path: repoFile('docs/briefs/some-brief.md'), content: `[owner:${NAME} 2026-07-25] directive` },
       'Write',
     );
     expect(text).toContain('identity-leak');
@@ -128,8 +155,8 @@ describe('pretooluse-content-lint hook — edit-time identity advisory', () => {
       {
         file_path: repoFile(SRC),
         edits: [
-          { new_string: '[owner:Quillon 2026-07-25] one' },
-          { new_string: ' * OWNER RULE (Quillon, 2026-07-25): "two"' },
+          { new_string: `[owner:${NAME} 2026-07-25] one` },
+          { new_string: ` * OWNER RULE (${NAME}, 2026-07-25): "two"` },
         ],
       },
       'MultiEdit',
@@ -141,7 +168,10 @@ describe('pretooluse-content-lint hook — edit-time identity advisory', () => {
     ['docs/plans (carry surface)', 'docs/plans/some-plan.md'],
     ['.papercusp (carry surface)', '.papercusp/state/notes.md'],
   ])('stays silent on %s', async (_label, rel) => {
-    const { text } = await runHook({ file_path: repoFile(rel), content: '[owner:Quillon 2026-07-25] fine here' }, 'Write');
+    const { text } = await runHook(
+      { file_path: repoFile(rel), content: `[owner:${NAME} 2026-07-25] fine here` },
+      'Write',
+    );
     expect(text).toBe('');
   });
 
@@ -158,8 +188,12 @@ describe('pretooluse-content-lint hook — edit-time identity advisory', () => {
   // FAIL-OPEN contract: the detector is resolved by walking up from the edited file, so a
   // file outside any repo that has it must be silently allowed, never an error.
   it.each([
-    ['a file outside any repo', { file_path: '/tmp/unrelated-content-lint-probe.ts', content: '[owner:Quillon 2026-07-25] x' }, 'Write'],
-    ['a payload with no file_path', { content: '[owner:Quillon 2026-07-25] x' }, 'Write'],
+    [
+      'a file outside any repo',
+      { file_path: '/tmp/unrelated-content-lint-probe.ts', content: `[owner:${NAME} 2026-07-25] x` },
+      'Write',
+    ],
+    ['a payload with no file_path', { content: `[owner:${NAME} 2026-07-25] x` }, 'Write'],
     ['an unrelated tool', { file_path: repoFile(SRC) }, 'Read'],
   ] as const)('fails open on %s', async (_label, input, tool) => {
     const { text, status } = await runHook(input as Record<string, unknown>, tool);

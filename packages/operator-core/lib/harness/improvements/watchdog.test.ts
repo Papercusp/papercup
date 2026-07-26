@@ -1090,6 +1090,42 @@ describe('debounceRedTestSignals (EI-10102): a file being actively edited across
       expect(checkParsesCleanly).not.toHaveBeenCalled();
     });
   });
+
+  describe('debounceRedTestSignals — a file that no longer exists (a deleted/never-committed scratch test)', () => {
+    it('drops the signal when checkExists reports the file is gone, WITHOUT even calling checkEdited', async () => {
+      const checkEdited = vi.fn(async () => false);
+      const checkExists = vi.fn(async (_path: string) => false);
+      const kept = await debounceRedTestSignals([redTestSig()], checkEdited, undefined, undefined, checkExists);
+      expect(kept).toEqual([]);
+      expect(checkExists).toHaveBeenCalledWith('a.test.ts');
+      expect(checkEdited).not.toHaveBeenCalled();
+    });
+
+    it('keeps the signal when checkExists reports the file is still there (falls through to the other debounces)', async () => {
+      const kept = await debounceRedTestSignals([redTestSig()], async () => false, undefined, undefined, async () => true);
+      expect(kept).toHaveLength(1);
+    });
+
+    it('fails OPEN when checkExists throws — an unverifiable filesystem check never silently swallows a real signal', async () => {
+      const kept = await debounceRedTestSignals([redTestSig()], async () => false, undefined, undefined, async () => {
+        throw new Error('EACCES');
+      });
+      expect(kept).toHaveLength(1);
+    });
+
+    it('keeps the signal when no checkExists is wired at all (backward-compatible default)', async () => {
+      const kept = await debounceRedTestSignals([redTestSig()], async () => false);
+      expect(kept).toHaveLength(1);
+    });
+
+    it('applies to a plain assertion failure too (unlike checkParsesCleanly, this is not scoped to transform-class failures)', async () => {
+      const checkExists = vi.fn(async () => false);
+      const assertionSig = redTestSig({ body: 'expected \'HUNG(bound neutralized)\' to be \'rejected(bound held)\'' });
+      const kept = await debounceRedTestSignals([assertionSig], async () => false, undefined, undefined, checkExists);
+      expect(kept).toEqual([]);
+      expect(checkExists).toHaveBeenCalledWith('a.test.ts');
+    });
+  });
 });
 
 describe('watchdog COVERAGE self-test — the original miss is caught end-to-end (P-012)', () => {

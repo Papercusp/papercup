@@ -231,6 +231,55 @@ export function clearTenantScopeSchemaCache(): void {
   tenantScopeCache.clear();
 }
 
+interface TenantScopeOverride {
+  /**
+   * The columns that ACTUALLY scope this table — replaces the generic
+   * workspace_id/harness_slug "already scoped" check for this table only.
+   */
+  requiredColumns: string[];
+  /** One-line description of the real key, inserted after the table name. */
+  keyDescription: string;
+  /** The suggested predicate for this table, given resolved ids (falls back to a placeholder when unresolved). */
+  suggest: (opts: { workspaceId?: string | null; harnessSlug?: string | null }) => string;
+  /** A tool that already scopes this table correctly, if one exists. */
+  preferredTool?: string;
+}
+
+/**
+ * Tables whose REAL tenancy predicate differs from the generic "has a
+ * workspace_id/harness_slug column" heuristic below — a column's PRESENCE in
+ * information_schema is not evidence it is POPULATED (EI-18669912007336072).
+ *
+ * harness_shared.agent_facts is tenanted by `scope` + `scope_ref`;
+ * `harness_slug` exists as a column but is NULL for ~99.6% of rows (facts are
+ * scoped 'harness'/'workspace'/'owner'/'work_item'/'role' via scope_ref, not
+ * harness_slug). The generic advisory's own suggested predicate
+ * (`workspace_id = … AND harness_slug = …`) then matches ~0.4% of rows and
+ * returns a clean-looking, confidence-inspiring EMPTY result instead of an
+ * error — worse than no guardrail, because a trusted zero is never re-checked
+ * (see the EI for the concrete audit this produced a false negative on).
+ *
+ * This is a deliberately HARDCODED semantic override (not schema-derived) —
+ * update it if a table's real tenancy key changes.
+ */
+const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
+  agent_facts: {
+    requiredColumns: ['scope', 'scope_ref'],
+    keyDescription: 'scope + scope_ref — harness_slug is NULL for nearly all rows, do not filter on it',
+    suggest: (opts) =>
+      opts.harnessSlug
+        ? `scope = 'harness' AND scope_ref = '${opts.harnessSlug.replaceAll("'", "''")}'`
+        : "scope = '<harness|workspace|owner|work_item|role>' AND scope_ref = '<the matching id>'",
+    preferredTool: 'facts:list (already scopes by scope + scope_ref)',
+  },
+};
+
+/** The bare (unqualified) table name — `schema.table` → `table`. */
+function bareTableName(ref: string): string {
+  const i = ref.lastIndexOf('.');
+  return i === -1 ? ref : ref.slice(i + 1);
+}
+
 async function readTenantScopeInfo(
   tables: string[],
   client?: OrgSql,
