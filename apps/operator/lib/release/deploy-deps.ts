@@ -119,6 +119,22 @@ export async function realRunUnderDeployLock<T>(
       mode: 'exclusive',
       maxDrainSec: 0,
       reason: 'deploy-cli main() gather+execute (single-flight)',
+      // EI-18674647773291145: without this, a deploy process that dies mid-flight
+      // (e.g. reaped by a service restart) leaks the exclusive for its full 20-min
+      // TTL — every subsequent trigger (auto-serve, manual --execute) silently
+      // COALESCES and exits 0, so a green build can sit unshipped for 20 minutes
+      // with no alarm. hostLocalOwnerPid resolves the pid this process itself
+      // embedded in DEPLOY_OWNER; if that pid is verifiably dead on this host, the
+      // stale holder is reclaimed and the acquire retried once — turning the silent
+      // 20-minute outage into a sub-second self-heal.
+      hostLocalOwnerPid: parseDeployOwnerPid,
+      onStaleHolderReclaimed: async ({ holder, pid }) => {
+        const detail = `reclaimed dead release-deploy holder ${holder.owner} (pid ${pid} not running on this host); this deploy is retrying the acquire`;
+        // Loud: this must never look like a normal quiet coalesce (Defect 1's "a
+        // leaked lock currently looks identical to healthy single-flighting").
+        console.error(`[deploy] STALE LOCK RECLAIMED — ${detail}`);
+        await recordStaleLockReclaim(detail);
+      },
     },
     fn,
   );
