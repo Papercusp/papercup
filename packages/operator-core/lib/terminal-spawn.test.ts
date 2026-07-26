@@ -85,7 +85,7 @@ describe('isProcessAlive', () => {
   });
 
   it('true when kill(pid, 0) does not throw', () => {
-    killSpy.mockReturnValue(true as unknown as boolean);
+    killSpy.mockReturnValue(true);
     expect(isProcessAlive(123)).toBe(true);
     expect(killSpy).toHaveBeenCalledWith(123, 0);
   });
@@ -119,7 +119,7 @@ describe('spawnInTerminal liveness check', () => {
   });
 
   it('reports likelyOpened:true when the pid is still alive after the delay', async () => {
-    vi.spyOn(process, 'kill').mockReturnValue(true as unknown as boolean);
+    vi.spyOn(process, 'kill').mockReturnValue(true);
     const resultPromise = spawnInTerminal({ oneliner: 'exec true', livenessCheckDelayMs: 400 });
     await vi.advanceTimersByTimeAsync(400);
     const result = await resultPromise;

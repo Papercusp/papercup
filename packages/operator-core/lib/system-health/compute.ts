@@ -604,7 +604,7 @@ export function deadRoutineOverdueMsForCiWindow(
  * never the widened one. Absence of a clean "checkpoint is active" signal must never SUPPRESS
  * the dead-routine alarm; it can only fail to widen it.
  */
-async function resolveDeadRoutineOverdueMs(sql: Sql, potSlug: string | null, now: number): Promise<number> {
+export async function resolveDeadRoutineOverdueMs(sql: Sql, potSlug: string | null, now: number): Promise<number> {
   try {
     const [{ integrationRoot }, { isCheckpointRunLockHeldCheap }] = await Promise.all([
       import('../release-deploy-launch'),

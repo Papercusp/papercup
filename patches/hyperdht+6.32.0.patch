@@ -1,8 +1,8 @@
 diff --git a/node_modules/hyperdht/lib/connect.js b/node_modules/hyperdht/lib/connect.js
-index 86afb4e..5421459 100644
+index 86afb4e..d85689f 100644
 --- a/node_modules/hyperdht/lib/connect.js
 +++ b/node_modules/hyperdht/lib/connect.js
-@@ -217,17 +217,81 @@ async function holepunch(c, opts) {
+@@ -217,17 +217,94 @@ async function holepunch(c, opts) {
  
    const relayed = diffAddress(serverAddress, relayAddress)
  
@@ -27,19 +27,30 @@ index 86afb4e..5421459 100644
 +  //     real listener — dialing it is legitimate.
 +  //   relayed=true (hs.peerAddress set): serverAddress = the value a RELAY node
 +  //     stamped at router.js:165 as `peerAddress: req.from` — the server's source
-+  //     address as observed BY THAT RELAY. Under a symmetric NAT the server's
-+  //     external mapping is per-destination, so the port the relay saw is not a
-+  //     port our packets can reach. THIS is the branch that dials an address the
-+  //     peer does not own.
++  //     address as observed BY THAT RELAY. THIS is the branch that dials an
++  //     address the peer does not serve UDX on, and it is 100% of the observed
++  //     failures (317/317 dead records). NO NAT IS INVOLVED — see below.
 +  //
-+  // Layered on top: getFirstRemoteAddress skips every BOGON candidate, so on an
-+  // all-private-subnet deployment (e.g. a 10.0.0.0/8 test overlay) EVERY entry in
-+  // addresses4 is skipped and the fallback is not an edge case — it is the only
-+  // path. Note also that a symmetric-NAT server is firewalled, so remoteAddress()
-+  // returns null (:455-456) and it publishes NO public addresses4 at all — an
-+  // EMPTY candidates array is the strongest form of "the fallback was forced",
-+  // even though udxAddresses4AllBogon is false for it by construction (it
-+  // requires length > 0). Read udxAddresses4's length alongside that flag.
++  // WHY THAT OBSERVED SOURCE IS THE WRONG SOCKET (not a NAT remap — a firewalled
++  // node simply SENDS from a different socket than it LISTENS on):
++  //   dht-rpc binds TWO udx sockets — io.js:230 serverSocket (the real UDX stream
++  //   listener) and io.js:261 clientSocket. DHT egress picks between them with
++  //   `this.firewalled ? this.clientSocket : this.serverSocket` (io.js:291 and
++  //   :321). A node with no public reflexive address stays firewalled, so its
++  //   handshake leaves via clientSocket, the relay observes THAT source, and we
++  //   end up dialing the peer's DHT client socket: bound (so no ICMP refusal —
++  //   the dial just hangs) but never serving UDX streams. Hence packetsReceived=0
++  //   and death at ~13s.
++  //
++  // AND THE REAL LISTENER WAS RIGHT THERE: connect.js:483 builds addresses4 from
++  // localAddresses(c.dht.io.serverSocket) — the genuine UDX listener — but on an
++  // all-private overlay (e.g. 10.99.0.x) every such entry is a BOGON, so
++  // getFirstRemoteAddress (:204-211) skips ALL of them and falls back to the
++  // wrong-socket address. The bogon filter is correct for the public internet and
++  // catastrophic on a private overlay: it discards the one correct answer it had.
++  // Note udxAddresses4AllBogon is false for an EMPTY array by construction (it
++  // requires length > 0), and c.lan gates whether localAddrs are included at all,
++  // so read udxAddresses4's LENGTH alongside the flag.
 +  // None of this is visible downstream unless the candidates AND their per-entry
 +  // bogon verdicts are recorded, which is what this does.
 +  //
@@ -67,9 +78,11 @@ index 86afb4e..5421459 100644
 +      // "used a real advertised address" from "used the peerHandshake reply".
 +      // Combined with udxRelayed it separates the two failure modes: fallback +
 +      // relayed=true means we dialed a RELAY-OBSERVED source port (router.js:165
-+      // `req.from`), which a symmetric NAT makes unreachable from our address;
++      // `req.from`) — the peer's DHT clientSocket, bound but not serving UDX;
 +      // fallback + relayed=false means we dialed the server's guarded bound-port
 +      // declaration, where a failure indicates staleness, not misresolution.
++      // Cross-check udxAddresses4: on a private overlay it should CONTAIN the
++      // peer's real listener as a bogon entry we skipped — that is the smoking gun.
 +      mark('udxPunchPath', 'open')
 +      mark('udxAddressFromFallback', addr === serverAddress)
 +      mark('udxPunchStats', { ...c.dht.stats.punches })
@@ -84,7 +97,7 @@ index 86afb4e..5421459 100644
    const onabort = () => {
      c.session.destroy()
      maybeDestroyEncryptedSocket(c, HOLEPUNCH_ABORTED())
-@@ -477,6 +541,18 @@ async function connectThroughNode(c, address, socket) {
+@@ -477,6 +554,18 @@ async function connectThroughNode(c, address, socket) {
      payload
    }
  

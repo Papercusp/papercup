@@ -18,12 +18,20 @@
  *  - an overdue cron+loop IS reported (a recurrence the engine advances → real);
  *  - a not-yet-due / inactive routine is NOT reported.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 
-const { readDeadRoutines } = await import('./compute');
+// WI-4310: resolveDeadRoutineOverdueMs's lock-probe leg is mocked per-test (it reads a real
+// fs lock file, which is orthogonal to what THIS integration test proves — the pipeline_events
+// DB query). `../release-deploy-launch` is mocked too since resolveDeadRoutineOverdueMs
+// dynamic-imports it purely to get an integrationRoot() string to pass through.
+const lockProbe = vi.fn<() => { held: boolean; elapsedSec: number | null }>(() => ({ held: false, elapsedSec: null }));
+vi.mock('../release-checkpoint-launch', () => ({ isCheckpointRunLockHeldCheap: () => lockProbe() }));
+vi.mock('../release-deploy-launch', () => ({ integrationRoot: () => '/fake-tree' }));
+
+const { readDeadRoutines, resolveDeadRoutineOverdueMs } = await import('./compute');
 
 const OVERDUE_MS = 10 * 60_000;
 
@@ -51,6 +59,14 @@ beforeAll(async () => {
       -- migration 323 (B-LOOP-1): the loop recurrence kind.
       reschedule_interval_sec integer, target_owner_id text
     )`);
+  // WI-4310: mirrors migration 177 (harness_shared.pipeline_events) — the shape
+  // resolveDeadRoutineOverdueMs's grace-window query reads.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.pipeline_events (
+      id bigserial NOT NULL, workspace_id text NOT NULL, install_slug text NOT NULL,
+      kind text NOT NULL, status text NOT NULL, detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+      created_at timestamptz DEFAULT now() NOT NULL
+    )`);
 }, 90_000);
 
 afterAll(async () => {
@@ -59,6 +75,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.routines`;
+  await rootSql`TRUNCATE harness_shared.pipeline_events`;
+  lockProbe.mockReset();
+  lockProbe.mockReturnValue({ held: false, elapsedSec: null });
 });
 
 /** next_fire_at 15min in the past — comfortably past the 10min overdue window. */
@@ -125,5 +144,55 @@ describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
     await insertRoutine({ id: 'cron-future', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
     // Ordered by next_fire_at ASC → cron-dead (20m) before cronloop-dead (15m).
     expect(await readDeadRoutines(rootSql, OVERDUE_MS)).toEqual(['cron-dead', 'cronloop-dead']);
+  });
+});
+
+describe('resolveDeadRoutineOverdueMs — checkpoint-window-aware threshold against a real PG (WI-4310)', () => {
+  it('widens when the (mocked) lock probe reports a checkpoint run active — never queries pipeline_events', async () => {
+    lockProbe.mockReturnValue({ held: true, elapsedSec: 120 });
+    const ms = await resolveDeadRoutineOverdueMs(rootSql, 'papercusp', Date.now());
+    expect(ms).toBe(20 * 60_000);
+  });
+
+  it('widens within the grace window after a real green_checkpoint pipeline_event row', async () => {
+    lockProbe.mockReturnValue({ held: false, elapsedSec: null });
+    await rootSql`
+      INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, created_at)
+      VALUES ('ws1', 'papercusp', 'green_checkpoint', 'not-green', now() - interval '2 minutes')`;
+    const ms = await resolveDeadRoutineOverdueMs(rootSql, 'papercusp', Date.now());
+    expect(ms).toBe(20 * 60_000);
+  });
+
+  it('stays at the base threshold once the most recent checkpoint event is past the grace window', async () => {
+    lockProbe.mockReturnValue({ held: false, elapsedSec: null });
+    await rootSql`
+      INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, created_at)
+      VALUES ('ws1', 'papercusp', 'green_checkpoint', 'advanced', now() - interval '10 minutes')`;
+    const ms = await resolveDeadRoutineOverdueMs(rootSql, 'papercusp', Date.now());
+    expect(ms).toBe(10 * 60_000);
+  });
+
+  it('ignores a DIFFERENT install\'s checkpoint event (multi-tenant scoping)', async () => {
+    lockProbe.mockReturnValue({ held: false, elapsedSec: null });
+    await rootSql`
+      INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, created_at)
+      VALUES ('ws2', 'some-other-hive', 'green_checkpoint', 'not-green', now() - interval '1 minute')`;
+    const ms = await resolveDeadRoutineOverdueMs(rootSql, 'papercusp', Date.now());
+    expect(ms).toBe(10 * 60_000);
+  });
+
+  it('ignores a non-checkpoint pipeline_event kind (e.g. git_sync)', async () => {
+    lockProbe.mockReturnValue({ held: false, elapsedSec: null });
+    await rootSql`
+      INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, created_at)
+      VALUES ('ws1', 'papercusp', 'git_sync', 'synced', now() - interval '1 minute')`;
+    const ms = await resolveDeadRoutineOverdueMs(rootSql, 'papercusp', Date.now());
+    expect(ms).toBe(10 * 60_000);
+  });
+
+  it('stays at the base threshold (fail-soft, no throw) with no pipeline_events at all and no potSlug', async () => {
+    lockProbe.mockReturnValue({ held: false, elapsedSec: null });
+    const ms = await resolveDeadRoutineOverdueMs(rootSql, null, Date.now());
+    expect(ms).toBe(10 * 60_000);
   });
 });

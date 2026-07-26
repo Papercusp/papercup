@@ -14,7 +14,7 @@
  * spawn / fs / os are mocked (no terminal opens); buildKickoffPromptFile is
  * mocked so no /dev/shm file is written and we can force the failure path.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
@@ -86,16 +86,16 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  vi.useFakeTimers();
   vi.clearAllMocks();
   buildKickoffPromptFileMock.mockResolvedValue('/dev/shm/papercusp-kickoff-xyz/new-plan.md');
-  // Spawned pid stays alive past the liveness-check beat (the "normal"
-  // success path) — see terminal-spawn.ts / EI-18696184925888288.
+  // Spawned pid genuinely stays alive across the (real, ~400ms) liveness-check
+  // delay in this environment — process.kill(pid,0) on our own PID is a
+  // reliable, side-effect-free "yes" for that probe (see terminal-spawn.ts /
+  // EI-18696184925888288). Every callPost here uses pid 4242 from spawnMock,
+  // which is NOT a real process — kill(4242,0) would normally throw ESRCH, so
+  // stub it to keep this file's existing (pre-liveness-check) assertions
+  // intact; the liveness check itself is covered by terminal-spawn.test.ts.
   vi.spyOn(process, 'kill').mockReturnValue(true as unknown as boolean);
-});
-
-afterEach(() => {
-  vi.useRealTimers();
 });
 
 describe('launch-su kickoff passthrough', () => {
