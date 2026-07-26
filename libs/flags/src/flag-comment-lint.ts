@@ -58,6 +58,22 @@
  *      silently skipped it. Note the asymmetry that keeps this precise: a membership
  *      claim is only ever evidence of 'off' — the absence of one implies nothing, so
  *      there is no corresponding "claims light" form to add here.
+ *
+ *   5. THE **REVERSED** DECLARATION COUNTS TOO — state first, "(default)" after
+ *      (P-010 follow-up, 2026-07-26). Steps 1-4 all assume the declaration reads
+ *      "DEFAULT OFF"; but the file also uses the natural-English inversion, e.g.
+ *        LAZY_SUBSTRATE_BOOT: "... OFF (default): boot is byte-identical to today
+ *        (eager all-harness boot). DARK + STAGED-ON-:3170-FIRST because a wrong
+ *        eviction silently stops a harness syncing → fleet data divergence ..."
+ *      `DEFAULT[\s-]+OFF` requires "DEFAULT" to come FIRST, so it did not match; no
+ *      other form matched either, so the entry classified as null and the guard
+ *      SKIPPED it — while the flag was in fact absent from DARK_FLAGS and deriving
+ *      live default-ON, in direct contradiction of its own "DARK + STAGED" text, for
+ *      a feature whose stated failure mode is fleet data divergence. Exactly the
+ *      PRESENCE_GOSSIP blind spot of step 4, one phrasing later: the guard is meant
+ *      to ASK the question, and a comment's word order should not decide whether it
+ *      gets asked. Also folds in the verb form ("defaults to OFF") and a colon after
+ *      DEFAULT ("DEFAULT: OFF"), which the original `[\s-]+` character class missed.
  */
 
 export interface FlagCommentEntry {
@@ -142,8 +158,20 @@ function normalize(comment: string): string {
   return s;
 }
 
-const DEFAULT_OFF_RE = /\bDEFAULT[\s-]+OFF\b/i;
-const DEFAULT_ON_RE = /\bDEFAULT[\s-]+ON\b/i;
+const DEFAULT_OFF_RE = /\bDEFAULT[\s:-]+OFF\b/i;
+const DEFAULT_ON_RE = /\bDEFAULT[\s:-]+ON\b/i;
+
+/** The THIRD established form (module doc, normalization step 5): the REVERSED
+ *  declaration — the state first, "(default)" after — e.g. "OFF (default): boot is
+ *  byte-identical to today". Anchored on a literal closing "(default)" so it cannot
+ *  swallow the very common "flip OFF via /admin/features … Default ON (derived
+ *  FLAG_DEFAULTS)" shape, where the parenthetical says something else entirely. */
+const REVERSED_OFF_RE = /\bOFF\s*\((?:the\s+)?default\)/i;
+const REVERSED_ON_RE = /\bON\s*\((?:the\s+)?default\)/i;
+
+/** Same claim in verb form — "defaults to OFF". */
+const DEFAULTS_TO_OFF_RE = /\bdefaults?\s+to\s+OFF\b/i;
+const DEFAULTS_TO_ON_RE = /\bdefaults?\s+to\s+ON\b/i;
 
 /** The second claim-of-darkness form (module doc, normalization step 4): a present-tense
  *  assertion of DARK_FLAGS membership, e.g. "Listed in KNOWN_DARK_FLAGS (cutover)".
@@ -162,9 +190,16 @@ const LISTED_DARK_RE = /\blisted in\s+(?:the\s+)?(?:KNOWN_)?DARK_FLAGS\b/i;
  *  comment claims both 'on' and 'off', or neither. */
 export function claimedDefault(entry: FlagCommentEntry): ClaimedDefault {
   const normalized = normalize(entry.comment);
-  // Either established form counts as claiming dark; see module doc step 4.
-  const hasOff = DEFAULT_OFF_RE.test(normalized) || LISTED_DARK_RE.test(normalized);
-  const hasOn = DEFAULT_ON_RE.test(normalized);
+  // Any established form counts as claiming a default; see module doc steps 4-5.
+  const hasOff =
+    DEFAULT_OFF_RE.test(normalized) ||
+    LISTED_DARK_RE.test(normalized) ||
+    REVERSED_OFF_RE.test(normalized) ||
+    DEFAULTS_TO_OFF_RE.test(normalized);
+  const hasOn =
+    DEFAULT_ON_RE.test(normalized) ||
+    REVERSED_ON_RE.test(normalized) ||
+    DEFAULTS_TO_ON_RE.test(normalized);
   if (hasOff === hasOn) return null; // both or neither ⇒ unclassifiable, skip
   return hasOff ? 'off' : 'on';
 }
