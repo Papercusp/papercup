@@ -115,6 +115,29 @@ export interface UnpairedLinkInfo {
   attempts: number;
 }
 
+/**
+ * WI-6063: one topic's share of the process-global peer budget, as seen by the
+ * fairness evaluator. Carried on {@link PeerCapInfo.topics} so the near-cap
+ * signal answers "WHICH topics are holding the budget" — previously it reported
+ * only a total (`245/256`), which named the pressure without naming the cause.
+ */
+export interface TopicPeerShare {
+  /** The topic this share describes. */
+  topicHex: string;
+  /** Live peers this topic is actually content-replicating with — see
+   *  {@link contentPeerCountForTopic}. Counts INBOUND peers as well as dialled
+   *  ones (announce-channel pairing is symmetric). */
+  peers: number;
+  /** The per-topic allowance in force at this evaluation (see
+   *  {@link evaluateSwarmFairness}); `null` when fairness is not engaged, i.e.
+   *  the budget is not under pressure and no topic is being held back. */
+  fairShare: number | null;
+  /** True while this topic's OUTBOUND dialling is paused because it holds more
+   *  than its fair share. Its announce (server) side stays up throughout, so it
+   *  still accepts inbound peers. */
+  dialPaused: boolean;
+}
+
 /** Snapshot of the shared swarm's peer-budget pressure at a near-cap crossing
  *  (P-004). Carried by {@link JoinHarnessSwarmOpts.onNearPeerCap}. */
 export interface PeerCapInfo {
@@ -125,6 +148,36 @@ export interface PeerCapInfo {
   /** True once `liveConnections` has actually REACHED the ceiling — Hyperswarm
    *  will now silently refuse further peers until a slot frees. */
   atCap: boolean;
+  /**
+   * WI-6063: per-topic breakdown of who holds the budget, when the fairness
+   * registry knows about any topics on this swarm (absent on minimal test fakes
+   * and before any join registers). The whole harm this signal exists to expose
+   * is one topic monopolising a shared ceiling, so reporting the total WITHOUT
+   * the breakdown states the symptom and withholds the diagnosis.
+   */
+  topics?: readonly TopicPeerShare[];
+}
+
+/**
+ * WI-6063: an edge-triggered change in one topic's outbound-dial permission.
+ * Emitted only on a TRANSITION (pause↔resume), never per-tick, so it can be
+ * recorded durably without spamming. Carried by
+ * {@link JoinHarnessSwarmOpts.onTopicDialThrottle}.
+ */
+export interface TopicDialThrottleInfo {
+  /** The topic whose dialling just changed. */
+  topicHex: string;
+  /** True = dialling was just PAUSED (topic is over its share); false = RESUMED. */
+  paused: boolean;
+  /** This topic's live content-replication peer count at the transition. */
+  peers: number;
+  /** The per-topic allowance that triggered the transition. */
+  fairShare: number;
+  /** Live connections / ceiling on the shared swarm at the transition. */
+  liveConnections: number;
+  maxPeers: number;
+  /** How many topics were sharing the budget when the allowance was computed. */
+  topicCount: number;
 }
 
 /**
@@ -222,6 +275,14 @@ export interface JoinHarnessSwarmOpts {
    * hysteresis, re-arms after the count drops back below the threshold).
    */
   onNearPeerCap?: (info: PeerCapInfo) => void;
+  /**
+   * WI-6063: fired when THIS topic's outbound dialling is paused or resumed by
+   * the per-topic fairness evaluator. Edge-triggered (transitions only), so it
+   * can be recorded durably without rate-limiting. The failure mode of a
+   * fairness bound is SILENT starvation — identical in appearance to the bug it
+   * fixes — so this is how the mechanism is verified rather than assumed.
+   */
+  onTopicDialThrottle?: (info: TopicDialThrottleInfo) => void;
   /**
    * OUR signed announce — sent to every (non-dropped) peer right after the
    * `papercusp/announce` channel opens, binding our log core to our device
@@ -1770,6 +1831,9 @@ type SwarmRefreshLoop = {
   timer: ManagedHandle | null;
   /** the interval `timer` is currently armed at (0 = not armed) */
   baseMs: number;
+  /** WI-6063: the swarm this loop drives — the per-topic fairness evaluator runs
+   *  once per tick against it (see {@link evaluateSwarmFairness}). */
+  readonly swarm: HyperswarmLike;
 };
 
 const swarmRefreshLoops = new WeakMap<object, SwarmRefreshLoop>();
@@ -1799,6 +1863,16 @@ function syncSwarmRefreshTimer(loop: SwarmRefreshLoop): void {
     base,
     () => {
       const now = Date.now();
+      // WI-6063: re-evaluate the per-topic peer-budget share ONCE per tick,
+      // before the per-join bodies. Timer-driven by necessity, not convenience:
+      // at the peer cap no `connection` events fire, so an evaluator hung off
+      // connections could never resume a paused topic (see evaluateSwarmFairness).
+      try {
+        evaluateSwarmFairness(loop.swarm);
+      } catch {
+        // Fairness is an optimisation over a working swarm — it must never be
+        // able to stop the refresh loop that keeps every join peered.
+      }
       // Iterate a SNAPSHOT: a tick can force a rejoin, and a `close()` from
       // anywhere (including inside a tick) may deregister mid-iteration.
       for (const entry of [...loop.entries]) {
@@ -1823,11 +1897,12 @@ function syncSwarmRefreshTimer(loop: SwarmRefreshLoop): void {
  * idempotent release that deregisters the entry and stops the shared timer once
  * the last join on that swarm has released.
  */
-function registerSwarmRefresh(swarm: object, entry: SwarmRefreshEntry): () => void {
-  let loop = swarmRefreshLoops.get(swarm);
+function registerSwarmRefresh(swarm: HyperswarmLike, entry: SwarmRefreshEntry): () => void {
+  const key = swarm as unknown as object;
+  let loop = swarmRefreshLoops.get(key);
   if (!loop) {
-    loop = { entries: new Set(), timer: null, baseMs: 0 };
-    swarmRefreshLoops.set(swarm, loop);
+    loop = { entries: new Set(), timer: null, baseMs: 0, swarm };
+    swarmRefreshLoops.set(key, loop);
   }
   const own = loop;
   own.entries.add(entry);
@@ -1839,6 +1914,271 @@ function registerSwarmRefresh(swarm: object, entry: SwarmRefreshEntry): () => vo
     own.entries.delete(entry);
     syncSwarmRefreshTimer(own);
   };
+}
+
+/**
+ * ── WI-6063: per-topic connection fairness on the shared swarm ──
+ *
+ * THE BUG. `maxPeers` is a PROCESS-GLOBAL ceiling on the ONE shared Hyperswarm,
+ * with no per-topic share. Every harness joins its own topic on that same swarm,
+ * so a busy or large topic can consume the whole budget and the remaining topics
+ * are starved — and Hyperswarm enforces the ceiling SILENTLY (peer N+1 simply
+ * never connects, no error, no event), so the starvation is invisible. A topic
+ * that joins LATE is the usual victim: the established topics already filled the
+ * budget, and nothing ever hands a slot back.
+ *
+ * THE LEVER. `swarm.join()` returns a `PeerDiscoverySession` whose
+ * `refresh({ client, server })` toggles that topic's CLIENT (lookup/dial) side
+ * independently of its SERVER (announce) side. Turning `client` off stops the
+ * topic enqueueing new dial candidates; it does NOT touch a single established
+ * connection, and it is fully reversible. That makes it the one safe control
+ * point here: the alternative levers are the firewall (topic-blind — Hyperswarm
+ * only hands it a public key) and eviction (drops live peers, i.e. causes the
+ * very harm we are fixing).
+ *
+ * THE METRIC. {@link contentPeerCountForTopic} — peers whose content-announce
+ * channel is currently OPEN for the topic, i.e. peers this hive is genuinely
+ * replicating with. Deliberately NOT hyperswarm's `peerInfo.topics`: that is
+ * populated only on the client/lookup path (`_handlePeer`), so INBOUND peers
+ * arrive with an empty topic list and any count built on it silently under-reads
+ * an inbound-heavy topic. Announce-channel pairing is symmetric, so this metric
+ * sees both directions. (It is also our own structure, where `peerInfo.topics`
+ * is marked `TODO: remove on next major` upstream.)
+ *
+ * THE SAFETY PROPERTY. Fairness ENGAGES ONLY UNDER GLOBAL PRESSURE. Below
+ * {@link FAIRNESS_ENGAGE_RATIO} of the ceiling there is no scarcity to arbitrate,
+ * so every topic dials freely and this code is a no-op — the common case has
+ * exactly zero behavioural delta. Under pressure, only topics ABOVE their share
+ * are held back; a starved topic is never throttled, so the mechanism can only
+ * ever move slots TOWARD the starved and never away.
+ *
+ * HONEST LIMITATION. This is CONVERGENT fairness, not instantaneous: pausing a
+ * hog's dialling does not free slots it already holds, it stops it re-taking the
+ * slots that churn frees, so the balance corrects as connections turn over. The
+ * instantaneous alternative is eviction, which we deliberately reject — a fix
+ * that drops healthy peers to prove a point is worse than the bug.
+ */
+export const FAIRNESS_ENGAGE_RATIO = 0.85;
+
+/**
+ * The per-topic floor. No topic is ever throttled below this many peers, however
+ * many topics share the swarm — a fair share that rounds down to 1-2 peers would
+ * make the "fix" itself a starvation mechanism on a host with many harnesses.
+ * With the ≥256 floor from {@link resolveDefaultMaxPeers}, the floor only starts
+ * binding past ~32 joined topics.
+ */
+export const MIN_PEERS_PER_TOPIC = 8;
+
+/** One topic's registration in its swarm's fairness registry. */
+type TopicFairnessEntry = {
+  readonly topicHex: string;
+  /**
+   * Reads the topic's CURRENT discovery session. A getter, not a captured
+   * session: `rejoinOwnSession` REPLACES the session on a forced rejoin, and a
+   * captured reference would leave us toggling a destroyed one.
+   */
+  readonly session: () => { refresh?: (opts?: object) => unknown } | undefined;
+  /** Last applied dial state — the latch that makes the callback edge-triggered. */
+  paused: boolean;
+  readonly onThrottle?: (info: TopicDialThrottleInfo) => void;
+};
+
+type SwarmFairnessState = {
+  readonly entries: Map<string, TopicFairnessEntry>;
+  /** The swarm itself, so the shared refresh tick can evaluate without a closure. */
+  readonly swarm: HyperswarmLike;
+};
+
+const swarmFairness = new WeakMap<object, SwarmFairnessState>();
+
+/**
+ * Apply a dial-permission change to one topic, and fire the edge-triggered
+ * callback. `server: true` is ALWAYS retained — `refresh()` throws when both
+ * sides are false, and more importantly a paused topic must keep ANNOUNCING so
+ * it can still be found and dialled BY peers; pausing is a decision to stop
+ * competing for the dial budget, never to leave the hive.
+ */
+function applyTopicDialState(
+  entry: TopicFairnessEntry,
+  paused: boolean,
+  ctx: { peers: number; fairShare: number; live: number; maxPeers: number; topicCount: number },
+): void {
+  if (entry.paused === paused) return; // level-based evaluator, edge-triggered effect
+  const session = entry.session();
+  const refresh = session?.refresh;
+  if (typeof refresh !== 'function') return; // minimal fake / no session yet — stay unlatched
+  try {
+    // May reject asynchronously (a rejoin racing us); the next tick re-evaluates
+    // from the real level, so a lost toggle self-corrects rather than sticking.
+    void Promise.resolve(refresh.call(session, { client: !paused, server: true })).catch(() => {});
+  } catch {
+    return; // could not apply — do NOT latch, so the next tick retries
+  }
+  entry.paused = paused;
+  const short = entry.topicHex.slice(0, 16);
+  if (paused) {
+    // A genuine pressure/defect signal (never fires in clean tests, which sit far
+    // below the engage ratio) — same convention as reportPeerCapPressure above.
+    console.warn(
+      `[swarm] ⚠ peer-budget fairness: topic ${short}… holds ${ctx.peers} peers vs a fair share of ` +
+        `${ctx.fairShare} (${ctx.live}/${ctx.maxPeers} live, ${ctx.topicCount} topics) — PAUSING its outbound ` +
+        `dialling so starved topics can take the slots that free up. It keeps announcing and still accepts inbound peers.`,
+    );
+  } else {
+    console.info(
+      `[swarm] peer-budget fairness: topic ${short}… back within its share ` +
+        `(${ctx.peers}/${ctx.fairShare}) — resuming outbound dialling.`,
+    );
+  }
+  if (entry.onThrottle) {
+    try {
+      entry.onThrottle({
+        topicHex: entry.topicHex,
+        paused,
+        peers: ctx.peers,
+        fairShare: ctx.fairShare,
+        liveConnections: ctx.live,
+        maxPeers: ctx.maxPeers,
+        topicCount: ctx.topicCount,
+      });
+    } catch {
+      // diagnostic-only callback; swallow
+    }
+  }
+}
+
+/**
+ * WI-6063: recompute every registered topic's dial permission from the CURRENT
+ * level. Deliberately level-based rather than event-driven: at the cap no
+ * `connection` events fire at all, so an evaluator hung off connections could
+ * never RESUME a paused topic — it would starve it exactly like the bug it
+ * fixes. Runs on the P-007 shared refresh tick (no new timer; repo rule).
+ *
+ * Exported for unit testing.
+ */
+export function evaluateSwarmFairness(swarm: HyperswarmLike): readonly TopicPeerShare[] {
+  const state = swarmFairness.get(swarm as unknown as object);
+  if (!state || state.entries.size === 0) return [];
+  const entries = [...state.entries.values()];
+  const maxPeers =
+    typeof swarm.maxPeers === 'number' && swarm.maxPeers > 0 ? swarm.maxPeers : undefined;
+  const live = countLiveConnections(swarm);
+  const topicCount = entries.length;
+  // Unknowable budget (minimal fake), or a single topic — there is no scarcity to
+  // arbitrate. Release anything held so a fake/degraded read can never leave a
+  // topic latched off.
+  const engaged =
+    maxPeers !== undefined &&
+    live !== undefined &&
+    topicCount > 1 &&
+    live >= Math.ceil(maxPeers * FAIRNESS_ENGAGE_RATIO);
+  if (!engaged) {
+    for (const entry of entries) {
+      applyTopicDialState(entry, false, {
+        peers: contentPeerCountForTopic(entry.topicHex),
+        fairShare: 0,
+        live: live ?? 0,
+        maxPeers: maxPeers ?? 0,
+        topicCount,
+      });
+    }
+    return entries.map((entry) => ({
+      topicHex: entry.topicHex,
+      peers: contentPeerCountForTopic(entry.topicHex),
+      fairShare: null,
+      dialPaused: entry.paused,
+    }));
+  }
+  const fairShare = Math.max(MIN_PEERS_PER_TOPIC, Math.floor(maxPeers / topicCount));
+  const shares: TopicPeerShare[] = [];
+  for (const entry of entries) {
+    const peers = contentPeerCountForTopic(entry.topicHex);
+    // STRICTLY greater: a topic sitting exactly AT its share is not a hog, and
+    // throttling it would be the same off-by-one that starves the marginal topic.
+    applyTopicDialState(entry, peers > fairShare, {
+      peers,
+      fairShare,
+      live: live as number,
+      maxPeers: maxPeers as number,
+      topicCount,
+    });
+    shares.push({ topicHex: entry.topicHex, peers, fairShare, dialPaused: entry.paused });
+  }
+  return shares;
+}
+
+/**
+ * WI-6063: read-only view of the fairness state for a swarm — the per-topic
+ * budget breakdown, without applying anything. For tests, health checks and the
+ * near-cap signal's `topics` field.
+ */
+export function swarmFairnessSnapshot(swarm: HyperswarmLike): readonly TopicPeerShare[] {
+  const state = swarmFairness.get(swarm as unknown as object);
+  if (!state || state.entries.size === 0) return [];
+  const entries = [...state.entries.values()];
+  const maxPeers =
+    typeof swarm.maxPeers === 'number' && swarm.maxPeers > 0 ? swarm.maxPeers : undefined;
+  const live = countLiveConnections(swarm);
+  const engaged =
+    maxPeers !== undefined &&
+    live !== undefined &&
+    entries.length > 1 &&
+    live >= Math.ceil(maxPeers * FAIRNESS_ENGAGE_RATIO);
+  const fairShare = engaged
+    ? Math.max(MIN_PEERS_PER_TOPIC, Math.floor((maxPeers as number) / entries.length))
+    : null;
+  return entries.map((entry) => ({
+    topicHex: entry.topicHex,
+    peers: contentPeerCountForTopic(entry.topicHex),
+    fairShare,
+    dialPaused: entry.paused,
+  }));
+}
+
+/**
+ * Register one topic in its swarm's fairness registry. Returns an idempotent
+ * release that deregisters it AND resumes its dialling first — a join closing
+ * while paused must never leave a destroyed session latched off in the registry,
+ * and must never hand the next join a stale entry.
+ *
+ * Keyed by topicHex: several harnesses can share one topic, and they share one
+ * discovery session, so the budget entry is per TOPIC, not per join.
+ */
+function registerTopicFairness(swarm: HyperswarmLike, entry: TopicFairnessEntry): () => void {
+  const key = swarm as unknown as object;
+  let state = swarmFairness.get(key);
+  if (!state) {
+    state = { entries: new Map(), swarm };
+    swarmFairness.set(key, state);
+  }
+  const own = state;
+  // First registration for this topic wins; a sibling join on the SAME topic
+  // rides the existing entry rather than replacing a live one out from under it.
+  if (!own.entries.has(entry.topicHex)) own.entries.set(entry.topicHex, entry);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const current = own.entries.get(entry.topicHex);
+    if (current !== entry) return; // a sibling join owns this topic's entry
+    if (current.paused) {
+      // Restore the topic's own dialling before dropping it from the registry —
+      // otherwise a close-while-paused leaves the underlying discovery session
+      // permanently client-off for any sibling that re-registers it later.
+      applyTopicDialState(current, false, {
+        peers: contentPeerCountForTopic(current.topicHex),
+        fairShare: 0,
+        live: 0,
+        maxPeers: 0,
+        topicCount: own.entries.size,
+      });
+    }
+    own.entries.delete(entry.topicHex);
+  };
+}
+
+export function _resetSwarmFairnessForTests(swarm: HyperswarmLike): void {
+  swarmFairness.delete(swarm as unknown as object);
 }
 
 export async function joinHarnessSwarm(
