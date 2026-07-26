@@ -341,6 +341,34 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'coord:inbox re-polling for a directed message',
   },
   {
+    family: 'coord-receipt',
+    keyTemplate: 'coord:receipt:<msgId>',
+    params: [{ name: 'msgId', required: true, describe: 'the coord msg_id whose federated delivery receipt to wait on' }],
+    describe: "A federated peer returned a DELIVERY RECEIPT for one of your coord messages (delivered, or quarantined with a reason in the payload).",
+    emitter:
+      'hyperbee coord-message projection (packages/operator-core/lib/sync/hyperbee/projections/coord-message.ts) — the fed_event pass-through on the receiving peer',
+    exists: true,
+  },
+  {
+    family: 'work-item-duplicate-settled',
+    keyTemplate: 'work-item:duplicate-settled:<id>',
+    params: [{ name: 'id', required: true, describe: 'the CANONICAL work-item id (the one your item duplicates)' }],
+    describe: 'The canonical item that YOUR item duplicates has settled — targeted at each duplicate-holder\'s assignee, not a subscriber fan-out.',
+    emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts) — the `duplicates` edge fan',
+    exists: true,
+  },
+  {
+    family: 'autoloop-release-pass',
+    keyTemplate: 'release-pass:autoloop',
+    params: [],
+    describe:
+      'The autoloop release-readiness monitor returned GO. One-shot by design: it NEVER fires on go:false, so a wake means the verdict really is GO (payload = the verdict).',
+    emitter:
+      'autoloop-release-readiness monitor (packages/operator-core/lib/harness/routines/autoloop-release-readiness-action.ts — AUTOLOOP_RELEASE_PASS_EVENT_KEY)',
+    exists: true,
+    replacesPoll: 'polling the autoloop-release-readiness-verdict fact for a GO',
+  },
+  {
     family: 'escalation-resolved',
     keyTemplate: 'escalation:resolved:<msgId>',
     params: [{ name: 'msgId', required: true, describe: 'the escalation / spawn-request msg_id you raised' }],

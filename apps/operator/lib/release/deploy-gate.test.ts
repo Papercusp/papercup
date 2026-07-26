@@ -128,18 +128,81 @@ describe('deploy gate predicate (deploy-cli.ts refusal)', () => {
     await git(repo, ['worktree', 'remove', '--force', release]).catch(() => {});
   });
 
-  it('PROCEEDS for a green target (the safe default), but NOT when noop', async () => {
+  it('PROCEEDS for a green target (the safe default), but NOT when noop (checkout AND serving process both at target)', async () => {
     const c1 = await commit('a.txt', '1', 'c1');
     await git(repo, ['branch', 'ready', c1]);
     const c2 = await commit('a.txt', '2', 'c2');
     await git(repo, ['branch', '-f', 'ready', c2]); // ready == target == green
 
     const cfg = releaseConfig({ integrationRoot: repo, releaseRoot: repo, releaseRef: 'ready' });
-    const greenPlan = await gatherPlan(cfg); // target defaults to `ready`
+    // WI-5864: noop now ALSO requires the live serving process to be confirmed at
+    // target, not just the on-disk checkout — inject a stub confirming it (a real
+    // health probe against a live :3070 has no place in a hermetic unit test).
+    const greenPlan = await gatherPlan(cfg, {}, {
+      fetchServingSha: async () => ({ reachable: true, sha: c2.slice(0, 7) }),
+    }); // target defaults to `ready`
     expect(greenPlan.green).toBe(true);
-    // releaseRoot === repo, whose HEAD is c2 === target → noop, so the gate stops
+    // releaseRoot === repo (HEAD c2 === target) AND the serving process confirmed
+    // at c2 too → true noop, so the gate stops.
     expect(greenPlan.noop).toBe(true);
+    expect(greenPlan.restartOnly).toBe(false);
     expect(gateProceeds(greenPlan, false)).toBe(false);
+  });
+
+  it('does NOT treat a checkout match as noop when the serving process is confirmed at a DIFFERENT sha — restartOnly instead (WI-5864)', async () => {
+    const c1 = await commit('a.txt', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a.txt', '2', 'c2');
+    await git(repo, ['branch', '-f', 'ready', c2]); // ready == target == green, checkout matches too
+
+    const cfg = releaseConfig({ integrationRoot: repo, releaseRoot: repo, releaseRef: 'ready' });
+    // Simulates a deploy that swapped the checkout to c2 and then crashed before
+    // restart — the checkout is at target, but the live process is still c1.
+    const plan = await gatherPlan(cfg, {}, {
+      fetchServingSha: async () => ({ reachable: true, sha: c1.slice(0, 7) }),
+    });
+    expect(plan.green).toBe(true);
+    expect(plan.noop).toBe(false);
+    expect(plan.restartOnly).toBe(true);
+    expect(plan.servingSha).toBe(c1.slice(0, 7));
+    // The gate PROCEEDS (restartOnly is not noop) — this is the self-heal path.
+    expect(gateProceeds(plan, false)).toBe(true);
+  });
+
+  it('treats an UNREACHABLE serving-sha probe as restartOnly, never noop — never silently trusts an unconfirmed match (WI-5864)', async () => {
+    const c1 = await commit('a.txt', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a.txt', '2', 'c2');
+    await git(repo, ['branch', '-f', 'ready', c2]);
+
+    const cfg = releaseConfig({ integrationRoot: repo, releaseRoot: repo, releaseRef: 'ready' });
+    const plan = await gatherPlan(cfg, {}, {
+      fetchServingSha: async () => ({ reachable: false, sha: null, error: 'connect ECONNREFUSED' }),
+    });
+    expect(plan.noop).toBe(false);
+    expect(plan.restartOnly).toBe(true);
+    expect(plan.servingReachable).toBe(false);
+  });
+
+  it('never fires the serving-sha probe at all when the checkout does not match target (a real code delta is never noop regardless)', async () => {
+    const c1 = await commit('a.txt', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a.txt', '2', 'c2');
+    await git(repo, ['branch', '-f', 'ready', c2]);
+    await git(repo, ['worktree', 'add', '--detach', release, c1]); // checkout NOT at target
+
+    const cfg = releaseConfig({ integrationRoot: repo, releaseRoot: release, releaseRef: 'ready' });
+    let probeCalls = 0;
+    const plan = await gatherPlan(cfg, {}, {
+      fetchServingSha: async () => {
+        probeCalls++;
+        return { reachable: true, sha: c2.slice(0, 7) };
+      },
+    });
+    expect(plan.noop).toBe(false);
+    expect(plan.restartOnly).toBe(false);
+    expect(probeCalls).toBe(0);
+    await git(repo, ['worktree', 'remove', '--force', release]).catch(() => {});
   });
 });
 

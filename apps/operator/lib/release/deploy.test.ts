@@ -177,6 +177,43 @@ describe('executeDeploy — happy path', () => {
   });
 });
 
+// WI-5864: a `restartOnly` plan means the checkout is ALREADY at target (a
+// prior deploy attempt swapped it and then crashed before restarting) —
+// executeDeploy must skip the (redundant, and misleadingly-labeled) swap step
+// and go straight to preflight → migrate → restart → health → verify-paths.
+describe('executeDeploy — restartOnly (WI-5864)', () => {
+  const restartOnlyPlan: DeployPlan = {
+    ...plan,
+    currentReleaseSha: plan.targetSha, // checkout already at target
+    servingSha: '1111111', // the live process is still the OLD build
+    servingReachable: true,
+    restartOnly: true,
+    noop: false,
+  };
+
+  it('skips runSetup (swap) entirely, still runs preflight/migrate/restart/health/verify-paths', async () => {
+    const { deps, calls } = makeDeps();
+    const res = await executeDeploy(cfg, restartOnlyPlan, deps);
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.startsWith('runSetup:'))).toBe(false);
+    expect(calls).toContain('snapshot');
+    expect(calls).toContain('preflight');
+    expect(calls).toContain('migrate');
+    expect(calls).toContain('restart');
+    expect(calls).toContain('health');
+    expect(calls).toContain('verifyPaths');
+    // order still holds for the steps that DO run
+    expect(calls.indexOf('preflight')).toBeLessThan(calls.indexOf('migrate'));
+    expect(calls.indexOf('migrate')).toBeLessThan(calls.indexOf('restart'));
+  });
+
+  it('a NON-restartOnly plan still runs runSetup (swap) as before — no regression to the normal path', async () => {
+    const { deps, calls } = makeDeps();
+    await executeDeploy(cfg, plan, deps); // plan.restartOnly is false
+    expect(calls.some((c) => c.startsWith('runSetup:'))).toBe(true);
+  });
+});
+
 describe('executeDeploy — rollback on failure', () => {
   it('rolls back code + db + restart when health fails (migrations staged)', async () => {
     // Deploy health fails on the 1st probe; the post-rollback probe succeeds.

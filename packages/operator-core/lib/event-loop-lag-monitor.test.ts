@@ -397,18 +397,23 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
         warnP95Ms: 20,
         profileOnSaturation: gate,
         profileDir: dir,
+        // The invariant under test is that the profiling band is HALF-OPEN —
+        // [trigger, cap) — so a window AT OR ABOVE the cap is never profiled.
+        // Exercising that at equality (cap === trigger ⇒ the band is empty) is the
+        // only STABLE way to assert it here: this harness cannot produce an
+        // arbitrarily large p95 on demand. A synchronous 300ms block still reports
+        // a window p95 of only ~20-33ms (measured), because the delay histogram
+        // resets per 60ms window, so "block 10x longer than the cap" does NOT move
+        // the window p95 above a cap set comfortably clear of the trigger — a
+        // cap-vs-block-length test reads as deterministic and silently is not.
         profileTriggerP95Ms: 20,
-        // The blocks below are ~300ms, an ORDER OF MAGNITUDE above this cap, so
-        // every saturated window lands unambiguously above it. (A cap set close to
-        // the trigger would be flaky: a window whose p95 happened to land inside the
-        // narrow [trigger, cap) band would capture legitimately.)
-        profileMaxP95Ms: 50,
+        profileMaxP95Ms: 20,
         profileDurationMs: 120,
         minProfileGapMs: 0,
         log,
       });
       for (let i = 0; i < 4; i++) {
-        blockFor(300);
+        blockFor(40);
         await new Promise((r) => setTimeout(r, 5));
       }
       await new Promise((r) => setTimeout(r, 300));
@@ -417,7 +422,7 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
       const skip = log.mock.calls.find(([line]) => String(line).includes('SKIPPED'));
       expect(skip).toBeTruthy();
       expect(String(skip?.[0])).toMatch(/too saturated to profile safely/);
-      expect(skip?.[1]).toMatchObject({ profileMaxP95Ms: 50, reason: 'above-safety-cap' });
+      expect(skip?.[1]).toMatchObject({ profileMaxP95Ms: 20, reason: 'above-safety-cap' });
     });
 
     it('the default cap (3000ms) leaves the chronic band profilable — a sub-cap window still captures', async () => {

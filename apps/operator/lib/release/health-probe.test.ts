@@ -7,7 +7,7 @@
  * the only real time is the short interval sleep).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { probeHealth, probeMemoryCanaryCheck, probeDomainReadCheck } from './health-probe';
+import { probeHealth, probeMemoryCanaryCheck, probeDomainReadCheck, fetchServingSha } from './health-probe';
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(typeof body === 'string' ? body : JSON.stringify(body), {
@@ -448,5 +448,86 @@ describe('probeHealth + probeDomainRead (EI-856)', () => {
     // Both verdicts are still attached even though the memory canary is what blocked.
     expect(r.memoryCanary?.status).toBe('degraded');
     expect(r.domainRead?.planCount).toBe(3);
+  });
+});
+
+// WI-5864: fetchServingSha is the "what sha is the LIVE process actually
+// serving" read gatherPlan's noop/restartOnly decision depends on — a crashed
+// deploy that already swapped the checkout must not permanently look like
+// noop, so this read's failure modes matter as much as its success path.
+describe('fetchServingSha', () => {
+  it('returns the sha from a healthy 2xx JSON body', async () => {
+    const fetchMock = vi.fn(async () => jsonRes(200, { ok: true, sha: 'a1b2c3d', service: 'papercusp-operator' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await fetchServingSha('http://x/api/health');
+
+    expect(r).toEqual({ reachable: true, sha: 'a1b2c3d' });
+  });
+
+  it('is reachable:true with sha:null when the field is absent (never confuses "no sha" with "unreachable")', async () => {
+    const fetchMock = vi.fn(async () => jsonRes(200, { ok: true, service: 'papercusp-operator' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await fetchServingSha('http://x/api/health');
+
+    expect(r).toEqual({ reachable: true, sha: null });
+  });
+
+  it('is reachable:true with sha:null when the field is an empty string', async () => {
+    const fetchMock = vi.fn(async () => jsonRes(200, { ok: true, sha: '' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await fetchServingSha('http://x/api/health');
+
+    expect(r).toEqual({ reachable: true, sha: null });
+  });
+
+  it('is reachable:false on a non-2xx status — never throws', async () => {
+    const fetchMock = vi.fn(async () => jsonRes(503, { ok: false }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await fetchServingSha('http://x/api/health');
+
+    expect(r.reachable).toBe(false);
+    expect(r.sha).toBeNull();
+    expect(r.error).toMatch(/status 503/);
+  });
+
+  it('is reachable:false on a transport failure (connection refused) — never throws', async () => {
+    const fetchMock = vi.fn(async () => {
+      const err = new TypeError('fetch failed');
+      (err as { cause?: unknown }).cause = { code: 'ECONNREFUSED' };
+      throw err;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await fetchServingSha('http://x/api/health');
+
+    expect(r.reachable).toBe(false);
+    expect(r.sha).toBeNull();
+    expect(r.error).toBeDefined();
+  });
+
+  it('is reachable:false on a malformed (non-JSON) 2xx body — never throws', async () => {
+    const fetchMock = vi.fn(async () => new Response('not json{', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await fetchServingSha('http://x/api/health');
+
+    expect(r.reachable).toBe(false);
+    expect(r.sha).toBeNull();
+  });
+
+  it('is a SINGLE attempt — no retry loop (distinct from probeHealth)', async () => {
+    const fetchMock = vi.fn(async () => {
+      const err = new TypeError('fetch failed');
+      throw err;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchServingSha('http://x/api/health', { requestTimeoutMs: 50 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

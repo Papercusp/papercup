@@ -85,6 +85,9 @@ function basePlan(): DeployPlan {
     migrations: ['libs/papercusp/libs/db/sql/200-x.sql'],
     warnings: [],
     noop: false,
+    servingSha: null,
+    servingReachable: false,
+    restartOnly: false,
     desktopOnly: false,
     risk: { tier: 'review', autoDeployable: false, reasons: ['1 staged migration(s)'], blocked: [] },
   };

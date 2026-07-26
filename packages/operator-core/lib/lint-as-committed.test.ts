@@ -75,6 +75,19 @@ describe('parseArgs', () => {
     expect(a.nonLint).toEqual([]);
   });
 
+  it('flags self-recursion — the runner matches its own lint:* prefix', () => {
+    // Found empirically: sweeping every lint:* through this tool picks up the runner
+    // itself, whose inner no-arg run exits 2 on its usage guard and reports as
+    // "FAIL — exit 2", indistinguishable from a real violation at the ref.
+    const a = parseArgs(['lint:as-committed']) as { selfRecursive: string[] };
+    expect(a.selfRecursive).toEqual(['lint:as-committed']);
+  });
+
+  it('does not flag ordinary lints as self-recursive', () => {
+    const a = parseArgs(['lint:no-owner-name-tags', 'lint:mdx']) as { selfRecursive: string[] };
+    expect(a.selfRecursive).toEqual([]);
+  });
+
   it('separates unknown flags from script names so a typo cannot become a script name', () => {
     const a = parseArgs(['lint:mdx', '--ref']); // --ref without '=' is not a ref
     expect(a.unknown).toEqual(['--ref']);
