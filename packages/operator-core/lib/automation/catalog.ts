@@ -22,6 +22,11 @@
  * the spawning routine onto the usage row at spawn time — not to infer it here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import {
+  readScoutBudgetOverrides,
+  resolveScoutWorkspaceCeilingUsd,
+  resolveScoutWorkspaceCeilingUsdLive,
+} from '../learning-governor/scout-budget-overrides';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { ScheduleSource } from '../schedule-inventory';
 
@@ -108,6 +113,16 @@ export interface AutomationLaneArm {
   enforcement: string;
 }
 
+/** Workspace-wide Scout/Blender spend ceiling (learning:set-scout-budget) — the cap ABOVE every per-pot/per-lane budget below. */
+export interface AutomationScoutCeiling {
+  /** Runtime override in USD; null = unset (env/default governs). */
+  overrideUsd: number | null;
+  /** The ceiling actually in force (override ?? env/default). 0 = no Scout spend allowed. */
+  effectiveUsd: number;
+  /** The env/default layer the override shadows. */
+  envUsd: number;
+}
+
 /**
  * The SPEND-GATING layer, distinct from the schedule layer above (P-011): a
  * routine can be active while its pot/lane is disarmed (fires, spends nothing)
@@ -119,6 +134,8 @@ export interface AutomationLaneArm {
 export interface AutomationArming {
   gymPots: AutomationGymArm[];
   lanes: AutomationLaneArm[];
+  /** P-012: the workspace-wide ceiling row rendered above the per-pot/per-lane arms; null when unreadable. */
+  scoutCeiling: AutomationScoutCeiling | null;
 }
 
 export interface AutomationCatalog {
@@ -359,7 +376,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
 
   // Arming (spend-gate) state — same degrade-to-empty posture as the schedule
   // inventory above: a partial pane beats a pane that fails to load.
-  let arming: AutomationArming = { gymPots: [], lanes: [] };
+  let arming: AutomationArming = { gymPots: [], lanes: [], scoutCeiling: null };
   try {
     const gymRows = await sql<
       Array<{ harness_slug: string; enabled: boolean; budget_usd: number | null; spent_usd: number | null; status: string | null }>
@@ -393,9 +410,23 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
         spentUsd: Number(r.spent_usd ?? 0) || 0,
         enforcement: r.enforcement ?? 'governor',
       })),
+      scoutCeiling: null,
     };
   } catch {
     /* degrade: arming section renders empty, schedule section still loads */
+  }
+  try {
+    const [override, effectiveUsd] = await Promise.all([
+      readScoutBudgetOverrides(),
+      resolveScoutWorkspaceCeilingUsdLive(),
+    ]);
+    arming.scoutCeiling = {
+      overrideUsd: override.workspaceCeilingUsd ?? null,
+      effectiveUsd,
+      envUsd: resolveScoutWorkspaceCeilingUsd(),
+    };
+  } catch {
+    /* degrade: ceiling row absent, pot/lane arms still render */
   }
 
   return {

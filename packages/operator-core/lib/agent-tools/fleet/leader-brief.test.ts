@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeBenchSuggestion,
+  computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
   computeStrandedFleetAlert,
   projectMember,
@@ -319,7 +320,16 @@ describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-1868125956
   });
 
   it('tags the stalled branch with its own kind so a leader can tell the two remedies apart', () => {
-    const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: [], doing }, 5);
+    const held = {
+      id: 'WI-1',
+      itemKind: 'bug',
+      title: 'in progress',
+      status: 'open',
+      rank: 0,
+      rankWriter: null,
+      activity: 'alive' as const,
+    };
+    const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: [], doing: held }, 5);
     expect(s?.kind).toBe('stalled-no-mcp');
   });
 

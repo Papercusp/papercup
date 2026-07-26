@@ -508,7 +508,7 @@ export default defineTool({
     'parked-awaiting-capability) + nextFireAt, progress-stalled flag, unanswered directed ' +
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (alive but not advancing, ' +
-    'or alive+idle with zero claims/queued and unparked — a fleet:bench candidate), ' +
+    'or alive+idle, unclaimed, unparked — `kind` idle-with-claimable ⇒ wake, never bench), ' +
     'and unownedCriticals (aged unassigned ' +
     'criticals this fleet\'s spec would admit). Scoped to ONE fleet ' +
     '(yours by default), not the whole workspace roster fleet:assignments returns. ' +
@@ -524,7 +524,8 @@ export default defineTool({
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it.',
+      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it. ' +
+      '`idleWithClaimableAlert` → wake those members (never bench — the queue is not empty).',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
