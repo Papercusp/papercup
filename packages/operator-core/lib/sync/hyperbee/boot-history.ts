@@ -158,6 +158,13 @@ export type BootHistoryKind =
   //                             potId is the LOCAL home slug, not a federated field) → DROP.
   //   - 'epoch_applied'       — an encrypted op decrypted + applied (the success path).
   | 'epoch_gate_built'
+  // WI-6043 (2026-07-26): `buildHiveRekeyBootDeps`'s fail-open catch casts this kind but it
+  // was never declared in this union — a silent gate-build failure (a PG hiccup, a missing
+  // local device identity, an unexpected throw) recorded an event whose `kind` didn't even
+  // type-check as a BootHistoryKind, and — same root cause as rekey_boundary_skipped below —
+  // it wasn't mirrored to stdout either, so a rig whose decrypt gate silently never installed
+  // had NO way to show that in its banked serve.log.
+  | 'epoch_gate_skipped'
   // WI-808 decisive entry trace: an encrypted-looking op (epoch stamped OR `{__rekey}`
   // value) REACHED the decrypt-gate. Distinguishes "content dropped UPSTREAM of the
   // gate" (this never fires) from "reached the gate but passed through" (fires with
@@ -298,6 +305,22 @@ const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
   'peer_revoked',
   'peer_unrevoked',
   'boot_fail',
+  // WI-6043 (2026-07-26, revocation_kcut post-ban content LEAK): these three are the
+  // re-key/K-cut path's own "loud signal" kinds (WI-280's stated purpose: "NAMES itself
+  // instead of a silent 0→0" / "instead of a swallowed console.error") — but before this
+  // fix they were recorded ONLY to the in-memory ring + PG, never mirrored to stdout, so
+  // they were absent from exactly the artifact (`rig_bank_logs`' banked serve.log) every
+  // Hetzner/local-matrix rig relies on for post-mortem diagnosis once frames are torn
+  // down. A revocation_kcut FAIL investigation had to fall back to inferring the boundary
+  // advance's outcome indirectly (epoch value absence across the whole run) instead of
+  // reading the actual verdict — the exact "inferred from silence" failure WI-5781 fixed
+  // for admission events but missed for these. All three are edge-triggered / at-most-
+  // once-per-lifecycle-event (a revoke call, a member grant, a gate install) — same sparse
+  // profile as the admission/join/peer kinds above, never the hot per-op decrypt trace.
+  'rekey_boundary_skipped',
+  'rekey_grant_skipped',
+  'epoch_gate_built',
+  'epoch_gate_skipped',
 ]);
 
 let _nowImpl: () => number = () => Date.now();

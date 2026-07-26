@@ -23,6 +23,49 @@ import { updateWorkItem, mergeWorkItemPayload } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 
+/**
+ * EI-18707466248332421: the family-AGNOSTIC subset of this tool's fields — the ones that are
+ * NOT issue-family columns but claim-ADMISSION tags on `payload`, written via
+ * mergeWorkItemPayload (which supports BOTH families) instead of the updateIssue column patch.
+ * Kept as ONE mapping so the issue-family path and the feature-family path below can never
+ * disagree about which fields are family-agnostic.
+ */
+const PAYLOAD_FLAG_KEYS = {
+  needsTwoMachineRig: 'needs_2_machine_rig',
+  needsHuman: 'needsHuman',
+} as const;
+
+type PayloadFlagArgs = { needsTwoMachineRig?: boolean; needsHuman?: boolean };
+
+/** The payload patch for whichever admission flags this caller actually requested. */
+function payloadFlagPatch(it: PayloadFlagArgs): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const [arg, key] of Object.entries(PAYLOAD_FLAG_KEYS)) {
+    const v = (it as Record<string, unknown>)[arg];
+    if (v !== undefined) patch[key] = v;
+  }
+  return patch;
+}
+
+/** Whether the caller asked for a genuinely PIPELINE-OWNED column edit (issue-family only). */
+function hasColumnEdit(it: {
+  title?: unknown;
+  body?: unknown;
+  severity?: unknown;
+  kind?: unknown;
+  foundDuring?: unknown;
+  linkedFeatureId?: unknown;
+}): boolean {
+  return (
+    it.title !== undefined ||
+    it.body !== undefined ||
+    it.severity !== undefined ||
+    it.kind !== undefined ||
+    it.foundDuring !== undefined ||
+    it.linkedFeatureId !== undefined
+  );
+}
+
 const FIELDS = {
   title: hardText(LIMITS.SHORT_TITLE).optional(),
   body: hardText(8000).optional(),
@@ -265,6 +308,35 @@ export default defineTool({
               `its authoring peer owns the row and this node receives updates through federation. ` +
               `(work_items:get / work_items:comment still work on it — only field-edit is blocked.)`,
           };
+        }
+        // EI-18707466248332421: the rig-gate WRITE path for the FEATURE family. needsTwoMachineRig /
+        // needsHuman are NOT pipeline-owned columns — they are claim-ADMISSION payload tags, and the
+        // floors that READ them are ALREADY global across both families (crossMachineRigExclusionSql
+        // via claimFloorsWhereSql, EI-14806); mergeWorkItemPayload likewise writes both families.
+        // But this handler calls updateWorkItem FIRST unconditionally, so its issue-family-only
+        // `unsupported_family` refusal short-circuited the flag merges above — leaving the global
+        // read floor UNREACHABLE for a feature-family item: nothing could ARM it. So a leg the
+        // repo's own committed scaffold declares rig-gated stayed claimable to every single-box cup
+        // forever — WI-3500 (8 placements) + WI-3496 (6) burned 14 spawns on work no single box can
+        // finish, and `state=blocked` was the only (coarse, un-re-admittable) mitigation available.
+        if (res.reason === 'unsupported_family') {
+          const flagPatch = payloadFlagPatch(it);
+          if (Object.keys(flagPatch).length > 0) {
+            const merged = await mergeWorkItemPayload(it.id, flagPatch, { harness: it.harness });
+            if (merged) {
+              // A column edit requested ALONGSIDE the flag genuinely IS pipeline-owned: apply the
+              // admission flag (it is family-agnostic) but still report that half honestly, rather
+              // than claiming the whole patch landed.
+              if (!hasColumnEdit(it)) return { ok: true as const, id: it.id, item: merged };
+              return {
+                ok: false as const,
+                id: it.id,
+                error:
+                  `work_item '${it.id}' is feature-family: the admission flag(s) ${Object.keys(flagPatch).join(', ')} WERE applied, ` +
+                  `but its other fields are owned by the pipeline — re-send the field edit without them.`,
+              };
+            }
+          }
         }
         return {
           ok: false as const,

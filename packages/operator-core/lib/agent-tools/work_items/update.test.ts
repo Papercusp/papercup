@@ -253,6 +253,99 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-2', { needsHuman: true }, expect.any(Object));
     });
 
+    // EI-18707466248332421: the rig-gate WRITE path for the FEATURE family. The READ floor has
+    // been GLOBAL across both families since EI-14806 (crossMachineRigExclusionSql via
+    // claimFloorsWhereSql — proved by get-next-rig-floor.integration.test.ts), but NOTHING could
+    // ARM it on a feature-family item: this handler calls updateWorkItem first, and its
+    // issue-family-only `unsupported_family` refusal short-circuited the payload-flag merges — so
+    // the global floor was unreachable for the feature family. Live consequence: WI-3500 (8
+    // placements) + WI-3496 (6) burned 14 spawns on legs the repo's own committed scaffold
+    // (papercusp-desktop/bin/hive-git-drill.sh) already declares impossible on one box.
+    // These are the guards that would have failed the day the read floor went in write-side-less.
+    describe('feature-family admission flags are writable (EI-18707466248332421)', () => {
+      const FEATURE_FAMILY = { ok: false, reason: 'unsupported_family' } as const;
+
+      it('needsTwoMachineRig on a FEATURE-family item is APPLIED, not refused as unsupported_family', async () => {
+        updM.mockResolvedValue(FEATURE_FAMILY as never);
+        mergeM.mockResolvedValue({ id: 'WI-3500', payload: { needs_2_machine_rig: true } } as never);
+        const b = await body({ id: 'WI-3500', needsTwoMachineRig: true });
+        expect(mergeM).toHaveBeenCalledWith('WI-3500', { needs_2_machine_rig: true }, { harness: undefined });
+        expect(b.counts).toEqual({ ok: 1, failed: 0 });
+        expect(b.results[0]).toMatchObject({
+          ok: true,
+          id: 'WI-3500',
+          item: { payload: { needs_2_machine_rig: true } },
+        });
+        expect(b.results[0].error).toBeUndefined();
+      });
+
+      it('clearing the flag (false) on a FEATURE-family item also lands — the re-admit path', async () => {
+        updM.mockResolvedValue(FEATURE_FAMILY as never);
+        mergeM.mockResolvedValue({ id: 'WI-3500', payload: { needs_2_machine_rig: false } } as never);
+        const b = await body({ id: 'WI-3500', needsTwoMachineRig: false });
+        expect(mergeM).toHaveBeenCalledWith('WI-3500', { needs_2_machine_rig: false }, { harness: undefined });
+        expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3500' });
+      });
+
+      it('needsHuman — the sibling family-agnostic flag — is likewise applied on a FEATURE-family item', async () => {
+        updM.mockResolvedValue(FEATURE_FAMILY as never);
+        mergeM.mockResolvedValue({ id: 'WI-3496', payload: { needsHuman: true } } as never);
+        const b = await body({ id: 'WI-3496', needsHuman: true });
+        expect(mergeM).toHaveBeenCalledWith('WI-3496', { needsHuman: true }, { harness: undefined });
+        expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3496' });
+      });
+
+      it('both flags on a FEATURE-family item merge together in ONE payload patch', async () => {
+        updM.mockResolvedValue(FEATURE_FAMILY as never);
+        mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
+        const b = await body({ id: 'WI-3500', needsTwoMachineRig: true, needsHuman: true });
+        expect(mergeM).toHaveBeenCalledTimes(1);
+        expect(mergeM).toHaveBeenCalledWith(
+          'WI-3500',
+          { needs_2_machine_rig: true, needsHuman: true },
+          { harness: undefined },
+        );
+        expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3500' });
+      });
+
+      it('a per-item flag inside items:[…] reaches a FEATURE-family row (the batch form)', async () => {
+        updM.mockResolvedValue(FEATURE_FAMILY as never);
+        mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
+        const b = await body({ items: [{ id: 'WI-3500', needsTwoMachineRig: true }, { id: 'WI-3496', needsTwoMachineRig: true }] });
+        expect(b.counts).toEqual({ ok: 2, failed: 0 });
+        expect(mergeM).toHaveBeenNthCalledWith(1, 'WI-3500', { needs_2_machine_rig: true }, expect.any(Object));
+        expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-3496', { needs_2_machine_rig: true }, expect.any(Object));
+      });
+
+      // The flag is family-agnostic; a COLUMN edit genuinely is not. Applying the flag must not
+      // silently swallow the rejection of the pipeline-owned half.
+      it('a flag alongside a COLUMN edit applies the flag but still reports the column rejection', async () => {
+        updM.mockResolvedValue(FEATURE_FAMILY as never);
+        mergeM.mockResolvedValue({ id: 'WI-3500', payload: { needs_2_machine_rig: true } } as never);
+        const b = await body({ id: 'WI-3500', needsTwoMachineRig: true, title: 'a pipeline-owned edit' });
+        expect(mergeM).toHaveBeenCalledWith('WI-3500', { needs_2_machine_rig: true }, expect.any(Object));
+        expect(b.counts).toEqual({ ok: 0, failed: 1 });
+        expect(b.results[0].error).toMatch(/WERE applied/);
+        expect(b.results[0].error).toMatch(/needs_2_machine_rig/);
+      });
+
+      it('a PURE column edit on a FEATURE-family item is unchanged — refused, with NO payload write', async () => {
+        updM.mockResolvedValue(FEATURE_FAMILY as never);
+        const b = await body({ id: 'F-1', title: 'x' });
+        expect(mergeM).not.toHaveBeenCalled();
+        expect(b.counts).toEqual({ ok: 0, failed: 1 });
+        expect(b.results[0].error).toMatch(/feature-family/);
+      });
+
+      it('a vanished item (merge returns null) falls back to the honest unsupported_family error', async () => {
+        updM.mockResolvedValue(FEATURE_FAMILY as never);
+        mergeM.mockResolvedValue(null as never);
+        const b = await body({ id: 'WI-gone', needsTwoMachineRig: true });
+        expect(b.counts).toEqual({ ok: 0, failed: 1 });
+        expect(b.results[0].error).toMatch(/feature-family/);
+      });
+    });
+
     it('needsHuman and needsTwoMachineRig on the same item both merge (two separate calls)', async () => {
       updM.mockResolvedValue({ ok: true, item: { id: 'WI-1' } } as never);
       mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
