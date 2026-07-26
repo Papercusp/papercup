@@ -157,6 +157,40 @@ describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_cla
     expect(after.updatedBy).toBe('leader-y');
   });
 
+  // EI-18694186565089433: the revision was stored TWICE (the column, bumped
+  // atomically on every write, and a `revision` field embedded inside the spec
+  // JSONB, which the read-edit-write pattern setClaimSpec forces on every caller
+  // carried forward verbatim) — so the embedded copy fell one write behind the
+  // column on every re-steer. Confirmed live: set_claim_spec returned revision 6
+  // (the column) while every following get_claim_spec read reported
+  // spec.revision 5 (the stale embedded copy) — a leader could not trust its own
+  // re-steer, and a member's stale-revision report was wrongly dismissed as a
+  // "timeline artifact".
+  it('EI-18694186565089433: rec.spec.revision matches rec.revision after a re-steer (no divergence)', async () => {
+    await setClaimSpec({ cupId: 'su-rec-3', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    await setClaimSpec({ cupId: 'su-rec-3', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-w' }, db.sql);
+    const rec = await getClaimSpecRecord({ cupId: 'su-rec-3' }, db.sql);
+    expect(rec.revision).toBe(1);
+    expect(rec.spec.revision).toBe(rec.revision); // the two copies must never diverge
+
+    // The fix is not just at the read boundary — the STORED jsonb itself carries
+    // the correct value, so a raw SQL read (dev:pg_query, psql) sees the same
+    // number the authoritative column does, instead of a permanently-one-behind
+    // embedded copy.
+    const [row] = await db.sql<{ revision: number; embedded_revision: number }[]>`
+      SELECT revision, (spec->>'revision')::int AS embedded_revision
+        FROM harness_shared.cup_claim_specs
+       WHERE workspace_id = 'default' AND bee_id = 'su-rec-3'`;
+    expect(row!.embedded_revision).toBe(row!.revision);
+  });
+
+  it('EI-18694186565089433: getClaimSpec (the bare-spec resolver, no record wrapper) also returns the stamped revision', async () => {
+    await setClaimSpec({ cupId: 'su-rec-4', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    await setClaimSpec({ cupId: 'su-rec-4', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    const spec = await getClaimSpec({ cupId: 'su-rec-4' }, db.sql);
+    expect(spec.revision).toBe(1);
+  });
+
   it('returns source:"default" (DEFAULT_CLAIM_SPEC, no metadata) for a bee/fleet with no stored spec', async () => {
     const rec = await getClaimSpecRecord({ cupId: 'no-such-bee-rec' }, db.sql);
     expect(rec).toEqual({ source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null });
@@ -183,6 +217,16 @@ describe('resolveFleetClaimSpec (EI-18672834165659298 — resolve BOTH the fleet
     expect(resolved!.fleetSlug).toBe('drain-fleet-slug');
     expect(resolved!.record.spec.specId).toBe('drain-fleet-slug-lane');
     expect(resolved!.record.source).toBe('fleet');
+  });
+
+  it('EI-18694186565089433: a re-steered fleet spec also carries the stamped (non-diverged) revision', async () => {
+    const cupId = fleetSpecBeeKey('drain-fleet-restamped');
+    await setClaimSpec({ cupId, spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-restamped-lane' }, updatedBy: 'leader-c' }, db.sql);
+    await setClaimSpec({ cupId, spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-restamped-lane' }, updatedBy: 'leader-c' }, db.sql);
+    const resolved = await resolveFleetClaimSpec({ spec: 'drain-fleet-restamped' }, db.sql);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.record.revision).toBe(1);
+    expect(resolved!.record.spec.revision).toBe(resolved!.record.revision);
   });
 
   it('resolves via the spec\'s own specId when the caller passes THAT instead of the fleet slug (the field-reported bug)', async () => {
@@ -294,10 +338,17 @@ describe('L9 (P-058) — tombstone on scope-downgrade (cup_claim_specs re-home)'
       { op: 'put', harness_slug: 'hiveB' },
     ]);
     // The LOCAL row now lives under hive B, revision preserved-and-bumped.
-    const [row] = await db.sql<{ harness_slug: string; revision: number }[]>`
-      SELECT harness_slug, revision FROM harness_shared.cup_claim_specs WHERE bee_id='su-rehome'`;
+    const [row] = await db.sql<{ harness_slug: string; revision: number; embedded_revision: number }[]>`
+      SELECT harness_slug, revision, (spec->>'revision')::int AS embedded_revision
+        FROM harness_shared.cup_claim_specs WHERE bee_id='su-rehome'`;
     expect(row.harness_slug).toBe('hiveB');
     expect(row.revision).toBe(DEFAULT_CLAIM_SPEC.revision + 1);
+    // EI-18694186565089433: the re-home path (DELETE + fresh INSERT, not an
+    // ON CONFLICT upsert) must ALSO stamp the computed nextRev into the stored
+    // spec's own embedded revision — otherwise a scope change is exactly where
+    // the two copies are born diverged (the column jumps to nextRev; a naive
+    // re-insert of the caller's v.spec would keep the OLD embedded value).
+    expect(row.embedded_revision).toBe(row.revision);
     // get_next reads the live row — one spec, under the new scope (no strand).
     expect(await getClaimSpec({ cupId: 'su-rehome' }, db.sql)).toMatchObject({ specId: DEFAULT_CLAIM_SPEC.specId });
   });

@@ -166,10 +166,23 @@ export interface AgentDossierCheckpoint {
   updatedAtMs: number | null;
 }
 
+/**
+ * EI-18694403367371331: the underlying read for each signal below is best-
+ * effort (`.catch(() => <empty>)`) so ONE broken source can never crash the
+ * whole dossier — but that previously collapsed "the read threw" into the
+ * exact same shape as "the agent genuinely holds/has none", which reads as
+ * healthy-idle when it may really mean broken-and-invisible. A key present in
+ * `unavailableSignals` means ITS read threw this call — render "unavailable",
+ * never the same look as a legitimate empty/none state.
+ */
+export type AgentSignalKey = 'loop' | 'currentClaim' | 'context' | 'unanswered' | 'lastToolCall';
+
 export interface AgentSignals {
-  /** null when the agent has no engine loop routine at all (never armed). */
+  /** null when the agent has no engine loop routine at all (never armed) —
+   *  OR the read threw; check `unavailableSignals` to tell them apart. */
   loop: AgentDossierLoopStatus | null;
-  /** The agent's most recently taken held work-item, or null if it holds none. */
+  /** The agent's most recently taken held work-item, or null if it holds none
+   *  — OR the read threw; check `unavailableSignals` to tell them apart. */
   currentClaim: AgentDossierClaim | null;
   contextTokens: number | null;
   compactionLimit: number | null;
@@ -180,6 +193,10 @@ export interface AgentSignals {
   unansweredDirectedCount: number;
   /** Last recorded tool_invocations row for this owner — null if never observed. */
   lastToolCallAt: string | null;
+  /** Signal keys whose underlying read THREW this call rather than returning
+   *  genuinely empty data (EI-18694403367371331). Empty array = every signal
+   *  resolved normally (even if some legitimately came back empty/none). */
+  unavailableSignals: AgentSignalKey[];
 }
 
 export interface AgentDetail {
@@ -484,6 +501,14 @@ async function ensureClaudeResumeDirMaterialized(
   }
 }
 
+const ALL_AGENT_SIGNAL_KEYS: AgentSignalKey[] = [
+  'loop',
+  'currentClaim',
+  'context',
+  'unanswered',
+  'lastToolCall',
+];
+
 const EMPTY_SIGNALS: AgentSignals = {
   loop: null,
   currentClaim: null,
@@ -492,18 +517,37 @@ const EMPTY_SIGNALS: AgentSignals = {
   lastCheckpoint: null,
   unansweredDirectedCount: 0,
   lastToolCallAt: null,
+  // The outer-catch fallback below can't tell which individual read failed
+  // (it fires on a synchronous bug in the shaping code, not a rejected
+  // promise — every promise already carries its own per-key catch), so it
+  // marks ALL of them unavailable rather than claiming a clean read.
+  unavailableSignals: ALL_AGENT_SIGNAL_KEYS,
 };
 
 /** Read one agent's P-005 health signals (loop/claim/context/checkpoint/unanswered/last-tool-call). */
 export async function getAgentSignals(owner: string): Promise<AgentSignals> {
+  const unavailable: AgentSignalKey[] = [];
+  // EI-18694403367371331: a signal's underlying read failing must be VISIBLE
+  // (logged + surfaced in `unavailableSignals`), never silently collapsed
+  // into the same shape as a legitimate "holds nothing" / "no loop" state —
+  // a leader reading a falsely-empty CLAIM as "this agent is idle" is
+  // precisely the wrong conclusion when deciding whether to reclaim work.
+  const onFailure =
+    (key: AgentSignalKey) =>
+    <T>(fallback: T) =>
+    (err: unknown): T => {
+      unavailable.push(key);
+      console.warn(`[adv-agent-detail] getAgentSignals(${owner}) ${key} signal threw:`, err);
+      return fallback;
+    };
   try {
     const workspaceId = activeWorkspaceId();
     const [loopStatus, held, presence, unanswered, lastToolCall] = await Promise.all([
-      getLoopStatus(owner).catch(() => null),
-      readHeldWorkItems(owner, workspaceId).catch(() => []),
-      getPresence(owner).catch(() => null),
-      fetchUnansweredDirected([owner]).catch(() => new Map()),
-      lastToolCallAtByOwner([owner]).catch(() => new Map()),
+      getLoopStatus(owner).catch(onFailure('loop')(null)),
+      readHeldWorkItems(owner, workspaceId).catch(onFailure('currentClaim')([])),
+      getPresence(owner).catch(onFailure('context')(null)),
+      fetchUnansweredDirected([owner]).catch(onFailure('unanswered')(new Map())),
+      lastToolCallAtByOwner([owner]).catch(onFailure('lastToolCall')(new Map())),
     ]);
     // readHeldWorkItems is ordered DESC by feature_id (most-recently-created
     // first) — the front row is the agent's most current claim, matching what
@@ -528,8 +572,10 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
           : null,
       unansweredDirectedCount: unanswered.get(owner)?.count ?? 0,
       lastToolCallAt: lastToolCall.get(owner) ?? null,
+      unavailableSignals: unavailable,
     };
-  } catch {
+  } catch (err) {
+    console.warn(`[adv-agent-detail] getAgentSignals(${owner}) failed entirely:`, err);
     return EMPTY_SIGNALS;
   }
 }

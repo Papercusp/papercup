@@ -45,6 +45,19 @@ export interface GitSyncRoutineInput {
   cron?: string;
   push?: boolean;
   pushSubmodules?: boolean;
+  /**
+   * Push SUBMODULE repos to THEIR OWN origins, independent of `push`
+   * (EI-18689553108460319 / WI-6017). Omit ⇒ run-git-sync's own default
+   * (follows `push`) applies — this is ONLY for the seed-time case where the
+   * caller already knows the answer must be `true` despite `push:false`
+   * (a bridged/p2p-only hive: the bridge writer owns the superproject's
+   * canonical refs, never an independently-hosted submodule library — see
+   * `seedGitSyncRoutineForMember`, which computes this from `hiveGitMode`).
+   * Mirrors git-sync-action.ts's runtime override for a hive that flips
+   * legacy→bridged mid-flight; this is the seed-time sibling for a member
+   * whose hive is bridged/p2p-only from the very first seed.
+   */
+  pushSubmoduleOrigins?: boolean;
   /** Defaults INACTIVE when omitted; seed callers always pass it explicitly
    *  (D-008 ratified all-active, so seeded rows are active). */
   active?: boolean;
@@ -71,6 +84,10 @@ export async function upsertGitSyncRoutine(sql: Sql, input: GitSyncRoutineInput)
         cron: input.cron ?? DEFAULT_GIT_SYNC_CRON,
         push: input.push ?? true,
         push_submodules: input.pushSubmodules ?? true,
+        // WI-6017: only written when the caller has an explicit opinion — an
+        // absent key lets run-git-sync's own default (follow `push`) apply,
+        // same idiom as `branch` below.
+        ...(input.pushSubmoduleOrigins !== undefined ? { pushSubmoduleOrigins: input.pushSubmoduleOrigins } : {}),
         ...(input.branch ? { branch: input.branch } : {}),
         // P-015: `merge_strategy` removed — it was read by nothing (configFromTrigger
         // never consumed it); the pipeline always merges (`git merge --no-edit`).
@@ -276,6 +293,19 @@ export async function seedGitSyncRoutineForMember(
     const cron = gitSyncCronForKey(opts.cronKey ?? opts.installSlug);
     const active = joinerSide ? GIT_SYNC_SEED_ACTIVE_JOINER : GIT_SYNC_SEED_ACTIVE_CREATOR;
     const branch = opts.entry.github_default_branch;
+    // WI-6017 (seed-time sibling of git-sync-action.ts's runtime hive-mode override):
+    // a member seeded WHILE its hive is already bridged/p2p-only gets `push:false`
+    // straight from decideGitSyncPush's hiveGitMode rule (2/2b) — never a true→false
+    // flip — so git-sync-action's runtime override (`if (cfg.push && gate.hiveGitMode)`)
+    // never fires for it and pushSubmoduleOrigins would stay unset, stranding its
+    // submodules exactly like the original EI-18689553108460319 bug. Opt it back in
+    // here, at seed time. NOT for a joiner: decideGitSyncPush's precedence checks
+    // hiveGitMode BEFORE joinerSide, so a joiner joining an already-bridged hive also
+    // gets reason 'bridged_hive' — but AH-6 (S0 no-direct-push) requires a joiner to
+    // push NOTHING, anywhere, so joinerSide must win here even though the decider's
+    // own reason string doesn't surface it.
+    const pushSubmoduleOrigins =
+      !joinerSide && (hiveGitMode === 'bridged' || hiveGitMode === 'p2p-only') ? true : undefined;
     const upsert = deps.upsert ?? upsertGitSyncRoutine;
     await upsert(sql, {
       workspaceId: opts.workspaceId,
@@ -284,6 +314,7 @@ export async function seedGitSyncRoutineForMember(
       push: decision.push,
       active,
       ...(branch ? { branch } : {}),
+      ...(pushSubmoduleOrigins !== undefined ? { pushSubmoduleOrigins } : {}),
     });
     return {
       seeded: true,

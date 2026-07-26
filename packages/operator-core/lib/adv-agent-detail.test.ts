@@ -1,5 +1,4 @@
-import { describe, it, expect } from 'vitest';
-import { deriveAgentLocks, deriveCoordState } from './adv-agent-detail';
+import { describe, it, expect, vi } from 'vitest';
 import type {
   ActiveLockRow,
   WaiterRow,
@@ -8,6 +7,31 @@ import type {
 import type { HandoffWithAcceptance } from './agent-tools/coordination/handoffs';
 import type { EscalationRecord } from './agent-tools/coordination/escalations';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
+
+// EI-18694403367371331: getAgentSignals' six health reads are each best-effort
+// (`.catch(() => <empty>)`) so no single broken source can crash the whole
+// dossier — mock every one of them so the tests below can force a throw on
+// exactly ONE leg and assert it renders as "unavailable", never the same
+// shape as a legitimate empty/none state.
+const getLoopStatus = vi.fn();
+vi.mock('./harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
+const readHeldWorkItems = vi.fn();
+vi.mock('./carry-brief', () => ({ readHeldWorkItems: (...a: unknown[]) => readHeldWorkItems(...a) }));
+const getPresence = vi.fn();
+vi.mock('./agent-tools/coordination/presence', () => ({
+  getPresence: (...a: unknown[]) => getPresence(...a),
+}));
+const fetchUnansweredDirected = vi.fn();
+vi.mock('./agent-tools/coordination/unanswered-directed', () => ({
+  fetchUnansweredDirected: (...a: unknown[]) => fetchUnansweredDirected(...a),
+}));
+const lastToolCallAtByOwner = vi.fn();
+vi.mock('./fleet/assignments', () => ({
+  lastToolCallAtByOwner: (...a: unknown[]) => lastToolCallAtByOwner(...a),
+}));
+vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
+
+const { deriveAgentLocks, deriveCoordState, getAgentSignals } = await import('./adv-agent-detail');
 
 const NOW = 1_700_000_000_000;
 const isoMs = (ms: number): string => new Date(ms).toISOString();

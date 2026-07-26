@@ -92,6 +92,24 @@ describe('upsertGitSyncRoutine — the `branch` extension', () => {
     const cfg = (upsertRoutineMock.mock.calls[0][1] as { triggerConfig: Record<string, unknown> }).triggerConfig;
     expect('branch' in cfg).toBe(false);
   });
+
+  it('WI-6017: writes pushSubmoduleOrigins into trigger_config when explicitly given (either value)', async () => {
+    await upsertGitSyncRoutine(fakeSql, { workspaceId: 'ws', installSlug: 'shop', push: false, pushSubmoduleOrigins: true });
+    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({
+      triggerConfig: { push: false, pushSubmoduleOrigins: true },
+    });
+    upsertRoutineMock.mockClear();
+    await upsertGitSyncRoutine(fakeSql, { workspaceId: 'ws', installSlug: 'shop', pushSubmoduleOrigins: false });
+    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({
+      triggerConfig: { pushSubmoduleOrigins: false },
+    });
+  });
+
+  it('WI-6017: omits the pushSubmoduleOrigins key entirely when not given — run-git-sync\'s own default (follow `push`) applies', async () => {
+    await upsertGitSyncRoutine(fakeSql, { workspaceId: 'ws', installSlug: 'shop' });
+    const cfg = (upsertRoutineMock.mock.calls[0][1] as { triggerConfig: Record<string, unknown> }).triggerConfig;
+    expect('pushSubmoduleOrigins' in cfg).toBe(false);
+  });
 });
 
 describe('seedGitSyncRoutineForMember (P-001/P-008 seed side)', () => {

@@ -185,21 +185,40 @@ export async function setClaimSpec(
     // Atomic: the tombstone (DELETE→old scope) + the re-insert (→new scope) commit
     // together, so a bee never observes a no-spec window mid-re-home.
     const nextRev = Math.max(prior[0]!.revision + 1, v.spec.revision);
+    // EI-18694186565089433: stamp the COMPUTED nextRev into the stored spec's own
+    // embedded `revision` field — never the client-submitted v.spec.revision, which
+    // is only the optimistic-concurrency precondition, not the value that actually
+    // lands. Without this the embedded copy is born stale on the very first write
+    // after a scope change (the column jumps to nextRev; the JSONB keeps whatever
+    // the caller sent).
+    const specToStore = withColumnRevision(v.spec, nextRev);
     const rows = (await sql.begin(async (tx) => {
       await tx`DELETE FROM harness_shared.cup_claim_specs WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}`;
       return (await tx`
         INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
-        VALUES (${ws}, ${args.cupId}, ${JSON.stringify(v.spec)}::text::jsonb, ${nextRev}, ${idOnly}, ${args.updatedBy ?? null}, ${potSlug}, now())
+        VALUES (${ws}, ${args.cupId}, ${JSON.stringify(specToStore)}::text::jsonb, ${nextRev}, ${idOnly}, ${args.updatedBy ?? null}, ${potSlug}, now())
         RETURNING revision`) as { revision: number }[];
     })) as unknown as { revision: number }[];
     return { ok: true, errors: [], revision: rows[0]?.revision, ...(strandWarning ? { warning: strandWarning } : {}) };
   }
 
+  // EI-18694186565089433: on a re-steer (ON CONFLICT), the REVISION column is
+  // computed atomically in SQL via GREATEST(...) — the client-submitted
+  // v.spec.revision may lose that race. Stamp the SAME GREATEST-computed value
+  // into the embedded spec's `revision` field, in the SAME statement (jsonb_set
+  // on EXCLUDED.spec), so the two copies can never diverge no matter which
+  // concurrent writer's bump actually wins. The plain (non-conflict) INSERT path
+  // needs no stamping: a brand-new row's embedded revision already equals the
+  // column value it's inserted with (both are v.spec.revision, verbatim).
   const rows = (await sql`
     INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
     VALUES (${ws}, ${args.cupId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, ${potSlug}, now())
     ON CONFLICT (workspace_id, bee_id) DO UPDATE SET
-      spec = EXCLUDED.spec,
+      spec = jsonb_set(
+        EXCLUDED.spec,
+        '{revision}',
+        to_jsonb(GREATEST(harness_shared.cup_claim_specs.revision + 1, EXCLUDED.revision))
+      ),
       revision = GREATEST(harness_shared.cup_claim_specs.revision + 1, EXCLUDED.revision),
       id_only = EXCLUDED.id_only,
       updated_by = EXCLUDED.updated_by,
@@ -516,7 +535,7 @@ export async function getClaimSpecRecord(
     const v = validateClaimSpec(row.spec);
     return {
       source: 'cup',
-      spec: v.ok && v.spec ? v.spec : DEFAULT_CLAIM_SPEC,
+      spec: v.ok && v.spec ? withColumnRevision(v.spec, row.revision) : DEFAULT_CLAIM_SPEC,
       revision: row.revision,
       updatedBy: row.updated_by,
       updatedAt: row.updated_at,
@@ -557,7 +576,7 @@ export async function getClaimSpecRecord(
         if (fv.ok && fv.spec) {
           return {
             source: 'fleet',
-            spec: fv.spec,
+            spec: withColumnRevision(fv.spec, frow.revision),
             revision: frow.revision,
             updatedBy: frow.updated_by,
             updatedAt: frow.updated_at,
@@ -637,7 +656,7 @@ export async function resolveFleetClaimSpec(
       fleetSlug,
       record: {
         source: 'fleet',
-        spec: v.spec,
+        spec: withColumnRevision(v.spec, row.revision),
         revision: row.revision,
         updatedBy: row.updated_by,
         updatedAt: row.updated_at,
