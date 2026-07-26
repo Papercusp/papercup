@@ -1463,6 +1463,42 @@ function classifyKind(cmdline: string): ProcessEntry['kind'] {
   return 'other';
 }
 
+/**
+ * Probe a single raw pid for OS-level existence + best-effort kind, WITHOUT
+ * the `kind === 'other'` drop that `listProcesses()` applies before a caller
+ * ever sees its results. `listProcesses()` is a *view* (six tracked agent
+ * kinds); this is the ground truth for one pid. Used by killProcess() to
+ * tell "this pid does not exist" apart from "this pid exists but is not one
+ * of the six kinds we track" — see EI-18698120633403217: without this check,
+ * a live `vitest`/`tsc`/`local-matrix` (or anything else outside the six
+ * needles) came back from listProcesses() as if it were absent, so
+ * killProcess() reported `pid_not_found` — a false claim about host state —
+ * for a process that `kill(1)` can plainly see and signal.
+ */
+export async function probeProcess(
+  pid: number,
+): Promise<{ exists: boolean; kind: ProcessEntry['kind']; cmdline: string }> {
+  const fs = await import('node:fs');
+  let cmdline = '';
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/cmdline`);
+    cmdline = raw.toString('utf8').replace(/\0/g, ' ').trim();
+  } catch {
+    return { exists: false, kind: 'other', cmdline: '' };
+  }
+  if (cmdline) {
+    return { exists: true, kind: classifyKind(cmdline), cmdline };
+  }
+  // An empty cmdline can still be a live process (e.g. a kernel thread or a
+  // zombie) — fall back to checking /proc/<pid> itself before declaring gone.
+  try {
+    fs.statSync(`/proc/${pid}`);
+    return { exists: true, kind: 'other', cmdline: '' };
+  } catch {
+    return { exists: false, kind: 'other', cmdline: '' };
+  }
+}
+
 export interface ListProcessesInput {
   kinds?: Array<ProcessEntry['kind']>;
 }

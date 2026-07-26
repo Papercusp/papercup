@@ -11,7 +11,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listProcessesMock = vi.fn();
-vi.mock('./dev-data', () => ({ listProcesses: (...a: unknown[]) => listProcessesMock(...a) }));
+const probeProcessMock = vi.fn();
+vi.mock('./dev-data', () => ({
+  listProcesses: (...a: unknown[]) => listProcessesMock(...a),
+  probeProcess: (...a: unknown[]) => probeProcessMock(...a),
+}));
 // Audit writes are best-effort + tangential — stub the DB to a no-op.
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { unsafe: vi.fn() } }) }));
 
@@ -23,11 +27,20 @@ function proc(pid: number, kind: string) {
 function withProcs(...entries: ReturnType<typeof proc>[]) {
   listProcessesMock.mockResolvedValue({ processes: entries });
 }
+/** Default: the probed pid truly does not exist on the host. */
+function withNoProbeHit() {
+  probeProcessMock.mockResolvedValue({ exists: false, kind: 'other', cmdline: '' });
+}
+function withProbeHit(kind: string, cmdline = `/bin/${kind}`) {
+  probeProcessMock.mockResolvedValue({ exists: true, kind, cmdline });
+}
 
 let killSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   listProcessesMock.mockReset();
+  probeProcessMock.mockReset();
+  withNoProbeHit(); // default: probe finds nothing, unless a test overrides it
   // CRITICAL: mock process.kill so the test never signals a real pid.
   killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
 });

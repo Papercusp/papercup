@@ -492,11 +492,23 @@ export function WorkItemDetail({
   workItem,
   onSelect,
   onBack,
+  onOpenChat,
 }: {
   slug: string;
   workItem: WorkItemRow;
   onSelect: (id: string) => void;
   onBack?: () => void;
+  /** WI-6023 — HOST-THE-PANEL seam for callers with no dock in their tree.
+   *
+   *  Omitted (the /adv Working tab): unchanged: openFeatureChat dispatches
+   *  OPEN_CHAT_EVENT and HarnessesDock opens the panel.
+   *
+   *  Provided (WorkItemPopupModal, mounted by OperatorChat): the dispatch is
+   *  SUPPRESSED and the resolved chatId handed back so the caller renders
+   *  <ChatPanel> itself — the PlanChat precedent. Without this the button is
+   *  silently dead, because the only OPEN_CHAT_EVENT listeners live in
+   *  HarnessesDock / PiTerminalsDock and neither is mounted there. */
+  onOpenChat?: (chatId: string) => void;
 }) {
   const [openingChat, setOpeningChat] = useState(false);
   const openChat = async () => {
@@ -508,9 +520,16 @@ export function WorkItemDetail({
         featureId: workItem.id,
         title: workItem.title,
         mode: 'discuss',
+        // Suppress the dock dispatch ONLY when this caller will host the
+        // panel — otherwise the detail also lands on the pending-opens queue
+        // and a later dock mount replays it (WI-6023).
+        ...(onOpenChat ? { dispatch: false } : {}),
       });
       if (res && typeof res === 'object' && 'error' in res) {
         throw new Error(String((res as { error: unknown }).error));
+      }
+      if (onOpenChat && res && typeof res === 'object' && 'chatId' in res) {
+        onOpenChat(String((res as { chatId: unknown }).chatId));
       }
     } catch (e) {
       toast.error('Open chat failed', { description: String(e) });

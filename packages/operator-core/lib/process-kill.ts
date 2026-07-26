@@ -14,7 +14,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { listProcesses, type ProcessEntry } from './dev-data';
+import { listProcesses, probeProcess, type ProcessEntry } from './dev-data';
 
 export type KillableKind = 'run.sh' | 'omp' | 'claude';
 const KILLABLE: Set<string> = new Set(['run.sh', 'omp', 'claude']);
@@ -33,7 +33,7 @@ export interface KillProcessResult {
   pid: number;
   kind?: string;
   signal?: string;
-  error?: 'pid_not_found' | 'protected_kind' | 'signal_failed';
+  error?: 'pid_not_found' | 'unsupported_kind' | 'protected_kind' | 'signal_failed';
   detail?: string;
 }
 
@@ -71,6 +71,29 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
   const target = processes.find((p: ProcessEntry) => p.pid === input.pid);
 
   if (!target) {
+    // listProcesses() silently drops any pid classified 'other' before the
+    // caller ever sees it, so "not in the classified list" does NOT mean
+    // "does not exist" — re-probe the raw pid before asserting that (see
+    // EI-18698120633403217).
+    const probe = await probeProcess(input.pid);
+    if (probe.exists) {
+      await writeAudit(input.workspaceId, input.actorSlug, {
+        action: 'processes.kill_rejected',
+        subject: String(input.pid),
+        details: {
+          reason: 'unsupported_kind',
+          kind: probe.kind,
+          cmdline_prefix: probe.cmdline.slice(0, 80),
+        },
+      });
+      return {
+        ok: false,
+        pid: input.pid,
+        kind: probe.kind,
+        error: 'unsupported_kind',
+        detail: `pid ${input.pid} exists but is not a tracked kind (run.sh|omp|claude|paperclip|pty|next) — this tool only manages those`,
+      };
+    }
     await writeAudit(input.workspaceId, input.actorSlug, {
       action: 'processes.kill_rejected',
       subject: String(input.pid),
