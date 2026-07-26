@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   armSubstrateWakeKeepalive,
+  mayDeferOnWakeVerdict,
   disarmSubstrateWakeKeepalive,
   announceSubstrateWakeActivity,
   substrateWakeKeepaliveStatus,
@@ -77,57 +78,66 @@ afterEach(() => {
 
 describe('arm', () => {
   it('joins the topic derived from the harness binding, without booting anything', async () => {
-    const armedOk = await armSubstrateWakeKeepalive(WS, SLUG, {
+    const verdict = await armSubstrateWakeKeepalive(WS, SLUG, {
       resolveSwarmBinding: () => BINDING,
     });
-    expect(armedOk).toBe(true);
+    expect(verdict).toBe('covered');
     expect(g.calls.watch).toHaveLength(1);
     expect(g.calls.watch[0].topicHex).toBe(deriveSwarmTopic(BINDING).toString('hex'));
   });
 
-  it('returns FALSE for a private / local-only harness (null binding) and watches nothing', async () => {
+  it("returns 'not-needed' for a private / local-only harness (null binding) and watches nothing", async () => {
     // No topic, no peers — nothing to cover, and the outbox LISTEN already
     // handles its local writes. The verdict must still be false so a caller
     // never reads "armed" into it.
-    const armedOk = await armSubstrateWakeKeepalive(WS, SLUG, {
+    const verdict = await armSubstrateWakeKeepalive(WS, SLUG, {
       resolveSwarmBinding: () => null,
     });
-    expect(armedOk).toBe(false);
+    expect(verdict).toBe('not-needed');
     expect(g.calls.watch).toHaveLength(0);
     expect(substrateWakeKeepaliveStatus().armed).toEqual([]);
   });
 
-  it('returns FALSE, stays un-armed, and warns LOUDLY when the binding resolver throws', async () => {
+  it("returns 'uncovered', stays un-armed, and warns LOUDLY when the binding resolver throws", async () => {
     // The warn is the point: a federating harness left without remote-wake
     // coverage is the divergence risk, so it must never fail silently.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const armedOk = await armSubstrateWakeKeepalive(WS, SLUG, {
+    const verdict = await armSubstrateWakeKeepalive(WS, SLUG, {
       resolveSwarmBinding: () => {
         throw new Error('pg is down');
       },
     });
-    expect(armedOk).toBe(false);
+    expect(verdict).toBe('uncovered');
     expect(substrateWakeKeepaliveStatus().armed).toEqual([]);
     expect(g.calls.watch).toHaveLength(0);
     expect(warn).toHaveBeenCalledOnce();
     expect(String(warn.mock.calls[0][0])).toMatch(/not covered by a remote wake/);
   });
 
-  it('returns FALSE when the binding is malformed enough that topic derivation throws', async () => {
+  it("returns 'uncovered' when the binding is malformed enough that topic derivation throws", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const armedOk = await armSubstrateWakeKeepalive(WS, SLUG, {
+    const verdict = await armSubstrateWakeKeepalive(WS, SLUG, {
       resolveSwarmBinding: () => ({ kind: 'hive' }) as unknown as SwarmBinding,
     });
-    expect(armedOk).toBe(false);
+    expect(verdict).toBe('uncovered');
     expect(substrateWakeKeepaliveStatus().armed).toEqual([]);
     expect(warn).toHaveBeenCalledOnce();
   });
 
   it('awaits an async resolver', async () => {
-    const armedOk = await armSubstrateWakeKeepalive(WS, SLUG, {
+    const verdict = await armSubstrateWakeKeepalive(WS, SLUG, {
       resolveSwarmBinding: async () => BINDING,
     });
-    expect(armedOk).toBe(true);
+    expect(verdict).toBe('covered');
+  });
+
+  it('the DEFER rule: only an uncovered federating harness must be booted', () => {
+    // The regression this three-way verdict exists to prevent — a boolean here
+    // either stops deferring private harnesses, or defers uncovered federating
+    // ones. Both are wrong; pin the rule in one place.
+    expect(mayDeferOnWakeVerdict('covered')).toBe(true);
+    expect(mayDeferOnWakeVerdict('not-needed')).toBe(true);
+    expect(mayDeferOnWakeVerdict('uncovered')).toBe(false);
   });
 
   it('is idempotent — re-arming the same harness does not double-register it', async () => {
