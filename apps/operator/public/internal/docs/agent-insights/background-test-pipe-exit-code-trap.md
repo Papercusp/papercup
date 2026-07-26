@@ -46,6 +46,38 @@ string, so don't assume it's set.
 pipe) — so `cmd1` may still be running, or may get `SIGPIPE`'d mid-write,
 independent of whatever `head` reports.
 
+`grep` is hazardous in *both* directions: it exits **1 on no match**, so it can
+also turn a genuinely clean run into an apparent failure.
+
+## It is not just `tail`/`head`/`grep` — it is ANY downstream stage
+
+This doc and the PreToolUse advisory originally named only `tail`/`head`/`grep`,
+because those were the three stages first observed. That framing is too narrow
+and let the trap recur (EI-18686555459167489: a `tsc` run reported "exit code 0"
+while tsc had actually exited 2). **Any** downstream stage replaces the
+upstream's status, and the ones that show up around a long verification run are
+exactly the ones that exit 0 unconditionally:
+
+```bash
+npx tsc --noEmit 2>&1 | tee build.log   # tee  — save it AND watch it
+npx tsc --noEmit 2>&1 | wc -l           # wc   — "just count the errors"
+npm run build  2>&1 | sed -n '1,40p'    # sed  — slice the interesting part
+npm test       2>&1 | sort | uniq -c    # sort/uniq — tally failures
+```
+
+Every one of those reports **0** no matter what the upstream did. The advisory
+now covers `tail head grep egrep fgrep tee wc sed awk sort uniq cut tr jq column
+xargs cat tac nl less more`, but treat the list as a heuristic for "you probably
+care about the upstream's exit code" — not as an exhaustive definition of the
+hazard. If a pipe is in the command at all, the exit code you get back is not
+the one you meant.
+
+> **The detection method that actually works is a positive control.** State what
+> output you EXPECT if the tool truly ran, then check you got it. A suspiciously
+> clean result is evidence the tool did not run, not evidence that it passed —
+> which is how EI-18686555459167489 was caught at all (the reporter expected
+> \~420 lines of pre-existing project errors and noticed their absence).
+
 ## The safe pattern
 
 Redirect to a **log file**, don't pipe through a truncating filter, and let

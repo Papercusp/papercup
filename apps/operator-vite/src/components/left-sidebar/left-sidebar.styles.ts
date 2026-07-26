@@ -1341,10 +1341,16 @@ body.has-left-sidebar .pc-header {
 
 /* 2 — lane strip (mirrors .pc-queen__lanes) */
 .pc-auto__lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
-.pc-auto__lane { min-width: 0; min-height: 46px; display: flex; align-items: center; gap: 8px;
+/* ⚠ display is BLOCK and the icon+copy row lives on .pc-auto__lane-inner:
+   WebKitGTK (the Tauri webview) IGNORES flex set on a <button> element, so
+   declaring the row here stacked the icon above the label on the real desktop
+   while looking correct in Chromium (EI-18135716653974462 / WI-5581). Same fix
+   as .pc-auto__toggle / .pc-auto__action below — do not move it back. */
+.pc-auto__lane { min-width: 0; min-height: 46px; display: block;
   padding: 7px 8px; text-align: left; cursor: pointer; color: var(--fg-dim, #b9d4e8);
   background: var(--bg-2, rgba(255, 255, 255, 0.04));
   border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); border-radius: 8px; }
+.pc-auto__lane-inner { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .pc-auto__lane:hover { color: var(--fg, #e7f7ff);
   border-color: color-mix(in srgb, var(--accent), transparent 64%);
   background: color-mix(in srgb, var(--accent), transparent 94%); }

@@ -126,12 +126,21 @@ export default function AgentsTab({ active }: { active: boolean }) {
               onClick={() => void setView(lane.id)}
               data-testid={`agents-lane-${lane.id}`}
             >
-              <span className="pc-auto__lane-icon">
-                <Icon size={13} aria-hidden />
-              </span>
-              <span className="pc-auto__lane-copy">
-                <span className="pc-auto__lane-label">{lane.label}</span>
-                <span className="pc-auto__lane-value">{lane.value}</span>
+              {/* Inner span carries the icon+copy row. WebKitGTK — the Tauri
+                  webview this ships in — IGNORES flex set on a <button>
+                  element, so declaring this row on the button itself stacked
+                  the icon on top of the label on the real desktop while
+                  looking correct in Chromium (EI-18135716653974462 / WI-5581,
+                  the same defect the HUD board was migrated off after an
+                  owner-screenshotted regression). Keep the layout in here. */}
+              <span className="pc-auto__lane-inner">
+                <span className="pc-auto__lane-icon">
+                  <Icon size={13} aria-hidden />
+                </span>
+                <span className="pc-auto__lane-copy">
+                  <span className="pc-auto__lane-label">{lane.label}</span>
+                  <span className="pc-auto__lane-value">{lane.value}</span>
+                </span>
               </span>
             </button>
           );

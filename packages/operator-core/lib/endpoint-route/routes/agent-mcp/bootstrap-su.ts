@@ -52,6 +52,10 @@ import {
 } from '../../../agent-tools/plans/launch-prompt';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
 import { rekeyCodexHome, writeSuCodexHome } from '../../../role-codex-home';
+// EI-11366: the real liveness check wired into writeSuCodexHome's identity-
+// split collision guard — is there a LIVE psu-pty host process for a sid that
+// previously owned the CODEX_HOME directory we're about to rebuild?
+import { findLiveHost } from '../../../events/await/psu-pty-discovery';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import { resolveSuLaunchCwd } from '../../../su-launch-cwd';
 import {
@@ -1827,6 +1831,13 @@ const post = defineTool({
           // "Do you trust this directory?" boot prompt (an su launch is trusted).
           trustDir: cwd,
           instructionRuntime,
+          // EI-11366: refuse to silently destroy a DIFFERENT sid's still-live
+          // Codex home (the identity-split incident this bug reported) —
+          // findLiveHost is the same self-validating (pid-alive + socket-exists
+          // + cmdline-verified) liveness oracle the wake-executor injects
+          // through, so "live" here means a real running psu-pty host, not
+          // just a DB row.
+          isOwnerLive: (priorSid: string) => findLiveHost(priorSid) != null,
         });
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics
