@@ -167,6 +167,17 @@ const CHECKPOINT_TERMINAL_MARKERS: ReadonlyArray<RegExp> = [
   /\b(?:transition(?:ed|ing)?|flipp?ed|moved|set(?:\s+state)?|marked|status\s*[:=]|now)\s+(?:to\s+|as\s+)?(?:passed|deprecated|resolved|closed|blocked|needs-human|done)\b/i,
   // an explicit "✅ COMPLETE" / "✅ DONE" completion header the cup writes on finish
   /✅\s*(?:complete(?:d)?|done|passed)\b/i,
+  // EI-18712524449804476 — a checkpoint that OPENS with an assertive all-caps terminal
+  // marker word, the convention this codebase's own agents actually write in practice
+  // ("TERMINAL — WI-4446 COMPLETE + VERIFIED, state=passed. Do NOT restart.",
+  // "SUPERSEDED by owner decision"). Anchored to the START of the checkpoint (never a
+  // passing mid-text mention) to keep the same conservative, false-positive-averse
+  // posture as the markers above.
+  /^\s*(?:TERMINAL|SUPERSEDED|OBSOLETE|VOID|DUPLICATE)\b/,
+  // EI-18712524449804476 — a checkpoint that OPENS with the item's own id followed
+  // directly by a terminal verb ("WI-4480 PASSED 2026-07-17 15:12Z (terminalOwner …)").
+  // Anchored to the start for the same reason as above.
+  /^\s*(?:WI|EI|F)-\d+\s+(?:PASSED|COMPLETE(?:D)?|DONE|RESOLVED|CLOSED|DEPRECATED|SUPERSEDED)\b/,
 ];
 
 /** EI-15232 — does the cup's checkpoint text DECLARE a terminal/blocked completion?
@@ -534,7 +545,39 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
   // breaker only halts for real if a cursed unit short-circuits before the failed
   // path. (terminal / live-holder above already clear the curse the moment it's
   // genuinely resolved or re-placed-and-working.)
-  if (obs.placementStatus === 'cursed' || obs.placementStatus === 'stranded') return { kind: 'latched' };
+  //
+  // EI-18712524449804476 — BUT a bare latch here is exactly the bug this item
+  // reports: checkpointDeclaresTerminal / planItemDeclaresTerminal (below) were only
+  // ever checked on the 'recovering' path, so a CURSED row whose own checkpoint (or
+  // linked plan item) already declares the work done/superseded stayed cursed FOREVER
+  // — the state/checkpoint divergence is invisible once the breaker has tripped, not
+  // just before it. Concrete (2026-07-26): WI-4446 (cursed, failCount 6, checkpoint
+  // "TERMINAL — ... COMPLETE + VERIFIED") and WI-4480 (cursed, failCount 5, checkpoint
+  // "PASSED 2026-07-17 ...") both sat cursed while their own checkpoints said done.
+  // Check the SAME two signals here, before latching: if either declares terminal,
+  // fall through to the SAME checkpoint-reconcile / plan-item-reconcile decisions used
+  // below — which flip `status` away from 'cursed' to 'recovering', so the very next
+  // tick lands on the existing recovering-debounce window (no per-tick storm; a
+  // dedicated new debounce state is unnecessary because this reuses that one).
+  if (obs.placementStatus === 'cursed' || obs.placementStatus === 'stranded') {
+    if (obs.checkpointDeclaresTerminal) {
+      return {
+        kind: 'checkpoint-reconcile',
+        reason:
+          'cursed row whose cup checkpoint declares terminal/blocked (stale-open, latched) — ' +
+          'reconcile the state, do not stay latched forever',
+      };
+    }
+    if (obs.planItemDeclaresTerminal) {
+      return {
+        kind: 'plan-item-reconcile',
+        reason:
+          'cursed row whose linked plan item already reached done/dropped (orphan-reconcile lag, ' +
+          'latched) — self-heal via the plan-item reconciler, do not stay latched forever',
+      };
+    }
+    return { kind: 'latched' };
+  }
 
   if (
     obs.placementStatus === 'recovering' &&

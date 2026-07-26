@@ -79,4 +79,27 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
     expect(events[0].message).toContain('newEpoch=1');
     expect(events[0].message).toContain('distributed=2');
   });
+
+  it('names skippedDevicePubkeys on a WI-6044 partial success (still live:true, some devices unwrappable)', async () => {
+    const result = await revokeHiveContributor(
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
+      {
+        isOwningSwarm: async () => true,
+        resolveOwnerGithubUserId: async () => 1,
+        loadTargetPubkeys: async () => ['pk-b'],
+        publishRevocation: async () => ({
+          live: true,
+          newEpoch: 2,
+          distributed: 1,
+          skippedDevicePubkeys: ['pk-creator'], // WI-6044: one malformed device skipped, boundary still applied
+        }),
+      },
+    );
+    expect(result).toMatchObject({ ok: true, live: true, newEpoch: 2, distributed: 1, skippedDevicePubkeys: ['pk-creator'] });
+    expect(skips().length, 'still a success — no skip event').toBe(0);
+    const events = applieds();
+    expect(events.length).toBe(1);
+    expect(events[0].message).toContain('skippedDevices=1');
+    expect(events[0].message).toContain('WI-6044');
+  });
 });

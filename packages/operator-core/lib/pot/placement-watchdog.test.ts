@@ -538,6 +538,32 @@ describe('checkpointDeclaresTerminal (EI-15232)', () => {
       expect(checkpointDeclaresTerminal(cp)).toBe(false);
     }
   });
+
+  it('EI-18712524449804476: matches the ACTUAL real-world cursed checkpoints this item was filed on', () => {
+    // WI-4446's real checkpoint (verbatim from the ticket) — none of the pre-existing
+    // markers matched this ("state=passed" is not "state:terminal"; no parenthetical;
+    // no "set/status:" trigger word; no checkmark).
+    expect(
+      checkpointDeclaresTerminal(
+        'TERMINAL — WI-4446 COMPLETE + VERIFIED, state=passed (s-1784251669829, 2026-07-16). Do NOT restart.',
+      ),
+    ).toBe(true);
+    // WI-4480's real checkpoint (verbatim) — bare "PASSED" with no preceding trigger word.
+    expect(checkpointDeclaresTerminal('WI-4480 PASSED 2026-07-17 15:12Z (terminalOwner su-b621dc7f)')).toBe(true);
+    // WI-4640's real checkpoint (verbatim) — "superseded" was not a recognized terminal word at all.
+    expect(checkpointDeclaresTerminal('SUPERSEDED by owner decision')).toBe(true);
+  });
+
+  it('EI-18712524449804476: the new leading markers stay anchored to the START (no mid-text false positive)', () => {
+    for (const cp of [
+      'still investigating whether this is terminal or not', // "terminal" mid-sentence, no leading assertion
+      'the previous approach was superseded but this checkpoint continues other work', // mid-text "superseded"
+      'ran the PASSED test suite, still 2 more steps to go', // "PASSED" describes a sub-step, not the item
+      'reviewing WI-4480 PASSED earlier by a peer before deciding my own next step', // cites ANOTHER item's history
+    ]) {
+      expect(checkpointDeclaresTerminal(cp)).toBe(false);
+    }
+  });
 });
 
 describe('evaluatePlacement — EI-15232 stale-open checkpoint reconcile (ZERO re-place pages)', () => {
@@ -588,8 +614,21 @@ describe('evaluatePlacement — EI-15232 stale-open checkpoint reconcile (ZERO r
     expect(d.kind).toBe('debounced');
   });
 
-  it('a cursed row stays latched — the reconcile branch sits AFTER the cursed latch (no per-tick storm)', () => {
+  it('EI-18712524449804476: a CURSED row whose checkpoint declares terminal reconciles instead of staying latched forever', () => {
     const d = evaluatePlacement(obs({ ...staleOpen, placementStatus: 'cursed', failCount: 3 }), CFG);
+    expect(d.kind).toBe('checkpoint-reconcile');
+  });
+
+  it('EI-18712524449804476: a STRANDED row whose checkpoint declares terminal also reconciles (not just cursed)', () => {
+    const d = evaluatePlacement(obs({ ...staleOpen, placementStatus: 'stranded', failCount: 3 }), CFG);
+    expect(d.kind).toBe('checkpoint-reconcile');
+  });
+
+  it('a cursed row with NO terminal-declaring checkpoint still latches (EI-865 behavior preserved)', () => {
+    const d = evaluatePlacement(
+      obs({ hasLiveHolder: false, checkpointDeclaresTerminal: false, placementStatus: 'cursed', failCount: 3 }),
+      CFG,
+    );
     expect(d.kind).toBe('latched');
   });
 });
@@ -672,13 +711,21 @@ describe('evaluatePlacement — WI-6038 plan-item-linked orphan-reconcile lag (Z
     expect(d.kind).toBe('debounced');
   });
 
-  it('a cursed row stays latched — the reconcile branch sits AFTER the cursed latch (no per-tick storm)', () => {
+  it('EI-18712524449804476: a CURSED row whose linked plan item is done/dropped self-heals instead of staying latched forever', () => {
     const d = evaluatePlacement(obs({ ...planLag, placementStatus: 'cursed', failCount: 3 }), CFG);
-    expect(d.kind).toBe('latched');
+    expect(d.kind).toBe('plan-item-reconcile');
   });
 
   it('a cup checkpoint declaring terminal takes precedence when BOTH lag signals are present (checked first)', () => {
     const d = evaluatePlacement(obs({ ...planLag, checkpointDeclaresTerminal: true }), CFG);
+    expect(d.kind).toBe('checkpoint-reconcile');
+  });
+
+  it('EI-18712524449804476: the same precedence holds for a CURSED row with both signals', () => {
+    const d = evaluatePlacement(
+      obs({ ...planLag, checkpointDeclaresTerminal: true, placementStatus: 'cursed', failCount: 3 }),
+      CFG,
+    );
     expect(d.kind).toBe('checkpoint-reconcile');
   });
 });
