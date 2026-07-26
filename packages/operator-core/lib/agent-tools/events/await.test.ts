@@ -25,6 +25,17 @@ vi.mock('../../events/await/store', () => ({
   // "nothing to retire" so every pre-existing test above is unaffected; overridden
   // per-test below to exercise the supersede path.
   cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
+  // EI-18676056143796303: the orphan guard now asks the fire latch whether this key
+  // (or a sibling in its family) has ever ACTUALLY fired before claiming no emitter
+  // exists. Defaults to "no evidence", so every pre-existing case above still warns
+  // exactly as it did; overridden per-test below to exercise the suppression path.
+  probeKeyFireEvidence: vi.fn(async (eventKey: string) => ({
+    prefix: eventKey.split(':').slice(0, 2).join(':'),
+    exact: false,
+    distinctKeys: 0,
+    fires: 0,
+    lastFiredAt: null,
+  })),
 }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
 vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
@@ -58,7 +69,7 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 
 import awaitTool from './await';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { registerAwait, cancelAwaitsForSubscribersOnKeys } from '../../events/await/store';
+import { registerAwait, cancelAwaitsForSubscribersOnKeys, probeKeyFireEvidence } from '../../events/await/store';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
@@ -250,14 +261,89 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     const out = await call({ event: 'overwatch:surface-landed' });
 
     expect(out.unknown_event_key).toBe(true);
-    expect(out.unknown_event_key_advice).toMatch(/NO REGISTERED EMITTER/);
-    expect(out.unknown_event_key_advice).toMatch(/can only TIME OUT/);
+    expect(out.unknown_event_key_advice).toMatch(/NO KNOWN EMITTER/);
+    // EI-18676056143796303: the verdict must now REST on the fire history it
+    // actually checked, not on an unsupportable claim about every emitter that
+    // could ever exist. It says "has EVER fired" (a fact it read) and hedges the
+    // consequence ("most likely only TIME OUT") — see the softening test below.
+    expect(out.unknown_event_key_advice).toMatch(/has EVER fired/);
+    expect(out.unknown_event_key_advice).toMatch(/most likely only TIME OUT/);
+    expect(out.unknown_event_key_advice).not.toMatch(/nothing in this system will ever fire it/);
 
     // Fail-open: the await is still registered. A hard reject would break the
     // legitimate not-yet-catalogued cases (hand-minted pair keys, announced gates).
     expect(out.ok).toBe(true);
     expect(out.await_id).toBe(99);
     expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  describe('EI-18676056143796303 — fire-history evidence overrides the membership verdict', () => {
+    it('SUPPRESSES the orphan warning when a SIBLING key in the family has fired (the coord:inbox-wake case)', async () => {
+      // The incident: an agent was woken BY coord:inbox-wake:<self>, re-registered
+      // the same key to park again, and was told "nothing in this system will ever
+      // fire it and this await can only TIME OUT". Believing that breaks the
+      // always-armed inbox-wake — the mechanism that rescues a stranded agent.
+      // Simulated here as a key the catalog does not know (a fresh owner id has no
+      // exact latch row) whose FAMILY has demonstrably fired.
+      vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
+        prefix: 'not-catalogued:family',
+        exact: false,
+        distinctKeys: 118,
+        fires: 8989,
+        lastFiredAt: '2026-07-25T23:28:37Z',
+      });
+      const out = await call({ event: 'not-catalogued:family:su-brand-new' });
+
+      expect(out.unknown_event_key).toBeUndefined();
+      expect(out.unknown_event_key_advice).toBeUndefined();
+      // …and says the useful thing instead: the await is fine, the CATALOG is the bug.
+      expect(out.uncatalogued_event_key).toBe(true);
+      expect(out.uncatalogued_event_key_advice).toMatch(/do NOT cancel it/);
+      expect(out.uncatalogued_event_key_advice).toMatch(/118 key\(s\) in its family/);
+      expect(out.emitter_evidence).toMatchObject({ fires: 8989, distinctKeys: 118 });
+      expect(out.await_id).toBe(99);
+    });
+
+    it('suppresses on an EXACT prior fire of this very key, and says so', async () => {
+      vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
+        prefix: 'not-catalogued:thing',
+        exact: true,
+        distinctKeys: 1,
+        fires: 3,
+        lastFiredAt: '2026-07-25T23:00:00Z',
+      });
+      const out = await call({ event: 'not-catalogued:thing' });
+      expect(out.unknown_event_key).toBeUndefined();
+      expect(out.uncatalogued_event_key).toBe(true);
+      expect(out.uncatalogued_event_key_advice).toMatch(/this exact key has fired/);
+    });
+
+    it('still WARNS on a genuine orphan — zero fire history keeps EI-10870 doing its job', async () => {
+      // fires:0 is the mock default; assert the guard is not simply disabled.
+      const out = await call({ event: 'overwatch:surface-landed' });
+      expect(out.unknown_event_key).toBe(true);
+      expect(out.uncatalogued_event_key).toBeUndefined();
+      expect(out.emitter_evidence).toBeUndefined();
+    });
+
+    it('is FAIL-SOFT: a latch probe that throws leaves the warning exactly as it was', async () => {
+      // withBoundedTimeout logs the degrade — expected here, so assert it rather
+      // than letting vitest-fail-on-console flag it.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(probeKeyFireEvidence).mockRejectedValueOnce(new Error('pg down'));
+      const out = await call({ event: 'overwatch:surface-landed' });
+      expect(out.unknown_event_key).toBe(true);
+      expect(out.ok).toBe(true);
+      expect(registerAwait).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:keyFireEvidence'));
+      warn.mockRestore();
+    });
+
+    it('does not even probe the latch for a CATALOGUED key (no cost on the happy path)', async () => {
+      vi.mocked(probeKeyFireEvidence).mockClear();
+      await call({ event: 'coord:inbox-wake:su-someone' });
+      expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    });
   });
 
   it('stays SILENT on a real catalogued key — no false alarm on the happy path', async () => {

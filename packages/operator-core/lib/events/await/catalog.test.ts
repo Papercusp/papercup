@@ -213,6 +213,36 @@ describe('EI-10870 — keyMatchesCatalog (the orphan-await guard)', () => {
     expect(keyMatchesCatalog('spawn-slot:freed:default')).toBe(true);
   });
 
+  it('EI-18676056143796303: coord:inbox-wake:<ownerId> is NOT an orphan — the most-fired key in the system, and the one that rescues a stranded agent', () => {
+    // The incident: an agent woken BY this key re-registered it to park again and
+    // was told "nothing in this system will ever fire it and this await can only
+    // TIME OUT". Acting on that warning means abandoning the always-armed
+    // inbox-wake — precisely the failure the inbox-wake exists to prevent.
+    expect(keyMatchesCatalog('coord:inbox-wake:su-5d27fac9-98b3-4012-8537-18b12cdf114d')).toBe(true);
+    expect(keyMatchesCatalog('coord:inbox-wake:su-anyone-else')).toBe(true);
+  });
+
+  it('EI-18676056143796303: the other emitting-but-unregistered families found in the same sweep resolve too', () => {
+    // Each was grounded on BOTH its emit site and a non-zero event_key_fires row.
+    expect(keyMatchesCatalog('escalation:resolved:ms18abc-0000-deadbeef')).toBe(true);
+    expect(keyMatchesCatalog('conversation:answered:conv-mrp8u2x7-0000-abc')).toBe(true);
+    expect(keyMatchesCatalog('handoff:accepted:ms18xyz-0000-cafe')).toBe(true);
+    expect(keyMatchesCatalog('plan:draft-ready:some-plan-slug')).toBe(true);
+    expect(keyMatchesCatalog('rate-limit:exhausted:acct-7')).toBe(true);
+    expect(keyMatchesCatalog('pot-git:ref-announce')).toBe(true);
+    expect(keyMatchesCatalog('pot-git:staging-advance')).toBe(true);
+    expect(keyMatchesCatalog('coord:receipt:ms18qqq-0000-feed')).toBe(true);
+    expect(keyMatchesCatalog('work-item:duplicate-settled:WI-5822')).toBe(true);
+    expect(keyMatchesCatalog('release-pass:autoloop')).toBe(true);
+  });
+
+  it('registering coord:inbox-wake did NOT widen the guard into swallowing neighbouring coord keys', () => {
+    // `coord:` is a busy namespace; the family must match on a ':' boundary only.
+    expect(keyMatchesCatalog('coord:inbox-waked:su-x')).toBe(false);
+    expect(keyMatchesCatalog('coord:something-else:su-x')).toBe(false);
+    expect(keyMatchesCatalog('rate-limit:exhaustedish:acct-7')).toBe(false);
+  });
+
   it('honours an INSTALLED pack family, so a pack-emitted key is never misreported as an orphan', () => {
     const installed = [
       ...EVENT_CATALOG,
