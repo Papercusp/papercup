@@ -220,3 +220,65 @@ describe('postgres pattern boundaries', () => {
     expect(claims(psqlDescribe, `${OPERATOR} -c "\\du"`)).toBe(false);
   });
 });
+
+/**
+ * P-008. The plan's first NEGATIVE verdict, so these guards protect a
+ * conclusion rather than a substitution: they must fail if anyone starts
+ * routing `ps`/`pgrep` at `dev:processes`.
+ */
+describe('process pattern boundaries (a not-a-substitute verdict)', () => {
+  const claims = (atom: string) =>
+    matchingAtoms(psProcessQuery, [{ sid: 's', ts: 't', atom }]).length === 1;
+
+  it('claims the job-liveness questions the family is actually made of', () => {
+    expect(claims('ps -p 636440 -o pid,etime,cmd')).toBe(true);
+    expect(claims('pgrep -f "tsc --noEmit"')).toBe(true);
+    expect(claims('ps aux')).toBe(true);
+    expect(claims('ps --ppid 3823918 -o pid,cmd')).toBe(true);
+  });
+
+  it('covers none of them — dev:processes has no pid, name or parent selector', () => {
+    for (const atom of [
+      'ps -p 636440 -o pid,etime,cmd',
+      'pgrep -f "tsc --noEmit"',
+      'ps aux',
+      'ps --ppid 3823918 -o pid,cmd',
+    ]) {
+      const result = psProcessQuery.cover(atom);
+      expect(result.covered, `${atom} should have no dev:processes expression`).toBe(false);
+      expect(result.reason).toBeTruthy();
+    }
+  });
+
+  /**
+   * The D-008 boundary. Searching for an agent kind IS `dev:processes`' question
+   * and it answers it exactly, so that intent is excluded from this pattern
+   * rather than dragging a genuinely-covered case into a negative verdict.
+   */
+  it('excludes searches for an agent kind, which are a different intent', () => {
+    expect(claims('pgrep -fc "claude"')).toBe(false);
+    expect(claims('pgrep -af omp')).toBe(false);
+    expect(claims('pgrep -f next-server')).toBe(false);
+  });
+
+  /**
+   * The tripwire. The exclusion above must live in the PATTERN; if it instead
+   * lived in a rigged `cover()` that returned false for everything, this
+   * assertion would fail — and if the lookahead ever breaks, the excluded atom
+   * reaches `cover()`, scores COVERED, and flips the recorded verdict.
+   */
+  it('still scores an agent-kind search as covered, so a broken exclusion is loud', () => {
+    const result = psProcessQuery.cover('pgrep -fc "claude"');
+    expect(result.covered).toBe(true);
+    expect(result.expression).toContain("kinds: ['claude']");
+  });
+
+  it('does not reach across to psql, which is a different family', () => {
+    expect(claims('psql -d papercusp -c "SELECT 1"')).toBe(false);
+  });
+
+  it('is never promotable past observe', () => {
+    expect(psProcessQuery.expectedVerdict).toBe('not-a-substitute');
+    expect(maxTierFor(psProcessQuery.expectedVerdict)).toBe('observe');
+  });
+});

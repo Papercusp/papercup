@@ -163,10 +163,16 @@ describe('every seeded pair survives the registry round-trip', () => {
       }
     });
 
-    it(`${pair.id} still claims its whole audited sample through the matcher`, () => {
+    it(`${pair.id} claims exactly what its verdict entitles it to through the matcher`, () => {
       // The verdict's sample size is the evidence the registry cites. If the
       // matcher claims fewer atoms than the audit did, the row's `sample_size`
       // overstates what enforcement actually covers.
+      //
+      // A `not-a-substitute` row inverts the invariant: the matcher drops those
+      // unconditionally (D-007), because the tool answers a different question
+      // and an advisory would tell the agent to stop doing the right thing. So
+      // for those the sample must claim ZERO — that is the assertion proving the
+      // negative row is inert, not merely unpromoted.
       const audit = auditPair(pair, fixture.sample);
       const registryRow = row({
         intentLabel: audit.intentLabel,
@@ -178,7 +184,8 @@ describe('every seeded pair survives the registry round-trip', () => {
       const claimed = fixture.sample.filter(
         (entry) => matchCommandToSubstitutions(entry.atom, [registryRow]).length === 1,
       );
-      expect(claimed).toHaveLength(audit.sampleSize);
+      const expected = audit.verdict === 'not-a-substitute' ? 0 : audit.sampleSize;
+      expect(claimed).toHaveLength(expected);
     });
   }
 });
