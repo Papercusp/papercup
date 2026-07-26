@@ -411,6 +411,19 @@ describe('isStaleRunning — crash-artifact detection', () => {
     expect(isStaleRunning({ status: 'idle', updatedAt: 0 }, stale * 2, stale)).toBe(false);
     expect(isStaleRunning({ status: 'paused', updatedAt: 0 }, stale * 2, stale)).toBe(false);
   });
+
+  // EI-18680423618217546: a real bounded ($50/maxCycles=1) cycle observed 2026-07-26 ran
+  // ~52 minutes wall-clock. The old 45-min threshold could reclaim (falsely) a LIVE cycle's
+  // 'running' row before it settled. Guard the margin so a future edit can't silently
+  // shrink it back below a real observed cycle duration.
+  it('does not classify a live row still within an observed-real-cycle duration as stale', () => {
+    const dispatchedAt = 0;
+    const observedRealCycleMs = 52 * 60_000; // 2026-07-26 observed: 6 runs, $0.42/$50 spent
+    const stillRunningNow = dispatchedAt + observedRealCycleMs;
+    expect(
+      isStaleRunning({ status: 'running', updatedAt: dispatchedAt }, stillRunningNow, GYM_AUTOLOOP_STALE_RUNNING_MS),
+    ).toBe(false);
+  });
 });
 
 describe('runGymAutoloopTick — stale-running reclaim (crash recovery)', () => {

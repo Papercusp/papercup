@@ -18,8 +18,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // + plans-read-guard (Read|Grep, P-003(b)) + ask-gate-mirror
     // (AskUserQuestion|ExitPlanMode, owner-inbox-single-pane P-001) + guard-operator-desktop
     // (browser-navigation MCP tools + Skill, EI-16981) + content-lint (Edit|Write|MultiEdit,
-    // P-013, wired WI-5543) + secrets-guard (Edit|Write|MultiEdit, wired WI-5542), in install
-    // order.
+    // P-013, wired WI-5543) + secrets-guard (Edit|Write|MultiEdit, wired WI-5542) +
+    // schedule-wakeup-provenance (ScheduleWakeup, EI-18680056073436345), in install order.
     expect(commandsFor(cfg, 'PreToolUse')).toEqual([
       `${DEST}/pretooluse-locks-acquire.sh`,
       `${DEST}/pretooluse-activity-report.sh`,
@@ -29,6 +29,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/guard-operator-desktop.mjs`,
       `${DEST}/pretooluse-content-lint.mjs`,
       `${DEST}/pretooluse-secrets-guard.mjs`,
+      `${DEST}/pretooluse-schedule-wakeup-provenance.mjs`,
     ]);
     expect(cfg.hooks.PreToolUse[0].matcher).toBe('Edit|Write|MultiEdit');
     expect(cfg.hooks.PreToolUse[1].matcher).toBe('*'); // activity-pre
@@ -40,6 +41,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     );
     expect(cfg.hooks.PreToolUse[6].matcher).toBe('Edit|Write|MultiEdit'); // content-lint
     expect(cfg.hooks.PreToolUse[7].matcher).toBe('Edit|Write|MultiEdit'); // secrets-guard
+    expect(cfg.hooks.PreToolUse[8].matcher).toBe('ScheduleWakeup'); // schedule-wakeup-provenance
 
     // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge +
     // ask-gate-mirror (in install order). The separate coord-inbox entry is retired —

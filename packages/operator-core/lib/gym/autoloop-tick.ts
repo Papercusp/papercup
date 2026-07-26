@@ -41,13 +41,23 @@ import type { BlueprintRetirementInfo } from '@papercusp/orchestrator/blueprint'
 export const GYM_AUTOLOOP_BUDGET_FLOOR_USD = 0.5;
 
 /**
- * A row 'running' longer than this is a crash artifact, not a live cycle. The
- * routine fires every 30 min and runs AT MOST one budget-bounded cycle, so 45
- * min (1.5 cadences) is far past any legitimate cycle — while staying well
- * clear of the durable-step replay window (a replayed tick sees a FRESH
- * 'running' row and must still skip it).
+ * A row 'running' longer than this is a crash artifact, not a live cycle.
+ *
+ * EI-18680423618217546: this used to be 45 min ("1.5 cadences … far past any
+ * legitimate cycle") — empirically false. A real bounded cycle observed
+ * 2026-07-26 (maxCycles=1, $50 budget, 6 runs) ran ~52 min wall-clock
+ * (LLM-latency-bound, not budget-bound — it only spent $0.42 of the $50 cap),
+ * so the old threshold could reclaim a LIVE cycle's row out from under it
+ * (a ~9-min false-positive window observed: 45min-after-dispatch to actual
+ * settle). `updatedAt` is only touched at dispatch and at settle (see
+ * `runGymAutoloopTick` below) — there is no in-cycle heartbeat — so the
+ * threshold must clear the SLOWEST plausible real cycle, not just a typical
+ * one. 3h gives a wide margin over the observed ~52min while still staying
+ * well clear of the durable-step replay window (a replayed tick sees a FRESH
+ * 'running' row and must still skip it) and still reclaiming a genuine
+ * crash-artifact row within a handful of the 30-min tick cadence.
  */
-export const GYM_AUTOLOOP_STALE_RUNNING_MS = 45 * 60_000;
+export const GYM_AUTOLOOP_STALE_RUNNING_MS = 3 * 60 * 60_000;
 
 // ---------------------------------------------------------------------------
 // P-032: triage-routed gym ideas → proposer candidate directions

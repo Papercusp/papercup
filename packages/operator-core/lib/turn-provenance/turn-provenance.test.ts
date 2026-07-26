@@ -195,6 +195,50 @@ describe('classifier boundaries', () => {
   it('empty ledger + no envelope → owner-interactive', () => {
     expect(classify('hello', [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('owner-interactive');
   });
+
+  describe('EI-18680056073436345: per-row ttlMs override (cli-schedule-wakeup)', () => {
+    it('a row past the GLOBAL ttl but within its OWN longer ttlMs still verifies', () => {
+      const text = 'Fallback wake (WI-5862 backstop — self-imposed, not owner)';
+      // 25 minutes old — dead under the global 10-minute TTL, alive under a
+      // 65-minute per-row ttl (a ~60-minute ScheduleWakeup delay + slack).
+      const r = row({ origin: 'cli-schedule-wakeup', sha256: payloadSha256(text), ttlMs: 65 * 60_000 });
+      const res = classify(text, [r], { nowMs: NOW + 25 * 60_000, ttlMs: TTL });
+      expect(res.verdict).toBe('verified-agent');
+      expect(res.matchedBy).toBe('hash');
+      expect(res.origin).toBe('cli-schedule-wakeup');
+    });
+
+    it('a row past its OWN longer ttlMs still expires — never a false verify', () => {
+      const text = 'a scheduled wake nobody delivered in time';
+      const r = row({ origin: 'cli-schedule-wakeup', sha256: payloadSha256(text), ttlMs: 65 * 60_000 });
+      const res = classify(text, [r], { nowMs: NOW + 71 * 60_000, ttlMs: TTL });
+      expect(res.verdict).toBe('owner-interactive');
+    });
+
+    it('a row with no ttlMs field (every pre-existing origin) is unaffected — global TTL still applies', () => {
+      const text = 'a normal wake-pump delivery';
+      const r = row({ origin: 'wake-pump', sha256: payloadSha256(text) }); // no ttlMs
+      const dead = classify(text, [r], { nowMs: NOW + TTL + 60_000, ttlMs: TTL });
+      expect(dead.verdict).toBe('owner-interactive');
+      const alive = classify(text, [r], { nowMs: NOW + 1000, ttlMs: TTL });
+      expect(alive.verdict).toBe('verified-agent');
+    });
+
+    it('readLedgerRows respects per-row ttlMs (not just classify)', () => {
+      appendLedgerRow(
+        { sid: SID, nonce: 'aaaaaaaaaaaaaaaa', origin: 'cli-schedule-wakeup', sha256: 'x', ts: NOW, ttlMs: 65 * 60_000 },
+        { dir, nowMs: NOW },
+      );
+      // 25 minutes later: dead under the default TTL passed here, alive under the row's own ttlMs.
+      const rows = readLedgerRows(SID, { dir, nowMs: NOW + 25 * 60_000, ttlMs: TTL });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].origin).toBe('cli-schedule-wakeup');
+    });
+
+    it('cli-schedule-wakeup is a recognized turn origin', () => {
+      expect(isTurnOrigin('cli-schedule-wakeup')).toBe(true);
+    });
+  });
 });
 
 describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notification)', () => {

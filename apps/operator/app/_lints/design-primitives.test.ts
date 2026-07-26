@@ -256,9 +256,18 @@ function unexpectedNativeConfirmFiles(): string[] {
   const offenders: string[] = [];
   for (const file of collectFiles()) {
     const content = readCode(file);
+    // WI-5924: the bare `confirm(` branch used to be a plain `\bconfirm\s*\(`
+    // with no receiver check, so it matched ANY `<anything>.confirm(...)` call
+    // — including a config object's own `confirm` callback property (e.g.
+    // `action.confirm(ctx)`), which has nothing to do with the native
+    // `window.confirm()` blocking dialog this rule exists to ban. A `\b`
+    // boundary alone doesn't exclude a dot-prefixed call (`.` is a non-word
+    // char, so the boundary still matches right after it) — the `(?<!\.)`
+    // negative lookbehind is what actually rules out property access, so
+    // only a bare/global `confirm(` (no receiver at all) trips this branch.
     const hasNativeConfirm =
       /window\.confirm\s*\(/.test(content) ||
-      (/\bconfirm\s*\(/.test(content) && !/useConfirmDialog/.test(content));
+      (/(?<!\.)\bconfirm\s*\(/.test(content) && !/useConfirmDialog/.test(content));
     if (!hasNativeConfirm) continue;
     const path = rel(file);
     if (!NATIVE_CONFIRM_ALLOWED_FILES.has(path)) offenders.push(path);

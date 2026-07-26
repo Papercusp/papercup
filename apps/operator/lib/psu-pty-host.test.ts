@@ -34,6 +34,7 @@ import {
   makeStaleFireGuard,
   isCarryRespawnStale,
   isCarryRespawnSuperseded,
+  shouldDeferWakeForPendingRespawn,
   ACTIVITY_PERSIST_MS,
   MAX_CONTROL_PAYLOAD_BYTES,
   controlPayloadWithinLimit,
@@ -402,6 +403,26 @@ describe('isCarryRespawnSuperseded (EI-18665672258948707 — a later respawn alr
     const lastRespawnAtMs = now - 1_000; // a respawn fired 1s ago, after this message arrived
     expect(isCarryRespawnStale(receivedAtMs, { maxAgeMs: 1_800_000, now })).toBe(false);
     expect(isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs)).toBe(true);
+  });
+});
+
+describe('shouldDeferWakeForPendingRespawn (EI-18679681961154136 — a wake must not starve a pending carry-respawn re-arm)', () => {
+  it('defers a wake `turn` when a carry-respawn re-arm is pending', () => {
+    expect(shouldDeferWakeForPendingRespawn('turn', 1)).toBe(true);
+    expect(shouldDeferWakeForPendingRespawn('turn', 2)).toBe(true);
+  });
+
+  it('does NOT defer a wake `turn` when no respawn is pending', () => {
+    expect(shouldDeferWakeForPendingRespawn('turn', 0)).toBe(false);
+  });
+
+  it('never defers a non-turn mode, even with a respawn pending — reset/recycle/mcp-reconnect are explicit operator actions, not routine wakes', () => {
+    expect(shouldDeferWakeForPendingRespawn('reset', 1)).toBe(false);
+    expect(shouldDeferWakeForPendingRespawn('recycle', 1)).toBe(false);
+    expect(shouldDeferWakeForPendingRespawn('carry-respawn', 1)).toBe(false);
+    expect(shouldDeferWakeForPendingRespawn('mcp-reconnect', 1)).toBe(false);
+    expect(shouldDeferWakeForPendingRespawn('raw', 1)).toBe(false);
+    expect(shouldDeferWakeForPendingRespawn('osc', 1)).toBe(false);
   });
 });
 

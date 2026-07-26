@@ -1562,6 +1562,26 @@ export function isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs) {
   return lastRespawnAtMs > receivedAtMs;
 }
 
+/** EI-18679681961154136: should an incoming control message be DEFERRED
+ *  because a carry-respawn re-arm retry is currently pending for this host?
+ *
+ *  makeCarryRearmController's production re-poll loop RELEASES the inject
+ *  mutex between busy-gate-defer attempts on purpose (so ordinary wakes are
+ *  never wedged waiting on it) — but that same release lets a ready-to-fire
+ *  `mode:'turn'` wake win the race for every idle window the rearm loop is
+ *  polling for: it opens a fresh turn, the agent goes busy again, and the
+ *  rearm's own next attempt misses the window it was waiting for. Repeated
+ *  indefinitely (a busy, well-connected agent keeps receiving wakes), the
+ *  queued carry-respawn is starved forever — observed + diagnosed end-to-end
+ *  on 2026-07-26. Only `mode:'turn'` is deferred here: reset/recycle/
+ *  mcp-reconnect are explicit operator/owner actions, not routine wakes, and
+ *  stay unaffected. The deferred wake loses nothing — it is already durable
+ *  mail (coord/loop redeliver it) and is picked up on the next natural turn,
+ *  exactly like an ordinary busy-gate refusal. Pure — exported for tests. */
+export function shouldDeferWakeForPendingRespawn(mode, pendingRespawnCount) {
+  return mode === 'turn' && pendingRespawnCount > 0;
+}
+
 /** The ordered write STEPS the host performs against the pty for a decoded
  *  message. raw → ONE immediate verbatim write (force-interrupt byte). turn →
  *  TWO writes: the line text, then the submit Enter (CR) as a SEPARATE keystroke
@@ -2404,6 +2424,36 @@ export function hostThroughPty(o) {
           /* diagnostic only */
         }
         return { ok: false, reason: 'ownerId-mismatch' };
+      }
+      // EI-18679681961154136: a carry-respawn re-arm retry is PENDING for this
+      // owner (an earlier busy-gate defer, now re-polling for the next idle
+      // window — see makeCarryRearmController). An ordinary wake `turn` must
+      // NOT be allowed to compete for that same idle window: the rearm loop
+      // RELEASES the inject mutex between attempts (deliberately, so ordinary
+      // wakes are never wedged waiting on it) — but that means a ready-to-fire
+      // wake can win the race for every idle window the rearm loop is polling
+      // for, opening a fresh turn that makes the agent busy again before the
+      // rearm's own next attempt lands. Repeat that indefinitely (a busy,
+      // well-connected agent keeps receiving wakes) and the carry-respawn is
+      // starved forever — observed + diagnosed end-to-end on 2026-07-26. The
+      // wake is already durable mail (coord/loop redeliver it), so it loses
+      // nothing by skipping this live injection: defer it exactly like an
+      // ordinary busy-gate refusal (queue-to-next-turn), and let the rearm
+      // loop's next attempt have the idle window uncontested. Scoped to
+      // `mode:'turn'` only — reset/recycle/mcp-reconnect stay unaffected;
+      // they are already explicit operator/owner actions, not routine wakes.
+      if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount())) {
+        const dropExtra = { reason: 'carry-respawn-pending' };
+        appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', dropExtra);
+        try {
+          process.stderr.write(
+            `psu-pty-host: wake turn DEFERRED for ${ownerId} (a carry-respawn re-arm is pending) — ` +
+              `left in inbox for the successor's first natural turn\n`,
+          );
+        } catch {
+          /* diagnostic only */
+        }
+        return { ok: false, reason: 'deferred-carry-respawn-pending' };
       }
       // EI-18109211232286833: stamp the receipt time ONCE, here, so both this
       // delivery attempt and its one makeCarryRearmController retry (which
