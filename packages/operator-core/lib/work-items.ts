@@ -3162,6 +3162,21 @@ export function readWorkItemClaimHoldProvenance(payload: unknown): {
 }
 
 /**
+ * EI-18672701535825889 / WI-5946: a claim-hold reason naming a deliberate policy-tier human
+ * gate (a `D-NNN` decision id, the triage gate's own `triageDecision:"gate"` marker, or the
+ * literal phrase "policy-tier") must not be bypassable by a bare `force:true` — that is the
+ * exact near-miss both this predicate's callers exist to stop (a force-adjacent clear of a
+ * security gate on a false "unattributed" reading; a by-id claim silently overriding an
+ * owner-gated hold with zero friction). `ownerOverride:true` is a second, distinct, audited
+ * assertion required in addition to `force`. Shared by `work_items:hold_open`'s clear guard
+ * and `work_items:claim`'s claim-hold guard — one predicate, never two copies to drift.
+ */
+export function looksLikePolicyGate(reason: string | null): boolean {
+  if (!reason) return false;
+  return /\bD-\d{3}\b/i.test(reason) || /triageDecision\s*[:=]\s*["']?gate["']?/i.test(reason) || /policy-tier/i.test(reason);
+}
+
+/**
  * The issue family's CLAIMABLE statuses — the not-yet-settled `open` state (the issue
  * dialect's single in-flight state; the engineer_issues CHECK has only open|resolved|closed).
  * The scheduler issue-claim branch self-picks an `open`, unblocked issue; terminal

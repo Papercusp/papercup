@@ -28,17 +28,18 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
-import { getWorkItem, setWorkItemClaimHold, readWorkItemClaimHoldProvenance } from '../../work-items';
+import {
+  getWorkItem,
+  setWorkItemClaimHold,
+  readWorkItemClaimHoldProvenance,
+  looksLikePolicyGate,
+} from '../../work-items';
 
-/** EI-18672701535825889 suggestion #5: a reason naming a deliberate policy-tier human gate
- *  (a `D-NNN` decision id, or the triage gate's own `triageDecision:"gate"` marker, or the
- *  literal phrase "policy-tier") must not be liftable by a bare `force:true` — the exact
- *  near-miss this item documents was a force-adjacent clear of a security gate on a false
- *  "unattributed" reading. `ownerOverride:true` is a second, distinct, audited assertion. */
-function looksLikePolicyGate(reason: string | null): boolean {
-  if (!reason) return false;
-  return /\bD-\d{3}\b/i.test(reason) || /triageDecision\s*[:=]\s*["']?gate["']?/i.test(reason) || /policy-tier/i.test(reason);
-}
+// EI-18672701535825889 / WI-5946: looksLikePolicyGate moved to work-items.ts so
+// work_items:claim's claim-hold guard (claim.ts) shares the SAME predicate instead of a
+// second copy that could drift — a reason naming a deliberate policy-tier human gate (a
+// `D-NNN` decision id, the triage gate's own `triageDecision:"gate"` marker, or the literal
+// phrase "policy-tier") must not be liftable/claimable by a bare `force:true`.
 
 export default defineTool({
   name: 'work_items:hold_open',

@@ -1868,4 +1868,74 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       expect(h.recycles).toHaveLength(1);
     });
   });
+
+  // EI-18681914950138372: beginFirstAttempt/endFirstAttempt close the
+  // starvation gap that shouldDeferWakeForPendingRespawn's ORIGINAL fix
+  // (EI-18679681961154136, `pending`/schedule()) left open — the entire
+  // window between a carry-respawn's ACCEPTANCE and its first busy-gate wait
+  // TIMING OUT, during which `pending` was still empty and a fresh wake sailed
+  // through the guard unfiltered. See makeCarryRearmController's `inFlight` doc
+  // comment for the exact mechanics this reproduces at the unit level (the
+  // host-level FIFO-mutex race itself is covered by psu-pty-host-turn's
+  // integration suite).
+  describe('beginFirstAttempt / endFirstAttempt (EI-18681914950138372 — the pre-retry starvation gap)', () => {
+    it('pendingCount() is 0 before beginFirstAttempt, >0 immediately after — the exact moment shouldDeferWakeForPendingRespawn must start protecting', () => {
+      const h = makeHarness();
+      expect(h.controller.pendingCount()).toBe(0);
+      expect(shouldDeferWakeForPendingRespawn('turn', h.controller.pendingCount())).toBe(false);
+
+      h.controller.beginFirstAttempt(NON_DRILL_MSG);
+
+      expect(h.controller.pendingCount()).toBe(1);
+      expect(shouldDeferWakeForPendingRespawn('turn', h.controller.pendingCount())).toBe(true);
+    });
+
+    it('endFirstAttempt clears it back to 0 (the successful-delivery / dropped-without-retry path — schedule() never runs)', () => {
+      const h = makeHarness();
+      h.controller.beginFirstAttempt(NON_DRILL_MSG);
+      expect(h.controller.pendingCount()).toBe(1);
+
+      h.controller.endFirstAttempt(NON_DRILL_MSG);
+
+      expect(h.controller.pendingCount()).toBe(0);
+      expect(shouldDeferWakeForPendingRespawn('turn', h.controller.pendingCount())).toBe(false);
+    });
+
+    it('pendingCount() never dips to 0 across the begin->schedule->end handoff (the exact sequence the host follows on a busy-gate defer)', () => {
+      // Mirrors the real call order at the host's control-socket handler:
+      // beginFirstAttempt() at message acceptance, then — only if the first
+      // busy-gate wait times out — schedule() for the retry, THEN
+      // endFirstAttempt() once runGatedDelivery's outer promise settles.
+      const h = makeHarness({ promptResults: [] }); // never resolves — retry stays pending
+      h.controller.beginFirstAttempt(NON_DRILL_MSG);
+      expect(h.controller.pendingCount()).toBe(1); // in-flight, no retry yet
+
+      expect(h.controller.schedule(NON_DRILL_MSG)).toBe('queued');
+      expect(h.controller.pendingCount()).toBe(2); // BOTH sets hold the key momentarily — never < 1
+
+      h.controller.endFirstAttempt(NON_DRILL_MSG);
+      expect(h.controller.pendingCount()).toBe(1); // retry's own `pending` entry still covers it
+      expect(shouldDeferWakeForPendingRespawn('turn', h.controller.pendingCount())).toBe(true);
+    });
+
+    it('endFirstAttempt is idempotent — a second call (e.g. a defensive re-clear) is a harmless no-op', () => {
+      const h = makeHarness();
+      h.controller.beginFirstAttempt(NON_DRILL_MSG);
+      h.controller.endFirstAttempt(NON_DRILL_MSG);
+      h.controller.endFirstAttempt(NON_DRILL_MSG);
+      expect(h.controller.pendingCount()).toBe(0);
+    });
+
+    it('a drill and a non-drill first-attempt track independently, same as the retry-phase `pending` set', () => {
+      const h = makeHarness();
+      h.controller.beginFirstAttempt(DRILL_MSG);
+      h.controller.beginFirstAttempt(NON_DRILL_MSG);
+      expect(h.controller.pendingCount()).toBe(2);
+
+      h.controller.endFirstAttempt(DRILL_MSG);
+      expect(h.controller.pendingCount()).toBe(1);
+      h.controller.endFirstAttempt(NON_DRILL_MSG);
+      expect(h.controller.pendingCount()).toBe(0);
+    });
+  });
 });

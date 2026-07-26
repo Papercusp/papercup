@@ -19,7 +19,12 @@ import {
   type AgentIdentity,
 } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
+import {
+  claimWorkItem,
+  classifyClaimFailure,
+  getWorkItem,
+  readWorkItemClaimHoldProvenance,
+} from '../../work-items';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import {
@@ -30,11 +35,18 @@ import {
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import {
+  assessClaimHoldGuard,
+  recordClaimHoldBypassAudit,
+  notifyClaimHoldBypass,
+} from './claim-hold-guard';
 
 interface ClaimItem {
   id: string;
   assignee?: string;
   harness?: string;
+  force?: boolean;
+  ownerOverride?: boolean;
 }
 
 /**
@@ -157,7 +169,58 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
       hint: `${admission.reason}. The claim was refused before mutation. ${fleetScopeLeaderRemedy(admission)}`,
     };
   }
+  // WI-5946: the by-id claim path never checked `payload._claimHold` — an owner-gated hold
+  // (D-003; work_items:hold_open / release{claimHold:true}) was silently claimable by anyone
+  // naming the id, even though the SAME flag already refuses self-select AND a non-holder's
+  // terminal transition (setWorkItemState's held-open guard). Pre-read the item and mirror
+  // hold_open's own clear-guard (force + a stricter ownerOverride for a policy-tier reason,
+  // EI-18672701535825889) — one shared predicate (assessClaimHoldGuard), never a bypassable gap.
+  const preClaimItem = await getWorkItem(it.id, it.harness).catch(() => null);
+  const claimHoldRefusal = preClaimItem
+    ? assessClaimHoldGuard(preClaimItem.payload, { force: it.force, ownerOverride: it.ownerOverride })
+    : null;
+  if (claimHoldRefusal) {
+    return {
+      ok: false,
+      id: it.id,
+      workItem: preClaimItem,
+      error: claimHoldRefusal.error,
+      heldBy: claimHoldRefusal.heldBy,
+      heldReason: claimHoldRefusal.heldReason,
+      convention: claimHoldRefusal.convention,
+      hint: `${it.id} is ${claimHoldRefusal.hint}`,
+    };
+  }
+  // `preClaimItem` reaching here with a hold means force (and, for a policy-tier reason,
+  // ownerOverride) already cleared the guard above — re-derive the SAME provenance once more
+  // (cheap, pure, no extra query) purely to know WHOM to audit/notify after the claim lands.
+  const priorHoldForNotify = preClaimItem ? readWorkItemClaimHoldProvenance(preClaimItem.payload) : null;
+  const bypassedHold = priorHoldForNotify?.heldOpen ?? priorHoldForNotify?.parked ?? null;
+  const bypassedHoldConvention: 'held_open (lease)' | 'claim_hold (durable park)' | null = priorHoldForNotify?.heldOpen
+    ? 'held_open (lease)'
+    : priorHoldForNotify?.parked
+      ? 'claim_hold (durable park)'
+      : null;
   const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness });
+  if (workItem && bypassedHold && bypassedHoldConvention) {
+    // Forced past a claim-hold — leave the hold IN PLACE (this never clears it; a leader lifts
+    // it explicitly via work_items:hold_open{clear:true}) but leave a forensic trail identical
+    // in shape to work_items:release's own force-bypass audit + notify (release-force-guard.ts).
+    void recordClaimHoldBypassAudit(claimer, it.id, {
+      heldBy: bypassedHold.by,
+      heldReason: bypassedHold.reason,
+      convention: bypassedHoldConvention,
+      harness: workItem.harness ?? it.harness ?? null,
+      ownerOverride: Boolean(it.ownerOverride),
+    });
+    void notifyClaimHoldBypass(identity, {
+      itemId: it.id,
+      heldBy: bypassedHold.by,
+      heldReason: bypassedHold.reason,
+      convention: bypassedHoldConvention,
+      harness: workItem.harness ?? it.harness ?? null,
+    });
+  }
   if (workItem) {
     // WI-5826: see terminalClaimWarning — a by-id claim of a finished row stays ALLOWED
     // (EI-8972) but can no longer be mistaken for fresh work.
@@ -219,10 +282,10 @@ export default defineTool({
   name: 'work_items:claim',
   profile: 'engineer',
   description:
-    'Claim one OR many work-items (assign to yourself, or to `assignee`). A target that is a fleet MEMBER may only receive an item matching its per-member/inherited fleet claim spec; out-of-scope named claims are refused before mutation and alert its leader. Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Returns per-item outcomes; one refusal/conflict never fails the rest.',
+    'Claim one OR many work-items (assign to yourself, or to `assignee`). A target that is a fleet MEMBER may only receive an item matching its per-member/inherited fleet claim spec; out-of-scope named claims are refused before mutation and alert its leader. Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Returns per-item outcomes; one refusal/conflict never fails the rest. A `payload._claimHold` item (work_items:hold_open / release{claimHold:true} — a deliberate, durable exclusion, sometimes an owner-gated D-003 policy hold) refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override` for a policy-tier reason) unless `force`/`ownerOverride` clear it (WI-5946) — the hold itself stays in place either way.',
   guidance: {
     when: 'You are starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, but never fleet scope.',
-    notWhen: 'A per-item `claim_conflict` means a LIVE peer holds it — coordinate with the `holder` (coord:send) or pick another item; do not blind-retry. (If the holder is dead, the stale-claim reclaim lane frees it.)',
+    notWhen: 'A per-item `claim_conflict` means a LIVE peer holds it — coordinate with the `holder` (coord:send) or pick another item; do not blind-retry. (If the holder is dead, the stale-claim reclaim lane frees it.) A per-item `claim_hold_blocked`/`policy_gate_requires_owner_override` means the item is DELIBERATELY parked (WI-2797 / D-003) — coordinate with the named holder before passing `force`/`ownerOverride`; do not reflexively force past it.',
     chaining:
       'work_items:list → work_items:claim → work_items:set_state → work_items:release/close. There is no separate work_items:heartbeat — ANY papercusp-su tool call already refreshes your liveness (dispatch-heartbeat beats coord_presence on every settled dispatch), which is what the stale-claim reaper checks before reclaiming a held item. The gap is a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest with zero papercusp-su calls) during a >10-15min single-claim investigation (EI-6772) — call work_items:checkpoint { id, checkpoint } partway through (it doubles as your progress note AND a liveness pulse) rather than going silent on the platform for the whole investigation.',
     seeAlso: [
@@ -246,13 +309,27 @@ export default defineTool({
             id: z.string().min(1),
             assignee: z.string().max(120).optional(),
             harness: z.string().max(80).optional(),
+            force: z.boolean().optional(),
+            ownerOverride: z.boolean().optional(),
           }),
         )
         .min(1)
         .max(200)
         .optional()
-        .describe('claim many work-items at once — each { id, assignee?, harness? }'),
+        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, ownerOverride? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          'default for the inline id / every id in `ids`: claim past a `payload._claimHold` exclusion (WI-2797 durable park / hold_open lease) instead of refusing with `claim_hold_blocked`. The hold is left in place (never auto-cleared) and the bypass is audited + notifies the holder and the owner (WI-5946).',
+        ),
+      ownerOverride: z
+        .boolean()
+        .optional()
+        .describe(
+          'default for the inline id / every id in `ids`: REQUIRED in addition to `force` when the claim-hold reason names a policy-tier gate (a D-NNN decision id, `triageDecision:"gate"`, or "policy-tier") — `force` alone is refused for a policy gate (mirrors work_items:hold_open, EI-18672701535825889).',
+        ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id } for one, or { ids:[…] } / items:[{ id }] for many',
@@ -268,10 +345,16 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const list: ClaimItem[] = args.items?.length
-      ? args.items.map((it) => ({ id: it.id, assignee: it.assignee ?? args.assignee, harness: it.harness ?? args.harness }))
+      ? args.items.map((it) => ({
+          id: it.id,
+          assignee: it.assignee ?? args.assignee,
+          harness: it.harness ?? args.harness,
+          force: it.force ?? args.force,
+          ownerOverride: it.ownerOverride ?? args.ownerOverride,
+        }))
       : args.ids?.length
-        ? args.ids.map((id) => ({ id, assignee: args.assignee, harness: args.harness }))
-        : [{ id: args.id as string, assignee: args.assignee, harness: args.harness }];
+        ? args.ids.map((id) => ({ id, assignee: args.assignee, harness: args.harness, force: args.force, ownerOverride: args.ownerOverride }))
+        : [{ id: args.id as string, assignee: args.assignee, harness: args.harness, force: args.force, ownerOverride: args.ownerOverride }];
     const env = await runBulk(list, (it) => claimOne(it, ident), { keyOf: (it) => ({ id: it.id }) });
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
     // D-006): piggyback a targeted memory recall for the just-claimed item(s)

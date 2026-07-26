@@ -121,7 +121,14 @@ const askOp = requireCoordOp('coord:ask');
 // the asker's inbox, or `events:await { event: 'conversation:answered:<id>' }`
 // if they want to block deliberately (that wait belongs to the CALLER's own
 // turn/loop, not hidden inside this tool call).
-const askOwnerArgs = askArgs.extend({
+// Exported for the EI-18682693723293580 regression test (agent-tools.test.ts) —
+// the tool itself is registered into the PROJECTED tool registry (role-gated,
+// `requirePrincipal: false`), which wraps `handler` behind machinery (payload-
+// tier shaping, StandardSchema validation, a UnifiedToolContext) a unit test
+// has no cheap reason to stand up. Pinning the schema DEFAULT directly is the
+// load-bearing assertion; askOp.run's own timeout_s<=0 fast path is covered in
+// compose.test.ts.
+export const askOwnerArgs = askArgs.extend({
   timeout_s: askArgs.shape.timeout_s.default(0).describe(
     'Seconds to poll for the owner\'s answer before returning (default 0 — return immediately once the question is opened; conversation_id lets you check back later or events:await on conversation:answered:<conversation_id>). Only pass a positive value from an INTERACTIVE (non-code:run) session where you genuinely want this call to block — a foreground code:run script has an ~55s hard cap and WILL script_timeout if this polls anywhere near it.',
   ),

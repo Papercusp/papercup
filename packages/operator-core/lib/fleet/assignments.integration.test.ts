@@ -199,6 +199,32 @@ describe('fleet_assignment view + reader (P-001/P-002)', () => {
     expect(scoped.some((r) => r.agentId === 'su-other-ws')).toBe(false);
   });
 
+  // EI-18683155325549123: presence rows carry harness_slug=NULL BY DESIGN (identity
+  // is workspace-scoped, never harness-bound) — an { agent, harness } self-scoped
+  // read (coord:orient's monitor-mode "me" fold) for an agent holding NO harness-
+  // scoped claim (a fleet leader with presence only) previously ANDed harness_slug
+  // straight onto the union and came back completely empty, misreading as "the
+  // fleet is dead" to a leader deciding whether to relaunch/stand down.
+  it("EI-18683155325549123: an { agent, harness } self-read sees the caller's own presence-only row, not empty", async () => {
+    await seedPresence('su-leader-only', { intent: 'leading, no claims of my own' });
+
+    const selfRead = await listFleetAssignments({ workspaceId: WS, agent: 'su-leader-only', harness: 'demo' });
+    expect(selfRead).toHaveLength(1);
+    expect(selfRead[0].source).toBe('presence');
+    expect(selfRead[0].agentId).toBe('su-leader-only');
+
+    // A DIFFERENT agent's { harness } self-read must NOT see this agent (no cross-
+    // identity leakage — the loosened match is scoped to the queried agent alone).
+    const otherAgent = await listFleetAssignments({ workspaceId: WS, agent: 'su-someone-else', harness: 'demo' });
+    expect(otherAgent).toHaveLength(0);
+
+    // A bare { harness } listing (no agent — the harness-wide roster read) must
+    // still EXCLUDE presence-only agents: the loosening is self-identification-only,
+    // never a general leak of every workspace presence row into a harness's roster.
+    const harnessWide = await listFleetAssignments({ workspaceId: WS, harness: 'demo' });
+    expect(harnessWide.some((r) => r.agentId === 'su-leader-only')).toBe(false);
+  });
+
   it('surfaces the declared-but-unclaimed smell (D-002)', async () => {
     await seedPresence('su-talk', { planSlug: 'plan-z', intent: 'on plan-z (allegedly)' });
     const grouped = groupByAgent(await listFleetAssignments({ workspaceId: WS }));

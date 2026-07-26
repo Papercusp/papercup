@@ -572,7 +572,31 @@ export function fleetScopedMiss(
   // and a fleet can go quiet while every surface looks correct. So when claimable > 0 we refuse
   // to certify a drain — no windDown, no stand-down advice — and instead name the divergence
   // loudly enough that the NEXT recurrence is a one-line report instead of an investigation.
-  const divergent = breakdown != null && breakdown.claimable > 0;
+  //
+  // WI-5947: the invariant above is sound only if the two observations describe the SAME
+  // instant. They do not: `breakdown` is read AFTER the claim attempt already failed, against a
+  // table the whole fleet mutates continuously. Any row that becomes claimable in that window —
+  // a peer releasing, a claim-hold lapsing, a detector filing a new bug — reproduces "claimed
+  // nothing AND claimable > 0" with a completely healthy claim path. Because the verdict below
+  // does not merely report but INSTRUCTS ("report this verdict to your fleet leader as a
+  // CLAIM-PATH BUG ... it is the reproduction"), that race manufactured fabricated bug reports
+  // against healthy code, complete with a plausible repro (observed live 2026-07-26 05:18Z,
+  // fleet nonp2p-bug-drain-0725, during a 0->2->4 claimable burst).
+  //
+  // So a bare `claimable > 0` is now only a SUSPICION. The caller (scheduler:get_next) settles
+  // it the only way it can be settled — by asking the claim path again — and reports the
+  // outcome as `divergenceRecheck`:
+  //   'resolved-by-retry' : the retry claimed an item; never reaches here (that is a success).
+  //   'confirmed-twice'   : two claim attempts missed while survivors persisted across two
+  //                         independent readings. THAT is the real EI-10062-class signal.
+  //   undefined           : no re-check ran (the retry timed out/errored, or the caller does not
+  //                         perform one) — unproven, and must not be asserted as a defect.
+  const survivorsReported = breakdown != null && breakdown.claimable > 0;
+  const divergent = survivorsReported && opts?.divergenceRecheck === 'confirmed-twice';
+  // Survivors reported but the divergence was never confirmed. Still NOT a drained lane (so
+  // windDown stays off and the member must not stand down), but the honest read is "the pool
+  // moved under you — pull again", not "you have found a bug in the claim path".
+  const unconfirmedSurvivors = survivorsReported && !divergent;
   // EI-18663622382734446: the spec's OWN view.filter matches zero issue-family rows at all —
   // a SPEC-AUTHORING problem (stale id allowlist, over-narrow plan/kind scope, a typo), not a
   // drained or floor-gated pool. Distinct from `divergent` (which requires matchedByFilter > 0

@@ -210,7 +210,24 @@ export async function listFleetAssignments(
     }
       AND ${opts.agent ? sql`(agent_id = ${opts.agent} OR agent_name = ${opts.agent})` : sql`TRUE`}
       AND ${opts.plan ? sql`plan_slug = ${opts.plan}` : sql`TRUE`}
-      AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`TRUE`}
+      AND ${
+        opts.harness
+          ? opts.agent
+            ? // EI-18683155325549123: `presence`-sourced rows carry harness_slug=NULL
+              // BY DESIGN (identity/presence is workspace-scoped, never harness-bound —
+              // see the view's presence branch in 430-fleet-membership-append-only-fact.sql).
+              // An unconditional `harness_slug = opts.harness` AND'd onto an agent-scoped
+              // (self-identification) read silently zeroed the caller's OWN row whenever
+              // they held no harness-scoped CLAIM — exactly a fleet leader holding presence
+              // only. That is not "the fleet is empty"; it is a scope mismatch between an
+              // identity signal (harness-agnostic) and a work signal (harness-scoped). When
+              // `agent` narrows the read to one identity, let that agent's own presence
+              // row through regardless of harness — its claims still must match the
+              // harness exactly, so a bare `{ harness }` listing (no agent) is unaffected.
+              sql`(harness_slug = ${opts.harness} OR (source = 'presence' AND harness_slug IS NULL))`
+            : sql`harness_slug = ${opts.harness}`
+          : sql`TRUE`
+      }
       AND ${activeOnly ? sql`(claim_active IS DISTINCT FROM false)` : sql`TRUE`}
     ORDER BY source, holder_heartbeat_at DESC NULLS LAST
   `;

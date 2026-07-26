@@ -441,7 +441,76 @@ export default defineTool({
         content: [{ type: 'text' as const, text: JSON.stringify(getNextTimeoutResult()) }],
       };
     }
-    const res = claim.value;
+    let res = claim.value;
+    // WI-5947: RE-CONFIRM before letting a divergence verdict be pronounced.
+    //
+    // `fleetScopedMiss` reports CLAIM-PATH/READ-PATH DIVERGENCE when the claim above returned
+    // nothing while the shared oracle reports claimable > 0. Those are two observations at two
+    // DIFFERENT INSTANTS against a table the whole fleet is mutating: any row that becomes
+    // claimable in the window between them (a peer releasing, a claim-hold lapsing, a detector
+    // filing a new bug) makes a perfectly healthy miss look like a narrowing defect. The verdict
+    // is not merely noisy — its advice INSTRUCTS the reader to file a claim-path bug in the
+    // EI-10062 / WI-4309 / WI-5275 / WI-5822 class and calls the breakdown "the reproduction",
+    // so a member following its tooling correctly files a fabricated bug against healthy code.
+    // Observed live 2026-07-26 05:18Z on fleet nonp2p-bug-drain-0725 during a 0->2->4 claimable
+    // burst; the claim path was correct throughout.
+    //
+    // The ground truth for "can the claim path actually select a row" is the CLAIM PATH, asked
+    // again — not a second read. So on a would-be-divergent miss we retry the claim exactly once:
+    //   - it succeeds  => the miss was a race, and the caller gets the work it came for (this is
+    //                     the common case, and it is strictly better than any error message);
+    //   - it misses    => re-read the breakdown; only if that STILL reports survivors do we let
+    //                     the divergence stand, now attested across two claim attempts.
+    // Placed HERE, before every `res?.workItem`-gated enrichment below, so a retry that lands
+    // flows through the ordinary success path unchanged (recall port, checkpoint hint, await
+    // cancellation) — there is no second, divergent success path to keep in sync.
+    //
+    // Cost is confined to the rare miss-with-survivors case: a normal drained miss (claimable
+    // === 0, the overwhelmingly common shape) never enters this block and pays nothing.
+    let issueBreakdown: import('../../scheduler/get-next').IssueClaimExclusionBreakdown | null = null;
+    let divergenceRecheck: 'resolved-by-retry' | 'confirmed-twice' | undefined;
+    if (!res && reconciliation.scope) {
+      issueBreakdown = await diagnoseFleetScopeIssueFloorMiss({
+        scope: reconciliation.scope,
+        harness: args.harness,
+        workspaceId: ident.workspaceId,
+        states: args.states,
+        rigAvailable: args.rigAvailable,
+      });
+      if (issueBreakdown && issueBreakdown.claimable > 0) {
+        const retry = await withBoundedTimeout(
+          getNextForBee({
+            cupId: ident.ownerId,
+            workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+            harness: args.harness,
+            heldPaths: args.heldPaths,
+            states: args.states,
+            rigAvailable: args.rigAvailable,
+            ignoreStoredSpec: !specOn && !reconciliation.scope,
+            checkIdleDrainOnMiss: true,
+          }),
+          { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:divergenceRecheck' },
+        );
+        // A degraded retry (timeout/error) proves nothing either way — leave the original
+        // breakdown in place and let the miss report itself exactly as it would have.
+        if (!retry.degraded && retry.value) {
+          res = retry.value;
+          divergenceRecheck = 'resolved-by-retry';
+        } else if (!retry.degraded) {
+          // Still nothing claimable to the claim path. Take a FRESH reading: if the pool moved
+          // on (the racing row is now taken), this collapses to an ordinary floor-gated miss.
+          const recheck = await diagnoseFleetScopeIssueFloorMiss({
+            scope: reconciliation.scope,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+            states: args.states,
+            rigAvailable: args.rigAvailable,
+          });
+          if (recheck) issueBreakdown = recheck;
+          if (recheck && recheck.claimable > 0) divergenceRecheck = 'confirmed-twice';
+        }
+      }
+    }
     // EI-8579: a self-puller with NEITHER a per-bee NOR an inherited fleet spec resolves to
     // DEFAULT_CLAIM_SPEC (plain oldest-first) — it can silently draw owner-deferred work
     // (a paused/de-scoped category) a curated spec would have excluded. Advisory only (the
@@ -580,16 +649,13 @@ export default defineTool({
     // instead of the bare "no claimable work-item matched fleet scope" a member previously got
     // with zero explanation. Always attempted alongside cooldownDiag (independent signals, both
     // fail soft); fleetScopedMiss itself suppresses it while paused.
-    const issueBreakdown =
-      !res && reconciliation.scope && !invalidHarnessKnownSlugs
-        ? await diagnoseFleetScopeIssueFloorMiss({
-            scope: reconciliation.scope,
-            harness: args.harness,
-            workspaceId: ident.workspaceId,
-            states: args.states,
-            rigAvailable: args.rigAvailable,
-          })
-        : null;
+    // WI-5947: computed ABOVE (before the divergence re-check, which needs it to decide whether
+    // to retry at all) and reused verbatim here — re-reading it would be a third unsynchronized
+    // observation of the same churning pool, i.e. the very defect this fix removes.
+    // `invalidHarnessKnownSlugs` still suppresses it: an unresolvable harness matches zero rows
+    // for reasons that have nothing to do with the floors.
+    const issueBreakdownForMiss =
+      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? issueBreakdown : null;
     return {
       content: [
         {
@@ -629,7 +695,8 @@ export default defineTool({
                 : reconciliation.scope
                   ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
                       cooldownDiag,
-                      issueBreakdown,
+                      issueBreakdown: issueBreakdownForMiss,
+                      divergenceRecheck,
                       harness: args.harness,
                     })
                   : {
