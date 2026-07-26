@@ -23,6 +23,31 @@ import { matchesWorkItemClaimSpec } from './claim-spec-match';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
+/**
+ * EI-18694186565089433: the revision is stored TWICE — the `cup_claim_specs.revision`
+ * COLUMN (bumped atomically by setClaimSpec's upsert) and a `revision` field embedded
+ * inside the `spec` JSONB itself (carried forward verbatim by the read-edit-write
+ * pattern setClaimSpec's own validation forces on every caller). Only the column is
+ * bumped on write, so the embedded copy is permanently one write behind the moment
+ * any caller round-trips a spec — every reader of the embedded field (formatSpecRef
+ * call sites included) then cites a stale revision while the column, and every
+ * OTHER reader of the column, correctly reports the current one. Confirmed live:
+ * scheduler:set_claim_spec returned revision 6 (the column) while every following
+ * scheduler:get_claim_spec read reported spec.revision 5 (the embedded copy).
+ *
+ * Fix direction (a) from the bug (preferred over syncing the two copies): the
+ * column is the single source of truth, so EVERY read of a validated spec object
+ * stamps the column's revision onto the returned spec before handing it to a
+ * caller — the embedded field can then never be observed as stale, because it is
+ * always overwritten with the authoritative value at the read boundary. Call this
+ * at every construction site that returns a `ClaimSpec` (getClaimSpec,
+ * getClaimSpecRecord, resolveFleetClaimSpec) so a caller reading EITHER
+ * `record.revision` or `record.spec.revision` sees the same, current number.
+ */
+function withColumnRevision(spec: ClaimSpec, columnRevision: number): ClaimSpec {
+  return spec.revision === columnRevision ? spec : { ...spec, revision: columnRevision };
+}
+
 export interface SetClaimSpecResult {
   ok: boolean;
   errors: string[];
@@ -257,11 +282,12 @@ export async function getClaimSpec(
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
   const rows = (await sql`
-    SELECT spec FROM harness_shared.cup_claim_specs
-     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as { spec: unknown }[];
+    SELECT spec, revision FROM harness_shared.cup_claim_specs
+     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as { spec: unknown; revision: number }[];
   if (rows.length > 0) {
-    const v = validateClaimSpec(rows[0]!.spec);
-    return v.ok && v.spec ? v.spec : DEFAULT_CLAIM_SPEC;
+    const row = rows[0]!;
+    const v = validateClaimSpec(row.spec);
+    return v.ok && v.spec ? withColumnRevision(v.spec, row.revision) : DEFAULT_CLAIM_SPEC;
   }
   // No per-bee spec — inherit the fleet's, when the bee belongs to one. Best-effort:
   // any hiccup here degrades to DEFAULT_CLAIM_SPEC (== claim_next ordering), never a
@@ -272,13 +298,15 @@ export async function getClaimSpec(
     const membership = await latestFleetMembership(ws, args.cupId);
     if (membership?.fleetSlug) {
       const frows = (await sql`
-        SELECT spec FROM harness_shared.cup_claim_specs
+        SELECT spec, revision FROM harness_shared.cup_claim_specs
          WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(membership.fleetSlug)} LIMIT 1`) as {
         spec: unknown;
+        revision: number;
       }[];
       if (frows.length > 0) {
-        const fv = validateClaimSpec(frows[0]!.spec);
-        if (fv.ok && fv.spec) return fv.spec;
+        const frow = frows[0]!;
+        const fv = validateClaimSpec(frow.spec);
+        if (fv.ok && fv.spec) return withColumnRevision(fv.spec, frow.revision);
       }
     }
   } catch {
