@@ -72,6 +72,9 @@ export const ALLOWLIST = new Set([
   'packages/operator-core/lib/inference-gateway/gateway.ts', // runs INSIDE the :8788 inference-gateway process
   'packages/operator-core/lib/inference-gateway/launch.ts', // :8788 gateway process bootstrap
   'packages/operator-core/lib/inference-gateway/watchdog.mjs', // standalone systemd watchdog for the gateway
+  'apps/operator/lib/mcp-proxy/watchdog.mjs', // standalone systemd watchdog for mcp-proxy -- plain node, no TS imports (deliberately dependency-free, same class as inference-gateway/watchdog.mjs)
+  'apps/operator/app/_components/useWslGateBlocking.ts', // browser hook -- window.setInterval polling wsl_status in the webview, not the host
+  'packages/operator-core/lib/operator-window-sync.ts', // browser cross-window localStorage sync (lease heartbeat) -- window/StorageEvent, only imported by OperatorConversationProvider.tsx; not a host timer
 ]);
 
 /**

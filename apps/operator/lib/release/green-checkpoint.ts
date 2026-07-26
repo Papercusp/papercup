@@ -2997,8 +2997,18 @@ export function realCheckpointDeps(
         const logDir = cfg.checkpointLogDir;
         mkdirSync(logDir, { recursive: true });
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}.log`);
-        writeFileSync(logPath, fullOutput);
+        // WI-6068: name the CANDIDATE, not just the base. `base` is `main`, which is
+        // constant between fast-forwards, so it cannot distinguish two runs — let alone a
+        // stale red from a fresh verdict. See resolveCandidateSha for the incident.
+        const candidateSha = resolveCandidateSha(treeDir);
+        const candidatePart = candidateSha ? `-cand-${candidateSha.slice(0, 12)}` : '';
+        logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}${candidatePart}.log`);
+        // ...and restate the identity in the BODY too, so a log that gets copied, pasted,
+        // or tailed out of its filename is still self-identifying.
+        const header =
+          `[green-checkpoint] candidate=${candidateSha ?? 'unresolved'} ` +
+          `base=${base ?? 'none'} written=${new Date().toISOString()}\n`;
+        writeFileSync(logPath, header + fullOutput);
         log(`full suite output → ${logPath}`);
         // P-014: prune logs older than 14 days so this dir doesn't grow unbounded.
         pruneOldLogs(logDir, 14);
@@ -3320,6 +3330,33 @@ export function realCheckpointDeps(
     },
     log,
   };
+}
+
+/**
+ * WI-6068: resolve the CANDIDATE sha a run actually judged, by reading the checkpoint
+ * tree's HEAD — `treeDir` is checked out AT the candidate, and `runGreen` is handed only
+ * `base`, so this is the one place the candidate is recoverable without a signature change.
+ *
+ * Why this exists: the checkpoint log's name used to encode ONLY `base` (i.e. `main`),
+ * which is CONSTANT between fast-forwards. So N runs judging N DIFFERENT candidates all
+ * produced near-identical filenames separated only by a start timestamp, and a STALE red
+ * was byte-indistinguishable from a fresh verdict. On 2026-07-26 that cost ~6 calls of
+ * false re-diagnosis: `ls -t | head -1` surfaced a red whose run had judged a
+ * pre-torn-fix candidate while the real run was still in flight (logging elsewhere, to
+ * /tmp). The candidate was ultimately recovered by archaeology on failing TEST NAMES —
+ * `git show <sha>:<test>` across a range — which is absurd for a field we can just print.
+ *
+ * Fail-open by contract: any failure returns undefined and the caller keeps the legacy
+ * name. A logging nicety must never be able to affect a gate verdict.
+ */
+function resolveCandidateSha(treeDir: string): string | undefined {
+  try {
+    const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: treeDir, encoding: 'utf8' });
+    const sha = r.status === 0 ? String(r.stdout ?? '').trim() : '';
+    return /^[0-9a-f]{7,40}$/.test(sha) ? sha : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** P-014: delete checkpoint-log files older than `days` so the dir doesn't grow

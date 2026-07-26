@@ -18,7 +18,8 @@
  * real-git temp-repo path; here we never touch a real branch.
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkNpmScript, hasNpmScript, realCheckpointDeps, type CheckpointExec } from './green-checkpoint';
@@ -696,5 +697,92 @@ describe('realCheckpointDeps.setupTree / push — real-path wiring (gap #10)', (
     const { exec } = makeExec([{ code: 0 }]);
     await realCheckpointDeps(cfg, exec).push('ready');
     expect(mockCreateWorkflowDispatch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-6068 recurrence guard. The suite log used to be named `<ts>-base-<sha>.log`, where
+ * `base` is `main` — CONSTANT between fast-forwards. So consecutive runs judging DIFFERENT
+ * candidates produced near-identical names, and a STALE red read exactly like a fresh
+ * verdict (2026-07-26: `ls -t | head -1` surfaced a red for a superseded candidate while
+ * the real run was still in flight and logging to /tmp; the candidate was only recovered
+ * by archaeology on failing TEST NAMES). These assert the candidate is recoverable from
+ * the artifact itself — and that resolving it can never break the gate.
+ */
+describe('WI-6068: the checkpoint log identifies the CANDIDATE it judged', () => {
+  /**
+   * A real git repo, because the candidate sha is read from the tree's HEAD.
+   * `marker` must differ between fixtures: git derives the sha from tree content +
+   * commit timestamp, so two identical trees committed inside the same second would
+   * collide on ONE sha — and the "distinguishable names" test below would pass
+   * vacuously while asserting the exact opposite of what it claims.
+   */
+  function makeGitTree(marker = 'fixture'): { dir: string; sha: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'green-cp-git-tree-'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'cp-git-fixture' }));
+    writeFileSync(join(dir, 'marker.txt'), marker);
+    const git = (...args: string[]) =>
+      spawnSync('git', args, { cwd: dir, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } });
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.invalid');
+    git('config', 'user.name', 'fixture');
+    git('add', '-A');
+    git('commit', '-qm', 'fixture');
+    const sha = git('rev-parse', 'HEAD').stdout.trim();
+    return { dir, sha };
+  }
+
+  it('writes the candidate sha into BOTH the log filename and the log body', async () => {
+    const { dir, sha } = makeGitTree();
+    try {
+      expect(sha).toMatch(/^[0-9a-f]{40}$/); // fixture sanity: HEAD really resolved
+      const before = new Set(readdirSync(tmpLogDir));
+      const { exec } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
+
+      await realCheckpointDeps(cfg, exec).runGreen(dir, 'base-sha');
+
+      const written = readdirSync(tmpLogDir).filter((f) => !before.has(f));
+      expect(written).toHaveLength(1);
+      // The filename alone must answer "what was judged" — that is the whole point.
+      expect(written[0]).toContain(`-cand-${sha.slice(0, 12)}`);
+      // ...and the body repeats it, so a tailed/copied log stays self-identifying.
+      expect(readFileSync(join(tmpLogDir, written[0]), 'utf8')).toContain(`candidate=${sha}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('two runs on DIFFERENT candidates produce distinguishable log names (the actual failure)', async () => {
+    const a = makeGitTree('candidate-a');
+    const b = makeGitTree('candidate-b');
+    try {
+      expect(a.sha).not.toBe(b.sha); // fixture sanity: genuinely different candidates
+      const before = new Set(readdirSync(tmpLogDir));
+      // Same `base` for both — exactly the real-world case the old name could not separate.
+      await realCheckpointDeps(cfg, makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]).exec).runGreen(a.dir, 'same-base');
+      await realCheckpointDeps(cfg, makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]).exec).runGreen(b.dir, 'same-base');
+
+      const written = readdirSync(tmpLogDir).filter((f) => !before.has(f));
+      expect(written).toHaveLength(2);
+      const candidatePart = (f: string) => /-cand-([0-9a-f]+)\./.exec(f)?.[1];
+      expect(new Set(written.map(candidatePart)).size).toBe(2);
+    } finally {
+      rmSync(a.dir, { recursive: true, force: true });
+      rmSync(b.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('FAILS OPEN on a non-git candidate tree — still logs, never throws (a naming nicety must not gate a verdict)', async () => {
+    const before = new Set(readdirSync(tmpLogDir));
+    const { exec } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
+
+    // cpTree is a bare temp dir with a package.json and no git repo at all.
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    const written = readdirSync(tmpLogDir).filter((f) => !before.has(f));
+    expect(written).toHaveLength(1);
+    expect(written[0]).not.toContain('-cand-');
+    expect(readFileSync(join(tmpLogDir, written[0]), 'utf8')).toContain('candidate=unresolved');
   });
 });

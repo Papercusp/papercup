@@ -95,7 +95,7 @@ export default defineTool({
         .max(20_000)
         .describe(
           'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
-            'No setTimeout/setInterval (not ambient in this sandbox) — use `await sleep(ms)` for a ' +
+            'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
             'short bounded delay (e.g. write-then-reverify) instead.',
         ),
       title: z
