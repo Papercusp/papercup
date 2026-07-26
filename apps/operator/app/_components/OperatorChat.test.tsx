@@ -9,10 +9,32 @@
  * virtualized transcript. Heavy children (cards, logo, Tooltip) are stubbed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { createNuqsMock } from '@papercusp/test-config/nuqs-mock';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
+// chat-ref-pills-2026-07-26 P-008: OperatorChat now owns `useQueryState` calls
+// (the "which popup is open" state for the D-002 seam below) — every suite
+// that renders it needs a nuqs mock (nuqs-mock.ts's own incompleteness-class
+// rationale). The two popup DESTINATIONS get their own dedicated test files;
+// here they're stubbed to a tiny probe so this suite only asserts OperatorChat's
+// OWN wiring (which id/harness it hands them), not their internals.
+vi.mock('nuqs', () => createNuqsMock());
+let lastWorkItemPopupProps: Record<string, any> = {};
+vi.mock('./work-items/WorkItemPopupModal', () => ({
+  default: (props: Record<string, any>) => {
+    lastWorkItemPopupProps = props;
+    return <div data-testid="wi-popup" data-id={props.id ?? ''} data-harness={props.harnessSlug ?? ''} />;
+  },
+}));
+let lastPlanPopupProps: Record<string, any> = {};
+vi.mock('./plans/PlanPopupModal', () => ({
+  default: (props: Record<string, any>) => {
+    lastPlanPopupProps = props;
+    return <div data-testid="plan-popup" data-plan={props.planSlug ?? ''} data-harness={props.harnessSlug ?? ''} />;
+  },
+}));
 // Capture the props OperatorChat hands ChatConversation, and render a tiny
 // controllable surface: the empty-state body, the banner, the composer extra,
 // and an input wired to onInputChange/onSubmit so we can drive submit().
@@ -68,6 +90,8 @@ function baseProps(over: Record<string, any> = {}) {
 afterEach(() => {
   lastProps = {};
   lastCardProps = {};
+  lastWorkItemPopupProps = {};
+  lastPlanPopupProps = {};
   cleanup();
 });
 
@@ -257,6 +281,62 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
       await vi.waitFor(() => {
         expect(vi.mocked(toast.error)).toHaveBeenCalledWith('network exploded');
       });
+    });
+  });
+
+  describe('ref-pill popup routing (chat-ref-pills-2026-07-26 P-008, D-002 seam)', () => {
+    it('forwards harnessSlug straight through to ChatConversation', () => {
+      render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
+      expect(lastProps.harnessSlug).toBe('papercusp');
+    });
+
+    it('opens the WorkItemPopupModal scoped to harnessSlug on a work-item ref activation', () => {
+      render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
+      expect(screen.queryByTestId('wi-popup')).toBeNull();
+
+      act(() => {
+        lastProps.onWorkRefActivate({ id: 'WI-5952', kind: 'work-item' });
+      });
+
+      const popup = screen.getByTestId('wi-popup');
+      expect(popup.getAttribute('data-id')).toBe('WI-5952');
+      expect(popup.getAttribute('data-harness')).toBe('papercusp');
+    });
+
+    it('opens the (reused) PlanPopupModal on a plan-item ref activation, with the message plan_slug', () => {
+      render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
+
+      act(() => {
+        lastProps.onWorkRefActivate({ id: 'P-008', kind: 'plan-item', planSlug: 'chat-ref-pills-2026-07-26' });
+      });
+
+      const popup = screen.getByTestId('plan-popup');
+      expect(popup.getAttribute('data-plan')).toBe('chat-ref-pills-2026-07-26');
+      expect(popup.getAttribute('data-harness')).toBe('papercusp');
+    });
+
+    it('does not open a plan popup for a plan-item ref with no message plan_slug (no safe destination)', () => {
+      render(<OperatorChat {...baseProps({ harnessSlug: 'papercusp' })} />);
+
+      act(() => {
+        lastProps.onWorkRefActivate({ id: 'P-008', kind: 'plan-item', planSlug: null });
+      });
+
+      expect(lastPlanPopupProps.planSlug ?? null).toBeNull();
+    });
+
+    it('does not open a work-item popup when there is no harnessSlug to scope it to', () => {
+      render(<OperatorChat {...baseProps()} />);
+
+      act(() => {
+        lastProps.onWorkRefActivate({ id: 'WI-5952', kind: 'work-item' });
+      });
+
+      // Neither popup even MOUNTS without a harnessSlug (avoids a duplicate
+      // stacked popup when the cross-harness sidebar overlaps a harness-scoped
+      // chat instance — see the render-guard comment in OperatorChat.tsx).
+      expect(screen.queryByTestId('wi-popup')).toBeNull();
+      expect(screen.queryByTestId('plan-popup')).toBeNull();
     });
   });
 });

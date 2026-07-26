@@ -89,7 +89,7 @@ afterEach(() => cleanup());
 
 describe('NewSessionLauncher', () => {
   it('renders a plan picker, a model picker, and a disabled launch button by default', () => {
-    render(<NewSessionLauncher />);
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
     expect(screen.getByRole('combobox', { name: 'Plan for new session' })).toBeTruthy();
     expect(screen.getByRole('combobox', { name: 'Model for new session' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '+ New session' })).toBeDisabled();
@@ -97,7 +97,7 @@ describe('NewSessionLauncher', () => {
 
   it('enables the button once a plan is chosen, and launches with the selected plan', async () => {
     const onLaunched = vi.fn();
-    render(<NewSessionLauncher onLaunched={onLaunched} />);
+    render(<NewSessionLauncher onLaunched={onLaunched} />, { wrapper: withNuqsTestingAdapter() });
     fireEvent.change(screen.getByRole('combobox', { name: 'Plan for new session' }), {
       target: { value: 'beta-plan' },
     });
@@ -117,7 +117,7 @@ describe('NewSessionLauncher', () => {
   });
 
   it('threads a non-default model choice through to launchAgent', async () => {
-    render(<NewSessionLauncher />);
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
     fireEvent.change(screen.getByRole('combobox', { name: 'Plan for new session' }), {
       target: { value: 'alpha-plan' },
     });
@@ -134,7 +134,7 @@ describe('NewSessionLauncher', () => {
   it('toasts an error and does not call onLaunched when launchAgent fails', async () => {
     h.launchAgent.mockResolvedValueOnce({ ok: false, error: 'boom' });
     const onLaunched = vi.fn();
-    render(<NewSessionLauncher onLaunched={onLaunched} />);
+    render(<NewSessionLauncher onLaunched={onLaunched} />, { wrapper: withNuqsTestingAdapter() });
     fireEvent.change(screen.getByRole('combobox', { name: 'Plan for new session' }), {
       target: { value: 'alpha-plan' },
     });
@@ -145,7 +145,7 @@ describe('NewSessionLauncher', () => {
   });
 
   it('the plan picker default value is the placeholder sentinel with no selection', () => {
-    render(<NewSessionLauncher />);
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
     const select = screen.getByRole('combobox', {
       name: 'Plan for new session',
     }) as HTMLSelectElement;

@@ -64,6 +64,7 @@ import NotFound from '../components/NotFound';
 import { NavigationProgress } from '../components/NavigationProgress';
 import ChunkReloadPrompt from '../components/ChunkReloadPrompt';
 import OfflineIndicator from '../components/OfflineIndicator';
+import StaleOperatorIndicator from '../components/StaleOperatorIndicator';
 import VersionBadge from '../components/VersionBadge';
 // Cross-platform env switcher top bar (dogfood-silent-canonical-hive-join P-013/P-014/
 // P-017). The data-driven, public-shippable twin of the Linux-only native GTK dev bar;
@@ -344,6 +345,10 @@ function RootComponent() {
               {/* Operator-unreachable persistent toast (EI-239) — fed by the
                   @papercusp/sync connectivity store. */}
               <OfflineIndicator />
+              {/* Version-skewed operator persistent toast (WI-5956) — fed by the
+                  @papercusp/sync stale-operator store: the origin is reachable
+                  but is running OLDER code than this rebuilt client. */}
+              <StaleOperatorIndicator />
               {/* Bottom-right "what's running" pill + out-of-date detector:
                   polls /api/desktop/version and flips to an amber click-to-reload
                   when the server's sha changes under us (Restart-parity). */}
