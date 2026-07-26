@@ -96,7 +96,18 @@ describe('pot-git publish-guard (real bare repo)', () => {
     expect(res.refusalCode).toBe('secrets');
     expect(res.secretFindings.length).toBeGreaterThan(0);
     expect(res.secretFindings[0].rule).toBe('aws-access-key-id');
-    expect(describePublishRefusal(res)).toContain('secret(s) found');
+    // EI-18751879785723304: the refusal must name WHERE the finding is, not just
+    // count it. The documented remedy (pot_git:secrets_exemptions { path }) needs
+    // the path, so a count-only message forced an operator to hand-reproduce the
+    // whole scan to recover it during a 3h fleet-wide egress freeze.
+    const msg = describePublishRefusal(res);
+    expect(msg).toContain('secret(s)');
+    expect(msg).toContain('config.env:1');
+    expect(msg).toContain('[aws-access-key-id]');
+    // ...and naming the location must NEVER leak the material itself — the
+    // excerpt is masked at detection ('AKIA…OP (20 chars)'), which is precisely
+    // what makes surfacing the path safe.
+    expect(msg).not.toContain(fakeKey);
   });
 
   it('refuses a range carrying a blob over the size cap', async () => {

@@ -1,0 +1,358 @@
+/**
+ * Equivalence pairs — the TEST-RUNNING family (plan
+ * `bash-to-tool-substitution-2026-07-26`, P-021).
+ *
+ * Population (D-021, measured over the 7d corpus): 2,645 test-running atoms
+ * across 68 of 86 su sessions. Proposed replacement: `testing:run`, built in
+ * this same item.
+ *
+ * ── What measuring the corpus changed about this family ──────────────────────
+ * The plan framed P-021 as "agents run tests by hand, give them a runner". The
+ * corpus says they already HAVE a good runner (`scripts/test-files.mjs`) and
+ * reach for it 70.8% of the time. What they lack is a RESULT: 84.8% of these
+ * commands pipe the output to `tail`/`head`, 81.7% merge `2>&1` into that pipe,
+ * and 15.7% redirect to a log and grep it separately. So the tool this family
+ * routes to returns counts + per-test failures and offers no raw passthrough —
+ * and this file's job is to say precisely which real commands that faithfully
+ * replaces, and which it does not.
+ *
+ * ── Three pairs, because the family splits three ways ────────────────────────
+ *  1. `tests.router-files`  — the dominant, healthy shape. Equivalent.
+ *  2. `tests.raw-vitest`    — the router BYPASS. Equivalent, and the one that
+ *     matters for correctness (see below).
+ *  3. `tests.affected`      — `npm run test:affected`. NOT a substitute, and
+ *     recorded as such so the conclusion is durable and re-derived every run
+ *     rather than living in a code comment (same role `process.ps-pgrep` plays).
+ *
+ * ── Why the bypass pair is a correctness row, not a style row ────────────────
+ * 372 raw-`vitest run` atoms appear across 44 sessions, 107 of them with no
+ * `cd` — i.e. root-level `vitest run <path>`. There is intentionally no root
+ * Vitest config, so under `--passWithNoTests` such a run can match zero files,
+ * execute NOTHING, and exit 0. That is a false green in the one place a false
+ * green is most expensive. `scripts/test-files.mjs` hard-refuses it, and
+ * `testing:run` can only ever go through the router, so routing this shape at
+ * the tool removes the failure mode rather than merely tidying the command.
+ *
+ * ── The envelope, read from the tool, not assumed ────────────────────────────
+ * `testing:run` (lib/agent-tools/testing/run.ts) takes
+ * `{ files: string[1..50], testNamePattern?: string(1..200), timeoutMs?,
+ * maxFailures? }`. Consequences that decide coverage below:
+ *  • `files` are handed to the router as-is, so a path must be REPO-ROOT
+ *    relative or absolute. `atomize` splits `cd apps/operator && vitest run
+ *    app/x.test.ts` into two atoms, so a cwd-relative operand arrives with the
+ *    `cd` that gave it meaning already gone. Those are excluded by the pattern
+ *    (see {@link ROOT_ANCHOR}), not failed by the envelope — D-008.
+ *  • The reporter is fixed at `--reporter=json` and distilled, so a command
+ *    that asks for a different reporter is asking for something else.
+ *  • The config is chosen by the router from each file's owning workspace, so a
+ *    hand-passed `--config`/`--root` is likewise a different request.
+ *  • There is no output file. A command that redirects stdout to a log wants an
+ *    artifact the tool does not produce (see the note on that exclusion below).
+ */
+
+import type { CoverageResult, SubstitutionPair } from '../types';
+
+/**
+ * Mirrors `testing:run`'s `files` array bound. Exported so `pairs/model-drift.test.ts`
+ * can pin it to the tool's real zod `.max()` (D-015) — the mirror is deliberate,
+ * the DRIFT is not.
+ */
+export const TESTING_RUN_MAX_FILES = 50;
+
+/** Mirrors `testing:run`'s `testNamePattern` length bound, same rationale. */
+export const TESTING_RUN_MAX_PATTERN = 200;
+
+/**
+ * Repo top-level directories a test path may be anchored at.
+ *
+ * Derived from the corpus rather than from `readdir`: the operand's first
+ * segment is `packages` 2,473x, `apps` 725x, `libs` 120x, `scripts` 6x,
+ * `papercusp-desktop` 2x. The remaining segments seen — `lib` (72), `src` (32),
+ * `app` (13) — are package-INTERNAL directories that only resolve after a `cd`
+ * into the workspace, which is exactly the case the tool cannot serve, so they
+ * are deliberately absent. `bin`/`tools`/`benchmarks`/`infra`/`templates`/
+ * `_retired` are real repo roots included for completeness.
+ *
+ * Under-matching here is safe (a real command simply falls outside the pattern
+ * and no advisory fires); over-matching would claim a command the tool cannot
+ * express, which is the failure D-001 exists to prevent.
+ */
+const ROOT_DIRS = [
+  '_retired', 'apps', 'benchmarks', 'bin', 'infra', 'libs',
+  'packages', 'papercusp-desktop', 'scripts', 'templates', 'tools',
+];
+
+/** A path anchored at the repo root: absolute, or a known top-level directory. */
+const ROOT_ANCHOR = `(?:/|(?:${ROOT_DIRS.join('|')})/)`;
+
+/** A JS/TS source path — the only operand shape the router can route. */
+const TEST_PATH = String.raw`\S+\.[cm]?[jt]sx?`;
+
+/**
+ * Atoms this family must never claim, excluded by PATTERN per D-008:
+ *  • `$`/backtick — a shell expansion the tool cannot resolve to literal paths
+ *    (`npm run test:file -- $(ls pkg/*.test.ts)` appears in the corpus)
+ *  • `*`/`?` — a glob, same reason
+ *  • `{}` — a `find -exec` placeholder
+ *  • an stdout redirect — see below
+ *  • `--reporter`/`--config`/`--root`/`--coverage`/`--watch` — a different
+ *    request, not a differently-spelled one
+ *
+ * ON EXCLUDING THE REDIRECT FORM, which is worth stating plainly because it
+ * costs real coverage: `… > /tmp/run.log 2>&1` is 71 of 400 distinct router
+ * commands, and redirect-then-grep is 15.7% of the family — i.e. part of the
+ * very output-handling cost `testing:run` was built to remove. It is excluded
+ * anyway, because the command's literal effect includes a FILE the tool does not
+ * produce, and this registry's standard is that a claimed command has a faithful
+ * expression, not merely a better answer to the intent behind it. Claiming it
+ * would let a promoted tier nudge an agent who genuinely wanted the artifact.
+ * Note `2>&1` alone is NOT a redirect for this purpose — it is stderr plumbing
+ * that changes nothing about the request, and it appears on 395 of 400 sampled
+ * commands, so treating it as a write would empty the family.
+ */
+const EXCLUDE_UNEXPRESSIBLE =
+  String.raw`(?![^\n]*[$\`])(?![^\n]*[*?])(?![^\n]*\{\})(?![^\n]*(?:^|\s)1?>)` +
+  String.raw`(?![^\n]*--(?:reporter|config|root|coverage|watch))`;
+
+/** Vitest flags that are no-ops for this tool: `vitest run` is already run-mode. */
+const NOOP_FLAGS = new Set(['--run']);
+
+/** Shell tokens that are stderr plumbing, not operands. */
+const STDERR_PLUMBING = /^2>/;
+
+interface ParsedTestCommand {
+  /** Literal operands that should become `files`. */
+  files: string[];
+  /** Vitest flags the agent passed, normalised to their bare name. */
+  flags: string[];
+  /** The `-t` value, unquoted; `null` when absent. */
+  testNamePattern: string | null;
+  /** An stdout redirect is present: the command produces a log artifact. */
+  writes: boolean;
+  /** An operand contains a shell expansion or glob. */
+  dynamic: boolean;
+}
+
+/** Whitespace tokeniser that keeps simple quoted spans intact. */
+function tokenize(atom: string): string[] {
+  return atom.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+}
+
+function unquote(token: string): string {
+  if (token.length >= 2 && (token[0] === '"' || token[0] === "'") && token[token.length - 1] === token[0]) {
+    return token.slice(1, -1);
+  }
+  return token;
+}
+
+/** Classify the operand/flag tokens of a test command. */
+function walkTokens(tokens: string[]): ParsedTestCommand {
+  const out: ParsedTestCommand = { files: [], flags: [], testNamePattern: null, writes: false, dynamic: false };
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+
+    if (STDERR_PLUMBING.test(token)) continue;
+
+    const redirect = /^(\d*)(>>|>)/.exec(token);
+    if (redirect) {
+      if (redirect[1] === '' || redirect[1] === '1') out.writes = true;
+      // A bare `> file` spends the next token on the target filename.
+      if (/^\d*(?:>>|>)$/.test(token)) i += 1;
+      continue;
+    }
+
+    if (token.startsWith('-') && token !== '-') {
+      const inlinePattern = /^--testNamePattern=(.*)$/.exec(token);
+      if (inlinePattern) {
+        out.testNamePattern = unquote(inlinePattern[1]);
+        out.flags.push('--testNamePattern');
+        continue;
+      }
+      if (token === '-t' || token === '--testNamePattern') {
+        out.flags.push(token);
+        // The pattern is the NEXT token and must not be mistaken for a file.
+        if (i + 1 < tokens.length) {
+          out.testNamePattern = unquote(tokens[i + 1]);
+          i += 1;
+        } else {
+          out.testNamePattern = '';
+        }
+        continue;
+      }
+      out.flags.push(token.replace(/=.*/, ''));
+      continue;
+    }
+
+    const operand = unquote(token);
+    if (/[$`*?]/.test(operand)) out.dynamic = true;
+    out.files.push(operand);
+  }
+
+  return out;
+}
+
+/**
+ * `npm run test:file -- <files> [-- <vitest args>]`.
+ * The corpus contains the double-`--` form (`-- x.test.ts -- -t "Ask"`), so the
+ * second separator, when present, splits operands from Vitest flags. Both halves
+ * go through the same walk — the split only matters for readability here.
+ */
+function parseRouterAtom(atom: string): ParsedTestCommand {
+  const tokens = tokenize(atom);
+  const sep = tokens.indexOf('--');
+  return walkTokens(sep === -1 ? [] : tokens.slice(sep + 1).filter((t) => t !== '--'));
+}
+
+/** `[npx] vitest run [flags] <files>`. */
+function parseRawVitestAtom(atom: string): ParsedTestCommand {
+  const tokens = tokenize(atom);
+  const runAt = tokens.findIndex((t) => t === 'run');
+  return walkTokens(runAt === -1 ? [] : tokens.slice(runAt + 1));
+}
+
+/** Render the tool call a covered command maps onto. */
+function expressionFor(parsed: ParsedTestCommand): string {
+  const files = parsed.files.map((f) => `"${f}"`).join(', ');
+  const pattern = parsed.testNamePattern ? `, testNamePattern: "${parsed.testNamePattern}"` : '';
+  return `testing:run { files: [${files}]${pattern} }`;
+}
+
+/**
+ * The shared capability envelope: everything `testing:run` can and cannot
+ * express about a parsed test command. Both equivalent pairs use this, so the
+ * two rows can never drift from each other.
+ */
+function coverTestCommand(parsed: ParsedTestCommand): CoverageResult {
+  if (parsed.writes) {
+    return { covered: false, reason: 'redirects the run to a log file; testing:run returns a structured result and writes no artifact' };
+  }
+  if (parsed.dynamic) {
+    return { covered: false, reason: 'operand is a shell expansion or glob, not a literal path' };
+  }
+  if (parsed.files.length === 0) {
+    return { covered: false, reason: 'no test file operand (runs a whole suite); testing:run requires an explicit file list' };
+  }
+  if (parsed.files.length > TESTING_RUN_MAX_FILES) {
+    return { covered: false, reason: `${parsed.files.length} files in one call; testing:run takes at most ${TESTING_RUN_MAX_FILES}` };
+  }
+
+  const unrouteable = parsed.files.find((f) => !/\.[cm]?[jt]sx?$/.test(f));
+  if (unrouteable) {
+    return { covered: false, reason: `operand "${unrouteable}" is a directory or name filter; testing:run takes explicit file paths` };
+  }
+
+  const unanchored = parsed.files.find((f) => !new RegExp(`^${ROOT_ANCHOR}`).test(f));
+  if (unanchored) {
+    return {
+      covered: false,
+      reason: `operand "${unanchored}" is relative to the command's cwd (a preceding \`cd\`), which the atom no longer carries; testing:run needs a repo-root-relative or absolute path`,
+    };
+  }
+
+  if (parsed.testNamePattern !== null) {
+    if (parsed.testNamePattern.length === 0) {
+      return { covered: false, reason: 'empty -t pattern; testing:run requires a non-empty testNamePattern' };
+    }
+    if (parsed.testNamePattern.length > TESTING_RUN_MAX_PATTERN) {
+      return { covered: false, reason: `-t pattern is ${parsed.testNamePattern.length} chars; testing:run caps testNamePattern at ${TESTING_RUN_MAX_PATTERN}` };
+    }
+  }
+
+  const unexpressible = parsed.flags.find(
+    (f) => f !== '-t' && f !== '--testNamePattern' && !NOOP_FLAGS.has(f),
+  );
+  if (unexpressible) {
+    return { covered: false, reason: `passes \`${unexpressible}\`, which testing:run has no argument for` };
+  }
+
+  return { covered: true, expression: expressionFor(parsed) };
+}
+
+/**
+ * P-021a — `npm run test:file -- <paths>`: the dominant shape, 69.5% of the
+ * family. Already correctly routed; what the tool changes is the RESULT the
+ * agent gets back, which is where the measured cost actually sits.
+ */
+export const routerTestFiles: SubstitutionPair = {
+  id: 'tests.router-files',
+  intentLabel: 'run-test-files',
+  bashPattern: new RegExp(`^${EXCLUDE_UNEXPRESSIBLE}npm\\s+run\\s+test:file\\s+--\\s+${ROOT_ANCHOR}${TEST_PATH}(?=\\s|$)`),
+  toolName: 'testing:run',
+  advisoryText:
+    'testing:run { files } runs the same router and returns { passed, failed, files, failures:[{file,test,message}] } — no `2>&1 | tail -60` and no log to grep afterwards.',
+  routing: {
+    want: 'to run specific test files and see which tests failed',
+    use: '`testing:run { files: [...] }`',
+    insteadOf: '`npm run test:file -- <paths> 2>&1 | tail -60` (a run redirected to a log file is not this — the tool writes no artifact)',
+  },
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    return coverTestCommand(parseRouterAtom(atom));
+  },
+};
+
+/**
+ * P-021b — raw `vitest run <paths>`: the router BYPASS, 12.3% of the family.
+ * Same tool call, but here the substitution also removes the root-level
+ * zero-match false green described in this file's header.
+ */
+export const rawVitestFiles: SubstitutionPair = {
+  id: 'tests.raw-vitest',
+  intentLabel: 'run-test-files',
+  bashPattern: new RegExp(
+    `^${EXCLUDE_UNEXPRESSIBLE}(?:npx\\s+)?vitest\\s+run\\s+(?:-t\\s+(?:"[^"]+"|'[^']+')\\s+)?${ROOT_ANCHOR}${TEST_PATH}(?=\\s|$)`,
+  ),
+  toolName: 'testing:run',
+  advisoryText:
+    'testing:run { files } routes each file to its OWNING Vitest config and refuses a zero-match run. A bare `vitest run <path>` from the repo root can match nothing and still exit 0 — a false green.',
+  routing: {
+    want: 'to run test files without hand-picking a Vitest config',
+    use: '`testing:run { files: [...] }`',
+    insteadOf: '`npx vitest run <path>` (a root-level run can match zero files and still exit 0 — the router refuses that)',
+  },
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    return coverTestCommand(parseRawVitestAtom(atom));
+  },
+};
+
+/**
+ * P-021c — `npm run test:affected`: 7.9% of the family, and deliberately NOT
+ * covered.
+ *
+ * This pair exists to make that a RECORDED verdict rather than a comment.
+ * `scripts/affected-tests.mjs` walks the dependency graph from a git diff and
+ * runs each workspace's own `npm test`; it has no Vitest-argument passthrough,
+ * so a JSON reporter cannot be plumbed through it and there is no file list to
+ * hand `testing:run` in the first place. The question it answers — "what did my
+ * edits affect?" — is not the question `testing:run` answers. Recording it keeps
+ * the routing table honest (`not-a-substitute` rows are filtered out of
+ * CLAUDE.md) and keeps the DB row pinned at `observe` by the
+ * `tier_requires_equivalence` constraint, so no future promotion sweep can
+ * quietly start nudging agents off a tool that has no replacement.
+ */
+export const affectedTests: SubstitutionPair = {
+  id: 'tests.affected',
+  intentLabel: 'run-affected-tests',
+  bashPattern: /^npm\s+run\s+test:affected/,
+  toolName: 'testing:run',
+  advisoryText:
+    'No substitute: `npm run test:affected` derives its own file list from the dependency graph. testing:run takes an explicit list. Keep using the script.',
+  routing: {
+    want: 'to run everything your edits affected',
+    use: '`npm run test:affected` (no tool equivalent)',
+    insteadOf: 'n/a — recorded as not-a-substitute so no promotion can nudge agents off it',
+  },
+  expectedVerdict: 'not-a-substitute',
+  cover(atom: string): CoverageResult {
+    void atom;
+    return {
+      covered: false,
+      reason: 'derives the test list from the git diff + dependency graph; testing:run requires an explicit file list and cannot compute one',
+    };
+  },
+};
+
+/** Every pair in the test-running family, in registry order. */
+export const TESTS_PAIRS: SubstitutionPair[] = [routerTestFiles, rawVitestFiles, affectedTests];

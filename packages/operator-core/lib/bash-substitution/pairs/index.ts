@@ -13,8 +13,9 @@ import { GIT_READ_PAIRS } from './git-read';
 import { POSTGRES_PAIRS } from './postgres';
 import { PROCESS_PAIRS } from './process';
 import { SERVICE_PAIRS } from './service';
+import { TESTS_PAIRS } from './tests';
 
-export { FILE_READ_PAIRS, GIT_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS, SERVICE_PAIRS };
+export { FILE_READ_PAIRS, GIT_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS, SERVICE_PAIRS, TESTS_PAIRS };
 
 /**
  * Every audited pair, in registry order.
@@ -24,6 +25,8 @@ export { FILE_READ_PAIRS, GIT_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS, SERVICE
  * `not-a-substitute` verdict and exists so the conclusion is durable and
  * re-derived on every test run; the routing generator filters it out of
  * CLAUDE.md, and the DB's `tier_requires_equivalence` keeps it at `observe`.
+ * `TESTS_PAIRS` carries both kinds at once — two equivalent shapes plus
+ * `tests.affected`, recorded negative for the same reason.
  */
 export const ALL_PAIRS: SubstitutionPair[] = [
   ...FILE_READ_PAIRS,
@@ -31,4 +34,5 @@ export const ALL_PAIRS: SubstitutionPair[] = [
   ...PROCESS_PAIRS,
   ...SERVICE_PAIRS,
   ...GIT_READ_PAIRS,
+  ...TESTS_PAIRS,
 ];
