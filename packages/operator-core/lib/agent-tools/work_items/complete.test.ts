@@ -1458,14 +1458,44 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     // with the FULL minimal closing shape up front — not just "you're missing
     // `completion`" — so a caller doesn't need 3+ round-trips to discover
     // `completion.summary` and `state` are both required to actually close.
+    //
+    // EI-18723223344390510: this case used to ALSO pass an unrecognized `note`
+    // key alongside `id` — before the deep-strictify fix, the tool's top-level
+    // schema (a `z.preprocess(gatherFlatCompletion, ...)` pipe) escaped
+    // `strictArgs`'s (then shallow) `.strict()` entirely, since a pipe has no
+    // `.strict()` method, so `note` was silently tolerated and only the
+    // `.refine()` custom message ever surfaced. Now that the whole schema tree
+    // is strictified, an unrecognized top-level key correctly fails FIRST
+    // (Zod's built-in strict-mode check runs before an object's `.refine()`),
+    // which is the right behavior but a DIFFERENT one from what this test was
+    // isolating — so the stray key is dropped here (covered by its own test
+    // below) and this case now tests the "no completion at all" shape in
+    // isolation, with no unrecognized-key noise to compete with the assertion.
     it('a shape with no completion at all states the FULL minimal closing contract in ONE error', () => {
       const result = (complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } })
-        .safeParse({ id: 'WI-1', note: 'just a note, not a completion' });
+        .safeParse({ id: 'WI-1' });
       expect(result.success).toBe(false);
       const message = result.error?.issues.map((i) => i.message).join(' ') ?? '';
       expect(message).toContain('{ id, state, completion: { summary } }');
       expect(message).toContain('state');
       expect(message).toContain('REQUIRED');
+    });
+
+    // EI-18723223344390510: the deep-strictify fix closes the SAME EI-10883
+    // "unrecognized key silently dropped" gap for THIS tool's top-level schema —
+    // it was escaping strictArgs' (then shallow) `.strict()` because its outer
+    // schema is a `z.preprocess(...)` pipe, not a bare object. A confused
+    // caller sending a free-text `note` instead of a real `completion` (the
+    // exact EI-6999 scenario) now gets told the key is unrecognized, rather
+    // than having it silently dropped and getting only the generic
+    // missing-completion message.
+    it('rejects an unrecognized top-level key instead of silently dropping it (EI-18723223344390510)', () => {
+      const result = (complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } })
+        .safeParse({ id: 'WI-1', note: 'just a note, not a completion' });
+      expect(result.success).toBe(false);
+      const message = result.error?.issues.map((i) => i.message).join(' ') ?? '';
+      expect(message.toLowerCase()).toContain('unrecognized');
+      expect(message).toContain('note');
     });
   });
 

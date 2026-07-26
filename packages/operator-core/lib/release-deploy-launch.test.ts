@@ -421,6 +421,24 @@ describe('computeDeployInFlight', () => {
     expect(f.active).toBe(false);
   });
 
+  /**
+   * VERBATIM output captured from the real box on 2026-07-26 while working this item — the
+   * `--collect` transient unit is garbage-collected once the deploy exits, which BLANKS
+   * ExecMainStartTimestamp rather than removing the key. `Date.parse('')` is NaN, so this is
+   * the shape that would emit a bogus startedAtMs if the parse were trusted unguarded.
+   */
+  it('the REAL post-run output (unit collected, timestamp blank) ⇒ not in flight, startedAtMs null', () => {
+    const f = computeDeployInFlight({
+      props: parseSystemctlShow('ExecMainStartTimestamp=\nActiveState=inactive\nSubState=dead\n'),
+      logPath: '/l',
+      logMtimeMs: 1,
+    });
+    expect(f.active).toBe(false);
+    expect(f.activeState).toBe('inactive');
+    expect(f.subState).toBe('dead');
+    expect(f.startedAtMs).toBeNull();
+  });
+
   it('failed ⇒ not in flight (the deploy is over; its outcome is reported elsewhere)', () => {
     const f = computeDeployInFlight({ props: { ActiveState: 'failed' }, logPath: '/l', logMtimeMs: 1 });
     expect(f.active).toBe(false);

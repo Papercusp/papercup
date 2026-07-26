@@ -79,12 +79,30 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
       greenPinAtStagingHead: true,
       deployedAtMs: 1,
     },
+    deployInFlight: null,
     canTriggerGreen: false,
     nothingToDeploy: true,
     state: 'up-to-date',
     recommendation: 'up to date',
     summary: 'up to date',
     errors: [],
+    ...over,
+  };
+}
+
+/** EI-18724155280048738: a running deploy, as `readDeployStatus` reports it. */
+function inFlight(over: Partial<NonNullable<DeployStatus['deployInFlight']>> = {}): NonNullable<
+  DeployStatus['deployInFlight']
+> {
+  return {
+    active: true,
+    unit: 'papercup-auto-deploy',
+    activeState: 'active',
+    subState: 'running',
+    startedAtMs: Date.parse('2026-07-26T16:09:43Z'),
+    logPath: '/tmp/papercup-auto-deploy.log',
+    logMtimeMs: null,
+    source: 'systemd',
     ...over,
   };
 }
@@ -128,6 +146,86 @@ describe('release:deploy — trigger', () => {
     const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, launched: true });
     expect(launchM).toHaveBeenCalledWith({}); // green deploy — no force/commit
+  });
+
+  /**
+   * EI-18724155280048738 — the double-trigger hazard. A trigger can return a TRANSPORT error
+   * (CONNECTION_CLOSED against PgBouncer :6432) after the handler already launched the deploy;
+   * the caller then re-checks, sees `ps` show nothing for ~20s, reads that as "the trigger did
+   * nothing", and fires again at the shared release checkout. These lock the surfaces that make
+   * the two states distinguishable.
+   */
+  it('REFUSES a second trigger while a deploy is in flight, and says so definitely', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({ state: 'deploy-in-flight', canTriggerGreen: false, nothingToDeploy: false, deployInFlight: inFlight() }),
+    );
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    expect(b.refused).toBe(true);
+    expect(b.reason).toMatch(/deploy_in_flight/);
+    // it must name the running unit and tell the caller their "failed" trigger probably worked
+    expect(b.reason).toMatch(/papercup-auto-deploy/);
+    expect(b.reason).toMatch(/transport error/i);
+    expect(b.reason).toMatch(/do not re-trigger/i);
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('the in-flight refusal WINS over the gate-red message (the caller needs their deploy, not a lecture)', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({ state: 'deploy-in-flight', canTriggerGreen: false, deployInFlight: inFlight() }),
+    );
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    expect(b.reason).toMatch(/deploy_in_flight/);
+    expect(b.reason).not.toMatch(/gate_red/);
+  });
+
+  it('op:status surfaces deployInFlight so a caller who lost the reply can re-check authoritatively', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'deploy-in-flight', deployInFlight: inFlight() }));
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
+    expect(b).toMatchObject({ ok: true, op: 'status', state: 'deploy-in-flight' });
+    expect((b.deployInFlight as { active: boolean }).active).toBe(true);
+  });
+
+  it('a FINISHED deploy does not keep refusing — the normal green trigger still fires', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({
+        state: 'green-deployable',
+        canTriggerGreen: true,
+        nothingToDeploy: false,
+        deployInFlight: inFlight({ active: false, activeState: 'inactive', subState: 'dead' }),
+      }),
+    );
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: true, launched: true });
+  });
+
+  it('the success note pre-warns that a transport error still means the deploy LAUNCHED', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false }),
+    );
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    expect(b.note).toMatch(/TRANSPORT ERROR/i);
+    expect(b.note).toMatch(/deployInFlight/);
+    // and it must disqualify the discriminator that caused the incident
+    expect(b.note).toMatch(/\bps\b/);
+  });
+
+  it('a duplicate-unit refusal from systemd is reported as the guard working, not as a maybe', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false }),
+    );
+    launchM.mockResolvedValue({
+      launched: false,
+      unit: 'papercup-auto-deploy',
+      mode: 'trigger',
+      argv: [],
+      logPath: '/tmp/x.log',
+      reason: 'systemd-run exited 1 (a deploy may already be in flight): Unit papercup-auto-deploy.service was already loaded',
+    });
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    expect(b.launched).toBe(false);
+    expect(b.note).toMatch(/already in flight/i);
+    expect(b.note).not.toMatch(/likely/i);
+    expect(b.note).toMatch(/deployInFlight/);
   });
 });
 
