@@ -87,11 +87,15 @@ import type { CoverageResult, SubstitutionPair } from '../types';
  * change with it rather than silently tracking a shared constant. The
  * `expectedVerdict` latch is what surfaces the divergence.
  */
-const PROBED_PORTS: Record<string, string> = {
+export const PROBED_PORTS: Record<string, string> = {
   '3070': 'operator',
   '3055': 'vite',
   '3350': 'scout',
   '3384': 'embed-sidecar',
+  // WI-6146 added this to HEALTH_ENDPOINTS; the model must follow or the audit
+  // scores against a tool that no longer exists. `service-model-drift.test.ts`
+  // is what forces that now — see the note on MODEL DRIFT below.
+  '3170': 'staging-api',
 };
 
 /**
@@ -99,10 +103,14 @@ const PROBED_PORTS: Record<string, string> = {
  * `services[]` probe that answers it. Note NONE of these is answered by the
  * `supervision[]` block — they are answered because something probes them.
  */
-const UNIT_TO_PROBE: Record<string, string> = {
+export const UNIT_TO_PROBE: Record<string, string> = {
   'papercup-dev-api': 'operator',
   'papercup-bg-host': 'bg-host-ticker',
   'papercup-embed-sidecar': 'embed-sidecar',
+  // WI-6146: staging-api is now genuinely probed (:3170), so `is-active
+  // papercup-staging-api` HAS a faithful tool expression. It moved out of
+  // SUPERVISED_BUT_UNPROBED below.
+  'papercup-staging-api': 'staging-api',
 };
 
 /**
@@ -111,8 +119,11 @@ const UNIT_TO_PROBE: Record<string, string> = {
  * answer and is not one. Separated from "unknown unit" in the failure reasons
  * because the remedy differs: these need a PROBE (P-013), not registration.
  */
-const SUPERVISED_BUT_UNPROBED = new Set([
-  'papercup-staging-api',
+export const SUPERVISED_BUT_UNPROBED = new Set([
+  // NOTE: `papercup-staging-api` used to head this list. WI-6146 gave it a real
+  // probe (:3170), so it now lives in UNIT_TO_PROBE instead. Its removal is the
+  // single largest coverage change this family has seen — staging-api was the
+  // most-asked-about unit in the corpus (34 is-active/status reads in 7d).
   'papercup-inference-gateway',
   'papercup-mcp-proxy',
   'papercup-live-federation-gate',

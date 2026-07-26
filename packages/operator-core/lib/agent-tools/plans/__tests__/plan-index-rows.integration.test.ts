@@ -1,0 +1,196 @@
+/**
+ * plan-index-rows.integration.test.ts — the invariant guard for migration 675.
+ *
+ * `harness_plans.content` is canonical; `plan_items` / `plan_decisions` are a
+ * DERIVED index recomputed on every write. The whole change rests on one
+ * property: those rows can never drift from what `deriveIndexFromContent`
+ * produces for the current `content`. This test is the recurrence guard for
+ * that property — it is what should fail if someone later adds a plan write
+ * path that forgets to maintain the index.
+ *
+ * It covers the cases that actually break derived indexes in practice:
+ *   - create populates rows
+ *   - an edit REPLACES rows (a status flip follows; a renamed id does not linger)
+ *   - REMOVING the last item clears rows (the delete-then-insert path — the one
+ *     an "upsert only" implementation silently gets wrong)
+ *   - ordering is preserved explicitly (`seq`), since a table is unordered
+ *   - deleting the plan cascades (no orphaned index rows)
+ *   - the rows agree with the jsonb column they replace
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type postgres from 'postgres';
+import { withPlanLock } from '../with-plan-lock';
+import { setupPlanPgFixture, registerHarnessProject, type PlanPgFixture } from './_pg-tool-fixture';
+
+const HARNESS = `zzz-planidx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const SLUG = 'plan-index-rows-probe';
+
+let fx: PlanPgFixture;
+let admin: postgres.Sql;
+let wsId: string;
+
+function body(opts: { items: string[]; decisions?: string[] }): string {
+  return `---
+title: plan index probe
+slug: ${SLUG}
+status: active
+created: 2026-07-26
+updated: 2026-07-26
+---
+
+# plan index probe
+
+## Now
+
+**State:** probing
+**Next:** probing
+
+## Phase 1 — probe
+
+${opts.items.join('\n')}
+
+## Decisions
+
+${(opts.decisions ?? []).join('\n\n')}
+`;
+}
+
+async function write(md: string): Promise<void> {
+  const res = await withPlanLock<{ ok: true }>(
+    null,
+    { slug: SLUG, intent: 'plan-index-rows test write', harnessSlug: HARNESS, workspaceId: wsId, ttlSec: 30 },
+    async () => ({ newBody: md, value: { ok: true } }),
+  );
+  expect(res.kind).toBe('applied');
+}
+
+async function itemRows(): Promise<Array<{ item_id: string; seq: number; status: string; item_text: string; blocked_by: string[] }>> {
+  return admin`
+    SELECT item_id, seq, status, item_text, blocked_by
+      FROM harness_shared.plan_items
+     WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+     ORDER BY seq
+  ` as unknown as Promise<Array<{ item_id: string; seq: number; status: string; item_text: string; blocked_by: string[] }>>;
+}
+
+beforeAll(async () => {
+  fx = await setupPlanPgFixture();
+  admin = fx.admin;
+  wsId = fx.workspaceId;
+  await registerHarnessProject(admin, wsId, HARNESS);
+});
+
+afterAll(async () => {
+  await admin`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS}`;
+  await fx.dispose();
+});
+
+describe('migration 675 — plan_items / plan_decisions stay in lockstep with content', () => {
+  it('populates rows on create, in document order', async () => {
+    await write(
+      body({
+        items: [
+          '- **P-001** `todo` first item',
+          '- **P-002** `wip` second item',
+          '- **P-003** `todo` third item',
+        ],
+        decisions: ['### D-001 — a decision\nDate: 2026-07-26\nthe body'],
+      }),
+    );
+
+    const rows = await itemRows();
+    expect(rows.map((r) => r.item_id)).toEqual(['P-001', 'P-002', 'P-003']);
+    // `seq` must be dense and ordered — a table has no implicit order, so if
+    // this regresses the UI silently reorders the plan.
+    expect(rows.map((r) => r.seq)).toEqual([0, 1, 2]);
+    expect(rows.find((r) => r.item_id === 'P-002')?.status).toBe('wip');
+
+    const decisions = await admin`
+      SELECT decision_id, seq, title FROM harness_shared.plan_decisions
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    expect(decisions.length).toBe(1);
+    expect(decisions[0].decision_id).toBe('D-001');
+  });
+
+  it('an edit REPLACES the rows rather than accumulating them', async () => {
+    await write(
+      body({
+        items: [
+          '- **P-001** `done` first item',
+          '- **P-002** `wip` second item',
+          '- **P-003** `todo` third item',
+        ],
+        decisions: ['### D-001 — a decision\nDate: 2026-07-26\nthe body'],
+      }),
+    );
+
+    const rows = await itemRows();
+    expect(rows.length).toBe(3);
+    expect(rows.find((r) => r.item_id === 'P-001')?.status).toBe('done');
+  });
+
+  it('REMOVING items deletes their rows — the case an upsert-only writer gets wrong', async () => {
+    await write(body({ items: ['- **P-001** `done` first item'] }));
+
+    const rows = await itemRows();
+    expect(rows.map((r) => r.item_id)).toEqual(['P-001']);
+
+    // and removing the LAST item must leave zero rows, not the previous set
+    await write(body({ items: [] }));
+    expect((await itemRows()).length).toBe(0);
+
+    const decisions = await admin`
+      SELECT count(*)::int AS n FROM harness_shared.plan_decisions
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    expect(decisions[0].n).toBe(0);
+  });
+
+  it('rows agree with the jsonb column they replace', async () => {
+    await write(
+      body({
+        items: [
+          '- **P-001** `todo` alpha',
+          '- **P-002** `blocked` beta',
+        ],
+      }),
+    );
+
+    const mismatches = await admin`
+      WITH expect AS (
+        SELECT e->>'id' AS item_id,
+               COALESCE(NULLIF(e->>'status',''),'todo') AS status,
+               COALESCE(e->>'text','') AS item_text
+          FROM harness_shared.harness_plans p,
+               LATERAL jsonb_array_elements(p.items) AS e
+         WHERE p.workspace_id = ${wsId} AND p.harness_slug = ${HARNESS} AND p.plan_slug = ${SLUG}
+      )
+      SELECT count(*)::int AS n
+        FROM expect x
+        FULL OUTER JOIN harness_shared.plan_items a
+          ON a.workspace_id = ${wsId} AND a.harness_slug = ${HARNESS}
+         AND a.plan_slug = ${SLUG} AND a.item_id = x.item_id
+       WHERE a.item_id IS NULL OR x.item_id IS NULL
+          OR a.status IS DISTINCT FROM x.status
+          OR a.item_text IS DISTINCT FROM x.item_text
+    `;
+    expect(mismatches[0].n).toBe(0);
+  });
+
+  it('deleting the plan cascades — no orphaned index rows', async () => {
+    expect((await itemRows()).length).toBeGreaterThan(0);
+
+    await admin`
+      DELETE FROM harness_shared.harness_plans
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+
+    expect((await itemRows()).length).toBe(0);
+    const decisions = await admin`
+      SELECT count(*)::int AS n FROM harness_shared.plan_decisions
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    expect(decisions[0].n).toBe(0);
+  });
+});

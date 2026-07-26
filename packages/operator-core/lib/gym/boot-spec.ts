@@ -139,6 +139,17 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // on every gym eval spawn. Blank it so eval agents always hand-shake THIS hermetic
     // instance (matching PAPERCUSP_POT_HOME_SLUG's seal above).
     PAPERCUSP_MCP_PROXY_BASE: '',
+    // WI-2604 root cause (1b), found 2026-07-26: the dev-box .env.local sets
+    // PAPERCUSP_OPERATOR_URL=http://localhost:3070/api/mcp (EI-286 leg (b)) and it
+    // leaks through the `...process.env` spread exactly like PAPERCUSP_MCP_PROXY_BASE
+    // above — dbos-invoke's this-host pin only applies when the var is UNSET, so
+    // every gym worker's .mcp.json handshook the LIVE :3070 operator, where
+    // role=worker rightly has zero capabilities (empty system_principals) and the
+    // throwaway harness doesn't exist. Result: 100% of gym runs 07-20→07-26
+    // terminal_state='escalated' with an empty diff — the workers could not write a
+    // byte, and the capability seeds (runner-ports.ts) never applied because the
+    // dispatch happened on the WRONG HOST. Pin it to THIS hermetic instance.
+    PAPERCUSP_OPERATOR_URL: `http://${cfg.bindHost ?? '127.0.0.1'}:${cfg.honoPort}/api/mcp`,
     PAPERCUSP_HONO_PORT: String(cfg.honoPort),
     PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',
     PAPERCUSP_WORKSPACE_ID: cfg.workspaceId,

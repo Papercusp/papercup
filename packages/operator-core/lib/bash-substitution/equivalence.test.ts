@@ -355,10 +355,27 @@ describe('service pattern boundaries', () => {
      * (P-013), the others need registration first.
      */
     it('does not cover a supervised-but-unprobed unit, and says why', () => {
-      const result = systemctlIsActive.cover('systemctl --user is-active papercup-staging-api.service');
+      // WI-6146 gave `papercup-staging-api` a real probe, so it is no longer an
+      // example of this class — see the covered-case assertion below. The
+      // inference gateway still is: supervised, never probed.
+      const result = systemctlIsActive.cover('systemctl --user is-active papercup-inference-gateway.service');
       expect(result.covered).toBe(false);
       expect(result.reason).toContain('SUPERVISED_PROCESSES');
       expect(result.reason).toContain('no up/down field');
+    });
+
+    /**
+     * WI-6146 / WI-6153. This assertion is the INVERSE of what stood here
+     * before: `papercup-staging-api` was the headline supervised-but-unprobed
+     * unit (34 is-active/status reads in the 7d corpus, more than any other),
+     * and P-013 item 1 gave it a probe. Kept as a regression guard so the
+     * coverage cannot silently disappear again if the endpoint is removed —
+     * pairs/service-model-drift.test.ts guards the same fact from the model side.
+     */
+    it('DOES cover staging-api now that :3170 is probed (was the headline gap)', () => {
+      const result = systemctlIsActive.cover('systemctl --user is-active papercup-staging-api.service');
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('staging-api');
     });
 
     it('does not cover a unit outside the registry entirely', () => {
@@ -390,17 +407,36 @@ describe('service pattern boundaries', () => {
     });
 
     /**
-     * The sharpest single finding in this family. `CLAUDE.md` tells every agent
-     * to verify a staging edit by restarting `:3170` and probing it — and
-     * `:3170` is not in `HEALTH_ENDPOINTS`, so the documented workflow has no
-     * tool form. 80 curl atoms went to bash because there was nowhere else.
+     * WAS the sharpest single finding in this family, and is now CLOSED —
+     * this assertion has been inverted deliberately (WI-6146 / WI-6153).
+     *
+     * `CLAUDE.md` tells every agent to verify a staging edit by restarting
+     * `:3170` and probing it. `:3170` was not in `HEALTH_ENDPOINTS`, so the
+     * documented workflow had no tool form and 80 curl atoms went to bash
+     * because there was nowhere else to go. P-013 item 1 added the probe.
+     *
+     * Kept (inverted) rather than deleted: the coverage is exactly what the
+     * pair's verdict and advisoryText now rest on, so it needs a guard.
      */
-    it('cannot answer for :3170, the staging operator the docs tell agents to probe', () => {
+    it('DOES answer for :3170 now that the staging operator is probed', () => {
       const result = curlHealthProbe.cover(
         'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:3170/api/health',
       );
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('staging-api');
+    });
+
+    /**
+     * The port-gap failure mode has NOT gone away — it moved. :8788 (inference
+     * gateway) is the live example, and it is why this pair does not simply
+     * become `equivalent` on the strength of :3170.
+     */
+    it('still cannot answer for a port it does not probe (:8788 gateway)', () => {
+      const result = curlHealthProbe.cover(
+        'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:8788/health',
+      );
       expect(result.covered).toBe(false);
-      expect(result.reason).toContain(':3170');
+      expect(result.reason).toContain(':8788');
     });
 
     it('cannot answer when the response BODY is what is wanted', () => {
