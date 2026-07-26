@@ -100,7 +100,14 @@ describe('blueprint:catalog — built-in tier', () => {
 
     const bench = byId(r, 'external-bench')!;
     expect(bench.retired?.retired).toBe(true);
-    expect(bench.retired?.at).toBe('2026-06-24');
+    // external-bench got its OWN retirement block on 2026-07-26 (owner decision,
+    // WI-5646) — deliberately a different date from coding-factory's above. It is
+    // retired because its PREMISE is gone (it was defined as a byte-for-byte mirror
+    // of the per-feature coding spine that was retired 2026-06-24), not merely
+    // because its parent was; the separate block is what stops it silently
+    // un-retiring if coding-factory is ever revived. 2026-06-24 here was the
+    // inherited parent date and is no longer what the catalog reports.
+    expect(bench.retired?.at).toBe('2026-07-26');
 
     // A non-retired blueprint carries no `retired` key at all.
     const research = byId(r, 'research')!;

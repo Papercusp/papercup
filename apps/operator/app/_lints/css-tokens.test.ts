@@ -47,6 +47,20 @@ const SOURCE_EXTENSIONS = ['.tsx', '.ts', '.css'] as const;
 const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
   // Radix Select sets this on its trigger to match listbox to trigger width.
   '--radix-select-trigger-width',
+  // Radix Popover's positioner publishes these on the content element: the
+  // trigger's width, and how much room is actually left beside/below it before
+  // the viewport edge. harness/Combobox.tsx's panel uses the width to never be
+  // narrower than the control it drops from, and the available-height to bound
+  // its scroll container to the space genuinely on screen — the P-006 fix in
+  // `hud-session-launcher-and-board-tabs-2026-07-26` (a plan list that ran off
+  // the bottom with no scrollbar).
+  '--radix-popover-trigger-width',
+  '--radix-popover-content-available-width',
+  '--radix-popover-content-available-height',
+  // harness/Combobox.tsx passes its `maxListHeight` prop down as an inline
+  // custom property on the popover content, so the caller's ceiling and the
+  // Radix-measured available height can be min()'d together in CSS.
+  '--h-combobox-max-list',
   // Operator chat sidebar drives a custom width var on body for chrome offset.
   '--op-chat-w',
   // Layout rails measure themselves in JS and write the current width on <html>.

@@ -224,6 +224,12 @@ export async function runHygieneSweep(
     void import('../../sync-sse')
       .then((m) => m.notifySyncInvalidate('learning.improvements'))
       .catch(() => {});
+    // Push-on-write for the Health tab's improvements panel
+    // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —
+    // same lazy fire-and-forget discipline as the invalidate above.
+    void import('../../system-health/compute')
+      .then((m) => m.refreshHealthPanel('improvements'))
+      .catch(() => {});
   }
   return result;
 }
@@ -330,6 +336,12 @@ export async function runObservationRetention(
   // The Observations pane reads `learning.observations`; nudge it after a prune.
   void import('../../sync-sse')
     .then((m) => m.notifySyncInvalidate('learning.observations'))
+    .catch(() => {});
+  // Push-on-write for the Health tab's observations panel
+  // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —
+  // same lazy fire-and-forget discipline as the invalidate above.
+  void import('../../system-health/compute')
+    .then((m) => m.refreshHealthPanel('observations'))
     .catch(() => {});
   return result;
 }

@@ -36,6 +36,20 @@ function genId(): string {
   return `tw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Push-on-write for the Health tab's autonomy panel
+ * (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007):
+ * every tripwire status flip changes the armed/tripped/reverted counts that
+ * panel shows. Lazy import so this store stays decoupled from the sync/health
+ * layers (same fire-and-forget discipline as improvements/capture-core.ts) — a
+ * cold health cache makes this a safe no-op.
+ */
+function refreshAutonomyHealthPanel(workspaceId: string): void {
+  void import('../../system-health/compute')
+    .then((m) => m.refreshHealthPanel('autonomy', workspaceId))
+    .catch(() => {});
+}
+
 function toMs(v: Date | string | null): number {
   if (v == null) return 0;
   return v instanceof Date ? v.getTime() : new Date(v).getTime();
@@ -125,6 +139,7 @@ export async function insertTripwire(
               ${JSON.stringify(arming.decision)}::text::jsonb,
               ${arming.decisionId ?? null},
               'armed', ${new Date(arming.armedAtMs)}, ${new Date(arming.windowUntilMs)})`;
+    refreshAutonomyHealthPanel(workspaceId);
     return id;
   } catch (err) {
     if (isMissingTable(err)) {
@@ -181,6 +196,7 @@ export async function markTripwireCleared(
     UPDATE harness_shared.autonomy_tripwires
        SET status = 'cleared', resolved_at = ${new Date(nowMs)}, resolved_by = ${resolvedBy}
      WHERE workspace_id = ${workspaceId} AND id = ${id} AND status = 'armed'`;
+  refreshAutonomyHealthPanel(workspaceId);
 }
 
 /** Flip an armed row to tripped (records which signal). CAS on status='armed'. */
@@ -197,6 +213,7 @@ export async function markTripwireTripped(
        SET status = 'tripped', trip_reason = ${reason},
            resolved_at = ${new Date(nowMs)}, resolved_by = ${resolvedBy}
      WHERE workspace_id = ${workspaceId} AND id = ${id} AND status = 'armed'`;
+  refreshAutonomyHealthPanel(workspaceId);
 }
 
 /** Flip a tripped row to reverted (the auto-revert executed). CAS on status='tripped'. */
@@ -210,6 +227,7 @@ export async function markTripwireReverted(
     UPDATE harness_shared.autonomy_tripwires
        SET status = 'reverted', reverted_at = ${new Date(nowMs)}
      WHERE workspace_id = ${workspaceId} AND id = ${id} AND status = 'tripped'`;
+  refreshAutonomyHealthPanel(workspaceId);
 }
 
 /**

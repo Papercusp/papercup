@@ -191,6 +191,15 @@ export async function setAutonomyPolicy(
     ...(input.reason ? { reason: input.reason } : {}),
   });
 
+  // Push-on-write for the Health tab's autonomy panel
+  // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007).
+  // Lazy import so this store stays decoupled from the sync/health layers (the
+  // same fire-and-forget discipline as the improvements-lane capture/decay/
+  // triage/hygiene writes) — a cold health cache makes this a safe no-op.
+  void import('../system-health/compute')
+    .then((m) => m.refreshHealthPanel('autonomy', workspaceId))
+    .catch(() => {});
+
   return { category, ceiling, locked, graduatedLevel, thresholdOverrides, ownerOverride };
 }
 

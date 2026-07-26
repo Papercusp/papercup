@@ -23,23 +23,64 @@
  * is the IO seam — ONE batch query keyed by the roster's ownerIds, the same
  * per-owner enrichment shape as `fetchPresenceFleet` / `fetchWakeability`, so
  * enriching N agents is a constant read, not N.
+ *
+ * STALENESS (EI-18729596985129261): `contextTokens`/`compactionLimit` are cached
+ * on `coord_presence` by the compaction-compliance watchdog on a 2-MINUTE cadence
+ * (compaction-compliance-watchdog.ts), NOT the per-turn hot path — a session's own
+ * ambient `context: N/L (X%)` injection is computed fresh every turn and can
+ * disagree with this cached bucket for up to a sweep interval, MORE under host
+ * load (a delayed/skipped sweep leaves the cache reflecting an arbitrarily older
+ * snapshot — observed live: a fleet member's `coord:orient` row read "critical"
+ * moments after its own live gauge read 12%). The watchdog already stamps
+ * `context_estimated_at` alongside `context_tokens` for exactly this reason, but
+ * that timestamp went unread here — so a badly-stale cached reading was reported
+ * with the SAME confidence as a fresh one. `deriveContextPressure` now takes the
+ * estimate's age and degrades a stale reading to `null` (honest "unknown", the
+ * same non-coercing contract as a missing estimate) rather than asserting a
+ * bucket a caller could act on (a leader benching a member, an agent
+ * self-compacting) against data that may no longer be true.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { contextGaugeBand, contextUsagePct } from './tools/inbox-context-usage';
 
 export type ContextPressureBucket = 'ok' | 'high' | 'critical';
 
+/** How stale a cached (contextTokens, compactionLimit) estimate may be before it
+ *  is no longer trustworthy enough to assert a bucket from. Several multiples of
+ *  the watchdog's own 2-minute sweep cadence (compaction-compliance-watchdog.ts'
+ *  DEFAULT_INTERVAL_MS) so a normally-delayed sweep under host load doesn't
+ *  false-negative a genuinely fresh reading — only a reading old enough that the
+ *  watchdog has very likely skipped multiple sweeps (or the owner rotated
+ *  sessions since) is discarded. Not imported from the watchdog module directly
+ *  to avoid pulling its DB/scheduler wiring into this pure, unit-tested file. */
+export const CONTEXT_ESTIMATE_STALE_MS = 15 * 60_000; // 15 min
+
 /**
- * PURE: reduce (contextTokens, compactionLimit) to the coarse 3-state bucket.
- * null when usage can't be computed (no limit set / no estimate yet) — an
- * honest "unknown", never defaulted to 'ok'.
+ * PURE: reduce (contextTokens, compactionLimit, estimatedAt) to the coarse
+ * 3-state bucket. null when usage can't be computed (no limit set / no estimate
+ * yet), OR when the estimate is stale beyond {@link CONTEXT_ESTIMATE_STALE_MS} —
+ * an honest "unknown" either way, never defaulted to 'ok' and never asserted
+ * from data that may no longer reflect the session's real usage.
+ *
+ * `estimatedAt` is OPTIONAL and defaults to "unknown age" (no staleness check) —
+ * a caller that doesn't carry `context_estimated_at` gets today's behavior
+ * unchanged; only callers that DO thread it through get the staleness guard.
+ * `now` is injectable for deterministic tests.
  */
 export function deriveContextPressure(
   contextTokens: number | null | undefined,
   compactionLimit: number | null | undefined,
+  estimatedAt?: string | number | Date | null,
+  now: number = Date.now(),
 ): ContextPressureBucket | null {
   const pct = contextUsagePct(contextTokens, compactionLimit);
   if (pct == null) return null;
+  if (estimatedAt != null) {
+    const estimatedAtMs = estimatedAt instanceof Date ? estimatedAt.getTime() : new Date(estimatedAt).getTime();
+    // An unparseable timestamp is a data bug, not evidence of freshness — treat
+    // it the same as "too stale to trust" rather than silently ignoring it.
+    if (!Number.isFinite(estimatedAtMs) || now - estimatedAtMs > CONTEXT_ESTIMATE_STALE_MS) return null;
+  }
   const band = contextGaugeBand(pct);
   if (band == null || band === 'quiet') return 'ok'; // below LOUD — not yet actionable pressure
   if (band === 'loud') return 'high';
@@ -49,9 +90,10 @@ export function deriveContextPressure(
 /**
  * IO seam: batch-read context pressure for a set of ownerIds. ownerIds should be
  * the LOCAL roster (a federated `fed:…` id never matches a local coord_presence
- * row, so passing them just wastes a comparison). Only owners with a resolvable
- * bucket (a non-null derivation) come back — an untracked owner is simply absent
- * from the map, mirroring `fetchPresenceFleet`'s "absent ⇒ default" contract.
+ * row, so passing them just wastes a comparison). Only owners with a resolvable,
+ * non-stale bucket (a non-null derivation) come back — an untracked OR stale
+ * owner is simply absent from the map, mirroring `fetchPresenceFleet`'s
+ * "absent ⇒ default" contract.
  */
 export async function fetchContextPressure(
   ownerIds: string[],
@@ -59,13 +101,15 @@ export async function fetchContextPressure(
   const out = new Map<string, ContextPressureBucket>();
   if (ownerIds.length === 0) return out;
   const { sql } = getOrgPg();
-  const rows = await sql<{ owner_id: string; context_tokens: number | null; compaction_limit: number | null }[]>`
-    SELECT owner_id, context_tokens, compaction_limit
+  const rows = await sql<
+    { owner_id: string; context_tokens: number | null; compaction_limit: number | null; context_estimated_at: string | null }[]
+  >`
+    SELECT owner_id, context_tokens, compaction_limit, context_estimated_at
       FROM harness_shared.coord_presence
      WHERE owner_id = ANY(${ownerIds}::text[])
   `;
   for (const r of rows) {
-    const bucket = deriveContextPressure(r.context_tokens, r.compaction_limit);
+    const bucket = deriveContextPressure(r.context_tokens, r.compaction_limit, r.context_estimated_at);
     if (bucket != null) out.set(r.owner_id, bucket);
   }
   return out;

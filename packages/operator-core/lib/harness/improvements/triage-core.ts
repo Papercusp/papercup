@@ -210,6 +210,12 @@ export async function applyTriageDecision(
   void import('../../sync-sse')
     .then((m) => m.notifySyncInvalidate('learning.improvements'))
     .catch(() => {});
+  // Push-on-write for the Health tab's improvements panel
+  // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007) —
+  // same lazy fire-and-forget discipline as the invalidate above.
+  void import('../../system-health/compute')
+    .then((m) => m.refreshHealthPanel('improvements'))
+    .catch(() => {});
 
   return { ok: true, id: input.id, decision, lifecycle, closed, ...(evidenceDowngrade ? { evidenceDowngrade } : {}) };
 }

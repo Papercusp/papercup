@@ -356,8 +356,8 @@ import './plugins/invoke_action';
 import './plugins/fire_event';
 import './plugins/tui_panes';
 import './tasks/create';
-import './messages/send';
-import './messages/dismiss';
+// messages:send / messages:dismiss RETIRED 2026-07-26 (P-008, owner-directed)
+// → _retired/work-item-mail/. coord:send absorbed the job at ~400x the volume.
 import './agent_chats/list';
 import './agent_chats/get';
 import './agent_chats/create';

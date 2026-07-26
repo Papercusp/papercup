@@ -566,6 +566,14 @@ export async function captureImprovement(
   void import('../../sync-sse')
     .then((m) => m.notifySyncInvalidate(isObservation ? 'learning.observations' : 'learning.improvements'))
     .catch(() => {});
+  // Push-on-write for the Health tab's observations/improvements panels
+  // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007):
+  // refresh the cached panel now instead of waiting up to 30s for the next
+  // health tick to notice this write. Same lazy fire-and-forget discipline —
+  // a cold health cache (or the flag off) makes this a safe no-op.
+  void import('../../system-health/compute')
+    .then((m) => m.refreshHealthPanel(isObservation ? 'observations' : 'improvements'))
+    .catch(() => {});
   // Calibration bet on flake-shaped signals (frontier P-041 / FB-13): filing a
   // flake IS the natural moment to bet on its recurrence. Same lazy
   // fire-and-forget discipline as above (the seam is flag-gated + never-throw
