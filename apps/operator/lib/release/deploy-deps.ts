@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { guardResource } from '@papercusp/operator-core/lib/agent-tools/locks/resource-lock-guard';
-import { lockCoordinationDomain } from '@papercusp/operator-core/lib/agent-tools/locks/coordination-domain';
+import { lockCoordinationDomain, hostGlobalLockDomain } from '@papercusp/operator-core/lib/agent-tools/locks/coordination-domain';
 import { sendMessage } from '@papercusp/operator-core/lib/agent-tools/coordination/messages';
 import type { AgentIdentity } from '@papercusp/operator-core/lib/agent-tools/coordination/identity';
 import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
@@ -111,7 +111,14 @@ export async function realRunUnderDeployLock<T>(
   const id = deployIdentity();
   const outcome = await guardResource(
     {
-      coordinationDomain: lockCoordinationDomain(),
+      // EI-18674647773291145 Defect 2: 'release-deploy' is host-global (there is
+      // one shared release checkout) — it must NOT be keyed by whichever tree
+      // this process's code happened to load from (lockCoordinationDomain()),
+      // or a manual deploy-cli run from the staging tree fails to serialize
+      // against the operator's own :3070 process (which loads from
+      // papercup-release) and locks:list run from a third tree falsely reports
+      // no holders. See hostGlobalLockDomain()'s doc comment.
+      coordinationDomain: hostGlobalLockDomain(),
       ownerId: id.ownerId,
       ownerLabel: id.ownerLabel,
       coordIdentity: id,

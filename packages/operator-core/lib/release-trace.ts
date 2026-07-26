@@ -264,11 +264,12 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
       // 2026-07-26 three agents ran the identical diagnosis within 15 minutes. When the
       // system already knows a live fixer holds THIS signature, wait for its verdict instead
       // of opening a parallel investigation of it.
-      if (gate.redOwner?.covered) {
+      const redOwner = gate.redOwner;
+      if (redOwner?.covered) {
         return {
           name: 'checkpoint:await',
           args: { pipeline, candidateSha: targetSha },
-          reason: `${gate.redOwner.label} Await this red's outcome rather than opening a second diagnosis of it.`,
+          reason: `${redOwner.label} Await this red's outcome rather than opening a second diagnosis of it.`,
         };
       }
       return {

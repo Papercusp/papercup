@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
+import { hostGlobalLockDomain, HOST_GLOBAL_RESOURCES } from './coordination-domain';
 import {
   getTxPool,
   getResource,
@@ -70,25 +71,41 @@ export default defineTool({
     trimmed: (data) => shapeLocksList(data, 'trimmed'),
   },
   async handler(args, ctx) {
-    const { coordinationDomain } = readIdentity(ctx);
+    const { coordinationDomain: callerDomain } = readIdentity(ctx);
     const pool = getTxPool();
 
     const registry = args.resource
       ? [await getResource(pool, args.resource)].filter((r): r is ResourceRegistryRow => r !== null)
       : await listResources(pool);
 
-    const queue = await readResourceQueue(pool, {
-      coordinationDomain,
-      resource: args.resource,
-    });
+    // EI-18674647773291145 Defect 2: a host-global resource (e.g. 'release-deploy')
+    // is acquired under hostGlobalLockDomain(), NOT the caller-tree-scoped domain
+    // readIdentity resolves — querying only the caller's domain here is exactly what
+    // produced a false `holders: []` for a lock provably held elsewhere. When the
+    // caller scoped the query to one such resource, follow it into its real domain;
+    // when unscoped (listing everything), query BOTH domains and merge so an
+    // unscoped `locks:list` can never silently omit a host-global resource's
+    // holders just because the caller happens to be running from a different tree.
+    const hgDomain = hostGlobalLockDomain();
+    const domains = args.resource
+      ? [HOST_GLOBAL_RESOURCES.has(args.resource) ? hgDomain : callerDomain]
+      : callerDomain === hgDomain
+        ? [callerDomain]
+        : [callerDomain, hgDomain];
+
+    const queues = await Promise.all(
+      domains.map((coordinationDomain) => readResourceQueue(pool, { coordinationDomain, resource: args.resource })),
+    );
+    const holders = queues.flatMap((q) => q.holders);
+    const draining = queues.some((q) => q.draining);
 
     // {data} envelope so the payload-tier shapers apply.
     return {
       data: {
         ok: true,
         resources: registry.map(registryJson),
-        holders: queue.holders.map(holderJson),
-        draining: queue.draining,
+        holders: holders.map(holderJson),
+        draining,
       },
     };
   },

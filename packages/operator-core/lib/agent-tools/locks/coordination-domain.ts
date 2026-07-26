@@ -79,3 +79,40 @@ export function lockCoordinationDomain(): string {
 export function __resetLockCoordinationDomain(): void {
   _domain = null;
 }
+
+/**
+ * EI-18674647773291145 (Defect 2): the FIXED domain for genuinely HOST-GLOBAL
+ * resources — ones that name a single shared subsystem on this host (e.g. the
+ * one shared release checkout `release-deploy` guards) rather than a physical
+ * file tree. `lockCoordinationDomain()` above is deliberately keyed by the
+ * CALLER's own repo root (correct for file-locking, D-015) — but that means a
+ * host-global resource acquired from two DIFFERENT physical checkouts of the
+ * same logical repo (e.g. the release checkout vs the staging/integration
+ * tree deploy-cli is often run from manually) silently lands in two different
+ * domains: the single-flight guarantee the resource exists for stops holding
+ * across trees, and any diagnostic (`locks:list`) run from yet another tree
+ * reports "no holders" for a lock that is genuinely held elsewhere (observed
+ * live 2026-07-26: `locks:list { resource: 'release-deploy' }` returned
+ * `holders: []` while a lock row provably existed). A resource that means
+ * "this one host-wide subsystem" must resolve to the SAME domain regardless
+ * of which tree loaded the calling code. `PAPERCUSP_LOCK_DOMAIN` still
+ * overrides, same as `lockCoordinationDomain()` (tests / no-repo builds).
+ */
+export function hostGlobalLockDomain(): string {
+  const override = process.env.PAPERCUSP_LOCK_DOMAIN;
+  if (override && override.trim()) return override.trim();
+  return 'papercusp-host-global';
+}
+
+/**
+ * Resource names whose acquirers use {@link hostGlobalLockDomain} instead of
+ * {@link lockCoordinationDomain} — kept as a single source of truth so a
+ * diagnostic reader (`locks:list`) can resolve the SAME fixed domain a
+ * host-global acquirer used. Currently just `release-deploy` (EI-18674647773291145
+ * Defect 2's concrete incident); `dev-server` has the identical cross-tree
+ * defect but is deliberately NOT included here yet — it has more call sites
+ * (dev:restart, system-health) that need their own dedicated review before
+ * migrating, tracked separately so this fix stays narrowly scoped to the
+ * incident it closes.
+ */
+export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set(['release-deploy']);

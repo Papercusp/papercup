@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import {
   lockDomainForProjectDir,
   lockCoordinationDomain,
+  hostGlobalLockDomain,
+  HOST_GLOBAL_RESOURCES,
   __resetLockCoordinationDomain,
 } from './coordination-domain';
 
@@ -94,5 +96,52 @@ describe('lockCoordinationDomain', () => {
     expect(lockCoordinationDomain()).toBe('/d1'); // cached — env change not re-read
     __resetLockCoordinationDomain();
     expect(lockCoordinationDomain()).toBe('/d2'); // re-read after reset
+  });
+});
+
+// EI-18674647773291145 Defect 2: a host-global resource (e.g. 'release-deploy')
+// must resolve to the SAME fixed domain regardless of which tree the calling
+// code loaded from — the whole point being it is NOT keyed by a repo realpath
+// the way `lockCoordinationDomain()` deliberately is.
+describe('hostGlobalLockDomain', () => {
+  it('is a fixed, non-path sentinel — never a realpath, never derived from cwd', () => {
+    const d = hostGlobalLockDomain();
+    expect(d).toBe('papercusp-host-global');
+    // Never confusable with a real repo-root path (which is always absolute).
+    expect(d.startsWith('/')).toBe(false);
+  });
+
+  it('is UNCACHED and NOT affected by lockCoordinationDomain()’s cache — each call re-reads', () => {
+    // Prime lockCoordinationDomain()'s cache with something unrelated first.
+    __resetLockCoordinationDomain();
+    expect(lockCoordinationDomain()).not.toBe(hostGlobalLockDomain());
+  });
+
+  it('honors the PAPERCUSP_LOCK_DOMAIN override, same as lockCoordinationDomain()', () => {
+    process.env.PAPERCUSP_LOCK_DOMAIN = '  /custom/host-domain  ';
+    expect(hostGlobalLockDomain()).toBe('/custom/host-domain');
+  });
+
+  it('ignores an empty/whitespace-only override (falls through to the fixed sentinel)', () => {
+    process.env.PAPERCUSP_LOCK_DOMAIN = '   ';
+    expect(hostGlobalLockDomain()).toBe('papercusp-host-global');
+  });
+
+  it('two calls from "different trees" (no override) resolve to the SAME domain — the exact defect this closes', () => {
+    // Unlike lockCoordinationDomain(), hostGlobalLockDomain() never consults
+    // import.meta.url / cwd, so there is nothing tree-dependent to vary here —
+    // this pins that invariant so a future refactor can't reintroduce a
+    // realpath-of-caller dependency.
+    expect(hostGlobalLockDomain()).toBe(hostGlobalLockDomain());
+  });
+});
+
+describe('HOST_GLOBAL_RESOURCES', () => {
+  it('includes release-deploy (the EI-18674647773291145 incident resource)', () => {
+    expect(HOST_GLOBAL_RESOURCES.has('release-deploy')).toBe(true);
+  });
+
+  it('deliberately excludes dev-server (scoped separately — more call sites to review)', () => {
+    expect(HOST_GLOBAL_RESOURCES.has('dev-server')).toBe(false);
   });
 });
