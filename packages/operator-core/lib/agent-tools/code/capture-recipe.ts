@@ -26,6 +26,7 @@ import {
   type CodeRecipeRow,
 } from '../../code-recipes-store';
 import { searchSimilarRecipes, type SimilarRecipe } from '../../code-recipes-search';
+import { resolveLearningPotSlug } from '../../learning/pot-scope';
 import {
   deriveRecipeAuthority,
   recipeAuthorityContextFromDescriptor,
@@ -204,9 +205,14 @@ export async function captureRecipe(
     // P-003 collision-fix: explicit title ⇒ slug; auto-derived ⇒ slug+scriptHash.
     const id = recipeId(title, description, input.script, { title: input.title });
 
-    const potSlug = input.harness
-      ? await deps.resolveHive(input.workspaceId, input.harness).catch(() => null)
-      : null;
+    // P-002 (pot-scope-all-learnings): the shared resolution order — explicit →
+    // harness's owning pot → the harness itself when it IS a hive home → env home
+    // pot → null. deps.resolveHive stays the injected registry-read step.
+    const potSlug = await resolveLearningPotSlug({
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harness,
+      resolveHive: deps.resolveHive,
+    });
 
     // Compute the embedding ONCE and reuse it for both dedup + the upsert.
     const embedding = await deps.embed(`${title}\n${description}`).catch(() => null);
@@ -252,6 +258,7 @@ export async function captureRecipe(
       toolsUsed,
       embedding,
       createdBy: input.ownerId,
+      potSlug,
     });
 
     await recordRecipeRun(deps.sql, {

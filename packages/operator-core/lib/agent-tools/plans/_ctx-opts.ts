@@ -22,7 +22,7 @@
  * this in becomes async (most read tool handlers already are).
  */
 
-import { type PlanSourceOpts } from './source';
+import { resolvePlanScope, type PlanSourceOpts } from './source';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 export interface CtxHarnessOpts extends PlanSourceOpts {
@@ -90,4 +90,42 @@ export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts>
     return { harnessSlug: home };
   }
   return { harnessSlug: raw };
+}
+
+/**
+ * Resolve the `(workspace_id, harness_slug)` key an operational
+ * `harness_shared.harness_plans` WRITE must use — the SAME resolution the
+ * READERS perform, from the SAME resolver.
+ *
+ * ⚠ Use this in every harness_plans writer. Do NOT re-derive the tenant with
+ * `activeWorkspaceId()` (or a `DEFAULT_WORKSPACE_ID` literal), and do NOT key
+ * on the raw ctx slug. That is a bug class this repo has now shipped THREE
+ * generations of (WI-5125 / EI-16183 / WI-5825), each time because a writer
+ * resolved its key on a second path that could disagree with the reader's:
+ *
+ *   gen 1 — a hardcoded `DEFAULT_WORKSPACE_ID`: matched ZERO rows for every
+ *           real tenant (plans live in 'papercusp-workspace', not 'default').
+ *   gen 2 — `activeWorkspaceId()`: the AMBIENT workspace (request-ALS → env →
+ *           registry default), which is only right when the caller happens to
+ *           be inside a browser request whose workspace matches the harness's
+ *           REGISTERED one. Any agent-side tool call outside that ALS scope,
+ *           or a different workspace being "current", keys a different row.
+ *   gen 3 — the raw ctx harness slug: `resolvePlanScope` collapses a MEMBER
+ *           harness to its Hive home (plans are Hive-scoped), so a writer that
+ *           skips the collapse keys a row the reader never looks at.
+ *
+ * `resolvePlanScope` is the one authority: it resolves the workspace from
+ * `harness_shared.projects` then the harness registry, THROWS rather than
+ * silently defaulting when neither knows the harness, and applies the Hive-home
+ * collapse. Passing its output through for BOTH the `withWorkspace()` scope and
+ * the SQL WHERE clause removes the second, disagreeing resolution path entirely
+ * — the same repair already applied to `clearStartedForTerminalPlan`.
+ *
+ * Callers that already hold a resolved scope (e.g. `withPlanLock`'s returned
+ * `result.scope`) should thread THAT through instead of calling this again.
+ */
+export async function resolvePlanWriteScope(
+  ctx: unknown,
+): Promise<{ workspaceId: string; harnessSlug: string }> {
+  return resolvePlanScope(await ctxToPlanSourceOpts(ctx));
 }

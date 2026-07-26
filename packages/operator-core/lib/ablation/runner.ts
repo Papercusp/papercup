@@ -49,6 +49,7 @@ import {
   type ScenarioArmOutcome,
 } from './scoring';
 import { insertAblationRun, lastAblatedAtByRule, type InsertAblationRunInput } from './store';
+import { resolveLearningPotSlug } from '../learning/pot-scope';
 
 /** The repo-relative playbook identity recorded on every run row. */
 export const SU_PLAYBOOK_REPO_PATH = 'apps/operator/prompts/papercusp-su-engineer.tools.md';
@@ -281,6 +282,9 @@ export async function runAblationCycle(
   );
 
   const excerpt = `${rule.lead} — ${rule.text.replace(/\s+/g, ' ').slice(0, 200)}`;
+  // P-002 pot-scope: a playbook ablation has no harness grain — it scopes to the
+  // process's home pot (env), or null for a genuinely pot-less host (D-002).
+  const potSlug = await resolveLearningPotSlug({ workspaceId: cfg.workspaceId });
   const runRowId = await insertRun({
     workspaceId: cfg.workspaceId,
     startedAtMs,
@@ -307,6 +311,7 @@ export async function runAblationCycle(
       ruleSpan: { startLine: rule.startLine, endLine: rule.endLine, section: rule.sectionHeading },
     },
     replayLeg,
+    potSlug,
   });
 
   log(

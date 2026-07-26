@@ -64,6 +64,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
 
     // ── HOT multi-tool, broadly-reused recipe — should rank TOP of promote. ──────
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'triage-and-block-stale',
       title: 'Triage and block stale work-items',
       description: 'list open work-items, then mark the stale ones blocked',
@@ -78,6 +79,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
 
     // ── A 1-tool wrapper — TRIVIAL, must be EXCLUDED as redundant. ───────────────
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'just-list-plans',
       title: 'List the plans',
       description: 'just call plans list',
@@ -92,6 +94,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
 
     // ── A solo, low-reuse multi-tool recipe — present but should rank below hot. ──
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'deploy-and-announce',
       title: 'Deploy and announce',
       description: 'deploy the harness then post to coord',
@@ -107,6 +110,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     // ── A near-duplicate PAIR (identical text + tools) — the MERGE cluster. ──────
     for (const id of ['summarize-feedback-a', 'summarize-feedback-b']) {
       await upsertRecipe(db.adminSql, {
+      potSlug: null,
         id,
         title: 'Summarize the feedback queue',
         description: 'read the feedback queue and produce a digest',
@@ -154,6 +158,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     const ws = 'ws-cand-floor';
     const hive = 'alpha';
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'rarely-run',
       title: 'Rarely run multi-tool recipe',
       description: 'a multi-tool recipe run only once',
@@ -170,6 +175,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
   it('uses the global recipe corpus across hives', async () => {
     const ws = 'ws-cand-hive';
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'alpha-only',
       title: 'Alpha multi-tool recipe',
       description: 'two-tool recipe in alpha',
@@ -178,6 +184,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       embedding: seededEmbedding(15),
     });
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'beta-only',
       title: 'Beta multi-tool recipe',
       description: 'two-tool recipe in beta',
@@ -197,6 +204,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     const ws = 'ws-cand-success';
     const hive = 'alpha';
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'stable-recipe',
       title: 'Stable two-tool recipe',
       description: 'reliable',
@@ -205,6 +213,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       embedding: seededEmbedding(31),
     });
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'flaky-recipe',
       title: 'Flaky two-tool recipe',
       description: 'unreliable',
@@ -231,6 +240,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
     // over PROMOTE_THRESHOLD (≈0.528 > 0.45), but with zero reuse breadth it must NOT
     // promote — the reuse floor (≥2 distinct agents OR ≥3 runs) is what holds it back.
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'one-off-three-tool',
       title: 'One-off three-tool recipe',
       description: 'three tools, run once by one agent',

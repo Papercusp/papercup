@@ -27,6 +27,10 @@ export interface RecordPredictionInput {
   /** The filed signal's stable identity (flake-recurrence probes re-captures on it). */
   watchdogKey?: string;
   workspaceId?: string;
+  /** The pot the predictor works under (P-002 pot-scope-all-learnings) — wins outright when set. */
+  potSlug?: string | null;
+  /** The harness the bet was made under; resolved to its owning pot when no explicit potSlug. */
+  harnessSlug?: string | null;
 }
 
 export interface RecordPredictionOutcome {
@@ -94,8 +98,22 @@ export async function recordPrediction(
       d.nowMs() + (input.horizonDays ?? defaults.horizonDays) * DAY_MS,
     ).toISOString();
     const sql = await d.getSql();
+    const workspaceId = input.workspaceId ?? (await d.workspaceId());
+    // P-002 (pot-scope-all-learnings): stamp the predictor's pot at write time.
+    // Lazy import mirrors the flag/PG imports above — a flag-off unit test never
+    // touches the resolver; failures degrade to null (a bet must never be lost
+    // to a scope lookup).
+    const potSlug = await import('../learning/pot-scope')
+      .then((m) =>
+        m.resolveLearningPotSlug({
+          workspaceId,
+          potSlug: input.potSlug ?? null,
+          harnessSlug: input.harnessSlug ?? null,
+        }),
+      )
+      .catch(() => null);
     const res = await d.insert(sql, {
-      workspaceId: input.workspaceId ?? (await d.workspaceId()),
+      workspaceId,
       predictor: input.predictor,
       domain: input.domain,
       subjectKind: input.subjectKind,
@@ -106,6 +124,7 @@ export async function recordPrediction(
       origin: input.origin ?? DEFAULT_SIGNAL_ORIGIN,
       watchdogKey: input.watchdogKey ?? null,
       horizonTs,
+      potSlug,
     });
     return res.created ? { recorded: true } : { recorded: false, reason: 'duplicate-open-bet' };
   } catch (e) {

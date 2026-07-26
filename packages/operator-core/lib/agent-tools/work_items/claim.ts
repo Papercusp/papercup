@@ -27,6 +27,7 @@ import {
   notifyFleetScopeRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 interface ClaimItem {
   id: string;

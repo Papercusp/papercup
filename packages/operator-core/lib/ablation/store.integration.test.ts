@@ -56,6 +56,7 @@ function input(over: Partial<InsertAblationRunInput> = {}): InsertAblationRunInp
     costUsd: 2.4,
     ledgerContext: [{ source: 'repo-scan', target: 'apps/operator/prompts/papercusp-su-engineer.tools.md' }],
     detail: { scenarios: [{ scenarioId: 's1', baseline: { passRate: 1 }, ablated: { passRate: 1 } }] },
+    potSlug: 'test-pot',
     ...over,
   };
 }

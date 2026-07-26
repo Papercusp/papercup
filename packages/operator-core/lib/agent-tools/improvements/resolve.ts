@@ -83,6 +83,7 @@ export default defineTool({
             subjectKind: 'improvement',
             subjectId: args.id,
             claim: `fix for ${args.id} survives the horizon (no reopen/re-capture)`,
+            harnessSlug: ctx.harnessSlug ?? null,
             ...(confidence !== undefined ? { probability: confidence } : {}),
           }),
         )

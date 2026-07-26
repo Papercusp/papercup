@@ -768,6 +768,17 @@ async function resolveFleetInfoByOwner(
  * because that is the one that has been costing time. DISTINCT ON does the pick
  * in the database rather than shipping every await to the caller.
  *
+ * ⚠ The `coord:inbox-wake:<self>` exclusion is LOAD-BEARING, not a tidy-up.
+ * Every agent carries a permanently-armed inbox-wake row (migration 183 /
+ * inbox-wake-arm.ts arms it at SessionStart, one per agent, re-upserted for
+ * life). It means "I am reachable by a wake" — the OPPOSITE of blocked.
+ * Measured on this box while building /adv/HUD: 126 of 139 open awaits were
+ * inbox-wakes, one per live agent, versus 13 genuine work gates. Counting them
+ * would have put ~93% of sessions in the Blocked column, which does not just
+ * add noise — it destroys the column, because a signal that fires for almost
+ * everyone tells you nothing about anyone. Any future filtering here must keep
+ * this predicate.
+ *
  * Best-effort by design: a read failure yields an empty map, so the Blocked
  * column degrades to empty and every agent still renders. A roster read must
  * never fail because one enrichment leg did.
@@ -785,6 +796,7 @@ export async function openAwaitsByOwner(
        WHERE fired_at IS NULL
          AND cancelled_at IS NULL
          AND superseded_at IS NULL
+         AND event_key NOT LIKE 'coord:inbox-wake:%'
          AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
        ORDER BY subscriber_id, created_at ASC
     `) as unknown as Array<{

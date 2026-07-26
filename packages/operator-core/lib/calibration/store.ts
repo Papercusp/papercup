@@ -39,11 +39,13 @@ function mapRow(r: Row): PredictionRow {
     resolvedAt: tsOrNull(r.resolved_at),
     outcome: r.outcome === null || r.outcome === undefined ? null : r.outcome === true || r.outcome === 't',
     resolutionNote: r.resolution_note === null || r.resolution_note === undefined ? null : String(r.resolution_note),
+    potSlug: r.pot_slug === null || r.pot_slug === undefined ? null : String(r.pot_slug),
   };
 }
 
 const COLS = `id, workspace_id, predictor, domain, subject_kind, subject_id, claim, probability,
-  stated, signal_origin, watchdog_key, horizon_ts, created_at, resolved_at, outcome, resolution_note`;
+  stated, signal_origin, watchdog_key, horizon_ts, created_at, resolved_at, outcome, resolution_note,
+  pot_slug`;
 
 export interface InsertPredictionInput {
   workspaceId: string;
@@ -58,6 +60,12 @@ export interface InsertPredictionInput {
   watchdogKey?: string | null;
   /** ISO timestamp the bet matures at. */
   horizonTs: string;
+  /**
+   * The pot the predictor works under (P-002 pot-scope-all-learnings) — resolve
+   * via resolveLearningPotSlug at the capture seam. Required so no writer forgets
+   * the scope; explicit null = genuinely context-less (D-002).
+   */
+  potSlug: string | null;
 }
 
 /**
@@ -72,9 +80,10 @@ export async function insertPrediction(
   const rows = await sql`
     INSERT INTO harness_shared.calibration_predictions
       (workspace_id, predictor, domain, subject_kind, subject_id, claim, probability, stated,
-       signal_origin, watchdog_key, horizon_ts)
+       signal_origin, watchdog_key, horizon_ts, pot_slug)
     VALUES (${q.workspaceId}, ${q.predictor}, ${q.domain}, ${q.subjectKind}, ${q.subjectId},
-      ${q.claim}, ${q.probability}, ${q.stated}, ${q.origin}, ${q.watchdogKey ?? null}, ${q.horizonTs})
+      ${q.claim}, ${q.probability}, ${q.stated}, ${q.origin}, ${q.watchdogKey ?? null}, ${q.horizonTs},
+      ${q.potSlug})
     ON CONFLICT (workspace_id, predictor, domain, subject_kind, subject_id)
       WHERE resolved_at IS NULL DO NOTHING
     RETURNING id

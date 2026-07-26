@@ -45,6 +45,7 @@ function bet(over: Partial<InsertPredictionInput> = {}): InsertPredictionInput {
     stated: false,
     origin: 'organic',
     horizonTs: PAST,
+    potSlug: 'test-pot',
     ...over,
   };
 }

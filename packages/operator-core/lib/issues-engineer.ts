@@ -1120,6 +1120,17 @@ export async function claimIssue(
        -- (this UPDATE never matches it, and classifyClaimFailure then misreports the
        -- resulting no-op as a live claim_conflict against holder:"unassigned").
        AND (assignee IS NULL OR btrim(assignee) = '' OR lower(btrim(assignee)) = 'unassigned' OR assignee = ${assignee})
+       -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
+       -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:
+       -- "a completed row is STILL directly claimable by id — the floor only gates
+       -- self-select"), because taking a finished item by name is how you reopen it,
+       -- inherit ownership, or attach follow-up work. The self-select path
+       -- (claimNextIssueWorkItem) is the one that must never opportunistically serve
+       -- finished work, and it enforces that as its alreadyCompleted floor.
+       -- The real WI-5826 defect was that the CALLER GOT NO SIGNAL — work_items:claim
+       -- returned a bare ok:true on a state='done' row, so an agent could not tell fresh
+       -- work from finished work. That is fixed where it belongs, in the claim TOOL's
+       -- success path (a loud terminalWarning), not by removing this escape hatch.
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);

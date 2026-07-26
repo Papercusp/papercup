@@ -18,8 +18,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveEffectiveHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
+import { resolvePlanWriteScope, ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
@@ -82,7 +81,15 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    // ⚠ WI-5125 / EI-16183 / WI-5825 class — resolved ONCE for the whole call
+    // (the harness is a single arg) from the SAME authority the readers use.
+    // This handler reads the plan via readPlanBySlug(ctxToPlanSourceOpts(sctx))
+    // and then writes its harness_plans row, so deriving the write key on a
+    // second path is precisely how the two come to disagree. See
+    // resolvePlanWriteScope's doc comment for the three generations of this bug.
+    // Never activeWorkspaceId(), never a DEFAULT_WORKSPACE_ID literal, never the
+    // un-collapsed ctx slug.
+    const { workspaceId: startWorkspaceId, harnessSlug } = await resolvePlanWriteScope(sctx);
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(
       slugs,
@@ -103,13 +110,6 @@ export default defineTool({
           };
         }
 
-        // ⚠ WI-5125 class (EI-16183): harness_plans is keyed on (workspace_id,
-        // harness_slug, plan_slug) — workspace_id is only knowable in-process
-        // via activeWorkspaceId() (already imported below for promotion). The
-        // old literal DEFAULT_WORKSPACE_ID matched ZERO rows for any
-        // non-default tenant, so plans:start silently no-opped (0-row UPDATE)
-        // while still reporting ok:true/status:'started'.
-        const startWorkspaceId = activeWorkspaceId();
         const rows = await withWorkspace(startWorkspaceId, async (tx) => {
           return tx<{ op_status: string; op_updated_at: string; prev_op_status: string | null }[]>`
             UPDATE harness_shared.harness_plans AS p
@@ -132,7 +132,22 @@ export default defineTool({
         });
 
         const row = rows[0];
-        const transitioned = row ? row.prev_op_status !== 'started' : false;
+        // WI-5825: 0 rows means no such plan in this (workspace, harness) —
+        // report it. This handler used to return ok:true / status:'started'
+        // regardless of rows affected, so a mis-scoped UPDATE announced a start
+        // that never happened (and then emitted the `plan started` demand event
+        // on it). A write that matched nothing is a failure, not a start.
+        if (!row) {
+          ctxAny.metadata?.({ slug, harnessSlug, refused: 'plan_not_found' });
+          return {
+            ok: false as const,
+            slug,
+            harnessSlug,
+            error: 'plan_not_found',
+            message: `no plan '${slug}' in ${startWorkspaceId}/${harnessSlug}`,
+          };
+        }
+        const transitioned = row.prev_op_status !== 'started';
 
         if (transitioned) {
           void Promise.all([
@@ -146,6 +161,7 @@ export default defineTool({
                 subjectKind: 'plan',
                 subjectId: slug,
                 claim: `plan ${slug} reaches status shipped within the horizon of its start`,
+                harnessSlug: harnessSlug ?? null,
               }),
             )
             .catch(() => {});

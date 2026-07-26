@@ -13,8 +13,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { resolvePlanWriteScope } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { bulkContent, runBulk } from '../_bulk';
 
@@ -51,16 +50,12 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-    // ⚠ WI-5125 class (EI-16183): harness_plans is keyed on (workspace_id,
-    // harness_slug, plan_slug). workspace_id is only knowable in-process via
-    // activeWorkspaceId() — it honors the WINDOW's request-scoped workspace
-    // (x-papercusp-workspace → ALS), which is what a UI-initiated write needs.
-    // The old literal DEFAULT_WORKSPACE_ID matched ZERO rows for any
-    // non-default tenant (every real plan lives in 'papercusp-workspace', not
-    // 'default') while still reporting ok:true — silently no-opping every
-    // drag-to-reorder.
-    const workspaceId = activeWorkspaceId();
+    // ⚠ WI-5125 / EI-16183 / WI-5825 class: harness_plans is keyed on
+    // (workspace_id, harness_slug, plan_slug), and that key MUST come from the
+    // same authority the readers use — see resolvePlanWriteScope's doc comment
+    // for the three generations of this bug. Never activeWorkspaceId(), never a
+    // DEFAULT_WORKSPACE_ID literal, never the un-collapsed ctx slug.
+    const { workspaceId, harnessSlug } = await resolvePlanWriteScope(sctx);
     const items = args.items ?? [{ slug: args.slug, priority: args.priority }];
     const env = await runBulk(
       items,

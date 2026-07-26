@@ -63,6 +63,8 @@ export interface PredictionRow {
   /** true/false once scored; NULL after resolution = voided (unscorable). */
   outcome: boolean | null;
   resolutionNote: string | null;
+  /** The pot the predictor worked under (P-002 pot-scope-all-learnings); null = pre-pot legacy or context-less. */
+  potSlug: string | null;
 }
 
 /** Per-persona per-domain Brier aggregate over scored organic bets. */

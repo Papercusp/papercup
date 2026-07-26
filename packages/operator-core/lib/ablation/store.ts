@@ -37,6 +37,8 @@ export interface AblationRunRow {
   ledgerContext: unknown[] | null;
   detail: { scenarios: ScenarioArmOutcome[] } & Record<string, unknown>;
   replayLeg: unknown | null;
+  /** The pot the ablated playbook serves (P-002 pot-scope-all-learnings); null = pre-pot legacy or context-less. */
+  potSlug: string | null;
 }
 
 export interface InsertAblationRunInput {
@@ -57,6 +59,12 @@ export interface InsertAblationRunInput {
   ledgerContext: unknown[] | null;
   detail: { scenarios: ScenarioArmOutcome[] } & Record<string, unknown>;
   replayLeg?: unknown | null;
+  /**
+   * The pot the ablated playbook serves (P-002 pot-scope-all-learnings) — resolve
+   * via resolveLearningPotSlug at the runner. Required so no writer forgets the
+   * scope; explicit null = genuinely context-less (D-002).
+   */
+  potSlug: string | null;
 }
 
 export async function insertAblationRun(sql: Sql, input: InsertAblationRunInput): Promise<string> {
@@ -64,7 +72,8 @@ export async function insertAblationRun(sql: Sql, input: InsertAblationRunInput)
     INSERT INTO harness_shared.prompt_ablation_runs
       (workspace_id, started_at, playbook_path, playbook_hash, rule_key, rule_hash,
        rule_excerpt, scenario_count, baseline_pass_rate, ablated_pass_rate,
-       pass_rate_delta, verdict, capped, cost_usd, ledger_context, detail, replay_leg)
+       pass_rate_delta, verdict, capped, cost_usd, ledger_context, detail, replay_leg,
+       pot_slug)
     VALUES
       (${input.workspaceId}, ${new Date(input.startedAtMs).toISOString()},
        ${input.playbookPath}, ${input.playbookHash}, ${input.ruleKey}, ${input.ruleHash},
@@ -73,7 +82,8 @@ export async function insertAblationRun(sql: Sql, input: InsertAblationRunInput)
        ${input.capped}, ${input.costUsd},
        ${input.ledgerContext ? JSON.stringify(input.ledgerContext) : null}::text::jsonb,
        ${JSON.stringify(input.detail)}::text::jsonb,
-       ${input.replayLeg != null ? JSON.stringify(input.replayLeg) : null}::text::jsonb)
+       ${input.replayLeg != null ? JSON.stringify(input.replayLeg) : null}::text::jsonb,
+       ${input.potSlug})
     RETURNING id`;
   return rows[0]!.id;
 }
@@ -99,6 +109,7 @@ interface RawRow {
   ledger_context: unknown[] | null;
   detail: AblationRunRow['detail'];
   replay_leg: unknown | null;
+  pot_slug: string | null;
 }
 
 const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : new Date(v).toISOString());
@@ -125,6 +136,7 @@ function mapRow(r: RawRow): AblationRunRow {
     ledgerContext: r.ledger_context,
     detail: r.detail,
     replayLeg: r.replay_leg,
+    potSlug: r.pot_slug,
   };
 }
 
@@ -144,7 +156,7 @@ export async function listAblationRuns(
     SELECT id, workspace_id, started_at, finished_at, playbook_path, playbook_hash,
            rule_key, rule_hash, rule_excerpt, origin, scenario_count,
            baseline_pass_rate, ablated_pass_rate, pass_rate_delta, verdict, capped,
-           cost_usd, ledger_context, detail, replay_leg
+           cost_usd, ledger_context, detail, replay_leg, pot_slug
       FROM harness_shared.prompt_ablation_runs
      WHERE workspace_id = ${workspaceId}
        ${opts.ruleKey ? sql`AND rule_key = ${opts.ruleKey}` : sql``}

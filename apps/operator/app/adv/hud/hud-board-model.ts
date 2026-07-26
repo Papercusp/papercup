@@ -21,6 +21,22 @@
 
 import type { Liveness } from '@papercusp/operator-core/lib/liveness';
 
+/**
+ * Sentinel for the "all fleets" chip. Not a real slug (slugs are kebab and never
+ * contain a space), so it cannot collide with one.
+ *
+ * EXPORTED deliberately: HudBoard raises it and HudView compares against it, and
+ * when each spelled the literal out itself the two silently drifted — HudBoard's
+ * copy had its leading space corrupted to a raw NUL byte, so `slug === ALL_FLEETS`
+ * never matched and the chip filtered the board to nothing instead of clearing
+ * the filter. A whitespace-ish sentinel is invisible in a diff, so it gets exactly
+ * one definition; never re-spell it inline.
+ */
+export const ALL_FLEETS = ' all';
+
+/** Grouping key for sessions belonging to no fleet. Same rule: one definition. */
+export const SOLO_FLEET_KEY = ' solo';
+
 /** The open `events:await` shape as the roster carries it (adv-roster's OpenAwait).
  *  Re-declared structurally so this client module never imports the server file. */
 export interface HudOpenAwait {
@@ -224,6 +240,24 @@ export function contextPct(tokens: number | null, limit: number | null): number 
   return Math.max(0, Math.min(100, Math.round((tokens / limit) * 100)));
 }
 
+/**
+ * Awaits that are INFRASTRUCTURE, not a block on work.
+ *
+ * `coord:inbox-wake:<self>` is armed permanently for every agent at
+ * SessionStart (migration 183) and means "I am reachable by a wake" — the
+ * opposite of blocked. Measured live while building this board: 126 of 139 open
+ * awaits were inbox-wakes, one per agent, against 13 real gates. Treating them
+ * as blocks would have parked ~93% of sessions in Blocked and made the column
+ * worthless, since a signal that fires for nearly everyone distinguishes no one.
+ *
+ * The server query already excludes these; this is the second line of defence,
+ * so a caller passing a raw awaits list (a test, a future endpoint, a cached
+ * payload written before that fix) still cannot resurrect the bug.
+ */
+export function isInfrastructureAwait(a: HudOpenAwait | null | undefined): boolean {
+  return Boolean(a && a.eventKey.startsWith('coord:inbox-wake:'));
+}
+
 /** Is this entry one of the owner's interactive su sessions? Uses the existing
  *  shared taxonomy (classifyAgentPane stamps `agentPaneKind`) rather than
  *  re-sniffing ids, so the board can't drift from the rest of the app. */
@@ -295,8 +329,11 @@ export function deriveColumn(
     };
   }
 
-  // 2. Blocked — parked on a gate, and we know which one.
-  if (e.openAwait) {
+  // 2. Blocked — parked on a REAL gate, and we know which one. An
+  //    infrastructure await (the always-armed inbox wake every agent holds) is
+  //    explicitly not a block: see isInfrastructureAwait for why counting it
+  //    would have swallowed ~93% of the roster.
+  if (e.openAwait && !isInfrastructureAwait(e.openAwait)) {
     const waited = ageSec(e.openAwait.sinceIso, nowMs);
     return {
       column: 'blocked',
@@ -497,7 +534,7 @@ export function toHudSession(
 export function deriveFleetRollups(sessions: HudSession[]): HudFleetRollup[] {
   const groups = new Map<string, HudFleetRollup>();
   for (const s of sessions) {
-    const key = s.fleetSlug ?? ' solo';
+    const key = s.fleetSlug ?? SOLO_FLEET_KEY;
     let g = groups.get(key);
     if (!g) {
       g = {

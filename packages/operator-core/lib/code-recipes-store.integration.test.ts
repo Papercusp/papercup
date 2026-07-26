@@ -42,6 +42,7 @@ describe('code_recipes store (real PG)', () => {
   it('upserts a recipe and reads it back (getRecipe + listRecipes)', async () => {
     const ws = 'ws-cr-basic';
     const row = await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'triage-stale-items',
       title: 'Triage stale items',
       description: 'list then act per stale work-item',
@@ -71,12 +72,14 @@ describe('code_recipes store (real PG)', () => {
 
   it('upsert updates title/description/script/tools in place by id (no duplicate)', async () => {
     const first = await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'note',
       title: 'Note',
       description: 'first',
       script: 'return 1;',
     });
     const second = await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'note',
       title: 'Note v2',
       description: 'second',
@@ -94,6 +97,7 @@ describe('code_recipes store (real PG)', () => {
 
   it('upsert PRESERVES an existing embedding when re-run without one', async () => {
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'emb',
       title: 'Emb',
       description: 'has embedding',
@@ -102,6 +106,7 @@ describe('code_recipes store (real PG)', () => {
     });
     // re-upsert with embedding omitted (embedder unavailable) — must not wipe it
     const after = await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'emb',
       title: 'Emb',
       description: 'still has embedding',
@@ -114,6 +119,7 @@ describe('code_recipes store (real PG)', () => {
   it('recordRecipeRun increments run_count/success_count/last_run_at + writes a run row', async () => {
     const ws = 'ws-cr-runs';
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'runner',
       title: 'Runner',
       description: 'd',
@@ -150,9 +156,9 @@ describe('code_recipes store (real PG)', () => {
   });
 
   it('listRecipes returns the global recipe corpus', async () => {
-    await upsertRecipe(db.adminSql, { id: 'h1', title: 'H1', description: 'd', script: 's' });
-    await upsertRecipe(db.adminSql, { id: 'h2', title: 'H2', description: 'd', script: 's' });
-    await upsertRecipe(db.adminSql, { id: 'g1', title: 'G1', description: 'd', script: 's' });
+    await upsertRecipe(db.adminSql, { id: 'h1', title: 'H1', description: 'd', script: 's', potSlug: null });
+    await upsertRecipe(db.adminSql, { id: 'h2', title: 'H2', description: 'd', script: 's', potSlug: null });
+    await upsertRecipe(db.adminSql, { id: 'g1', title: 'G1', description: 'd', script: 's', potSlug: null });
 
     const ids = new Set((await listRecipes(db.adminSql, { includeTrivial: true })).map((r) => r.id));
     expect(ids.has('h1')).toBe(true);
@@ -161,8 +167,8 @@ describe('code_recipes store (real PG)', () => {
   });
 
   it('is global — recipes are visible by id regardless of run workspace', async () => {
-    await upsertRecipe(db.adminSql, { id: 'p', title: 'A', description: 'd', script: 's' });
-    await upsertRecipe(db.adminSql, { id: 'p2', title: 'B', description: 'd', script: 's' });
+    await upsertRecipe(db.adminSql, { id: 'p', title: 'A', description: 'd', script: 's', potSlug: null });
+    await upsertRecipe(db.adminSql, { id: 'p2', title: 'B', description: 'd', script: 's', potSlug: null });
     expect((await getRecipe(db.adminSql, 'p'))?.title).toBe('A');
     expect((await getRecipe(db.adminSql, 'p2'))?.title).toBe('B');
   });
@@ -170,16 +176,19 @@ describe('code_recipes store (real PG)', () => {
   it('listRecipes HIDES low-value recipes by default; includeTrivial returns them (P-004)', async () => {
     // multi-tool, authored title → reuse-worthy (shown by default)
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'multi-tool-worthy', title: 'Triage and block stale items', description: 'd', script: 's',
       toolsUsed: ['work_items:list', 'work_items:set_state'],
     });
     // 1-tool wrapper → low-value (hidden by default)
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'one-tool-wrapper', title: 'Just list plans', description: 'd', script: 's',
       toolsUsed: ['plans:list'],
     });
     // auto-derived fallback title ("recipe: …") on a multi-tool script → low-value
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'auto-titled', title: 'recipe: plans:add-item + plans:set-status', description: 'd', script: 's',
       toolsUsed: ['plans:add-item', 'plans:set-status'],
     });
@@ -200,10 +209,10 @@ describe('code_recipes store (real PG)', () => {
     it('folds duplicates into the survivor: status=merged, merged_into set, counts summed', async () => {
       const ws = 'ws-cr-merge';
       // Survivor with some usage.
-      await upsertRecipe(db.adminSql, { id: 'survivor', title: 'Survivor', description: 'd', script: 's' });
+      await upsertRecipe(db.adminSql, { id: 'survivor', title: 'Survivor', description: 'd', script: 's', potSlug: null });
       // Two near-duplicates with their own usage.
-      await upsertRecipe(db.adminSql, { id: 'dup-1', title: 'Dup 1', description: 'd', script: 's' });
-      await upsertRecipe(db.adminSql, { id: 'dup-2', title: 'Dup 2', description: 'd', script: 's' });
+      await upsertRecipe(db.adminSql, { id: 'dup-1', title: 'Dup 1', description: 'd', script: 's', potSlug: null });
+      await upsertRecipe(db.adminSql, { id: 'dup-2', title: 'Dup 2', description: 'd', script: 's', potSlug: null });
       // Survivor: 2 runs / 2 success; dup-1: 3 runs / 2 success; dup-2: 1 run / 0 success.
       for (let i = 0; i < 2; i++) await recordRecipeRun(db.adminSql, { recipeId: 'survivor', workspaceId: ws, potSlug: 'alpha', success: true });
       await recordRecipeRun(db.adminSql, { recipeId: 'dup-1', workspaceId: ws, potSlug: 'alpha', success: true });
@@ -234,8 +243,8 @@ describe('code_recipes store (real PG)', () => {
 
     it('never merges a recipe into itself + skips absent ids', async () => {
       const ws = 'ws-cr-merge-self';
-      await upsertRecipe(db.adminSql, { id: 'keep', title: 'Keep', description: 'd', script: 's' });
-      await upsertRecipe(db.adminSql, { id: 'real-dup', title: 'Dup', description: 'd', script: 's' });
+      await upsertRecipe(db.adminSql, { id: 'keep', title: 'Keep', description: 'd', script: 's', potSlug: null });
+      await upsertRecipe(db.adminSql, { id: 'real-dup', title: 'Dup', description: 'd', script: 's', potSlug: null });
       await recordRecipeRun(db.adminSql, { recipeId: 'keep', workspaceId: ws, potSlug: null, success: true });
       await recordRecipeRun(db.adminSql, { recipeId: 'real-dup', workspaceId: ws, potSlug: null, success: true });
 
@@ -254,8 +263,8 @@ describe('code_recipes store (real PG)', () => {
 
     it('is idempotent — re-merging the same duplicate into the same survivor is a true no-op', async () => {
       const ws = 'ws-cr-merge-idem';
-      await upsertRecipe(db.adminSql, { id: 's', title: 'S', description: 'd', script: 's' });
-      await upsertRecipe(db.adminSql, { id: 'd', title: 'D', description: 'd', script: 's' });
+      await upsertRecipe(db.adminSql, { id: 's', title: 'S', description: 'd', script: 's', potSlug: null });
+      await upsertRecipe(db.adminSql, { id: 'd', title: 'D', description: 'd', script: 's', potSlug: null });
       await recordRecipeRun(db.adminSql, { recipeId: 'd', workspaceId: ws, potSlug: null, success: true });
 
       const first = await mergeRecipes(db.adminSql, { survivorId: 's', duplicateIds: ['d'] });
@@ -281,6 +290,7 @@ describe('code_recipes store (real PG)', () => {
       opts: { potSlug?: string | null; runCount: number; daysAgo: number | null; status?: string },
     ) {
       await upsertRecipe(db.adminSql, {
+      potSlug: null,
         id,
         title: id,
         description: 'd',

@@ -19,6 +19,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { resolveLearningPotSlug } from '../learning/pot-scope';
 
 /** Why a tick ended: a full cycle ran, a self-gate withheld it, or the cycle threw. */
 export type ScoutTickStatus = 'ran' | 'gated' | 'error';
@@ -55,6 +56,11 @@ export interface RecordScoutTickInput extends ScoutTickRecord {
    * ledger WITHOUT resetting Scout's cadence floor or faking Scout liveness.
    */
   origin?: string;
+  /**
+   * The pot the tick ran for (P-002 pot-scope-all-learnings) — wins outright when
+   * set; otherwise resolved from installSlug's owning pot, then the env home pot.
+   */
+  potSlug?: string | null;
 }
 
 /** Persist one tick row. Callers treat this as best-effort (errors swallowed upstream). */
@@ -62,14 +68,22 @@ export async function recordScoutTick(input: RecordScoutTickInput): Promise<void
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
   const origin = input.origin ?? 'scout';
+  // P-002 (pot-scope-all-learnings): stamp the tick's pot at write time. Never
+  // throws (the resolver degrades internally), so best-effort recording holds.
+  const potSlug = await resolveLearningPotSlug({
+    workspaceId: ws,
+    potSlug: input.potSlug ?? null,
+    harnessSlug: input.installSlug ?? null,
+  });
   await sql`
     INSERT INTO harness_shared.scout_ticks
       (workspace_id, install_slug, status, gate,
-       ideas_generated, ideas_routed, ideas_deduped, budget_used_usd, detail, origin)
+       ideas_generated, ideas_routed, ideas_deduped, budget_used_usd, detail, origin, pot_slug)
     VALUES
       (${ws}, ${input.installSlug ?? null}, ${input.status}, ${input.gate ?? null},
        ${input.ideasGenerated ?? 0}, ${input.ideasRouted ?? 0}, ${input.ideasDeduped ?? 0},
-       ${input.budgetUsedUsd ?? null}, ${JSON.stringify(input.detail ?? null)}::text::jsonb, ${origin})`;
+       ${input.budgetUsedUsd ?? null}, ${JSON.stringify(input.detail ?? null)}::text::jsonb, ${origin},
+       ${potSlug})`;
   // Push the Learning tab's Scout view (learning.scout shows the last tick) —
   // ONLY for Scout-origin ticks. A su-ideate pass rides this ledger but is not a
   // Scout tick, so it must not ping the Scout view (its own observability surface

@@ -88,6 +88,7 @@ type DbRow = {
   title: string;
   description: string;
   script: string;
+  pot_slug: string | null;
   author_role: string | null;
   tools_used: string[] | null;
   run_count: number | string;
@@ -113,6 +114,7 @@ function mapRow(r: DbRow): CodeRecipeRow {
     title: r.title,
     description: r.description,
     script: r.script,
+    potSlug: r.pot_slug,
     authorRole: r.author_role,
     toolsUsed: r.tools_used ?? [],
     runCount: asInt(r.run_count),
@@ -133,7 +135,7 @@ function mapRow(r: DbRow): CodeRecipeRow {
  *  (the raw VECTOR is never serialized back into JS — only its presence).
  *  Accepts a plain Sql OR a TransactionSql so the merge transaction can reuse it. */
 const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
-  id, title, description, script, author_role,
+  id, title, description, script, pot_slug, author_role,
   tools_used, run_count, success_count, last_run_at, status, promoted_tool,
   merged_into, tags, (embedding IS NOT NULL) AS has_embedding,
   created_by, created_at, updated_at
@@ -156,11 +158,11 @@ export async function upsertRecipe(
     input.embedding && input.embedding.length > 0 ? `[${input.embedding.join(',')}]` : null;
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.code_recipes
-      (id, title, description, script, author_role,
+      (id, title, description, script, pot_slug, author_role,
        tools_used, tags, embedding, created_by, updated_at)
     VALUES (
       ${input.id}, ${input.title},
-      ${input.description}, ${input.script}, ${input.authorRole ?? null},
+      ${input.description}, ${input.script}, ${input.potSlug}, ${input.authorRole ?? null},
       ${input.toolsUsed ?? []}, ${input.tags ?? []},
       ${embeddingLiteral}::vector, ${input.createdBy ?? null}, now()
     )
@@ -168,6 +170,9 @@ export async function upsertRecipe(
       title       = EXCLUDED.title,
       description = EXCLUDED.description,
       script      = EXCLUDED.script,
+      -- first-write pot attribution: a later update never steals the recipe from
+      -- its authoring pot; a legacy NULL adopts the updater's pot (organic backfill)
+      pot_slug    = COALESCE(harness_shared.code_recipes.pot_slug, EXCLUDED.pot_slug),
       author_role = EXCLUDED.author_role,
       tools_used  = EXCLUDED.tools_used,
       tags        = EXCLUDED.tags,

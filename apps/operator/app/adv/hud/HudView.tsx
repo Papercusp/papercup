@@ -31,6 +31,7 @@ import SessionChatModal from '@/app/_components/chat/SessionChatModal';
 import { scopeInboxItems, useInboxAttention } from '@/app/_components/inbox/use-inbox-pending';
 import HudBoard from './HudBoard';
 import {
+  ALL_FLEETS,
   buildHudBoard,
   HUD_COLUMNS,
   type HudAsk,
@@ -51,9 +52,10 @@ interface RosterPayload {
  *  minute-or-coarser granularity, so a faster tick would only cost renders. */
 const CLOCK_TICK_MS = 15_000;
 
-/** Sentinel used by the "all fleets" chip. Not a real slug (slugs are kebab
- *  and never contain a space), so it cannot collide with one. */
-const ALL_FLEETS = ' all';
+/* The "all fleets" sentinel is imported from hud-board-model, not re-declared:
+   HudBoard raises it and this file compares against it, and while each spelled
+   the literal out separately the two drifted (HudBoard's leading space became a
+   raw NUL byte, so this comparison never matched). One definition, imported. */
 
 export default function HudView({ workspaceId = null }: { workspaceId?: string | null }) {
   const [focusColumn, setFocusColumn] = useQueryState(

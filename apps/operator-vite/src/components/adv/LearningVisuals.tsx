@@ -297,7 +297,10 @@ export function LearningVisualStyles() {
       /* WI-5810 — the as-of stamp. Legible, not a footnote: a reader must be able
          to tell a quiet system from a stale panel at a glance. */
       .pc-learning-visual__asof {
-        font-size: 11px; font-weight: 700; letter-spacing: 0.01em;
+        /* letter-spacing stays 0 — nonzero tracking is not an approved app-UI
+           primitive (design-primitives lint); the 0.01em here was a no-op
+           micro-adjustment, so weight alone carries the stamp. */
+        font-size: 11px; font-weight: 700;
         color: var(--accent, #7dd3fc); border: 1px solid color-mix(in srgb, var(--accent, #7dd3fc) 35%, transparent);
         border-radius: 999px; padding: 1px 8px; white-space: nowrap;
         font-variant-numeric: tabular-nums;

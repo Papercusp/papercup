@@ -45,6 +45,12 @@ export interface LearningPotScopeInput {
   harnessSlug?: string | null;
   /** Forwarded to the registry read for a correctness-critical cross-process resolve. */
   fresh?: boolean;
+  /**
+   * Test/composition seam for step 2's registry read (defaults to
+   * potHomeSlugForHarness). Injecting here keeps the RESOLUTION ORDER in one
+   * place while a hermetic unit test still controls the only IO step.
+   */
+  resolveHive?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
 }
 
 /** Trim to a non-empty slug, or undefined. */
@@ -67,11 +73,13 @@ export async function resolveLearningPotSlug(input: LearningPotScopeInput): Prom
   if (harness) {
     try {
       const owner = clean(
-        await potHomeSlugForHarness(
-          input.workspaceId,
-          harness,
-          input.fresh ? { fresh: true } : undefined,
-        ),
+        input.resolveHive
+          ? await input.resolveHive(input.workspaceId, harness)
+          : await potHomeSlugForHarness(
+              input.workspaceId,
+              harness,
+              input.fresh ? { fresh: true } : undefined,
+            ),
       );
       if (owner) return owner;
     } catch {

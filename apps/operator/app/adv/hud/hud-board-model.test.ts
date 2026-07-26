@@ -17,6 +17,7 @@ import {
   deriveFleetRollups,
   formatAge,
   HUD_DEFAULT_THRESHOLDS,
+  isInfrastructureAwait,
   isSuSession,
   shortHandle,
   toHudSession,
@@ -184,6 +185,50 @@ describe('deriveColumn — precedence', () => {
       OPTS,
     );
     expect(v.reason).toBe('waiting for the suite verdict (fleet:gate)');
+  });
+
+  it('does NOT treat the always-armed inbox wake as a block', () => {
+    // The single most important guard in this file. Every agent carries a
+    // permanent `coord:inbox-wake:<self>` await (migration 183) meaning "I am
+    // reachable" — the opposite of blocked. Measured live on 2026-07-25 while
+    // building this board: 126 of 139 open awaits were inbox-wakes, one per
+    // agent, against 13 real gates. Counting them put ~93% of the roster in
+    // Blocked, which does not merely add noise — it destroys the column, since
+    // a signal that fires for nearly everyone distinguishes no one.
+    const v = deriveColumn(
+      entry({
+        openAwait: {
+          eventKey: 'coord:inbox-wake:su-11112222-3333-4444-5555-666677778888',
+          note: null,
+          sinceIso: iso(3 * 60 * 60_000),
+          expiresIso: null,
+        },
+      }),
+      undefined,
+      OPTS,
+    );
+    expect(v.column).toBe('working');
+  });
+
+  it('classifies infrastructure vs real gates', () => {
+    expect(isInfrastructureAwait({ eventKey: 'coord:inbox-wake:su-1', note: null, sinceIso: iso(0), expiresIso: null })).toBe(true);
+    // Real gates seen live: work-item:*, gate-first-green, composed-root.
+    expect(isInfrastructureAwait({ eventKey: 'work-item:done:WI-5779', note: null, sinceIso: iso(0), expiresIso: null })).toBe(false);
+    expect(isInfrastructureAwait({ eventKey: 'gate-first-green', note: null, sinceIso: iso(0), expiresIso: null })).toBe(false);
+    expect(isInfrastructureAwait(null)).toBe(false);
+  });
+
+  it('still blocks on a real gate held by an agent that also has an inbox wake', () => {
+    // The server picks the OLDEST non-inbox await, so a real gate must survive.
+    const v = deriveColumn(
+      entry({
+        openAwait: { eventKey: 'work-item:done:WI-5779', note: null, sinceIso: iso(20 * 60_000), expiresIso: null },
+      }),
+      undefined,
+      OPTS,
+    );
+    expect(v.column).toBe('blocked');
+    expect(v.reason).toContain('work-item:done:WI-5779');
   });
 
   it('blocked OUTRANKS stalled — a gated agent is behaving correctly, not stuck', () => {

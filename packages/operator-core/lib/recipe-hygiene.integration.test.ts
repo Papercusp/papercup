@@ -29,6 +29,7 @@ describe('runRecipeHygieneOnce (real PG)', () => {
     // STALE one-off: run once, then backdate last_run_at past the 30d window so the
     // conservative default sweep (run_count<=1 AND last_run older than 30d) retires it.
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'stale-oneoff-recipe',
       title: 'Stale one-off',
       description: 'run once, never reused',
@@ -42,6 +43,7 @@ describe('runRecipeHygieneOnce (real PG)', () => {
 
     // HOT recipe: several recent runs across distinct agents — must NOT be swept.
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'hot-recipe',
       title: 'Hot recipe',
       description: 'reused a lot',

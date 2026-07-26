@@ -16,8 +16,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
-import { resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { resolvePlanWriteScope } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
@@ -51,14 +50,17 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-    // ⚠ WI-5125 class (EI-16183): harness_plans is keyed on (workspace_id,
-    // harness_slug, plan_slug). workspace_id is only knowable in-process via
-    // activeWorkspaceId() — the old literal DEFAULT_WORKSPACE_ID matched ZERO
-    // rows for any non-default tenant, so every real pause fell into the
-    // notStarted:true branch below and silently no-opped while reporting
-    // ok:true.
-    const workspaceId = activeWorkspaceId();
+    // ⚠ WI-5125 / EI-16183 / WI-5825 class: harness_plans is keyed on
+    // (workspace_id, harness_slug, plan_slug), and that key MUST come from the
+    // same authority the readers use — see resolvePlanWriteScope's doc comment
+    // for the three generations of this bug. Never activeWorkspaceId(), never a
+    // DEFAULT_WORKSPACE_ID literal, never the un-collapsed ctx slug.
+    //
+    // This tool is the one that HID the bug worst: a mis-scoped UPDATE matches
+    // 0 rows and falls into the notStarted:true branch below, which reads as
+    // ordinary "you never started this plan" rather than a failure. That branch
+    // now distinguishes the two cases explicitly (plan_not_found vs notStarted).
+    const { workspaceId, harnessSlug } = await resolvePlanWriteScope(sctx);
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(
       slugs,
@@ -80,6 +82,32 @@ export default defineTool({
         });
         ctxAny.metadata?.({ slug, harnessSlug });
         if (rows.length === 0) {
+          // WI-5825: 0 rows has TWO causes and they are not the same news —
+          // (a) the plan row exists but was never operationally started (a
+          // benign notStarted), or (b) no such plan in this scope at all (a
+          // caller/scope error). Reporting (b) as (a) is exactly how a
+          // mis-scoped write used to masquerade as normal behavior. Probe the
+          // row's existence so the caller is told which one happened.
+          const exists = await withWorkspace(workspaceId, async (tx) => {
+            const found = await tx<{ plan_slug: string }[]>`
+              SELECT plan_slug
+                FROM harness_shared.harness_plans
+               WHERE workspace_id = ${workspaceId}
+                 AND harness_slug  = ${harnessSlug}
+                 AND plan_slug     = ${slug}
+               LIMIT 1
+            `;
+            return found.length > 0;
+          });
+          if (!exists) {
+            return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: 'plan_not_found',
+              message: `no plan '${slug}' in ${workspaceId}/${harnessSlug}`,
+            };
+          }
           return {
             ok: true as const,
             slug,

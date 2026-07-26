@@ -35,7 +35,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { potHomeSlugForHarness } from '../../hive-federation';
+import { resolveLearningPotSlug } from '../../learning/pot-scope';
 import { getRecipe, recordRecipeRun } from '../../code-recipes-store';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -292,9 +292,10 @@ export default defineTool({
         // recording failure must not fail the run.
         if (result.ok && !dryRun) {
           try {
-            const potSlug = ctx.harnessSlug
-              ? await potHomeSlugForHarness(workspaceId, ctx.harnessSlug).catch(() => null)
-              : null;
+            const potSlug = await resolveLearningPotSlug({
+              workspaceId,
+              harnessSlug: ctx.harnessSlug ?? null,
+            });
             await recordRecipeRun(sql, {
               recipeId: recipe.id,
               workspaceId,

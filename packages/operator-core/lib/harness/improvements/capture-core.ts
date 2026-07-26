@@ -567,6 +567,11 @@ export async function captureImprovement(
           claim: `flake ${flakeKey} re-captures within the horizon`,
           watchdogKey: flakeKey,
           origin,
+          // P-002 pot-scope: a 'harness:<slug>' scope names the owning-pot grain;
+          // other scopes (operator/workspace-global) resolve via the env home pot.
+          harnessSlug: input.scope?.startsWith('harness:')
+            ? input.scope.slice('harness:'.length)
+            : null,
         }),
       )
       .catch(() => {});

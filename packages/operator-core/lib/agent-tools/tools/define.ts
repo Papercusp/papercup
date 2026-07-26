@@ -15,6 +15,8 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { upsertRecipe } from '../../code-recipes-store';
+import { resolveLearningPotSlug } from '../../learning/pot-scope';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { routeDefineTool, type DefineToolSpec } from '../../define-tool-router';
 import { TOOL_TIERS } from '../../tool-scaffold';
 
@@ -94,6 +96,12 @@ export default defineTool({
     if (route.kind === 'composition') {
       const ident = resolveAgentIdentity(ctx);
       const sql = getOrgPg().sql;
+      // P-002 (pot-scope-all-learnings): a composed tool is a recipe — a learning —
+      // so it carries the defining agent's pot.
+      const potSlug = await resolveLearningPotSlug({
+        workspaceId: ctx.workspaceId ?? activeWorkspaceId(),
+        harnessSlug: ctx.harnessSlug ?? null,
+      });
       const row = await upsertRecipe(sql, {
         id: route.recipe.id,
         title: route.recipe.title,
@@ -102,6 +110,7 @@ export default defineTool({
         toolsUsed: route.recipe.toolsUsed,
         tags: route.recipe.tags,
         createdBy: ident.ownerId,
+        potSlug,
       });
       return reply({
         ok: true,

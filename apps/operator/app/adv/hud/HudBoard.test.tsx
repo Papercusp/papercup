@@ -17,7 +17,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import HudBoard from './HudBoard';
-import { buildHudBoard, type HudRosterEntry } from './hud-board-model';
+import { ALL_FLEETS, buildHudBoard, type HudRosterEntry } from './hud-board-model';
 
 vi.mock('@/app/harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -162,6 +162,22 @@ describe('HudBoard', () => {
     expect(chip.textContent).toContain('no leader');
     fireEvent.click(chip);
     expect(props.onToggleFleet).toHaveBeenCalledWith('atlas');
+  });
+
+  // Regression: the "all fleets" chip must raise the SHARED sentinel, because
+  // HudView clears the filter on `slug === ALL_FLEETS` and treats anything else
+  // as a real fleet slug to toggle ON. While HudBoard spelled the literal out
+  // itself the two drifted — its leading space had been corrupted to a raw NUL
+  // byte, so the comparison never matched and clicking "all fleets" ADDED a
+  // junk slug to the filter, emptying the board instead of showing everything.
+  // Asserting against the imported constant (not a re-typed literal) is the
+  // point: a copy that drifts again cannot pass this test.
+  it('raises the shared ALL_FLEETS sentinel from the all-fleets chip', () => {
+    const { props } = renderBoard([
+      entry({ ownerId: 'su-11111111-a', fleetSlug: 'atlas', fleetRole: 'leader' }),
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: /all fleets/ }));
+    expect(props.onToggleFleet).toHaveBeenCalledWith(ALL_FLEETS);
   });
 
   it('distinguishes loading, error and genuinely-empty', () => {

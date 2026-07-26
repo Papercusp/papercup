@@ -365,6 +365,17 @@ jobs:
       - name: Lint shell script syntax
         run: npm run lint:shell-syntax
 
+      # Mac build-path bash-3.2 portability guard (EI-18093921841116426 / WI-5769):
+      # macOS ships /bin/bash 3.2 system-wide (no Homebrew bash) — a bash-4+ builtin
+      # (mapfile, readarray, declare -A, ${var,,}/${var^^}) landing anywhere on the
+      # mac build path (mac-vm-build.sh / mac-vm-verify-build.sh / build-mac-cross.sh
+      # + their static source/invoke closure) only ever surfaced ~1hr into an actual
+      # mac VM build, and recurred twice (2026-07-19, 2026-07-25). GATING — scoped
+      # ONLY to the mac build path (many other bin/*.sh legitimately use these
+      # builtins on Linux/Windows-cross legs that run a modern bash).
+      - name: Lint mac build-path bash-3.2 portability
+        run: npm run lint:mac-bash-portability
+
       # Assert-integrity guard (WI-5788 / P-411): rig + scenario scripts whose probe
       # FAILING TO RUN reads as a PASS — an unmeasured counter coerced to a permissive
       # baseline, a var pre-set to its own success literal, an empty-read branch that

@@ -42,6 +42,7 @@ describe('code_recipes hybrid search (real PG)', () => {
     const hive = 'alpha';
     // The target: triage stale work-items, calls work_items:list + set_state.
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'triage-stale-work-items',
       title: 'Triage stale work-items',
       description: 'list open work-items then mark stale ones blocked',
@@ -51,6 +52,7 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
     // A decoy on a totally different topic + tool-set.
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'announce-deploy',
       title: 'Announce a deploy to the hive',
       description: 'post a coord message when a release ships',
@@ -60,6 +62,7 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
     // A weak lexical neighbor (shares "work-items" but a different action + tools).
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'count-work-items',
       title: 'Count open work-items',
       description: 'tally how many work-items are open',
@@ -90,6 +93,7 @@ describe('code_recipes hybrid search (real PG)', () => {
     const hive = 'alpha';
     // Same exact tool-set as the query, but no lexical/embedding head-start.
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'same-tools',
       title: 'Sweep items',
       description: 'sweep things',
@@ -99,6 +103,7 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
     // Lexically matches the query words but a disjoint tool-set.
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'lexical-only',
       title: 'Manage a plan and its items',
       description: 'manage plan items',
@@ -126,6 +131,7 @@ describe('code_recipes hybrid search (real PG)', () => {
     const ws = 'ws-crs-exclude';
     const hive = 'alpha';
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'self',
       title: 'Self recipe',
       description: 'a recipe',
@@ -134,6 +140,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       embedding: seededEmbedding(7),
     });
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'other',
       title: 'Self recipe',
       description: 'a recipe',
@@ -156,6 +163,7 @@ describe('code_recipes hybrid search (real PG)', () => {
   it('searches the global recipe corpus', async () => {
     const ws = 'ws-crs-hive';
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'in-alpha',
       title: 'Deploy the service',
       description: 'deploy it',
@@ -164,6 +172,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       embedding: seededEmbedding(9),
     });
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'in-beta',
       title: 'Deploy the service',
       description: 'deploy it',
@@ -186,6 +195,7 @@ describe('code_recipes hybrid search (real PG)', () => {
     const ws = 'ws-crs-fields';
     const hive = 'alpha';
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'fielded',
       title: 'Fielded recipe title',
       description: 'a thorough description here',
@@ -211,6 +221,7 @@ describe('code_recipes hybrid search (real PG)', () => {
 
   it('fails closed on entity-mismatched recipes and returns a revision-preserving runArgs continuation (P-008)', async () => {
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'authority-wi-4655',
       title: 'Read exact authority-bound item',
       description: 'load the exact work item for this lane',
@@ -219,6 +230,7 @@ describe('code_recipes hybrid search (real PG)', () => {
       embedding: seededEmbedding(31),
     });
     await upsertRecipe(db.adminSql, {
+      potSlug: null,
       id: 'authority-wi-other',
       title: 'Read exact authority-bound item',
       description: 'load the exact work item for this lane',
