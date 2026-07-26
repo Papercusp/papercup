@@ -204,6 +204,17 @@ jobs:
       - name: Lint no raw setInterval
         run: npm run lint:no-raw-setinterval
 
+      # no-wire-compression guard (WI-5988, owner directive 2026-07-26):
+      # Papercusp ships as a Tauri DESKTOP app — the operator host binds
+      # 127.0.0.1 and every consumer is on the same machine, so compressing a
+      # response spends CPU on both ends to shrink bytes that never leave the
+      # box (gzipSync on large sync payloads blocked the event loop 50-100ms
+      # per call). GATING on a compression PRODUCER in the transport layer;
+      # decompression and at-rest/distribution compression (backups, zstd
+      # archives, tarballs) are untouched.
+      - name: Lint no wire compression
+        run: npm run lint:no-wire-compression
+
       # eager promisify(execFile) guard (EI-10161): a module-scope `const x =
       # promisify(execFile)` throws at import time under a test's narrow
       # `vi.mock('node:child_process', () => ({ spawn }))` (execFile resolves to

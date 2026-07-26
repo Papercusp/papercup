@@ -95,6 +95,49 @@ describe('ensureHiveIdentity — WI-1981 ownership gate', () => {
     expect(inserted).toEqual([]);
   });
 
+  it('EI-18688308662198558: resolveHivePubkey CACHES a remote-view mint refusal — a 2nd call for the SAME pair does not re-read the registry, re-attempt the mint, or re-log', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const loadHarnessRegistryMock = vi.fn(async () => ({
+      projects: [{ slug: 'papercusp', harness_kind: 'hive', remote_hive: true }],
+    }));
+    vi.doMock('./harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
+    const { resolveHivePubkey } = await import('./hive-identity');
+
+    expect(await resolveHivePubkey('gym-loop-ws', 'papercusp')).toBeUndefined();
+    expect(loadHarnessRegistryMock).toHaveBeenCalledTimes(1);
+    expect(mintCalls).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    // A second (and third) call for the IDENTICAL pair must short-circuit on the
+    // cached refusal — zero additional registry reads, zero additional mint
+    // attempts, zero additional log lines. This is the fix for the observed live
+    // incident: an hour of identical "backfill failed" log lines from a caller
+    // polling this pair.
+    expect(await resolveHivePubkey('gym-loop-ws', 'papercusp')).toBeUndefined();
+    expect(await resolveHivePubkey('gym-loop-ws', 'papercusp')).toBeUndefined();
+    expect(loadHarnessRegistryMock).toHaveBeenCalledTimes(1);
+    expect(mintCalls).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it('EI-18688308662198558: the mint-refusal cache is scoped per (workspaceId, homeSlug) — a DIFFERENT pair is not short-circuited', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const loadHarnessRegistryMock = vi.fn(async () => ({
+      projects: [{ slug: 'papercusp', harness_kind: 'hive', remote_hive: true }],
+    }));
+    vi.doMock('./harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
+    const { resolveHivePubkey } = await import('./hive-identity');
+
+    expect(await resolveHivePubkey('gym-loop-ws', 'papercusp')).toBeUndefined();
+    expect(await resolveHivePubkey('another-ws', 'papercusp')).toBeUndefined();
+    // Two DISTINCT pairs ⇒ two registry reads, one per pair (neither short-circuited
+    // by the other's cache entry).
+    expect(loadHarnessRegistryMock).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    warnSpy.mockRestore();
+  });
+
   it('resolveHivePubkey returns the view pubkey (healed) instead of undefined/poison', async () => {
     mockRegistry([{ slug: 'papercusp', harness_kind: 'hive', remote_hive: true, hive_pubkey: 'TRUE_OWNER_PK' }]);
     const { resolveHivePubkey } = await import('./hive-identity');

@@ -487,3 +487,117 @@ describe('AutomationPane — Arming section (P-011)', () => {
     );
   });
 });
+
+/**
+ * The pause/start control (owner ask 2026-07-26: "the pause and start buttons in
+ * the middle pane in the blender docs and agents tabs all don't look like
+ * pause/start buttons").
+ *
+ * This was the FOURTH time it was raised. Rounds 2 and 3 each restyled the
+ * control to match a neighbouring chip (.pc-queen__btn, the Mug tab's button)
+ * and the same complaint came straight back, because "matches the button next to
+ * it" was never the property the owner was asking for — "reads as a transport
+ * control" was. These tests pin the four properties that actually deliver that,
+ * so a fifth restyle cannot quietly undo them:
+ *
+ *   1. the glyph shows the ACTION, not the state,
+ *   2. the glyph is SOLID (a stroke-only ▶/⏸ at this size is a faint mark),
+ *   3. layout stays OFF the <button> (WebKitGTK drops it — invisible in a
+ *      browser, broken on the owner's actual desktop),
+ *   4. the busy state keeps the control's shape.
+ *
+ * They assert rendered STRUCTURE, not cosmetics — colour and radius are free to
+ * change, these are not.
+ */
+describe('AutomationPane — the pause/start control', () => {
+  it('shows the ACTION the click performs, not the current state', () => {
+    renderPane({ routines: [routine({ name: 'gym-cycle', active: true })] });
+    const btn = screen.getByTestId('automation-toggle-gym-cycle');
+    // Running, so the button offers PAUSE.
+    expect(btn.getAttribute('data-glyph')).toBe('pause');
+    expect(btn.getAttribute('aria-pressed')).toBe('true');
+    expect(btn.getAttribute('aria-label')).toBe('Pause gym-cycle');
+  });
+
+  it('offers START on a paused routine', () => {
+    renderPane({ routines: [routine({ name: 'gym-cycle', active: false })] });
+    const btn = screen.getByTestId('automation-toggle-gym-cycle');
+    expect(btn.getAttribute('data-glyph')).toBe('play');
+    expect(btn.getAttribute('aria-pressed')).toBe('false');
+    expect(btn.getAttribute('aria-label')).toBe('Start gym-cycle');
+  });
+
+  it('draws the transport glyph SOLID — a stroke-only ▶/⏸ is what made these unreadable', () => {
+    // lucide defaults every icon to fill="none". At 13px that renders a hollow
+    // triangle and two hairline bars, which is the single biggest reason these
+    // never read as pause/start buttons. The fill is load-bearing, not decorative.
+    for (const active of [true, false]) {
+      renderPane({ routines: [routine({ name: 'gym-cycle', active })] });
+      const svg = screen.getByTestId('automation-toggle-gym-cycle').querySelector('svg');
+      expect(svg).not.toBeNull();
+      expect(svg!.getAttribute('fill')).toBe('currentColor');
+      cleanup();
+    }
+  });
+
+  it('keeps layout OFF the <button> — WebKitGTK silently drops flex declared there', () => {
+    // EI-18135716653974462 / WI-5581. The Tauri webview ignores flex/grid set on
+    // a <button> element, so the centring must live on an inner element or the
+    // glyph sits uncentred on the real desktop while looking perfect in a
+    // browser. If a future edit puts the glyph back as a direct child of the
+    // button, this fails — which is the whole point.
+    renderPane({ routines: [routine({ name: 'gym-cycle', active: true })] });
+    const btn = screen.getByTestId('automation-toggle-gym-cycle');
+    const inner = btn.querySelector('.pc-auto__glyph');
+    expect(inner).not.toBeNull();
+    expect(inner!.querySelector('svg')).not.toBeNull();
+    expect([...btn.children].some((c) => c.tagName.toLowerCase() === 'svg')).toBe(false);
+  });
+
+  it('keeps the header actions off the <button> too, with a solid glyph', () => {
+    renderPane({ routines: [routine({ name: 'gym-cycle', active: true })] });
+    const pauseAll = screen.getByTestId('automation-pause-all');
+    expect(pauseAll.querySelector('.pc-auto__action-inner')).not.toBeNull();
+    const svg = pauseAll.querySelector('.pc-auto__action-dot svg');
+    expect(svg).not.toBeNull();
+    expect(svg!.getAttribute('fill')).toBe('currentColor');
+    expect([...pauseAll.children].some((c) => c.tagName.toLowerCase() === 'svg')).toBe(false);
+  });
+
+  it('keeps its shape while busy instead of collapsing to a "…" character', async () => {
+    // The old busy state replaced the glyph with a literal ellipsis, so at the
+    // one moment the owner most needs to see the click landed, the control
+    // stopped looking like a control.
+    let release: (v: unknown) => void = () => {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise((resolve) => { release = resolve; })),
+    );
+    renderPane({ routines: [routine({ name: 'gym-cycle', active: true })] });
+
+    fireEvent.click(screen.getByTestId('automation-toggle-gym-cycle'));
+
+    const btn = await screen.findByTestId('automation-toggle-gym-cycle');
+    await waitFor(() => expect(btn.querySelector('.pc-auto__spinner')).not.toBeNull());
+    expect(btn.textContent).not.toContain('…');
+    expect(btn.querySelector('.pc-auto__glyph')).not.toBeNull();
+
+    release({ ok: true, json: async () => ({ ok: true, result: { content: [] } }) });
+    vi.unstubAllGlobals();
+  });
+
+  it('gives the arming rows their OWN verb, so ▶/⏸ means exactly one thing in the pane', () => {
+    // The arming rows gate SPEND — their verb is arm/disarm, not start/pause.
+    // They used to borrow the play/pause glyph, so the same mark meant two
+    // unrelated things a few rows apart.
+    renderPane({ arming } as never);
+    const armed = screen.getByTestId('arming-toggle-gym-papercusp');
+    const disarmed = screen.getByTestId('arming-toggle-lane-red-queen');
+    expect(armed.getAttribute('data-glyph')).toBe('disarm');
+    expect(disarmed.getAttribute('data-glyph')).toBe('arm');
+    // and never the transport glyphs
+    for (const btn of [armed, disarmed]) {
+      expect(['play', 'pause']).not.toContain(btn.getAttribute('data-glyph'));
+    }
+  });
+});

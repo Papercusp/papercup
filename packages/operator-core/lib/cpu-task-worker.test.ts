@@ -50,44 +50,36 @@ describe('cpu-task-worker — API surface', () => {
 });
 
 describe('cpu-task-worker — sync fallback (small batch)', () => {
-  it('returns JSON string for a small batch without gzip', async () => {
+  it('returns a JSON string for a small batch', async () => {
     const m = await mod();
     // itemCount < OFFLOAD_MIN_ITEMS → sync fallback
-    const { body, encoding } = await m.serializeJsonResponse({ results: [1, 2, 3] }, false, 1);
-    expect(encoding).toBe(null);
+    const body = await m.serializeJsonResponse({ results: [1, 2, 3] }, 1);
     expect(typeof body).toBe('string');
-    const parsed = JSON.parse(body as string);
-    expect(parsed).toEqual({ results: [1, 2, 3] });
+    expect(JSON.parse(body)).toEqual({ results: [1, 2, 3] });
   });
 
   it('converts BigInt values to Number in the sync path', async () => {
     const m = await mod();
-    const { body, encoding } = await m.serializeJsonResponse({ id: BigInt('9007199254740993') }, false, 1);
-    expect(encoding).toBe(null);
-    const parsed = JSON.parse(body as string) as { id: number };
+    const body = await m.serializeJsonResponse({ id: BigInt('9007199254740993') }, 1);
+    const parsed = JSON.parse(body) as { id: number };
     // BigInt 9007199254740993n converts to Number 9007199254740992 (JS precision limit)
     expect(typeof parsed.id).toBe('number');
   });
 
-  it('returns gzip Buffer when acceptsGzip=true and payload is large enough', async () => {
+  // INVERSE guard (2026-07-26): this module used to gzip large payloads. It
+  // must not again — the operator is a loopback desktop sidecar, so
+  // compression is pure CPU for bytes that never leave the machine, and the
+  // gzipSync it replaced was itself a ~50–100 ms main-thread block.
+  it('returns an uncompressed string even for a large payload', async () => {
     const m = await mod();
-    // Build a body that will be ≥ 1024 bytes
+    // Comfortably over the old 1024-byte gzip threshold.
     const bigArray = Array.from({ length: 100 }, (_, i) => ({ index: i, value: 'x'.repeat(20) }));
-    const { body, encoding } = await m.serializeJsonResponse({ rows: bigArray }, true, 1);
-    // Sync path gzips when payload >= 1024 bytes
-    expect(encoding).toBe('gzip');
-    expect(body).toBeInstanceOf(Buffer);
-    const decompressed = zlib.gunzipSync(body as Buffer).toString('utf8');
-    const parsed = JSON.parse(decompressed) as { rows: typeof bigArray };
-    expect(parsed.rows.length).toBe(100);
-  });
-
-  it('does NOT gzip when payload is small even if acceptsGzip=true', async () => {
-    const m = await mod();
-    const { body, encoding } = await m.serializeJsonResponse({ ok: true }, true, 1);
-    // Small payload → no gzip even when requested
-    expect(encoding).toBe(null);
+    const body = await m.serializeJsonResponse({ rows: bigArray }, 1);
     expect(typeof body).toBe('string');
+    expect(body.length).toBeGreaterThan(1024);
+    // Parseable directly — no decompression step exists.
+    const parsed = JSON.parse(body) as { rows: typeof bigArray };
+    expect(parsed.rows.length).toBe(100);
   });
 });
 
@@ -96,26 +88,23 @@ describe('cpu-task-worker — worker thread path (large batch)', () => {
     const m = await mod();
     const minItems = m.OFFLOAD_MIN_ITEMS;
     const rows = Array.from({ length: minItems + 1 }, (_, i) => ({ id: i }));
-    const { body, encoding } = await m.serializeJsonResponse({ rows }, false, rows.length);
-    // Worker path: no gzip requested
-    expect(encoding).toBe(null);
+    const body = await m.serializeJsonResponse({ rows }, rows.length);
     expect(typeof body).toBe('string');
-    const parsed = JSON.parse(body as string) as { rows: typeof rows };
+    const parsed = JSON.parse(body) as { rows: typeof rows };
     expect(parsed.rows.length).toBe(rows.length);
   });
 
-  it('serializes and gzips a large batch via the worker', async () => {
+  // INVERSE guard — the worker path must not reintroduce compression either.
+  it('returns an uncompressed string from the worker path for a large payload', async () => {
     const m = await mod();
     const minItems = m.OFFLOAD_MIN_ITEMS;
     const rows = Array.from({ length: minItems + 1 }, (_, i) => ({
       id: i,
       data: 'x'.repeat(50),
     }));
-    const { body, encoding } = await m.serializeJsonResponse({ rows }, true, rows.length);
-    expect(encoding).toBe('gzip');
-    expect(body).toBeInstanceOf(Buffer);
-    const decompressed = zlib.gunzipSync(body as Buffer).toString('utf8');
-    const parsed = JSON.parse(decompressed) as { rows: typeof rows };
+    const body = await m.serializeJsonResponse({ rows }, rows.length);
+    expect(typeof body).toBe('string');
+    const parsed = JSON.parse(body) as { rows: typeof rows };
     expect(parsed.rows.length).toBe(rows.length);
   });
 
@@ -126,9 +115,8 @@ describe('cpu-task-worker — worker thread path (large batch)', () => {
       id: BigInt(i),
       name: `row-${i}`,
     }));
-    const { body, encoding } = await m.serializeJsonResponse({ rows }, false, rows.length);
-    expect(encoding).toBe(null);
-    const parsed = JSON.parse(body as string) as { rows: { id: number; name: string }[] };
+    const body = await m.serializeJsonResponse({ rows }, rows.length);
+    const parsed = JSON.parse(body) as { rows: { id: number; name: string }[] };
     // All BigInt ids must have been coerced to Number
     for (const row of parsed.rows) {
       expect(typeof row.id).toBe('number');
@@ -139,7 +127,7 @@ describe('cpu-task-worker — worker thread path (large batch)', () => {
     const m = await mod();
     const minItems = m.OFFLOAD_MIN_ITEMS;
     const rows = Array.from({ length: minItems + 1 }, (_, i) => ({ id: i }));
-    await m.serializeJsonResponse({ rows }, false, rows.length);
+    await m.serializeJsonResponse({ rows }, rows.length);
     const s = m.getCpuWorkerState();
     // Worker should have been spawned and stay alive.
     expect(s.alive || s.disabled).toBe(true);
@@ -151,7 +139,7 @@ describe('cpu-task-worker — _resetCpuWorker test seam', () => {
     const m = await mod();
     const minItems = m.OFFLOAD_MIN_ITEMS;
     const rows = Array.from({ length: minItems + 1 }, (_, i) => ({ id: i }));
-    await m.serializeJsonResponse({ rows }, false, rows.length);
+    await m.serializeJsonResponse({ rows }, rows.length);
     await m._resetCpuWorker();
     const s = m.getCpuWorkerState();
     expect(s.alive).toBe(false);
