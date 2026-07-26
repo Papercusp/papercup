@@ -15,7 +15,21 @@ vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
 }));
-vi.mock('../../work-items', () => ({ releaseWorkItem: vi.fn(), setWorkItemClaimHold: vi.fn(), getWorkItem: vi.fn() }));
+vi.mock('../../work-items', () => ({
+  releaseWorkItem: vi.fn(),
+  setWorkItemClaimHold: vi.fn(),
+  getWorkItem: vi.fn(),
+  commentWorkItem: vi.fn(),
+}));
+
+// WI-5974: a voluntary/authorized release auto-resolves any pending release request —
+// mocked here so existing tests (no pending request on any item) are unaffected, and the
+// dedicated describe block below pins the wiring itself.
+const releaseRequest = vi.hoisted(() => ({
+  readWorkItemReleaseRequest: vi.fn(() => null as unknown),
+  resolveWorkItemReleaseRequest: vi.fn(async () => null as unknown),
+}));
+vi.mock('../../work-items-release-request', () => releaseRequest);
 
 // WI-4198: the force guard is unit-tested in release-force-guard.test.ts; here it is
 // mocked so these tests pin the HANDLER's contract (when the guard is consulted, what
@@ -34,15 +48,18 @@ vi.mock('./release-force-guard', () => ({
   notifyForceRelease: vi.fn(async () => {}),
 }));
 
-import { releaseWorkItem, setWorkItemClaimHold, getWorkItem } from '../../work-items';
+import { releaseWorkItem, setWorkItemClaimHold, getWorkItem, commentWorkItem } from '../../work-items';
 import { assessForceRelease, notifyForceRelease, recordForceReleaseAudit } from './release-force-guard';
 const releaseM = vi.mocked(releaseWorkItem);
 const holdM = vi.mocked(setWorkItemClaimHold);
 const getM = vi.mocked(getWorkItem);
+const commentM = vi.mocked(commentWorkItem);
 const assessM = vi.mocked(assessForceRelease);
 const auditM = vi.mocked(recordForceReleaseAudit);
 const notifyM = vi.mocked(notifyForceRelease);
 const tool = (await import('./release')).default;
+const sendMessageM = vi.hoisted(() => vi.fn(async () => ({}) as never));
+vi.mock('../coordination/messages', () => ({ sendMessage: sendMessageM }));
 
 type Out = { data: any };
 const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
@@ -51,6 +68,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   identity.ownerId = 'me';
   guard.verdict = { allowed: true, basis: 'holder-not-live', holderLiveness: { live: false } };
+  releaseRequest.readWorkItemReleaseRequest.mockReturnValue(null);
+  releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null);
+  commentM.mockResolvedValue({ id: 'post-1' } as never);
+  sendMessageM.mockResolvedValue({} as never);
   releaseM.mockImplementation(async (id: string) => ({ id, assignee: null }) as never);
   holdM.mockImplementation(async (id: string, hold: boolean) => ({ id, harness: null, hold, applicable: true }) as never);
 });
@@ -213,5 +234,65 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
   it('per-item harness flows through to setWorkItemClaimHold', async () => {
     await body({ items: [{ id: 'WI-1', harness: 'h1', claimHold: true }], harness: 'default-h' });
     expect(holdM).toHaveBeenCalledWith('WI-1', true, { harness: 'h1', parkedBy: 'me', parkedReason: undefined });
+  });
+});
+
+// WI-5974: a release resolves any pending work_items:request_release against the item early.
+describe('work_items:release resolves a pending release request (WI-5974)', () => {
+  it('no pending request on the item → no resolve attempt, no notify', async () => {
+    releaseM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h', payload: null } as never);
+    releaseRequest.readWorkItemReleaseRequest.mockReturnValue(null);
+    await body({ id: 'WI-1' });
+    expect(releaseRequest.resolveWorkItemReleaseRequest).not.toHaveBeenCalled();
+    expect(sendMessageM).not.toHaveBeenCalled();
+  });
+
+  it('a voluntary (non-forced) release resolves a pending request as holder-released and notifies the requester', async () => {
+    const payload = { release_request_by: 'req-1' }; // shape irrelevant — readWorkItemReleaseRequest is mocked
+    releaseM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h', payload } as never);
+    releaseRequest.readWorkItemReleaseRequest.mockReturnValue({
+      by: 'req-1', holder: 'me', reason: 'stalled', onSilence: 'reclaim', deadlineAt: 1, requestedAt: 1, resolved: false, resolution: null, resolvedAt: null,
+    });
+    releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue({
+      by: 'req-1', holder: 'me', reason: 'stalled', onSilence: 'reclaim', deadlineAt: 1, requestedAt: 1, resolved: true, resolution: 'holder-released', resolvedAt: Date.now(),
+    });
+    await body({ id: 'WI-1' });
+    expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'h', resolution: 'holder-released' });
+    expect(sendMessageM).toHaveBeenCalledTimes(1);
+    expect(sendMessageM.mock.calls[0][1]).toMatchObject({ to: ['req-1'] });
+    expect(commentM).toHaveBeenCalledTimes(1);
+  });
+
+  it('an already-resolved pending request (race) is never re-notified (CAS returns null)', async () => {
+    releaseM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h', payload: {} } as never);
+    releaseRequest.readWorkItemReleaseRequest.mockReturnValue({
+      by: 'req-1', holder: 'me', reason: 'x', onSilence: 'nothing', deadlineAt: 1, requestedAt: 1, resolved: false, resolution: null, resolvedAt: null,
+    });
+    releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null); // lost the race
+    await body({ id: 'WI-1' });
+    expect(sendMessageM).not.toHaveBeenCalled();
+    expect(commentM).not.toHaveBeenCalled();
+  });
+
+  it('a FORCED release resolves the pending request as "superseded", not "holder-released"', async () => {
+    getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer', lastProgressAt: 'ts' } as never);
+    releaseM.mockResolvedValue({ id: 'WI-HELD', assignee: null, harness: 'h', payload: {} } as never);
+    releaseRequest.readWorkItemReleaseRequest.mockReturnValue({
+      by: 'req-1', holder: 'peer', reason: 'x', onSilence: 'escalate', deadlineAt: 1, requestedAt: 1, resolved: false, resolution: null, resolvedAt: null,
+    });
+    releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue({
+      by: 'req-1', holder: 'peer', reason: 'x', onSilence: 'escalate', deadlineAt: 1, requestedAt: 1, resolved: true, resolution: 'superseded', resolvedAt: Date.now(),
+    });
+    await body({ id: 'WI-HELD', force: true, reason: 'holder session dead 3h' });
+    expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-HELD', { harness: 'h', resolution: 'superseded' });
+  });
+
+  it('a failure resolving the release request never fails the release itself (best-effort)', async () => {
+    releaseM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h', payload: {} } as never);
+    releaseRequest.readWorkItemReleaseRequest.mockImplementation(() => {
+      throw new Error('boom');
+    });
+    const b = await body({ id: 'WI-1' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
   });
 });

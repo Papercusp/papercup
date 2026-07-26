@@ -12,8 +12,8 @@
  * increment) still exercises the runner path.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { spawn, spawnSync, execSync } from 'node:child_process';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +34,12 @@ const baseEnv = (extra: Record<string, string> = {}): Record<string, string> => 
 });
 
 function runSync(args: string[], env: Record<string, string> = {}) {
-  return spawnSync('bash', [PC_HEAVY, ...args], { encoding: 'utf8', env: baseEnv(env), timeout: 30_000 });
+  // cwd: dir — a fresh, non-git tmpdir per test, so the tree-state token's
+  // git-status probe (EI-18688348461605365) naturally no-ops unless a test
+  // deliberately `git init`s it. Keeps the suite hermetic and avoids paying
+  // for (or racing against concurrent edits to) this repo's own live git
+  // status on every spawn.
+  return spawnSync('bash', [PC_HEAVY, ...args], { encoding: 'utf8', env: baseEnv(env), cwd: dir, timeout: 30_000 });
 }
 
 describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {

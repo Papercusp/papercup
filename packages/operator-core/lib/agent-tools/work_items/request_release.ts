@@ -37,25 +37,20 @@ export default defineTool({
   name: 'work_items:request_release',
   profile: 'engineer',
   description:
-    'Request that another agent release a work-item they hold, with an EXPLICIT deadline + an EXPLICIT announced ' +
-    'consequence — the sanctioned path for reclaiming a LIVE peer\'s claim when work_items:release{force:true} would ' +
-    'refuse with not_holder/force_unauthorized. { id, deadlineSec, onSilence, reason }. onSilence: "reclaim" (the ' +
-    'release-request-sweep force-frees the item if the deadline passes unanswered), "escalate" (pages the owner, item ' +
-    'stays held), or "nothing" (records the silence, item stays held). Messages the holder directly AND posts a ' +
-    'durable comment on the item (visible to every peer, not just a DM) so the request + deadline + consequence are ' +
-    'part of the item\'s history. Resolves EARLY, before the deadline, if the holder releases (work_items:release) or ' +
-    'explicitly declines (work_items:decline_release_request) — no consequence fires either way. Returns ' +
-    '{ ok, id, holder, deadlineAt, onSilence, reason }.',
+    'Ask another agent to release a work-item they hold, with an explicit deadline + announced consequence — the ' +
+    'sanctioned path when work_items:release{force:true} refuses (not_holder/force_unauthorized) on a LIVE peer\'s ' +
+    'claim. onSilence: "reclaim" (the sweep force-frees at the deadline), "escalate" (pages the owner, item stays ' +
+    'held), or "nothing". Messages the holder AND posts a durable comment on the item, so request+deadline+' +
+    'consequence join its history. Resolves EARLY, with no consequence, if the holder releases or declines first.',
   guidance: {
     when:
       'A work-item reads as held by an orphan / stalled peer but work_items:release{force:true} refused (not_holder or ' +
       'force_unauthorized) — you have no authority to force-reclaim a LIVE holder\'s claim. This is the sanctioned ' +
       'next step instead of hand-rolling a ping-then-reclaim protocol.',
     notWhen:
-      'The holder is already dead/stale by presence — work_items:release{force:true} already succeeds there (the ' +
-      '"holder-not-live" reaper basis), no need to wait out a deadline. You lead the holder\'s fleet or hold queen ' +
-      'authority — force already works for you too. A live peer who is genuinely progressing the item → coordinate ' +
-      'directly (coord:send), don\'t file a reclaim request against active work.',
+      'The holder is already dead/stale by presence, or you lead their fleet / hold queen authority — ' +
+      'work_items:release{force:true} already succeeds in those cases, so don\'t wait out a deadline. A live peer ' +
+      'genuinely progressing the item → coordinate directly (coord:send), not a reclaim request against active work.',
     chaining:
       'work_items:release{force:true} refused → work_items:request_release → (holder releases/declines early, or the ' +
       'release-request-sweep fires the announced consequence at the deadline) → work_items:claim.',

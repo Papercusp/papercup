@@ -101,21 +101,29 @@ export function readWorkItemReleaseRequest(payload: unknown): WorkItemReleaseReq
   const onSilenceRaw = p.release_request_on_silence;
   const onSilence: ReleaseRequestOnSilence =
     onSilenceRaw === 'reclaim' || onSilenceRaw === 'escalate' || onSilenceRaw === 'nothing' ? onSilenceRaw : 'nothing';
-  const requestedAt = Number(p.release_request_requested_at);
-  const resolvedAtRaw = p.release_request_resolved_at;
+  // Number(null) coerces to 0 (finite!), so a genuinely-null/undefined field must be
+  // distinguished BEFORE the numeric coercion — otherwise "never resolved" (null) reads
+  // back as "resolved at epoch 0".
+  const numOrNull = (v: unknown): number | null => {
+    if (v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const requestedAt = numOrNull(p.release_request_requested_at);
+  const resolvedAt = numOrNull(p.release_request_resolved_at);
   return {
     by: p.release_request_by,
     holder: p.release_request_holder,
     reason: typeof p.release_request_reason === 'string' ? p.release_request_reason : '',
     onSilence,
     deadlineAt,
-    requestedAt: Number.isFinite(requestedAt) ? requestedAt : deadlineAt,
+    requestedAt: requestedAt ?? deadlineAt,
     resolved: p.release_request_resolved === true || p.release_request_resolved === 'true',
     resolution:
       typeof p.release_request_resolution === 'string'
         ? (p.release_request_resolution as ReleaseRequestResolution)
         : null,
-    resolvedAt: Number.isFinite(Number(resolvedAtRaw)) ? Number(resolvedAtRaw) : null,
+    resolvedAt,
   };
 }
 

@@ -7,8 +7,6 @@
  * Phase E extension: a top-level Hono app layers the ported `next.config.js`
  * + `proxy.ts` behaviors on top of the inner `_hono/app.ts` API:
  *
- *   compress    — host-level gzip on every response (no-op for the inner
- *                 `_hono`-already-compressed `/api/*`; matters for docs HTML)
  *   apiCors     — broad `/api/*` CORS port from proxy.ts; mounts on the host
  *                 (not inside `_hono/app.ts`) to preserve the Phase 0
  *                 BOUNDARY contract — the existing narrow `tauriApiCors`
@@ -24,7 +22,6 @@
  *                 shell for client routes.
  */
 import { Hono } from 'hono';
-import { compress } from 'hono/compress';
 import { app } from './host-app';
 import { apiCors } from './host-cors';
 import { docsRoutes } from './host-docs';
@@ -42,10 +39,18 @@ import { requestDeadlineMiddleware } from './host-request-deadline';
 
 const host = new Hono();
 
-// 1. Outermost compression. Skips responses that already carry a
-//    Content-Encoding header (so `_hono`'s inner `/api/*` gzip is preserved
-//    and not double-encoded).
-host.use('*', compress());
+// 1. NO RESPONSE COMPRESSION — deliberate, do not re-add.
+//    Papercusp ships as a Tauri DESKTOP app: this host binds 127.0.0.1
+//    (resolveBindHost) and every consumer is on the same machine. Over
+//    loopback there is no bandwidth to save, so gzip is pure CPU on both
+//    ends — it cost ~50–100 ms of main-thread block per large sync response
+//    and is why cpu-task-worker.ts had to exist at all. The Tauri custom
+//    protocol already strips `accept-encoding` for this exact reason
+//    (src-tauri/src/custom_protocol.rs), and the one genuinely remote
+//    consumer (`/device/*`, the mobile client) never compressed either.
+//    If this host is ever fronted by a real network hop, compression belongs
+//    at the edge proxy (see infra/defguard/Caddyfile `encode gzip`), not in
+//    the app. Guarded by scripts/check-no-wire-compression.mjs.
 
 // 2. Broad `/api/*` CORS (proxy.ts port). Handles OPTIONS preflight and
 //    decorates downstream responses with the standard headers.

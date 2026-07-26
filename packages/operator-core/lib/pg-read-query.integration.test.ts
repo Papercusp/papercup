@@ -180,10 +180,14 @@ describe('describeRelation / listRelations (real PG)', () => {
     expect(d!.relation).toBe('harness_shared.harness_plans');
     expect(d!.kind).toBe('table');
     expect(d!.columns.length).toBeGreaterThan(0);
-    // Columns arrive in ordinal order with resolved types, like `\d`.
-    expect(d!.columns.map((c) => c.name)).toContain('slug');
+    // Every column carries a resolved type + nullability, like `\d` — asserted
+    // structurally rather than against specific column names, so the test does
+    // not break every time the table gains or renames a column.
+    expect(d!.columns.map((c) => c.name)).toContain('workspace_id');
     for (const col of d!.columns) {
+      expect(col.name).toBeTruthy();
       expect(col.type).not.toBe('');
+      expect(col.type).not.toBe('unknown');
       expect(typeof col.nullable).toBe('boolean');
     }
     // A table with a primary key must report it as a constraint.

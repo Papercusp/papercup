@@ -121,9 +121,40 @@ esac
 
 if [ "$_coalesce_enabled" = 1 ]; then
   _coalesce_ttl="${PC_HEAVY_COALESCE_SEC:-90}"
-  # Key on cwd + full argv, NUL-separated so args containing spaces can't
-  # collide two different commands into the same key.
-  _key=$({ printf '%s\0' "$PWD"; printf '%s\0' "$@"; } | sha1sum | cut -d' ' -f1)
+
+  # ── Tree-state token (EI-18688348461605365) ────────────────────────────
+  # cwd+argv alone is a STALE key whenever the SOURCE the command exercises
+  # changed between two identical invocations — the single most common way
+  # these commands get re-run (edit, then re-run to check the fix). Without
+  # this, a follower replays a pre-edit result: silent, confirmatory-looking
+  # wrong answer, not just a wasted run. Fold two cheap signals into the key
+  # so an edit busts the cache while genuine duplicate polls (nothing
+  # changed) still coalesce — deliberately NOT a full tree hash (must stay
+  # near-zero overhead; this runs on every pc-heavy call, not just leaders):
+  #   (a) any argv token that resolves to an existing regular file gets its
+  #       mtime+size folded in — covers `<tool> /path/to/script` directly,
+  #       INCLUDING a script outside the git tree (e.g. /tmp/genfix.mts,
+  #       the exact reported repro — git status can't see that edit at all).
+  #   (b) if cwd is inside a git worktree, one `git status --porcelain=v2
+  #       --branch` call (HEAD + tracked-file changes in one invocation) —
+  #       covers "I edited a repo-tracked file the command exercises".
+  # Fail-open: git/stat unavailable just yields an empty token, degrading to
+  # the previous cwd+argv-only behavior rather than erroring — coalescing
+  # was already best-effort, this doesn't change that contract.
+  _tree_token=""
+  for _a in "$@"; do
+    if [ -f "$_a" ]; then
+      _tree_token="$_tree_token|$(stat -c '%Y:%s' "$_a" 2>/dev/null)"
+    fi
+  done
+  if command -v git >/dev/null 2>&1; then
+    _git_state=$(git status --porcelain=v2 --branch --untracked-files=no 2>/dev/null)
+    [ -n "$_git_state" ] && _tree_token="$_tree_token|$(printf '%s' "$_git_state" | sha1sum | cut -d' ' -f1)"
+  fi
+
+  # Key on cwd + full argv + tree-state token, NUL-separated so args
+  # containing spaces can't collide two different commands into the same key.
+  _key=$({ printf '%s\0' "$PWD"; printf '%s\0' "$@"; printf '%s\0' "$_tree_token"; } | sha1sum | cut -d' ' -f1)
   _c_out="$_coalesce_dir/$_key.out"
   _c_err="$_coalesce_dir/$_key.err"
   _c_exit="$_coalesce_dir/$_key.exit"

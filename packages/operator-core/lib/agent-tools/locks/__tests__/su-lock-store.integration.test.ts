@@ -1421,3 +1421,93 @@ describe('audit regression — same-owner re-acquire', () => {
     expect(aLock?.owner).toBe('a');
   });
 });
+
+/**
+ * WI-5979 — `coordinationDomain: null` reads EVERY domain (diagnostic reads).
+ *
+ * The dossier's per-agent lock read used to key on the SERVING process's repo
+ * root, so it matched only locks acquired through an operator running from the
+ * same checkout — and the ports disagree (:3070 = papercup-release, the Tauri
+ * desktop's :3270 = the staging tree), so the desktop dossier saw none of the
+ * release-domain rows and showed every agent as lock-free, silently.
+ *
+ * These tests exercise the NULL branch's real SQL. The 60 tests above all pass a
+ * concrete domain, so none of them touch it — and a broken `WHERE TRUE` fragment
+ * here would break every lock read for the whole fleet.
+ *
+ * A null read sees OTHER suites' rows too (the table is shared, tests run in
+ * parallel), so every assertion filters to this test's own unique domains.
+ */
+describe('readQueue cross-domain (coordinationDomain: null)', () => {
+  it('returns rows from MULTIPLE domains, each stamped with its own domain', async () => {
+    const wsA = nextWs();
+    const wsB = nextWs();
+
+    await inWorkspaceTxn(wsA, 'agent-a', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: wsA, owner: 'agent-a', ownerLabel: 'A',
+        paths: ['shared.ts'], intent: 'editing in checkout A', ttlSec: 60,
+      }),
+    );
+    await inWorkspaceTxn(wsB, 'agent-b', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: wsB, owner: 'agent-b', ownerLabel: 'B',
+        paths: ['shared.ts'], intent: 'editing in checkout B', ttlSec: 60,
+      }),
+    );
+
+    // A domain-scoped read sees only its own — the pre-fix dossier behaviour.
+    const scoped = await readQueue(getTxPool(), { coordinationDomain: wsA });
+    expect(scoped.active_locks.map((l) => l.owner)).toEqual(['agent-a']);
+
+    // The null read spans both.
+    const all = await readQueue(getTxPool(), { coordinationDomain: null });
+    const mine = all.active_locks.filter(
+      (l) => l.coordination_domain === wsA || l.coordination_domain === wsB,
+    );
+    expect(mine).toHaveLength(2);
+    expect(mine.find((l) => l.owner === 'agent-a')?.coordination_domain).toBe(wsA);
+    expect(mine.find((l) => l.owner === 'agent-b')?.coordination_domain).toBe(wsB);
+    // Same repo-relative path in both — they are different physical files.
+    expect(new Set(mine.map((l) => l.path))).toEqual(new Set(['shared.ts']));
+  });
+
+  it('counts ahead_count PER domain, not across the whole table', async () => {
+    const wsA = nextWs();
+    const wsB = nextWs();
+
+    for (const [ws, holder] of [[wsA, 'hold-a'], [wsB, 'hold-b']] as const) {
+      await inWorkspaceTxn(ws, holder, (tx) =>
+        tryAcquire(tx, {
+          coordinationDomain: ws, owner: holder, ownerLabel: 'H',
+          paths: ['q.ts'], intent: 'hold', ttlSec: 60,
+        }),
+      );
+    }
+
+    const wA = await inWorkspaceTxn(wsA, 'wait-a', (tx) =>
+      tryInsertWaiter(tx, {
+        coordinationDomain: wsA, owner: 'wait-a', ownerLabel: 'WA',
+        paths: ['q.ts'], intent: 'want q in A', ttlSec: 60, maxWaitSec: 60,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    const wB = await inWorkspaceTxn(wsB, 'wait-b', (tx) =>
+      tryInsertWaiter(tx, {
+        coordinationDomain: wsB, owner: 'wait-b', ownerLabel: 'WB',
+        paths: ['q.ts'], intent: 'want q in B', ttlSec: 60, maxWaitSec: 60,
+      }),
+    );
+    if (!wA.ok || !wB.ok) throw new Error('waiter inserts should succeed');
+
+    const all = await readQueue(getTxPool(), { coordinationDomain: null });
+    const a = all.waiting.find((w) => w.coordination_domain === wsA);
+    const b = all.waiting.find((w) => w.coordination_domain === wsB);
+
+    // Each is FIRST in its own domain's queue. Without PARTITION BY
+    // coordination_domain the later-queued one would inherit a nonzero
+    // ahead_count from an unrelated domain's waiter.
+    expect(a?.ahead_count).toBe(0);
+    expect(b?.ahead_count).toBe(0);
+  });
+});
