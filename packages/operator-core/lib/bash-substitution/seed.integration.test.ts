@@ -66,6 +66,43 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     }
   });
 
+  /**
+   * The regression guard for a latent encoding bug P-008 was the first to reach
+   * (2026-07-26). `failing_cases` is written through postgres-js, whose jsonb
+   * parameter serializer DIFFERS between the drizzle-mutated canonical client
+   * and the hand-rolled client this test builds — one passes a pre-stringified
+   * string through, the other JSON.stringifies it AGAIN, storing the jsonb
+   * SCALAR `"[{…}]"` instead of an array (see the note in seed.ts).
+   *
+   * It stayed invisible because every earlier pair audited `equivalent` and so
+   * carried an EMPTY `failing_cases`, and the `verdict_evidence` CHECK
+   * short-circuits on the verdict before it ever calls `jsonb_array_length` —
+   * so the malformed value was never inspected. Asserting the STORED TYPE (not
+   * merely that the insert succeeded) is what makes the bug catchable, because
+   * the insert succeeds either way for an equivalent row.
+   */
+  it('stores failing_cases as a jsonb ARRAY, not a double-encoded scalar', async () => {
+    const rows = (await db.adminSql`
+      SELECT intent_label, jsonb_typeof(failing_cases) AS kind, jsonb_array_length(failing_cases) AS len
+        FROM harness_shared.bash_tool_substitutions
+       WHERE workspace_id = ${WORKSPACE}
+    `) as unknown as Array<{ intent_label: string; kind: string; len: number }>;
+
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.kind, `${row.intent_label} stored failing_cases as ${row.kind}`).toBe('array');
+    }
+
+    // And the point of storing them: a non-equivalent verdict must carry the
+    // evidence that explains it, which is also the DB's own CHECK.
+    const nonEquivalent = ALL_PAIRS.filter((p) => p.expectedVerdict !== 'equivalent');
+    for (const pair of nonEquivalent) {
+      const row = rows.find((r) => r.intent_label === pair.intentLabel);
+      expect(row, `${pair.id} was not seeded`).toBeDefined();
+      expect(Number(row!.len), `${pair.id} must name its failing cases`).toBeGreaterThan(0);
+    }
+  });
+
   it('re-seeding UPDATES in place rather than duplicating a rule', async () => {
     const again = await seedSubstitutionRegistry({
       workspaceId: WORKSPACE,

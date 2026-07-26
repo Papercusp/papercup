@@ -16,9 +16,13 @@
  *
  * Run: cd packages/operator-core && npx tsx arrow-source-ceiling.mts
  */
+import { fileURLToPath } from 'node:url';
+
 delete process.env.VITEST;
 
-const ROOT = '/home/marsh-office/papercupai-workspace/papercusp/packages/operator-core/lib';
+// Resolved from this file's own location so the script runs on any checkout —
+// a hardcoded home path names one developer's box (lint:no-box-identity, WI-4776).
+const ROOT = fileURLToPath(new URL('./lib', import.meta.url));
 
 const { listPlanRows, planItemsForRow } = await import(`${ROOT}/agent-tools/plans/source.ts`);
 const { resolveEffectiveStatusForItems } = await import(

@@ -156,6 +156,9 @@ import {
   drainSubstitutionAdvisory,
   type InboxEntry,
 } from '../coord-hook';
+// The audited pairs, so the pre-filter guard below can read each pair's VERDICT
+// instead of inferring enforceability from a fixture filename.
+import { ALL_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
 
 // ── native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010) ─────
 
@@ -5310,9 +5313,27 @@ describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the roun
   // every other test in this file stays green. Replays the REAL atoms behind
   // every recorded equivalence verdict — the same frozen corpus those verdicts
   // were computed from. Add a pair without adding its verb and this goes red.
-  it('every atom behind a recorded equivalence verdict passes the pre-filter', () => {
-    const files = readdirSync(SUBSTITUTION_FIXTURE_DIR).filter((f) => f.endsWith('.sample.json'));
-    expect(files.length).toBeGreaterThan(0);
+  //
+  // Scoped to the ENFORCEABLE pairs. A `not-a-substitute` pair (P-008's
+  // `ps`/`pgrep`) is dropped by `matchCommandToSubstitutions` unconditionally
+  // per D-007, so its atoms can never produce an advisory no matter what the
+  // pre-filter does — admitting them would buy nothing and charge every `ps`
+  // call on the box an HTTP round-trip to be told nothing. The exclusion reads
+  // the VERDICT off the pair rather than keying on a filename, so it cannot
+  // drift from what the matcher actually enforces.
+  it('every atom behind an ENFORCEABLE equivalence verdict passes the pre-filter', () => {
+    const enforceable = new Set(
+      ALL_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
+        (p) => `${p.id}.sample.json`,
+      ),
+    );
+    const files = readdirSync(SUBSTITUTION_FIXTURE_DIR).filter(
+      (f) => f.endsWith('.sample.json') && enforceable.has(f),
+    );
+    // Exact, not `> 0`: a filter that silently dropped fixtures would make this
+    // guard vacuously green — the same "passes while testing nothing" failure
+    // the scoping itself is meant to avoid.
+    expect(files.length, 'a fixture is missing for some enforceable pair').toBe(enforceable.size);
 
     const missed: string[] = [];
     let atoms = 0;

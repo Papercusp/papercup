@@ -70,7 +70,7 @@ describe('getAgentLocks lock-domain scope (WI-5979)', () => {
           acquired_ts: new Date('2026-07-26T06:00:00Z'),
           expires_ts: new Date('2026-07-26T06:20:00Z'),
           // Recorded by :3070; the reader's own domain would be the staging tree.
-          coordination_domain: '/home/marsh-office/papercupai-workspace/papercup-release',
+          coordination_domain: '/home/dev/papercupai-workspace/papercup-release',
         },
       ],
       waiting: [],

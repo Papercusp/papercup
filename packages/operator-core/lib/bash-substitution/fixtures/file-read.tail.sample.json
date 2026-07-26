@@ -52,7 +52,7 @@
     {
       "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",
       "ts": "2026-07-25T21:21:48.875Z",
-      "atom": "tail -30 /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/a3faa5fd-e682-46a9-bd5f-25d6693a52d6/tasks/bxio82d2n.output"
+      "atom": "tail -30 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/a3faa5fd-e682-46a9-bd5f-25d6693a52d6/tasks/bxio82d2n.output"
     },
     {
       "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
@@ -67,7 +67,7 @@
     {
       "sid": "su-9d726f46-c7bc-4986-8700-62340b58689d",
       "ts": "2026-07-26T04:52:27.658Z",
-      "atom": "tail -40 /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/b67e9147-c035-480e-b8bf-6ae6bf2ff32e/tasks/b9jrqfg4g.output 2>&1"
+      "atom": "tail -40 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/b67e9147-c035-480e-b8bf-6ae6bf2ff32e/tasks/b9jrqfg4g.output 2>&1"
     },
     {
       "sid": "su-a8557b00-55fb-4438-a7bd-f269a7a3bf6c",
@@ -92,7 +92,7 @@
     {
       "sid": "su-a28a5f3c-4f45-465e-af05-e1e6e05668a9",
       "ts": "2026-07-26T02:08:23.770Z",
-      "atom": "tail -60 /tmp/claude-1000/-home-marsh-office-papercupai-workspace-papercusp/7665ed51-afb7-4b65-b402-abc7cd44232a/tasks/b961049kj.output"
+      "atom": "tail -60 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/7665ed51-afb7-4b65-b402-abc7cd44232a/tasks/b961049kj.output"
     },
     {
       "sid": "su-73565638-a17a-4be4-adfd-86a6750ac1c1",
