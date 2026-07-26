@@ -100,9 +100,10 @@ describe('peer-log post-connection attach (WI-5673)', () => {
     // The invariant: attaching requires NO explicit download and NO update() —
     // opening the session is sufficient. It is ASYNC (peersCount is still 0 in
     // the same tick as the open), hence the poll rather than an immediate read.
-    const attached = await waitFor(() => (remote.peersCount() ?? 0) > 0);
+    // `peersCount` is optional on the RemoteLog surface, hence the optional call.
+    const attached = await waitFor(() => (remote.peersCount?.() ?? 0) > 0);
     expect(attached).toBe(true);
-    expect(remote.peersCount()).toBeGreaterThan(0);
+    expect(remote.peersCount?.() ?? 0).toBeGreaterThan(0);
 
     // And the attach is real: content flows over it.
     await remote.update();

@@ -1578,6 +1578,43 @@ defineTestDomain({
   ],
 });
 
+// papercusp-desktop bash self-tests (EI-18725214765732588): these guard the
+// live-federation rig + release-leg reaper scripts (release artifacts,
+// latest-manifest generation, gate/leg reapers, matrix-starvation downgrade,
+// rig log banking, and port self-discovery) but were referenced by NOTHING —
+// no aggregate script, no CI workflow, no green gate. Only federation-asserts
+// had a single live caller (live-federation-gate.sh), and only inside that
+// gate's own run, never in CI. Verified hermetic (synthetic localhost-only
+// HTTP listeners + static grep assertions, no docker/ssh/real network) before
+// wiring in. `test:selftests` (papercusp-desktop/package.json, backed by
+// bin/lib/run-selftests.sh) runs the same 7 as one aggregate; this domain
+// surfaces them individually in the Tests tab / admin Testing dashboard,
+// closing the "dark test" gap the same way EI-1610 closed it for the Rust
+// crates above.
+defineTestDomain({
+  id: 'desktop-selftests',
+  label: 'Desktop Selftests (bash)',
+  description:
+    'papercusp-desktop bash self-tests for the live-federation rig + release-leg scripts. Pure/hermetic — synthetic localhost listeners and static grep assertions only, no docker/ssh/real network.',
+  tier: 'surface',
+  sections: [
+    {
+      id: 'selftests',
+      label: 'Selftests',
+      description: 'The 7 previously-dark shell selftests (EI-18725214765732588), now wired into the aggregate runner + this registry.',
+      runners: [
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/federation-asserts.selftest.sh'], label: 'federation port self-discovery' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-artifacts.selftest.sh'], label: 'release artifacts guard' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh'], label: 'latest-manifest generation' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh'], label: 'live-federation-gate reaper' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh'], label: 'release local-leg reaper' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh'], label: 'local-matrix starvation downgrade' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh'], label: 'rig bank-logs' },
+      ],
+    },
+  ],
+});
+
 const PAPERCUSP_IDS = [
   'test-runs', 'vitals', 'chaos-desktop', 'ai-explore',
   'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
@@ -1587,6 +1624,8 @@ const PAPERCUSP_IDS = [
   'gym', 'inference-gateway', 'behaviour-suite', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
   // First-party Rust crates (Cargo) surfaced via per-crate manifestPath cargo runners (EI-1610) — the repo has no root Cargo workspace.
   'rust',
+  // papercusp-desktop bash self-tests, previously referenced by nothing (EI-18725214765732588).
+  'desktop-selftests',
   // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.
   'hive',
   // The cross-Hive (shared-hive) federation substrate as a cohesive subsystem view.

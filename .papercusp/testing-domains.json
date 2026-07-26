@@ -1555,6 +1555,77 @@
       ]
     },
     {
+      "id": "desktop-selftests",
+      "label": "Desktop Selftests (bash)",
+      "description": "papercusp-desktop bash self-tests for the live-federation rig + release-leg scripts. Pure/hermetic — synthetic localhost listeners and static grep assertions only, no docker/ssh/real network.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "selftests",
+          "label": "Selftests",
+          "description": "The 7 previously-dark shell selftests (EI-18725214765732588), now wired into the aggregate runner + this registry.",
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/federation-asserts.selftest.sh"
+              ],
+              "label": "federation port self-discovery"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/release-artifacts.selftest.sh"
+              ],
+              "label": "release artifacts guard"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh"
+              ],
+              "label": "latest-manifest generation"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh"
+              ],
+              "label": "live-federation-gate reaper"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh"
+              ],
+              "label": "release local-leg reaper"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh"
+              ],
+              "label": "local-matrix starvation downgrade"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh"
+              ],
+              "label": "rig bank-logs"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "hive",
       "label": "Hive (Mug/bee loop)",
       "description": "The local-hive orchestration loop: tracked Mug launch, bee placement + nursery, the deliver-and-wake / parent-wake liveness chain, spawn reclaim, host self-recycle, and the Apiary IQ battery. Many files also appear under operator-core (overlap intentional); this is the cohesive subsystem view.",
