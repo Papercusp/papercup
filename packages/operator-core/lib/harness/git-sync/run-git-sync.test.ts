@@ -454,13 +454,23 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
   });
 
   it('EI-18689553108460319: superproject push:false (bridged-hive commit-only) does NOT strand the submodule — it still pushes to its own origin', () => {
-    // Simulates git-sync-action's hive-mode override (`cfg.push = false`) — the bridge
-    // writer is meant to become the SOLE pusher of the superproject's canonical refs,
-    // never of an unrelated, independently-hosted submodule library.
+    // Simulates git-sync-action's hive-mode override — the bridge writer is meant to
+    // become the SOLE pusher of the superproject's canonical refs, never of an
+    // unrelated, independently-hosted submodule library.
+    //
+    // WI-6016: that override now sets BOTH flags (`cfg.push = false` +
+    // `cfg.pushSubmoduleOrigins = true`), so this simulation passes both to stay
+    // faithful to production. A BARE `push:false` can no longer mean "still push
+    // submodules": it is ambiguous — a JOINER (decideGitSyncPush joinerSide) carries
+    // push:false for an entirely different reason and must push NOTHING, ANYWHERE
+    // (the S0 no-direct-push invariant, AH-6 in code-plane-federation.test.ts, which
+    // this test's original bare-push:false form directly contradicted at the same
+    // input). Splitting the knob stays supported; it is now opt-IN rather than
+    // fail-open.
     writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
     writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
 
-    return runGitSync('test', { repoPath: repo, config: { push: false } }).then((out) => {
+    return runGitSync('test', { repoPath: repo, config: { push: false, pushSubmoduleOrigins: true } }).then((out) => {
       expect(out.status).toBe('synced');
       if (out.status === 'synced') {
         // the submodule still pushed to ITS OWN origin ...

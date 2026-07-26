@@ -99,6 +99,21 @@ if [ "${PAPERCUSP_RETAIN_DIST_CHUNKS:-}" = "1" ] || [[ "$CMD" == *--watch* ]] ||
   RETAIN=1
 fi
 
+# A wiping build DELETES every old hashed chunk when it swaps dist.next/ over
+# dist/. Any desktop window opened before that swap is pinned to chunks that no
+# longer exist, so its next lazy import dead-ends on "Importing a module script
+# failed" — the owner hit exactly this on 2026-07-26 after an agent ran a plain
+# `npm run build` on the shared tree. The error card blames "the dev build
+# watcher", which sends the reader looking in the wrong place, so SAY IT HERE
+# instead: on a working tree with live windows you want the retain regime.
+# (Harmless on a fresh release checkout — there are no old chunks to retain.)
+if [ "$RETAIN" -eq 0 ]; then
+  echo "[vite-build-singleflight] NOTE: wiping build — old hashed chunks in dist/ will be DELETED on swap." >&2
+  echo "[vite-build-singleflight]       Any desktop window open right now will 404 its pinned lazy chunks" >&2
+  echo "[vite-build-singleflight]       (\"Importing a module script failed\"). On a live working tree, prefer:" >&2
+  echo "[vite-build-singleflight]         PAPERCUSP_RETAIN_DIST_CHUNKS=1 npm --prefix apps/operator-vite run build" >&2
+fi
+
 # Append-open: never truncate a live holder's pid record while we're still
 # waiting for the lock.
 exec 9>>"$LOCK"

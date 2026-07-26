@@ -2719,9 +2719,24 @@ export function realCheckpointDeps(
             '\n\n=== COMMITTED CONFLICT MARKERS (@papercusp/operator-vite, EI-1836) — would break the SPA build ===\n' +
             markers.stdout;
         } else {
+          // PAPERCUSP_RETAIN_DIST_CHUNKS=1 — this build targets the LIVE WORKING
+          // TREE, which is exactly where desktop windows are open (:3170/:3270
+          // serve this dist). A default one-shot build stages into dist.next/ and
+          // SWAPS it over dist/, deleting every old hashed chunk; any window opened
+          // before the swap then 404s the lazy chunk it is pinned to and dead-ends
+          // on "Importing a module script failed" (owner-reported 2026-07-26).
+          // Because this gate runs on a TIMER, it broke every open window on a
+          // schedule — and the error card blames "the dev build watcher", so it was
+          // never traced back to here. Retention is the documented cure (WI-1484):
+          // emptyOutDir:false + devDistPrunePlugin's age-prune, so old chunks
+          // survive long enough for an open webview and are still bounded.
+          // ⚠ This does NOT weaken the gate: index.html always points at the NEW
+          // chunks, so what is verified/deployed is unchanged — retained chunks are
+          // extra files, and on a fresh checkout (the release build) there are none
+          // to retain, which is why the release path is deliberately left alone.
           const b = await exec('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
             cwd: treeDir,
-            env,
+            env: { ...env, PAPERCUSP_RETAIN_DIST_CHUNKS: '1' },
             allowNonZero: true,
           });
           buildOk = b.code === 0;

@@ -1097,6 +1097,14 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   if (cfg.push && gate.hiveGitMode) {
     console.log(`[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`);
     cfg.push = false;
+    // EI-18689553108460319 + WI-6016: the bridge writer owns the SUPERPROJECT's canonical
+    // refs — NOT an independently-hosted submodule library that nothing else ever pushes.
+    // So this override, and ONLY this override, opts submodule origin-pushes back in.
+    // It must be EXPLICIT: run-git-sync now defaults pushSubmoduleOrigins to follow
+    // `push`, because a bare push:false is ambiguous and a JOINER's push:false must
+    // push nothing anywhere (the S0 no-direct-push invariant, AH-6). Respect an explicit
+    // caller/config value if one was already set.
+    if (cfg.pushSubmoduleOrigins === undefined) cfg.pushSubmoduleOrigins = true;
   }
 
   // P-006: per-slug resource first (auto-registered), then the routine's extras

@@ -1142,7 +1142,18 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const doPush = cfg.push !== false;
   // EI-18689553108460319: submodule origin-push is INDEPENDENT of the superproject's
   // `push` flag — see the GitSyncConfig doc comment for why they must not share one knob.
-  const doSubPush = cfg.pushSubmoduleOrigins !== false;
+  //
+  // WI-6016: but that independence is OPT-IN, not the default. Defaulting it to `true`
+  // regardless of `push` made the knob fail-OPEN and silently regressed the S0
+  // no-direct-push invariant (AH-6, code-plane-federation.test.ts, 2026-06-20): a
+  // JOINER — `decideGitSyncPush({ joinerSide: true })`, a read-only member clone whose
+  // contribution path is fork-PR — carries push:false for a completely different reason
+  // than a bridged hive does, and it must push NOTHING, ANYWHERE. A bare `push:false`
+  // does not say WHICH reason applies, so the safe default is to follow `push` and let
+  // the one caller that genuinely wants the split (git-sync-action's hive-mode override,
+  // where the bridge owns only the SUPERPROJECT's canonical refs — never an
+  // independently-hosted submodule library) opt back in EXPLICITLY.
+  const doSubPush = cfg.pushSubmoduleOrigins !== undefined ? cfg.pushSubmoduleOrigins : doPush;
   const doSub = cfg.pushSubmodules !== false;
   const message = cfg.message ?? `chore(git-sync): auto-commit ${slug} [skip ci]`;
   const maxBlobBytes = cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;

@@ -678,10 +678,8 @@ export default defineTool({
     '(count/oldestAgeMs/newest), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing or idle ' +
     '— check `kind` before acting), ' +
-    'and unownedCriticals (aged criticals the spec admits). Also orphanedInFlight ' +
-    '(EI-18693470222331709): items released mid-checkpoint — assignee NULL but ' +
-    'last-progress present — indistinguishable from "never started" without this. ' +
-    'Scoped to ONE fleet ' +
+    'and unownedCriticals (aged criticals the spec admits) + orphanedInFlight ' +
+    '(released mid-progress, assignee NULL). Scoped to ONE fleet ' +
     '(yours by default), not fleet:assignments\' whole roster. ' +
     'Replaces the manual presence+assignments+inbox scan each monitor wake.',
   guidance: {
@@ -695,8 +693,7 @@ export default defineTool({
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it. ' +
-      'Nonzero `orphanedInFlight` → claim it (near-complete, cheapest win on the brief). ' +
+      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals`/`orphanedInFlight` → claim it. ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',
@@ -725,11 +722,7 @@ export default defineTool({
       .min(0)
       .max(1440)
       .optional()
-      .describe(
-        'EI-18693470222331709: minutes an orphaned in-flight item (released with progress ' +
-          'recorded) must sit before it surfaces here. Default 0 — the cost of leaving it ' +
-          'stranded is highest immediately after release.',
-      ),
+      .describe('Minutes an orphaned in-flight item must sit before it surfaces here. Default 0.'),
   }),
   async handler(args, ctx) {
     let actorWorkspace: string | null = null;
