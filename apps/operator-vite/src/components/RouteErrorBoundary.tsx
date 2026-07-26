@@ -34,6 +34,9 @@ interface State {
    *  threw (the console's "occurred in <X>"), shown in the detail pane. */
   componentStack: string | null;
   expanded: boolean;
+  /** A delayed chunk self-retry is armed — the card says so instead of
+   *  implying a human must click Reload. */
+  autoRetryArmed: boolean;
 }
 
 /** The canonical chunk-load-error matcher (every engine's phrasing — WebKit
@@ -90,8 +93,83 @@ export function shouldAutoReloadForChunkError(
   return nowMs - lastReloadAtMs > 60_000;
 }
 
+/** SessionStorage key counting DELAYED self-retries this tab has burned, so a
+ *  genuinely broken build settles on the manual card instead of reloading
+ *  roughly once a minute forever. Exported for tests. */
+export const CHUNK_DELAYED_RETRY_COUNT_KEY = 'pcusp-chunk-delayed-retry-count';
+export const CHUNK_DELAYED_RETRY_MAX = 5;
+
+/** When the 60s debounce BLOCKS an immediate auto-reload for a chunk-shaped
+ *  error, how long to wait before ONE delayed self-retry — or null for "don't".
+ *
+ *  Why this exists (gym-tab outage, 2026-07-26): a rebuild's asset-write window
+ *  on this box spans minutes and recurs every ~2 min, so the immediate
+ *  auto-reload routinely lands MID-BUILD, fails again inside the debounce, and
+ *  the card then waited for a HUMAN — on a failure that heals itself seconds
+ *  after the build finishes. Retrying once just past the debounce (+5s pad for
+ *  the build to finish writing) converts that dead-end into self-heal, while
+ *  `priorRetries >= CHUNK_DELAYED_RETRY_MAX` keeps a truly broken build from
+ *  looping. Pure over its inputs; exported for tests. */
+export function delayedChunkRetryMs(
+  error: unknown,
+  nowMs: number,
+  lastReloadAtMs: number,
+  priorRetries: number,
+): number | null {
+  const msg = String((error as { message?: unknown } | null)?.message ?? error ?? '');
+  if (!CHUNK_LOAD_ERROR_RE.test(msg)) return null;
+  if (priorRetries >= CHUNK_DELAYED_RETRY_MAX) return null;
+  const sinceMs = nowMs - lastReloadAtMs;
+  if (sinceMs > 60_000) return null; // the immediate path owns this case
+  return 60_000 - sinceMs + 5_000;
+}
+
+/** Shared by both boundaries: immediate auto-reload when allowed, else arm ONE
+ *  delayed self-retry. Returns the armed timer id (caller clears it on
+ *  unmount/reset) or null. `onArmed` fires only when a delayed retry was armed,
+ *  so the card can say so instead of implying a human must act. */
+function autoHealChunkError(error: unknown, onArmed?: () => void): number | null {
+  try {
+    const now = Date.now();
+    const last = Number(window.sessionStorage.getItem(CHUNK_AUTO_RELOAD_KEY) ?? 0);
+    if (shouldAutoReloadForChunkError(error, now, last)) {
+      window.sessionStorage.setItem(CHUNK_AUTO_RELOAD_KEY, String(now));
+      hardReload();
+      return null;
+    }
+    const rawCount = Number(window.sessionStorage.getItem(CHUNK_DELAYED_RETRY_COUNT_KEY) ?? 0);
+    const priorRetries = Number.isFinite(rawCount) ? rawCount : 0;
+    const delay = delayedChunkRetryMs(error, now, last, priorRetries);
+    if (delay === null) return null;
+    onArmed?.();
+    return window.setTimeout(() => {
+      try {
+        const nowRetry = Date.now();
+        const lastRetry = Number(window.sessionStorage.getItem(CHUNK_AUTO_RELOAD_KEY) ?? 0);
+        if (nowRetry - lastRetry <= 60_000) return; // someone else reloaded meanwhile
+        window.sessionStorage.setItem(CHUNK_AUTO_RELOAD_KEY, String(nowRetry));
+        window.sessionStorage.setItem(CHUNK_DELAYED_RETRY_COUNT_KEY, String(priorRetries + 1));
+        hardReload();
+      } catch {
+        /* manual fallback stays */
+      }
+    }, delay);
+  } catch {
+    return null; /* sessionStorage unavailable → manual fallback stays */
+  }
+}
+
 class RouteErrorBoundaryInner extends Component<Props, State> {
-  state: State = { error: null, componentStack: null, expanded: false };
+  state: State = { error: null, componentStack: null, expanded: false, autoRetryArmed: false };
+
+  private retryTimer: number | null = null;
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer !== null) {
+      window.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
 
   static getDerivedStateFromError(error: Error): Partial<State> {
     return { error };
@@ -102,8 +180,13 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
     // route. If the new route also throws, getDerivedStateFromError re-sets it
     // (resetKey is now stable, so no loop).
     if (this.state.error && prev.resetKey !== this.props.resetKey) {
-      this.setState({ error: null, componentStack: null, expanded: false });
+      this.clearRetryTimer();
+      this.setState({ error: null, componentStack: null, expanded: false, autoRetryArmed: false });
     }
+  }
+
+  componentWillUnmount(): void {
+    this.clearRetryTimer();
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
@@ -114,19 +197,13 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
     console.error('[RouteErrorBoundary] caught render error:', error, info.componentStack);
     // Stale-chunk AUTO-HEAL (2026-07-01): a long-open window whose lazy tab
     // chunk 404s after a rebuild used to sit on "Something went wrong" until a
-    // human clicked Reload — the owner hit this as "why don't I see Overwatch
-    // running?" (the tab was fine; the window predated the rebuild). Reload
-    // once automatically; the sessionStorage debounce means a build that is
-    // ACTUALLY broken still lands on the manual fallback instead of looping.
-    try {
-      const last = Number(window.sessionStorage.getItem(CHUNK_AUTO_RELOAD_KEY) ?? 0);
-      if (shouldAutoReloadForChunkError(error, Date.now(), last)) {
-        window.sessionStorage.setItem(CHUNK_AUTO_RELOAD_KEY, String(Date.now()));
-        hardReload();
-      }
-    } catch {
-      /* sessionStorage unavailable → manual fallback stays */
-    }
+    // human clicked Reload. Reload once automatically; if the 60s debounce
+    // blocks (the usual case when the reload itself landed mid-build — the
+    // 2026-07-26 gym-tab outage), arm ONE delayed retry just past the debounce
+    // instead of dead-ending on the manual card. A genuinely broken build still
+    // settles manual via CHUNK_DELAYED_RETRY_MAX.
+    this.clearRetryTimer();
+    this.retryTimer = autoHealChunkError(error, () => this.setState({ autoRetryArmed: true }));
   }
 
   render(): ReactNode {

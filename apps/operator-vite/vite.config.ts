@@ -4,6 +4,7 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
 import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from './dev-mode';
 import { devDistPrunePlugin, shouldRetainDistChunks } from './dev-dist-prune';
+import { distAtomicWritesPlugin } from './dist-atomic-writes';
 import { distWipeGuardPlugin } from './dist-wipe-guard';
 import { watchHeartbeatPlugin } from './watch-heartbeat';
 import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
@@ -294,6 +295,14 @@ export default defineConfig({
     // same-dist live watcher and fails open otherwise, so it never wedges the
     // deploy pipeline. See dist-wipe-guard.ts.
     ...(retainDistChunks ? [devDistPrunePlugin()] : [distWipeGuardPlugin({ outDir: finalOutDir })]),
+    // Retention stops rebuilds DELETING old chunks; this stops them CORRUPTING
+    // current ones: an in-place rewrite of a same-hash asset is a non-atomic
+    // truncate+write, and a webview fetching that file mid-write reads a
+    // truncated module ("Importing a module script failed" — the gym-tab outage,
+    // 2026-07-26). Skip identical rewrites (mtime-bump instead, so the prune TTL
+    // still sees them as current) and swap index.html atomically. No-op for a
+    // clean-empty/staged build (nothing exists in the fresh outDir to skip).
+    distAtomicWritesPlugin(),
     // EI-5202: stamp a heartbeat (build time + git SHA) after every `--watch`
     // rebuild, so a health probe can detect a wedged-but-running watcher
     // instead of the only signal being a manual dist/index.html mtime check.

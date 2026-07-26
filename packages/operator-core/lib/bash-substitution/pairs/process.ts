@@ -143,6 +143,34 @@ function pgrepPattern(atom: string): string | null {
  * char, `=` is not). `(?=\s|$)` still matches every real `ps`/`pgrep`
  * invocation (always followed by a flag/arg or nothing) while refusing an
  * atom where a same-named identifier is immediately assigned to (EI-18733363666718163).
+ *
+ * ── P-022 / D-025: why the advisory now names a LAUNCH-SITE workflow ─────────
+ * The verdict is unchanged and still correct — `dev:processes` cannot answer
+ * this question. But the old advisory ended "Keep using ps/pgrep for that",
+ * which is the WI-6146 shape: true of the tool it names, and silent about the
+ * fact that the intent DOES have a good answer one step earlier. P-022 measured
+ * 2,315 ps/pgrep atoms across 63 sessions asking it, and 2,307 of them (99.7%)
+ * already land on THIS pattern — so this advisory, not a new pair, is where that
+ * finding belongs. A second pair over the same atoms would be contradictory
+ * enforcement (the gate fires whichever matches first), not extra coverage.
+ *
+ * The registry cannot express the fix as an equivalence, and that is a property
+ * of the fix rather than a gap here: `capability:bash_output` requires a
+ * `bash_id` minted only by `capability:bash { run_in_background: true }`, while
+ * every real atom carries a pid from a NATIVE launch. There is nothing to map
+ * the command onto, so the verdict stays `not-a-substitute` and the value is
+ * carried entirely by the prose.
+ *
+ * The wording is deliberately hedged. Reading `capability/bash_output.ts` before
+ * writing it showed the obvious claim — "use capability:bash, it survives
+ * compaction" — is FALSE: that tool's in-memory job registry is wiped on any
+ * operator restart, and on this shared box such a restart is cross-agent
+ * (EI-8855). What is actually true is weaker and still decisive: the job is
+ * REATTACHABLE, because the log is written to a deterministic `stateDir + bash_id`
+ * path, so `strandedJobLookup` recovers the tail without the registry and
+ * `diagnoseStrandedCause` (EI-18666279107998059) reports a confirmed cause
+ * instead of a bare `unknown_bash_id`. A native background id has no such path
+ * and is simply dead after the boundary. Promise recoverability, never immunity.
  */
 export const psProcessQuery: SubstitutionPair = {
   id: 'process.ps-pgrep',
@@ -150,11 +178,11 @@ export const psProcessQuery: SubstitutionPair = {
   bashPattern: /^(?:ps|pgrep)(?=\s|$)(?![^\n]*\b(?:run\.sh|omp|claude|paperclip|pty|next)\b)/,
   toolName: 'dev:processes',
   advisoryText:
-    'dev:processes lists only agent-kind processes (run.sh/omp/claude/paperclip/pty/next) and has no pid or name selector — it cannot answer "is my job still running". Keep using ps/pgrep for that.',
+    'dev:processes lists only agent-kind processes (run.sh/omp/claude/paperclip/pty/next) and has no pid or name selector — it cannot answer "is my job still running", so ps/pgrep stays correct for a job that is ALREADY started. The fix is at the LAUNCH site: start long jobs with capability:bash { run_in_background: true } and poll capability:bash_output { bash_id, filter }. Not because that is restart-proof — the in-memory job registry is wiped whenever ANY agent restarts the operator — but because the log persists at a deterministic path, so a stranded poll still returns the tail plus a CONFIRMED cause (EI-8855) instead of a dead id.',
   routing: {
     want: 'whether a job you started is still running',
     use: '`dev:processes` — REJECTED for this intent (see P-008); it lists only agent-kind processes',
-    insteadOf: '`ps -p <pid>` / `pgrep -f <job>` — no tool form; keep using bash',
+    insteadOf: '`ps -p <pid>` / `pgrep -f <job>` — no tool form for an already-started job; launch via capability:bash to get a pollable handle',
   },
   expectedVerdict: 'not-a-substitute',
   cover(atom: string): CoverageResult {
