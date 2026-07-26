@@ -59,6 +59,7 @@ import devProcesses, { KIND_ENUM } from '../../agent-tools/dev/processes';
 import devPgQuery from '../../agent-tools/dev/pg_query';
 import capabilityRead, { DEFAULT_LIMIT } from '../../agent-tools/capability/read';
 import capabilityGit, { REFUSED_SUBCOMMANDS } from '../../agent-tools/capability/git';
+import testingRun from '../../agent-tools/testing/run';
 import { assertSingleReadStatement } from '../../pg-read-query';
 
 // The models under audit.
@@ -66,6 +67,13 @@ import { psProcessQuery, DEV_PROCESSES_KINDS } from './process';
 import { psqlSelectRead, psqlDescribe } from './postgres';
 import { sedRangeRead, catFileRead, headFileRead, tailFileRead, READ_DEFAULT_LIMIT } from './file-read';
 import { gitReadPassthrough, READ_SUBCOMMANDS } from './git-read';
+import {
+  routerTestFiles,
+  rawVitestFiles,
+  affectedTests,
+  TESTING_RUN_MAX_FILES,
+  TESTING_RUN_MAX_PATTERN,
+} from './tests';
 
 // The shared D-016 assertions. Extracted so the service family's guard
 // (service-model-drift.test.ts, dev:listening_ports) asserts through the SAME
@@ -306,5 +314,83 @@ describe('git-read.ts model tracks the real capability:git (D-015)', () => {
       capabilityGit,
       ['args', 'cwd'],
     );
+  });
+});
+
+// ── testing:run ↔ pairs/tests.ts ────────────────────────────────────────────
+
+/** Parse an args payload through the tool's REAL zod schema. */
+function accepts(args: Record<string, unknown>): boolean {
+  return (testingRun as unknown as { args: { safeParse: (a: unknown) => { success: boolean } } })
+    .args.safeParse(args).success;
+}
+
+const ONE_FILE = ['packages/operator-core/lib/a.test.ts'];
+const nFiles = (n: number) => Array.from({ length: n }, (_, i) => `packages/p/lib/a${i}.test.ts`);
+
+describe('tests.ts model tracks the real testing:run (D-015)', () => {
+  /**
+   * The bounds are asserted BEHAVIOURALLY — by parsing through the tool's own
+   * schema — rather than by reaching into zod's `_def`. A private-field probe
+   * would pin the shape of the validation library instead of the capability,
+   * and would go quietly green (or red) on a zod upgrade that changed neither.
+   */
+  it('TESTING_RUN_MAX_FILES is the real `files` bound', () => {
+    expect(accepts({ files: nFiles(TESTING_RUN_MAX_FILES) }), 'the tool rejects a list at the modelled maximum').toBe(true);
+    expect(
+      accepts({ files: nFiles(TESTING_RUN_MAX_FILES + 1) }),
+      `pairs/tests.ts models testing:run as taking at most ${TESTING_RUN_MAX_FILES} files and cover() refuses a ` +
+        `longer command on that basis. The tool now accepts more, so the model UNDER-claims: real multi-file ` +
+        `commands are being scored uncoverable when the tool would serve them.`,
+    ).toBe(false);
+    // The lower bound is what makes "no test file operand" a real refusal.
+    expect(accepts({ files: [] }), 'testing:run now accepts an EMPTY file list; cover() refuses those commands').toBe(false);
+  });
+
+  it('TESTING_RUN_MAX_PATTERN is the real `testNamePattern` bound', () => {
+    expect(accepts({ files: ONE_FILE, testNamePattern: 'x'.repeat(TESTING_RUN_MAX_PATTERN) })).toBe(true);
+    expect(
+      accepts({ files: ONE_FILE, testNamePattern: 'x'.repeat(TESTING_RUN_MAX_PATTERN + 1) }),
+      `cover() rejects a \`-t\` longer than ${TESTING_RUN_MAX_PATTERN} chars on the strength of this bound.`,
+    ).toBe(false);
+    // `-t ""` appears in the corpus; the empty-pattern refusal rests on this.
+    expect(accepts({ files: ONE_FILE, testNamePattern: '' }), 'an empty -t is now accepted; the refusal is stale').toBe(false);
+  });
+
+  it('testing:run still takes an EXPLICIT file list and nothing that derives one', () => {
+    expectArgSurface(
+      testingRun,
+      'testing:run',
+      ['files', 'maxFailures', 'testNamePattern', 'timeoutMs'],
+      'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` ONLY because there ' +
+        'is no arg that derives a file list from a diff or dependency graph — an `affected`/`changed`/`since` arg ' +
+        'would make 206 corpus atoms across 48 sessions suddenly expressible, and this pair would be actively ' +
+        'telling agents to keep shelling out. (2) Both equivalent patterns EXCLUDE commands passing ' +
+        '`--reporter`/`--config`/`--root` because the tool fixes the reporter at json and derives the config from ' +
+        'each file\'s owning workspace; a reporter or config arg would make those exclusions stale.',
+    );
+  });
+
+  it('cover() emits expressions built only from real testing:run args', () => {
+    expectExpressionUsesRealArgs(
+      routerTestFiles,
+      'npm run test:file -- packages/operator-core/lib/a.test.ts 2>&1',
+      testingRun,
+      ['files'],
+    );
+    expectExpressionUsesRealArgs(
+      rawVitestFiles,
+      'npx vitest run packages/operator-core/lib/a.test.ts -t "some case" 2>&1',
+      testingRun,
+      ['files', 'testNamePattern'],
+    );
+  });
+
+  it('the affected verdict and advisory still say what the argument surface implies', () => {
+    expect(affectedTests.expectedVerdict).toBe('not-a-substitute');
+    expect(affectedTests.advisoryText).toContain('No substitute');
+    for (const derived of ['affected', 'changed', 'since', 'diff', 'base']) {
+      expect(argKeys(testingRun), `testing:run gained a '${derived}' arg — re-audit tests.affected`).not.toContain(derived);
+    }
   });
 });

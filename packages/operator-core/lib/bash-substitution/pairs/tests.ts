@@ -334,7 +334,13 @@ export const routerTestFiles: SubstitutionPair = {
  */
 export const rawVitestFiles: SubstitutionPair = {
   id: 'tests.raw-vitest',
-  intentLabel: 'run-test-files',
+  // Distinct from `routerTestFiles`' label even though both route to the same
+  // tool: `intentLabel` is the registry's KEY (it mirrors the
+  // `harness_shared.bash_tool_substitutions` row), so two pairs sharing one
+  // label collapse into a single row and the drift check then compares each
+  // pair against the other's stored values. The sibling `file-read` family
+  // does the same — four labels, one tool.
+  intentLabel: 'run-test-files-unrouted',
   bashPattern: new RegExp(
     `^${EXCLUDE_UNEXPRESSIBLE}(?:npx\\s+)?vitest\\s+run\\s+(?:${T_PATTERN}\\s+)?${PATH_OPERAND}` +
       `${TRAILING_OPERANDS}${TRAILING_NOISE}$`,
@@ -375,10 +381,15 @@ export const affectedTests: SubstitutionPair = {
   toolName: 'testing:run',
   advisoryText:
     'No substitute: `npm run test:affected` derives its own file list from the dependency graph. testing:run takes an explicit list. Keep using the script.',
+  // `use` names the tool it was audited against even though the verdict is
+  // negative — the routing test requires it, and the reason is sound: the row
+  // records WHICH tool was rejected for this intent, not just that one was.
+  // Same shape as `process.ps-pgrep`. (Never rendered: the generator emits only
+  // `equivalent` pairs.)
   routing: {
     want: 'to run everything your edits affected',
-    use: '`npm run test:affected` (no tool equivalent)',
-    insteadOf: 'n/a — recorded as not-a-substitute so no promotion can nudge agents off it',
+    use: '`testing:run` — REJECTED for this intent (P-021); it needs an explicit file list',
+    insteadOf: '`npm run test:affected` — no tool form; keep using the script',
   },
   expectedVerdict: 'not-a-substitute',
   cover(atom: string): CoverageResult {

@@ -2031,12 +2031,34 @@ export async function setWorkItemState(
              -- later stale-claim/placement sweep.
              last_progress_at = NULL,
              updated_ts = ${Date.now()},
-             terminal_owner = ${opts.by ?? null},
-             terminal_completion_ref = ${opts.completionRef ?? null},
+             -- WI-6218: a skipCompletionGate write is documented as "not a completion at
+             -- all" (watchdog auto-close, system sweep, restore), and the isSecondTerminalClose
+             -- guard above deliberately exempts it. But it still reached this UPDATE and
+             -- stamped terminal_owner/ref/authority UNCONDITIONALLY — so a system sweep
+             -- re-closing an already-completed row took CREDIT for a real agent's completion,
+             -- and, because these callers pass no ref/authority, NULLED both alongside it.
+             -- There is already a test forbidding such a flip to write a terminal_completion_ref,
+             -- on the reasoning that it must stay DISTINGUISHABLE from a genuine completion
+             -- (WI-1404); terminal_owner and authority escaped the same reasoning.
+             --
+             -- PRESERVE-WHEN-PRESENT, not never-stamp: a fresh row keeps today's behaviour
+             -- (some restore/sweep callers may legitimately rely on the stamp, and that audit
+             -- is not done), while a row already carrying a completion is left alone. Measured
+             -- before the fix: 0 damaged rows in 30 days across both arms, so this closes a
+             -- LATENT hole rather than repairing live damage — see WI-6222 for the separate
+             -- agent-vs-agent damage the guard above now prevents.
+             terminal_owner = CASE WHEN ${Boolean(opts.skipCompletionGate)}
+                                     THEN COALESCE(NULLIF(terminal_owner, ''), ${opts.by ?? null})
+                                   ELSE ${opts.by ?? null} END,
+             terminal_completion_ref = CASE WHEN ${Boolean(opts.skipCompletionGate)}
+                                              THEN COALESCE(NULLIF(terminal_completion_ref, ''), ${opts.completionRef ?? null})
+                                            ELSE ${opts.completionRef ?? null} END,
              -- P-004: the authority judgement for THIS close. NULL when the caller
              -- supplied none — a legacy-shaped close (D-008), which is the right reading
              -- for the skipCompletionGate system paths and any writer not yet migrated.
-             authority = ${opts.completionAuthority ?? null},
+             authority = CASE WHEN ${Boolean(opts.skipCompletionGate)}
+                                THEN COALESCE(authority, ${opts.completionAuthority ?? null})
+                              ELSE ${opts.completionAuthority ?? null} END,
              payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                             THEN payload
                             ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)

@@ -149,6 +149,59 @@ export function normalizeFeatureStateInput(
   return { ok: false, valid: FEATURE_FAMILY_STATES };
 }
 
+/**
+ * Does this agent-supplied state SPELLING resolve to a terminal outcome?
+ *
+ * agent-protocol-authority-semantics-2026-07-26 P-005 / D-006. The agent-facing
+ * writer accepts a wide input vocabulary — the unified enum, the legacy per-family
+ * dialects, and known case/separator drift — all of which fold through
+ * FEATURE_STATE_ALIASES before the terminal question is even askable. So
+ * "is this write terminal?" cannot be answered by membership in
+ * ANY_FAMILY_TERMINAL_STATES alone: `passed`, `resolved` and `closed` are terminal
+ * only AFTER aliasing, and `todo`/`failing` look unfamiliar but are decidedly not.
+ *
+ * Folds case + separator drift exactly the way normalizeFeatureStateInput does, so
+ * the schema gate and the runtime writer can never disagree about which writes are
+ * terminal (a disagreement here would either wave an evidence-less close through or
+ * reject a legitimate non-terminal one).
+ */
+function resolvesToTerminalState(spelling: string): boolean {
+  const lower = spelling.trim().toLowerCase();
+  const resolved = FEATURE_STATE_ALIASES[lower] ?? lower;
+  return ANY_FAMILY_TERMINAL_STATES.includes(resolved);
+}
+
+/** Every state spelling the agent-facing writer accepts — the union of the
+ *  recognized vocabulary, the alias keys, and both families' terminals. */
+const ALL_ACCEPTED_STATE_SPELLINGS: readonly string[] = [
+  ...new Set([
+    ...FEATURE_FAMILY_STATES,
+    ...Object.keys(FEATURE_STATE_ALIASES),
+    ...ANY_FAMILY_TERMINAL_STATES,
+  ]),
+];
+
+/**
+ * The accepted spellings that mean "this item is FINISHED", i.e. the writes that
+ * MUST carry completion evidence (P-005). DERIVED, never hand-listed — a new alias
+ * or terminal added above lands in the right half automatically, which is the whole
+ * point: the drift that produced EI-18653071581558556 came from hand-copied lists.
+ */
+export const TERMINAL_INPUT_STATES: readonly string[] =
+  ALL_ACCEPTED_STATE_SPELLINGS.filter(resolvesToTerminalState);
+
+/** The accepted spellings that do NOT settle an item — the complement of
+ *  TERMINAL_INPUT_STATES over the same source set (total + disjoint by
+ *  construction; asserted in work-item-dispatch-states.test.ts). */
+export const NON_TERMINAL_INPUT_STATES: readonly string[] =
+  ALL_ACCEPTED_STATE_SPELLINGS.filter((s) => !resolvesToTerminalState(s));
+
+/** Pure predicate for the agent-facing schema gate + the runtime writer: does this
+ *  supplied state settle the item (and therefore require completion evidence)? */
+export function isTerminalStateInput(state: string): boolean {
+  return resolvesToTerminalState(state);
+}
+
 /** Default cap on how many times the stale-claim reaper will requeue one row
  *  before dead-lettering it to `blocked` (D-007). Env-overridable. */
 export const DEFAULT_STALE_RECLAIM_REQUEUE_CAP = 3;
