@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getChatAction } from './registry';
 import type { ChatActionContext } from './types';
+import type { CardOption, CardPresentation } from '@papercusp/agent-mcp';
 
 // Side-effect import — registers posture-autonomy/posture-overlays into the
 // shared registry once for this file (same pattern as importing an Entry
@@ -8,6 +9,14 @@ import type { ChatActionContext } from './types';
 import './PostureActions';
 
 const ctx: ChatActionContext = { sessionOwnerId: 'su-abc123' };
+
+/** Narrow a CardPresentation to its radio/checkbox member and pull `options`. */
+function optionsOf(presentation: CardPresentation | undefined): CardOption[] {
+  if (!presentation || (presentation.kind !== 'radio' && presentation.kind !== 'checkbox')) {
+    throw new Error(`expected a radio/checkbox presentation, got ${presentation?.kind ?? 'undefined'}`);
+  }
+  return presentation.options;
+}
 
 const fetchMock = vi.fn();
 
@@ -47,12 +56,13 @@ describe('PostureActions — posture-autonomy params (radio, sourced from the mo
     const spec = await autonomy.params!(ctx);
     expect(spec.presentation?.kind).toBe('radio');
     expect(spec.allowDecline).toBe(true);
-    const ids = spec.presentation?.options?.map((o) => o.id);
+    const options = optionsOf(spec.presentation);
+    const ids = options.map((o) => o.id);
     expect(ids).toEqual(['manual', 'auto', 'cold-auto']);
-    const auto = spec.presentation?.options?.find((o) => o.id === 'auto');
+    const auto = options.find((o) => o.id === 'auto');
     expect(auto?.label).toBe('AUTO — act, don’t ask');
     expect(auto?.hint).toMatch(/act on your own judgment/);
-    const manual = spec.presentation?.options?.find((o) => o.id === 'manual');
+    const manual = options.find((o) => o.id === 'manual');
     expect(manual?.label).toBe('Manual');
     expect(manual?.hint).toMatch(/no standing autonomy mode/);
   });
@@ -63,9 +73,10 @@ describe('PostureActions — posture-overlays params (checkbox, sourced from the
     const overlays = getChatAction('posture-overlays')!;
     const spec = await overlays.params!(ctx);
     expect(spec.presentation?.kind).toBe('checkbox');
-    const ids = spec.presentation?.options?.map((o) => o.id);
+    const options = optionsOf(spec.presentation);
+    const ids = options.map((o) => o.id);
     expect(ids).toEqual(['ideate', 'drain', 'grade']);
-    const ideate = spec.presentation?.options?.find((o) => o.id === 'ideate');
+    const ideate = options.find((o) => o.id === 'ideate');
     expect(ideate?.label).toMatch(/IDEATE/);
     expect(ideate?.hint).toMatch(/ideation passes/);
   });
