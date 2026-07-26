@@ -1895,13 +1895,51 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // ineffective repair reaches attempt 2/3 within a single process lifetime
   // instead of only via WI-5332's cross-restart durable-EI shortcut.
   interface RepairConfirmation {
-    /** When the re-attach that this confirmation judges was applied. */
+    /**
+     * Start of the CURRENT judgment window. Note this is RE-STAMPED by the
+     * zero-peers deferral branch (WI-5481) — so it is the window clock, NOT
+     * the incident clock. For "how long has this log actually been broken",
+     * read `repairAppliedAtMs` instead (EI-18723690188615364).
+     */
     appliedAtMs: number;
+    /**
+     * EI-18723690188615364: when the re-attach this confirmation judges was
+     * APPLIED — set once at stamp time and never re-stamped. The elapsed time
+     * from here to the outcome IS the true incident duration, and nothing else
+     * in the system records it: the repair-applied line reads as a 3-second
+     * incident while the real user-visible outage ran ~8.5 minutes.
+     */
+    repairAppliedAtMs: number;
     /** mergedPosition observed at that moment — "did it advance since" is the test. */
     baselinePosition: number;
     kind: string;
+    /**
+     * EI-18723690188615364: how many times the zero-peers branch has deferred
+     * judgment and re-armed. Bounded by REPAIR_CONFIRMATION_MAX_DEFERRALS so a
+     * log cannot sit in silent, self-perpetuating deferral forever.
+     */
+    deferrals: number;
   }
   const repairConfirmations = new Map<string, RepairConfirmation>();
+  /**
+   * EI-18723690188615364: the deferral budget for the zero-peers branch of
+   * `checkRepairConfirmation`. WI-5481 made that branch RE-ARM instead of
+   * discard (correct — a `connected_never_replicated` repair forces a topic
+   * rejoin, so the judged session is usually mid-reconnect with zero peers for
+   * a few seconds right when grace elapses), but it re-armed UNBOUNDEDLY and
+   * silently: a log that never regains a replicator peer defers forever and
+   * emits nothing, indistinguishable from a healthy recovery.
+   *
+   * 5 deferrals × REPLICATION_STALL_GRACE_MS (180s default) ≈ 15 minutes —
+   * orders of magnitude more than the few-seconds reconnect WI-5481 exists to
+   * ride out, so the fix it landed is fully preserved. Past that budget the
+   * confirmation is ABANDONED (recorded, not silently dropped) rather than
+   * escalated: a log with a permanently-zero replicator count is the
+   * `no_replicator` axis, owned by WI-752/WI-1534's swarm self-heal re-peer
+   * loop — synthesizing more session re-attaches at it would be a retry storm
+   * against a subsystem that is already handling it.
+   */
+  const REPAIR_CONFIRMATION_MAX_DEFERRALS = 5;
   // EI-13317 rung (b): harness-level cooldown for the repair-exhaustion →
   // forced-rejoin escalation below (NOT per-log — several admitted logs on
   // the same topic can stall together, and a topic-level rejoin already
@@ -2089,8 +2127,42 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (Date.now() - confirmation.appliedAtMs < REPLICATION_STALL_GRACE_MS) return;
     const advanced = mergedPosition > confirmation.baselinePosition;
     const caughtUp = knownLength <= mergedPosition;
+    // EI-18723690188615364: elapsed since the repair was APPLIED (not since the
+    // current window opened) — the true incident duration, reported on EVERY
+    // outcome below so no branch is silent.
+    const incidentS = Math.round((Date.now() - confirmation.repairAppliedAtMs) / 1000);
+    const deferredNote =
+      confirmation.deferrals > 0 ? ` after ${confirmation.deferrals} zero-peer deferral(s)` : '';
     if (advanced || caughtUp) {
-      repairConfirmations.delete(logKeyHex); // genuine recovery — nothing to do
+      repairConfirmations.delete(logKeyHex);
+      // EI-18723690188615364: genuine recovery used to `return` here having
+      // logged NOTHING. That made the ~6min window between "repair applied" and
+      // real recovery completely unreadable: an operator saw only the
+      // repair-APPLIED line and concluded a 3-second incident, while the real
+      // outage ran ~8.5 minutes. Success and indefinite deferral were both
+      // silent and therefore indistinguishable from each other — the exact
+      // reason WI-5673 stayed misdiagnosed for days. This is the ONLY place the
+      // incident duration is knowable, so it is recorded here.
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'replication_repair_confirmed',
+        `${peerLabel(logKeyHex)} (${confirmation.kind}): repair CONFIRMED ${incidentS}s after it ` +
+          `was applied${deferredNote} — ${
+            advanced
+              ? `ingest resumed (mergedPosition ${confirmation.baselinePosition} → ${mergedPosition})`
+              : `caught up (mergedPosition ${mergedPosition} >= knownLength ${knownLength})`
+          }. That ${incidentS}s IS the real incident duration (the repair-applied line alone reads ` +
+          `as an instant fix) (EI-18723690188615364)`,
+      );
+      // console.info (not .warn/.error) for the same reason as every other
+      // diagnostic in this file: meant to be always-on/grep-able in a banked
+      // serve.log, not suppressed by vitest-fail-on-console.
+      console.info(
+        `[replication-liveness] repair-confirmed: ingest recovered ${incidentS}s after repair` +
+          `${deferredNote} log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} ` +
+          `kind=${confirmation.kind} mergedPosition=${mergedPosition}`,
+      );
       return;
     }
     if ((peersCount ?? 0) <= 0) {
@@ -2098,7 +2170,48 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // forced rejoin that applied this repair. Defer judgment instead of
       // discarding it: re-arm with a fresh window so the NEXT pass that
       // observes a live peer (or genuine progress) gets the real verdict.
+      //
+      // EI-18723690188615364: this branch was ALSO silent, and self-perpetuating
+      // by design (it re-arms its own window every pass), so a log could sit in
+      // deferral forever emitting nothing. Now bounded AND recorded.
+      confirmation.deferrals += 1;
+      if (confirmation.deferrals > REPAIR_CONFIRMATION_MAX_DEFERRALS) {
+        repairConfirmations.delete(logKeyHex);
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'replication_repair_confirmation_abandoned',
+          `${peerLabel(logKeyHex)} (${confirmation.kind}): ABANDONING repair confirmation ` +
+            `${incidentS}s after the repair was applied — ${REPAIR_CONFIRMATION_MAX_DEFERRALS} ` +
+            `deferral(s) elapsed and this log has NEVER observed a live replicator peer at a ` +
+            `judgment moment, so the re-attach ladder can never judge it. Permanently-zero peers ` +
+            `is the no_replicator axis (WI-752/WI-1534 swarm self-heal re-peer loop), not this ` +
+            `ladder — deliberately NOT synthesizing another attempt (EI-18723690188615364)`,
+        );
+        console.info(
+          `[replication-liveness] repair-confirmation ABANDONED after ` +
+            `${REPAIR_CONFIRMATION_MAX_DEFERRALS} zero-peer deferrals (${incidentS}s since repair) ` +
+            `log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${confirmation.kind} ` +
+            `— no live replicator peer; the no_replicator self-heal loop owns this`,
+        );
+        return;
+      }
       confirmation.appliedAtMs = Date.now();
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'replication_repair_confirmation_deferred',
+        `${peerLabel(logKeyHex)} (${confirmation.kind}): repair applied ${incidentS}s ago but ZERO ` +
+          `live replicator peers at this judgment moment (likely mid-reconnect after the forced ` +
+          `rejoin) — deferring judgment and re-arming the window ` +
+          `(${confirmation.deferrals}/${REPAIR_CONFIRMATION_MAX_DEFERRALS}) (WI-5481)`,
+      );
+      console.info(
+        `[replication-liveness] repair-confirmation DEFERRED ` +
+          `(${confirmation.deferrals}/${REPAIR_CONFIRMATION_MAX_DEFERRALS}, ${incidentS}s since ` +
+          `repair): zero live peers log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} ` +
+          `kind=${confirmation.kind} — still BROKEN, not recovered`,
+      );
       return;
     }
     repairConfirmations.delete(logKeyHex); // one judgment per applied repair
@@ -2106,8 +2219,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       opts.workspaceId,
       opts.harnessSlug,
       'replication_repair_confirmation_failed',
+      // EI-18723690188615364: this used to read `Date.now() - appliedAtMs`, which
+      // the deferral branch above RE-STAMPS — so after any deferral it under-
+      // reported "repair applied Ns ago" as the time since the last deferral
+      // rather than since the repair. `repairAppliedAtMs` is never re-stamped.
       `${peerLabel(logKeyHex)} (${confirmation.kind}): repair applied ` +
-        `${Math.round((Date.now() - confirmation.appliedAtMs) / 1000)}s ago but mergedPosition ` +
+        `${incidentS}s ago${deferredNote} but mergedPosition ` +
         `is still ${mergedPosition} (was ${confirmation.baselinePosition}) with a live replicator ` +
         `peer — ineffective repair, synthesizing the next attempt directly (WI-5340)`,
     );
@@ -2163,10 +2280,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // `checkRepairConfirmation` once REPLICATION_STALL_GRACE_MS has
         // elapsed (mergeOnePass's per-log sample). Overwrites any PRIOR
         // outstanding confirmation for this log (this repair supersedes it).
+        const appliedNowMs = Date.now();
         repairConfirmations.set(keyHex, {
-          appliedAtMs: Date.now(),
+          appliedAtMs: appliedNowMs,
+          // EI-18723690188615364: the immutable incident clock — `appliedAtMs`
+          // is re-stamped by the zero-peers deferral branch, this is not.
+          repairAppliedAtMs: appliedNowMs,
           baselinePosition: mergeCursor.positions.get(keyHex) ?? 0,
           kind: repairEpisodeKind.get(keyHex) ?? 'frozen',
+          deferrals: 0,
         });
         recordBootEvent(
           opts.workspaceId,

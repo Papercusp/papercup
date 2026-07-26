@@ -533,7 +533,15 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // 2026-07-20 (WI-5563) — papercusp-replication-liveness-staleness-auto-close:
     // DELIBERATE new owner-authority dark flag (see PRE_INVERSION_DEFAULT_OFF above).
     // Count 28 → 29.
-    expect(offCount).toBe(29);
+    // 2026-07-26 (shared-hive-cross-machine-scale-10k-2026-06-29 P-010) — THREE BUG-FIX
+    // corrections, EI-7230-class, surfaced by the flag-comment-lint recall fix: the guard
+    // only recognised "DEFAULT OFF", so every flag declaring itself in the reversed
+    // "OFF (default)" form was silently skipped instead of checked. All three are
+    // owner-authority/cutover (no parking-watermark impact) and OFF is
+    // byte-identical-or-safer for each: papercusp-improvement-auto-implement,
+    // papercusp-lazy-substrate-boot, papercusp-capability-envelope-overrides.
+    // See PRE_INVERSION_DEFAULT_OFF above for the per-flag reasoning. Count 29 → 32.
+    expect(offCount).toBe(32);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

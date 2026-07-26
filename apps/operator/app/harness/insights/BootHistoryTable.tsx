@@ -94,7 +94,12 @@ export type BootHistoryKind =
   // never mirrored here. See boot-history.ts for the full rationale.
   | 'replication_repair_exhausted'
   | 'replication_repair_rejoin_failed'
-  | 'replication_repair_confirmation_failed';
+  | 'replication_repair_confirmation_failed'
+  // EI-18723690188615364: the recovery + bounded-deferral outcomes of the same
+  // post-repair confirmation window. See boot-history.ts for the rationale.
+  | 'replication_repair_confirmed'
+  | 'replication_repair_confirmation_deferred'
+  | 'replication_repair_confirmation_abandoned';
 
 export interface BootHistoryEntry {
   ts: number;
@@ -151,6 +156,9 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   replication_repair_exhausted: '🔧⛔',
   replication_repair_rejoin_failed: '🔧⚠',
   replication_repair_confirmation_failed: '🔧⏸',
+  replication_repair_confirmed: '🔧✓',
+  replication_repair_confirmation_deferred: '🔧⏳',
+  replication_repair_confirmation_abandoned: '🔧🏳',
 };
 
 const EMPTY: CSSProperties = {

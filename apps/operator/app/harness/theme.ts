@@ -388,6 +388,11 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   replication_repair_exhausted: 'var(--bad)',
   replication_repair_rejoin_failed: 'var(--bad)',
   replication_repair_confirmation_failed: 'var(--warn)',
+  // EI-18723690188615364: the recovery + bounded-deferral outcomes of the same
+  // window. `confirmed` is the only good one — a deferral means STILL BROKEN.
+  replication_repair_confirmed: 'var(--good)',
+  replication_repair_confirmation_deferred: 'var(--warn)',
+  replication_repair_confirmation_abandoned: 'var(--bad)',
 };
 export const BOOT_HISTORY_KIND_FALLBACK = 'var(--fg-dim)';
 

@@ -224,7 +224,28 @@ export type BootHistoryKind =
   // before synthesizing the next repair attempt directly (bypassing
   // replication-liveness.ts's edge-latch, which cannot re-fire on its own
   // while still alarmed).
-  | 'replication_repair_confirmation_failed';
+  | 'replication_repair_confirmation_failed'
+  // EI-18723690188615364: the other TWO outcomes of that same post-repair
+  // confirmation window, which used to `return` having logged nothing at all —
+  // so of its three branches only the failure above was observable. Success and
+  // indefinite deferral were both silent and therefore indistinguishable from
+  // each other, leaving the ~6min window between an applied repair and real
+  // recovery completely unreadable (an operator saw the repair-APPLIED line and
+  // concluded a 3-second incident against a real ~8.5min outage).
+  //
+  // 'replication_repair_confirmed' — ingest genuinely resumed (or caught up).
+  // Carries the elapsed time SINCE THE REPAIR WAS APPLIED, which is the true
+  // incident duration and is recorded nowhere else in the system.
+  | 'replication_repair_confirmed'
+  // The zero-peers branch (WI-5481) deferred judgment and re-armed its window:
+  // still BROKEN, not recovered. Bounded — see the 'abandoned' kind below.
+  | 'replication_repair_confirmation_deferred'
+  // The deferral budget ran out: this log never observed a live replicator peer
+  // at a judgment moment, so the re-attach ladder can never judge it. The
+  // confirmation is dropped with a verdict instead of re-arming forever in
+  // silence; permanently-zero peers is the no_replicator axis (WI-752/WI-1534
+  // swarm self-heal), so no further attempt is synthesized.
+  | 'replication_repair_confirmation_abandoned';
 
 export interface BootHistoryEntry {
   ts: number;

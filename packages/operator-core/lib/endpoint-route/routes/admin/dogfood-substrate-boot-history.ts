@@ -94,6 +94,12 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   // WI-5340: a re-attach's post-repair confirmation window elapsed with no
   // ingest progress — the repair didn't work, next attempt synthesized directly.
   replication_repair_confirmation_failed: true,
+  // EI-18723690188615364: the other two outcomes of that same window (genuine
+  // recovery, and bounded zero-peer deferral/abandonment), which used to emit
+  // nothing at all.
+  replication_repair_confirmed: true,
+  replication_repair_confirmation_deferred: true,
+  replication_repair_confirmation_abandoned: true,
 };
 const VALID_KINDS: ReadonlySet<string> = new Set(Object.keys(VALID_KINDS_MAP));
 
