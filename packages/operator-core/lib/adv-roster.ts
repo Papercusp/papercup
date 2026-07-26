@@ -81,6 +81,33 @@ export function dedupeEndedAgainstActive(
 export const GLOBAL_WORKSPACE = '*';
 
 /** One agent in the live roster: presence (primary) + adv_sessions enrichment. */
+/**
+ * An OPEN `events:await` an agent is parked on (adv-hud-fleet-board-2026-07-25
+ * P-001). "Open" = neither fired nor cancelled: a fired await is history, not a
+ * block. This is what lets a supervision surface tell "parked because it
+ * finished" apart from "parked forever on a gate nobody will open" — the failure
+ * mode that costs the most, because nobody raises a hand for it.
+ */
+/** Per-owner fleet membership as the roster carries it: the soft coord_presence
+ *  label, the fleet's bound accent, and the role within it. */
+export interface FleetInfo {
+  fleetSlug: string | null;
+  fleetColor: string | null;
+  fleetRole: string | null;
+}
+
+export interface OpenAwait {
+  /** The event key being awaited (e.g. `fleet:release-gate:suite-green`). */
+  eventKey: string;
+  /** The agent's own note about what it is waiting for; null when it gave none. */
+  note: string | null;
+  /** When the await was registered — the "blocked for how long" clock. */
+  sinceIso: string;
+  /** When it times out, if it does. null = waits indefinitely, which is exactly
+   *  the case a human most needs to see. */
+  expiresIso: string | null;
+}
+
 export interface RosterEntry {
   // ── presence (always present — the primary roster) ──
   ownerId: string;
@@ -187,6 +214,29 @@ export interface RosterEntry {
    *  what the pui paints the fleet's group header in. null when no fleet / the
    *  scheme didn't resolve (the pui falls back to a neutral header). */
   fleetColor: string | null;
+  /** Role within the named fleet ('leader' | 'member'); null when not in a fleet.
+   *  fetchPresenceFleet has always READ this alongside fleet_slug — it was simply
+   *  dropped on the floor here. /adv/HUD needs it for the LEAD badge + to sort a
+   *  fleet's leader above its members (adv-hud-fleet-board-2026-07-25 P-001). */
+  fleetRole: string | null;
+  // ── context pressure (coord_presence, watchdog-cached — adv-hud P-001) ──
+  /** Cached estimate of the session's current context size in tokens. null =
+   *  untracked (federated peer, or the watchdog hasn't sampled it yet). NEVER
+   *  coerce a null to 0: "unknown" and "empty" are different states. */
+  contextTokens: number | null;
+  /** The session's SOFT compaction limit in tokens. null ⇒ the per-model default
+   *  applies, so a pressure percentage cannot be computed from this row alone. */
+  compactionLimit: number | null;
+  /** When the CURRENT `intent` STRING was declared. Distinct from lastActiveAt,
+   *  which also moves on activity that never touches the intent text — the pair
+   *  is what separates "genuinely busy" from "stuck repeating itself", i.e. the
+   *  input to HUD's stall detector. null until the row's first write. */
+  intentDeclaredAt: string | null;
+  /** The OPEN event-await this agent is parked on — the "blocked, and on WHAT"
+   *  signal HUD's Blocked column is built from. null when the agent is not
+   *  awaiting anything. Only awaits that have neither fired nor been cancelled
+   *  count; a fired await is history, not a block. */
+  openAwait: OpenAwait | null;
   // ── live-thinking handle (agents-roster inspector) ──
   /** The agent's latest RUNNING spawned run-id — the `<runId>.jsonl` handle the
    *  live thinking stream (`/api/harness/:slug/agents/:runId/stream`) reads. null
@@ -399,10 +449,17 @@ export function mergeRosterEntries(
   defaultWakeMode: WakeMode = 'auto',
   pendingWakesByOwner: Map<string, number> = new Map(),
   nurseryByOwner: Map<string, NurseryLiveness> = new Map(),
-  fleetByOwner: Map<string, { fleetSlug: string | null; fleetColor: string | null }> = new Map(),
+  fleetByOwner: Map<string, FleetInfo> = new Map(),
   runInfoByOwner: Map<string, { runId: string; harness: string }> = new Map(),
   loopArmedOwners: Set<string> = new Set(),
   modesByOwner: Map<string, string[]> = new Map(),
+  /**
+   * Trailing OPTIONS bag for every join added from here on. Deliberately an
+   * object rather than a 14th positional: this signature is already at twelve
+   * positionals, and each new one makes every call site a counting exercise.
+   * New joins go in here so the arity stops growing.
+   */
+  extra: { awaitByOwner?: Map<string, OpenAwait> } = {},
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -508,6 +565,14 @@ export function mergeRosterEntries(
       pendingWakes: pendingWakesByOwner.get(p.ownerId) ?? 0,
       fleetSlug: fleetByOwner.get(p.ownerId)?.fleetSlug ?? null,
       fleetColor: fleetByOwner.get(p.ownerId)?.fleetColor ?? null,
+      fleetRole: fleetByOwner.get(p.ownerId)?.fleetRole ?? null,
+      // Context pressure + intent age ride straight off the presence row — no
+      // extra read. `?? null` (not `?? 0`): an unsampled context is UNKNOWN, and
+      // rendering unknown as 0% would read as "plenty of room left".
+      contextTokens: p.contextTokens ?? null,
+      compactionLimit: p.compactionLimit ?? null,
+      intentDeclaredAt: p.intentDeclaredAt ?? null,
+      openAwait: extra.awaitByOwner?.get(p.ownerId) ?? null,
       runId: runInfoByOwner.get(p.ownerId)?.runId ?? null,
       harnessSlug: runInfoByOwner.get(p.ownerId)?.harness ?? null,
       thinking: false, // annotated by mergeRosterWithAssignments (transcript mtime)
@@ -576,9 +641,16 @@ export function pendingLaunchesToRosterEntries(
       nativeSession: null,
       wakeMode: null,
       pendingWakes: 0,
-      // A pending launch hasn't joined a fleet yet — no group, no color.
+      // A pending launch hasn't joined a fleet yet — no group, no color, no role.
       fleetSlug: null,
       fleetColor: null,
+      fleetRole: null,
+      // Nothing has run, so there is no context to measure, no intent declared,
+      // and nothing to be blocked on.
+      contextTokens: null,
+      compactionLimit: null,
+      intentDeclaredAt: null,
+      openAwait: null,
       // Not yet running → no thinking stream.
       runId: null,
       harnessSlug: null,
@@ -650,8 +722,8 @@ export interface RosterWithAssignments {
  */
 async function resolveFleetInfoByOwner(
   presence: PresenceRecord[],
-): Promise<Map<string, { fleetSlug: string | null; fleetColor: string | null }>> {
-  const out = new Map<string, { fleetSlug: string | null; fleetColor: string | null }>();
+): Promise<Map<string, FleetInfo>> {
+  const out = new Map<string, FleetInfo>();
   let fleetByOwner: Awaited<ReturnType<typeof fetchPresenceFleet>>;
   try {
     fleetByOwner = await fetchPresenceFleet(presence.map((p) => p.ownerId));
@@ -660,9 +732,10 @@ async function resolveFleetInfoByOwner(
   }
   const colorCache = new Map<string, string | null>(); // `${workspaceId}\0${slug}` → accent
   for (const p of presence) {
-    const slug = fleetByOwner.get(p.ownerId)?.fleetSlug ?? null;
+    const membership = fleetByOwner.get(p.ownerId);
+    const slug = membership?.fleetSlug ?? null;
     if (!slug) {
-      out.set(p.ownerId, { fleetSlug: null, fleetColor: null });
+      out.set(p.ownerId, { fleetSlug: null, fleetColor: null, fleetRole: null });
       continue;
     }
     const key = `${p.workspaceId}\0${slug}`;
@@ -670,7 +743,68 @@ async function resolveFleetInfoByOwner(
       const scheme = await getFleetScheme(p.workspaceId, slug).catch(() => null);
       colorCache.set(key, scheme?.cursor ?? null);
     }
-    out.set(p.ownerId, { fleetSlug: slug, fleetColor: colorCache.get(key) ?? null });
+    out.set(p.ownerId, {
+      fleetSlug: slug,
+      fleetColor: colorCache.get(key) ?? null,
+      // Already present on the membership row fetchPresenceFleet returns — this
+      // used to be discarded here, which is why no surface could show LEAD.
+      fleetRole: membership?.fleetRole ?? null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Batch-read the OPEN event-await per owner (adv-hud-fleet-board-2026-07-25
+ * P-001) — the "blocked on a gate, and WHICH gate" join behind HUD's Blocked
+ * column.
+ *
+ * "Open" is the load-bearing predicate: `fired_at IS NULL AND cancelled_at IS
+ * NULL`. A fired await is history — counting it would park an agent in Blocked
+ * forever after the gate it was waiting on already opened. `superseded_at` is
+ * excluded for the same reason (a superseded await was replaced, not honoured).
+ *
+ * An agent may hold several awaits; the roster shows the OLDEST open one,
+ * because that is the one that has been costing time. DISTINCT ON does the pick
+ * in the database rather than shipping every await to the caller.
+ *
+ * Best-effort by design: a read failure yields an empty map, so the Blocked
+ * column degrades to empty and every agent still renders. A roster read must
+ * never fail because one enrichment leg did.
+ */
+export async function openAwaitsByOwner(
+  workspaceId: string | null = null,
+): Promise<Map<string, OpenAwait>> {
+  const out = new Map<string, OpenAwait>();
+  try {
+    const { sql } = getOrgPg();
+    const rows = (await sql`
+      SELECT DISTINCT ON (subscriber_id)
+             subscriber_id, event_key, note, created_at, expires_ts
+        FROM harness_shared.event_awaits
+       WHERE fired_at IS NULL
+         AND cancelled_at IS NULL
+         AND superseded_at IS NULL
+         AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
+       ORDER BY subscriber_id, created_at ASC
+    `) as unknown as Array<{
+      subscriber_id: string;
+      event_key: string;
+      note: string | null;
+      created_at: Date | string;
+      expires_ts: Date | string | null;
+    }>;
+    for (const r of rows) {
+      if (!r.subscriber_id || !r.event_key) continue;
+      out.set(r.subscriber_id, {
+        eventKey: r.event_key,
+        note: r.note ?? null,
+        sinceIso: new Date(r.created_at).toISOString(),
+        expiresIso: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
+      });
+    }
+  } catch {
+    /* best-effort: no awaits join → Blocked column empty, roster still renders */
   }
   return out;
 }
@@ -851,9 +985,13 @@ export async function mergeRosterWithAssignments(
   }
   // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping —
   // and the official standing-modes read (EI-7626), both batched, in parallel.
-  const [fleetInfoByOwner, modesByOwner] = await Promise.all([
+  const [fleetInfoByOwner, modesByOwner, awaitByOwner] = await Promise.all([
     resolveFleetInfoByOwner(presence),
     agentModesByOwner(presence),
+    // adv-hud P-001: the open-await join (HUD's Blocked column). Batched here
+    // rather than awaited after — a serial hop would add to the roster-merge
+    // baseline every caller pays (see the perf docs' serial-loop anti-pattern).
+    openAwaitsByOwner(workspaceId),
   ]);
   const entries = mergeRosterEntries(
     presence,
@@ -869,6 +1007,7 @@ export async function mergeRosterWithAssignments(
     runInfoByOwner,
     loopArmedOwners,
     modesByOwner,
+    { awaitByOwner },
   );
   const active = enrichPidLiveness(entries, os.hostname());
   // Stamp local agents with this machine's label (federated rows already carry their

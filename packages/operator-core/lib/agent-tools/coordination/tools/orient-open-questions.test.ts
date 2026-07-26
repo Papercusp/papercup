@@ -77,8 +77,8 @@ describe('shapeOpenQuestions (WI-5807)', () => {
     expect(fold.count).toBe(OPEN_QUESTIONS_CAP + 4);
     expect(fold.questions).toHaveLength(OPEN_QUESTIONS_CAP);
     // Newest first — an agent should meet the question someone is still waiting on.
-    expect(fold.questions.map((q) => q.id)).toEqual(['conv-0', 'conv-1', 'conv-2'].slice(0, OPEN_QUESTIONS_CAP));
-    expect(fold.hint).toContain(`${OPEN_QUESTIONS_CAP + 4} open questions`);
+    expect(fold.questions.map((q) => q.id)).toEqual(many.slice(0, OPEN_QUESTIONS_CAP).map((r) => r.id));
+    expect(fold.hint).toContain(`${OPEN_QUESTIONS_CAP + 4} open questions in this workspace have`);
   });
 
   it('orders newest-first even when the caller hands rows in a different order', () => {
@@ -110,7 +110,7 @@ describe('shapeOpenQuestions (WI-5807)', () => {
 
   it('singularizes the hint for exactly one question', () => {
     const fold = shapeOpenQuestions([row()], { nowMs: NOW })!;
-    expect(fold.hint).toContain('1 open question has');
-    expect(fold.hint).not.toContain('questions has');
+    expect(fold.hint).toContain('1 open question in this workspace has gone UNANSWERED');
+    expect(fold.hint).not.toContain('questions');
   });
 });

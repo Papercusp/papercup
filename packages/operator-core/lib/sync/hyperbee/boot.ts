@@ -2577,25 +2577,42 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // getHivePolicyCached's doc comment). The policy is scoped to the Hive home
       // (hiveHomeProjectionSlug rebinds on the joiner re-key; the owner's home harness is
       // its own slug). null ⇒ no policy ⇒ no enforcement.
-      const policyScopeSlug = hiveHomeProjectionSlug ?? opts.harnessSlug;
+      // WI-5783 FIX: the enforcement seam used to fall back to bare `opts.harnessSlug`
+      // when `hiveHomeProjectionSlug` is undefined — correct for a genuine JOINER
+      // (pre-rekey) or the owner's OWN home-scoped boot (where `opts.harnessSlug` IS
+      // the home slug), but WRONG for an OWNED hive's MEMBER-scoped boot on the
+      // OWNER's own machine (e.g. a from-repo owner also runs a separate boot/merge
+      // loop for its member harness, alongside its home-harness boot). That member
+      // boot's `opts.harnessSlug` is the MEMBER slug, not the Hive's home/policy slug,
+      // so `getHivePolicyCached` silently missed (null) and EN-4/EN-3/EN-2 enforcement
+      // no-opped for every op this loop merged — while the owner's home-scoped boot
+      // loop, racing the SAME merge, enforced correctly. This is why AK-ban read as
+      // flaky (PASS/FAIL alternating on which boot loop happened to apply the probed
+      // op first), not a clean always-fails bug — confirmed live via a one-shot
+      // [EN-4-TRACE] instrumentation (this fix supersedes it): on A, the
+      // harnessSlug='hello-world' (member) boot showed
+      // `hiveHomeProjectionSlug=<none> policyScopeSlug=hello-world ownerPolicyNull=true`
+      // at the exact moment the harnessSlug='hello-world-pot' (home) boot on the SAME
+      // instance correctly showed `policyScopeSlug=hello-world-pot ownerPolicyNull=false
+      // bannedGithubIds=["<B>"]` — i.e. two boot loops on ONE process, one policed, one
+      // not, for the identical Hive.
+      //
+      // `resolvedPotHomeSlug` (computed above, WI-2105 REV/WI-559 FED-1) already solves
+      // exactly this for the member-content guard: `potHomeSlugForHarness(workspaceId,
+      // opts.harnessSlug)` resolves the OWNING hive's home slug for ANY harness — the
+      // home boot itself (trivially resolvedPotHomeSlug === opts.harnessSlug), an owned
+      // hive's member boot (resolves to the pot/home slug — the fix), a genuine joiner
+      // pre-rekey (gated off by `bindingResolvesHiveHomeProjection`, unaffected), and a
+      // non-hive harness (undefined, unaffected — falls through to opts.harnessSlug
+      // unchanged). Reusing it here closes the admit/apply-style asymmetry the same way
+      // WI-559/FED-1 closed it for the content guard: hiveHomeProjectionSlug (joiner
+      // rebind) wins when set, else the general hive-home resolution, else this boot's
+      // own slug (today's fallback, preserved for the non-hive-peered case).
+      const policyScopeSlug = hiveHomeProjectionSlug ?? resolvedPotHomeSlug ?? opts.harnessSlug;
       const ownerPolicy: HivePolicy | null =
         (
           await getHivePolicyCached(opts.workspaceId, policyScopeSlug).catch(() => null)
         )?.policy ?? null;
-      // WI-5783 diagnostic (temporary, env-gated — remove once the AK-ban member-vs-home
-      // scope hypothesis is confirmed/ruled out): the enforcement seam falls back to
-      // `opts.harnessSlug` when `hiveHomeProjectionSlug` is undefined (the OWNER boot
-      // path). If the boot process actually merging a peer's op runs under a DIFFERENT
-      // harness slug than the one `pot:ban_member`'s `potHomeSlug` was written under
-      // (e.g. a from-repo owner's MEMBER-scoped boot vs its POT/home-scoped policy row),
-      // `getHivePolicyCached` silently misses (null) and enforcement no-ops. This makes
-      // that scope mismatch (or its absence) a one-read live fact instead of a guess.
-      if (process.env.PAPERCUSP_EN4_TRACE === '1') {
-
-        console.error(
-          `[EN-4-TRACE] ${new Date().toISOString()} harnessSlug=${opts.harnessSlug} hiveHomeProjectionSlug=${hiveHomeProjectionSlug ?? '<none>'} policyScopeSlug=${policyScopeSlug} ownerPolicyNull=${ownerPolicy === null} bannedGithubIds=${JSON.stringify(ownerPolicy?.moderation?.bannedGithubIds ?? [])}`,
-        );
-      }
       // Compose the single enforcement decorator EXACTLY as policy-admission.ts documents:
       // EN-2 rate (inner) wrapped by EN-4 ban → allowlist → takedown → content (outer),
       // over the CURRENT scopedApply (which `rekey` may have rebound). With no policy this

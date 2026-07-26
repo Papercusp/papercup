@@ -37,11 +37,18 @@ beforeAll(async () => {
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   await ensureConversationsTable(rootSql); // the store's own DDL (mirrors migration 132)
-  // Minimal coord_threads + coord_thread_posts for reparentThread.
+  // coord_threads + coord_thread_posts for reparentThread AND the WI-5807
+  // unansweredOnly join. `title`, `created_at` and `post_count` are NOT padding:
+  // migration 123 gives coord_threads all three, `title`/`created_at` COLLIDE with
+  // coord_conversations' own columns, and post_count is what "unanswered" is
+  // measured from — a rig missing them would let an ambiguous-column or
+  // missing-column regression pass here and only fail in production.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.coord_threads (
       workspace_id text NOT NULL, thread_id text NOT NULL,
-      parent_kind text NOT NULL, parent_ref text NOT NULL
+      parent_kind text NOT NULL, parent_ref text NOT NULL,
+      title text, created_at timestamptz DEFAULT now() NOT NULL,
+      post_count integer NOT NULL DEFAULT 0
     )`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.coord_thread_posts (
@@ -148,5 +155,74 @@ describe('reparentThread (PG, atomic re-key)', () => {
 
   it('is a no-op when the source parent has no thread', async () => {
     expect(await reparentThread(rootSql, WS, { kind: 'conversation', ref: 'nope' }, { kind: 'issue', ref: 'EI-1' }, 'issue-thread-EI-1')).toEqual({ reparented: false });
+  });
+});
+
+// ── WI-5807 (P-007): the unanswered/unscoped list filters ────────────────────
+// These back coord:orient's open-questions PULL surface. They are SQL-shaped
+// (a LEFT JOIN against coord_threads plus an OR-widened harness predicate), so a
+// fake-sql unit test proves nothing about them — the join, the COALESCE, and the
+// `c.`-qualification against coord_threads' colliding title/created_at columns
+// only exist against a real Postgres.
+describe('PgConversationStore.list — unansweredOnly / includeUnscoped (PG)', () => {
+  const thread = (ref: string, postCount: number) =>
+    rootSql`INSERT INTO harness_shared.coord_threads (workspace_id, thread_id, parent_kind, parent_ref, title, post_count)
+            VALUES (${WS}, ${'thr-' + ref}, 'conversation', ${ref}, 'a THREAD title that must not shadow the conversation title', ${postCount})`;
+
+  it('unansweredOnly keeps zero-reply AND never-threaded conversations, drops replied ones', async () => {
+    const s = store();
+    await s.create(mk('c-never-threaded')); // no coord_threads row at all
+    await s.create(mk('c-zero-posts'));
+    await s.create(mk('c-answered'));
+    await thread('c-zero-posts', 0);
+    await thread('c-answered', 2);
+
+    const unanswered = await s.list({ unansweredOnly: true });
+    expect(unanswered.map((r) => r.id).sort()).toEqual(['c-never-threaded', 'c-zero-posts']);
+    // …and the filter is opt-in: without it, the replied one is still listed.
+    expect((await s.list({})).map((r) => r.id)).toContain('c-answered');
+  });
+
+  it('projects the CONVERSATION row through the join (no column shadowed by coord_threads)', async () => {
+    const s = store();
+    await s.create(mk('c-1', { title: 'the conversation title', created_ts: '2026-02-02T00:00:00Z' }));
+    await thread('c-1', 0);
+    const [row] = await s.list({ unansweredOnly: true });
+    // coord_threads also has title + created_at; an unqualified select would
+    // either error or silently return the THREAD's values here.
+    expect(row.title).toBe('the conversation title');
+    expect(row.created_ts).toBe('2026-02-02T00:00:00.000Z');
+    expect(row.id).toBe('c-1');
+  });
+
+  it('includeUnscoped widens a harness filter to "this harness OR workspace-wide"', async () => {
+    const s = store();
+    await s.create(mk('c-mine', { harness_slug: 'web' }));
+    await s.create(mk('c-other', { harness_slug: 'other-harness' }));
+    await s.create(mk('c-global', { harness_slug: null, scope: 'operator' }));
+
+    // Strict (existing behavior): only the harness's own.
+    const strict = await s.list({ harness_slug: 'web' });
+    expect(strict.map((r) => r.id)).toEqual(['c-mine']);
+
+    // Widened: the harness's own PLUS the workspace-wide ones — the measured
+    // reason this exists (32 of 39 open questions are harness-less).
+    const widened = await s.list({ harness_slug: 'web', includeUnscoped: true });
+    expect(widened.map((r) => r.id).sort()).toEqual(['c-global', 'c-mine']);
+    expect(widened.map((r) => r.id)).not.toContain('c-other');
+  });
+
+  it('composes with the existing scalar filters and stays workspace-scoped', async () => {
+    const s = store();
+    await s.create(mk('c-open-q', { kind: 'question' }));
+    await s.create(mk('c-open-d', { kind: 'discussion' }));
+    await s.create(mk('c-resolved-q', { kind: 'question' }));
+    await s.setState('c-resolved-q', 'resolved');
+    await rootSql`INSERT INTO harness_shared.coord_conversations
+      (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, state, created_at, updated_at)
+      VALUES ('other-ws', 'c-foreign', 'question', 'harness', 'web', 'u1', 't', 'b', 'open', now(), now())`;
+
+    const rows = await s.list({ kind: 'question', state: 'open', unansweredOnly: true });
+    expect(rows.map((r) => r.id)).toEqual(['c-open-q']);
   });
 });

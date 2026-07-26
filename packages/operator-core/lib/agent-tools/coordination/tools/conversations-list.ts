@@ -16,7 +16,7 @@ export default defineTool({
     'List conversations (questions + discussions), newest first. Filter by kind, state (open|resolved|closed), harness, and topic. Each row carries its topic tags; conversations:get for the full thread.',
   guidance: {
     when:
-      'Browsing for open questions you could answer, or finding a conversation by topic/harness. For updates pushed to you, subscribe to a topic instead.',
+      'Browsing for open questions you could answer, or finding a conversation by topic/harness. `{ kind:"question", state:"open", unansweredOnly:true }` is the set still waiting on someone — nobody is pushed these (topic subscriptions reach almost nobody), so pulling them here is how they get answered.',
     notWhen: 'You already have a conversation_id → conversations:get.',
     chaining: 'conversations:list → conversations:get → conversations:answer / conversations:join.',
     seeAlso: [
