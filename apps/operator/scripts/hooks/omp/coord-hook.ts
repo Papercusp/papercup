@@ -1334,6 +1334,10 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
   // substitution rules that depend on this verb.
   'systemctl',
   'curl',
+  // P-010 (git-read family, `capability:git`). Reads only — the pair's own
+  // pattern decides which `git` atoms it claims; this set only decides which
+  // ones pay the operator round-trip at all.
+  'git',
 ]);
 
 /** Resource-registry pre-filter — mirrors the shell hook's `_needs_check` regex.

@@ -1343,7 +1343,11 @@ _SUBST_ENV_RE = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+')
 # today — it is listed here regardless, because the two pre-filters answer
 # different questions and a future edit to the resource token list must not
 # silently disable the substitution rules that depend on this verb.
-_SUBSTITUTION_HEADS = frozenset(('sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl'))
+#
+# P-010 adds 'git' (the git-read family, `capability:git`). Reads only — the
+# pair's own pattern decides which `git` atoms it claims; this set only decides
+# which ones pay the operator round-trip at all.
+_SUBSTITUTION_HEADS = frozenset(('sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl', 'git'))
 
 
 def _substitution_prefilter_hit(cmd):
