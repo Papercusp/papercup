@@ -114,6 +114,13 @@ interface WorkRefPillHastNode {
  * this component takes no position on it and simply forwards clicks when a
  * handler is given (renders a static, non-interactive pill otherwise, same
  * WorkRefPill degrade as when no plan context resolves a P-ref).
+ *
+ * P-008: the payload also carries `planSlug` (the message's OWN plan_slug,
+ * already in scope here for hydration) alongside `id`/`kind` — NOT a second
+ * activation path, just enriching the one D-002 seam with the one extra bit
+ * a 'plan-item' destination needs (which plan to open) that `id`/`kind` alone
+ * can't carry. A 'work-item' destination ignores it; harmlessly `undefined`
+ * when the message carries no plan_slug.
  */
 function ChatMessageContent({
   content,
@@ -124,7 +131,7 @@ function ChatMessageContent({
   content: string;
   harnessSlug?: string;
   planSlug?: string | null;
-  onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind }) => void;
+  onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => void;
 }) {
   const components = useMemo(
     () => ({
@@ -140,7 +147,7 @@ function ChatMessageContent({
             harnessSlug={harnessSlug ?? ''}
             planSlug={planSlug}
             size="xs"
-            onActivate={onWorkRefActivate ? () => onWorkRefActivate({ id, kind }) : undefined}
+            onActivate={onWorkRefActivate ? () => onWorkRefActivate({ id, kind, planSlug }) : undefined}
           />
         );
       },
@@ -236,9 +243,12 @@ export interface ChatConversationProps {
    * markdown content (chat-ref-pills-2026-07-26 P-004). This component only
    * wires the MECHANISM — it takes no position on what a click should DO
    * (open a popup, per the 2026-07-26 owner re-spec D-001, is the caller's
-   * decision). Omit to render static, non-interactive pills.
+   * decision). Omit to render static, non-interactive pills. P-008: the
+   * payload also carries the message's own `planSlug` — the one extra bit a
+   * 'plan-item' destination needs beyond `id`/`kind` (which plan to open);
+   * `undefined` when the message carries no plan_slug context.
    */
-  onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind }) => void;
+  onWorkRefActivate?: (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => void;
 
   /**
    * Optional per-message AVATAR override (gui-chat-session-controls-2026-07-25

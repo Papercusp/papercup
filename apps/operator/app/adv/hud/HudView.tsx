@@ -29,6 +29,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringLiteral, useQueryState } from 'nuqs';
 import SessionChatModal from '@/app/_components/chat/SessionChatModal';
 import { scopeInboxItems, useInboxAttention } from '@/app/_components/inbox/use-inbox-pending';
+import NewSessionLauncher from '@/app/adv/sessions/NewSessionLauncher';
 import HudBoard from './HudBoard';
 import {
   ALL_FLEETS,
@@ -88,15 +89,27 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
 
   /** The asks addressed to the human, narrowed by the SAME scoping the inbox
    *  applies. Without it the raw attention feed is the whole ~15-source
-   *  firehose (the "328" bug) and every agent would look like it needs you. */
+   *  firehose (the "328" bug) and every agent would look like it needs you.
+   *
+   * hud-consolidation-2026-07-26 P-002: this INCLUDES items with no
+   * `ownerAgentId` (previously filtered out here) — `buildHudBoard` splits
+   * them into `board.unattributed` on its own (`asksByOwner` already ignores
+   * the ownerless ones for per-session columns, so this is additive, not a
+   * behavior change to the existing needs-you column). See HudAsk's doc for
+   * why an ownerless Decision is structural, not an edge case. */
   const asks: HudAsk[] = useMemo(() => {
     const scoped = scopeInboxItems(attention.items ?? []);
     return scoped
-      .filter((i) => i.needsHuman && i.ownerAgentId)
+      .filter((i) => i.needsHuman)
       .map((i) => ({
         ownerAgentId: i.ownerAgentId,
         title: i.title,
         occurredAt: (i as { occurredAt?: string | null }).occurredAt ?? null,
+        id: i.id,
+        kind: i.kind,
+        itemRef: i.itemRef,
+        planSlug: i.planSlug,
+        harnessSlug: i.harnessSlug,
       }));
   }, [attention.items]);
 
@@ -160,6 +173,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         onOpenSession={(ownerId) => void setOpenOwner(ownerId)}
         loading={roster.loading}
         error={roster.error ? String(roster.error) : null}
+        headerAction={<NewSessionLauncher />}
       />
       {/* The existing chat-grade session popup: real transcript + live composer.
           Reused wholesale so answering from HUD is byte-identical to answering

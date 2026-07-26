@@ -125,6 +125,10 @@ export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture>
   // "this is known local-environment churn" error instead of a cryptic raw
   // "no such database: papercusp_it" deep inside a later query.
   await assertPgReachable(dsn, 'setupBaselineCoordFixture');
+  if (process.env.PAPERCUSP_DEBUG_FIXTURE_DSN === '1') {
+    const u = new URL(dsn);
+    console.error(`[DEBUG_FIXTURE_DSN] pid=${process.pid} host=${u.host} db=${u.pathname}`);
+  }
 
   // EI-18683737202696167: serialize against every OTHER file using this
   // fixture (see the doc comment on acquireFixtureMutex) BEFORE we truncate

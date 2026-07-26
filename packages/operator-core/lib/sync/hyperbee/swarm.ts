@@ -1228,19 +1228,27 @@ export interface PeerWireStats {
 export function readWireStats(socket: unknown): PeerWireStats {
   const raw = (socket as { rawStream?: Record<string, unknown> } | null | undefined)?.rawStream;
   if (!raw || typeof raw !== 'object') return { present: false };
-  const out: PeerWireStats = { present: false };
-  const copy = (key: keyof PeerWireStats & string) => {
-    const v = raw[key];
-    if (typeof v === 'number' && Number.isFinite(v)) {
-      (out as Record<string, unknown>)[key] = v;
-      out.present = true;
-    }
-  };
-  copy('bytesReceived');
-  copy('bytesTransmitted');
-  copy('packetsReceived');
-  copy('rtoCount');
-  copy('retransmits');
+  // Explicit per-field reads (no dynamic key write): a finite number is a real
+  // reading and flips `present`; anything else stays ABSENT rather than 0.
+  const num = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  const bytesReceived = num(raw.bytesReceived);
+  const bytesTransmitted = num(raw.bytesTransmitted);
+  const packetsReceived = num(raw.packetsReceived);
+  const rtoCount = num(raw.rtoCount);
+  const retransmits = num(raw.retransmits);
+  const present =
+    bytesReceived !== undefined ||
+    bytesTransmitted !== undefined ||
+    packetsReceived !== undefined ||
+    rtoCount !== undefined ||
+    retransmits !== undefined;
+  const out: PeerWireStats = { present };
+  if (bytesReceived !== undefined) out.bytesReceived = bytesReceived;
+  if (bytesTransmitted !== undefined) out.bytesTransmitted = bytesTransmitted;
+  if (packetsReceived !== undefined) out.packetsReceived = packetsReceived;
+  if (rtoCount !== undefined) out.rtoCount = rtoCount;
+  if (retransmits !== undefined) out.retransmits = retransmits;
   return out;
 }
 

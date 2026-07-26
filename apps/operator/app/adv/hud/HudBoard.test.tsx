@@ -45,6 +45,7 @@ function entry(over: Partial<HudRosterEntry> = {}): HudRosterEntry {
     claims: [],
     declaredUnclaimed: false,
     currentPlanSlug: null,
+    harnessSlug: null,
     agentPaneKind: 'su',
     role: 'su',
     agent: 'claude',

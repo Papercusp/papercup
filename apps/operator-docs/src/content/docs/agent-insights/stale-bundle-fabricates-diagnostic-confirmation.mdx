@@ -1,0 +1,107 @@
+---
+title: A stale pre-built bundle doesn't just lose data — it fabricates a clean confirmation
+description: Why verifying an experiment rig's instrumentation against source (node_modules, the patch file) is not enough — the check must run against the artifact actually executed.
+---
+
+## The defect (EI-18683847182779973)
+
+An investigation rig runs a large pre-built serve bundle (esbuild inlines every
+dependency into one file). When a diagnostic patch is applied to
+`node_modules` **after** the bundle was built, the rig silently executes
+**without** the instrumentation — and the absent field does not fail loudly.
+It reads `undefined`, which every ordinary render (`?? false`, a falsy check,
+`JSON.stringify` of an absent key) converts into a plausible-looking,
+**legitimate** value.
+
+This is worse than an ordinary stale-build bug. The value it fabricates is not
+random — it is systematically the **falsy** one, which in a diagnostic
+context is usually the "nothing unusual happened" reading. So the failure
+mode is not "the run errors" or "the number looks weird"; it is **the run
+produces a clean confirmation of whatever hypothesis predicted the falsy
+value**. A stale build here doesn't lose data — it manufactures agreement.
+
+## Concrete instance (verified by timestamp + grep)
+
+- `patches/hyperdht+6.32.0.patch` — adds `udxRelayed` / `udxServerAddress` /
+  `udxClientAddress` to the connection via `Object.defineProperty`.
+- The candidate bundle under test was built **before** that patch landed.
+- `grep -c 'udxRelayed' <bundle>` → `0`. The bundle inlines hyperdht, so it
+  carries its own pre-patch copy of `connect.js`/`server.js`.
+- `node_modules/hyperdht/lib/connect.js` **was** live-patched — so every
+  source-level check an agent performs says the instrumentation exists. Only
+  the artifact the rig actually executes lacks it.
+
+Had the run proceeded, `socket.udxRelayed` would have been `undefined` on
+every connection, rendered as not-relayed, and read as a clean confirmation
+of a prediction the investigation had already committed to.
+
+This was the **second** occurrence of the same class in the same
+investigation — `bytesReceived: 0` across 101 failing connections earlier had
+to be defended against exactly this reading (was it a real measurement, or
+`undefined ?? 0`?), costing a dedicated control-arm analysis to resolve. Two
+independent absent-vs-zero traps in one investigation is a strong signal this
+is structural, not bad luck.
+
+## Root cause
+
+There is no gate asserting that **the artifact being executed contains the
+instrumentation the experiment depends on**. The build step and the patch
+step are each independently correct; nothing checks their ORDER, and nothing
+checks the produced binary. Verification performed against source
+(`node_modules`, the patch file, the repo) is exactly where the check passes
+even when the run is broken — the source and the running artifact have
+silently diverged.
+
+## The guard
+
+`packages/operator-core/lib/dev/assert-bundle-markers.ts` —
+`assertBundleContainsMarkers({ bundlePath, requiredMarkers })` — greps the
+bundle you are about to execute for every symbol/field name your diagnostic
+depends on and throws a loud, specific error naming exactly which marker(s)
+are missing if any are absent. Cheap (one file read + substring scan); fails
+at **launch**, before you burn a run, instead of after — where the very
+question you needed to ask ("was this instrumented?") is unanswerable from
+the logs alone.
+
+```ts
+import { assertBundleContainsMarkers } from '@papercusp/operator-core/lib/dev/assert-bundle-markers';
+
+assertBundleContainsMarkers({
+  bundlePath: '/tmp/wi5837-patches/cand7_full.serve.mjs',
+  requiredMarkers: ['udxRelayed', 'udxServerAddress', 'udxClientAddress'],
+});
+// throws immediately if the bundle predates the hyperdht relay patch —
+// never silently runs the experiment on stale instrumentation.
+```
+
+Call it immediately before spawning/executing **any** pre-built bundle whose
+output you plan to use as evidence for a diagnostic conclusion — not just for
+hyperdht/P2P work. This applies to any ad hoc investigation rig that
+pre-builds a bundle and expects a `patches/` or source edit to be reflected
+in it.
+
+## Two guards this does NOT (yet) implement — still worth doing by hand
+
+1. **Bundle provenance stamping** — stamp a build with the mtimes/hashes of
+   the patches present in `node_modules` at build time, and refuse to run a
+   bundle whose patch-set is older than the current `patches/` directory.
+   Not implemented here deliberately: a bundle can rebuild without touching
+   `patches/`'s own mtime (e.g. a plain `npm install`), so provenance-by-mtime
+   can false-negative in a way a marker-presence check cannot. If you need
+   this, treat it as a *second*, independent layer — not a replacement.
+2. **Never let a diagnostic field collapse to a falsy default.** When you
+   write instrumentation into a patch, prefer an explicit sentinel
+   (`'absent'` / `null` with a distinct shape) over letting the reader default
+   an absent key to `false`/`0`/`undefined`. Then absent-vs-zero is decidable
+   from the log alone, and no control-arm analysis is ever needed to recover
+   it after the fact — this is what the `bytesReceived: 0` occurrence in the
+   same investigation cost to resolve.
+
+## When you'll hit this again
+
+Any time you: (a) pre-build a bundle that inlines its dependencies (esbuild,
+webpack, ncc, pkg, …), AND (b) iterate on a `node_modules` patch or source
+edit that the bundle is supposed to pick up on the next build, AND (c) the
+experiment's conclusion depends on a field that only exists because of that
+edit. If any of (a)–(c) hold, assert on the artifact before you trust its
+output.

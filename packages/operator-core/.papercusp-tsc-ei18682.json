@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "incremental": false },
+  "include": [
+    "lib/sync/hyperbee/swarm.ts",
+    "lib/sync/hyperbee/boot.ts",
+    "lib/sync/hyperbee/__tests__/swarm-data-path-honesty.test.ts",
+    "lib/sync/hyperbee/__tests__/swarm.test.ts"
+  ]
+}

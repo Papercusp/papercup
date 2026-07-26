@@ -81,6 +81,31 @@
 
 .hud__spacer { flex: 1 1 auto; }
 
+/* ── header action slot ("+ New session") ────────────────────────────────── */
+/* hud-consolidation-2026-07-26 P-001: the launch control lives in
+   NewSessionLauncher.tsx (shared with AdvSessionsClient's own picker); this
+   file only lays out the slot + the two Selects + Button it renders. No new
+   colours — Select/Button already carry their own DTCG-token styling. */
+
+.hud__header-action {
+  display: flex;
+  align-items: center;
+}
+
+.pc-new-session-launcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pc-new-session-launcher__select--plan {
+  max-width: 220px;
+}
+
+.pc-new-session-launcher__select--model {
+  max-width: 140px;
+}
+
 /* ── fleet filter strip ───────────────────────────────────────────────────── */
 
 .hud__fleets {
@@ -218,6 +243,34 @@
   line-height: 1.5;
 }
 
+/* ── unattributed asks (hud-consolidation-2026-07-26 P-002) ─────────────────
+   A single full-width strip above the columns, not a sixth column: these are
+   not sessions, so they don't belong in the 5-column session grid — but they
+   are needs-human Decisions, so they share the needs-you warn treatment. */
+.hud__unattributed {
+  flex: none;
+  padding: 0 14px 8px;
+}
+
+.hud__unattributed .hud__col-h {
+  color: var(--warn);
+  border-color: rgb(from var(--warn) r g b / 0.35);
+  background: rgb(from var(--warn) r g b / 0.08);
+}
+.hud__unattributed .hud__col-h .n { color: var(--warn); }
+
+.hud__unattributed-b {
+  border: 1px solid var(--border);
+  border-radius: 0 0 4px 4px;
+  background: var(--bg-2);
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 /* ── card ─────────────────────────────────────────────────────────────────── */
 
 /* Same WebKitGTK button-flex collapse as .hud__count / .hud__fleet above
@@ -249,6 +302,16 @@
 .hud__card--needs-you { border-color: rgb(from var(--warn) r g b / 0.45); }
 .hud__card--blocked { border-color: rgb(from var(--bad) r g b / 0.35); }
 .hud__card--stalled { border-color: rgb(from var(--warn) r g b / 0.4); }
+
+/* Unattributed asks (hud-consolidation-2026-07-26 P-002) render as a plain
+   `<div>`, not a `<button>` — there is no session to open (see
+   UnattributedAskCard's doc) — so the pointer cursor + hover-lift `.hud__card`
+   implies elsewhere is reset to a neutral, non-interactive treatment. */
+.hud__card--unattributed {
+  cursor: default;
+  border-color: rgb(from var(--warn) r g b / 0.45);
+}
+.hud__card--unattributed:hover { border-color: rgb(from var(--warn) r g b / 0.45); background: var(--bg); }
 
 /* The fleet rail: a per-card accent from DATA (fleetColor), falling back to a
    neutral so an unfleeted session still aligns with its neighbours. */

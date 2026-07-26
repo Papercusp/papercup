@@ -14,8 +14,13 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
-import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { usePlanList, type PlanListRow } from '../../admin/plans/plans-api';
+import {
+  buildLaunchPlanOptions,
+  MODEL_SELECT_DEFAULT,
+  OMP_MODEL_OPTIONS,
+  PLAN_SELECT_PLACEHOLDER,
+} from './NewSessionLauncher';
 
 interface ServerRowSummary {
   ompSessionId: string;
@@ -219,17 +224,6 @@ const SESSION_PANELS: Array<{ value: SessionPanel; label: string }> = [
   { value: 'tools', label: 'Tools' },
   { value: 'memory', label: 'Memory' },
   { value: 'handoff', label: 'Handoff' },
-];
-
-const PLAN_SELECT_PLACEHOLDER = '__select_plan__';
-const MODEL_SELECT_DEFAULT = '__default_model__';
-
-const OMP_MODEL_OPTIONS = [
-  { value: MODEL_SELECT_DEFAULT, label: 'Default' },
-  { value: 'sonnet', label: 'Claude Sonnet' },
-  { value: 'opus', label: 'Claude Opus' },
-  { value: 'haiku', label: 'Claude Haiku' },
-  { value: 'gpt-5.2', label: 'GPT-5.2' },
 ];
 
 /** Agents the "Launch SU" button can spawn (via the psu launcher). */
@@ -2533,78 +2527,8 @@ function formatDate(iso: string): string {
     return iso;
   }
 }
-/**
- * Build the grouped + sorted option tree for the "Start from plan
- * context" picker. Per `plans-newbutton-and-subharness-scope-2026-05-25`
- * P-026 / D-011.
- *
- * Pure — exported for unit-test access.
- */
-export function buildLaunchPlanOptions(
-  plans: PlanListRow[],
-  activeHarness: string | null | undefined,
-  loading: boolean,
-  noHarnessLabel = '(unassigned)',
-): import('@/app/harness/Select').SelectEntry[] {
-  const placeholder = {
-    value: PLAN_SELECT_PLACEHOLDER,
-    label: loading ? 'Loading plans…' : 'Select plan…',
-  };
-  if (plans.length === 0) return [placeholder];
-
-  const NO_HARNESS_KEY = '__no-harness__';
-  const byHarness = new Map<string, PlanListRow[]>();
-  for (const p of plans) {
-    const key = p.harness?.trim() || NO_HARNESS_KEY;
-    let bucket = byHarness.get(key);
-    if (!bucket) {
-      bucket = [];
-      byHarness.set(key, bucket);
-    }
-    bucket.push(p);
-  }
-
-  // Sort plans within each harness by updated DESC (newest first).
-  const updatedMs = (p: PlanListRow): number => {
-    if (!p.updated) return 0;
-    const t = Date.parse(p.updated);
-    return Number.isFinite(t) ? t : 0;
-  };
-  for (const list of byHarness.values()) {
-    list.sort((a, b) => updatedMs(b) - updatedMs(a));
-  }
-
-  const allKeys = [...byHarness.keys()];
-  const active = activeHarness?.trim() || null;
-  const activeFirst = active && byHarness.has(active) ? [active] : [];
-  const restKeys = allKeys
-    .filter((k) => k !== active && k !== NO_HARNESS_KEY)
-    .sort((a, b) => a.localeCompare(b));
-  const orderedKeys = [
-    ...activeFirst,
-    ...restKeys,
-    ...(byHarness.has(NO_HARNESS_KEY) ? [NO_HARNESS_KEY] : []),
-  ];
-
-  const groups: import('@/app/harness/Select').SelectEntry[] = orderedKeys.map((key) => {
-    const label = key === NO_HARNESS_KEY ? noHarnessLabel : key;
-    return {
-      kind: 'group' as const,
-      label,
-      options: byHarness.get(key)!.map((plan) => ({
-        value: plan.slug,
-        label: formatLaunchPlanOptionLabel(plan),
-      })),
-    };
-  });
-
-  return [placeholder, ...groups];
-}
-
-/** "<title> · updated 5d ago" or just "<title>" when no updated field. */
-function formatLaunchPlanOptionLabel(plan: PlanListRow): string {
-  const title = plan.title?.trim() || plan.slug;
-  if (!plan.updated) return title;
-  const rel = formatRelativeUpdated(plan.updated);
-  return rel ? `${title} · updated ${rel}` : title;
-}
+// buildLaunchPlanOptions / formatLaunchPlanOptionLabel / the
+// PLAN_SELECT_PLACEHOLDER + MODEL_SELECT_DEFAULT + OMP_MODEL_OPTIONS
+// constants moved to ./NewSessionLauncher (hud-consolidation-2026-07-26
+// P-001) so the HUD board header can reuse the exact same "launch from plan
+// context" picker without a second implementation. Imported above.

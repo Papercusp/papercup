@@ -16,13 +16,15 @@
  * nothing more.
  */
 
-import { memo } from 'react';
+import { memo, type ReactNode } from 'react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import FleetRoleGlyph from '@/app/_components/FleetRoleGlyph';
 import {
   ALL_FLEETS,
   SOLO_FLEET_KEY,
   formatAge,
+  HUD_ASK_KIND_LABEL,
+  type HudAsk,
   type HudBoard as HudBoardData,
   type HudBadge,
   type HudColumnId,
@@ -71,6 +73,16 @@ export interface HudBoardProps {
   onOpenSession: (ownerId: string) => void;
   loading: boolean;
   error: string | null;
+  /**
+   * Slot rendered at the right edge of the board header, before the
+   * su-only toggle — the "+ New session" launch control
+   * (hud-consolidation-2026-07-26 P-001). A slot rather than a fixed
+   * component so this file stays presentation-only and testable without
+   * mocking a live plan-list fetch (see the file docblock); HudView
+   * supplies the real `<NewSessionLauncher />`, tests can omit it or pass a
+   * stub node.
+   */
+  headerAction?: ReactNode;
 }
 
 function SessionCard({
@@ -138,6 +150,51 @@ function SessionCard({
 
 const MemoSessionCard = memo(SessionCard);
 
+/**
+ * UnattributedAsk — a needs-human Decision with no `ownerAgentId` to key a
+ * session card off of (hud-consolidation-2026-07-26 P-002, the coverage gate
+ * that must pass before the sidebar Inbox can be retired). Deliberately NOT a
+ * `<button>`/`onOpen` like SessionCard: there is no live agent session to
+ * open a conversation with, so this renders as an informational card — kind
+ * badge + title + age — rather than pretending an activation target exists.
+ * A `planSlug`/`itemRef` are carried on the underlying HudAsk for a FUTURE
+ * caller that wants to wire a destination (mirrors chat-ref-pills-2026-07-26's
+ * D-002 seam: rendering and destination are separable concerns), but wiring
+ * one is explicitly out of scope for this gate — the gate is about
+ * VISIBILITY, not click-through parity with the Inbox.
+ */
+function UnattributedAskCard({ ask }: { ask: HudAsk }) {
+  const kindLabel = HUD_ASK_KIND_LABEL[ask.kind] ?? ask.kind;
+  return (
+    <div className="hud__card hud__card--unattributed" aria-label={`${kindLabel} — ${ask.title}`}>
+      <span className="hud__card-row">
+        <span className="hud__rail" aria-hidden="true" />
+        <span className="hud__card-b">
+          <span className="hud__card-h">
+            <span className="hud__dot hud__dot--needs-you" aria-hidden="true" />
+            <span className="hud__chip hud__chip--accent">{kindLabel}</span>
+            <span className="hud__age">{formatAge(ageSecFromIso(ask.occurredAt))}</span>
+          </span>
+          <span className="hud__reason">{ask.title}</span>
+          {ask.planSlug ? <span className="hud__plan">{ask.planSlug}</span> : null}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+const MemoUnattributedAskCard = memo(UnattributedAskCard);
+
+/** Local mirror of hud-board-model's private `ageSec` — that one is not
+ *  exported (it takes an injected `nowMs`, which this presentational card has
+ *  no reason to thread through props for a once-per-render age label). */
+function ageSecFromIso(iso: string | null): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.round((Date.now() - t) / 1000));
+}
+
 function FleetChip({
   fleet,
   selected,
@@ -180,8 +237,10 @@ export default function HudBoard({
   onOpenSession,
   loading,
   error,
+  headerAction,
 }: HudBoardProps) {
   const needsYou = board.counts['needs-you'];
+  const unattributedCount = board.unattributed.length;
   const visibleColumns = focusColumn
     ? board.columns.filter((c) => c.id === focusColumn)
     : board.columns;
@@ -212,6 +271,8 @@ export default function HudBoard({
         </div>
 
         <span className="hud__spacer" />
+
+        {headerAction ? <span className="hud__header-action">{headerAction}</span> : null}
 
         <Tooltip
           label={
@@ -257,6 +318,24 @@ export default function HudBoard({
         </div>
       ) : null}
 
+      {/* hud-consolidation-2026-07-26 P-002: needs-human Decisions with no
+          owning agent (an unclaimed needs-human plan/work item, an
+          improvement/standing-approval/dark-flag awaiting triage, …) render
+          here rather than nowhere — see UnattributedAskCard's doc. */}
+      {board.unattributed.length > 0 ? (
+        <section className="hud__unattributed" aria-label="Unattributed asks">
+          <h3 className="hud__col-h">
+            Needs you — unattributed
+            <span className="n">{board.unattributed.length}</span>
+          </h3>
+          <div className="hud__unattributed-b">
+            {board.unattributed.map((a) => (
+              <MemoUnattributedAskCard key={a.id} ask={a} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {error ? (
         <p className="hud__state hud__state--error">
           Could not read the session roster: {error}
@@ -297,6 +376,9 @@ export default function HudBoard({
         {needsYou > 0
           ? `${needsYou} session${needsYou === 1 ? '' : 's'} waiting on you.`
           : 'Nothing is waiting on you.'}
+        {unattributedCount > 0
+          ? ` ${unattributedCount} unattributed ask${unattributedCount === 1 ? '' : 's'} with no owning session.`
+          : ''}
       </p>
     </div>
   );

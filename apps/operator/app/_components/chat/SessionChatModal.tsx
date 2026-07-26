@@ -318,6 +318,14 @@ function LiveSessionChat({
       agentName={agentName}
       renderAvatar={renderAvatar}
       footer={rosterEntry ? <SessionFooter entry={rosterEntry} /> : null}
+      // chat-ref-pills-2026-07-26 P-008: scopes this session's WI-/EI-/F- ref
+      // pills (live hydration + the popup destination) to the harness the
+      // roster attributes this agent's spawned run to — the SAME roster
+      // entry the identity chip (P-012) and footer (P-007) already read, no
+      // new query. Null (no matching spawned-agent run, e.g. an interactive
+      // psu session) degrades to static pills, same as any other
+      // unscoped conversation.
+      harnessSlug={rosterEntry?.harnessSlug ?? undefined}
     />
   );
 }

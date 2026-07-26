@@ -18,10 +18,14 @@
  * component already exposes.
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Lightbulb, Wrench } from 'lucide-react';
 import { toast } from 'sonner';
+import { parseAsString, useQueryState } from 'nuqs';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
+import type { WorkRefKind } from './chat/parse-work-refs';
+import WorkItemPopupModal from './work-items/WorkItemPopupModal';
+import PlanPopupModal from './plans/PlanPopupModal';
 import { CardAnswerError } from './OperatorConversationProvider';
 import { PendingCardsBar } from './chat/PendingCardsBar';
 import { renderCard } from '@/lib/chat-cards';
@@ -121,6 +125,18 @@ interface Props {
    * to render nothing.
    */
   footer?: ReactNode;
+
+  /**
+   * Harness scoping this conversation's WI-/EI-/F- ref pills
+   * (chat-ref-pills-2026-07-26 P-008) — forwarded to ChatConversation for
+   * live pill hydration (P-005) AND used by this component's OWN
+   * onWorkRefActivate wiring (below) to scope the WorkItemPopupModal query.
+   * Omit when the caller has no single-harness context (e.g. the
+   * cross-workspace operator sidebar) — pills still render, just static
+   * (no live state, no click destination), same graceful degrade
+   * ChatConversation already documents for a missing harnessSlug.
+   */
+  harnessSlug?: string;
 }
 
 const STARTING_PROMPTS = [
@@ -145,8 +161,48 @@ export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
   conversationId, workspaceId, agentName = 'Papercup', onDrillIn,
-  renderAvatar, footer,
+  renderAvatar, footer, harnessSlug,
 }: Props) {
+  // chat-ref-pills-2026-07-26 P-008 / D-002: this is the seam where a
+  // WI-/EI-/F-/P- ref pill's click actually DOES something. ChatConversation
+  // (P-004) only exposes the plain `onWorkRefActivate` passthrough hook —
+  // this component wires it to open the right popup, owning the "which item
+  // is open" nuqs state itself (same split PlansPane has with its own
+  // PlanPopupModal: the CALLER owns the open-id param, the popup component
+  // is a pure function of props). Distinct param names from PlansPane's own
+  // `pplan` (its Plans-pane popup and this chat-triggered one can be open
+  // independently without fighting over the same URL key).
+  const [openWorkItem, setOpenWorkItem] = useQueryState('wpop', parseAsString);
+  const [openChatPlan, setOpenChatPlan] = useQueryState('wppop', parseAsString);
+
+  // `wpop` encodes "<harnessSlug>::<id>" (mirrors curator-card-drill-in.ts's
+  // `resolvePlanItemDrillIn`'s "<planSlug>::<itemId>" `sel` convention) — a
+  // work-item ref alone is not enough to resolve `workItems.detail`, which is
+  // harness-scoped.
+  const [openWorkItemHarness, openWorkItemId] = useMemo((): [string | null, string | null] => {
+    if (!openWorkItem) return [null, null];
+    const sep = openWorkItem.indexOf('::');
+    if (sep < 0) return [null, null];
+    return [openWorkItem.slice(0, sep), openWorkItem.slice(sep + 2)];
+  }, [openWorkItem]);
+
+  const handleWorkRefActivate = useCallback(
+    (ref: { id: string; kind: WorkRefKind; planSlug?: string | null }) => {
+      if (ref.kind === 'plan-item') {
+        // A P- ref opens the EXISTING PlanPopupModal (D-001) — do not build a
+        // second plan popup. No message plan_slug context ⇒ nothing safe to
+        // open (P-006's "no plan context" stance, one layer over).
+        if (ref.planSlug) void setOpenChatPlan(ref.planSlug);
+        return;
+      }
+      // A WI-/EI-/F- ref needs a harness to scope workItems.detail — with
+      // none, there is nothing safe to open (mirrors HydratedWorkRefPill's
+      // own hydration gate one layer down).
+      if (!harnessSlug) return;
+      void setOpenWorkItem(`${harnessSlug}::${ref.id}`);
+    },
+    [harnessSlug, setOpenChatPlan, setOpenWorkItem],
+  );
   // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
   // consume a staged seed on mount (the usual path — the chat body was
   // unmounted while the inbox view showed), and listen for the live event in
@@ -250,88 +306,108 @@ export function OperatorChat({
   );
 
   return (
-    <ChatConversation
-      messages={messages}
-      busy={busy}
-      peerThinking={peerBusy}
-      error={error}
-      banner={
-        <>
-          {banner}
-          {conversationId && workspaceId && (
-            <PendingCardsBar conversationId={conversationId} workspaceId={workspaceId} />
-          )}
-        </>
-      }
-      emptyState={{
-        title: agentName,
-        body: passive
-          ? 'In passive mode. Type below to wake them.'
-          : 'Tell me what you want to inspect, scan, or unblock.',
-        icon: OperatorLogoMark,
-        // The starting prompts are Papercup-specific ("scan workspaces", "review
-        // blockers" — operator-scoped asks). A non-Papercup caller (SessionChatModal
-        // messaging an arbitrary su agent) has no business drafting these — they'd be
-        // actively misleading there, not just off-brand — so gate the whole panel on
-        // agentName rather than showing it unconditionally.
-        extra: agentName === 'Papercup' ? (
-          <div className="op-chat-empty-panel" aria-label="Quick draft prompts">
-            <div className="op-chat-empty-panel-head">
-              <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />
-              <div className="op-chat-empty-panel-label">Quick draft prompts</div>
+    <>
+      <ChatConversation
+        messages={messages}
+        busy={busy}
+        peerThinking={peerBusy}
+        error={error}
+        banner={
+          <>
+            {banner}
+            {conversationId && workspaceId && (
+              <PendingCardsBar conversationId={conversationId} workspaceId={workspaceId} />
+            )}
+          </>
+        }
+        emptyState={{
+          title: agentName,
+          body: passive
+            ? 'In passive mode. Type below to wake them.'
+            : 'Tell me what you want to inspect, scan, or unblock.',
+          icon: OperatorLogoMark,
+          // The starting prompts are Papercup-specific ("scan workspaces", "review
+          // blockers" — operator-scoped asks). A non-Papercup caller (SessionChatModal
+          // messaging an arbitrary su agent) has no business drafting these — they'd be
+          // actively misleading there, not just off-brand — so gate the whole panel on
+          // agentName rather than showing it unconditionally.
+          extra: agentName === 'Papercup' ? (
+            <div className="op-chat-empty-panel" aria-label="Quick draft prompts">
+              <div className="op-chat-empty-panel-head">
+                <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />
+                <div className="op-chat-empty-panel-label">Quick draft prompts</div>
+              </div>
+              <div className="op-chat-empty-panel-list">
+                {STARTING_PROMPTS.map(({ title, hint, prompt }) => (
+                  <button
+                    key={title}
+                    type="button"
+                    className="op-chat-empty-row"
+                    onClick={() => setInput(prompt)}
+                    disabled={busy}
+                    aria-label={`${title}: ${hint}. Draft this prompt.`}
+                  >
+                    <span className="op-chat-empty-row-title">{title}</span>
+                    <span className="op-chat-empty-row-hint">{hint}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="op-chat-empty-panel-list">
-              {STARTING_PROMPTS.map(({ title, hint, prompt }) => (
-                <button
-                  key={title}
-                  type="button"
-                  className="op-chat-empty-row"
-                  onClick={() => setInput(prompt)}
-                  disabled={busy}
-                  aria-label={`${title}: ${hint}. Draft this prompt.`}
-                >
-                  <span className="op-chat-empty-row-title">{title}</span>
-                  <span className="op-chat-empty-row-hint">{hint}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : undefined,
-      }}
-      labelForRole={() => ''}
-      inputPlaceholder={passive ? `Type to wake ${agentName}…` : `Reply to ${agentName}…`}
-      inputValue={input}
-      onInputChange={setInput}
-      onSubmit={submit}
-      composerExtra={
-        onGenerateIdeas ? (
-          <Tooltip label="Generate ideas" side="top" align="center">
-            {/* EI-13109: never reuse the send button's class here — this button
-                renders BEFORE the real submit, so `.oracle-send-button` lookups
-                (and users) mistook it for Send and typed drafts went unsent.
-                Disabled while a draft is pending: with text in the composer the
-                only live affordance is Send, so a click can't discard the draft. */}
-            <button
-              type="button"
-              aria-label="Generate ideas"
-              onClick={onGenerateIdeas}
-              disabled={busy || input.trim() !== ''}
-              className="pc-button op-chat-ideas-button"
-            >
-              <Lightbulb aria-hidden="true" className="oracle-send-icon" />
-            </button>
-          </Tooltip>
-        ) : undefined
-      }
-      renderToolChip={renderOperatorToolChip}
-      renderToolCard={renderToolCard}
-      renderReport={renderReport}
-      renderAvatar={renderAvatar}
-      footer={footer}
-      onLoadEarlier={onLoadEarlier}
-      hasMoreEarlier={hasMoreEarlier}
-      loadingEarlier={loadingEarlier}
-    />
+          ) : undefined,
+        }}
+        labelForRole={() => ''}
+        inputPlaceholder={passive ? `Type to wake ${agentName}…` : `Reply to ${agentName}…`}
+        inputValue={input}
+        onInputChange={setInput}
+        onSubmit={submit}
+        composerExtra={
+          onGenerateIdeas ? (
+            <Tooltip label="Generate ideas" side="top" align="center">
+              {/* EI-13109: never reuse the send button's class here — this button
+                  renders BEFORE the real submit, so `.oracle-send-button` lookups
+                  (and users) mistook it for Send and typed drafts went unsent.
+                  Disabled while a draft is pending: with text in the composer the
+                  only live affordance is Send, so a click can't discard the draft. */}
+              <button
+                type="button"
+                aria-label="Generate ideas"
+                onClick={onGenerateIdeas}
+                disabled={busy || input.trim() !== ''}
+                className="pc-button op-chat-ideas-button"
+              >
+                <Lightbulb aria-hidden="true" className="oracle-send-icon" />
+              </button>
+            </Tooltip>
+          ) : undefined
+        }
+        renderToolChip={renderOperatorToolChip}
+        renderToolCard={renderToolCard}
+        renderReport={renderReport}
+        renderAvatar={renderAvatar}
+        footer={footer}
+        onLoadEarlier={onLoadEarlier}
+        hasMoreEarlier={hasMoreEarlier}
+        loadingEarlier={loadingEarlier}
+        harnessSlug={harnessSlug}
+        onWorkRefActivate={handleWorkRefActivate}
+      />
+      {/* chat-ref-pills-2026-07-26 P-008: the D-002 seam's destinations. Both
+          popups are mounted here — the ONE place both OperatorChatSidebar and
+          SessionChatModal render through — so every ChatConversation caller
+          gets working ref-pill destinations for free, without each having to
+          wire its own. */}
+      <WorkItemPopupModal
+        id={openWorkItemId}
+        harnessSlug={openWorkItemHarness}
+        onSelect={(id) => void setOpenWorkItem(openWorkItemHarness ? `${openWorkItemHarness}::${id}` : null)}
+        onClose={() => void setOpenWorkItem(null)}
+      />
+      <PlanPopupModal
+        planSlug={openChatPlan}
+        harnessSlug={harnessSlug ?? null}
+        onClose={() => void setOpenChatPlan(null)}
+      />
+    </>
   );
 }
 

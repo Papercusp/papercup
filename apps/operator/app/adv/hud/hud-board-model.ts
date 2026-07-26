@@ -87,6 +87,12 @@ export interface HudRosterEntry {
   claims: Array<{ id?: string; planSlug?: string | null; status?: string | null }>;
   declaredUnclaimed: boolean;
   currentPlanSlug: string | null;
+  /** The harness a spawned-agent run row attributes this session to (adv-
+   *  roster.ts's `spawnedAgentRunInfoByOwner`) — null for a session with no
+   *  matching run (chat-ref-pills-2026-07-26 P-008: SessionChatModal's own
+   *  harness scoping for its WI-/EI-/F- ref-pill popup destinations). Always
+   *  present on the raw roster row; only newly TYPED here. */
+  harnessSlug: string | null;
   agentPaneKind: string;
   role: string | null;
   agent: string | null;
@@ -105,11 +111,69 @@ export interface HudRosterEntry {
 
 /** An unanswered thing addressed to the human, keyed to the agent that asked.
  *  Sourced from the SAME `plans.attention` feed the inbox and Queue read — the
- *  board never invents a second asks pipeline. */
+ *  board never invents a second asks pipeline.
+ *
+ * `ownerAgentId` is nullable BY DESIGN, not an edge case to special-case away:
+ * several AttentionItem sources (hud-consolidation-2026-07-26 P-002 — the
+ * `improvement`, `standing-approval`, and `dark-flag-ratification` adapters
+ * structurally always carry `ownerAgentId: null`; `operator-report` and
+ * `plan-item` carry it only when a claimant is resolvable) are genuine
+ * needs-human Decisions with no live agent to attach them to. Live count as
+ * of 2026-07-26 (workspace-wide, papercusp harness — the query is `plans:
+ * attention` with `payloadTier:'full'`, decision-tier items filtered
+ * `!ownerAgentId`): 301, dominated by `work-item-needs-human` (240). These
+ * MUST still render somewhere on the board (see `unattributedAsks` /
+ * `HudBoard.unattributed`) — a `.filter(i => i.ownerAgentId)` upstream of
+ * this type would silently drop every one of them with no UI anywhere in the
+ * app once the sidebar Inbox is retired (D-001). The remaining fields
+ * (id/kind/itemRef/planSlug/harnessSlug) mirror the subset of `AttentionItem`
+ * an unattributed card needs to render + be identified without an owning
+ * agent to key off of. */
 export interface HudAsk {
   ownerAgentId: string | null;
   title: string;
   occurredAt: string | null;
+  /** The source AttentionItem's own id — stable React key for an unattributed
+   *  card (there is no ownerAgentId to key off of). */
+  id: string;
+  /** AttentionItem['kind'] — not re-typed here (a full string import would
+   *  drag the admin/plans module into this pure, PG-free file); rendered as a
+   *  human label via HUD_ASK_KIND_LABEL, unknown kinds falling back to the
+   *  raw string. */
+  kind: string;
+  itemRef: string | null;
+  planSlug: string | null;
+  harnessSlug: string | null;
+}
+
+/** Human label for an unattributed ask's kind badge. Deliberately covers only
+ *  the kinds that are STRUCTURALLY capable of reaching here (ownerAgentId
+ *  null on a decision-tier item — see HudAsk's doc) rather than every
+ *  AttentionKind; an unlisted kind still renders via the raw string
+ *  fallback, so this table can never make a real ask invisible by omission. */
+export const HUD_ASK_KIND_LABEL: Record<string, string> = {
+  improvement: 'Improvement triage',
+  'standing-approval': 'Standing approval',
+  'dark-flag-ratification': 'Dark flag',
+  'operator-report': 'Operator report',
+  'plan-item': 'Plan item',
+  'work-item-needs-human': 'Work item',
+  'owner-wall': 'Owner wall',
+};
+
+/** The unattributed asks — needs-human items with no `ownerAgentId` to key a
+ *  session card off of (see HudAsk's doc for why this is structural, not an
+ *  edge case). Oldest first: the same urgency ordering `deriveColumn` applies
+ *  to a session's own needs-you reason. */
+export function unattributedAsks(asks: HudAsk[]): HudAsk[] {
+  return asks
+    .filter((a) => !a.ownerAgentId)
+    .slice()
+    .sort((a, b) => {
+      const at = a.occurredAt ? new Date(a.occurredAt).getTime() : Number.POSITIVE_INFINITY;
+      const bt = b.occurredAt ? new Date(b.occurredAt).getTime() : Number.POSITIVE_INFINITY;
+      return at - bt;
+    });
 }
 
 export const HUD_COLUMNS = ['needs-you', 'working', 'blocked', 'stalled', 'parked'] as const;
@@ -195,6 +259,10 @@ export interface HudBoard {
   fleets: HudFleetRollup[];
   counts: Record<HudColumnId, number>;
   total: number;
+  /** Needs-human asks with no owning agent — see `unattributedAsks`. Kept
+   *  OUT of `counts`/`columns['needs-you']`: those are per-SESSION
+   *  classifications, and an unattributed ask has no session to classify. */
+  unattributed: HudAsk[];
 }
 
 export interface HudThresholds {
@@ -634,5 +702,11 @@ export function buildHudBoard(
       .sort((a, b) => a.sortKey - b.sortKey || a.handle.localeCompare(b.handle)),
   }));
 
-  return { columns, fleets: deriveFleetRollups(sessions), counts, total: sessions.length };
+  return {
+    columns,
+    fleets: deriveFleetRollups(sessions),
+    counts,
+    total: sessions.length,
+    unattributed: unattributedAsks(asks),
+  };
 }

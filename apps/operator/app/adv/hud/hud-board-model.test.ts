@@ -22,6 +22,7 @@ import {
   isSuSession,
   shortHandle,
   toHudSession,
+  unattributedAsks,
   type HudAsk,
   type HudRosterEntry,
 } from './hud-board-model';
@@ -47,6 +48,7 @@ function entry(over: Partial<HudRosterEntry> = {}): HudRosterEntry {
     claims: [],
     declaredUnclaimed: false,
     currentPlanSlug: null,
+    harnessSlug: null,
     agentPaneKind: 'su',
     role: 'su',
     agent: 'claude',
@@ -69,6 +71,11 @@ const ask = (over: Partial<HudAsk> = {}): HudAsk => ({
   ownerAgentId: 'su-11112222-3333-4444-5555-666677778888',
   title: 'Drop the legacy shim, or migrate the 4 callers?',
   occurredAt: iso(12 * 60_000),
+  id: 'work-item-needs-human:WI-1',
+  kind: 'work-item-needs-human',
+  itemRef: null,
+  planSlug: null,
+  harnessSlug: 'papercusp',
   ...over,
 });
 
@@ -512,8 +519,40 @@ describe('buildHudBoard', () => {
     expect(board.columns.find((c) => c.id === 'needs-you')!.sessions[0].ownerId).toBe('su-aaaaaaaa-1');
   });
 
-  it('ignores an ask with no attributable agent rather than mis-assigning it', () => {
-    const board = buildHudBoard([entry()], [ask({ ownerAgentId: null })], { nowMs: NOW });
+  it('ignores an ask with no attributable agent rather than mis-assigning it, but surfaces it on board.unattributed', () => {
+    const board = buildHudBoard([entry()], [ask({ ownerAgentId: null, id: 'improvement:EI-1', kind: 'improvement' })], {
+      nowMs: NOW,
+    });
+    // Not assigned to any session's needs-you column...
     expect(board.counts['needs-you']).toBe(0);
+    // ...but not dropped either — hud-consolidation-2026-07-26 P-002's coverage
+    // gate: a needs-human ask with no owning agent must still render SOMEWHERE.
+    expect(board.unattributed).toHaveLength(1);
+    expect(board.unattributed[0].id).toBe('improvement:EI-1');
+  });
+});
+
+describe('unattributedAsks (hud-consolidation-2026-07-26 P-002)', () => {
+  it('keeps only asks with no ownerAgentId', () => {
+    const out = unattributedAsks([
+      ask({ id: 'a', ownerAgentId: 'su-aaaaaaaa-1' }),
+      ask({ id: 'b', ownerAgentId: null }),
+      ask({ id: 'c', ownerAgentId: '' as unknown as null }),
+    ]);
+    expect(out.map((a) => a.id)).toEqual(['b', 'c']);
+  });
+
+  it('sorts oldest first, unknown occurredAt last', () => {
+    const out = unattributedAsks([
+      ask({ id: 'newer', ownerAgentId: null, occurredAt: iso(5 * 60_000) }),
+      ask({ id: 'older', ownerAgentId: null, occurredAt: iso(60 * 60_000) }),
+      ask({ id: 'unknown', ownerAgentId: null, occurredAt: null }),
+    ]);
+    expect(out.map((a) => a.id)).toEqual(['older', 'newer', 'unknown']);
+  });
+
+  it('is empty for an all-attributed input, never throwing on an empty array', () => {
+    expect(unattributedAsks([])).toEqual([]);
+    expect(unattributedAsks([ask({ ownerAgentId: 'su-aaaaaaaa-1' })])).toEqual([]);
   });
 });

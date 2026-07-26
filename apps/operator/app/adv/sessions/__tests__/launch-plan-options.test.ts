@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlanListRow } from '@/app/admin/plans/plans-api';
-import { buildLaunchPlanOptions } from '../AdvSessionsClient';
+import { buildLaunchPlanOptions } from '../NewSessionLauncher';
 
 function plan(over: Partial<PlanListRow> & { slug: string; harness: string }): PlanListRow {
   return {

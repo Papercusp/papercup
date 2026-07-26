@@ -281,13 +281,25 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity): Promise<Bulk
 export default defineTool({
   name: 'work_items:claim',
   profile: 'engineer',
+  // PROMPT-WEIGHT (EI-10966): this tool was 2054 chars — 454 over the 1600 HARD CAP — which
+  // REDS the green gate and freezes deploys fleet-wide. Trimmed to the load-bearing contract;
+  // the rationale that used to live in the prompt now lives here, where it costs no context:
+  //   · claim_conflict → a LIVE peer holds it. Coordinate via coord:send; do NOT blind-retry.
+  //     A DEAD holder is freed automatically by the stale-claim lane, so retrying only races.
+  //   · claim_hold_blocked / policy_gate_requires_owner_override → deliberately parked
+  //     (WI-2797 / D-003, enforced on the by-id path by WI-5946's claim-hold-guard). force /
+  //     ownerOverride bypass it, leave the hold in place, and emit an audit row + notify.
+  //   · There is no work_items:heartbeat — ANY papercusp-su call refreshes liveness, which is
+  //     what the stale-claim reaper reads. The one gap is a long stretch of PURELY-LOCAL tool
+  //     use (Bash/Read/vitest, zero platform calls) inside a >10–15min claim (EI-6772); call
+  //     work_items:checkpoint partway, which is both a progress note and a liveness pulse.
   description:
-    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec; out-of-scope named claims are refused before mutation and alert its leader. A `_claimHold` item (hold_open / release{claimHold:true}) refuses with `claim_hold_blocked` — or `policy_gate_requires_owner_override` for a policy-tier hold — unless `force`/`ownerOverride` (WI-5946); the hold stays either way.',
+    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. A `_claimHold` item refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override`) unless `force`/`ownerOverride`; the hold stays either way.',
   guidance: {
     when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.',
-    notWhen: 'A `claim_conflict` means a LIVE peer holds it — coordinate with `holder` (coord:send) or pick another; do not blind-retry (a dead holder is freed by the stale-claim lane). `claim_hold_blocked`/`policy_gate_requires_owner_override` means it is DELIBERATELY parked (WI-2797 / D-003) — coordinate with the holder before `force`/`ownerOverride`.',
+    notWhen: '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.',
     chaining:
-      'work_items:list → claim → set_state → release/close. There is no work_items:heartbeat — ANY papercusp-su call already refreshes your liveness, which is what the stale-claim reaper checks. The gap is a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest, zero platform calls) during a >10-15min claim (EI-6772): call work_items:checkpoint partway — it is both a progress note and a liveness pulse.',
+      'work_items:list → claim → set_state → release/close. No heartbeat verb exists — any platform call refreshes liveness; during a long LOCAL-ONLY stretch call work_items:checkpoint as a liveness pulse (EI-6772).',
     seeAlso: [
       'work_items:claim_next (self-select the next claimable item instead of naming an id)',
       'work_items:observe (check claimability before taking)',

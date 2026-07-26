@@ -237,28 +237,21 @@ describe('work_items:claimable handler', () => {
     expect(out.excludedSample).toBeUndefined();
   });
 
-  it('sampleExcluded calls the sampler with the same filter/harness/states/assignee + the given limit, and surfaces excludedSample', async () => {
-    sampleM.mockResolvedValue({
-      taken: ['WI-1', 'WI-2'],
-      claimHold: ['WI-3'],
-      needsHuman: [],
-      observationLane: [],
-      externalBlocker: [],
-      planLaneReserved: [],
-      federationDetector: [],
-      loopNoise: [],
-      alreadyCompleted: [],
-      crossMachineRig: [],
-      blockedDep: [],
-      cooldown: [],
-    } as never);
+  it('sampleExcluded rides through as sampleLimit on the SAME snapshot read + surfaces excludedSample', async () => {
+    sampleValue = { ...EMPTY_SAMPLE, taken: ['WI-1', 'WI-2'], claimHold: ['WI-3'] };
     const out = await run({ harness: 'papercup', kind: 'bug', sampleExcluded: 5 });
-    expect(sampleM).toHaveBeenCalledWith(
+    expect(readM).toHaveBeenCalledWith(
       { field: 'kind', op: '=', value: 'bug' },
       expect.objectContaining({ harness: 'papercup', assignee: 'probe' }),
-      5,
+      expect.objectContaining({ sampleLimit: 5 }),
     );
     expect(out.excludedSample.taken).toEqual(['WI-1', 'WI-2']);
     expect(out.excludedSample.claimHold).toEqual(['WI-3']);
+  });
+
+  it('WI-5947: the counts, the rows and the sample come from ONE read — the handler never issues them separately', async () => {
+    await run({ harness: 'papercup', sampleExcluded: 3 });
+    // Three independent round-trips presented as one verdict is the defect; one call is the fix.
+    expect(readM).toHaveBeenCalledTimes(1);
   });
 });
