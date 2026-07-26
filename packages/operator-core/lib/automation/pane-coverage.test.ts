@@ -5,121 +5,134 @@
  * THE USER IN ONE OF THE PANES IN THE LEFT HAND SIDEBAR THERE CAN BE NO
  * ROUTINES THAT DONT GET SURFACED THERE."
  *
- * WHY THIS FILE EXISTS: the invariant was previously carried by a COMMENT on a
- * hand-written array in AgentsTab.tsx — "so no routine can exist without
- * appearing in exactly one of the three panes" — and the comment was wrong.
- * `infra` appeared in no pane's category list, so 40 routines (39 of them
- * ACTIVE: git-sync, green-checkpoint, hive-git-gc, release/deploy sweeps) were
- * invisible in the rail. Nothing failed, because nothing was checking.
+ * WHY THIS FILE EXISTS: the invariant was once carried by a COMMENT on a
+ * hand-written array in AgentsTab.tsx — "so no routine can exist without appearing
+ * in exactly one of the three panes" — and the comment was wrong. `infra` appeared
+ * in no pane's category list, so 40 routines (39 of them ACTIVE: git-sync,
+ * green-checkpoint, hive-git-gc, release sweeps) were invisible in the rail.
+ * Nothing failed, because nothing was checking.
  *
- * These tests are the check. If someone adds an AutomationCategory and forgets
- * to surface it, or narrows a pane's list, this file goes red.
+ * WHAT CHANGED (agents-system-pane-split-2026-07-26): panes no longer route by
+ * CATEGORY. The rail is two panes — Agents and System — and a row's pane is decided
+ * by `spend`: `llm`/`unknown` → Agents, `none` → System. That is a total function
+ * over a three-value domain, so coverage now holds BY CONSTRUCTION rather than by
+ * keeping two hand-written lists in sync. This file pins that construction, plus
+ * the residual category invariants (categories still LABEL rows even though they no
+ * longer route them).
+ *
+ * The failure mode it still guards is real: someone adds a third pane, or narrows a
+ * lens predicate, and rows fall between them exactly as `infra` once did.
  */
 import { describe, it, expect } from 'vitest';
-import {
-  AUTOMATION_CATEGORIES,
-  BLENDER_PANE_CATEGORIES,
-  DOCS_PANE_CATEGORIES,
-  CATCH_ALL_PANE_CATEGORIES,
-  type AutomationCategory,
-} from './pane-categories';
+import { AUTOMATION_CATEGORIES, type AutomationCategory } from './pane-categories';
 import { classifyRoutine } from './catalog';
+import {
+  AGENT_FAMILY_ORDER,
+  SYSTEM_FAMILY_ORDER,
+  TARGET_ROLE_SPEND,
+  routineFamily,
+  spendForTargetRole,
+  type RoutineFamily,
+  type RoutineSpend,
+} from './routine-classification';
 
-/** Every pane in the left rail that renders scheduled work, by its category claim. */
-const PANES: Record<string, readonly AutomationCategory[]> = {
-  Blender: BLENDER_PANE_CATEGORIES,
-  Docs: DOCS_PANE_CATEGORIES,
-  Agents: CATCH_ALL_PANE_CATEGORIES,
-};
+/**
+ * The pane a row lands in, mirroring `rowsForLens` in AutomationPane.tsx.
+ *
+ * ⚠ `unknown` goes to Agents, NOT System. An unclassified `target_role` must never
+ * quietly present itself as free — the owner-facing consequence of getting this
+ * backwards is a routine that CAN spend money sitting in the pane whose blurb says
+ * "none of it spends money".
+ */
+function paneFor(spend: RoutineSpend | 'unknown'): 'Agents' | 'System' {
+  return spend === 'none' ? 'System' : 'Agents';
+}
 
 describe('left-rail pane coverage', () => {
-  it('surfaces EVERY automation category in some pane — the owner mandate', () => {
-    const surfaced = new Set(Object.values(PANES).flat());
-    const orphaned = AUTOMATION_CATEGORIES.filter((c) => !surfaced.has(c));
-    expect(
-      orphaned,
-      `These categories are rendered by NO left-sidebar pane, so their routines are ` +
-        `invisible to the owner: ${orphaned.join(', ')}. Every category must be claimed ` +
-        `by a named pane or fall through to CATCH_ALL_PANE_CATEGORIES.`,
-    ).toEqual([]);
-  });
-
-  it('surfaces each category in exactly ONE pane — no routine listed twice', () => {
-    const seen = new Map<AutomationCategory, string>();
-    const dupes: string[] = [];
-    for (const [pane, cats] of Object.entries(PANES)) {
-      for (const c of cats) {
-        const prior = seen.get(c);
-        if (prior) dupes.push(`${c} claimed by both ${prior} and ${pane}`);
-        else seen.set(c, pane);
-      }
+  it('routes each of the three spend values to exactly one pane', () => {
+    const spends: Array<RoutineSpend | 'unknown'> = ['llm', 'none', 'unknown'];
+    for (const s of spends) {
+      expect(paneFor(s), `spend=${s} must resolve to a pane`).toMatch(/^(Agents|System)$/);
     }
-    expect(dupes).toEqual([]);
+    // And the split is real — not everything piling into one pane.
+    expect(new Set(spends.map(paneFor)).size).toBe(2);
   });
 
-  it('claims no category that does not exist', () => {
-    const known = new Set<string>(AUTOMATION_CATEGORIES);
-    for (const [pane, cats] of Object.entries(PANES)) {
-      for (const c of cats) {
-        expect(known.has(c), `${pane} claims unknown category "${c}"`).toBe(true);
-      }
+  it('routes an unclassified role to Agents, never to the free pane', () => {
+    expect(paneFor(spendForTargetRole('system:not-a-real-action'))).toBe('Agents');
+    expect(paneFor(spendForTargetRole(null))).toBe('Agents');
+  });
+
+  it('routes every classified target_role to a pane', () => {
+    for (const [role, entry] of Object.entries(TARGET_ROLE_SPEND)) {
+      expect(paneFor(entry.spend), `${role} must reach a pane`).toMatch(/^(Agents|System)$/);
     }
   });
 
-  it('derives the catch-all rather than hand-listing it', () => {
-    // The specific failure this guards: a new category added to
-    // AUTOMATION_CATEGORIES must land in the catch-all automatically, with no
-    // one remembering to edit a pane. Simulating that is what makes this a
-    // regression test and not a restatement of the implementation.
-    // Explicit type param: without it, TS narrows this Set to the literal
-    // union of the two pane arrays' own element types (e.g. 'learning'|'docs')
-    // rather than the full AutomationCategory — so `named.has(c)` below, where
-    // `c: AutomationCategory`, failed to typecheck (TS2345).
-    const named = new Set<AutomationCategory>([...BLENDER_PANE_CATEGORIES, ...DOCS_PANE_CATEGORIES]);
-    const expected = AUTOMATION_CATEGORIES.filter((c) => !named.has(c));
-    expect([...CATCH_ALL_PANE_CATEGORIES]).toEqual([...expected]);
-    // …and it must be non-empty, or the catch-all pane renders nothing at all.
-    expect(CATCH_ALL_PANE_CATEGORIES.length).toBeGreaterThan(0);
+  // The concrete regression: `infra` was in nobody's list and hid 40 routines. Under
+  // the spend split these are all `none`, so they are System rows — surfaced, and in
+  // the pane that correctly describes them.
+  it('surfaces the infra routines that the old category wiring lost', () => {
+    for (const role of [
+      'system:git-sync',
+      'system:green-checkpoint',
+      'system:hive-git-gc',
+      'system:release-trigger',
+    ]) {
+      expect(paneFor(spendForTargetRole(role)), role).toBe('System');
+    }
   });
 });
 
-describe('classifyRoutine is total', () => {
-  /**
-   * Real routine names sampled from the live table (2026-07-25), spanning every
-   * category — including the `infra` names that were invisible. A classification
-   * outside AUTOMATION_CATEGORIES would mean a routine that no pane can render.
-   */
-  const LIVE_SAMPLE: Array<[name: string, group: string | null]> = [
-    ['git-sync', 'git-sync'],
-    ['green-checkpoint', 'release'],
-    ['hive-git-gc', null],
-    ['release-trigger', 'release'],
-    ['knowledge-pack-delivery', null],
-    ['knowledge-pack-hygiene', null],
-    ['improvement-watchdog', 'health'],
-    ['improvement-implement', 'self-improvement'],
-    ['bp-singleton-memory-precision-0', null],
-    ['template-gym', null],
-    ['pot-eval-battery', null],
-    ['pot-wake', 'supervision'],
-    ['wake-brain', null],
-    ['hive-canary-sla', null],
-    ['cross-hive-outbox-drain', 'health'],
-    ['p2p-work-intake', 'health'],
-    ['plan-item-orphan-reconcile', 'health'],
-    ['loop-su-92bacd98-b714-4f44-a4fc-08e73ea7ca39', 'agent-loops'],
-    ['prospector-cadence', null],
-    ['some-brand-new-routine-nobody-anticipated', null],
-  ];
+describe('family coverage — the browse-by-family view', () => {
+  const ALL_FAMILIES: readonly RoutineFamily[] = [...AGENT_FAMILY_ORDER, ...SYSTEM_FAMILY_ORDER];
 
-  const surfaced = new Set(Object.values(PANES).flat());
+  it('claims every family by exactly one pane, with no overlap', () => {
+    expect(new Set(ALL_FAMILIES).size).toBe(ALL_FAMILIES.length);
+  });
 
-  it.each(LIVE_SAMPLE)('classifies %s into a surfaced category', (name, group) => {
-    const category = classifyRoutine(name, group);
-    expect(AUTOMATION_CATEGORIES).toContain(category);
-    expect(
-      surfaced.has(category),
-      `"${name}" classifies as "${category}", which no pane renders — it would be invisible.`,
-    ).toBe(true);
+  it('never produces a family that no pane lists', () => {
+    // A spread of real routine names observed on the box, plus an unrecognised one.
+    const names = [
+      'loop-su-d93ac1bf-d48f-420d-8136-dea6de467e7f',
+      'hive-wake',
+      'overwatch-wake',
+      'bp-singleton-scout-0',
+      'improvement-triage',
+      'doc-steward-dispatch',
+      'knowledge-pack-hygiene',
+      'git-sync',
+      'green-checkpoint',
+      'session-dir-gc',
+      'telemetry-retention',
+      'cross-hive-outbox-drain',
+      'p2p-perf-tier1',
+      'coord-probe-canary',
+      'a-brand-new-routine-nobody-mapped',
+    ];
+    for (const n of names) {
+      const fam = routineFamily(n, n.startsWith('loop-') ? 'loop' : 'scheduled');
+      expect(ALL_FAMILIES, `${n} → ${fam} is in no pane's family list`).toContain(fam);
+    }
+  });
+});
+
+describe('categories still label every row (they no longer route panes)', () => {
+  it('classifies any routine into a known category', () => {
+    const cases: Array<[string, string | null]> = [
+      ['gym-cycle', 'self-improvement'],
+      ['knowledge-pack-hygiene', 'health'],
+      ['git-sync', 'git-sync'],
+      ['loop-su-abc', null],
+      ['something-unrecognised', null],
+    ];
+    for (const [name, group] of cases) {
+      const cat = classifyRoutine(name, group);
+      expect(AUTOMATION_CATEGORIES as readonly AutomationCategory[], `${name} → ${cat}`).toContain(cat);
+    }
+  });
+
+  it('keeps the category list non-empty so the label axis still exists', () => {
+    expect(AUTOMATION_CATEGORIES.length).toBeGreaterThan(0);
   });
 });

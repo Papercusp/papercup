@@ -150,6 +150,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:knowledge-pack-hygiene': { spend: 'none', why: 'Rule-based stale/contradiction sweep over pack rows' },
   'system:hive-git-gc': { spend: 'none', why: 'Garbage-collects hive git objects' },
   'system:gc-plan-runs': { spend: 'none', why: 'Prunes finished plan-run rows' },
+  'system:gc-dead-loops': { spend: 'none', why: 'Reaps loop rows whose owning session is long gone' },
   'system:session-dir-gc': { spend: 'none', why: 'Deletes isolation dirs of ended sessions' },
   'system:telemetry-retention': { spend: 'none', why: 'Applies telemetry retention windows' },
   'system:idle-session-reaper': { spend: 'none', why: 'Reaps idle session rows' },

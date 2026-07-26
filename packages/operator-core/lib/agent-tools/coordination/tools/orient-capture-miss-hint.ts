@@ -25,7 +25,7 @@
  * almost nothing.
  */
 import { getLoopCarryNote, getLoopCarryJournal } from '../../../carry-note';
-import { readObservationItems } from '../../../harness/improvements/read-items';
+import { countObservationFilingsSince } from '../../../harness/improvements/read-items';
 
 /** Kill switch — set to 'off' to disable the capture-miss advisory entirely. */
 export const CAPTURE_MISS_KILL_ENV = 'PAPERCUSP_SU_CAPTURE_MISS';
@@ -134,12 +134,11 @@ export function computeCaptureMissHint(input: {
 
 /** Count the caller's lane:observation rows filed strictly after `sinceMs` (mirrors the P-011 hint). */
 async function countLaneFilingsSinceDefault(ownerId: string, sinceMs: number): Promise<number> {
-  const rows = await readObservationItems({});
-  return rows.filter((r) => {
-    if (r.createdBy !== ownerId) return false;
-    const ms = r.createdAt ? Date.parse(r.createdAt) : Number.NaN;
-    return Number.isFinite(ms) && ms > sinceMs;
-  }).length;
+  // P-008 (db-performance-remediation-2026-07-26): was `readObservationItems({})` +
+  // an in-memory `.filter(...).length` — up to 500 full candidates (body + entire
+  // payload JSONB) materialised on EVERY orient just to produce a count. See the
+  // twin fold in orient-ideate-hint; together ~931k calls at ~825 rows/call.
+  return countObservationFilingsSince(ownerId, new Date(sinceMs).toISOString());
 }
 
 /**

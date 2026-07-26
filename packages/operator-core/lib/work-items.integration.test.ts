@@ -1464,3 +1464,63 @@ describe('countWorkItems — true total, independent of the list cap', () => {
     expect(await wi.countWorkItems({ harness: H, kind: 'bug' })).toBe(1);
   });
 });
+
+describe('countWorkItemsByState — the state histogram (P-008)', () => {
+  /**
+   * The regression this guards: system-health's collectWorkItems used to derive its
+   * byState map by LISTING rows (`limit: 2000`) and tallying them in JS. That both
+   * shipped ~4.7MB of body/payload JSONB per call AND silently truncated the counts
+   * once the table passed the cap — the panel reported `total: 2000` against ~51,869
+   * real rows. These assertions fail if anyone reintroduces a list-and-tally.
+   */
+  it('sums to countWorkItems and is NOT truncated by a list cap', async () => {
+    const H = 'bystate-h';
+    for (let i = 0; i < 3; i++) await wi.createWorkItem({ kind: 'feature', title: `f${i}`, harness: H });
+    await wi.createWorkItem({ kind: 'bug', title: 'b', harness: H });
+    await wi.createWorkItem({ kind: 'change', title: 'c', harness: H });
+    await wi.createWorkItem({ kind: 'task', title: 't', harness: H });
+    // A different harness must not leak in.
+    await wi.createWorkItem({ kind: 'feature', title: 'other', harness: 'elsewhere-bystate' });
+
+    const byState = await wi.countWorkItemsByState({ harness: H });
+    const sum = Object.values(byState).reduce((a, b) => a + b, 0);
+
+    // THE core invariant: the histogram and the scalar total cannot disagree.
+    expect(sum).toBe(await wi.countWorkItems({ harness: H }));
+    expect(sum).toBe(6);
+
+    // Every bucket is a positive integer keyed by a real state (no `undefined` key,
+    // which is what a JS tally over a projected-away column would produce).
+    for (const [state, n] of Object.entries(byState)) {
+      expect(state).not.toBe('undefined');
+      expect(Number.isInteger(n)).toBe(true);
+      expect(n).toBeGreaterThan(0);
+    }
+
+    // A capped list read must not change the histogram — the truncation bug.
+    const capped = await wi.listWorkItems({ harness: H, limit: 2 });
+    expect(capped.length).toBe(2);
+    const after = await wi.countWorkItemsByState({ harness: H });
+    expect(Object.values(after).reduce((a, b) => a + b, 0)).toBe(6);
+  });
+
+  it('narrows by filter in step with countWorkItems (both families)', async () => {
+    const H = 'bystate-filter-h';
+    for (let i = 0; i < 2; i++) await wi.createWorkItem({ kind: 'feature', title: `f${i}`, harness: H });
+    await wi.createWorkItem({ kind: 'bug', title: 'b', harness: H });
+
+    const featureOnly = await wi.countWorkItemsByState({ harness: H, kind: 'feature' });
+    expect(Object.values(featureOnly).reduce((a, b) => a + b, 0)).toBe(
+      await wi.countWorkItems({ harness: H, kind: 'feature' }),
+    );
+
+    const bugOnly = await wi.countWorkItemsByState({ harness: H, kind: 'bug' });
+    expect(Object.values(bugOnly).reduce((a, b) => a + b, 0)).toBe(
+      await wi.countWorkItems({ harness: H, kind: 'bug' }),
+    );
+  });
+
+  it('returns an empty histogram (not a throw) for a harness with no items', async () => {
+    expect(await wi.countWorkItemsByState({ harness: 'no-such-harness-at-all' })).toEqual({});
+  });
+});

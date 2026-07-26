@@ -13,9 +13,11 @@
  *                                   │
  *                                   └─▶ STAGING resolveNamedQueryV2 (this tree)
  *
- *   - `/api/zero-harness/rest-query` + `/rest-query-batch`: resolved HERE, against
- *     the staging tree's query registry — so a brand-new resolver works the moment
- *     it is written, reading the same live Postgres the release process reads.
+ *   - `/api/zero-harness/rest-query`: resolved HERE, against the staging tree's
+ *     query registry — so a brand-new resolver works the moment it is written,
+ *     reading the same live Postgres the release process reads. (The companion
+ *     `/rest-query-batch` was removed with the client batcher in
+ *     drop-sync-batcher-2026-07-25; every sync read is now one request.)
  *   - Everything else (`/sse`, other `/api/*`, auth, mutations): proxied verbatim
  *     upstream, streaming preserved. This process defines no writes of its own;
  *     named queries are reads by construction.
@@ -49,7 +51,6 @@ if (!UPSTREAM) {
 }
 
 const REST_QUERY = '/api/zero-harness/rest-query';
-const REST_QUERY_BATCH = '/api/zero-harness/rest-query-batch';
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
@@ -133,29 +134,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     // Unknown to THIS tree — the live backend may still know it (e.g. the preview
     // tree is behind on some other resolver). Never fail where the proxy would work.
     return proxyUpstream(req, res);
-  }
-
-  if (req.method === 'POST' && url.pathname === REST_QUERY_BATCH) {
-    let queries: { name: string; args?: unknown }[];
-    try {
-      const parsed = JSON.parse(await readBody(req)) as { queries?: { name: string; args?: unknown }[] };
-      queries = parsed.queries ?? [];
-    } catch {
-      return sendJson(res, 400, { error: 'invalid body (not JSON)' });
-    }
-    // Resolve what this tree knows; anything unknown is reported per-slot exactly as
-    // the live batch route does, so the client's per-query error path is unchanged.
-    const results = await Promise.all(
-      queries.map(async (q) => {
-        try {
-          const local = await resolveLocal(q.name, q.args ?? {});
-          return local ?? { error: `unknown queryName: ${q.name}`, name: q.name };
-        } catch (err) {
-          return { error: String(err instanceof Error ? err.message : err), name: q.name };
-        }
-      }),
-    );
-    return sendJson(res, 200, { results });
   }
 
   return proxyUpstream(req, res);

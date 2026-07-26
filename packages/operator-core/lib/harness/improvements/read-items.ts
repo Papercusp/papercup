@@ -18,7 +18,7 @@
  *     (anti-re-dispatch counter + the explicit human-routing flag, D-001).
  */
 
-import { listIssues, type EngineerIssue, type IssueState, type ListIssuesFilter } from '../../issues-engineer';
+import { countIssues, listIssues, type EngineerIssue, type IssueState, type ListIssuesFilter } from '../../issues-engineer';
 import type { ImprovementCandidate, ImprovementState, WorkItemKind } from './policy';
 import { isSignalOrigin, originAllowed, ORGANIC_ONLY, type SignalOrigin } from './provenance';
 import { asStructuredObservation } from './observation-types';
@@ -211,6 +211,19 @@ export interface ReadImprovementDeps {
 const defaultDeps: ReadImprovementDeps = { listIssues };
 
 /**
+ * Deps for {@link countObservationFilingsSince}. Deliberately a SEPARATE, narrow type
+ * rather than a new field on {@link ReadImprovementDeps}: adding a required member to
+ * that shared interface would instantly stale every fixture that constructs it across
+ * the tree — in files this change never touches, which neither `test:affected` nor the
+ * per-file tsc baseline would select (the exact trap called out in CLAUDE.md).
+ */
+export interface CountObservationDeps {
+  countIssues: (filter: ListIssuesFilter) => Promise<number>;
+}
+
+const defaultCountDeps: CountObservationDeps = { countIssues };
+
+/**
  * Read every captured improvement (tagged the `papercusp-improvement` topic) as
  * storage-agnostic candidates. THE repoint point for any future storage move.
  * (P-010) Supports per-Hive scope filtering via harnessSlug.
@@ -234,6 +247,43 @@ export async function readObservationItems(
   deps: ReadImprovementDeps = defaultDeps,
 ): Promise<ImprovementCandidate[]> {
   return readByTopic(OBSERVATION_TOPIC, opts, deps);
+}
+
+/**
+ * COUNT how many observation-lane rows `createdBy` filed strictly after `sinceIso`
+ * — without materialising them.
+ *
+ * P-008 (db-performance-remediation-2026-07-26). Both orient hints
+ * (orient-capture-miss-hint, orient-ideate-hint) computed this by calling
+ * `readObservationItems({})` — up to 500 full candidates, each carrying `body` and
+ * the entire `payload` JSONB — and then `.filter(...).length` in JS. That ran on
+ * EVERY orient, fleet-wide: ~931k calls at ~825 rows/call, the #2 live consumer of
+ * this database. The predicates are two indexed column comparisons; Postgres returns
+ * the integer directly.
+ *
+ * Same lesson as the `countWorkItemsByState` fix in work-items.ts: when the caller
+ * only wants a SCALAR, listing rows to tally them in JS is the bug — and a column
+ * projection would not have helped, because these rows' own mapper genuinely reads
+ * body/payload.
+ *
+ * `sinceIso == null` counts ALL of that author's observation rows (the ideate hint's
+ * "no previous pass" case).
+ */
+export async function countObservationFilingsSince(
+  createdBy: string,
+  sinceIso: string | null,
+  deps: CountObservationDeps = defaultCountDeps,
+): Promise<number> {
+  if (!createdBy) return 0;
+  // Mirrors readObservationItems' effective filter EXACTLY (topic + the organic-only
+  // origin allowlist it defaults to), minus the row materialisation — so this count
+  // and that list can never disagree about what an "observation filing" is.
+  return deps.countIssues({
+    topic: OBSERVATION_TOPIC,
+    signalOrigins: ORGANIC_ONLY,
+    createdBy,
+    ...(sinceIso ? { createdAfter: sinceIso } : {}),
+  });
 }
 
 /** Shared body for the topic-scoped candidate readers (improvement + observation). */

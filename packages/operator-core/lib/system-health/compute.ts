@@ -424,11 +424,26 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
 
 async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHealth>> {
   return panelSafe<WorkItemsHealth>('workItems', async () => {
-    const { listWorkItems } = await import('../work-items');
-    const items = await listWorkItems({ limit: 2000 });
-    const byState: Record<string, number> = {};
-    for (const it of items) byState[it.state] = (byState[it.state] ?? 0) + 1;
+    // P-008 (db-performance-remediation-2026-07-26): this used to be
+    // `listWorkItems({ limit: 2000 })` followed by a JS tally
+    // (`for (const it of items) byState[it.state]++`). That materialised 2000 full
+    // work-items — ~4.7MB of `body`+`payload` JSONB per call — to derive the handful
+    // of integers below, and at 761k calls it was the single largest live consumer of
+    // this database (22.6% of live DB time; measured by pg_stat_statements DELTA, not
+    // lifetime totals — see plan decision D-007 for why that distinction matters).
+    //
+    // It was also WRONG: the 2000-row cap silently truncated the tally, so `total`
+    // and every byState bucket reported the 2000 most recent rows out of ~51,869 —
+    // off by ~26x. The aggregate has no cap to be wrong about.
+    //
+    // Measured, EXPLAIN (ANALYZE, SERIALIZE): 4734 kB / ~195 ms before vs 1 kB /
+    // ~52 ms after. Note the fix is an AGGREGATE, not the column projection the plan
+    // item first proposed — projection was unavailable because the row mappers
+    // genuinely read body/payload (issueToWorkItem, issueToCandidate).
+    const { countWorkItemsByState } = await import('../work-items');
+    const byState = await countWorkItemsByState();
     const n = (s: string) => byState[s] ?? 0;
+    const total = Object.values(byState).reduce((a, b) => a + b, 0);
     const inProgress = n('wip') + n('in-progress') + n('validating') + n('reviewing');
     // P-008 / P-009: stuck-items metric + reaper liveness (best-effort — a read
     // failure leaves the recovery fields undefined so the panel still renders).
@@ -438,7 +453,7 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
       recovery = await readWorkQueueHealth(getOrgPg().sql, { workspaceId: ctx.ws });
     } catch { /* leave recovery fields undefined — fail-soft */ }
     const data: WorkItemsHealth = {
-      total: items.length, byState,
+      total, byState,
       todo: n('todo'), inProgress, blocked: n('blocked'),
       needsHuman: n('needs-human') + n('needs_human'), done: n('done') + n('passed') + n('resolved'),
       ...(recovery ? {

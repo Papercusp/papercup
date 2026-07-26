@@ -281,17 +281,45 @@ export const curlHealthProbe: SubstitutionPair = {
 };
 
 /**
- * P-009 — "what is listening / who owns this port?" → `dev:service_health`.
+ * P-009 / P-013 D-017 — "what is listening / who owns this port?" →
+ * `dev:listening_ports`.
  *
- * The plan predicted this one: `dev:service_health` returns no sockets. Its
- * `ProbeResult.url` is the address it TRIED, not evidence anything is bound
- * there, and there is no pid/owner anywhere in the payload.
+ * ── RE-DERIVED 2026-07-26 (WI-6149 item 3) ──────────────────────────────────
+ * This pair used to point at `dev:service_health` with a `not-a-substitute`
+ * verdict and an advisory reading "there is no tool form for ss/lsof/netstat
+ * today; keep using them". D-017 built one — `dev:listening_ports` — so that
+ * advisory became FALSE, and a false advisory is exactly the staleness shape
+ * D-016's drift guards exist to catch. The tripwire the old comment promised
+ * ("if P-013 later adds a socket table and this pair is re-derived, that branch
+ * is where coverage will start appearing") is now cashed in.
  *
- * The `PROBED_PORTS` branch below is the genuine overlap and is kept as a
- * TRIPWIRE: a port-scoped query for a probed port, asking only whether a
- * listener exists (no process-ownership flag), IS faithfully answered by that
- * port's probe. If P-013 later adds a socket table and this pair is re-derived,
- * that branch is where the coverage will start appearing.
+ * MEASURED 15/24 → `needs-widening` (was 0/24 → `not-a-substitute`).
+ *
+ * The residue is the interesting part, and MEASURING it corrected the guess
+ * this comment first carried. All NINE misses are a SINGLE axis — socket STATE:
+ *
+ *   • 4× all-states ss/netstat (`ss -tn`, `ss -tinp`, `ss -tin dst …`,
+ *     `netstat -an -p tcp`) — no `-l`, so the question is about ESTABLISHED
+ *     connections, which this tool cannot see.
+ *   • 5× lsof without `-sTCP:LISTEN` (`lsof -i :3270`, `-iTCP:8044`, …) — lsof
+ *     prints established rows for the port too, so a LISTEN-only reply is a
+ *     subset, not a substitute.
+ *
+ * MULTI-PORT lsof (`-iTCP:3070 -iTCP:19045 -iTCP:3170`) is genuinely
+ * inexpressible — `port` is a scalar — but it is NOT independently observable
+ * here: both multi-port atoms in the sample ALSO omit `-sTCP:LISTEN`, so the
+ * state check rejects them first. The branch is kept and unit-tested directly,
+ * because the corpus will eventually contain a `-sTCP:LISTEN` multi-port shape
+ * and a verdict that only holds while a second defect masks it is not a
+ * verdict. Do not delete it as dead code.
+ *
+ * Per D-008 the fix for that residue is to NARROW THE PATTERN (splitting the
+ * listen-query subset out, as the file-read family did with four patterns) or
+ * to WIDEN THE TOOL with a state filter — NOT to lower the bar. Both are real
+ * options; neither is done here, because narrowing the pattern requires
+ * re-sampling the corpus against the new pattern and this change is already
+ * carrying a new verb. `needs-widening` with the failures NAMED is the honest
+ * intermediate state, and it is what keeps the pair at tier `observe`.
  *
  * `^ss(?:\s+-|\s*$)` rather than `^ss\b`: the corpus contains JavaScript
  * heredocs with `ss._blocked=true` and `ss=makeStore()`, which `\b` happily
@@ -305,44 +333,85 @@ export const listeningPorts: SubstitutionPair = {
   id: 'service.listening-ports',
   intentLabel: 'listening-socket-query',
   bashPattern: /^(?:ss|netstat)(?:\s+-|\s*$)|^lsof\b[^\n]*\s-{1,2}i/,
-  toolName: 'dev:service_health',
+  toolName: 'dev:listening_ports',
   advisoryText:
-    'dev:service_health returns no listening sockets and no owning pid — its per-service `url` is the address it probed, not proof of a bound listener. There is no tool form for ss/lsof/netstat today (P-013 tracks adding one); keep using them.',
+    'dev:listening_ports { port } answers "what is bound here and which process owns it" — the structured ss/lsof/netstat answer, including a same-uid pid + command. Read ownerVisible before pid: a socket owned by ANOTHER user reports ownerVisible:false, which means bound-but-unreadable, not free. It reports TCP LISTEN only, so keep using bash for established connections and for a single call spanning several ports.',
   routing: {
-    want: 'what is listening on a port / which process owns it',
-    use: '`dev:service_health` — REJECTED for this intent (see P-009); it returns no sockets and no pids',
-    insteadOf: '`ss -ltnp` / `lsof -nP -iTCP:<port> -sTCP:LISTEN` — no tool form; keep using bash',
+    want: 'what is listening on a TCP port / which process owns it',
+    use: '`dev:listening_ports { port }` (or `{ pid }` for the reverse lookup) — structured rows with pid, command and ownerVisible',
+    insteadOf:
+      '`ss -ltnp` / `lsof -nP -iTCP:<port> -sTCP:LISTEN` / `netstat -tlnp`. ⚠ LISTEN sockets only — an established-connection query (`ss -tn`, `netstat -an`) or one lsof call spanning several ports still needs bash',
   },
-  expectedVerdict: 'not-a-substitute',
+  expectedVerdict: 'needs-widening',
   cover(atom: string): CoverageResult {
-    // `-p` anywhere in an `ss` flag CLUSTER (`-ltnp`, `-lptn`, `-tinp`) asks for
-    // the owning process; `lsof` always prints COMMAND/PID, so it always does.
-    // Case-sensitive on purpose: lsof's `-P` means "numeric ports", not process.
-    const wantsOwner = /(?:^|\s)-[a-zA-Z]*p[a-zA-Z]*\b/.test(atom) || /^lsof\b/.test(atom);
-    const portMatch = /(?:iTCP:|:)(\d{2,5})\b/.exec(atom);
-    const port = portMatch?.[1];
-    if (wantsOwner) {
+    // ── 1. Is this even a LISTEN query? ──────────────────────────────────────
+    // The tool returns TCP sockets in LISTEN state and nothing else, so an
+    // all-states query is a DIFFERENT question. Answering it with the listen
+    // table is a confident wrong answer, which is the D-001 failure mode.
+    //
+    // Each verb signals listen-ness differently:
+    //   ss / netstat → an `-l` in the flag cluster (`-ltn`, `-lptn`, `-tlnp`).
+    //   lsof         → `-sTCP:LISTEN`; without it lsof prints ESTABLISHED rows
+    //                  for the port too, and the tool's answer is a subset.
+    const isLsof = /^lsof\b/.test(atom);
+    const listenOnly = isLsof
+      ? /-sTCP:LISTEN\b/.test(atom)
+      : /(?:^|\s)-[a-zA-Z]*l[a-zA-Z]*\b/.test(atom);
+    if (!listenOnly) {
       return {
         covered: false,
-        reason: 'asks which PROCESS owns the socket; dev:service_health returns no pid or command for any service',
+        reason: isLsof
+          ? 'no -sTCP:LISTEN, so it also lists ESTABLISHED connections on the port; dev:listening_ports reports LISTEN sockets only'
+          : 'no -l flag — this asks for connections in every state; dev:listening_ports reports LISTEN sockets only',
       };
     }
-    if (!port) {
+
+    // ── 2. UDP is out of scope entirely. ─────────────────────────────────────
+    if (/(?:^|\s)-[a-zA-Z]*u[a-zA-Z]*\b/.test(atom) || /iUDP/i.test(atom)) {
+      return { covered: false, reason: 'asks about UDP; dev:listening_ports reports TCP sockets only' };
+    }
+
+    // ── 3. A non-port/pid selector has no argument to carry it. ──────────────
+    // `ss -tin dst 140.82.113.3` filters by PEER address; the tool's only
+    // filters are `port` and `pid`.
+    if (/\b(?:dst|src)\s+\S/.test(atom)) {
       return {
         covered: false,
-        reason: 'asks for the socket table itself; dev:service_health returns per-service probe results, never a socket list',
+        reason: 'filters by peer address (dst/src); dev:listening_ports filters only by port or pid',
       };
     }
-    const probed = PROBED_PORTS[port];
-    if (!probed) {
+
+    // ── 4. Several ports in ONE call. `port` is a scalar. ────────────────────
+    // Count SELECTORS, not just literal numbers: `-iTCP:$p` is a port selector
+    // whose operand is only known at runtime. Conflating it with "no selector"
+    // is what made this branch first emit the whole-table expression for a
+    // single-port query — a wrong expression on a correct `covered`, which is
+    // the quieter half of the D-001 failure mode.
+    const selectors = atom.match(/(?:iTCP:|sport\s*=\s*:)([^\s'"]+)/g) ?? [];
+    const operands = [...new Set(selectors.map((t) => t.replace(/^(?:iTCP:|sport\s*=\s*:)/, '')))];
+    const literalPorts = operands.filter((o) => /^\d{2,5}$/.test(o));
+    if (operands.length > 1) {
       return {
         covered: false,
-        reason: `asks about :${port}, which dev:service_health does not probe — and it returns no socket table to look it up in`,
+        reason: `spans ${operands.length} ports (${operands.join(', ')}) in one call; dev:listening_ports takes a single scalar \`port\``,
       };
     }
-    // Genuine overlap: "is anything listening on a port we probe" is answered by
-    // that probe succeeding. See the tripwire note above.
-    return { covered: true, expression: `dev:service_health → services.find(s => s.name === '${probed}').up` };
+
+    // ── 5. Expressible. Name the actual call. ────────────────────────────────
+    // A pid selector (`lsof -p "$APPID" -a -iTCP -sTCP:LISTEN`) is the reverse
+    // lookup, served by `pid`. A shell-variable operand is still covered: the
+    // agent already holds the value it interpolated.
+    if (/(?:^|\s)-p\s+\S/.test(atom) && isLsof) {
+      return { covered: true, expression: 'dev:listening_ports { pid } → sockets[].port' };
+    }
+    if (operands.length === 1) {
+      const shown = literalPorts.length === 1 ? literalPorts[0] : `<${operands[0]}>`;
+      return {
+        covered: true,
+        expression: `dev:listening_ports { port: ${shown} } → sockets[0].{pid,command,ownerVisible}`,
+      };
+    }
+    return { covered: true, expression: 'dev:listening_ports {} → sockets[] (the whole LISTEN table, one row per port+address+command)' };
   },
 };
 

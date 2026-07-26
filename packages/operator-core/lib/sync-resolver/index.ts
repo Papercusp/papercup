@@ -80,7 +80,7 @@ const clampedLimitOpt = (cap: number) =>
 const RUNS_LIST_CAP = 2000;
 
 // Coerce any top-level BigInt field on each row to a Number so the rows survive the
-// rest-query-batch serializer (a plain JSON.stringify, which THROWS on a BigInt → a 500
+// rest-query serializer (a plain JSON.stringify, which THROWS on a BigInt → a 500
 // whenever the resolver returns rows). A bigserial({ mode: 'bigint' }) PK (user_actions.id
 // and ~34 other tables) is the common source; ids are well within 2^53. This mirrors the
 // explicit `typeof v === 'bigint' ? Number(v)` convention in harness-core / agent-chats-data
@@ -5917,8 +5917,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
  * caller hangs indefinitely (observed: advRoster.list, self-recovered after
  * 5-8 minutes with zero visible error in between, HTTP 000 on the client the
  * whole time). This turns that silent indefinite hang into a fast, loud,
- * recoverable 500 (rest-query.ts / rest-query-batch.ts already catch +
- * surface any resolve() rejection). Override via
+ * recoverable 500 (rest-query.ts already catches + surfaces any resolve()
+ * rejection). Override via
  * PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS; comfortably under the ~15s window where
  * a client gives up and reports HTTP 000, so a wedge fails clearly on the
  * SERVER side first.

@@ -16,8 +16,9 @@ import type { ImprovementCandidate } from '../../../harness/improvements/policy'
 
 vi.mock('../../../harness/improvements/read-items', () => ({
   readObservationItems: vi.fn(async () => []),
+  countObservationFilingsSince: vi.fn(async () => 0),
 }));
-import { readObservationItems } from '../../../harness/improvements/read-items';
+import { readObservationItems, countObservationFilingsSince } from '../../../harness/improvements/read-items';
 import {
   computeIdeateOverdue,
   defaultIdeateHintDeps,
@@ -132,26 +133,33 @@ describe('computeIdeateOverdue', () => {
 });
 
 describe('defaultIdeateHintDeps.countObservationsSince', () => {
-  const cand = (over: Partial<ImprovementCandidate>): ImprovementCandidate =>
-    ({ id: 'x', kind: 'change', scope: 'harness:papercusp', title: 't', ...over } as ImprovementCandidate);
+  /**
+   * P-008 (db-performance-remediation-2026-07-26): the author+recency predicates moved
+   * OUT of JS and INTO SQL. This fold used to call `readObservationItems({})` — up to
+   * 500 full candidates carrying `body` and the whole `payload` JSONB — and then
+   * `.filter(...).length`, on EVERY orient fleet-wide (~931k calls at ~825 rows/call).
+   * So the testable contract is no longer "did it filter the array correctly" but
+   * "did it delegate to the counting seam with the right boundary" — the filtering
+   * itself is now covered against real Postgres by the count/list parity assertions.
+   */
+  const mockCount = vi.mocked(countObservationFilingsSince);
 
-  it('counts only the caller\'s rows filed strictly after the boundary', async () => {
-    mockReadObs.mockResolvedValueOnce([
-      cand({ createdBy: 'su-a', createdAt: new Date(2_000).toISOString() }), // ✓ after
-      cand({ createdBy: 'su-a', createdAt: new Date(500).toISOString() }), //   ✗ before
-      cand({ createdBy: 'su-b', createdAt: new Date(3_000).toISOString() }), // ✗ other owner
-      cand({ createdBy: 'su-a', createdAt: undefined }), //                      ✗ no timestamp
-    ]);
-    expect(await defaultIdeateHintDeps.countObservationsSince('su-a', 1_000)).toBe(1);
+  it('delegates to the counting seam with the boundary as an ISO timestamp', async () => {
+    mockCount.mockResolvedValueOnce(4);
+    expect(await defaultIdeateHintDeps.countObservationsSince('su-a', 1_000)).toBe(4);
+    expect(mockCount).toHaveBeenCalledWith('su-a', new Date(1_000).toISOString());
   });
 
-  it('counts all of the caller\'s rows when the boundary is null (never ran)', async () => {
-    mockReadObs.mockResolvedValueOnce([
-      cand({ createdBy: 'su-a', createdAt: new Date(2_000).toISOString() }),
-      cand({ createdBy: 'su-a', createdAt: new Date(500).toISOString() }),
-      cand({ createdBy: 'su-a', createdAt: undefined }),
-      cand({ createdBy: 'su-b', createdAt: new Date(3_000).toISOString() }),
-    ]);
-    expect(await defaultIdeateHintDeps.countObservationsSince('su-a', null)).toBe(3);
+  it('passes a null boundary through (never ran ⇒ count all-time)', async () => {
+    mockCount.mockResolvedValueOnce(7);
+    expect(await defaultIdeateHintDeps.countObservationsSince('su-a', null)).toBe(7);
+    expect(mockCount).toHaveBeenCalledWith('su-a', null);
+  });
+
+  it('never materialises the observation rows (the regression this fix removes)', async () => {
+    mockReadObs.mockClear();
+    mockCount.mockResolvedValueOnce(0);
+    await defaultIdeateHintDeps.countObservationsSince('su-a', 1_000);
+    expect(mockReadObs).not.toHaveBeenCalled();
   });
 });

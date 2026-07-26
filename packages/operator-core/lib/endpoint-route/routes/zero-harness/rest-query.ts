@@ -4,12 +4,13 @@
  * Single-query REST endpoint with gzip when accepted. This is THE sync read
  * path: every `useSyncQuery` / prefetch / `fetchSyncQuery` lands here, one
  * request per query, bounded by the client's concurrency gate
- * (libs/generic/sync/src/transports/polling/fetch-gate.ts).
+ * (libs/generic/sync/src/transports/polling/concurrency-gate.ts).
  *
  * `auth: 'loopback'` (drop-sync-batcher-2026-07-25 P-001). It was `'public'`
- * while `rest-query-batch` — which carried all real sync traffic — was
- * `'loopback'`; moving every consumer onto this route at `'public'` would have
- * silently downgraded the whole sync surface from loopback-gated to public.
+ * while the since-removed `rest-query-batch` — which carried all real sync
+ * traffic — was `'loopback'`; moving every consumer onto this route at
+ * `'public'` would have silently downgraded the whole sync surface from
+ * loopback-gated to public.
  * Nothing legitimate lost access: the desktop webview reaches the sidecar over
  * Tauri IPC (loopback), the dev browser is `localhost:3055`, and the mobile
  * client uses the separately device-authed `/device/rest-query`.

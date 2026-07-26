@@ -34,12 +34,7 @@ import type { ScheduleSource } from '../schedule-inventory';
 // dependency-free module, because the sidebar tabs import them as VALUES and
 // this file top-level-imports a Postgres client. Re-exported so existing
 // importers (and the automation.catalog consumers) are unaffected.
-export {
-  AUTOMATION_CATEGORIES,
-  BLENDER_PANE_CATEGORIES,
-  DOCS_PANE_CATEGORIES,
-  CATCH_ALL_PANE_CATEGORIES,
-} from './pane-categories';
+export { AUTOMATION_CATEGORIES } from './pane-categories';
 export type { AutomationCategory } from './pane-categories';
 import type { AutomationCategory } from './pane-categories';
 import { AUTOMATION_CATEGORIES } from './pane-categories';

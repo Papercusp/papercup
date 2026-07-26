@@ -47,22 +47,24 @@ export const AUTOMATION_CATEGORIES: readonly AutomationCategory[] = [
   'agent-loops',
 ] as const;
 
-/** Blender — the learning / self-improvement pipeline. */
-export const BLENDER_PANE_CATEGORIES = ['learning'] as const satisfies readonly AutomationCategory[];
-
-/** Docs — documentation agents. */
-export const DOCS_PANE_CATEGORIES = ['docs'] as const satisfies readonly AutomationCategory[];
-
-/** Every category claimed by a pane with a specific identity. */
-const NAMED_PANE_CATEGORIES: readonly AutomationCategory[] = [
-  ...BLENDER_PANE_CATEGORIES,
-  ...DOCS_PANE_CATEGORIES,
-];
-
-/**
- * Agents — the CATCH-ALL pane. DERIVED, never hand-listed: everything that no
- * named pane claims lands here, which is what makes the owner mandate hold for
- * categories that do not exist yet.
+/*
+ * ⚠ THE PER-PANE CATEGORY CONSTANTS ARE GONE
+ * (agents-system-pane-split-2026-07-26 P-006).
+ *
+ * `BLENDER_PANE_CATEGORIES` / `DOCS_PANE_CATEGORIES` / `CATCH_ALL_PANE_CATEGORIES`
+ * existed because each left-rail pane claimed a set of CATEGORIES, and the mandate
+ * above then had to be enforced by keeping those sets exhaustive. The rail no
+ * longer works that way: it is two panes — Agents and System — and a row's pane is
+ * decided by `spend` (llm/unknown → Agents, none → System) in
+ * ./routine-classification. That is a total function, so "every routine reaches a
+ * pane" is true by construction instead of by list maintenance — which is the
+ * failure this file was created to survive in the first place (`infra` claimed by
+ * nobody, 40 routines invisible).
+ *
+ * `AutomationCategory` itself stays: it still LABELS a row (`AutomationRoutine.category`)
+ * and `classifyRoutine` still computes it. It just no longer routes anything.
+ *
+ * Do not reintroduce per-pane category constants without also re-adding the
+ * exhaustiveness check they require. pane-coverage.test.ts now guards the spend
+ * partition instead.
  */
-export const CATCH_ALL_PANE_CATEGORIES: readonly AutomationCategory[] =
-  AUTOMATION_CATEGORIES.filter((c) => !NAMED_PANE_CATEGORIES.includes(c));

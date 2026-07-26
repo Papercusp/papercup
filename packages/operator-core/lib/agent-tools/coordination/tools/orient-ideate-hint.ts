@@ -28,7 +28,7 @@
 import { shouldRunScoutCycle, type ScoutCadenceState } from '../../../scout/cadence';
 import { readLastRanTickAtMs } from '../../../scout/tick-ledger';
 import { readIdeaQueueStatus } from '../../../scout/routed-ledger';
-import { readObservationItems } from '../../../harness/improvements/read-items';
+import { countObservationFilingsSince } from '../../../harness/improvements/read-items';
 
 /** The su-ideate origin tag on the shared scout ledgers (migration 571, P-010). */
 const SU_IDEATE_ORIGIN = 'su-ideate';
@@ -77,13 +77,15 @@ export interface IdeateHintDeps {
  * typed reader is cheap and avoids duplicating the topic-tag join in this fold.
  */
 async function countObservationsSinceDefault(ownerId: string, sinceMs: number | null): Promise<number> {
-  const rows = await readObservationItems({});
-  return rows.filter((r) => {
-    if (r.createdBy !== ownerId) return false;
-    if (sinceMs == null) return true;
-    const ms = r.createdAt ? Date.parse(r.createdAt) : Number.NaN;
-    return Number.isFinite(ms) && ms > sinceMs;
-  }).length;
+  // P-008 (db-performance-remediation-2026-07-26): this used to be
+  // `readObservationItems({})` — up to 500 full candidates, each carrying `body` and
+  // the whole `payload` JSONB — followed by an in-memory `.filter(...).length`. The
+  // doc comment above called that "cheap"; measured fleet-wide it was not: this runs
+  // on EVERY orient, and together with the identical fold in orient-capture-miss-hint
+  // it accounted for ~931k calls at ~825 rows/call — the #2 live consumer of the
+  // database. Both predicates are plain indexed column comparisons, so Postgres
+  // returns the integer directly.
+  return countObservationFilingsSince(ownerId, sinceMs == null ? null : new Date(sinceMs).toISOString());
 }
 
 export const defaultIdeateHintDeps: IdeateHintDeps = {

@@ -1610,6 +1610,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh'], label: 'local-matrix starvation downgrade' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh'], label: 'rig bank-logs' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-run-env.selftest.sh'], label: 'vm_run guest-env delivery (WI-6176)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh'], label: 'seat-offer b→a failure discriminator (WI-6179)' },
       ],
     },
   ],

@@ -274,6 +274,14 @@ import './telemetry-retention-action';
 // housekeeping over the routine's OWN already-terminal runs, no owner-authority
 // surface.
 import './gc-plan-runs-action';
+// `system:gc-dead-loops` — the same unbounded-growth class, one table over
+// (agents-system-pane-split-2026-07-26 P-007). `loop:arm` materialises one
+// `loop-<ownerId>` routine row per looping session; `loop:end` and the dead-man
+// sweep DEACTIVATE it and nothing ever deletes it, so the workspace was carrying
+// 770 loop rows — 750 of them dead — accruing ~30/day since June. Reaps only
+// INACTIVE loop rows whose owning session has been silent past the retention
+// window (14d default); an armed loop is never touched at any age.
+import './gc-dead-loops-action';
 // `system:precompute-derived-reads` — the cadence behind the derived-read substrate
 // (precompute-derived-sync-reads-2026-07-19, WI-5460). Computes the three expensive
 // derived sync reads (storage.usage 20.0s, plans.lint 13.8s, learning.soakReport

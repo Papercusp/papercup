@@ -93,6 +93,7 @@ import {
   getIssueDetail,
   listIssues,
   countIssues,
+  countIssuesByState,
   setIssueState,
   claimIssue,
   releaseIssue,
@@ -755,6 +756,91 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
   }
 
   return total;
+}
+
+/**
+ * STATE-HISTOGRAM companion to {@link countWorkItems} — `state -> count` across BOTH
+ * families for the same filter, mirroring its WHERE exactly (so the histogram's sum
+ * equals countWorkItems' scalar).
+ *
+ * P-008 (db-performance-remediation-2026-07-26). Use this instead of listing rows and
+ * tallying them in JS. `system-health/compute.ts`'s `collectWorkItems` did
+ * `listWorkItems({ limit: 2000 })` then `for (const it of items) byState[it.state]++`,
+ * shipping ~4.7MB of `body`+`payload` JSONB per call across 761k calls to derive ~7
+ * integers — the single largest live consumer of this database (22.6% of live DB time,
+ * measured by delta not by lifetime totals; see plan decision D-007).
+ *
+ * Two reasons this is an aggregate rather than the "add a column projection" the plan
+ * item originally proposed:
+ *  1. Projection was NOT AVAILABLE here. Both hot callers genuinely read the heavy
+ *     columns — `issueToWorkItem` maps `summary: i.body` and `payload: i.payload`, and
+ *     `issueToCandidate` destructures ~10 fields out of payload. Dropping them from the
+ *     SELECT would have silently degraded both to undefined. (Same trap as P-006/D-005,
+ *     where the "obvious" projection measured as a pessimization and was reverted.)
+ *  2. The list shape was also WRONG, not just slow — the 2000-row cap silently truncated
+ *     the tally, so the panel reported `total: 2000` against ~51,869 real rows. An
+ *     aggregate cannot be truncated.
+ *
+ * Measured, EXPLAIN (ANALYZE, SERIALIZE), 3 runs each: list shape 4734 kB / ~195 ms vs
+ * this GROUP BY 1 kB / ~52 ms — ~4,700x fewer bytes, ~3.7x faster.
+ */
+export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): Promise<Record<string, number>> {
+  const { sql } = getOrgPg();
+  const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
+  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  const byState: Record<string, number> = {};
+  const add = (state: string | null | undefined, n: number) => {
+    const k = state ?? 'unknown';
+    byState[k] = (byState[k] ?? 0) + n;
+  };
+
+  if (wantFeature) {
+    const ws = activeWorkspaceId();
+    const rows = await sql<{ state: string | null; n: number }[]>`
+      SELECT status AS state, count(*)::int AS n
+        FROM harness_shared.harness_features_consolidated
+       WHERE ${featureFamilyKindClause(sql, ws)}
+         AND workspace_id = ${ws}
+         AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
+         AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
+         AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
+         AND ${filter.assignee ? sql`taken_by = ${filter.assignee}` : sql`TRUE`}
+         AND ${
+           filter.parent
+             ? sql`parent_id = ${filter.parent}`
+             : filter.includeChildren
+               ? sql`TRUE`
+               : sql`(parent_id IS NULL OR parent_id = '')`
+         }
+         AND ${
+           filter.admissibleOnly
+             ? sql`(
+                 ${autoPickableWhereSql(sql, ws)}
+                 AND ${claimHoldExclusionSql(sql, 'payload')}
+                 AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
+               )`
+             : sql`TRUE`
+         }
+       GROUP BY status`;
+    for (const r of rows) add(r.state, r.n);
+  }
+
+  // Issues are always top-level, so a `parent` filter excludes them (mirrors countWorkItems).
+  if (wantIssue && !filter.parent) {
+    const issueStates = await countIssuesByState({
+      kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
+      kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
+      scope: filter.harness ? `harness:${filter.harness}` : undefined,
+      state: (filter.state as IssueState) || undefined,
+      assignee: filter.assignee,
+      assignedBy: filter.assignedBy,
+      admissibleOnly: filter.admissibleOnly,
+      excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
+    });
+    for (const [state, n] of Object.entries(issueStates)) add(state, n);
+  }
+
+  return byState;
 }
 
 /** Resolve one work-item by id, searching both kind-tables (ids are disjoint across families). */

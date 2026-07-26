@@ -468,27 +468,76 @@ describe('service pattern boundaries', () => {
       expect(claims(listeningPorts, 'lsof src-tauri/sidecar.lock 2>/dev/null')).toBe(false);
     });
 
-    it('covers none of the real shapes — there is no socket table in the payload', () => {
+    /**
+     * The tripwire the old comment promised has been cashed in: D-017 built
+     * `dev:listening_ports`, so the LISTEN-query shapes that used to have no
+     * tool form now have one. These four were the exact atoms asserted as
+     * UNCOVERABLE before the re-derivation — keeping them, inverted, is what
+     * makes the move visible rather than a silently rewritten expectation.
+     */
+    it('covers the real LISTEN-query shapes now that dev:listening_ports exists', () => {
       for (const atom of ['ss -ltnp 2>/dev/null', 'ss -ltn', 'lsof -nP -iTCP:3070 -sTCP:LISTEN', 'netstat -tlnp']) {
         const result = listeningPorts.cover(atom);
-        expect(result.covered, `${atom} should have no dev:service_health expression`).toBe(false);
-        expect(result.reason).toBeTruthy();
+        expect(result.covered, `${atom} should have a dev:listening_ports expression`).toBe(true);
+        expect(result.expression).toContain('dev:listening_ports');
       }
     });
 
-    /**
-     * The tripwire, and where P-013's coverage will first appear: asking only
-     * whether a PROBED port has a listener (no process-ownership flag) IS
-     * answered by that port's probe succeeding.
-     */
-    it('still scores a probed-port listener check as covered, so a rigged envelope is loud', () => {
-      const result = listeningPorts.cover('ss -ltn "sport = :3070"');
+    it('resolves the owner question that was the whole basis of the old refusal', () => {
+      const result = listeningPorts.cover('lsof -nP -iTCP:3070 -sTCP:LISTEN');
       expect(result.covered).toBe(true);
-      expect(result.expression).toContain('operator');
+      // The refusal used to read "returns no pid or command for any service".
+      expect(result.expression).toContain('pid');
+      expect(result.expression).toContain('port: 3070');
     });
 
-    it('is never promotable past observe', () => {
-      expect(listeningPorts.expectedVerdict).toBe('not-a-substitute');
+    it('serves the reverse lookup (which ports does this pid hold) via `pid`', () => {
+      const result = listeningPorts.cover('lsof -nP -p "$APPID" -a -iTCP -sTCP:LISTEN');
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('pid');
+    });
+
+    /**
+     * The residue, and the reason this pair is `needs-widening` rather than
+     * `equivalent`. All of it is one axis: socket STATE. Asserted explicitly so
+     * a future `state` arg cannot quietly leave the verdict stale-pessimistic.
+     */
+    it('refuses non-LISTEN queries — the single axis holding it off `equivalent`', () => {
+      for (const atom of ['ss -tn 2>/dev/null', 'ss -tinp 2>/dev/null', 'netstat -an -p tcp']) {
+        const result = listeningPorts.cover(atom);
+        expect(result.covered, `${atom} asks about established connections`).toBe(false);
+        expect(result.reason).toContain('LISTEN sockets only');
+      }
+      // lsof signals state differently — via -sTCP:LISTEN, not -l.
+      const lsofAllStates = listeningPorts.cover('lsof -nP -iTCP:8044');
+      expect(lsofAllStates.covered).toBe(false);
+      expect(lsofAllStates.reason).toContain('ESTABLISHED');
+    });
+
+    /**
+     * Exercised DIRECTLY because the frozen sample cannot reach it: both
+     * multi-port atoms in the corpus also omit `-sTCP:LISTEN`, so the state
+     * check rejects them first. A branch whose correctness is masked by a
+     * second defect is untested, not proven — and the masking will disappear
+     * the moment the tool grows a state filter.
+     */
+    it('refuses a multi-port lsof — `port` is a scalar (masked in the sample, tested here)', () => {
+      const result = listeningPorts.cover('lsof -nP -iTCP:3070 -iTCP:19045 -iTCP:3170 -sTCP:LISTEN');
+      expect(result.covered).toBe(false);
+      expect(result.reason).toContain('single scalar');
+    });
+
+    it('a port selector carrying a shell variable is still a PORT query, not a table read', () => {
+      // Regression: this first emitted the whole-table expression because the
+      // operand was not numeric — a wrong expression on a correct `covered`.
+      const result = listeningPorts.cover('lsof -nP -iTCP:$p -sTCP:LISTEN');
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('port:');
+      expect(result.expression).not.toContain('whole LISTEN table');
+    });
+
+    it('is held at observe by the state residue, not promotable', () => {
+      expect(listeningPorts.expectedVerdict).toBe('needs-widening');
       expect(maxTierFor(listeningPorts.expectedVerdict)).toBe('observe');
     });
   });

@@ -617,6 +617,20 @@ export interface ListIssuesFilter {
    *  issue surface — `task` items never leak into issues:* unless asked for). */
   kinds?: readonly IssueStoreKind[];
   topic?: string; // issues tagged with this topic
+  /**
+   * P-008 (db-performance-remediation-2026-07-26): author + recency predicates, so a
+   * caller wanting "how many did *I* file since T" can COUNT in Postgres instead of
+   * listing rows and filtering in JS. Both orient hints
+   * (orient-capture-miss-hint, orient-ideate-hint) were doing
+   * `readObservationItems({})` — up to 500 full candidates including `body` and the
+   * whole `payload` — and then `.filter(r => r.createdBy === me && r.createdAt > since).length`,
+   * on EVERY orient across the fleet. That was ~931k calls at ~825 rows/call.
+   * Applied identically in listIssues / countIssues / countIssuesByState so the
+   * list, the total, and the histogram can never disagree (the WI-5512 parity rule).
+   */
+  createdBy?: string;
+  /** ISO timestamp — rows created STRICTLY after it. Pairs with {@link createdBy}. */
+  createdAfter?: string;
   /** Learning-signal provenance allowlist (frontier P-002/D-002). Omit = NO origin
    *  filter (the generic work-item surface shows everything); the LEARNING read
    *  seam (read-items.ts) is what defaults to organic-only. */
@@ -752,6 +766,8 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+       AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
+       AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
        AND ${
          filter.topic
            ? sql`EXISTS (
@@ -810,6 +826,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
+         AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
@@ -830,6 +848,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+       AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
+       AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit
@@ -838,6 +858,90 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        }
        AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
   return rows[0]?.n ?? 0;
+}
+
+/**
+ * STATE-HISTOGRAM companion to {@link countIssues} — one row per distinct `state`
+ * for the same filter, instead of one scalar total. Mirrors countIssues' WHERE
+ * exactly (both branches) so the histogram and the total can never disagree.
+ *
+ * P-008 (db-performance-remediation-2026-07-26): this exists so a caller that
+ * wants a state DISTRIBUTION stops materialising rows to count them in JS.
+ * `system-health/compute.ts`'s `collectWorkItems` was doing
+ * `listWorkItems({ limit: 2000 })` and then `for (const it of items)
+ * byState[it.state]++` — shipping ~4.7MB of `body`+`payload` JSONB per call,
+ * 761k calls, to derive ~7 integers. Measured with EXPLAIN (ANALYZE, SERIALIZE):
+ * 4734 kB / ~195 ms for the list shape vs 1 kB / ~52 ms for this GROUP BY —
+ * ~4,700x fewer bytes and ~3.7x faster.
+ *
+ * It also fixes a CORRECTNESS bug, which is the real reason not to "just add a
+ * projection" instead: the 2000-row cap silently truncated the counts. With
+ * 25,055 issue-family + 26,814 feature-family rows live, the health panel was
+ * reporting `total: 2000` and the state distribution of only the 2000 most
+ * recent — wrong by ~26x. An aggregate has no cap to be wrong about.
+ */
+export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise<Record<string, number>> {
+  const { sql } = getOrgPg();
+  const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
+  const rows = filter.topic
+    ? await sql<{ state: string | null; n: number }[]>`
+      SELECT ei.state AS state, count(DISTINCT ei.issue_id)::int AS n
+        FROM harness_shared.engineer_issues ei
+        JOIN harness_shared.coord_links cl
+          ON cl.workspace_id = ${coordScopeWorkspace()}
+         AND cl.rel = 'tagged'
+         AND cl.src_kind = ${ISSUE_KIND}
+         AND cl.src_ref = ei.issue_id
+         AND cl.dst_kind = 'topic'
+         AND cl.dst_ref = ${filter.topic}
+       WHERE ei.workspace_id = ${issuesScopeWorkspace()}
+         AND ei.kind = ANY(${kindSet as string[]}::text[])
+         AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
+         AND ${filter.scope ? sql`ei.scope = ${filter.scope}` : sql`TRUE`}
+         AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
+         AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
+         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
+         AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
+         AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
+         AND ${
+           filter.audit
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
+             : sql`TRUE`
+         }
+         AND ${filter.excludeObservationLane ? sql`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}
+       GROUP BY ei.state`
+    : await sql<{ state: string | null; n: number }[]>`
+      SELECT state, count(*)::int AS n
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${issuesScopeWorkspace()}
+         AND kind = ANY(${kindSet as string[]}::text[])
+         AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
+         AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
+         AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
+         AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
+         AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
+         AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
+         AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
+       AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
+         AND ${
+           filter.audit
+             ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+             : sql`TRUE`
+         }
+         AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}
+       GROUP BY state`;
+  const out: Record<string, number> = {};
+  for (const row of rows) {
+    // A NULL state is impossible today (the column is NOT NULL) but folding it to
+    // 'unknown' keeps the histogram total equal to countIssues() if that changes.
+    out[row.state ?? 'unknown'] = (out[row.state ?? 'unknown'] ?? 0) + row.n;
+  }
+  return out;
 }
 
 /**
@@ -868,6 +972,8 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
+         AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
@@ -893,6 +999,8 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+       AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
+       AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit

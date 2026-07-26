@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { createGymRunnerPorts, type GymRunnerPortsConfig } from '../runner-ports';
 import type { Sql } from 'postgres';
 
-/** A no-op tagged-template + `.unsafe()` sql fake for teardownHarness tests. */
+/** A no-op tagged-template + `.unsafe()`/`.json()` sql fake (teardown + principal-seed paths). */
 function fakeSql(): Sql {
   const tag = (async () => []) as unknown as Sql;
   (tag as unknown as { unsafe: (s: string) => Promise<unknown[]> }).unsafe = async () => [];
+  (tag as unknown as { json: (v: unknown) => unknown }).json = (v: unknown) => v;
   return tag;
 }
 
@@ -21,7 +22,7 @@ function cfg(over: Partial<GymRunnerPortsConfig> = {}): { config: GymRunnerPorts
   const execs: string[][] = [];
   const config: GymRunnerPortsConfig = {
     operatorBaseUrl: 'http://127.0.0.1:3971',
-    gymSql: (() => {}) as never, // not exercised by the HTTP/exec tests
+    gymSql: fakeSql(), // registerThrowawayHarness seeds principals through it before the HTTP call
     superuserToken: 'sekret-token-1234567890',
     workspaceId: 'gym-ws',
     fetchFn: (async (url: string, init: RequestInit) => {

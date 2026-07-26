@@ -147,6 +147,18 @@ export function serveUploadPack(
     child.stdout.pipe(duplex);
     child.on('error', (e) => {
       stderr += String(e);
+      // WI-6184: END the duplex here too, not only in the 'close' handler. A
+      // spawn failure (`spawn git ENOENT` — live-observed once on the tower
+      // bg-host) is not guaranteed to also emit 'close', and without an end
+      // frame the REQUESTER is told nothing: it waits out its full 120s fetch
+      // ceiling and reports a bare timeout, hiding a purely local, instantly
+      // knowable failure. Ending is idempotent, so the common 'error'-then-
+      // 'close' ordering is unaffected.
+      try {
+        duplex.end();
+      } catch {
+        /* ignore */
+      }
       finish(-1);
     });
     child.on('close', (code) => {
@@ -182,6 +194,23 @@ export function fetchOverDuplex(
     // in flight — a child process, or nothing yet if we're still stuck in
     // mkdtemp/server.listen setup.
     let child: ChildProcessWithoutNullStreams | null = null;
+    // ── WI-6184 timeout forensics ──
+    // A bare "fetch timed out after 120000ms" is undiagnosable: it cannot
+    // distinguish "the peer never answered at all" from "the peer answered and
+    // then stalled mid-pack" — and those have completely different causes (a
+    // silently-swallowed serve error vs. a dying transport). Counting bytes in
+    // each direction makes the timeout message name which one happened, on the
+    // DIALING box, without a cross-machine log read (the exact gap that stalled
+    // five diagnosis wakes — see git-sync-action.ts:1746-1757).
+    //
+    // Safe to attach alongside the pipes below: `duplex`/`conn` are ALREADY put
+    // in flowing mode by `.pipe()`, and Node delivers each chunk to EVERY
+    // 'data' listener, so an extra counter never consumes or steals bytes.
+    // (Contrast swarm.ts's warning about adding a 'data' listener to a socket
+    // that is NOT piped — that would switch it to flowing and eat bytes.)
+    let bytesFromPeer = 0;
+    let bytesToPeer = 0;
+    let bridgeConnected = false;
     // Never let a stream error crash the host — attached SYNCHRONOUSLY, before
     // any await, so an already-destroyed/decoy duplex (the documented
     // DIAL-REGISTRY GAP idiom several callers use — a pre-destroyed stub
@@ -247,7 +276,18 @@ export function fetchOverDuplex(
     // enforced ceiling: kill the child if one was spawned, and always finish.
     const timer = setTimeout(() => {
       timedOut = true;
-      stderr += `\nfetch timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms`;
+      // WI-6184: name what we were WAITING ON, not just that we waited.
+      //   peer→us 0 B  ⇒ the serving side never answered (its handleReq refused
+      //                  silently, threw and got swallowed, or never received
+      //                  the req frame) — look at the PEER, not the transport.
+      //   peer→us > 0  ⇒ the peer did answer and the stream then stalled — a
+      //                  transport/connection-death problem on this path.
+      //   bridge=no    ⇒ we never even got git's ext helper connected locally,
+      //                  so the stall is LOCAL setup (mkdtemp/listen/spawn).
+      stderr +=
+        `\nfetch timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms` +
+        ` (peer→us ${bytesFromPeer}B, us→peer ${bytesToPeer}B,` +
+        ` bridge=${bridgeConnected ? 'yes' : 'no'}, gitChild=${child ? 'spawned' : 'none'})`;
       try {
         child?.kill('SIGKILL');
       } catch {
@@ -278,6 +318,15 @@ export function fetchOverDuplex(
       duplex.on('error', () => {});
       conn.pipe(duplex);
       duplex.pipe(conn);
+      // WI-6184: counters only — see the declarations above for why an extra
+      // 'data' listener on an already-piped stream is byte-safe.
+      bridgeConnected = true;
+      duplex.on('data', (c: Buffer | string) => {
+        bytesFromPeer += typeof c === 'string' ? Buffer.byteLength(c) : c.length;
+      });
+      conn.on('data', (c: Buffer | string) => {
+        bytesToPeer += typeof c === 'string' ? Buffer.byteLength(c) : c.length;
+      });
     });
 
     void (async () => {

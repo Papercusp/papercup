@@ -95,9 +95,14 @@ export async function ensureGymPipelinePrincipals(sql: Sql, workspaceIds: readon
   const ids = [...new Set(workspaceIds.filter((w) => w.length > 0))];
   for (const workspaceId of ids) {
     for (const [name, caps] of Object.entries(GYM_PIPELINE_ROLE_CAPS)) {
+      // ⚠ sql.json, NOT `${JSON.stringify(...)}::jsonb`: postgres-js serializes a
+      // JS string param as a JSON STRING value, so the stringify idiom lands a
+      // double-encoded scalar ('"[...]"') — loadRoleCapabilities' Array.isArray
+      // then reads it as EMPTY caps. This exact bug made seeds #1/#2 inert
+      // across gym cycles 2026-07-26 (proven against cycle #4's live DB).
       await sql`
         INSERT INTO harness_shared.system_principals (workspace_id, name, bearer_hash, capabilities)
-        VALUES (${workspaceId}, ${name}, ${randomBytes(32).toString('hex')}, ${JSON.stringify(caps)}::jsonb)
+        VALUES (${workspaceId}, ${name}, ${randomBytes(32).toString('hex')}, ${sql.json([...caps])})
         ON CONFLICT (workspace_id, name) DO UPDATE SET capabilities = EXCLUDED.capabilities`;
     }
   }

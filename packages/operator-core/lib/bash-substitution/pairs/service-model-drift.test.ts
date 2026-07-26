@@ -39,7 +39,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import { HEALTH_ENDPOINTS, SUPERVISED_PROCESSES } from '../../service-health';
-import { PROBED_PORTS, UNIT_TO_PROBE, SUPERVISED_BUT_UNPROBED } from './service';
+import { PROBED_PORTS, UNIT_TO_PROBE, SUPERVISED_BUT_UNPROBED, listeningPorts } from './service';
+import devListeningPorts from '../../agent-tools/dev/listening_ports';
+import { LISTENING_SOCKETS_DEFAULT_LIMIT } from '../../listening-sockets';
+import { expectArgSurface, expectExpressionUsesRealArgs } from './model-drift-helpers';
 
 /**
  * Probes that are real but do NOT come from `HEALTH_ENDPOINTS`, with the reason.
@@ -154,6 +157,80 @@ describe('service.ts equivalence model tracks the real dev:service_health (WI-61
         `either they were renamed/removed, or the model invented them. Either way cover() is emitting a reason ` +
         `string about a unit that does not exist:\n  - ${unknown.join('\n  - ')}`,
     ).toEqual([]);
+  });
+
+  /**
+   * ── dev:listening_ports ↔ the re-derived listeningPorts pair (WI-6149) ─────
+   *
+   * This pair is the reason D-016 exists. It spent its whole life recording
+   * `not-a-substitute` and an advisory that read "there is no tool form for
+   * ss/lsof/netstat today; keep using them" — and the moment D-017 shipped
+   * `dev:listening_ports`, that sentence became a lie that nothing would have
+   * caught. The `expectedVerdict` latch cannot catch it: `cover()` does not
+   * import the tool, so building a tool changes no recomputed verdict.
+   *
+   * These guards close that loop for the NEXT widening, in both directions.
+   */
+  it('the listeningPorts pair points at a tool that actually exists', () => {
+    expect(
+      listeningPorts.toolName,
+      `The pair routes agents to '${listeningPorts.toolName}', but the imported tool is named ` +
+        `'${devListeningPorts.name}'. A renamed verb leaves every advisory naming a tool that cannot be called.`,
+    ).toBe(devListeningPorts.name);
+  });
+
+  it('dev:listening_ports still takes exactly { port, pid, limit } — the surface cover() maps onto', () => {
+    expectArgSurface(
+      devListeningPorts,
+      'dev:listening_ports',
+      ['limit', 'pid', 'port'],
+      'cover() maps port-scoped queries onto `port`, the reverse (which ports does this pid hold) onto `pid`, ' +
+        'and unscoped table reads onto the default `limit`. A NEW arg is the dangerous direction here: the pair ' +
+        'is recorded `needs-widening` SOLELY because 9 of 24 sampled atoms ask about non-LISTEN sockets. Adding ' +
+        'a `state`/`established`/`udp` arg would make most of those expressible and the recorded verdict would ' +
+        'be stale-pessimistic — advising agents to keep shelling out for something the tool had just learned to ' +
+        'do. Re-run the coverage measurement and re-record expectedVerdict before widening the expected list.',
+    );
+  });
+
+  it('cover() emits expressions built only from real dev:listening_ports args', () => {
+    expectExpressionUsesRealArgs(listeningPorts, 'lsof -nP -iTCP:3070 -sTCP:LISTEN', devListeningPorts, ['port']);
+  });
+
+  it('the LISTEN-only limitation the verdict rests on is still real', () => {
+    // The ENTIRE `needs-widening` residue is the state axis. If the tool ever
+    // reports non-LISTEN sockets, every one of those 9 misses becomes coverable
+    // and this pair must be re-derived. Nothing else in the suite would notice,
+    // because cover() reaches its refusals without consulting the tool at all.
+    const described = JSON.stringify(devListeningPorts.guidance ?? {});
+    expect(
+      /LISTEN/.test(described),
+      `dev:listening_ports no longer documents a LISTEN-only scope. The listeningPorts pair refuses 9 of its 24 ` +
+        `sampled atoms with the reason "reports LISTEN sockets only" — if that stopped being true, those refusals ` +
+        `are now wrong and the verdict should have moved off needs-widening.`,
+    ).toBe(true);
+  });
+
+  it('advisoryText names the real tool and does not resurrect the "no tool form" claim', () => {
+    expect(listeningPorts.advisoryText).toContain('dev:listening_ports');
+    expect(
+      /no tool form/i.test(listeningPorts.advisoryText),
+      `listeningPorts.advisoryText has regained the pre-D-017 "no tool form" claim, which is false now that ` +
+        `dev:listening_ports exists: ${listeningPorts.advisoryText}`,
+    ).toBe(false);
+    // The honest-null contract is the single most misreadable thing about this
+    // tool (a bound-but-unreadable socket vs a free port), so the advisory must
+    // keep carrying it — it is what an agent reads at tier `advise`.
+    expect(listeningPorts.advisoryText).toContain('ownerVisible');
+  });
+
+  it('the default row cap the tool documents is a real exported constant', () => {
+    expect(
+      typeof LISTENING_SOCKETS_DEFAULT_LIMIT,
+      'listening-sockets.ts no longer exports a numeric default row cap, which dev:listening_ports quotes in its ' +
+        '`limit` arg description. A description quoting a number that no longer exists is the file-read ' +
+        'advisoryText drift in a different costume.',
+    ).toBe('number');
   });
 
   it('staging-api specifically is modelled as PROBED (the WI-6146 regression this file was written for)', () => {

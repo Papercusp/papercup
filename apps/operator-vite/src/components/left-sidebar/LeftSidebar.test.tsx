@@ -27,8 +27,7 @@ vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-account
 vi.mock('./MugTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
 vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwatch" /> }));
 vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
-vi.mock('./BlenderTab', () => ({ default: () => <div data-testid="panel-blender" /> }));
-vi.mock('./DocsTab', () => ({ default: () => <div data-testid="panel-docs" /> }));
+vi.mock('./SystemTab', () => ({ default: () => <div data-testid="panel-system" /> }));
 vi.mock('./AgentsTab', () => ({ default: () => <div data-testid="panel-agents" /> }));
 vi.mock('./SpendTab', () => ({ default: () => <div data-testid="panel-spend" /> }));
 vi.mock('./ConversationsTab', () => ({ default: () => <div data-testid="panel-conversations" /> }));
@@ -287,35 +286,43 @@ describe('<LeftSidebar> shell', () => {
     expect(document.documentElement.style.getPropertyValue('--left-sidebar-w')).toBeTruthy();
   });
 
-  // Blender + Docs (owner ask 2026-07-25) — the automation-control tabs. These
-  // exist so scheduled agents that SPEND TOKENS are visible and pausable; if a
-  // refactor drops them from TABS the owner silently loses that control again,
-  // which is exactly the failure they were added to fix.
-  it('opens the Blender tab from ?lst=blender', async () => {
-    renderRail('?lst=blender');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('blender');
-    expect(await screen.findByTestId('panel-blender')).toBeTruthy();
+  // Agents + System (owner ask 2026-07-25, split 2026-07-26) — the automation-
+  // control tabs. These exist so scheduled agents that SPEND TOKENS are visible and
+  // pausable; if a refactor drops them from TABS the owner silently loses that
+  // control again, which is exactly the failure they were added to fix.
+  it('opens the Agents tab from ?lst=agents', async () => {
+    renderRail('?lst=agents');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('agents');
+    expect(await screen.findByTestId('panel-agents')).toBeTruthy();
     expect(screen.queryByTestId('panel-queen')).toBeNull();
   });
 
-  it('opens the Docs tab from ?lst=docs', async () => {
-    renderRail('?lst=docs');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('docs');
-    expect(await screen.findByTestId('panel-docs')).toBeTruthy();
+  it('opens the System tab from ?lst=system', async () => {
+    renderRail('?lst=system');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('system');
+    expect(await screen.findByTestId('panel-system')).toBeTruthy();
   });
 
-  it('places Blender and Docs immediately after the kettle/overwatch tab', () => {
+  it('places Agents and System immediately after the kettle/overwatch tab', () => {
     renderRail();
     const ids = Array.from(document.querySelectorAll('[role="tab"]')).map((el) =>
       el.getAttribute('data-testid'),
     );
     const kettle = ids.indexOf('left-sidebar-tab-overwatch');
-    const blender = ids.indexOf('left-sidebar-tab-blender');
-    const docs = ids.indexOf('left-sidebar-tab-docs');
-    expect(blender).toBeGreaterThan(-1);
-    expect(docs).toBe(blender + 1);
+    const agents = ids.indexOf('left-sidebar-tab-agents');
+    const system = ids.indexOf('left-sidebar-tab-system');
+    expect(agents).toBeGreaterThan(-1);
+    expect(system).toBe(agents + 1);
     // Overwatch is flag-gated, so only assert adjacency when it is actually rendered.
-    if (kettle > -1) expect(blender).toBe(kettle + 1);
+    if (kettle > -1) expect(agents).toBe(kettle + 1);
+  });
+
+  // The retired ids must not silently resolve to something else — a stale
+  // `?lst=blender` bookmark falls through to the default tab (see the TABS note in
+  // LeftSidebar.tsx).
+  it('no longer resolves the retired blender / docs tab ids', () => {
+    renderRail('?lst=blender');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).not.toBe('blender');
   });
 
 });

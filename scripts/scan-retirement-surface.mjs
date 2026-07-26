@@ -75,6 +75,16 @@ export const DEFAULT_EXCLUDE_GLOBS = [
   'test-results/**',
   '**/junit.xml',
   '**/coverage/**',
+  // Same class of generated build-sidecar bundle, inside the papercusp-desktop
+  // submodule — only reachable once `git ls-files --recurse-submodules` was
+  // fixed to see submodule content at all (P-007, 2026-07-26): these are
+  // minified/compiled Tauri sidecar + SPA build outputs, tracked in that
+  // submodule's own git index but regenerated frequently by the fleet
+  // (non-canonical, not hand-written source) — a retirement sweep hitting a
+  // compiled string literal here is noise, not a real coupling.
+  'papercusp-desktop/src-tauri/sidecar/**',
+  'papercusp-desktop/src-tauri/env-sidecars/**',
+  'papercusp-desktop/src-tauri/sidecar.tmp.*/**',
 ];
 
 /** Compile a small glob (supporting `*`, `**`, literal) to a RegExp anchored on the whole path. */
@@ -165,8 +175,15 @@ export function scanSurface({
   allowlist = [],
   excludeGlobs = DEFAULT_EXCLUDE_GLOBS,
   root = ROOT,
+  // --recurse-submodules is REQUIRED: libs/papercusp is a git submodule, so a
+  // plain `git ls-files` from the superproject silently returns NOTHING for
+  // anything under it — meaning a retirement sweep using the DEFAULT listFiles
+  // would silently skip the whole libs/papercusp/packages/harness/blueprints
+  // tree (found empirically while building this surface's sibling, P-007
+  // agent-trap-guards-2026-07-26, which hit the identical blind spot and
+  // confirmed the fix against the real tree: 122 files recovered).
   listFiles = () =>
-    execSync('git ls-files', { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
+    execSync('git ls-files --recurse-submodules', { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
       .split('\n')
       .filter(Boolean),
   readFile = (f) => readFileSync(new URL(f, `file://${root.endsWith('/') ? root : root + '/'}`), 'utf8'),

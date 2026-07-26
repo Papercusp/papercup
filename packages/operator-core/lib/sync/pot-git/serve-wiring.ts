@@ -345,12 +345,68 @@ function failAllSessions(state: ChannelState): void {
   state.clientSessions.clear();
 }
 
+// ─── WI-6184: serve-side observability ──────────────────────────────────
+// Before this, the ENTIRE serving half of the p2p-git plane was silent: an
+// inbound fetch that was refused, that threw, or that served a pack left no
+// trace on this machine. A peer whose clone hung for the full 120s ceiling
+// therefore had nothing to report and we had nothing to read — the documented
+// cause of five stalled diagnosis wakes (git-sync-action.ts:1746-1757).
+//
+// Deliberately NOT env-gated: this is release-grade observability, not a debug
+// trace. Volume is controlled instead — a served pack is rare and always logged,
+// while REFUSALS (which a misconfigured or looping peer can generate steadily)
+// are aggregated per reason, never emitted per event.
+const REFUSE_LOG_WINDOW_MS = 30_000;
+const refuseLogLast = new Map<string, { at: number; suppressed: number }>();
+
+/** True when this refusal should be logged now; folds any suppressed repeats
+ *  from the current window into the returned count so a storm reports as one
+ *  line with a tally instead of N lines. */
+function shouldLogRefusal(key: string, now: number): { log: boolean; suppressed: number } {
+  const prev = refuseLogLast.get(key);
+  if (prev && now - prev.at < REFUSE_LOG_WINDOW_MS) {
+    prev.suppressed++;
+    return { log: false, suppressed: prev.suppressed };
+  }
+  const suppressed = prev?.suppressed ?? 0;
+  refuseLogLast.set(key, { at: now, suppressed: 0 });
+  // Bound the map: these keys are (reason, repoKey, peer) tuples, so a hostile
+  // peer varying repoKey could otherwise grow it without limit.
+  if (refuseLogLast.size > 512) {
+    for (const [k, e] of refuseLogLast) {
+      if (now - e.at >= REFUSE_LOG_WINDOW_MS) refuseLogLast.delete(k);
+      if (refuseLogLast.size <= 256) break;
+    }
+  }
+  return { log: true, suppressed };
+}
+
+/** Short, log-safe tag for the peer that opened this serve session. Uses the
+ *  SIGNATURE-VERIFIED device identity where one exists (never the wire frame's
+ *  self-reported fields) so the tag can be trusted in a forensic read. */
+function peerTag(state: ChannelState): string {
+  try {
+    const pk = state.serverConfig?.resolvePeerDevicePubkey?.(state.socket);
+    return pk ? pk.slice(0, 8) : 'unverified';
+  } catch {
+    return 'unverified';
+  }
+}
+
 function handleReq(state: ChannelState, v: ReqFrame): void {
+  const startedAt = Date.now();
   const refuse = (reason: string): void => {
     try {
       state.messages?.refuse.send({ id: v.id, reason });
     } catch {
       /* best-effort */
+    }
+    const { log, suppressed } = shouldLogRefusal(`${reason} ${v.repoKey} ${peerTag(state)}`, Date.now());
+    if (log) {
+      console.warn(
+        `[pot-git] serve REFUSED reason=${reason} repo=${v.repoKey} peer=${peerTag(state)} id=${v.id}` +
+          (suppressed > 0 ? ` (+${suppressed} identical suppressed in the last ${REFUSE_LOG_WINDOW_MS / 1000}s)` : ''),
+      );
     }
   };
   void (async () => {
@@ -443,12 +499,38 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     );
     state.serverSessions.set(v.id, duplex);
     try {
-      await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs, scopeServeGrant });
+      const res = await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs, scopeServeGrant });
+      // WI-6184: the one line that says a real fetch was served, and how it
+      // ended. `code === 0` is the success signal; timedOut distinguishes "the
+      // requester went away / upload-pack wedged" from a clean nonzero exit.
+      const ms = Date.now() - startedAt;
+      const detail =
+        `repo=${v.repoKey} peer=${peerTag(state)} id=${v.id} code=${res.code}` +
+        `${res.timedOut ? ' timedOut=true' : ''} ${ms}ms`;
+      if (res.code === 0) console.info(`[pot-git] serve OK ${detail}`);
+      else console.warn(`[pot-git] serve FAILED ${detail} stderr=${res.stderr.trim().slice(0, 300)}`);
     } finally {
       state.serverSessions.delete(v.id);
     }
-  })().catch(() => {
-    /* best-effort: a bad/hostile request must never crash the shared channel */
+  })().catch((e) => {
+    // A bad/hostile request must never crash the shared channel — but it must
+    // never SILENTLY STARVE the requester either. This catch used to swallow
+    // the error with no frame sent, so any throw above (a wedged `pathExists`,
+    // an unexpected `serveUploadPack` failure) left the peer with no refuse and
+    // no end: it then hung its FULL 120s fetch ceiling and reported a bare
+    // ":failed" with no reason — indistinguishable from a dead transport, and
+    // exactly the signature seen on the 2-machine rig. Tell the requester so it
+    // fails fast (its `duplex.on('error')` resolves immediately), and say so
+    // here so the failing side is diagnosable on THIS machine.
+    try {
+      state.messages?.refuse.send({ id: v.id, reason: 'serve-error' });
+    } catch {
+      /* best-effort — the channel may already be gone */
+    }
+    console.warn(
+      `[pot-git] serve ERROR repo=${v.repoKey} peer=${peerTag(state)} id=${v.id}` +
+        ` after ${Date.now() - startedAt}ms: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`,
+    );
   });
 }
 
