@@ -243,6 +243,107 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
   });
 });
 
+describe('reconcileLoopRoutines — turn-journal completion signal (WI-6069)', () => {
+  // Root cause: `lifecycle-report.sh` (the kind='lifecycle' 'ended' marker) is wired in
+  // ~/.claude/settings.json ONLY to SessionStart/SessionEnd, never to Stop — so it only ever
+  // fires at a genuine session restart, never at an ordinary turn boundary. A warm session
+  // driven entirely by push wakes (events:await / a loop re-wake) never restarts, so before
+  // this fix it never got a completion signal from layer 1 and (absent quiescence) silently
+  // degraded to the ~30min stuck-park backstop every fire, regardless of the configured
+  // interval. `session_turn_journal` (P-012's per-CLI Stop-hook journal write) DOES fire at
+  // the end of every ordinary turn — this is the new layer-1.5 signal that closes the gap.
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+  const warmRow = (over: Record<string, unknown>) => ({
+    id: 'rt-1',
+    target_owner_id: 'su-test',
+    interval_sec: 60,
+    parked: true,
+    install_slug: 'papercusp',
+    name: 'loop-su-test',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    lifecycle_completed_at: null,
+    lifecycle_started_at: null,
+    presence_last_active_at: null,
+    ...over,
+  });
+
+  it("re-arms via 'turn-journal' off a per-turn Stop-hook journal write, with NO lifecycle marker and NO presence-quiescence quiet-gap needed", async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [warmRow({ turn_journal_completed_at: pgString(T0 + 5_000) })],
+      updates,
+    );
+    const recordFire = vi.fn(async () => {});
+    // Only 6s after the fire — well short of FALLBACK_QUIET_MS (60s) — so presence-quiescence
+    // could never have settled this; turn-journal is the ONLY signal that can.
+    const res = await reconcile({ sql, nowMs: T0 + 6_000, recordFire });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-1', via: 'turn-journal' });
+    expect(res.loops[0].nextFireAt).toBe(T0 + 5_000 + 60_000); // completed + interval
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-test', expect.stringContaining('turn-journal'), 'ok');
+  });
+
+  it('the lifecycle marker still wins when BOTH signals are present (no behavior change for a session that DOES restart)', async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        warmRow({
+          lifecycle_completed_at: pgString(T0 + 3_000),
+          turn_journal_completed_at: pgString(T0 + 5_000),
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('lifecycle');
+    expect(res.loops[0].completedAt).toBe(T0 + 3_000);
+  });
+
+  it("a turn-journal settle whose turn text is a provider-kill signature is reclassified as 'error' (EI-13818 coverage extended to this via)", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic log
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        warmRow({
+          turn_journal_completed_at: pgString(T0 + 5_000),
+          last_assistant_text_after_fire: 'You have exceeded your usage limit · resets 5:40am',
+        }),
+      ],
+      updates,
+    );
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({ sql, nowMs: T0 + 6_000, recordFire });
+    expect(res.rearmed).toBe(1);
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-test',
+      expect.stringContaining('loop-lifecycle-death'),
+      'error',
+    );
+  });
+
+  it('a COLD loop does NOT consult turn_journal_completed_at (it has its own two-signal ladder) — an otherwise-signal-less cold fire is left in flight', async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        warmRow({
+          carry: 'cold',
+          note_updated_ts: null,
+          turn_journal_completed_at: pgString(T0 + 5_000), // present, but must be ignored for cold
+          presence_last_active_at: pgString(T0 + 5_000), // active since fire → not stuck either
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0);
+  });
+});
+
 describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustness P0b)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');

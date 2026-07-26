@@ -55,11 +55,14 @@ export interface BootSubstrateResult {
   booted: number;
   alreadyBooted: number;
   failed: number;
+  /** P-010: harnesses the activation policy left dark (wake on demand). */
+  deferred: number;
   results: Array<{
     workspaceId: string;
     harnessSlug: string;
-    state: 'booted' | 'already-booted' | 'failed';
+    state: 'booted' | 'already-booted' | 'failed' | 'deferred';
     error?: string;
+    deferReason?: 'inactive';
   }>;
   usedSidecar: boolean;
   /** Whether the LAZY_SUBSTRATE_BOOT eviction reaper was started this boot. */

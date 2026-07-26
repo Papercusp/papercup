@@ -755,11 +755,11 @@ export async function getLoopStatuses(
            --
            -- WI-6069: the ORIGINAL version of this read consulted ONLY the kind='lifecycle'
            -- 'ended' marker, on the (verified-false, see reconcile-loop-routines.ts's module
-           -- header) premise that Claude Code's `Stop` hook writes it every turn — in reality
-           -- `lifecycle-report.sh` is wired only to SessionStart/SessionEnd, so that marker only
-           -- ever lands at a genuine session restart, making `lastTurnAt` read as perpetually
-           -- stale (and `turnsStalled` fire) for any healthy session driven entirely by push
-           -- wakes. UNION in `session_turn_journal` (P-012's per-CLI Stop-hook journal write,
+           -- header) premise that Claude Code's Stop hook writes it every turn -- in reality
+           -- lifecycle-report.sh is wired only to SessionStart/SessionEnd, so that marker only
+           -- ever lands at a genuine session restart, making lastTurnAt read as perpetually
+           -- stale (and turnsStalled fire) for any healthy session driven entirely by push
+           -- wakes. UNION in session_turn_journal (P-012's per-CLI Stop-hook journal write,
            -- which DOES fire every ordinary turn) so this reads the real most-recent turn
            -- regardless of which signal happened to land. MAX ignores NULLs, so either source
            -- being empty for this owner is harmless.
