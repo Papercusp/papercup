@@ -527,8 +527,10 @@ async function harnessSlugsFromPgRegistry(workspaceId: string): Promise<string[]
 export interface BootSingleResult {
   workspaceId: string;
   harnessSlug: string;
-  state: 'booted' | 'already-booted' | 'failed';
+  state: 'booted' | 'already-booted' | 'failed' | 'deferred';
   error?: string;
+  /** Present on `state:'deferred'` — why the activation policy left it dark. */
+  deferReason?: 'inactive';
 }
 
 export interface BootAllOpts {
@@ -553,6 +555,21 @@ export interface BootAllOpts {
    * not touch PG). Default: the PG registry via `loadHarnessRegistry`.
    */
   discoverHarnessSlugs?: (workspaceId: string) => Promise<string[]>;
+  /**
+   * P-010: override the activation-fact probe (tests inject; unit tests must not
+   * touch PG). Default reads undrained `substrate_outbox` counts + recent
+   * `shared_presence` in two grouped queries.
+   */
+  activationFactDeps?: import('./substrate-active-set-facts').ActivationFactDeps;
+  /** P-010: presence newer than this counts as live activity. Default 15m. */
+  activationPresenceWindowMs?: number;
+  /**
+   * P-010 SAFETY INTERLOCK — allow deferring harnesses that FEDERATE (Hive home
+   * or member). Correct ONLY once P-012's always-on remote wake signal exists:
+   * a deferred harness is not joined to its topic, so a remote peer's push is
+   * unheard until something LOCAL wakes it. Default false.
+   */
+  deferFederatingHarnesses?: boolean;
   /**
    * Override the swarm-binding resolver. Default reads
    * `.papercusp/shared.json` via `resolveHarnessPaths` and returns
@@ -586,6 +603,9 @@ export interface BootAllResult {
   booted: number;
   alreadyBooted: number;
   failed: number;
+  /** P-010: harnesses the activation policy deliberately left dark this sweep.
+   *  They are NOT failures — each is wake-eligible on access / captured write. */
+  deferred: number;
   results: BootSingleResult[];
 }
 
@@ -1011,6 +1031,88 @@ export async function bootSingleHarness(
  * (or just the workspaceIds passed in). Errors per harness are caught;
  * the result rolls them up so callers can log + continue.
  */
+/**
+ * P-010: decide which of this sweep's pairs to leave DARK (activate on demand).
+ *
+ * Returns an EMPTY set — i.e. eager boot, byte-identical to today — unless
+ * LAZY_SUBSTRATE_BOOT is ON. That flag already gates this entire lazy-boot
+ * feature family (eviction reaper + outbox keepalive), so activation rides it
+ * rather than introducing a second, separately-flippable half of one behaviour.
+ *
+ * FAIL-OPEN throughout: every error path returns an empty set. Deferring is the
+ * only decision here that can lose data, so anything we cannot verify boots.
+ */
+async function resolveActivationDeferrals(
+  pairs: ReadonlyArray<{ wsId: string; slug: string }>,
+  opts: BootAllOpts,
+): Promise<Set<string>> {
+  const empty = new Set<string>();
+  if (pairs.length === 0) return empty;
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    const on = await getFlag(FLAGS.LAZY_SUBSTRATE_BOOT, 'system').catch(() => false);
+    if (!on) return empty;
+
+    const { loadHarnessRegistry } = await import('../../harness-registry');
+    const { gatherActivationFacts, createPgActivationFactDeps } = await import(
+      './substrate-active-set-facts'
+    );
+    const { planSubstrateActivation } = await import('./substrate-active-set-policy');
+
+    // Registry lookup per WORKSPACE (not per harness) — harness_kind/hive_slug
+    // for every pair costs one cached registry read each.
+    const slugsByWs = new Map<string, string[]>();
+    for (const p of pairs) {
+      const list = slugsByWs.get(p.wsId);
+      if (list) list.push(p.slug);
+      else slugsByWs.set(p.wsId, [p.slug]);
+    }
+    const entries: Array<{
+      workspaceId: string;
+      harnessSlug: string;
+      harnessKind?: string;
+      hiveSlug?: string;
+    }> = [];
+    for (const [wsId, slugs] of slugsByWs) {
+      const reg = await loadHarnessRegistry(wsId);
+      const bySlug = new Map(reg.projects.map((pr) => [pr.slug, pr]));
+      for (const slug of slugs) {
+        const pr = bySlug.get(slug);
+        entries.push({
+          workspaceId: wsId,
+          harnessSlug: slug,
+          harnessKind: pr?.harness_kind,
+          hiveSlug: pr?.hive_slug,
+        });
+      }
+    }
+
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+    const facts = await gatherActivationFacts(
+      entries,
+      opts.activationFactDeps ??
+        createPgActivationFactDeps(sql as unknown as Parameters<typeof createPgActivationFactDeps>[0]),
+    );
+    const decision = planSubstrateActivation(facts, {
+      now: Date.now(),
+      presenceActiveMs: opts.activationPresenceWindowMs ?? 15 * 60 * 1000,
+      // Stays FALSE until P-012's always-on remote wake signal lands — see the
+      // safety-interlock note in substrate-active-set-policy.
+      deferFederating: opts.deferFederatingHarnesses === true,
+    });
+    return new Set(decision.defer);
+  } catch (e) {
+    console.warn(
+      '[boot-all] activation planning failed — booting every harness eagerly (fail-open):',
+      e instanceof Error ? e.message : String(e),
+    );
+    return empty;
+  }
+}
+
 export async function bootAllHarnessesForActiveWorkspace(
   opts: BootAllOpts = {},
 ): Promise<BootAllResult> {
@@ -1041,7 +1143,39 @@ export async function bootAllHarnessesForActiveWorkspace(
   const bootConcurrency =
     opts.bootConcurrency ??
     (Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 4);
-  const results = await mapWithConcurrency(pairs, bootConcurrency, ({ wsId, slug }) =>
+  // P-010 activate-on-demand: leave inactive harnesses DARK and wake them on
+  // access / captured write. Empty set (⇒ eager boot) unless LAZY_SUBSTRATE_BOOT
+  // is on; see resolveActivationDeferrals.
+  const deferKeys = await resolveActivationDeferrals(pairs, opts);
+  const deferredResults: BootSingleResult[] = [];
+  let toBoot = pairs;
+  if (deferKeys.size > 0) {
+    // Deferral is only SAFE with wake tracking on — the wake paths
+    // (getBootedHarness / handleOutboxNotifyForEvictedHarness) no-op while it is
+    // off, which would strand every deferred harness. Enable it BEFORE marking
+    // (markHarnessActivationDeferred itself no-ops when tracking is off), rather
+    // than relying on the caller's post-boot reaper start. Idempotent.
+    enableSubstrateEvictionTracking();
+    toBoot = [];
+    for (const p of pairs) {
+      if (deferKeys.has(key(p.wsId, p.slug))) {
+        markHarnessActivationDeferred(p.wsId, p.slug);
+        deferredResults.push({
+          workspaceId: p.wsId,
+          harnessSlug: p.slug,
+          state: 'deferred',
+          deferReason: 'inactive',
+        });
+      } else {
+        toBoot.push(p);
+      }
+    }
+    console.log(
+      `[boot-all] activate-on-demand: booting ${toBoot.length}/${pairs.length} harness(es); ` +
+        `${deferredResults.length} deferred (wake on access or captured write)`,
+    );
+  }
+  const bootResults = await mapWithConcurrency(toBoot, bootConcurrency, ({ wsId, slug }) =>
     bootSingleHarness(wsId, slug, {
       timeoutMs: opts.perHarnessTimeoutMs,
       resolveSwarmBinding: opts.resolveSwarmBinding,
@@ -1049,6 +1183,7 @@ export async function bootAllHarnessesForActiveWorkspace(
       skipSendSideWiring: opts.skipSendSideWiring,
     }),
   );
+  const results: BootSingleResult[] = [...bootResults, ...deferredResults];
 
   // p2p-hive-directory P-003 boot-join: after the harnesses boot, join the global
   // hive-directory topic + announce this workspace's owned public/invite hives.
@@ -1175,10 +1310,14 @@ export async function bootAllHarnessesForActiveWorkspace(
   })();
 
   return {
-    attempted: results.length,
+    // `attempted` stays "boots we actually tried" — a deferred harness was
+    // deliberately not attempted, so counting it here would misreport the sweep
+    // (and, with the flag OFF, deferredResults is empty ⇒ unchanged).
+    attempted: bootResults.length,
     booted: results.filter((r) => r.state === 'booted').length,
     alreadyBooted: results.filter((r) => r.state === 'already-booted').length,
     failed: results.filter((r) => r.state === 'failed').length,
+    deferred: deferredResults.length,
     results,
   };
 }

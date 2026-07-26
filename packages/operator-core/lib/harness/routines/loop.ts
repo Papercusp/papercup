@@ -751,11 +751,26 @@ export async function getLoopStatuses(
            -- (not parked) loop has, by construction, already been judged "settled" for its most
            -- recent fire by the reconciler, so the parked-only stall check below can never see
            -- a loop that keeps getting re-armed on a WEAK completion signal (e.g. stale/false
-           -- presence-quiescence) without ever producing a genuine Stop-hook 'ended' marker.
-           -- Same index shape as the subquery above (owner_id, kind, summary) — cheap.
-           (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
-             WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
-               AND ag.summary = ${SESSION_END_MARKER}) AS last_turn_at,
+           -- presence-quiescence) without ever producing a genuine turn-completion marker.
+           --
+           -- WI-6069: the ORIGINAL version of this read consulted ONLY the kind='lifecycle'
+           -- 'ended' marker, on the (verified-false, see reconcile-loop-routines.ts's module
+           -- header) premise that Claude Code's `Stop` hook writes it every turn — in reality
+           -- `lifecycle-report.sh` is wired only to SessionStart/SessionEnd, so that marker only
+           -- ever lands at a genuine session restart, making `lastTurnAt` read as perpetually
+           -- stale (and `turnsStalled` fire) for any healthy session driven entirely by push
+           -- wakes. UNION in `session_turn_journal` (P-012's per-CLI Stop-hook journal write,
+           -- which DOES fire every ordinary turn) so this reads the real most-recent turn
+           -- regardless of which signal happened to land. MAX ignores NULLs, so either source
+           -- being empty for this owner is harmless.
+           (SELECT max(ts) FROM (
+              SELECT ag.created_at AS ts FROM harness_shared.agent_activity ag
+               WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
+                 AND ag.summary = ${SESSION_END_MARKER}
+              UNION ALL
+              SELECT j.created_at AS ts FROM harness_shared.session_turn_journal j
+               WHERE j.owner_id = r.target_owner_id
+            ) last_turn_sources) AS last_turn_at,
            (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
              WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at,
            lw.channel                                                    AS last_wake_channel,

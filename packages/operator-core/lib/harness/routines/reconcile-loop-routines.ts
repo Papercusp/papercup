@@ -17,33 +17,64 @@
  *
  * ## The completion signal (the resolved spike — B-LOOP-2's open question)
  * A loop fire is a WARM `coord` wake (D-005) — it mints NO plan_run, so the signal is
- * NOT `plan_runs.finished_at`. It is re-sourced from the SESSION turn lifecycle:
- * Claude Code's `Stop` hook (and `SessionEnd`) is wired to `lifecycle-report.sh`, which
- * fires `activity:report {kind:'lifecycle', summary:'■ session ended'}` at the END of
- * EVERY turn into `harness_shared.agent_activity`, keyed by `owner_id = PAPERCUSP_SID =`
- * the loop's `target_owner_id`. So the most-recent such marker AFTER `last_fired_at` is
- * the woken turn's completion. This is per-turn AND immune to the mid-turn quiet-gap a
- * `coord_presence.last_active_at` quiescence read suffers from (a long SILENT Bash leaves
- * last_active_at stale mid-turn → a false "settled"). (EI-12979: this used to match
- * `summary ILIKE '%end%'` on the reasoning that kind='lifecycle' rows only ever carry
- * "▶ session started" / "■ session ended" — true today, but an unanchored substring
- * match on someone ELSE's assumption about what else might get written under
+ * NOT `plan_runs.finished_at`. It is re-sourced from the SESSION turn lifecycle.
+ *
+ * ⚠ EI-18712914572668391 / WI-6069 (2026-07-26): the paragraph below describing
+ * `lifecycle-report.sh` as "wired to `Stop` (and `SessionEnd`)" was FALSE — verified live
+ * against `~/.claude/settings.json`: `lifecycle-report.sh` is wired ONLY to `SessionStart`
+ * + `SessionEnd`; the `Stop` hook slot runs `workitem-verify-nudge.sh` / `stop-turn-journal.sh`
+ * / `ask-gate-mirror.sh` — none of which write the `kind='lifecycle'` marker. So the
+ * `lifecycle_completed_at` signal below has in practice only ever fired at a genuine
+ * SESSION RESTART, never at an ordinary turn boundary — exactly matching the live evidence
+ * that drove this fix (8 start/end marker PAIRS in a day, not one per turn). A warm session
+ * driven entirely by push wakes (events:await / a loop re-wake) never restarts, so for such
+ * a session this ladder never got past layer 1 and (per the two caveats below) rarely got
+ * past layer 2 either — its EFFECTIVE loop period silently became the layer-3 backstop
+ * (≥30min) regardless of the configured interval, and the better-behaved (push-wake-only)
+ * the agent, the worse this got. The fix: layer 1.5 below, `turn-journal`, consults
+ * `session_turn_journal` instead/in addition — the Stop hook DOES fire `journal:record-turn`
+ * on every turn (deterministic-context-carry-2026-07-14 P-012's `stop-turn-journal.sh`,
+ * client-neutral across Claude/Codex/OMP), so that table's per-owner `created_at` actually is
+ * the per-turn signal the paragraph below always claimed to have. The lifecycle marker is
+ * left in place (still correct, still fires at a real session restart / for any client that
+ * DOES wire Stop→lifecycle-report.sh) — this only adds the layer that makes the ladder work
+ * for the common case where it doesn't restart.
+ *
+ * (Original paragraph, now describing the OTHER available signal rather than "the" signal:)
+ * Claude Code's `SessionEnd` hook is wired to `lifecycle-report.sh`, which fires
+ * `activity:report {kind:'lifecycle', summary:'■ session ended'}` into
+ * `harness_shared.agent_activity`, keyed by `owner_id = PAPERCUSP_SID =` the loop's
+ * `target_owner_id`, at a genuine session restart boundary. The most-recent such marker
+ * AFTER `last_fired_at` is treated as a completion when present. This is immune to the
+ * mid-turn quiet-gap a `coord_presence.last_active_at` quiescence read suffers from (a long
+ * SILENT Bash leaves last_active_at stale mid-turn → a false "settled"). (EI-12979: this
+ * used to match `summary ILIKE '%end%'` on the reasoning that kind='lifecycle' rows only
+ * ever carry "▶ session started" / "■ session ended" — true today, but an unanchored
+ * substring match on someone ELSE's assumption about what else might get written under
  * kind='lifecycle' is exactly the latent trap that bug describes. Now compares against
  * the shared SESSION_END_MARKER / SESSION_START_MARKER constants exactly, the same
  * ones report.ts's `lifecyclePhase` and presence-wakeability.ts's `fetchWakeability`
  * key off — one canonical marker, never re-derived per reader.)
  *
- * ## Robustness (3 layers, each cheap)
- *  1. PRIMARY — the lifecycle 'ended' marker (above). COLD loops (payload_template
- *     carry:'cold') use a DIFFERENT ladder entirely — see completionSignal: the settle is
- *     the turn's 'ended' AFTER the boundary 'started', OR the carry-note refresh (the
- *     protocol's own completion receipt); bare presence-quiescence is NOT a cold settle
- *     (a recycle's booted-but-idle session is quiet without having run its iteration —
- *     the 2026-07-03 stale-note-treadmill live finding, wakes #5033→#5036).
- *  2. FALLBACK — the lifecycle report is a DETACHED, fail-open POST (it CAN be lost). If
- *     no 'ended' marker exists after the fire but `coord_presence.last_active_at`
- *     advanced past last_fired_at AND has since gone quiet (≥ FALLBACK_QUIET_MS), the
- *     session did work then idled → rebase off last_active_at (recovers a dropped report).
+ * ## Robustness (now 4 layers, each cheap)
+ *  1. PRIMARY-A — the lifecycle 'ended' marker (above) — fires at a genuine session
+ *     restart. COLD loops (payload_template carry:'cold') use a DIFFERENT ladder entirely —
+ *     see completionSignal: the settle is the turn's 'ended' AFTER the boundary 'started',
+ *     OR the carry-note refresh (the protocol's own completion receipt); bare
+ *     presence-quiescence is NOT a cold settle (a recycle's booted-but-idle session is quiet
+ *     without having run its iteration — the 2026-07-03 stale-note-treadmill live finding,
+ *     wakes #5033→#5036).
+ *  1.5. PRIMARY-B ('turn-journal', WI-6069) — WARM loops only: the per-turn Stop-hook
+ *     journal write (`session_turn_journal`, P-012) fires at the end of EVERY ordinary turn,
+ *     restart or not, across every CLI — the actual "a turn just finished" signal 1's
+ *     original doc claimed to have. Checked whenever 1 does not fire. Not applied to cold
+ *     loops (they have their own two-signal ladder with a reset-boundary guard that this
+ *     signal cannot participate in — it carries no 'started' counterpart to disambiguate).
+ *  2. FALLBACK — 1/1.5 can both miss (the lifecycle report is a DETACHED, fail-open POST;
+ *     the journal write can 'no_note'/miss its transcript on a bad turn). If neither marker
+ *     exists after the fire but `coord_presence.last_active_at` advanced past last_fired_at
+ *     AND has since gone quiet (≥ FALLBACK_QUIET_MS), the session did work then idled →
+ *     rebase off last_active_at (recovers a dropped report).
  *  3. STUCK-PARK BACKSTOP — a loop parked far past the fire with NO post-fire signal at
  *     all (the wake was never delivered / the session died silently) is re-armed off
  *     `last_fired_at + interval` so the next fire RETRIES (and then flows through the
@@ -382,7 +413,7 @@ export async function defaultEscalateLifecycleDeath(info: LifecycleDeathInfo): P
   });
 }
 
-export type RebaseVia = 'lifecycle' | 'note-refresh' | 'presence-quiescence' | 'stuck-backstop';
+export type RebaseVia = 'lifecycle' | 'turn-journal' | 'note-refresh' | 'presence-quiescence' | 'stuck-backstop';
 
 export interface LoopRebaseResult {
   /** Loops re-armed this pass. */
@@ -431,6 +462,10 @@ interface LoopRow {
   last_fired_at: Date | string | null;
   /** max(agent_activity.created_at) for a kind='lifecycle' 'ended' marker after the fire. */
   lifecycle_completed_at: Date | string | null;
+  /** WI-6069: max(session_turn_journal.created_at) for this owner after the fire — the
+   *  Stop hook's per-turn journal write (P-012), which fires at the end of EVERY ordinary
+   *  turn (not just a session restart). See the module header's layer-1.5 note. */
+  turn_journal_completed_at: Date | string | null;
   /** max(agent_activity.created_at) for a kind='lifecycle' 'started' marker after the fire —
    *  the cold reset-boundary guard (see completionSignal). */
   lifecycle_started_at: Date | string | null;
@@ -511,8 +546,17 @@ function completionSignal(
   if (lc != null && (ls == null || ls < lc)) {
     return { completedAt: lc, via: 'lifecycle' };
   }
-  // 2. FALLBACK: a dropped lifecycle report — the session did genuine work after the fire
-  //    then went quiet. last_active_at is the genuine-activity ts (NOT keepalive).
+  // 1.5. PRIMARY-B (WI-6069): the per-turn Stop-hook journal write. See module header —
+  //    unlike the lifecycle marker above (which in practice only fires at a genuine session
+  //    restart), this fires at the end of EVERY ordinary turn, so it is what actually lets a
+  //    warm, push-wake-only session (never restarts) settle promptly instead of degrading to
+  //    the layer-3 stuck-park backstop every single fire.
+  const tj = tsMs(row.turn_journal_completed_at);
+  if (tj != null) {
+    return { completedAt: tj, via: 'turn-journal' };
+  }
+  // 2. FALLBACK: a dropped lifecycle report / journal write — the session did genuine work
+  //    after the fire then went quiet. last_active_at is the genuine-activity ts (NOT keepalive).
   const la = tsMs(row.presence_last_active_at);
   if (la != null && la > lastFiredMs && nowMs - la >= FALLBACK_QUIET_MS) {
     return { completedAt: la, via: 'presence-quiescence' };
@@ -585,6 +629,13 @@ export async function reconcileLoopRoutines(
                AND a.kind = 'lifecycle'
                AND a.summary = ${SESSION_END_MARKER}
                AND a.created_at > r.last_fired_at) AS lifecycle_completed_at,
+           -- WI-6069: the Stop hook's per-turn journal write (P-012) fires at the end of
+           -- EVERY ordinary turn, restart or not, across every CLI — see the layer-1.5
+           -- module-header note. Cheap: indexed on (owner_id, created_at DESC).
+           (SELECT max(j.created_at)
+              FROM harness_shared.session_turn_journal j
+             WHERE j.owner_id = r.target_owner_id
+               AND j.created_at > r.last_fired_at) AS turn_journal_completed_at,
            (SELECT max(a.created_at)
               FROM harness_shared.agent_activity a
              WHERE a.owner_id = r.target_owner_id
@@ -756,7 +807,7 @@ export async function reconcileLoopRoutines(
       if (signal) {
         completedAt = signal.completedAt;
         via = signal.via;
-        if (via === 'lifecycle' || via === 'presence-quiescence') {
+        if (via === 'lifecycle' || via === 'turn-journal' || via === 'presence-quiescence') {
           turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
         }
       } else {
