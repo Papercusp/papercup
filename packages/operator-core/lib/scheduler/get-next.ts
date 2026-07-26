@@ -373,14 +373,22 @@ function escapePgRegexLiteral(literal: string): string {
 }
 
 /**
- * `\m`/`\M` are Postgres ARE begin-of-word/end-of-word anchors — the SQL mirror of
- * the JS evaluator's `\b...\b` word-boundary (EI-18690730909662985). Used by the
- * `word` op: a case-insensitive WHOLE-WORD substring match, unlike `glob`'s bare
- * substring ILIKE which false-positives on a literal nested inside a larger word
- * (e.g. `*p2p*` matching "nonp2p-bug-drain").
+ * The SQL mirror of the JS evaluator's `word` boundary (EI-18690730909662985):
+ * a case-insensitive WHOLE-WORD substring match, unlike `glob`'s bare substring
+ * ILIKE which false-positives on a literal nested inside a larger word (e.g.
+ * `*p2p*` matching "nonp2p-bug-drain").
+ *
+ * Uses explicit `[^A-Za-z0-9]`/string-edge boundaries, NOT Postgres's `\m`/`\M`
+ * word anchors: Postgres counts `_` as a word character exactly as JS `\b` does,
+ * so `\mreplication\M` does not match "replication_soak" — the snake_case blind
+ * spot that leaked WI-5639 into a non-P2P fleet. Verified both engines agree
+ * before AND after this change. Keep in sync with claim-spec-match.ts's
+ * `wordBoundaryRegex` (which carries the full rationale) and
+ * claim-spec-payload-filter.ts's `wordBoundaryRegexSource`.
  */
 function wordBoundaryPgRegex(literal: string): string {
-  return `\\m${escapePgRegexLiteral(literal)}\\M`;
+  const lit = escapePgRegexLiteral(literal);
+  return `(^|[^A-Za-z0-9])${lit}([^A-Za-z0-9]|$)`;
 }
 
 /**

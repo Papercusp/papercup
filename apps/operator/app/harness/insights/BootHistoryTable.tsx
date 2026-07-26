@@ -64,6 +64,13 @@ export type BootHistoryKind =
   // on success, indistinguishable-from-never-reached in a banked serve.log).
   | 'rekey_boundary_applied'
   | 'epoch_gate_built'
+  // WI-6043 drive-by fix: this kind existed in the canonical union (boot-history.ts,
+  // added for the same WI-6043 investigation) but was missing here — the same
+  // exhaustiveness-drift class noted for peer_cap_near/replication_frozen above, caught
+  // this time by the compiler (dogfood-substrate/page.tsx feeds the canonical
+  // BootHistoryEntry[] into this table, so a missing kind here is a real build break,
+  // not just a cosmetic gap).
+  | 'epoch_gate_skipped'
   | 'epoch_gate_seen'
   | 'epoch_defer'
   | 'epoch_decrypt_fail'
@@ -76,7 +83,13 @@ export type BootHistoryKind =
   // WI-3684 repair-on-detect: a connected_never_replicated zombie session
   // re-attach applied (or failed) under the merge gate. See boot-history.ts.
   | 'replication_repair'
-  | 'replication_repair_failed';
+  | 'replication_repair_failed'
+  // EI-13317 rung (b) / WI-5340: same pre-existing exhaustiveness-drift class as
+  // epoch_gate_skipped above — these three existed in the canonical union but were
+  // never mirrored here. See boot-history.ts for the full rationale.
+  | 'replication_repair_exhausted'
+  | 'replication_repair_rejoin_failed'
+  | 'replication_repair_confirmation_failed';
 
 export interface BootHistoryEntry {
   ts: number;

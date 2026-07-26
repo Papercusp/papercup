@@ -96,8 +96,27 @@ describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => 
   it('NOT title word → { not: { title: { matches } } } mirroring the spec wordBoundaryRegex (EI-18690730909662985)', () => {
     const f: FilterNode = { not: { field: 'title', op: 'word', value: 'p2p' } };
     expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({
-      not: { title: { matches: { source: '\\bp2p\\b', flags: 'i' } } },
+      not: { title: { matches: { source: '(?<![A-Za-z0-9])p2p(?![A-Za-z0-9])', flags: 'i' } } },
     });
+  });
+
+  // Pin the BEHAVIOUR, not just the literal source above: a pinned string alone
+  // let the `\b` boundary look correct while silently failing on snake_case.
+  // `\b` counts `_` as a word char, so `\breplication\b` missed "replication_soak"
+  // — the blind spot that leaked WI-5639 into a non-P2P fleet.
+  it('the translated word regex treats `_` as a boundary and still rejects intra-word hits', () => {
+    const f: FilterNode = { field: 'title', op: 'word', value: 'replication' };
+    const out = claimSpecFilterToClaimablePayloadFilter(f) as {
+      title: { matches: { source: string; flags: string } };
+    };
+    const re = new RegExp(out.title.matches.source, out.title.matches.flags);
+
+    expect(re.test('replication_soak: recovery misses 90s SLA')).toBe(true);
+    expect(re.test('[replication-liveness] no_replicator')).toBe(true);
+    expect(re.test('replication')).toBe(true);
+    // Still a WHOLE-word match: no bare-substring false positives.
+    expect(re.test('bioreplicationary drift')).toBe(false);
+    expect(re.test('Fix dashboard pagination off-by-one')).toBe(false);
   });
 
   it('relational op on a payload field is dropped permissively → undefined', () => {

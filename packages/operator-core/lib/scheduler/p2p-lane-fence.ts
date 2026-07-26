@@ -43,11 +43,30 @@ import type { FilterNode } from './claim-spec';
  * whole-word equivalents.
  */
 export const P2P_LANE_EXCLUSION_TERMS = [
+  // Core p2p / federation vocabulary.
   'p2p',
   'shared-hive',
   'federation',
   'holepunch',
   'steering lease',
+  // Replication subsystem. In this pot "replication" IS the p2p transport surface
+  // (replication_soak, no_replicator, connected_never_replicated, the
+  // [replication-liveness] EI stream) — not database replication.
+  // WI-5639 leaked into fleet nonp2p-bug-drain-0725 purely because this term was
+  // absent; it is the single highest-value entry in this list.
+  'replication',
+  // Named p2p stack components. These were live in nonp2p-bug-drain-0725's
+  // hand-typed rev9 spec but were MISSING from this supposedly-canonical fence —
+  // so importing the fence as it stood would have WIDENED the leak, not closed
+  // it. Folded in here so the shared source is a true superset and the next
+  // editor has nothing left to hand-type.
+  'swarm',
+  'hyperswarm',
+  'hyperdht',
+  'hyperbee',
+  'dht',
+  'udx',
+  'relay',
 ] as const;
 
 /**

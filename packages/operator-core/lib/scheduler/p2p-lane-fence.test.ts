@@ -64,6 +64,14 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     'VM<->host swarm holepunch fails intermittently',
     'steering lease renewal races the DHT announce',
     'bridge the shared-hive projection gap',
+    // WI-5639, the item that actually leaked into fleet nonp2p-bug-drain-0725.
+    // snake_case: the boundary must treat `_` as a separator, or this is admitted.
+    'replication_soak: WI-183-class zombie-connection recovery still misses 90s SLA',
+    '[replication-liveness] no_replicator: harness=papercusp log=4072cfad012b',
+    // Named stack components folded in from the fleet's hand-typed rev9 spec.
+    'udx punch-path instrumentation is unmeasurable',
+    'hyperbee snapshot read races the hyperdht announce',
+    'relay fallback never retries after a failed hole punch',
   ];
 
   it.each(fenced)('excludes: %s', (title) => {
@@ -86,8 +94,35 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
 
   it('P2P_LANE_EXCLUSION_TERMS has not silently shrunk (content regression guard — WI-5265/9 class)', () => {
     expect(new Set(P2P_LANE_EXCLUSION_TERMS)).toEqual(
-      new Set(['p2p', 'shared-hive', 'federation', 'holepunch', 'steering lease']),
+      new Set([
+        'p2p',
+        'shared-hive',
+        'federation',
+        'holepunch',
+        'steering lease',
+        'replication',
+        'swarm',
+        'hyperswarm',
+        'hyperdht',
+        'hyperbee',
+        'dht',
+        'udx',
+        'relay',
+      ]),
     );
+  });
+
+  // The fence is only as good as the `word` op's boundary definition. `\b` (JS) and
+  // `\m`/`\M` (Postgres) both count `_` as a WORD character, so a `word` term never
+  // matched across an underscore — and this pot names its soak/test identifiers in
+  // snake_case. That is the exact mechanism by which WI-5639 leaked. Pin it here so
+  // a revert to `\b` fails loudly instead of silently re-opening the lane.
+  it('matches across an underscore — `_` is a boundary, not a word char (WI-5639 leak mechanism)', () => {
+    const leaked = issueItem({
+      id: 'WI-5639',
+      title: 'replication_soak: WI-183-class zombie-connection recovery still misses 90s SLA',
+    });
+    expect(matchesWorkItemClaimSpec(leaked, specWithFence())).toBe(false); // excluded
   });
 
   it('validateClaimSpec accepts a spec built with buildP2pLaneFence()', async () => {

@@ -151,16 +151,31 @@ function escapeRegexLiteral(value: string): string {
 }
 
 /**
- * EI-18690730909662985: `word` is a case-insensitive WHOLE-WORD substring match —
- * `\bliteral\b` — unlike `glob`'s bare `*literal*` substring match, which
- * false-positives whenever the literal appears inside a larger word (e.g. a
- * `*p2p*` title-exclusion wrongly matching a fleet named "nonp2p-bug-drain",
- * whose own title mentions its own name). Mirrored byte-for-byte in
- * get-next.ts's SQL compiler (`~* '\m...\M'`) and claim-spec-payload-filter.ts's
+ * EI-18690730909662985: `word` is a case-insensitive WHOLE-WORD substring match,
+ * unlike `glob`'s bare `*literal*` substring match, which false-positives
+ * whenever the literal appears inside a larger word (e.g. a `*p2p*`
+ * title-exclusion wrongly matching a fleet named "nonp2p-bug-drain", whose own
+ * title mentions its own name).
+ *
+ * The boundary is `[^A-Za-z0-9]` (or string edge) — NOT `\b`. `\b` counts `_` as
+ * a WORD character, so `\breplication\b` does not match "replication_soak", and
+ * this pot names its soak/test identifiers in snake_case (replication_soak,
+ * no_replicator, connected_never_replicated) — precisely the titles a p2p fence
+ * most needs to catch. That blind spot leaked WI-5639 ("replication_soak: ...")
+ * into fleet nonp2p-bug-drain-0725, whose mission excludes P2P work; adding the
+ * obvious `word:'replication'` fence term did NOT fix it, and the failure looked
+ * intermittent because the hyphenated "[replication-liveness]" DID match.
+ *
+ * Alphanumeric-only boundaries keep the EI-18690730909662985 fix intact
+ * ("nonp2p-bug-drain" is still admitted: `p2p` is preceded by the letter "n")
+ * while also matching across `_`.
+ *
+ * Mirrored byte-for-byte in get-next.ts's SQL compiler (Postgres has the SAME
+ * `_`-is-a-word-char behaviour for `\m`/`\M`) and claim-spec-payload-filter.ts's
  * `matches` translation — keep all three in sync.
  */
 function wordBoundaryRegex(literal: string): RegExp {
-  return new RegExp(`\\b${escapeRegexLiteral(literal)}\\b`, 'i');
+  return new RegExp(`(?<![A-Za-z0-9])${escapeRegexLiteral(literal)}(?![A-Za-z0-9])`, 'i');
 }
 
 function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolean {

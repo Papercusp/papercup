@@ -9,8 +9,15 @@
  * "evicted harness accumulates undrained rows" gap (EI-126 regression guard).
  *
  * One listener per process (not per harness): lighter than per-harness LISTEN and
- * matches the trigger's one-per-write-payload model. The per-harness drain in
- * outbox-drain.ts uses its OWN pg.listen once the engine re-boots.
+ * matches the trigger's one-per-write-payload model.
+ *
+ * The per-harness drain in outbox-drain.ts USED to open its own dedicated pg.listen
+ * once the engine re-booted — N harnesses meant N PG backends on this same global
+ * channel. That was the other half of P-008 and is now closed: the production seam
+ * (wire-outbox.ts) passes `hubListen` into `startOutboxDrain({ listen })`, so those
+ * drains ride the shared ref-counted `pg-listen-hub` connection. This keepalive
+ * still keeps its OWN listener, deliberately — it must stay up for harnesses the
+ * reaper has EVICTED, i.e. exactly when no drain is subscribed to notice.
  */
 
 import type postgres from 'postgres';

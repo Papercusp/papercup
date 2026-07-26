@@ -87,9 +87,14 @@ function literalToRegexSource(value: string): string {
 /**
  * Mirror claim-spec-match.ts's `wordBoundaryRegex` EXACTLY (EI-18690730909662985):
  * a case-insensitive WHOLE-WORD substring match, for the `word` op.
+ *
+ * Boundary is `[^A-Za-z0-9]`/string-edge, NOT `\b` — `\b` treats `_` as a word
+ * char, so `\breplication\b` misses "replication_soak". See the full rationale on
+ * claim-spec-match.ts's `wordBoundaryRegex`; these two and get-next.ts's Postgres
+ * compiler must stay in sync.
  */
 function wordBoundaryRegexSource(value: string): string {
-  return `\\b${literalToRegexSource(value)}\\b`;
+  return `(?<![A-Za-z0-9])${literalToRegexSource(value)}(?![A-Za-z0-9])`;
 }
 
 interface Translated {
