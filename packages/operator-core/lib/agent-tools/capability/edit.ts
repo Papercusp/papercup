@@ -52,9 +52,22 @@ export default defineTool({
       if (count > 1 && !args.replace_all) {
         return err('not_unique', `old_string matches ${count} times; pass replace_all or add surrounding context to make it unique.`);
       }
+      // EI-18693907749585513: NEVER use String.prototype.replace(old, new) with a
+      // string searchValue — the REPLACEMENT string is still pattern-interpreted
+      // ($&, $`, $', $1, $$, ...) regardless of whether the search side is a plain
+      // string. `` $` `` in particular expands to "everything before the match",
+      // which silently spliced an entire file into itself when new_string happened
+      // to contain a literal `$` followed by a backtick (e.g. prose quoting shell
+      // expansion markers). split/join (the replace_all path) is already immune —
+      // neither treats `$` specially — so mirror that here via a literal index
+      // splice instead of `.replace()`. `indexOf` is safe: the caller already
+      // enforced (above) that old_string occurs exactly once when !replace_all.
       const next = args.replace_all
         ? raw.split(args.old_string).join(args.new_string)
-        : raw.replace(args.old_string, args.new_string);
+        : (() => {
+            const idx = raw.indexOf(args.old_string);
+            return raw.slice(0, idx) + args.new_string + raw.slice(idx + args.old_string.length);
+          })();
       try {
         writeFileSync(abs, next, 'utf8');
       } catch (e: unknown) {

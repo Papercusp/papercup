@@ -86,6 +86,36 @@ describe('evaluatePlanEdit — successful edits', () => {
     expect(r.value.ok).toBe(true);
     expect(r.newBody).not.toContain('runs at 22 fps.');
   });
+
+  // EI-18693907749585513: this mirrors the SAME bug found + fixed in capability:edit
+  // — `String.prototype.replace(old, new)` pattern-interprets `$`-sequences in the
+  // replacement string even when the search side is a literal string. `` $` ``
+  // expands to "everything before the match" and silently spliced the whole
+  // document into itself. Every case must land verbatim, with no hidden duplication.
+  describe('new_string containing JS String.replace special patterns lands verbatim', () => {
+    const dollarCases: Array<[label: string, newString: string]> = [
+      ['$&  (whole match)', 'prefix $& suffix'],
+      ["$` (backtick — everything before the match)", 'prefix $` suffix'],
+      ["$' (everything after the match)", "prefix $' suffix"],
+      ['$1  (capture group, no regex used)', 'prefix $1 suffix'],
+      ['$$  (literal dollar escape)', 'prefix $$ suffix'],
+    ];
+
+    for (const [label, newString] of dollarCases) {
+      it(label, async () => {
+        const r = await evaluatePlanEdit(VALID, 'The next concrete action.', newString, false, SLUG, undefined);
+        expect(r.value.ok).toBe(true);
+        const expected = VALID.replace('The next concrete action.', () => newString); // literal splice via callback form (never pattern-interpreted)
+        expect(r.newBody).toBe(expected);
+        expect(r.newBody!.length).toBe(VALID.length - 'The next concrete action.'.length + newString.length);
+        // The corruption shape observed in production: the document's own
+        // preceding content (starting with the frontmatter) spliced back in,
+        // which would duplicate the `---` frontmatter delimiters beyond the
+        // normal open+close pair.
+        expect(r.newBody!.match(/^---$/gm)?.length ?? 0).toBe(2);
+      });
+    }
+  });
 });
 
 describe('evaluatePlanEdit — CAS + lint inherited from evaluateSetContent', () => {

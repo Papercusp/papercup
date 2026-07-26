@@ -148,4 +148,50 @@ describe('capability:edit', () => {
     expect(r.isError).toBe(true);
     expect(parse(r).reason).toBe('no_op');
   });
+
+  // EI-18693907749585513: `String.prototype.replace(old, new)` pattern-interprets
+  // `$`-sequences in the REPLACEMENT string even when the search side is a plain
+  // string — `` $` `` in particular expands to "everything before the match" and
+  // silently spliced an entire file into itself in production. Every one of these
+  // must land byte-for-byte, and the resulting file length must equal
+  // before.length - old_string.length + new_string.length (no hidden duplication).
+  describe('new_string containing JS String.replace special patterns lands verbatim', () => {
+    const dollarCases: Array<[label: string, newString: string]> = [
+      ['$&  (whole match)', 'prefix $& suffix'],
+      ["$` (backtick — everything before the match)", 'prefix $` suffix'],
+      ["$' (everything after the match)", "prefix $' suffix"],
+      ['$1  (capture group, no regex used)', 'prefix $1 suffix'],
+      ['$$  (literal dollar escape)', 'prefix $$ suffix'],
+    ];
+
+    for (const [i, [label, newString]] of dollarCases.entries()) {
+      it(`single replace: ${label}`, async () => {
+        const f = join(DIR, `e-dollar-${i}.txt`);
+        const before = 'HEADER\nconst anchor = 1;\nFOOTER\n';
+        writeFileSync(f, before);
+        const r = (await editTool.handler!({ file_path: f, old_string: 'const anchor = 1;', new_string: newString }, ctx)) as {
+          content: Array<{ text: string }>;
+          isError?: boolean;
+        };
+        expect(r.isError).toBeUndefined();
+        expect(parse(r).ok).toBe(true);
+        const after = readFileSync(f, 'utf8');
+        const expected = before.replace('const anchor = 1;', () => newString); // literal splice via callback form (never pattern-interpreted)
+        expect(after).toBe(expected);
+        expect(after.length).toBe(before.length - 'const anchor = 1;'.length + newString.length);
+        expect(after).not.toContain('HEADER\nconst anchor = 1;\nFOOTER\nHEADER'); // the observed corruption shape: prefix spliced back in
+      });
+
+      it(`replace_all: ${label}`, async () => {
+        const f = join(DIR, `e-dollar-all-${i}.txt`);
+        const before = 'anchor\nanchor\n';
+        writeFileSync(f, before);
+        const r = (await editTool.handler!({ file_path: f, old_string: 'anchor', new_string: newString, replace_all: true }, ctx)) as {
+          content: Array<{ text: string }>;
+        };
+        expect(parse(r).ok).toBe(true);
+        expect(readFileSync(f, 'utf8')).toBe(`${newString}\n${newString}\n`);
+      });
+    }
+  });
 });

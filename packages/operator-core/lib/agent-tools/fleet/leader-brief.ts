@@ -66,7 +66,9 @@ import type { ContextPressureBucket } from '../coordination/context-pressure';
 import type { UnansweredDirectedSummary } from '../coordination/unanswered-directed';
 import {
   readUnownedCriticalsForFleet,
+  readOrphanedInFlightForFleet,
   type UnownedCriticalCandidate,
+  type OrphanedInFlightCandidate,
 } from '../../harness/improvements/unowned-critical-escalation';
 
 export interface LeaderBriefMember {
@@ -676,7 +678,10 @@ export default defineTool({
     '(count/oldestAgeMs/newest), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing or idle ' +
     '— check `kind` before acting), ' +
-    'and unownedCriticals (aged criticals the spec admits). Scoped to ONE fleet ' +
+    'and unownedCriticals (aged criticals the spec admits). Also orphanedInFlight ' +
+    '(EI-18693470222331709): items released mid-checkpoint — assignee NULL but ' +
+    'last-progress present — indistinguishable from "never started" without this. ' +
+    'Scoped to ONE fleet ' +
     '(yours by default), not fleet:assignments\' whole roster. ' +
     'Replaces the manual presence+assignments+inbox scan each monitor wake.',
   guidance: {
@@ -691,6 +696,7 @@ export default defineTool({
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
       'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals` → claim it. ' +
+      'Nonzero `orphanedInFlight` → claim it (near-complete, cheapest win on the brief). ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',
@@ -714,6 +720,16 @@ export default defineTool({
       .max(168)
       .optional()
       .describe('WI-5213: hours an unassigned critical must age before it surfaces here. Default 4.'),
+    orphan_min_age_minutes: z
+      .number()
+      .min(0)
+      .max(1440)
+      .optional()
+      .describe(
+        'EI-18693470222331709: minutes an orphaned in-flight item (released with progress ' +
+          'recorded) must sit before it surfaces here. Default 0 — the cost of leaving it ' +
+          'stranded is highest immediately after release.',
+      ),
   }),
   async handler(args, ctx) {
     let actorWorkspace: string | null = null;
@@ -783,6 +799,14 @@ export default defineTool({
       workspaceId,
       ageHours: args.unowned_critical_age_hours,
     });
+    // EI-18693470222331709: items released mid-flight (progress recorded, now
+    // unassigned) — read failures already fail soft to `[]`.
+    const orphanedInFlight: OrphanedInFlightCandidate[] = await readOrphanedInFlightForFleet({
+      fleet,
+      harness: args.harness,
+      workspaceId,
+      minAgeMinutes: args.orphan_min_age_minutes,
+    });
     // EI-18681259560385029: read the fleet's LIVE claimable count before projecting members
     // — the per-member bench suggestion must not assert "drained or scoped-out" without it.
     // Fails soft to null (UNKNOWN), never 0.
@@ -842,6 +866,10 @@ export default defineTool({
       // spec would admit — >0 here means an escalation the leader should act
       // on (reclaim/reassign/nudge), not weather to wait out.
       unowned_criticals: unownedCriticals.length,
+      // EI-18693470222331709: orphaned in-flight items (filing is not fixing, same
+      // as unowned_criticals above) — >0 means near-complete work stranded by a
+      // release/reap, the cheapest claimable win on this brief.
+      orphaned_in_flight: orphanedInFlight.length,
     };
     const totalLoad = members.reduce((sum, m) => sum + m.load, 0);
     // EI-15055: loud fleet-wide zero-wip-with-supply alert — see computeStrandedFleetAlert.
@@ -899,6 +927,7 @@ export default defineTool({
         },
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
+        ...(orphanedInFlight.length > 0 ? { orphanedInFlight } : {}),
         ...(strandedFleetAlert ? { strandedFleetAlertReason: strandedFleetAlert.reason } : {}),
         ...(specStarvedAlert ? { specStarvedAlertReason: specStarvedAlert.reason } : {}),
         ...(idleWithClaimableAlert

@@ -121,3 +121,113 @@ export async function readUnownedCriticalsForFleet(args: {
     return [];
   }
 }
+
+/**
+ * EI-18693470222331709 (2026-07-26): "an item RELEASED mid-flight is
+ * indistinguishable from one nobody ever started." WI-6006 sat state=open /
+ * assignee=NULL for 23 minutes with a checkpoint reading "all 6 signals
+ * implemented, full suite green, next: work_items:complete" — the ONLY thing
+ * blocking the plan's closing item — and nothing flagged it: unownedAgedCriticals
+ * above answers a DIFFERENT question (severity='critical' AND age>=4h; this item
+ * had no severity and was 23 minutes old), and benchSuggestion flags the idle
+ * AGENT, never the stranded ITEM.
+ */
+export interface OrphanedInFlightCandidate {
+  id: string;
+  kind: string;
+  title: string;
+  harness: string | null;
+  /** Minutes since the item's last REAL progress (state transition / checkpoint
+   *  write) — how long it has sat back in the pool since being handed back,
+   *  rounded to 1 decimal. */
+  minutesSinceProgress: number;
+  lastProgressAt: string;
+}
+
+/**
+ * Pure: state='open' AND assignee IS NULL AND lastProgressAt IS NOT NULL.
+ *
+ * `lastProgressAt` can only be set while an item is actively HELD — a state
+ * transition (`setWorkItemState`) or a checkpoint write both require a live
+ * holder (see `markIssueProgress`/`markFeatureProgress` and the checkpoint
+ * store's progress-anchor bump) — so a row that is CURRENTLY unclaimed yet still
+ * carries one was necessarily handed back mid-flight (voluntary release, a stale-
+ * claim reaper, or a dead session), never "nobody ever started it". No new
+ * schema/column needed: `last_released_by` provenance is NOT required to make
+ * this call — the progress signal alone already proves prior real work, and the
+ * assignee IS NULL clause already proves it isn't a legitimate live re-dispatch.
+ *
+ * Deliberately NOT age-gated by default (unlike `unownedAgedCriticals`'s 4h bar):
+ * this work is nearly complete, so the cost of leaving it stranded is HIGHEST
+ * immediately after release — an age floor would defeat the point. Callers that
+ * want a grace window (avoid flagging an item mid a legitimate re-dispatch that
+ * simply hasn't been re-claimed yet) pass `minAgeMinutes`.
+ */
+export function unownedInFlightOrphans(
+  items: readonly WorkItem[],
+  opts: { minAgeMinutes?: number; nowMs?: number } = {},
+): OrphanedInFlightCandidate[] {
+  const minAgeMinutes = opts.minAgeMinutes ?? 0;
+  const nowMs = opts.nowMs ?? Date.now();
+  const out: OrphanedInFlightCandidate[] = [];
+  for (const item of items) {
+    if (item.assignee != null) continue;
+    if (item.state !== 'open') continue;
+    if (!item.lastProgressAt) continue;
+    const progressMs = Date.parse(item.lastProgressAt);
+    if (!Number.isFinite(progressMs)) continue;
+    const minutes = (nowMs - progressMs) / 60_000;
+    if (minutes < minAgeMinutes) continue;
+    out.push({
+      id: item.id,
+      kind: item.kind,
+      title: item.title,
+      harness: item.harness,
+      minutesSinceProgress: Math.round(minutes * 10) / 10,
+      lastProgressAt: item.lastProgressAt,
+    });
+  }
+  return out;
+}
+
+/**
+ * Pure (mirrors `unownedCriticalsMatchingFleetSpec`): the subset of orphaned
+ * in-flight items a given FLEET's claim spec would ADMIT.
+ */
+export function unownedInFlightOrphansMatchingFleetSpec(
+  items: readonly WorkItem[],
+  spec: Parameters<typeof matchesWorkItemClaimSpec>[1],
+  opts: { minAgeMinutes?: number; nowMs?: number } = {},
+): OrphanedInFlightCandidate[] {
+  const admitted = items.filter((item) => matchesWorkItemClaimSpec(item, spec));
+  return unownedInFlightOrphans(admitted, opts);
+}
+
+/**
+ * IO: mirrors {@link readUnownedCriticalsForFleet} — the one-call shell
+ * `fleet:leader-brief` uses. No severity filter (an orphaned in-flight item
+ * carries no severity signal at all — WI-6006 had none), so this queries the
+ * open issue-family backlog broadly and narrows client-side; fails soft to `[]`.
+ */
+export async function readOrphanedInFlightForFleet(args: {
+  fleet: string;
+  harness?: string;
+  workspaceId?: string;
+  minAgeMinutes?: number;
+}): Promise<OrphanedInFlightCandidate[]> {
+  try {
+    const [issues, spec] = await Promise.all([
+      listIssues({
+        state: 'open',
+        kinds: ISSUE_FAMILY_KINDS,
+        scope: args.harness ? `harness:${args.harness}` : undefined,
+        limit: 100,
+      }),
+      getClaimSpec({ cupId: fleetSpecBeeKey(args.fleet), workspaceId: args.workspaceId }),
+    ]);
+    const items: WorkItem[] = issues.map(issueToWorkItem);
+    return unownedInFlightOrphansMatchingFleetSpec(items, spec, { minAgeMinutes: args.minAgeMinutes });
+  } catch {
+    return [];
+  }
+}

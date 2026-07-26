@@ -1342,6 +1342,64 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
   });
 });
 
+/**
+ * EI-18692070370140239 — the write-INDICATOR's own false positives.
+ *
+ * The describe above records how the guard, on its first pass, denied a
+ * read-only script and was fixed by requiring a WRITE-shaped call. The
+ * indicator then over-matched in the same shape one level down: its
+ * `\bwrite\w*\s*\(` alternative matched ANY `.write(`, so a script that
+ * merely PRINTS a string resembling a tree path — `sys.stdout.write(...)`,
+ * `process.stdout.write(...)` — was denied as an "interpreter write" with no
+ * file I/O anywhere in it. Caught the same way as its predecessor: it denied
+ * an ordinary agent command that wrote nothing to the tree.
+ *
+ * A write to stdout/stderr is not a file write; a bare `.write(` is ambiguous
+ * (file handle vs io.StringIO vs socket) and now counts only alongside a
+ * file-object construct in the SAME inline body. The denies below are the
+ * load-bearing half: they prove the narrowing did not open a hole.
+ */
+describe('interpreter write-indicator false positives (EI-18692070370140239)', () => {
+  const TREE_PATH = 'packages/operator-core/lib/foo.ts';
+
+  it.each([
+    ['a read-only sys.stdout.write of a literal tree path', `python3 -c 'import sys; sys.stdout.write("${TREE_PATH}")'`],
+    ['a read-only sys.stderr.write of a literal tree path', `python3 -c 'import sys; sys.stderr.write("${TREE_PATH}")'`],
+    ['a read-only process.stdout.write (node)', `node -e 'process.stdout.write("${TREE_PATH}")'`],
+    ['a .write( onto an in-memory io.StringIO buffer', `python3 -c 'import io; b=io.StringIO(); b.write("${TREE_PATH}")'`],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows a heredoc script that only PRINTS a tree path', () => {
+    const command = "python3 - <<'EOF'\n" + `import sys; sys.stdout.write("${TREE_PATH}")\n` + 'EOF';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  // ── the narrowing must not open a hole ──────────────────────────────────
+  it('still denies a stdout write sitting ALONGSIDE a real file write in one body', () => {
+    // The load-bearing case for stripping non-file sinks before scanning:
+    // removing `sys.stdout.write(` must not mask the open(...,'w') next to it.
+    const command = `python3 -c 'import sys; sys.stdout.write("hi"); open("${TREE_PATH}", "w").write("x")'`;
+    expect(denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV))).toContain('EI-18691482279179647');
+  });
+
+  it('still denies a two-statement handle write (f = open(p, "w"); f.write(...))', () => {
+    const command = `python3 -c 'f=open("${TREE_PATH}", "w"); f.write("x")'`;
+    expect(denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV))).toContain('EI-18691482279179647');
+  });
+
+  it('still denies pathlib Path(...).write_text — a named form that is unambiguous alone', () => {
+    const command = `python3 -c 'from pathlib import Path; Path("${TREE_PATH}").write_text("x")'`;
+    expect(denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV))).toContain('EI-18691482279179647');
+  });
+
+  it('still denies a StringIO buffer write alongside a real file write', () => {
+    const command = `python3 -c 'import io; b=io.StringIO(); b.write("x"); open("${TREE_PATH}", "w").write("y")'`;
+    expect(denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV))).toContain('EI-18691482279179647');
+  });
+});
+
 // ── Substitution gate (bash-to-tool-substitution-2026-07-26, P-016) ─────────
 // Two distinct things are under test and they fail differently:
 //   1. the PRE-FILTER — does a command a registry rule could claim actually

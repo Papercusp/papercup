@@ -99,9 +99,21 @@ export async function evaluatePlanEdit(
   if (count > 1 && !replaceAll) {
     return { newBody: null, value: { ok: false, code: 'string_not_unique', count } };
   }
+  // EI-18693907749585513: NEVER `String.prototype.replace(old, new)` with a string
+  // searchValue — the REPLACEMENT string is still pattern-interpreted ($&, $`, $',
+  // $1, $$, ...) even though the search side is literal. `` $` `` in particular
+  // expands to "everything before the match", which silently spliced a whole file
+  // into itself elsewhere in the codebase (capability:edit, same bug). split/join
+  // (the replaceAll path below) is already immune — neither treats `$` specially —
+  // so mirror that here via a literal index splice instead of `.replace()`.
+  // `indexOf` is safe: `count > 1 && !replaceAll` was already rejected above, so
+  // oldString occurs exactly once whenever this branch runs.
   const content = replaceAll
     ? current.split(oldString).join(newString)
-    : current.replace(oldString, newString);
+    : (() => {
+        const idx = current.indexOf(oldString);
+        return current.slice(0, idx) + newString + current.slice(idx + oldString.length);
+      })();
 
   // Delegate to the shared CAS + legacy-boundary + lint core. (CAS re-checks the
   // same `current`; harmless and keeps one safety path.)

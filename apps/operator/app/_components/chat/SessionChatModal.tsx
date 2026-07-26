@@ -310,7 +310,7 @@ function SessionFooter({
         {detailChipLabel ? (
           <button
             type="button"
-            className="hud__chip hud__chip--warn oracle-session-footer-detail-chip"
+            className="oracle-session-footer-detail-chip"
             onClick={() => onOpenDetail?.(locksCount > 0 ? 'locks' : 'coord')}
             title="Open the agent detail panel to this section"
             data-testid="session-chat-footer-detail-chip"

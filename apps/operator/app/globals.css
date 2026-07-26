@@ -24511,20 +24511,28 @@ body:has(.operator-panel) {
 }
 
 /* P-004: the "⚠ N locks / M unread" summary chip — D-002's one deliberate
- * duplicate, reusing .hud__chip's look but as a real button (it opens +
- * scrolls the dossier rail), so reset the button chrome the base chip class
- * doesn't need to account for. Also resets .hud__chip's `display:
- * inline-flex` to `inline-block` — WebKitGTK (the Tauri desktop webview)
- * ignores flex/grid set on the <button> element itself (same class of bug as
- * .hud__card / .hud__count — see hud.css), and this button's content is
- * plain text (no children that need flex alignment), so inline-block alone
- * reproduces the same visual with no inner span required. The `button.`
- * prefix raises specificity above the plain-class `.hud__chip` rule so this
- * override wins regardless of CSS source order. */
+ * duplicate of .hud__chip--warn's LOOK, but as a real <button> (it opens +
+ * scrolls the dossier rail). Does NOT share the .hud__chip class itself
+ * (kept span-only, see hud.css) — WebKitGTK (the Tauri desktop webview)
+ * ignores flex/grid set on a <button> element (same bug class as
+ * .hud__card / .hud__count), and this file's HUD-enforced button-flex lint
+ * (design-primitives.test.ts) statically flags ANY selector sharing a class
+ * with a literal <button> regardless of a later override, so reusing
+ * .hud__chip here would red that gate even with a display:inline-block
+ * reset. Duplicating the (few) declarations instead keeps this button
+ * decoupled from the span-only class (WI-5993 P-005 verification fix). */
 button.oracle-session-footer-detail-chip {
   display: inline-block;
-  cursor: pointer;
   font: inherit;
+  font-size: 9.5px;
+  line-height: 1.6;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgb(from var(--warn) r g b / 0.4);
+  color: var(--warn);
+  background: rgb(from var(--warn) r g b / 0.1);
+  white-space: nowrap;
+  cursor: pointer;
   appearance: none;
 }
 

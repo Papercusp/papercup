@@ -971,14 +971,55 @@ except Exception:
 # the fix — same shape as the mistake this whole item exists to catch (an
 # agent walking through a hole without noticing), just caught inside the fix
 # instead of downstream of it.
+# EI-18692070370140239 — THE SAME MISTAKE ONE LEVEL DOWN. The note above
+# records the first false-positive round (the guard denied its own read-only
+# `open(...).read()` syntax check) and the WRITE-indicator requirement that
+# fixed it. The indicator ITSELF then over-matched: `\bwrite\w*\s*\(` matches
+# ANY `.write(`, including sinks that never touch the filesystem — so a
+# read-only `python3 -c 'import sys; sys.stdout.write("<a tree path>")'`,
+# which merely PRINTS a string that happens to look like a tree path, was
+# denied as an "interpreter write". Caught the same way as its predecessor:
+# it denied an ordinary agent command that wrote nothing to the tree.
+#
+# The split below is the fix. A write to stdout/stderr is not a file write,
+# and a bare `.write(` is genuinely AMBIGUOUS (a file handle, an io.StringIO
+# buffer, a socket, a response object — indistinguishable without dataflow
+# this guard deliberately does not do). So a bare `.write(` counts only when
+# the SAME inline body also shows a file object being opened. That is sound
+# specifically because this guard only ever scans INLINE code (-c/-e/heredoc):
+# a one-liner that writes a file has to open it in that same body. Named
+# forms that are unambiguous on sight stay STANDALONE indicators below, so
+# `Path("x").write_text(y)` and `fs.writeFileSync(...)` still deny.
+
+# Sinks that are definitionally NOT the filesystem — removed from the body
+# before any write-scan, so they can neither trip nor mask an indicator.
+_NONFILE_WRITE_RE = re.compile(
+    r'\b(?:sys|process)\s*\.\s*(?:stdout|stderr)\s*\.\s*write\w*\s*\('
+)
+# Unambiguous on sight — any one of these alone means a file write.
 _WRITE_INDICATOR_RE = re.compile(
-    r'\bwrite\w*\s*\('                                    # .write(/.writelines(/writeFileSync-style calls
-    r'|\bopen\s*\([^)]*,\s*[\'"][waxWAX][b+t]?[\'"]'       # open(path, 'w'/'a'/'x'[b/t/+])
+    r'\bopen\s*\([^)]*,\s*[\'"][waxWAX][b+t]?[\'"]'        # open(path, 'w'/'a'/'x'[b/t/+])
     r'|writeFileSync|appendFileSync|createWriteStream'      # node fs, common named forms
+    r'|\bwrite_(?:text|bytes)\s*\('                         # pathlib Path.write_text/_bytes
     r'|\.save\s*\('                                        # common ORM/model .save(
     r'|(?:pickle|json|yaml)\.dump\s*\('                     # serialize-to-file idioms
     r'|shutil\.(?:copy|move)|os\.(?:rename|remove|replace)|unlink\s*\('
 )
+# Ambiguous alone — only a write indicator alongside a file-object construct.
+_BARE_WRITE_CALL_RE = re.compile(r'\bwrite\w*\s*\(')
+_FILE_OBJECT_RE = re.compile(
+    r'\bopen\s*\(|\bPath\s*\(|\bfdopen\s*\(|\bNamedTemporaryFile\s*\('
+)
+
+
+def _body_indicates_file_write(body):
+    # Non-file sinks are stripped FIRST: `sys.stdout.write(` must not satisfy
+    # the bare-write test, and stripping it cannot hide a real write because
+    # a real write is a separate call elsewhere in the body.
+    scan = _NONFILE_WRITE_RE.sub('', body)
+    if _WRITE_INDICATOR_RE.search(scan):
+        return True
+    return bool(_BARE_WRITE_CALL_RE.search(scan) and _FILE_OBJECT_RE.search(scan))
 _INTERPRETER_RE = re.compile(r'(?:^|[\s;&|(])(?:[\w./-]*/)?(python3?|node|perl|ruby|deno|bun)(?=\s|$)')
 _INLINE_CODE_FLAG_RE = re.compile(r'(?:^|\s)-[ce]\b')
 
@@ -1053,8 +1094,9 @@ def _interpreter_write_guard():
         # file, which Edit already locks; nothing new for this guard to see.
     _bodies = _extract_quoted_flag_bodies(command) + _extract_heredoc_bodies(command)
     for _body in _bodies:
-        if not _WRITE_INDICATOR_RE.search(_body):
-            continue  # a read (or no recognized I/O at all) — nothing to gate
+        if not _body_indicates_file_write(_body):
+            continue  # a read, a stdout/stderr print, or no recognized file
+            # I/O at all — nothing to gate (EI-18692070370140239)
         _hit = _payload_literal_tree_path(_body, _canon, _cwd)
         if _hit:
             deny(

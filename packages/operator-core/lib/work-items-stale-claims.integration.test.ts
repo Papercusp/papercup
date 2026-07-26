@@ -48,6 +48,15 @@ const AGENT_ACTIVITY_DDL = `
     summary text,
     created_at timestamptz NOT NULL DEFAULT now()
   )`;
+// WI-6015: a deliberately minimal projection of the real tool_invocations table
+// (see projected-tool-deps.ts's TELEMETRY_INSERT_SQL for the full column list) —
+// the STALLED-leg activity guard under test reads only coord_owner_id/invoked_at.
+const TOOL_INVOCATIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.tool_invocations (
+    id BIGSERIAL PRIMARY KEY,
+    coord_owner_id text,
+    invoked_at timestamptz NOT NULL DEFAULT now()
+  )`;
 
 let db: FreshPgDb;
 let sql: postgres.Sql;
@@ -64,6 +73,7 @@ beforeAll(async () => {
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(ENGINEER_ISSUES_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
+  await sql.unsafe(TOOL_INVOCATIONS_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -71,7 +81,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity`;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.tool_invocations`;
 });
 
 async function seedIssue(
@@ -504,6 +514,39 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect((await reclaimStaleWorkItemClaims(sql, { includeStalled: true })).released).toHaveLength(0);
     const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true, stalledMs: 5 * 60_000 });
     expect(r.released[0]).toMatchObject({ feature_id: 'F-ST6', reason: 'stalled' });
+  });
+
+  // WI-6015 (EI-18691099450966094 trap c): last_progress_at is only bumped by an
+  // explicit work_items:checkpoint call, so a holder doing real work WITHOUT
+  // checkpointing reads as "no progress" forever on last_progress_at/taken_at
+  // alone — this must never be enough, by itself, to reclaim a genuinely-active
+  // holder's claim. Mirrors the watchdog's EI-14763 holder_active guard.
+  it('stalled: flag ON — a holder with RECENT tool_invocations is KEPT despite stale last_progress_at/taken_at', async () => {
+    await seedItem('F-ST7', 'su-tool-active', 30, 'in_progress', 0, 30); // claimed + "progressed" 30 min ago
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-tool-active', now())`; // alive
+    // The exact incident shape: 138 tool_invocations in the prior 8 minutes.
+    await sql`INSERT INTO harness_shared.tool_invocations (coord_owner_id, invoked_at)
+              SELECT 'su-tool-active', now() - make_interval(mins => g) FROM generate_series(0, 7) AS g`;
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+    expect(r.released).toHaveLength(0);
+    expect((await statusOf('F-ST7')).taken_by).toBe('su-tool-active');
+  });
+
+  it('stalled: flag ON — a holder with RECENT agent_activity is KEPT despite stale last_progress_at/taken_at', async () => {
+    await seedItem('F-ST8', 'su-turn-active', 30, 'in_progress', 0, 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-turn-active', now())`;
+    await sql`INSERT INTO harness_shared.agent_activity (owner_id, kind, summary, created_at)
+              VALUES ('su-turn-active', 'lifecycle', 'turn', now() - make_interval(mins => 2))`;
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+    expect(r.released).toHaveLength(0);
+  });
+
+  it('stalled: flag ON — a holder with NO recent activity of any kind IS still freed (guard does not mask genuine stalls)', async () => {
+    await seedItem('F-ST9', 'su-truly-stalled', 30, 'in_progress', 0, 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-truly-stalled', now())`; // alive (heartbeat only)
+    // No agent_activity, no tool_invocations rows at all for this holder.
+    const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST9', reason: 'stalled' });
   });
 });
 
