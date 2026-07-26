@@ -31,6 +31,31 @@ export type ManagedCategory =
   | 'external-process' // a separate process's timer (gateway/launcher/bench)
   | (string & {}); // forward-compat: any host-defined category
 
+/**
+ * The push-don't-poll DATA-SOURCE verdict for a timer (D-004,
+ * stop-discarded-dedup-and-audit-server-polling-2026-07-26 / P-011) — orthogonal to
+ * `ManagedCategory` above (which is about SCHEDULING MECHANISM/ownership, not data source):
+ *
+ *   - 'must-sample'   — no event source exists to subscribe to (port reachability, PID
+ *                        liveness, disk usage, an external HTTP probe). Legitimately a timer.
+ *   - 'timeout-reaper' — the passage of time IS the trigger (stale-claim sweep, presence
+ *                        reaper, epoch-key reconcile, a deadline check). A timeout
+ *                        implemented as a subscription is just a timer with extra steps.
+ *   - 'violation'      — recomputes derived state from a store that ALREADY emits change
+ *                        events, on a timer, regardless of subscriber presence. The actual
+ *                        push-don't-poll sin — convert this to invalidate-on-write instead.
+ *
+ * OPTIONAL at the type level (a required field would force every one of the ~97 existing
+ * `managedSetInterval`/`PeriodicCheck` call sites to be edited in this one change — too large
+ * a blast radius for one PR). The real enforcement is `scripts/check-timer-classification.mjs`
+ * (lint:timer-classification): a shrink-only BASELINE grandfathers today's unclassified call
+ * sites; a NEW site outside the baseline that omits `classification` fails the build. This is
+ * the SAME staged-rollout shape as `lint:no-raw-setinterval` (P-007/P-008) — visibility (an
+ * optional field + inventory column) becoming enforceable control (a lint gate) without a
+ * flag-day rewrite of every existing timer.
+ */
+export type TimerClassification = 'must-sample' | 'timeout-reaper' | 'violation';
+
 export interface ManagedTimerOptions {
   category: ManagedCategory;
   /** Heavy ticks shed a cycle under load when the injected shouldShed(name) returns true. Light ticks omit it. */
@@ -45,6 +70,11 @@ export interface ManagedTimerOptions {
    * fire — so the timer is VISIBLE without per-connection churn.
    */
   instanced?: boolean;
+  /** D-004 push-don't-poll classification (P-011) — see `TimerClassification`. Declaring it
+   *  makes the timer's data-source verdict VISIBLE in schedule:inventory instead of living
+   *  only in a plan/audit document that goes stale; omit only for a call site the shrink-only
+   *  lint BASELINE still grandfathers. */
+  classification?: TimerClassification;
 }
 
 /** The public, listable view of one armed timer. */
@@ -68,6 +98,9 @@ export interface ManagedEntry {
   instanced: boolean;
   /** number of live instances aggregated into this row (1 for a singleton). */
   instances: number;
+  /** D-004 push-don't-poll classification (P-011), or null when the call site hasn't
+   *  declared one yet (grandfathered by the shrink-only lint BASELINE). */
+  classification: TimerClassification | null;
 }
 
 export interface ManagedHandle {
@@ -215,6 +248,7 @@ export function managedSetInterval(
     shed: opts.shed ?? false,
     instanced,
     instances: 1,
+    classification: opts.classification ?? null,
   };
   const rec: InternalRecord = { entry, key, timer: { unref: undefined }, running: false, stopped: false };
   const tick = makeTick(name, fn, opts, rec);
@@ -261,6 +295,7 @@ export function listManaged(): ManagedEntry[] {
       if (r.entry.lastFireAt != null) g.lastFireAt = Math.max(g.lastFireAt ?? 0, r.entry.lastFireAt);
       if (r.entry.lastError) g.lastError = r.entry.lastError;
       g.running = g.running || r.entry.running;
+      if (g.classification == null && r.entry.classification != null) g.classification = r.entry.classification;
     }
   }
   return [...singletons, ...grouped.values()].sort((a, b) => a.name.localeCompare(b.name));

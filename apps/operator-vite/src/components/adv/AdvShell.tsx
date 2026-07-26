@@ -165,7 +165,14 @@ export function visibleAdvTabs(allMode: boolean): typeof ADV_TABS {
  * tab IDs (ADV_TAB_IDS) are unchanged, since they're serialised into ?tab=
  * URLs, deep links, and the agent ui:dispatch surface.
  */
-export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>(['overview', 'hud']);
+export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
+  'overview',
+  'hud',
+  // Learning promoted to the visible strip, right of HUD (owner ask 2026-07-26
+  // — pulled out of the More menu's Insights group; splitPrimarySecondary
+  // preserves ADV_TABS order, so no explicit ordering needed here).
+  'learning',
+]);
 
 /**
  * Groups for the More menu (mitigation (a): "hidden" must not become
@@ -176,7 +183,7 @@ export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>(['ov
 export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; tabIds: readonly AdvTabId[] }> = [
   { id: 'build', label: 'Build', tabIds: ['plans', 'git', 'testing', 'docs'] },
   { id: 'work', label: 'Work', tabIds: ['harnesses', 'conversations', 'calendar'] },
-  { id: 'insights', label: 'Insights', tabIds: ['insights', 'learning', 'evals', 'health'] },
+  { id: 'insights', label: 'Insights', tabIds: ['insights', 'evals', 'health'] },
   { id: 'system', label: 'System', tabIds: ['frames', 'settings'] },
 ];
 

@@ -20,7 +20,7 @@
  */
 import { Suspense } from 'react';
 import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
-import { Users, AudioLines } from 'lucide-react';
+import { Users, AudioLines, GraduationCap } from 'lucide-react';
 import ChromeShell from '@/app/_components/ChromeShell';
 import type { OpChatFace } from '@/app/_components/op-chat-faces';
 import { useLexicon } from '@/lib/useLexicon';
@@ -31,6 +31,7 @@ import { LEFT_SIDEBAR_CSS } from '../left-sidebar/left-sidebar.styles';
 // must retry, not escalate to the fatal boundary (WI-2902).
 const SwarmTab = lazy(() => import('../left-sidebar/SwarmTab'));
 const VoiceTab = lazy(() => import('../left-sidebar/VoiceTab'));
+const LearningLoopFace = lazy(() => import('./LearningLoopFace'));
 
 /**
  * Hosts a pane that was written for the left rail inside the chat sidebar.
@@ -75,6 +76,21 @@ export default function ChromeShellWithChatFaces() {
   // Rebuilt per render (cheap: two object literals) but memo-stable enough —
   // OperatorChatSidebar keys its nuqs parser off the face IDS, not identity.
   const faces: OpChatFace[] = [
+    // FIRST so 🎓 sits immediately right of 🫖 Pot Health (owner ask
+    // 2026-07-26, option C "Loop" of three rendered mockups).
+    {
+      id: 'learning',
+      label: 'Learning',
+      tip: 'Learning — the loop at a glance: stage counts, release readiness, and what needs attention',
+      icon: <GraduationCap size={16} aria-hidden="true" />,
+      render: () => (
+        <ChatFacePane>
+          <Suspense fallback={<div className="pclsb-panel__empty">Loading…</div>}>
+            <LearningLoopFace />
+          </Suspense>
+        </ChatFacePane>
+      ),
+    },
     {
       id: 'fleet',
       label: t('fleet'),

@@ -241,10 +241,11 @@ describe('harness route panel → tab mapping contract', () => {
 
 // ─── D-001 More-menu split (hud-first-nav-and-dossier-2026-07-26 P-002) ─────
 describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', () => {
-  it('exactly Overview + HUD are primary', () => {
+  it('exactly Overview + HUD + Learning are primary (Learning promoted, owner ask 2026-07-26)', () => {
     expect(PRIMARY_ADV_TAB_IDS.has('overview')).toBe(true);
     expect(PRIMARY_ADV_TAB_IDS.has('hud')).toBe(true);
-    expect(PRIMARY_ADV_TAB_IDS.size).toBe(2);
+    expect(PRIMARY_ADV_TAB_IDS.has('learning')).toBe(true);
+    expect(PRIMARY_ADV_TAB_IDS.size).toBe(3);
   });
 
   it('every non-primary ADV_TABS id appears in exactly one More-menu group (nothing goes unreachable)', () => {
@@ -256,15 +257,15 @@ describe('PRIMARY_ADV_TAB_IDS / SECONDARY_TAB_GROUPS / splitPrimarySecondary', (
 
   it('splits a tab list into primary (strip) and secondary (More menu)', () => {
     const { primary, secondary } = splitPrimarySecondary(ADV_TABS);
-    expect(primary.map((t) => t.id)).toEqual(['overview', 'hud']);
+    expect(primary.map((t) => t.id)).toEqual(['overview', 'hud', 'learning']);
     expect(secondary.map((t) => t.id)).toEqual(
-      ADV_TABS.map((t) => t.id).filter((id) => id !== 'overview' && id !== 'hud'),
+      ADV_TABS.map((t) => t.id).filter((id) => !PRIMARY_ADV_TAB_IDS.has(id)),
     );
   });
 
   it('under All Pots, secondary only contains the workspace-level subset', () => {
     const { secondary } = splitPrimarySecondary(visibleAdvTabs(true));
-    expect(secondary.map((t) => t.id)).toEqual(['plans', 'calendar', 'harnesses', 'health', 'frames', 'conversations', 'learning', 'evals']);
+    expect(secondary.map((t) => t.id)).toEqual(['plans', 'calendar', 'harnesses', 'health', 'frames', 'conversations', 'evals']);
   });
 });
 

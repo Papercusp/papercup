@@ -502,6 +502,10 @@ export default defineTool({
             workspaceId: activeWorkspaceId(),
             includeArchived,
             includeInstances,
+            // plans:list RENDERS item prose (itemsForRow maps i.text), so it is the one
+            // caller that opts into the full items payload (P-006 projection default is
+            // structural-fields-only).
+            itemText: true,
             ...(args.template ? { template: args.template } : {}),
             ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
             ...sourceFilters,
@@ -521,6 +525,8 @@ export default defineTool({
                 harnessSlug,
                 includeArchived,
                 includeInstances,
+                // See the workspaceWide branch above — plans:list renders item text.
+                itemText: true,
                 ...(args.template ? { template: args.template } : {}),
                 ...(args.templateSlug
                   ? { templateSlug: args.templateSlug }

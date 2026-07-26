@@ -821,12 +821,61 @@ export async function listPlanRows(
  *  columns only. What `plans:list` renders from (audit P-042). */
 export type PlanIndexRow = Omit<PlanRow, 'content'>;
 
+/** Minimal shape of the postgres.js tagged-template callback both list helpers receive. */
+type PlanTx = (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
+
+/**
+ * SQL fragment for the `items` column (db-performance-remediation-2026-07-26 P-006).
+ *
+ * Default strips ONLY each element's `text` key via the jsonb `-` operator, so every
+ * structural field (id / status / importance / blockedBy / phase / decisionRefs) survives
+ * untouched — that is precisely what the hot polling callers read, and it removes 74% of
+ * the column's bytes. `WITH ORDINALITY` + `ORDER BY` preserves item order, which the
+ * plan-item DAG walk in pot/survey depends on. A NULL/absent items column still yields
+ * `[]`, matching the previous non-null contract callers rely on (`row.items.length`).
+ */
+function planItemsProjection(tx: PlanTx, itemText: boolean | undefined) {
+  return itemText
+    ? tx`items`
+    : tx`(SELECT COALESCE(jsonb_agg(e.value - 'text' ORDER BY e.ord), '[]'::jsonb)
+            FROM jsonb_array_elements(COALESCE(items, '[]'::jsonb)) WITH ORDINALITY e(value, ord)) AS items`;
+}
+
+/**
+ * SQL fragment for the two heavy columns no LIST-path consumer reads (P-006). Emits typed
+ * NULLs so the row shape — and therefore `rowFromDb` — is unchanged whether or not the
+ * caller opted in. Trailing comma is part of the fragment; the call site supplies
+ * `now_next` after it.
+ */
+function planHeavyProjection(tx: PlanTx, heavyFields: boolean | undefined) {
+  return heavyFields
+    ? tx`now_state, template_data,`
+    : tx`NULL::text AS now_state, NULL::jsonb AS template_data,`;
+}
+
 /**
  * Index-only listing: every projection column, never the content blob, with
  * the archived/status filters pushed into SQL and an optional LIMIT
  * (audit P-042 — EI-98/EI-174/EI-175 were `plans:list` loading + parsing
  * every body per request). Rows arrive parse-free; a consumer needing item
  * statuses reads the Stage-3 `items` jsonb already on the row.
+ *
+ * PAYLOAD PROJECTION (db-performance-remediation-2026-07-26 P-006). This was the single
+ * most expensive statement in the database: 1.84M calls over 16.5 days returning 730M
+ * rows, 15.1% of ALL database time, at a ~298 ms mean. The plan was never the problem —
+ * the table holds under 1000 rows and the scan takes 7 ms. The cost is DETOASTING and
+ * SERIALIZING large jsonb that most callers never read (proved by re-running the query
+ * with real output: 49.7 ms wide vs 4.5 ms narrow for identical rows).
+ *
+ * So the heavy columns are now OPT-IN, and the default is the cheap shape:
+ *   - `items` ships WITHOUT each item's `text` (74% of the column's bytes) unless
+ *     `itemText: true`. Every structural field — id / status / importance / blockedBy /
+ *     phase / decisionRefs — is still present, which is all the hot polling callers
+ *     (system-health, pot/survey, scout) ever read. `plans:list` renders item prose, so
+ *     it opts in.
+ *   - `now_state` and `template_data` are omitted unless `heavyFields: true`; nothing on
+ *     the LIST path reads them (template_data is only consumed by the single-plan
+ *     mutation path). `now_next` stays — plans:list renders it as nextAction.
  */
 export async function listPlanIndexRows(
   opts: PlanSourceOpts & {
@@ -848,6 +897,12 @@ export async function listPlanIndexRows(
     updatedSince?: string;
     /** Row order: 'updated'/'created' = recency DESC, 'slug' (default) = slug ASC. */
     order?: 'updated' | 'created' | 'slug';
+    /** Ship each item's `text` too (P-006). Default false — structural fields only.
+     *  Only a caller that RENDERS item prose needs this. */
+    itemText?: boolean;
+    /** Ship `now_state` + `template_data` (P-006). Default false — no LIST-path
+     *  consumer reads them. */
+    heavyFields?: boolean;
   } = {},
 ): Promise<PlanIndexRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
@@ -877,13 +932,15 @@ export async function listPlanIndexRows(
             ? tx`ORDER BY created_at DESC NULLS LAST`
             : tx`ORDER BY plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+      const itemsCol = planItemsProjection(tx, opts.itemText);
+      const heavyCols = planHeavyProjection(tx, opts.heavyFields);
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
+               archived, is_legacy, updated_at, ${itemsCol}, ${heavyCols} now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data
+               template
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
@@ -977,6 +1034,10 @@ export async function listPlanIndexRowsForWorkspace(
     updatedSince?: string;
     /** Row order: 'updated'/'created' = recency DESC, default = harness+slug ASC. */
     order?: 'updated' | 'created' | 'slug';
+    /** Ship each item's `text` too (P-006). Default false — structural fields only. */
+    itemText?: boolean;
+    /** Ship `now_state` + `template_data` (P-006). Default false. */
+    heavyFields?: boolean;
   },
 ): Promise<PlanIndexRow[]> {
   const { workspaceId } = opts;
@@ -1004,13 +1065,15 @@ export async function listPlanIndexRowsForWorkspace(
             ? tx`ORDER BY created_at DESC NULLS LAST`
             : tx`ORDER BY harness_slug ASC, plan_slug ASC`;
       const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+      const itemsCol = planItemsProjection(tx, opts.itemText);
+      const heavyCols = planHeavyProjection(tx, opts.heavyFields);
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
+               archived, is_legacy, updated_at, ${itemsCol}, ${heavyCols} now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data
+               template
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId}
          ${archivedFilter}
