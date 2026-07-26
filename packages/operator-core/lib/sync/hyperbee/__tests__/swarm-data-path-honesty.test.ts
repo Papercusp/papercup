@@ -291,6 +291,46 @@ describe('WI-5980 — the address-resolution branch is recorded, and absent stay
   });
 });
 
+describe('EI-18700336768867234 — the flattened log also carries the patch\'s own udx* names', () => {
+  const OPEN_FASTPATH_FALLBACK = {
+    udxRelayed: true,
+    udxPunchPath: 'open',
+    udxAddressFromFallback: true,
+    udxAddresses4AllBogon: true,
+    udxAddresses4: [{ host: '10.99.0.12', port: 49737, bogon: true }],
+    udxRemoteHolepunchable: false,
+    udxFirewall: 2,
+    udxPunchStats: { open: 7, consistent: 1, random: 0 },
+  };
+
+  it('emits BOTH the short flattened key and the raw udx* key for every present field', () => {
+    // Before this fix, `grep -c udxPunchPath <serve.log>` returned 0 on a FULLY
+    // instrumented run — the rename (udxPunchPath -> punchPath) happened at
+    // extractConnectionPath and was never undone, so a name-keyed stale-bundle
+    // detector could not tell "absent" from "renamed", and manufactured a false
+    // STALE-BUNDLE refusal against real data (the bug this test guards).
+    const flat = flattenPathDiagnostics(extractConnectionPath({ ...OPEN_FASTPATH_FALLBACK }));
+    expect(flat.punchPath).toBe('open');
+    expect(flat.udxPunchPath).toBe('open');
+    expect(flat.addrFromFallback).toBe(true);
+    expect(flat.udxAddressFromFallback).toBe(true);
+    expect(flat.addrs4AllBogon).toBe(true);
+    expect(flat.udxAddresses4AllBogon).toBe(true);
+    expect(flat.remoteHolepunchable).toBe(false);
+    expect(flat.udxRemoteHolepunchable).toBe(false);
+    expect(flat.firewall).toBe(2);
+    expect(flat.udxFirewall).toBe(2);
+    expect(flat.addrs4).toBe(flat.udxAddresses4);
+    expect(flat.punchStats).toBe(flat.udxPunchStats);
+  });
+
+  it('never fabricates a udx* alias for an absent field', () => {
+    const flat = flattenPathDiagnostics(extractConnectionPath({ udxRelayed: true }));
+    expect(flat).toEqual({});
+    for (const key of Object.keys(flat)) expect(key.startsWith('udx')).toBe(false);
+  });
+});
+
 describe('EI-18682571591024156 — onPeerConnected cannot overclaim success', () => {
   it('reports signalling-only + an honest tri-state, and carries the DHT path', async () => {
     const { swarm, emit } = fakeSwarm();

@@ -110,6 +110,53 @@ const SHELL_SUBSTITUTION = /\$\(|\$\{|\$[A-Za-z_]|`/;
 /** A repo-selecting global flag that maps onto `cwd`. */
 const REPO_SELECTOR = /(?:^|\s)(?:-C\s+(\S+)|--git-dir[= ](\S+)|--work-tree[= ](\S+))/;
 
+/**
+ * Split a command atom into the argv the SHELL would have produced: split on
+ * UNQUOTED whitespace, then remove one layer of quoting from each token.
+ *
+ * A naive `split(/\s+/)` is wrong here and wrong in a way that matters — it
+ * turns `--format='%H %cI'` (one argv element) into two, and `-S "reclaimed dead
+ * release-deploy"` into four. `cover()` would then have emitted an `expression`
+ * that does NOT reproduce the command, which is exactly the self-deception
+ * `types.ts` warns about: false evidence backing a true verdict is still false
+ * evidence. Caught by reading the first derived sample rather than by a test,
+ * which is why the per-atom expressions are printed when a pair is built.
+ *
+ * An UNTERMINATED quote is closed implicitly. That case is an `atomize`
+ * artifact, not a real command: a `|` inside a quoted string (`git grep -nEi
+ * "select .*from +(a|b)"`) makes the atomiser split mid-string, so the atom is a
+ * fragment. Closing it keeps the expression a faithful rendering of the ATOM,
+ * which is the unit this whole harness matches on.
+ */
+export function shellArgv(atom: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let started = false;
+  for (let i = 0; i < atom.length; i += 1) {
+    const ch = atom[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started || current) out.push(current);
+      current = '';
+      started = false;
+      continue;
+    }
+    current += ch;
+  }
+  if (started || current) out.push(current);
+  return out;
+}
+
 /** The `git` subcommand, skipping global flags and their arguments. */
 export function gitSubcommand(atom: string): string | null {
   const tokens = atom.trim().split(/\s+/).slice(1);
@@ -176,20 +223,38 @@ export const gitReadPassthrough: SubstitutionPair = {
     // A repo-selecting global flag becomes `cwd` — verified live against a
     // sibling worktree, which is where 140 corpus atoms point.
     const repo = REPO_SELECTOR.exec(atom);
-    const cwd = repo ? (repo[1] ?? repo[2] ?? repo[3]) : null;
-    const rest = atom
-      .replace(/\s*(?:\d?>[>&]?\s*\S+)\s*$/, '')
-      .split(/\s+/)
-      .slice(1)
-      .filter((t, i, all) => {
-        const prev = all[i - 1];
-        if (prev === '-C' || prev === '-c' || prev === '--git-dir' || prev === '--work-tree') return false;
-        return t !== '-C' && t !== '-c' && !t.startsWith('--git-dir') && !t.startsWith('--work-tree');
-      });
-    const argv = rest.map((t) => `'${t.replace(/^["']|["']$/g, '')}'`).join(', ');
+    // A trailing stderr/stdout silencer is shell noise, not an argument — the
+    // file-read family settled this already (`treats a stderr redirect as noise,
+    // not as a write`). Strip it before tokenising.
+    const denoised = atom.replace(/\s*(?:\d?>[>&]?\s*\S+)\s*$/, '');
+    const tokens = shellArgv(denoised).slice(1);
+    const argvTokens: string[] = [];
+    let cwd: string | null = repo ? (repo[1] ?? repo[2] ?? repo[3] ?? null) : null;
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (token === '-C' || token === '--git-dir' || token === '--work-tree') {
+        cwd = tokens[i + 1] ?? cwd;
+        i += 1;
+        continue;
+      }
+      if (token === '-c') {
+        i += 1;
+        continue;
+      }
+      const inlineRepo = /^--(?:git-dir|work-tree)=(.+)$/.exec(token);
+      if (inlineRepo) {
+        cwd = inlineRepo[1];
+        continue;
+      }
+      argvTokens.push(token);
+    }
+    if (argvTokens.length === 0) {
+      return { covered: false, reason: 'no git arguments survive once global flags are removed' };
+    }
+    const argv = argvTokens.map((t) => JSON.stringify(t)).join(', ');
     return {
       covered: true,
-      expression: `capability:git { args: [${argv}]${cwd ? `, cwd: '${cwd}'` : ''} }`,
+      expression: `capability:git { args: [${argv}]${cwd ? `, cwd: ${JSON.stringify(cwd)}` : ''} }`,
     };
   },
 };

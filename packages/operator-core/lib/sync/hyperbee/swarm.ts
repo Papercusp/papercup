@@ -1464,6 +1464,24 @@ export function flattenPathDiagnostics(path: PeerConnectionPath): Record<string,
     const p = path.punchStats;
     out.punchStats = `open=${p.open ?? '?'} consistent=${p.consistent ?? '?'} random=${p.random ?? '?'}`;
   }
+  // EI-18700336768867234: also emit each field under the RAW `udx*` name
+  // `patches/hyperdht+6.32.0.patch` actually stamps on the socket — the source of
+  // truth for these fields. extractConnectionPath (above) renames udxPunchPath ->
+  // punchPath etc. on the way in, and this function renames some again
+  // (addresses4AllBogon -> addrs4AllBogon, addresses4 -> addrs4) on the way to the
+  // log — so `grep -c udxPunchPath <serve.log>` finds ZERO on a fully-instrumented
+  // run, which a name-keyed stale-bundle-vs-absent detector (elsewhere) cannot tell
+  // apart from a genuinely un-rebuilt sidecar. Emit BOTH spellings (never rename —
+  // preference order in EI-18700336768867234) rather than pick one: existing
+  // consumers of the short keys are unaffected, and any grep/analyser keyed on the
+  // patch's own `udx*` names now finds real data instead of a false refusal.
+  if (path.punchPath !== undefined) out.udxPunchPath = path.punchPath;
+  if (path.addressFromFallback !== undefined) out.udxAddressFromFallback = path.addressFromFallback;
+  if (path.addresses4AllBogon !== undefined) out.udxAddresses4AllBogon = path.addresses4AllBogon;
+  if (path.remoteHolepunchable !== undefined) out.udxRemoteHolepunchable = path.remoteHolepunchable;
+  if (path.firewall !== undefined) out.udxFirewall = path.firewall;
+  if (out.addrs4 !== undefined) out.udxAddresses4 = out.addrs4;
+  if (out.punchStats !== undefined) out.udxPunchStats = out.punchStats;
   return out;
 }
 

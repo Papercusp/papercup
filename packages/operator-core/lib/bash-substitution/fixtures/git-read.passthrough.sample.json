@@ -1,0 +1,128 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair git-read.passthrough",
+  "extractedAt": "2026-07-26T01:23:00Z",
+  "totalAtoms": 2387,
+  "totalSessions": 77,
+  "sample": [
+    {
+      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
+      "ts": "2026-07-25T21:52:35.291Z",
+      "atom": "git --git-dir=/home/marsh-office/.papercusp/pot-git/papercusp/gh-1223568103.git for-each-ref 'refs/hive/*' 'refs/namespaces/*/refs/heads/staging' --format='%(refname) %(objectname:short=12)' 2>/dev/null"
+    },
+    {
+      "sid": "su-e044d888-c238-4311-8eb0-aef7896b3e92",
+      "ts": "2026-07-20T04:12:22.149Z",
+      "atom": "git -C libs/papercusp status --porcelain packages/harness/knowledge-packs/"
+    },
+    {
+      "sid": "su-63f9b336-5b17-461a-b12e-a8421de9a09b",
+      "ts": "2026-07-26T01:13:10.220Z",
+      "atom": "git diff -- packages/operator-core/lib/scheduler/get-next.ts 2>&1"
+    },
+    {
+      "sid": "su-143b12bd-edcc-4af5-b983-3ec8f258b992",
+      "ts": "2026-07-19T20:44:44.055Z",
+      "atom": "git diff --stat 5421cd2ade 5e0af0a147"
+    },
+    {
+      "sid": "su-f11bc5d5-bd86-42c6-a1b2-706aac7dd1cc",
+      "ts": "2026-07-26T03:40:27.943Z",
+      "atom": "git diff -U0 apps/operator/bin/hono-host.ts"
+    },
+    {
+      "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
+      "ts": "2026-07-26T02:25:52.478Z",
+      "atom": "git grep -rn \"debounceRedTestSignals\\"
+    },
+    {
+      "sid": "su-73565638-a17a-4be4-adfd-86a6750ac1c1",
+      "ts": "2026-07-26T04:11:28.966Z",
+      "atom": "git log --format='%H %cI' -S \"reclaimed dead release-deploy holder\" -- apps/operator/lib/release/deploy-deps.ts 2>&1"
+    },
+    {
+      "sid": "su-e044d888-c238-4311-8eb0-aef7896b3e92",
+      "ts": "2026-07-20T04:35:24.419Z",
+      "atom": "git log --oneline -1 -- apps/operator/app/admin/testing/_components/LiveMetricsTab.tsx"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-20T15:10:41.333Z",
+      "atom": "git log --oneline -10 -- papercusp-desktop 2>&1"
+    },
+    {
+      "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
+      "ts": "2026-07-20T06:24:02.336Z",
+      "atom": "git log --oneline -3 -- libs/testing-shell/src/llm/types.ts"
+    },
+    {
+      "sid": "su-6bf2ddf4-01af-4873-a116-9ddcb2a0a779",
+      "ts": "2026-07-25T23:53:55.741Z",
+      "atom": "git log --oneline -3 -- papercusp-desktop/bin/two-instance-hive-from-repo-smoke.sh"
+    },
+    {
+      "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
+      "ts": "2026-07-20T03:16:02.143Z",
+      "atom": "git log --oneline -5 -- packages/operator-core/lib/escalation/episodic-ei.ts packages/operator-core/lib/sync/hyperbee/replication-stall-ei.ts 2>&1"
+    },
+    {
+      "sid": "su-21cd5f76-1476-4ee0-b596-30bc43b98bc9",
+      "ts": "2026-07-21T02:15:39.562Z",
+      "atom": "git log --oneline -8 -- packages/operator-core/lib/gym/__tests__/loop-control-plane.integration.test.ts"
+    },
+    {
+      "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",
+      "ts": "2026-07-25T23:08:58.737Z",
+      "atom": "git log --since='2026-07-25 18:25:00' --format='%h %ad %s' --date=format-local:'%H:%M:%S' -- package.json apps/operator-vite/package.json apps/operator/package.json"
+    },
+    {
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-21T02:18:29.599Z",
+      "atom": "git log -1 --format='%H %ci' -- papercusp-desktop/src-tauri 2>/dev/null"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-20T10:40:33.674Z",
+      "atom": "git log -3 --format='%H %cI %s' -- bin/lib/deb-hetzner-rig.sh"
+    },
+    {
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-19T16:08:53.293Z",
+      "atom": "git log -p --follow -- packages/operator-core/lib/sync/hyperbee/topic-gossip.ts"
+    },
+    {
+      "sid": "su-9d726f46-c7bc-4986-8700-62340b58689d",
+      "ts": "2026-07-26T03:34:07.907Z",
+      "atom": "git ls-files scratch/ei18676-verify/probe.ts"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T02:39:53.607Z",
+      "atom": "git merge-base --is-ancestor ff1e25c5 a5ba5521 2>/dev/null"
+    },
+    {
+      "sid": "su-fe74471f-5278-4d38-8ea0-d07c8e47f544",
+      "ts": "2026-07-20T07:02:42.186Z",
+      "atom": "git show --stat HEAD~1 2>/dev/null"
+    },
+    {
+      "sid": "su-39274e17-029f-409c-b058-970c9cc5bfdc",
+      "ts": "2026-07-26T01:50:14.443Z",
+      "atom": "git show HEAD:.github/workflows/test.yml"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T04:52:06.071Z",
+      "atom": "git status --porcelain -- apps/operator/scripts/psu-pty-host.mjs packages/operator-core/lib/events/await/psu-pty-discovery.ts"
+    },
+    {
+      "sid": "su-92bacd98-b714-4f44-a4fc-08e73ea7ca39",
+      "ts": "2026-07-26T01:06:38.146Z",
+      "atom": "git status --porcelain src-tauri/sidecar/apps 2>&1"
+    },
+    {
+      "sid": "su-63f9b336-5b17-461a-b12e-a8421de9a09b",
+      "ts": "2026-07-26T01:47:17.614Z",
+      "atom": "git status --short libs/papercusp/libs/db/src/schema/"
+    }
+  ]
+}

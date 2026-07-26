@@ -838,8 +838,3 @@ export function summarizeOrphan(
 export function isReclaimCandidate(s: OrphanedClaimSummary): boolean {
   return s.verdict === 'orphan';
 }
-
-// TEMP-RECURRENCE-PROBE — remove immediately after the check.
-export function __tempProbeExport(): number {
-  return 1;
-}

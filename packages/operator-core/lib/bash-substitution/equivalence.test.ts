@@ -22,6 +22,7 @@ import { catFileRead, headFileRead, sedRangeRead, tailFileRead, FILE_READ_PAIRS 
 import { psqlDescribe, psqlSelectRead } from './pairs/postgres';
 import { psProcessQuery } from './pairs/process';
 import { curlHealthProbe, listeningPorts, systemctlIsActive } from './pairs/service';
+import { gitReadPassthrough, shellArgv } from './pairs/git-read';
 import type { CorpusFixture } from './corpus';
 import type { SampledCommand } from './types';
 
@@ -446,5 +447,100 @@ describe('service pattern boundaries', () => {
     expect(claims(systemctlIsActive, 'curl -s http://127.0.0.1:3070/api/health')).toBe(false);
     expect(claims(curlHealthProbe, 'systemctl --user is-active papercup-bg-host.service')).toBe(false);
     expect(claims(listeningPorts, 'systemctl --user is-active papercup-bg-host.service')).toBe(false);
+  });
+});
+
+/**
+ * The GIT-READ family (P-010). `capability:git` is an argv PASS-THROUGH
+ * (`{ args: string[], cwd? }`, spawned with no shell), so unlike every other
+ * family the boundary is not "which reads is the tool shaped for" — it is
+ * "which argv the SHELL produces rather than the agent".
+ */
+describe('git-read pattern boundaries', () => {
+  const claims = (atom: string) =>
+    matchingAtoms(gitReadPassthrough, [{ sid: 's', ts: 't', atom }]).length === 1;
+
+  /**
+   * The argv splitter is the load-bearing part of this pair's evidence: a naive
+   * whitespace split turns `--format='%H %cI'` into two arguments and `-S "a b
+   * c"` into four, so `cover()` would emit an `expression` that does not
+   * reproduce the command — false evidence behind a true verdict.
+   */
+  describe('shellArgv', () => {
+    it('keeps a quoted value with spaces as ONE argument', () => {
+      expect(shellArgv(`git log --format='%H %cI' -S "reclaimed dead holder"`)).toEqual([
+        'git',
+        'log',
+        '--format=%H %cI',
+        '-S',
+        'reclaimed dead holder',
+      ]);
+    });
+
+    it('closes an unterminated quote instead of dropping the fragment', () => {
+      // A real corpus atom: `atomize` split inside the quoted regex at its `|`.
+      expect(shellArgv('git grep -nEi "select .*from +(harness_shared')).toEqual([
+        'git',
+        'grep',
+        '-nEi',
+        'select .*from +(harness_shared',
+      ]);
+    });
+  });
+
+  it('claims the read subcommands, including behind -C and --git-dir', () => {
+    expect(claims('git status --short')).toBe(true);
+    expect(claims('git log --oneline -5 -- packages/operator-core')).toBe(true);
+    expect(claims('git -C libs/papercusp status --porcelain')).toBe(true);
+    expect(claims('git --git-dir=/home/x/.git for-each-ref')).toBe(true);
+    expect(claims('git merge-base --is-ancestor ff1e25c5 a5ba5521 2>/dev/null')).toBe(true);
+  });
+
+  /**
+   * The D-008 boundary, and the ONLY one this tool has: `args` is a literal
+   * `string[]` and expands nothing, so a command whose argv the shell produces
+   * has no tool form. 99 of 2,500 corpus reads (4.0%) are this residue.
+   */
+  it('excludes commands whose argv comes from the shell', () => {
+    expect(claims('git -C "$DESK" rev-parse HEAD 2>/dev/null')).toBe(false);
+    expect(claims('git log -1 --format=%H -- $(find . -name x.ts)')).toBe(false);
+    expect(claims('git -C $R for-each-ref `cat /tmp/refs`')).toBe(false);
+  });
+
+  /** The tripwire: the exclusion must live in the PATTERN, so a substituted
+   *  atom that reaches `cover()` scores NOT covered and drops the verdict. */
+  it('still scores a substituted atom as uncovered, so a broken exclusion is loud', () => {
+    const result = gitReadPassthrough.cover('git -C "$DESK" rev-parse HEAD');
+    expect(result.covered).toBe(false);
+    expect(result.reason).toContain('LITERAL string[]');
+  });
+
+  it('does not claim git writes — git-sync owns commit and push', () => {
+    expect(claims('git commit -m "wip"')).toBe(false);
+    expect(claims('git push origin staging')).toBe(false);
+    expect(claims('git add -A')).toBe(false);
+    expect(claims('git reset --hard HEAD')).toBe(false);
+  });
+
+  it('renders a faithful tool call, quoted arguments intact', () => {
+    const result = gitReadPassthrough.cover(`git log --format='%H %cI' -3 -- bin/lib/x.sh`);
+    expect(result.covered).toBe(true);
+    expect(result.expression).toBe(
+      'capability:git { args: ["log", "--format=%H %cI", "-3", "--", "bin/lib/x.sh"] }',
+    );
+  });
+
+  it('maps a repo-selecting global flag onto cwd, not onto argv', () => {
+    const result = gitReadPassthrough.cover('git -C /home/x/papercup-release rev-parse HEAD 2>/dev/null');
+    expect(result.covered).toBe(true);
+    expect(result.expression).toBe(
+      'capability:git { args: ["rev-parse", "HEAD"], cwd: "/home/x/papercup-release" }',
+    );
+  });
+
+  it('does not reach across into the other families', () => {
+    expect(claims('psql -d papercusp -c "SELECT 1"')).toBe(false);
+    expect(claims('ps aux')).toBe(false);
+    expect(claims('systemctl --user is-active papercup-bg-host.service')).toBe(false);
   });
 });

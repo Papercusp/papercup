@@ -9,11 +9,12 @@
 
 import type { SubstitutionPair } from '../types';
 import { FILE_READ_PAIRS } from './file-read';
+import { GIT_READ_PAIRS } from './git-read';
 import { POSTGRES_PAIRS } from './postgres';
 import { PROCESS_PAIRS } from './process';
 import { SERVICE_PAIRS } from './service';
 
-export { FILE_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS, SERVICE_PAIRS };
+export { FILE_READ_PAIRS, GIT_READ_PAIRS, POSTGRES_PAIRS, PROCESS_PAIRS, SERVICE_PAIRS };
 
 /**
  * Every audited pair, in registry order.
@@ -29,4 +30,5 @@ export const ALL_PAIRS: SubstitutionPair[] = [
   ...POSTGRES_PAIRS,
   ...PROCESS_PAIRS,
   ...SERVICE_PAIRS,
+  ...GIT_READ_PAIRS,
 ];
