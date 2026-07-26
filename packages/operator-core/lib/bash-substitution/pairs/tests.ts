@@ -88,6 +88,36 @@ const ROOT_ANCHOR = `(?:/|(?:${ROOT_DIRS.join('|')})/)`;
 /** A JS/TS source path — the only operand shape the router can route. */
 const TEST_PATH = String.raw`\S+\.[cm]?[jt]sx?`;
 
+/** One routable operand: a repo-root-anchored JS/TS path. */
+const PATH_OPERAND = `${ROOT_ANCHOR}${TEST_PATH}`;
+
+/** A `-t "…"` / `-t '…'` pair — the one Vitest flag with a tool argument. */
+const T_PATTERN = String.raw`-t\s+(?:"[^"]*"|'[^']*')`;
+
+/**
+ * Trailing shell noise an atom may legitimately end with. `2>&1` is stderr
+ * plumbing and `&` is backgrounding; neither changes the request. (A `|` never
+ * appears here — `atomize` has already split on it.)
+ */
+const TRAILING_NOISE = String.raw`(?:\s+2>&1)?(?:\s*&)?\s*`;
+
+/**
+ * Tokens allowed AFTER the first path operand, repeated to the end of the atom.
+ *
+ * WHY THE PATTERNS ARE END-ANCHORED. Constraining only the first operand let a
+ * pattern claim a command whose LATER operands the tool cannot express — and
+ * the corpus contains exactly that: `vitest run packages/db/src/error-events.
+ * unit.test.ts packages/connector-polymarket` mixes a file with a bare
+ * DIRECTORY, which the router cannot route. The harness caught it as a
+ * `needs-widening` verdict on the raw-vitest sample, and D-008's answer is to
+ * narrow the pattern rather than lower the bar. Anchoring to the end costs
+ * almost nothing measured against the corpus — the router family goes 920 → 917
+ * distinct commands and the raw family 40 → 39, with session coverage unchanged
+ * (67 and 5) — and in exchange the pattern now claims a command only when EVERY
+ * token in it is expressible.
+ */
+const TRAILING_OPERANDS = `(?:\\s+(?:${T_PATTERN}|--run|${PATH_OPERAND}))*`;
+
 /**
  * Atoms this family must never claim, excluded by PATTERN per D-008:
  *  • `$`/backtick — a shell expansion the tool cannot resolve to literal paths
@@ -277,7 +307,12 @@ function coverTestCommand(parsed: ParsedTestCommand): CoverageResult {
 export const routerTestFiles: SubstitutionPair = {
   id: 'tests.router-files',
   intentLabel: 'run-test-files',
-  bashPattern: new RegExp(`^${EXCLUDE_UNEXPRESSIBLE}npm\\s+run\\s+test:file\\s+--\\s+${ROOT_ANCHOR}${TEST_PATH}(?=\\s|$)`),
+  // `--` is permitted mid-list: the corpus contains the double-separator form
+  // `-- <files> -- -t "…"`, where the second `--` hands the rest to Vitest.
+  bashPattern: new RegExp(
+    `^${EXCLUDE_UNEXPRESSIBLE}npm\\s+run\\s+test:file\\s+--\\s+${PATH_OPERAND}` +
+      `(?:\\s+(?:--|${T_PATTERN}|--run|${PATH_OPERAND}))*${TRAILING_NOISE}$`,
+  ),
   toolName: 'testing:run',
   advisoryText:
     'testing:run { files } runs the same router and returns { passed, failed, files, failures:[{file,test,message}] } — no `2>&1 | tail -60` and no log to grep afterwards.',
@@ -301,7 +336,8 @@ export const rawVitestFiles: SubstitutionPair = {
   id: 'tests.raw-vitest',
   intentLabel: 'run-test-files',
   bashPattern: new RegExp(
-    `^${EXCLUDE_UNEXPRESSIBLE}(?:npx\\s+)?vitest\\s+run\\s+(?:-t\\s+(?:"[^"]+"|'[^']+')\\s+)?${ROOT_ANCHOR}${TEST_PATH}(?=\\s|$)`,
+    `^${EXCLUDE_UNEXPRESSIBLE}(?:npx\\s+)?vitest\\s+run\\s+(?:${T_PATTERN}\\s+)?${PATH_OPERAND}` +
+      `${TRAILING_OPERANDS}${TRAILING_NOISE}$`,
   ),
   toolName: 'testing:run',
   advisoryText:
