@@ -230,6 +230,31 @@ export function triageIdea(item: ScoredItem): IdeaTriageDecision {
 }
 
 /**
+ * Extract cross-referenced work-item/issue ids an idea's title+body cites as
+ * supporting EVIDENCE (e.g. "cites EI-5834, EI-5846..."). Recognizes the
+ * EI-/WI-/F- id families used across this repo. Order-preserving, deduped.
+ *
+ * Used by the pre-place evidence-staleness guard (triage-core.ts,
+ * EI-18696839552593260 — 12 near-duplicate Scout ideas were all auto-triaged
+ * 'place' although each one's OWN cited evidence already stated the premise
+ * they argued from): an idea whose every citation is already terminal with a
+ * completion ref is a strong signal its premise may be stale.
+ */
+export function extractCitedIds(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const re = /\b(?:EI|WI|F)-\d+\b/g;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of text.match(re) ?? []) {
+    if (!seen.has(m)) {
+      seen.add(m);
+      out.push(m);
+    }
+  }
+  return out;
+}
+
+/**
  * Generate a triage summary for the Queen to read: which ideas got which decisions,
  * and why. Used in the digest broadcast or the Queen's decision log.
  */

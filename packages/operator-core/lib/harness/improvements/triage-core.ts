@@ -30,7 +30,7 @@ import {
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import type { ScoredItem } from './digest';
 import type { TriageDecision } from './triage';
-import { classifyIdeaType } from './triage';
+import { classifyIdeaType, extractCitedIds } from './triage';
 import { issueToCandidate } from './read-items';
 import {
   initializeIdeaLifecycle,
@@ -57,6 +57,9 @@ export interface ApplyTriageResult {
   lifecycle?: IdeaLifecyclePayload;
   /** True when decision='reject' closed the issue (it left the open queue). */
   closed?: boolean;
+  /** Present when the EVIDENCE-STALENESS GUARD downgraded an incoming place→gate
+   *  (EI-18696839552593260). `requestedDecision` is what the caller asked for. */
+  evidenceDowngrade?: { requestedDecision: TriageDecision; citedIds: string[]; staleIds: string[] };
   error?: string;
 }
 
@@ -75,6 +78,51 @@ export interface TriageCoreDeps {
 }
 
 const defaultDeps: TriageCoreDeps = { getIssue, setIssueState, commentIssue, mergeIssuePayload };
+
+const TERMINAL_ISSUE_STATES = new Set(['resolved', 'closed']);
+
+/**
+ * Evidence-staleness pre-check (EI-18696839552593260): a Scout-idea batch filed
+ * 12 near-duplicate ideas, each citing a slightly different subset of the same
+ * underlying evidence cluster, and every one of those cited items ALREADY
+ * carried a terminal state + completion ref that contradicted the idea's own
+ * premise — a single cheap check would have caught every one before it was
+ * auto-triaged 'place' and burned a claim+investigate+reject cycle.
+ *
+ * Best-effort + narrow by design: a lookup failure or an idea citing nothing
+ * never blocks anything (returns stale:false); it only ever recommends a
+ * place→gate DOWNGRADE (never a reject — mirrors the scheduled triage pass's
+ * existing "never reject automatically" conservatism, improvement-actions.ts),
+ * and only when EVERY resolvable citation is terminal-with-evidence (an idea
+ * citing even one still-open item keeps its premise live).
+ */
+export async function evidenceStalenessCheck(
+  issue: Pick<EngineerIssue, 'id' | 'title' | 'body'>,
+  deps: Pick<TriageCoreDeps, 'getIssue'>,
+): Promise<{ stale: boolean; citedIds: string[]; staleIds: string[] }> {
+  const citedIds = extractCitedIds(`${issue.title ?? ''} ${issue.body ?? ''}`).filter((id) => id !== issue.id);
+  if (citedIds.length === 0) return { stale: false, citedIds: [], staleIds: [] };
+
+  const staleIds: string[] = [];
+  let resolvedCount = 0;
+  for (const id of citedIds) {
+    let cited: EngineerIssue | null = null;
+    try {
+      cited = await deps.getIssue(id);
+    } catch {
+      continue; // best-effort — a lookup failure never blocks the decision
+    }
+    if (!cited) continue; // a citation that doesn't resolve to a real item proves nothing
+    resolvedCount += 1;
+    if (TERMINAL_ISSUE_STATES.has(cited.state) && cited.terminalCompletionRef) {
+      staleIds.push(id);
+    }
+  }
+  // Stale only when every citation that COULD be resolved is terminal-with-evidence
+  // — an idea citing at least one still-open (or unresolvable) item keeps its premise live.
+  const stale = resolvedCount > 0 && staleIds.length === resolvedCount;
+  return { stale, citedIds, staleIds };
+}
 
 function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
   const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
