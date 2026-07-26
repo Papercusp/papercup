@@ -102,8 +102,8 @@ see who's working where), `coord:*` (presence, messaging, handoffs),
 
 **Utilities** — `artifacts:*` (text artifacts), `tasks:*` / `goals:*` (work
 items + objectives), `search:fulltext` / `search:semantic` (keyword +
-meaning-based recall across workspace prose), `messages:*` (durable
-feature-scoped messages, e.g. `messages:send`).
+meaning-based recall across workspace prose), `coord:message-agent` (durable
+work-item-scoped conversation threads).
 
 **High-value systems worth knowing:**
 - **`design-phase:*`** — the UI design loop: validate/lint a design spec,
@@ -907,11 +907,11 @@ BM25) → `search:semantic` if paraphrased → read code at the cited paths
   schema-canonical tables.** Work-item state flows through the `work_items:*`
   verbs (`set_state`/`claim`/…); *feature-pipeline* state advances through the
   pipeline roles (validator/reviewer/…), not a direct write (hand-off is
-  `messages:send`). The documented verbs emit audit rows + sync invalidation;
+  `coord:send`). The documented verbs emit audit rows + sync invalidation;
   raw SQL doesn't. **This holds even under direct user pressure** — "just flip
   it now" / "I don't care about the pipeline" is not new information that
   changes the mechanism, only the pressure did. If a user insists after
-  you've correctly named `messages:send` as the route, re-explain WHY and
+  you've correctly named `coord:send` as the route, re-explain WHY and
   re-offer the same correct path — never invent a workaround verb/row-format
   to appease them; caving with a fabricated call is worse than the original
   ask because it looks compliant while silently corrupting state.

@@ -39,7 +39,6 @@ const nuqsState: Record<string, unknown> = {
   acharness: '',
   acrole: '',
   chat: null,
-  msg: null,
   cq: '',
   cvf: {},
   opc: null,
@@ -232,7 +231,6 @@ beforeEach(() => {
   nuqsState.acharness = '';
   nuqsState.acrole = '';
   nuqsState.chat = null;
-  nuqsState.msg = null;
   nuqsState.opc = null;
   mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
   syncResults = {
@@ -242,13 +240,12 @@ beforeEach(() => {
       promoted_issue_id: null, created_ts: new Date(Date.now() - 120_000).toISOString(),
       updated_ts: new Date(Date.now() - 120_000).toISOString(),
     }]),
-    'conversations.deliberationList': ready(),
-    'conversations.agentChatList': ready(),
-    'conversations.messageList': ready([{
-      id: 'msg-1', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
-      kind: 'handoff', subject: 'pick up the UI work', body: 'the scoping is done, your turn', status: 'delivered',
-      created_at: new Date(Date.now() - 60_000).toISOString(), from_feature_id: 'F-042', to_feature_id: 'F-042',
+    'conversations.deliberationList': ready([{
+      thread_id: 'th-mail-thread', parent_kind: 'handoff', parent_ref: 'F-042', title: 'pick up the UI work',
+      created_by: 'architect', harness_slug: 'papercusp', created_at: new Date(Date.now() - 60_000).toISOString(),
+      last_post_at: new Date(Date.now() - 60_000).toISOString(), post_count: 1,
     }]),
+    'conversations.agentChatList': ready(),
   };
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ conversations: [] }) })));
 });
@@ -286,27 +283,29 @@ describe('AdvConversationsTab — Create-style shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open pick up the UI work' }));
     expect(setQueryStates).toHaveBeenCalledTimes(1);
     expect(setQueryStates).toHaveBeenCalledWith({
-      conv: 'messages',
+      conv: 'deliberations',
       conversation: null,
-      thread: null,
+      thread: 'th-mail-thread',
       chat: null,
-      msg: 'msg-1',
       fmsg: null,
     });
   });
 
   it('keeps the same conversation list DOM mounted while the selected detail changes', async () => {
-    syncResults[syncKey('conversations.messageDetail', { id: 'msg-1' })] = ready([{
-      id: 'msg-1', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
-      kind: 'handoff', subject: 'pick up the UI work', body: 'the scoping is done, your turn', status: 'delivered',
-      created_at: new Date().toISOString(), from_feature_id: 'F-042', to_feature_id: 'F-042',
+    syncResults[syncKey('conversations.deliberationDetail', { id: 'th-mail-thread' })] = ready([{
+      thread: {
+        thread_id: 'th-mail-thread', parent_kind: 'handoff', parent_ref: 'F-042', title: 'pick up the UI work',
+        created_by: 'architect', harness_slug: 'papercusp', created_at: new Date().toISOString(),
+        last_post_at: new Date().toISOString(), post_count: 1,
+      },
+      posts: [],
     }]);
     const { rerender } = render(<AdvConversationsTab />);
     const listBefore = screen.getByRole('region', { name: 'Conversation list' });
     const rowBefore = screen.getByRole('button', { name: 'Open pick up the UI work' });
 
-    nuqsState.conv = 'messages';
-    nuqsState.msg = 'msg-1';
+    nuqsState.conv = 'deliberations';
+    nuqsState.thread = 'th-mail-thread';
     rerender(<AdvConversationsTab />);
 
     expect(screen.getByRole('region', { name: 'Conversation list' })).toBe(listBefore);
@@ -320,7 +319,6 @@ describe('AdvConversationsTab — Create-style shell', () => {
     nuqsState.thread = 'issue-thread-EI-9534';
     nuqsState.conversation = 'conv-from-an-earlier-qa-visit';
     nuqsState.chat = 'chat-from-an-earlier-agent-visit';
-    nuqsState.msg = 'message-from-an-earlier-message-visit';
     nuqsState.fmsg = 'event-from-an-earlier-feed-visit';
 
     render(<AdvConversationsTab />);
@@ -331,7 +329,6 @@ describe('AdvConversationsTab — Create-style shell', () => {
       conversation: null,
       thread: null,
       chat: null,
-      msg: null,
       fmsg: null,
     });
   });
@@ -342,7 +339,6 @@ describe('AdvConversationsTab — Create-style shell', () => {
       'conversations.questionsList',
       'conversations.deliberationList',
       'conversations.agentChatList',
-      'conversations.messageList',
     ]) {
       syncResults[name] = { data: [], loading: true, fetching: true, error: null, invalidate: vi.fn(), transport: 'SSE' };
     }
@@ -587,11 +583,10 @@ describe('AdvConversationsTab — Create-style shell', () => {
 
 // ─── The unified communication views (every type, not just coord threads) ──────
 //
-// the-conversations-tab-surfaces-every-comm-type: the tab gained three views that
-// read the shared named-query cache: agent chats, work-item messages, and
-// deliberations. These guard the new views
-// against render-time crashes the typecheck can't catch and assert each one
-// surfaces its data.
+// the-conversations-tab-surfaces-every-comm-type: the tab gained two views that
+// read the shared named-query cache: agent chats and deliberations. These guard
+// the new views against render-time crashes the typecheck can't catch and
+// assert each one surfaces its data.
 
 /** Adapt the old endpoint-shaped fixtures into the named-query row contract. */
 function stubComms(byUrl: Record<string, unknown>) {
@@ -601,8 +596,6 @@ function stubComms(byUrl: Record<string, unknown>) {
     if (path.includes('/threads/get')) syncResults['conversations.deliberationDetail'] = ready([payload]);
     if (path.includes('/agent-chats/list')) syncResults['conversations.agentChatList'] = ready((payload.items as unknown[]) ?? []);
     if (path.includes('/agent-chats/get')) syncResults['conversations.agentChatDetail'] = ready(payload.chat ? [payload.chat] : []);
-    if (path.includes('/messages/list')) syncResults['conversations.messageList'] = ready((payload.items as unknown[]) ?? []);
-    if (path.includes('/messages/get')) syncResults['conversations.messageDetail'] = ready(payload.message ? [payload.message] : []);
     if (path.includes('/coordination/conversations/list')) syncResults['conversations.questionsList'] = ready((payload.conversations as unknown[]) ?? []);
     if (path.includes('/coordination/conversations/get')) {
       const conversation = payload.conversation as Record<string, unknown> | undefined;
@@ -637,25 +630,24 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(kindPills).toContain('Questions & discussions');
     expect(kindPills).toContain('Group decisions');
     expect(kindPills).toContain('Agent chat');
-    expect(kindPills).toContain('Work-item mail');
     expect(screen.queryByRole('tab', { name: /Agent chats/i })).toBeNull();
     expect(screen.getByRole('tab', { name: /Raw events/i })).toBeTruthy();
   });
 
   it('deduplicates semantic copies across timestamps without collapsing distinct content', () => {
     const base = {
-      id: 'msg-a', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
-      kind: 'handoff', subject: 'release path', body: 'please take this', status: 'delivered',
-      created_at: '2026-07-11T12:00:00.000Z', from_feature_id: 'WI-7', to_feature_id: 'WI-7',
+      id: 'chat-a', harness_slug: 'papercusp', role: 'worker', feature_id: 'WI-7',
+      title: 'release path', created_at: '2026-07-11T12:00:00.000Z', updated_at: '2026-07-11T12:00:00.000Z',
+      archived_at: null, total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 1,
     };
-    const rows = composeUnifiedConversationRows([], [], [], [
+    const rows = composeUnifiedConversationRows([], [], [
       base,
       { ...base },
-      { ...base, id: 'msg-b', created_at: '2026-07-11T13:00:00.000Z' },
-      { ...base, id: 'msg-c', body: 'a separate follow-up' },
+      { ...base, id: 'chat-b', created_at: '2026-07-11T13:00:00.000Z', updated_at: '2026-07-11T13:00:00.000Z' },
+      { ...base, id: 'chat-c', title: 'a separate follow-up' },
     ], 50);
 
-    expect(rows.map((row) => row.sourceId)).toEqual(['msg-b', 'msg-c']);
+    expect(rows.map((row) => row.sourceId)).toEqual(['chat-b', 'chat-c']);
   });
 
   it('positions virtual rows without compositor transforms and keys them by conversation identity', () => {
@@ -686,8 +678,7 @@ describe('AdvConversationsTab — unified communication views', () => {
     const rows = composeUnifiedConversationRows(
       [{ id: 'system-question', kind: 'question', state: 'open', scope: 'workspace', harness_slug: null, title: 'health tick', asker_id: 'system:watchdog', topics: [], promoted_issue_id: null, created_ts: TS(1), updated_ts: TS(1) }],
       [{ thread_id: 'agent-thread', parent_kind: null, parent_ref: null, title: 'agent decision', created_by: 'architect', harness_slug: null, created_at: TS(2), last_post_at: null, post_count: 1 }],
-      [],
-      [{ id: 'system-mail', harness_slug: null, from_slug: 'system-scheduler', to_slug: 'worker', to_role: null, kind: 'notify', subject: 'tick', body: null, status: 'sent', created_at: TS(3), from_feature_id: null, to_feature_id: null }],
+      [{ id: 'system-chat', harness_slug: null, role: 'system:scheduler', feature_id: null, title: 'tick', created_at: TS(3), updated_at: TS(3), archived_at: null, total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 0 }],
       50,
     );
     expect(rows.map((row) => row.sourceId)).toEqual(['agent-thread']);
@@ -717,7 +708,7 @@ describe('AdvConversationsTab — unified communication views', () => {
     // The rail header count reflects every merged row. (A facet chip's live
     // count may coincide with this number, so scope to the rail-head total.)
     const railHead = container.querySelector('.pc-advconv__railhead--unified');
-    expect(railHead?.querySelector('strong')?.textContent).toBe('103');
+    expect(railHead?.querySelector('strong')?.textContent).toBe('102');
   });
 
   it('Deliberations view lists threads and opens its posts', async () => {

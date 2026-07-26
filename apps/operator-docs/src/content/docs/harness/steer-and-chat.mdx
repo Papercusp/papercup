@@ -21,24 +21,33 @@ them.
 
 | You want to… | Use |
 |---|---|
-| Leave durable direction/context for whoever works a feature next | `messages:send` (work-item-scoped) |
+| Leave durable direction/context for whoever works a feature next | `work_items:comment` / `work_items:checkpoint` (the work-item ledger) |
 | Have an interactive conversation with a role agent inside a harness | `agent_chats:*` |
 | Nudge a *live* agent right now (or wake an idle one) | `coord:send` (with `wake: 'required'`/`'optimistic'`) |
 | Make a running agent stop / wrap up | `turn:interrupt` |
 | Answer a question an agent asked | the decision card / `conversations:answer` / `coord` escalation |
 | Steer the whole Pot (not one agent) | the operator chat surface |
 
-## Durable messages — `messages:*`
+## Durable direction — the work-item ledger
 
-`messages:send` (`packages/operator-core/lib/agent-tools/messages/send.ts`)
-writes a durable message that survives across spawns — the right surface for
-inter-agent hand-offs and human direction tied to work. Messages are
-**work-item-scoped**: with `to_feature_id` set they form that feature's
-thread; without it they're harness-level
-(`packages/agent-mcp/src/tools/messages/inbox.ts`). Every fresh spawn working
-that item reads the thread via `messages:inbox` — this is how direction
-reaches a [fresh context](/internal/docs/harness/decisions/fresh-contexts)
-that didn't exist when you wrote it.
+Durable, work-scoped direction lives **on the work-item**, not in a mailbox.
+`work_items:comment` appends to the item's thread; `work_items:checkpoint`
+writes the in-flight carry-note that is **re-injected on the item's next
+invocation** — so direction reaches a
+[fresh context](/internal/docs/harness/decisions/fresh-contexts) that didn't
+exist when you wrote it, which is the property a mailbox was there to provide.
+Prefer the checkpoint for "here is where I left off"; prefer a comment for
+findings and rulings others need to read.
+
+:::caution[`messages:*` is retired]
+The work-item MAIL surface — `messages:send` / `messages:dismiss` /
+`messages:inbox` / `messages:outbox` and their `cross_harness:` analogs — was
+**retired 2026-07-26** (WI-6097). It was not broken; it lost to `coord:send`,
+which carried roughly 400× its traffic, while the mail plane took zero writes
+in its final 30 days. Do not wire new code to it or reintroduce it. All 222
+existing rows are preserved — this was code removal only. Restore notes:
+`_retired/work-item-mail/RESTORE.md`.
+:::
 
 ## Role-scoped chats — `agent_chats:*`
 
@@ -48,8 +57,9 @@ For an interactive back-and-forth with a role agent inside a harness (the
 (`packages/operator-core/lib/agent-tools/agent_chats/chat.ts` — transcripts,
 cost rollup, and feature-lock checks handled server-side), and
 `agent_chats:send_message` is the fire-and-forget non-streaming append used
-by autonomous dispatches. Use this when you want a conversation; use
-`messages:*` when you want durable direction.
+by autonomous dispatches. Use this when you want a conversation; use the
+work-item ledger (`work_items:comment` / `work_items:checkpoint`) when you
+want durable direction.
 
 ## Live coordination — `coord:*`
 

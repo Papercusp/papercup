@@ -40,10 +40,10 @@ have been hit before. Cheap to call; save yourself the work.
 ### Investigate a validator rejection
 
 The validator already explained what failed. Your job is WHY.
-1. `messages:inbox` — read the validator's verdict.
+1. `coord:inbox` — read the validator's verdict.
 2. `artifacts:load` the work + the plan that produced it.
 3. Diagnose the gap (intent miss vs implementation bug vs spec ambiguity).
-4. `messages:send` with the analysis. If the spec is wrong,
+4. `coord:send` with the analysis. If the spec is wrong,
    escalate to architect; if the implementation is wrong, send to worker.
 
 ### Find architectural context

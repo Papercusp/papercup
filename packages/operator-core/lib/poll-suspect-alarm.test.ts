@@ -259,7 +259,7 @@ describe('runTimerRegistrationScanOnce', () => {
     expect(result.alerted).toEqual([fresh]);
     expect(result.seeded).toBe(false);
     expect(emitToast).toHaveBeenCalledTimes(1);
-    expect(emitToast.mock.calls[0][0].description).toContain('brand-new-timer');
+    expect(emitToast.mock.calls[0]![0].description).toContain('brand-new-timer');
     expect(persistKnownNames).toHaveBeenCalledWith([fresh]);
   });
 

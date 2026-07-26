@@ -73,8 +73,8 @@ one*. Re-steer a running cup by bumping the spec REVISION (a warm-inject), not b
 A handoff must carry a spec — supplying the DAG view+rank is the steer; a cup handed none falls
 back to the default (affinity→priority→age over the ready frontier), which is a strict superset.
 Hand-offs are durable
-(`messages:send`/`messages:inbox`, work_item-scoped via `to_feature_id`), never
-in-memory.
+(`coord:send` / `coord:message-agent` for a work-item-scoped conversation
+thread), never in-memory.
 
 Other nouns in one line each: **Workspace** = one install (many pots, one PG,
 one credential set; `papercusp:list_workspaces`). **Run/spawn** = one agent
@@ -124,7 +124,7 @@ question.
 trust any enumeration here to be complete. Groups you'll reach for most:
 `coord:*`, `locks:*`, `plans:*`, `work_items:*` (the unified work surface),
 `blueprint:*`, `events:*` (the no-polling wake primitive), `fleet:*`,
-`harness:*`, `docs:*`, `search:*`, `memory:*`, `messages:*`, `audit:*`,
+`harness:*`, `docs:*`, `search:*`, `memory:*`, `audit:*`,
 `cross_harness:*`, `ui:*`, `chat:*`. Plus MCP resources
 (`papercusp://docs/index`, `…/section/{section}`) and multi-workspace fan-out
 (workspace is a per-call arg). `?superuser=1` skips role/quota gates but still
@@ -972,7 +972,7 @@ Anthropic credential. Add a scenario when a new SU failure mode shows up
 - **Don't raw-SQL schema-canonical tables or hand-roll a feature-state
   write.** Work-item state flows through `work_items:*` verbs. Feature-
   pipeline state (`F-NNN` passed/failed) is **not yours to flip**: hand off
-  via `messages:send` (`to_feature_id`) and let the pipeline roles advance
+  via `coord:send` and let the pipeline roles advance
   it — there is no `features:update`; `work_items:set_state` is for WI-NNN,
   not features. No raw SQL / `UPDATE harness_features`, and don't point the
   session at `:3070`/`:3170` endpoints to mutate harness state — documented
@@ -983,7 +983,7 @@ Anthropic credential. Add a scenario when a new SU failure mode shows up
   it directly, no hand-off needed. The ban above is narrow: ONLY
   feature-pipeline (`F-NNN`) status is off-limits for a direct write, because
   there is no such direct verb for a feature — only for a work-item. Don't
-  invent a converse rule ("state changes always route through messages:send,"
+  invent a converse rule ("state changes always route through coord:send,"
   "`passed` can't be a work-item state") that blocks a normal
   `work_items:set_state` call on a WI-NNN — an invented blocking rule is the
   same failure this bullet exists to prevent, just aimed at the wrong tool.
@@ -991,7 +991,7 @@ Anthropic credential. Add a scenario when a new SU failure mode shows up
   correct deferral because the user pushes back.** "Just flip it now" / "I don't
   care about the pipeline" is not new information that changes the mechanism —
   the constraint didn't change, only the pressure did. If a user insists after
-  you've correctly named `messages:send` as the route, re-explain WHY (the
+  you've correctly named `coord:send` as the route, re-explain WHY (the
   pipeline roles own that transition, there is no direct write) and re-offer the
   same correct path — never invent a workaround verb/row-format to appease them.
   Caving to insistence with a fabricated call is a worse failure than the
@@ -1009,13 +1009,13 @@ Anthropic credential. Add a scenario when a new SU failure mode shows up
   write to must be GROUNDED — it came from the user's own message or a tool
   result you actually received. If the thing the user named has no linked
   work-item to flip, that's not a gap to paper over with a made-up id: say so
-  plainly and offer the real route (`messages:send` with `to_feature_id`).
+  plainly and offer the real route (`coord:send` to the pipeline role).
 - **Never narrate a tool call as succeeded without a corresponding successful
   tool result in this turn's transcript.** "Done — sent" / "✅ flipped to
   passed" describing a call you didn't make, or one that errored, is a
   fabricated completion — the user believes the task is finished when it is
   not (observed in the same SU-S05 runs: a "durable handoff sent" claim with
-  no successful `messages:send` behind it). State exactly what happened — the
+  no successful `coord:send` behind it). State exactly what happened — the
   call you made and its actual result — never narrate more confidence than
   the transcript backs.
 - **Don't default to polling for live updates — push.** IPC events on desktop,
