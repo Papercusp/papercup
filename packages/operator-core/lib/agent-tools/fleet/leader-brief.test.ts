@@ -941,7 +941,8 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
     expect(agents[0].parkedOnResolved).toBeUndefined();
   });
 
-  it('a read failure fails soft — parkedOnResolved stays unset, never throws', async () => {
+  it('a roots-read failure fails soft (via the shared withBoundedTimeout degrade) — never throws, keeps the raw sentinel visible', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const listActiveComposedRoots = vi.fn(async () => {
       throw new Error('pg down');
     });
@@ -949,7 +950,11 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
     await expect(
       decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: vi.fn() as never }),
     ).resolves.toBeDefined();
-    expect(agents[0].parkedOnResolved).toBeUndefined();
+    // withBoundedTimeout degrades the failed read to its [] fallback rather than throwing, so
+    // resolution proceeds with an empty tree map — resolveComposedParkedOn's own fail-open path
+    // (asserted in isolation above) then keeps the unresolved sentinel visible, same as a genuine
+    // 1.5s timeout would. Never silently drops the raw signal a leader could otherwise have seen.
+    expect(agents[0].parkedOnResolved).toEqual(['composed-root:96']);
   });
 
   it('projectMember prefers parkedOnResolved over the raw flat parkedOn end-to-end', () => {
