@@ -19,6 +19,7 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryReleaseResource } from './su-lock-store';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { resourceLockDomain, candidateResourceLockDomains } from './coordination-domain';
 
 const releaseItem = z.object({
   lock_id: z.string().uuid().optional(),
@@ -51,7 +52,7 @@ export default defineTool({
     items: z.array(releaseItem).min(1).max(200).optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, coordinationDomain } = readIdentity(ctx);
+    const { ownerId } = readIdentity(ctx);
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
     const resources = [...(args.resource ? [args.resource] : []), ...(args.resources ?? [])];
     const bulkItems = args.items?.length
@@ -69,16 +70,7 @@ export default defineTool({
       };
     }
 
-    async function releaseOne(item: z.infer<typeof releaseItem>) {
-      const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-        tryReleaseResource(tx, {
-          coordinationDomain,
-          owner: ownerId,
-          lockId: item.lock_id,
-          resource: item.resource,
-        }),
-      );
-
+    async function announceBackUp(r: Awaited<ReturnType<typeof tryReleaseResource>>) {
       // P-010 + A4: releasing an exclusive frees the resource — tell the agents
       // who were WAITING on it (not the whole fleet) that it's back up.
       if (r.exclusiveResources.length > 0) {
@@ -87,8 +79,34 @@ export default defineTool({
           await broadcastResourceBackUp({ source: coordId, resource: res, waiters: r.waiters[res] ?? [] });
         }
       }
+    }
 
-      return r;
+    async function releaseOne(item: z.infer<typeof releaseItem>) {
+      if (item.resource) {
+        // WI-5960: the resource name is known — go straight to ITS domain
+        // (host-global / workspace-scoped / caller-tree), matching whichever
+        // domain locks:acquire_resource used to acquire it.
+        const domain = resourceLockDomain(item.resource);
+        const r = await inWorkspaceTxn(domain, ownerId, (tx) =>
+          tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, resource: item.resource }),
+        );
+        await announceBackUp(r);
+        return r;
+      }
+      // lock_id only — the resource name (and therefore its domain) is unknown
+      // here, so try the caller's domain first (the common case, zero extra
+      // cost), falling back to the special-domain families (WI-5960) only if
+      // that finds nothing.
+      for (const domain of candidateResourceLockDomains()) {
+        const r = await inWorkspaceTxn(domain, ownerId, (tx) =>
+          tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, lockId: item.lock_id }),
+        );
+        if (r.released > 0) {
+          await announceBackUp(r);
+          return r;
+        }
+      }
+      return { released: 0, releasedModes: [], exclusiveResources: [], waiters: {} };
     }
 
     const env = await runBulk(

@@ -127,6 +127,59 @@ describe('search:fulltext', () => {
     const [, opts] = runFullTextSearch.mock.calls[0];
     expect(opts.scopeFilter).toBe('org');
   });
+
+  // EI-18685793913963409: a ZERO-hit default-scope result reads as "no existing
+  // bug/change/task duplicate" when 'work_item' (opt-in, EI-6984) was never
+  // actually searched — the exact miss that let a dedup-search-first capture
+  // create a duplicate of an already-landed WI-* fix. The hint must appear on
+  // every response that didn't search work_item, and NEVER when it did.
+  it('surfaces work_item_scope_hint on the historic (work_item-less) default scope', async () => {
+    vi.doMock('@papercusp/search', () => ({
+      runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
+    }));
+    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+
+    const { default: tool } = await import('../search/fulltext');
+    const result = (await tool.handler({ query: 'claimHold by-id bypass' }, MAKE_CTX())) as any;
+    const data = JSON.parse(result.content[0].text);
+    expect(data.work_item_scope_hint).toMatch(/work_item/);
+  });
+
+  it('surfaces work_item_scope_hint when an explicit scope omits work_item', async () => {
+    vi.doMock('@papercusp/search', () => ({
+      runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
+    }));
+    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+
+    const { default: tool } = await import('../search/fulltext');
+    const result = (await tool.handler({ query: 'cost', scope: ['escalations'] }, MAKE_CTX())) as any;
+    const data = JSON.parse(result.content[0].text);
+    expect(data.work_item_scope_hint).toBeDefined();
+  });
+
+  it('omits work_item_scope_hint once scope:["work_item"] is included', async () => {
+    vi.doMock('@papercusp/search', () => ({
+      runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
+    }));
+    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+
+    const { default: tool } = await import('../search/fulltext');
+    const result = (await tool.handler({ query: 'claimHold by-id bypass', scope: ['work_item'] }, MAKE_CTX())) as any;
+    const data = JSON.parse(result.content[0].text);
+    expect(data.work_item_scope_hint).toBeUndefined();
+  });
+
+  it('omits work_item_scope_hint under scope:["all"] (work_item is included)', async () => {
+    vi.doMock('@papercusp/search', () => ({
+      runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
+    }));
+    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
+
+    const { default: tool } = await import('../search/fulltext');
+    const result = (await tool.handler({ query: 'cost', scope: ['all'] }, MAKE_CTX())) as any;
+    const data = JSON.parse(result.content[0].text);
+    expect(data.work_item_scope_hint).toBeUndefined();
+  });
 });
 
 // ─── search:semantic ──────────────────────────────────────────────────────────

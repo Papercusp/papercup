@@ -6,6 +6,10 @@
  *
  * Seams: Select/useLexicon/plans-api/launch-agent/sonner stubbed — same
  * pattern as PlanActions.test.tsx and AgentLauncherButton.test.tsx.
+ * Uses @testing-library/react + vitest only (no jest-dom matchers) — see
+ * those files' identical note; jest-dom's Chai plugin isn't registered in
+ * this workspace's vitest setup, so `.toBeDisabled()` throws
+ * "Invalid Chai property" rather than failing the assertion (WI-5963).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -92,7 +96,9 @@ describe('NewSessionLauncher', () => {
     render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
     expect(screen.getByRole('combobox', { name: 'Plan for new session' })).toBeTruthy();
     expect(screen.getByRole('combobox', { name: 'Model for new session' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '+ New session' })).toBeDisabled();
+    expect(
+      (screen.getByRole('button', { name: '+ New session' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it('enables the button once a plan is chosen, and launches with the selected plan', async () => {
@@ -102,7 +108,7 @@ describe('NewSessionLauncher', () => {
       target: { value: 'beta-plan' },
     });
     const btn = screen.getByRole('button', { name: '+ New session' });
-    expect(btn).not.toBeDisabled();
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(btn);
     await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
     expect(h.launchAgent).toHaveBeenCalledWith({

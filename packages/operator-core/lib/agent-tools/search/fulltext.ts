@@ -110,6 +110,17 @@ export default defineTool({
       rank: r.score,
     }));
 
+    // EI-18685793913963409: a ZERO/low hit count on the historic default scope
+    // (which silently excludes 'work_item', EI-6984) reads to a caller as "no
+    // existing bug/change/task matches this" when in fact that corpus was never
+    // queried — the exact miss that let a dedup-search-first capture create a
+    // duplicate of an already-landed fix. The guidance already says to pass
+    // scope:['work_item'] before filing, but that relies on the caller
+    // recalling it from prose; surface it as a structured, impossible-to-miss
+    // field on every unscoped-of-work_item response instead (additive only —
+    // never changes `results`/`total_hits` for existing callers).
+    const workItemUnsearched = !scope.includes('work_item');
+
     return {
       content: [{
         type: 'text',
@@ -118,6 +129,14 @@ export default defineTool({
           scope,
           total_hits: totalHits,
           results: top,
+          ...(workItemUnsearched
+            ? {
+                work_item_scope_hint:
+                  "the bug/change/task issue corpus was NOT searched (scope:['work_item'] is opt-in, not part of this default) — " +
+                  'a ZERO or low hit count above does NOT mean no matching bug/change exists. ' +
+                  "Before filing (improvements:capture / work_items:create), re-run with scope including 'work_item' to dedup-check it.",
+              }
+            : {}),
         }),
       }],
     };

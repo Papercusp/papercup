@@ -23,6 +23,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { hasValidGitEntry } from './valid-git-entry';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 let _domain: string | null = null;
 
@@ -120,15 +121,70 @@ export function hostGlobalLockDomain(): string {
 export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set(['release-deploy', 'dev-server']);
 
 /**
+ * WI-5960: the same cross-domain defect as {@link HOST_GLOBAL_RESOURCES}, but for
+ * resources whose SYSTEM-SIDE acquirer keys itself by **workspace**, not by a fixed
+ * host-global constant — the concrete incident is `git-sync:<slug>`: the
+ * `system:git-sync` routine action acquires it under `coordinationDomain =
+ * ctx.workspaceId || '*'` (git-sync-action.ts's `handleGitSync`), but an agent
+ * calling `locks:acquire_resource { resource: 'git-sync:<slug>' }` — the su
+ * playbook's documented "pause sync to safely mutate the tree" mechanism — landed
+ * under {@link lockCoordinationDomain} (the repo-root) instead: two disjoint
+ * domains, so the agent's exclusive hold was INVISIBLE to git-sync's own
+ * conflict check and the routine committed straight through it (observed live
+ * 2026-07-26 — 6 commits landed during a held, un-expired exclusive hold).
+ * Matched by PREFIX (the resource name embeds a dynamic harness slug, unlike the
+ * fixed {@link HOST_GLOBAL_RESOURCES} names).
+ */
+const WORKSPACE_SCOPED_RESOURCE_PREFIXES: readonly string[] = ['git-sync:'];
+
+/** True when `resource` belongs to a family whose system-side acquirer keys
+ *  itself by workspace (see {@link WORKSPACE_SCOPED_RESOURCE_PREFIXES}). */
+export function isWorkspaceScopedResource(resource: string): boolean {
+  return WORKSPACE_SCOPED_RESOURCE_PREFIXES.some((prefix) => resource.startsWith(prefix));
+}
+
+/**
+ * The lock coordination domain for a WORKSPACE-scoped resource (WI-5960) —
+ * mirrors `git-sync-action.ts`'s OWN `ctx.workspaceId || '*'` computation
+ * exactly (same fallback, no `PAPERCUSP_LOCK_DOMAIN` override: the routine
+ * side has none either, so adding one here would just reintroduce a different
+ * mismatch in whatever environment sets it) so an agent's acquire lands in the
+ * SAME domain the routine itself checks.
+ */
+export function workspaceScopedLockDomain(): string {
+  return activeWorkspaceId() || '*';
+}
+
+/**
  * The correct lock coordination domain for a NAMED resource — the fixed
  * {@link hostGlobalLockDomain} when `resource` is in
- * {@link HOST_GLOBAL_RESOURCES}, else the caller-tree-scoped
+ * {@link HOST_GLOBAL_RESOURCES}, {@link workspaceScopedLockDomain} when it
+ * matches a {@link isWorkspaceScopedResource} family, else the caller-tree-scoped
  * {@link lockCoordinationDomain}. Centralizes the branch `locks:list` already
  * applied ad hoc (EI-18674647773291145 Defect 2) so every acquirer/reader of a
  * resource lock picks the same domain by construction — adding a resource to
- * `HOST_GLOBAL_RESOURCES` fixes every call site in one place instead of
- * requiring each one to remember the branch.
+ * `HOST_GLOBAL_RESOURCES` (or a prefix to `WORKSPACE_SCOPED_RESOURCE_PREFIXES`)
+ * fixes every call site in one place instead of requiring each one to remember
+ * the branch.
  */
 export function resourceLockDomain(resource: string): string {
-  return HOST_GLOBAL_RESOURCES.has(resource) ? hostGlobalLockDomain() : lockCoordinationDomain();
+  if (HOST_GLOBAL_RESOURCES.has(resource)) return hostGlobalLockDomain();
+  if (isWorkspaceScopedResource(resource)) return workspaceScopedLockDomain();
+  return lockCoordinationDomain();
+}
+
+/**
+ * WI-5960: candidate domains to try, IN ORDER, when releasing or heartbeating a
+ * named-resource lock by `lock_id` ALONE — the resource name (and therefore its
+ * {@link resourceLockDomain}) isn't known at that call site. Most locks are
+ * ordinary file-tree-domain resources, so the caller's own domain is tried
+ * FIRST (zero extra cost on the common path, byte-identical to before this
+ * fix); the special-domain families are tried only as a fallback when the
+ * first attempt finds nothing — covering a `git-sync:<slug>` / host-global
+ * lock that was (correctly) acquired under a different domain via
+ * {@link resourceLockDomain}. Deduped — `workspaceScopedLockDomain()` can
+ * coincide with `lockCoordinationDomain()` under `PAPERCUSP_LOCK_DOMAIN`.
+ */
+export function candidateResourceLockDomains(): string[] {
+  return [...new Set([lockCoordinationDomain(), hostGlobalLockDomain(), workspaceScopedLockDomain()])];
 }

@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { resourceLockDomain } from './coordination-domain';
 import { broadcastResourceDrainStart } from './resource-broadcast';
 import { hardText, LIMITS } from '../limits';
 
@@ -65,7 +66,12 @@ export default defineTool({
       .optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, ownerLabel } = readIdentity(ctx);
+    // WI-5960: route through the resource's OWN domain (host-global / workspace-
+    // scoped / caller-tree), not unconditionally the file-lock (repo-root) domain
+    // — a `git-sync:<slug>` (or `release-deploy`/`dev-server`) acquire under the
+    // wrong domain is invisible to that resource's real system-side acquirer.
+    const coordinationDomain = resourceLockDomain(args.resource);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
     const reason = args.reason ?? '';
 

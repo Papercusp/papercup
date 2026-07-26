@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -227,22 +227,56 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     expect(second.status).toBe(0);
     expect(second.stderr).not.toContain('coalesced:');
     // No coalesce cache dir should even be created when disabled.
-    expect(() => readFileSync(join(dir, 'coalesce'))).toThrow();
+    expect(existsSync(join(dir, 'coalesce'))).toBe(false);
   });
 
   it('reclaims an ABANDONED lock (leader killed before writing a result) instead of making a follower wait out the whole window', async () => {
-    const leader = spawn('bash', [PC_HEAVY, 'bash', '-c', 'sleep 30; echo never'], {
+    // A plain mkdir lock (unlike the flock slots) has no kernel-level
+    // auto-release — a SIGKILL'd leader (never trappable) would otherwise
+    // strand the lock forever, taxing every future identical call with a
+    // full wait before it gives up. Same command text for the "leader" and
+    // the follow-up so they share a coalescing key; both are long-running
+    // (sleep 30) so we can observe the LOCK being reclaimed (via `spawn` +
+    // polling its mtime) without blocking the test on the full 30s.
+    const cmd = 'sleep 30; echo never';
+    const coalesceDir = join(dir, 'coalesce');
+    const lockMtime = () => {
+      let names: string[] = [];
+      try { names = readdirSync(coalesceDir); } catch { return null; }
+      const f = names.find((n) => n.endsWith('.lock'));
+      return f ? statSync(join(coalesceDir, f)).mtimeMs : null;
+    };
+
+    const leader = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
       env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' }),
       detached: true,
     });
     await new Promise((r) => setTimeout(r, 400)); // let it claim the coalescing lock
     process.kill(-(leader.pid as number), 'SIGKILL'); // hard-kill: no trap/cleanup runs
+    const staleMtime = lockMtime();
+    expect(staleMtime).not.toBeNull();
+
     await new Promise((r) => setTimeout(r, 2300)); // past the 2s coalescing window — lock now stale
 
-    const t0 = Date.now();
-    const r = runSync(['bash', '-c', 'sleep 30; echo never'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' });
-    const waited = Date.now() - t0;
-    expect(r.status).toBe(0);
-    expect(r.stdout.trim()).toBe('recovered-does-not-run'); // placeholder replaced below
+    const follower = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' }),
+      detached: true,
+    });
+    try {
+      // Poll briefly for the lock to be RECREATED (a fresh mtime) — proving
+      // the stale lock was reclaimed promptly, not waited-out for the full
+      // window (which would itself eventually also just run uncached, but
+      // only after paying the whole PC_HEAVY_COALESCE_SEC again).
+      const t0 = Date.now();
+      let reclaimed = false;
+      while (Date.now() - t0 < 1500) {
+        const mt = lockMtime();
+        if (mt !== null && mt > (staleMtime as number)) { reclaimed = true; break; }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(reclaimed).toBe(true);
+    } finally {
+      process.kill(-(follower.pid as number), 'SIGKILL'); // cleanup, don't let it run 30s
+    }
   });
 });

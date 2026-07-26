@@ -12,6 +12,7 @@ import { readIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryHeartbeatResource } from './su-lock-store';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { candidateResourceLockDomains } from './coordination-domain';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
