@@ -215,6 +215,45 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.summary).not.toContain('STALLED');
   });
 
+  it('EI-18719549079738452: 0 reds + not-fast-forwarded reads as a held gate, not a silent all-clear', async () => {
+    // The torn-candidate incident this guards: green-checkpoint's retriage recognizes
+    // a stale red and works to auto-refire, but while that plays out the LAST
+    // *recorded* verdict can show 0 consecutive reds / stalled:false / fireStale:false
+    // — every existing branch above falls through to '' — while `main` genuinely sits
+    // behind the latest green pin (mainFastForwarded:false). The summary must say so
+    // instead of reading as fully healthy.
+    const git = fakeGit({
+      pathCommit: 'torn1234567',
+      contains: {
+        HEAD: ['torn1234567'],
+        'origin/staging': ['torn1234567'],
+        'origin/main': [], // not promoted — main hasn't fast-forwarded
+        deployedsha0: [],
+      },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/w.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () =>
+          snap({ stalled: false, consecutiveReds: 0, fireStale: false, fireStaleReason: null }, 'synced', {
+            greenPinAtStagingHead: false,
+          }),
+      },
+    );
+    expect(res.positions.inMain).toBe(false);
+    expect(res.verdictProvenance.mainFastForwarded).toBe(false);
+    expect(res.gate.consecutiveReds).toBe(0);
+    expect(res.gate.stalled).toBe(false);
+    expect(res.summary).toContain('main ✗');
+    expect(res.summary).toContain('0 reds');
+    expect(res.summary).toContain('NOT fast-forwarded');
+    // Must not be confused with the reds-based / wedge-based labels (this is neither).
+    expect(res.summary).not.toContain('STALLED');
+    expect(res.summary).not.toContain('WEDGED');
+  });
+
   it('a submodule path is detected, annotated, and resolved against the submodule (not staging)', async () => {
     const git = fakeGit({
       submodules: ['libs/papercusp'],

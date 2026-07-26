@@ -27,6 +27,7 @@ import { loadHiveMemberDevicePubkeys, addRevokedHivePubkeys } from './hive-membe
 import {
   advanceEpochOnHiveBoundary,
   isHiveRekeyEnabled,
+  type BoundaryRekeyResult,
 } from './sync/hyperbee/hive-epoch-boundary-wiring';
 
 export type RevokeHiveContributorResult =
@@ -47,6 +48,12 @@ export type RevokeHiveContributorResult =
        *  wrapKeyToMember threw (malformed rows) — a PARTIAL success, still live:true but
        *  those specific devices hold no key for newEpoch. Absent on the fully-healthy path. */
       skippedDevicePubkeys?: string[];
+      /** WI-6043 diagnostic: WHY the boundary did not advance, when live:false. The boundary
+       *  already computes this ('flag-disabled' | 'no-fresh-members' | 'no-author' | 'no-gap' |
+       *  'all-members-unwrappable') — it was previously dropped here, so a live:false revoke
+       *  could not name which of the five fired and every FAIL run had to be re-diagnosed by
+       *  hand. Absent on the applied path (live:true). */
+      reason?: BoundaryRekeyResult['reason'];
     }
   | { ok: false; code: 'bad_target' | 'not_owner' | 'no_owner_identity' | 'no_target' | 'no_owner_row' | 'revoke_failed'; detail?: string };
 
@@ -71,7 +78,13 @@ export interface RevokeHiveContributorSeams {
     potHomeSlug: string,
     ownerGithubUserId: number,
     pubkeys: string[],
-  ) => Promise<{ live: boolean; newEpoch?: number; distributed?: number; skippedDevicePubkeys?: string[] }>;
+  ) => Promise<{
+    live: boolean;
+    newEpoch?: number;
+    distributed?: number;
+    skippedDevicePubkeys?: string[];
+    reason?: BoundaryRekeyResult['reason'];
+  }>;
 }
 
 /**
@@ -108,7 +121,12 @@ export async function revokeHiveContributor(
         input.workspaceId,
         input.potHomeSlug,
         'rekey_boundary_skipped',
-        `revoke boundary advance skipped for gh=${input.githubUserId}: advance-not-applied`,
+        // WI-6043: name the ACTUAL cause. This was the hardcoded placeholder
+        // 'advance-not-applied', which told a FAIL-run investigator nothing beyond what
+        // live:false already said — the boundary knew which of the five early-returns fired
+        // and the answer was discarded one frame below.
+        `revoke boundary advance skipped for gh=${input.githubUserId}: ` +
+          `advance-not-applied reason=${result.reason ?? 'unreported'}`,
       );
     } else {
       const skipped = result.skippedDevicePubkeys;
@@ -161,13 +179,21 @@ async function revokeHiveContributorInner(
 
   // 4. Publish: add to the owner's own row (federates via the Hive peer-log, P-004).
   try {
-    const { live, newEpoch, distributed, skippedDevicePubkeys } = await publishRevocation(
+    const { live, newEpoch, distributed, skippedDevicePubkeys, reason } = await publishRevocation(
       input.workspaceId,
       input.potHomeSlug,
       ownerGithubUserId,
       pubkeys,
     );
-    return { ok: true, revokedPubkeys: pubkeys, live, newEpoch, distributed, skippedDevicePubkeys };
+    return {
+      ok: true,
+      revokedPubkeys: pubkeys,
+      live,
+      newEpoch,
+      distributed,
+      skippedDevicePubkeys,
+      reason,
+    };
   } catch (err: unknown) {
     const detail = err instanceof Error ? err.message : String(err);
     if (/no.*row/i.test(detail)) return { ok: false, code: 'no_owner_row', detail };
@@ -188,7 +214,13 @@ async function realPublishRevocation(
   potHomeSlug: string,
   ownerGithubUserId: number,
   pubkeys: string[],
-): Promise<{ live: boolean; newEpoch?: number; distributed?: number; skippedDevicePubkeys?: string[] }> {
+): Promise<{
+  live: boolean;
+  newEpoch?: number;
+  distributed?: number;
+  skippedDevicePubkeys?: string[];
+  reason?: BoundaryRekeyResult['reason'];
+}> {
   const row = await addRevokedHivePubkeys(workspaceId, potHomeSlug, ownerGithubUserId, pubkeys);
   if (!row) {
     throw new Error('owner has no hive_members row — join the Hive before revoking');
@@ -200,11 +232,15 @@ async function realPublishRevocation(
   // revoked member replicates post-boundary ciphertext it can never decrypt = the C-001
   // READ cut. Flag-gated (papercusp-hive-rekey): OFF ⇒ no-op, today's PG-only behavior →
   // `live:false`. ON ⇒ the removal is a live read-cut → `live:true`.
-  const { applied, newEpoch, distributed, skippedDevicePubkeys } = await advanceEpochOnHiveBoundary({
-    workspaceId,
-    potHomeSlug,
-    enabled: await isHiveRekeyEnabled(),
-    cutOffPubkeys: pubkeys,
-  });
-  return { live: applied, newEpoch, distributed, skippedDevicePubkeys };
+  const { applied, newEpoch, distributed, skippedDevicePubkeys, reason } =
+    await advanceEpochOnHiveBoundary({
+      workspaceId,
+      potHomeSlug,
+      enabled: await isHiveRekeyEnabled(),
+      cutOffPubkeys: pubkeys,
+    });
+  // WI-6043: `reason` names WHICH early-return fired when the advance did not apply. Dropping
+  // it here is what made a live:false revoke unattributable — the leak run could not say
+  // whether the cut failed on the flag, on no-author, on no-fresh-members, ...
+  return { live: applied, newEpoch, distributed, skippedDevicePubkeys, reason };
 }

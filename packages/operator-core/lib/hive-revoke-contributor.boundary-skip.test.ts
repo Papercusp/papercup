@@ -61,6 +61,34 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
     expect(events[0].message).toContain('advance-not-applied');
   });
 
+  it('WI-6043: propagates the boundary REASON on live:false — the caller can name WHICH of the five early-returns fired', async () => {
+    // Regression guard for the diagnostic gap that made every revocation_kcut FAIL run
+    // unattributable: advanceEpochOnHiveBoundary computed `reason`, and realPublishRevocation
+    // dropped it, so a live:false revoke reported only the hardcoded 'advance-not-applied'.
+    // A FAIL is scarce (leaks on ~1 in 3-5 rig runs), so an unattributable one is a wasted run.
+    const result = await revokeHiveContributor(
+      { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
+      {
+        isOwningSwarm: async () => true,
+        resolveOwnerGithubUserId: async () => 1,
+        loadTargetPubkeys: async () => ['pk-b'],
+        // 'no-author' = loadHivePubkey returned null. Per-run state, so it is a candidate
+        // mechanism for the INTERMITTENT post-ban leak — indistinguishable from the other
+        // four causes until the reason survives this hop.
+        publishRevocation: async () => ({ live: false, reason: 'no-author' as const }),
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.live).toBe(false);
+    expect(result.reason, 'the boundary reason reaches the revoke caller').toBe('no-author');
+
+    const events = skips();
+    expect(events.length).toBeGreaterThan(0);
+    // The boot event NAMES the cause rather than restating what live:false already said.
+    expect(events[0].message).toContain('reason=no-author');
+  });
+
   it('does NOT record a skip on the happy path (revoke live, boundary advanced) — records rekey_boundary_applied instead (WI-6043)', async () => {
     const result = await revokeHiveContributor(
       { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
