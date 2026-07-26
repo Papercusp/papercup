@@ -18,6 +18,7 @@ import { groupByAgent, listFleetAssignments } from './assignments';
 import { getWorkItem, isClaimHoldParked, listWorkItems, type WorkItem } from '../work-items';
 import { isAutoPickable, loadTrustedGithubUserIds } from '../work-items-admission';
 import { placementConfig } from '../pot/placement-watchdog';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import type { PlacementBee, PlacementTask } from './placement-affinity';
 // Reuse the SAME readiness the survey + DBOS orchestrator dispatch by (D-007's
 // shared seam: filterReadyFrontier → selectReady over getFeatureBlockers). No
@@ -29,10 +30,19 @@ import {
   type FrontierRow,
 } from '../pot/survey';
 
-/** Feature/issue states that mean "settled" — never a placeable frontier item. */
-const TERMINAL_STATES = new Set([
-  'passed', 'deprecated', 'resolved', 'closed', 'cancelled', 'done', 'dropped', 'merged',
-]);
+/** Feature/issue states that mean "settled" — never a placeable frontier item.
+ *
+ *  EI-18643345612795886 / EI-18653071581558556: this used to be an independent
+ *  hand-copied literal (never re-synced with the canonical cross-family union in
+ *  work-item-dispatch-states.ts). The sibling copy in placement-watchdog.ts
+ *  DRIFTED that way and stopped recognizing `done`/`dropped` for months — this
+ *  file's copy happened to still be correct only by coincidence, not by any
+ *  guard. DERIVE from the single canonical constant so this module can never
+ *  drift the same way; `'cancelled'`/`'merged'` are kept as explicit, documented
+ *  extras — no live work-item ever carries either (confirmed 2026-07-25: neither
+ *  appears in FEATURE_FAMILY_STATES nor the issue-family vocabulary), they are
+ *  harmless back-compat for the placement-gather.test.ts contract. */
+const TERMINAL_STATES = new Set([...ANY_FAMILY_TERMINAL_STATES, 'cancelled', 'merged']);
 
 /**
  * EI-8438: deliberate-PARK states — not settled, but also never an automatic

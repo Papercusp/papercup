@@ -761,6 +761,52 @@ export function classifySameHiveMember(input: {
   return isOwner ? 'admit' : 'miss';
 }
 
+/**
+ * EI-18665254552552477: the PURE decision behind `joinHarnessSwarm`'s
+ * `hasStalledLogs` self-heal signal — extracted so it is unit-testable in
+ * isolation (the call site closes over `admitted`/`ownLog`/a forward-declared
+ * `swarmHandle`, none of which are convenient to construct standalone).
+ *
+ * WI-1534's original mitigation only ever asked "does an ADMITTED remote log
+ * show zero replicator peers" — a question that is silently undefined (falls
+ * through to `false`, i.e. "not stalled") while `admitted` holds no remote
+ * log at all. That pre-admission window is exactly backwards: zero admitted
+ * remotes is the WORST stall this predicate can observe, not the healthiest,
+ * yet it read as healthy and left the self-heal loop on the slow 60s
+ * keepalive throughout it (root-caused live via EI-18662944242304583, gate
+ * run 20260725-183831: 20.5min / 188 established connections / zero inbound
+ * frames / zero admissions, entirely on the slow cadence).
+ *
+ * So: report stalled for either (a) an admitted remote log with zero
+ * replicator peers (the original WI-1534 axis, unchanged), or (b) zero
+ * admitted remotes AT ALL while `liveConnectionCount` is nonzero — i.e. we
+ * have live swarm sockets on this topic and nothing has been admitted yet.
+ * The live-connection leg is required (not "admitted is empty" alone) so a
+ * genuinely solo/offline node still gets the slow cadence — the same
+ * false-positive discipline rung (c)'s never-paired escalation already
+ * applies (WI-5686: an axis with no live-peer guard fires for a peer that
+ * simply isn't there).
+ */
+export function computeHasStalledLogs(
+  admitted: ReadonlyMap<string, Partial<{ peersCount(): number | undefined }>>,
+  ownLogKeyHex: string,
+  liveConnectionCount: number,
+): boolean {
+  let sawRemoteAdmitted = false;
+  for (const [keyHex, log] of admitted) {
+    if (keyHex === ownLogKeyHex) continue;
+    sawRemoteAdmitted = true;
+    if (typeof log.peersCount !== 'function') continue;
+    try {
+      if (log.peersCount() === 0) return true;
+    } catch {
+      // treat a throwing probe as "not stalled" for this log
+    }
+  }
+  if (sawRemoteAdmitted) return false;
+  return liveConnectionCount > 0;
+}
+
 export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
   if (!opts.workspaceRoot) throw new Error('bootHarnessSubstrate: workspaceRoot required');
   if (!opts.workspaceId) throw new Error('bootHarnessSubstrate: workspaceId required');
@@ -3883,21 +3929,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // that re-arms it; otherwise it settles into the 60s slow keepalive
         // and a genuinely stalled/zombie peer can go unresynced for as long
         // as it takes an UNRELATED event to coincidentally trigger a working
-        // reconnect (the observed 80+min stall). Best-effort (peersCount()
-        // undefined on a fake/mock log in tests → skip that log, never
-        // throws) and cheap (Map scan, no I/O).
+        // reconnect (the observed 80+min stall). EI-18665254552552477 extended
+        // this to the PRE-admission window too (zero admitted remotes used to
+        // read as healthy, which is backwards — see computeHasStalledLogs's
+        // docstring). Pure decision extracted to computeHasStalledLogs (unit
+        // tested in isolation); this closure only supplies its three live
+        // inputs. Best-effort (never throws past this call — a throwing probe
+        // or a throwing `swarmHandle` getter is treated as "not stalled") and
+        // cheap (Map scan, no I/O). `swarmHandle` is a forward reference
+        // (declared later, assigned once the join resolves) — safe here
+        // because this callback is only ever invoked from a refresh tick,
+        // which cannot fire before the join settles; same convention as
+        // `escalateToForcedRejoin`'s `swarmHandle?.forceRejoin()` above.
         hasStalledLogs: () => {
-          for (const [keyHex, log] of admitted) {
-            if (keyHex === ownLog.keyHex) continue;
-            const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
-            if (typeof maybePeers.peersCount !== 'function') continue;
-            try {
-              if (maybePeers.peersCount() === 0) return true;
-            } catch {
-              // treat a throwing probe as "not stalled" for this log
-            }
+          try {
+            return computeHasStalledLogs(admitted, ownLog.keyHex, swarmHandle?.liveConnectionCount ?? 0);
+          } catch {
+            return false;
           }
-          return false;
         },
         // P-201 (p2p-git-live-activation-2026-07-09): register the hive-git
         // serve plane only for a harness actually bound to a hive home — a

@@ -235,6 +235,49 @@ describe('WI-4489: gate verdict staleness', () => {
 });
 
 /**
+ * EI-18646778682511611 — a partial ('advanced-prefix', P-016/D-010) advance resets
+ * `consecutiveReds` to 0 by design (the stall streak means "is main frozen", and a
+ * partial advance proves it isn't) — but `tryLongestGreenPrefix` returns `green: false`
+ * for that same tick on purpose: the candidate/tip is a CONFIRMED, reproducing red, only
+ * the longest green prefix behind it shipped. Reusing the reset stall counter as "the
+ * gate is green" reported gate.green=true for a tick with real, non-flaky test failures —
+ * the live incident: three genuine regressions (a migration-atomicity lint + two design-
+ * token lints) reproduced identically across the retry, yet op:status read green=true.
+ */
+describe('EI-18646778682511611: an advanced-prefix tick must not report gate.green=true', () => {
+  const advancedPrefixEvent: PipelineEventRow = {
+    id: '1',
+    kind: 'green_checkpoint',
+    status: 'advanced-prefix',
+    detail: { green: false, candidate: 'redtip0000000', from: 'lastready00000', logPath: '/tmp/x-run.log' },
+    createdAtMs: 1_720_000_000_000,
+  };
+
+  it('⭐ gate.green is false right after an advanced-prefix tick, even though consecutiveReds was reset to 0', () => {
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 0, fireStale: false }, {}, [advancedPrefixEvent]),
+    );
+    expect(s.gate.lastVerdict?.status).toBe('advanced-prefix');
+    expect(s.gate.green).toBe(false);
+  });
+
+  it('a genuine full advance (status "advanced") still reports gate.green=true — the fix is scoped to advanced-prefix only', () => {
+    const advancedEvent: PipelineEventRow = { ...advancedPrefixEvent, status: 'advanced', detail: { green: true } };
+    const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false }, {}, [advancedEvent]));
+    expect(s.gate.green).toBe(true);
+  });
+
+  it('the green pin still ships behind an advanced-prefix tip — canTriggerGreen decoupled from gate.green', () => {
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 0, fireStale: false }, { deployedBehindGreenPin: 1 }, [advancedPrefixEvent]),
+    );
+    expect(s.gate.green).toBe(false);
+    expect(s.state).toBe('green-deployable');
+    expect(s.canTriggerGreen).toBe(true); // deploying the CONFIRMED-green prefix is still safe
+  });
+});
+
+/**
  * EI-10902: "what did the last gate tick decide, and on what code?" — previously answerable
  * only by grepping ANSI-coloured log files + cross-referencing a checkout's git log. The
  * candidate sha / failing tests / log path were ALREADY persisted (WI-4494's recordCheckpointVerdict

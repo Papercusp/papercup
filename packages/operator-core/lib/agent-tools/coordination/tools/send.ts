@@ -627,6 +627,11 @@ async function sendOne(
           const fan = await wakeRecipients([originalFrom], {
             summary: msg.summary,
             source: identity.ownerId,
+            // EI-18663224517726594: carry THIS message's own msg_id in the wake
+            // payload so a woken agent can thread a further reply
+            // (related_msg_id) without a separate coord:inbox round-trip just to
+            // recover an id they were already delivered the content of.
+            payload: { msg_id: env.msg_id },
           });
           replyWake = { target: originalFrom, woken: fan.woken };
         }
@@ -701,6 +706,16 @@ async function sendOne(
     const fan = await wakeRecipients(env.to, {
       summary: msg.summary,
       source: identity.ownerId,
+      // EI-18663224517726594 (fix option 1, preferred): a wake-pump payload
+      // previously carried the message's summary/body but NOT its msg_id, so
+      // answering straight from the wake — the natural, intended path — could
+      // only ever produce an UNTHREADED reply (no related_msg_id available),
+      // silently defeating wakeOnReply and the unanswered_directed tracking,
+      // and later tripping a spurious delivery-ladder alarm at the replier.
+      // Carrying msg_id here makes the correct action (thread the reply)
+      // available at the moment of action instead of requiring a separate
+      // coord:inbox call purely to recover an id already delivered in-body.
+      payload: { msg_id: env.msg_id },
     });
     wake = { mode: wakeMode, targets: fan.targets, woken: fan.woken };
     if (fan.staged > 0) wake.staged = fan.staged;

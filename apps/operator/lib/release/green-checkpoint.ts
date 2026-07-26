@@ -2369,6 +2369,47 @@ export function realCheckpointDeps(
         }
       }
 
+      // EI-18147177863084708: the 3 identity-leak lints (check-no-owner-name-tags.mjs =
+      // `[owner:<name>]` provenance tags; check-no-box-identity.mjs = hardcoded
+      // `/home/<user>/` paths; check-no-identity-literals.mjs = bare box git-name/email/
+      // hostname/OS-user) previously ran ONLY inside release-local.sh's WI-4776 gate, at
+      // release-CUT time — so a leak an agent authors on `staging` (a `[owner:Avi …]` tag
+      // or a stray box-identity literal is CORRECT on a carry surface but a leak in shipped
+      // source) sits undetected through every green-checkpoint tick until a release attempt
+      // finally trips over it, sometimes dozens of commits later: the 0.0.12 Windows Server
+      // cut (2026-07-20) hit 24 accumulated leaks across 13 files, killing 2 cut attempts
+      // ~30min each. These are GLOBAL source scans, independent of the candidate diff — same
+      // rationale as lint:design-primitives below — so run all three here, UNCONDITIONALLY,
+      // so a leak reds the checkpoint the tick it lands instead of surfacing only at cut
+      // time. Unlike release-local.sh's `&&`-chain (which only ever shows the FIRST failing
+      // lint's leaks, forcing whack-a-mole across multiple builds), every one of the three
+      // is run and every failure is reported together in one verdict. A subject hive without
+      // these scripts (hasNpmScript false) skips this leg entirely, same fallback as the
+      // legs above.
+      let lintIdentityOut = '';
+      let lintIdentityOk = true;
+      if (r.code === 0 && typecheckOk && lintMigrationsOk) {
+        const identityLints: Array<{ script: string; label: string }> = [
+          { script: 'lint:no-owner-name-tags', label: 'OWNER-NAME TAG' },
+          { script: 'lint:no-box-identity', label: 'BOX-IDENTITY PATH' },
+          { script: 'lint:no-identity-literals', label: 'BOX IDENTITY LITERAL' },
+        ];
+        const identityFailures: string[] = [];
+        for (const { script, label } of identityLints) {
+          if (!hasNpmScript(treeDir, script)) continue;
+          const out = await exec('npm', ['run', script], { cwd: treeDir, env, allowNonZero: true });
+          if (out.code !== 0) {
+            identityFailures.push(`\n\n=== ${label} LINT FAILED (npm run ${script}, WI-4776 class) ===\n` + out.stdout + out.stderr);
+          }
+        }
+        lintIdentityOk = identityFailures.length === 0;
+        if (!lintIdentityOk) {
+          lintIdentityOut =
+            '\n\n=== IDENTITY-LEAK LINTS FAILED (WI-4776 class — owner-name tag / box path / box identity literal committed to tracked source) ===' +
+            identityFailures.join('');
+        }
+      }
+
       // EI-18218408212070282: `test:affected` (the `r` leg above) only runs a workspace's
       // suite when that workspace is in the CANDIDATE DIFF's affected set (scripts/
       // affected-tests.mjs). design-primitives.test.ts and its siblings (css-tokens.test.ts,
@@ -2390,7 +2431,7 @@ export function realCheckpointDeps(
       // design-lint files) skips this leg entirely, same fallback as the legs above.
       let lintDesignPrimitivesOut = '';
       let lintDesignPrimitivesOk = true;
-      if (r.code === 0 && typecheckOk && lintMigrationsOk && hasNpmScript(treeDir, 'lint:design-primitives')) {
+      if (r.code === 0 && typecheckOk && lintMigrationsOk && lintIdentityOk && hasNpmScript(treeDir, 'lint:design-primitives')) {
         const designPrimitives = await exec('npm', ['run', 'lint:design-primitives'], {
           cwd: treeDir,
           env,
@@ -2421,7 +2462,7 @@ export function realCheckpointDeps(
       // made `npm --workspace @papercusp/operator-vite run build` die with "No workspaces
       // found" on every per-hive gate, holding that hive's `main` forever (oddsmith).
       const spaWorkspace = cfg.spaBuildWorkspace;
-      if (r.code === 0 && typecheckOk && lintMigrationsOk && lintDesignPrimitivesOk && spaWorkspace) {
+      if (r.code === 0 && typecheckOk && lintMigrationsOk && lintIdentityOk && lintDesignPrimitivesOk && spaWorkspace) {
         // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a
         // cryptic CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such
         // markers in globals.css (a bad git-sync auto-merge — the live-merge resolver
@@ -2458,8 +2499,8 @@ export function realCheckpointDeps(
           }
         }
       }
-      let green = r.code === 0 && typecheckOk && lintMigrationsOk && lintDesignPrimitivesOk && buildOk;
-      const fullOutput = r.stdout + r.stderr + typecheckOut + lintMigrationsOut + lintDesignPrimitivesOut + buildOut;
+      let green = r.code === 0 && typecheckOk && lintMigrationsOk && lintIdentityOk && lintDesignPrimitivesOk && buildOk;
+      const fullOutput = r.stdout + r.stderr + typecheckOut + lintMigrationsOut + lintIdentityOut + lintDesignPrimitivesOut + buildOut;
 
       // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
       // SUITE is what failed (r.code !== 0; the build only runs on a green suite, so
@@ -2523,6 +2564,7 @@ export function realCheckpointDeps(
       let failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
       if (!typecheckOk && !failingTests.includes('lint:tsc')) failingTests.push('lint:tsc');
       if (!lintMigrationsOk && !failingTests.includes('lint:migrations')) failingTests.push('lint:migrations');
+      if (!lintIdentityOk && !failingTests.includes('lint:identity-leak')) failingTests.push('lint:identity-leak');
       if (!lintDesignPrimitivesOk && !failingTests.includes('lint:design-primitives')) failingTests.push('lint:design-primitives');
       let summary = summarizeSuiteOutput(fullOutput);
       if (!green && buildOk && failingTests.length) {

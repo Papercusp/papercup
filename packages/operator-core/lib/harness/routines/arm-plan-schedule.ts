@@ -14,13 +14,23 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
 import { materializePlanSchedule, deactivatePlanSchedule } from './materialize-plan-schedule';
 import type { ScheduleTrigger } from './schedule-next';
 
 export interface ArmPlanScheduleInput {
   sql?: Sql;
-  workspaceId?: string;
+  /**
+   * ⚠ REQUIRED (WI-5825). `harness_plans` is keyed on (workspace_id, harness_slug,
+   * plan_slug), so the tenant must come from the PLAN — `plan.workspaceId` from a
+   * plan read, or `tpl[0].workspace_id` from the template row — never from the
+   * ambient `activeWorkspaceId()`. This used to be optional with an
+   * `?? activeWorkspaceId()` fallback: every caller happens to pass it today, so the
+   * fallback was unreached, but it left the trap armed for the next one, and a
+   * mis-keyed UPDATE here matches 0 rows in silence — the plan simply never arms (or
+   * never disarms) while the call returns ok. Requiring it makes the COMPILER catch
+   * an omission instead. See plans/_write-scope.ts for the three shipped generations.
+   */
+  workspaceId: string;
   harnessSlug: string;
   templateSlug: string;
   /** The plan's authored recurrence (from the schedule column). */
@@ -43,7 +53,7 @@ export type ArmResult =
 export async function armPlanSchedule(input: ArmPlanScheduleInput): Promise<ArmResult> {
   if (!input.schedule && !input.scheduledAt) return { ok: false, reason: 'not_scheduled' };
   const sql = input.sql ?? getOrgPg().sql;
-  const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  const { workspaceId } = input;
 
   await sql`
     UPDATE harness_shared.harness_plans
@@ -71,12 +81,13 @@ export async function armPlanSchedule(input: ArmPlanScheduleInput): Promise<ArmR
  */
 export async function disarmPlanSchedule(input: {
   sql?: Sql;
-  workspaceId?: string;
+  /** ⚠ REQUIRED (WI-5825) — see {@link ArmPlanScheduleInput.workspaceId}. */
+  workspaceId: string;
   harnessSlug: string;
   templateSlug: string;
 }): Promise<{ ok: true }> {
   const sql = input.sql ?? getOrgPg().sql;
-  const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  const { workspaceId } = input;
   await sql`
     UPDATE harness_shared.harness_plans
        SET schedule_active = false, updated_at = now()

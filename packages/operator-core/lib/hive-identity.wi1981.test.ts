@@ -120,6 +120,24 @@ describe('isCanonicalHiveOwner — wake-#5515 (divergent key ≠ ownership)', ()
     expect(divergentCalls).toEqual([]);
   });
 
+  // WI-5714: signalHiveKeyDivergent's alerts had no clear/resolve path — a
+  // held-key-matches-canonical result (the recovery edge) must clear any
+  // outstanding DIVERGENT alert so a real recovery gets a RECOVERED broadcast
+  // instead of the alert looking permanently open.
+  it('RECOVERY (WI-5714): held key now matches canonical → clears the DIVERGENT alert', async () => {
+    heldPk = 'TRUE_OWNER_PK';
+    hiveRow = { pubkeyBase64: 'TRUE_OWNER_PK', keychainId: 'hive:ws:papercusp' };
+    mockRegistry([]);
+    const { isCanonicalHiveOwner } = await import('./hive-identity');
+    expect(await isCanonicalHiveOwner('papercusp-workspace', 'papercusp')).toBe(true);
+    await new Promise((r) => setTimeout(r, 0)); // the clear fires void'd (best-effort)
+    expect(clearDivergentCalls).toHaveLength(1);
+    expect(clearDivergentCalls[0]).toMatchObject({
+      workspaceId: 'papercusp-workspace',
+      potSlug: 'papercusp',
+    });
+  });
+
   it('the LIVE incident: divergent held key + CORRECT hives row → NOT owner + divergent signal', async () => {
     heldPk = 'DIVERGENT_FILE_TIER_PK';
     hiveRow = { pubkeyBase64: 'dt7o6io_TRUE_PK', keychainId: 'remote:dt7o6io_TRUE_PK' };

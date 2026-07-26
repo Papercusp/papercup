@@ -483,9 +483,17 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
  * enabled on this host ⇒ `present: false` (nothing to probe — NEVER a phantom
  * DOWN; that is the exact EI-188/EI-276 false-alarm class the HEALTH_ENDPOINTS
  * header warns against, which is why this is a dedicated probe and not a raw
- * endpoint entry). Enabled + /healthz answers ⇒ up. Enabled + no answer ⇒ DOWN,
- * with a note saying embedding is NOT broken (the client seam falls back to
- * in-process embedding per D-003) — degraded, not an outage.
+ * endpoint entry). Enabled + /healthz answers ⇒ up. Enabled + no answer ⇒ DOWN.
+ *
+ * ⚠ EI-18580900204592249: the DOWN note used to claim embedding "falls back to
+ * in-process embedding (D-003)" — that fallback was RETIRED by WI-4021
+ * (2026-07-11): a host with a CONFIGURED sidecar URL now REQUIRES it. On a
+ * real outage, embed calls reject loudly (`sidecar_required_unavailable`) and
+ * memory writes park in `harness_shared.memory_write_journal`, auto-draining
+ * once the sidecar returns — this is degraded (no data loss, self-healing),
+ * but it is NOT the harmless silent fallback the old note implied. The
+ * in-process path only survives on a host with NO sidecar configured at all
+ * (desktop app, tests, bench) — see `embed-sidecar-wiring.ts`.
  */
 export async function probeEmbedSidecar(timeoutMs = 5000): Promise<ProbeResult> {
   const name = 'embed-sidecar';
@@ -512,8 +520,9 @@ export async function probeEmbedSidecar(timeoutMs = 5000): Promise<ProbeResult> 
   if (!result.up) {
     result.note =
       `⚠ embed sidecar DOWN (healthz to ${url}: ${result.note ?? 'no response'}) — the shared warm-model embedding ` +
-      `process for this host. Embedding is NOT broken: every consumer falls back to in-process embedding (D-003), ` +
-      `just without the shared warm model. Spawn-side auto-respawn should recover it; not a :3070 fault.`;
+      `process for this host. This host's sidecar is REQUIRED (in-process fallback retired by WI-4021/D-003): embed ` +
+      `calls reject loudly (sidecar_required_unavailable) and memory writes park in the write journal until it ` +
+      `returns — degraded + self-healing, not silent, and not a :3070 fault. Spawn-side auto-respawn should recover it.`;
   }
   return result;
 }

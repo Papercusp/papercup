@@ -3015,11 +3015,11 @@ export async function recordWatchdogTick(rec: WatchdogTickRecord): Promise<void>
   await sql`
     INSERT INTO harness_shared.watchdog_ticks
       (workspace_id, install_slug, status, signals, captured, declined_duplicates, deferred, deferred_keys,
-       known_open_keys, stale_resolved_keys, seen_keys, collectors, self_escalations)
+       known_open_keys, stale_resolved_keys, seen_keys, standing_keys, collectors, self_escalations)
     VALUES (${rec.workspaceId}, ${rec.installSlug ?? null}, ${rec.status}, ${rec.signals},
             ${rec.captured}::text[], ${rec.declinedDuplicates}, ${rec.deferred}, ${rec.deferredKeys ?? []}::text[],
             ${rec.knownOpenKeys ?? []}::text[], ${rec.staleResolvedKeys ?? []}::text[],
-            ${rec.seenKeys ?? []}::text[],
+            ${rec.seenKeys ?? []}::text[], ${rec.standingKeys ?? []}::text[],
             ${JSON.stringify(rec.collectors)}::text::jsonb, ${rec.selfEscalations}::text[])
   `;
 }
@@ -3093,6 +3093,8 @@ export interface WatchdogTickStatusRow {
   deferredKeys: string[];
   knownOpenKeys: string[];
   staleResolvedKeys: string[];
+  /** Keys the P-003/D-001 delta gate suppressed as standing this tick (EI-18638773146465036). */
+  standingKeys: string[];
   collectors: CollectorStatus[];
   selfEscalations: string[];
 }
@@ -3115,11 +3117,12 @@ export async function readWatchdogStatus(workspaceId: string, limit = 10): Promi
     deferred_keys: string[];
     known_open_keys: string[];
     stale_resolved_keys: string[];
+    standing_keys: string[];
     collectors: CollectorStatus[];
     self_escalations: string[];
   }[]>`
     SELECT tick_at, install_slug, status, signals, captured, declined_duplicates, deferred,
-           deferred_keys, known_open_keys, stale_resolved_keys, collectors, self_escalations
+           deferred_keys, known_open_keys, stale_resolved_keys, standing_keys, collectors, self_escalations
       FROM harness_shared.watchdog_ticks
      WHERE workspace_id = ${workspaceId}
      ORDER BY tick_at DESC
@@ -3135,6 +3138,7 @@ export async function readWatchdogStatus(workspaceId: string, limit = 10): Promi
     deferredKeys: r.deferred_keys ?? [],
     knownOpenKeys: r.known_open_keys ?? [],
     staleResolvedKeys: r.stale_resolved_keys ?? [],
+    standingKeys: r.standing_keys ?? [],
     collectors: Array.isArray(r.collectors) ? r.collectors : [],
     selfEscalations: r.self_escalations ?? [],
   }));

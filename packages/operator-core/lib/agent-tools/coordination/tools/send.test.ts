@@ -326,6 +326,23 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(b.results[0].replyWake?.foldedIntoDirectedWake).toBeUndefined();
   });
 
+  it('EI-18663224517726594: a directed wake:true send carries the new message\'s OWN msg_id in the wake payload — a woken recipient can thread its reply without a separate coord:inbox round-trip', async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['bee-1'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
+    const b = await body({ to: ['bee-1'], summary: 'please review X', wake: 'required' });
+    expect(wakeM).toHaveBeenCalledTimes(1);
+    const opts = wakeM.mock.calls[0][1] as { payload?: unknown };
+    expect(opts.payload).toEqual({ msg_id: b.results[0].msg_id });
+  });
+
+  it('EI-18663224517726594: the reply-wake fan (waking the ORIGINAL sender when a third party replies) also carries the reply\'s own msg_id', async () => {
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['asker'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
+    expect(wakeM).toHaveBeenCalledTimes(1);
+    const opts = wakeM.mock.calls[0][1] as { payload?: unknown };
+    expect(opts.payload).toEqual({ msg_id: b.results[0].msg_id });
+  });
+
   it('flag OFF → no wakeOnReply persisted and no reply-wake (behaves as today)', async () => {
     flagM.mockResolvedValue(false as never);
     // directed send: no opt-in persisted

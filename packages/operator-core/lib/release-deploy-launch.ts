@@ -146,7 +146,19 @@ export function computeDeployStatus(snap: GitPipelineSnapshot): DeployStatus {
         logPath: typeof lastCheckpointEvent.detail?.logPath === 'string' ? lastCheckpointEvent.detail.logPath : null,
       }
     : null;
-  const gateGreen = g.consecutiveReds === 0 && !g.fireStale;
+  // EI-18646778682511611: a partial advance ('advanced-prefix', P-016/D-010) resets
+  // `consecutiveReds` to 0 by design (trackGateStall treats it as "main is advancing,
+  // not stalled") — but it is EXPLICITLY the case where the CANDIDATE/tip is still red
+  // (green-checkpoint.ts's tryLongestGreenPrefix returns `green: false` for it on
+  // purpose: only a longest-green-PREFIX shipped, the tip's own failures are real and
+  // unfixed, tracked separately via the release-fixer dispatch). Reusing the stall-streak
+  // counter as "the gate is green" therefore reported gate.green=true immediately after
+  // a run with reproducing, non-flaky test failures — silently laundering a confirmed
+  // regression into a green-looking status with no accountable follow-up. `consecutiveReds
+  // === 0` answers "is main stalled"; it must NOT also answer "is the last-evaluated
+  // candidate green" when the two diverge, so exclude the one status where they do.
+  const lastVerdictWasPartialRed = lastVerdict?.status === 'advanced-prefix';
+  const gateGreen = g.consecutiveReds === 0 && !g.fireStale && !lastVerdictWasPartialRed;
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
 

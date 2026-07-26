@@ -39,6 +39,7 @@ function tick(p: Partial<WatchdogTickStatusRow> & { tickAt: string }): WatchdogT
     deferredKeys: [],
     knownOpenKeys: [],
     staleResolvedKeys: [],
+    standingKeys: [],
     collectors: [],
     selfEscalations: [],
     ...p,
@@ -117,6 +118,20 @@ describe('improvements:watchdog-status tool', () => {
     expect(summary.staleResolvedPrefiltered).toBe(2); // 2 + 0
     expect(summary.deferred).toBe(4); // 3 + 1
     expect(summary.selfEscalations).toEqual(['esc-a', 'esc-b', 'esc-c']); // flatMap, in order
+  });
+
+  it('rolls up standing-key suppression (P-003/D-001 delta gate, EI-18638773146465036)', async () => {
+    mockReadTicks.mockResolvedValue([
+      tick({ tickAt: 't3', standingKeys: ['unresolved-escalation:foo', 'stalled-claim:bar'] }),
+      tick({ tickAt: 't2', standingKeys: ['unresolved-escalation:foo'] }),
+      tick({ tickAt: 't1', standingKeys: ['unresolved-escalation:foo'] }),
+    ]);
+    const res = await callTool({});
+    const { summary } = JSON.parse(res.content[0].text);
+    expect(summary.standingSuppressed).toBe(4); // 2 + 1 + 1
+    // "hot" = seen standing on >= 3 of the fetched ticks — one watchdogKey churning is
+    // visible at a glance instead of a raw psql group-by.
+    expect(summary.standingHotKeys).toEqual([{ key: 'unresolved-escalation:foo', count: 3 }]);
   });
 
   it('lastTickAt is the newest tick; lastRanTickAt is the newest tick whose status is "ran"', async () => {

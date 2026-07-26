@@ -85,6 +85,25 @@ writeFileSync(
 );
 afterAll(() => rmSync(designPrimitivesLintTree, { recursive: true, force: true }));
 
+// EI-18147177863084708: a candidate tree that provides all 3 identity-leak lints
+// (check-no-owner-name-tags.mjs / check-no-box-identity.mjs / check-no-identity-literals.mjs)
+// but not `lint:tsc`/`lint:migrations`/`lint:design-primitives` — isolates the identity-leak
+// leg's wiring (position in the sequence, all-3-run-unconditionally, combined failure
+// signature) the same way the trees above isolate their own legs.
+const identityLintTree = mkdtempSync(join(tmpdir(), 'green-cp-identity-lint-tree-'));
+writeFileSync(
+  join(identityLintTree, 'package.json'),
+  JSON.stringify({
+    name: 'cp-identity-lint-fixture',
+    scripts: {
+      'lint:no-owner-name-tags': 'node scripts/check-no-owner-name-tags.mjs',
+      'lint:no-box-identity': 'node scripts/check-no-box-identity.mjs',
+      'lint:no-identity-literals': 'node scripts/check-no-identity-literals.mjs',
+    },
+  }),
+);
+afterAll(() => rmSync(identityLintTree, { recursive: true, force: true }));
+
 const cfg: ReleaseConfig = releaseConfig({
   integrationRoot: '/int',
   releaseRoot: '/int',
@@ -173,6 +192,50 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   // candidate diff's affected set, so a real violation elsewhere in the tree could
   // silently ride an unrelated candidate's diff into the green pin. This leg must run
   // UNCONDITIONALLY (never gated by the affected set) so "green" reflects the whole tree.
+  it('detects the optional identity-leak lint scripts without requiring them from subject hives', () => {
+    expect(hasNpmScript(cpTree, 'lint:no-owner-name-tags')).toBe(false);
+    expect(hasNpmScript(cpTree, 'lint:no-box-identity')).toBe(false);
+    expect(hasNpmScript(cpTree, 'lint:no-identity-literals')).toBe(false);
+    expect(hasNpmScript(identityLintTree, 'lint:no-owner-name-tags')).toBe(true);
+    expect(hasNpmScript(identityLintTree, 'lint:no-box-identity')).toBe(true);
+    expect(hasNpmScript(identityLintTree, 'lint:no-identity-literals')).toBe(true);
+  });
+
+  it('runs all 3 identity-leak lints after a green suite, before the SPA build, when the candidate provides them', async () => {
+    // suite green → all 3 identity lints green → marker grep clean → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(identityLintTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    expect(calls).toHaveLength(6);
+    expect(calls[1].args).toEqual(['run', 'lint:no-owner-name-tags']);
+    expect(calls[2].args).toEqual(['run', 'lint:no-box-identity']);
+    expect(calls[3].args).toEqual(['run', 'lint:no-identity-literals']);
+    expect(calls[1].opts?.cwd).toBe(identityLintTree);
+    expect(calls[1].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    expect(calls[4].cmd).toBe('git'); // conflict-marker grep
+    expect(calls[5].args).toContain('build');
+  });
+
+  it('EI-18147177863084708: reports EVERY failing identity-leak lint together (not just the first) and holds before the SPA build', async () => {
+    // owner-name-tags FAILS, box-identity FAILS, identity-literals passes — unlike
+    // release-local.sh's `&&`-chain, all 3 must run and every failure must be visible
+    // in one verdict instead of whack-a-mole across builds.
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: 'FOUND: [owner:Avi 2026-07-20] in packages/operator-core/lib/foo.ts' },
+      { code: 1, stdout: 'FOUND: /home/marsh-office/ in some.service' },
+      { code: 0 },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(identityLintTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain('lint:identity-leak');
+    expect(r.summary).toContain('OWNER-NAME TAG LINT FAILED');
+    expect(r.summary).toContain('BOX-IDENTITY PATH LINT FAILED');
+    expect(calls).toHaveLength(4); // all 3 lints ran (unconditional) — build NOT attempted
+  });
+
   it('detects the optional lint:design-primitives script without requiring it from subject hives', () => {
     expect(hasNpmScript(cpTree, 'lint:design-primitives')).toBe(false);
     expect(hasNpmScript(designPrimitivesLintTree, 'lint:design-primitives')).toBe(true);

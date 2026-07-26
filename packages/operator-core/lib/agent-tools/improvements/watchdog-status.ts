@@ -85,6 +85,22 @@ export default defineTool({
       declinedDuplicates: ticks.reduce((n, t) => n + t.declinedDuplicates, 0),
       knownOpenPrefiltered: ticks.reduce((n, t) => n + t.knownOpenKeys.length, 0),
       staleResolvedPrefiltered: ticks.reduce((n, t) => n + t.staleResolvedKeys.length, 0),
+      // P-003/D-001 delta-gate suppression (EI-18638773146465036): a key showing up as
+      // "standing" on most/every tick in this window is a live-state condition the watchdog
+      // keeps re-detecting but is correctly NOT re-filing — normal for a real unresolved
+      // condition, but `standingHotKeys` surfaces it so "one watchdogKey churning" is
+      // visible at a glance instead of requiring a raw psql group-by (the exact gap that let
+      // one key mint 32 work-items over 4 days before this gate existed).
+      standingSuppressed: ticks.reduce((n, t) => n + t.standingKeys.length, 0),
+      standingHotKeys: Object.entries(
+        ticks.reduce<Record<string, number>>((acc, t) => {
+          for (const k of t.standingKeys) acc[k] = (acc[k] ?? 0) + 1;
+          return acc;
+        }, {}),
+      )
+        .filter(([, count]) => count >= 3)
+        .sort((a, b) => b[1] - a[1])
+        .map(([key, count]) => ({ key, count })),
       deferred: ticks.reduce((n, t) => n + t.deferred, 0),
       selfEscalations: ticks.flatMap((t) => t.selfEscalations),
       // P-013: signal-to-noise rollup — how much the ephemeral-benchmark filter dropped

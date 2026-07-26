@@ -16,6 +16,8 @@ import {
   deriveBeeAliveFromPresence,
   NO_PRESENCE_BEE_BOOTSTRAP_GRACE_MS,
 } from './placement-gather';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { isUnitTerminal } from '../pot/placement-watchdog';
 import type { PlacementTask } from './placement-affinity';
 
 describe('workItemToTask — harness backfill for EI items (F-FIX-033)', () => {
@@ -119,6 +121,18 @@ describe('isNonPlaceableWorkItemState — EI-8438: the blocked-state placement f
     expect(isNonPlaceableWorkItemState(null)).toBe(false);
     expect(isNonPlaceableWorkItemState(undefined)).toBe(false);
     expect(isNonPlaceableWorkItemState('')).toBe(false);
+  });
+
+  it('RECURRENCE GUARD (EI-18643345612795886 / EI-18653071581558556): never drifts from the canonical cross-family terminal union again — every ANY_FAMILY_TERMINAL_STATES word is treated as settled here AND agrees with placement-watchdog.isUnitTerminal', () => {
+    // placement-gather.ts and placement-watchdog.ts independently decide "is this
+    // work-item finished" — they drifted apart once already (placement-watchdog's
+    // hand-copy silently stopped recognizing done/dropped for months while this
+    // file's copy happened to still be right). This asserts the two can never
+    // silently diverge again, regardless of which one is edited next.
+    for (const s of ANY_FAMILY_TERMINAL_STATES) {
+      expect(isNonPlaceableWorkItemState(s)).toBe(true);
+      expect(isUnitTerminal(s)).toBe(true);
+    }
   });
 });
 
