@@ -137,11 +137,6 @@ export const OVERWATCH_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     ),
   },
   {
-    name: 'messages:send',
-    description: 'Send a durable work-item-scoped message (to_feature_id) to a pipeline role.',
-    input: obj({ to: { type: 'string' }, to_feature_id: { type: 'string' }, body: { type: 'string' } }, ['body']),
-  },
-  {
     name: 'autonomy:decide',
     description:
       "Ask the decision gate whether an action is auto or must be escalated. For the overwatch role it returns { posture:'auto'|'gated', actionClass, escalateOnly } — nudge/observe/escalate are auto; any structural verb is gated.",

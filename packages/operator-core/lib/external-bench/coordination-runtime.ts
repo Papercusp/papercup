@@ -149,15 +149,16 @@ export function coordinationSpawnPlans(spec: CoordinationSpec, backlog: readonly
 /**
  * The tool-name matchers that count as INTER-AGENT COORDINATION (not work-acquisition). Rationale: the C4
  * question is "did the agents coordinate vs work in isolation" — so we count direct peer messaging
- * (`coord:*`), broadcast (`topics:*`), durable hand-off (`messages:send`), and shared-state / blackboard
- * reads+writes (`work_items:comment|amend|observe`). We deliberately EXCLUDE `work_items:claim_next` /
+ * (`coord:*`), broadcast (`topics:*`), and shared-state / blackboard reads+writes
+ * (`work_items:comment|amend|observe`). We deliberately EXCLUDE `work_items:claim_next` /
  * `fleet:assignments` — self-claim is present even in the no-coordination arm, so it does not evidence
  * coordination. Peer-review rides `coord:ask`/`coord:send`, already covered by the `coord:` prefix.
+ * (`messages:send` was retired 2026-07-26 — retire-work-item-mail-surface-2026-07-26 P-007 —
+ * and dropped from this list; it had 0 calls/90d and coord:* subsumed the durable-hand-off case.)
  */
 export const COORDINATION_TOOL_MATCHERS: readonly (string | RegExp)[] = [
   /^coord:/,
   /^topics:/,
-  'messages:send',
   'work_items:comment',
   'work_items:amend',
   'work_items:observe',

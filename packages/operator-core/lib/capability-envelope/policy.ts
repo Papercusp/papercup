@@ -98,7 +98,7 @@ export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
   },
   // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
   // C-2 / B-01 + D-002). It READS the whole system and NUDGES/OBSERVES/ESCALATES
-  // (coord:send / coord:escalate / improvements:capture / messages:send), but it must
+  // (coord:send / coord:escalate / improvements:capture), but it must
   // NEVER edit code or run a shell — it tells the Queen/bees what to do, it doesn't act
   // on WORK itself (D-001). So, mirroring the lifted `bee` read-only confinement
   // (EI-524), deny the write+exec capabilities at the envelope layer. (Its

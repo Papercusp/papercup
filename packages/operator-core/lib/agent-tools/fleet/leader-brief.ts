@@ -775,7 +775,8 @@ export default defineTool({
     'parked-awaiting-capability)+nextFireAt, stalled flag, unanswered msgs ' +
     '(count/oldestAgeMs/newest), contextPressure ' +
     '(ok|high|critical), bench state (parkedOn), benchSuggestion (not-advancing or idle ' +
-    '— check `kind` before acting), ' +
+    '— check `kind` before acting), `dormant` (zero self-wake mechanism — no loop, no ' +
+    'park, no claim — wake it NOW, do not wait), ' +
     'and unownedCriticals (aged criticals the spec admits) + orphanedInFlight ' +
     '(released mid-progress, assignee NULL). Scoped to ONE fleet ' +
     '(yours by default), not fleet:assignments\' whole roster. ' +
@@ -791,7 +792,9 @@ export default defineTool({
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
       '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
-      'fleet:bench it onto the gate it is actually blocked on. Nonzero `unownedCriticals`/`orphanedInFlight` → claim it. ' +
+      'fleet:bench it onto the gate it is actually blocked on. `dormant:true` → coord:send ' +
+      '{ wake:"required" } it now; never bench (there is no loop/park to bench onto — that would do nothing). ' +
+      'Nonzero `unownedCriticals`/`orphanedInFlight` → claim it. ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',
@@ -962,6 +965,11 @@ export default defineTool({
       // these members land here instead. This is the count computeFloorStarvedFleetAlert
       // keys on; without it the gated-lane alert could never fire.
       laneless_idle: members.filter((m) => m.benchSuggestion?.kind === 'laneless-idle').length,
+      // EI-18730414627683753: members with ZERO self-wake mechanism (no loop, no park, no
+      // claim) — distinct from laneless_idle above, which does not distinguish a healthy
+      // loop-armed member (will re-cycle on its own) from one that will never wake again.
+      // >0 here means the leader must wake these members NOW; waiting out a tick does nothing.
+      dormant: members.filter((m) => m.dormant === true).length,
       // The live authoritative claimable total behind the two fields above (the same
       // number work_items:claimable reports). null ⇒ could not be read on this brief —
       // NOT zero, and never to be read as a drained lane.

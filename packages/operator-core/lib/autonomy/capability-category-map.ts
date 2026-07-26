@@ -108,7 +108,8 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   // ── inbox-triage — plans:attention override BEFORE the plans: group ──
   { id: 'cat:plans-attention', on: TRIGGER, when: { action: { matches: '^plans:attention' } }, fire: 'inbox-triage', meta: { reason: 'the inbox / attention view' } },
   { id: 'cat:inbox', on: TRIGGER, when: { action: { matches: '^inbox:' } }, fire: 'inbox-triage', meta: { reason: 'inbox triage' } },
-  { id: 'cat:messages-dismiss', on: TRIGGER, when: { action: { matches: '^messages:dismiss' } }, fire: 'inbox-triage', meta: { reason: 'dismisses an inbox message' } },
+  // cat:messages-dismiss (messages:dismiss) RETIRED 2026-07-26 —
+  // retire-work-item-mail-surface-2026-07-26 P-007.
 
   // ── plan-governance ──
   { id: 'cat:plan-reviews', on: TRIGGER, when: { action: { matches: '^harness:(plan_reviews|pending_reviews)' } }, fire: 'plan-governance', meta: { reason: 'plan-review queue' } },

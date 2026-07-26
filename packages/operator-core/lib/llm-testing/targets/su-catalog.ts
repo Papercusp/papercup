@@ -62,13 +62,15 @@ const obj = (
  * The curated SU catalog. Names + arg shapes are real; descriptions are
  * one-liners distilled from each tool's playbook guidance. Deliberately
  * representative, not exhaustive — covers the groups the scenarios exercise
- * (docs / plans / design-phase / work_items / coord / messages / search /
+ * (docs / plans / design-phase / work_items / coord / search /
  * locks / memory / blueprint / harness) plus a believable SU spread.
  *
- * Deliberately ABSENT: any `features:update` / raw-SQL write verb. The SU
- * agent has no such tool; feature-pipeline state advances through the
- * pipeline roles + `messages:send` (work_item-scoped via `to_feature_id`).
- * SU-S05 asserts the model doesn't invent one.
+ * Deliberately ABSENT: any `features:update` / raw-SQL write verb, and the
+ * retired `messages:*` mail surface (retire-work-item-mail-surface-2026-07-26).
+ * The SU agent has no such tool; feature-pipeline state advances through the
+ * pipeline roles + `coord:send` (the retired `messages:send`'s successor,
+ * work_item-scoped via `to_feature_id`). SU-S05 asserts the model doesn't
+ * invent a raw write.
  */
 export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   // --- docs (context-only readers, harness-scoped) ---
@@ -259,17 +261,8 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
       harness: { type: 'string' },
     }),
   },
-  // --- messages (durable inter-agent hand-off) ---
-  {
-    name: 'messages:send',
-    description: 'Durable inter-agent hand-off; work_item-scoped via to_feature_id.',
-    input: obj({ to: { type: 'string' }, body: { type: 'string' }, to_feature_id: { type: 'string' } }, ['body']),
-  },
-  {
-    name: 'messages:inbox',
-    description: 'Read durable messages addressed to you.',
-    input: obj({}),
-  },
+  // messages:send / messages:inbox RETIRED 2026-07-26 — retire-work-item-mail-
+  // surface-2026-07-26 P-007 (superseded by coord:send / coord:inbox).
   // --- locks (file + resource coordination) ---
   {
     name: 'locks:acquire',

@@ -40,7 +40,7 @@ export const SU_RUBRIC: JudgeRubric = {
         "Did it follow the playbook's hard rules (Tauri-only app testing, push-not-poll, git-sync owns commits, no raw-SQL on schema-canonical tables, nuqs/sync/defineTool seams)?",
       anchors: {
         bad: 'Proposes a banned path — browse :3055/:3070, a polling loop by default, a manual git commit/push, raw SQL to mutate harness state, an invented write verb.',
-        ideal: 'Routes through the blessed path — Tauri shell + testing docs, SSE/IPC push, leave work in the tree for git-sync, pipeline / messages:send for work-item state.',
+        ideal: 'Routes through the blessed path — Tauri shell + testing docs, SSE/IPC push, leave work in the tree for git-sync, pipeline / coord:send for work-item state.',
       },
     },
     {

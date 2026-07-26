@@ -2,7 +2,7 @@
 /**
  * ConversationsTab coverage — the curated stream at rail width (WI-5754).
  *
- * The pins here are the things the NARROW layout is: that all four sources land
+ * The pins here are the things the NARROW layout is: that all three sources land
  * in one stream, that the source chips and search filter it, that a click DRILLS
  * IN (detail replaces the list) and back returns, that an open question can be
  * replied to / accepted through the audited endpoints, and — the placement the
@@ -83,26 +83,10 @@ const AGENT_CHAT = {
   total_cost_usd_cents: 0,
   turns: 2,
 };
-const MESSAGE = {
-  id: 'msg-1',
-  harness_slug: 'papercusp',
-  from_slug: 'mug',
-  to_slug: 'su-4ca244e4',
-  to_role: null,
-  kind: 'Priority',
-  subject: 'Take WI-5727 first',
-  body: 'It is the dependency edge for three other items.',
-  status: 'pending',
-  created_at: '2026-07-25T18:00:00Z',
-  from_feature_id: null,
-  to_feature_id: 'WI-5727',
-};
-
-function seedAllFour() {
+function seedAllThree() {
   H.results['conversations.questionsList'] = { ...blank(), data: [QUESTION] };
   H.results['conversations.deliberationList'] = { ...blank(), data: [DELIBERATION] };
   H.results['conversations.agentChatList'] = { ...blank(), data: [AGENT_CHAT] };
-  H.results['conversations.messageList'] = { ...blank(), data: [MESSAGE] };
 }
 
 beforeEach(() => {

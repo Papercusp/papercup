@@ -12,11 +12,11 @@
  *     who → whom · pot · work-item. Every field on the wide row survives;
  *     roughly nine are visible where /adv shows five.
  *   • source identity is a 2px STRIPE + short label, not a text pill. The pill
- *     ("Questions & discussions") would eat a third of a narrow row. The four
+ *     ("Questions & discussions") would eat a third of a narrow row. The three
  *     hues are an analogous sweep off the app accent, deliberately avoiding
  *     good/warn/bad — those stay reserved for STATE, so a stripe can never be
  *     misread as a warning.
- *   • the facet bar collapses to one search box + four counted source chips.
+ *   • the facet bar collapses to one search box + three counted source chips.
  *   • detail REPLACES the list, with a back control and an ↗ escape to /adv.
  *
  * NOT here, deliberately:
@@ -31,7 +31,7 @@
  * through the same audited conversations/post + conversations/resolve calls
  * /adv uses.
  *
- * What a conversation IS — the four reads, the dedup, the system-actor filter —
+ * What a conversation IS — the three reads, the dedup, the system-actor filter —
  * comes from components/conversations/unified-conversations, shared with /adv so
  * the two panes cannot drift.
  *
@@ -47,7 +47,6 @@ import {
   Bot,
   CheckCircle2,
   Inbox,
-  Mail,
   MessageCircle,
   MessagesSquare,
   RefreshCw,
@@ -74,7 +73,6 @@ import {
   type ConvRow,
   type ConversationSource,
   type DeliberationDetail,
-  type MsgRow,
   type ThreadRow,
   type UnifiedConversationRow,
 } from '../conversations/unified-conversations';
@@ -84,7 +82,7 @@ import {
 const LIST_LIMIT = 100;
 const UNIFIED_LIMIT = LIST_LIMIT * 4;
 
-const SOURCES = ['all', 'threads', 'deliberations', 'agentchats', 'messages'] as const;
+const SOURCES = ['all', 'threads', 'deliberations', 'agentchats'] as const;
 type SourceFilter = (typeof SOURCES)[number];
 
 /** Short chip labels — "Questions & discussions" does not fit a 300px chip row. */
@@ -93,7 +91,6 @@ const CHIP_LABEL: Record<SourceFilter, string> = {
   threads: 'Q&A',
   deliberations: 'Decisions',
   agentchats: 'Chat',
-  messages: 'Mail',
 };
 
 /** The stripe label on a row: shorter still, because it shares the top line
@@ -102,14 +99,12 @@ const STRIPE_LABEL: Record<ConversationSource, string> = {
   threads: 'Q&A',
   deliberations: 'Decision',
   agentchats: 'Agent chat',
-  messages: 'Mail',
 };
 
 const SOURCE_ICON: Record<ConversationSource, typeof MessageCircle> = {
   threads: MessageCircle,
   deliberations: MessagesSquare,
   agentchats: Bot,
-  messages: Mail,
 };
 
 /** Which /adv route + params open this row on the wide surface. */
@@ -119,9 +114,7 @@ function advSearchFor(row: UnifiedConversationRow): Record<string, string> {
       ? 'conversation'
       : row.source === 'deliberations'
         ? 'thread'
-        : row.source === 'agentchats'
-          ? 'chat'
-          : 'msg';
+        : 'chat';
   return { tab: 'conversations', conv: row.source, [key]: row.sourceId };
 }
 
@@ -155,7 +148,6 @@ function ConversationRow({
   onOpen: (row: UnifiedConversationRow) => void;
 }) {
   const Icon = SOURCE_ICON[row.source];
-  const isMail = row.source === 'messages';
   return (
     <button
       type="button"
@@ -177,12 +169,6 @@ function ConversationRow({
       <span className="pclsb-conv__title">{row.title}</span>
       <span className="pclsb-conv__meta">
         {row.actor ? <span>{row.actor}</span> : null}
-        {isMail && row.recipient ? (
-          <>
-            <span className="sep">→</span>
-            <span>{row.recipient}</span>
-          </>
-        ) : null}
         {row.harnessSlug ? (
           <>
             <span className="sep">·</span>
@@ -499,60 +485,6 @@ function AgentChatDetailBody({ id, summary }: { id: string; summary?: UnifiedCon
   );
 }
 
-function MessageDetailBody({ id, summary }: { id: string; summary?: UnifiedConversationRow }) {
-  const q = useSyncQuery<MsgRow>({
-    queryName: 'conversations.messageDetail',
-    args: { id },
-    enabled: !!id,
-    staleTime: 30_000,
-  });
-  const raw = q.data?.[0] ?? null;
-  const detail = raw && raw.id === id ? raw : null;
-
-  return (
-    <>
-      <div className="pclsb-conv__detail">
-        <div className="pclsb-conv__kicker">
-          <span className="pclsb-conv__src">{SOURCE_LABEL.messages}</span>
-          {detail?.status ? (
-            <span className={`pclsb-conv__state ${stateClass(detail.status)}`}>{detail.status}</span>
-          ) : null}
-        </div>
-        <h2 className="pclsb-conv__h">{detail?.subject || detail?.body || summary?.title || id}</h2>
-        {!detail ? (
-          <p className="pclsb-conv__loading">Loading message…</p>
-        ) : (
-          <>
-            <div className="pclsb-conv__stats">
-              <span>
-                {detail.from_slug} → {detail.to_slug ?? detail.to_role ?? '∅'}
-              </span>
-              <span>{detail.kind}</span>
-              {detail.harness_slug ? <span>{detail.harness_slug}</span> : null}
-              <span>{fmtConversationTs(detail.created_at)}</span>
-            </div>
-            {detail.body ? <p className="pclsb-conv__body">{detail.body}</p> : null}
-            {(detail.from_feature_id || detail.to_feature_id) && (
-              <div className="pclsb-conv__callout is-link">
-                <ArrowUpRight size={13} aria-hidden />
-                <div>
-                  <b>Related work</b>
-                  <p>
-                    {detail.from_feature_id ?? '—'} → {detail.to_feature_id ?? '—'}
-                  </p>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-      <p className="pclsb-conv__readonly">
-        <Mail size={11} aria-hidden /> Agent-to-agent mail — read-only.
-      </p>
-    </>
-  );
-}
-
 // ─── the pane ───────────────────────────────────────────────────────────────
 
 export default function ConversationsTab({ active }: { active: boolean }) {
@@ -564,7 +496,7 @@ export default function ConversationsTab({ active }: { active: boolean }) {
   );
   const navigate = useNavigate();
 
-  // The four curated stores — the SAME cached reads /adv consumes, so opening
+  // The three curated stores — the SAME cached reads /adv consumes, so opening
   // this tab after visiting /adv (or the reverse) hits a warm cache rather than
   // re-fetching. All gate on `active`: an unopened tab costs nothing.
   const questions = useSyncQuery<ConvRow>({
@@ -585,23 +517,15 @@ export default function ConversationsTab({ active }: { active: boolean }) {
     enabled: active,
     staleTime: 30_000,
   });
-  const messages = useSyncQuery<MsgRow>({
-    queryName: 'conversations.messageList',
-    args: { limit: LIST_LIMIT },
-    enabled: active,
-    staleTime: 30_000,
-  });
-
   const rows = useMemo(
     () =>
       composeUnifiedConversationRows(
         questions.data ?? [],
         deliberations.data ?? [],
         agentChats.data ?? [],
-        messages.data ?? [],
         UNIFIED_LIMIT,
       ),
-    [questions.data, deliberations.data, agentChats.data, messages.data],
+    [questions.data, deliberations.data, agentChats.data],
   );
 
   const counts = useMemo(() => {
@@ -610,7 +534,6 @@ export default function ConversationsTab({ active }: { active: boolean }) {
       threads: 0,
       deliberations: 0,
       agentchats: 0,
-      messages: 0,
     };
     for (const r of rows) c[r.source] += 1;
     return c;
@@ -624,7 +547,7 @@ export default function ConversationsTab({ active }: { active: boolean }) {
     [rows, source, search],
   );
 
-  const queries = [questions, deliberations, agentChats, messages];
+  const queries = [questions, deliberations, agentChats];
   const loading = queries.some((q) => q.loading);
   const error = queries.find((q) => q.error)?.error ?? null;
   const invalidate = () => queries.forEach((q) => q.invalidate());
@@ -695,10 +618,8 @@ export default function ConversationsTab({ active }: { active: boolean }) {
           <QuestionDetail id={selected.id} summary={selectedRow} />
         ) : selected.source === 'deliberations' ? (
           <DeliberationDetailBody id={selected.id} summary={selectedRow} />
-        ) : selected.source === 'agentchats' ? (
-          <AgentChatDetailBody id={selected.id} summary={selectedRow} />
         ) : (
-          <MessageDetailBody id={selected.id} summary={selectedRow} />
+          <AgentChatDetailBody id={selected.id} summary={selectedRow} />
         )}
       </div>
       </TooltipPrimitive.Provider>

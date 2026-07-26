@@ -17,9 +17,9 @@ export default defineTool({
   capability: 'notifications:read',
   guidance: {
     when: `Read recent toast notifications shown to the user — for "did I miss anything?" / replay.`,
-    notWhen: `For PERSISTENT inbox items, use \`messages:inbox\`. Notifications are ephemeral toasts.`,
+    notWhen: `For PERSISTENT cross-agent messages, use \`coord:inbox\`. Notifications are ephemeral toasts.`,
     seeAlso: [
-      'messages:inbox (persistent inbox items)',
+      'coord:inbox (persistent cross-agent messages)',
       'operator:nudge (send a transient toast)',
     ],
   },

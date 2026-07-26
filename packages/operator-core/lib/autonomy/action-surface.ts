@@ -97,16 +97,9 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     humanSurface: 'Inbox (plans:attention) — tier/severity controls',
     coverage: 'covered',
   },
-  {
-    id: 'inbox.dismiss-message',
-    label: 'Dismiss / resolve an inbox message',
-    category: 'inbox-triage',
-    reversibility: 'reversible',
-    authority: 'system',
-    queenVerbs: ['messages:dismiss'],
-    humanSurface: 'Inbox — message dismiss',
-    coverage: 'covered',
-  },
+  // inbox.dismiss-message (messages:dismiss) RETIRED 2026-07-26 —
+  // retire-work-item-mail-surface-2026-07-26 P-007. See
+  // _retired/work-item-mail/RESTORE.md.
 
   // ── escalations & agent-questions ────────────────────────────────────────────
   {

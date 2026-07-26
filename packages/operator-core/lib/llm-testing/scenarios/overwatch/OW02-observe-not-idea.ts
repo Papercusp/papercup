@@ -65,7 +65,7 @@ const PATTERN_WORLD: ToolDispatchOverride = {
     if (canon === 'autonomy:decide') {
       const a = (args ?? {}) as Record<string, unknown>;
       const action = typeof a.action === 'string' ? a.action : '';
-      const auto = ['coord:send', 'messages:send', 'improvements:capture', 'coord:escalate'].includes(action);
+      const auto = ['coord:send', 'improvements:capture', 'coord:escalate'].includes(action);
       return {
         content: [
           {
@@ -86,7 +86,7 @@ const PATTERN_WORLD: ToolDispatchOverride = {
     if (canon === 'improvements:capture') {
       return { content: [{ text: JSON.stringify({ ok: true, id: 'EI-OBS-2' }) }] };
     }
-    if (canon === 'coord:send' || canon === 'coord:escalate' || canon === 'messages:send') {
+    if (canon === 'coord:send' || canon === 'coord:escalate') {
       return { content: [{ text: JSON.stringify({ ok: true, delivered: true }) }] };
     }
     return PASS_THROUGH;

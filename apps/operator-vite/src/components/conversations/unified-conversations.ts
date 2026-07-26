@@ -12,7 +12,7 @@
  * telemetry, and when two rows are "the same conversation".
  *
  * Everything here is PURE (no React, no fetch state) so it is directly
- * unit-testable and carries no chunk weight into either surface. The four
+ * unit-testable and carries no chunk weight into either surface. The three
  * `useSyncQuery` reads stay with their components — this module only says what
  * to do with the rows once they arrive.
  *
@@ -116,27 +116,11 @@ export interface AgentChatDetail extends AgentChatRow {
   transcript?: AgentChatTurn[];
 }
 
-/** `conversations.messageList` / `messageDetail` — work-item-scoped agent mail. */
-export interface MsgRow {
-  id: string;
-  harness_slug: string | null;
-  from_slug: string;
-  to_slug: string | null;
-  to_role: string | null;
-  kind: string;
-  subject: string | null;
-  body: string | null;
-  status: string;
-  created_at: string;
-  from_feature_id: string | null;
-  to_feature_id: string | null;
-}
-
 // ─── The unified row ────────────────────────────────────────────────────────
 
-/** The four curated sources. Deliberately NOT the `inbox`/`feed` view ids —
+/** The three curated sources. Deliberately NOT the `inbox`/`feed` view ids —
  *  a row always belongs to exactly one materialized store. */
-export type ConversationSource = 'threads' | 'deliberations' | 'agentchats' | 'messages';
+export type ConversationSource = 'threads' | 'deliberations' | 'agentchats';
 
 export interface UnifiedConversationRow {
   /** `${source}:${sourceId}` — stable across list invalidations, so a row that
@@ -164,7 +148,6 @@ export const SOURCE_LABEL: Record<ConversationSource, string> = {
   threads: 'Questions & discussions',
   deliberations: 'Group decisions',
   agentchats: 'Agent chat',
-  messages: 'Work-item mail',
 };
 
 // ─── Normalisation + identity ───────────────────────────────────────────────
@@ -219,7 +202,6 @@ export function composeUnifiedConversationRows(
   questions: readonly ConvRow[],
   deliberations: readonly ThreadRow[],
   agentChats: readonly AgentChatRow[],
-  messages: readonly MsgRow[],
   limit: number,
 ): UnifiedConversationRow[] {
   const candidates: UnifiedConversationRow[] = [
@@ -266,21 +248,6 @@ export function composeUnifiedConversationRows(
       relatedRef: row.feature_id,
       count: row.turns,
       updatedAt: conversationEpoch(row.updated_at ?? row.created_at),
-    })),
-    ...messages.filter((row) => !isSystemConversationActor(row.from_slug)).map((row) => ({
-      id: `messages:${row.id}`,
-      source: 'messages' as const,
-      sourceId: row.id,
-      typeLabel: SOURCE_LABEL.messages,
-      kind: row.kind,
-      state: row.status,
-      title: row.subject || row.body || row.id,
-      preview: row.body ?? '',
-      actor: row.from_slug,
-      recipient: row.to_slug ?? row.to_role ?? undefined,
-      harnessSlug: row.harness_slug,
-      relatedRef: row.to_feature_id ?? row.from_feature_id,
-      updatedAt: conversationEpoch(row.created_at),
     })),
   ];
 

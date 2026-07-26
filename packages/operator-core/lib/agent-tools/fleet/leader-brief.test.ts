@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeBenchSuggestion,
+  computeDormantAlert,
   computeFloorStarvedFleetAlert,
   computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
@@ -279,6 +280,93 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
     const m = projectMember(baseAgent({ verdict: 'waiting', monitorState: 'waiting' }), NOW);
     expect(m.benchSuggestion).toBeDefined();
     expect(m.benchSuggestion?.reason).toMatch(/idle-cycling/);
+  });
+});
+
+// EI-18730414627683753: a member with NO self-wake mechanism at all (no loop, no park,
+// no claim) is a DISTINCT, more severe state than "laneless-idle" (which assumes a healthy
+// armed loop will re-cycle it) — the live incident this closes had `bench_suggested`/
+// `laneless_idle` fire for both dormant members, indistinguishable from a merely-idle
+// loop-armed one, so the leader had to hand-inspect loopMode/nextFireAt per row to notice.
+describe('computeDormantAlert (EI-18730414627683753)', () => {
+  it('flags a first-turn-done member with no loop, not parked, no claim', () => {
+    expect(
+      computeDormantAlert({ verdict: 'first-turn-done', loopMode: null, parkedOn: [], doing: null, load: 0, queued: [] }),
+    ).toBe(true);
+  });
+
+  it('flags a speaking member in the same shape', () => {
+    expect(
+      computeDormantAlert({ verdict: 'speaking', loopMode: null, parkedOn: [], doing: null, load: 0, queued: [] }),
+    ).toBe(true);
+  });
+
+  it('does NOT flag a member with an active loop (work or monitor) — it will re-cycle on its own', () => {
+    for (const loopMode of ['work', 'monitor'] as const) {
+      expect(
+        computeDormantAlert({ verdict: 'first-turn-done', loopMode, parkedOn: [], doing: null, load: 0, queued: [] }),
+      ).toBe(false);
+    }
+  });
+
+  it('does NOT flag a member parked on an event — it has a wake mechanism', () => {
+    expect(
+      computeDormantAlert({
+        verdict: 'first-turn-done',
+        loopMode: null,
+        parkedOn: ['work-item:status:WI-1'],
+        doing: null,
+        load: 0,
+        queued: [],
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT flag a member holding a claim or with queued work', () => {
+    const holding = { id: 'WI-1', itemKind: 'bug', title: 'in progress', status: 'open', rank: 0, rankWriter: null, activity: 'alive' as const };
+    expect(
+      computeDormantAlert({ verdict: 'first-turn-done', loopMode: null, parkedOn: [], doing: holding, load: 1, queued: [] }),
+    ).toBe(false);
+    expect(
+      computeDormantAlert({
+        verdict: 'first-turn-done',
+        loopMode: null,
+        parkedOn: [],
+        doing: null,
+        load: 0,
+        queued: [{ id: 'WI-9' }] as never,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT flag dead/booted/joined/monitoring/waiting — only speaking/first-turn-done are dormant-eligible', () => {
+    for (const verdict of ['dead', 'booted', 'joined', 'monitoring', 'waiting'] as const) {
+      expect(
+        computeDormantAlert({ verdict, loopMode: null, parkedOn: [], doing: null, load: 0, queued: [] }),
+      ).toBe(false);
+    }
+  });
+
+  it('is suppressed for a paused (winding-down) fleet, matching every sibling alert', () => {
+    expect(
+      computeDormantAlert(
+        { verdict: 'first-turn-done', loopMode: null, parkedOn: [], doing: null, load: 0, queued: [] },
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it('projectMember surfaces `dormant:true` end-to-end, distinct from benchSuggestion', () => {
+    const m = projectMember(baseAgent({ verdict: 'first-turn-done' }), NOW);
+    expect(m.dormant).toBe(true);
+    // Same idle shape also trips the (unchanged) laneless-idle benchSuggestion —
+    // dormant is an ADDITIONAL, more urgent signal, not a replacement.
+    expect(m.benchSuggestion?.kind).toBe('laneless-idle');
+  });
+
+  it('projectMember does NOT set `dormant` for a healthy loop-armed idle member', () => {
+    const m = projectMember(baseAgent({ verdict: 'waiting', monitorState: 'waiting', loopMode: 'monitor' }), NOW);
+    expect(m.dormant).toBeUndefined();
   });
 });
 

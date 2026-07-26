@@ -1549,14 +1549,13 @@ body.has-left-sidebar .pc-header {
    SOURCE COLOUR is the load-bearing decision here. /adv writes the source as a
    text pill ("Questions & discussions"); that pill alone would eat a third of a
    narrow row, so source identity moves to a 2px left stripe + a short label.
-   The four hues are an ANALOGOUS SWEEP off the app accent — sky, indigo, teal,
-   violet — deliberately avoiding good/warn/bad, which stay reserved for STATE
+   The three hues are an ANALOGOUS SWEEP off the app accent — sky, indigo, teal
+   — deliberately avoiding good/warn/bad, which stay reserved for STATE
    pills. A stripe must never be readable as a warning. */
 .pclsb-conv {
   --conv-threads: var(--accent, #38bdf8);
   --conv-deliberations: #818cf8;
   --conv-agentchats: #2dd4bf;
-  --conv-messages: #c084fc;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1666,7 +1665,6 @@ body.has-left-sidebar .pc-header {
 .pclsb-conv__chipbtn--threads { --chip: var(--conv-threads); }
 .pclsb-conv__chipbtn--deliberations { --chip: var(--conv-deliberations); }
 .pclsb-conv__chipbtn--agentchats { --chip: var(--conv-agentchats); }
-.pclsb-conv__chipbtn--messages { --chip: var(--conv-messages); }
 .pclsb-conv__chipbtn .dot {
   width: 6px;
   height: 6px;
@@ -1714,7 +1712,6 @@ body.has-left-sidebar .pc-header {
 .pclsb-conv__row--threads { --src: var(--conv-threads); }
 .pclsb-conv__row--deliberations { --src: var(--conv-deliberations); }
 .pclsb-conv__row--agentchats { --src: var(--conv-agentchats); }
-.pclsb-conv__row--messages { --src: var(--conv-messages); }
 .pclsb-conv__row::before {
   content: "";
   position: absolute;

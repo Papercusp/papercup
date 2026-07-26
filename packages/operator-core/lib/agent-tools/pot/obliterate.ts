@@ -61,6 +61,10 @@ const AUDIT_LOG_TABLES = [
   'session_turns',
   'session_briefs',
   'agent_activity',
+  // retire-work-item-mail-surface-2026-07-26 P-006: the work-item mail surface's
+  // write path (`messages:send`) is retired, so this table is append-only history
+  // now — kept here (never purged by default) same as any other audit log. No
+  // existing rows are deleted by this plan.
   'messages_consolidated',
   'executed_actions_consolidated',
   'user_actions',

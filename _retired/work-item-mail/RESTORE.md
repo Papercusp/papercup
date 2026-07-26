@@ -83,6 +83,33 @@ peers, so deleting rows here could propagate. Keep it code-only.
    `doSendMessage — recipient harness existence (WI-385)` suite, the two
    `send_message`-spoof cases, and the `getOrgPg`/`sql` mock that existed only
    to serve them were removed. See git history at this commit for the originals.
+6. **P-004 (sync/data-layer readers)** —
+   `packages/operator-core/lib/sync-resolver/index.ts`: restore the
+   `'conversations.messageList'` and `'conversations.messageDetail'` REGISTRY
+   entries (both queried `harness_shared.messages_consolidated`; see git
+   history at this commit for the exact SQL — `messageList` was a
+   `LIMIT`+`count(*)` pair with a 280-char body truncation, `messageDetail`
+   was a scoped by-id lookup).
+   `packages/operator-core/lib/sync-resolver/table-to-query-names.ts`:
+   restore the `'harness_shared.messages_consolidated': ['conversations.messageList',
+   { name: 'conversations.messageDetail', scope: idScope }]` entry.
+   `packages/agent-mcp/src/tools/search/query.ts`: restore `'messages'` to
+   the `KINDS` tuple, the `MessageSearchRow`/`MessageFallbackRow` types, and
+   the `if (wantKind('messages'))` block (FTS over an inline
+   `to_tsvector(subject || body)` + ILIKE fallback, both against
+   `harness_shared.messages_consolidated`).
+   Also restore the matching test fixtures/assertions in
+   `table-to-query-names.test.ts`, `sync-resolver/index.test.ts`,
+   `sync-read-audit.ts` (`'conversations.messageDetail': null` allowlist
+   entry), and `packages/agent-mcp/src/tools/search/query.test.ts` — see git
+   history at this commit for the originals.
+   ⚠️ **Not un-wired by P-004** (a separate gap found while doing this lane,
+   not yet fixed as of this note): `apps/operator-vite/src/components/left-sidebar/ConversationsTab.tsx`
+   and the shared `apps/operator-core/lib/../components/conversations/unified-conversations.ts`
+   ALSO read `conversations.messageList`/`messageDetail` (the left-sidebar
+   rail's "Mail" source) but were never listed in this plan's P-005 item text
+   (which only names `AdvConversationsTab.tsx`). Check whether P-005 covered
+   them before assuming a clean restore/removal state.
 
 **Deliberately NOT retired (live, shared — do NOT move these here):**
 `packages/operator-core/lib/cross-harness-data.ts` — only `readInbox`/
