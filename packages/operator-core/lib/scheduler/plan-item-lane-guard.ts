@@ -111,6 +111,62 @@ function itemMentioned(text: string | null | undefined, itemId: string): boolean
   return new RegExp(`\\b${escapeRegExp(itemId)}\\b`).test(text);
 }
 
+/** Split Now text into the smallest units an owner-gate marker can sensibly be
+ *  scoped to: lines first (a `## Now` block is usually bulleted), then sentences
+ *  within a line. The sentence split requires WHITESPACE after the terminator so
+ *  real plan prose like "discovery.refresh() into ONE loop" or ":3170-only,
+ *  high-stakes" is never cut in half mid-clause. */
+function markerScopeSegments(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    for (const sentence of line.split(/(?<=[.!?;])\s+/)) {
+      const s = sentence.trim();
+      if (s) out.push(s);
+    }
+  }
+  return out;
+}
+
+/**
+ * EI-18718822565695446: find an owner-gate marker in the `## Now` block that is
+ * actually ABOUT `itemId`.
+ *
+ * The previous form asked two INDEPENDENT questions of the whole block — "is the
+ * item mentioned anywhere?" and "is there a marker anywhere?" — so one genuinely
+ * gated item's marker gated every OTHER item the block happened to name. That
+ * inverts the Now block's purpose: the more helpfully it enumerates what is
+ * actionable, the more items it false-gates. (Real case: a Now block reading
+ * "the next actionable block: P-007, P-008, P-009" plus "P-019 remains
+ * owner-gated — it needs the live 2-machine Hetzner rig" gated P-007/8/9 on
+ * P-019's gate.) This is the same locality `itemMentioned` already established
+ * one level up, applied one level down: it narrowed plan-wide → Now-block-wide,
+ * and this narrows Now-block-wide → the clause that names the item.
+ *
+ * Two rules, in order — the second exists so tightening the scope cannot swap a
+ * false POSITIVE for a false NEGATIVE, which is the more dangerous direction
+ * (it would hand genuinely owner-gated work to a self-selector):
+ *   1. DEFINITE — a marker in the same line/sentence as the item's mention.
+ *      Where one sentence names several items and carries a marker, it gates all
+ *      of them, which is correct and is the WI-1774/P-003 shape (EI-13780).
+ *   2. UNAMBIGUOUS — the block carries a marker and names NO OTHER plan item, so
+ *      the marker cannot be about anything else. Preserves the pre-fix behaviour
+ *      exactly where it was never ambiguous, e.g. a Now block whose mention and
+ *      marker sit in separate sentences ("P-019 is the remaining item. It is
+ *      owner-gated.").
+ * Anything else — a marker elsewhere in a block that names other items too — is
+ * genuinely ambiguous and no longer gates.
+ */
+function findNowOwnerGateMarker(nowText: string, itemId: string, allItemIds: readonly string[]): string | null {
+  if (!nowText || !itemMentioned(nowText, itemId)) return null;
+  for (const segment of markerScopeSegments(nowText)) {
+    if (!itemMentioned(segment, itemId)) continue;
+    const marker = findOwnerGateMarker(segment);
+    if (marker) return marker;
+  }
+  const mentionsAnotherItem = allItemIds.some((id) => id !== itemId && itemMentioned(nowText, id));
+  return mentionsAnotherItem ? null : findOwnerGateMarker(nowText);
+}
+
 interface PlanItemStamp {
   plan_slug: string;
   /** One or more plan-item ids this work-item implements (source_plan_item_ids

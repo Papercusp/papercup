@@ -294,14 +294,13 @@ describe('confidence (evidence-strength tier, mig 671 / WI-6052)', () => {
     expect(f.confidence).toBeNull();
   });
 
-  it('a forged/unrecognized stored value reads back as null (defensive parse, same style as sourceProvenance)', async () => {
-    await db.sql`
-      INSERT INTO harness_shared.agent_facts
-        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
-      VALUES (${WS}, 'harness', 'papercusp', 'conf-forged', 'b', 'peer', now() + interval '1 day', 'omniscient')`;
-    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
-    expect(f.key).toBe('conf-forged');
-    expect(f.confidence).toBeNull();
+  it('the DB CHECK constraint (mig 671) rejects an unrecognized value at write time — defense in depth alongside the TS enum', async () => {
+    await expect(
+      db.sql`
+        INSERT INTO harness_shared.agent_facts
+          (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
+        VALUES (${WS}, 'harness', 'papercusp', 'conf-forged', 'b', 'peer', now() + interval '1 day', 'omniscient')`,
+    ).rejects.toThrow(/agent_facts_confidence_check|violates check constraint/i);
   });
 });
 
