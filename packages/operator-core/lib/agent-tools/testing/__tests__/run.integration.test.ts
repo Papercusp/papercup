@@ -25,13 +25,39 @@
 import { describe, it, expect } from 'vitest';
 import runTool from '../run';
 
-/** `defineTool` wraps a handler's `{ data }` into MCP content; unwrap it. */
+/**
+ * Invoke the tool's raw handler. Called directly (rather than through the MCP
+ * dispatcher) a handler returns its own return value verbatim — for this tool
+ * `{ data }`. The MCP `{ content: [{ text }] }` envelope is applied by the
+ * transport layer above, so unwrap both shapes rather than assuming either.
+ */
 function call(args: Record<string, unknown>) {
   return (runTool as unknown as {
-    handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
+    handler: (a: unknown, c: unknown) => Promise<unknown>;
   }).handler(args, {});
 }
-const body = async (p: ReturnType<typeof call>) => JSON.parse((await p).content[0].text);
+
+/** The envelope testing:run returns (success and error shapes together). */
+interface RunResult {
+  ok: boolean;
+  runId?: string;
+  error?: string;
+  routerOutput?: string;
+  passed?: number;
+  failed?: number;
+  skipped?: number;
+  files?: number;
+  failures?: Array<{ file: string; test: string; message: string }>;
+  failuresTruncated?: boolean;
+  durationMs?: number | null;
+}
+
+async function body(p: ReturnType<typeof call>): Promise<RunResult> {
+  const raw = (await p) as { data?: unknown; content?: Array<{ text: string }> };
+  if (raw?.data !== undefined) return raw.data as RunResult;
+  if (raw?.content?.[0]?.text) return JSON.parse(raw.content[0].text) as RunResult;
+  throw new Error(`unrecognised tool result shape: ${JSON.stringify(raw)?.slice(0, 200)}`);
+}
 
 /** A small, stable, PG-free unit suite in this package — a real green target. */
 const GREEN_TARGET = 'packages/operator-core/lib/testing-flakiness.test.ts';

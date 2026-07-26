@@ -203,3 +203,15 @@ probehome.*/
 # frozen for 5 days. Never source — ignore the whole class so it cannot recur.
 **/.appimage-extract/
 **/squashfs-root/
+
+# Composed rig-VM sidecar — build OUTPUT, never source. `bin/vm-rig/
+# compose-rig-sidecar-current.sh` defaults its OUT to $REPO_ROOT/.rig-sidecar-current
+# (dot-prefixed, so it is easy to miss in a status), and every run re-emits a
+# 58MB esbuild bundle plus verbatim COPIES of all ~549 db-sql migrations and the
+# prompts tree. git-sync's blanket `git add -A` then committed 762 files of it on
+# 2026-07-26, and logged the oversize warning
+#   "EXCLUDED oversized file(s) … they will never push: .rig-sidecar-current/serve.mjs (58.1MB)"
+# on every single tick. Same class as the .appimage-extract entry above — a
+# regenerable build artifact landing in the tree because nothing ignored it.
+# Regenerate it any time with the compose script; it must never be tracked.
+.rig-sidecar-current/
