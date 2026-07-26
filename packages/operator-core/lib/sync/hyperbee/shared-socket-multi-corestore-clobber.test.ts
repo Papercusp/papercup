@@ -326,4 +326,73 @@ describe('shared-socket multi-corestore serve clobber (WI-5673)', () => {
     expect(coldAttached).toBe(false);
     expect(remoteCold.peersCount?.() ?? 0).toBe(0);
   }, 30_000);
+
+  /**
+   * THE PRODUCTION SHAPE, taken from a real preserved failure bundle
+   * (~/.papercusp/live-fed-gate/triage/fail/130857-replication_soak).
+   *
+   * The rig's two harnesses (`hello-world`, `hello-world-pot`) are in the SAME
+   * hive, and each ADMITS THE OTHER'S PEER LOG — the bundle shows one key
+   * admitted under both (`announce_admitted harness=hello-world-pot …
+   * origin=hello-world … key=2860344a` ×14 and the mirror for 9b3550a9), and
+   * replication-liveness running repair for the SAME key under BOTH harnesses
+   * (2860344afd25: 5 repair lines under each). So ONE remote core is opened in
+   * TWO different corestores on the SAME machine, and both stores replicate the
+   * SAME peer socket.
+   *
+   * Both sessions want a replicator on one muxer, but `pair()` has ONE
+   * hypercore/alpha slot. This models exactly that: two fetch-side stores, one
+   * socket, one key.
+   *
+   * The bundle's episode pattern is the fingerprint to match — the SAME key
+   * alternating `never_attached` (harness A's view) and `replicator_lost`
+   * (harness B's view), with repair-on-detect reporting "re-attached" and the
+   * log stalling again seconds later.
+   */
+  it('SAME KEY IN TWO CORESTORES on one socket (the rig’s real shape): both sessions cannot hold a replicator', async () => {
+    const serveStore = makeStore('ssc-samekey-serve-');
+    await serveStore.ready();
+    const keyHex = await seedLog(serveStore, 'SAMEKEY-1');
+
+    // Two harness stores on the fetch side, mirroring hello-world +
+    // hello-world-pot both admitting the same peer log.
+    const fetchHarnessA = makeStore('ssc-samekey-fa-');
+    await fetchHarnessA.ready();
+    const fetchHarnessB = makeStore('ssc-samekey-fb-');
+    await fetchHarnessB.ready();
+
+    const [sockFetch, sockServe] = await noiseStreamPair();
+    serveStore.replicate(sockServe);
+    fetchHarnessA.replicate(sockFetch);
+    fetchHarnessB.replicate(sockFetch); // second store on the SAME socket
+    await waitFor(() => false, 250);
+
+    const viaA = await openRemoteLog(fetchHarnessA, keyHex);
+    const viaB = await openRemoteLog(fetchHarnessB, keyHex);
+
+    const aAttached = await waitFor(() => (viaA.peersCount?.() ?? 0) > 0, 4_000);
+    const bAttached = await waitFor(() => (viaB.peersCount?.() ?? 0) > 0, 4_000);
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[WI-5673 same-key probe] harnessA=${aAttached} (peers=${viaA.peersCount?.() ?? 0}) ` +
+        `harnessB=${bAttached} (peers=${viaB.peersCount?.() ?? 0})`,
+    );
+
+    // OBSERVED: exactly ONE of the two stores gets a replicator; the other sits
+    // at peersCount 0 indefinitely. Asserted as "exactly one" rather than
+    // "A wins" so the guard does not depend on registration order.
+    //
+    // This is the production failure: the losing harness's detector reports the
+    // key as connected_never_replicated, repair-on-detect "re-attaches" a
+    // session that still cannot win the single slot, and the log stalls again
+    // seconds later — the exact never_attached/replicator_lost churn in the
+    // preserved bundle.
+    //
+    // ⚠ CHARACTERIZATION OF A LIVE DEFECT (WI-6076). WHEN FIXED, INVERT to
+    // `expect(attachedCount).toBe(2)` — both harnesses must be able to
+    // replicate the same key over one connection.
+    const attachedCount = (aAttached ? 1 : 0) + (bAttached ? 1 : 0);
+    expect(attachedCount).toBe(1);
+  }, 30_000);
 });

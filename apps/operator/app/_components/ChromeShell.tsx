@@ -24,7 +24,9 @@ import { RecentActionsCenter } from './RecentActionsCenter';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import RouteLink from './RouteLink';
 import { PuiLauncherButton } from './PuiLauncherButton';
-import { ConsoleLauncherButton } from './ConsoleLauncherButton';
+// ConsoleLauncherButton is intentionally NOT imported: the global "+" terminal
+// launcher was removed from the navbar on 2026-07-26 (owner ask — see the note
+// in pc-header-center). The component itself is kept for restoration.
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
@@ -281,12 +283,21 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               FLAGS.TESTING (default off), so it only appears when the testing
               flag is on. */}
           {testingFlag ? <PuiLauncherButton /> : null}
-          {/* Native-console + psu superuser-session launcher (WI-3093). The
-              owner reported "I don't see the psu button in the Windows app" —
-              ConsoleLauncherButton existed but was never rendered anywhere. It
-              self-hides its psu affordance behind the owner-authority
-              PSU_END_USER flag (the server re-checks before honoring runPsu). */}
-          <ConsoleLauncherButton />
+          {/* REMOVED 2026-07-26 (owner ask, hud-session-launcher-and-board-tabs
+              P-001): the global "+" terminal launcher (ConsoleLauncherButton)
+              no longer renders here — "now that we have this hud page remove the
+              new terminal button next to the OPS button". The HUD page's own
+              session launcher supersedes it.
+
+              The COMPONENT is deliberately kept (not deleted): it was added at
+              owner request under WI-3093 ("I don't see the psu button in the
+              Windows app") and still carries the psu affordance behind the
+              owner-authority PSU_END_USER flag, plus the
+              window.__papercupLaunchTerminal devtools trigger. Re-render it here
+              to restore. NOTE the sibling PuiLauncherButton above also opens a
+              terminal, but is FLAGS.TESTING-gated and therefore normally
+              invisible, so this "+" is the button that actually sat next to
+              OPS. */}
           {/* The Start/Pause-Hive control (start-hive-wake P-006) lives in the
               AdvShell harness bar (AdvNowRunning), not here. */}
         </div>
