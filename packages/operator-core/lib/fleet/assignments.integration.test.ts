@@ -59,6 +59,11 @@ async function truncateAll(): Promise<void> {
   await admin`DELETE FROM harness_shared.harness_features_consolidated WHERE feature_id LIKE 'FA-TEST-%'`;
   await admin`DELETE FROM harness_shared.engineer_issues WHERE issue_id LIKE 'FA-TEST-%'`;
   await admin`DELETE FROM harness_shared.spawned_agents WHERE spawn_id LIKE 'fa-test-%'`;
+  // EI-18690480039212432: this literal owner id is unique to the workspace-mismatch
+  // regression test below — its whole point is a membership fact recorded under WS
+  // while its claim lives under a DIFFERENT workspace_id, so it can't be scoped by WS
+  // alone like the rest of this cleanup.
+  await admin`DELETE FROM harness_shared.fleet_membership_events WHERE owner_id = 'fa-test-ws-mismatch'`;
 }
 
 /** A nursery row (EI-311 alias-liveness leg) — cup:spawn's three identity
@@ -115,6 +120,21 @@ async function seedPlanClaim(
     VALUES (${opts.workspaceId ?? WS}, 'all', ${opts.plan ?? 'plan-x'}, ${opts.item ?? 'P-001'},
             ${owner}, ${opts.ownerName ?? null}, 'testing',
             now() + ${`${opts.ttlSec ?? 1200} seconds`}::interval)
+  `;
+}
+
+/** Append a fleet-membership fact (WI-1345) — the canonical source
+ *  fleet_slug/fleet_role is projected from. Fires the presence-guard triggers
+ *  for real, exactly like `fleet:join`'s appendFleetMembershipEvent. */
+async function seedMembershipEvent(
+  ownerId: string,
+  fleetSlug: string,
+  opts: { workspaceId?: string; fleetRole?: string } = {},
+): Promise<void> {
+  await admin`
+    INSERT INTO harness_shared.fleet_membership_events
+      (workspace_id, owner_id, fleet_slug, fleet_role, event)
+    VALUES (${opts.workspaceId ?? WS}, ${ownerId}, ${fleetSlug}, ${opts.fleetRole ?? 'member'}, 'join')
   `;
 }
 

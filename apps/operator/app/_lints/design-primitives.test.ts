@@ -479,6 +479,85 @@ function unexpectedFlexOrGridOnButtonSelectors(): string[] {
   return offenders;
 }
 
+/**
+ * `apps/operator/app/globals.css` declares the button baseline with
+ * `:where(button, .pc-btn) { ...; min-height: 26px; ... }`. `:where()` has
+ * ZERO specificity, so every property a later rule DOES declare overrides
+ * it — the only thing that survives is a property the author never thought
+ * to declare. A rule that sets both `width` and `height` to <=26px on a
+ * button selector but never declares `min-height` silently gets the
+ * baseline's `min-height: 26px`, growing a same-declared-width square/circle
+ * into an off-by-a-few-px "egg" (EI-18690913356156250, caught only because
+ * WI-5989 measured getBoundingClientRect() in a live WebKitGTK webview —
+ * nothing else fails: typecheck, unit tests, and the other design-primitive
+ * lints above all stay green, because the defect exists only in computed
+ * layout).
+ *
+ * Flags any CSS ruleset (styled-jsx `<style jsx>` blocks or a plain .css
+ * file) whose selector list contains a bare `button` type selector, or a
+ * class known (via collectButtonClassNames) to be applied directly on a
+ * `<button>` element — while its declarations set both `width` and `height`
+ * to <=26px WITHOUT also declaring `min-height` (any min-height, any value —
+ * once an author states one explicitly they've made a deliberate choice,
+ * even if that choice happens to match the floor).
+ */
+function unexpectedSmallButtonWithoutMinHeight(): string[] {
+  const offenders: string[] = [];
+  const buttonClasses = collectButtonClassNames();
+  const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+  const bareButtonRe = /(^|[\s>+~,])button(?=[\s.:#\[>+~,]|$)/;
+  // `(?<!min-)(?<!max-)width` isn't safe across older regex targets in this
+  // repo's ts-node/esbuild pipeline, so use a simple negative-lookbehind-free
+  // word-boundary match and reject on the captured prefix instead.
+  const dimRe = (prop: 'width' | 'height') =>
+    new RegExp(`(^|[;{\\s])${prop}\\s*:\\s*([0-9.]+)px\\b`, 'g');
+  const minHeightRe = /(^|[;{\s])min-height\s*:/;
+
+  for (const file of collectFiles()) {
+    const content = readCode(file);
+    const matches = [...content.matchAll(ruleRe)];
+    for (const match of matches) {
+      const [whole, selectorList, decls] = match;
+      if (selectorList.length > 200) continue;
+      if (/[;]/.test(selectorList)) continue;
+      if (/\(/.test(selectorList) && !/:(?:not|is|where|hover|focus(?:-visible)?|active|disabled)\s*\(/.test(selectorList)) {
+        continue;
+      }
+      if (minHeightRe.test(decls)) continue;
+
+      const widthMatch = [...decls.matchAll(dimRe('width'))].find((m) => !/^(?:min|max)-$/.test(m[1] === ';' || m[1] === '{' || /\s/.test(m[1]) ? '' : m[1]));
+      const heightMatches = [...decls.matchAll(dimRe('height'))];
+      // Reject a match whose prop name was actually `min-width`/`max-width`
+      // (etc.) by checking the character immediately before the matched
+      // prefix boundary wasn't part of `min-`/`max-`.
+      const isBareDim = (m: RegExpMatchArray, prop: string): boolean => {
+        const idx = m.index ?? 0;
+        const before = decls.slice(Math.max(0, idx - 4), idx);
+        return !/min-$|max-$/.test(before + (m[1] === ';' || m[1] === '{' ? '' : m[1]));
+      };
+      const width = [...decls.matchAll(dimRe('width'))].find((m) => isBareDim(m, 'width'));
+      const height = [...decls.matchAll(dimRe('height'))].find((m) => isBareDim(m, 'height'));
+      void widthMatch;
+      void heightMatches;
+      if (!width || !height) continue;
+      if (Number(width[2]) > 26 || Number(height[2]) > 26) continue;
+
+      const selectors = selectorList.split(',').map((s) => s.trim()).filter(Boolean);
+      for (const sel of selectors) {
+        const hasBareButton = bareButtonRe.test(sel);
+        const lastCompound = sel.split(/[\s>+~]+/).pop() ?? '';
+        const lastClasses = (lastCompound.match(/\.[A-Za-z0-9_-]+/g) ?? []).map((c) => c.slice(1));
+        const hasButtonClass = lastClasses.some((c) => buttonClasses.has(c));
+        if (!hasBareButton && !hasButtonClass) continue;
+        const before = content.slice(0, match.index! + whole.indexOf(selectorList));
+        const line = before.split('\n').length;
+        offenders.push(`${rel(file)}:${line}: ${sel} (width:${width[2]}px height:${height[2]}px, no min-height)`);
+      }
+    }
+  }
+  return offenders;
+}
+
 function unexpectedDirectCyanLiteralsInAuditedFiles(): string[] {
   const offenders: string[] = [];
   // All six brand-adjacent cyan/sky shades (P-006f): cyan-400/300, sky-500/400/300/200

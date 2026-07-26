@@ -46,7 +46,7 @@ async function seedIssue(
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
     VALUES (${H}, ${id}, 'bug', ${`title ${id}`}, 'open', ${opts.takenBy ?? null},
-       ${WS}, 0, 0, ${opts.payload ? db.sql.json(opts.payload) : null})`;
+       ${WS}, 0, 0, ${opts.payload ? db.sql.json(opts.payload as unknown as Parameters<typeof db.sql.json>[0]) : null})`;
 }
 
 async function readPayload(id: string): Promise<Record<string, unknown> | null> {

@@ -36,6 +36,7 @@ const { parseArgs, detectorPathsFromCommand, summarize, isDirectCliInvocation } 
     any: boolean;
     unknown: string[];
     nonLint?: string[];
+    selfRecursive?: string[];
   };
   detectorPathsFromCommand: (command: unknown) => string[];
   summarize: (results: { script: string; status: string; note?: string }[]) => {

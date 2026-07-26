@@ -19,8 +19,13 @@
  * stampFleetMembershipAtBoot's contract (bootstrap-su-fleet-stamp.test.ts).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import type { SetModeResult } from '../../../modes/store';
 
-const setModeMock = vi.fn(async (_opts: unknown) => ({ ok: true, noop: false }));
+// Explicit SetModeResult return type: the bare literal `{ ok: true, noop: false }`
+// made TS infer this mock's resolved-value type as exactly `{ok, noop}`, so later
+// mockResolvedValueOnce calls carrying stickyConflict/error (real SetModeResult
+// fields) failed as excess properties (TS2353).
+const setModeMock = vi.fn(async (_opts: unknown): Promise<SetModeResult> => ({ ok: true, noop: false }));
 const refreshControlAnchorMock = vi.fn(async (_opts: unknown) => ({}));
 
 vi.mock('../../../modes/store', () => ({

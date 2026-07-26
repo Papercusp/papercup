@@ -771,4 +771,42 @@
   color: var(--pc-dossier-mute);
 }
 
+/* ── Health signals (hud-first-nav-and-dossier-2026-07-26 P-005) ── */
+.pc-dossier__ctxbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pc-dossier__ctxbar {
+  flex: 1 1 auto;
+  height: 5px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--pc-dossier-rule), transparent 20%);
+  overflow: hidden;
+}
+.pc-dossier__ctxbar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.pc-dossier__ctxbar-fill[data-risk='warn'] {
+  background: var(--warn);
+}
+.pc-dossier__ctxbar-fill[data-risk='bad'] {
+  background: var(--bad);
+}
+.pc-dossier__ctxbar-pct {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--pc-dossier-dim);
+}
+.pc-dossier__checkpoint {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--pc-dossier-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Responsive 2-pane stacking is owned by the shared shell (TwoPaneShell.css). */

@@ -21,6 +21,7 @@ import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relat
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
+import { contextPct } from '../hud/hud-board-model';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
 import { useAgentDetail } from './use-agent-detail';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the DTO + the `agentDetail.byOwner`
@@ -28,7 +29,7 @@ import { useAgentDetail } from './use-agent-detail';
 // unread" summary chip can share the SAME useSyncQuery cache entry (no new
 // query) — re-exported here for backward compat (AgentDossier.test.tsx and any
 // other existing `import { type AgentDetail } from './AgentDossier'`).
-export type { AgentDetail } from './use-agent-detail';
+export type { AgentDetail, AgentSignals } from './use-agent-detail';
 
 function shortSource(s: string): string {
   const v = (s || '').toLowerCase();
@@ -59,6 +60,25 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }): R
 
 function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** hud-first-nav-and-dossier-2026-07-26 P-005: risk bucket for the context bar's
+ *  color, mirroring the ~80%/60% thresholds already used fleet-wide for
+ *  "past this, self-compact" guidance — not a new scale invented for this bar. */
+function contextRisk(pct: number): 'ok' | 'warn' | 'bad' {
+  if (pct >= 80) return 'bad';
+  if (pct >= 60) return 'warn';
+  return 'ok';
+}
+
+const CHECKPOINT_DISPLAY_CAP = 220;
+
+/** Cap a checkpoint note for the glance row — the full text is what the agent
+ *  itself is re-injected with on its next wake; this is a pointer, not the
+ *  authoritative copy. */
+function truncateCheckpoint(text: string): string {
+  if (text.length <= CHECKPOINT_DISPLAY_CAP) return text;
+  return `${text.slice(0, CHECKPOINT_DISPLAY_CAP)}…`;
 }
 
 function nativeSessionCommand(handle: NativeSessionHandle): string | null {
@@ -100,7 +120,10 @@ export default function AgentDossier({
   const locks = detail?.locks;
   const coord = detail?.coord;
   const codex = detail?.codex;
+  const signals = detail?.signals;
   const nativeSession = detail?.nativeSession ?? entry?.nativeSession ?? null;
+
+  const ctxPct = signals ? contextPct(signals.contextTokens, signals.compactionLimit) : null;
 
   // Files this agent holds / waits on — to cross-mark the file list.
   const heldPaths = new Set(locks?.held.map((l) => l.path) ?? []);
@@ -157,6 +180,95 @@ export default function AgentDossier({
           <MetaRow label="window" value={entry.windowId} />
           <MetaRow label="omp thread" value={entry.ompThreadId} />
           <MetaRow label="user" value={entry.userId} />
+        </section>
+      ) : null}
+
+      {/* ── Health signals (hud-first-nav-and-dossier-2026-07-26 P-005):
+          "is this agent healthy and will it keep going?", in priority order —
+          loop, current claim, context pressure, last checkpoint, unanswered
+          directed, last tool call. Each field is sourced from an existing
+          roster/sync primitive; see adv-agent-detail.ts's AgentSignals doc. ── */}
+      {entry ? (
+        <section className="pc-dossier__section" id="pc-dossier-signals">
+          <h4 className="pc-dossier__h">
+            Health
+            {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
+          </h4>
+          <MetaRow
+            label="loop"
+            value={
+              signals?.loop
+                ? signals.loop.active
+                  ? [
+                      'armed',
+                      signals.loop.intervalSec != null ? `every ${signals.loop.intervalSec}s` : null,
+                      signals.loop.stalled
+                        ? '⚠ stalled'
+                        : signals.loop.nextFireAt
+                          ? `next ${expiresIn(signals.loop.nextFireAt)}`
+                          : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
+                  : 'not armed'
+                : detail
+                  ? 'no loop'
+                  : null
+            }
+          />
+          <MetaRow
+            label="claim"
+            value={
+              signals?.currentClaim
+                ? `${signals.currentClaim.id}${signals.currentClaim.title ? ` — ${signals.currentClaim.title}` : ''}`
+                : detail
+                  ? 'none held'
+                  : null
+            }
+          />
+          {ctxPct != null ? (
+            <div className="pc-dossier__meta-row">
+              <span className="pc-dossier__meta-key">context</span>
+              <span className="pc-dossier__meta-val pc-dossier__ctxbar-row">
+                <span className="pc-dossier__ctxbar">
+                  <span
+                    className="pc-dossier__ctxbar-fill"
+                    data-risk={contextRisk(ctxPct)}
+                    style={{ width: `${ctxPct}%` }}
+                  />
+                </span>
+                <span className="pc-dossier__ctxbar-pct">
+                  {signals?.contextTokens?.toLocaleString()} / {signals?.compactionLimit?.toLocaleString()} ·{' '}
+                  {ctxPct}%
+                </span>
+              </span>
+            </div>
+          ) : null}
+          {signals?.lastCheckpoint ? (
+            <div className="pc-dossier__meta-row">
+              <span className="pc-dossier__meta-key">checkpoint</span>
+              <span className="pc-dossier__meta-val">
+                <div className="pc-dossier__checkpoint">{truncateCheckpoint(signals.lastCheckpoint.text)}</div>
+                {signals.lastCheckpoint.updatedAtMs != null ? (
+                  <span className="pc-dossier__ctxbar-pct">
+                    {formatRelativeUpdated(signals.lastCheckpoint.updatedAtMs)}
+                  </span>
+                ) : null}
+              </span>
+            </div>
+          ) : null}
+          <MetaRow
+            label="unanswered"
+            value={
+              signals && signals.unansweredDirectedCount > 0
+                ? `${signals.unansweredDirectedCount} peer${signals.unansweredDirectedCount === 1 ? '' : 's'} waiting on a reply`
+                : null
+            }
+          />
+          <MetaRow
+            label="last tool call"
+            value={signals?.lastToolCallAt ? formatRelativeUpdated(signals.lastToolCallAt) : null}
+          />
         </section>
       ) : null}
 

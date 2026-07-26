@@ -104,12 +104,42 @@ export interface CodexHomeDiagnostics {
   resumeCommand: string;
   error: string | null;
 }
+// hud-first-nav-and-dossier-2026-07-26 P-005: the six health signals — see the
+// server-side docstring on AgentSignals (adv-agent-detail.ts) for what each is
+// sourced from.
+export interface AgentDossierLoopStatus {
+  active: boolean;
+  intervalSec: number | null;
+  nextFireAt: string | null;
+  parked: boolean;
+  stalled: boolean;
+}
+export interface AgentDossierClaim {
+  id: string;
+  title: string | null;
+  harness: string | null;
+}
+export interface AgentDossierCheckpoint {
+  text: string;
+  updatedAtMs: number | null;
+}
+export interface AgentSignals {
+  loop: AgentDossierLoopStatus | null;
+  currentClaim: AgentDossierClaim | null;
+  contextTokens: number | null;
+  compactionLimit: number | null;
+  lastCheckpoint: AgentDossierCheckpoint | null;
+  unansweredDirectedCount: number;
+  lastToolCallAt: string | null;
+}
+
 export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
   coord: AgentCoordState;
   nativeSession: NativeSessionHandle | null;
   codex: CodexHomeDiagnostics | null;
+  signals: AgentSignals;
 }
 
 /** Lazy-load the Tier-3 dossier for one owner id through sync. Any number of

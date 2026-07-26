@@ -105,6 +105,15 @@ const DETAIL: AgentDetail = {
   },
   nativeSession: null,
   codex: null,
+  signals: {
+    loop: { active: true, intervalSec: 60, nextFireAt: new Date(Date.now() + 5 * 60_000).toISOString(), parked: true, stalled: false },
+    currentClaim: { id: 'WI-9001', title: 'Fix the thing', harness: 'papercusp' },
+    contextTokens: 40_000,
+    compactionLimit: 200_000,
+    lastCheckpoint: { text: 'did the thing, left the other thing', updatedAtMs: Date.now() - 120_000 },
+    unansweredDirectedCount: 2,
+    lastToolCallAt: new Date(Date.now() - 30_000).toISOString(),
+  },
 };
 
 describe('AgentDossier', () => {

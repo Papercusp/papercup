@@ -480,13 +480,64 @@ async function ensureClaudeResumeDirMaterialized(
   }
 }
 
+const EMPTY_SIGNALS: AgentSignals = {
+  loop: null,
+  currentClaim: null,
+  contextTokens: null,
+  compactionLimit: null,
+  lastCheckpoint: null,
+  unansweredDirectedCount: 0,
+  lastToolCallAt: null,
+};
+
+/** Read one agent's P-005 health signals (loop/claim/context/checkpoint/unanswered/last-tool-call). */
+export async function getAgentSignals(owner: string): Promise<AgentSignals> {
+  try {
+    const workspaceId = activeWorkspaceId();
+    const [loopStatus, held, presence, unanswered, lastToolCall] = await Promise.all([
+      getLoopStatus(owner).catch(() => null),
+      readHeldWorkItems(owner, workspaceId).catch(() => []),
+      getPresence(owner).catch(() => null),
+      fetchUnansweredDirected([owner]).catch(() => new Map()),
+      lastToolCallAtByOwner([owner]).catch(() => new Map()),
+    ]);
+    // readHeldWorkItems is ordered DESC by feature_id (most-recently-created
+    // first) — the front row is the agent's most current claim, matching what
+    // "current claim" means at a glance.
+    const top = held[0] ?? null;
+    return {
+      loop: loopStatus
+        ? {
+            active: loopStatus.active,
+            intervalSec: loopStatus.intervalSec,
+            nextFireAt: loopStatus.nextFireAt,
+            parked: loopStatus.parked,
+            stalled: loopStatus.stalled,
+          }
+        : null,
+      currentClaim: top ? { id: top.id, title: top.title, harness: top.harness } : null,
+      contextTokens: presence?.contextTokens ?? null,
+      compactionLimit: presence?.compactionLimit ?? null,
+      lastCheckpoint:
+        top?.checkpoint != null
+          ? { text: top.checkpoint, updatedAtMs: top.checkpointUpdatedAtMs ?? null }
+          : null,
+      unansweredDirectedCount: unanswered.get(owner)?.count ?? 0,
+      lastToolCallAt: lastToolCall.get(owner) ?? null,
+    };
+  } catch {
+    return EMPTY_SIGNALS;
+  }
+}
+
 /** The full Tier-3 dossier for one agent: locks + coord + client diagnostics, fetched concurrently. */
 export async function getAgentDetail(owner: string): Promise<AgentDetail> {
-  const [locks, coord, nativeSession, codex] = await Promise.all([
+  const [locks, coord, nativeSession, codex, signals] = await Promise.all([
     getAgentLocks(owner),
     getAgentCoordState(owner),
     getAgentNativeSession(owner),
     getAgentCodexDiagnostics(owner),
+    getAgentSignals(owner),
   ]);
-  return { ownerId: owner, locks, coord, nativeSession, codex };
+  return { ownerId: owner, locks, coord, nativeSession, codex, signals };
 }
