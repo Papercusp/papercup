@@ -169,6 +169,14 @@ const MERGE_POLL_MS = 1000;
  * both.
  */
 const DEFAULT_REPLICATION_STALL_GRACE_MS = 3 * 60 * 1000;
+/**
+ * EI-18723690188615364: default deferral budget for the post-repair
+ * confirmation window's zero-live-peers branch. 5 × the 180s default grace
+ * ≈ 15 minutes — far longer than the few-seconds mid-reconnect WI-5481's
+ * re-arm exists to ride out, but finite, so a log that never regains a
+ * replicator peer stops deferring silently forever.
+ */
+const DEFAULT_REPAIR_CONFIRMATION_MAX_DEFERRALS = 5;
 /** Default pending-retry interval (ms). A pending peer is re-checked on this
  *  cadence until it becomes verified, conclusively fails, or exceeds the grace
  *  window. D-006. */
@@ -318,6 +326,17 @@ export interface BootHarnessOpts {
    * zombie axis was intentionally shortened (WI-5634's rig soak override).
    */
   connectedNeverReplicatedGraceMs?: number;
+  /**
+   * EI-18723690188615364: how many times the post-repair confirmation window
+   * may defer judgment because the sample it landed on showed ZERO live
+   * replicator peers (the WI-5481 mid-reconnect case) before it gives up and
+   * records a `replication_repair_confirmation_abandoned` verdict instead of
+   * re-arming forever in silence. Tests shrink this to exercise the bound
+   * without burning a pass per deferral.
+   * Default `DEFAULT_REPAIR_CONFIRMATION_MAX_DEFERRALS` (5) — ≈15 minutes at
+   * the default 180s grace.
+   */
+  repairConfirmationMaxDeferrals?: number;
   /**
    * Test seam — override the read-admission binding check. Production leaves
    * this undefined and the real `buildVerifyBindingAdapter` (verifyAttestation
@@ -1939,7 +1958,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * loop — synthesizing more session re-attaches at it would be a retry storm
    * against a subsystem that is already handling it.
    */
-  const REPAIR_CONFIRMATION_MAX_DEFERRALS = 5;
+  const REPAIR_CONFIRMATION_MAX_DEFERRALS =
+    opts.repairConfirmationMaxDeferrals ?? DEFAULT_REPAIR_CONFIRMATION_MAX_DEFERRALS;
   // EI-13317 rung (b): harness-level cooldown for the repair-exhaustion →
   // forced-rejoin escalation below (NOT per-log — several admitted logs on
   // the same topic can stall together, and a topic-level rejoin already
