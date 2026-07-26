@@ -122,6 +122,38 @@ describe('process.ts model tracks the real dev:processes (D-015)', () => {
     expect(argKeys(devProcesses)).not.toContain('pattern');
     expect(argKeys(devProcesses)).not.toContain('name');
   });
+
+  /**
+   * P-022 / D-025. This pair's verdict is negative, so ALL of its value to an
+   * agent is the advisory prose — which makes that prose the thing most likely
+   * to rot back to a dead end ("no tool form; keep using bash"), the WI-6146
+   * shape. 99.7% of the 2,315 ps/pgrep atoms in the corpus land on this one
+   * pattern, so this string is the single highest-traffic piece of routing
+   * advice in the registry. Both halves are pinned:
+   *
+   *   the REDIRECT — naming both tools, because a launch-site fix is useless if
+   *     the advisory only says which tool does not work;
+   *   the CAVEAT — because the tempting simplification ("use capability:bash,
+   *     it survives compaction") is FALSE. That tool's in-memory job registry is
+   *     wiped on any operator restart, cross-agent on this box (EI-8855). Losing
+   *     the caveat would make this advisory promise immunity the platform does
+   *     not provide, which is worse than the dead end it replaced.
+   */
+  it('the advisory still redirects to the launch-site workflow, and still hedges it (D-025)', () => {
+    for (const token of ['capability:bash', 'capability:bash_output']) {
+      expect(
+        psProcessQuery.advisoryText,
+        `the ps/pgrep advisory no longer names ${token}. This pair is not-a-substitute, so the redirect IS its ` +
+          `entire value — without it the advisory is a dead end for the 99.7% of ps/pgrep commands that match here.`,
+      ).toContain(token);
+    }
+    expect(
+      psProcessQuery.advisoryText,
+      'the ps/pgrep advisory no longer carries the EI-8855 stranding caveat. Do not recommend capability:bash as ' +
+        'restart-proof: its job registry is wiped whenever ANY agent restarts the operator. The honest claim is ' +
+        'RECOVERABILITY (deterministic log path + a confirmed stranded cause), never immunity.',
+    ).toContain('EI-8855');
+  });
 });
 
 // ── dev:pg_query ↔ pairs/postgres.ts ────────────────────────────────────────

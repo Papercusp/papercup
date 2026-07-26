@@ -18,7 +18,10 @@ const H = vi.hoisted(() => ({ href: '/adv?tab=a', hardReload: vi.fn(), explode: 
 vi.mock('@tanstack/react-router', () => ({ useLocation: () => ({ href: H.href }) }));
 vi.mock('@papercusp/operator-core/lib/hard-reload', () => ({ hardReload: H.hardReload }));
 
-import RouteErrorBoundary from './RouteErrorBoundary';
+import RouteErrorBoundary, {
+  CHUNK_DELAYED_RETRY_MAX,
+  delayedChunkRetryMs,
+} from './RouteErrorBoundary';
 
 // Throws based on a module-level flag rather than a prop, so a re-render driven by
 // the boundary's OWN setState (Try again) re-evaluates the latest flag — exactly
@@ -124,5 +127,29 @@ describe('<RouteErrorBoundary>', () => {
     );
     expect(screen.getByTestId('happy')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('delayedChunkRetryMs', () => {
+  const chunkErr = new Error('Importing a module script failed.');
+
+  it('is null for a non-chunk error', () => {
+    expect(delayedChunkRetryMs(new Error('kaboom'), 100_000, 90_000, 0)).toBeNull();
+  });
+
+  it('is null when the immediate path owns it (debounce already expired)', () => {
+    expect(delayedChunkRetryMs(chunkErr, 200_000, 100_000, 0)).toBeNull();
+  });
+
+  it('waits out the remaining debounce plus the build-settle pad', () => {
+    // last reload 10s ago → 50s of debounce left + 5s pad
+    expect(delayedChunkRetryMs(chunkErr, 110_000, 100_000, 0)).toBe(55_000);
+  });
+
+  it('gives up past the retry cap so a broken build cannot reload-loop', () => {
+    expect(delayedChunkRetryMs(chunkErr, 110_000, 100_000, CHUNK_DELAYED_RETRY_MAX)).toBeNull();
+    expect(
+      delayedChunkRetryMs(chunkErr, 110_000, 100_000, CHUNK_DELAYED_RETRY_MAX - 1),
+    ).toBe(55_000);
   });
 });

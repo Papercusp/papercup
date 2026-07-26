@@ -214,6 +214,7 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
         <div style={CARD}>
           <h2 style={TITLE}>This view hit an error</h2>
           <ErrorCardBody />
+          {this.state.autoRetryArmed && <AutoRetryNote />}
           <div style={ROW}>
             <button type="button" style={PRIMARY} onClick={() => hardReload()}>
               Reload
@@ -221,7 +222,15 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
             <button
               type="button"
               style={SECONDARY}
-              onClick={() => this.setState({ error: null, componentStack: null, expanded: false })}
+              onClick={() => {
+                this.clearRetryTimer();
+                this.setState({
+                  error: null,
+                  componentStack: null,
+                  expanded: false,
+                  autoRetryArmed: false,
+                });
+              }}
             >
               Try again
             </button>
@@ -281,22 +290,21 @@ export function DefaultRouterErrorComponent({
   reset?: () => void;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
+  const [autoRetryArmed, setAutoRetryArmed] = useState(false);
   useEffect(() => {
-    try {
-      const last = Number(window.sessionStorage.getItem(CHUNK_AUTO_RELOAD_KEY) ?? 0);
-      if (shouldAutoReloadForChunkError(error, Date.now(), last)) {
-        window.sessionStorage.setItem(CHUNK_AUTO_RELOAD_KEY, String(Date.now()));
-        hardReload();
-      }
-    } catch {
-      /* sessionStorage unavailable → manual fallback stays */
-    }
+    // Same immediate-then-delayed auto-heal as RouteErrorBoundary (shared
+    // debounce + retry-cap keys, so the two boundaries can't double-reload).
+    const timer = autoHealChunkError(error, () => setAutoRetryArmed(true));
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, [error]);
   return (
     <div role="alert" style={WRAP}>
       <div style={CARD}>
         <h2 style={TITLE}>This view hit an error</h2>
         <ErrorCardBody />
+        {autoRetryArmed && <AutoRetryNote />}
         <div style={ROW}>
           <button type="button" style={PRIMARY} onClick={() => hardReload()}>
             Reload
@@ -316,6 +324,17 @@ export function DefaultRouterErrorComponent({
         {expanded && <ErrorDetail error={error} />}
       </div>
     </div>
+  );
+}
+
+/** Shown when a delayed chunk self-retry is armed — tells the user the card
+ *  heals itself so they don't have to babysit the Reload button. */
+function AutoRetryNote(): ReactNode {
+  return (
+    <p style={{ ...BODY, color: 'var(--accent, #57d7ff)' }}>
+      A new build is still rolling out — this view retries automatically in about a minute. No
+      action needed.
+    </p>
   );
 }
 
