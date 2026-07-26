@@ -41,6 +41,11 @@ export type BootHistoryKind =
   // (boot-history.ts) but was missing here, a pre-existing exhaustiveness
   // drift (harmless: an unmapped kind renders with no color/mark, not a crash).
   | 'peer_cap_near'
+  // WI-6063: per-topic outbound-dial throttling by the peer-budget fairness
+  // evaluator (edge-triggered pause/resume). Mirrored here at the same time as
+  // the canonical union rather than left to drift — page.tsx feeds canonical
+  // BootHistoryEntry[] into this table, so a missing kind is a build break.
+  | 'peer_dial_throttled'
   | 'peer_capped'
   | 'peer_revoked'
   | 'peer_unrevoked'
@@ -117,6 +122,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   peer_rejected: '⛔',
   peer_rate_limited: '🛑',
   peer_cap_near: '📶',
+  peer_dial_throttled: '⚖',
   peer_capped: '✂',
   peer_revoked: '🚫',
   peer_unrevoked: '↩',

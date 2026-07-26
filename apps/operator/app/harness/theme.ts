@@ -356,6 +356,8 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   peer_rejected: 'var(--warn)',
   peer_rate_limited: 'var(--bad)',
   peer_cap_near: 'var(--warn)',
+  // WI-6063: a deliberate, self-releasing bound rather than a fault — warn, not bad.
+  peer_dial_throttled: 'var(--warn)',
   peer_capped: 'var(--warn)',
   peer_revoked: 'var(--bad)',
   peer_unrevoked: 'var(--good)',

@@ -232,6 +232,25 @@ async function realPublishRevocation(
   // revoked member replicates post-boundary ciphertext it can never decrypt = the C-001
   // READ cut. Flag-gated (papercusp-hive-rekey): OFF ⇒ no-op, today's PG-only behavior →
   // `live:false`. ON ⇒ the removal is a live read-cut → `live:true`.
+  // ⚠ WI-6043: DO NOT pass an `sql` transaction handle into this call without also fixing
+  // the epoch cache. It looks like a pure atomicity improvement and it is not.
+  //
+  // The drain's encrypt capability caches the current epoch for EPOCH_CACHE_TTL_MS = 5s
+  // (hive-epoch-op-gate.ts:160-175). Its immediate-invalidation signal is a process-local
+  // generation counter that setHiveEpoch bumps at CALL time (hive-epoch-state.ts:86-87),
+  // while `getCurrentEpoch` re-reads on a SEPARATE pooled connection (hive-epoch-boot-deps.ts:200,
+  // no sql). Today that is safe ONLY because this call passes no sql, so the boundary's
+  // setHiveEpoch autocommits and the bump and the new value become visible together.
+  //
+  // Wrap this in a transaction and that stops being true: the generation bumps while the
+  // epoch write is still uncommitted, so the very next encryptOp misses the cache, re-reads
+  // the OLD epoch on its own connection, and re-caches it under the NEW generation — pinning
+  // the OUTGOING epoch for the full 5s TTL with no remaining invalidation signal. Every
+  // content op drained in that window federates under the epoch the just-revoked member still
+  // holds a key for: a post-ban read leak, load-dependent and intermittent.
+  //
+  // If atomicity here is ever genuinely needed, invalidate AFTER commit (or have the encrypt
+  // capability read through the same transaction) rather than bumping mid-transaction.
   const { applied, newEpoch, distributed, skippedDevicePubkeys, reason } =
     await advanceEpochOnHiveBoundary({
       workspaceId,
