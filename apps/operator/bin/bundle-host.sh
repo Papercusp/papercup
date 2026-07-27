@@ -31,7 +31,21 @@
 #     stale bundle silently runs old code, see
 #     internal-docs/agent-insights/bg-host-runs-stale-routine-code.md).
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# EI-18808640677734527: resolve THIS script's directory ONCE, to an absolute
+# path, BEFORE the cd below. `${BASH_SOURCE[0]}` holds the path AS INVOKED, so
+# re-running `dirname` on it after a `cd` re-resolves a RELATIVE invocation
+# against the new cwd — which broke the `source` at the bottom of this header
+# for exactly the invocation this script's own Usage line documents
+# (`apps/operator/bin/bundle-host.sh` from the repo root):
+#   line 44: apps/operator/bin/bundle-host-common.sh: No such file or directory
+# systemd never hit it because the three ExecStartPre users (:3270 bg-host,
+# :3170 staging, :3070 dev) invoke it by absolute path — but a human or agent
+# following the docs did, and the failure is quiet in the way that matters:
+# the script exits non-zero having left `dist-host/hono-host.mjs` UNTOUCHED, so
+# a restart afterwards silently runs the STALE bundle
+# (internal-docs/agent-insights/bg-host-runs-stale-routine-code.md again).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
 
 ENTRY="${1:-bin/hono-host.ts}"
 OUTFILE="${2:-dist-host/hono-host.mjs}"
@@ -41,7 +55,7 @@ OUTFILE="${2:-dist-host/hono-host.mjs}"
 # them. The dummy `module`/`exports` neutralise the CJS
 # `if (require.main === module)` CLI-guard idiom inside bundled files (always
 # false → guard body skipped, correct: they are not the entrypoint).
-source "$(dirname "${BASH_SOURCE[0]}")/bundle-host-common.sh"
+source "$SCRIPT_DIR/bundle-host-common.sh"
 
 # Native (.node-addon) packages esbuild cannot inline — they resolve platform
 # binaries relative to their real package dir. On the dev host they resolve

@@ -340,8 +340,41 @@ describe('the scan strips comments before matching', () => {
  * signature is `goalRef` TOGETHER WITH `assumptions`; nothing else in the tree
  * pairs them.
  */
-const CONSTRUCTS_SHAPE = (code: string): boolean =>
-  /\bgoalRef\b/.test(code) && /\bassumptions\b/.test(code);
+/**
+ * ⚠ AND ON PROXIMITY, NOT ON FILE-LEVEL CO-OCCURRENCE — the same lesson one turn
+ * later, and it cost a fleet-wide gate red to learn.
+ *
+ * Requiring the pair anywhere in the SAME FILE is only the shape's signature in a
+ * SMALL file. `work-items.ts` is ~4,600 lines and mentions `assumptions` (a P-008
+ * completion ATTESTATION record, ~line 1907) and `goalRef` (read off an
+ * `AgentStateStamp`, ~line 4561) — two unrelated records 2,600 lines apart,
+ * neither remotely a HolderContext. The gate reported it as a second construction
+ * site and held `main` for everyone.
+ *
+ * A construction site is an OBJECT LITERAL, so the tokens must be close enough to
+ * sit in one. The window is deliberately generous — a real literal carrying five
+ * fields with comments between them still fits — because the failure to avoid is
+ * a FALSE one: a guard that cries wolf gets widened until it is meaningless, which
+ * is precisely what the `goalRef`-alone note below already warned about. This is
+ * that same warning, applied to the axis it missed.
+ */
+const SHAPE_PROXIMITY_CHARS = 400;
+const CONSTRUCTS_SHAPE = (code: string): boolean => {
+  for (const m of code.matchAll(/\bgoalRef\b/g)) {
+    const at = m.index ?? 0;
+    const window = code.slice(
+      Math.max(0, at - SHAPE_PROXIMITY_CHARS),
+      at + SHAPE_PROXIMITY_CHARS,
+    );
+    if (!/\bassumptions\b/.test(window)) continue;
+    // CONSUMING the projection is the behaviour this gate wants, so destructuring
+    // the resolver's own result must not read as a second construction site —
+    // otherwise the gate punishes the exact call it exists to drive traffic to.
+    if (/\bresolveHolderContext\s*\(/.test(window)) continue;
+    return true;
+  }
+  return false;
+};
 
 const SHAPE_ALLOWLIST: Record<string, string> = {
   'packages/operator-core/lib/coord/holder-context.ts':
@@ -368,6 +401,31 @@ describe('LEG A — only the resolver constructs a HolderContext', () => {
         `resolveHolderContext: ${offenders.join(', ')}. D-055 fixed ONE shape for eight ` +
         `injection points; a second construction site is how eight shapes start.`,
     ).toEqual([]);
+  });
+
+  /**
+   * ⚠ THE DELIBERATE VIOLATION for leg A — and the proof the PROXIMITY narrowing
+   * bit only the false positive. Without this, tightening the predicate to fix a
+   * fleet-wide gate red is indistinguishable from quietly disabling the guard.
+   */
+  it('DELIBERATE VIOLATION: a real second construction site is still detected', () => {
+    const violating = `
+      const ctx = { goalRef: refOf(claim), goalText: claim.intent,
+                    assumptions: { count: keys.length, keys }, declaredAt, stale };
+    `;
+    expect(CONSTRUCTS_SHAPE(violating)).toBe(true);
+
+    // ...and the false positive that held main: the two tokens present in one
+    // file but in unrelated records far apart (work-items.ts had them ~2,600
+    // lines apart — a P-008 attestation and an AgentStateStamp read).
+    const farApart = `const a = { assumptions: opts.assumptions };${'\n// filler'.repeat(200)}\nif (readAgentStateStamp(o).goalRef === id) reset();`;
+    expect(CONSTRUCTS_SHAPE(farApart)).toBe(false);
+
+    // ...and CONSUMING the projection is never a construction site, however many
+    // of its field names the consumer names while destructuring it.
+    expect(
+      CONSTRUCTS_SHAPE(`const { goalRef, assumptions } = await resolveHolderContext(o, r, s);`),
+    ).toBe(false);
   });
 });
 
@@ -464,8 +522,27 @@ describe('LEG B — the goal producer has one reader', () => {
  */
 const ASSUMPTION_KIND_FILTER_RE = /kind\s*(?:=|===)\s*['"`]assumption['"`]/;
 const LEGACY_ASSUMPTION_FALLBACK_RE = /confidence\s*(?:=|===)\s*['"`]suspected['"`]/;
-const ASSUMPTION_KIND_FILTER = (code: string): boolean =>
-  ASSUMPTION_KIND_FILTER_RE.test(code) && !LEGACY_ASSUMPTION_FALLBACK_RE.test(code);
+
+/**
+ * ⚠ A BRANCH ON THE KIND BEING WRITTEN IS NOT A READ FILTER.
+ *
+ * This gate is about SELECTING ROWS by an almost-empty column. `facts/assert.ts`
+ * does `if (args.kind === 'assumption') noteAssumptionAsserted(...)` — branching on
+ * the kind the CALLER just passed, on the WRITE path, to decide whether to move the
+ * assumption watermark (D-087 R5). There is no query and no population to be wrong
+ * about: `args.kind` is 'assumption' exactly when the caller said so. Flagging it
+ * held `main` for the whole fleet over correct code.
+ *
+ * Stripped rather than allowlisted, and per-OCCURRENCE rather than per-file, so a
+ * file containing BOTH a write branch and a genuine read filter is still caught on
+ * the read filter — an allowlist entry would have excused the whole file.
+ */
+const WRITE_INPUT_KIND_RE = /\b(?:args|input|opts|params|payload|fact)\.kind\s*===?\s*['"`]assumption['"`]/g;
+
+const ASSUMPTION_KIND_FILTER = (code: string): boolean => {
+  const reads = code.replace(WRITE_INPUT_KIND_RE, '');
+  return ASSUMPTION_KIND_FILTER_RE.test(reads) && !LEGACY_ASSUMPTION_FALLBACK_RE.test(reads);
+};
 
 describe('LEG C — assumptions are never keyed off the unpopulated `kind` column', () => {
   it('no file filters facts by kind = assumption', () => {
@@ -499,6 +576,26 @@ describe('LEG C — assumptions are never keyed off the unpopulated `kind` colum
     // …and the SCANNED predicate (not just the regex) still fires on a kind-ONLY
     // read, which is the defect D-083 §2 is about.
     expect(ASSUMPTION_KIND_FILTER(`AND kind = 'assumption'`)).toBe(true);
+
+    // ⚠ THE WRITE-PATH NARROWING, proven in BOTH directions. Branching on the kind
+    // the CALLER passed is not a read filter — flagging it held `main` for the
+    // whole fleet over correct code (`facts/assert.ts`, D-087 R5)...
+    expect(
+      ASSUMPTION_KIND_FILTER(`if (args.kind === 'assumption') noteAssumptionAsserted(o, id);`),
+    ).toBe(false);
+    // ...but the strip is per-OCCURRENCE, not per-file, so a file carrying BOTH a
+    // write branch AND a genuine kind-only read filter is still caught on the read.
+    expect(
+      ASSUMPTION_KIND_FILTER(
+        `if (args.kind === 'assumption') note(o);\nconst r = await sql\`SELECT id FROM agent_facts WHERE kind = 'assumption'\`;`,
+      ),
+    ).toBe(true);
+    // ...and the legacy-covering form stays exempt even alongside a write branch.
+    expect(
+      ASSUMPTION_KIND_FILTER(
+        `if (args.kind === 'assumption') note(o);\nWHERE (kind = 'assumption' OR (kind IS NULL AND confidence = 'suspected'))`,
+      ),
+    ).toBe(false);
   });
 
   /**

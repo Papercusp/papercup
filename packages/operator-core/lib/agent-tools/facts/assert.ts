@@ -30,7 +30,7 @@ import {
   type FactDependency,
   type FactSourceProvenance,
 } from '../../agent-facts/store';
-import { assumptionDetectabilityWarning } from '../../agent-facts/conflicts';
+import { assumptionDetectabilityWarning, isAssumptionFact } from '../../agent-facts/conflicts';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
@@ -360,10 +360,19 @@ export default defineTool({
     // precisely what lets ONE monotonic id name a SET ("every live assumption of
     // mine at or below this id"), so no assumption-set table is needed.
     //
-    // Only kind='assumption' moves it: a conclusion or a convention is not
-    // something the agent is provisionally taking as true, and folding them in
-    // would make the watermark mean "any fact I wrote", which no reader wants.
-    if (args.kind === 'assumption') {
+    // Only an ASSUMPTION moves it: a conclusion or a convention is not something
+    // the agent is provisionally taking as true, and folding those in would make
+    // the watermark mean "any fact I wrote", which no reader wants.
+    //
+    // ⚠ Via `isAssumptionFact`, NOT a hand-rolled `kind === 'assumption'`. P-008
+    // shipped the assumption as `confidence:'suspected'` + `dependsOn` BEFORE
+    // migration 690 added the `kind` discriminator, and `kind` is still declared
+    // on a small minority of rows (D-083 §2) — so a kind-only test silently
+    // misses every legacy-form assumption while passing every fixture that sets
+    // the new field. One predicate, already written and already tested, decides
+    // what an assumption is (D-087 R2); a second copy here would be free to drift
+    // from the detector that consumes the very same rows.
+    if (isAssumptionFact({ kind: args.kind ?? null, confidence: args.confidence ?? null })) {
       noteAssumptionAsserted(identity.ownerId, fact.id ?? null);
     }
     // WI-3801 lint + P-014 turn-ref verification/origin stamp — warn-only,
