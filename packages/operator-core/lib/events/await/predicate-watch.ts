@@ -109,15 +109,7 @@ function log(msg: string): void {
  * those take the `return v as T` branch that was always correct.
  */
 function parseJsonb<T>(v: unknown): T | null {
-  if (v == null) return null;
-  if (typeof v === 'string') {
-    try {
-      return JSON.parse(v) as T;
-    } catch {
-      return null;
-    }
-  }
-  return v as T;
+  return v == null ? null : (v as T);
 }
 
 function mapRow(r: any): PredicateWatchRow {

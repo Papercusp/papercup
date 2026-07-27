@@ -24,6 +24,7 @@ import {
 // conversations:* included). Same import admin/coord + admin/plans use.
 import '../../../agent-tools/index';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
+import { requireAllowedOriginOr403 } from '../../cors';
 // WI-5364: shared extras carry the runScoped seam so proxied handlers that use
 // ctx.tx (sessions:list was the first) get a real DB handle instead of 500ing.
 import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
@@ -78,6 +79,15 @@ function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
 }
 
 async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
+  // The 'unverified-loopback' admission on the route below relies on this CSRF
+  // backstop, exactly as /admin/coord's write dispatch does (auth-posture.test.ts):
+  // a browser cross-origin POST is refused, while the desktop webview's allowed
+  // origins and its no-Origin native/IPC-bridge fetches pass. The backstop is what
+  // makes admitting a cookie-less caller safe on a proxy that reaches write verbs
+  // (topics:create, conversations:post/answer/resolve, coord:ask).
+  const csrf = requireAllowedOriginOr403(req);
+  if (csrf) return csrf;
+
   const group = String(ctx.params.group);
   const verb = String(ctx.params.verb);
   if (!ALLOWED[group]?.has(verb)) {
@@ -111,7 +121,26 @@ const route = defineTool({
   method: 'POST',
   path: '/admin/coordination/:group/:verb',
   // The admin coordination UI runs as a verified loopback session.
-  auth: { trust: ['verified', 'trusted'] },
+  //
+  // 'unverified-loopback' (WI-6486, owner-hit 2026-07-27: the HUD conversation
+  // pane 403-blanked): a Tauri desktop webview fetches the operator /api DIRECTLY
+  // over loopback with no cookie/bearer, so it only ever resolves to
+  // 'unverified-loopback' — never 'verified'. This is the SAME diagnosis and the
+  // same remedy /admin/coord took on 2026-07-11 for the roster's send/wake, and
+  // the operator binds loopback-only, so the caller is still owner-local.
+  //
+  // ⚠ WHY THIS MOUNT MATTERED MORE THAN THE OTHERS: hud-consolidation-2026-07-26
+  // (D-001) RETIRED the sidebar Inbox on the grounds that every ask it surfaced
+  // "now opens as a HUD conversation instead" — and `sessions:list` here is that
+  // conversation's owner→session lookup. So this 403 removed the only surface for
+  // a human ask, with no fallback left to fall back to. A route added for the
+  // cookie'd admin shell became load-bearing for the cookie-less desktop webview,
+  // and nothing re-checked the trust tier when the dependency moved.
+  //
+  // Safe because `dispatch` opens with the requireAllowedOriginOr403 CSRF backstop
+  // — see the comment there; without it this admission would expose the proxy's
+  // write verbs to a cross-origin browser POST.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   handler: dispatch,
 });
 
