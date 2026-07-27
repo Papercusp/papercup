@@ -111,7 +111,7 @@ export function __setCommsTierGateDeps(d: Partial<CommsTierGateDeps>): void {
   deps = { ...deps, ...d };
 }
 export function __resetCommsTierGate(): void {
-  deps = { listHiveMembers, effectiveCommsTier };
+  deps = { listHiveMembers: listHiveMembersForLocalPot, effectiveCommsTier };
   deviceMaps.clear();
   tiers.clear();
 }

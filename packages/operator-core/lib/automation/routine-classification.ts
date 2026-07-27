@@ -79,6 +79,99 @@ export type RoutineLiveness = 'running' | 'stalled' | 'dormant';
  */
 export type RoutineControl = 'routine' | 'flag' | 'none';
 
+/**
+ * WHY a `control: 'none'` row has no switch here.
+ *
+ * The owner asked this question out loud on 2026-07-26, looking at the shipped
+ * System pane: *"why are there some things that say 'Runs as a managed schedule,
+ * not a routine — paused from its own subsystem'. should we not have all runs as
+ * routines?"* That the question had to be asked IS the defect — "its own
+ * subsystem" names a limitation and points nowhere, and a single sentence was
+ * covering five architecturally different situations.
+ *
+ * Splitting them matters because the answers are genuinely different, and one of
+ * them is a real invariant rather than an implementation gap:
+ *
+ *   - `watchdog`   — a watchdog driven BY the routines tick cannot detect a WEDGED
+ *                    routines tick. Being outside the control plane is the whole
+ *                    point of the thing; this is the one that must never be "fixed".
+ *   - `per-process`— a cache refresh runs in every process. There is no singleton
+ *                    to pause, so a single switch would be a lie about scope.
+ *   - `per-connection` — one timer per stream, created and destroyed with it. Not
+ *                    a schedule at all; it has no steady-state identity to toggle.
+ *   - `other-process` — a different OS process. Reachable only once the P-014
+ *                    per-process federation lands; a genuine gap, not a principle.
+ *   - `ephemeral-tier` — already centrally driven, just declared as a blueprint
+ *                    `triggers.schedule` rather than a routines row. The one set
+ *                    where "make it a routine" is a coherent proposal.
+ */
+export type NoControlReason =
+  | 'watchdog'
+  | 'per-process'
+  | 'per-connection'
+  | 'other-process'
+  | 'ephemeral-tier'
+  | 'unknown';
+
+export interface ControlEntry {
+  control: RoutineControl;
+  /** One line, shown as the row's tooltip — where the switch is, or why there isn't one. */
+  why: string;
+  /** Set only when `control === 'none'`; null otherwise. */
+  reason: NoControlReason | null;
+}
+
+/** The tooltip copy per no-control reason. Kept beside the type so the two cannot drift. */
+const NO_CONTROL_COPY: Record<NoControlReason, string> = {
+  watchdog:
+    'A watchdog — deliberately outside the routine system, because one driven by the scheduler could not detect the scheduler wedging. Stopping it is a code change, by design.',
+  'per-process':
+    'A per-process cache refresh — one runs in every operator process, so there is no single switch to offer. It stops when the process does.',
+  'per-connection':
+    'A per-connection timer — one exists per live stream and dies with it. There is no steady-state schedule here to pause.',
+  'other-process':
+    'Runs inside a separate process (not the operator), which the routine system cannot yet reach. Stop it by stopping that process.',
+  'ephemeral-tier':
+    'A central sweep on the in-process tier — declared in code rather than as a routine row, so it has no per-row switch yet.',
+  unknown: 'Not a routine row, so it has no switch in this pane.',
+};
+
+/**
+ * Derive where a non-routines row's switch lives (or why it has none), from the
+ * two fields the inventory already carries. Pure and total — an unrecognised
+ * source/category degrades to `unknown` rather than throwing, because a new
+ * timer category appearing should show a vague tooltip, never break the pane.
+ */
+export function routineControl(input: {
+  source: string;
+  category?: string | null;
+  flagKey?: string | null;
+}): ControlEntry {
+  if (input.source === 'routines') {
+    return { control: 'routine', why: 'Pause or resume it right here.', reason: null };
+  }
+  if (input.flagKey) {
+    return {
+      control: 'flag',
+      why: `Its on/off switch is the feature flag \`${input.flagKey}\` — toggling here sets that flag.`,
+      reason: null,
+    };
+  }
+  const reason: NoControlReason =
+    input.source === 'external-process'
+      ? 'other-process'
+      : input.category === 'watchdog'
+        ? 'watchdog'
+        : input.category === 'cache'
+          ? 'per-process'
+          : input.category === 'lifecycle'
+            ? 'per-connection'
+            : input.category === 'global-sweep' || input.category === 'ephemeral-harness'
+              ? 'ephemeral-tier'
+              : 'unknown';
+  return { control: 'none', why: NO_CONTROL_COPY[reason], reason };
+}
+
 /** The subject grouping for the secondary browse-by-family view. */
 export type RoutineFamily =
   | 'loops'

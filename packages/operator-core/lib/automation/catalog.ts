@@ -52,6 +52,7 @@ import type { AutomationCategory } from './pane-categories';
 import { AUTOMATION_CATEGORIES } from './pane-categories';
 import {
   isClockDriven,
+  routineControl,
   routineFamily,
   routineKind,
   routineLiveness,
@@ -97,6 +98,13 @@ export interface AutomationRoutine {
   liveness: RoutineLiveness;
   /** Where this row's on/off switch lives — replaces the ambiguous `controllable: false` padlock. */
   control: RoutineControl;
+  /**
+   * One line: where the switch is, or WHY this row has none. Mirrors `spendWhy`.
+   * Exists because `control:'none'` alone collapsed five different situations into
+   * one dead-end tooltip ("paused from its own subsystem"), which sent the owner
+   * to ask a human instead of reading the row. See `routineControl`.
+   */
+  controlWhy: string;
   /**
    * When `control === 'flag'`, the feature-flag key that IS this row's armed state
    * (e.g. `papercusp-doc-steward`). The pane wires its toggle to `flags:set` for
@@ -450,7 +458,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       rescheduleIntervalSec: r.reschedule_interval_sec,
     });
     const liveness = routineLiveness({ active, nextFireAt: iso(r.next_fire_at), clockDriven });
-    const control: RoutineControl = 'routine';
+    const { control, why: controlWhy } = routineControl({ source: 'routines' });
     return {
       name: r.name,
       installSlug: r.install_slug,
@@ -466,6 +474,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       family: routineFamily(r.name, kind),
       liveness,
       control,
+      controlWhy,
       flagKey: null,
       needsAttention: routineNeedsAttention({ liveness, control, active, spend }),
       installs: [r.install_slug],
@@ -513,9 +522,14 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
         // Only a routines row has a `routines:set` switch. A sync-triggered sweep
         // whose armed state comes from a feature flag has a REAL switch — the flag —
         // so it is `flag`, not an inert padlock. Everything else is genuinely
-        // uncontrollable from here and says so with its source.
-        const control: RoutineControl =
-          typeof row.detail?.flag === 'string' ? 'flag' : 'none';
+        // uncontrollable from here and now says WHY (watchdog / per-process /
+        // per-connection / other-process / ephemeral-tier) rather than pointing the
+        // owner at an unnamed "own subsystem".
+        const { control, why: controlWhy } = routineControl({
+          source: row.source,
+          category: row.category,
+          flagKey: typeof row.detail?.flag === 'string' ? row.detail.flag : null,
+        });
         const liveness = routineLiveness({
           active,
           nextFireAt: row.nextFire,
@@ -539,6 +553,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
           family: routineFamily(row.name, kind),
           liveness,
           control,
+          controlWhy,
           flagKey: typeof row.detail?.flag === 'string' ? row.detail.flag : null,
           needsAttention: routineNeedsAttention({ liveness, control, active, spend }),
           installs: [row.installSlug ?? row.source],

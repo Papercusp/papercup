@@ -6,6 +6,10 @@ import {
   MEMBER_SET_TTL_MS,
 } from './hive-member-identity-set';
 import type { listHiveMembers } from '../../hive-membership-store';
+// EI-18777176681958978: the `loadMembers` seam now takes a LOCAL pot handle and resolves the
+// federated read scope itself, so a stub must match THAT signature (a stub demanding the
+// branded scope is correctly rejected as too narrow for the seam).
+import type { listHiveMembersForLocalPot } from '../../federated-pot-scope';
 
 /**
  * Hermetic — no PG. Inject a fake listHiveMembers (the federated hive_members read) +
@@ -13,8 +17,13 @@ import type { listHiveMembers } from '../../hive-membership-store';
  * member-identity set — cached, invalidated on join/leave, TTL-backstopped.
  */
 type Members = Awaited<ReturnType<typeof listHiveMembers>>;
-function fakeMembers(rows: Array<Array<{ device_pubkey: string }>>): typeof listHiveMembers {
-  return (async () => rows.map((atts) => ({ deviceAttestations: atts }))) as unknown as typeof listHiveMembers;
+function fakeMembers(
+  rows: Array<Array<{ device_pubkey: string }>>,
+): typeof listHiveMembersForLocalPot {
+  return (async () =>
+    rows.map((atts) => ({
+      deviceAttestations: atts,
+    }))) as unknown as typeof listHiveMembersForLocalPot;
 }
 
 beforeEach(() => _clearHiveMemberDeviceSetCacheForTest());

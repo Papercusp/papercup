@@ -227,8 +227,24 @@ class FrameDuplex extends Duplex {
     try {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       this.bytesOut += buf.length;
-      this.sendChunk(buf);
-      cb();
+      // EI-18776567787336109 — REAL BACKPRESSURE.
+      //
+      // This used to call cb() unconditionally, which told node "that write is
+      // done, send more" no matter how backed up the muxer's stream was. For a
+      // small warm fetch (100-650ms) that is invisible; for a multi-GB cold
+      // join it means the whole pack is shovelled into the connection as fast
+      // as upload-pack can produce it, with nothing in git's own pipeline able
+      // to slow it down.
+      //
+      // protomux already reports this: `send()` returns the muxer's `drained`
+      // flag (the underlying `stream.write()` result), and a channel can
+      // register an `ondrain` callback. Honouring it is what turns this duplex
+      // into a properly flow-controlled stream — the write callback is simply
+      // deferred until the wire can accept more, which pauses `child.stdout`
+      // through the existing pipe.
+      const drained = this.sendChunk(buf);
+      if (drained === false) this.onBackpressure(cb);
+      else cb();
     } catch (e) {
       cb(e instanceof Error ? e : new Error(String(e)));
     }
