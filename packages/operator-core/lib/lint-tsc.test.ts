@@ -643,9 +643,9 @@ describe('decidePerFile + typeReferencedFiles — the required-field-on-a-shared
     });
     expect(r.verdict).toBe('fail-attributed');
     expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['referencing.ts']);
-    // unrelated.ts has no baseline entry, so it is a NEW file, not peer drift — but it must NOT be
-    // attributed either (it is neither changed nor type-referenced).
-    expect(r.newFiles!.map((x: { file: string }) => x.file)).toEqual(['unrelated.ts']);
+    // unrelated.ts has its own baseline entry (a KNOWN file), so it is benign peer drift, not
+    // attributed — it is neither changed nor type-referenced.
+    expect(r.peerDrift!.map((x: { file: string }) => x.file)).toEqual(['unrelated.ts']);
   });
 
   it('a file directly in changedFiles is attributed but NOT counted in typeAttributed (no double-widening)', () => {

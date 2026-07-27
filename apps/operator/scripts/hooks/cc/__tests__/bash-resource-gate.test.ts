@@ -1341,6 +1341,31 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
       expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
     }
   });
+
+  /**
+   * EI-18760311552821358 — `docker cp` to a CONTAINER destination
+   * (`<container>:<path>`) false-denied. The `\bcp\b` scan matches the `cp`
+   * inside `docker cp` too, and its destination positional (`container:/path`)
+   * is not a host path at all — `_resolve_write_target` was joining it against
+   * cwd like any relative path, and when cwd sits inside the canonical tree
+   * (the exact situation this guard exists to protect) that trivially
+   * resolves to a path under the tree root, producing a false deny on a
+   * command that can never touch the host tree at that argument position.
+   */
+  it.each([
+    [
+      'the exact filed repro: `docker cp local.sh container:/tmp/c.sh && docker exec ...`',
+      'docker cp /tmp/wi6210-check.sh pcusp-rig-a:/tmp/c.sh && docker exec pcusp-rig-a bash /tmp/c.sh',
+    ],
+    ['a bare `docker cp` to a container destination', 'docker cp /tmp/x.sh my-container:/tmp/x.sh'],
+    ['the symmetric container-source form (still not a host path token)', 'docker cp my-container:/tmp/x.sh /tmp/x.sh'],
+  ])('allows %s (container ref is not a host path)', (_label, command) => {
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('a genuine in-tree `cp` destination right next to a `docker cp` invocation still denies (the exemption is scoped to container refs, not to `cp` generally)', () => {
+    expectShellWriteDeny(runGate(bashCmd('cp /tmp/x.ts apps/operator/foo.ts', { cwd: CANON }), CANON_ENV));
+  });
 });
 
 /**
