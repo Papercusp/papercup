@@ -330,3 +330,157 @@ describe('P-021 — the material lens rides the SAME dispatch', () => {
     if (r.status === 'value') expect(r.material).toBeUndefined();
   });
 });
+
+/**
+ * D-039 / WI-6444 — THE HOIST REACHES THE READER.
+ *
+ * The defect these tests exist against: `unknownHoist` was declared on all six
+ * nullable cells AND enforced at registration (`validateCellSpec` REJECTS a nullable
+ * cell without one) — and read by nothing. Six declarations, one validator, zero
+ * consumers. Every nullable cell answered `value: null` with the reason dropped,
+ * while every unit gate stayed green, because nothing anywhere tested that a
+ * DECLARED field is REACHABLE from the read path.
+ *
+ * So the last block below is the one that matters most: it walks the real
+ * `BUILTIN_CELLS` rather than a fixture, because a fixture-only test would have
+ * passed throughout the entire life of the bug.
+ */
+describe('D-039 — the unknown hoist rides the SAME dispatch to the reader', () => {
+  const nullableSpec = (over: Partial<CellSpec> = {}) =>
+    spec({ nullable: true, unknownHoist: 'goalUnknown', ...over });
+
+  it('emits the hoist, keyed by the DECLARED name, with the resolver value intact', async () => {
+    registerCell(nullableSpec());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: null }, goalUnknown: 'nothing-held' });
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      // The live regression, verbatim: `state:read { cell:'agent.goal' }` returned
+      // `value: null` and NO reason field at all, so a caller could not tell "this
+      // agent holds nothing" from "the resolver could not tell".
+      expect(r.value).toBeNull();
+      expect(r.unknownHoist).toEqual({ key: 'goalUnknown', value: 'nothing-held' });
+    }
+    // Axis 5 — a lens on the one derivation, never a second call.
+    expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('a MEASURED silence is reported as a value, not as an absence — `verdictUnknown: []` survives', async () => {
+    // The negative result is load-bearing. A hoist that fired on the healthy path
+    // would be one agents learn to ignore, so "measured, nothing unknown" must be
+    // distinguishable from "the channel is broken" — that is what `drifted` is for.
+    registerCell(nullableSpec({ unknownHoist: 'verdictUnknown' }));
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, verdictUnknown: [] });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.unknownHoist).toEqual({ key: 'verdictUnknown', value: [] });
+      expect(r.unknownHoist?.drifted).toBeUndefined();
+    }
+  });
+
+  it('⚠ hoists even when the HEADLINE is known — an unknown leg must not hide behind a known one', async () => {
+    // `positions.deployed` reads true while `inMain` was never measured. Gating the
+    // hoist on a null headline would drop exactly this case, which is the shape of
+    // the defect the result-level rule exists to surface.
+    registerCell(nullableSpec({ unknownHoist: 'positionsUnknown' }));
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, positionsUnknown: ['inMain'] });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.value).toBe(true);
+      expect(r.unknownHoist).toEqual({ key: 'positionsUnknown', value: ['inMain'] });
+    }
+  });
+
+  it('⚠ a DECLARED-but-absent hoist is reported as drifted, NEVER omitted', async () => {
+    // The opposite rule to `material`'s drift case, on purpose. Omitting here would
+    // reproduce WI-6444 byte for byte: a nullable cell answering `value: null` with
+    // no reason attached, silently. The read still succeeds — P-026 (f) — but the
+    // caller is told the channel is broken rather than empty.
+    registerCell(nullableSpec());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: null } });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.unknownHoist).toEqual({ key: 'goalUnknown', value: null, drifted: true });
+    }
+  });
+
+  it('OMITS the hoist for a NON-nullable cell — no behaviour change for a cell that declares none', async () => {
+    registerCell(spec());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, goalUnknown: 'stray' });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') expect(r.unknownHoist).toBeUndefined();
+  });
+});
+
+/**
+ * ⚠ THE REACHABILITY GUARD — the test whose ABSENCE was the root cause.
+ *
+ * Declared-vs-consumed is the gap: `validateCellSpec` proves every nullable cell
+ * DECLARES a hoist, and nothing proved the read path EMITS one. Both halves were
+ * green while the feature did not exist. This walks the REAL registrations, so a
+ * future refactor that drops the hoist reds here instead of going quiet.
+ */
+describe('D-039 — every nullable BUILTIN cell reaches a reader with its hoist', () => {
+  /** Build `{a:{b:value}}` from "a.b" — the resolver shape each cell declares. */
+  function payloadAtPath(path: string, value: unknown): Record<string, unknown> {
+    const segs = path.split('.');
+    const root: Record<string, unknown> = {};
+    let cur = root;
+    segs.forEach((seg, i) => {
+      if (i === segs.length - 1) cur[seg] = value;
+      else {
+        const next: Record<string, unknown> = {};
+        cur[seg] = next;
+        cur = next;
+      }
+    });
+    return root;
+  }
+
+  const nullableBuiltins = BUILTIN_CELLS.filter((s) => s.nullable && s.changeSignal.kind === 'poll');
+
+  it('the sweep is NON-VACUOUS — there are nullable built-in cells to check', () => {
+    // Without this, deleting every nullable declaration would make the sweep below
+    // pass by iterating nothing. Six today: git.pipelinePosition, the four verdict
+    // cells, and agent.goal.
+    expect(nullableBuiltins.length).toBeGreaterThanOrEqual(6);
+    for (const s of nullableBuiltins) expect(s.unknownHoist?.trim()).toBeTruthy();
+  });
+
+  it.each(nullableBuiltins.map((s) => [s.cell, s] as const))(
+    '%s emits its declared hoist through readCell',
+    async (_cell, s) => {
+      registerCell(s);
+      const hoistKey = s.unknownHoist as string;
+      const path = (s.changeSignal as { path: string }).path;
+      dispatchReadOnlyTool.mockResolvedValue({
+        ...payloadAtPath(path, null), // the nullable headline, degraded — the case that matters
+        [hoistKey]: 'measured-unknown-reason',
+      });
+
+      const subject = s.callerRelativity.kind === 'parameter' ? 'a-subject' : undefined;
+      const r = await readCell(s.cell, READER, ENV, subject);
+
+      expect(r.status).toBe('value');
+      if (r.status === 'value') {
+        expect(r.value).toBeNull();
+        // The assertion the bug would have failed: PRESENT, and keyed by what the
+        // spec declares rather than by a name this test hard-codes.
+        expect(r.unknownHoist).toBeDefined();
+        expect(r.unknownHoist?.key).toBe(hoistKey);
+        expect(r.unknownHoist?.value).toBe('measured-unknown-reason');
+        expect(r.unknownHoist?.drifted).toBeUndefined();
+      }
+    },
+  );
+});

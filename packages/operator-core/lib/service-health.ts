@@ -195,12 +195,42 @@ export const CONNECT_PREFLIGHT_MS = 400;
 type NetConnect = typeof netConnect;
 
 /**
- * Raw TCP connect check — resolves true iff a connection completes within
- * `timeoutMs`, false on connect-refused OR on timeout (a wedged/backlog-full
- * listener that never finishes the handshake). `connectFn` is injectable for
- * tests; production callers use the real `node:net` connect.
+ * Tri-state preflight verdict (EI-18748002829224393 — see the doc comment on
+ * `tcpPreflight` below for why 'refused' and 'indeterminate' must NOT be
+ * collapsed into one boolean "down").
  */
-export function tcpPreflight(url: string, timeoutMs = CONNECT_PREFLIGHT_MS, connectFn: NetConnect = netConnect): Promise<boolean> {
+export type TcpPreflightResult = 'connected' | 'refused' | 'indeterminate';
+
+/**
+ * Raw TCP connect check. Resolves:
+ *  - 'connected'    — the handshake completed within `timeoutMs`.
+ *  - 'refused'      — the OS itself refused the connection (ECONNREFUSED or any
+ *                      other socket `error` event). This is DETERMINATE: an
+ *                      instant, real signal regardless of how busy this
+ *                      process's event loop is — nothing is listening.
+ *  - 'indeterminate' — the fixed `timeoutMs` budget expired with NEITHER
+ *                      `connect` nor `error` ever firing. EI-18748002829224393:
+ *                      this does NOT mean the listener is down. `setTimeout`
+ *                      measures event-loop-serviced time, not network time —
+ *                      on a cold/loaded process the connect callback can be
+ *                      queued but never serviced before the timer fires, even
+ *                      though the OS-level handshake itself completed in
+ *                      single-digit ms. Reproduced deterministically: the
+ *                      FIRST `probeAll` in a cold process reported every HTTP
+ *                      endpoint's preflight timing out (~1.1s, identical
+ *                      across all five — one shared event-loop stall, not five
+ *                      independent network failures), while a solo probe of
+ *                      the SAME endpoint under the SAME load succeeded in
+ *                      ~60ms. A genuinely wedged listener (stuck accept
+ *                      backlog) is indistinguishable from loop lag at this
+ *                      layer alone, so this case must be resolved by falling
+ *                      through to the real HTTP fetch (see `probeEndpoint`),
+ *                      not reported as down here.
+ *
+ * `connectFn` is injectable for tests; production callers use the real
+ * `node:net` connect.
+ */
+export function tcpPreflight(url: string, timeoutMs = CONNECT_PREFLIGHT_MS, connectFn: NetConnect = netConnect): Promise<TcpPreflightResult> {
   let host: string;
   let port: number;
   try {
@@ -210,23 +240,23 @@ export function tcpPreflight(url: string, timeoutMs = CONNECT_PREFLIGHT_MS, conn
   } catch {
     // Unparseable URL (shouldn't happen for our fixed HEALTH_ENDPOINTS list) —
     // never let a preflight bug block the real probe; fall through as reachable.
-    return Promise.resolve(true);
+    return Promise.resolve('connected');
   }
   return new Promise((resolve) => {
     let settled = false;
     const socket = connectFn({ host, port });
-    const finish = (ok: boolean) => {
+    const finish = (result: TcpPreflightResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       socket.removeAllListeners?.('connect');
       socket.removeAllListeners?.('error');
       socket.destroy?.();
-      resolve(ok);
+      resolve(result);
     };
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    socket.once('connect', () => finish(true));
-    socket.once('error', () => finish(false));
+    const timer = setTimeout(() => finish('indeterminate'), timeoutMs);
+    socket.once('connect', () => finish('connected'));
+    socket.once('error', () => finish('refused'));
   });
 }
 
@@ -243,19 +273,29 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeout
     !r.up && spec.onDemand
       ? { ...r, present: false, note: r.note ? `${r.note} (on-demand dev layer, not currently running)` : 'on-demand dev layer, not currently running' }
       : r;
-  const reachable = await tcpPreflight(spec.url);
-  if (!reachable) {
+  const preflight = await tcpPreflight(spec.url);
+  if (preflight === 'refused') {
     // Fails fast (≤ CONNECT_PREFLIGHT_MS) instead of waiting out the full
     // (possibly 10s) response budget for a port that isn't even accepting.
+    // This branch is unaffected by EI-18748002829224393: an OS-level refusal
+    // is determinate and instant regardless of event-loop load.
     return markIfOnDemand({
       name: spec.name,
       up: false,
       status: null,
       latencyMs: Date.now() - start,
       url: spec.url,
-      note: `connect refused or did not complete within ${CONNECT_PREFLIGHT_MS}ms preflight (not a slow-response case)`,
+      note: `connection refused at TCP preflight (≤${CONNECT_PREFLIGHT_MS}ms) — nothing is listening`,
     });
   }
+  // EI-18748002829224393: an 'indeterminate' preflight (the fixed budget
+  // expired without `connect`/`error` ever firing) is deliberately NOT
+  // reported as down here — see tcpPreflight's doc comment. Fall through to
+  // the real HTTP fetch either way ('connected' or 'indeterminate'): a
+  // healthy listener whose preflight was merely loop-lagged now correctly
+  // resolves up via the fetch; a GENUINELY wedged listener still ends up
+  // reported down below (its own connect fails there too) — just via the
+  // slower response-budget path instead of the fast preflight short-circuit.
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
@@ -263,7 +303,21 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeout
     // < 500 = "up" (a 401/404 still means the server is answering); 5xx = down.
     return markIfOnDemand({ name: spec.name, up: res.status < 500, status: res.status, latencyMs: Date.now() - start, url: spec.url });
   } catch {
-    return markIfOnDemand({ name: spec.name, up: false, status: null, latencyMs: Date.now() - start, url: spec.url });
+    return markIfOnDemand({
+      name: spec.name,
+      up: false,
+      status: null,
+      latencyMs: Date.now() - start,
+      url: spec.url,
+      // Surface WHY the preflight didn't fast-fail this result, for the
+      // diagnostic signature the bug report names: "TCP preflight timed out,
+      // then the real fetch also failed" is a genuinely down/wedged listener;
+      // an omitted note here (preflight === 'connected') is the plain fetch-
+      // failed case unchanged from before.
+      note: preflight === 'indeterminate'
+        ? `TCP preflight was indeterminate (timer expired under load, not a refused connection) and the follow-up HTTP fetch then also failed — likely a genuinely down/wedged listener, not event-loop lag`
+        : undefined,
+    });
   } finally {
     clearTimeout(timer);
   }

@@ -12,6 +12,7 @@ import {
   detectUnguardedHalt,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
+  settledMessagesCursor,
   unregisteredArtifactTripwire,
   type UnguardedHaltTripwire,
   type UnregisteredArtifactTripwire,
@@ -270,5 +271,53 @@ export async function boundedUnguardedHaltSweep(input: {
     timeoutMs: TURN_END_SWEEP_BUDGET_MS,
     label: 'turn-end-unguarded-halt-sweep',
   });
+  return value;
+}
+
+/**
+ * Settle this agent's `messages_since_ts` to the read receipt
+ * (unread-count-truthfulness-2026-07-27 P-008 / D-008). Returns the ts written,
+ * or null when no advance was warranted. Never throws.
+ *
+ * WHY THIS RIDES THIS SEAM. `messages_since_ts` had exactly ONE writer in the
+ * tree — `coord:watermark-set` — with exactly ONE caller, the OMP hook's
+ * `onTurnEnd`. Claude Code and Codex have no equivalent (the cc PostToolUse
+ * hook keeps its cursor in a per-session FILE that never reaches PG), so on a
+ * non-OMP fleet the cursor was NEVER written at all: measured 2026-07-27, of
+ * the 14 agents with a clean turn end in 24h, 14/14 had a `messages_shown_ts`
+ * and 0/14 a current `messages_since_ts`. An empty settle cursor reads as
+ * "never read anything" — i.e. count from log epoch — which is the 19k unread
+ * badge this plan exists to fix.
+ *
+ * `journal:record-turn` is the one server-side moment that fires at every turn
+ * end across every CLI, so settling HERE covers every client at once and a
+ * future transport inherits it: only the seam must fire, and the value is
+ * derived server-side from the authoritative receipt rather than reported by
+ * the client. ABORT-SAFETY is inherited, not rebuilt — cc's `Stop` hook does
+ * not fire on user interrupt and OMP's `turn_end` never fires for a mid-turn
+ * freeze, so an aborted turn still leaves the cursor put and re-delivers its
+ * mail on the next turn.
+ */
+async function settleCoordWatermark(ownerId: string): Promise<string | null> {
+  const { readWatermark, writeWatermark } = await import('./agent-tools/coordination/watermarks');
+  const wm = await readWatermark(ownerId);
+  const next = settledMessagesCursor({
+    sinceTs: wm?.messages_since_ts,
+    shownTs: wm?.messages_shown_ts,
+  });
+  if (!next) return null;
+  await writeWatermark(ownerId, { messages_since_ts: next });
+  return next;
+}
+
+export async function boundedCoordWatermarkSettle(input: { ownerId: string }): Promise<string | null> {
+  const { value } = await withBoundedTimeout(
+    settleCoordWatermark(input.ownerId).catch(() => null),
+    {
+      fallback: null,
+      timeoutMs: TURN_END_SWEEP_BUDGET_MS,
+      label: 'turn-end-coord-watermark-settle',
+    },
+  );
   return value;
 }

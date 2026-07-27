@@ -20,9 +20,16 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { readCell } from '../../cell-read';
+import { formatCellHoist, readCell, type CellRead } from '../../cell-read';
 import { listCells } from '../../cell-registry';
 import { formatCellUnknown } from '../../cell-contract';
+
+/** The `value` branch of a cell read, plus a `summary` ONLY when its hoist has
+ *  something to say (see `formatCellHoist` — a measured-empty channel stays quiet). */
+function valueResult(out: Extract<CellRead, { status: 'value' }>) {
+  const hoistProse = out.unknownHoist ? formatCellHoist(out.unknownHoist) : null;
+  return hoistProse === null ? { ok: true, ...out } : { ok: true, ...out, summary: hoistProse };
+}
 
 export default defineTool({
   name: 'state:read',
@@ -122,7 +129,11 @@ export default defineTool({
                     ...out,
                     summary: `No cell "${out.cell}" is readable by you. It may not exist, or it may be outside your audience — these are deliberately indistinguishable. Do NOT reconstruct the value from another surface.`,
                   }
-                : { ok: true, ...out },
+                : // D-039 — a LOUD hoist gets prose too. The payload already carries
+                  // `unknownHoist` for a program to branch on; this is the half that
+                  // reaches a reader who skims. Silent on a measured-empty channel, so
+                  // the line keeps meaning something when it does appear.
+                  valueResult(out),
           ),
         },
       ],

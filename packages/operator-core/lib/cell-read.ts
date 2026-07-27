@@ -148,6 +148,26 @@ export interface CellHoist {
 }
 
 /**
+ * Render a hoist for a prose surface, or `null` when it has nothing to say.
+ * Mirrors `formatCellUnknown` — `key`/`value` tell a program what to do, this tells
+ * a reader why, and neither replaces the other.
+ *
+ * ⚠ RETURNS NULL ON A MEASURED SILENCE, deliberately. An empty `verdictUnknown: []`
+ * means the resolver looked and found nothing unknown, and announcing that on every
+ * healthy read is how a warning becomes noise a reader learns to skip — which would
+ * cost exactly the case the hoist exists for. Prose is spent only when the channel
+ * has something.
+ */
+export function formatCellHoist(h: CellHoist): string | null {
+  if (h.drifted) {
+    return `⚠ this cell declares the result-level unknown channel "${h.key}", but its resolver did not emit it. The reason a null value carries is MISSING, not empty — treat a null here as unexplained, and read this as a registration defect in the resolver rather than a clean measurement.`;
+  }
+  if (h.value === null || h.value === undefined) return null;
+  if (Array.isArray(h.value) && h.value.length === 0) return null;
+  return `⚠ "${h.key}" is not empty — part of this answer is UNKNOWN rather than measured: ${JSON.stringify(h.value)}. Do not read the headline as a complete verdict without checking it.`;
+}
+
+/**
  * Dispatcher error code → unknown code. Explicit and total-by-fallback rather than an
  * if-chain, so the classification is readable in one place and testable directly.
  *

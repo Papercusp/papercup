@@ -140,6 +140,23 @@ export default defineTool({
       });
     }
 
+    // unread-count-truthfulness-2026-07-27 P-008 / D-008: SETTLE the coord
+    // read cursor. `messages_since_ts` had exactly one writer (the OMP hook's
+    // onTurnEnd), so on a Claude/Codex fleet it was never written at all and
+    // read as "never read anything" — the 19k unread badge. This seam is the
+    // one server-side turn-end moment shared by every CLI, so settling here
+    // covers every client and a future transport inherits it. The value is
+    // derived server-side from the authoritative receipt (`messages_shown_ts`),
+    // monotone + clamped, so it can neither regress an OMP-reported cursor nor
+    // advance past what was demonstrably shown. Abort-safety is inherited: this
+    // seam does not fire for an interrupted/frozen turn, so aborted mail is
+    // still re-delivered. Bounded + fail-soft; fresh (non-deduped) turns only.
+    let coordCursorSettledTo: string | null = null;
+    if (ownerId && !deduped) {
+      const { boundedCoordWatermarkSettle } = await import('../../turn-end-tracking-io');
+      coordCursorSettledTo = await boundedCoordWatermarkSettle({ ownerId });
+    }
+
     // P-001 (ambient-semantic-push) turn-end lexical cursor: rebuild this
     // session's recency-decayed sparse term-weight cursor from its recent
     // journal notes (echo-guarded to the agent's OWN notes) and upsert it —
@@ -230,6 +247,7 @@ export default defineTool({
         ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
         ...(unguardedHaltTripwire ? { unguardedHalt: unguardedHaltTripwire } : {}),
         ...(cursorPersisted ? { cursorPersisted } : {}),
+        ...(coordCursorSettledTo ? { coordCursorSettledTo } : {}),
       },
     };
   },

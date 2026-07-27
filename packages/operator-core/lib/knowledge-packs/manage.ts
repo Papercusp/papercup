@@ -88,7 +88,12 @@ export interface ManageDeps {
 function realJudge(): LlmJudge {
   // Lazy — pulling the Anthropic client at module load would tax every importer.
   return async (input) => {
-    const { createAnthropicJudge } = await import('../memory/anthropic-judge');
+    const { createAnthropicJudge, conflictJudgeAvailable, warnKnowledgePackJudgeUnavailableOnce } =
+      await import('../memory/anthropic-judge');
+    // EI-18746586784230719: classification here is unconditional (no feature
+    // flag gates it like memory:remember's conflict-check), so an unkeyed
+    // judge silently classifies everything 'clean' with zero signal. Say so.
+    if (!conflictJudgeAvailable()) warnKnowledgePackJudgeUnavailableOnce();
     return createAnthropicJudge()(input);
   };
 }

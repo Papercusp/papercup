@@ -11,7 +11,13 @@
  */
 
 import { z } from 'zod';
-import { defineTool, listAllProjectedTools, SU_ROLES } from '@papercusp/agent-mcp';
+import {
+  defineTool,
+  listAllProjectedTools,
+  lookupSystemPrincipalCapabilitiesByRole,
+  SU_ROLES,
+} from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { shapeAgentToolsList } from './list-shape';
 
 export default defineTool({
@@ -54,13 +60,31 @@ export default defineTool({
     const asRoleOverride = args.asRole && args.asRole.length > 0 ? args.asRole : null;
     const role = asRoleOverride ?? ctx.role;
     const isSuperuser = asRoleOverride ? false : ctx.isSuperuser === true;
-    // In asRole simulation, also drop the principal — real spawned
-    // agents at that role don't carry one, so the cap-gate would be
-    // skipped for them. Without this, simulating asRole=worker from
-    // an operator shell still triggers the cap-gate via the
-    // synthesized operator principal, diverging from real worker calls.
-    const effectivePrincipal = asRoleOverride ? null : ctx.principal ?? null;
-    const principalCaps = effectivePrincipal?.capabilities ?? new Set<string>();
+    // In asRole simulation, evaluate the capability gate against the REAL
+    // system_principals row for that role (WI-6154), not against a blindly
+    // dropped principal. Many roles (e.g. `worker`) intentionally carry a
+    // restricted, capability-EMPTY principal on a live host — dropping the
+    // principal entirely for every simulated role made this tool report
+    // `allowed:true` for tools whose REAL dispatch-time capability gate
+    // (dispatchProjectedTool, packages/agent-mcp/src/dispatch-projected.ts)
+    // denies with missing_capability, because dispatch sees ctx.principal
+    // non-null-but-empty while this simulation saw null (gate skipped
+    // entirely). A role with NO system_principals row at all still gets no
+    // synthesized gate here — that correctly matches real dispatch behavior
+    // for a genuinely principal-less role (e.g. an su/operator role).
+    let effectivePrincipal: { capabilities?: ReadonlySet<string> } | null;
+    let principalCaps: ReadonlySet<string>;
+    if (asRoleOverride) {
+      const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+      const roleCaps = workspaceId
+        ? await lookupSystemPrincipalCapabilitiesByRole(workspaceId, asRoleOverride)
+        : null;
+      effectivePrincipal = roleCaps ? { capabilities: roleCaps } : null;
+      principalCaps = roleCaps ?? new Set<string>();
+    } else {
+      effectivePrincipal = ctx.principal ?? null;
+      principalCaps = effectivePrincipal?.capabilities ?? new Set<string>();
+    }
 
     const filterRe = args.filter ? safeRegex(args.filter) : null;
     const onlyAllowed = args.onlyAllowed ?? true;

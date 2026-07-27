@@ -254,3 +254,52 @@ export const UNGUARDED_HALT_NOTE =
 export function detectUnguardedHalt(s: RewakeGuaranteeState): UnguardedHaltTripwire | null {
   return isRewakeGuaranteed(s) ? null : { kind: 'unguarded-halt', note: UNGUARDED_HALT_NOTE };
 }
+
+/* ------------------------------------------------------------------ *
+ * Coord watermark settle (unread-count-truthfulness-2026-07-27 P-008 /
+ * D-008) — the THIRD sweep riding this seam.
+ * ------------------------------------------------------------------ */
+
+/** The two message cursors, as stored on `harness_shared.coord_watermarks`. */
+export interface CoordSettleState {
+  /** `messages_since_ts` — the turn-END settle cursor: the newest message
+   *  PROVABLY CONSUMED IN A COMPLETED TURN. */
+  sinceTs: string | null | undefined;
+  /** `messages_shown_ts` — the read RECEIPT: the newest message put in front
+   *  of the agent, advanced MID-TURN by `coord:inbox` at injection (D-002). */
+  shownTs: string | null | undefined;
+}
+
+/**
+ * The value `messages_since_ts` should settle to at a CLEAN turn end, or null
+ * when no write is warranted. Pure.
+ *
+ * D-008: `messages_since_ts` becomes a strict, abort-safe FOLLOWER of
+ * `messages_shown_ts`, exactly one clean turn behind — so the two cursors keep
+ * genuinely distinct meanings (shown = put in front of the agent, possibly by a
+ * turn that later aborted; since = consumed in a turn that genuinely finished).
+ *
+ * Two properties, both load-bearing, both enforced HERE rather than in
+ * `writeWatermark`:
+ *   - MONOTONE — returns null unless `shown > since`, so the settle can never
+ *     regress a value an OMP session reported. `writeWatermark` is deliberately
+ *     last-write-wins (its own doc: a `max()` clamp there would break the
+ *     at-least-once safe-commit recovery and turn a documented re-delivery into
+ *     a SKIP), and explicitly makes ordering safety "the caller's". This is
+ *     that caller.
+ *   - CLAMPED — the only non-null value returned is `shown` itself, so the
+ *     cursor can never advance past what was demonstrably shown. That gives
+ *     P-008's `since_ts <= shown_ts` invariant BY CONSTRUCTION rather than by
+ *     a test, matching the substrate's own stated contract
+ *     (`messages_shown_ts` is always >= `messages_since_ts`).
+ *
+ * An empty `shownTs` returns null: no receipt on record means nothing has been
+ * PROVEN shown, and inventing a wall-clock "now" here would silently skip mail.
+ */
+export function settledMessagesCursor(s: CoordSettleState): string | null {
+  const shown = s.shownTs || null;
+  if (!shown) return null; // no receipt → nothing proven shown → never guess
+  const since = s.sinceTs || null;
+  if (since && since >= shown) return null; // already at/ahead → no write
+  return shown;
+}

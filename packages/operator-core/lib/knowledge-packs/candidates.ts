@@ -600,7 +600,11 @@ function lazyConflictJudge(): LlmJudge {
   // Lazy — mirrors manage.ts's realJudge(): pulling the Anthropic client at
   // module load would tax every importer of this module.
   return async (input) => {
-    const { createAnthropicJudge } = await import('../memory/anthropic-judge');
+    const { createAnthropicJudge, conflictJudgeAvailable, warnKnowledgePackJudgeUnavailableOnce } =
+      await import('../memory/anthropic-judge');
+    // EI-18746586784230719: unconditional, no feature flag — warn so an
+    // unkeyed judge silently passing every candidate isn't invisible.
+    if (!conflictJudgeAvailable()) warnKnowledgePackJudgeUnavailableOnce();
     return createAnthropicJudge()(input);
   };
 }
