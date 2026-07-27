@@ -29,6 +29,8 @@ import {
   CHECKPOINT_MAX_RUNTIME_SEC,
   REPLACE_STALE_MIN_AGE_SEC,
   classifyReplaceRequest,
+  checkpointCandidateContainment,
+  renderContainmentWarning,
 } from './release-checkpoint-launch';
 
 // 2026-07-10: every run wrote to /tmp/<unit>.log, so the natural response to a red —
@@ -794,5 +796,241 @@ describe('checkpointUnitForRoot (per-root manual gates, 2026-07-01)', () => {
     expect(a.startsWith(`${CHECKPOINT_UNIT}-`)).toBe(true);
     // systemd unit-name-safe suffix (base36 of a u32 — no dots/slashes/spaces).
     expect(a).toMatch(/^[a-z0-9-]+$/);
+  });
+});
+
+/**
+ * EI-18757156963245979 — the replace policy, as a pure rule.
+ *
+ * REGRESSION UNDER TEST (measured 2026-07-27; four consecutive gate runs died this way and
+ * `main` sat 49 commits behind with nothing actually broken): replaceability was decided by
+ * AGE alone. `REPLACE_STALE_MIN_AGE_SEC` (1200s) is meant to read "old enough to plausibly be
+ * wedged", but the suite itself took 1180s under load — so a perfectly healthy run crossed the
+ * age line ~20s AFTER finishing its suite, i.e. exactly as it entered the verdict path. A
+ * peer's `replaceStale:true` then SIGTERMed candidate e4a93f8b 85 seconds into the stale-red
+ * re-triage, discarding the auto-refire that would have re-fired the gate onto a newer tip.
+ *
+ * The invariant pinned here: a run that has published `delivering` is NEVER replaceable, at
+ * ANY age. If an age-only decision is reintroduced, the `delivering` cases below go red —
+ * instead of the gate silently failing to converge again hours later.
+ */
+describe('classifyReplaceRequest (EI-18757156963245979: never kill a run that is about to deliver)', () => {
+  const OLD = REPLACE_STALE_MIN_AGE_SEC + 60;
+
+  it('refuses a run in its VERDICT path even when it is old enough to look wedged', () => {
+    // The exact e4a93f8b shape: stale candidate, past the age line, mid re-triage.
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: OLD, delivering: true })).toEqual({
+      replace: false,
+      reason: 'delivering',
+    });
+  });
+
+  it('phase beats age no matter how old the run gets (an age-only rule cannot pass this)', () => {
+    for (const elapsed_sec of [OLD, OLD * 2, OLD * 10]) {
+      expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec, delivering: true }).replace).toBe(false);
+    }
+  });
+
+  it('still replaces a genuinely wedged run — old, stale, and NOT delivering (the EI-9672 case)', () => {
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: OLD, delivering: false })).toEqual({
+      replace: true,
+    });
+  });
+
+  it('degrades to the age test when the run published no phase (older build / wedged early)', () => {
+    // `delivering` undefined must not be read as "delivering" — that would make the flag inert.
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: OLD })).toEqual({ replace: true });
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: 60 })).toEqual({
+      replace: false,
+      reason: 'young',
+    });
+  });
+
+  it('keeps the EI-11667 young-run guard: a young stale run is healthy-in-progress, not wedged', () => {
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: 5 * 60, delivering: false })).toEqual({
+      replace: false,
+      reason: 'young',
+    });
+  });
+
+  it('never touches a run judging the CURRENT candidate, regardless of age or phase', () => {
+    expect(classifyReplaceRequest({ candidate_stale: false, elapsed_sec: OLD, delivering: false })).toEqual({
+      replace: false,
+      reason: 'not_stale',
+    });
+  });
+
+  it('treats an unknown elapsed_sec as not-old-enough (systemd reported no start time)', () => {
+    expect(classifyReplaceRequest({ candidate_stale: true, elapsed_sec: null })).toEqual({
+      replace: false,
+      reason: 'young',
+    });
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * P-004 (EI-18752644493166307) — does the judged candidate contain MY edits?
+ *
+ * The warning TEXT is the deliverable here, so it is asserted directly. The bug it
+ * closes is a misREADING, not a missing field: a candidate without your fix reds on
+ * the pre-fix failure with the pre-fix count, which reads as "your fix did not work"
+ * and sends you to re-debug correct code.
+ * ------------------------------------------------------------------------- */
+describe('renderContainmentWarning (P-004)', () => {
+  const p = (path: string, reason: 'uncommitted' | 'newer-commit' | 'absent') => ({
+    path,
+    inCandidate: false as const,
+    reason,
+    unknownReason: null,
+  });
+
+  it('pre-empts the misread: a red from this run is not evidence your fix failed', () => {
+    const w = renderContainmentWarning(['a.ts'], [p('a.ts', 'uncommitted')], [], 'caller-supplied');
+    expect(w).toMatch(/NOT evidence your change failed/);
+    expect(w).toMatch(/ORIGINAL failure with the ORIGINAL count/);
+  });
+
+  it('routes an uncommitted miss to git-sync:run and a quiet-cut miss to the quiet window', () => {
+    const uncommitted = renderContainmentWarning(['a.ts'], [p('a.ts', 'uncommitted')], [], 'caller-supplied');
+    expect(uncommitted).toMatch(/git-sync:run/);
+    expect(uncommitted).not.toMatch(/quiet window/);
+
+    const newer = renderContainmentWarning(['b.ts'], [p('b.ts', 'newer-commit')], [], 'caller-supplied');
+    expect(newer).toMatch(/quiet window/);
+    // Sending an already-committed change to git-sync:run would waste another run.
+    expect(newer).not.toMatch(/Fix: git-sync:run/);
+  });
+
+  it('a NEW file is grouped with uncommitted — the same lever applies', () => {
+    const w = renderContainmentWarning(['new.test.ts'], [p('new.test.ts', 'absent')], [], 'caller-supplied');
+    expect(w).toMatch(/NOT COMMITTED/);
+    expect(w).toMatch(/new\.test\.ts/);
+  });
+
+  /**
+   * The resolution of "if your fix is among them". The old warning named excluded SHAS,
+   * which is the one space the reader has no information about — an agent knows its
+   * FILES. Naming which excluded commit carries which file is the whole point.
+   */
+  it('names WHICH excluded commit carries the file, not just that commits were excluded', () => {
+    const w = renderContainmentWarning(
+      ['a.ts'],
+      [p('a.ts', 'newer-commit')],
+      [{ path: 'a.ts', commits: ['fff1234 my just-landed fix'] }],
+      'caller-supplied',
+    );
+    expect(w).toMatch(/'a\.ts' is carried by EXCLUDED commit\(s\): fff1234 my just-landed fix/);
+    expect(w).not.toMatch(/if your fix is among them/);
+  });
+
+  /**
+   * This tree is edited concurrently by the whole fleet, so an INFERRED set routinely
+   * contains peers' uncommitted work. Claiming those are "your files" is a false
+   * positive, and a detector that cries wolf is one agents learn to scroll past —
+   * which would cost more than the gap it closes.
+   */
+  it('claims ownership ONLY when the caller declared the paths', () => {
+    const declared = renderContainmentWarning(['a.ts'], [p('a.ts', 'uncommitted')], [], 'caller-supplied');
+    expect(declared).toMatch(/of your file\(s\)/);
+
+    const inferred = renderContainmentWarning(['a.ts'], [p('a.ts', 'uncommitted')], [], 'inferred-uncommitted');
+    expect(inferred).not.toMatch(/of your file\(s\)/);
+    expect(inferred).toMatch(/may be a peer's/);
+    // …and it must point at the route that WOULD give an exact answer.
+    expect(inferred).toMatch(/pass `paths: \[\.\.\.\]`/);
+  });
+});
+
+describe('checkpointCandidateContainment (P-004)', () => {
+  const BLOB_OLD = '0'.repeat(40);
+  const BLOB_NEW = 'f'.repeat(40);
+
+  /** A git that answers by arg shape; status non-zero ⇒ the read FAILED (never ""). */
+  const fakeExec =
+    (answers: Record<string, string>) =>
+    (_cmd: string, args: string[]) => {
+      const key = args.slice(2).join(' ');
+      return key in answers
+        ? { status: 0, stdout: answers[key], stderr: '' }
+        : { status: 128, stdout: '', stderr: 'fatal' };
+    };
+
+  it('reports included/missing for caller-declared paths', async () => {
+    const r = await checkpointCandidateContainment({
+      root: '/repo',
+      candidateSha: 'cand',
+      tipSha: 'cand',
+      paths: ['in.ts', 'out.ts'],
+      execFn: fakeExec({
+        'rev-parse --verify cand:in.ts': BLOB_OLD,
+        'hash-object -- in.ts': BLOB_OLD,
+        'rev-parse --verify cand:out.ts': BLOB_OLD,
+        'hash-object -- out.ts': BLOB_NEW,
+        'rev-parse --verify HEAD:out.ts': BLOB_OLD,
+      }),
+    });
+    expect(r.source).toBe('caller-supplied');
+    expect(r.included).toEqual(['in.ts']);
+    expect(r.missing).toEqual(['out.ts']);
+    expect(r.warning).toMatch(/THIS RUN WILL NOT SEE 1 of your file/);
+  });
+
+  it('is SILENT when every declared file is in the candidate — no warning to habituate to', async () => {
+    const r = await checkpointCandidateContainment({
+      root: '/repo',
+      candidateSha: 'cand',
+      tipSha: 'cand',
+      paths: ['in.ts'],
+      execFn: fakeExec({ 'rev-parse --verify cand:in.ts': BLOB_OLD, 'hash-object -- in.ts': BLOB_OLD }),
+    });
+    expect(r.missing).toEqual([]);
+    expect(r.warning).toBeNull();
+  });
+
+  it('falls back to the working tree, and labels that set as INFERRED', async () => {
+    const r = await checkpointCandidateContainment({
+      root: '/repo',
+      candidateSha: 'cand',
+      tipSha: 'cand',
+      execFn: fakeExec({
+        'status --porcelain': ' M dirty.ts',
+        'rev-parse --verify cand:dirty.ts': BLOB_OLD,
+        'hash-object -- dirty.ts': BLOB_NEW,
+        'rev-parse --verify HEAD:dirty.ts': BLOB_OLD,
+      }),
+    });
+    expect(r.source).toBe('inferred-uncommitted');
+    expect(r.missing).toEqual(['dirty.ts']);
+    expect(r.warning).toMatch(/may be a peer's/);
+  });
+
+  it('attributes a missing file to the excluded commit that carries it', async () => {
+    const r = await checkpointCandidateContainment({
+      root: '/repo',
+      candidateSha: 'cand',
+      tipSha: 'tip',
+      paths: ['a.ts'],
+      execFn: fakeExec({
+        'rev-parse --verify cand:a.ts': BLOB_OLD,
+        'hash-object -- a.ts': BLOB_NEW,
+        'rev-parse --verify HEAD:a.ts': BLOB_NEW,
+        'log --oneline --no-decorate cand..tip -- a.ts': 'fff1234 my just-landed fix',
+      }),
+    });
+    expect(r.excludedCommitsTouchingYourFiles).toEqual([{ path: 'a.ts', commits: ['fff1234 my just-landed fix'] }]);
+    expect(r.warning).toMatch(/fff1234 my just-landed fix/);
+  });
+
+  it('a git that fails entirely produces UNKNOWN and NO warning — never a false all-clear', async () => {
+    const r = await checkpointCandidateContainment({
+      root: '/repo',
+      candidateSha: 'cand',
+      tipSha: 'cand',
+      paths: ['a.ts'],
+      execFn: () => ({ status: 128, stdout: '', stderr: 'fatal' }),
+    });
+    expect(r.unknown).toEqual(['a.ts']);
+    expect(r.included).toEqual([]);
+    expect(r.warning).toBeNull();
   });
 });

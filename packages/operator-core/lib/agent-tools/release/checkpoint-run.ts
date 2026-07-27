@@ -77,7 +77,7 @@ export default defineTool({
       .array(z.string())
       .optional()
       .describe(
-        'Repo-relative files your change touches. The reply then reports callerEditsInCandidate { included, missing } — whether the commit this run judges actually CARRIES them. Omit and it infers the set from uncommitted working-tree files instead, which still catches the common miss but cannot see a change you already committed.',
+        'Repo-relative files your change touches. The reply then reports callerEditsInCandidate { included, missing } — whether the commit this run judges actually CARRIES them, so a red you get back is unambiguously about your code. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed.',
       ),
   }),
   async handler(args, _ctx) {

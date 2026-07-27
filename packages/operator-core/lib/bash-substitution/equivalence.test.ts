@@ -21,7 +21,13 @@ import { ALL_PAIRS } from './pairs';
 import { catFileRead, headFileRead, sedRangeRead, tailFileRead, FILE_READ_PAIRS } from './pairs/file-read';
 import { psqlDescribe, psqlSelectRead } from './pairs/postgres';
 import { psProcessQuery } from './pairs/process';
-import { curlHealthProbe, listeningPorts, systemctlIsActive } from './pairs/service';
+import {
+  buildProbedPortCurlPattern,
+  curlHealthProbe,
+  listeningPorts,
+  PROBED_PORTS,
+  systemctlIsActive,
+} from './pairs/service';
 import { gitReadPassthrough, shellArgv } from './pairs/git-read';
 import type { CorpusFixture } from './corpus';
 import type { SampledCommand } from './types';
@@ -309,7 +315,7 @@ describe('service pattern boundaries', () => {
   const claims = (pair: typeof systemctlIsActive, atom: string) =>
     matchingAtoms(pair, [{ sid: 's', ts: 't', atom }]).length === 1;
 
-  describe('systemctl unit liveness (needs-widening)', () => {
+  describe('systemctl unit liveness (equivalent since P-014)', () => {
     it('claims the boolean-liveness verbs', () => {
       expect(claims(systemctlIsActive, 'systemctl --user is-active papercup-bg-host.service')).toBe(true);
       expect(claims(systemctlIsActive, 'systemctl --user is-failed papercusp-db-backup.service 2>&1')).toBe(true);
@@ -429,7 +435,20 @@ describe('service pattern boundaries', () => {
      * — an unexplained exclusion reads as an oversight and invites the next agent
      * to add a probe that would alarm constantly.
      */
-    it('does not cover a deliberately-excluded unit, and says which structural reason', () => {
+    /**
+     * ⚠ INVERTED AGAIN by P-014 (WI-6244) — the THIRD time an assertion in this
+     * describe has been flipped by a real widening, and the reason is different
+     * from the previous two. WI-6146/WI-6149 flipped units by REGISTERING them.
+     * This flip registers nothing: `dev:service_health { units:[…], scope }`
+     * reaches a unit WITHOUT registering it, so a deliberately-unregistered unit
+     * is now answerable while still being deliberately unregistered.
+     *
+     * Both halves are asserted, because losing either would be a real
+     * regression: the atom is COVERED (the state question is answered) AND the
+     * structural reason still rides along in the expression (so nobody reads the
+     * new coverage as "it should be registered after all").
+     */
+    it('covers a deliberately-excluded unit via `units`, still carrying its structural reason', () => {
       for (const [atom, needle] of [
         ['systemctl --user is-active papercusp-db-backup.service', 'ONESHOT'],
         ['systemctl --user is-active papercup-green-checkpoint-manual-1fxzuva.service', 'TRANSIENT'],
@@ -437,31 +456,99 @@ describe('service pattern boundaries', () => {
         ['systemctl is-active fail2ban', 'NOT INSTALLED'],
       ] as const) {
         const result = systemctlIsActive.cover(atom);
-        expect(result.covered, atom).toBe(false);
-        expect(result.reason, atom).toContain(needle);
+        expect(result.covered, atom).toBe(true);
+        expect(result.expression, atom).toContain('units:');
+        expect(result.expression, atom).toContain(needle);
       }
     });
 
-    /** WI-6149: a unit LIST in one call — `systemctlUnit` only ever sees the head. */
-    it('does not cover a multi-unit call, and counts the units it names', () => {
-      const result = systemctlIsActive.cover('systemctl is-active fail2ban crowdsec 2>/dev/null');
-      expect(result.covered).toBe(false);
-      expect(result.reason).toContain('2 units in one call');
-      expect(result.reason).toContain('crowdsec');
+    /**
+     * P-014: scope is derived from the atom, and `systemctl` with NEITHER flag
+     * defaults to `--system`. Getting this wrong would emit an expression that
+     * queries a manager which cannot hold the answer — the `logs:read`
+     * `system: boolean` defect, in a different tool.
+     */
+    it('derives the systemd manager from the atom, defaulting a bare systemctl to system', () => {
+      expect(systemctlIsActive.cover('systemctl is-active auditd').expression).toContain("scope: 'system'");
+      expect(
+        systemctlIsActive.cover('systemctl --user is-active papercusp-db-backup.service').expression,
+      ).toContain("scope: 'user'");
     });
 
-    it('still does not cover a genuinely unknown unit', () => {
+    /**
+     * WI-6149 asserted this was UNCOVERABLE; P-014 makes it expressible, because
+     * `units` is an array and one `systemctl show` serves the whole list. Note
+     * the observed corpus atom `is-active papercup-dev-api papercup-staging-api`
+     * was ALREADY answerable before the widening — both units are probed — so
+     * the old blanket refusal was scoring a wrong miss even on its own terms.
+     */
+    it('covers a multi-unit call in one `units` array, naming every unit', () => {
+      const result = systemctlIsActive.cover('systemctl is-active fail2ban crowdsec 2>/dev/null');
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain("'fail2ban'");
+      expect(result.expression).toContain("'crowdsec'");
+      expect(result.expression).toContain('unitsUnknown');
+    });
+
+    /**
+     * THE POINT OF THE WHOLE WIDENING, asserted as a boundary: an unknown unit is
+     * not merely covered — it is answered BETTER than by the command it replaces.
+     * `systemctl is-active <nonexistent>` prints `inactive`, byte-identical to a
+     * stopped service; three units in the 7d corpus (papercup-auto-deploy,
+     * papercup-green-checkpoint, papercup-pgbouncer) are exactly that case.
+     */
+    it('covers a genuinely unknown unit — and routes it at loadState, not activeState', () => {
       const result = systemctlIsActive.cover('systemctl --user is-active papercup-not-a-real-unit.service');
+      expect(result.covered).toBe(true);
+      expect(result.expression).toContain('loadState');
+    });
+
+    /** A glob or `$(…)` names nothing `units` can carry — the one shape left in bash. */
+    it('still refuses a glob or shell substitution — `units` takes literal names', () => {
+      const result = systemctlIsActive.cover("systemctl --user is-active 'papercup-*'");
       expect(result.covered).toBe(false);
-      expect(result.reason).toContain('outside the supervision registry');
+      expect(result.reason).toContain('literal unit names');
     });
   });
 
-  describe('curl health probe (needs-widening)', () => {
-    it('claims a loopback health or version probe', () => {
-      expect(claims(curlHealthProbe, 'curl -s http://127.0.0.1:3070/api/health')).toBe(true);
-      expect(claims(curlHealthProbe, 'curl -s http://localhost:3170/api/health 2>&1')).toBe(true);
-      expect(claims(curlHealthProbe, 'curl -s -m 10 http://127.0.0.1:8788/health')).toBe(true);
+  describe('curl health probe (equivalent since P-014)', () => {
+    /**
+     * ⚠ NARROWED by P-014 (WI-6244). The pattern used to claim EVERY loopback
+     * health/version curl and then fail most of them in `cover()` — 96 of 138
+     * corpus atoms — which scored the pair `needs-widening` for behaving exactly
+     * as its own advisory documented. Both residues are shapes the tool
+     * DELIBERATELY declines, so they belong outside the claim:
+     *   • no `-o /dev/null` ⇒ the BODY is wanted (79 atoms, the majority intent
+     *     — see HEALTH_PAYLOAD_FINDING);
+     *   • an unprobed port ⇒ the fixed probe set cannot reach it.
+     */
+    it('claims a liveness-only probe of a PROBED port', () => {
+      expect(claims(curlHealthProbe, 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3070/api/health')).toBe(true);
+      expect(claims(curlHealthProbe, 'curl -s -o /dev/null -w "%{http_code}" http://localhost:3170/api/health 2>&1')).toBe(true);
+    });
+
+    it('does NOT claim a body read or an unprobed port — different questions, not gaps', () => {
+      // The majority intent: read the payload. dev:service_health never carries it.
+      expect(claims(curlHealthProbe, 'curl -s http://127.0.0.1:3070/api/health')).toBe(false);
+      // :8788 is the inference gateway — deliberately unprobed (its /health needs
+      // an auth header, so an unauthenticated probe would manufacture a phantom DOWN).
+      expect(claims(curlHealthProbe, 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8788/health')).toBe(false);
+    });
+
+    /**
+     * The pattern is BUILT from PROBED_PORTS, so adding a probe automatically
+     * widens the claim rather than leaving a hand-written list behind. Asserted
+     * directly because a drifted second model is the exact staleness class D-016
+     * exists to catch.
+     */
+    it('derives its port list from PROBED_PORTS rather than a hand-written copy', () => {
+      for (const port of Object.keys(PROBED_PORTS)) {
+        expect(
+          claims(curlHealthProbe, `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:${port}/api/health`),
+          `:${port} is probed, so the pattern must claim it`,
+        ).toBe(true);
+      }
+      expect(buildProbedPortCurlPattern(['9999']).source).toContain('9999');
     });
 
     it('excludes remote hosts and non-health routes', () => {
@@ -503,7 +590,7 @@ describe('service pattern boundaries', () => {
      * gateway) is the live example, and it is why this pair does not simply
      * become `equivalent` on the strength of :3170.
      */
-    it('still cannot answer for a port it does not probe (:8788 gateway)', () => {
+    it('still cannot answer for a port it does not probe (:8788 gateway) [envelope backstop]', () => {
       const result = curlHealthProbe.cover(
         'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:8788/health',
       );
@@ -511,18 +598,44 @@ describe('service pattern boundaries', () => {
       expect(result.reason).toContain(':8788');
     });
 
-    it('cannot answer when the response BODY is what is wanted', () => {
+    /**
+     * P-014: these two `cover()` refusals are now BACKSTOPS, not the live path —
+     * the pattern no longer claims either shape. They are kept deliberately (the
+     * D-008 anti-rot rule): if the pattern is ever loosened, the envelope fails
+     * loudly instead of the pair silently claiming a question it answers wrong.
+     */
+    it('cannot answer when the response BODY is what is wanted [envelope backstop]', () => {
       const result = curlHealthProbe.cover('curl -s http://127.0.0.1:3070/api/health');
       expect(result.covered).toBe(false);
       expect(result.reason).toContain('BODY');
     });
   });
 
-  describe('listening sockets (a not-a-substitute verdict)', () => {
-    it('claims the socket-query tools', () => {
+  describe('listening sockets (equivalent since P-014)', () => {
+    it('claims the LISTEN-query shapes', () => {
       expect(claims(listeningPorts, 'ss -ltnp 2>/dev/null')).toBe(true);
       expect(claims(listeningPorts, 'netstat -tlnp 2>/dev/null')).toBe(true);
       expect(claims(listeningPorts, 'lsof -nP -iTCP:3070 -sTCP:LISTEN')).toBe(true);
+    });
+
+    /**
+     * ⚠ NARROWED by P-014 (WI-6244): LISTEN-ness is part of the CLAIM now, not
+     * something `cover()` rejects afterwards. All 49 corpus misses were this one
+     * axis — an established-connection census is a different question from "what
+     * is listening", which is this pair's whole intentLabel, so the pattern was
+     * over-claiming. See SOCKET_STATE_FINDING for what the narrowing drops.
+     */
+    it('does NOT claim an all-states / UDP query — a different question, not a gap', () => {
+      for (const atom of [
+        'ss -tn 2>/dev/null',
+        'ss -tnp state established \'( dport = :5432 )\'',
+        'ss -tinp 2>/dev/null',
+        'netstat -an -p tcp 2>/dev/null',
+        'lsof -nP -iTCP:8044 2>&1',
+        'ss -lunp 2>/dev/null', // has -l, but UDP
+      ]) {
+        expect(claims(listeningPorts, atom), `${atom} must fall outside the claim`).toBe(false);
+      }
     });
 
     /**
@@ -570,11 +683,11 @@ describe('service pattern boundaries', () => {
     });
 
     /**
-     * The residue, and the reason this pair is `needs-widening` rather than
-     * `equivalent`. All of it is one axis: socket STATE. Asserted explicitly so
-     * a future `state` arg cannot quietly leave the verdict stale-pessimistic.
+     * P-014: a BACKSTOP now, not the live path — the pattern no longer claims
+     * these. Kept per the D-008 anti-rot rule so a loosened pattern fails loudly
+     * here rather than silently answering a connection census with the bind table.
      */
-    it('refuses non-LISTEN queries — the single axis holding it off `equivalent`', () => {
+    it('refuses non-LISTEN queries [envelope backstop]', () => {
       for (const atom of ['ss -tn 2>/dev/null', 'ss -tinp 2>/dev/null', 'netstat -an -p tcp']) {
         const result = listeningPorts.cover(atom);
         expect(result.covered, `${atom} asks about established connections`).toBe(false);
@@ -608,9 +721,16 @@ describe('service pattern boundaries', () => {
       expect(result.expression).not.toContain('whole LISTEN table');
     });
 
-    it('is held at observe by the state residue, not promotable', () => {
-      expect(listeningPorts.expectedVerdict).toBe('needs-widening');
-      expect(maxTierFor(listeningPorts.expectedVerdict)).toBe('observe');
+    /**
+     * P-014 closed the last `needs-widening` verdicts in the plan. `maxTierFor`
+     * states what the verdict PERMITS — promotion to `advise` is still P-020's
+     * staged decision after a real observation window, never automatic.
+     */
+    it('all three service pairs now permit `advise` (P-014 closed the family)', () => {
+      for (const pair of [systemctlIsActive, curlHealthProbe, listeningPorts]) {
+        expect(pair.expectedVerdict, pair.id).toBe('equivalent');
+        expect(maxTierFor(pair.expectedVerdict), pair.id).toBe('advise');
+      }
     });
   });
 

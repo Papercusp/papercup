@@ -13,7 +13,31 @@ function parse(result: { content: Array<{ text: string }> }): Record<string, unk
   return JSON.parse(result.content[0].text);
 }
 
-beforeEach(() => vi.resetModules());
+/**
+ * P-004: the handler now also asks whether the judged candidate CONTAINS the caller's
+ * files. That read really shells out to git against the live repo — un-stubbed it made
+ * these unit tests depend on whatever this box happened to have uncommitted (it did:
+ * the assertion below started failing with a list of the author's own in-flight files).
+ * Stub it to "nothing to report" so each case exercises only the branch it names; the
+ * containment logic itself is tested in candidate-contains.test.ts and
+ * release-checkpoint-launch.test.ts.
+ */
+const NO_CONTAINMENT = vi.fn(async () => ({
+  candidateSha: null,
+  tipSha: null,
+  source: 'caller-supplied' as const,
+  included: [],
+  missing: [],
+  unknown: [],
+  paths: [],
+  excludedCommitsTouchingYourFiles: [],
+  warning: null,
+}));
+
+beforeEach(() => {
+  vi.resetModules();
+  NO_CONTAINMENT.mockClear();
+});
 afterEach(() => vi.doUnmock('../../release-checkpoint-launch'));
 
 describe('release:checkpoint-run', () => {
@@ -24,7 +48,11 @@ describe('release:checkpoint-run', () => {
       argv: [],
       logPath: '/tmp/papercup-green-checkpoint-manual.log',
     }));
-    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
 
     const { default: tool } = await import('./checkpoint-run');
     const result = await tool.handler({}, MAKE_CTX());
@@ -47,7 +75,11 @@ describe('release:checkpoint-run', () => {
         excludedCommits: ['fffffff my just-landed fix'],
       },
     }));
-    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
 
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
@@ -64,7 +96,11 @@ describe('release:checkpoint-run', () => {
       logPath: '/tmp/papercup-green-checkpoint-manual.log',
       willJudge: { candidate: 'aaaaaaa', tip: 'aaaaaaa', quietCutApplied: false, quietCutSec: 240, excludedCommits: [] },
     }));
-    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
 
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
@@ -80,7 +116,11 @@ describe('release:checkpoint-run', () => {
       logPath: '/tmp/papercup-green-checkpoint-manual.log',
       reason: 'systemd-run exited 1 (a manual checkpoint may already be running)',
     }));
-    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
 
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
@@ -103,7 +143,11 @@ describe('release:checkpoint-run', () => {
         argv: [],
         logPath: '/tmp/papercup-green-checkpoint-manual.log',
       }));
-      vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
+      vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
 
       const { default: tool } = await import('./checkpoint-run');
       const b = parse((await tool.handler({}, MAKE_CTX(role))) as never);
@@ -300,7 +344,11 @@ describe('release:checkpoint-run', () => {
       argv: [],
       logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
     }));
-    vi.doMock('../../release-checkpoint-launch', async (orig) => ({ ...(await orig()), launchDetachedCheckpoint: launchSpy }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
 
     const { default: tool } = await import('./checkpoint-run');
     await tool.handler({ force: true }, MAKE_CTX());

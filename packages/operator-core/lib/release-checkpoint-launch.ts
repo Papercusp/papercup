@@ -692,7 +692,7 @@ export interface CheckpointContainment {
   /** The integration tip at the time of the check (null when unresolvable). */
   tipSha: string | null;
   /** Where the checked path-set came from — caller-declared beats inferred. */
-  source: 'caller-supplied' | 'uncommitted-working-tree';
+  source: 'caller-supplied' | 'inferred-uncommitted';
   /** Paths the candidate carries byte-identically to the working tree. */
   included: string[];
   /** Paths it does NOT carry. A red on any of these is NOT evidence your fix failed. */
@@ -727,8 +727,11 @@ export async function checkpointCandidateContainment(args: {
   // objectively-hazardous set instead: anything uncommitted is invisible to every
   // committed candidate, so it needs no attribution to be worth warning about. That
   // inference is what makes this fire for the caller who did not know to ask.
-  const source: CheckpointContainment['source'] = args.paths?.length ? 'caller-supplied' : 'uncommitted-working-tree';
-  const paths = args.paths?.length ? args.paths : await uncommittedPaths(git);
+  const source: CheckpointContainment['source'] = args.paths?.length ? 'caller-supplied' : 'inferred-uncommitted';
+  // Bounded: an inferred set is the WHOLE fleet's dirty tree and can be large. A wall of a
+  // hundred peer paths buries the one line that matters, so cap what is checked (the
+  // warning caps again when it renders).
+  const paths = args.paths?.length ? args.paths : (await uncommittedPaths(git)).slice(0, 40);
 
   const verdict = await callerEditsInCandidate(git, args.candidateSha, paths);
   const tipSha = args.tipSha ?? null;
@@ -773,13 +776,21 @@ export function renderContainmentWarning(
   const uncommitted = [...byReason('uncommitted'), ...byReason('absent')];
   const newer = byReason('newer-commit');
   const list = (xs: string[]) => `${xs.slice(0, 6).join(', ')}${xs.length > 6 ? ` (+${xs.length - 6} more)` : ''}`;
+  const declared = source === 'caller-supplied';
 
+  // OWNERSHIP IS ONLY CLAIMED WHEN IT WAS DECLARED. This tree is edited concurrently by
+  // the whole fleet, so an inferred (working-tree) set routinely contains PEERS' edits —
+  // calling those "your files" would be a false positive, and a detector that cries wolf
+  // on a shared tree is one agents learn to scroll past. That would cost more than the
+  // gap it closes, so the inferred branch states exactly what it knows and no more.
   const parts: string[] = [
-    `⚠ THIS RUN WILL NOT SEE ${missing.length} of your file(s). A RED from it is NOT evidence your change failed — the suite is testing code WITHOUT it, so it reds on the ORIGINAL failure with the ORIGINAL count.`,
+    declared
+      ? `⚠ THIS RUN WILL NOT SEE ${missing.length} of your file(s). A RED from it is NOT evidence your change failed — the suite is testing code WITHOUT them, so it reds on the ORIGINAL failure with the ORIGINAL count.`
+      : `⚠ ${missing.length} uncommitted file(s) in this shared tree are INVISIBLE to the commit this run judges. They may be a peer's — but if any are YOURS, a red from this run is not evidence your change failed, because your change is not in what it tests.`,
   ];
   if (uncommitted.length) {
     parts.push(
-      `NOT COMMITTED (invisible to the gate, which checks out a commit and cannot see the working tree): ${list(uncommitted)}. Fix: git-sync:run, then re-fire.`,
+      `NOT COMMITTED (the gate checks out a commit and cannot see the working tree): ${list(uncommitted)}. Fix: git-sync:run, then re-fire.`,
     );
   }
   if (newer.length) {
@@ -787,12 +798,13 @@ export function renderContainmentWarning(
       `COMMITTED BUT NEWER THAN THE CANDIDATE (the quiet-cut stepped the judged commit back): ${list(newer)}. Fix: wait out the quiet window (~4 min) and re-fire, or let the next run pick it up.`,
     );
   }
+  // The resolution of "if your fix is among them": which excluded commit carries which file.
   for (const e of excluded.slice(0, 4)) {
     parts.push(`'${e.path}' is carried by EXCLUDED commit(s): ${e.commits.slice(0, 3).join(' | ')}`);
   }
-  if (source === 'uncommitted-working-tree') {
+  if (!declared) {
     parts.push(
-      'These were inferred from the working tree, not declared — pass `paths: [...]` naming the files your change touches for an exact verdict.',
+      'For a verdict about YOUR change specifically, pass `paths: [...]` naming the files it touches — then this answers included/missing exactly instead of listing the whole tree.',
     );
   }
   return parts.join(' ');
