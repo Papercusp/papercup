@@ -32,6 +32,7 @@ import {
   revListBefore,
   commitUnixTime,
   changedFiles,
+  commitsBetween,
   type AdvanceResult,
 } from './git-ops';
 import { toolingRoot, type ReleaseConfig } from './release-config';

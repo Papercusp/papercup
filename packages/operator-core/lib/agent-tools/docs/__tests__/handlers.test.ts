@@ -472,6 +472,49 @@ describe('docs:search handler', () => {
     expect(mod.default.args.safeParse({ query: 'ab' }).success).toBe(true);
   });
 
+  // EI-18804433041289369: a harness-scoped search (the natural, "pass my own harness slug" call) does
+  // NOT reach agent-insights/ — a caller who does not know that reads "no hits I recognize" as "no such
+  // page exists". A `scopeNote` on every non-engineering-surface response makes that scope explicit
+  // instead of silent, even on a NON-empty result (the reported incident had 37 hits, just none of them
+  // agent-insights).
+  describe('scopeNote (EI-18804433041289369)', () => {
+    it('harness surface → scopeNote present, names the surface and the harness:\'all\' retry', async () => {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      const tool = (await import('../search')).default;
+      const res = await tool.handler({ query: 'auth flow', limit: 8 } as never, { harnessSlug: 'sheets' } as never);
+      const p = payloadOf(res);
+      expect(p.surface).toBe('harness');
+      expect(typeof p.scopeNote).toBe('string');
+      expect(p.scopeNote).toMatch(/agent-insights/);
+      expect(p.scopeNote).toMatch(/harness:'all'/);
+    });
+
+    it('project surface → scopeNote present too (also excludes agent-insights)', async () => {
+      process.env.PAPERCUSP_PROJECT_DOCS_ROOT = '/tmp/proj-docs';
+      mockRegistry([]);
+      const tool = (await import('../search')).default;
+      const res = await tool.handler(
+        { query: 'auth flow', limit: 8, harness: 'all' } as never,
+        { harnessSlug: '*' } as never,
+      );
+      const p = payloadOf(res);
+      expect(p.surface).toBe('project');
+      expect(typeof p.scopeNote).toBe('string');
+    });
+
+    it('engineering surface (the agent-insights corpus itself) → NO scopeNote', async () => {
+      mockRegistry([]);
+      const tool = (await import('../search')).default;
+      const res = await tool.handler(
+        { query: 'auth flow', limit: 8 } as never,
+        { harnessSlug: '*', isSuperuser: true } as never,
+      );
+      const p = payloadOf(res);
+      expect(p.surface).toBe('engineering');
+      expect(p.scopeNote).toBeUndefined();
+    });
+  });
+
   // ── CH3: the result-limit guard. The engine truncates to `limit` hits
   //    (searchDocs slices to args.limit), so the tool must bound it: default 8,
   //    floor 1, hard cap 20 — an unbounded limit can't drag the whole corpus.

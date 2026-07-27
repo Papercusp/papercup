@@ -450,6 +450,15 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   can silently hit a different tenant's row and look like a stale/diverged
   store when it isn't:
   [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).
+  ⚠ A work-item's **severity** (issue-family only: bug/change/task) is never a
+  top-level `payload`/`metadata` key on `harness_shared.work_items` — a raw
+  `payload ? 'severity'` audit always returns **zero rows**, which reads exactly
+  like "no criticals" even when there are plenty. It lives at
+  `payload->'_ei'->>'severity'` (migration 374's `engineer_issues` compat-view
+  fold); prefer `work_items:list{severity}` / `work_items:claimable`, or query
+  the `engineer_issues` view directly (scopes on `scope = 'harness:<slug>'`, not
+  `harness_slug`):
+  [work-item severity lives under payload._ei, not top-level](/internal/docs/agent-insights/work-item-severity-lives-under-payload-ei-not-top-level).
   ⚠ For CLAIMABLE issue-family work (bug/change/task), `status='open'` is **NOT**
   claimability — the real claim path applies ~12 unconditional floors, so a raw
   `WHERE status='open'` overcounts ~13×. Use the dedicated tool

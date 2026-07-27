@@ -44631,6 +44631,63 @@ Remove-Item "$env:LOCALAPPDATA\com.papercusp.desktop","$env:LOCALAPPDATA\Papercu
 * **Spaces-in-username** is testable without switching console users: create a `First Last` account, grant `SeBatchLogonRight` (secedit), then install + launch the app via a task `/ru "First Last"`. The startup log proves all Windows-side paths resolve with the space (`shared sidecar home: C:\Users\First Last`, `\\?\C:\Users\First Last\…`). The operator boot under the spaces profile needs interactive onboarding (a fresh user has no distro), so it’s a partial test.
 * **SmartScreen is NOT exercised by an scp’d installer** — it has no Mark-of-the-Web. Testing the “unknown publisher” wall needs a real browser download (and is moot once the installer is Authenticode-signed).
 
+# A work-item's severity is real — but a raw SQL audit checking payload/metadata top-level keys always finds zero
+
+> harness_shared.work_items has no top-level severity column and severity is never a top-level JSON key either — issue-family severity lives at payload->'_ei'->>'severity' (migration 374's engineer_issues compat-view convention), defaulted to 'minor' at write time. A raw audit like `payload ? 'severity'` or `metadata ? 'severity'` silently returns zero rows for every item, reading exactly like 'there are no criticals' when the real severities are sitting one JSON level deeper. Always go through work_items:list/work_items:claimable/the engineer_issues view (or payload->'_ei'->>'severity' directly) instead.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+`harness_shared.work_items` (the true base table since migration 374) has **no `severity` column**, and `severity` is **not a top-level key** in either its `payload` or `metadata` JSON either. For issue-family rows (`item_kind` ∈ `bug`/`change`/`task`), severity is nested one level deeper, inside a `_ei` sub-object the `engineer_issues` compat view/trigger maintains:
+
+```sql
+-- sql-snippet-justified: quotes the real column shape this page exists to warn about.
+payload -> '_ei' ->> 'severity'   -- the ACTUAL location, e.g. 'critical'
+payload ? 'severity'              -- ALWAYS false — 'severity' is never a top-level key
+metadata ? 'severity'             -- ALWAYS false — there is no metadata.severity either
+```
+
+An agent auditing “how many open critical bugs are there” with the natural, un-nested query gets **zero rows every time** — not an error, not a warning, just an empty result that reads exactly like “there are no criticals”. This happened live on 2026-07-27: an agent saw `fleet:leader-brief`’s `unowned_criticals: 7` and, suspecting the metric was broken, “verified” it with a raw `payload->>'severity'='critical'` audit that returned 0 rows — concluded the metric was a false alarm, dismissed it, and **carried that wrong conclusion forward into a loop checkpoint for a successor to inherit**. The 7 real criticals it had dismissed included a live-trading gate and a fleet-wide false-green in `testing:run`/`build:typecheck`, aged up to 433h unowned. The mistake was caught only when the same agent re-derived severity’s real storage location from `374-work-items-unify-base-table.sql` and re-ran the audit correctly.
+
+## Why it’s nested this way
+
+[Section titled “Why it’s nested this way”](#why-its-nested-this-way)
+
+Migration 374 unified `harness_features_consolidated` + `engineer_issues` into one base table, `harness_shared.work_items`. Feature-family rows never had a `severity` concept; issue-family rows did (an `engineer_issues.severity` column with a `CHECK (severity = ANY (ARRAY['critical','major','minor', 'nit']))` constraint, migration 131). Rather than adding a nullable `work_items.severity` column used only by 3 of the unified kinds, the migration folded every issue-only field (`severity`, `scope`, `source`, `found_during`, `linked_feature_id`, `created_by`, `assigned_by`, `signal_origin`) into a single `payload->'_ei'` sub-object, and the `engineer_issues` compat view projects it back out:
+
+```sql
+-- sql-snippet-justified: the compat view definition itself (374), showing where severity
+-- actually lives and its write-time default — not a query to hand-write.
+COALESCE(payload->'_ei'->>'severity', 'minor') AS severity
+```
+
+So severity **is** genuinely stored (defaulted to `'minor'` at write time by `createIssue` in `issues-engineer.ts` — `${input.severity ?? 'minor'}` — and again by the compat view’s own `COALESCE` as a belt-and-braces fallback for any legacy row that predates the convention). `work_items:get` / `work_items:list` read it correctly (`issueToWorkItem` maps `severity: i.severity` off the `engineer_issues` view, which already did the `_ei` unwrap). The bug is purely in **raw SQL against the base table** guessing the wrong JSON shape.
+
+## The fix — don’t guess the JSON shape; use the tool or the compat view
+
+[Section titled “The fix — don’t guess the JSON shape; use the tool or the compat view”](#the-fix--dont-guess-the-json-shape-use-the-tool-or-the-compat-view)
+
+* **Prefer the tools** — `work_items:list { severity }`, `work_items:claimable`, or `improvements`/`issues` search all resolve severity correctly; they never touch `payload` directly.
+
+* **Need raw SQL?** Query through the `engineer_issues` compat view (real top-level `severity` column, already unwrapped) — not `work_items` directly:
+
+  ```sql
+  -- sql-snippet-justified: the sanctioned raw-SQL path, via the compat view.
+  SELECT issue_id, severity, state FROM harness_shared.engineer_issues
+   WHERE scope = 'harness:<slug>' AND severity = 'critical' AND state = 'open';
+  ```
+
+  Note `engineer_issues` scopes on **`scope = 'harness:<slug>'`**, not `harness_slug` — it has no `harness_slug` column (that lives one level down, on the real `work_items` row). Copying the `work_items` idiom (`WHERE harness_slug = ...`) either errors (no such column) or, if “fixed” by dropping the predicate, silently spans every harness.
+
+* **Querying `work_items` directly anyway?** Reach one level deeper: `payload->'_ei'->>'severity'` — never `payload->>'severity'` or a `payload ? 'severity'` existence check.
+
+## General rule
+
+[Section titled “General rule”](#general-rule)
+
+A JSON payload column that folds a *compat view’s* only-some-kinds fields under a versioned sub-key (`_ei`, or any similar convention) will never satisfy a top-level `? 'key'` or `->>'key'` check for that field — the absence of rows from that query is not evidence the data doesn’t exist. Before concluding “zero rows ⇒ nothing to find” on any `harness_shared.*` JSON audit, check the relevant compat view’s `CREATE VIEW` definition (or the migration that introduced the payload-folding) for how the field is actually nested, or use the tool that already knows.
+
 # A work-item's tags live in three places — only two are read by the claim path
 
 > Why work_items:tag could return ok, show up in work_items:get.topics, and still leave the item failing fleet admission with fleet_scope_violation — and which field each claim-spec evaluator actually reads.
@@ -85868,6 +85925,24 @@ Three frictions that cost real time driving the operator webview headlessly for 
 **The dev-bridge token file is JSON, not a bare token.** `/tmp/tauri-dev-bridge-<pid>.token` contains `{"port":N,"token":"...","pid":N}` — not a raw token string. `--port` and `--token` are **per-subcommand** options, not global flags. On a box with a peer’s shell also running, pass your **own** `--port`/`--token` (read from your shell’s log line `Token file: ...`) explicitly — auto-discovery can otherwise attach to the peer’s shell instead of yours.
 
 Net: with `ui:dispatch set_url` + `wait` (no `sleep`) + explicit port/token, a multi-route drive is deterministic; without them it flakes and can produce false-green audits (e.g. “verifying” N routes that were all secretly the same page because navigation silently no-opped).
+
+**When you DO fall back to a full reload (`location.href=`), pin the wait to the incoming page — never to the view’s own selector alone (EI-18812301452864060).** The natural-looking idiom
+
+```plaintext
+tauri-agent-tools eval --pid $P "location.href='…?lview=X'; 'go'"
+tauri-agent-tools wait --pid $P --selector '.pc-learning__viewpane' --timeout 45000
+tauri-agent-tools eval --pid $P "<measure the DOM>"
+```
+
+is wrong and **fails silently**. `location.href=` is a full reload, and for a moment after it fires the OUTGOING page is still the live document — so a `wait` on a selector the outgoing page also matches (the same view class, or any earlier navigation’s leftover pane) is satisfied immediately, and the measurement lands on a half-torn-down or half-loaded document. This is not theoretical: probing the same view twice in a row returned a clean verdict and then a blank one — same view, same instance, same bundle — and a screenshot captured at the end of one such drive was a blank frame later cited as live-verification evidence in a `work_items:complete` (the completion gate correctly rejected it).
+
+The fix is one clause: put a navigation NONCE (not the view id — some views rewrite their own `?lview=` param to a resolved value, which evaporates a pin keyed on the id) in the URL and require it to already be live before you’ll trust anything else in the settle condition:
+
+```plaintext
+--eval "location.href.indexOf('vnonce=N')>=0 && (!!document.querySelector('.pc-learning__viewpane') || /hit an error/.test(document.body.innerText))"
+```
+
+`scripts/verify-learning-tab-views.sh` does exactly this and carries the full rationale inline — copy its `SETTLED` construction rather than re-deriving it. And separately: **never cite a screenshot you have not opened.** A capture taken after a mis-settled wait looks exactly like a legitimate artifact until a human (or the completion gate) actually looks at it.
 
 ## 2. Reporting format
 

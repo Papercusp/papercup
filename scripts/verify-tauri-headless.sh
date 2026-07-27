@@ -562,6 +562,7 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   [ -f "$SPA_HB" ] && SPA_SHA="$(sed -n 's/.*"gitSha": *"\([0-9a-f]*\)".*/\1/p' "$SPA_HB" 2>/dev/null | head -1)"
   log "SPA snapshot frozen at $SPA_DIST${SPA_SHA:+ (shared build ${SPA_SHA:0:12})} — IMMUTABLE for this run; restart to pick up a newer build."
   log "  → edited source AFTER this boot? run: bash \"$WORK/check-freshness.sh\" (\$VERIFY_TAURI_FRESHNESS_CHECK) BEFORE trusting a re-check — it warns loudly if the shared bundle drifted (EI-17134)."
+  log "  → waiting for a REBUILD (not just checking one)? do NOT stat one specific hashed asset (e.g. dist/assets/adv-D5qbAjO8.js) — a rebuild emits a NEW content-hash filename, so the file you're watching is orphaned and its mtime is frozen forever; the poll hangs indefinitely (EI-18812301452864060). Compare the newest matching file instead: \`ls -t dist/assets/adv-*.js | head -1\`, or just use check-freshness.sh above."
 else
   log "WARNING: no built SPA at $SHARED_SPA_DIST (operator-vite not built yet) — NOT freezing a"
   log "         snapshot; the sidecar falls through to the shared dist as before. Build"

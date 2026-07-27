@@ -631,6 +631,43 @@ flakes and can produce false-green audits (e.g. "verifying" N routes
 that were all secretly the same page because navigation silently
 no-opped).
 
+**When you DO fall back to a full reload (`location.href=`), pin the wait
+to the incoming page — never to the view's own selector alone
+(EI-18812301452864060).** The natural-looking idiom
+
+```
+tauri-agent-tools eval --pid $P "location.href='…?lview=X'; 'go'"
+tauri-agent-tools wait --pid $P --selector '.pc-learning__viewpane' --timeout 45000
+tauri-agent-tools eval --pid $P "<measure the DOM>"
+```
+
+is wrong and **fails silently**. `location.href=` is a full reload, and for
+a moment after it fires the OUTGOING page is still the live document — so a
+`wait` on a selector the outgoing page also matches (the same view class,
+or any earlier navigation's leftover pane) is satisfied immediately, and the
+measurement lands on a half-torn-down or half-loaded document. This is not
+theoretical: probing the same view twice in a row returned a clean verdict
+and then a blank one — same view, same instance, same bundle — and a
+screenshot captured at the end of one such drive was a blank frame later
+cited as live-verification evidence in a `work_items:complete` (the
+completion gate correctly rejected it).
+
+The fix is one clause: put a navigation NONCE (not the view id — some views
+rewrite their own `?lview=` param to a resolved value, which evaporates a
+pin keyed on the id) in the URL and require it to already be live before
+you'll trust anything else in the settle condition:
+
+```
+--eval "location.href.indexOf('vnonce=N')>=0 && (!!document.querySelector('.pc-learning__viewpane') || /hit an error/.test(document.body.innerText))"
+```
+
+`scripts/verify-learning-tab-views.sh` does exactly this and carries the
+full rationale inline — copy its `SETTLED` construction rather than
+re-deriving it. And separately: **never cite a screenshot you have not
+opened.** A capture taken after a mis-settled wait looks exactly like a
+legitimate artifact until a human (or the completion gate) actually looks
+at it.
+
 ## 2. Reporting format
 
 ```
