@@ -402,3 +402,36 @@ describe('TABLE_TO_QUERY_NAMES shape', () => {
     }
   });
 });
+
+/**
+ * A duplicate key in TABLE_TO_QUERY_NAMES is INVISIBLE at runtime — an object
+ * literal keeps the LAST one and silently discards every earlier declaration — so
+ * no assertion against the built object can find it. This guard reads the source.
+ *
+ * It exists because it actually happened (2026-07-27): a change added a second
+ * 'harness_shared.coord_event_log' key while one already existed further down. The
+ * later literal won, so the newly-added conversation queries were never invalidated
+ * by any coord write — a brand-new feature that simply never refreshed, with nothing
+ * anywhere reporting a problem. It also emitted TS1117, which hard-fails the
+ * typecheck gate REGARDLESS of the per-file error baseline, blocking the whole
+ * fleet's green checkpoint until someone chased it down.
+ *
+ * This registry is exactly the kind of long, append-friendly map where two
+ * contributors adding the same table months apart is a matter of time.
+ */
+describe('TABLE_TO_QUERY_NAMES source hygiene', () => {
+  it('declares every table key exactly once (a duplicate silently overrides, it does not merge)', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./table-to-query-names.ts', import.meta.url), 'utf8');
+
+    // Top-level entries of the map are indented exactly two spaces; query names
+    // nested inside an array value are indented four, so they cannot match here.
+    const keys = [...src.matchAll(/^ {2}'([\w.]+)':/gm)].map((m) => m[1]);
+    // Non-vacuity: prove the regex actually found the map before trusting a pass.
+    expect(keys.length).toBeGreaterThan(50);
+
+    const seen = new Set<string>();
+    const duplicated = keys.filter((k) => (seen.has(k) ? true : (seen.add(k), false)));
+    expect(duplicated, `duplicate table key(s): ${duplicated.join(', ')}`).toEqual([]);
+  });
+});

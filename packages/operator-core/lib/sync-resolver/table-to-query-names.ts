@@ -208,15 +208,35 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Tag and subscriber changes alter the Q&A list/detail projections even
   // though the conversation scalar row itself does not change.
   'harness_shared.coord_entity_subscriptions': ['conversations.questionDetail'],
-  // Agent↔agent coord traffic as a curated conversation source
-  // (conversations-agent-messages-2026-07-27). A new envelope can be a new
-  // conversation ROOT (list) or a REPLY that changes an existing root's reply
-  // count and last-activity sort key (list AND detail), and the row carries no
-  // trigger id matching the detail key, so detail full-busts by name — the same
-  // stance coord_threads/coord_thread_posts already take above.
+  // coord_event_log has TWO independent consumer families, and they MUST stay in
+  // this single entry — an object literal cannot repeat a key, and a duplicate
+  // does not merge, it SILENTLY OVERRIDES. That is exactly what happened on
+  // 2026-07-27: `conversations-agent-messages-2026-07-27` added a second
+  // 'harness_shared.coord_event_log' key here while one already existed further
+  // down, so the later literal won and the agent-message conversation queries
+  // below were never invalidated by any coord write — the brand-new source would
+  // simply never refresh. It also emitted TS1117, which hard-fails the typecheck
+  // gate regardless of the error baseline and so blocked the whole fleet's green
+  // checkpoint. Add new consumers to this array; never re-declare the key.
+  //
+  // 1. Agent↔agent coord traffic as a curated conversation source
+  //    (conversations-agent-messages-2026-07-27). A new envelope can be a new
+  //    conversation ROOT (list) or a REPLY that changes an existing root's reply
+  //    count and last-activity sort key (list AND detail), and the row carries no
+  //    trigger id matching the detail key, so detail full-busts by name — the same
+  //    stance coord_threads/coord_thread_posts already take above.
+  // 2. dev.coordFeed is the live coordination firehose (the PresenceRail Activity
+  //    tab + the /adv Conversations Feed). The emit_change_notify trigger on
+  //    coord_event_log is filtered to ORIGINAL rows (body->>'notify_kind' IS NULL)
+  //    so the per-subscriber fan-out delivery copies don't each fire — the busiest
+  //    coord table stays cheap (shared-hive-collaboration P-006). The (name,args)
+  //    dedupe bounds burst refetches.
   'harness_shared.coord_event_log': [
     'conversations.agentMessageList',
     'conversations.agentMessageDetail',
+    'dev.coordFeed',
+    'coord.history',
+    'coord.inbox',
   ],
   // harness_shared.messages_consolidated entry retired with the work-item
   // mail read queries — see retire-work-item-mail-surface-2026-07-26 P-004.
@@ -447,13 +467,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // live-execution view (scheduler.running) — a Queen set_claim_spec re-steer bumps the
   // revision a running bee shows (hybrid-bee-scheduler P-001 / D-007).
   'harness_shared.cup_claim_specs': ['scheduler.running'],
-  // dev.coordFeed is the live coordination firehose (the PresenceRail Activity
-  // tab + the /adv Conversations Feed). The emit_change_notify trigger on
-  // coord_event_log is filtered to ORIGINAL rows (body->>'notify_kind' IS NULL)
-  // so the per-subscriber fan-out delivery copies don't each fire — the busiest
-  // coord table stays cheap (shared-hive-collaboration P-006). The (name,args)
-  // dedupe bounds burst refetches.
-  'harness_shared.coord_event_log': ['dev.coordFeed', 'coord.history', 'coord.inbox'],
+  // (coord_event_log's entry lives above, merged — see the note there on why this
+  // key must never be re-declared.)
   // coord_open_escalations (355-coord-open-escalations-projection.sql) is the
   // small open-escalation projection plans:attention's listEscalations source
   // reads — NOT the same table as coord_event_log above, and (until mig 633)

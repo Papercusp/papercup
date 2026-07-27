@@ -632,20 +632,114 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.getByRole('tab', { name: /Raw events/i })).toBeTruthy();
   });
 
-  it('deduplicates semantic copies across timestamps without collapsing distinct content', () => {
+  it('deduplicates by identity but keeps same-source rows that merely share a title', () => {
+    // REGRESSION (conversations-agent-messages-2026-07-27 P-005). The semantic
+    // signature used to collapse ANY two rows sharing title/actor/pot — even
+    // two DIFFERENT ids from the SAME store. Measured on live data that ate 42%
+    // of agent chats (100 fetched → 58 signatures), which is why the pane read
+    // "Chat 51" while 100 rows had loaded (owner, 2026-07-27). Two chat sessions
+    // with the same title are two conversations; only a cross-store MIRROR of
+    // one conversation may collapse (asserted in the next test).
     const base = {
       id: 'chat-a', harness_slug: 'papercusp', role: 'worker', feature_id: 'WI-7',
       title: 'release path', created_at: '2026-07-11T12:00:00.000Z', updated_at: '2026-07-11T12:00:00.000Z',
       archived_at: null, total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 1,
     };
-    const rows = composeUnifiedConversationRows([], [], [
+    const rows = composeUnifiedConversationRows({ agentChats: [
       base,
       { ...base },
       { ...base, id: 'chat-b', created_at: '2026-07-11T13:00:00.000Z', updated_at: '2026-07-11T13:00:00.000Z' },
       { ...base, id: 'chat-c', title: 'a separate follow-up' },
-    ], 50);
+    ] }, 50);
 
-    expect(rows.map((row) => row.sourceId)).toEqual(['chat-b', 'chat-c']);
+    // chat-b (newest) then chat-a; the exact-id repeat of chat-a is dropped by
+    // IDENTITY dedup, which is the collapse that was always correct.
+    expect(rows.map((row) => row.sourceId)).toEqual(['chat-b', 'chat-a', 'chat-c']);
+  });
+
+  it('still collapses one conversation mirrored into two different stores', () => {
+    // The case the semantic signature exists for, and the one it must keep
+    // handling after P-005 narrowed it to CROSS-source only.
+    const rows = composeUnifiedConversationRows({
+      deliberations: [{
+        thread_id: 'th-mirror', parent_kind: 'issue', parent_ref: 'WI-9', title: 'shared subject',
+        created_by: 'architect', harness_slug: 'papercusp', created_at: TS(5), last_post_at: TS(5), post_count: 2,
+      }],
+      agentMessages: [{
+        msg_id: 'ms-mirror', kind: 'message', from: 'architect', to: [], summary: 'shared subject',
+        body: null, harness_slug: 'papercusp', plan_slug: null, lifecycle: null,
+        audience: ['@object:issue:WI-9'], broadcast: false, reply_count: 0, ts: TS(6), last_reply_ts: null,
+      }],
+    }, 50);
+
+    // Identical title/actor/pot/relatedRef across two stores → one row survives.
+    expect(rows).toHaveLength(1);
+  });
+
+  it('composes agent↔agent coord messages as a curated source with routing and reply counts', () => {
+    // The source that did not exist before P-004: 82,440 agent-authored
+    // envelopes had no curated home at all (owner, 2026-07-27: "I see agents
+    // sending messages to each other all the time").
+    const rows = composeUnifiedConversationRows({ agentMessages: [
+      {
+        msg_id: 'ms-direct', kind: 'message', from: 'su-alpha', to: ['su-beta'],
+        summary: 'the release gate is red', body: 'full body text',
+        harness_slug: 'papercusp', plan_slug: 'some-plan', lifecycle: 'finding',
+        audience: ['@object:issue:WI-42'], broadcast: false, reply_count: 3,
+        ts: TS(4), last_reply_ts: TS(2),
+      },
+      {
+        msg_id: 'ms-cast', kind: 'message', from: 'su-gamma', to: ['*'],
+        summary: 'facts:assert is down fleet-wide', body: null,
+        harness_slug: null, plan_slug: null, lifecycle: null,
+        audience: [], broadcast: true, reply_count: 0, ts: TS(8), last_reply_ts: null,
+      },
+      // System-origin traffic is telemetry, never a curated conversation.
+      {
+        msg_id: 'ms-sys', kind: 'message', from: 'system-watchdog', to: ['*'],
+        summary: 'infra-liveness tick', body: null, harness_slug: null, plan_slug: null,
+        lifecycle: null, audience: [], broadcast: true, reply_count: 0, ts: TS(1), last_reply_ts: null,
+      },
+    ] }, 50);
+
+    expect(rows.map((row) => row.sourceId)).toEqual(['ms-direct', 'ms-cast']);
+    const [direct, cast] = rows;
+    expect(direct.typeLabel).toBe('Agent messages');
+    expect(direct.actor).toBe('su-alpha');
+    expect(direct.recipient).toBe('su-beta');
+    expect(direct.count).toBe(3);
+    // The audience selector — not the plan — is the openable related object.
+    expect({ kind: direct.relatedKind, ref: direct.relatedRef }).toEqual({ kind: 'issue', ref: 'WI-42' });
+    // A broadcast has no single recipient; naming one would be a lie.
+    expect(cast.recipient).toBe('broadcast');
+    // Sorted by last ACTIVITY: ms-direct's reply at TS(2) beats ms-cast at TS(8).
+    expect(direct.updatedAt).toBeGreaterThan(cast.updatedAt);
+  });
+
+  it('types each source’s related ref so it can be linked to the right destination', () => {
+    // Feeds ConversationRefLink (P-009/P-010): a ref with no KIND is text we
+    // cannot safely route, and must stay plain rather than guess.
+    const rows = composeUnifiedConversationRows({
+      questions: [{
+        id: 'q-promoted', kind: 'question', state: 'resolved', scope: 'workspace', harness_slug: null,
+        title: 'promoted question', asker_id: 'oracle', topics: [], promoted_issue_id: 'EI-77',
+        created_ts: TS(9), updated_ts: TS(9),
+      }],
+      deliberations: [{
+        thread_id: 'th-feature', parent_kind: 'feature', parent_ref: 'hive-canary#F-CANARY-1',
+        title: 'feature thread', created_by: 'architect', harness_slug: 'papercusp',
+        created_at: TS(8), last_post_at: TS(8), post_count: 1,
+      }, {
+        thread_id: 'th-untyped', parent_kind: 'something-new', parent_ref: 'X-1',
+        title: 'unknown parent', created_by: 'architect', harness_slug: 'papercusp',
+        created_at: TS(7), last_post_at: TS(7), post_count: 1,
+      }],
+    }, 50);
+
+    const byId = Object.fromEntries(rows.map((r) => [r.sourceId, r]));
+    expect(byId['q-promoted'].relatedKind).toBe('issue');
+    expect(byId['th-feature'].relatedKind).toBe('feature');
+    expect(byId['th-untyped'].relatedKind).toBeNull();
   });
 
   it('positions virtual rows without compositor transforms and keys them by conversation identity', () => {
@@ -674,9 +768,12 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(isSystemConversationActor('system-release')).toBe(true);
     expect(isSystemConversationActor('architect')).toBe(false);
     const rows = composeUnifiedConversationRows(
-      [{ id: 'system-question', kind: 'question', state: 'open', scope: 'workspace', harness_slug: null, title: 'health tick', asker_id: 'system:watchdog', topics: [], promoted_issue_id: null, created_ts: TS(1), updated_ts: TS(1) }],
-      [{ thread_id: 'agent-thread', parent_kind: null, parent_ref: null, title: 'agent decision', created_by: 'architect', harness_slug: null, created_at: TS(2), last_post_at: null, post_count: 1 }],
-      [{ id: 'system-chat', harness_slug: null, role: 'system:scheduler', feature_id: null, title: 'tick', created_at: TS(3), updated_at: TS(3), archived_at: null, total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 0 }],
+      {
+        questions: [{ id: 'system-question', kind: 'question', state: 'open', scope: 'workspace', harness_slug: null, title: 'health tick', asker_id: 'system:watchdog', topics: [], promoted_issue_id: null, created_ts: TS(1), updated_ts: TS(1) }],
+        deliberations: [{ thread_id: 'agent-thread', parent_kind: null, parent_ref: null, title: 'agent decision', created_by: 'architect', harness_slug: null, created_at: TS(2), last_post_at: null, post_count: 1 }],
+        agentChats: [{ id: 'system-chat', harness_slug: null, role: 'system:scheduler', feature_id: null, title: 'tick', created_at: TS(3), updated_at: TS(3), archived_at: null, total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 0 }],
+        agentMessages: [{ msg_id: 'system-msg', kind: 'message', from: 'system-watchdog', to: ['*'], summary: 'tick', body: null, harness_slug: null, plan_slug: null, lifecycle: null, audience: [], broadcast: true, reply_count: 0, ts: TS(4), last_reply_ts: null }],
+      },
       50,
     );
     expect(rows.map((row) => row.sourceId)).toEqual(['agent-thread']);
@@ -1028,7 +1125,7 @@ describe('AdvConversationsTab — P-008 stress regressions', () => {
         created_ts: TS(1), updated_ts: TS(1),
       }];
       // A brand-new array reference each pass, as a real background refetch hands back.
-      const rows = composeUnifiedConversationRows(questions, [deliberation], [chat], 50);
+      const rows = composeUnifiedConversationRows({ questions, deliberations: [deliberation], agentChats: [chat] }, 50);
       expect(rows.map((row) => row.id)).toEqual(['threads:' + `q-${i}`, 'agentchats:chat-static', 'deliberations:th-static']);
     }
   });
@@ -1038,14 +1135,14 @@ describe('AdvConversationsTab — P-008 stress regressions', () => {
     const middle = { thread_id: 'th-b', parent_kind: null, parent_ref: null, title: 'b', created_by: 'architect', harness_slug: 'papercusp', created_at: TS(20), last_post_at: TS(20), post_count: 1 };
     const newest = { thread_id: 'th-c', parent_kind: null, parent_ref: null, title: 'c', created_by: 'architect', harness_slug: 'papercusp', created_at: TS(10), last_post_at: TS(10), post_count: 1 };
 
-    const before = composeUnifiedConversationRows([], [oldest, middle, newest], [], 50);
+    const before = composeUnifiedConversationRows({ deliberations: [oldest, middle, newest] }, 50);
     expect(before.map((row) => row.sourceId)).toEqual(['th-c', 'th-b', 'th-a']);
 
     // th-a gets a fresh reply and jumps to the front; th-b/th-c are untouched
     // and must keep their relative order (b before c) even though the array
     // position shifted underneath them.
     const afterOldestUpdated = { ...oldest, last_post_at: TS(0.1) };
-    const after = composeUnifiedConversationRows([], [afterOldestUpdated, middle, newest], [], 50);
+    const after = composeUnifiedConversationRows({ deliberations: [afterOldestUpdated, middle, newest] }, 50);
     expect(after.map((row) => row.sourceId)).toEqual(['th-a', 'th-c', 'th-b']);
   });
 

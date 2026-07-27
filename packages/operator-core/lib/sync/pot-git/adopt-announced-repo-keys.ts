@@ -121,6 +121,10 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
     const reg = await load(workspaceId);
     const adopted: { slug: string; from: string | undefined; to: string }[] = [];
     let unchanged = 0;
+    // A key that was already correct but is only now provable as the OWNER's
+    // (source 'local' → 'peer'). Worth persisting — it stops a later pass from
+    // re-deriving — but it is not a re-key and must not be reported as one.
+    let restamped = 0;
 
     for (const entry of reg.projects) {
       if (!isLocalPotHome(entry)) continue;
@@ -128,14 +132,19 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
       if (!announcedKey) continue;
 
       const before = entry.pot_repo_key;
+      const beforeSource = entry.pot_repo_key_source;
       const next = adoptRepoKey(entry, announcedKey);
-      if (next.key === before && entry.pot_repo_key_source === next.source) {
+      // Nothing to write. This is the STEADY STATE and it must stay a true
+      // no-op: this runs on every boot, and persisting an identical registry
+      // each time would be a pointless write on the hot boot path.
+      if (next.key === before && next.source === beforeSource) {
         unchanged += 1;
         continue;
       }
       entry.pot_repo_key = next.key;
       entry.pot_repo_key_source = next.source;
       if (next.key === before) {
+        restamped += 1;
         unchanged += 1;
         continue;
       }
@@ -143,9 +152,8 @@ export async function adoptAnnouncedRepoKeysForWorkspace(
     }
 
     if (adopted.length === 0) {
-      // A source-only restamp still needs persisting, but says nothing useful.
-      if (unchanged > 0) await save(reg, workspaceId).catch(() => {});
-      return { adopted, unchanged, wrote: false };
+      if (restamped > 0) await save(reg, workspaceId).catch(() => {});
+      return { adopted, unchanged, wrote: restamped > 0 };
     }
 
     await save(reg, workspaceId);

@@ -2439,99 +2439,6 @@ function lensColor(lens: string): string {
   return CATEGORICAL_HEXES[Math.abs(h) % CATEGORICAL_HEXES.length];
 }
 
-/**
- * Inline 5-star grader that lives ON the idea card (owner ask 2026-07-19d) —
- * the same grade + feedback the GradePanel popup carried, no popup. Stars fill
- * to the current grade; clicking a star grades immediately; the small note
- * affordance reveals an inline feedback input whose Save submits grade + note
- * together (matching the ?grade= deep-link flow).
- */
-function CardGradeStars({
-  current,
-  busy,
-  attribution,
-  feedback,
-  noteOpenInit = false,
-  onGrade,
-}: {
-  current: EffectiveGrade | null;
-  busy: boolean;
-  attribution: string | null;
-  feedback: string | null;
-  noteOpenInit?: boolean;
-  onGrade: (grade: number, feedback?: string) => void;
-}) {
-  const [noteOpen, setNoteOpen] = useState(noteOpenInit);
-  const [note, setNote] = useState("");
-  // A star picked while the note editor is open waits for Save (grade + note
-  // submit together); with the editor closed a star click grades immediately.
-  const [pendingGrade, setPendingGrade] = useState<number | null>(null);
-  const shown = pendingGrade ?? current?.grade ?? 0;
-  return (
-    <div className={`pc-learning__stargrade${current ? " is-graded" : " is-ungraded"}`}>
-      <span
-        role="radiogroup"
-        aria-label="Grade this idea"
-        className="pc-learning__stars"
-      >
-        {[1, 2, 3, 4, 5].map((g) => (
-          <button
-            key={g}
-            type="button"
-            role="radio"
-            aria-checked={shown === g}
-            aria-label={`Grade ${g} of 5`}
-            disabled={busy}
-            className={`pc-learning__star${g <= shown ? " is-on" : ""}`}
-            onClick={() => {
-              setPendingGrade(g);
-              if (!noteOpen) onGrade(g);
-            }}
-          >
-            <Star size={16} fill={g <= shown ? "currentColor" : "none"} aria-hidden />
-          </button>
-        ))}
-      </span>
-      <button
-        type="button"
-        className="pc-learning__starnote"
-        aria-expanded={noteOpen}
-        onClick={() => setNoteOpen((v) => !v)}
-      >
-        {noteOpen ? "hide note" : feedback ? "note ✓" : "+ note"}
-      </button>
-      <span
-        className="pc-learning__starmeta"
-        title={feedback ? `“${feedback}”` : undefined}
-      >
-        {attribution ?? "ungraded — a grade teaches the generator"}
-      </span>
-      {noteOpen ? (
-        <span className="pc-learning__stargrade-note">
-          <input
-            type="text"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Why this grade?"
-            aria-label="Grade feedback"
-          />
-          <button
-            type="button"
-            aria-label="save grade"
-            disabled={busy || shown === 0}
-            onClick={() => {
-              onGrade(shown, note.trim() || undefined);
-              setNoteOpen(false);
-            }}
-          >
-            Save
-          </button>
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
 function whenLabel(ms: number): string {
   if (!ms) return "";
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -3929,12 +3836,6 @@ function tickTone(
 
 /** Compact lens initials for the strip's chips ("first-principles" → "fp",
     "analogical" → "a") — the full name + count rides the chip tooltip. */
-const lensAbbrev = (lens: string): string =>
-  lens
-    .split("-")
-    .map((w) => w[0] ?? "")
-    .join("");
-
 /** The grade a row should display: an in-flight optimistic owner write wins,
     then the snapshot's stored grade, else null (ungraded). */
 interface EffectiveGrade {
