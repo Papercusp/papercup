@@ -56,7 +56,7 @@ const BASELINE: ReadonlySet<string> = new Set([
   'apps/operator/app/admin/dbos/DbosClient.tsx :: /api/admin/dbos/status',
   'apps/operator/app/admin/schedules/SchedulesClient.tsx :: /api/admin/schedules/inventory',
   'apps/operator/app/admin/plans/plans-api.ts :: /api/admin/inbox/triage',
-  // The two /api/admin/coordination entries were removed 2026-07-27 (WI-6500): the
+  // The two /api/admin/coordination entries were removed 2026-07-27 (WI-6501): the
   // shrink-only check flagged them stale because WI-6486 had already widened that
   // proxy to VTL for the HUD conversation pane. Fixing the route fixed its callers.
 
@@ -134,7 +134,7 @@ function normalisePath(raw: string): string {
  * Module-level `const NAME = '/api/...'` base constants, so a fetch built from one
  * is still attributable to a route.
  *
- * WI-6500 — this is the hole the first cut of this guard left open, and it cost the
+ * WI-6501 — this is the hole the first cut of this guard left open, and it cost the
  * owner a dead plans sidebar. `plans-api.ts` does NOT contain a literal
  * `fetch('/api/admin/plans/...')`; it declares `const BASE = '/api/admin/plans'` and
  * every one of its ~30 verbs goes through two helpers that fetch `${BASE}/${verb}`.

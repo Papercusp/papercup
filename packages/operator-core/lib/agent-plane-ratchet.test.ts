@@ -173,11 +173,24 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
     expect(row?.firstInterpretableAt).toBe('2026-07-27T13:18:00Z');
   });
 
-  /** The live series as of 2026-07-27: 3/6 then 4/6 from 14:34, and no regression. */
-  it('passes the real production series, with the two WI-6465 metrics exempt', () => {
+  /**
+   * The live series as of 2026-07-27: 3/8 then 4/8 from 14:34, and no regression.
+   *
+   * The interpretable count is 4 and the DENOMINATOR is 8 — PLANE_METRIC_IDS
+   * gained the two commitment-backed legs (WI-6465 / D-102) without gaining
+   * their producer. Verified against harness_shared.agent_plane_measurements:
+   * every recorded window through 2026-07-27T18:36 still carries metric_count 6
+   * and never mentions those two ids, so they have not once been interpretable.
+   * They are therefore listed as BLOCKED here rather than left to windowOf's
+   * interpretable-by-default — defaulting them true is what silently pushed
+   * this expectation to 6 and reddened the gate.
+   */
+  it('passes the real production series, with the four WI-6465 metrics exempt', () => {
     const blocked = {
       'conflicting-assumption-incidence': w(false),
       'acted-on-stale-or-wrong-value': w(false),
+      'acted-on-stale-declared-basis': w(false),
+      'closed-work-basis-moved': w(false),
     };
     const report = ratchetPlaneSeries({
       series: [
@@ -188,7 +201,9 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
     });
     expect(report.failures).toHaveLength(0);
     expect(report.exempt.map((r) => r.metric).sort()).toEqual([
+      'acted-on-stale-declared-basis',
       'acted-on-stale-or-wrong-value',
+      'closed-work-basis-moved',
       'conflicting-assumption-incidence',
     ]);
     expect(report.highWaterCount).toBe(4);
@@ -200,6 +215,8 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
     const blocked = {
       'conflicting-assumption-incidence': w(false),
       'acted-on-stale-or-wrong-value': w(false),
+      'acted-on-stale-declared-basis': w(false),
+      'closed-work-basis-moved': w(false),
     };
     const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
 
@@ -207,7 +224,9 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
 
     const afterClose = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6465']) });
     expect(afterClose.failures.map((f) => f.metric).sort()).toEqual([
+      'acted-on-stale-declared-basis',
       'acted-on-stale-or-wrong-value',
+      'closed-work-basis-moved',
       'conflicting-assumption-incidence',
     ]);
     expect(afterClose.exempt).toHaveLength(0);

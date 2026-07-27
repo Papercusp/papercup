@@ -111,7 +111,7 @@ describe('coordination proxy — CSRF backstop (WI-6486)', () => {
 });
 
 /**
- * WI-6500 — POST /admin/plans/:verb joined the VTL set because the left sidebar's
+ * WI-6501 — POST /admin/plans/:verb joined the VTL set because the left sidebar's
  * plan load 403'd on the cookie-less desktop webview (owner-reported: "plans:get →
  * 403: trust unverified-loopback not in allowlist").
  *
@@ -120,7 +120,7 @@ describe('coordination proxy — CSRF backstop (WI-6486)', () => {
  * promote). So the CSRF guard is the only thing left standing between a foreign page
  * and a plan mutation. These pin it.
  */
-describe('plans admin write route — CSRF backstop (WI-6500)', () => {
+describe('plans admin write route — CSRF backstop (WI-6501)', () => {
   it('refuses a cross-origin browser POST', async () => {
     const req = post('/admin/plans/set-status', 'https://evil.example', { slug: 'x', status: 'shipped' });
     const res = (await plansWrite.handler(req as never, { params: { verb: 'set-status' } } as never)) as Response;

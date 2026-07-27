@@ -696,12 +696,22 @@ export async function reclaimStaleIssueClaims(
   // the release-cooldown floor can't misfire), greppable via `last_released_by LIKE
   // 'reaper:%'`. This reaper has no per-row reason split (unlike the feature-family
   // leg) — every row it frees is the DEAD leg — so the marker is always 'reaper:dead'.
+  // Best-effort, same discipline as the lease cleanup below: an attribution-stamp miss
+  // must never fail (or partially roll back) the release itself, which has already
+  // committed by the time we get here. A handful of older, deliberately-decoupled test
+  // fixtures model `engineer_issues` as a genuinely standalone table with no backing
+  // `harness_shared.work_items` at all (pre-work-item-status-full-unify style); this
+  // catch keeps this reaper working for them exactly as it did before this fix.
   if (released.length > 0) {
-    await sql`
-      UPDATE harness_shared.work_items
-         SET last_released_by = 'reaper:dead', last_released_at = now()
-       WHERE feature_id = ANY(${released.map((r) => r.issue_id)}::text[])
-         AND item_kind IN ('bug', 'change')`;
+    try {
+      await sql`
+        UPDATE harness_shared.work_items
+           SET last_released_by = 'reaper:dead', last_released_at = now()
+         WHERE feature_id = ANY(${released.map((r) => r.issue_id)}::text[])
+           AND item_kind IN ('bug', 'change')`;
+    } catch {
+      // best-effort — see comment above
+    }
   }
   // EI-6480: clear the stale per-Hive claim LEASE for every issue this sweep just returned to
   // the OPEN pool. Unlike the feature reaper (whose work_items.harness_slug IS the bare lease

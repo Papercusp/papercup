@@ -86,6 +86,17 @@ export type RatchetVerdict = (typeof RATCHET_VERDICTS)[number];
 export const METRIC_KNOWN_GAPS: Readonly<Partial<Record<PlaneMetricId, string>>> = Object.freeze({
   'conflicting-assumption-incidence': 'WI-6465',
   'acted-on-stale-or-wrong-value': 'WI-6465',
+  // The two COMMITMENT-backed legs added with the metric ids themselves
+  // (WI-6465 / D-102). Their SHAPE exists; their PRODUCER does not yet emit —
+  // verified against the live series 2026-07-27, where every recorded window
+  // through 18:36 still carries metric_count 6 and does not mention these ids
+  // at all. So they are `never-interpretable` for the same open item as the two
+  // above, and belong here rather than being assumed interpretable: an
+  // unexplained empty metric is designed to FAIL, and WI-6465 closing is
+  // exactly what should turn these into hard failures if the producer is still
+  // silent (see judgeKnownGap + the ratchet test that pins that).
+  'acted-on-stale-declared-basis': 'WI-6465',
+  'closed-work-basis-moved': 'WI-6465',
 });
 
 /** One metric's state in one window, as read back from a measurement row. */

@@ -180,7 +180,7 @@ const RULES: ReadonlyArray<{
       // what makes admitting a cookie-less caller safe on a proxy that reaches
       // write verbs (topics:create, conversations:post/answer/resolve, coord:ask).
       { method: 'POST', path: '/admin/coordination/:group/:verb', auth: VTL },
-      // WI-6500 — the same EI-338 path, owner-reported from the left sidebar:
+      // WI-6501 — the same EI-338 path, owner-reported from the left sidebar:
       // "plans:get → 403: trust unverified-loopback not in allowlist". The plans
       // rail is the primary navigation surface rather than an optional pane, so VT
       // here meant the sidebar was dead in the shipping (desktop) build.

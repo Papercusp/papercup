@@ -259,7 +259,7 @@ export async function dispatchRead(req: Request, ctx: RouteContext): Promise<Res
 }
 
 async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
-  // WI-6500: this route admits `unverified-loopback` so the cookie-less desktop
+  // WI-6501: this route admits `unverified-loopback` so the cookie-less desktop
   // webview can reach it (see the route definition). That admission removes the
   // trust tier as the cross-origin backstop, so the CSRF origin guard IS the
   // backstop — mirrors coord/:verb and the coordination proxy. Must stay FIRST.
@@ -371,7 +371,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   return unwrap(result);
 }
 
-// WI-6500 (owner-reported 2026-07-27: "plans:get → 403: trust unverified-loopback
+// WI-6501 (owner-reported 2026-07-27: "plans:get → 403: trust unverified-loopback
 // not in allowlist" opening a plan from the left sidebar).
 //
 // Both routes admit `unverified-loopback` — the EI-338 class, same fix as the coord

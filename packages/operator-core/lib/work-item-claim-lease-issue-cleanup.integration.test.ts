@@ -73,6 +73,18 @@ const SPAWNED_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
     spawn_id text PRIMARY KEY, session_owner text, run_id text, status text NOT NULL,
     heartbeat_at timestamptz, finished_at timestamptz, cancelled_at timestamptz)`;
+// EI-18674157526367861: liveHolderFragment ALSO unconditionally folds in
+// activeTurnHolderFragment (a recent harness_shared.agent_activity row confers
+// liveness too) — this fixture predates that change, so reclaimStaleIssueClaims
+// hard-errored here with "relation harness_shared.agent_activity does not exist"
+// the moment that fragment landed (a stale-fixture class per the CLAUDE.md "trigger
+// to watch" note: a dependency ADDED to a shared query, not selected by this file's
+// own schema). Deliberately minimal — same projection as
+// work-items-stale-claims.integration.test.ts's own AGENT_ACTIVITY_DDL.
+const AGENT_ACTIVITY_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
+    id BIGSERIAL PRIMARY KEY, owner_id text NOT NULL, kind text NOT NULL, summary text,
+    created_at timestamptz NOT NULL DEFAULT now())`;
 
 const CLAIM_NEXT_INTENT = 'work-stealing claim (claim_next)';
 
@@ -88,6 +100,7 @@ beforeAll(async () => {
   await sql.unsafe(ENGINEER_ISSUES_DDL);
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
+  await sql.unsafe(AGENT_ACTIVITY_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -96,7 +109,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.engineer_issues, harness_shared.coord_presence, harness_shared.spawned_agents`;
+  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.engineer_issues, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity`;
   await setLeaseFlag(true);
 });
 afterEach(async () => {
