@@ -1926,6 +1926,11 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
           // reviewer uses to decide whether the live cold join ever ran.
           path: 'no-topic-stub',
           ok: outcome.ok,
+          // WI-6372: `ok` means A FETCH COMPLETED. `converged` is the question a
+          // release reviewer actually cares about, carried here so the two can
+          // never again be read as the same thing from this record. `null` =
+          // the probe could not judge (no announcements to compare against).
+          converged: convergence?.converged ?? null,
           namespaceCount: outcome.namespaces.length,
           skippedExisting: outcome.skippedExisting.length,
         },
@@ -2040,6 +2045,9 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         // a real dial rather than leaving a reader to infer it from key presence.
         path: 'dialed',
         ok: outcome?.ok ?? false,
+        // WI-6372: see the stub writer above — `ok` is "a fetch completed",
+        // `converged` is "we are level with the pot". Never the same question.
+        converged: convergence?.converged ?? null,
         namespaceCount: outcome?.namespaces.length ?? 0,
         skippedExisting: outcome?.skippedExisting.length ?? 0,
         // WI-6189 ladder telemetry — the burn-down a watcher needs to tell a
@@ -2095,11 +2103,18 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // `harness_shared.routines.metadata->'bootstrap'` on a later wake. A
       // release whose open question is "does the live cold join work" cannot
       // have success be the silent case.
+      // WI-6372: this line is the single most-trusted artifact this feature
+      // produces, and for 7 days it said COMPLETE about a mirror that was a
+      // week stale. It must never again assert completion while the probe
+      // says we are not level with the pot.
       console.log(
-        `[git-sync] ${slug}: bootstrap-tick COLD JOIN COMPLETE (dialed: ${dialLog.join(', ')}): ` +
+        `[git-sync] ${slug}: bootstrap-tick ${
+          convergence?.converged === false ? 'FETCH COMPLETE BUT NOT CONVERGED' : 'COLD JOIN COMPLETE'
+        } (dialed: ${dialLog.join(', ')}): ` +
           `seeded ${outcome.namespaces.length} namespace(s) in ${outcome.steps ?? 0} rung(s)` +
           `${outcome.skippedExisting.length > 0 ? `, ${outcome.skippedExisting.length} already present` : ''}` +
-          `${outcome.shallow ? ' — still shallow' : ' — history complete'}`,
+          `${outcome.shallow ? ' — still shallow' : ' — history complete'}` +
+          `${convergence?.converged === false ? ` — ${formatConvergenceVerdict(convergence)}` : ''}`,
       );
     }
   } catch (e) {

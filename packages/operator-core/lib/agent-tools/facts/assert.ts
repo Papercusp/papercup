@@ -22,6 +22,7 @@ import {
   FACT_BODY_MAX_CHARS,
   FACT_CONFIDENCE_LEVELS,
   FACT_KINDS,
+  CONVENTION_ENFORCEMENT_TIERS,
   FACT_MAX_DEPENDENCIES,
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
@@ -343,6 +344,9 @@ export default defineTool({
       kind: args.kind ?? null,
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
       ...(args.claim ? { claim: args.claim } : {}),
+      // P-018: validated inside assertFact (validateConventionEnforcement), not
+      // here — the D-016 floor rule has to bind every writer, not just this tool.
+      ...(args.enforcement ? { enforcement: args.enforcement } : {}),
       ttlSec,
       createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),

@@ -173,7 +173,16 @@ vi.mock('../../sync/pot-git/peer-dial-registry', () => ({ openHiveGitDuplexToDev
 vi.mock('../../sync/hyperbee/local-announce-identity', () => ({ loadCachedLocalAnnounceIdentity: loadCachedLocalAnnounceIdentityMock }));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, getOrgPg: () => ({ sql: { unsafe: unsafeMock } }) };
+  // WI-6372: `sql` is now used in BOTH of postgres.js's two calling
+  // conventions by this leg — as a TEMPLATE TAG (the convergence probe's
+  // fed-event + prior-state reads) and as `sql.unsafe(...)`
+  // (patchRoutineMetadata). A bare `{ unsafe }` object satisfies only the
+  // second: the tag call then dies "sql is not a function" inside the leg's
+  // fail-soft catch, which becomes a console.warn, which vitest-fail-on-console
+  // reds this ENTIRE file with — 24 misleading failures naming everything
+  // except the mock. Same trap as the storage stub set above.
+  const sql = Object.assign(async (..._parts: unknown[]) => [] as unknown[], { unsafe: unsafeMock });
+  return { ...actual, getOrgPg: () => ({ sql }) };
 });
 
 // Import AFTER the mocks so the module resolves the mocked deps.
@@ -416,10 +425,28 @@ describe('runBootstrapLeg', () => {
    * the routines patch. Asserting on the patch itself is also what these tests actually mean;
    * a global call COUNT was only ever a proxy for it.
    */
-  function routinesPatchCalls(): Array<[string, unknown[]]> {
+  function routinesPatchCallsWithKey(key: string): Array<[string, unknown[]]> {
     return unsafeMock.mock.calls
       .filter((c) => String(c[0]).includes('harness_shared.routines'))
+      .filter((c) => {
+        // WI-6372: SQL TEXT alone no longer identifies the patch. The
+        // convergence probe writes its own routines patch through the SAME
+        // `patchRoutineMetadata` (hence byte-identical SQL) and, being ABOVE
+        // the warm gate, writes it FIRST — so selecting by text or by index
+        // silently returned the convergence record to tests asserting about
+        // the bootstrap one. Select by the metadata KEY each test actually
+        // means; a third leg-level patch can then be added without touching
+        // any of these assertions.
+        try {
+          return key in (JSON.parse(String((c[1] as unknown[])[1])) as Record<string, unknown>);
+        } catch {
+          return false;
+        }
+      })
       .map((c) => [String(c[0]), c[1] as unknown[]] as [string, unknown[]]);
+  }
+  function routinesPatchCalls(): Array<[string, unknown[]]> {
+    return routinesPatchCallsWithKey('bootstrap');
   }
   function routinesPatch(): { text: string; params: unknown[] } {
     const [call] = routinesPatchCalls();

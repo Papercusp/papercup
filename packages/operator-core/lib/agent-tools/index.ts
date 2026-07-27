@@ -227,6 +227,7 @@ import './memory/list';
 import './facts/assert';
 import './facts/retract';
 import './facts/list';
+import './conventions/governing';
 // fleet-reliability-verification-2026-07-10 P-010 (WI-3812) — self-verifying
 // federation probes: probe:emit stamps required federation keys + refuses
 // loudly when unfederatable; probe:get reads the derived per-hop verdict;

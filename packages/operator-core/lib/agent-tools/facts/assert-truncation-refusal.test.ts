@@ -60,6 +60,10 @@ function fakeStoredFact(input: AssertFactInput): AgentFact {
     kind: input.kind ?? null,
     dependsOn: [...(input.dependsOn ?? [])],
     claim: input.claim ?? null,
+    // P-018 / D-016: echoed from the input for the same reason `confidence` and
+    // `kind` are — this stand-in models the PERSISTED row, so hardcoding null
+    // would make the enforcement round-trip untestable from here.
+    enforcement: input.enforcement ?? null,
     sourceRef: input.sourceRef ?? null,
     audienceScope: input.audienceScope ?? null,
     sourceProvenance: input.sourceProvenance ?? null,

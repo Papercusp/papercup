@@ -21,6 +21,9 @@ const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   kind: null,
   dependsOn: [],
   claim: null,
+  // P-018 / D-016, migration 692. Null is the honest default here: this fixture
+  // asserts DISCLOSURE of body truncation, not convention enforcement.
+  enforcement: null,
   sourceRef: 'wi:EI-10951',
   audienceScope: null,
   sourceProvenance: null,

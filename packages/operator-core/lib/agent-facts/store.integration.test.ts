@@ -28,6 +28,8 @@ import {
   factVersions,
   FACTS_PER_SCOPE_CAP,
   listLapsedWallFacts,
+  listConventionFacts,
+  factCitationRef,
   type FactDependency,
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
@@ -70,6 +72,10 @@ beforeAll(async () => {
     // partial `agent_facts_kind` index. Added in the SAME edit as the migration,
     // which is the discipline the 498/505/664 drift above exists to enforce.
     '690-agent-facts-depends-on-kind-claim.sql',
+    // P-018: the `enforcement` column + its tier CHECK. Same discipline again —
+    // added in the same edit as the migration, so a drift between the tier
+    // vocabulary in TypeScript and the one in the DB reds HERE.
+    '692-agent-facts-convention-enforcement.sql',
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper
     // (lifted from this file's own former inline version).
@@ -595,5 +601,96 @@ describe('listLapsedWallFacts', () => {
     expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).toContain('wall:renewed');
     await assertFact({ ...base, key: 'wall:renewed', body: 'fresh body', ttlSec: 3600 }, db.sql);
     expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).not.toContain('wall:renewed');
+  });
+});
+
+/**
+ * P-018 — the conventions layer against real PG. The unit suite pins the D-016
+ * RULES; this pins that they survive a round-trip through the mig-692 column and
+ * that the cross-scope discovery read actually selects what it claims to.
+ */
+describe('P-018 conventions — enforcement round-trip + cross-scope discovery', () => {
+  const conv = (over: Record<string, unknown> = {}) => ({
+    scope: 'workspace' as const,
+    key: 'migrations-via-runner',
+    body: 'Apply migrations via db:migrate, never a raw psql -f.',
+    kind: 'convention' as const,
+    createdBy: 'su-int',
+    workspaceId: WS,
+    ...over,
+  });
+
+  it('persists an enforcement tier and reads it back typed', async () => {
+    const f = await assertFact(
+      conv({ enforcement: { tier: 'gate', floor: 0.6, reviewBy: '2026-09-01' } }),
+      db.sql,
+    );
+    expect(f.enforcement).toEqual({ tier: 'gate', floor: 0.6, reviewBy: '2026-09-01' });
+    const [read] = await listConventionFacts({ workspaceId: WS }, db.sql);
+    expect(read.enforcement).toEqual({ tier: 'gate', floor: 0.6, reviewBy: '2026-09-01' });
+    // The citable id carries the real version id, so it is checkable.
+    expect(factCitationRef(read)).toMatch(/^fact:workspace:migrations-via-runner@v\d+$/);
+  });
+
+  it('a structural convention persists with no floor', async () => {
+    const f = await assertFact(conv({ enforcement: { tier: 'structural' } }), db.sql);
+    expect(f.enforcement).toEqual({ tier: 'structural' });
+  });
+
+  it('REFUSES a floorless gate at the STORE, not just the tool layer', async () => {
+    await expect(assertFact(conv({ enforcement: { tier: 'gate' } }), db.sql)).rejects.toThrow(
+      /requires floor and reviewBy/,
+    );
+    // …and nothing was written — a refused write must not leave a partial row.
+    expect(await listConventionFacts({ workspaceId: WS }, db.sql)).toHaveLength(0);
+  });
+
+  it('REFUSES an enforcement tier on a non-convention', async () => {
+    await expect(
+      assertFact(conv({ kind: 'conclusion', enforcement: { tier: 'structural' } }), db.sql),
+    ).rejects.toThrow(/only meaningful on kind:'convention'/);
+  });
+
+  it('the mig-692 CHECK rejects an out-of-vocabulary tier written OUT OF BAND', async () => {
+    // The TypeScript validator is bypassable (a raw INSERT); the DB constraint is
+    // the backstop that keeps the vocabulary closed either way.
+    await expect(
+      db.sql.unsafe(`
+        INSERT INTO harness_shared.agent_facts
+          (workspace_id, scope, scope_ref, key, body, created_by, expires_at, kind, enforcement)
+        VALUES ('${WS}', 'workspace', NULL, 'smuggled', 'b', 'su-int', now() + interval '1 day',
+                'convention', '{"tier":"prompt"}'::jsonb)`),
+    ).rejects.toThrow(/agent_facts_enforcement_tier_check/);
+  });
+
+  it('discovery is CROSS-SCOPE — the caller need not know which scope it was filed under', async () => {
+    await assertFact(conv({ key: 'ws-rule' }), db.sql);
+    await assertFact(conv({ key: 'harness-rule', scope: 'harness', scopeRef: 'papercusp' }), db.sql);
+    await assertFact(conv({ key: 'owner-rule', scope: 'owner', scopeRef: 'su-me' }), db.sql);
+    const keys = (await listConventionFacts({ workspaceId: WS }, db.sql)).map((f) => f.key);
+    expect(keys.sort()).toEqual(['harness-rule', 'owner-rule', 'ws-rule']);
+  });
+
+  it('scopeRefs narrows to the refs that govern YOU — but never hides a workspace rule', async () => {
+    await assertFact(conv({ key: 'ws-rule' }), db.sql);
+    await assertFact(conv({ key: 'mine', scope: 'owner', scopeRef: 'su-me' }), db.sql);
+    await assertFact(conv({ key: 'theirs', scope: 'owner', scopeRef: 'su-someone-else' }), db.sql);
+    const keys = (
+      await listConventionFacts({ workspaceId: WS, scopeRefs: ['su-me'] }, db.sql)
+    ).map((f) => f.key);
+    expect(keys.sort()).toEqual(['mine', 'ws-rule']);
+  });
+
+  it('excludes non-conventions, retracted, and superseded versions', async () => {
+    await assertFact(conv({ key: 'a-conclusion', kind: 'conclusion' }), db.sql);
+    await assertFact(conv({ key: 'no-kind', kind: null }), db.sql);
+    await assertFact(conv({ key: 'gone' }), db.sql);
+    await retractFact({ scope: 'workspace', key: 'gone', workspaceId: WS }, db.sql);
+    // A corrected convention returns ONCE — the current version, not both.
+    await assertFact(conv({ key: 'revised', body: 'v1' }), db.sql);
+    await assertFact(conv({ key: 'revised', body: 'v2' }), db.sql);
+    const out = await listConventionFacts({ workspaceId: WS }, db.sql);
+    expect(out.map((f) => f.key)).toEqual(['revised']);
+    expect(out[0].body).toBe('v2');
   });
 });
