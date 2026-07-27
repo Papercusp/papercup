@@ -1684,8 +1684,16 @@ async function runConvergenceProbe(input: {
       });
     }
 
+    // Read local sigrefs ONLY for devices that actually announced. GUARD 2 means
+    // a device without an announcement can never be judged behind, so reading
+    // its namespace is pure waste — and it is not cheap: each read spawns git
+    // (twice, via readNamespaceRef + cat-file). Live-measured on the tower
+    // 2026-07-27: 20 attested candidate devices but exactly ONE announcing peer,
+    // i.e. ~38 of 40 subprocess spawns per tick, per harness, for nothing.
+    const announcingDevices = new Set(announced.map((a) => a.devicePubkeyBase64));
     const local: LocalMirror[] = [];
     for (const device of candidateDevicePubkeys) {
+      if (!announcingDevices.has(device)) continue;
       const stored = await readSigrefs(repoPath, device).catch(() => null);
       local.push({ devicePubkeyBase64: device, version: stored?.version ?? null });
     }

@@ -884,7 +884,7 @@ export async function composeOrient(
   // every wake for no reason — it already has them from an earlier full orient).
   if (!monitor)
     try {
-      const { foldFacts, renderFactSrc } = await import('../../../agent-facts/store');
+      const { foldFacts, renderFactSrc, factCitationRef } = await import('../../../agent-facts/store');
       const selectors = [
         { scope: 'workspace' as const },
         ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
@@ -944,6 +944,24 @@ export async function composeOrient(
           // anchoring work-item closed); `dependsStale` is a mechanical verdict
           // on a dependency the fact's own author declared.
           ...(f.depsStale ? { dependsStale: f.depsStale } : {}),
+          // P-018: the MODALITY, which this projection dropped — so a normative
+          // convention arrived here byte-identical to a settled conclusion, at
+          // the one surface every agent reads every wake. Same whitelist defect
+          // P-033 (e) found in `toAgentMessageRow`: the field was stored and the
+          // reader simply never selected it.
+          //
+          // Emitted ONLY when declared, so the common case (a legacy fact with
+          // no kind) stays byte-identical and this costs the fold nothing.
+          ...(f.kind ? { kind: f.kind } : {}),
+          ...(f.kind === 'convention'
+            ? {
+                // D-016's tier — and `cite`, the ref to pass verbatim as a
+                // `premises` entry at the point of action (D-075 R1). Without it
+                // the fold could name a convention it gave you no way to cite.
+                ...(f.enforcement ? { enforcement: f.enforcement } : {}),
+                cite: factCitationRef(f),
+              }
+            : {}),
         }));
       }
       if (withheld.length > 0) {
