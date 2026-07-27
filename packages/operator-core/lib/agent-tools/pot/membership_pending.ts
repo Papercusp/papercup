@@ -11,6 +11,7 @@ import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listPendingJoins } from '../../hive-pending-joins-store';
+import { resolveFederatedPotScope } from '../../federated-pot-scope';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -46,7 +47,13 @@ export default defineTool({
     const workspaceId =
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const status = args.status === 'all' ? null : args.status; // undefined ⇒ store default 'pending'
-    const rows = await listPendingJoins(workspaceId, args.pot, { status });
+    // WI-6318: hive_pending_joins is a `hiveScoped` projection, persisted under the
+    // OWNER-authored slug. `args.pot` is a tool argument, so on a joiner it is the LOCAL
+    // handle and this queue reads EMPTY — indistinguishable from "no one is waiting".
+    // A no-op on an owner; fails open to the local handle.
+    const rows = await listPendingJoins(workspaceId, await resolveFederatedPotScope(workspaceId, args.pot), {
+      status,
+    });
     return text({ ok: true, pot: args.pot, count: rows.length, pending: rows });
   },
 });

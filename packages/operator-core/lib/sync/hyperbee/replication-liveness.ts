@@ -105,6 +105,16 @@ export interface ReplicationStallEpisode {
     | 'expected_never_admitted';
   /** How long the stall condition had been held when the episode fired (ms). */
   stalledForMs: number;
+  /**
+   * EI-18778631943888326: WHICH STAGE is actually stuck, for `kind:'frozen'` only
+   * (undefined on every other kind). 'transport' = blocks are not flowing — the
+   * classic attached-but-dead reading. 'apply' = replication IS delivering (the
+   * writer length advanced during the stall) but the merge/apply stage is not
+   * consuming it, so the replicator is the WRONG place to look. Machine-readable
+   * counterpart to the wording in `detail`, so a dashboard/triage can route on the
+   * stage instead of regex-ing prose.
+   */
+  stalledStage?: 'transport' | 'apply';
   /** Human-readable one-liner for the boot event / EI body. */
   detail: string;
 }
@@ -190,6 +200,13 @@ interface LogState {
   lastNonZeroPeersMs: number | null;
   /** Last time mergedPosition advanced (seeded at first sample with a position). */
   lastIngestProgressMs: number | null;
+  /**
+   * EI-18778631943888326: last time `knownLength` advanced — i.e. the last time
+   * replication actually DELIVERED writer updates to this replica. null = never
+   * observed advancing this process lifetime. Used ONLY to attribute a frozen
+   * episode to the right stage; it never gates whether the episode fires.
+   */
+  lastKnownLengthProgressMs: number | null;
   /**
    * Start of the current swarm-connected-while-NOT-replicating window; null
    * when the condition doesn't hold (sustained-offline, or a replicator is
@@ -579,6 +596,10 @@ export function sampleReplicationLiveness(
       // Seed progress clock at first sight so a pre-existing backlog doesn't
       // instantly alarm — it gets a full grace window from first observation.
       lastIngestProgressMs: sample.mergedPosition !== undefined ? now : null,
+      // EI-18778631943888326: null (never observed advancing) rather than `now` —
+      // seeding it to `now` would let the very first sample masquerade as "delivery
+      // observed" and mis-attribute a genuine transport freeze to apply.
+      lastKnownLengthProgressMs: null,
       connectedNeverReplSinceMs: null,
       lastSwarmSeenMs: null,
       lastSwarmConnections: null,
@@ -596,6 +617,12 @@ export function sampleReplicationLiveness(
   const wasBehind =
     st.mergedPosition !== null && st.knownLength > st.mergedPosition;
   st.lastSampleMs = now;
+  // EI-18778631943888326: `knownLength` is the writer's length AS KNOWN TO OUR
+  // REPLICA, so it can only advance when replication is actually DELIVERING the
+  // writer's updates to us. That makes "did knownLength move while merging stood
+  // still?" a free, already-sampled discriminator between the two very different
+  // causes the frozen axis used to conflate — see the axis body below.
+  if (sample.knownLength > st.knownLength) st.lastKnownLengthProgressMs = now;
   st.knownLength = sample.knownLength;
   st.lastSwarmConnections = sample.swarmConnections ?? null;
 
@@ -870,20 +897,54 @@ export function sampleReplicationLiveness(
       now - st.lastIngestProgressMs >= graceMs
     ) {
       // Replicator attached, writer is ahead, and we have ingested NOTHING for
-      // the whole grace window — attached-but-dead (blocks not flowing). Gated
-      // on peers>0 so a plainly-disconnected peer alarms on the peers axis
-      // (or never, if it was never connected), not twice.
+      // the whole grace window. Gated on peers>0 so a plainly-disconnected peer
+      // alarms on the peers axis (or never, if it was never connected), not twice.
+      //
+      // EI-18778631943888326: this used to say, unconditionally, "replicator
+      // attached but ingest frozen" — which names the REPLICATOR as the suspect.
+      // That is only one of two causes, and during the WI-559 diagnosis it was the
+      // WRONG one: replication was healthy (the peer was streaming, bytesReceived
+      // climbing) while the MERGE PASS aborted every ~60s on an FK violation, so
+      // mergedPosition never moved. The alarm sent the reader toward the
+      // replicator/swarm layer while the actual defect sat in apply.
+      //
+      // Discriminate with data we already sample: `knownLength` is the writer
+      // length AS KNOWN TO OUR REPLICA, so it advances ONLY when replication is
+      // delivering. If it moved during this stall, the transport is demonstrably
+      // alive and the stuck stage is APPLY/MERGE; if it never moved, the classic
+      // attached-but-dead reading stands. Attribution only — the episode still
+      // fires identically either way, so no alarm is lost.
       st.alarmedFrozen = true;
+      // STRICTLY greater, not >=: the sample where a log first becomes behind sets BOTH
+      // clocks to the same instant, so `>=` would count the window-STARTING observation
+      // as in-window delivery and mis-attribute a log that received updates and then went
+      // dark to 'apply' forever. Delivery only counts if it happened strictly AFTER the
+      // freeze window opened — the discriminator is scoped to THIS stall, not "ever
+      // delivered". (Caught by the third attribution test, which failed on `>=`.)
+      const deliveringDuringStall =
+        st.lastKnownLengthProgressMs !== null &&
+        st.lastKnownLengthProgressMs > st.lastIngestProgressMs;
+      const stalledSecs = Math.round((now - st.lastIngestProgressMs) / 1000);
+      const positions =
+        `writer at ${st.knownLength}, merged to ${sample.mergedPosition}, ` +
+        `no merge progress for ${stalledSecs}s`;
       const episode: ReplicationStallEpisode = {
         workspaceId,
         harnessSlug,
         logKeyHex: sample.keyHex,
         kind: 'frozen',
         stalledForMs: now - st.lastIngestProgressMs,
-        detail:
-          `log=${sample.keyHex.slice(0, 12)}… replicator attached but ingest frozen: ` +
-          `writer at ${st.knownLength}, merged to ${sample.mergedPosition}, ` +
-          `no progress for ${Math.round((now - st.lastIngestProgressMs) / 1000)}s`,
+        stalledStage: deliveringDuringStall ? 'apply' : 'transport',
+        detail: deliveringDuringStall
+          ? `log=${sample.keyHex.slice(0, 12)}… APPLY/MERGE frozen — replication is ` +
+            `DELIVERING (writer length advanced during this stall) but the merge pass is ` +
+            `not consuming it: ${positions}. Look at the MERGE/apply stage, NOT the ` +
+            `replicator or swarm — e.g. a merge pass aborting mid-batch (a constraint ` +
+            `violation rolls back the whole pass), or ops being quarantined/dropped at apply. ` +
+            `Check the serve log for "merge pass FAILED" / quarantine lines for this harness.`
+          : `log=${sample.keyHex.slice(0, 12)}… replicator attached but NOT DELIVERING ` +
+            `(writer length has not advanced during this stall): ${positions}. ` +
+            `Blocks are not flowing — look at the replicator/swarm layer.`,
       };
       onEpisode(episode);
       dispatchRepair(episode);

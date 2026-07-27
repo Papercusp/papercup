@@ -35,6 +35,7 @@ import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
 import { withBoundedTimeout } from '../../../bounded-timeout';
+import { getHostSnapshot, type HostSnapshot } from '../../../host-snapshot';
 import { shapeOrient } from './orient-shape';
 import type { OrientPipeline } from '../pipeline-health';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
@@ -224,6 +225,17 @@ export interface OrientResult {
   /** Present iff queen-loop steering facts were withheld from a responsive caller
    *  (P-002) — transparent, never a silent drop. Pull live state via pot:get-steering. */
   factsWithheld?: { count: number; reason: string };
+  /** The four scalars agents otherwise shell out for — current UTC instant, core
+   *  count, load average, free memory (bash-to-tool-substitution-2026-07-26,
+   *  P-026 + P-027). Measured over the 7d corpus: 852 `date` atoms across 50 of
+   *  86 sessions (69% of them a bare `date`/`date -u`) and 283 load/mem/core
+   *  atoms across 47 of 86 sessions, spread over ~26 distinct zero-argument
+   *  shapes. A near-constant answer asked that often does not want a VERB — a
+   *  verb still costs the inference round-trip that IS the measured cost — so it
+   *  rides here, on a call already made 1,207 times in the same window. Always
+   *  present (it cannot fail beyond `now`); ~25 tokens. See host-snapshot.ts for
+   *  what deliberately stays bash (`du`/`df`, and `$(date …)` interpolation). */
+  host?: HostSnapshot;
   /** coord:plan-events delta — newest few + the true total; null on failure;
    *  absent when includePlanEvents:false. P-005 (full-mode delta rollout):
    *  `unchanged:true` ⇒ `recent` is deliberately empty — the newest events are
@@ -632,6 +644,10 @@ export async function composeOrient(
     // key name — so a caller who reads either name off this fold gets real rows
     // instead of a silent empty array on a mismatched accessor.
     inbox: { summary: inbox?.summary, recent: inbox?.entries, entries: inbox?.entries },
+    // P-026/P-027: the shell-out-avoidance scalars. Unconditional and in-process
+    // (no await, no round-trip) — the whole point is that the answer has already
+    // arrived by the time an agent would have thought to run `date` or `uptime`.
+    host: getHostSnapshot(),
     ...(fleetDelta !== undefined ? { fleetDelta } : {}),
     // P-004: fold the mechanical owner-present bit when the handler resolved it (undefined ⇒
     // leg absent; the handler passes null on a read failure).

@@ -15,6 +15,7 @@ import { getHivePolicy } from '../../hive-policy-store';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { fileReport, countReportsSince } from '../../hive-reports-store';
 import { getHiveMember } from '../../hive-membership-store';
+import { resolveFederatedPotScope } from '../../federated-pot-scope';
 import { softText, clampText, LIMITS } from '../limits';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -74,8 +75,17 @@ export default defineTool({
     // workspace no reader ever queries.
     const workspaceId = await resolveHiveWorkspaceId(ambientWorkspaceId, args.pot);
 
+    // WI-6318: the SAME bug the paragraph above fixes on the WORKSPACE axis, on the SLUG
+    // axis. `args.pot` is a TOOL ARGUMENT, so on a joiner it is the LOCAL handle — while
+    // hive_policy AND pot_members are both `hiveScoped` projections, persisted under the
+    // OWNER-authored (federated) slug. Reading either under the local handle returns
+    // nothing, which this handler cannot distinguish from "the owner never enabled
+    // reporting" / "you are not a member" — so a legitimate joiner was refused twice over.
+    // resolveFederatedPotScope is a no-op on an owner and fails open to the local handle.
+    const potScope = await resolveFederatedPotScope(workspaceId, args.pot);
+
     // Gate: reporting must be enabled by the owner-signed policy.
-    const resolved = await getHivePolicy(workspaceId, args.pot).catch(() => null);
+    const resolved = await getHivePolicy(workspaceId, potScope).catch(() => null);
     if (!resolved?.policy.moderation?.reportable) {
       return text({ ok: false, code: 'reporting_not_enabled', detail: 'the Pot owner has not enabled reporting' });
     }
@@ -89,7 +99,7 @@ export default defineTool({
     // be able to file reports — "any admitted MEMBER" is the doc contract, but nothing
     // previously checked it. Fail closed on a lookup error (never let an unresolvable
     // membership check silently admit the report).
-    const member = await getHiveMember(workspaceId, args.pot, identity.githubUserId).catch(() => null);
+    const member = await getHiveMember(workspaceId, potScope, identity.githubUserId).catch(() => null);
     if (!member) {
       return text({
         ok: false,
@@ -101,9 +111,11 @@ export default defineTool({
     // WI-567 (report-spam abuse vector): rate-gate before writing. Fail OPEN on a
     // count-lookup error (never let a transient store fault block a legitimate
     // report — this is an abuse guard, not a correctness gate).
+    // WI-6318: hive_reports is hiveScoped too, so the rate-gate must COUNT under the same
+    // scope the rows are written to — otherwise the count is always 0 and the guard is inert.
     const recentCount = await countReportsSince(
       workspaceId,
-      args.pot,
+      potScope,
       identity.githubUserId,
       Date.now() - REPORT_RATE_LIMIT_WINDOW_MS,
     ).catch(() => 0);
@@ -117,7 +129,10 @@ export default defineTool({
 
     const report = await fileReport({
       workspaceId,
-      potHomeSlug: args.pot,
+      // WI-6318 — the WORST instance of the class: this is a WRITE. Under a joiner's local
+      // handle the row lands in a scope no reader (including the Pot owner's moderation view)
+      // ever queries, while the tool still answers ok:true — the report silently vanishes.
+      potHomeSlug: potScope,
       reporterGithubUserId: identity.githubUserId,
       reporterGithubUsername: identity.githubLogin,
       targetKind: args.targetKind,

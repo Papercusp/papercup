@@ -36,7 +36,11 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
     const r = (row ?? {}) as Record<string, unknown>;
     const item = (r.item ?? {}) as Record<string, unknown>;
     const coverage = r.coverage as
-      | { level?: unknown; workers?: unknown }
+      | {
+          level?: unknown;
+          workers?: unknown;
+          holder?: { goalText?: unknown; goalUnknown?: unknown; stale?: unknown } | null;
+        }
       | null
       | undefined;
     const unresolved = Array.isArray(item.unresolvedBlockers)
@@ -63,11 +67,21 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
       diverged: r.coverageDivergence === true,
     };
     if (tier === "trimmed") return base;
+    const holder = coverage?.holder ?? null;
     return {
       ...base,
       blockedBy: joined(item.blockedBy),
       blockedByIssues: joined(r.blockedByIssues),
       workers: joined(coverage?.workers),
+      /** P-029/D-060: WHY the holder took it — the whole point of the item is
+       *  that a reader should not have to attempt a claim to learn this. Clipped
+       *  like `text`, since a flattened tier is a scalar table; the unclipped goal
+       *  plus `declaredAt`/`ownerLabel` ride the full tier's `coverage.holder`.
+       *  Null here is HONEST (nothing declared / auto-claimed), never invented. */
+      holderGoal: clip(holder?.goalText, c.text),
+      /** Null (not false) when activity is unknown — an unreadable activity stamp
+       *  must not read as "fresh" (the same 3-valued rule as the full tier). */
+      holderStale: typeof holder?.stale === "boolean" ? holder.stale : null,
       archived: r.archived === true,
     };
   };

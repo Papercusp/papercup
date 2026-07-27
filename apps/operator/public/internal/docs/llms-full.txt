@@ -7714,6 +7714,83 @@ Note
 
 **Update (2026-06-06):** Two things in this footer drifted. (1) The DBOS dir moved from `apps/operator/lib/dbos/` to `packages/operator-core/lib/dbos/`. (2) The `autoloop-workflow.ts` (AutoLoop as scheduled + dedup-keyed) is **retired** (`autoloop-pot-operator-rebuild-2026-06-05` P-010/D-009 — it read a `director-config.json` enablement surface nothing wrote). (3) The Phase-3 durable pipeline is now the **default** orchestrator (on unless `PAPERCUSP_DBOS_ORCHESTRATOR=0`), and the **legacy main loop is retired** — archived to `libs/papercusp/_retired/orchestrator-run-loop/` on 2026-06-06; setting `PAPERCUSP_DBOS_ORCHESTRATOR=0` no longer reverts to it (there is no legacy loop left), it just registers no DBOS orchestrator at all. Gotcha #8’s “leaving that feature to the legacy main loop” no longer applies — a parallel/branch verb now simply stops the durable pipeline.
 
+# A projection nobody populates makes its consumers CONSTANT — and 'fixing' it the obvious way flips the constant, not the bug
+
+> coord_presence.current_files was empty for 113 of 113 live agents, because coord:orient — the mandated every-wake bootstrap — re-declared intent WITHOUT the arg, and declare-intent treated an omitted current_files as CLEAR (`args.current_files ?? []`) while documenting the OPPOSITE convention for its sibling `items` arg. Four consumers read that column; each degraded silently, because a term that is constant-false does not throw, it just stops discriminating. The trap on the way out: deriving the column from the LOCK plane makes locks/enrich-busy's holder_focused constant-TRUE instead, killing the orphan-lock signal in the other direction. Includes the 2-minute diagnostic for 'is this projection actually populated?'.
+
+## The shape of the bug
+
+[Section titled “The shape of the bug”](#the-shape-of-the-bug)
+
+`coord_presence.current_files` is the “which files is this agent on?” projection. It is written only by `coord:declare-intent`, whose handler did:
+
+```ts
+currentFiles: args.current_files ?? [],   // omitted ⇒ CLEAR
+```
+
+`coord:orient` — the bootstrap **every agent is instructed to call on every wake** — re-declares intent and does not pass `current_files`. So every wake, every agent, silently zeroed its own row. Measured on the live box before the fix:
+
+```sql
+SELECT count(*) AS live,
+       count(*) FILTER (WHERE jsonb_array_length(COALESCE(current_files,'[]'::jsonb))>0) AS with_files
+FROM harness_shared.coord_presence
+WHERE heartbeat_at > now() - interval '10 minutes';
+-- live=113, with_files=0
+```
+
+The tell that this was a bug and not a design choice was **inside the same tool**: its sibling `items` argument documents the opposite convention in its own describe text — *“Omit to leave claims untouched.”* Two arguments, one tool, opposite omission semantics, only one of them documented.
+
+## Why nobody noticed for so long
+
+[Section titled “Why nobody noticed for so long”](#why-nobody-noticed-for-so-long)
+
+**A dead signal does not fail. It stops discriminating.** Every consumer kept running and returning plausible answers:
+
+| consumer                                | the term                                                    | what it silently became                                                                                                                                |
+| --------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `coord:send` `@file:<path>`             | audience includes agents whose `current_files` has the path | resolved to ZERO recipients while a peer verifiably held a lock (EI-18772330418885814)                                                                 |
+| `locks/enrich-busy` `holder_focused`    | `p.currentFiles.includes(b.path)`                           | constant **false** ⇒ the `holder_intent_diverged !== true` veto never fired ⇒ a live, actively-focused lock holder got advertised as “likely orphaned” |
+| `fleet/place_batch` touch-set exclusion | peer lanes ∪ bee files                                      | peer half always empty ⇒ conflict avoidance could not see other agents at all                                                                          |
+| git-sync derived attribution            | presence fill for the edit ledger                           | `.filter(e => e.files.length > 0)` dropped every presence entry                                                                                        |
+
+None of these throw. None show up in a test that mocks the projection — a fixture that hands `currentFiles: ['a.ts']` to the consumer proves the consumer works *given data*, which was never the failing half.
+
+## The trap on the way out (this is the part worth remembering)
+
+[Section titled “The trap on the way out (this is the part worth remembering)”](#the-trap-on-the-way-out-this-is-the-part-worth-remembering)
+
+The obvious fix is *“nobody declares files, so populate the column automatically from the agent’s live LOCK holdings — the lock plane already knows, and the edit hook maintains it with no agent discipline.”* That is wrong, and it is wrong in a way that looks right.
+
+`enrich-busy` asks: **is the holder of this contended lock still focused on this path?** A holder holds a lock on the contended path *by definition* — that is why the row is contended. So a lock-derived `current_files` makes `holder_focused` constant **TRUE**, the veto always fires, and `holder_intent_diverged` can never be reported again.
+
+You would have replaced a constant-false term with a constant-true one, “fixed” the measured symptom (the column is populated now!), and silently deleted a different feature. Both directions are invisible.
+
+The resolution is that these are **two different signals** and the system needs both:
+
+* **Declared** (`current_files`) — what the agent *said* it is working on. Intent. This is what `enrich-busy` must compare against, because its whole question is whether the holder’s stated focus has moved off the lock.
+* **Observed** (the lock plane) — what the agent is *actually* touching. Activity. This is what collision-avoidance wants, and it is automatic: the PreToolUse edit hook takes a lock on every `Edit`/`Write`.
+
+So the fix was: make the declared field stop wiping itself, and point the consumers that want the *automatic* answer at the lock plane instead — `locks/live-lock-paths.ts`, the one shared read (`readQueue` with `coordinationDomain: null`, holders only, fail-soft to `[]`). `coord:send`’s own `@file:` miss message already states the principle: **the lock plane is the authority on who is on a file.**
+
+## The diagnostic: before trusting a consumer, prove its input is populated
+
+[Section titled “The diagnostic: before trusting a consumer, prove its input is populated”](#the-diagnostic-before-trusting-a-consumer-prove-its-input-is-populated)
+
+Two minutes, and it would have caught all four of these at once.
+
+1. **Count the projection in production, not in a fixture.** `SELECT count(*), count(*) FILTER (WHERE <field is non-empty>)` over live rows. A `0 / N` result means every consumer of that field is currently a no-op, whatever its tests say.
+2. **Find every writer.** `grep` the field name across the tree and separate *producers* from *consumers*. Here there were four consumers and exactly one producer — an optional argument that essentially no caller passes.
+3. **Check the hot path for an omission.** If a high-frequency bootstrap (`coord:orient`, a heartbeat, a watchdog heal) writes the same row, ask what its *omitted* fields do. Omitted-means-clear plus a frequent writer is a self-zeroing column.
+4. **Read the term, not the function.** For any boolean guard, ask “can this be constant?” `holder_focused !== true` reads like a real condition and compiles to `true`.
+
+## Conventions this leaves behind
+
+[Section titled “Conventions this leaves behind”](#conventions-this-leaves-behind)
+
+* On `coord_presence.current_files` and `session_briefs.current_files`: **omitted ⇒ untouched, explicit `[]` ⇒ clear**, matching `items`. NULL is the on-the-wire sentinel (the columns are `NOT NULL`, so it can never be a legitimate value); the `VALUES` clause `COALESCE`s to `'[]'` for a fresh insert, and the `ON CONFLICT` clause reads the **parameter** rather than `EXCLUDED` (which the `VALUES` coalesce has already flattened).
+* `current_plan_slug` was deliberately **not** changed with it: it is genuinely populated (37/113 live rows at the time), and preserving it would strand a stale plan association on an agent that has moved off the plan. Same-looking column, different correct answer — measure before you generalize a fix to a neighbour.
+* Guarding this needs **real Postgres**, not a recording mock. The entire claim is that a JS `undefined`, marshalled as a bound NULL through `COALESCE($n::text::jsonb, <existing>)`, preserves the row. A fake `sql` that captures interpolated values only proves you *passed* null — your own mental model — not that the database kept the data. See `packages/operator-core/lib/presence-current-files.integration.test.ts`, which provisions its own database (and therefore also dodges the shared baseline container’s migration drift, EI-18779962385972529).
+
 # A default-ON flag turns "hermetic" unit tests into live-DB writers
 
 > Flag-gated glue with a production default param defeats a factory's PG-free test contract — getOrgPg() falls back to localhost:5432, the dev box's LIVE operator DB.
@@ -23332,6 +23409,87 @@ The abort is thrown during **Node’s environment teardown on `process.exit()`**
 
 1. **A native `terminate`/SIGABRT below the JS layer is unreachable from JS.** If it fires during teardown, the only lever is to not run the teardown — or the whole process — the way that reaches it. On a fully-exiting process, SIGKILL-after-drain is that lever.
 2. **Prove which native surface throws before mitigating one.** `nm -D` for the C++ class symbol against the addons actually in `/proc/<pid>/maps`, plus a coredump that still crashes with your suspect skipped, is what turned two wrong-target mitigations into the right fix. A mitigation aimed at the wrong native surface *logs that it is protecting you* and doesn’t — the most dangerous kind of half-fix.
+
+# A negative assertion pinned to a literal rots silently — and rewording the string is what kills it
+
+> A POSITIVE assertion pinning a literal fails loudly when the string is reworded, forcing you to look at it. A NEGATIVE one starts passing — permanently, invisibly, and as a direct consequence of doing the rename correctly — so the suite keeps reporting a guard it no longer has. `npm run lint:vacuous-negatives` gates the decisive case (prose that exists nowhere emittable while a long fragment of it IS in the source). Includes the four false-positive classes that are NOT this bug, why prose must be excluded from the corpus, and why a checker that quotes its own example poisons its own evidence.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A test with a truthful-looking name is green. The guard it describes does not exist.
+
+```ts
+// checkpoint-run.test.ts, for an unknown length of time
+expect(String(b.note)).not.toMatch(/⚠ quiet-cut EXCLUDED/);
+```
+
+The banner had already been reworded in `checkpoint-run.ts`. The regex could no longer match anything the tool was *capable* of emitting, so it passed unconditionally — no matter what the code did. Nothing in CI would ever have surfaced it; it was found by hand, only because someone happened to be rewriting that exact string.
+
+## Why this class is worse than a merely weak test
+
+[Section titled “Why this class is worse than a merely weak test”](#why-this-class-is-worse-than-a-merely-weak-test)
+
+A **positive** assertion pinning a literal (`toMatch(/foo/)`) is *self-healing*: reword the string and the test fails loudly, so the rename drags you to the assertion.
+
+A **negative** assertion is the exact inverse. Rewording makes it *more* likely to pass. The failure is silent, permanent, and **created by the act of doing the rename correctly**.
+
+And negative guards are not evenly distributed — they cluster on warning/prompt/advice strings, written *because a bad phrasing already caused an incident once*. So this class specifically disarms the guards we wrote after getting burned.
+
+The dead guard and the regression are one story
+
+The assertion above existed to keep settled-fact grammar out of the reply. While it was dead, that grammar drifted back into the same file in a new form — filed separately as EI-18759622667757826. The guard was disarmed exactly when it was needed.
+
+## The guard
+
+[Section titled “The guard”](#the-guard)
+
+```bash
+npm run lint:vacuous-negatives          # GATING in CI, ~45s
+npm run lint:vacuous-negatives:report   # + the non-gating bucket
+```
+
+A negative assertion on a static literal is vacuous when the literal appears **nowhere the system could emit it** — not in any tracked non-test file, and not anywhere in its own test file (where a fixture would put it). Two verdicts:
+
+| verdict      | meaning                                                                                                                                                                           | gates?  |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| **DRIFTED**  | A long contiguous fragment of the literal **is** in the source. The guarded string still exists; the guard is pinned to its OLD wording. Dead guard, live emitter.                | **yes** |
+| **ORPHANED** | Nothing resembling the literal exists anywhere. Usually a deliberate “this phrasing is gone for good” ratchet — legitimate and stable, since the historical string never changes. | no      |
+
+Deliberate exception? `// vacuous-negative-ok: <reason>` on the line or in the comment block above it. That is an improvement in itself: it turns an invisible always-passes into a documented intentional ratchet.
+
+## What is NOT this bug
+
+[Section titled “What is NOT this bug”](#what-is-not-this-bug)
+
+Each of these was a live false positive on the first sweep, and each is now a pinned test. A negative assertion is **not** flagged when the string is producible:
+
+* **The source has it.** The guard can still fail. Fine.
+* **The test builds it as a fixture** — `not.toContain('old state line')` next to a fixture containing `old state line`, asserting the mutation replaced it.
+* **A “no extra suffix/prefix” guard** whose literal *contains* a literal the same file asserts positively — `toContain('a → b')` beside `not.toContain('a → b →')`.
+* **Runtime-composed output**: the template is in the source and the *value* comes from the test (`--workspace=` + `null`; `plan:` + `plan-started`). The residue being supplied by the test file is the signature of composition.
+
+The gate is further narrowed to **prose** — multi-word wording with no embedded digits. Value pins (`SKIP_FROMREPO="${SKIP_FROMREPO:-0}"` — the default must not be 0), shape guards (`kill "$PORT_LOCK_KEEPER_PID"` — stop.sh must not force-kill the keeper) and single tokens are all *good* assertions; they report, they never gate.
+
+## Two traps worth knowing (both nearly made the detector useless)
+
+[Section titled “Two traps worth knowing (both nearly made the detector useless)”](#two-traps-worth-knowing-both-nearly-made-the-detector-useless)
+
+**Prose is not an emitter, so it is not corpus.** A doc or prompt that *describes* a banner cannot produce it. Judging against `.md` made the motivating instance undetectable: `⚠ quiet-cut EXCLUDED` survived in exactly one place — `blueprints/base/prompts/release-fixer.md`, which still told release-fixer agents to look for a warning the tool had stopped emitting. Prose scored the dead string “still exists”, **and** the stale prompt (a second, live defect on the release-gate path) stayed invisible. Measured over the whole repo, dropping prose from the corpus changes exactly **one** assertion’s verdict.
+
+**A checker that cites its own example poisons its own evidence.** This lint’s header quotes the banner verbatim, and it is a `.mjs` — so it was in its own corpus, and the one assertion it was written to catch scored “the string exists”. It is excluded by path now. This was caught only by *replaying the real pre-fix commit through the judge* and getting zero findings — never by reading the code and reasoning about it.
+
+How to verify a detector
+
+Replay the real historical defect through it. The pre-fix commit is in git; feed that file to the judge against the live corpus and check it flags that assertion **and only that one**. A detector for a class that cannot demonstrate it catches the instance the class was named for is exactly the vacuous guard it exists to prevent.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `agent-insights/a-check-that-never-ran-must-not-read-as-passed` — the sibling rule for probes, and `npm run lint:assert-integrity`, its mechanical guard for shell scenarios.
+* EI-18765867705399052 (this class), EI-18759622667757826 (the regression the dead guard failed to stop), EI-18773280958875269 (the same rot in prompts, still unguarded).
 
 # A new learning-singleton blueprint ships its DEFINITION but does NOT auto-create the routine — materialize it post-deploy
 
@@ -66294,9 +66452,9 @@ The gating sites are the documentation.
 
 The **agent-insights** are the fleet’s procedural runbook — one short page per hard-won, non-obvious fact (a confusing failure’s root cause, a subtle invariant, a library quirk). Written one-per-page; this is the generated landing index.
 
-**616 insights.** By status: active (518), current (23), superseded (21).
+**617 insights.** By status: active (519), current (23), superseded (21).
 
-**Top tags:** `testing` 64 · `federation` 59 · `runbook` 47 · `postgres` 43 · `desktop` 40 · `fleet` 33 · `debugging` 32 · `gotcha` 31 · `vitest` 31 · `tauri` 30 · `coordination` 28 · `inference-gateway` 27 · `pot` 26 · `memory` 24 · `watchdog` 24 · `mcp` 23 · `release` 23 · `rate-limit` 22 · `deploy` 21 · `dbos` 20 · `git-sync` 20 · `hyperbee` 20 · `shared-pot` 20 · `mug` 19 · `plans` 19
+**Top tags:** `testing` 65 · `federation` 59 · `runbook` 47 · `postgres` 43 · `desktop` 40 · `fleet` 33 · `debugging` 32 · `gotcha` 31 · `vitest` 31 · `tauri` 30 · `coordination` 28 · `inference-gateway` 27 · `pot` 26 · `memory` 24 · `watchdog` 24 · `mcp` 23 · `release` 23 · `rate-limit` 22 · `deploy` 21 · `dbos` 20 · `git-sync` 20 · `hyperbee` 20 · `shared-pot` 20 · `mug` 19 · `plans` 19
 
 ## All insights
 
@@ -66378,6 +66536,7 @@ The **agent-insights** are the fleet’s procedural runbook — one short page p
 | [A native Claude-Code Bash run\_in\_background task can be killed with no explanation under extreme host load (EI-13910)](/internal/docs/agent-insights/native-bash-background-task-killed-under-host-overload)                                        | `claude-code` `run_in_background` `bash` `host-load` `oom` `reaper` `EI-13910` `WI-3821`                                                                                                                                                                        | active     | 2026-07-19 | A long-lived, lightweight run\_in\_background:true Bash task (a guarded poll loop, negligible CPU/mem) was externally killed \~2min after launch with status:killed/‘was stopped’, no exit code, no error in its own log, and the process fully gone from the process table (not zombied). No papercusp-owned code is responsible: the only related hook (pretooluse-bash-resource-gate.sh) is a PreToolUse gate that only ALLOWS/DENIES a command before it starts — it never signals an already-running child, and it has no polling/reaper loop. The kill correlated with a period of very high host load (1-min loadavg 140-175 on this shared multi-agent box), which independently melted the host to load 3000+ at least twice the same week (see the heavy-admission gate in the same hook file). The most likely mechanisms are the Linux OOM-killer or Claude Code’s own CLI-internal background-task lifetime/concurrency management — both outside papercusp’s repo and therefore not fixable here. Actionable takeaway: for an unbounded/long wait, prefer a SHORT re-arm loop (ScheduleWakeup / loop:arm, re-firing every few minutes) over one long-lived run\_in\_background poller — a re-arm loop that dies just means a missed wake (recoverable on the next scheduled check), while a killed long-lived poller silently strands the wait with no re-arm at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | [A native Napi::Error/SIGABRT on process exit needs a no-cleanup hard exit, not a teardown-skip](/internal/docs/agent-insights/native-sigabrt-on-exit-needs-a-no-cleanup-hard-exit)                                                                    | `host-recycle` `napi` `sigabrt` `memory-watchdog` `native-addons`                                                                                                                                                                                               | active     | 2026-07-13 | Why skipping the P2P substrate close never stopped the host-recycle SIGABRT (exit 134), and the reliable fix: SIGKILL self after the drain so Node’s env teardown — where the native addon actually throws — never runs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | [A near-limit context gauge on a fresh carry-respawn successor is your DEAD predecessor’s reading](/internal/docs/agent-insights/frozen-context-gauge-after-carry-respawn)                                                                             | —                                                                                                                                                                                                                                                               | —          | —          | The coord ownerId survives a carry-respawn by design, so the in-process context-usage cache serves the pre-cut estimate for up to a watchdog pass — a fresh successor rendering ‘89%’ must never re-compact on it. Fixed at the source 2026-07-18; the lore predates the fix.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| [A negative assertion pinned to a literal rots silently — and rewording the string is what kills it](/internal/docs/agent-insights/negative-assertions-rot-silently)                                                                                   | `testing` `assertions` `lint` `test-integrity` `vacuous-guards` `drift` `prompts`                                                                                                                                                                               | active     | 2026-07-27 | A POSITIVE assertion pinning a literal fails loudly when the string is reworded, forcing you to look at it. A NEGATIVE one starts passing — permanently, invisibly, and as a direct consequence of doing the rename correctly — so the suite keeps reporting a guard it no longer has. `npm run lint:vacuous-negatives` gates the decisive case (prose that exists nowhere emittable while a long fragment of it IS in the source). Includes the four false-positive classes that are NOT this bug, why prose must be excluded from the corpus, and why a checker that quotes its own example poisons its own evidence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | [A new learning-singleton blueprint ships its DEFINITION but does NOT auto-create the routine — materialize it post-deploy](/internal/docs/agent-insights/new-learning-singleton-needs-materialization)                                                | `self-learning` `routines` `blueprints` `learning-singleton` `materialize` `deploy` `frontier` `dark-loop` `calibration` `memory-precision`                                                                                                                     | active     | 2026-06-18 | Adding a learning loop (blueprint + LEARNING\_SINGLETONS entry + op) ships code only; the `@singleton/bp-singleton-<id>-0` routine ROW is never created on deploy/boot — there is no boot-time materializer. Until you run `materializeLearningSingletons` (the seed CLI) for the workspace, the loop has no routine, never fires, and never shows in improvements:learning\_loops — even with singletonActive:true and the flag ON. This is the 0th gate, before the three in dark-learning-loops-are-triple-gated.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | [A new OpEnvelope field silently drops on the wire unless PeerLogOp carries it — the pot-content epoch-drop](/internal/docs/agent-insights/peerlogop-wire-envelope-drops-new-opfields)                                                                 | `federation` `pot` `pot-rekey` `epoch` `peer-log` `wire-envelope` `serialization` `opfield-drop` `silent-drop` `wi-808` `read-merge` `snapshot`                                                                                                                 | active     | 2026-06-25 | Encrypted shared-pot content (work\_items/features) silently dropped on every joiner with ZERO decrypt-gate trace. Root cause: OpEnvelope.epoch existed but the on-wire PeerLogOp never carried an `epoch` field, so the rekey stamp was dropped at the send-append, the receive toEnvelope, AND the snapshot path → the op reached the gate with epoch==null → ciphertext treated as plaintext → dropped. The PeerLogOp compat `Pick` only guards field REMOVAL, so TS never flagged it. Same class as the pre-P-010 hlc-drop.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | [A new package in a CJS family must not set type:module (and needs main+types, not just exports)](/internal/docs/agent-insights/new-package-cjs-family-type-module-trap)                                                                               | `packaging` `cjs` `esm` `tsx` `tooldef` `type-module` `module-resolution` `monorepo` `exports` `vitest`                                                                                                                                                         | active     | 2026-05-31 | Two packaging traps that bite when you add a workspace package to the src-as-entry tooldef family. (1) Setting “type”: “module” on a package that CJS siblings re-export from breaks the operator’s tsx host with ‘does not provide an export named X’ — vitest/esbuild mask it, so unit tests stay green while the real host would fail on reload. (2) A package.json with only “exports” and no top-level “main”/“types” is unresolvable under classic moduleResolution: node. Both surfaced during the @papercusp/tooldef extraction.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

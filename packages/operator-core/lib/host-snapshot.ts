@@ -126,7 +126,12 @@ export function getHostSnapshot(): HostSnapshot {
 
   try {
     const profile = getResourceProfile();
-    if (Number.isFinite(profile.cores)) snap.cores = profile.cores;
+    // NB: the core count lives on `signals`, not on the profile root — the root
+    // carries DERIVED caps (maxSimultaneousAgents, pgPoolMax, …), not the raw
+    // signal. Reading `profile.cores` returns undefined SILENTLY, which is how
+    // this field shipped absent the first time.
+    const cores = profile.signals?.cores;
+    if (typeof cores === 'number' && Number.isFinite(cores)) snap.cores = cores;
     if (profile.hostClass) snap.hostClass = profile.hostClass;
   } catch {
     /* profile unavailable — cores/hostClass absent */

@@ -26,6 +26,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { revokeContributorViaGithub } from '../../sync/hyperbee/revoke-contributor';
 import { revokeHiveContributor } from '../../hive-revoke-contributor';
+import { resolveFederatedPotScope } from '../../federated-pot-scope';
 
 export default defineTool({
   name: 'substrate:revoke_contributor',
@@ -76,7 +77,13 @@ export default defineTool({
     const result = args.potSlug
       ? await revokeHiveContributor({
           workspaceId: args.workspaceId,
-          potHomeSlug: args.potSlug,
+          // WI-6318: `potSlug` is a TOOL ARGUMENT, so on a joiner it is the LOCAL pot handle,
+          // while pot_members lives under the OWNER-authored (federated) slug. The revoke
+          // UPDATEs the caller's own member row, so an unresolved local handle finds no row
+          // and the revoke fails outright ("owner has no hive_members row — join the Hive
+          // before revoking") on a Pot the caller has genuinely joined. Resolving is a no-op
+          // on an owner and fails open to the local handle.
+          potHomeSlug: await resolveFederatedPotScope(args.workspaceId, args.potSlug),
           githubUserId: args.githubUserId,
         })
       : await revokeContributorViaGithub({

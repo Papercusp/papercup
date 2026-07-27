@@ -40,8 +40,24 @@ import {
   type LivenessMode,
 } from './claims';
 import { workGroupExists, isWorkGroupMember } from './work-group';
+import { projectClaimHolder, type ClaimHolder } from './claim-holder';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+
+/** P-029/D-060: the holder projection for a live claim row, or null when unheld.
+ *  One helper so `plan_items:status` and `plan_items:my_items` cannot render the
+ *  same holder two different ways. */
+function holderOfClaim(claim: PlanItemClaim | null): ClaimHolder | null {
+  if (!claim) return null;
+  return projectClaimHolder({
+    ownerId: claim.owner,
+    ownerLabel: claim.ownerLabel,
+    itemId: claim.itemId,
+    intent: claim.intent,
+    acquiredTs: claim.acquiredTs,
+    lastActivityTs: claim.lastActivityTs,
+  });
+}
 
 // ── 1. Liveness mode (shared-ness) ──────────────────────────────────────────────
 
@@ -309,6 +325,10 @@ export interface MergedPlanItemState {
   assignment: PlanItemAssignment | null;
   /** The live claim (a lapsed/expired claim is reported as null — it no longer holds). */
   claim: PlanItemClaim | null;
+  /** P-029/D-060: WHO holds it and WHY, in the shape every non-conflict reader
+   *  renders — the claim's declared goal (or an honest `goalUnknown`) plus
+   *  staleness. Null when unheld. Projected from `claim`, so it adds no read. */
+  holder: ClaimHolder | null;
   inPlan: boolean;
 }
 
@@ -362,6 +382,7 @@ export async function mergedPlanItemStates(
       disposition: disposition(assignment, liveClaim),
       assignment,
       claim: liveClaim,
+      holder: holderOfClaim(liveClaim),
       inPlan: planStatus.has(id),
     });
   }
@@ -371,6 +392,11 @@ export async function mergedPlanItemStates(
 export interface MyItemState {
   assignment: PlanItemAssignment;
   claim: PlanItemClaim | null;
+  /** P-029/D-060 — see {@link MergedPlanItemState.holder}. Non-null here whenever
+   *  a live claim exists, INCLUDING the `claimed-mismatch` case where the holder
+   *  is a peer rather than the assignee: that is precisely the reader who needs to
+   *  see the goal without colliding. */
+  holder: ClaimHolder | null;
   disposition: PlanItemDisposition;
 }
 
@@ -381,7 +407,12 @@ async function pairAssignmentsWithClaims(workspaceId: string, assignments: PlanI
   for (const a of assignments) {
     const claimRow = await getClaim(workspaceId, a.harnessSlug, a.planSlug, a.itemId);
     const liveClaim = claimRow && !claimRow.expired ? claimRow : null;
-    out.push({ assignment: a, claim: liveClaim, disposition: disposition(a, liveClaim) });
+    out.push({
+      assignment: a,
+      claim: liveClaim,
+      holder: holderOfClaim(liveClaim),
+      disposition: disposition(a, liveClaim),
+    });
   }
   return out;
 }

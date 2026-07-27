@@ -178,6 +178,81 @@ describe('no_replicator axis (the original WI-183 symptom)', () => {
   });
 });
 
+// EI-18778631943888326: a frozen episode used to say, unconditionally, "replicator
+// attached but ingest frozen" — naming the REPLICATOR as the suspect. That is only ONE
+// of two causes. During the WI-559 diagnosis it was the WRONG one: replication was
+// healthy (the peer was streaming) while the MERGE PASS aborted every ~60s on an FK
+// violation, so mergedPosition never moved. The alarm pointed at the replicator/swarm
+// layer while the defect sat in apply.
+//
+// `knownLength` is the writer length AS KNOWN TO OUR REPLICA, so it advances only when
+// replication is actually delivering — a free discriminator from data already sampled.
+// These pin BOTH attributions. Teeth: hard-coding stalledStage to 'transport' (the old
+// unconditional reading) flips the first test red.
+describe('frozen axis — stage attribution (transport vs apply)', () => {
+  const frozenSampler = (on: (e: ReplicationStallEpisode) => void) => {
+    let now = 1_000_000;
+    return {
+      at: (len: number, pos: number, advanceMs = 0) => {
+        now += advanceMs;
+        sampleReplicationLiveness(
+          WS,
+          HS,
+          { keyHex: KEY, knownLength: len, mergedPosition: pos, peersCount: 1 },
+          { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+        );
+      },
+    };
+  };
+
+  it("attributes to APPLY when the writer length ADVANCED during the stall (replication is delivering)", () => {
+    const { episodes, on } = collect();
+    const s = frozenSampler(on);
+    s.at(10, 4); // seed the progress clock
+    s.at(15, 4, GRACE / 2); // delivery observed: writer length moved, merge did NOT
+    s.at(20, 4, GRACE / 2 + 1); // grace elapsed with zero merge progress ⇒ alarm
+
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('frozen'); // still the same axis — no alarm is lost
+    expect(episodes[0]!.stalledStage).toBe('apply');
+    const detail = episodes[0]!.detail;
+    expect(detail).toContain('APPLY/MERGE frozen');
+    expect(detail).toContain('DELIVERING');
+    expect(detail).toContain('NOT the'); // "...NOT the replicator or swarm"
+    // The old, misleading wording must be gone from this branch.
+    expect(detail).not.toContain('replicator attached but ingest frozen');
+  });
+
+  it('attributes to TRANSPORT when the writer length never advanced (classic attached-but-dead)', () => {
+    const { episodes, on } = collect();
+    const s = frozenSampler(on);
+    s.at(10, 4);
+    s.at(10, 4, GRACE); // nothing moved at all — blocks are not flowing
+
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.stalledStage).toBe('transport');
+    expect(episodes[0]!.detail).toContain('NOT DELIVERING');
+    expect(episodes[0]!.detail).toContain('replicator/swarm');
+    // Must NOT blame apply when we have no evidence replication delivered anything.
+    expect(episodes[0]!.detail).not.toContain('APPLY/MERGE frozen');
+  });
+
+  it('a writer length that advanced only BEFORE the stall window does not count as delivering', () => {
+    // The discriminator must be scoped to THIS stall, not "ever delivered". A log that
+    // received updates earlier and then went dark is a TRANSPORT freeze; reading any
+    // historical delivery as evidence would mis-route it to apply forever.
+    const { episodes, on } = collect();
+    const s = frozenSampler(on);
+    s.at(10, 8); // caught-up-ish, delivery happening
+    s.at(14, 14); // merge keeps up — advances BOTH clocks, no backlog
+    s.at(20, 14, 1_000); // now behind: this observation starts a fresh freeze window
+    s.at(20, 14, GRACE + 1); // nothing moves through the whole window
+
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.stalledStage).toBe('transport');
+  });
+});
+
 describe('frozen axis (attached-but-dead: replicator present, ingest not flowing)', () => {
   it('fires once when the writer is ahead and merge position makes no progress past grace, with peers attached', () => {
     const { episodes, on } = collect();

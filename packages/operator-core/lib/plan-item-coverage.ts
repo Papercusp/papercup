@@ -45,6 +45,7 @@ import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { TERMINAL_STATUSES as FEATURE_TERMINAL_STATUSES } from './dbos/frontier-readiness';
 import { isTerminalItemStatus } from './fleet-drained-events';
 import type { ItemActivity } from './item-activity';
+import { projectClaimHolder, type ClaimHolder } from './plan-items/claim-holder';
 
 /** The link rels that count a work-item as ADDRESSING a plan item. `blocks` is NOT
  *  here — that's the issue-block overlay (todo→blocked), a different relationship. */
@@ -141,6 +142,12 @@ export interface PlanItemCoverage {
   directlyClaimed: boolean;
   directHolder: string | null;
   directActivity: ItemActivity | null;
+  /** P-029/D-060: the direct claim's holder WITH the goal they declared for it,
+   *  so a reader browsing what is taken no longer has to collide with the holder
+   *  to learn why. Null when nothing is directly claimed. Pure projection — every
+   *  field is already on the `fleet_assignment` row read below (`detail` IS the
+   *  claim intent for a plan_item_claim source), so it costs no extra query. */
+  holder: ClaimHolder | null;
   level: CoverageLevel;
   /** Distinct holder ids actively on it (live links + a live direct claim). */
   workers: string[];
@@ -225,6 +232,11 @@ export function coverageCollisions(cov: Iterable<PlanItemCoverage>): CoverageCol
 export interface CompactCoverage {
   level: CoverageLevel;
   workers?: string[];
+  /** P-029/D-060: the direct claim's holder + the goal they declared for it.
+   *  ABSENT rather than null when there is no direct claim, and — the rule that
+   *  matters — its absence never removes the ROW: a reader must not be able to
+   *  infer holder visibility from the shape of the list (D-056). */
+  holder?: ClaimHolder;
   links?: { id: string; rel: string; activity: ItemActivity; terminal: boolean }[];
 }
 
@@ -232,6 +244,7 @@ export function compactCoverage(cov: PlanItemCoverage): CompactCoverage {
   return {
     level: cov.level,
     ...(cov.workers.length ? { workers: cov.workers } : {}),
+    ...(cov.holder ? { holder: cov.holder } : {}),
     ...(cov.links.length
       ? {
           links: cov.links.map((l) => ({
@@ -320,14 +333,28 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
   // 2. live claims (work-item AND plan-item) from the canonical view — one read.
   const fleet = await listFleetAssignments({ workspaceId: null, activeOnly: true });
   const wiActivity = new Map<string, { activity: ItemActivity; holder: string | null }>();
-  const directClaim = new Map<string, { activity: ItemActivity; holder: string | null }>();
+  // P-029/D-060: keep the claim's DECLARED GOAL alongside its activity. On a
+  // `plan_item_claim` row the view's `detail` IS `plan_item_claims.intent`, and
+  // `claim_acquired_ts`/`last_activity_ts` are the staleness signals — all three
+  // already on the row, so carrying them costs nothing but the fields we stopped
+  // discarding. (This used to keep `agentId` alone, which is exactly why a reader
+  // saw a bare ownerId and had to collide with the holder to learn the why.)
+  const directClaim = new Map<string, { activity: ItemActivity; holder: ClaimHolder | null; holderId: string | null }>();
   for (const r of fleet) {
     if (r.source === 'work_item_claim' && r.workItemId) {
       wiActivity.set(r.workItemId, { activity: deriveActivity(r), holder: r.agentId });
     } else if (r.source === 'plan_item_claim' && r.planSlug && r.itemId) {
       directClaim.set(planItemRef(r.planSlug, r.itemId), {
         activity: deriveActivity(r),
-        holder: r.agentId,
+        holderId: r.agentId,
+        holder: projectClaimHolder({
+          ownerId: r.agentId,
+          ownerLabel: r.agentLabel,
+          itemId: r.itemId,
+          intent: r.detail,
+          acquiredTs: r.claimAcquiredTs,
+          lastActivityTs: r.lastActivityTs,
+        }),
       });
     }
   }
@@ -411,14 +438,19 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     const level = classifyCoverage(links, directlyClaimed);
     const workers = new Set<string>();
     for (const l of links) if (l.holder) workers.add(l.holder);
-    if (directlyClaimed && direct?.holder) workers.add(direct.holder);
+    if (directlyClaimed && direct?.holderId) workers.add(direct.holderId);
     const newest = newestByRef.get(ref);
     out.set(ref, {
       ref,
       links,
       directlyClaimed,
-      directHolder: direct?.holder ?? null,
+      directHolder: direct?.holderId ?? null,
       directActivity: direct?.activity ?? null,
+      // Mirrors `directHolder`'s presence rule — projected whenever a direct claim
+      // row exists, INCLUDING a stalled/dead one. Hiding a lapsing holder would
+      // hide the case a reader most needs: `stale`/`directActivity` say it is not
+      // progressing, which is more useful than an empty holder that reads as free.
+      holder: direct?.holder ?? null,
       level,
       workers: [...workers],
       lastActivityAt: newest != null ? new Date(newest) : null,

@@ -34,6 +34,7 @@ import { resolveAgentIdentity, isEphemeralMcpCallIdentity, type AgentIdentity } 
 import { resolvePlanScope } from './source';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
 import { getClaim } from '../../plan-items/claims';
+import { autoConvertClaimIntent } from '../../plan-items/claim-holder';
 import {
   convertPlanItem,
   findConvertedWorkItemByStamp,
@@ -522,7 +523,10 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         ownerLabel: agentId.ownerLabel,
         ownerName,
         ownerUser: bestEffortOwnerUser(ctx),
-        intent: `plans:set-status ${it.itemId} → wip (auto-convert)`,
+        // Built by the shared helper, not a literal, so the non-conflict holder
+        // projection can tell this MECHANISM string apart from a declared goal
+        // (P-029/D-060) without a detector that drifts from the writer.
+        intent: autoConvertClaimIntent(it.itemId),
       }).catch((e) =>
         console.warn(
           `[plans:set-status] auto-convert ${it.slug}#${it.itemId} failed:`,
