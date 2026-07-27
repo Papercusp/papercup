@@ -146,21 +146,62 @@ describe('work_items:create handler (keyed-array)', () => {
     expect(createM).toHaveBeenCalledWith(expect.objectContaining({ title: 'a', assign_to: 'someone-else' }), expect.anything());
   });
 
-  it('P-016 refuses an out-of-scope create+assign before the item exists', async () => {
-    fleetAdmission.decision = {
+  // EI-18784357226895330: an out-of-scope create+assign DOWNGRADES to an unassigned
+  // FILE — it is never refused outright. A claim spec fences the PULL from the shared
+  // pool, not the act of recording a finding. The prior behavior (refuse the create)
+  // left a critical fleet-wide bug with no owner AND no durable record.
+  describe('out-of-scope create+assign (fleet lane)', () => {
+    const outOfScope = {
       allowed: false,
       scoped: true,
       code: 'fleet_scope_violation',
       reason: 'new item is outside fixed cohort',
       scope: { fleetSlug: 'fixed-wave', ownerId: 'bee-7', fleetRole: 'member', record: { spec: { specId: 'fixed', revision: 7 } } },
     };
-    const b = await body({ kind: 'bug', title: 'outside', assign_to: 'bee-7' });
-    expect(b.results[0]).toMatchObject({ ok: false, error: 'fleet_scope_violation' });
-    expect(createM).not.toHaveBeenCalled();
-    expect(fleetAdmission.notify).toHaveBeenCalledOnce();
-    // EI-18673501896258575: the caller sees the SAME concrete remedy the leader was
-    // notified with, not just a bare refusal reason.
-    expect(b.results[0].message).toMatch(/remedy: scheduler:set_claim_spec/);
+
+    it('FILES the item unassigned rather than refusing the create', async () => {
+      fleetAdmission.decision = { ...outOfScope };
+      const b = await body({ kind: 'bug', title: 'outside', assign_to: 'bee-7' });
+      // the finding survives...
+      expect(b.results[0]).toMatchObject({ ok: true });
+      expect(createM).toHaveBeenCalledOnce();
+      // ...but NO out-of-scope claim was created.
+      expect(createM.mock.calls[0][0]).toMatchObject({ title: 'outside', assign_to: undefined });
+      expect(fleetAdmission.notify).toHaveBeenCalledOnce();
+    });
+
+    it('records the requester as reporter so the filing stays attributable', async () => {
+      fleetAdmission.decision = { ...outOfScope };
+      await body({ kind: 'bug', title: 'outside', assign_to: 'bee-7' });
+      expect(createM.mock.calls[0][0].payload).toMatchObject({
+        fleetScopeDowngrade: { requestedAssignee: 'bee-7', reportedBy: 'me', fleet: 'fixed-wave', code: 'fleet_scope_violation' },
+      });
+    });
+
+    it('tells the caller plainly they do NOT hold it, with the leader remedy', async () => {
+      fleetAdmission.decision = { ...outOfScope };
+      const b = await body({ kind: 'bug', title: 'outside', assign_to: 'bee-7' });
+      expect(b.results[0].fleetScopeDowngrade).toMatch(/FILED UNASSIGNED/);
+      expect(b.results[0].fleetScopeDowngrade).toMatch(/you do NOT hold it/);
+      // EI-18673501896258575: the caller sees the SAME concrete remedy the leader was
+      // notified with, not just a bare refusal reason.
+      expect(b.results[0].fleetScopeDowngrade).toMatch(/remedy: scheduler:set_claim_spec/);
+    });
+
+    it('a WOUND-DOWN fleet also files: recording a finding is not acquiring work', async () => {
+      fleetAdmission.decision = { ...outOfScope, code: 'fleet_winding_down', reason: 'fleet is paused' };
+      const b = await body({ kind: 'bug', title: 'found during stand-down', assign_to: 'bee-7' });
+      expect(b.results[0]).toMatchObject({ ok: true });
+      expect(createM.mock.calls[0][0]).toMatchObject({ assign_to: undefined });
+    });
+
+    it('leaves an IN-scope create+assign completely untouched', async () => {
+      fleetAdmission.decision = { allowed: true, scoped: true };
+      const b = await body({ kind: 'bug', title: 'inside', assign_to: 'bee-7' });
+      expect(b.results[0].fleetScopeDowngrade).toBeUndefined();
+      expect(createM.mock.calls[0][0]).toMatchObject({ assign_to: 'bee-7' });
+      expect(fleetAdmission.notify).not.toHaveBeenCalled();
+    });
   });
 
   it('batch-level harness is the default for items that omit one', async () => {

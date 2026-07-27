@@ -1,7 +1,7 @@
 {
   "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.date-read",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 729,
+  "totalAtoms": 728,
   "totalSessions": 50,
   "sample": [
     {
@@ -20,9 +20,9 @@
       "atom": "date '+%H:%M:%S'"
     },
     {
-      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T06:29:28.865Z",
-      "atom": "date '+%Y-%m-%d %H:%M:%S%z  (now)'"
+      "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
+      "ts": "2026-07-25T21:05:39.885Z",
+      "atom": "date '+%Y-%m-%d %H:%M:%S %z'"
     },
     {
       "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
@@ -36,8 +36,8 @@
     },
     {
       "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
-      "ts": "2026-07-26T15:23:58.183Z",
-      "atom": "date '+now=%H:%M:%S %Z'"
+      "ts": "2026-07-26T15:40:00.788Z",
+      "atom": "date '+now=%H:%M:%S %Z (%sZ)'"
     },
     {
       "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
@@ -50,14 +50,14 @@
       "atom": "date +\"%Y-%m-%d %H:%M:%S %Z (local)\""
     },
     {
-      "sid": "su-39274e17-029f-409c-b058-970c9cc5bfdc",
-      "ts": "2026-07-26T06:38:47.896Z",
-      "atom": "date +%H%M%S\\"
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T05:33:24.429Z",
+      "atom": "date +%FT%T%z"
     },
     {
-      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
-      "ts": "2026-07-26T01:05:52.270Z",
-      "atom": "date +%H:%M:%S"
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-25T19:23:47.698Z",
+      "atom": "date +%H:%M"
     },
     {
       "sid": "su-772cf615-c6a4-488e-8491-b553ced6b4ac",
@@ -65,14 +65,14 @@
       "atom": "date +%T"
     },
     {
-      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
-      "ts": "2026-07-26T13:29:42.679Z",
-      "atom": "date +'now local %H:%M:%S  (UTC %H:%M via -u)'"
+      "sid": "su-a28a5f3c-4f45-465e-af05-e1e6e05668a9",
+      "ts": "2026-07-26T02:50:29.848Z",
+      "atom": "date +%s)"
     },
     {
-      "sid": "su-00cb5bbb-979b-4d78-81d8-a1debf876551",
-      "ts": "2026-07-26T00:25:07.621Z",
-      "atom": "date -Iseconds"
+      "sid": "su-7a80832c-ade5-4ed2-9a08-43f72fbbdae4",
+      "ts": "2026-07-26T07:21:42.392Z",
+      "atom": "date -Is"
     },
     {
       "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
@@ -80,49 +80,49 @@
       "atom": "date -u '+%H:%M:%SZ'"
     },
     {
-      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
-      "ts": "2026-07-26T06:26:51.915Z",
-      "atom": "date -u '+NOW: %H:%M:%SZ'"
-    },
-    {
-      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
-      "ts": "2026-07-26T14:31:52.327Z",
-      "atom": "date -u '+now=%Y-%m-%dT%H:%M:%SZ'"
-    },
-    {
-      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
-      "ts": "2026-07-21T11:37:04.394Z",
-      "atom": "date -u +\"%Y-%m-%d %H:%M:%S UTC\""
-    },
-    {
-      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
-      "ts": "2026-07-26T05:33:24.429Z",
-      "atom": "date -u +%FT%TZ"
-    },
-    {
       "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T03:07:29.150Z",
-      "atom": "date -u +%H:%M:%SZ"
-    },
-    {
-      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T01:46:18.277Z",
-      "atom": "date -u +%Y-%m-%d"
-    },
-    {
-      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T13:00:51.435Z",
-      "atom": "date -u +%Y-%m-%dT%H:%M:%SZ"
+      "ts": "2026-07-26T14:54:06.975Z",
+      "atom": "date -u '+%Y-%m-%dT%H:%M:%SZ'"
     },
     {
       "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
-      "ts": "2026-07-26T13:29:42.679Z",
-      "atom": "date -u +'UTC %H:%M:%S'"
+      "ts": "2026-07-26T16:12:04.866Z",
+      "atom": "date -u '+NOW_UTC=%Y-%m-%dT%H:%M:%SZ'"
     },
     {
-      "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
-      "ts": "2026-07-26T04:14:07.940Z",
-      "atom": "date -u +'now: %Y-%m-%dT%H:%M:%SZ'"
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T11:42:22.812Z",
+      "atom": "date -u +\"%FT%TZ\""
+    },
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T08:46:15.421Z",
+      "atom": "date -u +\"%Y-%m-%dT%H:%M:%SZ\""
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T01:37:02.088Z",
+      "atom": "date -u +%H:%M:%S"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-26T15:53:45.644Z",
+      "atom": "date -u +%H:%MZ"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T07:02:52.670Z",
+      "atom": "date -u +%Y-%m-%dT%H:%M:%S.000Z"
+    },
+    {
+      "sid": "su-48ed7aaf-a682-4059-b032-42e9488f6620",
+      "ts": "2026-07-26T11:32:11.177Z",
+      "atom": "date -u +%s"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T16:10:02.774Z",
+      "atom": "date -u +'now: %H:%M:%SZ'"
     }
   ]
 }

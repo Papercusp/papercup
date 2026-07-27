@@ -1259,8 +1259,23 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
       // connection" is not a reliable proxy for "the forced-rejoin
       // connection". Gating on the actual escalation log removes the race.
       let forceRejoinFired = false;
+      // WI-6324: this spy SWALLOWS every console.info (deliberate — the suite is
+      // noisy), which made a failure here structurally undiagnosable. boot.ts emits
+      // the line below IMMEDIATELY BEFORE `void swarmHandle?.forceRejoin()`, so
+      // `forceRejoinFired` proves only that the escalation DECISION was reached —
+      // NOT that forceRejoin() was ever invoked (the `?.` swallows an unset
+      // swarmHandle silently), and NOT that it produced a fresh connection. With
+      // the trace discarded too, "escalated but never reconnected" and
+      // "reconnected but never healed" were indistinguishable. Keep swallowing,
+      // but RETAIN the swarm/replication lines so a failure can name which half broke.
+      const infoTrace: string[] = [];
       const infoSpy = vi.spyOn(console, 'info').mockImplementation((...args: unknown[]) => {
-        if (String(args[0] ?? '').includes('repair-exhausted: forcing topic rejoin')) {
+        const line = args.map((a) => String(a)).join(' ');
+        if (/\[swarm\]|\[replication-liveness\]|rejoin/i.test(line)) {
+          infoTrace.push(line);
+          if (infoTrace.length > 40) infoTrace.shift();
+        }
+        if (line.includes('repair-exhausted: forcing topic rejoin')) {
           forceRejoinFired = true;
         }
       });
@@ -1460,9 +1475,23 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
         async () => (await readFeature(orgDb.adminSql, HIVE_HOME, 'F-zombie')) ?? undefined,
         { timeoutMs: 30_000, intervalMs: 200 },
       );
+      // WI-6324: name WHICH rung broke rather than merging every failure into one
+      // "did not fire/heal" (which points diagnosis at the detector even when the
+      // detector is the half that worked). `memberConnAttempts` counts every
+      // consultation of the sidecarOffloadOverride seam — i.e. every connection the
+      // member actually opened — so it stays at 1 exactly when no fresh connection
+      // followed the escalation. ATTRIBUTION ONLY: this changes no pass/fail verdict.
+      const stalledStage = !forceRejoinFired
+        ? 'DETECT — the connected_never_replicated escalation never fired at all (no "repair-exhausted: forcing topic rejoin" log). Suspect the replication-liveness/ladder half, NOT the swarm.'
+        : memberConnAttempts <= 1
+          ? 'REJOIN — the escalation fired and logged, but the member never opened a second connection (memberConnAttempts is still 1). boot.ts logs that line immediately BEFORE `void swarmHandle?.forceRejoin()`, so this is what it looks like when forceRejoin is never actually invoked (an unset swarmHandle is swallowed by the `?.`) or resolves without dialing. Suspect swarm.ts forceRejoinNow / its eviction sweep, NOT the detector.'
+          : 'REPLICATE — a fresh connection DID open after the escalation (memberConnAttempts > 1) yet content still never landed: the reconnect is not resuming core replication (core likely still bound to the dead muxer). Suspect the admit -> addRemoteCore -> session.replicate(muxer) re-attach path.';
       expect(
         landed,
-        `F-zombie never landed on the member — the connected_never_replicated -> forceRejoin recovery path did not fire/heal within 30s (memberConnAttempts=${memberConnAttempts}, forceRejoinFired=${forceRejoinFired}, elapsed=${Date.now() - t0}ms)`,
+        `F-zombie never landed on the member within 30s ` +
+          `(memberConnAttempts=${memberConnAttempts}, forceRejoinFired=${forceRejoinFired}, elapsed=${Date.now() - t0}ms).\n` +
+          `stalledStage: ${stalledStage}\n` +
+          `last swarm/replication console.info lines:\n  ${infoTrace.slice(-25).join('\n  ') || '(none captured)'}`,
       ).toMatchObject({ feature_id: 'F-zombie', origin: 'remote', title: 'Authored while member zombied' });
       expect(
         forceRejoinFired,

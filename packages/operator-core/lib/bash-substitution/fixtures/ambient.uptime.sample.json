@@ -1,28 +1,13 @@
 {
   "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.uptime",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 116,
-  "totalSessions": 36,
+  "totalAtoms": 106,
+  "totalSessions": 35,
   "sample": [
     {
       "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
       "ts": "2026-07-26T01:11:11.943Z",
       "atom": "uptime"
-    },
-    {
-      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
-      "ts": "2026-07-21T12:07:16.446Z",
-      "atom": "uptime\" \"$d\"/*.log \"$d\"/*.out 2>/dev/null"
-    },
-    {
-      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
-      "ts": "2026-07-26T06:42:16.215Z",
-      "atom": "uptime\" 2>&1"
-    },
-    {
-      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
-      "ts": "2026-07-26T07:20:18.796Z",
-      "atom": "uptime' 2>&1"
     }
   ]
 }

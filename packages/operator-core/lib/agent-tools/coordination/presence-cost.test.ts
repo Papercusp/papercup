@@ -6,7 +6,9 @@
  *   (2) a hive-scale snapshot (≤ PRESENCE_HIVE_SCALE_AGENTS lean rows) stays
  *       under the snapshot inline-glance budget — i.e. the default slice never
  *       grows into a file-persist;
- *   (3) include_detail adds bounded, opt-in overhead (never on the lean path).
+ *   (3) include_detail adds bounded, opt-in overhead (never on the lean path);
+ *   (4) include_coupling's appended expanded[] is capped, and leaves the base
+ *       rows byte-identical (D-053).
  *
  * These are the CI ceiling that a future presence field addition can't silently
  * breach. The real-corpus numbers that justify the budgets live in
@@ -27,6 +29,7 @@ import {
   PRESENCE_LEAN_ROW_TOKEN_BUDGET,
   PRESENCE_INLINE_GLANCE_TOKEN_BUDGET,
 } from './presence-cost';
+import { COUPLED_EXPANSION_MAX } from '../../coord/coupled-expansion';
 
 /** A realistic, heavy-end active SU row: a long intent sentence, several files
  *  and claims — about as big as a single legitimately-busy lean row gets. */
@@ -155,5 +158,42 @@ describe('include_detail overhead (P-011 — opt-in, never on the lean path)', (
     expect(detailed.tokens).toBeGreaterThan(lean.tokens); // detail genuinely adds
     // Even with detail, a single agent's row stays well bounded (opt-in admin read).
     expect(detailed.tokens).toBeLessThan(PRESENCE_LEAN_ROW_TOKEN_BUDGET * 2);
+  });
+});
+
+describe('include_coupling overhead (P-031 leg d — appended block, never the base rows)', () => {
+  /** A full block: every coupled peer resolved, each with a long stated reason —
+   *  about as big as the appended block can legitimately get. */
+  const fullBlock = Array.from({ length: COUPLED_EXPANSION_MAX }, (_, i) => ({
+    ownerId: `su-${i.toString(16).padStart(8, '0')}-aaaa-bbbb-cccc-1234567890ab`,
+    expandedBecause:
+      'coupled — derived, and declared by su-1234abcd-aaaa-bbbb-cccc-1234567890ab: ' +
+      'both editing packages/operator-core/lib/sync-resolver and racing the same migration',
+    source: 'both' as const,
+    reason: 'both editing packages/operator-core/lib/sync-resolver and racing the same migration',
+    declaredBy: 'su-1234abcd-aaaa-bbbb-cccc-1234567890ab',
+    inRoster: true,
+    ownerLabel: `su · su-${i.toString(16).padStart(5, '0')}`,
+    sessionState: 'live',
+    intent: 'Wiring the union consumer into coord:presence and re-verifying on :3170',
+    intentStale: false,
+    lastActiveSecAgo: 7,
+  }));
+
+  it('a MAXED block stays inside the inline-glance budget on its own', () => {
+    // The cap (COUPLED_EXPANSION_MAX) is what makes this bounded — without it a
+    // third-party coupler could declare arbitrarily many edges against one agent
+    // and grow this block without limit.
+    expect(measurePresenceCost(fullBlock).tokens).toBeLessThan(PRESENCE_INLINE_GLANCE_TOKEN_BUDGET);
+  });
+
+  it('D-053: the block APPENDS — the base rows are byte-identical with it and without it', () => {
+    // The contract that matters. Not "the payload is small" but "the payload the
+    // caller would have gotten anyway did not change".
+    const rows = Array.from({ length: 8 }, (_, i) => toStableRosterRow(makeHeavyRow(i)));
+    const base = { active: rows, summary: { active: rows.length } };
+    const withCoupling = { ...base, expanded: fullBlock, expandedTotal: fullBlock.length };
+    expect(JSON.stringify(withCoupling.active)).toBe(JSON.stringify(base.active));
+    expect(JSON.stringify(withCoupling.summary)).toBe(JSON.stringify(base.summary));
   });
 });

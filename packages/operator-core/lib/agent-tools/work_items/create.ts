@@ -306,6 +306,25 @@ export default defineTool({
     const env = await runBulk(
       list,
       async (spec) => {
+        // EI-18784357226895330: a claim spec governs what a member may PULL from the
+        // shared claimable pool. It must NOT govern what a member may FILE. This block
+        // used to refuse the whole create, which meant a member who discovered an
+        // out-of-lane defect could not register it AT ALL — the escape hatch of "file
+        // it and carry it yourself" was closed too. The observed cost: a CRITICAL
+        // fleet-wide bug (EI-18779962385972529, the entire operator-core integration
+        // tier dead) sat root-caused, with a designed fix, and no owner and no path to
+        // one, surviving only as prose in a coord message — the exact silent-drop the
+        // work-item ledger exists to prevent. Filing costs the fleet nothing and creates
+        // the accountability trail; only the CLAIM is lane-contended.
+        //
+        // So the refusal is now a DOWNGRADE, not a rejection: the item is always filed,
+        // UNASSIGNED, with the requester recorded as reporter, and the caller is told
+        // plainly that they do not hold it. The safety rationale is fully preserved —
+        // no out-of-scope claim is ever created — while the diagnosis survives even
+        // when the ownership does not. Applies to `fleet_winding_down` too: a paused
+        // fleet's member must not acquire NEW work, but recording a finding is not
+        // acquiring work.
+        let fleetScopeDowngrade: Record<string, never> | { fleetScopeDowngrade: string } = {};
         if (spec.assign_to) {
           const admission = await admitSubjectForFleetTarget({
             target: spec.assign_to,
@@ -318,16 +337,28 @@ export default defineTool({
               admission,
               `work_items:create+assign '${spec.title}' → ${spec.assign_to}`,
             );
-            return {
-              ok: false as const,
-              title: spec.title,
-              error: admission.code,
-              // EI-18673501896258575: same concrete remedy fleetScopeLeaderRemedy already
-              // sent to the fleet leader (via notifyFleetScopeRefusal) — echoed to the
-              // CALLER too, so a member acting on an explicit leader directive can see the
-              // exact scheduler:set_claim_spec shape needed instead of filing the item
-              // unclaimed and waiting, blind, for the leader to notice the notification.
-              message: `${admission.reason}. The item was not created, so no out-of-scope claim exists. ${fleetScopeLeaderRemedy(admission)}`,
+            const requestedAssignee = spec.assign_to;
+            spec.payload = {
+              ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
+              fleetScopeDowngrade: {
+                requestedAssignee,
+                reportedBy: ident.ownerId,
+                fleet: admission.scope.fleetSlug,
+                code: admission.code,
+                at: new Date().toISOString(),
+              },
+            };
+            spec.assign_to = undefined;
+            fleetScopeDowngrade = {
+              // EI-18673501896258575: the same concrete remedy fleetScopeLeaderRemedy
+              // already sent to the fleet leader (via notifyFleetScopeRefusal), echoed to
+              // the CALLER too, so a member can see the exact scheduler:set_claim_spec
+              // shape needed instead of waiting, blind, for the leader to notice.
+              fleetScopeDowngrade:
+                `FILED UNASSIGNED — the item exists on the ledger, but you do NOT hold it: ` +
+                `${admission.reason}. No out-of-scope claim was created. You are recorded as the ` +
+                `reporter, so the finding is durable and attributable while it waits for an owner. ` +
+                `${fleetScopeLeaderRemedy(admission)}`,
             };
           }
         }
@@ -373,6 +404,9 @@ export default defineTool({
           workItem: res.workItem,
           ...codeTaskWarning,
           ...residualLinkNudge,
+          // EI-18784357226895330: filed, but the requested self-assignment was refused
+          // by the fleet lane — the caller must see this on an ok:true result.
+          ...fleetScopeDowngrade,
           // P-008 soft-band advisory: created fine, but these OPEN items are
           // semantically close — check them before splitting the work.
           ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),

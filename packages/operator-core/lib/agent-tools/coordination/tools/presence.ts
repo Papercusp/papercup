@@ -28,6 +28,8 @@ import {
 import { listParkedAwaitsForSubscribers } from '../../../events/await/store';
 import { buildParkedOnMap } from '../../fleet/assignments';
 import { overlayPresenceCursors } from '../presence-cursor-overlay';
+import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings';
+import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
 
 export default defineTool({
   name: 'coord:presence',
@@ -45,7 +47,7 @@ export default defineTool({
     // coordination-layer bug). `summary.active` is a COUNT, not the roster — do not confuse
     // the two `active` keys at different nesting levels.
     returns:
-      '{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), self?: string (your own ownerId, only when resolvable), etag, as_of, scope }. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }.',
+      '{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), self?: string (your own ownerId, only when resolvable), etag, as_of, scope }. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }. With include_coupling: an APPENDED expanded[] ({ ownerId, expandedBecause, source: derived|declared|both, reason?, declaredBy?, inRoster, ownerLabel, sessionState, intent, intentStale, lastActiveSecAgo }) + expandedTotal — `active` is unchanged by it. `intent` there is the peer\'s DECLARED INTENT, not a goal; goal + assumptions arrive with P-016/P-008. expanded[] is reader-relative and NOT etag-tracked, so a `since:` stub can lag a coupling change.',
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always
@@ -103,6 +105,10 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('ambient-semantic-push P-002: add each active agent\'s `cursor` — the top terms of its current lexical cursor (what it is working on, mined from its own journal), data-not-directive. Opt-in + fail-soft + snapshot-only (never a [coord+N] delta). DEFAULT-OFF and additionally gated by the PAPERCUSP_AMBIENT_CURSOR feature flag; absent unless both are on.'),
+    include_coupling: z
+      .boolean()
+      .optional()
+      .describe('P-031: append `expanded[]` — the peers YOU are coupled to (coord:couple), each with `expandedBecause`, plus their declared intent and staleness projected from the roster row you are already being sent. Opt-in + fail-soft. The base roster is byte-identical whether this is on or off (D-053): coupling decides only who appears in the appended block, never what the base rows contain. A coupled peer outside this read\'s scope appears with inRoster:false and null state — coupling re-ranks what you can already see, it never widens it.'),
     since: z
       .string()
       .optional()
@@ -268,10 +274,49 @@ export default defineTool({
     const cursorEnabled =
       args.include_cursor === true && (cursorFlag === '1' || cursorFlag === 'true');
     active = await overlayPresenceCursors(active, { enabled: cursorEnabled });
+    // unified-agent-state-plane P-031 leg (d): THE UNION CONSUMER. Opt-in
+    // `expanded[]` — the peers this caller is coupled to, resolved through the
+    // ONE shared predicate (`resolveCoupledPeers` = derived ∪ declared −
+    // suppressed) so no consumer re-implements the merge.
+    //
+    // ⚠ D-053: this APPENDS a top-level block and never touches `active`. The
+    // base roster is byte-identical whether include_coupling is on or off —
+    // coupling decides only WHO appears in the appended block. The block is
+    // reader-relative BY DESIGN (that is what `expanded[]` is for), which is
+    // also why it must never migrate into a row: `since:`/[coord+N] diff the
+    // raw rows, and a reader-relative field there would break the byte-stable
+    // delta contract. It is likewise NOT etag-tracked — same rule as the
+    // modes/parkedOn/coordHook overlays above, so a `since:` stub can lag a
+    // coupling change; re-read without `since:` after coupling.
+    //
+    // `derived: []` until P-013 builds the derivation — the union is already the
+    // call site, so P-013 plugs its half in here and nothing else changes. Being
+    // empty today is exactly why this is OPT-IN rather than always-on: paying a
+    // query on every read of a hot poll surface to append an empty array is the
+    // wrong trade, and P-013 owns the always-on decision.
+    let expansion: ReturnType<typeof buildCoupledExpansion> | null = null;
+    if (args.include_coupling === true && self) {
+      try {
+        const edges = await listCouplingsFor(self, c.workspaceId ?? undefined);
+        const peers = resolveCoupledPeers(self, [], edges);
+        expansion = buildCoupledExpansion(peers, active);
+      } catch {
+        /* fail-soft — a coupling read must never degrade the roster */
+      }
+    }
     const out = {
       ...snapshot,
       ...(self ? { self } : {}),
       active,
+      ...(expansion
+        ? {
+            expanded: expansion.expanded,
+            expandedTotal: expansion.total,
+            ...(expansion.truncated
+              ? { expandedTruncated: `showing ${expansion.expanded.length} of ${expansion.total} coupled peers` }
+              : {}),
+          }
+        : {}),
     };
     // {data} envelope so the payload-tier shapers apply; HTTP consumers (the
     // pui roster panes) still read identical lossless JSON text.

@@ -2201,7 +2201,26 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (!confirmation) return;
     if (Date.now() - confirmation.appliedAtMs < REPLICATION_STALL_GRACE_MS) return;
     const advanced = mergedPosition > confirmation.baselinePosition;
-    const caughtUp = knownLength <= mergedPosition;
+    // WI-6324: `knownLength` is the writer's length AS KNOWN TO OUR REPLICA, so it
+    // only advances when replication is actually DELIVERING. On a zombie connection
+    // that has delivered nothing it stays 0 — and a bare `knownLength <= mergedPosition`
+    // then reads 0 <= 0 as "caught up", i.e. it treats "we know NOTHING about this
+    // peer's log" as "we have EVERYTHING from it". That false confirmation deletes
+    // the confirmation record and disarms the escalation ladder, so the connection
+    // can never recover — in exactly the case the ladder exists for. Observed as a
+    // deterministic red in the connected_never_replicated repro: the trace shows
+    // `repair-confirmed: ingest recovered ... mergedPosition=0` two seconds after
+    // the forced rejoin, and nothing ever lands afterwards.
+    //
+    // Catch-up therefore requires POSITIVE knowledge of the writer. With
+    // knownLength === 0 there is no evidence of recovery, so we fall through to the
+    // still-stalled branches below and the ladder keeps working. This costs nothing
+    // for a genuinely empty log: there is no stall to confirm until something is
+    // written, and the first delivered entry makes knownLength positive.
+    //
+    // NOTE this hazard is why every pre-existing test of this ladder hands it a
+    // writer "well ahead" (length 1000) — the zero case was never exercised.
+    const caughtUp = knownLength > 0 && knownLength <= mergedPosition;
     // EI-18723690188615364: elapsed since the repair was APPLIED (not since the
     // current window opened) — the true incident duration, reported on EVERY
     // outcome below so no branch is silent.
