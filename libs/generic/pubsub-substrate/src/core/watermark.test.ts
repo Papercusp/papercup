@@ -55,8 +55,40 @@ describe('normaliseWatermark', () => {
       plan_events_since_ts: 't3',
       subscriptions_fired: ['m1'],
       snapshot_rebootstrap_pending: true,
+      cursors: { 'facts:workspace': '1783010341361' },
     };
     expect(normaliseWatermark(wm)).toEqual(wm);
+  });
+});
+
+// D-077: `cursors` is the OPEN map that makes registering a new surface a
+// key-add rather than a change to this type. The whole Watermark rides in one
+// jsonb column and PgWatermarkStore.write is a read-modify-write, so anything
+// this normaliser drops is destroyed durably on the next write by ANY caller.
+describe('normaliseWatermark — cursors (open surface map)', () => {
+  it('defaults to an empty map when absent', () => {
+    expect(normaliseWatermark({ messages_since_ts: 't' }).cursors).toEqual({});
+  });
+
+  it('PRESERVES a surface key this build does not know about', () => {
+    // The load-bearing case: an older host must not silently drop a newer
+    // surface's cursor, or the newer peer re-reads from zero forever.
+    const out = normaliseWatermark({
+      cursors: { 'facts:workspace': '42', 'some:future:surface': 'abc' },
+    });
+    expect(out.cursors).toEqual({ 'facts:workspace': '42', 'some:future:surface': 'abc' });
+  });
+
+  it('drops non-string cursor values but keeps well-formed siblings', () => {
+    const out = normaliseWatermark({
+      cursors: { good: 'v1', bad: 7, alsoBad: null } as unknown as Record<string, string>,
+    });
+    expect(out.cursors).toEqual({ good: 'v1' });
+  });
+
+  it('degrades a malformed cursors value to an empty map', () => {
+    expect(normaliseWatermark({ cursors: ['a'] as unknown as Record<string, string> }).cursors).toEqual({});
+    expect(normaliseWatermark({ cursors: 'nope' as unknown as Record<string, string> }).cursors).toEqual({});
   });
 });
 
