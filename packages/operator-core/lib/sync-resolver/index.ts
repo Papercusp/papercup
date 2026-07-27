@@ -5361,11 +5361,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { limit } = args as { limit: number };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
       const [rows, totalRows] = await Promise.all([
+        // `harness_slug` is null on 5,698 of 5,761 threads, and BOTH the ref
+        // pill and WorkItemPopupModal need a harness to scope workItems.detail
+        // — so the "ATTACHED TO" link (owner requirement, D-005) was dead on
+        // every Decisions row until this fallback existed. The harness is
+        // recoverable from the work-item the thread hangs off, fixing 89.7%;
+        // the rest keep the honest "no harness context" state.
+        //
+        // A scalar subquery, NOT a join: `feature_id` is not unique across
+        // harnesses for F-NNN ids, so a join would multiply thread rows.
+        // And NOT "inherit the pane's harness": issue-thread-WI-6355 renders
+        // under papercusp but its work-item lives in oddsmith-hive, so
+        // inheriting would look the item up confidently in the WRONG harness.
         sql`
-          SELECT thread_id, parent_kind, parent_ref, title, created_by, harness_slug,
-                 created_at, last_post_at, post_count
-            FROM harness_shared.coord_threads
-           ORDER BY last_post_at DESC NULLS LAST, created_at DESC NULLS LAST
+          SELECT t.thread_id, t.parent_kind, t.parent_ref, t.title, t.created_by,
+                 COALESCE(t.harness_slug,
+                          (SELECT w.harness_slug
+                             FROM harness_shared.work_items w
+                            WHERE w.feature_id = t.parent_ref
+                              AND w.harness_slug IS NOT NULL
+                            LIMIT 1)) AS harness_slug,
+                 t.created_at, t.last_post_at, t.post_count
+            FROM harness_shared.coord_threads t
+           ORDER BY t.last_post_at DESC NULLS LAST, t.created_at DESC NULLS LAST
            LIMIT ${limit}`,
         sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads`,
       ]);
@@ -5378,10 +5396,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
       const [thread, posts] = await Promise.all([
-        sql`SELECT thread_id, parent_kind, parent_ref, title, created_by, harness_slug,
-                   created_at, last_post_at, post_count
-              FROM harness_shared.coord_threads
-             WHERE thread_id = ${id} LIMIT 1`,
+        // Same parent-work-item harness fallback as deliberationList — the two
+        // MUST agree. A list that resolves the harness while the detail does
+        // not is the worst outcome: the pill looks live in the row and dies
+        // the moment you open it.
+        sql`SELECT t.thread_id, t.parent_kind, t.parent_ref, t.title, t.created_by,
+                   COALESCE(t.harness_slug,
+                            (SELECT w.harness_slug
+                               FROM harness_shared.work_items w
+                              WHERE w.feature_id = t.parent_ref
+                                AND w.harness_slug IS NOT NULL
+                              LIMIT 1)) AS harness_slug,
+                   t.created_at, t.last_post_at, t.post_count
+              FROM harness_shared.coord_threads t
+             WHERE t.thread_id = ${id} LIMIT 1`,
         sql`SELECT id, author_id, body, created_at, harness_slug
               FROM harness_shared.coord_thread_posts
              WHERE thread_id = ${id}
