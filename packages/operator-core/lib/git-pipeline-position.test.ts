@@ -78,10 +78,21 @@ const NO_CANDIDATE: ChangeInCandidate = {
   detail: null,
 };
 
+/** P-006: a clean tree — nothing for the next git-sync tick to sweep. */
+const NO_SWEEP: SweepExposure = {
+  exposed: false,
+  dirtyPathCount: null,
+  dirtyPathSample: [],
+  nextSweepInMs: null,
+  detail: null,
+};
+
 /** A fake `git` runner keyed by arg shape + a per-ref containment map. */
 function fakeGit(opts: {
   submodules?: string[];
   dirty?: boolean;
+  /** P-006: raw porcelain for the TREE-WIDE status (the sweep's blast radius). */
+  dirtyTree?: string;
   pathCommit?: string | null;
   subject?: string;
   /** ref → set of shas that ref's history contains (ancestor-or-equal). */
@@ -106,7 +117,14 @@ function fakeGit(opts: {
       const subs = opts.submodules ?? [];
       return subs.length ? subs.map((p, i) => `submodule.s${i}.path ${p}`).join('\n') : null;
     }
-    if (args[0] === 'status') return opts.dirty ? 'M somefile' : '';
+    // P-006: the path-filtered status (`status --porcelain -- <path>`) and the
+    // TREE-WIDE one are different questions — the second is the sweep's blast radius.
+    // A fixture that answers both with the same string cannot exercise the multi-file
+    // case at all, which is the only case P-006 exists for.
+    if (args[0] === 'status') {
+      if (!opts.dirty) return '';
+      return args.includes('--') ? 'M somefile' : (opts.dirtyTree ?? 'M somefile');
+    }
     // The gitlink read that IS the ground truth across the boundary.
     if (args[0] === 'ls-tree') {
       const pin = opts.submodulePin;
@@ -569,6 +587,7 @@ describe('gitPipelinePosition (P-002)', () => {
       runtimes: classifyRuntimeOwners('a.ts'),
       serving: HEALTHY_SERVING,
       changeInCandidate: NO_CANDIDATE,
+      sweepExposure: NO_SWEEP,
       notes: [],
       stages: [],
       blockedOn: null,
@@ -822,6 +841,7 @@ describe('computeStages: position x health', () => {
     gitSync: HEALTHY_GIT_SYNC,
     serving: HEALTHY_SERVING,
     changeInCandidate: NO_CANDIDATE,
+    sweepExposure: NO_SWEEP,
     runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
     ...over,
   });
@@ -1078,6 +1098,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
     gitSyncLastStatus: 'synced',
     gitSync: HEALTHY_GIT_SYNC,
     changeInCandidate: NO_CANDIDATE,
+    sweepExposure: NO_SWEEP,
     runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
     ...over,
     serving,
@@ -1159,6 +1180,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       runtimes: classifyRuntimeOwners('a.ts'),
       serving,
       changeInCandidate: NO_CANDIDATE,
+      sweepExposure: NO_SWEEP,
       notes: [],
       stages: [],
       blockedOn: null,
@@ -1291,6 +1313,7 @@ describe('changeInCandidate (P-004)', () => {
         gitSync: HEALTHY_GIT_SYNC,
         serving: HEALTHY_SERVING,
         changeInCandidate: NO_CANDIDATE,
+        sweepExposure: NO_SWEEP,
         runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
         ...over,
       });
@@ -1366,6 +1389,7 @@ describe('changeInCandidate (P-004)', () => {
       runtimes: classifyRuntimeOwners('a.ts'),
       serving: HEALTHY_SERVING,
       changeInCandidate: NO_CANDIDATE,
+      sweepExposure: NO_SWEEP,
       notes: [],
       stages: [],
       blockedOn: null,
@@ -1605,6 +1629,7 @@ describe('stage levers (P-005)', () => {
       gitSync: HEALTHY_GIT_SYNC,
       serving: HEALTHY_SERVING,
       changeInCandidate: NO_CANDIDATE,
+      sweepExposure: NO_SWEEP,
       runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
       ...over,
     });
@@ -1817,5 +1842,245 @@ describe('P-005 ACCEPTANCE TEST — one call answers "is it live, and if not wha
     expect(res.blockedOn).toBeNull();
     expect(res.nextAction).toBeNull();
     expect(res.summary).not.toMatch(/BLOCKED AT|WAITING AT/);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * P-006 — SWEEP EXPOSURE.
+ *
+ * The defect (EI-18735166063643844): an agent cannot commit atomically here, so a
+ * multi-file change is GUARANTEED to expose a partial intermediate as a commit, and
+ * the green-checkpoint can cut its candidate inside that window. Measured cost: 29
+ * failures against a 14:09 candidate for work whose dependent fix landed at 14:36 —
+ * all green at tip, and a peer spent a wake triaging them.
+ *
+ * What is pinned here is a DISTINCTION, not a warning: one dirty file cannot be cut
+ * into a partial set, so warning there would be a false alarm that trains readers to
+ * skim past the real one.
+ * ------------------------------------------------------------------------- */
+describe('sweep exposure (P-006)', () => {
+  const NOW = 1_000_000_000_000;
+
+  const stageInput = (sweep: SweepExposure): Parameters<typeof computeStages>[0] => ({
+    dirtyUncommitted: true,
+    positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    verdictProvenance: {
+      lastGreenSha: 'g',
+      lastGreenShortSha: 'g',
+      lastGreenAgeMs: 1,
+      mainFastForwarded: true,
+      deployedBehindGreenPin: 0,
+      deployOrigin: 'gate-green',
+    },
+    gitSyncLastStatus: 'synced',
+    gitSync: HEALTHY_GIT_SYNC,
+    serving: HEALTHY_SERVING,
+    changeInCandidate: NO_CANDIDATE,
+    runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
+    sweepExposure: sweep,
+  });
+
+  it('a clean path is not exposed at all — and says nothing', () => {
+    const s = evaluateSweepExposure({
+      dirtyUncommitted: false,
+      dirtyPaths: null,
+      nextSweepAtMs: NOW + 60_000,
+      nowMs: NOW,
+    });
+    expect(s.exposed).toBe(false);
+    expect(s.detail).toBeNull();
+    expect(s.dirtyPathCount).toBeNull();
+  });
+
+  it('ONE dirty path: exposed, but explicitly NOT a partial-set risk', () => {
+    const s = evaluateSweepExposure({
+      dirtyUncommitted: true,
+      dirtyPaths: ['packages/operator-core/lib/x.ts'],
+      nextSweepAtMs: NOW + 5 * 60_000,
+      nowMs: NOW,
+    });
+    expect(s.exposed).toBe(true);
+    expect(s.dirtyPathCount).toBe(1);
+    expect(s.detail).toMatch(/cannot cut a partial set/);
+    // The multi-file alarm must NOT fire here.
+    expect(s.detail).not.toMatch(/SWEEP-EXPOSED/);
+    expect(s.detail).toMatch(/~5 min/);
+  });
+
+  it('SEVERAL dirty paths: names the blast radius, the window, and that you cannot make it atomic', () => {
+    const s = evaluateSweepExposure({
+      dirtyUncommitted: true,
+      dirtyPaths: ['a.ts', 'b.ts', 'c.ts'],
+      nextSweepAtMs: NOW + 3 * 60_000,
+      nowMs: NOW,
+    });
+    expect(s.exposed).toBe(true);
+    expect(s.dirtyPathCount).toBe(3);
+    expect(s.detail).toMatch(/SWEEP-EXPOSED/);
+    expect(s.detail).toMatch(/all 3 dirty path/);
+    expect(s.detail).toMatch(/a\.ts, b\.ts, c\.ts/);
+    expect(s.detail).toMatch(/~3 min/);
+    // The honest half: there is no lever that makes it atomic.
+    expect(s.detail).toMatch(/cannot make this atomic/);
+    // ...and the reason it matters: the gate can judge the intermediate.
+    expect(s.detail).toMatch(/judge the intermediate/);
+  });
+
+  it('a large dirty set is sampled, not dumped — and the remainder is counted', () => {
+    const paths = Array.from({ length: 20 }, (_, i) => `f${i}.ts`);
+    const s = evaluateSweepExposure({ dirtyUncommitted: true, dirtyPaths: paths, nextSweepAtMs: null, nowMs: NOW });
+    expect(s.dirtyPathCount).toBe(20);
+    expect(s.dirtyPathSample).toHaveLength(6);
+    expect(s.detail).toMatch(/\+14 more/);
+  });
+
+  it('an OVERDUE tick clamps to zero — never a negative or a past-tense window', () => {
+    const s = evaluateSweepExposure({
+      dirtyUncommitted: true,
+      dirtyPaths: ['a.ts', 'b.ts'],
+      nextSweepAtMs: NOW - 10 * 60_000, // the scheduler is late
+      nowMs: NOW,
+    });
+    expect(s.nextSweepInMs).toBe(0);
+    expect(s.detail).toMatch(/within the next MINUTE/);
+    expect(s.detail).not.toMatch(/-\d/);
+  });
+
+  it('carry note (2): an UNDEFINED next-fire renders as unknown, never "NaN min"', () => {
+    // `nextFireAtMs` is parsed out of free-form routine state, so `undefined` reaches
+    // here as easily as `null` — and `=== null` lets it straight through into the
+    // arithmetic. This is the trap P-003 hit; pin it rather than re-learn it.
+    const s = evaluateSweepExposure({
+      dirtyUncommitted: true,
+      dirtyPaths: ['a.ts', 'b.ts'],
+      nextSweepAtMs: undefined as unknown as number | null,
+      nowMs: NOW,
+    });
+    expect(s.nextSweepInMs).toBeNull();
+    expect(s.detail).not.toMatch(/NaN/);
+    expect(s.detail).toMatch(/at its next tick/);
+  });
+
+  it('parsePorcelainPaths takes the NEW path of a rename, and unquotes', () => {
+    const out = [
+      ' M packages/operator-core/lib/x.ts',
+      '?? new-file.ts',
+      'R  old/name.ts -> new/name.ts',
+      ' M "path with space.ts"',
+    ].join('\n');
+    expect(parsePorcelainPaths(out)).toEqual([
+      'packages/operator-core/lib/x.ts',
+      'new-file.ts',
+      'new/name.ts',
+      'path with space.ts',
+    ]);
+  });
+
+  it('the committed-stage LEVER carries the blast radius when the sweep takes more than your file', () => {
+    // `git-sync:run` told to an agent mid-refactor is an instruction to commit the
+    // broken intermediate on purpose. The lever stays — it is right once the set is
+    // done — but it must not read as "commits your file".
+    const stages = computeStages(
+      stageInput(
+        evaluateSweepExposure({
+          dirtyUncommitted: true,
+          dirtyPaths: ['a.ts', 'b.ts', 'c.ts'],
+          nextSweepAtMs: NOW + 60_000,
+          nowMs: NOW,
+        }),
+      ),
+    );
+    const committed = stages.find((s) => s.name === 'committed')!;
+    expect(committed.lever).toMatch(/git-sync:run/);
+    expect(committed.lever).toMatch(/sweeps ALL 3 dirty paths/);
+    expect(committed.lever).toMatch(/only fire it once the set is complete/);
+    expect(committed.detail).toMatch(/SWEEP-EXPOSED/);
+  });
+
+  it('a SINGLE dirty path leaves the committed lever exactly as it was', () => {
+    const stages = computeStages(
+      stageInput(
+        evaluateSweepExposure({
+          dirtyUncommitted: true,
+          dirtyPaths: ['x.ts'],
+          nextSweepAtMs: NOW + 60_000,
+          nowMs: NOW,
+        }),
+      ),
+    );
+    const committed = stages.find((s) => s.name === 'committed')!;
+    expect(committed.lever).toBe('git-sync:run (commit the working tree — the gate cannot see it)');
+  });
+
+  it('end-to-end: a dirty path in a multi-file tree surfaces it in sweepExposure, notes AND the summary', async () => {
+    const git = fakeGit({
+      dirty: true,
+      dirtyTree: [' M packages/operator-core/lib/a.ts', ' M packages/operator-core/lib/b.ts', '?? c.ts'].join('\n'),
+      pathCommit: 'abc1234567',
+      contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'], 'origin/main': [], deployedsha0: [] },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'packages/operator-core/lib/a.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () =>
+          ({
+            ...snap(),
+            routines: {
+              gitSync: {
+                name: 'git-sync',
+                active: true,
+                cron: null,
+                lastFiredAtMs: null,
+                nextFireAtMs: Date.now() + 4 * 60_000,
+              },
+            },
+          }) as GitPipelineSnapshot,
+        resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: null }),
+      },
+    );
+    expect(res.sweepExposure.exposed).toBe(true);
+    expect(res.sweepExposure.dirtyPathCount).toBe(3);
+    expect(res.sweepExposure.nextSweepInMs).toBeGreaterThan(0);
+    expect(res.notes.join(' ')).toMatch(/SWEEP-EXPOSED/);
+    expect(res.summary).toMatch(/SWEEP-EXPOSED: the next git-sync tick \(~4 min\) commits all 3 dirty paths/);
+  });
+
+  it('end-to-end: a dirty path ALONE in the tree gets no sweep clause in the summary', async () => {
+    const git = fakeGit({
+      dirty: true,
+      dirtyTree: ' M packages/operator-core/lib/a.ts',
+      pathCommit: 'abc1234567',
+      contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'], 'origin/main': [], deployedsha0: [] },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'packages/operator-core/lib/a.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+        resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: null }),
+      },
+    );
+    expect(res.sweepExposure.dirtyPathCount).toBe(1);
+    expect(res.summary).toContain('⚠ +uncommitted edits');
+    expect(res.summary).not.toMatch(/SWEEP-EXPOSED/);
+  });
+
+  it('a sha-only probe measures no exposure and pays for no status read at all', async () => {
+    const seen: string[][] = [];
+    const inner = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const git: GitRunner = async (repo, args) => {
+      seen.push(args);
+      return inner(repo, args);
+    };
+    const res = await gitPipelinePosition(
+      { sha: 'abc1234567' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(res.sweepExposure.exposed).toBe(false);
+    expect(seen.some((a) => a[0] === 'status')).toBe(false);
   });
 });
