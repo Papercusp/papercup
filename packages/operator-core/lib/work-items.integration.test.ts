@@ -1289,6 +1289,45 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
     expect(obs?.planItemBlocked).toBeUndefined();
   });
 
+  // WI-5343 (secondary ask): a durable WI-2797 claim-hold must read back as NOT
+  // available + gated, the same shape as the G2/origin gates and the plan-lane block
+  // above — before this fix it read as available:true (the double-placement trap the
+  // parent item's title names). Pinned for both families since claimHoldExclusionSql /
+  // claimFloorsWhereSql enforce the hold on both at claim time.
+  it('reports claimHoldParked for an unclaimed issue-family item carrying payload._claimHold (WI-5343)', async () => {
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'held',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { _claimHold: true },
+    });
+
+    const obs = await wi.observeWorkItem(bug.id);
+    expect(obs).toMatchObject({ available: false, claimedBy: null, gated: true, claimHoldParked: true });
+  });
+
+  it('reports claimHoldParked for an unclaimed feature-family item carrying payload._claimHold (WI-5343)', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'held-feature',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { _claimHold: true },
+    });
+
+    const obs = await wi.observeWorkItem(feat.id);
+    expect(obs).toMatchObject({ available: false, claimedBy: null, gated: true, claimHoldParked: true });
+  });
+
+  it('an unclaimed item with NO claim-hold is unaffected (available, no claimHoldParked)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'unheld', harness: 'papercup', createdBy: 'agA' });
+
+    const obs = await wi.observeWorkItem(bug.id);
+    expect(obs).toMatchObject({ available: true, claimedBy: null });
+    expect(obs?.claimHoldParked).toBeUndefined();
+  });
+
   it('does NOT consult the plan-item-lane guard once the item is already claimed', async () => {
     const feat = await wi.createWorkItem({
       kind: 'feature',

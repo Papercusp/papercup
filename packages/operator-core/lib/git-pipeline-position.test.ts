@@ -1520,7 +1520,7 @@ describe('changeInCandidate (P-004)', () => {
       expect(r.detail).toMatch(/inflight1234/);
     });
 
-    it('EI-18797292094433710: a newer-commit miss states the AMBIGUITY and the ancestor probe — it never exonerates the red', () => {
+    it('EI-18797292094433710: a newer-commit miss states the AMBIGUITY and the marker lever — it never exonerates the red', () => {
       // `inCandidate` compares the path's CURRENT content, so a peer's later commit to
       // the same file is indistinguishable from your own change having missed the cut.
       // Claiming "a RED from that run is NOT evidence your change failed" there is a
@@ -1534,7 +1534,13 @@ describe('changeInCandidate (P-004)', () => {
       });
       expect(r.judgingContainsPath).toBe(false);
       expect(r.detail).toMatch(/UNRESOLVED/);
-      expect(r.detail).toMatch(/merge-base --is-ancestor/);
+      // The lever this points at is now the `marker` argument rather than a shelled-out
+      // `git merge-base --is-ancestor`: both resolve the same ambiguity, but the marker
+      // settles it inside the SAME call that raised it, so there is no second step to
+      // skip. What this assertion protects is that SOME definitive lever is named — an
+      // "UNRESOLVED" verdict with no way to resolve it is what invites the guess.
+      expect(r.detail).toMatch(/SETTLE IT IN ONE CALL/);
+      expect(r.detail).toMatch(/re-call with `marker`/);
       expect(r.detail).toMatch(/do not re-fire/i);
       // the false exoneration must be gone
       expect(r.detail).not.toMatch(/NOT evidence your change failed/);

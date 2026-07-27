@@ -82,11 +82,29 @@ export type AssumptionDeclaration = string[] | typeof NO_ASSUMPTIONS;
  * REQUIRED on every commitment-class call. Deliberately NOT `.optional()` and
  * deliberately without a default — see the header.
  */
+/**
+ * The SHAPE, spelled literally. EI-18812234312014879: the two refusals below used to
+ * describe the VALUE ('the key(s) ... or the literal "none"') without the CONTAINER,
+ * so a caller with exactly one key reasonably passed a bare string — and the union
+ * then rejected it with nothing but zod's default `Invalid input`, which names no
+ * expected type and no example. That is the worst possible ordering: an informative
+ * refusal followed by an uninformative one, for the same argument. Both messages now
+ * carry this, so whichever one a caller hits shows the array brackets.
+ */
+export const ASSUMPTIONS_SHAPE_HINT =
+  'Shape: an ARRAY of facts:assert keys — assumptions: ["my-fact-key"] (note the brackets, even for a ' +
+  'single key) — or the bare literal assumptions: "none".';
+
 export const assumptionsArg = z
-  .union([
-    z.array(z.string().min(1).max(120)).min(1).max(MAX_ASSUMPTION_KEYS),
-    z.literal(NO_ASSUMPTIONS),
-  ])
+  .union(
+    [
+      z.array(z.string().min(1).max(120)).min(1).max(MAX_ASSUMPTION_KEYS),
+      z.literal(NO_ASSUMPTIONS),
+    ],
+    // Without this, ANY malformed value (a bare key string being by far the most
+    // likely) surfaces as zod's bare "Invalid input".
+    { errorMap: () => ({ message: `assumptions is malformed. ${ASSUMPTIONS_SHAPE_HINT}` }) },
+  )
   .describe(
     "REQUIRED — the `facts:assert` KEYS this close rests on (e.g. [\"gate-red-is-flake-not-regression\"]), " +
       'or the literal "none" if it rests on no recorded assumption. There is deliberately NO default: a ' +
@@ -100,7 +118,7 @@ export const ASSUMPTIONS_REQUIRED_MESSAGE =
   'a terminal close requires `assumptions` — the facts:assert key(s) this close rests on, or the ' +
   'literal "none". This is required-with-explicit-none by design (D-016/D-050): a terminal close ' +
   'removes the item from the shared queue, so an assumption that was wrong leaves with it. If the ' +
-  'close rests on nothing you recorded, pass "none" explicitly.';
+  `close rests on nothing you recorded, pass "none" explicitly. ${ASSUMPTIONS_SHAPE_HINT}`;
 
 /** True when a value is a well-formed declaration. Used by the shorthand checks,
  *  which run BEFORE the object schema validates the field itself. */

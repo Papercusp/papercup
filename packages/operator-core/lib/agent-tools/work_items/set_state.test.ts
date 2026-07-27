@@ -291,6 +291,23 @@ describe('terminal writes structurally require an assumption declaration (P-017 
     }
   });
 
+  /**
+   * EI-18812234312014879. Rejecting the wrong shape (above) is only half the job —
+   * the refusal has to say what the right one IS. Both refusals described the VALUE
+   * ("the key(s) ... or the literal \"none\"") without the CONTAINER, so a caller with
+   * exactly one key passed a bare string and got back zod's default `Invalid input`:
+   * no expected type, no example. Hit live while closing a work item; cost two calls.
+   */
+  it('names the ARRAY shape when the value is malformed, not a bare "Invalid input"', () => {
+    const r = parse({ id: 'WI-1', state: 'done', completionRef: REF, assumptions: 'my-fact-key' });
+    expect(r.success, 'a bare key string is still (correctly) refused').toBe(false);
+
+    const message = r.success ? '' : r.error.issues.map((i) => i.message).join(' | ');
+    expect(message, "must not be zod's contentless default").not.toMatch(/^Invalid input$/);
+    expect(message, 'must show the brackets, which is the whole point').toContain('["my-fact-key"]');
+    expect(message, 'must still offer the "none" escape hatch').toContain('none');
+  });
+
   it('leaves NON-terminal writes alone — no declaration required', () => {
     for (const state of ['wip', 'blocked', 'needs-human', 'open', 'todo']) {
       expect(parse({ id: 'WI-1', state }).success, state).toBe(true);
