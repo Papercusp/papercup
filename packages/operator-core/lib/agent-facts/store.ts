@@ -713,6 +713,47 @@ export async function listFacts(
   );
 }
 
+/**
+ * Every VERSION of one fact identity, newest first — the read that makes
+ * append-versioning (P-008 a) worth having. The current version is the row with
+ * `supersededAt === null`; walk `supersedesId` to follow the chain back.
+ *
+ * LOCAL partition only (`source_hive IS NULL`), matching every other
+ * identity-scoped path here: a foreign hive's observations are not versions of
+ * yours, and interleaving them would make the chain unreadable.
+ *
+ * ⚠ HISTORY IS BOUNDED, NOT INFINITE — {@link sweepExpiredFacts} deletes
+ * superseded versions 30d after they were replaced. A chain therefore truncates
+ * at the tail, and a `supersedesId` older than that resolves to nothing. That is
+ * deliberate (an unbounded audit tail on a hot table is its own defect); what
+ * D-003 requires is that a pointer never resolves to DIFFERENT content, not
+ * that it resolves forever.
+ */
+export async function factVersions(
+  args: { scope: FactScope; scopeRef?: string | null; key: string; workspaceId?: string; limit?: number },
+  inject?: Sql,
+): Promise<AgentFact[]> {
+  const err = validateFactScope(args.scope, args.scopeRef);
+  if (err) throw new InvalidInputError(`facts:versions — ${err}`);
+  const key = args.key.trim();
+  if (!key) throw new InvalidInputError('facts:versions — key required');
+  const sql = sqlOf(inject);
+  const ws = args.workspaceId ?? activeWorkspaceId();
+  const ref = args.scope === 'workspace' ? '' : (args.scopeRef ?? '').trim();
+  const limit = args.limit && args.limit > 0 ? Math.floor(args.limit) : 20;
+  const rows = await sql<AgentFactRow[]>`
+    SELECT id, superseded_at::text, supersedes_id,
+           scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+           confidence, created_by, updated_at::text, expires_at::text
+      FROM harness_shared.agent_facts
+     WHERE workspace_id = ${ws} AND scope = ${args.scope}
+       AND coalesce(scope_ref,'') = ${ref} AND key = ${key}
+       AND source_hive IS NULL
+     ORDER BY superseded_at DESC NULLS FIRST, id DESC
+     LIMIT ${limit}`;
+  return rows.map(rowToFact);
+}
+
 /** Expiry sweep (routines-tick reaper pattern): hard-delete rows expired or
  *  retracted > 30d ago — keeps the audit trail bounded. Fail-soft at call site. */
 export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
@@ -721,6 +762,11 @@ export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
     DELETE FROM harness_shared.agent_facts
      WHERE expires_at < now() - interval '30 days'
         OR retracted_at < now() - interval '30 days'
+        -- P-008 (a): bound the version tail on the SUPERSEDE date, not on the
+        -- version's own expiry. A long-TTL fact (a 90d wall) corrected on day
+        -- one leaves a version whose expires_at is still months out; without
+        -- this clause the tail would outlive the value it was corrected to.
+        OR superseded_at < now() - interval '30 days'
     RETURNING key`;
   return rows.length;
 }

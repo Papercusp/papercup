@@ -176,7 +176,20 @@ async function writeToPg(
        ${row.expires_at}::timestamptz, ${row.retracted_at}::timestamptz, true,
        ${authorPubkey}, ${origin}, ${fedTs}, ${sourceHive},
        ${audienceScope}, ${sourceProvenance}::text::jsonb, ${confidence})
+    -- ⚠ P-008 (a) / migration 689: the identity index is now PARTIAL
+    -- (agent_facts_identity_current ... WHERE superseded_at IS NULL), and an
+    -- ON CONFLICT inference spec that omits the predicate matches NO index —
+    -- failing at PLAN time, on every write, not only on conflicts. This table
+    -- was broken exactly that way once before (mig 461 widened the identity and
+    -- the stale 4-column spec zeroed out fact writes until it was caught).
+    --
+    -- A federated row is deliberately NOT append-versioned: it is a remote
+    -- peer's CURRENT observation, already last-write-wins by fed_ts and never
+    -- the target of a local D-003 pointer, so versioning it would multiply rows
+    -- by peer × revision for no reader. It stays an in-place upsert of the live
+    -- row; it only has to name the new predicate.
     ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))
+      WHERE superseded_at IS NULL
     DO UPDATE SET
       body          = EXCLUDED.body,
       source_ref    = EXCLUDED.source_ref,
@@ -216,6 +229,8 @@ async function deleteFromPg(
      WHERE workspace_id = ${opts.workspaceId}
        AND scope = ${scope} AND coalesce(scope_ref,'') = ${scopeRef ?? ''}
        AND key = ${factKey} AND source_hive IS NOT NULL
+       -- P-008 (a): the live remote version only; a superseded row is history.
+       AND superseded_at IS NULL
        AND (${ts}::bigint IS NULL
          OR harness_shared.fed_order_key(NULL, ${ts}::bigint) >= harness_shared.fed_order_key(NULL, fed_ts))`;
 }
