@@ -1374,18 +1374,30 @@ async function resolveSubmodulePin(
 }
 
 /**
- * P-006: paths out of `git status --porcelain`. Column layout is fixed (`XY <path>`),
- * and a rename is `XY <old> -> <new>` — take the NEW path, since that is what the
- * sweep commits. Exported for the test that pins the rename case, which is the one
- * shape a naive `slice(3)` gets silently wrong.
+ * P-006: paths out of `git status --porcelain`. A record is `XY <path>`, and a rename
+ * is `XY <old> -> <new>` — take the NEW path, since that is what the sweep commits.
+ *
+ * It must NOT slice fixed columns, and this is not fastidiousness — a `slice(3)`
+ * version shipped and lost the first character of the first path on the very first
+ * live probe (`ackages/operator-core/...`). Cause: `realGit` returns `stdout.trim()`,
+ * so the leading space of an unstaged ` M path` record survives on every line EXCEPT
+ * the first, where the trim ate it. No fixture could catch that — fixtures do not go
+ * through realGit — and the corruption is silent: a plausible-looking path that simply
+ * is not the file.
+ *
+ * The trim stays (every other caller of realGit depends on it); the tolerance belongs
+ * here. Matching the status FIELD instead of a column offset handles ` M x`, `MM x`,
+ * `?? x`, `R  a -> b` and the trimmed `M x` alike — the {1,2} backtracks when the
+ * second character turns out to be the start of the path rather than a status flag.
  */
 export function parsePorcelainPaths(out: string): string[] {
+  const RECORD = /^([ MADRCU?!]{1,2}) (.*)$/;
   return out
     .split('\n')
     .map((l) => l.trimEnd())
-    .filter((l) => l.length > 3)
-    .map((l) => {
-      const rest = l.slice(3);
+    .map((l) => RECORD.exec(l)?.[2] ?? null)
+    .filter((rest): rest is string => rest !== null && rest.length > 0)
+    .map((rest) => {
       const arrow = rest.indexOf(' -> ');
       return (arrow >= 0 ? rest.slice(arrow + 4) : rest).replace(/^"|"$/g, '');
     })

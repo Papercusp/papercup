@@ -1733,6 +1733,16 @@ function GymView({
   const champions = proposals.filter((p) => p.status === "accepted").length;
   const pending = proposals.filter((p) => p.status === "pending").length;
   const rejected = proposals.filter((p) => p.status === "rejected").length;
+  // Newest run instant across the listed groups — stamped into the sticky
+  // "Recent challengers" header so recency is legible at any scroll position.
+  const newestRunAtMs = useMemo<number | null>(() => {
+    let newest: number | null = null;
+    for (const r of runs) {
+      const when = r.finishedAt ?? r.startedAt;
+      if (when != null && (newest == null || when > newest)) newest = when;
+    }
+    return newest;
+  }, [runs]);
   const t = useLexicon();
   const running = activeAutoloops.length;
   useEffect(() => {
@@ -1858,8 +1868,29 @@ function GymView({
         <>
           {proposals.length > 0 || runs.length > 0 ? (
             <>
-              <div className="pc-learning__sectionhead">
+              {/* STICKY + carries RECENCY (owner escalation 2026-07-26, ~20
+                  reports of "no recent gym runs"): the runs list is newest-first
+                  at the TOP of this scrolling pane, and the judge cards the user
+                  actually reads are BELOW it — so reading a card necessarily
+                  scrolls every recent run out of view. With a ~268px fixed header
+                  (stage strip + tabs + subtitle + the orientation banner) the
+                  scroll area is only ~800px, so a ~250px scroll already hides the
+                  6 newest rows and leaves e.g. "9h ago" as the topmost visible
+                  line — which reads as "the gym has produced nothing recent"
+                  (REPRODUCED live at scrollTop 250). Pinning this header and
+                  stamping the newest run's age into it means the answer to "is
+                  anything recent?" is on screen at EVERY scroll position. */}
+              <div className="pc-learning__sectionhead pc-learning__sectionhead--stickyruns">
                 <h2>Recent challengers</h2>
+                {newestRunAtMs != null ? (
+                  <span
+                    className="pc-learning__runsrecency"
+                    title={`Newest gym run finished ${new Date(newestRunAtMs).toLocaleString()}. ${runs.length} run group(s) listed, newest first — scroll up for the newest.`}
+                  >
+                    newest {whenLabel(newestRunAtMs)}
+                    {runs.length > 0 ? ` · ${runs.length} listed` : ""}
+                  </span>
+                ) : null}
               </div>
               {/* WI-5696 (owner ask): a completed cycle is not a separate
                   category — it is a challenger EVENT, so it lives under this
@@ -5295,6 +5326,21 @@ export function LearningStyles() {
       .pc-learning__section { display: flex; flex-direction: column; gap: 7px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
       .pc-learning__sectionhead--tools { justify-content: flex-start; min-height: 28px; }
+      /* Pin the runs header inside the scrolling view-pane so the newest-run
+         recency stays on screen while the user scrolls down to the judge cards
+         (owner escalation 2026-07-26: scrolling hid every recent run and the
+         list appeared to start hours ago). Opaque background + z-index so rows
+         slide UNDER it rather than through it. */
+      .pc-learning__sectionhead--stickyruns {
+        position: sticky; top: 0; z-index: 3;
+        background: var(--bg-0, #070d15); padding: 4px 0 5px;
+        box-shadow: 0 6px 10px -8px rgba(0,0,0,0.85);
+      }
+      .pc-learning__runsrecency {
+        font-size: 11px; font-weight: 600; color: var(--fg-dim, #b9d4e8);
+        border: 1px solid var(--border, #2a2a2a); border-radius: 999px;
+        padding: 1px 8px; white-space: nowrap;
+      }
       .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 740; text-transform: uppercase; letter-spacing: 0; color: var(--fg, #e7eef5); }
       .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       /* Work-Queue-parity search + filter affordances (owner ask 2026-07-19). */

@@ -1970,13 +1970,37 @@ describe('sweep exposure (P-006)', () => {
       '?? new-file.ts',
       'R  old/name.ts -> new/name.ts',
       ' M "path with space.ts"',
+      'MM staged-and-modified.ts',
     ].join('\n');
     expect(parsePorcelainPaths(out)).toEqual([
       'packages/operator-core/lib/x.ts',
       'new-file.ts',
       'new/name.ts',
       'path with space.ts',
+      'staged-and-modified.ts',
     ]);
+  });
+
+  it('REGRESSION (live probe): realGit TRIMS, so the first record loses its leading space', () => {
+    // Found by dogfooding on the real repo, not by any fixture — fixtures never go
+    // through realGit, which returns `stdout.trim()`. Every ` M path` record keeps its
+    // leading space except the FIRST, whose space the trim ate. A column-slicing parser
+    // therefore returned `ackages/operator-core/...` — a plausible path that is not the
+    // file, corrupting the sample silently rather than failing.
+    const trimmedFirstLine = ['M packages/operator-core/lib/a.ts', ' M packages/operator-core/lib/b.ts', ' M papercusp-desktop'].join(
+      '\n',
+    );
+    expect(parsePorcelainPaths(trimmedFirstLine)).toEqual([
+      'packages/operator-core/lib/a.ts',
+      'packages/operator-core/lib/b.ts',
+      'papercusp-desktop',
+    ]);
+  });
+
+  it('a path whose first character is itself a status letter still parses', () => {
+    // The backtracking case that makes the status-field match safe: `M Makefile` could
+    // read as status "M " + path "akefile" if {1,2} were greedy without a fallback.
+    expect(parsePorcelainPaths('M Makefile\n?? Dockerfile')).toEqual(['Makefile', 'Dockerfile']);
   });
 
   it('the committed-stage LEVER carries the blast radius when the sweep takes more than your file', () => {
