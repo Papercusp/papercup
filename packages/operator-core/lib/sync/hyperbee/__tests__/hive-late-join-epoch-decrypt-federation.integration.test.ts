@@ -91,6 +91,7 @@ import { PendingEpochContent } from '../pending-epoch-content';
 import { reconcileEpochKeysForCurrentMembers } from '../hive-epoch-boundary-wiring';
 import { advanceHiveEpoch, getHiveEpoch } from '../hive-epoch-state';
 import { listHiveMembers, upsertHiveMember } from '../../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 import { buildHarnessPlansProjection, type HarnessPlanRow } from '../projections/harness-plans';
 import { buildEngineerIssuesProjection, type EngineerIssueRow } from '../projections/engineer-issues';
 import { buildHiveEpochKeysProjection } from '../projections/hive-epoch-keys';
@@ -352,7 +353,13 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
 
       // Operator member view == raw rows (the WI-892 invariant: the view must not
       // silently return fewer members than exist).
-      const members = await listHiveMembers(WORKSPACE_ID, HIVE_SLUG, dbOwner.sql);
+      const members = await listHiveMembers(
+        WORKSPACE_ID,
+        // EI-18777176681958978: this rig's owner and joiner share HIVE_SLUG, so it is the
+        // federated scope; the divergent-handle case is covered in federated-pot-scope tests.
+        unsafeFederatedPotScope(HIVE_SLUG, 'rig fixture: owner and joiner share the same hive slug'),
+        dbOwner.sql,
+      );
       const [{ n: rawCount }] = await dbOwner.sql<Array<{ n: number }>>`
         SELECT COUNT(*)::int AS n FROM harness_shared.pot_members
          WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${HIVE_SLUG}`;

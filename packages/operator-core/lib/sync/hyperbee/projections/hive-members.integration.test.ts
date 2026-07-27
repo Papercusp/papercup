@@ -16,6 +16,7 @@ import { generateEd25519KeypairDer } from '../../../identity/ed25519';
 import { hiveKeychainId } from '../../../identity/hive-keypair';
 import { insertHiveIfAbsent } from '../../../hive-store';
 import { loadRevokedHivePubkeys, getHiveMember } from '../../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 import { buildHiveMembersProjection, _testing, type HiveMemberRow } from './hive-members';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
@@ -103,7 +104,15 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
     expect(member?.githubUsername).toBe('octo');
     expect(member?.deviceAttestations[0]?.device_pubkey).toBe('pk-a');
     // the whole point: a federated revocation lands where the admission union reads it
-    expect([...(await loadRevokedHivePubkeys(WS, HIVE, db.sql))]).toEqual(['bad-pk']);
+    expect([
+      ...(await loadRevokedHivePubkeys(
+        WS,
+        // EI-18777176681958978: the projection under test writes under this same slug, so it
+        // IS the federated scope here.
+        unsafeFederatedPotScope(HIVE, 'projection fixture: the projection writes under this slug'),
+        db.sql,
+      )),
+    ]).toEqual(['bad-pk']);
   });
 
   it('drops a cross-Hive op (pot_home_slug != the projection scope)', async () => {

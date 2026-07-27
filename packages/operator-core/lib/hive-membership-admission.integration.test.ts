@@ -41,6 +41,7 @@ import {
 } from './hive-membership-admission';
 import { getPendingJoin, listPendingJoins } from './hive-pending-joins-store';
 import { getHiveMember, listHiveMembers } from './hive-membership-store';
+import { unsafeFederatedPotScope } from './federated-pot-scope';
 import { getHivePolicy, upsertHivePolicyRow } from './hive-policy-store';
 import { canonicalizeHivePolicy, type HivePolicy } from './hive-policy-schema';
 import { banMember, unbanMember } from './hive-moderation';
@@ -159,7 +160,7 @@ describe('admission — OPEN mode (or absent policy) ⇒ auto-admit', () => {
     );
     expect(out).toEqual({ outcome: 'admit' });
     expect(await listPendingJoins(WS, HIVE, { status: null }, sql)).toHaveLength(0);
-    expect(await listHiveMembers(WS, HIVE, sql)).toHaveLength(0);
+    expect(await listHiveMembers(WS, HIVE_SCOPE, sql)).toHaveLength(0);
   });
 
   it("explicit membership:'open' ⇒ admit; no pending recorded", async () => {
@@ -242,7 +243,7 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
     expect(pending).toMatchObject({ status: 'denied', reason: 'spam', decidedByGithubUserId: OWNER_ID });
     // The deny is logged but NEVER lands a member row.
     expect(await getHiveMember(WS, HIVE, alice.githubUserId, sql)).toBeNull();
-    expect(await listHiveMembers(WS, HIVE, sql)).toHaveLength(0);
+    expect(await listHiveMembers(WS, HIVE_SCOPE, sql)).toHaveLength(0);
   });
 
   it('approve with NO pending row ⇒ no_pending; never trust-admits', async () => {
@@ -466,7 +467,7 @@ describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-63
     await setPolicy({ membership: 'approval' });
     const out = await ownerAdmitOrPend({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
-    expect(await listHiveMembers(WS, HIVE, sql)).toHaveLength(1);
+    expect(await listHiveMembers(WS, HIVE_SCOPE, sql)).toHaveLength(1);
     expect(await listPendingJoins(WS, HIVE, { status: null }, sql)).toHaveLength(0);
   });
 

@@ -26,6 +26,7 @@ import { generateEd25519KeypairDer } from '../../../identity/ed25519';
 import { hiveKeychainId } from '../../../identity/hive-keypair';
 import { insertHiveIfAbsent } from '../../../hive-store';
 import { loadRevokedHivePubkeys, getHiveMember } from '../../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 import { getHiveSetting } from '../../../hive-settings-store';
 import { buildHarnessProjectionApply } from './register-all';
 import { announceSlugInScope } from '../read-admission';
@@ -34,6 +35,10 @@ import type { DeviceAttestationEntry } from '../../../harness/contributor-row-ty
 
 const WS = 'ws-a003';
 const HOME = 'hive-home'; // the Hive home slug — the op carries this
+// EI-18777176681958978: HOME is the OWNER-authored home slug the op carries, i.e. exactly the
+// federated scope the readers require — this suite's whole subject is the write side binding
+// to it.
+const HOME_SCOPE = unsafeFederatedPotScope(HOME, 'A-003 fixture: HOME is the owner-authored home slug the op carries');
 const MEMBER = 'member-repo'; // the harness a joiner actually boots
 const OWN_LOG = 'own-log-hex';
 const REMOTE_LOG = 'remote-log-hex'; // != OWN_LOG → origin='remote' (a federated op)
@@ -138,11 +143,11 @@ describe('A-003 — pot_members/pot_settings reach a member-booted joiner', () =
     await seedHive(HOME);
     // The revocation half of A-003: without the fix the joiner's admission union is empty.
     await memberBoundApply()(memberOp({ revoked_pubkeys: ['bad-pk'] }));
-    expect([...(await loadRevokedHivePubkeys(WS, HOME, db.adminSql))]).toEqual([]);
+    expect([...(await loadRevokedHivePubkeys(WS, HOME_SCOPE, db.adminSql))]).toEqual([]);
     // With the fix, the revoked pubkey reaches the union boot.ts seeds/refreshes from.
     await db.adminSql.unsafe('TRUNCATE harness_shared.pot_members CASCADE');
     await joinerApply()(memberOp({ revoked_pubkeys: ['bad-pk'] }));
-    expect([...(await loadRevokedHivePubkeys(WS, HOME, db.adminSql))]).toEqual(['bad-pk']);
+    expect([...(await loadRevokedHivePubkeys(WS, HOME_SCOPE, db.adminSql))]).toEqual(['bad-pk']);
   });
 
   it('surgical: the rebind still DEMUXES — an op for a DIFFERENT hive home is dropped', async () => {
