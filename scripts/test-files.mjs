@@ -106,6 +106,68 @@ export function groupRoutes(routes) {
   return [...groups.values()];
 }
 
+/**
+ * EI-18822211427354845: a caller that wants a machine-readable report passes ONE
+ * `--outputFile=<path>` through the `--` passthrough (this is exactly what the
+ * `testing:run` tool does), and every group below forwarded it verbatim to its OWN
+ * `vitest run`. Each group therefore OVERWROTE the previous group's report, and only
+ * the LAST group survived on disk — so a caller distilling that file reported ONE
+ * group as if it were the whole run. A two-workspace request whose FIRST group was
+ * red came back `failed:0, failures:[]`: the verdict bit survived (callers also AND
+ * the exit code) but the diagnostics silently described the wrong group.
+ *
+ * This is the same defect EI-13535 fixed for the router's OWN verdict, one layer up:
+ * `aggregateGroupResults` already sums across groups, so the report the router emits
+ * must follow the same rule rather than being last-writer-wins.
+ *
+ * A MULTI-group run gives each group a distinct `<base>.<index><ext>`. A SINGLE-group
+ * run is left byte-identical to the caller's requested path, so existing callers (and
+ * the common case) are completely unaffected.
+ */
+export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
+  if (groupCount <= 1) return vitestArgs;
+  const perGroupPath = (p) => {
+    const dot = p.lastIndexOf('.');
+    const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf(sep));
+    // Only treat a dot AFTER the last separator as an extension, so a dotted
+    // DIRECTORY (…/my.dir/report) is never split in the middle.
+    return dot > slash && dot > 0
+      ? `${p.slice(0, dot)}.${groupIndex}${p.slice(dot)}`
+      : `${p}.${groupIndex}.json`;
+  };
+  const out = [];
+  for (let i = 0; i < vitestArgs.length; i += 1) {
+    const arg = vitestArgs[i];
+    if (arg.startsWith('--outputFile=')) {
+      out.push(`--outputFile=${perGroupPath(arg.slice('--outputFile='.length))}`);
+    } else if (arg === '--outputFile' && i + 1 < vitestArgs.length) {
+      out.push(arg, perGroupPath(vitestArgs[i + 1]));
+      i += 1;
+    } else {
+      out.push(arg);
+    }
+  }
+  return out;
+}
+
+/**
+ * Strip `--outputFile` for the EI-18099113673609528 detail-recovery re-runs below.
+ * Those re-run INDIVIDUAL files purely to print human-readable detail to a live
+ * stdio; letting them keep the report path would clobber the group's real report
+ * with a single file's results — the same last-writer-wins bug as above, arriving
+ * by a different door.
+ */
+export function withoutOutputFileArg(vitestArgs) {
+  const out = [];
+  for (let i = 0; i < vitestArgs.length; i += 1) {
+    const arg = vitestArgs[i];
+    if (arg.startsWith('--outputFile=')) continue;
+    if (arg === '--outputFile') { i += 1; continue; }
+    out.push(arg);
+  }
+  return out;
+}
+
 export function listedFiles(output, cwd) {
   return [...new Set(
     output
@@ -272,8 +334,11 @@ export function main(argv = process.argv.slice(2)) {
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
   // verdict is decided only after every group has had its chance to run.
   const groupResults = [];
-  for (const group of groups) {
+  for (const [groupIndex, group] of groups.entries()) {
     const cwdLabel = relative(REPO_ROOT, group.cwd) || '.';
+    // EI-18822211427354845: each group writes its OWN report file when the run spans
+    // several groups, so one group's report can never overwrite another's.
+    const groupVitestArgs = perGroupVitestArgs(vitestArgs, groupIndex, groups.length);
     const requested = group.routes.map((route) => route.requested);
     // A null config is a config-less Vitest package (libs/generic/* shape): omit `--config`
     // entirely so Vitest auto-discovers its defaults from the package cwd, exactly as its own
