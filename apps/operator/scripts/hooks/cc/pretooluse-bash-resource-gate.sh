@@ -1637,6 +1637,7 @@ _SUBSTITUTION_HEADS = frozenset((
     'ss', 'netstat', 'lsof',
     'npx', 'vitest', 'journalctl',
     'date', 'uptime', 'nproc', 'free',
+    'grep',
 ))
 
 # Narrow phrases a substitution row claims whose bare head is too common for the

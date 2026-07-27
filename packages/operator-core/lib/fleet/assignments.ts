@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { isActivelyWorked, isReclaimable, type ItemActivity } from '../item-activity';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../adv-sessions';
+export type { PlanItemLaneBlock } from '../scheduler/plan-item-lane-guard';
 import type { PlanItemLaneBlock } from '../scheduler/plan-item-lane-guard';
 
 /** A presence row whose workspace is '*' belongs to every workspace's fleet. */

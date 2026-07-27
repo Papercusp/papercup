@@ -1371,6 +1371,14 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
   'uptime',
   'nproc',
   'free',
+  // `code-search.definition-lookup` → `gitnexus.query`. The pair claims only
+  // DEFINITION-shaped recursive greps (an `export function`/`class`/`interface`
+  // pattern under a source dir), which its own bashPattern decides; a plain
+  // `grep foo file.txt` is not claimed. Listed as the bare verb for the same
+  // reason `cat`/`git`/`sed` are: this set only decides which heads pay the
+  // operator round-trip at all, and an atom the registry claims an ENFORCEABLE
+  // equivalence for MUST clear the pre-filter or the rule can never fire.
+  'grep',
 ]);
 
 /**

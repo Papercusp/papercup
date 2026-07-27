@@ -458,7 +458,14 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       -- Real column is text NULL; the rig never writes it, it only must EXIST.
       -- NOTE: no backticks in this comment on purpose — this SQL lives inside a TS
       -- template literal, so a backtick here terminates it (EI-18748484115079154).
-      ADD COLUMN IF NOT EXISTS authority text;
+      ADD COLUMN IF NOT EXISTS authority text,
+      -- Same EI-10579 drift class again: EI-18820653360383242 (migration 698) added
+      -- closed_ts, the set-once close timestamp, and ISSUE_COLS now selects it
+      -- unconditionally. On the REAL schema this column is maintained by a base-table
+      -- trigger and is never written by a caller; here it only has to EXIST so the
+      -- SELECT does not 42703. Real column is bigint NULL (epoch ms, the *_ts family
+      -- convention), NOT a timestamptz -- do not "fix" it to match the *_at columns.
+      ADD COLUMN IF NOT EXISTS closed_ts bigint;
   `);
 
   // WI-1644 (part 4): migration 432 (work-item-completion-integrity, POST-379 —
