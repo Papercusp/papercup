@@ -16,7 +16,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences } from './parser';
+import { parsePlan, maskFences, normalizeDecisionBodyHeadings } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 
@@ -52,7 +52,12 @@ export function setDecisionBodyInBody(
   // One blank line before a following heading (matches add-decision's block spacing);
   // none at EOF.
   const trailing = blockEnd < body.length ? '\n' : '';
-  const rebuilt = `\n${datePiece}${newDecisionBody.trim()}\n${trailing}`;
+  // Demote `#`/`##` headings so the new body cannot break out of the
+  // `## Decisions` section (EI-18804290731494084) — same structural guard
+  // add-decision applies, so both decision writers are safe by construction
+  // rather than only the one that happened to be fixed.
+  const { body: safeBody } = normalizeDecisionBodyHeadings(newDecisionBody.trim());
+  const rebuilt = `\n${datePiece}${safeBody}\n${trailing}`;
   const newBody = body.slice(0, headLineEnd) + rebuilt + body.slice(blockEnd);
 
   // oldBody (for the result) = the prior block minus its leading blank + Date line.

@@ -188,6 +188,12 @@ export default defineTool({
         if (v.currentVersion != null) payload.currentVersion = v.currentVersion;
       } else if (v.code === 'lint_failed') {
         payload.errors = v.errors;
+        if (v.preexistingErrors) {
+          payload.preexistingErrors = v.preexistingErrors;
+          payload.hint =
+            `only the ${v.errors.length} error(s) above were INTRODUCED by this edit — the plan already carried ` +
+            `${v.preexistingErrors} unrelated lint error(s), which do not block your write. Fix the introduced ones.`;
+        }
       } else if (v.code === 'string_not_unique') {
         payload.count = v.count;
         payload.hint = 'add surrounding context to old_string to make it unique, or pass replace_all: true';

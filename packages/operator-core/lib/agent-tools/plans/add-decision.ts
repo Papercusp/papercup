@@ -21,7 +21,7 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences } from './parser';
+import { parsePlan, maskFences, normalizeDecisionBodyHeadings } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { readPlanBySlug } from './source';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -177,10 +177,15 @@ export function appendDecisionToBody(
 ): string {
   const refsLine =
     refs.length > 0 ? `\nRelated: ${refs.join(', ')}` : '';
+  // Demote `#`/`##` headings in the body so they cannot break out of the
+  // `## Decisions` section and shred the decision (EI-18804290731494084).
+  // Enforced HERE, at authorship, rather than documented as a convention:
+  // the failure is silent, so the only tier that works is a structural one.
+  const { body: safeBody } = normalizeDecisionBodyHeadings(decisionBody.trim());
   const block =
     `\n### ${decisionId} — ${title.trim()}\n` +
     `Date: ${date}\n` +
-    `${decisionBody.trim()}${refsLine}\n`;
+    `${safeBody}${refsLine}\n`;
 
   // Find the `## Decisions` section — allowing a numbered prefix
   // ("## 5. Decisions") and trailing whitespace ONLY. A heading with a

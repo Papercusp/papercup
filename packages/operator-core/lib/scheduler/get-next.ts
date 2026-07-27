@@ -53,6 +53,7 @@ import {
   positiveIdCohortIds,
 } from './claim-spec';
 import { getOrgPg } from '@papercusp/db-org';
+import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
   claimFloorsWhereSql,
@@ -1345,7 +1346,7 @@ export async function getNextWorkItem(
   // by every member); neither present ⇒ claimFloorsWhereSql's own `['todo']` default.
   const effectiveStates = opts.states ?? spec.states;
 
-  const floors = claimFloorsWhereSql(sql, {
+  const floorOpts = {
     harness: opts.harness,
     workspaceId: ws,
     states: effectiveStates,

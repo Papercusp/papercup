@@ -292,6 +292,13 @@ export async function lintParsed(
   for (const w of parsed.parseWarnings) {
     report.errors.push({ level: 'error', code: 'parse_warning', message: w });
   }
+  // Notices are observations, not violations — they must stay WARNINGS.
+  // Every entry in `parseWarnings` becomes an error two lines above, and an
+  // error rejects every subsequent write to the plan, so routing a notice
+  // there would wedge the plan it is merely describing (EI-18804290731494084).
+  for (const n of parsed.parseNotices) {
+    report.warnings.push({ level: 'warning', code: 'parse_notice', message: n });
+  }
 
   const itemIds = new Set(parsed.items.map((i) => i.id));
   const itemById = new Map(parsed.items.map((i) => [i.id, i]));
