@@ -20,7 +20,7 @@ export default defineTool({
   name: 'work_items:completion_stats',
   profile: 'engineer',
   description:
-    "Genuine-completions metric for one harness: terminalTotal (every done/closed work-item, both families) vs genuineCompletions (terminal AND carrying both an owner and a completion_ref — the only rows the completion-integrity gate would accept without a skip) vs dedupOrUnverified (the difference — watchdog/hygiene/revert dedup flips, or pre-gate historical rows).",
+    "Completion-integrity metric for one harness: terminalTotal (every done/closed work-item, both families) vs genuineCompletions (terminal AND carrying an owner PLUS either a completion_ref or an authority judgement — the only rows the gate would accept without a skip) vs dedupOrUnverified (the difference — watchdog/hygiene/revert dedup flips, or pre-gate historical rows), plus gateJudged (P-013: terminal rows the P-004 evidence gate actually JUDGED). gateJudged/terminalTotal is instrument COVERAGE, not a compliance score — only work_items:complete stamps a judgement, so a close made via the bare state-write path is unjudged however well evidenced it was.",
   guidance: {
     when:
       'Reporting progress on a harness and the question is "how much REAL work landed", not just the raw done/closed count — a watchdog dedup sweep or hygiene close inflates the raw terminal count without any owner doing the work.',

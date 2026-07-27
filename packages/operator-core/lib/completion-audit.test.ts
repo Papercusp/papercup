@@ -19,6 +19,7 @@ import {
   auditPredicateSql,
   auditPredicateSqlFor,
   citesScreenshotArtifact,
+  completionAuthorityPredicateSql,
   COMPLETION_AUDITS,
   hasIntermittentFailureRateEvidence,
   isBackedLiveDroveUiClaim,
@@ -27,6 +28,7 @@ import {
   RECONCILER_SYSTEM_ACTOR,
   touchesLayoutBearingFiles,
 } from './completion-audit';
+import { WORK_ITEM_COMPLETION_AUTHORITIES } from './work-item-completion-authority';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 
 /**

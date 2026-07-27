@@ -92,12 +92,20 @@ export interface PresenceIdentity {
  * so each federated presence row carries it for the per-Hive lock authority.
  * Defaults null (a non-Hive harness, or a caller that hasn't wired Hive scope yet)
  * — additive + back-compat.
+ *
+ * `runsRoutines` (EI-18761517980514694) is the same shape one layer on: the
+ * capability bit the per-Hive RUNNER election filters peers by ("this node's
+ * routine host is live AND a cadence-runner routine is armed here for this
+ * harness" — lib/cadence-runner-capability.ts). Defaults null = "not a runner",
+ * the conservative direction: peers skip us, but every selector adds SELF
+ * unconditionally, so we still run our own loop.
  */
 export function buildPresenceAnnounceRow(
   identity: PresenceIdentity,
   state: PresenceState,
   nowMs: number,
   potSlug: string | null = null,
+  runsRoutines: boolean | null = null,
 ): SharedPresenceRow {
   return {
     harness_slug: state.harnessSlug,
@@ -109,6 +117,7 @@ export function buildPresenceAnnounceRow(
     last_seen_at: nowMs,
     schema_version: PRESENCE_SCHEMA_VERSION,
     hive_slug: potSlug,
+    runs_routines: runsRoutines,
   };
 }
 
@@ -120,8 +129,9 @@ export function buildPresenceAnnounceOp(
   state: PresenceState,
   nowMs: number,
   potSlug: string | null = null,
+  runsRoutines: boolean | null = null,
 ): LocalWriteOp {
-  const value = buildPresenceAnnounceRow(identity, state, nowMs, potSlug);
+  const value = buildPresenceAnnounceRow(identity, state, nowMs, potSlug, runsRoutines);
   return {
     type: 'put',
     table: 'presence',
@@ -172,6 +182,19 @@ export interface AnnounceLocalPresenceDeps {
    *  authority scopes by it (lockAuthorityForHive's `WHERE hive_slug`). Null = a
    *  non-Hive harness. Additive: omitted → null (back-compat). */
   potSlug?: string | null;
+  /**
+   * EI-18761517980514694 — resolve the RUNNER-election capability bit
+   * (`shared_presence.runs_routines`). Called LAZILY, only on a tick that actually
+   * announces (never on a suppressed one), so the cost is one cached lookup per
+   * announce rather than one per poll.
+   *
+   * A resolver rather than a value ON PURPOSE: resolving once at wire time (the way
+   * `potSlug` is) would let a node that later DISARMS its cadence routine keep a
+   * stale `true` marker, keep winning the argmin and re-create the very starvation
+   * this fixes. Re-resolving per announce self-heals inside one staleness window.
+   * A throw resolves to null ("not a runner") — the conservative direction.
+   */
+  resolveRunsRoutines?: () => Promise<boolean | null>;
 }
 
 export interface AnnounceResult {
@@ -194,7 +217,20 @@ export async function announceLocalPresence(
   if (!shouldAnnounce(deps.prev, state, now, deps.cadence)) {
     return { announced: false };
   }
-  await deps.append(buildPresenceAnnounceOp(identity, state, now, deps.potSlug ?? null));
+  // EI-18761517980514694: resolved HERE (post-cadence-decision) so a suppressed tick
+  // costs nothing. Never fails the announce — an unresolvable capability publishes
+  // null ("not a runner"), which peers skip while we stay our own candidate.
+  let runsRoutines: boolean | null = null;
+  if (deps.resolveRunsRoutines) {
+    try {
+      runsRoutines = await deps.resolveRunsRoutines();
+    } catch {
+      runsRoutines = null;
+    }
+  }
+  await deps.append(
+    buildPresenceAnnounceOp(identity, state, now, deps.potSlug ?? null, runsRoutines),
+  );
   return { announced: true, last: { state: { ...state }, atMs: now } };
 }
 
@@ -209,6 +245,9 @@ export interface PresenceAnnounceLoopDeps {
   /** The harness's home Hive slug (P-008/P-009) — resolved ONCE by the publisher
    *  (potHomeSlugForHarness) and stamped on every announce. Null = non-Hive. */
   potSlug?: string | null;
+  /** EI-18761517980514694 — forwarded to {@link announceLocalPresence}; see its
+   *  doc for why this is a per-announce RESOLVER and not a wire-time value. */
+  resolveRunsRoutines?: () => Promise<boolean | null>;
   /** Tick rate (the decision cadence is shouldAnnounce's; the loop just polls). */
   intervalMs: number;
   cadence?: AnnounceCadenceOpts;
@@ -267,6 +306,7 @@ export function startPresenceAnnounceLoop(deps: PresenceAnnounceLoopDeps): Prese
         now: deps.now,
         cadence: deps.cadence,
         potSlug: deps.potSlug,
+        resolveRunsRoutines: deps.resolveRunsRoutines,
       });
       if (result.last) prev = result.last;
     } catch (err) {

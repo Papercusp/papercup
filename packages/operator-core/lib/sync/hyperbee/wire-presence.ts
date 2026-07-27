@@ -30,6 +30,7 @@ import { resolveLocalAnnounceIdentity } from './local-announce-identity';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { machineFingerprint } from '../../identity/device-keychain-id';
 import { potHomeSlugForHarness } from '../../hive-federation';
+import { nodeRunsCadenceLoops } from '../../cadence-runner-capability';
 import type { SharedPresenceRow } from './projections/presence';
 import {
   registerPresenceGossipTopic,
@@ -58,6 +59,9 @@ export interface WirePresenceOpts {
   // ── test / wiring seams ──
   resolveIdentity?: () => Promise<PresenceIdentity | null>;
   resolveHiveSlug?: (workspaceId: string, harnessSlug: string) => Promise<string | null>;
+  /** EI-18761517980514694 test seam — override the runner-capability resolver
+   *  stamped onto each announce (default: nodeRunsCadenceLoops for this harness). */
+  resolveRunsRoutines?: () => Promise<boolean | null>;
   getState?: () => PresenceState;
   setIntervalFn?: (cb: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearIntervalFn?: (h: ReturnType<typeof setInterval>) => void;
@@ -119,6 +123,15 @@ export async function wirePresenceAnnounceForHarness(
   const resolveIdentity =
     opts.resolveIdentity ?? (() => defaultResolvePresenceIdentity(handle));
 
+  // EI-18761517980514694: the RUNNER-election capability bit stamped on every
+  // announce. Re-resolved per announce (behind a 60s cache in the resolver) rather
+  // than fixed at wire time like `potSlug` — a node that DISARMS its cadence routine
+  // must stop advertising itself as a runner, or it keeps winning the argmin and the
+  // pot's cadence loop goes dark again.
+  const resolveRunsRoutines =
+    opts.resolveRunsRoutines ??
+    (async () => nodeRunsCadenceLoops(handle.workspaceId, handle.harnessSlug));
+
   const getState =
     opts.getState ??
     ((): PresenceState => ({ intent: null, currentView: null, harnessSlug: handle.harnessSlug }));
@@ -138,7 +151,7 @@ export async function wirePresenceAnnounceForHarness(
       opts.presenceGossip ?? (await getFlag(FLAGS.PRESENCE_GOSSIP, 'system').catch(() => false));
     let writer: PresenceGossipWriter | undefined;
     if (gossipWriterOn) {
-      writer = await buildGossipWriter(handle, getState, potSlug, opts);
+      writer = await buildGossipWriter(handle, getState, potSlug, opts, resolveRunsRoutines);
       if (!writer) gossipWriterOn = false; // gh-unauthed → stay on the log path gate (no-op anyway)
     }
     await registerPresenceGossipTopic({
@@ -171,6 +184,7 @@ export async function wirePresenceAnnounceForHarness(
           }
         : (op) => handle.append(op),
     potSlug,
+    resolveRunsRoutines,
     intervalMs,
     now: opts.now,
     setIntervalFn: opts.setIntervalFn,
@@ -273,6 +287,7 @@ async function buildGossipWriter(
   getState: () => PresenceState,
   potSlug: string,
   opts: WirePresenceOpts,
+  resolveRunsRoutines: () => Promise<boolean | null>,
 ): Promise<PresenceGossipWriter | undefined> {
   try {
     const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });

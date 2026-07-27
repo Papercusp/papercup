@@ -2477,6 +2477,24 @@ export interface CompletionIntegrityStats {
    *  other skipCompletionGate write, or a pre-migration-432 historical row with the
    *  columns still null). */
   dedupOrUnverified: number;
+  /**
+   * P-013 — terminal rows carrying an `authority` judgement: the count the P-004 gate has
+   * actually JUDGED (`work_items:complete` stamps it; the bare state-write path does not).
+   *
+   * This is the honest completion-integrity KPI, and it is deliberately NOT
+   * "% of closes with no evidence" — that rate measures 0.00% and always will. Evidence
+   * lands in three different places (the `authority` judgement, `payload._completionEvidence`,
+   * and `terminal_completion_ref`), so "does this row have an evidence object" is true for
+   * essentially every close — precisely the weak check P-004 replaced ("an 'is the object
+   * present?' test passes every one of them", complete.ts). What the metric can honestly
+   * report is COVERAGE: how much of the close traffic the judge ever sees.
+   *
+   * ⚠ `gateJudged` is NOT a compliance score. A close routed through `setWorkItemState`
+   * lands unjudged however well evidenced it was, so a low ratio here means "the instrument
+   * covers little of the traffic", NOT "agents are closing without evidence". Measured
+   * 2026-07-27: 38.2% of that day's agent closes were judged, vs 0.1% the day before.
+   */
+  gateJudged: number;
 }
 
 /**
@@ -2489,30 +2507,43 @@ export interface CompletionIntegrityStats {
 export async function getCompletionIntegrityStats(harness: string): Promise<CompletionIntegrityStats> {
   const { sql } = getOrgPg();
   const [featureRows, issueRows] = await Promise.all([
-    sql<{ terminal_total: string; genuine: string }[]>`
+    sql<{ terminal_total: string; genuine: string; judged: string }[]>`
       SELECT
         count(*) FILTER (WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])) AS terminal_total,
         count(*) FILTER (
           WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[])
             AND terminal_owner IS NOT NULL AND terminal_owner <> ''
             AND ((terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> '') OR authority IS NOT NULL)
-        ) AS genuine
+        ) AS genuine,
+        count(*) FILTER (
+          WHERE status = ANY(${FEATURE_TERMINAL_STATES}::text[]) AND authority IS NOT NULL
+        ) AS judged
       FROM harness_shared.harness_features_consolidated
       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${harness}`,
-    sql<{ terminal_total: string; genuine: string }[]>`
+    sql<{ terminal_total: string; genuine: string; judged: string }[]>`
       SELECT
         count(*) FILTER (WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])) AS terminal_total,
         count(*) FILTER (
           WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[])
             AND terminal_owner IS NOT NULL AND terminal_owner <> ''
             AND ((terminal_completion_ref IS NOT NULL AND terminal_completion_ref <> '') OR authority IS NOT NULL)
-        ) AS genuine
+        ) AS genuine,
+        count(*) FILTER (
+          WHERE state = ANY(${[...ISSUE_TERMINAL_STATUSES]}::text[]) AND authority IS NOT NULL
+        ) AS judged
       FROM harness_shared.engineer_issues
       WHERE workspace_id = ${issuesScopeWorkspace()} AND scope = ${`harness:${harness}`}`,
   ]);
   const terminalTotal = Number(featureRows[0]?.terminal_total ?? 0) + Number(issueRows[0]?.terminal_total ?? 0);
   const genuineCompletions = Number(featureRows[0]?.genuine ?? 0) + Number(issueRows[0]?.genuine ?? 0);
-  return { harness, terminalTotal, genuineCompletions, dedupOrUnverified: terminalTotal - genuineCompletions };
+  const gateJudged = Number(featureRows[0]?.judged ?? 0) + Number(issueRows[0]?.judged ?? 0);
+  return {
+    harness,
+    terminalTotal,
+    genuineCompletions,
+    dedupOrUnverified: terminalTotal - genuineCompletions,
+    gateJudged,
+  };
 }
 
 // ── live-verified marker (release-pipeline-resilience-2026-06-09 P-013) ──────────

@@ -39,6 +39,17 @@ export interface SharedPresenceRow {
    *  it) still validate; the presence publisher stamps it (resolved via
    *  potHomeSlugForHarness) at announce time. */
   hive_slug?: string | null;
+  /** EI-18761517980514694 — the per-Hive RUNNER-election capability bit: true when
+   *  this node's routine host is live AND it has an ACTIVE cadence-runner routine
+   *  (gym-cycle / scout-cycle) for this harness. Stamped by the presence publisher
+   *  (see lib/cadence-runner-capability.ts) and consumed via
+   *  LockAuthorityDeps.routineHostsOnly, which drops non-capable PEERS from
+   *  candidacy — the election previously had no notion of whether the node it
+   *  elected could run the loop, so a peer that never fires `gym-cycle` won every
+   *  tick and the gym went dark. Optional on DECODE (mirrors hive_slug) so a
+   *  pre-upgrade peer's record still validates; absent ⇒ that peer is not a runner
+   *  candidate, which is safe because the selectors add SELF unconditionally. */
+  runs_routines?: boolean | null;
 }
 
 export interface PresenceProjectionOpts {
@@ -66,7 +77,12 @@ export function isSharedPresenceRow(input: unknown): input is SharedPresenceRow 
     typeof r.last_seen_at === 'number' && Number.isFinite(r.last_seen_at) &&
     typeof r.schema_version === 'number' && Number.isInteger(r.schema_version) &&
     // hive_slug is optional (absent on pre-P-008 rows) + nullable (non-Hive harness).
-    (r.hive_slug === undefined || r.hive_slug === null || typeof r.hive_slug === 'string')
+    (r.hive_slug === undefined || r.hive_slug === null || typeof r.hive_slug === 'string') &&
+    // runs_routines is optional (absent on pre-EI-18761517980514694 peer records) +
+    // nullable (publisher could not resolve it) — never reject an older peer's row.
+    (r.runs_routines === undefined ||
+      r.runs_routines === null ||
+      typeof r.runs_routines === 'boolean')
   );
 }
 
@@ -93,13 +109,13 @@ async function writeToPg(
     INSERT INTO harness_shared.shared_presence
       (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
        intent, current_view, last_seen_at, schema_version, pot_slug, fed_ts, fed_hlc,
-       author_pubkey)
+       author_pubkey, runs_routines)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.machine_label},
        ${row.device_pubkey}, ${row.intent}, ${row.current_view},
        to_timestamp(${row.last_seen_at} / 1000.0),
        ${row.schema_version}, ${row.hive_slug ?? null}, ${fedTs}, ${fedHlc},
-       ${authorPubkey})
+       ${authorPubkey}, ${row.runs_routines ?? null})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, machine_label) DO UPDATE SET
       device_pubkey = EXCLUDED.device_pubkey,
       intent = EXCLUDED.intent,
@@ -109,7 +125,8 @@ async function writeToPg(
       pot_slug = EXCLUDED.pot_slug,
       fed_ts = EXCLUDED.fed_ts,
       fed_hlc = EXCLUDED.fed_hlc,
-      author_pubkey = EXCLUDED.author_pubkey
+      author_pubkey = EXCLUDED.author_pubkey,
+      runs_routines = EXCLUDED.runs_routines
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
