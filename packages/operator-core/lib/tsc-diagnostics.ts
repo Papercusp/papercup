@@ -1,0 +1,226 @@
+/**
+ * Parse `tsc --pretty false` output into structured diagnostics.
+ *
+ * Plan `bash-to-tool-substitution-2026-07-26`, P-024. Backs `build:typecheck`
+ * the way `distillVitestRun` backs `testing:run` — the projection lives here so
+ * it is unit-testable against real compiler output without spawning a compiler.
+ *
+ * ## Relationship to `scripts/lib/tsc-baseline-gate.mjs`
+ *
+ * That module already has a `parseTscErrors`, and this is deliberately NOT a
+ * fork of it. The baseline gate needs exactly `{ file, code }` — it counts
+ * errors per file against a committed baseline, so line/column/message would be
+ * dead weight there. An AGENT needs the opposite: the message is the entire
+ * point, because the whole cost this tool removes is the agent piping a
+ * compiler log through `grep`/`tail` to read those messages. So this is a
+ * widening of the same grammar for a different consumer, kept here rather than
+ * pushed into the gate because loading a `scripts/**.mjs` at tool-dispatch time
+ * would tie a hot agent surface to an untyped CLI helper.
+ *
+ * ## The no-op codes are the load-bearing part
+ *
+ * A tsc run that checked NOTHING exits non-zero and prints one line. Piped
+ * through the `| grep <myfile>` that 42% of no-op runs in the corpus used, it
+ * prints nothing at all — which reads as "no errors in my file". Naming those
+ * codes ({@link NO_INPUT_CODES}) is what lets the tool refuse the run instead
+ * of reporting a clean zero, the same way `testing:run` refuses a zero-match
+ * Vitest run rather than passing vacuously.
+ */
+
+/** One compiler diagnostic. `file` is null for a global error (TS5057, TS6053, …). */
+export interface TscDiagnostic {
+  file: string | null;
+  line: number | null;
+  column: number | null;
+  code: string;
+  category: 'error' | 'warning';
+  message: string;
+}
+
+/** Per-file error counts, most errors first — the `| grep -c` an agent writes by hand. */
+export interface TscFileCount {
+  file: string;
+  count: number;
+}
+
+/**
+ * Diagnostic codes meaning "this invocation checked no files at all".
+ *
+ * Verified live against TypeScript 6.0.3 at the papercusp repo root, which has
+ * no root `tsconfig.json` (only `tsconfig.base.json`):
+ *   - TS5057 — `tsc -p .`             → "Cannot find a tsconfig.json file at the specified directory"
+ *   - TS5058 — `tsc -p tsconfig.json` → "The specified path does not exist"
+ *   - TS18003 — a tsconfig that EXISTS but whose include/files match nothing
+ *   - TS6053 — a file operand that does not exist
+ */
+export const NO_INPUT_CODES = new Set(['TS5057', 'TS5058', 'TS6053', 'TS18003']);
+
+/** `path/to/file.ts(12,5): error TS2322: message` */
+const LOCATED = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s*(.*)$/;
+/** `error TS5057: message` — a global failure with no file attribution. */
+const GLOBAL = /^\s*(error|warning)\s+(TS\d+):\s*(.*)$/;
+/** tsc's own trailing tally, used as a parser cross-check. */
+const FOUND = /^Found (\d+) errors? in (\d+) files?\.?$/;
+const FOUND_ZERO = /^Found 0 errors?\.?$/;
+
+/**
+ * Cap on how much of a multi-line diagnostic's nested detail is retained.
+ *
+ * The nested lines are usually where the actual cause is ("Types of property
+ * 'a' are incompatible"), so dropping them entirely would hand back a message
+ * an agent has to go re-read the raw log for — re-creating the pipe this tool
+ * exists to remove. But an assignability error between two large object types
+ * can nest for dozens of lines, so it is bounded rather than unbounded.
+ */
+const MAX_MESSAGE_CHARS = 400;
+
+/**
+ * Parse raw `tsc` output. Tolerates the `--pretty` layout being absent (we always
+ * pass `--pretty false`) and ignores progress/version chatter.
+ *
+ * Nested continuation lines (leading whitespace) are folded into the preceding
+ * diagnostic's message, whitespace-collapsed and capped.
+ */
+export function parseTscDiagnostics(output: string): TscDiagnostic[] {
+  const diagnostics: TscDiagnostic[] = [];
+  let current: TscDiagnostic | null = null;
+  let truncated = false;
+
+  const flush = () => {
+    if (current) {
+      current.message = current.message.trim();
+      diagnostics.push(current);
+    }
+    current = null;
+    truncated = false;
+  };
+
+  for (const rawLine of String(output).split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+
+    // A continuation line belongs to the diagnostic above it.
+    if (current && /^\s+\S/.test(line)) {
+      if (!truncated) {
+        const next = `${current.message} ${line.trim()}`;
+        if (next.length > MAX_MESSAGE_CHARS) {
+          current.message = `${next.slice(0, MAX_MESSAGE_CHARS)}…`;
+          truncated = true;
+        } else {
+          current.message = next;
+        }
+      }
+      continue;
+    }
+
+    const located = LOCATED.exec(line);
+    if (located) {
+      flush();
+      current = {
+        file: located[1],
+        line: Number(located[2]),
+        column: Number(located[3]),
+        code: located[5],
+        category: located[4] as 'error' | 'warning',
+        message: located[6],
+      };
+      continue;
+    }
+
+    const global = GLOBAL.exec(line);
+    if (global) {
+      flush();
+      current = {
+        file: null,
+        line: null,
+        column: null,
+        code: global[2],
+        category: global[1] as 'error' | 'warning',
+        message: global[3],
+      };
+      continue;
+    }
+
+    flush();
+  }
+  flush();
+
+  return diagnostics;
+}
+
+/**
+ * tsc's own `Found N errors in M files.` tally, or null when absent.
+ *
+ * Used as a parser cross-check: if our count and tsc's disagree, the grammar has
+ * drifted from the compiler's output format and the caller is told, rather than
+ * silently reporting a wrong number. A compiler upgrade changing the diagnostic
+ * layout is exactly the kind of change nothing else here would catch.
+ */
+export function parseFoundSummary(output: string): number | null {
+  for (const rawLine of String(output).split('\n')) {
+    const line = rawLine.trim();
+    if (FOUND_ZERO.test(line)) return 0;
+    const found = FOUND.exec(line);
+    if (found) return Number(found[1]);
+  }
+  return null;
+}
+
+/** Errors only (warnings are not gating and would inflate the count). */
+export function errorsOnly(diagnostics: TscDiagnostic[]): TscDiagnostic[] {
+  return diagnostics.filter((d) => d.category === 'error');
+}
+
+/**
+ * Files with a parse-level (TS1xxx) error. Such a file fails to compile at all,
+ * so tsc UNDER-REPORTS everything downstream of it — the same hard-fail rule
+ * `scripts/lib/tsc-baseline-gate.mjs` applies, surfaced here so an agent reading
+ * a small error count knows whether to trust it.
+ */
+export function syntaxBrokenFiles(diagnostics: TscDiagnostic[]): string[] {
+  const files = new Set<string>();
+  for (const d of diagnostics) {
+    if (/^TS1\d{3}$/.test(d.code)) files.add(d.file ?? '(unattributed)');
+  }
+  return [...files].sort();
+}
+
+/** Per-file error counts, most errors first, then alphabetically for stability. */
+export function summariseByFile(diagnostics: TscDiagnostic[]): TscFileCount[] {
+  const counts = new Map<string, number>();
+  for (const d of diagnostics) {
+    const key = d.file ?? '(unattributed)';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts]
+    .map(([file, count]) => ({ file, count }))
+    .sort((a, b) => b.count - a.count || a.file.localeCompare(b.file));
+}
+
+/**
+ * The diagnostic proving this invocation checked nothing, or null.
+ *
+ * Returned rather than a boolean so the caller can quote the compiler's own
+ * wording back — "TS5057: Cannot find a tsconfig.json file at the specified
+ * directory: '.'" explains the refusal far better than any message we could
+ * write, and it is the compiler's word rather than our inference.
+ */
+export function noInputDiagnostic(diagnostics: TscDiagnostic[]): TscDiagnostic | null {
+  return diagnostics.find((d) => NO_INPUT_CODES.has(d.code)) ?? null;
+}
+
+/**
+ * Keep only diagnostics attributed to one of `files`.
+ *
+ * Matching is by path SUFFIX after normalising separators, because the caller
+ * names a repo-root-relative path while tsc emits a path relative to the
+ * tsconfig's own directory. Suffix matching is anchored at a segment boundary so
+ * `lib/run.ts` cannot match `lib/prerun.ts`.
+ */
+export function filterToFiles(diagnostics: TscDiagnostic[], files: string[]): TscDiagnostic[] {
+  const wanted = files.map((f) => f.replace(/\\/g, '/').replace(/^\.\//, ''));
+  return diagnostics.filter((d) => {
+    if (!d.file) return false;
+    const path = d.file.replace(/\\/g, '/');
+    return wanted.some((w) => path === w || path.endsWith(`/${w}`) || w.endsWith(`/${path}`) || w === path);
+  });
+}
