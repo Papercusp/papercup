@@ -200,7 +200,7 @@ describe('deriveCoordState', () => {
       msg({ msg_id: 'm-2', ts: isoMs(NOW - 5_000), from: 'su-1', to: ['su-2'], summary: 'newest outbound' }),
       msg({ msg_id: 'm-3', ts: isoMs(NOW - 1_000), from: 'su-3', to: ['su-9'], summary: 'unrelated' }),
     ];
-    const out = deriveCoordState(messages, new Set(), [], [], 'su-1');
+    const out = deriveCoordState(messages, new Set(), [], [], 'su-1', null);
     expect(out.lastMessage?.msgId).toBe('m-2');
     expect(out.lastMessage?.direction).toBe('outbound');
     expect(out.lastMessage?.summary).toBe('newest outbound');
@@ -220,7 +220,7 @@ describe('deriveCoordState', () => {
       { ...msg({ msg_id: 'm-null', ts: isoMs(NOW - 1_500), from: 'su-9' }), to: null },
     ] as unknown as CoordEnvelope[];
 
-    const out = deriveCoordState(messages, new Set(), [], [], 'su-1');
+    const out = deriveCoordState(messages, new Set(), [], [], 'su-1', null);
 
     // No throw, and the good row still resolves — the malformed rows simply
     // match no owner rather than taking the panel down with them.
@@ -233,7 +233,7 @@ describe('deriveCoordState', () => {
       msg({ msg_id: 'm-1', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'], summary: 'to me' }),
       msg({ msg_id: 'm-2', ts: isoMs(NOW - 1_000), from: 'su-3', to: ['*'], summary: 'broadcast' }),
     ];
-    const out = deriveCoordState(messages, new Set(), [], [], 'su-1');
+    const out = deriveCoordState(messages, new Set(), [], [], 'su-1', null);
     expect(out.lastMessage?.msgId).toBe('m-1');
   });
 

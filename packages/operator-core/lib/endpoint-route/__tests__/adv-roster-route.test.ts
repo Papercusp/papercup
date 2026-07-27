@@ -14,6 +14,7 @@ import type { RouteContext } from '../define-route';
 const mergeRosterMock = vi.fn();
 const listEndedMock = vi.fn();
 const listPendingMock = vi.fn();
+const listStartingMock = vi.fn();
 const getAgentDetailMock = vi.fn();
 
 // Keep the REAL dedupeEndedAgainstActive (we want to exercise it through the
@@ -31,6 +32,10 @@ vi.mock('../../adv-sessions', async (importActual) => ({
   ...(await importActual<typeof import('../../adv-sessions')>()),
   listEndedAdvSessions: (...a: unknown[]) => listEndedMock(...a),
   listPendingWorkbenchLaunches: (...a: unknown[]) => listPendingMock(...a),
+  // WI-6376: the handler Promise.all's this one too — unmocked it would hit real
+  // PG, the exact live-Postgres dependency the listPending mock above exists to
+  // remove.
+  listStartingTerminalLaunches: (...a: unknown[]) => listStartingMock(...a),
 }));
 // The /adv/roster/agent handler delegates wholesale to getAgentDetail; its
 // locks + coord internals are unit-tested in adv-agent-detail.test.ts.
@@ -94,6 +99,7 @@ beforeEach(() => {
   // (called unconditionally by the handler) then .map()s over and throws — every
   // test in this file crashed on this until a default was added here.
   listPendingMock.mockResolvedValue([]);
+  listStartingMock.mockResolvedValue([]); // same reason as listPendingMock above
   getAgentDetailMock.mockResolvedValue({ ownerId: 'su-1', locks: {}, coord: {} });
 });
 
@@ -113,6 +119,60 @@ describe('GET /adv/roster', () => {
     expect(json.orphanedClaims).toEqual([
       { source: 'plan_item_claim', agent: 'su-dead', id: 'P-001' },
     ]);
+  });
+
+  describe('the `starting` tier (WI-6376 — terminal launches during their boot window)', () => {
+    const startingRow = (over: Record<string, unknown> = {}) => ({
+      id: 77,
+      workspaceId: 'ws1',
+      planSlug: null,
+      agent: 'claude',
+      role: null,
+      feature: null,
+      mode: 'console',
+      terminalBin: 'gnome-terminal',
+      pid: 999,
+      windowId: null,
+      ompThreadId: null,
+      label: 'claude',
+      cwd: null,
+      coordOwnerId: 'su-booting',
+      sessionId: null,
+      display: 'terminal',
+      launchArgv: ['psu', '--no-picker'],
+      launchedAt: null,
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      exitCode: null,
+      ...over,
+    });
+
+    it('surfaces a terminal launch that has not registered yet', async () => {
+      listStartingMock.mockResolvedValue([startingRow()]);
+      const json = await (await callRoster()).json();
+      expect(json.starting.map((r: { ownerId: string }) => r.ownerId)).toEqual(['su-booting']);
+      expect(json.starting[0].liveness).toBe('pending');
+    });
+
+    it('drops it once the session comes online, so the board never double-cards it', async () => {
+      mergeRosterMock.mockResolvedValue({ active: [{ ownerId: 'su-booting' }], orphanedClaims: [] });
+      listStartingMock.mockResolvedValue([startingRow()]);
+      const json = await (await callRoster()).json();
+      expect(json.starting).toEqual([]);
+      expect(json.active.map((r: { ownerId: string }) => r.ownerId)).toEqual(['su-booting']);
+    });
+
+    it('keeps terminal launches OUT of `pending` — that tier is the pui pane queue (D-006)', async () => {
+      listStartingMock.mockResolvedValue([startingRow()]);
+      const json = await (await callRoster()).json();
+      expect(json.pending).toEqual([]);
+      expect(json.starting).toHaveLength(1);
+    });
+
+    it('scopes to the requested workspace like every other tier', async () => {
+      await callRoster('?workspace=ws1');
+      expect(listStartingMock).toHaveBeenLastCalledWith({ workspaceId: 'ws1' });
+    });
   });
 
   it('dedupes an ended terminal whose owner is still live in the active roster', async () => {

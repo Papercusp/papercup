@@ -362,7 +362,7 @@ export function deriveCoordState(
       m.kind === 'message' &&
       m.from !== owner &&
       (recipientsOf(m).includes(owner) || recipientsOf(m).includes('*')) &&
-      (readCursor === null || m.ts > readCursor) &&
+      (!readCursor || m.ts > readCursor) &&
       !acked.has(m.msg_id),
   ).length;
 

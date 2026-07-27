@@ -22,6 +22,7 @@ import {
   isInfrastructureAwait,
   isSuSession,
   shortHandle,
+  TERMINAL_LAUNCH_ONLINE_GRACE_SEC,
   toHudSession,
   unattributedAsks,
   type HudAsk,
@@ -342,6 +343,57 @@ describe('deriveColumn — precedence', () => {
       const v = deriveColumn(entry({ liveness: 'pending', lastActiveAt: null }), [ask()], OPTS);
       expect(v.column).toBe('needs-you');
       expect(v.reason).not.toMatch(/Fresh session/);
+    });
+
+    it('reports a terminal launch that never came online as a FAILED launch, not as fresh (WI-6376)', () => {
+      const v = deriveColumn(
+        entry({
+          liveness: 'pending',
+          lastActiveAt: null,
+          display: 'terminal',
+          startedAt: iso(TERMINAL_LAUNCH_ONLINE_GRACE_SEC * 1000 + 5_000),
+        }),
+        undefined,
+        OPTS,
+      );
+      // Still the human's to fix — but the card must stop implying a healthy
+      // session is on its way.
+      expect(v.column).toBe('needs-you');
+      expect(v.reason).toMatch(/never came online/);
+      expect(v.reason).not.toMatch(/Fresh session/);
+      expect(v.sinceSec).toBeGreaterThanOrEqual(TERMINAL_LAUNCH_ONLINE_GRACE_SEC);
+    });
+
+    it('still calls a terminal launch INSIDE the grace window a fresh session', () => {
+      const v = deriveColumn(
+        entry({
+          liveness: 'pending',
+          lastActiveAt: null,
+          display: 'terminal',
+          startedAt: iso(5_000),
+        }),
+        undefined,
+        OPTS,
+      );
+      expect(v.column).toBe('needs-you');
+      expect(v.reason).toMatch(/Fresh session/);
+      expect(v.reason).not.toMatch(/never came online/);
+    });
+
+    it('never applies the failed-launch reason to a WORKBENCH pending launch', () => {
+      // Non-vacuity guard on the `display` discriminator: same age, other tier.
+      const v = deriveColumn(
+        entry({
+          liveness: 'pending',
+          lastActiveAt: null,
+          display: 'workbench',
+          startedAt: iso(TERMINAL_LAUNCH_ONLINE_GRACE_SEC * 1000 + 5_000),
+        }),
+        undefined,
+        OPTS,
+      );
+      expect(v.reason).toMatch(/Fresh session/);
+      expect(v.reason).not.toMatch(/never came online/);
     });
 
     it('leaves a session that HAS taken a turn classified exactly as before', () => {

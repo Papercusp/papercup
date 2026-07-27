@@ -4,8 +4,11 @@ import {
   scopePresenceToWorkspace,
   mergeRosterEntries,
   pendingLaunchesToRosterEntries,
+  startingLaunchesToRosterEntries,
+  dedupeStartingAgainstActive,
   dedupeEndedAgainstActive,
   shouldProbePid,
+  type RosterEntry,
   LIVE_MS,
   GLOBAL_WORKSPACE,
   type NurseryLiveness,
@@ -440,6 +443,62 @@ describe('pendingLaunchesToRosterEntries (pui-reactive-session-panes D-006)', ()
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
     expect(e.label).toBe('claude · p'); // agent · planSlug
     expect(e.launchArgv).toEqual([]);
+  });
+});
+
+describe('startingLaunchesToRosterEntries (WI-6376 — terminal launch boot window)', () => {
+  it('keys the entry on the PRE-PINNED coord owner, so it is the same identity presence will use', () => {
+    const row = adv({
+      id: 91,
+      display: 'terminal',
+      coordOwnerId: 'su-abc',
+      launchArgv: ['psu', '--no-picker', '--agent=claude', '--owner-id=su-abc'],
+      pid: 4242,
+    });
+    const [e] = startingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.ownerId).toBe('su-abc'); // NOT a synthetic id — dedupe depends on this
+    expect(e.liveness).toBe('pending');
+    expect(e.lastActiveAt).toBeNull(); // → needs-you via deriveColumn step 1c
+    expect(e.advSessionId).toBe(91);
+    expect(e.pid).toBe(4242);
+  });
+
+  it("keeps display='terminal' so the pui's workbench-only pane filter can never pane it", () => {
+    const row = adv({ id: 92, display: 'terminal', coordOwnerId: 'su-x' });
+    const [e] = startingLaunchesToRosterEntries([row], 'box-1');
+    // is_displayable (apps/tui/src/session_panes.rs) requires exactly 'workbench'.
+    expect(e.display).toBe('terminal');
+    expect(e.display).not.toBe('workbench');
+  });
+
+  it('falls back to a synthetic id for a pre-WI-6363 row with no pre-pinned owner', () => {
+    const row = adv({ id: 93, display: 'terminal', coordOwnerId: null });
+    const [e] = startingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.ownerId).toBe('starting:adv:93');
+  });
+});
+
+describe('dedupeStartingAgainstActive (WI-6376 — no double card once it boots)', () => {
+  // Only `ownerId` is read; a full RosterEntry would obscure that.
+  const online = (ownerId: string): RosterEntry => ({ ownerId }) as RosterEntry;
+
+  it('drops a starting row whose session has come online', () => {
+    const starting = startingLaunchesToRosterEntries(
+      [adv({ id: 1, display: 'terminal', coordOwnerId: 'su-online' })],
+      'box-1',
+    );
+    expect(starting).toHaveLength(1); // guard: the dedupe below is not vacuous
+    expect(dedupeStartingAgainstActive(starting, [online('su-online')])).toEqual([]);
+  });
+
+  it('keeps a starting row whose session has NOT registered yet', () => {
+    const starting = startingLaunchesToRosterEntries(
+      [adv({ id: 2, display: 'terminal', coordOwnerId: 'su-booting' })],
+      'box-1',
+    );
+    expect(
+      dedupeStartingAgainstActive(starting, [online('su-someone-else')]).map((e) => e.ownerId),
+    ).toEqual(['su-booting']);
   });
 });
 

@@ -1,0 +1,221 @@
+/**
+ * task-manager/reconcile-tick — the periodic pass that keeps the ledger honest
+ * (task-manager-no-escape-2026-07-27, P-011 / P-012).
+ *
+ * Composition only: `scan` supplies kernel truth, `reconcile` decides, `store`
+ * persists. The logic worth reading here is the REFUSAL TO ACT ON A BAD SCAN.
+ *
+ * Stranding is destructive to information — it closes a row and reports the task
+ * as over. A scan that returned nothing because the cgroup root was missing, or
+ * that hit its process cap, is indistinguishable ROW-BY-ROW from a box that
+ * genuinely went idle. Acting on it would mass-strand every live task and report
+ * a fleet-wide outage that did not happen. So a degraded scan updates what it can
+ * positively confirm and declines to close anything, saying so in the summary.
+ * "I could not tell" is a valid answer; a confident wrong one is not.
+ *
+ * REPORT-ONLY on residue (D-010): unaccounted processes are recorded and surfaced,
+ * never killed. Until the classification has been right for a sustained window, an
+ * auto-reaper acting on a false positive is strictly worse than the bypass it is
+ * trying to police.
+ */
+
+import { absCgroupDir, nodeCgroupFs, sampleCgroup, type CgroupFs } from './cgroup-read';
+import { reconcile, summarizeReconcile, scopeUnitOf, type ReconcileResult } from './reconcile';
+import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
+import {
+  clearVanishedUnaccounted,
+  listLiveTasks,
+  markStranded,
+  residueTaskId,
+  touchAlive,
+  upsertUnaccounted,
+} from './store';
+import { taskIdFromScopeUnit, type TaskRow } from './types';
+
+export interface ReconcileTickDeps {
+  scan?: (opts: ScanOptions) => ScanResult;
+  listLive?: (workspaceId?: string) => Promise<TaskRow[]>;
+  fs?: CgroupFs;
+  now?: () => number;
+  notify?: (msg: { summary: string; kind: 'message' | 'escalation' }) => Promise<void>;
+  scanOptions?: ScanOptions;
+  workspaceId?: string;
+  graceMs?: number;
+  /** Persist nothing — used by the `processes:list { live: true }` read path, which
+   *  wants a fresh verdict without a write on a read. */
+  dryRun?: boolean;
+}
+
+export interface ReconcileTickResult {
+  summary: ReturnType<typeof summarizeReconcile>;
+  result: ReconcileResult;
+  scan: { ownedRootExists: boolean; truncated: boolean; processes: number; userManagerRoot: string | null };
+  /** True when the scan could not be trusted enough to close rows. */
+  degraded: boolean;
+  degradedReason?: string;
+  touched: number;
+  strandedCount: number;
+  unaccountedPersisted: number;
+  residueCleared: number;
+}
+
+export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<ReconcileTickResult> {
+  const fs = deps.fs ?? nodeCgroupFs;
+  const now = deps.now ?? Date.now;
+  const scanFn = deps.scan ?? scanProcesses;
+  const listLive = deps.listLive ?? listLiveTasks;
+
+  const scan = scanFn({ fs, ...(deps.scanOptions ?? {}) });
+  const live = await listLive(deps.workspaceId);
+  const result = reconcile(live, scan.processes, { now: now(), graceMs: deps.graceMs });
+  const summary = summarizeReconcile(result);
+
+  // ── is this scan trustworthy enough to CLOSE rows? ───────────────────────
+  let degradedReason: string | undefined;
+  if (!scan.ownedRootExists && live.length > 0) {
+    degradedReason =
+      'our cgroup slice does not exist on this host — every row would strand, which is a scan fault, not an outage';
+  } else if (scan.truncated) {
+    degradedReason = 'scan hit its process cap, so absence does not prove absence';
+  }
+  const degraded = Boolean(degradedReason);
+
+  if (deps.dryRun) {
+    return {
+      summary,
+      result,
+      scan: {
+        ownedRootExists: scan.ownedRootExists,
+        truncated: scan.truncated,
+        processes: scan.processes.length,
+        userManagerRoot: scan.userManagerRoot,
+      },
+      degraded,
+      degradedReason,
+      touched: 0,
+      strandedCount: 0,
+      unaccountedPersisted: 0,
+      residueCleared: 0,
+    };
+  }
+
+  // ── positive confirmations are always safe to write ──────────────────────
+  const scopeDirByUnit = new Map<string, string>();
+  for (const p of scan.processes) {
+    const unit = scopeUnitOf(p);
+    if (unit && !scopeDirByUnit.has(unit)) scopeDirByUnit.set(unit, p.cgroupPath);
+  }
+  const byTaskId = new Map(live.map((r) => [r.taskId, r]));
+
+  const touched = await touchAlive(
+    result.alive.map((a) => {
+      const row = byTaskId.get(a.taskId);
+      const dir = row?.scopeUnit ? scopeDirByUnit.get(row.scopeUnit) : undefined;
+      const sample = dir ? sampleCgroup(absCgroupDir(dir), fs) : null;
+      return {
+        taskId: a.taskId,
+        pid: a.pid,
+        processIdentity: a.processIdentity,
+        metrics: sample
+          ? {
+              lastMemoryBytes: sample.memoryBytes,
+              peakMemoryBytes: sample.peakMemoryBytes,
+              cpuUsec: sample.cpuUsec,
+              pidsCurrent: sample.pidsCurrent ?? a.pidsSeen,
+            }
+          : { pidsCurrent: a.pidsSeen },
+      };
+    }),
+  );
+
+  // ── destructive writes only on a trustworthy scan ────────────────────────
+  let strandedCount = 0;
+  let unaccountedPersisted = 0;
+  let residueCleared = 0;
+  if (!degraded) {
+    strandedCount = await markStranded(result.stranded);
+
+    const groups = result.unaccounted.map((g) => ({
+      // A scope of OURS whose row already closed keeps its own id, so the history
+      // stays attached to the real task instead of forking a phantom one.
+      taskId: (g.scopeUnit && taskIdFromScopeUnit(g.scopeUnit)) || residueTaskId(g.cgroupPath),
+      cgroupPath: g.cgroupPath,
+      scopeUnit: g.scopeUnit,
+      pids: g.pids,
+      sampleCmdline: g.sampleCmdline,
+    }));
+    const persisted = await upsertUnaccounted(groups, { workspaceId: deps.workspaceId });
+    unaccountedPersisted = persisted.length;
+    residueCleared = await clearVanishedUnaccounted(persisted, { workspaceId: deps.workspaceId });
+  }
+
+  await maybeNotify(deps, { summary, result, degraded, degradedReason });
+
+  return {
+    summary,
+    result,
+    scan: {
+      ownedRootExists: scan.ownedRootExists,
+      truncated: scan.truncated,
+      processes: scan.processes.length,
+      userManagerRoot: scan.userManagerRoot,
+    },
+    degraded,
+    degradedReason,
+    touched,
+    strandedCount,
+    unaccountedPersisted,
+    residueCleared,
+  };
+}
+
+/**
+ * Notify only on a state CHANGE, never on every tick.
+ *
+ * A 30s cadence that broadcasts its summary is 2,880 messages a day for a healthy
+ * box, which is how a signal becomes noise and then becomes muted — the exact
+ * failure the `live-federation-gate` entry in SUPERVISED_PROCESSES had to be
+ * flap-damped out of (~48 broadcasts/day for one healthy unit).
+ */
+const lastNotified = { key: '', at: 0 };
+const RENOTIFY_MS = 30 * 60_000;
+
+async function maybeNotify(
+  deps: ReconcileTickDeps,
+  ctx: { summary: ReturnType<typeof summarizeReconcile>; result: ReconcileResult; degraded: boolean; degradedReason?: string },
+): Promise<void> {
+  if (!deps.notify) return;
+  const now = (deps.now ?? Date.now)();
+  const noteworthy = ctx.degraded || ctx.summary.unaccounted > 0 || ctx.summary.overdue > 0;
+  const key = ctx.degraded
+    ? `degraded:${ctx.degradedReason}`
+    : `unaccounted:${ctx.summary.unaccounted}/overdue:${ctx.summary.overdue}`;
+
+  if (!noteworthy) {
+    lastNotified.key = '';
+    return;
+  }
+  if (key === lastNotified.key && now - lastNotified.at < RENOTIFY_MS) return;
+  lastNotified.key = key;
+  lastNotified.at = now;
+
+  const parts: string[] = [];
+  if (ctx.degraded) parts.push(`scan DEGRADED — ${ctx.degradedReason}`);
+  if (ctx.summary.unaccounted > 0) {
+    parts.push(
+      `${ctx.summary.unaccounted} unaccounted cgroup(s) holding ${ctx.summary.unaccountedPids} process(es) — ` +
+        `something is running inside our slice that no managedSpawn registered`,
+    );
+  }
+  if (ctx.summary.overdue > 0) parts.push(`${ctx.summary.overdue} task(s) past deadline`);
+  await deps.notify({
+    summary: `[task-manager] ${parts.join('; ')}`,
+    kind: ctx.degraded ? 'escalation' : 'message',
+  });
+}
+
+/** Test seam — clear the notify debounce. */
+export function resetNotifyDebounce(): void {
+  lastNotified.key = '';
+  lastNotified.at = 0;
+}

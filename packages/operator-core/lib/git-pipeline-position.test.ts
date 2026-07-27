@@ -1826,6 +1826,85 @@ describe('changeInCandidate (P-004)', () => {
       expect(res.notes.join(' ')).toMatch(/CANDIDATE DOES NOT CONTAIN THIS FILE/);
     });
 
+    /**
+     * EI-18797292094433710 — the caller's real question is "is MY change in the judged
+     * commit", and blob identity stops answering it the moment a peer commits to the same
+     * file. These drive the FULL entry point (not `evaluateChangeInCandidate` alone),
+     * because the defect they guard lives in the argument handling.
+     */
+    describe('marker containment — the peer-edited-my-file case', () => {
+      /** A candidate whose blob DIFFERS from the tree (a peer moved the file) but which
+       *  still carries the caller's change. Blob identity says "missing"; the marker does not. */
+      const peerEditedGit =
+        (fileAtCandidate: string): GitRunner =>
+        async (_repo, args) => {
+          if (args[0] === 'status') return 'M a.ts';
+          if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
+          if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
+          if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
+          if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'judging1:a.ts') return '0'.repeat(40);
+          // HEAD matches the tree ⇒ committed-but-newer, i.e. reason 'newer-commit'.
+          if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'HEAD:a.ts') return 'f'.repeat(40);
+          if (args[0] === 'hash-object') return 'f'.repeat(40);
+          if (args[0] === 'ls-tree') return `100644 blob ${'e'.repeat(40)}\ta.ts`;
+          if (args[0] === 'show') return fileAtCandidate;
+          return null;
+        };
+
+      const run = (marker: string | undefined, contents: string) =>
+        gitPipelinePosition(
+          { path: 'a.ts', marker },
+          {
+            git: peerEditedGit(contents),
+            loadDeploy: async () => deploy(),
+            loadSnapshot: async () => snap(),
+            resolveGateCandidates: async () => ({ judgingSha: 'judging1', nextCandidateSha: 'judging1' }),
+          },
+        );
+
+      it('a confirmed marker suppresses the false "does not contain" alarm', async () => {
+        const res = await run('MY_FIX_MARKER', 'before MY_FIX_MARKER after');
+        // The file is still NOT byte-identical — that stays honestly reported…
+        expect(res.changeInCandidate.judgingContainsPath).toBe(false);
+        // …but the question the caller asked is now answered, with evidence.
+        expect(res.changeInCandidate.markerJudging?.present).toBe(true);
+        expect(res.changeInCandidate.markerJudging?.count).toBe(1);
+        // The alarm and the re-fire advice are what cost the outage; both must be gone.
+        expect(res.notes.join(' ')).not.toMatch(/CANDIDATE DOES NOT CONTAIN THIS FILE/);
+        expect(res.changeInCandidate.detail).toMatch(/DOES carry your change/);
+        expect(res.changeInCandidate.detail).toMatch(/Do NOT re-fire/);
+      });
+
+      it('an absent marker still warns — the exoneration is not blanket', async () => {
+        const res = await run('MY_FIX_MARKER', 'this commit predates the fix');
+        expect(res.changeInCandidate.markerJudging?.present).toBe(false);
+        expect(res.changeInCandidate.detail).toMatch(/does NOT carry your change/);
+      });
+
+      /**
+       * REGRESSION GUARD for a defect found while fixing the above: a `const marker =
+       * inp.marker` added inside the consuming block SHADOWED the validated binding, and
+       * nothing caught it — tsc is happy, and no test covered an invalid marker. With the
+       * guard bypassed, a whitespace marker substring-matches indentation: measured at 542
+       * hits against the real repo, i.e. a CONFIDENT WRONG "the candidate carries your
+       * change" for a caller who supplied nothing. That is the precise failure this
+       * module's contract forbids, so it is asserted rather than left to review.
+       */
+      it('a whitespace-only marker is NOT measured, however many times it would match', async () => {
+        const res = await run('   ', 'a\n   indented\n   lines\n   everywhere');
+        expect(res.changeInCandidate.markerJudging).toBeNull();
+        expect(res.changeInCandidate.detail).not.toMatch(/DOES carry your change/);
+      });
+
+      it('no marker ⇒ not measured, and the honest ambiguity is preserved', async () => {
+        const res = await run(undefined, 'irrelevant');
+        expect(res.changeInCandidate.markerJudging).toBeNull();
+        expect(res.changeInCandidate.missingReason).toBe('newer-commit');
+        expect(res.changeInCandidate.detail).toMatch(/UNRESOLVED/);
+      });
+    });
+
     it('does NOT claim containment across a submodule boundary — the gate judges the PIN', async () => {
       // The superproject stores a gitlink, not submodule content, so a blob comparison
       // there compares nothing. Reporting `true` would be the same absence-reads-as-
