@@ -291,3 +291,105 @@ describe('acquireResourceExclusiveWithWait — hostLocalOwnerPid reclaim (EI-186
     await _resetForTests();
   });
 });
+
+/**
+ * EI-18833814302562374 — the reclaim must cover the WAITING path too.
+ *
+ * The reclaim above originally ran only when `maxWaitSec <= 0`, on the reasoning
+ * that a waiting caller "already has its own TTL/drain recovery". It does not:
+ * `maxWaitSec` drains SHARED holders, while an EXCLUSIVE conflict returns
+ * `held_exclusive` immediately. So a waiting caller had strictly LESS recovery
+ * than a no-wait one — which is why a killed deploy's `release-deploy` lock
+ * (maxDrainSec 0) self-healed while its `dev-server` lock (maxDrainSec 120)
+ * blocked every deploy on the box for the holder's full 20-minute TTL.
+ */
+describe('acquireResourceExclusiveWithWait — dead-holder reclaim on the WAITING path (EI-18833814302562374)', async () => {
+  const live = await dbLive();
+
+  it.skipIf(!live)('reclaims a definitively-dead exclusive holder when maxWaitSec > 0', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const deadPid = await definitelyDeadPid();
+    const staleOwner = `stale-owner:${deadPid}`;
+
+    // A deploy killed mid-flight leaves this behind on `dev-server`.
+    const first = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: staleOwner,
+      ownerLabel: 'stale',
+      resource: 'dev-server',
+      reason: 'test',
+      ttlSec: 60,
+      maxWaitSec: 0,
+    });
+    expect(first.ok).toBe(true);
+
+    let reclaimed: { holder: { owner: string }; pid: number } | null = null;
+    const startedAt = Date.now();
+    // The deploy's own withDrain shape: a DRAIN budget, not a no-wait coalesce.
+    const second = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: 'fresh-owner',
+      ownerLabel: 'fresh',
+      resource: 'dev-server',
+      reason: 'release deploy (drain before swap)',
+      ttlSec: 60,
+      maxWaitSec: 120,
+      hostLocalOwnerPid: hostLocalOwnerPidFromLabel,
+      onStaleHolderReclaimed: (info) => {
+        reclaimed = info;
+      },
+    });
+
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.status).toBe('held');
+    expect(reclaimed).not.toBeNull();
+    expect(reclaimed!.pid).toBe(deadPid);
+    expect(reclaimed!.holder.owner).toBe(staleOwner);
+    // Self-heal is immediate — never "wait out the holder's TTL".
+    expect(Date.now() - startedAt).toBeLessThan(30_000);
+
+    await _resetListenersForTests();
+    await _resetForTests();
+  });
+
+  it.skipIf(!live)('does NOT reclaim a LIVE exclusive holder on the waiting path', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const liveOwner = `stale-owner:${process.pid}`; // this test process is definitely alive
+
+    const first = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: liveOwner,
+      ownerLabel: 'live',
+      resource: 'dev-server',
+      reason: 'test',
+      ttlSec: 60,
+      maxWaitSec: 0,
+    });
+    expect(first.ok).toBe(true);
+
+    let reclaimed = false;
+    const second = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: 'fresh-owner',
+      ownerLabel: 'fresh',
+      resource: 'dev-server',
+      reason: 'release deploy (drain before swap)',
+      ttlSec: 60,
+      maxWaitSec: 5,
+      hostLocalOwnerPid: hostLocalOwnerPidFromLabel,
+      onStaleHolderReclaimed: () => {
+        reclaimed = true;
+      },
+    });
+
+    // A live holder is never stolen — single-flighting still holds.
+    expect(reclaimed).toBe(false);
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.reason).toBe('held_exclusive');
+
+    await _resetListenersForTests();
+    await _resetForTests();
+  });
+});

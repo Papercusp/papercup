@@ -263,21 +263,32 @@ IS NULL)` — that is the moment, not the moment someone disputes the result. Th
 error above survived a leader who *knew* this rule because they applied it to
 conclusions and not to queries.
 
-Before publishing any conclusion that rests on a field being absent — or on a rate
-bucketed over time:
+Before publishing any conclusion that rests on a field being absent, on a rate
+bucketed over time, or on a field's value **exonerating** something:
 
 1. **Vintage** — first day the field is nonzero. Scope the window to it.
 2. **Paths** — which writers populate it? Does a documented-but-lossy call shape
    (a bare string where an object is expected) skip it silently?
 3. **Axis** — is the timestamp column you are bucketing on actually the event you
    mean, or has a bulk update moved it?
-4. **Direction** — state the benign reading explicitly, then name the one query
+4. **Definition** — for any field whose value talks you *out* of the suspicion,
+   read its computation, not its name. `window_end` was `max(resolvedAt)`.
+5. **Bounds** — is there a `LIMIT`, page size, or window cap anywhere in the read
+   path that was slack when written? Would anything emit a signal on the day it
+   started biting?
+6. **Scope** — re-run the lookup with **your own** narrowing removed. A `WHERE`
+   clause you typed and a column that never existed produce identical emptiness.
+7. **Direction** — state the benign reading explicitly, then name the one query
    that separates it from the accusatory one. If you cannot name that query, you
    do not yet have a finding.
 
-Step 4 is the cheap one and it caught the other three in retrospect. Each of the
-four errors above was one query away from being avoided, and in each case the
-benign alternative was never enumerated before the conclusion was broadcast.
+Step 7 is the cheap one and it caught every other item in retrospect. Each error on
+this page was one query away from being avoided, and in each case the benign
+alternative was never enumerated before the conclusion was broadcast.
+
+And when the reading is exculpatory, apply the list anyway. Steps 4 and 6 exist
+because a comfortable answer is the one nobody asks a second question about — a
+clean result and a probe that cannot detect the problem look the same from outside.
 
 ## If you have already published a wrong criterion
 
@@ -296,6 +307,9 @@ reporter was right.
 
 ## See also
 
+- `oddsmith-hive` **WI-6468** — the forward-scorer truncation that produced the
+  mirror-direction, bound, and fingerprint sections above; the full method is parked
+  as a comment on that item. Contributed by `su-e80ad977`.
 - `EI-18826838313468069` — completion evidence is written to
   `payload._completionEvidence`, not `terminal_completion_ref`; and the
   bare-string `completion` path writes nothing at all.

@@ -2078,6 +2078,9 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
       data.suIdeate && data.suIdeate.passesInWindow > 0
         ? ` · su-ideate: ${data.suIdeate.passesInWindow} pass(es)/24h (${data.suIdeate.ideasFiled} filed)`
         : '';
+    const divergenceNote = data.provenanceDivergence?.crossesWarnThreshold
+      ? ` · WI-6338 provenance divergence ${(data.provenanceDivergence.value * 100).toFixed(0)}% (sourceRole/topic/routedIdea disagree)`
+      : '';
     const summary =
       (data.lastRanAt == null
         ? data.lastTickAt == null
@@ -2085,7 +2088,7 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
           : `no full cycle in 24h — last tick ${agoMin(data.lastTickAt, ctx.now)} (gated/idle)`
         : data.transportDeath
           ? `TRANSPORT-DEATH — ${data.ranInWindow} cycle(s) ran in 24h but 0 ideas generated (a transport failure, not low quality)`
-          : `${data.ideasInWindow} idea(s)/24h over ${data.ranInWindow} cycle(s); last run ${agoMin(data.lastRanAt, ctx.now)} (${data.ideasLastRun} ideas)`) + suNote;
+          : `${data.ideasInWindow} idea(s)/24h over ${data.ranInWindow} cycle(s); last run ${agoMin(data.lastRanAt, ctx.now)} (${data.ideasLastRun} ideas)`) + suNote + divergenceNote;
     return {
       status,
       summary,
@@ -2103,6 +2106,16 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
           : []),
         ...(data.grading
           ? [m('graded 24h', data.grading.gradedInWindow), m('ungraded', data.grading.ungraded)]
+          : []),
+        // WI-6338: same omit-not-zero contract as the two legs above.
+        ...(data.provenanceDivergence
+          ? [
+              m(
+                'provenance divergence',
+                `${(data.provenanceDivergence.value * 100).toFixed(0)}%`,
+                data.provenanceDivergence.crossesWarnThreshold ? 'warn' : undefined,
+              ),
+            ]
           : []),
       ],
     };

@@ -65,6 +65,26 @@ export function parseDeployOwnerPid(owner: string): number | null {
   return Number.isFinite(pid) && pid > 0 ? pid : null;
 }
 
+/**
+ * EI-18833814302562374: the stale-holder reclaim hook, shared by BOTH locks a
+ * deploy takes. A killed deploy leaks `release-deploy` AND `dev-server` — same
+ * process, same `release-deploy:<pid>:<uuid>` owner, same host-global domain —
+ * so wiring the self-heal onto only one of them (as this file did) leaves the
+ * other squatting for its full TTL and FATALs every subsequent deploy. Anything
+ * that acquires under DEPLOY_OWNER must pass this plus `parseDeployOwnerPid`.
+ */
+function onStaleDeployHolderReclaimed(resource: string) {
+  return async ({ holder, pid }: { holder: { owner: string }; pid: number }): Promise<void> => {
+    const detail =
+      `reclaimed dead ${resource} holder ${holder.owner} (pid ${pid} not running on this host); ` +
+      `this deploy is retrying the acquire`;
+    // Loud: this must never look like a normal quiet coalesce (Defect 1's "a
+    // leaked lock currently looks identical to healthy single-flighting").
+    console.error(`[deploy] STALE LOCK RECLAIMED — ${detail}`);
+    await recordStaleLockReclaim(detail);
+  };
+}
+
 /** Best-effort pipeline-history breadcrumb for a reclaim — never lets a telemetry
  *  failure affect the deploy path (mirrors `recordEvent`'s lazy import below). */
 async function recordStaleLockReclaim(detail: string): Promise<void> {
@@ -135,13 +155,7 @@ export async function realRunUnderDeployLock<T>(
       // stale holder is reclaimed and the acquire retried once — turning the silent
       // 20-minute outage into a sub-second self-heal.
       hostLocalOwnerPid: parseDeployOwnerPid,
-      onStaleHolderReclaimed: async ({ holder, pid }) => {
-        const detail = `reclaimed dead release-deploy holder ${holder.owner} (pid ${pid} not running on this host); this deploy is retrying the acquire`;
-        // Loud: this must never look like a normal quiet coalesce (Defect 1's "a
-        // leaked lock currently looks identical to healthy single-flighting").
-        console.error(`[deploy] STALE LOCK RECLAIMED — ${detail}`);
-        await recordStaleLockReclaim(detail);
-      },
+      onStaleHolderReclaimed: onStaleDeployHolderReclaimed('release-deploy'),
     },
     fn,
   );
@@ -236,6 +250,17 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
           mode: 'exclusive',
           maxDrainSec: opts.drainSec ?? DEFAULT_DRAIN_SEC,
           reason: 'release deploy (drain before swap)',
+          // EI-18833814302562374: a deploy killed mid-flight (the MCP client's
+          // 300s idle abort is the reliable way to do this) leaks BOTH its locks.
+          // `release-deploy` self-healed via this same hook while `dev-server`
+          // did not, so the next deploy got PAST the coalesce and then died on
+          // `could not acquire exclusive(dev-server): held_exclusive` for the
+          // holder's full 20-min TTL. maxDrainSec does NOT cover this: the drain
+          // wait applies to SHARED holders, and an exclusive conflict returns
+          // immediately — so without this the waiting path had LESS recovery
+          // than the no-wait one.
+          hostLocalOwnerPid: parseDeployOwnerPid,
+          onStaleHolderReclaimed: onStaleDeployHolderReclaimed('dev-server'),
         },
         fn,
       );

@@ -122,8 +122,14 @@ export interface ExclusiveWaitParams {
    * holder's full TTL block into a sub-second self-heal instead of a silent outage
    * for the resource's entire TTL. Return null for an owner string this convention
    * doesn't apply to (e.g. a different caller's identity shape) — no-op for those,
-   * same behaviour as omitting this field entirely. Only consulted on the no-wait
-   * (`maxWaitSec <= 0`) path; a waiting caller already has its own TTL/drain recovery.
+   * same behaviour as omitting this field entirely.
+   *
+   * Consulted on EVERY acquire path, waiting or not. It previously ran only on the
+   * no-wait (`maxWaitSec <= 0`) path, on the reasoning that "a waiting caller
+   * already has its own TTL/drain recovery" — that was FALSE (EI-18833814302562374):
+   * `maxWaitSec` drains SHARED holders only, and an exclusive conflict returns
+   * `held_exclusive` immediately, so a waiting caller had strictly LESS recovery
+   * than a no-wait one, not more.
    */
   hostLocalOwnerPid?: (owner: string) => number | null;
   /** Fired once per stale holder actually reclaimed via `hostLocalOwnerPid` — the
@@ -179,18 +185,36 @@ export async function acquireResourceExclusiveWithWait(
       }),
     );
 
-  // No-wait path: acquire once and report whatever we get.
-  if (maxWaitSec <= 0) {
+  /**
+   * `doAcquire`, plus ONE dead-holder reclaim + retry when the conflict is
+   * another owner's exclusive.
+   *
+   * EI-18674647773291145: a coalesce blocked by another owner's exclusive is
+   * ALSO the shape a crashed holder's leaked lock takes — before accepting it,
+   * give the caller one chance to identify + reclaim a definitively-dead holder
+   * and retry, rather than returning `held_exclusive` for the resource's full
+   * TTL (the 20-minute deploy outage that closed).
+   *
+   * EI-18833814302562374: this MUST run on every acquire path, not just the
+   * no-wait one. `maxWaitSec > 0` buys a drain wait for SHARED holders only —
+   * an exclusive conflict returns `held_exclusive` immediately (see the waiting
+   * path below), so a waiting caller has NO recovery of its own and fails
+   * instantly against a dead holder. That asymmetry is what left `dev-server`
+   * (deploy's `withDrain`, maxDrainSec 120) blocked for the holder's full TTL
+   * while `release-deploy` (maxDrainSec 0) self-healed in the same process.
+   */
+  const acquireReclaimingDeadHolders = async () => {
     let r = await doAcquire();
-    // EI-18674647773291145: a coalesce blocked by another owner's exclusive is
-    // ALSO the shape a crashed holder's leaked lock takes — before accepting it,
-    // give the caller one chance to identify + reclaim a definitively-dead holder
-    // and retry, rather than silently returning `held_exclusive` for the resource's
-    // full TTL (the 20-minute deploy outage this closes).
     if (!r.ok && r.reason === 'held_exclusive' && hostLocalOwnerPid) {
       const reclaimed = await reclaimDeadExclusiveHolders(cd, owner, r.holders, hostLocalOwnerPid, onStaleHolderReclaimed);
       if (reclaimed) r = await doAcquire();
     }
+    return r;
+  };
+
+  // No-wait path: acquire once and report whatever we get.
+  if (maxWaitSec <= 0) {
+    const r = await acquireReclaimingDeadHolders();
     if (!r.ok) return { ok: false, reason: r.reason, holders: r.holders };
     if (r.status === 'held') {
       return { ok: true, status: 'held', lock_id: r.lock_id, waited_sec: 0, shared_holders_at_start: r.shared_holders, fence_seq: r.fence_seq };
@@ -219,7 +243,7 @@ export async function acquireResourceExclusiveWithWait(
   } catch {
     // LISTEN-pool saturated (too many active workspaces). Fall back to a
     // single no-wait acquire so the caller still gets a structured result.
-    const r = await doAcquire();
+    const r = await acquireReclaimingDeadHolders();
     if (!r.ok) return { ok: false, reason: r.reason, holders: r.holders };
     if (r.status === 'held') {
       return { ok: true, status: 'held', lock_id: r.lock_id, waited_sec: 0, shared_holders_at_start: r.shared_holders, fence_seq: r.fence_seq };
@@ -228,8 +252,12 @@ export async function acquireResourceExclusiveWithWait(
   }
 
   try {
-    const acquired = await doAcquire();
+    const acquired = await acquireReclaimingDeadHolders();
     if (!acquired.ok) {
+      // NB (EI-18833814302562374): this returns IMMEDIATELY — the drain loop
+      // below waits out SHARED holders only, never an exclusive one. So the
+      // reclaim above is a waiting caller's only defence against a dead holder,
+      // not a redundant belt-and-braces on top of `maxWaitSec`.
       return { ok: false, reason: acquired.reason, holders: acquired.holders };
     }
     if (acquired.status === 'held') {

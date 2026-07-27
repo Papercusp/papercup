@@ -221,6 +221,40 @@ describe('devDeployState', () => {
       process.env.PAPERCUSP_RELEASE_REF = prev;
     }
   });
+
+  it('EI-18788901632987174: an absent ref and a broken git invocation produce DIFFERENTLY-worded errors[] entries, end to end', async () => {
+    // Absent ref (real repo, bad ref name) — classifies not-applicable.
+    const prevRef = process.env.PAPERCUSP_RELEASE_REF;
+    process.env.PAPERCUSP_RELEASE_REF = 'no-such-ref';
+    let absentRefError: string | undefined;
+    try {
+      const st = await devDeployState();
+      absentRefError = st.errors.find((e) => e.includes('no-such-ref'));
+    } finally {
+      process.env.PAPERCUSP_RELEASE_REF = prevRef;
+    }
+    expect(absentRefError).toBeDefined();
+
+    // Broken invocation (the repo path itself doesn't exist) — classifies
+    // resolver-failed. Same shape of failure (commitRef → errors[]), different
+    // ROOT CAUSE — this is the exact pair the bug's recurrence guard asks for.
+    const prevRoot = process.env.PAPERCUSP_RELEASE_ROOT;
+    process.env.PAPERCUSP_RELEASE_ROOT = path.join(tmp, 'no-such-release-checkout-dir');
+    let brokenInvocationError: string | undefined;
+    try {
+      const st = await devDeployState();
+      expect(st.deployed).toBeNull();
+      brokenInvocationError = st.errors.find((e) => e.includes('git failed resolving'));
+    } finally {
+      process.env.PAPERCUSP_RELEASE_ROOT = prevRoot;
+    }
+    expect(brokenInvocationError).toBeDefined();
+
+    // The two must not read the same way — a caller (or a human) must be able
+    // to tell "give up" from "try again" from the text alone.
+    expect(absentRefError).not.toBe(brokenInvocationError);
+    expect(absentRefError).not.toContain('git failed resolving');
+  });
 });
 
 describe('devDeployState caching (P-015 — collapse the git fan-out under the poll storm)', () => {

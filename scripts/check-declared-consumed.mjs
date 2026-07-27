@@ -62,12 +62,21 @@
  *
  * ── HEURISTIC, AND WHICH WAY IT LEANS ────────────────────────────────────────
  *
- * This is regex-and-brace-depth over stripped source, not a typechecker. Its
- * blind spots are deliberate and one-directional: a write spread across lines,
- * or a mid-line object-literal property, is MISSED — which understates writers
- * and reads as a failure. Every rule therefore errs toward failing loudly, never
- * toward passing quietly, and the report prints the file:line of every site it
- * counted so a disputed verdict can be audited in one look rather than trusted.
+ * This is regex-and-brace-depth over stripped source, not a typechecker, and it
+ * is worth being precise about what that costs. A property is recognised only at
+ * the START of a line, so a mid-line `{ ordered: 1 }` or a write spread across
+ * lines is MISSED. Every such miss removes a writer or a reader, which moves a
+ * row toward `write-only`/`read-only`/`inert`/`not-declared` — all of which FAIL.
+ * There is no formatting that converts a miss into a green tick, which is the one
+ * property a heuristic gate has to have: it can waste your time, it cannot lie to
+ * you. The report prints file:line for every site counted, so a verdict you
+ * doubt is audited by looking rather than by trusting.
+ *
+ * The honest limitation is the opposite direction: a false POSITIVE read hides a
+ * defect, and vacuous passes (5) and (6) below were both exactly that. Both were
+ * caught only because a field already proven dead by hand kept coming back green
+ * — which is why the sweep's acceptance test is "does it re-derive a KNOWN
+ * defect", never "does it pass".
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -150,6 +159,11 @@ export const DECLARED_FIELDS = [
     producer: 'a cell registration declaring `ordered: { stages: [...] }`',
     consumer: 'anything that uses the declared stage order to rank or compare cell values',
     why: 'Axis 6. The stage order exists so a reader can say which of two positions is FURTHER ALONG. Declared and written but never read, the ordering claim is decorative: a caller comparing stages still has to hardcode the sequence, which is the duplication the axis was added to remove.',
+    // Found BY this sweep on its first correct run, and deliberately not fixed by
+    // it: wiring a consumer to green one's own gate is the very move the gate
+    // exists to detect. Closing WI-6473 must delete this ref so the row returns
+    // to hard-failing.
+    knownUnbuilt: 'WI-6473',
   },
 ];
 
@@ -180,7 +194,7 @@ export const DECLARED_COLUMNS = [
   { id: 'agent_plane_measurements.workspace_id', table: 'agent_plane_measurements', name: 'workspace_id', migration: '697-agent-plane-measurements.sql',
     why: 'Tenant scope. An unfiltered read mixes workspaces into one meaningless series.' },
   { id: 'agent_plane_measurements.harness_slug', table: 'agent_plane_measurements', name: 'harness_slug', migration: '697-agent-plane-measurements.sql',
-    why: 'The second half of the tenant key.' },
+    why: 'The second half of the tenant key. Unread, one harness’s measurements are silently folded into another’s series, and the trend a reader draws is of two different planes averaged together.' },
   { id: 'agent_plane_measurements.measured_at', table: 'agent_plane_measurements', name: 'measured_at', migration: '697-agent-plane-measurements.sql',
     why: 'When the measurement was taken — the series order.' },
   { id: 'agent_plane_measurements.window_start', table: 'agent_plane_measurements', name: 'window_start', migration: '697-agent-plane-measurements.sql',

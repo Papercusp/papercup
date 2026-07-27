@@ -376,6 +376,93 @@ describe('buildFleetKindClaimSpec (EI-7671 — fleet-level kind-filter claim spe
   });
 });
 
+function issueItem(overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'title'>): WorkItem {
+  return {
+    kind: 'bug',
+    family: 'issue',
+    harness: 'papercusp',
+    summary: '',
+    state: 'open',
+    assignee: null,
+    takenAt: null,
+    lastProgressAt: null,
+    assignedBy: null,
+    severity: 'minor',
+    parent: null,
+    payload: {},
+    rank: null,
+    rankWriter: null,
+    rankUpdatedAt: null,
+    priority: null,
+    origin: 'local',
+    auditVerdict: null,
+    verifiedAuthorGithubUserId: null,
+    terminalOwner: null,
+    terminalCompletionRef: null,
+    terminalCompletionEvidence: null,
+    createdAt: '2026-07-27T00:00:00.000Z',
+    updatedAt: '2026-07-27T00:00:00.000Z',
+    ...overrides,
+  } as WorkItem;
+}
+
+// WI-6342: a "nonp2p" drain fleet's auto-generated kind-only claim spec had no
+// awareness of the fleet's own P2P-exclusion mandate, so a p2p/dht/federation-
+// tagged item (a papercup-isolated-dht liveness bug) was served straight to a
+// single-box fleet member who cannot execute it — the same regression class as
+// WI-5265/WI-5272/WI-5639/WI-6050 (a missing p2p-lane-fence), now via this NEW
+// code path rather than a hand-typed scheduler:set_claim_spec.
+describe('isNonP2pDrainFleetSlug + buildFleetKindClaimSpec p2p-lane-fence composition (WI-6342)', () => {
+  it('recognizes the established "nonp2p-bug-drain-<date>" naming convention', () => {
+    expect(isNonP2pDrainFleetSlug('nonp2p-bug-drain-0727')).toBe(true);
+    expect(isNonP2pDrainFleetSlug('nonp2p-bug-drain-0725')).toBe(true);
+    expect(isNonP2pDrainFleetSlug('NonP2P-Bug-Drain')).toBe(true); // case-insensitive
+  });
+
+  it('does not misfire on an unrelated fleet slug', () => {
+    expect(isNonP2pDrainFleetSlug('atlas-fleet')).toBe(false);
+    expect(isNonP2pDrainFleetSlug('backlog-drain')).toBe(false);
+  });
+
+  it('composes the p2p-lane fence into a "nonp2p"-named fleet\'s spec', () => {
+    const spec = buildFleetKindClaimSpec('nonp2p-bug-drain-0727', ['bug', 'change', 'task']);
+    expect((spec.view as { fence?: string }).fence).toBe('p2p-lane');
+  });
+
+  it('does NOT compose the fence for an ordinary (non-"nonp2p") drain fleet', () => {
+    const spec = buildFleetKindClaimSpec('atlas-fleet', ['bug']);
+    expect((spec.view as { fence?: string }).fence).toBeUndefined();
+  });
+
+  it('end-to-end: the validated "nonp2p" fleet spec excludes a real p2p/dht-tagged item (WI-6342 itself), admits an ordinary bug', () => {
+    const rawSpec = buildFleetKindClaimSpec('nonp2p-bug-drain-0727', ['bug', 'change', 'task']);
+    const validated = validateClaimSpec(rawSpec);
+    expect(validated.ok, `spec invalid: ${validated.ok ? '' : validated.errors.join('; ')}`).toBe(true);
+    const spec = validated.spec as ClaimSpec;
+
+    const dhtBug = issueItem({
+      id: 'WI-6342',
+      title: 'papercup-isolated-dht liveness probe FAILED — bootstrap 172.31.44.1:49838 unreachable/wedged',
+    });
+    expect(matchesWorkItemClaimSpec(dhtBug, spec)).toBe(false); // excluded
+
+    const ordinaryBug = issueItem({ id: 'WI-y', title: 'Fix dashboard pagination off-by-one' });
+    expect(matchesWorkItemClaimSpec(ordinaryBug, spec)).toBe(true); // still admitted
+  });
+
+  it('the ordinary (non-fenced) fleet spec still admits the p2p/dht item (proves the fence, not something else, does the excluding)', () => {
+    const rawSpec = buildFleetKindClaimSpec('atlas-fleet', ['bug', 'change', 'task']);
+    const validated = validateClaimSpec(rawSpec);
+    expect(validated.ok).toBe(true);
+    const spec = validated.spec as ClaimSpec;
+    const dhtBug = issueItem({
+      id: 'WI-6342',
+      title: 'papercup-isolated-dht liveness probe FAILED — bootstrap 172.31.44.1:49838 unreachable/wedged',
+    });
+    expect(matchesWorkItemClaimSpec(dhtBug, spec)).toBe(true); // admitted (no fence composed)
+  });
+});
+
 // EI-10409: fleet:launch-on-plan used to ALWAYS overwrite the fleet claim spec on launch,
 // silently clobbering a spec the leader had just hand-authored (e.g. a vetted id-pinned wave)
 // and replacing it with a bare `plan=` filter that ordinary (non-promoted) backlog work-items

@@ -1,0 +1,318 @@
+/**
+ * P-002 — the declared-vs-consumed sweep's predicates.
+ *
+ * Every test below locks a distinction whose LOSS produces a green gate over a
+ * real defect. Four of them are regression tests in the literal sense: the sweep
+ * shipped each of these false verdicts during its own construction, and a green
+ * run is what reported them. That is the point worth preserving — the gate was
+ * only trustworthy once it FAILED on a field a human had already proven dead, so
+ * these cases pin the failure, not the pass.
+ */
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore -- plain .mjs gate script, no type declarations by design
+import { stripComments, blankQuotedStrings, interfaceRanges, classifyTsField, classifySqlColumn, judgeConsumption, rollupSweep, looksGenerated, isTestFile, DECLARED_FIELDS, DECLARED_COLUMNS } from '../../../scripts/check-declared-consumed.mjs';
+import { describe, expect, it } from 'vitest';
+
+describe('judgeConsumption — the four-way split', () => {
+  it('needs BOTH ends of the wire to call a field consumed', () => {
+    expect(judgeConsumption({ declarations: 1, writes: 2, reads: 3 })).toBe('consumed');
+  });
+
+  it('WI-6444 shape: written and never read is write-only, not consumed', () => {
+    expect(judgeConsumption({ declarations: 1, writes: 6, reads: 0 })).toBe('write-only');
+  });
+
+  it('WI-6465 shape: read and never written is read-only, not consumed', () => {
+    expect(judgeConsumption({ declarations: 1, writes: 0, reads: 4 })).toBe('read-only');
+  });
+
+  it('declared and untouched at both ends is inert', () => {
+    expect(judgeConsumption({ declarations: 1, writes: 0, reads: 0 })).toBe('inert');
+  });
+
+  /**
+   * The static analogue of P-001's `no-data`. Zero writes and zero reads against
+   * zero DECLARATIONS is not a defect report — it is the gate describing a target
+   * that no longer exists. Collapsing it into `inert` sends someone hunting for a
+   * consumer of a field that was renamed away.
+   */
+  it('distinguishes "nothing uses it" from "it is not there any more"', () => {
+    expect(judgeConsumption({ declarations: 0, writes: 0, reads: 0 })).toBe('not-declared');
+    expect(judgeConsumption({ declarations: 0, writes: 0, reads: 0 })).not.toBe('inert');
+  });
+});
+
+describe('vacuous pass (1) — a declaration is not a use', () => {
+  const src = `
+export interface CellSpec {
+  cell: string;
+  unknownHoist?: string;
+  ordered?: { stages: string[] };
+}
+
+export const GIT_CELL = {
+  cell: 'git.pipelinePosition',
+  unknownHoist: 'positionsUnknown',
+};
+`;
+
+  it('reads an interface property as a declaration and an object-literal property as a write', () => {
+    const c = classifyTsField(src, 'unknownHoist');
+    expect(c.declarations).toHaveLength(1);
+    expect(c.writes).toHaveLength(1);
+    expect(c.reads).toHaveLength(0);
+  });
+
+  it('does not let the declaration alone make a field look consumed', () => {
+    const only = classifyTsField('interface S {\n  ordered?: { stages: string[] };\n}', 'ordered');
+    expect(only.declarations).toHaveLength(1);
+    expect(only.writes).toHaveLength(0);
+    expect(only.reads).toHaveLength(0);
+    expect(judgeConsumption({ declarations: 1, writes: 0, reads: 0 })).toBe('inert');
+  });
+
+  /**
+   * A property is recognised only at the START of a line. Real declarations and
+   * real registrations are formatted that way; a one-line `{ ordered: 1 }` is
+   * missed. The miss is deliberate and safe in the ONE direction that matters:
+   * an unseen write leaves the field looking read-only or not-declared, both of
+   * which FAIL loudly. There is no formatting that turns a miss into a pass.
+   */
+  it('misses a mid-line property, and fails rather than passes when it does', () => {
+    expect(classifyTsField('const x = { ordered: 1 };', 'ordered').writes).toHaveLength(0);
+    expect(judgeConsumption({ declarations: 0, writes: 0, reads: 0 })).not.toBe('consumed');
+  });
+
+  it('tracks the interface body by brace depth, so a later literal is still a write', () => {
+    const ranges = interfaceRanges(src);
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].start).toBe(2);
+    expect(ranges[0].end).toBe(6);
+  });
+
+  it('does not treat an unbraced type alias as a declaration body', () => {
+    const src = ["type Verdict = 'a' | 'b';", 'const x = {', '  ordered: 1,', '};'].join('\n');
+    expect(interfaceRanges(src)).toHaveLength(0);
+    // Outside any interface body, the property is a WRITE, not a declaration.
+    const c = classifyTsField(src, 'ordered');
+    expect(c.writes).toEqual([3]);
+    expect(c.declarations).toHaveLength(0);
+  });
+});
+
+describe('vacuous pass (2) — a comment is not a use', () => {
+  it('ignores a property access that only appears in a docblock', () => {
+    const src = [
+      '/** `key` is the declared field name (`spec.unknownHoist`) — carried rather than',
+      ' *  recomputed. See also spec.unknownHoist above. */',
+      'const x = 1;',
+    ].join('\n');
+    expect(classifyTsField(src, 'unknownHoist').reads).toHaveLength(0);
+  });
+
+  it('ignores a field named inside a line comment', () => {
+    expect(classifyTsField('// spec.materiality is resolved later\nconst y = 2;', 'materiality').reads).toHaveLength(0);
+  });
+
+  /** cell-registry.ts names `materiality` in nine rejection MESSAGES. */
+  it('ignores a field named inside a quoted rejection message', () => {
+    const src = "reject('materiality', 'materiality-path-missing', 'materiality must name a `path`.');";
+    expect(classifyTsField(src, 'materiality').reads).toHaveLength(0);
+  });
+
+  it('preserves line numbers while blanking, so reported sites stay accurate', () => {
+    const src = 'const a = 1;\n/* spec.ordered\n   spec.ordered */\nconst b = spec.ordered;';
+    const c = classifyTsField(src, 'ordered');
+    expect(c.reads).toEqual([4]);
+  });
+
+  it('leaves template literals intact — SQL lives in them', () => {
+    const src = 'const q = `SELECT superseded_at FROM agent_facts`;';
+    expect(stripComments(src)).toContain('superseded_at');
+    expect(blankQuotedStrings(src)).toContain('superseded_at');
+  });
+
+  it('blanks the contents of quoted strings but keeps their length', () => {
+    const src = "const a = 'materiality';";
+    expect(blankQuotedStrings(src)).toHaveLength(src.length);
+    expect(blankQuotedStrings(src)).not.toContain('materiality');
+  });
+});
+
+describe('vacuous pass (3) — the declaring module is not a consumer', () => {
+  /**
+   * `validateCellSpec` reads `spec.unknownHoist` twice, in the same file that
+   * declares it. Counting those, the sweep stays green after the real emission
+   * in cell-read.ts is deleted — i.e. it fails to re-derive WI-6444, the one
+   * thing it must do. This test pins the two halves the sweep must keep apart.
+   */
+  it('sees the validator read, which is why the caller must exclude the declaring file', () => {
+    const declaringModule = `
+export interface CellSpec {
+  unknownHoist?: string;
+}
+export function validateCellSpec(spec: CellSpec) {
+  if (spec.nullable && !spec.unknownHoist?.trim()) return ['unknown-not-hoisted'];
+  if (!spec.nullable && spec.unknownHoist) return ['hoist-without-nullable'];
+  return [];
+}`;
+    const c = classifyTsField(declaringModule, 'unknownHoist');
+    expect(c.declarations).toHaveLength(1);
+    expect(c.reads).toHaveLength(2);
+
+    // Excluded (what the sweep does) the field has no consumer at all.
+    expect(judgeConsumption({ declarations: 1, writes: 0, reads: 0 })).toBe('inert');
+    // Counted, the very same field reads as fully consumed. That is the trap.
+    expect(judgeConsumption({ declarations: 1, writes: 1, reads: c.reads.length })).toBe('consumed');
+  });
+
+  it('every declared field names the module the exclusion applies to', () => {
+    for (const f of DECLARED_FIELDS) {
+      expect(f.declaredIn, `${f.id} must declare its home module`).toMatch(/\.ts$/);
+    }
+  });
+});
+
+describe('vacuous pass (4)+(5) — retired and generated code are not consumers', () => {
+  it('skips retired surfaces', () => {
+    expect(DECLARED_FIELDS.length).toBeGreaterThan(0);
+    // `_retired` is in SKIP_DIRS; assert via the walker's contract on test files.
+    expect(isTestFile('packages/operator-core/lib/cell-read.test.ts')).toBe(true);
+    expect(isTestFile('packages/operator-core/lib/cell-read.ts')).toBe(false);
+    expect(isTestFile('apps/operator/e2e/thing.spec.ts')).toBe(true);
+  });
+
+  /**
+   * THE ONE THAT ACTUALLY FIRED. The sweep's first green run reported
+   * `CellSpec.ordered` as consumed with 46 readers; all 46 were `.ordered` inside
+   * checked-in storybook webpack bundles. Minified code collides with everything,
+   * so a bundle in the tree can vouch for any field name at all.
+   */
+  it('recognises a minified bundle by line length, not by path', () => {
+    expect(looksGenerated(`const a=1;${'x'.repeat(3000)}\n`)).toBe(true);
+    expect(looksGenerated('const a = 1;\nconst b = spec.ordered;\n')).toBe(false);
+    expect(looksGenerated('short file, no newline at all')).toBe(false);
+  });
+});
+
+describe('vacuous pass (6) — a spread is not a property access', () => {
+  /**
+   * `[...ordered.map(f)]` in an unrelated codegen script was the single "read"
+   * that kept CellSpec.ordered green after the bundles were excluded. One
+   * false positive was enough to hide the defect completely.
+   */
+  it('does not count the third dot of a spread as a member access', () => {
+    expect(classifyTsField('const out = [...ordered.map(serializeDomain)];', 'ordered').reads).toHaveLength(0);
+  });
+
+  it('still counts a genuine member access, including optional chaining', () => {
+    expect(classifyTsField('const a = spec.ordered;', 'ordered').reads).toEqual([1]);
+    expect(classifyTsField('const a = spec?.ordered;', 'ordered').reads).toEqual([1]);
+    expect(classifyTsField('const a = cell.spec.ordered;', 'ordered').reads).toEqual([1]);
+  });
+
+  it('does not match a field name that is merely a suffix of another', () => {
+    expect(classifyTsField('const a = x.reordered;', 'ordered').reads).toHaveLength(0);
+  });
+
+  it('separates assignment from comparison', () => {
+    expect(classifyTsField('spec.ordered = next;', 'ordered').writes).toEqual([1]);
+    expect(classifyTsField('if (spec.ordered === next) {}', 'ordered').reads).toEqual([1]);
+    expect(classifyTsField('if (spec.ordered => next) {}', 'ordered').reads).toEqual([1]);
+  });
+});
+
+describe('classifySqlColumn — write clauses vs read clauses', () => {
+  it('reads an UPDATE ... SET as a write', () => {
+    const src = 'const q = `UPDATE harness_shared.agent_facts SET superseded_at = COALESCE(superseded_at, now()) WHERE id = $1`;';
+    const c = classifySqlColumn(src, 'superseded_at');
+    expect(c.writes.length).toBeGreaterThan(0);
+  });
+
+  it('reads an INSERT column list as a write', () => {
+    const src = 'const q = `INSERT INTO harness_shared.agent_plane_measurements (workspace_id, interpretable_count, metric_count) VALUES ($1,$2,$3)`;';
+    expect(classifySqlColumn(src, 'interpretable_count').writes.length).toBeGreaterThan(0);
+  });
+
+  it('reads a WHERE predicate as a read, not a write', () => {
+    const src = 'const q = `SELECT id FROM harness_shared.agent_facts WHERE superseded_at IS NULL`;';
+    const c = classifySqlColumn(src, 'superseded_at');
+    expect(c.reads.length).toBeGreaterThan(0);
+    expect(c.writes).toHaveLength(0);
+  });
+
+  it('reads a select-list projection as a read', () => {
+    const src = 'const q = `SELECT superseded_at::text AS superseded_at FROM harness_shared.agent_facts`;';
+    expect(classifySqlColumn(src, 'superseded_at').reads.length).toBeGreaterThan(0);
+  });
+
+  /** A row type mirroring the column does not touch it — (1) in SQL costume. */
+  it('skips a column name that is only a field on a row interface', () => {
+    const src = 'export interface FactRow {\n  superseded_at: string | null;\n}';
+    const c = classifySqlColumn(src, 'superseded_at');
+    expect(c.reads).toHaveLength(0);
+    expect(c.writes).toHaveLength(0);
+  });
+
+  it('ignores a column named only in a comment', () => {
+    const src = '// superseded_at IS NULL is the current-fact filter\nconst a = 1;';
+    const c = classifySqlColumn(src, 'superseded_at');
+    expect(c.reads).toHaveLength(0);
+    expect(c.writes).toHaveLength(0);
+  });
+});
+
+describe('rollupSweep — what fails the build', () => {
+  const row = (over: Record<string, unknown>) => ({ id: 'x', verdict: 'consumed', ...over });
+
+  it('passes when everything is consumed', () => {
+    const roll = rollupSweep([row({}), row({ id: 'y' })]);
+    expect(roll.consumed).toBe(2);
+    expect(roll.failures).toHaveLength(0);
+  });
+
+  it('fails on an unexplained unconsumed field', () => {
+    const roll = rollupSweep([row({ id: 'dead', verdict: 'write-only' })]);
+    expect(roll.failures).toHaveLength(1);
+    expect(roll.failures[0].id).toBe('dead');
+  });
+
+  /**
+   * A filed, owned gap is REPORTED, never re-failed — re-failing the build for a
+   * known-open bug is how a gate becomes noise the fleet routes around, which is
+   * what nearly killed lint:no-bespoke-state-read (WI-6464).
+   */
+  it('reports a knownUnbuilt gap without failing the build', () => {
+    const roll = rollupSweep([row({ id: 'ordered', verdict: 'write-only', knownUnbuilt: 'WI-6473' })]);
+    expect(roll.failures).toHaveLength(0);
+    expect(roll.knownUnbuilt).toBe(1);
+  });
+
+  it('surfaces a stale row separately from a missing consumer', () => {
+    const roll = rollupSweep([row({ id: 'gone', verdict: 'not-declared' })]);
+    expect(roll.stale).toHaveLength(1);
+    expect(roll.failures).toHaveLength(0);
+  });
+});
+
+describe('the census rows themselves', () => {
+  it('gives every target a stated consequence, so no field is watched by nobody', () => {
+    for (const t of [...DECLARED_FIELDS, ...DECLARED_COLUMNS]) {
+      expect(t.why, `${t.id} must say what breaks`).toBeTruthy();
+      expect((t.why as string).length).toBeGreaterThan(40);
+    }
+  });
+
+  it('scopes every column to the table that owns it', () => {
+    for (const c of DECLARED_COLUMNS) {
+      expect(c.table, `${c.id} must name its table`).toBeTruthy();
+      expect(c.id).toBe(`${c.table}.${c.name}`);
+      expect(c.migration).toMatch(/^\d{3}-.*\.sql$/);
+    }
+  });
+
+  it('covers all three migrations this plane shipped', () => {
+    const migs = new Set(DECLARED_COLUMNS.map((c: { migration: string }) => c.migration.slice(0, 3)));
+    expect(migs).toEqual(new Set(['689', '694', '697']));
+  });
+});
