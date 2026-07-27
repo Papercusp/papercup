@@ -177,27 +177,48 @@ export function isValidTaskId(taskId: string): boolean {
   return /^[0-9a-z]{4,64}$/.test(taskId);
 }
 
-/** `pc-<taskId>.scope`. Throws on an invalid id rather than emitting a unit name
- *  systemd will reject at spawn time (a launch-time failure is far harder to read
- *  than a call-time one). */
-export function scopeUnitForTask(taskId: string): string {
+/** Separates the machine-readable task id from the human-readable label inside a
+ *  scope unit name. `--` because a single `-` is legal inside a label. */
+export const TASK_SCOPE_LABEL_SEP = '--';
+
+/**
+ * `pc-<taskId>.scope`, or `pc-<taskId>--<label>.scope` when a label is supplied.
+ *
+ * The label exists because `systemctl --user list-units` is how people have always
+ * found a running fleet member, and replacing a descriptive unit name with an
+ * opaque id would take that away to buy nothing — the id is only meaningful to the
+ * reconciler. Carrying both keeps the exact ledger join AND stays greppable, so no
+ * existing habit breaks when a seam is enrolled.
+ *
+ * Throws on an invalid id rather than emitting a unit name systemd will reject at
+ * spawn time (a launch-time failure is far harder to read than a call-time one).
+ */
+export function scopeUnitForTask(taskId: string, label?: string): string {
   if (!isValidTaskId(taskId)) {
     throw new Error(
       `task-manager: invalid taskId ${JSON.stringify(taskId)} — must match /^[0-9a-z]{4,64}$/ to be a legal systemd unit name`,
     );
   }
-  return `${TASK_SCOPE_PREFIX}${taskId}.scope`;
+  const safe = (label ?? '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return safe
+    ? `${TASK_SCOPE_PREFIX}${taskId}${TASK_SCOPE_LABEL_SEP}${safe}.scope`
+    : `${TASK_SCOPE_PREFIX}${taskId}.scope`;
 }
 
 /**
- * The exact inverse. Returns null for anything that is not ours — which is how
- * the reconciler tells "a scope we launched" from "some other transient scope on
- * this user manager", without a lookup.
+ * The exact inverse — label and all. Returns null for anything that is not ours,
+ * which is how the reconciler tells "a scope we launched" from "some other
+ * transient scope on this user manager", without a lookup.
  */
 export function taskIdFromScopeUnit(unit: string): string | null {
   const trimmed = unit.trim();
   if (!trimmed.startsWith(TASK_SCOPE_PREFIX) || !trimmed.endsWith('.scope')) return null;
-  const id = trimmed.slice(TASK_SCOPE_PREFIX.length, -'.scope'.length);
+  const body = trimmed.slice(TASK_SCOPE_PREFIX.length, -'.scope'.length);
+  const sep = body.indexOf(TASK_SCOPE_LABEL_SEP);
+  const id = sep >= 0 ? body.slice(0, sep) : body;
   return isValidTaskId(id) ? id : null;
 }
 

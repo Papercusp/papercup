@@ -38,13 +38,32 @@ export type { Watermark };
  *     cursor at all and so counted the whole log
  *     (unread-count-truthfulness-2026-07-27 P-002 / D-004).
  *
- * Why a fallback is needed at all: `messages_since_ts` is persisted only at
- * `onTurnEnd`, which is ATTACHED-ONLY, so a detached/headless session keeps
- * its initial `''` forever — which reads as "never read anything", i.e. count
- * from log epoch. `messages_shown_ts` (advanced deterministically by
- * `coord:inbox` at injection) and the `tool_invocations` read record are the
- * signals that survive that, so they are what an empty settle cursor falls
- * back to.
+ * Why a fallback is needed at all: an empty `messages_since_ts` reads as "never
+ * read anything", i.e. count from log epoch — the 19k unread badge. It used to
+ * be empty on almost every row because the cursor had exactly ONE writer
+ * (`coord:watermark-set`, called only by the OMP hook's `onTurnEnd`), so no
+ * Claude/Codex session ever wrote it at all. NOTE this is a CLIENT-COVERAGE
+ * gap, not the attached-vs-detached one an earlier version of this comment
+ * described: `onTurnEnd`'s "detached" means the OPERATOR is unreachable, which
+ * is a different (and much rarer) condition than "a headless session".
+ * `messages_shown_ts` (advanced deterministically by `coord:inbox` at
+ * injection) and the `tool_invocations` read record are the signals that
+ * survive that, so they are what an empty settle cursor falls back to.
+ *
+ * The write side is now fixed at its source: `messages_since_ts` SETTLES at the
+ * cross-client turn-end seam `journal:record-turn`
+ * (`turn-end-tracking.ts#settledMessagesCursor`, unread-count-truthfulness
+ * P-008 / D-008), so every client advances it, not just OMP.
+ *
+ * This fallback is nonetheless PERMANENT, not a bridge awaiting that fix
+ * (D-011). The settle is FORWARD-ONLY — it fires at a clean turn end, so it can
+ * never reach an agent that has stopped taking turns, and thousands of existing
+ * rows carry a `shown_ts` with no `since_ts` that only this fallback resolves
+ * (D-009 declined to backfill them precisely because it already does). It is
+ * also the recurrence guard for the bug class: the settle still depends on the
+ * seam FIRING, so a killed session or a future transport that never reaches it
+ * lands back here — and this fallback is what makes that degrade quietly
+ * instead of counting from epoch. Do not remove it.
  */
 export function pickUnreadCursor(
   wmTs: string | null | undefined,

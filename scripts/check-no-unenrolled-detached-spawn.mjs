@@ -41,7 +41,14 @@ const ROOT = new URL('..', import.meta.url).pathname;
  */
 export const ALLOWLIST = new Map([
   // ── one-shot host/dev plumbing, not fleet work ───────────────────────────
-  ['packages/operator-core/lib/console-spawn.ts', 'opens a desktop TERMINAL for a human; the window, not the process, is the unit of control'],
+  // NOTE: this file serves TWO shapes and only ONE of them is exempt. The HEADLESS
+  // path (spawnHeadless) IS enrolled — it has no window, it is the largest agent
+  // subtree on the box, and it is the EI-9748 population. The exemption covers only
+  // spawnConsole, where a human's terminal WINDOW is the unit of control. Treating
+  // the whole file as exempt was the original mistake and left 80 live fleet
+  // members invisible; the import of task-manager/enroll-sync now clears the guard
+  // for the file, so this entry is documentation rather than a live exemption.
+  ['packages/operator-core/lib/console-spawn.ts', 'spawnConsole opens a desktop TERMINAL for a human (window is the unit of control); spawnHeadless IS enrolled'],
   ['packages/operator-core/lib/terminal-spawn.ts', 'same: a human-facing terminal window'],
   ['packages/operator-core/lib/harness-launch.ts', 'harness bring-up, supervised by the harness lifecycle rather than the task ledger'],
   ['packages/operator-core/lib/agent-tools/dev/restart.ts', 'restarts a systemd unit — already supervised by SUPERVISED_PROCESSES + unit-reconciler'],

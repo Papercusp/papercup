@@ -40,8 +40,15 @@ const DEFAULT_DRAIN_SEC = 60;
 // COMMIT" loop from scratch (WI-1546), db:migrate now applies a hard
 // lock_timeout (fail FAST instead of hanging indefinitely — no lock_timeout
 // was set before this fix) and retries with backoff automatically, but ONLY
-// for the lock-timeout failure class; any other psql error (syntax,
-// constraint, …) fails immediately, unretried.
+// for the retryable transaction-contention failure classes — lock timeout,
+// deadlock, and serialization failure (EI-18747087108453188: a deadlock is
+// if anything the MORE retryable of the two, since Postgres has already
+// broken the cycle by killing one side of it, and it is also the MORE
+// LIKELY failure here — a migration touching harness_shared.work_items also
+// touches its two dependent views, and a reader locking view-then-base
+// against `ALTER TABLE …; CREATE OR REPLACE VIEW …` locking base-then-view
+// is a guaranteed lock-order inversion against ordinary fleet read traffic);
+// any other psql error (syntax, constraint, …) fails immediately, unretried.
 const MIGRATION_LOCK_TIMEOUT_SQL = '10s';
 const LOCK_RETRY_MAX_ATTEMPTS = 5;
 const LOCK_RETRY_BASE_DELAY_MS = 2000;
@@ -195,9 +202,11 @@ async function withConnectionRetry<T>(
 
 type SpawnResult = SpawnSyncReturns<string>;
 
-/** Run the migration script via psql, retrying ONLY on a lock-timeout cancel,
- *  up to `maxAttempts`, with {@link lockRetryBackoffMs} backoff between
- *  attempts. `spawn` is injectable for tests. */
+/** Run the migration script via psql, retrying ONLY on a retryable
+ *  transaction-contention failure ({@link isRetryableLockFailure} — lock
+ *  timeout, deadlock, or serialization failure), up to `maxAttempts`, with
+ *  {@link lockRetryBackoffMs} backoff between attempts. `spawn` is injectable
+ *  for tests. */
 async function runMigrationWithLockRetry(
   url: string,
   script: string,
@@ -468,7 +477,11 @@ export default defineTool({
             exit_code: r.status,
             stderr: (r.stderr ?? '').slice(-2000),
             attempts,
-            lock_timeout_retries_exhausted: attempts >= LOCK_RETRY_MAX_ATTEMPTS && isLockTimeoutFailure(r.stderr ?? ''),
+            // EI-18747087108453188: was isLockTimeoutFailure-only, so a deadlock
+            // or serialization-failure exhaustion (both now retried above)
+            // silently reported false here. Widened to match the same
+            // predicate the retry loop itself uses.
+            lock_timeout_retries_exhausted: attempts >= LOCK_RETRY_MAX_ATTEMPTS && isRetryableLockFailure(r.stderr ?? ''),
           });
         }
         // Record only on a successful apply (first writer wins). This is the

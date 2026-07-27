@@ -69,6 +69,9 @@ vi.mock('../locks/resource-lock-guard', () => ({
 
 import migrateTool, {
   isLockTimeoutFailure,
+  isDeadlockFailure,
+  isSerializationFailure,
+  isRetryableLockFailure,
   lockRetryBackoffMs,
   isTransientConnectionFailure,
   connectionRetryBackoffMs,
@@ -264,6 +267,61 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
   it('exhausts retries after 5 repeated lock-timeout cancels and reports lock_timeout_retries_exhausted', async () => {
     vi.useFakeTimers();
     h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: LOCK_TIMEOUT_STDERR });
+    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.advanceTimersByTimeAsync(8000);
+    await vi.advanceTimersByTimeAsync(16000);
+    const out = parse(await promise);
+    expect(out.ok).toBe(false);
+    expect(out.attempts).toBe(5);
+    expect(out.lock_timeout_retries_exhausted).toBe(true);
+    expect(h.spawnSync).toHaveBeenCalledTimes(5);
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
+  // EI-18747087108453188: a deadlock is if anything MORE retryable than a lock
+  // timeout (PG has already broken the cycle by killing one side of it), and
+  // it is the MORE LIKELY failure here — but the retry loop originally only
+  // recognized isLockTimeoutFailure, so a deadlocked migration gave up after
+  // one attempt.
+  const DEADLOCK_STDERR =
+    'ERROR:  deadlock detected\n' +
+    'DETAIL:  Process 181887 waits for AccessExclusiveLock on relation 16306610; blocked by process 3301494.\n' +
+    '         Process 3301494 waits for AccessShareLock on relation 35727; blocked by process 181887.';
+  const SERIALIZATION_FAILURE_STDERR = 'ERROR:  could not serialize access due to concurrent update';
+
+  it('retries a deadlock cancel with backoff and succeeds once the cycle clears', async () => {
+    vi.useFakeTimers();
+    h.spawnSync
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: DEADLOCK_STDERR })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' });
+    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    await vi.advanceTimersByTimeAsync(2000); // backoff after attempt 1
+    const out = parse(await promise);
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+    expect(out.attempts).toBe(2);
+    expect(h.spawnSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a serialization-failure cancel with backoff and succeeds once contention clears', async () => {
+    vi.useFakeTimers();
+    h.spawnSync
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: SERIALIZATION_FAILURE_STDERR })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' });
+    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    await vi.advanceTimersByTimeAsync(2000);
+    const out = parse(await promise);
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+    expect(out.attempts).toBe(2);
+    expect(h.spawnSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('exhausts retries after 5 repeated deadlock cancels and still reports lock_timeout_retries_exhausted (widened predicate)', async () => {
+    vi.useFakeTimers();
+    h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: DEADLOCK_STDERR });
     const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
     await vi.advanceTimersByTimeAsync(2000);
     await vi.advanceTimersByTimeAsync(4000);

@@ -4,14 +4,16 @@ description: fs.mkdirSync('/proc/anything', { recursive:true }) on node 25.9 ret
 discovered: 2026-07-11
 tags: [testing, vitest, node, mkdirSync, proc, wedge, ci-gate, fail-soft, runbook]
 status: active
-documents:
-  - the failure signature (vitest fork worker pinned ~90% CPU, R-state, no children, no output)
-  - the gdb one-liner that convicts it and the bounded node repro
-  - the safe ENOTDIR replacement pattern for "unwritable dir" fail-soft tests
 normative: true
 governs:
   - choosing an unwritable dir in a test
 ---
+
+## What this page covers
+
+- the failure signature (vitest fork worker pinned ~90% CPU, R-state, no children, no output)
+- the gdb one-liner that convicts it and the bounded node repro
+- the safe ENOTDIR replacement pattern for "unwritable dir" fail-soft tests
 
 ## The trap
 

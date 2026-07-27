@@ -8,10 +8,17 @@ import {
 } from './subject-ref';
 
 describe('parseSubjectRef', () => {
-  it('parses feature ids (F-/WI-, case-insensitive, upcased)', () => {
+  it('parses feature ids (F-/WI-/EI-, case-insensitive, upcased)', () => {
     expect(parseSubjectRef('F-001')).toEqual({ kind: 'feature', ref: 'F-001' });
     expect(parseSubjectRef('wi-12')).toEqual({ kind: 'feature', ref: 'WI-12' });
     expect(parseSubjectRef('  F-7  ')).toEqual({ kind: 'feature', ref: 'F-7' });
+    // EI- is the improvement/issue id family (improvements:capture mints them) and
+    // shares one id space with F-/WI-. It was missing from FEATURE_RE, so an EI-
+    // citation fell through to the path branch and got filesystem-checked as a file —
+    // reporting a valid work-item reference as a stale citation, which was 3 of the 34
+    // offenders on the red lint:insight-citations leg (EI-18820414923640246).
+    expect(parseSubjectRef('EI-13317')).toEqual({ kind: 'feature', ref: 'EI-13317' });
+    expect(parseSubjectRef('ei-18693907749585513')).toEqual({ kind: 'feature', ref: 'EI-18693907749585513' });
   });
 
   it('parses symbol refs (file :: name, whitespace optional)', () => {

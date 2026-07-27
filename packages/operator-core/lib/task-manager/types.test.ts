@@ -59,6 +59,31 @@ describe('task id + scope unit naming', () => {
     const unit = scopeUnitForTask('abc123');
     expect(taskIdFromScopeUnit(`  ${unit}\n`)).toBe('abc123');
   });
+
+  it('carries a human LABEL alongside the id, and still round-trips', () => {
+    // `systemctl --user list-units | grep <something>` is how people have always
+    // found a running fleet member. Enrolling a seam must not take that away —
+    // the id is only meaningful to the reconciler, the label is for humans.
+    const unit = scopeUnitForTask('abc123', 'bug-drain-member-3');
+    expect(unit).toBe('pc-abc123--bug-drain-member-3.scope');
+    expect(taskIdFromScopeUnit(unit)).toBe('abc123');
+  });
+
+  it('sanitizes and bounds a hostile label without corrupting the id', () => {
+    const unit = scopeUnitForTask('abc123', 'You are a member of the /bug drain/ fleet!!'.repeat(6));
+    expect(taskIdFromScopeUnit(unit)).toBe('abc123');
+    expect(unit).toMatch(/^pc-abc123--[A-Za-z0-9._-]+\.scope$/);
+    expect(unit.length).toBeLessThan(90);
+  });
+
+  it('omits the separator entirely when the label sanitizes to nothing', () => {
+    expect(scopeUnitForTask('abc123', '///')).toBe('pc-abc123.scope');
+  });
+
+  it('still rejects a labelled scope whose ID half is not ours', () => {
+    expect(taskIdFromScopeUnit('pc-BAD--label.scope')).toBeNull();
+    expect(taskIdFromScopeUnit('pc---label.scope')).toBeNull();
+  });
 });
 
 describe('slice naming', () => {

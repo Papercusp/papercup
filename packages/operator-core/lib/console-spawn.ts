@@ -48,6 +48,13 @@ import type { ConsoleEnvelope } from './console-launcher';
 import type { ColorScheme } from './console-color-schemes';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
+// task-manager P-009 follow-up: the HEADLESS path enrols (see
+// buildHeadlessSpawnCommand's doc for why this file's windowed path does not).
+import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
+import { scopeUnitForTask, sliceForClass } from './task-manager/types';
+import { warmScopeProbe } from './task-manager/managed-spawn';
+
+warmScopeProbe();
 
 // ─── Linux terminal selection ────────────────────────────────────────
 
@@ -1281,6 +1288,12 @@ export interface SpawnHeadlessOpts {
    * exists for). Production callers omit it.
    */
   spawnCommandProbes?: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean };
+  /** task-manager P-009 follow-up — provenance for the ledger row. Optional: a
+   *  caller that does not know says so (the row records `console-spawn:headless`)
+   *  rather than guessing, because a wrong attribution in a ledger built FOR
+   *  attribution is worse than an honest gap. */
+  launchedBy?: string;
+  fleetSlug?: string | null;
 }
 
 // EI-9748: headless members are a DETACHED + unref'd child of whichever operator
@@ -1366,13 +1379,33 @@ export function buildHeadlessSpawnCommand(
   oneliner: string,
   label: string,
   probes: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean } = {},
+  /**
+   * task-manager-no-escape-2026-07-27 P-009 (follow-up): when the caller has
+   * enrolled this member in the task ledger, it passes the scope unit + slice here
+   * so the member lands inside `papercusp.slice` with a name the reconciler can
+   * join on.
+   *
+   * This path was originally ALLOWLISTED out of the task manager on the reasoning
+   * that console-spawn "opens a desktop TERMINAL for a human; the window is the
+   * unit of control". That is true for spawnConsole and FLATLY WRONG here: a
+   * headless member has no window at all, it is the largest agent subtree on the
+   * box, and it is the exact population EI-9748 is about. One file served two
+   * shapes and the allowlist treated it as one.
+   *
+   * Note the scope was ALREADY being created (EI-9748 Route A) — what was missing
+   * was only the slice and the name. So this is not new confinement machinery on
+   * a critical path; it is the same `systemd-run` call, addressed.
+   */
+  taskScope?: { unit: string; slice: string } | null,
 ): { bin: string; args: string[] } {
   const platform = probes.platform ?? process.platform;
   const hasSystemdRun = probes.hasSystemdRun ?? (() => isOnPath('systemd-run'));
   if (platform === 'linux' && hasSystemdRun()) {
     const safeLabel =
       label.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'member';
-    const unitName = `papercup-headless-${safeLabel}-${process.pid}-${Date.now()}`;
+    // Un-enrolled fallback keeps the historical name so nothing that greps for
+    // `papercup-headless-` breaks when the ledger is unavailable.
+    const unitName = taskScope?.unit ?? `papercup-headless-${safeLabel}-${process.pid}-${Date.now()}`;
     return {
       bin: 'systemd-run',
       args: [
@@ -1381,6 +1414,7 @@ export function buildHeadlessSpawnCommand(
         '--collect',
         '--quiet',
         `--unit=${unitName}`,
+        ...(taskScope ? [`--slice=${taskScope.slice}`] : []),
         '--',
         'bash',
         '-lc',
@@ -1434,7 +1468,15 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
     // survives a `systemctl --user restart papercup-{dev,staging}-api.service`
     // instead of being reaped by KillMode=control-group. See
     // buildHeadlessSpawnCommand's doc comment for the full rationale.
-    const { bin, args } = buildHeadlessSpawnCommand(oneliner, label, opts.spawnCommandProbes);
+    // task-manager P-009 follow-up: enrol BEFORE the fork. The scope was already
+    // being created for EI-9748; this only gives it our slice + a joinable name,
+    // and mints the ledger row that makes the member visible in /admin/tasks with
+    // its fleet, its log, and its live cost.
+    const enrolment = beginSyncEnrolment({ class: 'agent-session' });
+    const taskScope = enrolment.confined
+      ? { unit: scopeUnitForTask(enrolment.taskId, label), slice: sliceForClass('agent-session') }
+      : null;
+    const { bin, args } = buildHeadlessSpawnCommand(oneliner, label, opts.spawnCommandProbes, taskScope);
     const child = spawn(bin, args, {
       detached: true,
       stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
@@ -1442,6 +1484,20 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       env: { ...process.env, ...envelope.env },
     });
     child.unref();
+    completeSyncEnrolment(
+      { ...enrolment, scopeUnit: taskScope?.unit ?? null },
+      {
+        class: 'agent-session',
+        title: `headless member: ${label}`,
+        argv: [bin, ...args.slice(0, 6)],
+        cwd: envelope.cwd,
+        launchedBy: opts.launchedBy ?? 'console-spawn:headless',
+        fleetSlug: opts.fleetSlug ?? null,
+        logPath,
+        detail: { headless: true, label },
+      },
+      child.pid ?? null,
+    );
     if (logFd != null) {
       closeSync(logFd); // the child holds its own dup of the fd
       logFd = null;

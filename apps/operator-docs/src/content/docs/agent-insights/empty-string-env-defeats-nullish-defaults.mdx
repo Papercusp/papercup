@@ -4,10 +4,10 @@ description: "A compose line like `SCOUT_CONVERSATION_BUDGET_USD: ${SCOUT_CONVER
 discovered: 2026-07-17
 tags: [env, docker-compose, nodejs, nullish-coalescing, config-parsing, scout, budget-gate, prod-outage, restart, debugging]
 status: active
-documents:
-  - apps/scout-service/src/scout/budget.ts
-  - apps/scout-service/src/scout/scout.service.ts
-  - docker-compose.prod.yml
+# No `documents:` — the code this documented (apps/scout-service, docker-compose.prod.yml)
+# has since been deleted from the tree. The LESSON is general and still worth keeping, so
+# the doc stays; the citations were dropped rather than repointed because there is nothing
+# left to point at (EI-18820414923640246).
 ---
 
 # Empty-string env vars defeat `??` defaults

@@ -32,12 +32,24 @@ export type SubjectRef =
   | { kind: 'symbol'; file: string; name: string }
   | { kind: 'feature'; ref: string };
 
-/** Matches a feature/work-item id: F-001, WI-12 (case-insensitive on the prefix). */
-const FEATURE_RE = /^(?:F|WI)-\d+$/i;
+/**
+ * Matches a feature/work-item id: F-001, WI-12, EI-18693907749585513
+ * (case-insensitive on the prefix).
+ *
+ * `EI-` is the improvement/issue id family (`improvements:capture` mints them) and is
+ * every bit as much a work-item id as `F-`/`WI-` — the three share one id space. It was
+ * missing here, so an `EI-` citation fell through to the path branch and got
+ * filesystem-checked as if it were a file, reporting a perfectly valid work-item
+ * reference as a "stale citation — path does not exist on disk"
+ * (EI-18820414923640246: 3 of the 34 offenders on the red lint:insight-citations leg
+ * were exactly this, in capability-edit-dollar-substitution-corruption.mdx and
+ * swarm-link-severed-restart-the-wedged-side.mdx).
+ */
+const FEATURE_RE = /^(?:F|WI|EI)-\d+$/i;
 
 /**
  * Parse one subject-ref token from its compact string form:
- *   - `F-001` / `WI-12`           → feature
+ *   - `F-001` / `WI-12` / `EI-42` → feature
  *   - `src/foo.ts :: myFn`        → symbol (whitespace around `::` optional)
  *   - `packages/x/**` / `a/b.ts`  → path glob
  *

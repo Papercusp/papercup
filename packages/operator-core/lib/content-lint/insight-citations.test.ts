@@ -42,6 +42,33 @@ describe('findStaleInsightCitations', () => {
     expect(stale).toEqual([{ path: 'packages/operator-core/lib/moved-away.ts', kind: 'path' }]);
   });
 
+  // EI-18820414923640246 — both of these were PERMANENT reds: input that could never
+  // pass, on a leg whose whole value is that a red means something. A guard that reds on
+  // unverifiable-by-construction input teaches the fleet to stop reading it.
+  it('IGNORES a work-item id citation (F-/WI-/EI-) — it names a work item, not a path', () => {
+    const body = withFrontmatter('  - "EI-13317"\n  - "WI-1576"\n  - "F-3"');
+    expect(findStaleInsightCitations(body, repoRoot)).toEqual([]);
+  });
+
+  it('IGNORES an ABSOLUTE path — the contract is repo-relative, so it is not ours to verify', () => {
+    // join(repoRoot, '/etc/x') silently yields <repoRoot>/etc/x, so these were checked at
+    // a path nobody ever meant to exist. Docs legitimately cite files outside the tree
+    // (an installed global CLI, a systemd drop-in).
+    const body = withFrontmatter(
+      '  - /etc/systemd/resolved.conf.d/papercusp-fallback-dns.conf\n' +
+      '  - /home/linuxbrew/.linuxbrew/lib/node_modules/tauri-agent-tools/dist/commands/check.js',
+    );
+    expect(findStaleInsightCitations(body, repoRoot)).toEqual([]);
+  });
+
+  it('still FLAGS a repo-relative stale path alongside ignored refs (the guard is not weakened)', () => {
+    // The negative control: making the two cases above pass must not make everything pass.
+    const body = withFrontmatter('  - "EI-13317"\n  - /etc/some.conf\n  - packages/operator-core/lib/moved-away.ts');
+    expect(findStaleInsightCitations(body, repoRoot)).toEqual([
+      { path: 'packages/operator-core/lib/moved-away.ts', kind: 'path' },
+    ]);
+  });
+
   it('checks the FILE part of a `path :: symbol` citation, ignoring the symbol name', () => {
     const goodSymbol = withFrontmatter('  - packages/operator-core/lib/real-file.ts :: someExport');
     expect(findStaleInsightCitations(goodSymbol, repoRoot)).toEqual([]);

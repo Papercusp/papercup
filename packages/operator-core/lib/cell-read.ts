@@ -164,7 +164,15 @@ export function formatCellHoist(h: CellHoist): string | null {
   }
   if (h.value === null || h.value === undefined) return null;
   if (Array.isArray(h.value) && h.value.length === 0) return null;
-  return `⚠ "${h.key}" is not empty — part of this answer is UNKNOWN rather than measured: ${JSON.stringify(h.value)}. Do not read the headline as a complete verdict without checking it.`;
+  /**
+   * ⚠ "QUALIFIES", NOT "IS UNKNOWN". A loud hoist carries the REASON the headline is
+   * not a positive verdict, and that reason is itself MEASURED — `goalUnknown:
+   * "nothing-held"` is a fact about an agent that holds nothing, not a failure to
+   * look. Calling it "unknown rather than measured" (this line's first draft, caught
+   * on the live read) would be confidently wrong about the most ordinary case there
+   * is — the same misdiagnosis the flattened `goalRef` headline was chosen to avoid.
+   */
+  return `⚠ "${h.key}" is not empty — this answer carries a QUALIFIER you should read before acting on the headline: ${JSON.stringify(h.value)}.`;
 }
 
 /**

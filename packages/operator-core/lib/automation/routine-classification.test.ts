@@ -15,6 +15,8 @@ import {
   SYSTEM_FAMILY_ORDER,
   TARGET_ROLE_SPEND,
   isLoopRoutine,
+  armedStateLabel,
+  routineArmedState,
   routineControl,
   routineFamily,
   routineKind,
@@ -423,5 +425,41 @@ describe('routineControl — why a row has (or has not) a switch', () => {
       expect(reason, `${source}/${category}`).not.toBe('unknown');
       expect(why.trim(), `${source}/${category}`).not.toBe('');
     }
+  });
+});
+
+/**
+ * routineArmedState — WI-6447, the tri-state the pane used to destroy.
+ *
+ * The bug these assertions pin: `catalog.ts` collapsed the field with
+ * `const active = row.armed !== false`, which maps the UNKNOWN case (`null` — the
+ * 7 external-process rows whose live fire-state needs P-014 federation) onto
+ * `true`. The pane then ASSERTED those were running when nothing had checked.
+ * Written so a future "simplify this back to a boolean" has to delete an explicit
+ * statement that unknown must not read as on.
+ */
+describe('routineArmedState — unknown is a state, not a default', () => {
+  it('maps the two VERIFIED booleans to their own states', () => {
+    expect(routineArmedState(true)).toBe('armed');
+    expect(routineArmedState(false)).toBe('disarmed');
+  });
+
+  it('maps null to unknown rather than to armed', () => {
+    // The load-bearing case: `armed !== false` returned true here.
+    expect(routineArmedState(null)).toBe('unknown');
+  });
+
+  it('degrades an absent field to unknown, not to the flattering state', () => {
+    // Total over the input type: a future inventory source that stops emitting
+    // `armed` lands on the honest state without anyone remembering to look.
+    expect(routineArmedState(undefined)).toBe('unknown');
+  });
+
+  it('labels every state with copy that reads as an answer, not a field name', () => {
+    expect(armedStateLabel('armed')).toBe('armed');
+    // "not armed" is the distinction the owner asked to SEE (2026-07-27): a row
+    // showing only "every 1m" reads as a schedule that IS running every minute.
+    expect(armedStateLabel('disarmed')).toBe('not armed');
+    expect(armedStateLabel('unknown')).toBe('arm state unknown');
   });
 });

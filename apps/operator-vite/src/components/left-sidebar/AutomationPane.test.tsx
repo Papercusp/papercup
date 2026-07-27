@@ -42,7 +42,7 @@ vi.mock('@papercusp/sync', () => ({
   }),
 }));
 
-import AutomationPane, { armBudgetLabel, armingLaneValue, scheduleLaneValue } from './AutomationPane';
+import AutomationPane, { armBudgetLabel, armingLaneValue, rowMeta, scheduleLaneValue } from './AutomationPane';
 
 type Routine = {
   name: string;
@@ -57,6 +57,8 @@ type Routine = {
   family: string;
   /** `active` alone cannot say whether a row will run again — see routine-classification. */
   liveness: 'running' | 'stalled' | 'dormant';
+  /** WI-6447: the tri-state `active` destroys — `unknown` is a real answer here. */
+  armedState: 'armed' | 'disarmed' | 'unknown';
   control: 'routine' | 'flag' | 'none';
   /** Where the switch is, or WHY there is none — rendered as the padlock tooltip. */
   controlWhy: string;
@@ -89,6 +91,7 @@ const routine = (over: Partial<Routine> = {}): Routine => {
     kind: 'scheduled',
     family: 'learning',
     liveness: active ? 'running' : 'dormant',
+    armedState: active ? 'armed' : 'disarmed',
     control: 'routine',
     controlWhy: 'Pause or resume it right here.',
     flagKey: null,
@@ -542,6 +545,56 @@ describe('AutomationPane — non-routine schedules', () => {
     expect(screen.getByTestId('automation-nocontrol-doc-freshness-sweep')).toBeTruthy();
     // The old generic copy must be gone wherever the reason is rendered.
     expect(document.body.textContent).not.toMatch(/paused from its own subsystem/);
+  });
+
+  /**
+   * WI-6447 — owner ask 2026-07-27: *"can you make whether its enabled or not
+   * visible in the display?"*
+   *
+   * The pane rendered `r.cadence` alone, so an in-process sweep reporting
+   * `armed: false` showed "every 1m" and read exactly like one that fires every
+   * minute — the owner was looking at a list of sweeps whose state they could
+   * neither see nor turn off. The `unknown` case is the worse half: those rows
+   * carry no verified state at all, and the old `armed !== false` funnel made
+   * them read as on.
+   */
+  it('says out loud that a sweep is NOT armed instead of showing a bare cadence', () => {
+    const meta = rowMeta({ ...uncontrollable, armedState: 'disarmed' } as never);
+    expect(meta).toContain('every 6h');
+    expect(meta).toContain('not armed');
+  });
+
+  it('renders the unverified rows as unknown, never as armed', () => {
+    // The 7 external-process rows: live fire-state needs P-014 federation, so
+    // nothing has checked them. Asserting "running" there is the bug.
+    const unknown = { ...uncontrollable, source: 'external-process', armedState: 'unknown' as const };
+    renderPane({ routines: [unknown] });
+    const row = screen.getByTestId('automation-row-doc-freshness-sweep');
+    expect(row.textContent).toMatch(/arm state unknown/);
+    expect(row.textContent).not.toMatch(/·\s*armed/);
+  });
+
+  it('leaves a plainly-armed row unsuffixed — the unsurprising case adds no noise', () => {
+    // Suffixing every row would bury the two states that CHANGE what the owner
+    // should believe; a running schedule showing its cadence already says it.
+    expect(rowMeta({ ...uncontrollable, armedState: 'armed' } as never)).toBe('every 6h');
+  });
+
+  it('does not tell a stalled row it is "not armed" — it already explains itself', () => {
+    // "stalled · owner last active 2h ago · not armed" is two ways of saying the
+    // same thing, and the stall reason is the one that helps.
+    const stalled = { ...uncontrollable, liveness: 'stalled' as const, armedState: 'disarmed' as const };
+    expect(rowMeta(stalled as never)).not.toMatch(/not armed/);
+  });
+
+  it('says it on a TRIGGERED row too — those have no cadence to read state from', () => {
+    const triggered = {
+      ...uncontrollable,
+      kind: 'triggered' as const,
+      triggerLabel: 'after each git-sync',
+      armedState: 'disarmed' as const,
+    };
+    expect(rowMeta(triggered as never)).toBe('after each git-sync · not armed');
   });
 
   it('never renders an undefined reason when a row omits one', () => {

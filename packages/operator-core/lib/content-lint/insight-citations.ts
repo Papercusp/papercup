@@ -57,6 +57,13 @@ export function findStaleInsightCitations(body: string, repoRoot: string): Stale
     for (const p of paths) {
       const path = p.trim();
       if (!path || GLOB_CHARS.test(path)) continue; // a glob matches a set — not a single-file existence check
+      // An ABSOLUTE path is not a repo-relative citation, and this detector's whole
+      // contract is repo-relative (see the doc comment above). `join(repoRoot, '/etc/x')`
+      // silently yields `<repoRoot>/etc/x`, so such a ref was checked at a path that was
+      // never meant to exist and could NEVER pass — a permanent red the fleet learns to
+      // ignore. Docs legitimately cite files outside the tree (an installed global CLI, a
+      // systemd drop-in); they are simply not ours to verify from here.
+      if (path.startsWith('/')) continue;
       if (seen.has(path)) continue;
       seen.add(path);
       if (!existsSync(join(repoRoot, path))) {
