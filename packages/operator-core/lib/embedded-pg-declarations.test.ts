@@ -28,7 +28,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -40,26 +40,43 @@ const REGEN = 'npm run gen:types --prefix libs/papercusp/packages/embedded-postg
 
 describe('@papercusp/embedded-postgres-server generated declarations', () => {
   it(`regenerate identically from source — run \`${REGEN}\` if this fails`, () => {
-    const out = mkdtempSync(join(tmpdir(), 'epg-dts-drift-'));
+    // Generate from a HERMETIC COPY of the JS sources, never in place. Two
+    // reasons, both load-bearing:
+    //
+    //  - Correctness. With the committed `.d.ts` present, `index.js`'s
+    //    `export … from './migration-runner.js'` resolves to the DECLARATION
+    //    instead of the JS. The check would then be validating the committed
+    //    files partly against themselves, and tsc additionally refuses to emit
+    //    over its own resolved input (TS5055). Copying only `*.js` reproduces
+    //    the clean-slate state `gen:types` creates with its `rm`.
+    //  - Safety. This repo has ONE working tree shared by the whole fleet, so a
+    //    test must never write into the package directory; a peer could be
+    //    mid-edit in it.
+    const work = mkdtempSync(join(tmpdir(), 'epg-dts-drift-'));
     try {
-      // Same tsconfig the regen script uses, so the two can never disagree
-      // about flags; only the output directory is redirected.
-      execFileSync('npx', ['tsc', '-p', 'tsconfig.types.json', '--outDir', out], {
-        cwd: PKG_DIR,
+      mkdirSync(join(work, 'src'));
+      for (const name of ['index.js', 'migration-runner.js']) {
+        writeFileSync(join(work, 'src', name), readFileSync(join(PKG_DIR, 'src', name), 'utf8'));
+      }
+      // The real config — so the test and `gen:types` can never disagree about flags.
+      writeFileSync(join(work, 'tsconfig.types.json'), readFileSync(join(PKG_DIR, 'tsconfig.types.json'), 'utf8'));
+
+      execFileSync('npx', ['tsc', '-p', 'tsconfig.types.json'], {
+        cwd: work,
         encoding: 'utf8',
         stdio: 'pipe',
       });
 
       for (const name of DECLARATIONS) {
         const committed = readFileSync(join(PKG_DIR, 'src', name), 'utf8');
-        const fresh = readFileSync(join(out, name), 'utf8');
+        const fresh = readFileSync(join(work, 'src', name), 'utf8');
         expect(
           fresh,
           `${name} is STALE: the committed declaration no longer matches what the source generates. Run \`${REGEN}\`.`,
         ).toBe(committed);
       }
     } finally {
-      rmSync(out, { recursive: true, force: true });
+      rmSync(work, { recursive: true, force: true });
     }
   });
 
