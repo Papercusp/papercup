@@ -2003,6 +2003,7 @@ export async function gitPipelinePosition(
     positions,
     positionsUnknown,
     verdictProvenance,
+    verdictUnknown,
     deployedSha,
     gate,
     gitSyncLastStatus: snap.gitSync.lastStatus,

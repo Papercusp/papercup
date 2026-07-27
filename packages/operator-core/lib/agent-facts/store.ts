@@ -25,6 +25,11 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { InvalidInputError } from '@papercusp/tooldef';
 import { activeWorkspaceId } from '../workspace-registry';
+// P-008 (b): the unknown vocabulary a failed dependency read records. Imported,
+// never re-declared — cell-contract.ts declares itself the canonical home and
+// forbids a local copy, and a second enumeration is precisely how a caller's
+// branch set silently diverges from the contract it thinks it implements.
+import type { CellUnknownCode } from '../cell-contract';
 
 export const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'] as const;
 export type FactScope = (typeof FACT_SCOPES)[number];
@@ -44,6 +49,32 @@ export type FactScope = (typeof FACT_SCOPES)[number];
  */
 export const FACT_CONFIDENCE_LEVELS = ['verified', 'provisional', 'suspected'] as const;
 export type FactConfidence = (typeof FACT_CONFIDENCE_LEVELS)[number];
+
+/**
+ * P-008 (b) / D-019 DEFECT 1 (migration 690) — the claim MODALITY.
+ *
+ * ⚠ THIS IS NOT `scope`, AND THAT IS THE WHOLE POINT. `scope`
+ * (workspace|role|owner|harness|work_item) says WHO a fact is ABOUT. `kind` says
+ * WHAT KIND OF CLAIM it is. D-019 killed the separate assumption ledger P-001
+ * proposed on the grounds that "an assumption IS a fact" — but that only becomes
+ * mechanically true, rather than a convention nobody can query, once the three
+ * modalities are distinguishable:
+ *
+ *   conclusion — a settled finding. Today's default behaviour, stated.
+ *   assumption — provisional; pairs with {@link FactDependency} so it can go
+ *                stale on its own declared terms (D-007/D-019).
+ *   convention — normative ("we do X here"); P-018's target.
+ *
+ * Workspace-scope CORRELATES with conventions but is not identical to them (a
+ * workspace-scoped conclusion is not a convention), so correlation cannot
+ * substitute — which is exactly why D-019 recorded the absence as a DEFECT.
+ *
+ * NULL = not declared, and it is never rewritten to 'conclusion'. Inventing a
+ * modality nobody stated is the same manufactured-certainty failure the nullable
+ * `confidence` column already refuses.
+ */
+export const FACT_KINDS = ['conclusion', 'assumption', 'convention'] as const;
+export type FactKind = (typeof FACT_KINDS)[number];
 
 // EI-18681984560352579 / migration 664 (2026-07-26): raised 500 -> 1200. The
 // old 500-char cap was silently amputating the OPERATIVE clause of facts
@@ -128,6 +159,59 @@ export interface FactSourceProvenance {
   verifiedAt: string;
 }
 
+/**
+ * P-008 (b), migration 690 — ONE declared dependency of a fact on a CELL, with
+ * the anchor that makes "has it changed?" a MECHANICAL question.
+ *
+ * ── WHY A DIGEST AND NOT A VERSION ───────────────────────────────────────────
+ *
+ * D-012's hard constraint is "reuse the existing clock, do not mint a version
+ * counter" — and a cell HAS no counter to reuse. `CellSpec.changeSignal` is
+ * `{ kind:'poll', tool, path }`: a POINTER to a resolver, not a stored value, so
+ * there is no row whose `fed_ts` could serve. The value only exists once
+ * something dispatches the tool. The only honest anchor is therefore the VALUE
+ * ITSELF, digested — and a digest is a better fit than it first looks, because
+ * it answers precisely the question D-007 asks ("did what I relied on change?")
+ * without caring how the underlying store happens to version itself.
+ *
+ * ── WHY `unknown` IS A FIRST-CLASS ALTERNATIVE TO `digest` ───────────────────
+ *
+ * A cell that could not be read AT ASSERT TIME has no digest to record. The
+ * tempting shortcut is to drop the dependency, or store an empty digest; both
+ * launder a non-observation into an observation, and the second is worse — it
+ * would later compare equal to another failed read and report FRESH. So an
+ * unreadable dependency stores its enumerated {@link CellUnknownCode} instead,
+ * and every later verdict on it is `undeterminable`. The fact still records what
+ * it MEANT to rest on, which is the part a reader needs.
+ *
+ * Exactly one of `digest` / `unknown` is set. `observed` is a bounded rendering
+ * kept purely so a human reading the fact can see what the value WAS without
+ * resolving a hash against nothing.
+ */
+export interface FactDependency {
+  /** The cell id this fact rests on, e.g. `pipeline.myChange`. */
+  cell: string;
+  /** ISO timestamp the cell was read at assert time. */
+  observedAt: string;
+  /** Stable digest of the observed value. Absent iff `unknown` is set. */
+  digest?: string;
+  /** Bounded human-readable rendering of the observed value (never compared). */
+  observed?: string;
+  /** The enumerated reason the cell yielded no value at assert time. Absent iff
+   *  `digest` is set. `'absent'` is this layer's own code for "the cell does not
+   *  exist for this reader" — a CellRead status, not a CellUnknownCode. */
+  unknown?: CellUnknownCode | 'absent';
+}
+
+/** P-008 (b) — bound a fact's declared dependency set. A fact rests on a handful
+ *  of cells; a declaration long enough to need more than this is not a
+ *  dependency list, it is a design document in the wrong field. Enforced in code
+ *  rather than by a CHECK so an over-long declaration CLIPS like an over-long
+ *  body instead of failing the write (this table's standing P-007 rule). */
+export const FACT_MAX_DEPENDENCIES = 12;
+/** Bound for {@link FactDependency.observed} — a label, not a payload. */
+export const FACT_DEPENDENCY_OBSERVED_CHARS = 120;
+
 export interface AgentFact {
   scope: FactScope;
   scopeRef: string | null;
@@ -142,6 +226,17 @@ export interface AgentFact {
   /** EI-18681964809855890: evidence-strength; null = unset (legacy/default,
    *  renders unbadged — see {@link renderFactsFold}). */
   confidence: FactConfidence | null;
+  /** P-008 (b) / D-019: the claim MODALITY (see {@link FactKind}); null = not
+   *  declared (every pre-migration-690 row). Distinct from `scope`. */
+  kind: FactKind | null;
+  /** P-008 (b): the CELLS this fact rests on, captured at assert time. Empty
+   *  array when nothing was declared — an assumption without dependencies is
+   *  legal, it simply cannot go stale on its own terms. */
+  dependsOn: FactDependency[];
+  /** P-008 (b) / D-019 DEFECT 2: the optional TYPED assertion P-011 compares,
+   *  e.g. `{ subject: 'cell:gate.greenCheckpoint.verdict', assertion: '…' }`.
+   *  `body` remains the prose a human reads; null when none was filed. */
+  claim: Record<string, unknown> | null;
   createdBy: string;
   updatedAt: string;
   expiresAt: string;
@@ -175,6 +270,20 @@ export interface AssertFactInput {
   /** EI-18681964809855890: evidence-strength (see {@link FactConfidence}).
    *  Omitted/null = unset — legacy shape, unbadged in folds, ordinary TTL. */
   confidence?: FactConfidence | null;
+  /** P-008 (b) / D-019: the claim modality. Omitted/null = not declared. */
+  kind?: FactKind | null;
+  /**
+   * P-008 (b): the fact's declared CELL dependencies, ALREADY RESOLVED to
+   * digests by the caller — same division of labour as `sourceProvenance`,
+   * which the store also persists verbatim. Resolving a cell means dispatching
+   * its resolver tool, and a storage module that reaches into the tool
+   * dispatcher to do that would invert the dependency (and make every fact
+   * write, including the ones inside routines, depend on the whole tool
+   * registry). `captureFactDependencies` in agent-tools/facts owns the capture.
+   */
+  dependsOn?: readonly FactDependency[] | null;
+  /** P-008 (b) / D-019 DEFECT 2: the optional typed assertion P-011 compares. */
+  claim?: Record<string, unknown> | null;
   createdBy: string;
   ttlSec?: number;
   workspaceId?: string;
@@ -299,6 +408,94 @@ export function parseFactSourceProvenance(raw: unknown): FactSourceProvenance | 
     ...(typeof s.label === 'string' && s.label ? { label: s.label } : {}),
     ...(typeof s.error === 'string' && s.error ? { error: s.error } : {}),
   };
+}
+
+/**
+ * P-008 (b): defensive read of the `depends_on` jsonb round-trip. Same contract
+ * and same reasons as {@link parseFactSourceProvenance}: absent / malformed /
+ * wrong-shaped entries are DROPPED rather than thrown on, and both the
+ * already-parsed and raw-JSON-text arrivals are accepted (whether a jsonb column
+ * arrives parsed depends on the postgres.js client's `types` config — the
+ * test-helper client returns text where getOrgPg returns objects, and a parser
+ * that handled only one of those would pass its unit tests and fail in
+ * production).
+ *
+ * ⚠ A malformed ENTRY is dropped; it is never coerced into a readable one. An
+ * entry with neither `digest` nor `unknown` has no anchor at all, so keeping it
+ * would mean reporting a comparison that cannot be made — the exact laundering
+ * the `unknown` branch exists to prevent. PURE.
+ */
+export function parseFactDependencies(raw: unknown): FactDependency[] {
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  const out: FactDependency[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const d = entry as Record<string, unknown>;
+    const cell = typeof d.cell === 'string' ? d.cell.trim() : '';
+    const observedAt = typeof d.observedAt === 'string' ? d.observedAt : '';
+    if (!cell || !observedAt) continue;
+    const digest = typeof d.digest === 'string' && d.digest ? d.digest : undefined;
+    const unknown =
+      typeof d.unknown === 'string' && d.unknown ? (d.unknown as FactDependency['unknown']) : undefined;
+    // Exactly one anchor. Neither ⇒ nothing to compare; both ⇒ contradictory,
+    // and guessing which one to believe is how a wrong verdict gets minted.
+    if ((digest === undefined) === (unknown === undefined)) continue;
+    out.push({
+      cell,
+      observedAt,
+      ...(digest ? { digest } : {}),
+      ...(unknown ? { unknown } : {}),
+      ...(typeof d.observed === 'string' && d.observed
+        ? { observed: d.observed.slice(0, FACT_DEPENDENCY_OBSERVED_CHARS) }
+        : {}),
+    });
+    if (out.length >= FACT_MAX_DEPENDENCIES) break;
+  }
+  return out;
+}
+
+/**
+ * P-008 (b): normalize a caller's declared dependencies for STORAGE — trim,
+ * de-duplicate by cell, drop anchorless entries, clip `observed`, and bound the
+ * list. Returns null when nothing survives, so the column stays NULL rather than
+ * holding an empty array (a NULL and a `[]` would otherwise be two encodings of
+ * "no dependencies", and readers would have to handle both).
+ *
+ * De-duplication keeps the FIRST occurrence: a caller that names the same cell
+ * twice observed it once: the second entry is a duplicate of that observation,
+ * not a second measurement, and keeping both would double-count it in every
+ * later verdict. PURE.
+ */
+export function normalizeFactDependencies(
+  deps: readonly FactDependency[] | null | undefined,
+): FactDependency[] | null {
+  if (!deps || deps.length === 0) return null;
+  const seen = new Set<string>();
+  const out: FactDependency[] = [];
+  for (const d of deps) {
+    const cell = (d?.cell ?? '').trim();
+    if (!cell || seen.has(cell)) continue;
+    const hasDigest = typeof d.digest === 'string' && d.digest.length > 0;
+    const hasUnknown = typeof d.unknown === 'string' && d.unknown.length > 0;
+    if (hasDigest === hasUnknown) continue; // anchorless or contradictory
+    seen.add(cell);
+    out.push({
+      cell,
+      observedAt: d.observedAt || new Date().toISOString(),
+      ...(hasDigest ? { digest: d.digest } : {}),
+      ...(hasUnknown ? { unknown: d.unknown } : {}),
+      ...(d.observed ? { observed: d.observed.slice(0, FACT_DEPENDENCY_OBSERVED_CHARS) } : {}),
+    });
+    if (out.length >= FACT_MAX_DEPENDENCIES) break;
+  }
+  return out.length > 0 ? out : null;
 }
 
 /**
@@ -446,6 +643,20 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       ? input.ttlSec
       : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
   const confidence = input.confidence ?? null;
+  // P-008 (b), migration 690. `dependsOn` arrives ALREADY RESOLVED (see
+  // AssertFactInput.dependsOn) — the store's job is to normalize and persist it,
+  // not to dispatch cell resolvers. `kind` is validated rather than trusted: the
+  // DB CHECK would reject a bad value with an opaque constraint error, and an
+  // InvalidInputError names the actual mistake (EI-7463's class — a caller-input
+  // error must not surface as a 500 that inflates the tool's error rate).
+  if (input.kind != null && !(FACT_KINDS as readonly string[]).includes(input.kind)) {
+    throw new InvalidInputError(
+      `facts:assert — unknown kind '${input.kind}' — one of ${FACT_KINDS.join('|')}`,
+    );
+  }
+  const kind = input.kind ?? null;
+  const dependsOn = normalizeFactDependencies(input.dependsOn);
+  const claim = input.claim && typeof input.claim === 'object' ? input.claim : null;
   // P-008 (a): APPEND-VERSIONING, not upsert-in-place (migration 689).
   //
   // This used to be ON CONFLICT DO UPDATE SET body = EXCLUDED.body — which
@@ -468,6 +679,15 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // identity — the previous code expressed that as `retracted_at = NULL` on the
   // mutated row, i.e. by erasing the evidence that it had ever been retracted.
   // The retraction now survives, on the version that carried it.
+  //
+  // ⚠ P-008 (b): `depends_on` deliberately does NOT carry forward from the
+  // superseded version the way `harness_slug` does. A federation slug is a
+  // stable IDENTITY, so inheriting it is correct; a dependency set is an
+  // OBSERVATION ("cell X digested to D at time T"). Inheriting one would stamp
+  // the old reading onto a new version asserted later, which is exactly the
+  // frozen-snapshot defect D-003 forbids — and it would fail in the confident
+  // direction, reporting FRESH because the digest it compares against was never
+  // re-observed. A re-assert re-declares its dependencies or has none.
   const rows = await sql<AgentFactRow[]>`
     WITH superseded AS (
       UPDATE harness_shared.agent_facts
@@ -480,7 +700,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     )
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
-       audience_scope, source_provenance, confidence, supersedes_id)
+       audience_scope, source_provenance, confidence, supersedes_id, kind, depends_on, claim)
     VALUES
       (${ws},
        -- keep an already-stamped federation identity when a later assert omits
@@ -493,10 +713,13 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${audienceScope},
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,
        ${confidence},
-       (SELECT id FROM superseded))
+       (SELECT id FROM superseded),
+       ${kind},
+       ${dependsOn ? JSON.stringify(dependsOn) : null}::text::jsonb,
+       ${claim ? JSON.stringify(claim) : null}::text::jsonb)
     RETURNING id, superseded_at::text, supersedes_id,
               scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-              confidence, created_by, updated_at::text, expires_at::text`;
+              confidence, kind, depends_on, claim, created_by, updated_at::text, expires_at::text`;
   // Cap enforcement — evict oldest-updated live facts past the cap for this
   // (scope, ref). LOCAL partition only (H6): the local writer's cap must never
   // evict foreign-source observations (those are bounded per-source by the
@@ -599,7 +822,7 @@ export async function foldFacts(
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
     const rows = await sql<AgentFactRow[]>`
       SELECT scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-             confidence, created_by, updated_at::text, expires_at::text
+             confidence, kind, depends_on, claim, created_by, updated_at::text, expires_at::text
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws} AND scope = ${sel.scope}
          AND coalesce(scope_ref,'') = ${ref}
@@ -744,7 +967,7 @@ export async function factVersions(
   const rows = await sql<AgentFactRow[]>`
     SELECT id, superseded_at::text, supersedes_id,
            scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, created_by, updated_at::text, expires_at::text
+           confidence, kind, depends_on, claim, created_by, updated_at::text, expires_at::text
       FROM harness_shared.agent_facts
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${key}
@@ -805,6 +1028,10 @@ interface AgentFactRow {
   audience_scope: string | null;
   source_provenance: unknown;
   confidence: string | null;
+  /** P-008 (b) — migration 690. */
+  kind?: string | null;
+  depends_on?: unknown;
+  claim?: unknown;
   created_by: string;
   updated_at: string;
   expires_at: string;
@@ -826,6 +1053,31 @@ function parseFactConfidence(raw: string | null): FactConfidence | null {
   return (FACT_CONFIDENCE_LEVELS as readonly string[]).includes(raw) ? (raw as FactConfidence) : null;
 }
 
+/** P-008 (b): the same read-side backstop for `kind`. The mig-690 CHECK already
+ *  rejects an unknown value at write time; this catches the case a CHECK cannot
+ *  — a LATER migration widening the vocabulary, after which an old reader would
+ *  otherwise map a new modality onto one it does not actually have. PURE. */
+function parseFactKind(raw: string | null | undefined): FactKind | null {
+  if (raw == null) return null;
+  return (FACT_KINDS as readonly string[]).includes(raw) ? (raw as FactKind) : null;
+}
+
+/** P-008 (b): defensive read of the `claim` jsonb. Same dual text/object arrival
+ *  handling as {@link parseFactDependencies}; anything that is not a JSON OBJECT
+ *  (an array, a bare scalar) is null — P-011 compares typed FIELDS, and a scalar
+ *  has none. PURE. */
+export function parseFactClaim(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
+}
+
 function rowToFact(r: AgentFactRow): AgentFact {
   return {
     scope: r.scope,
@@ -838,6 +1090,14 @@ function rowToFact(r: AgentFactRow): AgentFact {
     // WI-6052: now persisted — mig 671 added the `confidence` column and the
     // INSERT/RETURNING/SELECT above all carry it round-trip.
     confidence: parseFactConfidence(r.confidence),
+    // P-008 (b), migration 690. `dependsOn` normalizes to [] rather than null so
+    // every consumer can iterate without a null guard — the absence of
+    // dependencies and an empty set mean the same thing to a reader ("this fact
+    // cannot go stale on declared terms"), unlike `kind`/`claim`, where absent
+    // genuinely means "not declared" and must stay distinguishable.
+    kind: parseFactKind(r.kind),
+    dependsOn: parseFactDependencies(r.depends_on),
+    claim: parseFactClaim(r.claim),
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,

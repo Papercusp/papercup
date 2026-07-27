@@ -612,6 +612,7 @@ describe('gitPipelinePosition (P-002)', () => {
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
       positionsUnknown: [],
+      verdictUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
       verdictProvenance: {
@@ -1236,6 +1237,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
       positionsUnknown: [],
+      verdictUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
       verdictProvenance: {
@@ -1451,6 +1453,7 @@ describe('changeInCandidate (P-004)', () => {
       dirtyUncommitted: false,
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
       positionsUnknown: [],
+      verdictUnknown: [],
       deployedSha: 'deployedsha0',
       gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
       verdictProvenance: {

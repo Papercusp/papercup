@@ -10,9 +10,15 @@
  * buttons (the "silver 3D outset button" gotcha). Extracting the button base +
  * the hives pill/popover here — and importing it from BOTH AdvShell AND each pill
  * component — makes the pills portable to any consumer with no duplicated CSS to
- * drift. The AdvShell-only toolbar-button variants (--start/--stop/--new/--share/
- * --shared/--waiting) stay in AdvShell's inline <style>; they cascade off the
- * `.pc-advshell__action` base defined here.
+ * drift.
+ *
+ * AdvNowRunning's own variants (--start/--stop/--waiting + the harness bar) moved
+ * here for the SAME reason, 2026-07-27: the pot cluster left AdvShell's header for
+ * the pot-scoped tab bodies (AdvPotBar), so AdvNowRunning no longer renders inside
+ * AdvShell's markup and can no longer borrow its inline <style>. It imports this
+ * sheet directly now. The selector-specific rules (--new/--share/--shared, the
+ * select trigger, the sub-pots toggle) live with the row that owns them, in
+ * adv-pot-bar.css. Everything below cascades off the `.pc-advshell__action` base.
  *
  * AgentsRunningPill's own wrapper + roster popover styles remain self-injected in
  * its RosterStyles <style> (already portable); this file only needs to carry what
@@ -38,6 +44,51 @@
 .pc-advshell__action:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+/* ── AdvNowRunning: the pot status bar + its Start/Stop/waiting buttons ────── */
+.pc-advshell__harness-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding-left: 10px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+}
+.pc-advshell__idle {
+  font-size: 11px;
+  font-style: italic;
+  color: rgba(220, 214, 248, 0.5);
+  white-space: nowrap;
+}
+.pc-advshell__action--start {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.38);
+}
+.pc-advshell__action--start:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.26);
+}
+.pc-advshell__action--stop {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.34);
+}
+.pc-advshell__action--stop:hover {
+  background: rgba(239, 68, 68, 0.22);
+}
+/* Amber "N plans waiting" nudge — started plans with no running pot to pick them
+   up. Matches the Create tab's amber accent. */
+.pc-advshell__action--waiting {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+.pc-advshell__action--waiting:hover {
+  background: rgba(245, 158, 11, 0.24);
+  color: #fde68a;
 }
 
 /* ── HivesRunningPill: "▶ N POT running" button + fold-out control popover ── */
