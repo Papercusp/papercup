@@ -739,7 +739,7 @@ describe('P-007 — TOTALITY FUZZ: readCell never throws, whatever the resolver 
 
 /**
  * ⚠⚠ TOTALITY IS "NEVER THROWS" — IT IS **NOT** "ALWAYS TERMINATES", AND THE DIFFERENCE
- * IS A LIVE DEFECT (WI-6486).
+ * IS A LIVE DEFECT (WI-6488).
  *
  * Every row above proves `readCell` cannot fail its caller by THROWING. Nothing in this
  * module, in `dispatchReadOnlyTool`, or in `dispatchProjectedTool` bounds how long the
@@ -755,10 +755,10 @@ describe('P-007 — TOTALITY FUZZ: readCell never throws, whatever the resolver 
  *
  * The test below PINS the current behaviour rather than asserting the desired one — a
  * test asserting an absent bound would simply be red forever and get skipped. When
- * WI-6486 is fixed this test FAILS, which is the intended trigger to flip it to expect
+ * WI-6488 is fixed this test FAILS, which is the intended trigger to flip it to expect
  * `'readCell'` and assert the bound instead.
  */
-describe('P-007 — the bound that does NOT exist (pins WI-6486)', () => {
+describe('P-007 — the bound that does NOT exist (pins WI-6488)', () => {
   it('⚠ a resolver that never settles makes readCell never settle either', async () => {
     registerCell(spec());
     dispatchReadOnlyTool.mockImplementation(() => new Promise(() => {}));
@@ -770,7 +770,7 @@ describe('P-007 — the bound that does NOT exist (pins WI-6486)', () => {
 
     expect(
       winner,
-      'readCell RETURNED before the timer — a bound now exists on the resolver dispatch. That is the WI-6486 ' +
+      'readCell RETURNED before the timer — a bound now exists on the resolver dispatch. That is the WI-6488 ' +
         "fix landing, and it is good news: flip this expectation to 'readCell' and assert the unknown code the " +
         'bound produces (it should be resolver-failed, whose lever is retry-or-escalate).',
     ).toBe('timer');

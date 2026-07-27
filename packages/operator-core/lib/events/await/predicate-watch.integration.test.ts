@@ -12,6 +12,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import type { PredicateOp } from './predicate-watch';
+import type { CellSpec } from '../../cell-registry';
+// P-005 drives its predicates off the REAL cell specs, so a registration edit moves the
+// test with it instead of leaving it polling a path the cell no longer declares.
+import { GATE_CANDIDATE_CELL, GIT_PIPELINE_POSITION_CELL } from '../../cell-registrations';
 
 const h = vi.hoisted(() => ({
   sql: null as any,
@@ -267,6 +271,230 @@ describe('predicate watches (real PG)', () => {
       expect((await pw.getPredicateWatch(row.id))!.active).toBe(false);
       const match = await pw.findMatchingActivePredicateWatch({ ...scopeFor(path), op: 'gt', value: 127, intervalSec: 30, once: true });
       expect(match).toBeNull();
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // P-005 — `state:subscribe` end-to-end over a REAL cell
+  // (agent-state-plane-verification-2026-07-27)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * The suites above prove the predicate machinery is edge-correct for a hand-written
+   * (tool, path, op, value). This one proves the CELL half: that a subscription whose
+   * predicate came from a real `CellSpec` actually wakes its subscriber when the
+   * underlying store moves, and — the P-021 property — that a `of:'material'`
+   * subscription stays silent through churn on the cell's headline path.
+   *
+   * ── WHAT THIS COVERS, AND WHAT IT HONESTLY DOES NOT ─────────────────────────
+   *
+   * `state:subscribe` is a PRESET over `watch:create` and holds no polling logic of its
+   * own, so the end-to-end chain has three links and they are asserted in two places:
+   *
+   *   1. state:subscribe resolves a cell NAME to the cell's declared (tool, path) and
+   *      hands it to watch:create  →  asserted in `agent-tools/state/state-tools.test.ts`
+   *      ("takes the (tool, args, path) triple from the CELL", and the `of:'material'`
+   *      re-pointing).
+   *   2. that predicate is registered and polled                    →  asserted HERE.
+   *   3. crossing it wakes the subscriber with the new value        →  asserted HERE.
+   *
+   * This file does NOT re-invoke the tool (it needs a full MCP ctx, and duplicating that
+   * setup would test the harness rather than the behaviour). It instead derives its
+   * predicate FROM THE SAME `CellSpec` the tool reads, so the two cannot silently drift:
+   * a registration change moves both. The `TRIPLE PROVENANCE` test below pins that.
+   */
+  describe('P-005 — a cell subscription wakes on a real store mutation', () => {
+    /**
+     * The "underlying store" — a mutable object the faked dispatch serves. Mutating it
+     * between evals IS the store mutation the item asks for; the resolver tool is not
+     * the subject under test here (its own dispatch is dispatch-projected's territory).
+     */
+    let STORE: Record<string, unknown> = {};
+
+    /** Seed a watch from a CELL SPEC, taking the triple off the spec rather than typing
+     *  it — exactly as `state:subscribe` does. `of` selects headline vs materiality. */
+    async function seedCellWatch(
+      spec: CellSpec,
+      opts: { of?: 'value' | 'material'; op?: PredicateOp; value?: unknown; once?: boolean },
+    ) {
+      if (spec.changeSignal.kind !== 'poll') throw new Error('P-005 fixture needs a poll cell');
+      const path =
+        opts.of === 'material'
+          ? (spec.materiality as { path: string }).path
+          : spec.changeSignal.path;
+      const id = globalThis.crypto.randomUUID();
+      const eventKey = `predicate:${id}`;
+      const subscriber = `su-cell-${++seq}`;
+      await store.registerAwait({ subscriberId: subscriber, eventKey, once: opts.once ?? false });
+      const row = await pw.registerPredicateWatch({
+        id,
+        workspaceId: 'ws-pw-test',
+        ownerId: subscriber,
+        role: 'su',
+        harnessSlug: null,
+        eventKey,
+        tool: spec.changeSignal.tool,
+        args: {},
+        path,
+        op: opts.op ?? 'eq',
+        value: opts.value,
+        intervalSec: 60,
+        once: opts.once ?? false,
+      });
+      return { row, eventKey, subscriber, path };
+    }
+
+    /** Re-read the row and evaluate it — the poller's per-tick unit. */
+    const step = async (id: string) => pw.evalPredicateWatch((await pw.getPredicateWatch(id))!);
+
+    beforeAll(() => {
+      pw.configurePredicateDispatch(async () => STORE);
+    });
+
+    afterEach(() => {
+      // The outer afterEach clears the dispatch seam; restore ours for the next case.
+      pw.configurePredicateDispatch(async () => STORE);
+      STORE = {};
+    });
+
+    it('TRIPLE PROVENANCE: the watch polls the tool + path the CELL declares, not a copy', async () => {
+      const spec = GATE_CANDIDATE_CELL;
+      const { row } = await seedCellWatch(spec, { of: 'value', op: 'exists' });
+      // If a registration edit moves the cell's resolver or path, this fails HERE rather
+      // than the suite quietly polling a path the cell no longer declares.
+      expect(row.tool).toBe((spec.changeSignal as { tool: string }).tool);
+      expect(row.path).toBe((spec.changeSignal as { path: string }).path);
+    });
+
+    it('⚠ POSITIVE WAKE FIRST — mutating the store across the condition wakes the subscriber', async () => {
+      const { row, eventKey } = await seedCellWatch(GIT_PIPELINE_POSITION_CELL, {
+        op: 'eq',
+        value: true,
+      });
+
+      // Not yet deployed.
+      STORE = { positions: { deployed: false } };
+      expect(await step(row.id)).toMatchObject({ matched: false, fired: false });
+      expect(h.emits).toHaveLength(0);
+
+      // THE MUTATION: the deploy lands.
+      STORE = { positions: { deployed: true } };
+      const crossed = await step(row.id);
+
+      expect(crossed).toMatchObject({ matched: true, fired: true });
+      expect(h.emits).toHaveLength(1);
+      expect(h.emits[0].key).toBe(eventKey);
+    });
+
+    it('the wake carries the NEW value — a subscriber must not be woken with the stale one', async () => {
+      const { row } = await seedCellWatch(GIT_PIPELINE_POSITION_CELL, { op: 'eq', value: true });
+
+      STORE = { positions: { deployed: false } };
+      await step(row.id);
+      STORE = { positions: { deployed: true } };
+      await step(row.id);
+
+      expect(h.emits).toHaveLength(1);
+      // `observed` is what the poll actually read at the crossing — the post-mutation
+      // value. A wake carrying the pre-mutation value would resume an agent on the very
+      // condition it was waiting to leave.
+      expect(h.emits[0].payload).toMatchObject({ observed: true });
+      expect((await pw.getPredicateWatch(row.id))!.lastValue).toBe(true);
+    });
+
+    /**
+     * ⚠⚠ THE VACUOUS PASS THIS ITEM NAMES, AND THE ORDER THAT DEFEATS IT.
+     *
+     * "A change below the materiality path does not wake me" is satisfied PERFECTLY by a
+     * subscription that is broken and can never wake at all. A test that asserts only
+     * the silence cannot tell the two apart, and it would report the strongest possible
+     * green over a dead subscriber.
+     *
+     * So this case proves the watch CAN fire before it is ever asked to stay quiet, on
+     * the SAME row — not a sibling fixture, because a sibling only proves some other
+     * watch works. `once:false` is what makes one row able to carry both halves.
+     */
+    it('⚠ MATERIALITY: proven-capable FIRST, then silent through headline churn', async () => {
+      const spec = GATE_CANDIDATE_CELL;
+      const materialPath = (spec.materiality as { path: string }).path;
+      const headlinePath = (spec.changeSignal as { path: string }).path;
+      expect(materialPath, 'the fixture needs two DIFFERENT paths to say anything').not.toBe(
+        headlinePath,
+      );
+
+      const { row } = await seedCellWatch(spec, { of: 'material', op: 'eq', value: true });
+
+      // ── LEG 1: PROVE IT CAN FIRE. Without this the rest is unfalsifiable.
+      STORE = { changeInCandidate: { judgingSha: 'aaaaaaa', judgingContainsPath: false } };
+      expect(await step(row.id)).toMatchObject({ matched: false, fired: false });
+
+      STORE = { changeInCandidate: { judgingSha: 'aaaaaaa', judgingContainsPath: true } };
+      expect(
+        await step(row.id),
+        'the material watch never fired at all — every silence asserted below would be vacuous',
+      ).toMatchObject({ matched: true, fired: true });
+      expect(h.emits).toHaveLength(1);
+
+      // Back to false so the next cross is a real false→true edge.
+      STORE = { changeInCandidate: { judgingSha: 'aaaaaaa', judgingContainsPath: false } };
+      expect(await step(row.id)).toMatchObject({ matched: false, fired: false });
+
+      // ── LEG 2: THE HEADLINE CHURNS. `judgingSha` moves on every commit — this is the
+      // high-frequency path P-021 exists to insulate a subscriber from.
+      for (const sha of ['bbbbbbb', 'ccccccc', 'ddddddd', 'eeeeeee']) {
+        STORE = { changeInCandidate: { judgingSha: sha, judgingContainsPath: false } };
+        expect(await step(row.id), `sha churn to ${sha} must not wake a material subscriber`).toMatchObject({
+          fired: false,
+        });
+      }
+      expect(h.emits, 'four headline changes produced a wake — materiality is not gating').toHaveLength(1);
+
+      // ── LEG 3: AND IT STILL WORKS. The silence above was gating, not death.
+      STORE = { changeInCandidate: { judgingSha: 'eeeeeee', judgingContainsPath: true } };
+      expect(await step(row.id)).toMatchObject({ matched: true, fired: true });
+      expect(h.emits).toHaveLength(2);
+    });
+
+    /**
+     * The sharpest statement of the property: two subscriptions to the SAME cell, given
+     * the IDENTICAL store mutation, must diverge. Anything less could be explained by
+     * the mutation simply not having happened.
+     */
+    it('⚠ the SAME mutation wakes a headline subscriber and not a material one', async () => {
+      const spec = GATE_CANDIDATE_CELL;
+      const headline = await seedCellWatch(spec, { of: 'value', op: 'eq', value: 'ccccccc' });
+      const material = await seedCellWatch(spec, { of: 'material', op: 'eq', value: true });
+
+      STORE = { changeInCandidate: { judgingSha: 'aaaaaaa', judgingContainsPath: false } };
+      await step(headline.row.id);
+      await step(material.row.id);
+      expect(h.emits).toHaveLength(0);
+
+      // ONE mutation: the candidate sha moves. Nothing material changed.
+      STORE = { changeInCandidate: { judgingSha: 'ccccccc', judgingContainsPath: false } };
+      const headlineOut = await step(headline.row.id);
+      const materialOut = await step(material.row.id);
+
+      expect(headlineOut, 'the headline subscriber asked about the sha and the sha moved').toMatchObject({
+        fired: true,
+      });
+      expect(materialOut, 'the material subscriber asked a question whose answer did not change').toMatchObject({
+        fired: false,
+      });
+      expect(h.emits.map((e) => e.key)).toEqual([headline.eventKey]);
+    });
+
+    it('a cell whose declared path is ABSENT from the store does not fire — and does not error out', async () => {
+      const { row } = await seedCellWatch(GIT_PIPELINE_POSITION_CELL, { op: 'eq', value: true });
+      // The resolver answered, but with a shape that has no `positions.deployed`.
+      STORE = { somethingElse: true };
+      const out = await step(row.id);
+      // `comparePredicate` refuses to decide on absent evidence rather than reading
+      // undefined as "not true" — a wake on absent evidence is a false all-clear.
+      expect(out).toMatchObject({ matched: false, fired: false });
+      expect(h.emits).toHaveLength(0);
+      // ...and the row stays healthy: a missing path is not an error-ladder event.
+      expect((await pw.getPredicateWatch(row.id))!.active).toBe(true);
     });
   });
 });
