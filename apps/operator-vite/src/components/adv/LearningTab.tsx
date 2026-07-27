@@ -114,7 +114,12 @@ const LVIEWS = [
   "observations",
   "rubrics",
   "pipeline",
-  "ideas",
+  // `ideas` was RETIRED 2026-07-27 (learning-tab-surface-public-release P-003,
+  // owner Option A: "okay lets go with a but keep the observe tab"). The Ideas
+  // ledger and the Backlog were two lists over one population — the generator's
+  // output and the work that output became — and reading either alone told half
+  // the story. They are now ONE list under `improvements`; a stale `?lview=ideas`
+  // deep-link is redirected there (see LearningTab's redirect effect).
   "gym",
   "improvements",
   "benchmark",
@@ -167,11 +172,9 @@ function viewDescriptions(t: ReturnType<typeof useLexicon>): Record<LView, strin
       "The quality rubrics live behavior is judged against, with their grade history.",
     pipeline:
       "Inside each idea-generation cycle: ideator roster, raw ideas, critique verdicts, fusions, and where they routed.",
-    ideas:
-      "The generator's ledger — every routed idea with its trace; your grades here teach the generator which lenses win.",
     gym: `Prompt-optimization experiments — challengers vs champions — plus ${t("scout")}-seeded archive niches.`,
     improvements:
-      "The WORK queue: every captured bug/improvement agents burn down (routed ideas land here as work items). Grading the ideas that produced them lives in Ideas.",
+      "What the learning loop produced: each idea and the work it became, from not-ready-yet through shipped. Grading an idea here is what teaches the generator.",
     benchmark:
       "Whole-system benchmark runs (the IQ battery) — is a new instance measurably better?",
     orchestration: `${t("pot")}-eval scoring trends — is orchestration quality improving over time?`,
@@ -249,13 +252,13 @@ const STAGES: ReadonlyArray<{
     label: "Improve",
     icon: Lightbulb,
     views: [
-      { id: "ideas", label: "Ideas", icon: Lightbulb },
       { id: "gym", label: "Gym", icon: Dumbbell },
-      // "Backlog", not "Improvements" (owner confusion 2026-07-19): next to
-      // "Ideas" the old name read as a second suggestion list. Ideas = grade
-      // the GENERATOR's output; Backlog = the WORK queue agents burn down.
-      // The lview id stays `improvements` — deep-links depend on it.
-      { id: "improvements", label: "Backlog", icon: Sparkles },
+      // ONE list, not two (P-003, owner Option A 2026-07-27). It was "Backlog"
+      // only to disambiguate it from a sibling "Ideas" tab that no longer
+      // exists; the merged view carries BOTH halves of the loop's output — the
+      // idea and the work it became — so it is named for the stage's verb. The
+      // lview id stays `improvements`: deep-links depend on it.
+      { id: "improvements", label: "Improvements", icon: Sparkles },
     ],
   },
   {
@@ -346,7 +349,6 @@ const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
   "improvements",
   "gym",
   "learnings",
-  "ideas",
   "frontier",
   "throughput",
 ]);
@@ -475,6 +477,25 @@ export default function LearningTab() {
       ? "improvements"
       : requestedView;
 
+  // P-003: keep the URL naming the view actually on screen. Two ways it can
+  // lie, and BOTH resolve here rather than in a per-case special: a retired id
+  // (`?lview=ideas` — the Ideas ledger merged into Improvements), and a valid
+  // but flag-hidden id (`?lview=gym` with FLAGS.TESTING off). In each case the
+  // pane already degrades to the default above, so this is not about what
+  // renders — it is that the URL is the AGENT-VISIBLE control surface (repo
+  // rule: user-meaningful state lives in nuqs, and ui:get_state reads it). A
+  // param naming a view nobody is looking at is a real bug for the reader
+  // driving this tab through ui:dispatch, not cosmetics.
+  //
+  // Read through the RAW param, not `lview`: parseAsStringEnum resolves an
+  // unknown value to the default, so the enum hook can never SEE "ideas" — only
+  // the raw string can. Writing null-safe (no param ⇒ no write) keeps a clean
+  // URL clean instead of stamping ?lview=improvements on every mount.
+  const [lviewRaw, setLviewRaw] = useQueryState("lview", parseAsString);
+  useEffect(() => {
+    if (lviewRaw != null && lviewRaw !== view) void setLviewRaw(view);
+  }, [lviewRaw, setLviewRaw, view]);
+
   // Pot lens INHERITED from the top-bar pot selector (owner directive
   // 2026-07-26: "the pot should be inherited by the currently selected pot" —
   // the tab-level `?lhive=` picker is GONE; one selection scopes every tab).
@@ -506,7 +527,7 @@ export default function LearningTab() {
   useEffect(() => {
     const previous = previousView.current;
     if (previous === view) return;
-    if (previous === "ideas") void setGradeDetail(null);
+    if (previous === "improvements") void setGradeDetail(null);
     if (previous === "rubrics") void setRubricId(null);
     if (previous === "learnings") void setRetainDetail(null);
     previousView.current = view;
@@ -783,11 +804,6 @@ function LearningViewContent({
   }
   if (view === "pipeline") {
     return <AnalyzePanel onStatus={reportViewStatus} />;
-  }
-  if (view === "ideas") {
-    return (
-      <ScoutView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />
-    );
   }
   if (view === "rubrics") {
     return (

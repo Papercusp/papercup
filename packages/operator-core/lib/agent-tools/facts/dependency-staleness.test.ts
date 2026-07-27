@@ -218,4 +218,13 @@ describe('subject keying — a caller-relative cell is a different question per 
     expect(observationKey('deploy.3070.sha')).toBe('deploy.3070.sha');
     expect(observationKey('c', 'x')).not.toBe(observationKey('c', 'y'));
   });
+
+  it('an over-budget dependency reports undeterminable NAMING the budget, never fresh', () => {
+    // "we ran out of read budget" and "nothing changed" are different facts and
+    // only one is safe to act on — so the detail must not send a reader hunting
+    // a resolver that is working fine.
+    const v = evaluateDependencyStaleness([dep({ cell: 'z' })], now({ z: { unknown: 'read-budget-exceeded' } }));
+    expect(v?.status).toBe('undeterminable');
+    expect(v?.deps[0].detail).toContain('read-budget-exceeded');
+  });
 });

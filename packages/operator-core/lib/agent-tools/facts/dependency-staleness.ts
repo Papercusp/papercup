@@ -40,7 +40,7 @@
  * What a changed dependency means is precisely "the ground under this has moved
  * — re-verify", and only the reader can tell an expired premise from a
  * conclusion that outlived its evidence. So the reader gets the fact AND the
- * verdict. Recorded as D-065 rather than left as an implementation liberty,
+ * verdict. Recorded as D-066 rather than left as an implementation liberty,
  * because it narrows a decision another lane may be building against.
  *
  * The verdict is sharper than the source-staleness one it sits beside, and that
@@ -58,6 +58,24 @@ import type { CellReader } from '../../cell-registry';
  *  of cell values, and short enough that a whole dependency set stays readable
  *  inside a fact row an agent may well read by eye. */
 const DIGEST_CHARS = 16;
+
+/**
+ * Max DISTINCT (cell, subject) observations one staleness pass will dispatch.
+ *
+ * ⚠ THIS IS A HOT-PATH BUDGET, NOT A CORRECTNESS LIMIT. `markStaleDependencyFacts`
+ * runs inside the `coord:orient` standing-facts fold, which every agent hits on
+ * every wake. A fold can carry ~12 facts per selector across 3 selectors, each
+ * declaring up to {@link FACT_MAX_DEPENDENCIES} dependencies — so an unbounded
+ * de-duplicated set is ~400 resolver dispatches, and these resolvers run git and
+ * systemd probes. That is not a slow orient, it is an unusable one.
+ *
+ * 8 is chosen to cover the realistic case (a handful of registered cells, a few
+ * subjects) while making the pathological one impossible. Past the budget a
+ * dependency reports `undeterminable` NAMING the budget — never `fresh`, because
+ * "we ran out of read budget" and "nothing changed" are different facts and only
+ * one of them is safe to act on.
+ */
+export const STALENESS_READ_BUDGET = 8;
 
 /**
  * Order-independent JSON for hashing. Objects serialize with SORTED keys, at
@@ -322,17 +340,26 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
   // same cell about DIFFERENT subjects need two reads, and one read reused for
   // both would answer the wrong question for one of them.
   const targets = new Map<string, { cell: string; subject?: string }>();
+  const overBudget: string[] = [];
   for (const f of facts) {
     for (const d of f.dependsOn ?? []) {
       const key = observationKey(d.cell, d.subject);
-      if (!targets.has(key) && targets.size < FACT_MAX_DEPENDENCIES * 4) {
-        targets.set(key, { cell: d.cell, ...(d.subject ? { subject: d.subject } : {}) });
+      if (targets.has(key)) continue;
+      if (targets.size >= STALENESS_READ_BUDGET) {
+        overBudget.push(key);
+        continue;
       }
+      targets.set(key, { cell: d.cell, ...(d.subject ? { subject: d.subject } : {}) });
     }
   }
   if (targets.size === 0) return facts.map((f) => ({ ...f }));
 
   const current = new Map<string, CurrentCellObservation>();
+  // Anything past the budget is reported UNDETERMINABLE, naming the budget as the
+  // reason. Leaving it out of the map would also yield `undeterminable`, but with
+  // the wrong explanation ("the cell yields no value now") — and a reader chasing
+  // a stale fact would go looking for a broken resolver that is working fine.
+  for (const key of overBudget) current.set(key, { unknown: 'read-budget-exceeded' });
   try {
     for (const [key, t] of targets) {
       current.set(key, await observeCell(t.cell, reader, env, t.subject));
@@ -379,7 +406,7 @@ async function observeCell(
  * disagree about what counts as "the same observation". PURE.
  */
 export function observationKey(cell: string, subject?: string): string {
-  return subject ? `${cell} ${subject}` : cell;
+  return subject ? `${cell}\x00${subject}` : cell;
 }
 
 /** Trim, drop empties, de-duplicate, and bound — shared by both halves so the
