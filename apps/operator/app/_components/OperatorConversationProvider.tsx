@@ -626,7 +626,7 @@ export type GenerationFn = (
 /**
  * Project the UI's rich `ChatMessage` onto the converse tool's WIRE shape.
  *
- * WI-6502 — owner-reported: chat died with a wall of `messages.N: Unrecognized
+ * WI-6508 — owner-reported: chat died with a wall of `messages.N: Unrecognized
  * keys: "id", "seq", "report"`, one line per message, ~200 lines of it.
  *
  * `ChatMessage` is a RENDERING model and has grown presentation/persistence
@@ -662,7 +662,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      // WI-6502: project onto the wire shape — never ship the render model.
+      // WI-6508: project onto the wire shape — never ship the render model.
       messages: toConverseWireMessages(req.messages),
       trigger: req.trigger,
       mayAskActive: req.mayAskActive,

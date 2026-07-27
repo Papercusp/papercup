@@ -1,5 +1,5 @@
 /**
- * converse-wire-messages.test.ts — WI-6502.
+ * converse-wire-messages.test.ts — WI-6508.
  *
  * The owner's chat died with ~200 lines of `messages.N: Unrecognized keys:
  * "id", "seq", "report"`. Cause: `ChatMessage` is the UI's RENDER model and has
