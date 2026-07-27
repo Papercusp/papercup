@@ -273,3 +273,45 @@ describe('serve-refusal diagnosability (a refusal must name its own lookup key)'
     expect(formatRefusalTarget('not-serving', '', [])).toContain('topic=<unknown>');
   });
 });
+
+describe('EI-18802104888674071: serve reachability across a shared peer connection', () => {
+  const { resolveServeRegistration } = _testing;
+  const cfgA = { potHomeSlug: 'papercusp', workspaceId: 'ws-1' };
+  const cfgB = { potHomeSlug: 'hello-world-3-pot', workspaceId: 'ws-1' };
+  const OWN_SOCKET = { tag: 'wired-here' };
+  const LIVE_SOCKET = { tag: 'this-muxers-live-connection' };
+
+  // THE LIVE REPRO. Two pots share one peer connection; whichever pot's swarm
+  // handled it is the only one `wireHiveGitServe` ran for, but `mux.pair` is
+  // registered at PROTOCOL scope so the OTHER pot's channel still materializes
+  // here. Before this fix that channel refused `not-serving` for the life of
+  // the connection — observed on the rig as
+  // `topic=d85dc18c…(papercusp) serveTopics=0edc4b5f…(hello-world-3-pot)`.
+  it('serves a pot wired on ANOTHER muxer, using THIS connection for identity', () => {
+    const got = resolveServeRegistration(undefined, cfgA, LIVE_SOCKET);
+    expect(got?.serverConfig).toBe(cfgA);
+    // Identity MUST come from the live connection. Carrying the socket stored
+    // at the original registration would authenticate this peer as a different
+    // one — the failure mode that makes widening the lookup dangerous at all.
+    expect(got?.socket).toBe(LIVE_SOCKET);
+  });
+
+  it('prefers this muxer\'s OWN registration over the process-wide one', () => {
+    const got = resolveServeRegistration({ serverConfig: cfgB, socket: OWN_SOCKET }, cfgA, LIVE_SOCKET);
+    expect(got?.serverConfig).toBe(cfgB);
+    expect(got?.socket).toBe(OWN_SOCKET);
+  });
+
+  // The boundary that keeps this from being a privilege leak: the fallback is
+  // keyed by the SAME topicHex, never "any config on this muxer". A pot this
+  // box never wired serve for stays unserved.
+  it('REFUSES a topic this box never wired serve for anywhere', () => {
+    expect(resolveServeRegistration(undefined, undefined, LIVE_SOCKET)).toBeNull();
+  });
+
+  it('REFUSES when the peer on this connection cannot be identified', () => {
+    // No socket ⇒ resolvePeerDevicePubkey has nothing to authenticate against.
+    // Adopting the config anyway would serve an unauthenticated peer.
+    expect(resolveServeRegistration(undefined, cfgA, undefined)).toBeNull();
+  });
+});

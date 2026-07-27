@@ -378,6 +378,66 @@ function serveConfigsFor(mux: object): Map<string, { serverConfig: PotGitServeCo
   return m;
 }
 
+/** Topic hexes THIS BOX has explicitly wired serve for via `wireHiveGitServe`
+ *  on ANY connection (process-global) — the SERVE-side mirror of
+ *  peer-dial-registry.ts's `wiredTopics` (WI-5210).
+ *
+ *  WHY (EI-18802104888674071, diagnosed 2026-07-27 from a live rig refusal):
+ *  `wireHiveGitServe` runs once per swarm connection-handler firing, with THAT
+ *  swarm's own topic — so `serveConfigByMuxer` only ever learns the pot whose
+ *  swarm handled the connection. But `resolveMuxStream` registers `mux.pair`
+ *  at PROTOCOL scope with NO id filter, so `ensureChannel(mux, id)`
+ *  materializes a channel for ANY pot-git topic the remote opens on that
+ *  muxer. When two pots share one peer connection, whichever pot wired the
+ *  muxer wins and the other pot's inbound reqs refuse `not-serving` FOREVER on
+ *  that connection — observed live as
+ *    `topic=d85dc18c…(papercusp) serveTopics=0edc4b5f…(hello-world-3-pot)`.
+ *  The dial plane already solved exactly this; serve was the unfixed half.
+ *
+ *  SAFETY — this widens ONLY the topic gate, never the authorization:
+ *   - lookup is by the SAME topicHex the remote asked for, so the assertion is
+ *     precisely "this box deliberately joined + wired serve for that pot
+ *     somewhere". It is NEVER "any config on this muxer" — that would serve an
+ *     unauthorized pot to a peer that only ever joined a different one.
+ *   - the config is pot-scoped data (`potHomeSlug`/`workspaceId`/`timeoutMs`)
+ *     plus a resolver that is a pure function of the socket handed to it, so
+ *     nothing connection-bound is carried across.
+ *   - peer IDENTITY comes from the CURRENT muxer's socket (`socketByMuxer`),
+ *     never the socket stored alongside the original registration — reusing
+ *     that would authenticate this peer as a different one. */
+const serveConfigByTopic = new Map<string, PotGitServeConfig>();
+
+/** The live connection socket for a muxer, recorded wherever this module has
+ *  both in hand. Only used to give the `serveConfigByTopic` fallback above the
+ *  CURRENT connection's socket for identity resolution. */
+const socketByMuxer = new WeakMap<object, unknown>();
+
+/**
+ * Decide what a freshly-materialized channel should serve — the whole of the
+ * EI-18802104888674071 rule, as a pure function so the safety boundary is
+ * directly assertable (the surrounding path needs a live Protomux).
+ *
+ * @param kept        this (muxer, topic)'s own registration, if `wireHiveGitServe` ran here
+ * @param shared      the process-wide registration for the SAME topicHex, if any
+ * @param muxerSocket the CURRENT muxer's live socket, if known
+ */
+function resolveServeRegistration(
+  kept: { serverConfig: PotGitServeConfig; socket: unknown } | undefined,
+  shared: PotGitServeConfig | undefined,
+  muxerSocket: unknown,
+): { serverConfig: PotGitServeConfig; socket: unknown } | null {
+  // The muxer's own registration always wins — it carries the socket serve was
+  // actually wired against.
+  if (kept) return { serverConfig: kept.serverConfig, socket: kept.socket };
+  // No process-wide registration for this exact topic ⇒ this box never wired
+  // serve for that pot anywhere. Refusing `not-serving` is CORRECT here.
+  if (!shared) return null;
+  // Wired elsewhere, but we cannot identify the peer on this connection —
+  // adopt nothing rather than a config we could not authenticate against.
+  if (muxerSocket === undefined) return null;
+  return { serverConfig: shared, socket: muxerSocket };
+}
+
 /** Muxers on which the lazy-accept `pair()` notifier (below) is already
  *  registered — pair() is idempotent to call twice, but this avoids
  *  redundant re-registration on every `resolveMuxStream` call. */
@@ -983,10 +1043,18 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   // re-created after the onclose eviction below — or materialized by the lazy
   // `pair()` notifier before `wireHiveGitServe`'s register() ran — must still
   // serve; `wireHiveGitServe` runs once per connection and never back-fills.
-  const kept = serveConfigByMuxer.get(mux as unknown as object)?.get(topicHex);
-  if (kept) {
-    state.serverConfig = kept.serverConfig;
-    state.socket = kept.socket;
+  // EI-18802104888674071: when this muxer never had `wireHiveGitServe` run for
+  // THIS topic — usually because a DIFFERENT pot's swarm handled the shared
+  // connection — fall back to the process-wide registration for the same
+  // topicHex. See `serveConfigByTopic` / `resolveServeRegistration`.
+  const adopted = resolveServeRegistration(
+    serveConfigByMuxer.get(mux as unknown as object)?.get(topicHex),
+    serveConfigByTopic.get(topicHex),
+    socketByMuxer.get(mux as unknown as object),
+  );
+  if (adopted) {
+    state.serverConfig = adopted.serverConfig;
+    state.socket = adopted.socket;
   }
   const channel = mux.createChannel({
     protocol: POT_GIT_PROTOCOL,
@@ -1106,6 +1174,11 @@ export function wireHiveGitServe(socket: unknown, topic: Buffer, config: PotGitS
         // Persist per-muxer FIRST (survives channel eviction — see
         // serveConfigByMuxer), then mirror onto the live state.
         serveConfigsFor(mux as unknown as object).set(topic.toString('hex'), { serverConfig: config, socket });
+        // ...and process-wide, so a channel the remote opens for this topic on
+        // a DIFFERENT muxer (one wired by another pot's swarm) can still be
+        // served — see `serveConfigByTopic` (EI-18802104888674071).
+        serveConfigByTopic.set(topic.toString('hex'), config);
+        socketByMuxer.set(mux as unknown as object, socket);
         const state = ensureChannel(mux, topic);
         state.serverConfig = config;
         state.socket = socket;
@@ -1239,4 +1312,18 @@ export const _testing = {
    *  no-op under vitest, so the emitted line is unobservable in a test — and
    *  this tail is the whole diagnostic payload of a `not-serving` refusal. */
   formatRefusalTarget,
+  /** EI-18802104888674071: the process-wide serve registry (mirrors
+   *  peer-dial-registry.ts's `_testing.wiredTopics`) and the pure rule that
+   *  consults it — the live path needs a Protomux, this does not. */
+  serveConfigByTopic,
+  resolveServeRegistration,
+  /** Clear the PROCESS-WIDE serve state between tests. The per-muxer maps are
+   *  WeakMaps keyed by a fresh muxer per test, so they self-isolate — but
+   *  `serveConfigByTopic` is a strong Map keyed by topic HEX, and tests reuse
+   *  topic hexes. Without this, one test wiring serve for a topic would make a
+   *  later test's "unwired muxer refuses not-serving" case silently pass by
+   *  serving instead. */
+  reset(): void {
+    serveConfigByTopic.clear();
+  },
 };

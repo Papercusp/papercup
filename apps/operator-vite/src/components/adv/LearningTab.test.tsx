@@ -2140,6 +2140,76 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     expect(seenArgs["learning.improvements"]).toEqual({});
   });
 
+  // WI-6384 residual: the resolver + the query GATE were fixed to serve the
+  // workspace-wide rollup for hive '', but LearningsView still short-circuited
+  // the RENDER on `hive === ""` and printed "No pots" — so the rollup arrived
+  // and was thrown away one layer below the fix. The lens guard could not see
+  // this: it asserts on query enablement/args, and both were already correct.
+  // A read-layer guard is structurally blind to a render-layer refusal, so the
+  // All-Pots contract needs a test that renders.
+  it("All Pots (hive '') RENDERS the workspace-wide retained rollup, not 'No pots'", () => {
+    nuqsState.lview = "learnings";
+    advScopeState.allMode = true;
+    advScopeState.slug = null;
+    advScopeState.hive = "";
+    hiveResult = {
+      data: [
+        {
+          hive: "",
+          rows: [
+            {
+              id: "learning-rollup-1",
+              text: "Workspace-wide retained learning visible under the All Pots lens.",
+              kind: "migration",
+              createdBy: "system-migration",
+            },
+          ],
+          packs: [],
+          organicCount: 1,
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(document.body.textContent).toContain(
+      "Workspace-wide retained learning visible under the All Pots lens.",
+    );
+    expect(document.body.textContent).not.toContain("No pot");
+  });
+
+  // The other half of the same contract: with the short-circuit gone, an
+  // unavailable rollup must still surface its REASON rather than falling
+  // through to the calm "No retained learnings" empty (WI-6382's class).
+  it("All Pots (hive '') surfaces an unavailable rollup's reason", () => {
+    nuqsState.lview = "learnings";
+    advScopeState.allMode = true;
+    advScopeState.slug = null;
+    advScopeState.hive = "";
+    hiveResult = {
+      data: [
+        {
+          hive: "",
+          rows: [],
+          packs: [],
+          organicCount: 0,
+          unavailable: true,
+          unavailableReason: "no pots registered in this workspace",
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(document.body.textContent).toContain(
+      "no pots registered in this workspace",
+    );
+  });
+
   it("turns retained prose into a headline preview with typed provenance", () => {
     nuqsState.lview = "learnings";
     hiveResult = {

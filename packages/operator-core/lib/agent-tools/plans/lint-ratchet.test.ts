@@ -137,9 +137,12 @@ describe('evaluateSetContent — the ratchet end to end', () => {
     if (value.ok) throw new Error('unreachable');
     expect(value.code).toBe('lint_failed');
     if (value.code !== 'lint_failed') throw new Error('unreachable');
-    // Only the introduced error is reported — never the plan's own baggage.
-    expect(value.errors).toHaveLength(1);
-    expect(value.errors[0]?.message).toContain('P-404');
+    // Only the introduced errors are reported — never the plan's own baggage.
+    // (One broken blocked-by ref legitimately raises two findings:
+    // `unknown_blocked_by` and `missing_blocker`.)
+    expect(value.errors.map((e) => e.code).sort()).toEqual(['missing_blocker', 'unknown_blocked_by']);
+    expect(value.errors.every((e) => e.message.includes('P-404'))).toBe(true);
+    expect(value.errors.some((e) => e.message.includes('Duplicate'))).toBe(false);
     expect(value.preexistingErrors).toBeGreaterThan(0);
   });
 

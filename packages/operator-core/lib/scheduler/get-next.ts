@@ -158,6 +158,20 @@ export interface GetNextResult {
  *    without a schema change.
  *  - `plan_item` ⇒ `source_plan_item_ids` (a text[]), the only array item-field.
  */
+/**
+ * Time budget for ONE claim attempt, and for the whole fallback ladder (EI-18805386252364731).
+ *
+ * The ladder runs its query up to three tiers plus a release-and-retry loop, so these are two
+ * genuinely different bounds: the per-attempt value caps a single pathological statement, and
+ * the ladder value caps their SUM — without the latter, several individually-affordable
+ * attempts still add up to a pull that never returns.
+ *
+ * Sized to stay comfortably under the MCP transport's own patience so the failure surfaces as a
+ * typed error from US, with a spec to blame, rather than as an opaque client-side abort.
+ */
+const CLAIM_ATTEMPT_BUDGET_MS = 5_000;
+const CLAIM_LADDER_BUDGET_MS = 15_000;
+
 type FieldKind = 'scalar-text' | 'scalar-num' | 'json-array' | 'text-array';
 interface FieldMap {
   /** The column/expression `sql` fragment. */
@@ -1361,13 +1375,38 @@ export async function getNextWorkItem(
     // query this fragment). Omitted/false ⇒ a payload.needs_2_machine_rig feature is excluded
     // for a single-box caller, matching the issue-family tier-3 floor (claimNextIssueWorkItem).
     rigAvailable: opts.rigAvailable,
-  });
-  const order = compileRank(sql, spec, bee);
+  };
+
+  // EI-18805386252364731: the claim query runs on the `harness_admin` pool, which carries a
+  // role-default lock_timeout but DELIBERATELY NO statement_timeout (migrations share it and
+  // must run unbounded). An over-cost claim spec therefore did not fail — it HUNG, until the
+  // MCP client transport gave up minutes later, and a JS-side AbortController cannot rescue it
+  // because postgres-js does not cancel an in-flight query. The member then reads a pull that
+  // never returned as "the lane is drained" and parks, while the lane is in fact full.
+  //
+  // So every attempt runs inside a BOUNDED txn, and the whole ladder shares ONE budget: a spec
+  // too expensive to decide now surfaces as a typed OrgTxnTimeoutError the tool reports, never
+  // as a drain-shaped `null`. Bounding each attempt alone would not be enough — the ladder runs
+  // this query up to three tiers plus a release-and-retry loop, so N individually-affordable
+  // attempts can still sum past any caller's patience.
+  const ladderDeadline = Date.now() + CLAIM_LADDER_BUDGET_MS;
 
   /** One attempt at the compiled query under a given (possibly widened) filter node. */
   const attempt = async (filterNode: FilterNode | undefined): Promise<WorkItem | null> => {
-    const filter = compileFilter(sql, filterNode);
-    const rows = await sql<FeatureRowDb[]>`
+    const remainingMs = ladderDeadline - Date.now();
+    if (remainingMs <= 0) {
+      // The budget is gone. Report it as the same typed contention error a per-statement
+      // timeout raises — the caller must never mistake this for "nothing matched".
+      throw new OrgTxnTimeoutError('57014', new Error('claim ladder budget exhausted'));
+    }
+    const rows = await boundedOrgTxn(
+      async (tx) => {
+        // Compile against the TRANSACTION client so the fragments belong to the connection
+        // that carries the SET LOCAL statement_timeout.
+        const floors = claimFloorsWhereSql(tx, floorOpts);
+        const order = compileRank(tx, spec, bee);
+        const filter = compileFilter(tx, filterNode);
+        return tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET taken_by = ${bee.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
        WHERE (harness_slug, feature_id) = (
@@ -1379,7 +1418,10 @@ export async function getNextWorkItem(
           LIMIT 1
           FOR UPDATE SKIP LOCKED
        )
-      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+      RETURNING ${tx.unsafe(FEATURE_COLS)}`;
+      },
+      { client: sql, statementTimeoutMs: Math.min(remainingMs, CLAIM_ATTEMPT_BUDGET_MS) },
+    );
     return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
 

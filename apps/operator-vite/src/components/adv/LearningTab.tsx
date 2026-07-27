@@ -4932,12 +4932,17 @@ function LearningsView({
           </Tooltip>
         </div>
 
-        {hive === "" ? (
-          <div className="pc-learning__quietempty" role="status">
-            <Brain size={14} aria-hidden />
-            <span>No {t("pot", { plural: true, lower: true })}</span>
-          </div>
-        ) : sync.loading && !snap ? (
+        {/* WI-6384 (residual): there used to be a `hive === ""` short-circuit
+            HERE that printed "No pots" before anything looked at `snap`. The
+            resolver and the query gate above had already been fixed to serve
+            the workspace-wide rollup for '', so the rollup arrived and was
+            discarded one layer below the fix — the All-Pots lens still read as
+            empty. "No pots" is not a render-time fact either: when the
+            workspace genuinely has no pots the resolver says so as
+            `unavailable('no pots registered in this workspace')`, which the
+            branch below renders WITH its reason. Selecting the broadest lens
+            now shows the broadest result. */}
+        {sync.loading && !snap ? (
           <p className="pc-learning__quietempty">
             Loading the {t("pot", { lower: true })}&rsquo;s shared memory…
           </p>
