@@ -93,7 +93,10 @@ export type RowDrift =
  */
 export function expectedRows(fixtures: PairWithFixture[]): ExpectedRow[] {
   return fixtures.map(({ pair, fixture }) => {
-    const audit = auditPair(pair, fixture.sample);
+    // Pass the fixture as the POPULATION so a homogeneous-but-high-volume pair
+    // (few distinct spellings, many real commands) is audited as a census rather
+    // than rejected as under-sampled — see auditPair's census note.
+    const audit = auditPair(pair, fixture.sample, fixture);
     return {
       intentLabel: audit.intentLabel,
       bashPattern: audit.bashPattern,

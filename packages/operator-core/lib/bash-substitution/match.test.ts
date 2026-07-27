@@ -153,7 +153,7 @@ describe('every seeded pair survives the registry round-trip', () => {
 
   for (const { pair, fixture } of fixtures) {
     it(`${pair.id} matches identically before and after storage`, () => {
-      const audit = auditPair(pair, fixture.sample);
+      const audit = auditPair(pair, fixture.sample, fixture);
       const stored = compileRegistryPattern(audit.bashPattern, audit.bashPatternFlags);
       expect(stored, `${pair.id} stored pattern failed to compile`).not.toBeNull();
 
@@ -175,7 +175,7 @@ describe('every seeded pair survives the registry round-trip', () => {
       // and an advisory would tell the agent to stop doing the right thing. So
       // for those the sample must claim ZERO — that is the assertion proving the
       // negative row is inert, not merely unpromoted.
-      const audit = auditPair(pair, fixture.sample);
+      const audit = auditPair(pair, fixture.sample, fixture);
       const registryRow = row({
         intentLabel: audit.intentLabel,
         bashPattern: audit.bashPattern,

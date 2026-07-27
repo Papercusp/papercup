@@ -1,0 +1,128 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.date-read",
+  "extractedAt": "2026-07-26T13:34:00Z",
+  "totalAtoms": 729,
+  "totalSessions": 50,
+  "sample": [
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T07:16:35.138Z",
+      "atom": "date"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T09:51:14.093Z",
+      "atom": "date '+%H:%M:%S %Z'"
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-25T22:02:34.423Z",
+      "atom": "date '+%H:%M:%S'"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T06:29:28.865Z",
+      "atom": "date '+%Y-%m-%d %H:%M:%S%z  (now)'"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-26T14:44:12.780Z",
+      "atom": "date '+%Y-%m-%dT%H:%M:%S (local)'"
+    },
+    {
+      "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
+      "ts": "2026-07-25T21:17:49.740Z",
+      "atom": "date '+now %H:%M:%S'"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-26T15:23:58.183Z",
+      "atom": "date '+now=%H:%M:%S %Z'"
+    },
+    {
+      "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
+      "ts": "2026-07-25T21:18:29.864Z",
+      "atom": "date '+relaunching poll at %H:%M:%S — next cron tick expected 17:30'"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T11:37:04.394Z",
+      "atom": "date +\"%Y-%m-%d %H:%M:%S %Z (local)\""
+    },
+    {
+      "sid": "su-39274e17-029f-409c-b058-970c9cc5bfdc",
+      "ts": "2026-07-26T06:38:47.896Z",
+      "atom": "date +%H%M%S\\"
+    },
+    {
+      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
+      "ts": "2026-07-26T01:05:52.270Z",
+      "atom": "date +%H:%M:%S"
+    },
+    {
+      "sid": "su-772cf615-c6a4-488e-8491-b553ced6b4ac",
+      "ts": "2026-07-20T18:57:30.667Z",
+      "atom": "date +%T"
+    },
+    {
+      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
+      "ts": "2026-07-26T13:29:42.679Z",
+      "atom": "date +'now local %H:%M:%S  (UTC %H:%M via -u)'"
+    },
+    {
+      "sid": "su-00cb5bbb-979b-4d78-81d8-a1debf876551",
+      "ts": "2026-07-26T00:25:07.621Z",
+      "atom": "date -Iseconds"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T15:11:10.979Z",
+      "atom": "date -u '+%H:%M:%SZ'"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-26T06:26:51.915Z",
+      "atom": "date -u '+NOW: %H:%M:%SZ'"
+    },
+    {
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-26T14:31:52.327Z",
+      "atom": "date -u '+now=%Y-%m-%dT%H:%M:%SZ'"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T11:37:04.394Z",
+      "atom": "date -u +\"%Y-%m-%d %H:%M:%S UTC\""
+    },
+    {
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T05:33:24.429Z",
+      "atom": "date -u +%FT%TZ"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T03:07:29.150Z",
+      "atom": "date -u +%H:%M:%SZ"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T01:46:18.277Z",
+      "atom": "date -u +%Y-%m-%d"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T13:00:51.435Z",
+      "atom": "date -u +%Y-%m-%dT%H:%M:%SZ"
+    },
+    {
+      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
+      "ts": "2026-07-26T13:29:42.679Z",
+      "atom": "date -u +'UTC %H:%M:%S'"
+    },
+    {
+      "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
+      "ts": "2026-07-26T04:14:07.940Z",
+      "atom": "date -u +'now: %Y-%m-%dT%H:%M:%SZ'"
+    }
+  ]
+}

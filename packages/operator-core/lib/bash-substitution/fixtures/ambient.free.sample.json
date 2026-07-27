@@ -1,0 +1,28 @@
+{
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.free",
+  "extractedAt": "2026-07-26T13:34:00Z",
+  "totalAtoms": 33,
+  "totalSessions": 20,
+  "sample": [
+    {
+      "sid": "su-6eab8a26-2a45-4253-a708-671fd3182607",
+      "ts": "2026-07-26T05:26:06.011Z",
+      "atom": "free"
+    },
+    {
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T08:55:41.855Z",
+      "atom": "free -g"
+    },
+    {
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T04:09:07.174Z",
+      "atom": "free -h"
+    },
+    {
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-20T09:37:27.113Z",
+      "atom": "free-port-base\\.ts\" /tmp/tsc-gym-check.log"
+    }
+  ]
+}

@@ -16,7 +16,15 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { atomize, atomHead, normalizeAtom } from './atomize';
-import { auditPair, deriveVerdict, matchingAtoms, maxTierFor, MIN_SAMPLE_SIZE } from './equivalence';
+import {
+  auditPair,
+  deriveVerdict,
+  matchingAtoms,
+  maxTierFor,
+  MIN_POPULATION_ATOMS,
+  MIN_POPULATION_SESSIONS,
+  MIN_SAMPLE_SIZE,
+} from './equivalence';
 import { ALL_PAIRS } from './pairs';
 import { catFileRead, headFileRead, sedRangeRead, tailFileRead, FILE_READ_PAIRS } from './pairs/file-read';
 import { psqlDescribe, psqlSelectRead } from './pairs/postgres';
@@ -82,13 +90,52 @@ describe('verdict derivation (D-008 — total coverage or it is not equivalent)'
     const thin: SampledCommand[] = [{ sid: 'su-x', ts: '2026-07-26T00:00:00Z', atom: 'cat /tmp/a.log' }];
     expect(() => auditPair(catFileRead, thin)).toThrow(/need >= 20/);
   });
+
+  // ── the CENSUS escape hatch (P-026/P-027) ────────────────────────────────
+  // Fixtures dedupe, so `sample.length` counts distinct SPELLINGS. Without this,
+  // an intent everyone types identically (`nproc`, `uptime`) is rejected as "too
+  // rare to enforce" despite being the strongest kind of evidence there is.
+  const thinSample: SampledCommand[] = [{ sid: 'su-x', ts: '2026-07-26T00:00:00Z', atom: 'cat /tmp/a.log' }];
+
+  it('admits a small sample that is a CENSUS of a large, fleet-wide population', () => {
+    const audit = auditPair(catFileRead, thinSample, { totalAtoms: 116, totalSessions: 36 });
+    expect(audit.sampleSize).toBe(1);
+  });
+
+  it('still refuses when the population is large but concentrated in few sessions', () => {
+    // 400 commands from 2 sessions is one agent's habit, not fleet-wide evidence.
+    expect(() => auditPair(catFileRead, thinSample, { totalAtoms: 400, totalSessions: 2 })).toThrow(
+      /need >= 20/,
+    );
+  });
+
+  it('still refuses when the population is genuinely rare', () => {
+    expect(() => auditPair(catFileRead, thinSample, { totalAtoms: 3, totalSessions: 3 })).toThrow(
+      /need >= 20/,
+    );
+  });
+
+  it('names the population in the refusal so the reason is actionable', () => {
+    expect(() => auditPair(catFileRead, thinSample, { totalAtoms: 400, totalSessions: 2 })).toThrow(
+      /400 atoms across 2 sessions/,
+    );
+  });
 });
 
 describe.each(ALL_PAIRS)('pair $id', (pair) => {
   const fixture = loadFixture(pair.id);
 
-  it(`carries a sample of at least ${MIN_SAMPLE_SIZE} real commands`, () => {
-    expect(fixture.sample.length).toBeGreaterThanOrEqual(MIN_SAMPLE_SIZE);
+  it(`carries at least ${MIN_SAMPLE_SIZE} real commands, by sample or by census`, () => {
+    // Two admissible shapes (see auditPair's census note): a normal pair carries
+    // >= MIN_SAMPLE_SIZE distinct spellings, while a HOMOGENEOUS pair carries
+    // every spelling that exists, drawn from a large fleet-wide population. What
+    // is never admissible is thin evidence — which both branches still forbid.
+    if (fixture.sample.length < MIN_SAMPLE_SIZE) {
+      expect(fixture.totalAtoms).toBeGreaterThanOrEqual(MIN_POPULATION_ATOMS);
+      expect(fixture.totalSessions).toBeGreaterThanOrEqual(MIN_POPULATION_SESSIONS);
+    } else {
+      expect(fixture.sample.length).toBeGreaterThanOrEqual(MIN_SAMPLE_SIZE);
+    }
     // Every sampled command must be a real one drawn from the corpus, not a
     // hand-written example that happens to pass.
     for (const entry of fixture.sample) {
@@ -97,13 +144,13 @@ describe.each(ALL_PAIRS)('pair $id', (pair) => {
   });
 
   it('records the verdict the harness actually computes', () => {
-    const audit = auditPair(pair, fixture.sample);
+    const audit = auditPair(pair, fixture.sample, fixture);
     expect(audit.verdict).toBe(pair.expectedVerdict);
     expect(audit.sampleSize).toBe(fixture.sample.length);
   });
 
   it('explains every failure it reports', () => {
-    const audit = auditPair(pair, fixture.sample);
+    const audit = auditPair(pair, fixture.sample, fixture);
     for (const failure of audit.failingCases) {
       expect(failure.reason.length).toBeGreaterThan(10);
       expect(failure.atom).toBeTruthy();

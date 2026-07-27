@@ -135,7 +135,7 @@ export async function seedSubstitutionRegistry(opts: {
   const outcomes: SeedOutcome[] = [];
 
   for (const { pair, fixture } of opts.fixtures) {
-    const audit = auditPair(pair, fixture.sample);
+    const audit = auditPair(pair, fixture.sample, fixture);
     if (audit.verdict !== pair.expectedVerdict) {
       throw new Error(
         `[substitution-seed] pair "${pair.id}" computes "${audit.verdict}" but is recorded as ` +

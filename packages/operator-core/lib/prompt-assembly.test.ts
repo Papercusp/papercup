@@ -387,6 +387,44 @@ describe('assembleRolePrompt — peer-wake note (owner directive 2026-06-24)', (
   });
 });
 
+describe('assembleRolePrompt — coupling note (owner directive 2026-07-27, P-031/D-062)', () => {
+  it('injects the couple/decouple note into the SHARED base EVERY role inherits', async () => {
+    // The owner's ask was explicitly all agents, not just fleet roles — coupling is
+    // not a fleet mechanism (D-054 cut `same fleet` from the predicate), so a
+    // role-gated note would hide it from exactly the third-party case it serves.
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Coupling');
+    expect(out.text).toContain('coord:couple');
+    expect(out.text).toContain('coord:decouple');
+    expect(out.sections.some((s) => s.name === 'coupling-note')).toBe(true);
+  });
+
+  it('teaches the DECOUPLE trigger and the COST, not just the couple verb (D-062)', async () => {
+    // A capability taught only as "how to turn it on" grows monotonically: nobody
+    // removes an edge they were never told to remove, and both agents pay for it.
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('no longer want to see each other\'s data intimately');
+    expect(out.text).toContain('BOTH sides');
+    // …and it must say the third-party case is allowed, or agents never find it.
+    expect(out.text).toContain('COUPLE ANY TWO AGENTS');
+  });
+
+  it('states NO token number — the per-entry cost is unmeasured until P-013 lands (D-062)', async () => {
+    // Guard against the failure this plan already made twice: a figure invented
+    // here would read as measured and then get carried onto other surfaces.
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    const couplingSection = out.text.slice(out.text.indexOf('## Coupling'));
+    const note = couplingSection.slice(0, couplingSection.indexOf('\n## ') + 1 || undefined);
+    expect(note).not.toMatch(/\d+\s*(tokens?|KB|kb)\b/);
+  });
+});
+
 describe('assembleRolePrompt — concurrency-first note (owner directive 2026-06-20)', () => {
   it('injects the "never wait for a calm window; a non-resource block is a BUG to fix" note into the SHARED base every role inherits', async () => {
     mockTools.length = 0;

@@ -186,6 +186,7 @@ export interface AssembledSection {
     | 'agent-activity-truth-note'
     | 'wait-loop-note'
     | 'peer-wake-note'
+    | 'coupling-note'
     | 'runtime';
   chars: number;
 }

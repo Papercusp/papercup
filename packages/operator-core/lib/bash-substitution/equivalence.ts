@@ -44,6 +44,28 @@ import type {
  */
 export const MIN_SAMPLE_SIZE = 20;
 
+/**
+ * Population floors for the CENSUS escape hatch below: a pattern backed by at
+ * least this many real commands, spread across at least this many independent
+ * sessions, has earned a verdict even when its DEDUPED sample is smaller than
+ * {@link MIN_SAMPLE_SIZE}.
+ *
+ * The session floor is what stops this becoming a loophole — 40 commands from
+ * one session is one agent's habit, not fleet-wide evidence, and it still throws.
+ */
+export const MIN_POPULATION_ATOMS = MIN_SAMPLE_SIZE;
+export const MIN_POPULATION_SESSIONS = 5;
+
+/**
+ * The real POPULATION a sample was drawn from (`CorpusFixture`'s own counts).
+ *
+ * Optional, and only ever used to WIDEN the floor, never to narrow it.
+ */
+export interface SamplePopulation {
+  totalAtoms: number;
+  totalSessions: number;
+}
+
 /** Cap on stored failing cases: enough to act on, small enough for a jsonb column. */
 const MAX_FAILING_CASES = 25;
 
@@ -62,18 +84,55 @@ export function matchingAtoms(pair: SubstitutionPair, corpus: SampledCommand[]):
 /**
  * Run the harness for one pair against a corpus of real sampled commands.
  *
- * @throws if the pattern matches fewer than {@link MIN_SAMPLE_SIZE} commands —
- *   an under-sampled verdict is worse than no verdict, because it looks equally
- *   authoritative in the registry.
+ * @param population - the counts of the REAL population `corpus` was sampled
+ *   from (pass the `CorpusFixture` itself). Optional; supplying it can only
+ *   ADMIT a pair the raw sample floor would have rejected, never reject one it
+ *   would have admitted.
+ *
+ * @throws if the pattern has not earned a verdict — an under-sampled verdict is
+ *   worse than no verdict, because it looks equally authoritative in the
+ *   registry. See the CENSUS note below for what "under-sampled" means.
  */
-export function auditPair(pair: SubstitutionPair, corpus: SampledCommand[]): PairAudit {
+export function auditPair(
+  pair: SubstitutionPair,
+  corpus: SampledCommand[],
+  population?: SamplePopulation,
+): PairAudit {
   const sample = matchingAtoms(pair, corpus);
 
-  if (sample.length < MIN_SAMPLE_SIZE) {
+  // ── The floor, and the CENSUS escape hatch (P-026/P-027) ──────────────────
+  // Fixtures are built with `sampleDistinct`, so `sample.length` counts distinct
+  // SPELLINGS, not commands. Read literally, the floor therefore rejects any
+  // intent expressed in fewer than 20 different ways — which is a statement
+  // about vocabulary, not about evidence, and it inverts the guard's own
+  // purpose: a pattern with 24 spellings across 30 commands passes, while
+  // `^uptime` (116 real commands across 36 independent sessions, spelled 4 ways)
+  // fails as "too rare to enforce".
+  //
+  // Worse, low spelling-variety is precisely the property that makes a family
+  // worth acting on: an intent everyone expresses IDENTICALLY is the one a
+  // single fixed answer can serve. P-026/P-027 are entirely made of those.
+  //
+  // So when the sample EXHAUSTS a population that is itself large and
+  // fleet-wide, it is a census rather than a thin sample — there is no more
+  // evidence to be had, and demanding it would be demanding variety that does
+  // not exist. A genuinely rare intent still throws: the population floors are
+  // checked against real commands AND distinct sessions.
+  const isCensus =
+    population !== undefined &&
+    population.totalAtoms >= MIN_POPULATION_ATOMS &&
+    population.totalSessions >= MIN_POPULATION_SESSIONS;
+
+  if (sample.length < MIN_SAMPLE_SIZE && !isCensus) {
+    const pop = population
+      ? ` The population it was drawn from is ${population.totalAtoms} atoms across ` +
+        `${population.totalSessions} sessions, which does not meet the census floor ` +
+        `(>= ${MIN_POPULATION_ATOMS} atoms across >= ${MIN_POPULATION_SESSIONS} sessions).`
+      : '';
     throw new Error(
       `[equivalence] pair "${pair.id}" matched only ${sample.length} of ${corpus.length} corpus atoms ` +
         `(need >= ${MIN_SAMPLE_SIZE}). Either the pattern is wrong, or this intent is too rare to enforce — ` +
-        `do not record a verdict from this sample.`,
+        `do not record a verdict from this sample.${pop}`,
     );
   }
 
