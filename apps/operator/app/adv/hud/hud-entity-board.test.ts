@@ -346,3 +346,82 @@ describe('helpers', () => {
     expect(shortAssignee('avi')).toBe('avi');
   });
 });
+
+/* hud-open-destinations-and-true-counts-2026-07-27 P-004 — owner report: the
+   Work items tab "is only showing 201 needs you items. Where are all the rest?
+   we have way more work items than that."
+
+   Diagnosed on live data (papercusp, 27,514 rows): the tab fetched ONE 500-row
+   `updated_ts DESC` window and derived every count from it. That window held
+   `done 264, open 197, resolved 21, dropped 9, blocked 8, closed 1` and ZERO of
+   the 45 needs-human rows, while the store held 13,126 open+todo. So the board
+   reported a sample as if it were a total. */
+describe('true per-column totals (P-004)', () => {
+  it('rolls a state aggregate up through the SAME mapping the cards use', () => {
+    expect(
+      rollUpStateCounts([
+        { state: 'open', n: 13_126 },
+        { state: 'needs-human', n: 45 },
+        { state: 'blocked', n: 85 },
+        { state: 'wip', n: 3 },
+        { state: 'done', n: 9_355 },
+        { state: 'resolved', n: 3_278 },
+      ]),
+    ).toEqual({
+      'needs-you': 45,
+      working: 3,
+      blocked: 85,
+      ready: 13_126,
+      done: 12_633,
+    });
+  });
+
+  it('ignores absent/negative counts rather than emitting NaN', () => {
+    expect(rollUpStateCounts([{ state: 'open' }, { state: 'open', n: -4 }, { state: 'open', n: 7 }]).ready).toBe(7);
+  });
+
+  it('reports the STORE total, not the sampled rows — the reported defect', () => {
+    // One fetched card, but the store says 13,126 are ready.
+    const board = buildWorkItemBoard([item({ id: 'WI-1', state: 'open' })], [], {
+      nowMs: NOW,
+      totals: { ready: 13_126 },
+    });
+    expect(board.counts.ready).toBe(13_126);
+    // And the column SAYS what it is not showing, rather than implying it holds
+    // everything it counted.
+    expect(board.columns.find((c) => c.id === 'ready')!.hidden).toBe(13_125);
+  });
+
+  it('never reports fewer than the cards on screen (asks are not in the store totals)', () => {
+    const board = buildWorkItemBoard([], [ask({ id: 'a1' }), ask({ id: 'a2' })], {
+      nowMs: NOW,
+      totals: { 'needs-you': 0 },
+    });
+    expect(board.counts['needs-you']).toBe(2);
+    expect(board.columns.find((c) => c.id === 'needs-you')!.hidden).toBe(0);
+  });
+
+  it('FALLS BACK to counting matches while a query filters — a total would lie about the screen', () => {
+    const board = buildWorkItemBoard(
+      [item({ id: 'WI-1', state: 'open' }), item({ id: 'WI-2', state: 'open' })],
+      [],
+      { nowMs: NOW, totals: { ready: 13_126 }, query: 'WI-1' },
+    );
+    expect(board.counts.ready).toBe(1);
+    expect(board.total).toBe(1);
+  });
+
+  it('without totals the board still counts what it holds (unchanged behaviour)', () => {
+    const board = buildWorkItemBoard([item({ id: 'WI-1', state: 'open' })], [], { nowMs: NOW });
+    expect(board.counts.ready).toBe(1);
+    expect(board.total).toBe(1);
+  });
+
+  it('the fetch-state list covers every branch workItemColumn maps', () => {
+    // A status the board fetches must land somewhere real, and every column the
+    // board renders must be reachable from the list — otherwise a column
+    // silently stops loading cards.
+    const reached = new Set(HUD_WORK_ITEM_FETCH_STATES.map((s) => workItemColumn(s)));
+    for (const id of HUD_ENTITY_COLUMNS) expect(reached.has(id)).toBe(true);
+  });
+});
