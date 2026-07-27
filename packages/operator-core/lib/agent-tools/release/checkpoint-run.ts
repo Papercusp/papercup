@@ -162,22 +162,33 @@ export default defineTool({
 
     const excluded = result.willJudge?.excludedCommits ?? [];
     const excludedPaths = result.willJudge?.excludedPaths ?? [];
-    // The old warning ended at "if your fix is among them" — it named SHAS and left the
-    // reader to resolve them, in the one space the reader has no information about. Answer
-    // it instead: when containment resolved the question, say so outright; otherwise at
-    // least name the FILES the excluded window touches, which a caller CAN match against
-    // its own edits.
-    const excludedWarning = containment?.warning
+
+    // COMPOSED, not either/or. The containment verdict is the SPECIFIC answer and the
+    // exclusion notice is the GENERIC one, so containment leads — but the generic notice
+    // is not dropped, because a caller may have edited files it did not declare. An
+    // earlier either/or chain let the generic branch shadow a definitive positive, which
+    // is the same "the reader must resolve it themselves" failure in a new place.
+    const declaredAllIn =
+      !!containment && containment.source === 'caller-supplied' && !containment.missing.length && !!containment.included.length;
+    const containmentPart = containment?.warning
       ? ` ${containment.warning}`
-      : excluded.length
-        ? ` ⚠ quiet-cut EXCLUDED ${excluded.length} commit(s) newer than the judged candidate (they get the NEXT run). ${
+      : declaredAllIn
+        ? ` ✓ the judged candidate carries all ${containment.included.length} file(s) you named — this is a real verdict on your change.`
+        : '';
+
+    // The old text ended at "if your fix is among them" and listed SHAS — the one space the
+    // reader has no information about. Answer in PATH space, which a caller can match
+    // against its own edits at a glance.
+    const excludedPart = !excluded.length
+      ? ''
+      : declaredAllIn
+        ? ` (${excluded.length} newer commit(s) were excluded from this run, touching ${excludedPaths.slice(0, 4).join(', ') || 'other files'} — none of the files you named, which were checked.)`
+        : ` ⚠ quiet-cut EXCLUDED ${excluded.length} commit(s) newer than the judged candidate (they get the NEXT run). ${
             excludedPaths.length
               ? `Those commits touch: ${excludedPaths.slice(0, 8).join(', ')}${excludedPaths.length > 8 ? ` (+${excludedPaths.length - 8} more)` : ''} — if you edited any of them, THIS run judges the older version, and a red from it is not evidence your change failed.`
               : `Excluded: ${excluded.slice(0, 5).join(' | ')}${excluded.length > 5 ? ' | …' : ''}`
-          }`
-        : containment && containment.included.length
-          ? ` ✓ the judged candidate carries your ${containment.included.length} checked file(s) — this verdict is a real verdict on your change.`
-          : '';
+          }`;
+    const excludedWarning = `${containmentPart}${excludedPart}`;
     return {
       content: [
         {

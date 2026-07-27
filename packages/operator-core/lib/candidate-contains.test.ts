@@ -31,9 +31,9 @@ function fakeGit(opts: {
   blobs?: Record<string, string>;
   /** path → working-tree blob sha. Absent ⇒ the file cannot be read. */
   tree?: Record<string, string>;
-  status?: string;
   log?: string;
   diff?: string;
+  lsFiles?: string;
   /** Simulate a total git failure (bad repo, missing binary). */
   allFail?: boolean;
 }): GitRead {
@@ -45,7 +45,7 @@ function fakeGit(opts: {
     if (args[0] === 'hash-object') {
       return opts.tree?.[args[2]] ?? null;
     }
-    if (args[0] === 'status') return opts.status ?? '';
+    if (args[0] === 'ls-files') return opts.lsFiles ?? '';
     if (args[0] === 'log') return opts.log ?? '';
     if (args[0] === 'diff') return opts.diff ?? '';
     return null;
@@ -160,17 +160,29 @@ describe('callerEditsInCandidate', () => {
 
 describe('uncommittedPaths', () => {
   it('reports untracked files — the input a committed candidate provably cannot contain', async () => {
-    const git = fakeGit({ status: '?? packages/x/brand-new.test.ts\n M packages/x/edited.ts' });
-    expect(await uncommittedPaths(git)).toEqual(['packages/x/brand-new.test.ts', 'packages/x/edited.ts']);
+    const git = fakeGit({ diff: 'packages/x/edited.ts', lsFiles: 'packages/x/brand-new.test.ts' });
+    expect(await uncommittedPaths(git)).toEqual(['packages/x/edited.ts', 'packages/x/brand-new.test.ts']);
   });
 
-  it('reports the NEW path of a rename — the one that has to be in the candidate', async () => {
-    const git = fakeGit({ status: 'R  old/name.ts -> new/name.ts' });
-    expect(await uncommittedPaths(git)).toEqual(['new/name.ts']);
+  /**
+   * The regression this parse was rewritten for: `git status --porcelain` encodes state
+   * in a two-column PREFIX (`" M path"`), and every runner here trims stdout — which eats
+   * the first line's leading space and shifts the column parse by one, silently yielding
+   * a truncated path ("irty.ts" for "dirty.ts"). Bare-path reads have no column to lose,
+   * so a trimmed answer is still a correct answer.
+   */
+  it('survives a TRIMMED first line — no leading-column dependency', async () => {
+    const git = fakeGit({ diff: 'dirty.ts', lsFiles: '' });
+    expect(await uncommittedPaths(git)).toEqual(['dirty.ts']);
   });
 
-  it('a clean tree is empty, and a failed status is empty rather than throwing', async () => {
-    expect(await uncommittedPaths(fakeGit({ status: '' }))).toEqual([]);
+  it('de-duplicates a path reported by both reads', async () => {
+    const git = fakeGit({ diff: 'a.ts\nb.ts', lsFiles: 'b.ts' });
+    expect(await uncommittedPaths(git)).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('a clean tree is empty, and a failed read is empty rather than throwing', async () => {
+    expect(await uncommittedPaths(fakeGit({ diff: '', lsFiles: '' }))).toEqual([]);
     expect(await uncommittedPaths(fakeGit({ allFail: true }))).toEqual([]);
   });
 });

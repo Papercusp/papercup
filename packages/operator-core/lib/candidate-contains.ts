@@ -164,22 +164,27 @@ export async function callerEditsInCandidate(
 /**
  * Paths with uncommitted working-tree changes, INCLUDING untracked files.
  *
- * `git status --porcelain` is the only read that sees an untracked file, and an
- * untracked file is the most dangerous input to a gate run: a brand-new test or
- * fixture the candidate provably cannot contain. Rename entries (`R  old -> new`)
- * report the NEW path, which is the one that must be in the candidate.
+ * An untracked file is the most dangerous input to a gate run — a brand-new test or
+ * fixture the candidate provably cannot contain, and the one case a `git diff` against
+ * a commit cannot see at all — so it must be in this set.
+ *
+ * Deliberately TWO bare-path reads rather than one `git status --porcelain`. Porcelain
+ * v1 encodes the state in a fixed two-column PREFIX (`" M path"`), so its meaning
+ * depends on leading whitespace — and every runner in this tree trims stdout, which
+ * silently eats the first line's leading space and shifts the column parse by one. That
+ * is a parse whose correctness depends on something no caller can see; these two
+ * commands emit paths and nothing else, so there is no column to lose.
  */
 export async function uncommittedPaths(git: GitRead): Promise<string[]> {
-  const out = await git(['status', '--porcelain']);
-  if (!out) return [];
-  const paths: string[] = [];
-  for (const line of out.split('\n')) {
-    if (line.length < 4) continue;
-    const rest = line.slice(3).trim();
-    if (!rest) continue;
-    const arrow = rest.lastIndexOf(' -> ');
-    paths.push(arrow >= 0 ? rest.slice(arrow + 4) : rest);
-  }
+  const [tracked, untracked] = await Promise.all([
+    git(['diff', '--name-only', 'HEAD']),
+    git(['ls-files', '--others', '--exclude-standard']),
+  ]);
+  const paths = [tracked, untracked]
+    .filter((o): o is string => typeof o === 'string' && o.length > 0)
+    .flatMap((o) => o.split('\n'))
+    .map((l) => l.trim())
+    .filter(Boolean);
   return [...new Set(paths)];
 }
 

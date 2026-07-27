@@ -38,6 +38,7 @@
  * mechanically forced to agree.
  */
 import { describe, it, expect } from 'vitest';
+import type { z } from 'zod';
 import { HEALTH_ENDPOINTS, SUPERVISED_PROCESSES, NON_PROBED_UNITS, DOWN_CONFIRM_TICKS } from '../../service-health';
 import {
   PROBED_PORTS,
@@ -45,9 +46,12 @@ import {
   SUPERVISED_BUT_UNPROBED,
   SUPERVISION_ROW_NAME,
   EXCLUSION_REASON,
+  curlHealthProbe,
   listeningPorts,
+  systemctlScope,
 } from './service';
 import devListeningPorts from '../../agent-tools/dev/listening_ports';
+import devServiceHealth from '../../agent-tools/dev/service_health';
 import { LISTENING_SOCKETS_DEFAULT_LIMIT, SS_ARGV } from '../../listening-sockets';
 import { expectArgSurface, expectExpressionUsesRealArgs } from './model-drift-helpers';
 
@@ -327,5 +331,90 @@ describe('service.ts equivalence model tracks the real dev:service_health (WI-61
     expect(UNIT_TO_PROBE['papercup-staging-api']).toBe('staging-api');
     expect(SUPERVISED_BUT_UNPROBED.has('papercup-staging-api')).toBe(false);
     expect(HEALTH_ENDPOINTS.some((s) => s.name === 'staging-api')).toBe(true);
+  });
+});
+
+/**
+ * P-014 (WI-6244) — the model of the WIDENED tool.
+ *
+ * `systemctlIsActive.cover()` now emits `dev:service_health { units, scope }`
+ * expressions, which is a claim about the tool's ARGUMENT SURFACE, not just its
+ * probe list. The same drift hole this file exists to close applies: narrowing
+ * the tool back (dropping `units`, or collapsing `scope` to a boolean) would
+ * leave `cover()` unchanged, the verdict unchanged, and the whole suite green
+ * while every emitted expression became uncallable.
+ */
+describe('P-014: the unit-state widening (arg-surface drift)', () => {
+  it('dev:service_health really accepts the `units` + `scope` args cover() emits', () => {
+    expectArgSurface(
+      devServiceHealth,
+      'dev:service_health',
+      ['units', 'scope'],
+      'systemctlIsActive.cover() emits `dev:service_health { units: [...], scope: ... }` for every unit outside the ' +
+        'probe registry — which is 50 of the 114 corpus atoms. Removing either arg makes those expressions uncallable ' +
+        'while the recorded `equivalent` verdict still claims they work.',
+    );
+  });
+
+  /**
+   * ⚠ THREE-VALUED ON PURPOSE — do not "simplify" this to a boolean.
+   *
+   * The identical mistake was made and caught in `logs:read` (P-023): `--user`
+   * and `--system` are separate managers, so a boolean forces a caller asking
+   * about a system unit to query a manager that CANNOT hold the answer and get
+   * a confident wrong result. Measured here too: every flagless `systemctl
+   * is-active` atom in the corpus names a genuine system unit (auditd, ufw,
+   * fail2ban, crowdsec), and a bare `systemctl` defaults to `--system`.
+   */
+  it('scope stays three-valued (user | system | all), and flagless atoms map to system', () => {
+    // Asserted through the schema's BEHAVIOUR rather than its internals: what
+    // matters is that all three values parse and a boolean does not.
+    const args = (devServiceHealth as { args: z.ZodType }).args;
+    for (const scope of ['user', 'system', 'all']) {
+      expect(args.safeParse({ units: ['x'], scope }).success, `scope:'${scope}' must be accepted`).toBe(true);
+    }
+    expect(
+      args.safeParse({ units: ['x'], scope: true }).success,
+      'scope must NOT accept a boolean — that is the exact collapse this guard exists to prevent',
+    ).toBe(false);
+    expect(args.safeParse({ units: ['x'], scope: 'both' }).success).toBe(false);
+    // The corpus rule, asserted directly: no flag ⇒ systemctl talks to --system.
+    expect(systemctlScope('systemctl is-active auditd 2>&1')).toBe('system');
+    expect(systemctlScope('systemctl --system is-active pgbouncer')).toBe('system');
+    expect(systemctlScope('systemctl --user is-active papercup-dev-api.service')).toBe('user');
+  });
+
+  /**
+   * The curl pattern is DERIVED from `PROBED_PORTS`, so a hand-written second
+   * copy can never drift from it. Asserted from both ends: every modelled port
+   * appears in the live pattern, and no unmodelled port does.
+   */
+  it('the curl pattern is derived from PROBED_PORTS, not a hand-written copy', () => {
+    for (const port of Object.keys(PROBED_PORTS)) {
+      expect(curlHealthProbe.bashPattern.source, `:${port} is probed but absent from the pattern`).toContain(port);
+    }
+    // A port nobody probes must NOT be claimed — :8788 is the live example
+    // (deliberately unprobed: its /health requires an auth header).
+    expect(curlHealthProbe.bashPattern.test('curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8788/health')).toBe(
+      false,
+    );
+  });
+
+  /**
+   * The narrowings must stay narrow. Both pairs reached `equivalent` by CLAIMING
+   * LESS, so a loosened pattern silently re-introduces the exact wrong answers
+   * (a connection census answered with the bind table; a body read answered with
+   * a diagnostic snapshot) while the recorded verdict still says `equivalent`.
+   */
+  it('the P-014 narrowings hold: no all-states socket query, no body-reading curl', () => {
+    expect(listeningPorts.bashPattern.test('ss -tnp 2>/dev/null')).toBe(false);
+    expect(listeningPorts.bashPattern.test('ss -lunp 2>/dev/null')).toBe(false);
+    expect(listeningPorts.bashPattern.test('lsof -nP -iTCP:8044 2>&1')).toBe(false);
+    expect(curlHealthProbe.bashPattern.test('curl -s http://127.0.0.1:3070/api/health')).toBe(false);
+    // …while the shapes they DO claim still match.
+    expect(listeningPorts.bashPattern.test('ss -ltnp 2>/dev/null')).toBe(true);
+    expect(
+      curlHealthProbe.bashPattern.test('curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3070/api/health'),
+    ).toBe(true);
   });
 });

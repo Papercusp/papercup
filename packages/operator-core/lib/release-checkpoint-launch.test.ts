@@ -993,7 +993,8 @@ describe('checkpointCandidateContainment (P-004)', () => {
       candidateSha: 'cand',
       tipSha: 'cand',
       execFn: fakeExec({
-        'status --porcelain': ' M dirty.ts',
+        'diff --name-only HEAD': 'dirty.ts',
+        'ls-files --others --exclude-standard': '',
         'rev-parse --verify cand:dirty.ts': BLOB_OLD,
         'hash-object -- dirty.ts': BLOB_NEW,
         'rev-parse --verify HEAD:dirty.ts': BLOB_OLD,

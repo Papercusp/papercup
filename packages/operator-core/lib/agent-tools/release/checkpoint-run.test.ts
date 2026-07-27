@@ -355,4 +355,143 @@ describe('release:checkpoint-run', () => {
 
     expect(launchSpy).toHaveBeenCalledWith({ force: true });
   });
+
+  /* ----------------------------------------------------------------------- *
+   * P-004 (EI-18752644493166307) — the containment answer, in the reply.
+   *
+   * The filer burned two gate runs judging candidates without their fix, and had
+   * restated the correct rule to the owner an hour earlier. That is the evidence
+   * that prose is the wrong layer: a rule you must recall at exactly the right
+   * instant only fires for someone who already knows. It has to be in the return
+   * value, at the moment of the mistake.
+   * ----------------------------------------------------------------------- */
+  const LAUNCHED = {
+    launched: true,
+    unit: 'papercup-green-checkpoint-manual',
+    argv: [],
+    logPath: '/tmp/papercup-green-checkpoint-manual.log',
+    willJudge: {
+      candidate: 'aaaaaaa',
+      tip: 'fffffff',
+      quietCutApplied: true,
+      quietCutSec: 240,
+      excludedCommits: ['fffffff my just-landed fix'],
+      excludedPaths: ['packages/operator-core/lib/mine.ts'],
+    },
+  };
+
+  const mockWith = (containment: unknown) => {
+    const launchSpy = vi.fn(async () => LAUNCHED);
+    const containmentSpy = vi.fn(async () => containment);
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: containmentSpy,
+    }));
+    return { launchSpy, containmentSpy };
+  };
+
+  it('reports callerEditsInCandidate and leads the note with the hard warning', async () => {
+    const { containmentSpy } = mockWith({
+      candidateSha: 'aaaaaaa',
+      tipSha: 'fffffff',
+      source: 'caller-supplied',
+      included: [],
+      missing: ['packages/operator-core/lib/mine.ts'],
+      unknown: [],
+      paths: [],
+      excludedCommitsTouchingYourFiles: [],
+      warning: '⚠ THIS RUN WILL NOT SEE 1 of your file(s). A RED from it is NOT evidence your change failed.',
+    });
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: ['packages/operator-core/lib/mine.ts'] }, MAKE_CTX())) as never);
+
+    // The caller's declared paths reach the check against the commit that will be judged.
+    expect(containmentSpy).toHaveBeenCalledWith({
+      candidateSha: 'aaaaaaa',
+      tipSha: 'fffffff',
+      paths: ['packages/operator-core/lib/mine.ts'],
+    });
+    expect(b.callerEditsInCandidate).toMatchObject({ missing: ['packages/operator-core/lib/mine.ts'] });
+    expect(String(b.note)).toMatch(/NOT evidence your change failed/);
+  });
+
+  /**
+   * The old warning ended at "if your fix is among them" and listed SHAS — the one space
+   * the reader has no information about. When containment cannot resolve it, the fallback
+   * must at least answer in PATH space, which the caller CAN match against its own edits.
+   */
+  it('falls back to naming the FILES the excluded commits touch, not just the shas', async () => {
+    mockWith({
+      candidateSha: 'aaaaaaa',
+      tipSha: 'fffffff',
+      source: 'inferred-uncommitted',
+      included: [],
+      missing: [],
+      unknown: [],
+      paths: [],
+      excludedCommitsTouchingYourFiles: [],
+      warning: null,
+    });
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+    expect(String(b.note)).toMatch(/Those commits touch: packages\/operator-core\/lib\/mine\.ts/);
+    expect(String(b.note)).toMatch(/not evidence your change failed/i);
+    expect(String(b.note)).not.toMatch(/if your fix is among them/);
+  });
+
+  it('confirms containment positively when the candidate DOES carry the files', async () => {
+    mockWith({
+      candidateSha: 'aaaaaaa',
+      tipSha: 'aaaaaaa',
+      source: 'caller-supplied',
+      included: ['packages/operator-core/lib/mine.ts'],
+      missing: [],
+      unknown: [],
+      paths: [],
+      excludedCommitsTouchingYourFiles: [],
+      warning: null,
+    });
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: ['packages/operator-core/lib/mine.ts'] }, MAKE_CTX())) as never);
+    // A caller told "your file is in there" can trust a red as a real red — which is the
+    // other half of the fix, and the half that stops a needless re-fire.
+    expect(String(b.note)).toMatch(/real verdict on your change/);
+  });
+
+  it('answers containment on the already_running path too — that verdict is the one landing', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: false,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/x.log',
+      reason: 'already_running',
+      alreadyRunning: { active: true, unit: 'u', candidate: 'inflight1', current_head: 'tip1' },
+    }));
+    const containmentSpy = vi.fn(async () => ({
+      candidateSha: 'inflight1',
+      tipSha: 'tip1',
+      source: 'caller-supplied' as const,
+      included: [],
+      missing: ['mine.ts'],
+      unknown: [],
+      paths: [],
+      excludedCommitsTouchingYourFiles: [],
+      warning: '⚠ the in-flight run cannot see mine.ts',
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: containmentSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: ['mine.ts'] }, MAKE_CTX())) as never);
+    // Checked against the IN-FLIGHT candidate, never the hypothetical fresh one.
+    expect(containmentSpy).toHaveBeenCalledWith({ candidateSha: 'inflight1', tipSha: 'tip1', paths: ['mine.ts'] });
+    expect(b.containment_warning).toMatch(/cannot see mine\.ts/);
+  });
 });
