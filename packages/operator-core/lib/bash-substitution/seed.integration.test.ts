@@ -17,8 +17,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { loadPairFixtures } from './corpus';
+import { MIN_POPULATION_ATOMS, MIN_POPULATION_SESSIONS, MIN_SAMPLE_SIZE } from './equivalence';
 import { seedSubstitutionRegistry } from './seed';
 import { ALL_PAIRS } from './pairs';
+import { POLICY_INTENT_PREFIX } from './types';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
@@ -44,11 +46,10 @@ describe('seedSubstitutionRegistry (real PG)', () => {
 
     expect(outcomes).toHaveLength(ALL_PAIRS.length);
     expect(outcomes.every((o) => o.inserted)).toBe(true);
-    // Every sample must be a real one of at least the mandated size.
-    expect(outcomes.every((o) => o.sampleSize >= 20)).toBe(true);
 
     const rows = (await db.adminSql`
-      SELECT intent_label, tool_name, equivalence_verdict, tier, advisory_text, sample_size, baseline_calls
+      SELECT intent_label, tool_name, equivalence_verdict, tier, advisory_text,
+             sample_size, baseline_calls, baseline_sessions
         FROM harness_shared.bash_tool_substitutions
        WHERE workspace_id = ${WORKSPACE}
        ORDER BY intent_label
@@ -56,13 +57,68 @@ describe('seedSubstitutionRegistry (real PG)', () => {
 
     expect(rows).toHaveLength(ALL_PAIRS.length);
     for (const row of rows) {
-      // Rows land at `observe` no matter how good the verdict is — promotion is
-      // P-020's staged decision, never an automatic consequence of a green audit.
-      expect(row.tier).toBe('observe');
       expect(row.advisory_text).toBeTruthy();
-      expect(Number(row.sample_size)).toBeGreaterThanOrEqual(20);
       // The frozen population count feeds Phase 5's before/after measurement.
       expect(Number(row.baseline_calls)).toBeGreaterThan(0);
+
+      // Evidence floor — assert the SAME two-branch admissibility `auditPair`
+      // enforces, not just the sample branch of it. A HOMOGENEOUS intent carries
+      // every spelling that exists rather than 20 distinct ones (`nproc` has 2,
+      // `uptime` 1), and D-036 admits it on POPULATION instead. Asserting
+      // `sample_size >= 20` alone re-imposed the pre-D-036 floor here and would
+      // have failed for the P-026/P-027 rows too — it only surfaced with P-028
+      // because this suite needs real PG and had not been run since.
+      const bySample = Number(row.sample_size) >= MIN_SAMPLE_SIZE;
+      const byCensus =
+        Number(row.baseline_calls) >= MIN_POPULATION_ATOMS &&
+        Number(row.baseline_sessions) >= MIN_POPULATION_SESSIONS;
+      expect(
+        bySample || byCensus,
+        `${String(row.intent_label)} is thin evidence: sample=${String(row.sample_size)} ` +
+          `population=${String(row.baseline_calls)} atoms / ${String(row.baseline_sessions)} sessions`,
+      ).toBe(true);
+
+      // Rows land at `observe` no matter how good the verdict is — promotion is
+      // P-020's staged decision, never an automatic consequence of a green audit.
+      // The ONE exception is an authorized POLICY tier (D-003/D-039): a rule that
+      // already existed independently has nothing to observe, so it is declared by
+      // the pair and gated on the `policy-violation:` intent prefix.
+      if (String(row.intent_label).startsWith(POLICY_INTENT_PREFIX)) {
+        expect(row.tier).not.toBe('observe');
+      } else {
+        expect(row.tier).toBe('observe');
+      }
+    }
+  });
+
+  it('seeds an authorized policy row AT its declared tier, and re-asserts it on conflict', async () => {
+    // The policy tier is pair-owned, not earned from an observation window, so —
+    // unlike an ordinary row's tier — re-seeding must re-assert it. Otherwise a
+    // row seeded BEFORE the declaration sits at `observe` forever and the policy
+    // is enforced nowhere, which is this file's whole reason for existing.
+    const policyPairs = ALL_PAIRS.filter((p) => p.policyTier !== undefined);
+    expect(policyPairs.length).toBeGreaterThan(0);
+
+    for (const pair of policyPairs) {
+      expect(pair.intentLabel.startsWith(POLICY_INTENT_PREFIX)).toBe(true);
+      await db.adminSql`
+        UPDATE harness_shared.bash_tool_substitutions SET tier = 'observe'
+         WHERE workspace_id = ${WORKSPACE} AND intent_label = ${pair.intentLabel}
+      `;
+    }
+
+    await seedSubstitutionRegistry({
+      workspaceId: WORKSPACE,
+      fixtures: loadPairFixtures(ALL_PAIRS),
+      client: db.adminSql,
+    });
+
+    for (const pair of policyPairs) {
+      const [row] = (await db.adminSql`
+        SELECT tier FROM harness_shared.bash_tool_substitutions
+         WHERE workspace_id = ${WORKSPACE} AND intent_label = ${pair.intentLabel}
+      `) as unknown as Array<{ tier: string }>;
+      expect(row?.tier).toBe(pair.policyTier);
     }
   });
 
