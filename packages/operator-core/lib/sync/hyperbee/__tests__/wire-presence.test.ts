@@ -8,6 +8,7 @@ import {
   wirePresenceAnnounceForHarness,
   publishPresenceTombstoneForHarness,
   type PresenceWireHandle,
+  createBroadcastFailureReporter,
 } from '../wire-presence';
 import type { LocalWriteOp } from '../boot';
 import type { PresenceIdentity } from '../presence-announce';
@@ -154,5 +155,97 @@ describe('publishPresenceTombstoneForHarness (EI-469 leave retract)', () => {
     });
     expect(ok).toBe(false);
     expect(appended).toHaveLength(0);
+  });
+});
+
+// EI-18767449529288937 — a failed presence gossip broadcast used to be COMPLETELY
+// silent (the false return discarded at the only call site; throws swallowed into
+// that same false), so a node could be invisible to every peer with clean logs.
+// Observed live on the 2-machine rig (WI-559). These cover the pure reporter that
+// now carries the signal.
+describe('createBroadcastFailureReporter (EI-18767449529288937 broadcast-failure signal)', () => {
+  function harness(warnIntervalMs = 1000) {
+    const warns: string[] = [];
+    const infos: string[] = [];
+    let now = 0;
+    const note = createBroadcastFailureReporter({
+      label: 'ws::repo-a',
+      now: () => now,
+      warnIntervalMs,
+      warn: (m) => warns.push(m),
+      info: (m) => infos.push(m),
+    });
+    return {
+      warns,
+      infos,
+      note,
+      advance: (ms: number) => {
+        now += ms;
+      },
+    };
+  }
+
+  const TOPIC = 'abcdef0123456789';
+
+  it('a delivered beat is silent — no log noise on the healthy path', () => {
+    const h = harness();
+    for (let i = 0; i < 10; i++) h.note(true, TOPIC);
+    expect(h.warns).toHaveLength(0);
+    expect(h.infos).toHaveLength(0);
+  });
+
+  it('warns IMMEDIATELY on the first failure, naming the node and the consequence', () => {
+    const h = harness();
+    h.note(false, TOPIC);
+    expect(h.warns).toHaveLength(1);
+    expect(h.warns[0]).toContain('ws::repo-a');
+    expect(h.warns[0]).toContain('NOT reaching peers');
+    // The operative consequence — why a reader should care.
+    expect(h.warns[0]).toContain('INVISIBLE');
+    // The topic is identified (truncated), so a multi-topic node is diagnosable.
+    expect(h.warns[0]).toContain('abcdef012345');
+  });
+
+  it('THROTTLES a permanently-failing broadcast instead of flooding the log', () => {
+    const h = harness(1000);
+    // A permanently-unbound writer re-attempts every ~30s forever; 50 beats inside
+    // one window must not produce 50 lines.
+    for (let i = 0; i < 50; i++) h.note(false, TOPIC);
+    expect(h.warns).toHaveLength(1);
+  });
+
+  it('warns again once the throttle window elapses, with a rising streak count', () => {
+    const h = harness(1000);
+    h.note(false, TOPIC); // streak 1 → warns
+    h.advance(999);
+    h.note(false, TOPIC); // still inside the window → silent
+    expect(h.warns).toHaveLength(1);
+    h.advance(1);
+    h.note(false, TOPIC); // window elapsed → warns again
+    expect(h.warns).toHaveLength(2);
+    // The count is the evidence that this is sustained, not a one-off miss.
+    expect(h.warns[1]).toContain('3 consecutive');
+  });
+
+  it('reports RECOVERY when a beat lands after a failing streak, then resets', () => {
+    const h = harness(1000);
+    h.note(false, TOPIC);
+    h.note(false, TOPIC);
+    h.note(true, TOPIC);
+    expect(h.infos).toHaveLength(1);
+    expect(h.infos[0]).toContain('RECOVERED');
+    expect(h.infos[0]).toContain('2 consecutive failed beat(s)');
+    // Streak reset: the next failure is a FIRST failure again (warns immediately,
+    // not swallowed by the throttle left over from the previous episode).
+    const warnsBefore = h.warns.length;
+    h.note(false, TOPIC);
+    expect(h.warns).toHaveLength(warnsBefore + 1);
+    expect(h.warns[h.warns.length - 1]).toContain('1 consecutive');
+  });
+
+  it('a recovery with no prior failure is silent (never announces a non-event)', () => {
+    const h = harness();
+    h.note(true, TOPIC);
+    expect(h.infos).toHaveLength(0);
   });
 });

@@ -239,15 +239,19 @@ class FrameDuplex extends Duplex {
   }
   /** Deliver an inbound DATA frame's bytes to the readable side.
    *
-   *  FAIL-CLOSED on a dead session (EI-18765930091826096): never buffer into a
-   *  duplex nobody will ever read again. `push()` on a stream with no reader
-   *  returns false — backpressure this class cannot honour, because the bytes
-   *  arrive as protomux frames on a channel SHARED with every other session and
-   *  there is nowhere to put them back. An abandoned session (its fetch gave up
-   *  and walked away) therefore used to absorb the REST OF THE PEER'S PACK into
-   *  an undrained readable buffer, held alive by `clientSessions`, freed only by
-   *  a connection teardown — i.e. only by a process restart. Dropping is correct
-   *  and lossless here: the reader is gone, so there is no one to lose bytes. */
+   *  The `readableEnded` arm is the load-bearing one: pushing after EOF emits
+   *  ERR_STREAM_PUSH_AFTER_EOF, which this class's fail-soft 'error' listener
+   *  would silently swallow. The `destroyed` arm is belt-and-braces only —
+   *  measured, node already makes push-after-destroy a silent no-op.
+   *
+   *  NOTE (EI-18765930091826096) — this guard is NOT what stops the session leak,
+   *  and must not be mistaken for it. The bytes that degraded a peer channel were
+   *  buffered into a duplex that was still ALIVE and merely unread (its reader,
+   *  git, had been SIGKILLed), which no condition here can detect: dropping on a
+   *  live session would corrupt a healthy fetch. What actually stops it is making
+   *  the session UNREACHABLE — `openHiveGitFetchDuplex`'s close-prune plus
+   *  `fetchOverDuplex`'s ownership release — so no frame is ever routed here at
+   *  all. This only closes the narrow race between those two. */
   pushChunk(chunk: Buffer): void {
     if (this.destroyed || this.readableEnded) return;
     this.push(chunk);

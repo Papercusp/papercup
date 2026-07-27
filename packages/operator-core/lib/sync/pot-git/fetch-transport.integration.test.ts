@@ -9,7 +9,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/fetch-transport.integration.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { rm } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { PassThrough } from 'node:stream';
@@ -136,6 +136,36 @@ describe('pot-git fetch transport (real upload-pack ↔ fetch over a duplex)', (
     const res = await fetchOverDuplex(clientRepo, conn, [peerNamespaceRefspec(devA)], { timeoutMs: 30_000 });
     expect(res.code, res.stderr).toBe(0);
     expect(await readNamespaceRef(clientRepo, devA, 'refs/heads/work')).toBe(sha2);
+  });
+
+  /**
+   * EI-18765930091826096 recurrence guard: fetchOverDuplex OWNS the duplex.
+   *
+   * The ABANDONED path is the only one that distinguishes this, which is exactly
+   * why the leak survived so long. On a HEALTHY fetch both halves of the duplex
+   * are ended by the pipes anyway (the peer's end-frame ends the readable side,
+   * `conn.pipe(duplex)` ends the writable side), so node auto-destroys it and an
+   * `expect(duplex.destroyed)` there passes with the release REVERTED — a
+   * vacuous assertion, confirmed by mutation testing.
+   *
+   * Here nothing ever answers, so the ceiling is the only thing that can settle
+   * the fetch and NOTHING else can end the duplex. In production that duplex is
+   * a pot-git FrameDuplex whose write-end sends the `end` frame that reaps the
+   * peer's `git upload-pack`, and whose close releases the session that would
+   * otherwise keep absorbing the peer's pack forever.
+   */
+  it('EI-18765930091826096: a fetch that gives up RELEASES its duplex (the peer must be told, or its upload-pack never stops)', async () => {
+    const stalled = new PassThrough();
+    const res = await fetchOverDuplex(clientRepo, stalled, [peerNamespaceRefspec(devA)], {
+      timeoutMs: 750,
+    });
+    expect(res.timedOut, res.stderr).toBe(true);
+    // Ending the write side is what reaches the peer; destroying is what frees
+    // the session. Assert both, since they fix different halves of the leak.
+    expect(stalled.writableEnded, 'the peer was never told we gave up').toBe(true);
+    await vi.waitFor(() => expect(stalled.destroyed, 'the duplex was never released').toBe(true), {
+      timeout: 5_000,
+    });
   });
 
   it('serveUploadPack refuses a repo outside the pot-git root (defense in depth)', async () => {

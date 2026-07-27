@@ -223,14 +223,15 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       timeoutMs: 30_000,
     });
     expect(res.code, res.stderr).toBe(0);
-    // `fetchOverDuplex` OWNS the duplex's lifetime and must release it on every
-    // path. Asserted separately from the session count below, because on THIS
-    // (happy) path the peer's own end-frame already prunes the map — so the map
-    // assertion alone would stay green with the ownership fix reverted, and the
-    // ceiling path (where no end-frame ever arrives) would leak undetected.
-    expect(duplex.destroyed, 'fetchOverDuplex must release the caller duplex').toBe(true);
-    // The release is driven by stream 'close' / the serve `finally`, both of
-    // which land a tick or two after the fetch resolves.
+    // NOTE: do NOT add `expect(duplex.destroyed)` here. It looks like it defends
+    // fetchOverDuplex's ownership release, but on this healthy path the pipes end
+    // both halves anyway and node auto-destroys the duplex — mutation testing
+    // showed it passes with the release REVERTED. The test that actually
+    // distinguishes it lives in fetch-transport.integration.test.ts, on the
+    // abandoned path, where nothing else can end the duplex.
+    //
+    // The release below is driven by stream 'close' / the serve `finally`, both
+    // of which land a tick or two after the fetch resolves.
     await vi.waitFor(
       () => {
         const counts = serveTesting.sessionCounts(clientNoise, TOPIC);
@@ -259,17 +260,29 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     );
   });
 
-  it('EI-18765930091826096: an abandoned duplex absorbs no further pack bytes (fail-closed pushChunk)', () => {
-    const sent: Buffer[] = [];
+  it('EI-18765930091826096: a data frame arriving after EOF is dropped, not pushed past the end', async () => {
     const d = new serveTesting.FrameDuplex(
-      (chunk) => sent.push(chunk),
+      () => {},
       () => {},
     );
-    d.destroy();
-    // The peer keeps streaming its pack at a session whose reader (git) is gone.
-    // Buffering it is what turned each failed rung into permanently-held memory.
-    expect(() => d.pushChunk(Buffer.alloc(64 * 1024, 1))).not.toThrow();
-    expect(d.readableLength).toBe(0);
+    const errors: string[] = [];
+    d.on('error', (e: NodeJS.ErrnoException) => errors.push(e.code ?? e.message));
+    d.resume();
+    d.pushEnd();
+    await new Promise((r) => setImmediate(r));
+
+    // A late/duplicate data frame for an already-ended session. Unguarded this is
+    // ERR_STREAM_PUSH_AFTER_EOF, which this class's fail-soft 'error' listener
+    // swallows — an invisible protocol violation.
+    //
+    // Deliberately NOT asserted here: "an abandoned duplex buffers nothing".
+    // That was measured and is NOT what this guard does — node already no-ops
+    // push-after-destroy, and the bytes that actually leaked went into a LIVE
+    // unread duplex, which nothing here can detect. The tests that defend the
+    // leak itself are the two above (close-prune + ownership release).
+    d.pushChunk(Buffer.alloc(64 * 1024, 1));
+    await new Promise((r) => setImmediate(r));
+    expect(errors, 'a post-EOF data frame must be dropped, not pushed').toEqual([]);
   });
 
   /**
