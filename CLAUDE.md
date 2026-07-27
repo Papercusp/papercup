@@ -275,6 +275,24 @@ inconsistent (git files vs node_modules/build), which crash-loops `:3070` on
 the command above with `--no-drain`). Blocking on git-sync / the green gate before
 continuing is the anti-pattern; force it and move on.
 
+**"Is my change live, and if not what is the ONE thing blocking it" is ONE call —
+`dev:pipeline_position { path }` — never a hand-diff.** It answers three *different*
+questions that agents routinely conflate; hand-resolving them cost 11 tool calls and 4
+`merge-base`/`git log` diffs on 2026-07-26 and still went wrong twice:
+
+| you want to know | read | not |
+|---|---|---|
+| is it live, and if not the ONE lever | `blockedOn` + `nextAction` (the `summary` now LEADS with them) | the row of position ticks — a boolean per stage cannot say whether that stage is *moving* |
+| is this leg stuck, or just slow | `stages[].health` (`advancing`/`stalled`/`disabled`/`broken`) | `positions.*` alone — that read a 2h52m push freeze as "not yet" |
+| did my work reach origin | `gitSync.pushedRepos` | `gitSync.status` — `'synced'` is reachable with **nothing** pushed |
+| is the running process executing my code | `serving.startedSinceCodeChange` | `positions.deployed` — a git fact stating a process conclusion ("deployed ✓" ≠ live; filed 4× independently) |
+| is the gate judging MY code | `changeInCandidate.judgingContainsPath` | assuming a red is about your change — a run judging a candidate without it isn't |
+| will the next tick commit my half-finished refactor | `sweepExposure` (blast radius + when) | nothing — git-sync sweeps the WHOLE tree, so `git-sync:run` mid-refactor commits the broken intermediate on purpose |
+
+`nextAction: null` is a **positive** answer ("waiting is correct"), never a missing one —
+do not invent a lever when the honest move is to wait. Full field-by-field guide:
+[reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
+
 ## Server-side edits and the two-port model — no hot-reload
 
 The Hono host (`bin/hono-host.ts`, MCP tools, `lib/endpoint-route`,

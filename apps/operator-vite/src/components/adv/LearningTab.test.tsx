@@ -1767,3 +1767,90 @@ describe("LearningTab — P-009 first-run orientation", () => {
     expect(strap?.textContent).toContain("WORK queue");
   });
 });
+
+/**
+ * Owner escalation 2026-07-26 (~20 reports of "no recent gym runs"): the runs
+ * list is newest-first at the top of a scrolling pane and the judge cards are
+ * below it, so scrolling to read a card pushes every recent run off-screen and
+ * the list appears to start hours ago. The runs header is therefore STICKY and
+ * carries the newest run's age, so recency is legible at any scroll position.
+ */
+describe("GymView — recent-challengers header carries recency", () => {
+  it("stamps the newest run age + count into a sticky header", () => {
+    nuqsState.lview = "gym";
+    advScopeState.slug = "papercusp";
+    advScopeState.hive = "papercusp";
+    const now = Date.now();
+    gymResult = {
+      data: [
+        {
+          proposals: [],
+          autoloops: [],
+          archiveSeeds: [],
+          cycles: [],
+          runs: [
+            {
+              harnessSlug: "papercusp",
+              variantId: "cand-newest",
+              cycle: 1,
+              runCount: 3,
+              states: ["escalated"],
+              startedAt: now - 3 * 3600_000,
+              finishedAt: now - 2 * 3600_000, // newest
+              decision: null,
+              isBaseline: false,
+            },
+            {
+              harnessSlug: "papercusp",
+              variantId: "cand-older",
+              cycle: 1,
+              runCount: 3,
+              states: ["escalated"],
+              startedAt: now - 10 * 3600_000,
+              finishedAt: now - 9 * 3600_000,
+              decision: null,
+              isBaseline: false,
+            },
+          ],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+
+    const head = document.querySelector(".pc-learning__sectionhead--stickyruns");
+    expect(head).toBeTruthy(); // the header must be the sticky variant
+    const recency = head?.querySelector(".pc-learning__runsrecency");
+    expect(recency).toBeTruthy();
+    // Derived from the NEWEST run (2h), never the oldest (9h), and states the count.
+    expect(recency?.textContent).toContain("2h");
+    expect(recency?.textContent).not.toContain("9h");
+    expect(recency?.textContent).toContain("2 listed");
+  });
+
+  it("omits the recency chip when there are no runs (no bogus 'newest')", () => {
+    nuqsState.lview = "gym";
+    advScopeState.slug = "papercusp";
+    advScopeState.hive = "papercusp";
+    gymResult = {
+      data: [
+        {
+          proposals: [{ id: "p1", status: "pending", role: "worker" }],
+          autoloops: [],
+          archiveSeeds: [],
+          cycles: [],
+          runs: [],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(document.querySelector(".pc-learning__runsrecency")).toBeNull();
+  });
+});
