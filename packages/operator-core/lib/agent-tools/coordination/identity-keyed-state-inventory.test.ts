@@ -304,21 +304,29 @@ const ALLOWLIST: Record<string, Classification> = {
       'ambient-semantic-push-2026-07-14 P-013 (migration 614): per-SELF-session adjacency streak state, same ' +
       'shape and same "for pruning/debugging only" owner_id as collision_hysteresis.owner_id.',
   },
-  // NOTE: `bak_*` snapshot tables are NOT listed here — they are skipped
-  // structurally by isFrozenBackupSnapshotTable (see its comment for why, and
-  // for the four gate reds that motivated it). The two entries that used to sit
-  // here (bak_20260717_unify_work_items.taken_by, bak_20260717_unify_subs.subscriber_id)
-  // were removed with that change: the scan no longer finds them, so leaving them
-  // would red the "allowlist has not rotted" test instead. A snapshot named
-  // OUTSIDE the `bak_` convention still needs a hand-written entry, like this one:
-  '_pot_backfill_649_dropped.taken_by': {
-    status: 'exempt',
-    reason:
-      'pot-membership-backfill (migration 649): a frozen reversibility snapshot of the work_items rows dropped ' +
-      'during the pot-membership backfill (CREATE TABLE … AS SELECT wi.* … before the DELETE, ' +
-      '649-pot-membership-backfill.sql step 3) — no live reader or reaper touches it; DELETE this entry when the ' +
-      '_pot_backfill_649_dropped table is dropped.',
-  },
+  // NOTE: snapshot / scratch tables are NOT listed here. TWO independent
+  // mechanisms keep them out of this allowlist, and BOTH mean a hand-written
+  // entry for one is guaranteed to rot (asserted below by the
+  // "no leading-underscore scratch tables" test):
+  //
+  //   1. `bak_*` frozen undo snapshots are skipped structurally by the scan
+  //      itself (isFrozenBackupSnapshotTable — see its comment for why, and for
+  //      the four gate reds that motivated it). The two entries that used to sit
+  //      here (bak_20260717_unify_work_items.taken_by,
+  //      bak_20260717_unify_subs.subscriber_id) were removed with that change:
+  //      the scan no longer finds them, so leaving them would red the "allowlist
+  //      has not rotted" test instead.
+  //
+  //   2. Leading-underscore MIGRATION-INTERNAL scratch tables (e.g.
+  //      `_pot_backfill_649_dropped`, `_pot_members_686_orphans`) never reach
+  //      the scan at all: pull-schema.mjs "Fix 0" strips them from
+  //      generated.ts before it is written (stripScratchTableDeclarations,
+  //      EI-18785808338338490). A `_pot_backfill_649_dropped.taken_by` entry
+  //      DID sit here — added 2026-07-20 when drizzle-kit still emitted the
+  //      table — and it reds this gate as soon as the strip landed
+  //      (2026-07-27). The table still EXISTS in Postgres; it is simply no
+  //      longer application surface, so there is nothing for this inventory to
+  //      classify. Do not re-add it when you see the table in psql.
   'session_pending_gates.owner_id': {
     status: 'exempt',
     reason:
@@ -487,8 +495,13 @@ export const backupsInHarnessShared = harnessShared.table("backups_owner_audit",
 	ownerId: text("owner_id"),
 });
 `;
-    // Neither name matches /^bak_/, so both must still be swept in and be a
-    // deliberate decision — the skip is narrow, not a prefix free-for-all.
+    // Neither name matches /^bak_/, so THIS parser sweeps both in — the skip is
+    // narrow, not a prefix free-for-all. NOTE this is a statement about
+    // scanIdentityColumns in isolation, NOT about what reaches it end-to-end:
+    // `_`-prefixed scratch tables are stripped from generated.ts upstream by
+    // pull-schema.mjs "Fix 0" (EI-18785808338338490), so in the real pipeline
+    // this parser never sees one. Do not read this case as "underscore tables
+    // need an ALLOWLIST entry" — they must NOT have one (see the guard below).
     expect(scanIdentityColumns(src)).toEqual([
       { table: '_pot_backfill_649_dropped', column: 'taken_by' },
       { table: 'backups_owner_audit', column: 'owner_id' },
@@ -531,6 +544,34 @@ describe('identity-keyed state inventory (EI-8999 — the WI-3642 lesson general
       stale,
       stale.length > 0
         ? `Allowlist entries no longer found in schema.ts (renamed/dropped column or table — remove or update): ${stale.join(', ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+
+  // RECURRENCE GUARD for the 2026-07-27 gate red. A leading-underscore
+  // MIGRATION-INTERNAL scratch table (`_pot_backfill_649_dropped`,
+  // `_pot_members_686_orphans`, …) is stripped from generated.ts by
+  // pull-schema.mjs "Fix 0" (stripScratchTableDeclarations,
+  // EI-18785808338338490) BEFORE this scan ever reads it. So such a table can
+  // never appear in `foundKeys`, and any allowlist entry naming one is
+  // guaranteed to rot the moment it is added — which is exactly what happened:
+  // the entry was written 2026-07-20 against a generated.ts that still carried
+  // the table, and reded the fleet-wide gate when the strip landed.
+  //
+  // The trap is that the table is still VISIBLE in psql, so an agent looking at
+  // the live DB naturally concludes it needs classifying. This fails that
+  // instinct HERE, as a pure assertion with the reason attached, instead of in
+  // the gate an hour later with only "entry no longer found" to go on.
+  it('has no leading-underscore scratch tables — they are stripped upstream and can never match', () => {
+    const scratch = Object.keys(ALLOWLIST).filter((k) => k.startsWith('_'));
+    expect(
+      scratch,
+      scratch.length > 0
+        ? `Allowlist entries name migration-internal scratch table(s): ${scratch.join(', ')}.\n` +
+            'These are stripped from generated.ts by pull-schema.mjs "Fix 0" ' +
+            '(stripScratchTableDeclarations, EI-18785808338338490), so this scan can never see them ' +
+            'and the entry will rot. They are NOT application surface — there is nothing to classify, ' +
+            'even though the table still exists in Postgres. Delete the entry.'
         : undefined,
     ).toEqual([]);
   });

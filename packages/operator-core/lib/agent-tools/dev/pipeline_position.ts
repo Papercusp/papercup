@@ -43,9 +43,27 @@ export default defineTool({
     sha: z.string().min(4).max(64).optional(),
   }),
   async handler(args) {
-    if (!args.path && !args.sha) {
-      return { data: { error: 'Provide a path or a sha.' } };
-    }
+    /**
+     * unified-agent-state-plane-2026-07-27 P-007: a NO-ARG call is now legal and returns
+     * the PIPELINE-WIDE legs (`gate`, `deployedSha`, `verdictProvenance`) with the
+     * per-path legs reported as unmeasured.
+     *
+     * It used to return `{ error: 'Provide a path or a sha.' }`, which was reasonable
+     * while every caller was asking a per-path question. It stopped being reasonable
+     * when the cell registry began serving `gate.greenCheckpoint.verdict`,
+     * `deploy.3070.sha` and `git.mainBehindStaging` — cells whose `callerRelativity` is
+     * GLOBAL, precisely because the gate's red streak and the deployed sha are not
+     * relative to anyone's path. `readCell` dispatches a global cell with `{}` (see
+     * argsForRelativity), so the guard made those three cells resolve to an error
+     * payload: registered, and dead. A registration that reads as an error is worse than
+     * no registration, because the registry is supposed to be the trustworthy surface.
+     *
+     * The resolver already handled a null path correctly — it notes 'Provide a path or a
+     * sha' and computes every global leg — so this is the removal of a wrapper-level
+     * guard, not a new code path. Callers who omit both args still get told, in `notes`,
+     * that the per-path legs are unanswerable; they simply also get the facts that do
+     * not depend on a path.
+     */
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha });
 
     // WI-5440: a path can have MORE THAN ONE consumer on DIFFERENT activation

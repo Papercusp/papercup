@@ -210,6 +210,41 @@ registerDerivedRead({
   },
 });
 
+// ── health.toolEfficiency (P-010 + P-011, decision D-008) ────────────────────
+//
+// The single most expensive read-path offender measured on this box: FOUR
+// tool_invocations aggregates run inline on every computeSystemHealth. A live
+// pg_stat_statements delta (2026-07-27) caught the three heaviest advancing in
+// LOCKSTEP — +93/+94/+94 calls in the same 3.6-minute window — which is what
+// proved they share ONE caller rather than being three independent problems:
+//
+//   limit-failure rollup 14d   300.8 ms  72.8 CPU-h lifetime
+//   coord_owner empty-runs     216.6 ms  45.5 CPU-h
+//   `oriented` CTE 24h         125.8 ms  30.4 CPU-h
+//
+// ~26 calls/min fleet-wide across ~49 uncoordinated agent processes = ~0.28
+// DB-cores burned continuously recomputing identical fleet-wide numbers.
+//
+// TTL rationale (the header's rule: ttl follows how fast the SIGNAL moves, not
+// how expensive the compute is): the underlying windows are 24h, 7d and 14d, so
+// a value seconds-old and one ten-minutes-old are indistinguishable — nothing in
+// a 14-day error count changes meaningfully inside a routine tick. 10 minutes is
+// chosen ALSO because WI-5471 runs producers shortest-ttl-first: a heavy
+// four-scan producer must never sort ahead of the liveness-sensitive short-ttl
+// ones (dev.serviceHealth 90s, learning.improvements 90s) and head-of-line-block
+// them. Scope is workspace — the aggregates are fleet-wide and carry no harness
+// filter, so a per-harness snapshot would be N identical copies.
+registerDerivedRead({
+  key: 'health.toolEfficiency',
+  ttlMs: 10 * 60_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  compute: async () => {
+    const { computeToolEfficiencyHealth } = await import('../system-health/tool-efficiency');
+    return computeToolEfficiencyHealth();
+  },
+});
+
 // ── rubrics.list (owner-reported 2026-07-19: the Learnings → Rubrics tab took
 // ~0.7s to OPEN on a LOCAL desktop app — "loading a little data should be
 // instant"). Root cause: an N+1 over-fetch on the user-facing read path. The

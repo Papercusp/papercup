@@ -368,6 +368,56 @@ describe('gitPipelinePosition (P-002)', () => {
      * one is final, the other is retry-or-escalate. A sha-only probe has no path to
      * compare, so "no candidate is judging it" is not an answer about the pipeline.
      */
+    /**
+     * THE READABILITY REGRESSION. The three GLOBAL cells (gate verdict / deployed sha /
+     * main-vs-staging) are dispatched by `readCell` with NO ARGS, because
+     * `argsForRelativity` passes `{}` for a global cell. So a no-arg read must return
+     * the path-independent legs — if it does not, those three cells register and then
+     * resolve to nothing, which is worse than not registering them.
+     */
+    it('a NO-ARG read still answers the global legs, and does not fake the per-path ones', async () => {
+      const res = await gitPipelinePosition(
+        {},
+        { git: measuring(), loadDeploy: async () => deploy(), loadSnapshot: async () => snap({ consecutiveReds: 4 }) },
+      );
+      // The three global cells' headlines are all present and real.
+      expect(res.gate.consecutiveReds).toBe(4);
+      expect(res.deployedSha).toBe('deployedsha0');
+      expect(res.verdictProvenance.mainFastForwarded).toBe(true);
+      // …and none of them is degraded, so the verdict hoist stays quiet.
+      expect(res.verdictUnknown.map((v) => v.leg)).toEqual(['changeInCandidate.judgingSha']);
+      // But there is NO SUBJECT, so every position leg is unmeasured rather than false.
+      // Before P-007 this returned four confident `false`s with an empty hoist — the
+      // same defect as a failed ref read, reachable by omitting an argument.
+      expect(res.positions).toEqual({
+        committedLocal: false,
+        onStaging: false,
+        inMain: false,
+        deployed: false,
+      });
+      expect(res.positionsUnknown.sort()).toEqual(['committedLocal', 'deployed', 'inMain', 'onStaging']);
+    });
+
+    /**
+     * The one no-target case that must STAY a confident false: a path whose file has no
+     * commit yet. The `git log` read SUCCEEDED and found nothing, so "not committed, not
+     * on staging" is a measurement. Hoisting it would make the hoist meaningless for the
+     * newly-created-file case, which is one of the commonest reads there is.
+     */
+    it('does NOT hoist a path that simply has no commit yet — that false is measured', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'apps/operator/app/brand-new.ts' },
+        {
+          git: fakeGit({ dirty: true }), // no pathCommit ⇒ `log` returns null: nothing has touched it
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () => snap(),
+        },
+      );
+      expect(res.targetSha).toBeNull();
+      expect(res.positions.committedLocal).toBe(false);
+      expect(res.positionsUnknown).toEqual([]);
+    });
+
     it('reports a sha-only probe as not-applicable, never as "no run in flight"', async () => {
       const res = await gitPipelinePosition(
         { sha: 'abc1234567' },

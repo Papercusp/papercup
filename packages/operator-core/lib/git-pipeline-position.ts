@@ -1793,6 +1793,25 @@ export async function gitPipelinePosition(
         ? readLeg('deployed', await refContains(git, root, deployedSha, targetSha))
         : readLeg('deployed', null);
     }
+  } else if (!relPath || inp.sha) {
+    /**
+     * P-007. No target sha, so NOTHING above was measured — and the four `false`s are
+     * therefore not evidence. Two of the three ways to get here need saying:
+     *   · neither a path nor a sha was passed (the GLOBAL cell reads, which ask about
+     *     the gate/deploy legs and have no per-path subject at all);
+     *   · a sha was passed and did not resolve.
+     * The third — a path given whose file has no commit yet — is deliberately NOT
+     * hoisted: there the `log` read SUCCEEDED and found nothing, so "not committed, not
+     * on staging, not deployed" is a measured absence and an honest answer.
+     *
+     * Without this, a no-target read reported `deployed: false` with an EMPTY
+     * positionsUnknown — the identical "false by degradation, indistinguishable from
+     * false by measurement" defect P-006 fixed in `refContains`, reachable by simply
+     * omitting an argument.
+     */
+    for (const leg of ['committedLocal', 'onStaging', 'inMain', 'deployed']) {
+      if (!positionsUnknown.includes(leg)) positionsUnknown.push(leg);
+    }
   }
 
   const snap = await loadSnapshot();

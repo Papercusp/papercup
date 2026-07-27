@@ -2058,51 +2058,47 @@ async function collectToolEfficiency(ctx: HealthCtx): Promise<HealthPanel<ToolEf
     // waste mode. The other three grade failures that announce themselves; a mis-mapped
     // response shape returns ok:true, so the panel could report "tool efficiency healthy"
     // while ~30% of a session's authored round-trips came back blank (measured, 2026-07-13).
-    const [
-      { readCodeRunAdoption, rollupAdoption, gradeToolUtilization },
-      { readLimitFailureRate, gradeLimitFailureRate },
-      { readOrientDedupRate, gradeOrientDedupRate },
-      { readEmptyResultRate, gradeEmptyResultRate },
-    ] = await Promise.all([
-      import('../code-run-adoption'),
-      import('../limit-failure-rate'),
-      import('../orient-dedup-rate'),
-      import('../empty-result-rate'),
+    // P-010/P-011 (decision D-008): these four aggregates are PRECOMPUTED by the
+    // `health.toolEfficiency` derived-read producer. Running them inline here was
+    // the single most expensive read-path offender on the box — a live
+    // pg_stat_statements delta caught the three heaviest advancing in lockstep
+    // (+93/+94/+94 calls in one 3.6-min window, ~0.28 DB-cores burned
+    // continuously) because ~49 agent processes each recomputed the same
+    // fleet-wide numbers with no coordination. See system-health/tool-efficiency.ts
+    // for the measurement and derived-reads/producers.ts for the ttl rationale.
+    //
+    // D-003: a reader NEVER computes. A missing snapshot (first boot, or right
+    // after a producerVersion bump) warms in the background and reports 'unknown'
+    // for one routine tick rather than silently reintroducing the inline scans.
+    // When the PRECOMPUTE_DERIVED_READS flag is OFF, readDerivedSnapshot itself
+    // falls back to inline compute — the pre-fix behavior, kept as the escape
+    // hatch — so that path stays live without a branch here.
+    const { readDerivedSnapshot } = await import('../derived-reads/registry');
+    await import('../derived-reads/producers');
+    const snapshot = await readDerivedSnapshot<ToolEfficiencyHealth>('health.toolEfficiency');
+    const data = snapshot.payload;
+    if (!data) {
+      return {
+        status: 'unknown',
+        summary: 'tool-efficiency metrics precomputing — no snapshot yet (health.toolEfficiency)',
+        data: null,
+        link: { label: 'Learning', href: '/adv?tab=learning' },
+        metrics: [],
+      };
+    }
+    const { limitFailure, codeRunAdoption, orientDedup, emptyResult } = data;
+    const adoptionRatePct = codeRunAdoption.adoptionRatePct;
+    const status = toolEfficiencyStatus([
+      limitFailure.rating,
+      codeRunAdoption.rating,
+      orientDedup.rating,
+      emptyResult.rating,
     ]);
-    const { sql } = getOrgPg();
-    const runQuery = async <T = unknown>(query: string, params: unknown[]): Promise<T[]> =>
-      (await sql.unsafe(query, params as never)) as unknown as T[];
-
-    const [adoptionSummaries, limitRollup, orientRollup, emptyRollup] = await Promise.all([
-      readCodeRunAdoption(runQuery, { sinceDays: 7 }),
-      readLimitFailureRate(runQuery, { sinceDays: 14 }),
-      readOrientDedupRate(runQuery, { sinceHours: 24 }),
-      readEmptyResultRate(runQuery, { sinceDays: 7 }),
-    ]);
-    const adoptionRollup = rollupAdoption(adoptionSummaries);
-    const adoptionGrade = gradeToolUtilization(adoptionRollup);
-    const limitGrade = gradeLimitFailureRate(limitRollup);
-    const orientGrade = gradeOrientDedupRate(orientRollup);
-    const emptyGrade = gradeEmptyResultRate(emptyRollup);
-    const adoptionRatePct = adoptionRollup.adoptionRate !== null ? Math.round(adoptionRollup.adoptionRate * 100) : null;
-
-    const data: ToolEfficiencyHealth = {
-      limitFailure: { rating: limitGrade.rating, evidence: limitGrade.evidence, totalErrs: limitRollup.totalErrs },
-      codeRunAdoption: { rating: adoptionGrade.rating, evidence: adoptionGrade.evidence, adoptionRatePct },
-      orientDedup: { rating: orientGrade.rating, evidence: orientGrade.evidence, pctRedundant: orientRollup.pctRedundant },
-      emptyResult: {
-        rating: emptyGrade.rating,
-        evidence: emptyGrade.evidence,
-        pctEmpty: emptyRollup.pctEmpty,
-        totalEmptyRuns: emptyRollup.totalEmptyRuns,
-      },
-    };
-    const status = toolEfficiencyStatus([limitGrade.rating, adoptionGrade.rating, orientGrade.rating, emptyGrade.rating]);
     const summary =
-      `limit-failures ${limitGrade.rating} (${limitRollup.totalErrs}/14d) · ` +
-      `code:run adoption ${adoptionGrade.rating}${adoptionRatePct !== null ? ` (${adoptionRatePct}%)` : ''} · ` +
-      `orient-dedup ${orientGrade.rating}${orientRollup.pctRedundant !== null ? ` (${orientRollup.pctRedundant}%)` : ''} · ` +
-      `ok-but-empty ${emptyGrade.rating}${emptyRollup.pctEmpty !== null ? ` (${emptyRollup.pctEmpty}%)` : ''}`;
+      `limit-failures ${limitFailure.rating} (${limitFailure.totalErrs}/14d) · ` +
+      `code:run adoption ${codeRunAdoption.rating}${adoptionRatePct !== null ? ` (${adoptionRatePct}%)` : ''} · ` +
+      `orient-dedup ${orientDedup.rating}${orientDedup.pctRedundant !== null ? ` (${orientDedup.pctRedundant}%)` : ''} · ` +
+      `ok-but-empty ${emptyResult.rating}${emptyResult.pctEmpty !== null ? ` (${emptyResult.pctEmpty}%)` : ''}`;
     const toneOf = (r: ToolEfficiencyRating['rating']): PanelStatus | undefined =>
       r === 'broken' ? 'crit' : r === 'degraded' ? 'warn' : undefined;
     return {
@@ -2111,10 +2107,10 @@ async function collectToolEfficiency(ctx: HealthCtx): Promise<HealthPanel<ToolEf
       data,
       link: { label: 'Learning', href: '/adv?tab=learning' },
       metrics: [
-        m('limit-failures 14d', limitRollup.totalErrs, toneOf(limitGrade.rating)),
-        m('code:run adoption', adoptionRatePct !== null ? `${adoptionRatePct}%` : 'n/a', toneOf(adoptionGrade.rating)),
-        m('orient-dedup', orientRollup.pctRedundant !== null ? `${orientRollup.pctRedundant}%` : 'n/a', toneOf(orientGrade.rating)),
-        m('ok-but-empty', emptyRollup.pctEmpty !== null ? `${emptyRollup.pctEmpty}%` : 'n/a', toneOf(emptyGrade.rating)),
+        m('limit-failures 14d', limitFailure.totalErrs, toneOf(limitFailure.rating)),
+        m('code:run adoption', adoptionRatePct !== null ? `${adoptionRatePct}%` : 'n/a', toneOf(codeRunAdoption.rating)),
+        m('orient-dedup', orientDedup.pctRedundant !== null ? `${orientDedup.pctRedundant}%` : 'n/a', toneOf(orientDedup.rating)),
+        m('ok-but-empty', emptyResult.pctEmpty !== null ? `${emptyResult.pctEmpty}%` : 'n/a', toneOf(emptyResult.rating)),
       ],
     };
   });

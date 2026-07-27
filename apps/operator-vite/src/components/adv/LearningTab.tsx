@@ -958,15 +958,60 @@ function ReleaseReadinessStrip() {
   );
 }
 
-// ─── Improvements view ───────────────────────────────────────────────────────
+// ─── Improve view (the merged loop-output list) ───────────────────────────────
 
 const LANES = ["all", "auto", "human"] as const;
 type Lane = (typeof LANES)[number];
+
+/** Provenance scope — the mockup's scope bar (owner-approved 2026-07-27).
+ *
+ *  It filters by WHERE A ROW CAME FROM, and it is the single control that makes
+ *  this view honest. Measured 2026-07-27: 8,202 rows — 99.93% of the old
+ *  Backlog — were ALSO on the Work tab, because the backlog read applied no
+ *  provenance filter at all. `loop` scopes to what the learning loop itself
+ *  produced (~823); `all` is the deliberate escape hatch back to every capture.
+ *
+ *  `loop` is the resolver's DEFAULT (P-002) and the ONLY variant served from
+ *  the precomputed snapshot — so the common path must pass NO scope arg. */
+const LOOP_SCOPES = ["loop", "all"] as const;
+type LoopScope = (typeof LOOP_SCOPES)[number];
 
 function ageLabel(days: number): string {
   if (days < 1 / 24) return "just now";
   if (days < 1) return `${Math.round(days * 24)}h`;
   return `${Math.round(days)}d`;
+}
+
+/**
+ * One row of the merged Improve list (P-003, owner Option A 2026-07-27).
+ *
+ * Improve used to be two tabs over ONE population: Ideas (the generator's
+ * ledger) and Backlog (the work those ideas became). Reading either alone told
+ * half the story — an idea with no visible fate, or a work item with no visible
+ * origin. A row now carries both halves, and either may be absent:
+ *
+ * - `item` + `idea` — the common case: an idea that became work.
+ * - `idea` only — [owner 2026-07-27 verbatim] "THE IMPROVE SHOULD JUST BE
+ *   THE IDEAS BEFORE THEY GET INTO WORK ITEMS OR THE WORK ITEMS THAT CAME FROM
+ *   IDEAS": an idea routed to a plan/gym/benchmark rail, or still held before
+ *   it is filed. These are the "not ready yet" end of the pipeline.
+ * - `item` only — a capture with no idea behind it. Under `loop` scope that is
+ *   a PROVENANCE GAP worth seeing (see WI-6338: the three records of "Scout
+ *   produced this" disagree by ~50%); under `all` scope it is simply a
+ *   human/watchdog filing.
+ */
+interface LoopRow {
+  key: string;
+  item: ScoredItem | null;
+  idea: ScoutRoutedItem | null;
+}
+
+/** Recency for the merged sort, in days, from whichever half the row has.
+ *  Work items carry `ageDays` from the digest; ideas carry a routing instant. */
+function rowAgeDays(row: LoopRow, nowMs: number): number {
+  if (row.item) return row.item.ageDays;
+  const at = row.idea?.routedAt ? Date.parse(row.idea.routedAt) : NaN;
+  return Number.isNaN(at) ? Number.MAX_SAFE_INTEGER : (nowMs - at) / 86_400_000;
 }
 
 function ImprovementsView({
@@ -978,18 +1023,46 @@ function ImprovementsView({
   hiveReady: boolean;
   onStatus?: (status: LearningViewStatus) => void;
 }) {
+  const t = useLexicon();
+  const RAIL_META = railMeta(t);
+  const openArming = useOpenArming();
+  const [scope, setScope] = useQueryState(
+    "lscope",
+    parseAsStringEnum<LoopScope>([...LOOP_SCOPES]).withDefault("loop"),
+  );
   // P-042: the tab-level hive lens scopes the feed to one hive's member-harness
   // improvements; '' ⇒ the workspace-wide feed (no hive arg). Gated on
   // hiveReady (WI-5412): this is the tab's heaviest read — firing it before
   // the lens resolves paid it twice on every first click.
+  //
+  // The scope arg is passed ONLY for 'all' (P-002): 'loop' is the resolver's
+  // default, and the derived-read producer precomputes exactly the default
+  // variant. Sending `scope:'loop'` explicitly would be a different args key,
+  // miss the snapshot, and pay the 0.4-0.5s inline compute on every mount.
   const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({
     queryName: "learning.improvements",
-    args: hive ? { hive } : {},
+    args: {
+      ...(hive ? { hive } : {}),
+      ...(scope === "all" ? { scope: "all" } : {}),
+    },
     staleTime: 30_000,
     enabled: hiveReady,
   });
   const digest = sync.data?.[0];
-  const t = useLexicon();
+  // The idea half of the same population (absorbed from the retired Ideas
+  // view): lens, rail, grounding trace, grade and outcome, plus the cycle
+  // engine's own instruments. Same hive lens, same readiness gate.
+  const scoutSync = useSyncQuery<ScoutSnapshot>({
+    queryName: "learning.scout",
+    args: hive ? { hive } : {},
+    staleTime: 30_000,
+    enabled: hiveReady,
+  });
+  const snap = scoutSync.data?.[0];
+  const routed = useMemo(() => snap?.recent ?? [], [snap]);
+  const rails = snap?.railCounts ?? [];
+  const health = snap?.health ?? { status: "neutral" as const, markers: [] };
+  const groundingTitles = snap?.groundingTitles ?? {};
   // Drafts-in-iteration (moved here from the Ideas view — owner ask
   // 2026-07-19): a draft plan awaiting revision is WORK IN PROGRESS, so it
   // belongs on the backlog surface. Thin dedicated read, never the heavy
@@ -1009,24 +1082,74 @@ function ImprovementsView({
   // Selected item (`?lsel=`): set by deep-links (e.g. a Scout-routed improvement
   // click) — the row is highlighted + scrolled into view; clicking it dismisses.
   const [lsel, setLsel] = useQueryState("lsel", parseAsString);
+  // Absorbed from the retired Ideas view, both URL state so an agent can drive
+  // them through ui:dispatch: the rail facet and the pipeline-trace expansion.
+  const [railFilter, setRailFilter] = useQueryState("irail", parseAsString);
+  const [traceOpen, setTraceOpen] = useQueryState("itrace", parseAsString);
 
-  const allRows = useMemo<ScoredItem[]>(() => {
-    if (!digest) return [];
-    const base =
-      lane === "auto"
+  // ── The join. An idea records the artifact it became as a typed ref, so a
+  // work-item routing is "wi:EI-…" and the two halves key on the work-item id.
+  // An idea can be re-routed to the same item; keep the newest routing.
+  const ideaByItemId = useMemo(() => {
+    const byId = new Map<string, ScoutRoutedItem>();
+    for (const idea of routed) {
+      if (!idea.routedRef.startsWith("wi:")) continue;
+      const id = idea.routedRef.slice("wi:".length);
+      const prev = byId.get(id);
+      if (!prev || (idea.routedAt ?? "") > (prev.routedAt ?? ""))
+        byId.set(id, idea);
+    }
+    return byId;
+  }, [routed]);
+
+  const allRows = useMemo<LoopRow[]>(() => {
+    const nowMs = Date.now();
+    const base = !digest
+      ? []
+      : lane === "auto"
         ? digest.autoEligible
         : lane === "human"
           ? digest.humanQueue
           : [...digest.autoEligible, ...digest.humanQueue];
-    // Most-recent first (owner ask 2026-07-19): improvement ids (EI-NNNNN) are
-    // issued sequentially, so the numeric suffix is a reliable capture-recency
-    // key (the payload carries no createdAt). Newest at top.
+    const workRows: LoopRow[] = base.map((item) => ({
+      key: item.id,
+      item,
+      idea: ideaByItemId.get(item.id) ?? null,
+    }));
+    // Ideas with no work-item row of their own — routed to a plan/gym/benchmark
+    // rail, or not yet filed at all. These are the loop's output BEFORE it
+    // becomes work, and the owner named them explicitly as in scope.
+    //
+    // The lane facet (auto-fixable / needs-review) is a WORK-ITEM triage
+    // decision, so an idea-only row cannot satisfy it — selecting a lane
+    // excludes them rather than showing rows the filter never judged. The
+    // column filters need no such rule: their accessors read through `item`
+    // and report "—" here, so an idea-only row drops out of a severity or
+    // state filter on its own.
+    const filed = new Set(workRows.map((row) => row.item?.id));
+    const ideaRows: LoopRow[] =
+      lane === "all"
+        ? routed
+            .filter((idea) => {
+              if (!idea.routedRef.startsWith("wi:")) return true;
+              return !filed.has(idea.routedRef.slice("wi:".length));
+            })
+            .map((idea) => ({ key: idea.ideaId, item: null, idea }))
+        : [];
+    // Most-recent first across BOTH halves. Work items carry a fractional
+    // `ageDays` from the digest and ideas a routing instant, so age-in-days is
+    // the one key both can answer; the sequential id suffix (the old Backlog
+    // sort) stays as the tie-break for same-instant captures.
     const idNum = (s: string) => {
       const n = parseInt(s.split("-").pop() ?? "", 10);
       return Number.isFinite(n) ? n : 0;
     };
-    return [...base].sort((a, b) => idNum(b.id) - idNum(a.id));
-  }, [digest, lane]);
+    return [...workRows, ...ideaRows].sort((a, b) => {
+      const d = rowAgeDays(a, nowMs) - rowAgeDays(b, nowMs);
+      if (Math.abs(d) > 1e-9) return d;
+      return idNum(b.item?.id ?? b.key) - idNum(a.item?.id ?? a.key);
+    });
+  }, [digest, ideaByItemId, lane, routed]);
 
   const sources = useMemo<string[]>(() => {
     const s = new Set<string>();
@@ -1039,13 +1162,27 @@ function ImprovementsView({
     return [...s].sort();
   }, [digest]);
 
-  const rows = useMemo<ScoredItem[]>(
-    () => (src ? allRows.filter((it) => it.source === src) : allRows),
-    [allRows, src],
-  );
-  const sparseRows = useMemo(
-    () => [...(digest?.autoEligible ?? []), ...(digest?.humanQueue ?? [])],
-    [digest],
+  const rows = useMemo<LoopRow[]>(() => {
+    let out = allRows;
+    // Who filed it (`?lsrc=`) — a chip row in the scope bar rather than the old
+    // dropdown, so the provenance split is readable without opening a menu.
+    if (src) out = out.filter((row) => row.item?.source === src);
+    // Which rail the idea routed into (`?irail=`, absorbed from Ideas). A rail
+    // is a property of the IDEA, so filtering by one necessarily narrows to
+    // idea-bearing rows — that is the question being asked.
+    if (railFilter) out = out.filter((row) => row.idea?.rail === railFilter);
+    return out;
+  }, [allRows, railFilter, src]);
+  const sparseRows = useMemo<LoopRow[]>(
+    () =>
+      [...(digest?.autoEligible ?? []), ...(digest?.humanQueue ?? [])].map(
+        (item) => ({
+          key: item.id,
+          item,
+          idea: ideaByItemId.get(item.id) ?? null,
+        }),
+      ),
+    [digest, ideaByItemId],
   );
   // Shared column filters + quick-search (owner ask 2026-07-19: mimic the
   // Working tab's Work Queue): the shared filter engine (`impf` param) over
@@ -1055,16 +1192,20 @@ function ImprovementsView({
     "impq",
     parseAsString.withDefault(""),
   );
-  const filterCols = useMemo<FilterableColumn<ScoredItem>[]>(
+  // Accessors read THROUGH the work-item half: an idea-only row answers "—" to
+  // every work-item column, so it drops out of any such filter by itself, and
+  // the lens column is the one facet an idea-only row can actually answer.
+  const filterCols = useMemo<FilterableColumn<LoopRow>[]>(
     () => [
-      { key: "kind", header: "Kind", filter: { type: "enum", accessor: (r) => r.kind } },
-      { key: "severity", header: "Severity", filter: { type: "enum", accessor: (r) => r.severity ?? "—" } },
-      { key: "scope", header: "Scope", filter: { type: "enum", accessor: (r) => r.scope } },
-      { key: "tier", header: "Tier", filter: { type: "enum", accessor: (r) => r.tier } },
-      { key: "state", header: "State", filter: { type: "enum", accessor: (r) => r.state ?? "—" } },
-      { key: "ideaType", header: "Idea type", filter: { type: "enum", accessor: (r) => r.ideaType ?? "—" } },
-      { key: "score", header: "Score", filter: { type: "number", accessor: (r) => r.score } },
-      { key: "ageDays", header: "Age (days)", filter: { type: "number", accessor: (r) => r.ageDays } },
+      { key: "kind", header: "Kind", filter: { type: "enum", accessor: (r) => r.item?.kind ?? "—" } },
+      { key: "severity", header: "Severity", filter: { type: "enum", accessor: (r) => r.item?.severity ?? "—" } },
+      { key: "scope", header: "Scope", filter: { type: "enum", accessor: (r) => r.item?.scope ?? "—" } },
+      { key: "tier", header: "Tier", filter: { type: "enum", accessor: (r) => r.item?.tier ?? "—" } },
+      { key: "state", header: "State", filter: { type: "enum", accessor: (r) => r.item?.state ?? "—" } },
+      { key: "ideaType", header: "Idea type", filter: { type: "enum", accessor: (r) => r.item?.ideaType ?? "—" } },
+      { key: "lens", header: "Lens", filter: { type: "enum", accessor: (r) => r.idea?.lens ?? "—" } },
+      { key: "score", header: "Score", filter: { type: "number", accessor: (r) => r.item?.score ?? 0 } },
+      { key: "ageDays", header: "Age (days)", filter: { type: "number", accessor: (r) => r.item?.ageDays ?? 0 } },
     ],
     [],
   );
@@ -1072,14 +1213,19 @@ function ImprovementsView({
   const visibleRows = useMemo(() => {
     const q = (search ?? "").trim().toLowerCase();
     if (!q) return cf.rows;
-    return cf.rows.filter((it) =>
-      `${it.id} ${it.title} ${it.tierReason} ${it.scope}`
+    // Search spans BOTH halves — an idea's title is often the only text an
+    // as-yet-unfiled row has.
+    return cf.rows.filter((row) =>
+      `${row.item?.id ?? ""} ${row.item?.title ?? ""} ${row.item?.tierReason ?? ""} ${row.item?.scope ?? ""} ${row.idea?.title ?? ""} ${row.idea?.lens ?? ""}`
         .toLowerCase()
         .includes(q),
     );
   }, [cf.rows, search]);
   const isFiltered =
-    cf.hasActive || (search ?? "").trim() !== "" || Boolean(src);
+    cf.hasActive ||
+    (search ?? "").trim() !== "" ||
+    Boolean(src) ||
+    Boolean(railFilter);
 
   const resolved = digest?.byState?.resolved ?? 0;
   const showDashboard = (digest?.open ?? 0) >= 4;
