@@ -40,6 +40,7 @@ import {
   workspaceBrainReadKeys,
 } from '../workspace-brain-scope';
 import { setCarryNote, getCarryNote, getCarryJournal, hiveScope } from '../carry-note';
+import { UNVERIFIED_NOTE_STAMP } from './owner-claim-guard';
 // The Mug carry-journal converged onto the ONE shared carry-note substrate
 // (su-cold-auto-mode-2026-07-03 P-001 / D-004). The journal ring primitives moved
 // there; re-exported here for back-compat importers (pot/carry-journal.test.ts).
@@ -347,7 +348,13 @@ export function syncPotWakeRules(workspaceId: string, subs: PotEventSubscription
       // subscription's `on` list") — pot:wake's steering-pause gate needs the
       // real trigger to tell a placement-demand wake from a must-fire one.
       args: (e) => ({
-        reason: `subscribed event (${e.tool})${sub.note ? ` — ${sub.note}` : ''}`,
+        // EI-18742016294354354: `sub.note` is free text a prior wake wrote for
+        // itself — it has no provenance mechanism, so it must never reach the
+        // NEXT wake's kickoff as bare fact indistinguishable from the platform-
+        // computed `reason`/`trigger` fields around it (a fabricated "the owner
+        // already answered X" is exactly what slipped through here). Stamp it
+        // explicitly wherever it lands in the kickoff text.
+        reason: `subscribed event (${e.tool})${sub.note ? ` — [${UNVERIFIED_NOTE_STAMP}] ${sub.note}` : ''}`,
         source: 'event',
         trigger: e.tool,
       }),

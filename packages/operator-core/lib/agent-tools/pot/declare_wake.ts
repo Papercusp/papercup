@@ -41,6 +41,7 @@ import {
 import { getPotStarted } from '../../pot/started';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 import { softText, clampText, LIMITS } from '../limits';
+import { looksLikeUnverifiedOwnerClaim, UNVERIFIED_OWNER_CLAIM_GUIDANCE } from '../../pot/owner-claim-guard';
 
 const subscriptionSchema = z.object({
   on: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).describe(
@@ -112,6 +113,35 @@ export default defineTool({
         ],
       };
     }
+    // EI-18742016294354354: refuse a note/kickoff/carry-note that reads as a claim
+    // the owner already made a decision ("the owner answered X", "approved by the
+    // owner"). This tool has no provenance mechanism (unlike coord:send{relayOf} or
+    // facts:assert{sourceRef}) — such a claim would outlive the session that knew it
+    // was speculative and render as bare fact at the next wake. Pure text check, no
+    // side effects yet, so it runs before any DB read/mutation below.
+    const claimCandidates: Array<[string, string | undefined]> = [
+      ...(args.events ?? []).map((s, i): [string, string | undefined] => [`events[${i}].note`, s.note]),
+      ['kickoff', args.kickoff],
+      ['remember', args.remember],
+    ];
+    for (const [field, text] of claimCandidates) {
+      if (looksLikeUnverifiedOwnerClaim(text)) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'unverified_owner_claim',
+                field,
+                message: UNVERIFIED_OWNER_CLAIM_GUIDANCE,
+              }),
+            },
+          ],
+        };
+      }
+    }
+
     const { sql } = getOrgPg();
 
     // WI-2012 (owner directive 2026-07-03): no started hives ⇒ the mug STAYS paused.

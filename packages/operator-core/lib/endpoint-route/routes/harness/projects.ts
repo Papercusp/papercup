@@ -382,17 +382,43 @@ const create = defineTool({
 
     // P-010 (hive-from-github-url / D-007) — standalone-from-URL: a cloned repo
     // gets a detection-generated blueprint so it is immediately runnable, like
-    // the from-repo hive path. Best-effort; opt out with generateBlueprint:false.
-    // runTests defaults FALSE in this HTTP path (no 2-min verify inline) —
-    // re-verify later via harness:generate-from-repo.
+    // the from-repo hive path. EI-665: Entry 1 (fresh `parentDir`+`folderName`
+    // init) and Entry 3 (`path`, an existing folder) hit this SAME registration
+    // route but previously got NEITHER a blueprint NOR (for Entry 1) an initial
+    // commit — diverging from harness:create's documented contract ("writes the
+    // git-canonical .papercusp/blueprint.yaml") and leaving Entry 1's fresh repo
+    // on an unborn HEAD ("does not have any commits yet"). Extend the same
+    // best-effort detection-generated blueprint to those two entries too; opt out
+    // with generateBlueprint:false. runTests defaults FALSE in this HTTP path (no
+    // 2-min verify inline) — re-verify later via harness:generate-from-repo.
     let blueprint: import('../../../harness/generate-blueprint-for-clone').GenerateBlueprintForCloneResult | undefined;
-    if (cloneInfo && body.generateBlueprint !== false) {
+    if ((cloneInfo || initInfo || rawPath) && body.generateBlueprint !== false) {
       const { generateBlueprintForClone } = await import(
         '../../../harness/generate-blueprint-for-clone'
       );
       blueprint = await generateBlueprintForClone(slug, path, {
         runTests: body.runTests === true,
       });
+    }
+
+    // EI-665 cont'd: a fresh Entry-1 `git init` is a bare repo with no commit and
+    // no branch — the same "unborn HEAD freezes origin" hazard `createPotHarness`
+    // guards against for a new Hive home (per-hive-git-and-release-gate D-003).
+    // Give Entry 1 / Entry 3 harnesses the same initial-commit treatment: stage
+    // the now-written scaffold and commit on `staging`. No-op (committed:false)
+    // when the repo already has history (a re-registered existing folder) or no
+    // `.git` at all (a repo-less/non-git existing folder) — safe to call
+    // unconditionally. Best-effort: never fails the create.
+    let repoInit: import('../../../harness/hive-repo-init').CommitInitialResult | undefined;
+    if (initInfo || rawPath) {
+      try {
+        const { commitInitialHiveRepo } = await import('../../../harness/hive-repo-init');
+        repoInit = await commitInitialHiveRepo({ path, slug });
+      } catch (e) {
+        console.warn(
+          `[harness/projects] initial-commit failed (${slug}): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
     }
 
     return Response.json({
@@ -416,6 +442,7 @@ const create = defineTool({
         : {}),
       ...(initInfo ? { init: initInfo } : {}),
       ...(blueprint ? { blueprint } : {}),
+      ...(repoInit ? { repoInit } : {}),
     });
   },
 });

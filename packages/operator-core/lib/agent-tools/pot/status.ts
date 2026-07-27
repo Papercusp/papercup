@@ -20,6 +20,7 @@ import { getPotStarted } from '../../pot/started';
 import { recentWatchdogFires, watchdogFallbackSleepSec, watchdogStaleSec } from '../../pot/watchdog';
 import { summarizeOpenPlacements } from '../../pot/placement-watchdog';
 import { readPotSoakReport } from '../../pot/soak-report';
+import { UNVERIFIED_NOTE_STAMP } from '../../pot/owner-claim-guard';
 
 export default defineTool({
   name: 'pot:status',
@@ -99,7 +100,16 @@ export default defineTool({
                 }
               : null,
             placements,
-            subscriptions: state.subscriptions,
+            // EI-18742016294354354: a subscription `note` is free text the Mug (or an
+            // agent) wrote for herself — it has no provenance mechanism, so it must
+            // never render as bare fact adjacent to the platform-computed fields above.
+            // Stamp every non-empty note explicitly, the same way coord:send{relayOf}
+            // stamps relay provenance — a reader (Mug or human) sees at a glance that
+            // this line is agent-authored and unverified, not corroborated state, even
+            // if its text reads like "the owner already decided X".
+            subscriptions: state.subscriptions.map((s) =>
+              s.note ? { ...s, noteProvenance: UNVERIFIED_NOTE_STAMP } : s,
+            ),
             liveRuleIds: ruleIds,
             lastWakeAt: state.lastWakeAt ? new Date(state.lastWakeAt).toISOString() : null,
             declaredAt: state.declaredAt ? new Date(state.declaredAt).toISOString() : null,
