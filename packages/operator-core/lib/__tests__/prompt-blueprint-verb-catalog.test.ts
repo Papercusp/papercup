@@ -46,7 +46,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { buildFullToolNameCatalog } from '../static-tool-catalog';
 
@@ -66,15 +66,59 @@ function listScannedFiles(): string[] {
     // empirically, P-007, by cross-checking scanner.md's known
     // `messages:read`/`messages:write` capability-tier strings, which should
     // have surfaced as candidate hits and initially didn't).
-    const files = execSync(`git ls-files --recurse-submodules -- ${JSON.stringify(root)}`, {
-      cwd: REPO,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    })
-      .split('\n')
-      .filter(Boolean)
-      .filter((f) => /\.(md|ya?ml)$/i.test(f));
+    let files: string[] = [];
+    try {
+      files = execSync(`git ls-files --recurse-submodules -- ${JSON.stringify(root)}`, {
+        cwd: REPO,
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+      })
+        .split('\n')
+        .filter(Boolean)
+        .filter((f) => /\.(md|ya?ml)$/i.test(f));
+    } catch {
+      files = [];
+    }
+    // WI-6235: git ls-files is not a reliable enumerator in EVERY tree this test
+    // runs in. The green-checkpoint judges a worktree materialized with `git
+    // archive` (apps/operator/bin/release/setup-release-checkout.sh) — the files
+    // are all physically present, but `libs/papercusp` is not REGISTERED as a
+    // submodule there, so `--recurse-submodules` silently returns ZERO for the
+    // blueprints root. That is exactly the silent under-scan this file's header
+    // says the flag was added to prevent, relocated into the gate environment:
+    // the scan quietly measured 72 files instead of 194 and the sanity assertion
+    // below is what caught it (candidate f9bc6fc0, 2026-07-26).
+    //
+    // So: git first (it respects .gitignore and is the cheap path), but when a
+    // root that EXISTS on disk yields nothing from git, walk the filesystem
+    // instead of trusting the empty answer. A scan that cannot see the corpus
+    // must not be able to report success.
+    if (files.length === 0) {
+      files = walkFiles(join(REPO, root))
+        .map((abs) => abs.slice(REPO.length).replace(/^\/+/, ''))
+        .filter((f) => /\.(md|ya?ml)$/i.test(f));
+    }
     out.push(...files);
+  }
+  return out;
+}
+
+/** Recursive on-disk enumeration — the fallback when git cannot see a root
+ *  (see the `git archive` note in listScannedFiles). Skips node_modules/.git so
+ *  it enumerates the same corpus git would, not vendored copies of it. */
+function walkFiles(dir: string): string[] {
+  const out: string[] = [];
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    if (e.name === 'node_modules' || e.name === '.git') continue;
+    const full = join(dir, e.name);
+    if (e.isDirectory()) out.push(...walkFiles(full));
+    else if (e.isFile()) out.push(full);
   }
   return out;
 }

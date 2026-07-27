@@ -23,7 +23,6 @@ import {
   hasIntermittentFailureRateEvidence,
   isBackedLiveDroveUiClaim,
   KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES,
-  looksLikeCitedProseEvidence,
   looksLikeIntermittentClassification,
   RECONCILER_SYSTEM_ACTOR,
   touchesLayoutBearingFiles,
@@ -61,43 +60,18 @@ function recordingSql() {
 const frag = (x: unknown) => x as unknown as { text: string; params: unknown[] };
 
 describe('completion-audit predicates (EI-10867)', () => {
-  it("'no-evidence' keys on the EVIDENCE payload — NOT on terminal_completion_ref", () => {
-    const f = frag(auditPredicateSql(recordingSql(), 'no-evidence'));
-
-    // The fix: it must test for the evidence key…
-    expect(f.text).toContain('payload');
-    expect(f.text).toContain('?'); // jsonb key-existence
-    expect(f.params).toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
-
-    // …and must NOT be the old, unfireable predicate. THIS is the falsification: the
-    // pre-fix code produced exactly `terminal_completion_ref IS NULL` here.
-    expect(f.text).not.toContain('terminal_completion_ref');
+  // P-006/D-003: the 'no-evidence' bareness audit was DELETED — P-004 made structured
+  // evidence required at WRITE time (an evidence-less close lands authority:'proposed'),
+  // so there is no longer a wrong value for a later sweep to re-verify. This asserts the
+  // deletion stuck: re-adding the bucket should have to re-argue D-003, not slip back in.
+  it("'no-evidence' is GONE from the audit vocabulary (P-006/D-003)", () => {
+    expect(COMPLETION_AUDITS).not.toContain('no-evidence');
   });
 
   it("'no-completion-record' preserves the OLD check as its own, separately-named audit", () => {
     const f = frag(auditPredicateSql(recordingSql(), 'no-completion-record'));
     expect(f.text).toContain('terminal_completion_ref IS NULL');
     expect(f.params).not.toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
-  });
-
-  it('a NULL payload reads as NO evidence (it must not drop out of the audit)', () => {
-    // The row that never carried a payload is the MOST suspect, so `payload ? key`
-    // alone (which is NULL, not false, for a NULL payload) would be a silent miss.
-    const f = frag(auditPredicateSql(recordingSql(), 'no-evidence'));
-    expect(f.text).toContain("COALESCE(payload, '{}'::jsonb)");
-  });
-
-  it('the aliased form (a joined query) keys on the SAME field as the unaliased one', () => {
-    const plain = frag(auditPredicateSql(recordingSql(), 'no-evidence'));
-    const aliased = frag(auditPredicateSqlFor(recordingSql(), 'no-evidence', 'ei'));
-
-    expect(aliased.text).toContain('ei.payload');
-    expect(aliased.params).toEqual(plain.params); // same evidence key, same semantics
-    expect(aliased.text).not.toContain('terminal_completion_ref');
-
-    // The two forms must stay structurally identical modulo the alias — the 6 call
-    // sites drifting apart is the class of bug this whole module exists to kill.
-    expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
   });
 
   it('the aliased no-completion-record form also matches its unaliased twin', () => {
@@ -150,22 +124,32 @@ describe('completion-audit predicates (EI-10867)', () => {
     });
   });
 
-  // EI-18677799334390930: a plan-item-reconcile close mirrors an ADJACENT plan
-  // item's status onto a work-item and is never independently verified — the
-  // `no-evidence` audit must ALWAYS catch it, even if a future caller adds a
-  // well-meaning `_completionEvidence` stamp to that write path.
-  describe("'no-evidence' also ALWAYS flags a reconcile-sourced close (EI-18677799334390930)", () => {
-    it('ORs in terminal_owner = RECONCILER_SYSTEM_ACTOR alongside the evidence-key check', () => {
-      const f = frag(auditPredicateSql(recordingSql(), 'no-evidence'));
+  /**
+   * EI-18677799334390930, rescued by D-012. A plan-item-reconcile close mirrors an
+   * ADJACENT plan item's status onto a work-item and is never independently verified.
+   * This rule used to ride INSIDE the deleted `no-evidence` branch; P-006 promoted it to
+   * its own bucket precisely so deleting that branch could not drop it silently.
+   */
+  describe("'reconciler-sourced' (EI-18677799334390930, rescued by D-012)", () => {
+    it('keys on terminal_owner = RECONCILER_SYSTEM_ACTOR', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'reconciler-sourced'));
       expect(f.text).toContain('terminal_owner');
-      expect(f.text).toContain('?'); // still jsonb key-existence, ORed with the actor check
       expect(f.params).toContain(RECONCILER_SYSTEM_ACTOR);
-      expect(f.params).toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
+    });
+
+    /**
+     * The load-bearing assertion. Keyed on the ACTOR, never on an evidence key — so
+     * adding a well-meaning `_completionEvidence` stamp to the reconcile write path
+     * cannot make these rows vanish from the audit.
+     */
+    it('does NOT depend on the evidence key (an evidence stamp cannot defeat it)', () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'reconciler-sourced'));
+      expect(f.params).not.toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
     });
 
     it('the aliased form matches the unaliased twin (modulo alias)', () => {
-      const plain = frag(auditPredicateSql(recordingSql(), 'no-evidence'));
-      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'no-evidence', 'ei'));
+      const plain = frag(auditPredicateSql(recordingSql(), 'reconciler-sourced'));
+      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'reconciler-sourced', 'ei'));
       expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
     });
   });
@@ -321,52 +305,6 @@ describe('isBackedLiveDroveUiClaim (WI-5891)', () => {
     expect(isBackedLiveDroveUiClaim({})).toBe(true);
     expect(isBackedLiveDroveUiClaim(null)).toBe(true);
     expect(isBackedLiveDroveUiClaim(undefined)).toBe(true);
-  });
-});
-
-// EI-13424 — the audit's own false-positive rate: a `no-evidence` hit whose prose
-// completion.summary already cites real verification detail should not read as a bare
-// done-assertion. These are close paraphrases of the three real completions the bug
-// report cites (WI-4669 / WI-4999 / WI-5089), each of which the audit flagged despite
-// carrying rich, cited verification prose.
-describe('looksLikeCitedProseEvidence (EI-13424)', () => {
-  it('flags a ref citing a live tool observation + field-by-field spec check (WI-4669-shaped)', () => {
-    const ref =
-      'Live-verified events:status { event } in production right now, called twice this session; ' +
-      'checked every requirement in the spec against the actual returned field, including a live ' +
-      "observation (\"fired\" on event 'rig-heal-federation-green'), waiters[]/wake_outcomes[] field-by-field.";
-    expect(looksLikeCitedProseEvidence(ref)).toBe(true);
-  });
-
-  it('flags a ref citing a drill run + cross-referenced peer drillIds (WI-4999-shaped)', () => {
-    const ref =
-      "Verified via session:carry-drill{op:'report'} at 2026-07-17T03:20Z: perClass = " +
-      '[claude-interactive: drills:1, gaps:0, sufficient:true], cross-referenced against TWO ' +
-      'independent fresh drills from fleet peers (su-b7b40c9b drillId 828c3534-e29b-4716-a716-446655440000).';
-    expect(looksLikeCitedProseEvidence(ref)).toBe(true);
-  });
-
-  it('flags a ref citing a file:line, measured numbers, and a commit sha (WI-5089-shaped)', () => {
-    const ref =
-      'Verified the actual doc content is present and committed: desktop-release-upload-runbook.mdx ' +
-      "has a '## Keep cargo caches warm' section (lines 187-228) with the measured numbers " +
-      '(cold 428-crate rebuild 143s vs warm incremental 4s) and the commit sha d3ca309e076992e162b319f035fbb8624692716c.';
-    expect(looksLikeCitedProseEvidence(ref)).toBe(true);
-  });
-
-  it('does NOT flag a genuinely bare done-assertion', () => {
-    expect(looksLikeCitedProseEvidence('done')).toBe(false);
-    expect(looksLikeCitedProseEvidence('Completed all tasks, looks good.')).toBe(false);
-    expect(looksLikeCitedProseEvidence(null)).toBe(false);
-    expect(looksLikeCitedProseEvidence(undefined)).toBe(false);
-    expect(looksLikeCitedProseEvidence('')).toBe(false);
-  });
-
-  it('does NOT flag a short ref even if it happens to contain a number (length floor)', () => {
-    // Under the length floor — a short ref shouldn't earn "evidenced" status just
-    // because it contains digits; that would recreate the over-detection failure mode
-    // this exists to avoid, just shifted to short refs instead of long ones.
-    expect(looksLikeCitedProseEvidence('Fixed bug #123, done.')).toBe(false);
   });
 });
 

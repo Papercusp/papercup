@@ -70,7 +70,7 @@ export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificati
  * This constant used to be declared PRIVATELY and IDENTICALLY in work-items.ts and
  * issues-engineer.ts. That duplication is precisely how the write path and the audit
  * path drifted: the writers agreed on `_completionEvidence`, while the
- * `audit:'no-evidence'` reader keyed on `terminal_completion_ref` — a column the
+ * (since-deleted) `audit:'no-evidence'` reader keyed on `terminal_completion_ref` — a column the
  * completion gate FORCES to be non-null — so the audit could never return a row it was
  * named for (4,119 unverified terminal rows read as clean). Both families now import
  * this single key, so a write and an audit cannot disagree about where evidence lives.
