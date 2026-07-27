@@ -264,6 +264,12 @@ import './loop/session_audit';
 import './loop/soak_report';
 import './loop/status';
 import './loop/transfer';
+// bash-to-tool-substitution-2026-07-26 P-023 (D-027) — a systemd unit's journal,
+// filtered server-side via `journalctl --grep` and distilled. 96% of the measured
+// journalctl corpus pulled a whole window across a pipe and grepped it after the
+// fact; NOT ONE used --grep. Distinct from the `journal:*` group, which is the
+// AGENT journal, not systemd's.
+import './logs/read';
 // owner-directive slots (EI-11484): explicit owner orders, recorded verbatim,
 // rendered above the loop agenda every wake until dispositioned.
 import './orders/record';

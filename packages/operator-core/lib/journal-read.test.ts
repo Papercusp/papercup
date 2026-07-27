@@ -1,0 +1,283 @@
+/**
+ * journal-read — guards for the semantics that are expensive to relearn.
+ *
+ * Plan `bash-to-tool-substitution-2026-07-26`, P-023 (D-027).
+ *
+ * Every case below pins something that has ALREADY gone wrong once in this repo
+ * or is a quiet-wrongness trap of the same shape:
+ *  - exit 1 vs a real failure (soak-report's fail-soft catch returned zeros and
+ *    the OOM gate reported CLEAN while bg-host had restarted 9 times);
+ *  - "no journal" vs "no lines" (ABSENT EVIDENCE MUST NEVER READ AS EVIDENCE OF
+ *    ABSENCE);
+ *  - the `--grep` PUSH-DOWN, which is the tool's entire reason to exist and would
+ *    be silently undone by a refactor that filtered client-side instead.
+ */
+
+import { describe, expect, it } from 'vitest';
+import {
+  buildJournalctlArgs,
+  clampLimit,
+  classifyJournalctlFailure,
+  collapseConsecutive,
+  decodeMessage,
+  decodePriority,
+  decodeRealtime,
+  decodeUnit,
+  JOURNAL_READ_DEFAULT_LIMIT,
+  JOURNAL_READ_DEFAULT_SINCE,
+  JOURNAL_READ_MAX_LIMIT,
+  parseJournalJson,
+  readJournal,
+  type JournalExec,
+} from './journal-read';
+
+/** Build one journalctl `-o json` line. */
+function jsonLine(fields: Record<string, unknown>): string {
+  return JSON.stringify({ __REALTIME_TIMESTAMP: '1785110000000000', PRIORITY: '6', ...fields });
+}
+
+const execReturning = (stdout: string): JournalExec => async () => ({ stdout });
+
+describe('buildJournalctlArgs', () => {
+  it('PUSHES grep down to --grep — the whole reason this tool exists', () => {
+    const args = buildJournalctlArgs({ units: ['papercup-bg-host.service'], grep: 'oom|killed process' });
+    const at = args.indexOf('--grep');
+    expect(at).toBeGreaterThan(-1);
+    expect(args[at + 1]).toBe('oom|killed process');
+    // Case-insensitive, matching the `grep -i` the corpus hand-wrote.
+    expect(args).toContain('--case-sensitive=false');
+  });
+
+  it('omits --grep entirely when no pattern is given (never an empty filter)', () => {
+    expect(buildJournalctlArgs({ units: ['u.service'] })).not.toContain('--grep');
+  });
+
+  it('unit-scopes with -u per unit, and merges several units into one stream', () => {
+    const args = buildJournalctlArgs({ units: ['a.service', 'b.timer'] });
+    expect(args.filter((a) => a === '-u')).toHaveLength(2);
+    expect(args).toContain('a.service');
+    expect(args).toContain('b.timer');
+  });
+
+  it('defaults the window rather than reading unbounded history', () => {
+    const args = buildJournalctlArgs({ units: ['a.service'] });
+    expect(args[args.indexOf('--since') + 1]).toBe(JOURNAL_READ_DEFAULT_SINCE);
+  });
+
+  it('reads --user by default and --system only when asked (kernel/OOM records)', () => {
+    expect(buildJournalctlArgs({ units: ['a.service'] })).toContain('--user');
+    expect(buildJournalctlArgs({ units: ['a.service'], system: true })).toContain('--system');
+    expect(buildJournalctlArgs({ units: ['a.service'], system: true })).not.toContain('--user');
+  });
+
+  it('asks journalctl for limit+1 rows so `truncated` is measured, not guessed', () => {
+    const args = buildJournalctlArgs({ units: ['a.service'], limit: 25 });
+    expect(args[args.indexOf('-n') + 1]).toBe('26');
+  });
+
+  it('always disables the pager (a pager on a pipe hangs the read)', () => {
+    expect(buildJournalctlArgs({ units: ['a.service'] })).toContain('--no-pager');
+  });
+
+  it('restricts --output-fields so -o json stays affordable', () => {
+    const args = buildJournalctlArgs({ units: ['a.service'] });
+    const flag = args.find((a) => a.startsWith('--output-fields='));
+    expect(flag).toBeDefined();
+    expect(flag).toContain('MESSAGE');
+    expect(flag).toContain('_SYSTEMD_UNIT');
+    expect(flag).toContain('__REALTIME_TIMESTAMP');
+  });
+
+  it('passes level through as journalctl -p (this level AND more severe)', () => {
+    const args = buildJournalctlArgs({ units: ['a.service'], level: 'err' });
+    expect(args[args.indexOf('-p') + 1]).toBe('err');
+  });
+});
+
+describe('clampLimit', () => {
+  it('defaults, floors and ceilings without ever returning 0 or NaN', () => {
+    expect(clampLimit(undefined)).toBe(JOURNAL_READ_DEFAULT_LIMIT);
+    expect(clampLimit(Number.NaN)).toBe(JOURNAL_READ_DEFAULT_LIMIT);
+    expect(clampLimit(0)).toBe(1);
+    expect(clampLimit(10_000)).toBe(JOURNAL_READ_MAX_LIMIT);
+    expect(clampLimit(37.9)).toBe(37);
+  });
+});
+
+describe('classifyJournalctlFailure', () => {
+  it('treats exit 1 with EMPTY stderr as NO MATCH — a clean window, not a failure', () => {
+    expect(classifyJournalctlFailure({ code: 1, stderr: '' })).toMatchObject({ kind: 'no-match' });
+    expect(classifyJournalctlFailure({ code: 1, stderr: '   \n' })).toMatchObject({ kind: 'no-match' });
+  });
+
+  it('treats exit 1 WITH stderr as a real error — the read did not succeed', () => {
+    const out = classifyJournalctlFailure({ code: 1, stderr: 'Failed to add match: Invalid argument' });
+    expect(out.kind).toBe('error');
+    expect(out.message).toContain('Invalid argument');
+  });
+
+  it('treats ENOENT as NO SYSTEMD — a platform capability, not an error', () => {
+    expect(classifyJournalctlFailure({ code: 'ENOENT' })).toMatchObject({ kind: 'no-systemd' });
+  });
+
+  it('falls back to the error message when there is no stderr', () => {
+    expect(classifyJournalctlFailure(new Error('spawn timed out')).message).toContain('spawn timed out');
+  });
+});
+
+describe('parseJournalJson', () => {
+  it('decodes a MESSAGE stored as an ARRAY OF BYTES (non-UTF8 payloads)', () => {
+    const bytes = [...Buffer.from('build failed', 'utf8')];
+    expect(parseJournalJson(jsonLine({ MESSAGE: bytes }))[0].message).toBe('build failed');
+  });
+
+  it('never renders a byte-array message as "72,101,..." — that looks like data and is not', () => {
+    const bytes = [...Buffer.from('hi', 'utf8')];
+    expect(parseJournalJson(jsonLine({ MESSAGE: bytes }))[0].message).not.toContain(',');
+  });
+
+  it('SKIPS malformed lines instead of failing the whole read', () => {
+    const stdout = ['-- No entries --', jsonLine({ MESSAGE: 'real' }), 'not json at all'].join('\n');
+    const out = parseJournalJson(stdout);
+    expect(out).toHaveLength(1);
+    expect(out[0].message).toBe('real');
+  });
+
+  it('drops a record with no MESSAGE rather than emitting an empty row', () => {
+    expect(parseJournalJson(jsonLine({ MESSAGE: null }))).toHaveLength(0);
+  });
+
+  it('clips an oversized message and flags it', () => {
+    const out = parseJournalJson(jsonLine({ MESSAGE: 'x'.repeat(5000) }))[0];
+    expect(out.clipped).toBe(true);
+    expect(out.message.length).toBeLessThan(5000);
+  });
+});
+
+describe('field decoding', () => {
+  it('reads __REALTIME_TIMESTAMP as MICROSECONDS since the epoch', () => {
+    // 1_785_110_000_000_000µs = 1_785_110_000_000ms
+    expect(decodeRealtime('1785110000000000')).toBe(new Date(1_785_110_000_000).toISOString());
+  });
+
+  it('returns an empty ts rather than an Invalid Date for junk', () => {
+    expect(decodeRealtime('nope')).toBe('');
+    expect(decodeRealtime(undefined)).toBe('');
+  });
+
+  it('maps the numeric-string PRIORITY to a severity name', () => {
+    expect(decodePriority('0')).toBe('emerg');
+    expect(decodePriority('3')).toBe('err');
+    expect(decodePriority('7')).toBe('debug');
+    expect(decodePriority('8')).toBeNull();
+    expect(decodePriority(undefined)).toBeNull();
+  });
+
+  it('falls back from _SYSTEMD_UNIT to SYSLOG_IDENTIFIER, then null', () => {
+    expect(decodeUnit({ _SYSTEMD_UNIT: 'a.service', SYSLOG_IDENTIFIER: 'x' })).toBe('a.service');
+    expect(decodeUnit({ SYSLOG_IDENTIFIER: 'oddsmith-alert' })).toBe('oddsmith-alert');
+    expect(decodeUnit({})).toBeNull();
+  });
+
+  it('decodeMessage passes a plain string straight through', () => {
+    expect(decodeMessage('plain')).toBe('plain');
+    expect(decodeMessage(42)).toBeNull();
+  });
+});
+
+describe('collapseConsecutive', () => {
+  const rec = (ts: string, message: string, unit = 'a.service') =>
+    ({ ts, unit, level: 'info' as const, message, clipped: false });
+
+  it('collapses a consecutive run into one row with a count and the LAST ts', () => {
+    const { entries, collapsed } = collapseConsecutive([
+      rec('t1', 'retrying'), rec('t2', 'retrying'), rec('t3', 'retrying'),
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ repeat: 3, ts: 't1', lastTs: 't3' });
+    expect(collapsed).toBe(2);
+  });
+
+  it('does NOT collapse identical lines separated by a different line — chronology survives', () => {
+    const { entries, collapsed } = collapseConsecutive([
+      rec('t1', 'tick'), rec('t2', 'boom'), rec('t3', 'tick'),
+    ]);
+    expect(entries).toHaveLength(3);
+    expect(collapsed).toBe(0);
+  });
+
+  it('does not merge the same message from DIFFERENT units', () => {
+    const { entries } = collapseConsecutive([rec('t1', 'up', 'a.service'), rec('t2', 'up', 'b.service')]);
+    expect(entries).toHaveLength(2);
+  });
+
+  it('leaves an uncollapsed row at repeat:1 with no lastTs', () => {
+    const [entry] = collapseConsecutive([rec('t1', 'once')]).entries;
+    expect(entry.repeat).toBe(1);
+    expect(entry.lastTs).toBeUndefined();
+  });
+});
+
+describe('readJournal', () => {
+  it('reports a NO-MATCH exit as a clean readable window, NOT an error', async () => {
+    const exec: JournalExec = async () => { throw Object.assign(new Error('exit 1'), { code: 1, stderr: '' }); };
+    const out = await readJournal({ units: ['a.service'], grep: 'nope' }, exec);
+    expect(out.entries).toEqual([]);
+    expect(out.journalAvailable).toBe(true);
+    expect(out.journalError).toBeNull();
+  });
+
+  it('reports an absent journal as journalAvailable:false — never as an empty log', async () => {
+    const exec: JournalExec = async () => { throw Object.assign(new Error('nope'), { code: 'ENOENT' }); };
+    const out = await readJournal({ units: ['a.service'] }, exec);
+    expect(out.journalAvailable).toBe(false);
+    expect(out.journalError).toBeNull();
+    expect(out.entries).toEqual([]);
+  });
+
+  it('reports a FAILED read with journalError set, so empty entries cannot be read as clean', async () => {
+    const exec: JournalExec = async () => {
+      throw Object.assign(new Error('boom'), { code: 1, stderr: 'Failed to add match' });
+    };
+    const out = await readJournal({ units: ['a.service'] }, exec);
+    expect(out.journalError).toContain('Failed to add match');
+    expect(out.journalAvailable).toBe(true);
+  });
+
+  it('keeps the NEWEST rows and flags truncation when the read exceeds `limit`', async () => {
+    const lines = Array.from({ length: 5 }, (_, i) =>
+      jsonLine({ MESSAGE: `line-${i}`, __REALTIME_TIMESTAMP: String(1785110000000000 + i * 1_000_000) }));
+    const out = await readJournal({ units: ['a.service'], limit: 3 }, execReturning(lines.join('\n')));
+    expect(out.truncated).toBe(true);
+    expect(out.matched).toBe(5);
+    expect(out.entries.map((e) => e.message)).toEqual(['line-2', 'line-3', 'line-4']);
+  });
+
+  it('does not flag truncation when the read fits', async () => {
+    const out = await readJournal({ units: ['a.service'], limit: 10 }, execReturning(jsonLine({ MESSAGE: 'one' })));
+    expect(out.truncated).toBe(false);
+    expect(out.matched).toBe(1);
+  });
+
+  it('counts `matched` BEFORE dedup, and reports what dedup removed', async () => {
+    const lines = Array.from({ length: 4 }, (_, i) =>
+      jsonLine({ MESSAGE: 'same', _SYSTEMD_UNIT: 'a.service', __REALTIME_TIMESTAMP: String(1785110000000000 + i) }));
+    const out = await readJournal({ units: ['a.service'] }, execReturning(lines.join('\n')));
+    expect(out.matched).toBe(4);
+    expect(out.collapsed).toBe(3);
+    expect(out.entries).toHaveLength(1);
+    expect(out.entries[0].repeat).toBe(4);
+  });
+
+  it('echoes the exact argv so any result is reproducible by hand', async () => {
+    const out = await readJournal({ units: ['a.service'], grep: 'boom' }, execReturning(''));
+    expect(out.command).toContain('journalctl');
+    expect(out.command).toContain('--grep boom');
+    expect(out.command).toContain('-u a.service');
+  });
+
+  it('reports the window it actually used, including the defaulted one', async () => {
+    const out = await readJournal({ units: ['a.service'] }, execReturning(''));
+    expect(out.window).toEqual({ since: JOURNAL_READ_DEFAULT_SINCE, until: null });
+  });
+});

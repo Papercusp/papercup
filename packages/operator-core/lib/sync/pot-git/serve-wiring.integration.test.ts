@@ -346,7 +346,14 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     // Pre-fix this test does not fail an assertion; it hits the vitest
     // timeout, which is exactly the production symptom.
     const deadSockPath = join(root, 'dead-peer.sock');
+    // Tracked so teardown can destroy the SERVER end too: this peer never
+    // completes a session, so destroying only the client leaves the accepted
+    // connection lingering and `server.close()`'s callback never fires (it
+    // waits for every connection to end). Every other test in this file
+    // finishes a real exchange, so their sockets close on their own.
+    let deadSrvConn: Socket | null = null;
     const deadServer = createServer({ allowHalfOpen: true }, (srvConn) => {
+      deadSrvConn = srvConn;
       srvConn.on('error', () => {});
       // A REAL SecretStream (so the handshake completes and we get past
       // `await opened`) deliberately never wired to pot-git serve — no
@@ -388,10 +395,12 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       expect(res.code).not.toBe(0);
       expect(res.timedOut).toBe(false);
     } finally {
-      try {
-        deadSocket.destroy();
-      } catch {
-        /* ignore */
+      for (const s of [deadSocket, deadSrvConn as Socket | null]) {
+        try {
+          s?.destroy();
+        } catch {
+          /* ignore */
+        }
       }
       await new Promise<void>((r) => deadServer.close(() => r()));
     }

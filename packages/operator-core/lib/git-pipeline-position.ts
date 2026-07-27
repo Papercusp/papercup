@@ -956,15 +956,23 @@ export async function gitPipelinePosition(
     deployedSha,
     gate,
     gitSyncLastStatus: snap.gitSync.lastStatus,
+    // Defensive by intent, not to appease a fixture: `snap.gitSync` is parsed out of
+    // free-form routine METADATA, so any of these can legitimately be absent on an
+    // older/partial row. A diagnostic surface that throws when a field is missing is
+    // strictly worse than one that reports a benign default — an agent trying to find
+    // out why its change is stuck must never be answered with a TypeError.
     gitSync: {
-      status: snap.gitSync.lastStatus,
-      lastSyncedAtMs: snap.gitSync.lastSyncedAtMs,
-      syncAgeMs: snap.gitSync.lastSyncedAtMs === null ? null : Date.now() - snap.gitSync.lastSyncedAtMs,
-      consecutiveErrorTicks: snap.gitSync.consecutiveErrorTicks,
-      pushedRepos: snap.gitSync.lastPushed,
-      mergedRepos: snap.gitSync.lastMerged,
-      conflicts: snap.gitSync.lastConflicts,
-      errors: snap.gitSync.lastErrors,
+      status: snap.gitSync?.lastStatus ?? null,
+      lastSyncedAtMs: snap.gitSync?.lastSyncedAtMs ?? null,
+      syncAgeMs:
+        snap.gitSync?.lastSyncedAtMs === null || snap.gitSync?.lastSyncedAtMs === undefined
+          ? null
+          : Date.now() - snap.gitSync.lastSyncedAtMs,
+      consecutiveErrorTicks: snap.gitSync?.consecutiveErrorTicks ?? 0,
+      pushedRepos: snap.gitSync?.lastPushed ?? [],
+      mergedRepos: snap.gitSync?.lastMerged ?? [],
+      conflicts: snap.gitSync?.lastConflicts ?? [],
+      errors: snap.gitSync?.lastErrors ?? [],
     },
     runtime,
     runtimes,

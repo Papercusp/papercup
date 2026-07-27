@@ -20,7 +20,9 @@ vi.mock('@papercusp/operator-core/lib/hard-reload', () => ({ hardReload: H.hardR
 
 import RouteErrorBoundary, {
   CHUNK_DELAYED_RETRY_MAX,
+  CHUNK_DELAYED_RETRY_WINDOW_MS,
   delayedChunkRetryMs,
+  pruneRetryLog,
 } from './RouteErrorBoundary';
 
 // Throws based on a module-level flag rather than a prop, so a re-render driven by
@@ -151,5 +153,20 @@ describe('delayedChunkRetryMs', () => {
     expect(
       delayedChunkRetryMs(chunkErr, 110_000, 100_000, CHUNK_DELAYED_RETRY_MAX - 1),
     ).toBe(55_000);
+  });
+});
+
+describe('pruneRetryLog', () => {
+  it('drops timestamps outside the sliding window so an exhausted tab heals', () => {
+    const now = 10_000_000;
+    const stale = now - CHUNK_DELAYED_RETRY_WINDOW_MS - 1;
+    const fresh = now - 1_000;
+    expect(pruneRetryLog(JSON.stringify([stale, fresh]), now)).toEqual([fresh]);
+  });
+  it('tolerates garbage and legacy scalar values', () => {
+    expect(pruneRetryLog('not json', 1_000)).toEqual([]);
+    expect(pruneRetryLog('5', 1_000)).toEqual([]); // old lifetime-counter format
+    expect(pruneRetryLog(null, 1_000)).toEqual([]);
+    expect(pruneRetryLog(JSON.stringify(['x', 500]), 1_000)).toEqual([500]);
   });
 });

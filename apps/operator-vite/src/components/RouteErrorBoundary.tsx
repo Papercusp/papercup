@@ -93,11 +93,29 @@ export function shouldAutoReloadForChunkError(
   return nowMs - lastReloadAtMs > 60_000;
 }
 
-/** SessionStorage key counting DELAYED self-retries this tab has burned, so a
- *  genuinely broken build settles on the manual card instead of reloading
- *  roughly once a minute forever. Exported for tests. */
-export const CHUNK_DELAYED_RETRY_COUNT_KEY = 'pcusp-chunk-delayed-retry-count';
+/** SessionStorage key holding a JSON array of epoch-ms timestamps of DELAYED
+ *  self-retries, so a genuinely broken build settles on the manual card instead
+ *  of reloading roughly once a minute forever. A SLIDING window (not a lifetime
+ *  counter): a tab that exhausted its retries during an outage heals again once
+ *  the window drains — a lifetime counter left such tabs permanently manual
+ *  (observed during the 2026-07-26 gym-tab recovery). Exported for tests. */
+export const CHUNK_DELAYED_RETRY_COUNT_KEY = 'pcusp-chunk-delayed-retry-log';
 export const CHUNK_DELAYED_RETRY_MAX = 5;
+export const CHUNK_DELAYED_RETRY_WINDOW_MS = 30 * 60_000;
+
+/** Parse + prune the retry log to timestamps still inside the sliding window.
+ *  Pure; exported for tests. */
+export function pruneRetryLog(raw: string | null, nowMs: number): number[] {
+  try {
+    const arr: unknown = JSON.parse(raw ?? '[]');
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map(Number)
+      .filter((ts) => Number.isFinite(ts) && nowMs - ts < CHUNK_DELAYED_RETRY_WINDOW_MS);
+  } catch {
+    return [];
+  }
+}
 
 /** When the 60s debounce BLOCKS an immediate auto-reload for a chunk-shaped
  *  error, how long to wait before ONE delayed self-retry — or null for "don't".
@@ -137,9 +155,11 @@ function autoHealChunkError(error: unknown, onArmed?: () => void): number | null
       hardReload();
       return null;
     }
-    const rawCount = Number(window.sessionStorage.getItem(CHUNK_DELAYED_RETRY_COUNT_KEY) ?? 0);
-    const priorRetries = Number.isFinite(rawCount) ? rawCount : 0;
-    const delay = delayedChunkRetryMs(error, now, last, priorRetries);
+    const retryLog = pruneRetryLog(
+      window.sessionStorage.getItem(CHUNK_DELAYED_RETRY_COUNT_KEY),
+      now,
+    );
+    const delay = delayedChunkRetryMs(error, now, last, retryLog.length);
     if (delay === null) return null;
     onArmed?.();
     return window.setTimeout(() => {
@@ -148,7 +168,13 @@ function autoHealChunkError(error: unknown, onArmed?: () => void): number | null
         const lastRetry = Number(window.sessionStorage.getItem(CHUNK_AUTO_RELOAD_KEY) ?? 0);
         if (nowRetry - lastRetry <= 60_000) return; // someone else reloaded meanwhile
         window.sessionStorage.setItem(CHUNK_AUTO_RELOAD_KEY, String(nowRetry));
-        window.sessionStorage.setItem(CHUNK_DELAYED_RETRY_COUNT_KEY, String(priorRetries + 1));
+        window.sessionStorage.setItem(
+          CHUNK_DELAYED_RETRY_COUNT_KEY,
+          JSON.stringify([...pruneRetryLog(
+            window.sessionStorage.getItem(CHUNK_DELAYED_RETRY_COUNT_KEY),
+            nowRetry,
+          ), nowRetry]),
+        );
         hardReload();
       } catch {
         /* manual fallback stays */
