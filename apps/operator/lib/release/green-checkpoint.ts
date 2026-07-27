@@ -111,6 +111,15 @@ export interface CheckpointDeps {
   /** Re-run EXACTLY these failing files at `ref`, for the stale-candidate re-triage.
    *  Optional: absent ⇒ every red is treated as real (today's behaviour). */
   runTestsAtRef?(ref: string, files: FailingFile[]): Promise<{ pass: boolean; summary: string }>;
+  /** EI-18759362119598634: the LINT/TYPECHECK sibling of `runTestsAtRef` — re-run
+   *  EXACTLY these non-test GATE signatures (see {@link NON_TEST_GATE_SCRIPTS}) at
+   *  `ref`, for a red whose `failingTests` are entirely gate ids and therefore never
+   *  populate `failingFiles` (that list is test-FILE-only). Without this, a gate-only
+   *  red skipped the stale-candidate re-triage outright — no file to re-run ⇒ no
+   *  rescue — so a lint fixed seconds after the quiet-cut still held the gate red
+   *  forever. Optional: absent ⇒ a gate-only red is never re-verified at tip (today's
+   *  behaviour preserved for stubs/hives that don't provide it). */
+  runGateAtRef?(ref: string, gateIds: string[]): Promise<{ pass: boolean; summary: string }>;
   /** EI-18669342433807110: called right before a stale-candidate auto-refire RECURSES (which can
    *  run a full suite again, minutes, before this process returns) — merges a marker into
    *  `gate_health` so a concurrent reader (coord:orient, dev:why) can tell the cached red for

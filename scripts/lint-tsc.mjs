@@ -66,6 +66,8 @@ import {
   parseExplicitFiles,
   decidePerFile,
   effectiveBaselineByFile,
+  exportedTypeNames,
+  filesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
   runTscBaselineGate,
@@ -79,6 +81,8 @@ export {
   parseExplicitFiles,
   decidePerFile,
   effectiveBaselineByFile,
+  exportedTypeNames,
+  filesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
 };

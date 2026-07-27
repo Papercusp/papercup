@@ -31,25 +31,44 @@ interface IncomingCommand {
   command: { id: string; args: unknown };
 }
 
-let active: { close: () => void } | null = null;
+// A plain module-level `let` is NOT sufficient to guarantee only one live
+// stream: if this module is ever evaluated more than once in the same page
+// (e.g. reached through two different bundler-resolved specifiers for the
+// same file — a dual-bundling edge case, see EI-18758340172989350), each
+// evaluation gets its OWN copy of the variable, so one instance's
+// `reconnect()` closes only ITS OWN stream and never sees the other
+// instance's — leaving both connected. That is exactly the "2 identical
+// EventSources, same tabId" symptom observed 2026-07-27 (a duplicated
+// leader-bridge stream contributing to WebKit's 6-per-host connection
+// budget being exhausted). Park the singleton on `globalThis` under a fixed
+// key instead, so every evaluation of this module — however many there
+// turn out to be — reads and writes the SAME live-stream handle.
+const ACTIVE_KEY = '__papercuspLeaderBridgeActive__';
+interface ActiveStream { close: () => void }
+function getActiveStream(): ActiveStream | null {
+  return (globalThis as Record<string, unknown>)[ACTIVE_KEY] as ActiveStream | null ?? null;
+}
+function setActiveStream(next: ActiveStream | null): void {
+  (globalThis as Record<string, unknown>)[ACTIVE_KEY] = next;
+}
 
 export function startLeaderBridge(opts: BridgeOptions): () => void {
   const reconnect = () => {
-    active?.close();
+    getActiveStream()?.close();
     if (!opts.isLeader()) {
-      active = null;
+      setActiveStream(null);
       return;
     }
     const workspace = opts.getWorkspace();
-    active = openStream(workspace, opts.tabId);
+    setActiveStream(openStream(workspace, opts.tabId));
   };
 
   reconnect();
   const unsubLeader = opts.onLeaderChange(reconnect);
 
   return () => {
-    active?.close();
-    active = null;
+    getActiveStream()?.close();
+    setActiveStream(null);
     unsubLeader();
   };
 }

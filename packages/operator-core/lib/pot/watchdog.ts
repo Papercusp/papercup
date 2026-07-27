@@ -41,7 +41,9 @@ import { getPotStarted, listStartedWorkspaceLoops, setPotStarted } from './start
 /** The fallback sleep the watchdog arms when the Mug forgot to declare
  *  (D-004 / OQ-3: default 30 min — failing toward "sleeps too long" is cheap). */
 export function watchdogFallbackSleepSec(): number {
-  const n = Number(process.env.PAPERCUSP_POT_WATCHDOG_SLEEP_SEC ?? process.env.PAPERCUSP_POT_WATCHDOG_SLEEP_SEC ?? 1800);
+  const n = Number(
+    process.env.PAPERCUSP_POT_WATCHDOG_SLEEP_SEC ?? process.env.PAPERCUSP_POT_WATCHDOG_SLEEP_SEC ?? 1800,
+  );
   return Number.isFinite(n) && n >= 60 ? n : 1800;
 }
 
@@ -412,6 +414,36 @@ export function computeWatchdogBackoff(args: {
  *  embed the scope key verbatim in their fire `reason` (as the existing
  *  rubric-staleness reasons already do, quoting the rubricId). Omitted ⇒
  *  today's exact source-only behavior, unchanged. */
+/**
+ * PURE: guarantee a scoped fire's `reason` actually CONTAINS its `scopeKey`.
+ *
+ * A `scopeKey` is resolved against the ledger as `reason LIKE '%scopeKey%'`, so a
+ * caller that records a reason NOT containing the key builds a debounce that can
+ * never match its own prior fires — it re-pages every tick, forever, and silently:
+ * the write succeeds, the read returns 0, and nothing anywhere reports a fault.
+ *
+ * That is not hypothetical. `agent-state-divergence-sweep` recorded the bare alert
+ * summary while querying with an `<ownerId>:<toolName>` scope key, and produced
+ * 113 fires across only 2 distinct conditions in 37 minutes — ~91% of one agent's
+ * inbox — with the leader-escalation backstop equally dead, because `isRepeat`
+ * read the same never-matching lookup (EI-18824142520274965).
+ *
+ * Documenting the contract was not enough to prevent that, so this ENFORCES it:
+ * a scoped reason missing its key is prefixed rather than trusted. The warning
+ * names the caller so the mismatch is fixed at the source instead of relying on
+ * this repair; correct callers (rubric-staleness, which always quotes its
+ * rubricId) are untouched, so this can only ever fire on the bug it prevents.
+ */
+export function scopedFireReason(reason: string, scopeKey: string | undefined, source: WatchdogSource): string {
+  if (!scopeKey || reason.includes(scopeKey)) return reason;
+  console.warn(
+    `[pot-watchdog] '${source}' claimed a fire with scopeKey='${scopeKey}' whose reason does not contain it — ` +
+      `the debounce would never match and this alarm would re-fire every tick. Prefixing the reason; ` +
+      `fix the caller to embed the key (EI-18824142520274965).`,
+  );
+  return `[${scopeKey}] ${reason}`;
+}
+
 export async function recentWatchdogFires(
   workspaceId: string,
   installSlug: string,
@@ -485,6 +517,8 @@ export async function claimWatchdogFire(opts: {
   scopeKey?: string;
 }): Promise<boolean> {
   const { workspaceId, installSlug, source, windowHours = 24, scopeKey } = opts;
+  // Make the scopeKey↔reason contract SELF-ENFORCING rather than documented-only.
+  const reason = scopedFireReason(opts.reason, scopeKey, source);
   try {
     const { sql } = getOrgPg();
     return await sql.begin(async (tx) => {
@@ -514,23 +548,29 @@ export async function claimWatchdogFire(opts: {
         baseWindowHours: windowHours,
         capHours: watchdogBackoffCapHours(),
         last: lastRow
-          ? { reason: lastRow.reason, firedAtMs: new Date(lastRow.fired_at).getTime(), repeatCount: lastRow.repeat_count ?? 1 }
+          ? {
+              reason: lastRow.reason,
+              firedAtMs: new Date(lastRow.fired_at).getTime(),
+              repeatCount: lastRow.repeat_count ?? 1,
+            }
           : null,
-        reason: opts.reason,
+        reason,
       });
       if (decision.skip) return false;
       await tx`
         INSERT INTO harness_shared.pot_watchdog_fires
           (workspace_id, install_slug, source, reason, wake_at, demand, repeat_count)
         VALUES (
-          ${workspaceId}, ${installSlug}, ${source}, ${opts.reason},
+          ${workspaceId}, ${installSlug}, ${source}, ${reason},
           ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::text::jsonb,
           ${decision.repeatCount}
         )`;
       return true;
     });
   } catch (e) {
-    console.warn(`[pot-watchdog] claimWatchdogFire failed (fail-open — proceeding as if unfired): ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[pot-watchdog] claimWatchdogFire failed (fail-open — proceeding as if unfired): ${e instanceof Error ? e.message : e}`,
+    );
     return true;
   }
 }
@@ -640,10 +680,7 @@ export async function armFallbackPotWake(opts: {
  * IS the violation at this seam (the liveness invariant is unconditional
  * while started, D-002). Fail-soft, fire-and-forget from the route.
  */
-export async function potTurnEndCheck(opts: {
-  workspaceId: string;
-  installSlug: string;
-}): Promise<FallbackArmResult> {
+export async function potTurnEndCheck(opts: { workspaceId: string; installSlug: string }): Promise<FallbackArmResult> {
   // Thread the standing demand so the fallback sleep is DEMAND-ADAPTIVE (a crashed / non-self-arming Mug with
   // a backlog re-wakes in ~2 min, not 30). This is NOT a gate — the turn-end seam still arms unconditionally
   // (D-002); demand only sizes the SLEEP. Fail-soft: a read error → null → the long idle sleep, unchanged.
@@ -755,7 +792,9 @@ export async function potWatchdogSweep(opts: { now?: number } = {}): Promise<Fal
  *  a deliberate brief pause. Default 24h; env-tunable; <= 0 DISABLES the whole
  *  paused-recovery sweep (kill switch). */
 export function pausedRecoveryStaleSec(): number {
-  const n = Number(process.env.PAPERCUSP_POT_PAUSED_RECOVERY_SEC ?? process.env.PAPERCUSP_POT_PAUSED_RECOVERY_SEC ?? 86_400);
+  const n = Number(
+    process.env.PAPERCUSP_POT_PAUSED_RECOVERY_SEC ?? process.env.PAPERCUSP_POT_PAUSED_RECOVERY_SEC ?? 86_400,
+  );
   return Number.isFinite(n) ? n : 86_400;
 }
 
@@ -764,11 +803,7 @@ export function pausedRecoveryStaleSec(): number {
  *  (respect a deliberate long pause while still surfacing it loudly; legacy
  *  PAPERCUSP_POT_PAUSED_AUTO_RESUME still accepted). */
 export function pausedRecoveryAutoResume(): boolean {
-  const v = (
-    process.env.PAPERCUSP_POT_PAUSED_AUTO_RESUME ??
-    process.env.PAPERCUSP_POT_PAUSED_AUTO_RESUME ??
-    'on'
-  )
+  const v = (process.env.PAPERCUSP_POT_PAUSED_AUTO_RESUME ?? process.env.PAPERCUSP_POT_PAUSED_AUTO_RESUME ?? 'on')
     .trim()
     .toLowerCase();
   return !(v === 'off' || v === '0' || v === 'false');
@@ -901,7 +936,8 @@ export async function pausedPotRecoverySweep(opts: { now?: number } = {}): Promi
           workspaceId,
           installSlug,
           outcome: 'skipped',
-          reason: 'per-pot placement bit, not the workspace loop bit (WI-3309) — never auto-resume material under workspace coordination',
+          reason:
+            'per-pot placement bit, not the workspace loop bit (WI-3309) — never auto-resume material under workspace coordination',
           pausedForMs,
         });
         continue;
@@ -923,9 +959,7 @@ export async function pausedPotRecoverySweep(opts: { now?: number } = {}): Promi
       }));
       const alreadyFiredRecently =
         (await recentWatchdogFires(workspaceId, installSlug, windowHours, 'paused-recovery')) > 0;
-      if (
-        !shouldActOnPausedPot({ pausedAtMs, now, thresholdMs, hasDemand: demand.demand, alreadyFiredRecently })
-      ) {
+      if (!shouldActOnPausedPot({ pausedAtMs, now, thresholdMs, hasDemand: demand.demand, alreadyFiredRecently })) {
         continue;
       }
       // WI-3261: still fires the debounced alert so the owner is reminded work

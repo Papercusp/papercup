@@ -669,6 +669,14 @@ export function runTscBaselineGate({
         formatAttributionHeadline({ count: result.attributed.length, explicit: explicitFiles !== null }),
       );
       for (const r of result.attributed) console.error(formatRow(r));
+      if (result.typeAttributed && result.typeAttributed.length > 0) {
+        console.error(
+          `   (${result.typeAttributed.length} of the above are NOT in your changed-file set — attributed because ` +
+            `they reference an exported type/interface one of your changed files also exports. This is the ` +
+            `EI-18756182128903253 fix: a required-field addition breaks a fixture/constructor your diff never ` +
+            `touched, and that fixture now gates with your change instead of surfacing hours later at green-checkpoint.)`,
+        );
+      }
       if (result.newFiles.length > 0) {
         console.error(`   (also ${result.newFiles.length} NEW file(s) with errors — see below)`);
         for (const r of result.newFiles) console.error(formatRow(r));

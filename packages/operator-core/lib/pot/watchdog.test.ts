@@ -85,6 +85,7 @@ import {
   watchdogFallbackSleepSec,
   watchdogDemandSleepSec,
   watchdogStaleSec,
+  scopedFireReason,
 } from './watchdog';
 
 const NOW = 1_750_000_000_000;
@@ -400,5 +401,28 @@ describe('potDemandCheck (P-011)', () => {
     expect((await potDemandCheck(WS)).demand).toBe(true);
     demandRow = { todo_items: 0, started_plans: 1 };
     expect((await potDemandCheck(WS)).demand).toBe(true);
+  });
+});
+
+// ── EI-18824142520274965: the scopeKey↔reason contract, enforced ─────────────
+//
+// A scoped debounce resolves as `reason LIKE '%scopeKey%'`, so a reason that does
+// not contain its key builds a lookup that can never match its own prior fires —
+// the alarm re-pages every tick and nothing reports a fault. Documenting that was
+// not enough (the divergence sweep shipped exactly this bug and emitted 113 fires
+// across 2 conditions in 37 minutes), so the invariant is now enforced in code.
+describe('scopedFireReason — a scoped fire must be findable by its own key', () => {
+  it('leaves a correct reason untouched', () => {
+    const reason = '[su-a:work_items:claim] you called it 3×';
+    expect(scopedFireReason(reason, 'su-a:work_items:claim', 'tick')).toBe(reason);
+  });
+
+  it('repairs a reason that omits the key, so the debounce can match', () => {
+    const out = scopedFireReason('you called it 3×', 'su-a:work_items:claim', 'tick');
+    expect(out).toContain('su-a:work_items:claim');
+  });
+
+  it('is a no-op when no scopeKey is in play — unscoped callers are unaffected', () => {
+    expect(scopedFireReason('plain reason', undefined, 'tick')).toBe('plain reason');
   });
 });
