@@ -24,6 +24,19 @@ type ItemsTier = keyof typeof PLANS_ITEMS_TIER_CAPS;
 const clip = (s: unknown, n: number): string | null =>
   typeof s === "string" ? (s.length > n ? `${s.slice(0, n - 1)}…` : s) : null;
 
+/** True when `clip(s, n)` actually cut `s` short. EI-18762253154342502: the
+ *  result-door's own `detectInnerTruncationMarkers` scans a spilled result's
+ *  serialized JSON for a literal `"<field>_truncated": true` key — the SAME
+ *  convention `work_items:get`'s `summary_truncated` and `coord:inbox`'s
+ *  `body_truncated` already use. Before this fix, `clip()` silently dropped
+ *  text with a bare "…" and no marker, so a plans:items row that got clipped
+ *  to fit the trimmed/standard tier was indistinguishable — to the door — from
+ *  a row that was never truncated at all, and an over-door spill of such a
+ *  result printed the unconditional (and false) "FULL tool result" banner.
+ *  Stamping `text_truncated` closes that gap for THIS tool; the door's default
+ *  banner was also made honest for every tool that doesn't (yet) stamp one. */
+const wasClipped = (s: unknown, n: number): boolean => typeof s === "string" && s.length > n;
+
 const joined = (v: unknown): string | null =>
   Array.isArray(v) && v.length > 0 ? v.map(String).join(",") : null;
 

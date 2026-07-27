@@ -184,7 +184,7 @@ export default defineTool({
   guidance: {
     when: 'Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
     notWhen:
-      'For a foreground command — its output is in the capability:bash result directly. Note: a miss reporting `reason: "stranded_by_operator_restart"` or `"job_process_gone"` (with a log tail) means the job\'s in-memory tracking is gone while its log survived; the tool already checked this operator process\'s own uptime against the job\'s age to tell the two causes apart (EI-18666279107998059), so the reason IS the confirmed cause, not a guess — it is not a wrong id, just re-run capability:bash rather than treating it as a tool bug.',
+      'For a foreground command — its output is in the capability:bash result directly. Note: a miss with a log tail means the job\'s in-memory tracking is gone while its log survived. `reason: "tracking_lost_process_alive"` means the process is CONFIRMED still running (via the durable task ledger) — do NOT re-run, keep polling. `"job_process_gone"` with the ledger cited in `advice` means it is CONFIRMED dead — safe to re-run. Any other wording (uptime-only fallback, no ledger row) is the best available INFERENCE, not a confirmed verdict — verify yourself (e.g. `ps`) before re-running to avoid doubling load on a shared box.',
     chaining: 'capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early.',
     seeAlso: [
       'capability:bash (start the command)',

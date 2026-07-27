@@ -190,7 +190,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         `# marked field(s) are themselves incomplete and were never fully serialized — paging this\n` +
         `# file will NOT recover them. Re-call ${opts.toolName} with a wider per-field limit/budget\n` +
         `# argument for the missing detail.\n\n`
-      : `# result-door spill — FULL tool result (the in-context copy was truncated at the door)\n` +
+      : // EI-18762253154342502: never claim "FULL" unconditionally — no marker firing
+        // proves nothing was cut upstream, only that no DETECTED marker was found (a
+        // tool can truncate a field with a plain ellipsis and no `_truncated` flag,
+        // as plans:items did before this fix). "as it reached this door" is always
+        // true and never overclaims what was actually recoverable.
+        `# result-door spill — the text as it reached this door (no upstream truncation marker detected;\n` +
+        `# that does NOT guarantee the tool emitted every field in full — only that none of its known\n` +
+        `# _truncated markers fired)\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
         `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n\n`;
     writeFileSync(fsPath, header + fullText, { mode: 0o600 });
@@ -235,8 +242,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           `Re-call ${opts.toolName} with a wider per-field limit/budget argument for the missing detail.]`
         : `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
           `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
-          `The FULL result is at ${fsPath} (scratch URI: ${uri}) — page it with a bounded read ` +
-          `(offset/limit) instead of re-running the tool.]`,
+          `The result as it reached this door is at ${fsPath} (scratch URI: ${uri}) — page it with a ` +
+          `bounded read (offset/limit) instead of re-running the tool. (No upstream truncation marker ` +
+          `was detected, but that is not a guarantee the tool emitted every field in full — if a field ` +
+          `still looks cut short after paging, re-call ${opts.toolName} with a wider per-field ` +
+          `limit/budget argument or payloadTier:'full'.)]`,
     });
     return { ...result, content: doored };
   } catch {
