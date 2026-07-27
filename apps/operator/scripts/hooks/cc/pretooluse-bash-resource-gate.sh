@@ -6,11 +6,13 @@
 #
 # ALSO: the native-scheduler lockout (native-scheduler-lockout-2026-06-09
 # P-010) — when this session is an AGENT session (PAPERCUSP_AGENT_SESSION=1:
-# role panes, the brain/Queen; the owner's own sessions never set it), deny
-# persistent OS schedulers (crontab/at/batch/systemd-run) at command position.
-# Local regex, no HTTP. Catches the compound forms (`cd x && crontab …`) the
-# launch-time Bash(crontab:*) prefix deny-patterns can't. Wakes belong in the
-# harness routines table (hive:declare-wake) — the only scheduler that
+# role panes, the brain/Queen — OR PAPERCUSP_FLEET_SLUG set, the backstop for
+# a fleet member whose launch path dropped the marker, EI-18815668439722436;
+# the owner's own plain sessions set neither), deny persistent OS schedulers
+# (crontab/at/batch/systemd-run) at command position. Local regex, no HTTP.
+# Catches the compound forms (`cd x && crontab …`) the launch-time
+# Bash(crontab:*) prefix deny-patterns can't. Wakes belong in the harness
+# routines table (hive:declare-wake) — the only scheduler that
 # Pause/hive:status/the liveness backstop can see.
 #
 # Cheap by design: a local keyword pre-filter lets the overwhelming majority

@@ -113,7 +113,13 @@ export interface CoordEscalationSummary {
 export interface AgentCoordState {
   /** Most recent message directly involving this agent (sent or addressed to it). */
   lastMessage: CoordMessageSummary | null;
-  /** Unacked messages addressed to this agent (kind=message; broadcasts included, self-sent excluded). */
+  /**
+   * Messages addressed to this agent (kind=message; broadcasts included,
+   * self-sent excluded) that arrived AFTER its last read receipt and were
+   * never explicitly acked. Null receipt (no watermark, no recorded
+   * coord:inbox/orient call) ⇒ the agent genuinely has read nothing, so the
+   * whole log counts — that is the honest answer, not a bug.
+   */
   unreadCount: number;
   /** Open (un-accepted) handoffs this agent sent or received. */
   openHandoffs: CoordHandoffSummary[];

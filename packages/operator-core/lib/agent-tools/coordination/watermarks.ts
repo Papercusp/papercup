@@ -24,6 +24,38 @@ import { coordScopeWorkspace } from './log';
 export { emptyWatermark };
 export type { Watermark };
 
+/**
+ * The ONE rule for "what has this agent already read" — the LATER of the
+ * turn-END settle watermark and a real read receipt; either alone counts;
+ * neither ⇒ null ("no receipt on record", i.e. nothing can be narrowed).
+ * ISO strings compare lexicographically.
+ *
+ * Lives HERE, next to the cursor fields it interprets, because it has two
+ * unrelated consumers that must never drift apart on the rule:
+ *   - the continuation gate (loop/checkpoint.ts), where it started life as
+ *     P-007 fleet-member-dx / EI-9035;
+ *   - the Sessions-dossier unread badge (adv-agent-detail.ts), which had NO
+ *     cursor at all and so counted the whole log
+ *     (unread-count-truthfulness-2026-07-27 P-002 / D-004).
+ *
+ * Why a fallback is needed at all: `messages_since_ts` is persisted only at
+ * `onTurnEnd`, which is ATTACHED-ONLY, so a detached/headless session keeps
+ * its initial `''` forever — which reads as "never read anything", i.e. count
+ * from log epoch. `messages_shown_ts` (advanced deterministically by
+ * `coord:inbox` at injection) and the `tool_invocations` read record are the
+ * signals that survive that, so they are what an empty settle cursor falls
+ * back to.
+ */
+export function pickUnreadCursor(
+  wmTs: string | null | undefined,
+  readTs: string | null | undefined,
+): string | null {
+  const a = wmTs || null;
+  const b = readTs || null;
+  if (a && b) return b > a ? b : a;
+  return b ?? a;
+}
+
 function makeDefaultStore(): WatermarkStore {
   return new PgWatermarkStore({
     getSql: () => getOrgPg().sql,

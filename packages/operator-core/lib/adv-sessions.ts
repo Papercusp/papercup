@@ -285,6 +285,60 @@ export async function listPendingWorkbenchLaunches(
 }
 
 /**
+ * `display` for a TERMINAL-spawned psu launch (WI-6376). Deliberately NOT
+ * 'workbench': that value is pui-reactive-session-panes D-006's pane QUEUE, where
+ * `launched_at IS NULL` means "the pui has not opened a pane for this row yet".
+ * A terminal launch already owns a real terminal, so feeding it into that queue
+ * would make the pui open a second, redundant work-area pane for it. The two
+ * values are read by two different queries on purpose — keep them distinct.
+ */
+export const DISPLAY_TERMINAL_LAUNCH = 'terminal';
+
+/** How long a terminal launch stays on the board before it ages out entirely.
+ *  Long enough that a launch which never booted is VISIBLE as a failure rather
+ *  than silently absent (the WI-6376 complaint), bounded so it cannot accrete. */
+export const STARTING_LAUNCH_WINDOW_SEC = 15 * 60;
+
+/**
+ * Terminal-spawned psu launches that have not ended, within the boot window
+ * (WI-6376 / owner ask 2026-07-25: "I want the sessions to show up there whether
+ * or not they are launched with the new session button or if they are launched
+ * with the psu utility").
+ *
+ * Between the spawn and psu's own coord-presence registration there is no
+ * presence row, so the presence-primary roster cannot see the session at all —
+ * the board showed it NOWHERE. This is the durable representation that covers
+ * that window; the caller drops any row whose owner has since come online, so a
+ * booted session is rendered once, from presence, not twice.
+ */
+export async function listStartingTerminalLaunches(
+  opts: { workspaceId?: string | null; limit?: number; withinSec?: number } = {},
+): Promise<AdvSessionRow[]> {
+  const limit = opts.limit ?? 50;
+  const withinSec = opts.withinSec ?? STARTING_LAUNCH_WINDOW_SEC;
+  const ws = opts.workspaceId ?? null;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
+             display, launch_argv, launched_at, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE display = ${DISPLAY_TERMINAL_LAUNCH}
+         AND ended_at IS NULL
+         AND started_at > now() - (${withinSec}::int * interval '1 second')
+         AND (${ws}::text IS NULL OR workspace_id = ${ws})
+       ORDER BY started_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map(mapAdvSessionRow);
+  } catch (e) {
+    warnUnlessMissingTable(e, 'listStartingTerminalLaunches');
+    return [];
+  }
+}
+
+/**
  * Mark a pending workbench launch CONSUMED — the pui opened its pane (D-006).
  * Idempotent (only stamps an unset launched_at), so a roster-refresh race can't
  * double-consume. Returns true when this call did the stamping.

@@ -218,10 +218,47 @@ display_has_owning_app() {
 # (never a broad pattern-kill) and cleans the socket so the picker can reuse
 # the number immediately. Best-effort: any failure just leaves the picker
 # skipping past the display exactly as it always did.
+# EI-18816386093046558: the header above calls a stale SOCKET with no live Xvfb
+# "already-safe — nothing to reap there". Safe, yes; free, no. The picker skips
+# past such a socket FOREVER, and PORT_BASE is DERIVED from the display number it
+# finally lands on — so every leaked socket permanently pushes the port range
+# upward. 97 sockets had accumulated here (93 of them orphaned, oldest 07-13),
+# walking the picker to :173 -> base 34530; surviving X450 sockets show a past
+# walk to :450 -> 37300, well inside other services' ports. So the orphan IS
+# worth reclaiming — that is what keeps the port range anchored at its floor.
+#
+# LIVENESS PREDICATE: a bound X server always holds its socket in the kernel's
+# listening set, so `ss -xl` answers "is anything actually serving this path?"
+# definitively, for ALL sockets, in ONE ~14ms call. Per-socket xdpyinfo/fuser
+# probes were MEASURED at >2 minutes across this many sockets (and xdpyinfo can
+# hang outright on a stale path) — far too slow for a boot path. Snapshot once.
+X_LISTENING_SNAPSHOT=""
+x_socket_has_listener() {
+  [ -n "$X_LISTENING_SNAPSHOT" ] || X_LISTENING_SNAPSHOT="$(ss -xlH 2>/dev/null | grep -o '/tmp/\.X11-unix/X[0-9]*' | sort -u)"
+  grep -qxF "/tmp/.X11-unix/X$1" <<<"$X_LISTENING_SNAPSHOT"
+}
+# Reclaims an ORPHANED socket file: no Xvfb process, nothing listening, and older
+# than the age gate — the age gate is what protects an Xvfb that has created its
+# socket but not yet bound it (that one is seconds old). Verified on this box:
+# all 4 live displays, including the owner's real :1, were correctly protected
+# while 93 orphans were correctly identified. /tmp/.X11-unix is sticky, so this
+# can only ever unlink THIS user's own files, and nothing is ever KILLED here.
+reap_orphaned_x_socket() {
+  local n="$1" sock="/tmp/.X11-unix/X$1"
+  [ "${VERIFY_TAURI_REAP_ORPHAN_SOCKETS:-1}" = "1" ] || return 1
+  [ -S "$sock" ] || return 1
+  x_socket_has_listener "$n" && return 1
+  find "$sock" -maxdepth 0 -mmin "+$((STALE_DISPLAY_MAX_AGE / 60))" 2>/dev/null | grep -q . || return 1
+  rm -f "$sock" 2>/dev/null || return 1
+  log "reclaimed orphaned X socket :$n — no Xvfb process, nothing listening (EI-18816386093046558)"
+  return 0
+}
 reap_stale_display_if_abandoned() {
   local n="$1" xvfb_pid ob_pid age
   xvfb_pid="$(pgrep -f "Xvfb :$n " 2>/dev/null | head -1)"
-  [ -n "$xvfb_pid" ] || return 1
+  # No Xvfb at all ⇒ the orphaned-socket case, which is reclaimable on its own
+  # terms (above) rather than something to walk past.
+  [ -n "$xvfb_pid" ] || { reap_orphaned_x_socket "$n"; return $?; }
   display_has_owning_app "$n" && return 1
   age="$(ps -o etimes= -p "$xvfb_pid" 2>/dev/null | tr -d '[:space:]')"
   case "$age" in ''|*[!0-9]*) return 1 ;; esac
@@ -270,7 +307,17 @@ fi
 # normal concurrent runs disjoint, while the lock covers the forced-display /
 # same-range case. fed_pick_free_port remains the second line of defence for a
 # non-verifier process already squatting on a candidate port.
-PORT_BASE=$(( 33700 + (DISPLAY_NUM - 90) * 10 ))
+#
+# EI-18816386093046558: BOUND the derived range. The display-derived offset exists
+# only to SPREAD concurrent runs onto disjoint ports — actual correctness comes
+# from fed_pick_free_port plus the flock walk-forward loop below, so aliasing two
+# runs onto one base is already handled (the loop walks forward). Left unbounded,
+# a drifting display number walked the base into other services' ports (:450 ->
+# 37300). Wrapping into a fixed 60-slot window preserves the spread while capping
+# the range at [33700, 34300) no matter how far the display number has drifted.
+PORT_SLOT=$(( (DISPLAY_NUM - 90) % 60 ))
+[ "$PORT_SLOT" -ge 0 ] || PORT_SLOT=$(( PORT_SLOT + 60 ))   # bash % keeps the sign: a forced DISPLAY_NUM < 90 must not go negative
+PORT_BASE=$(( 33700 + PORT_SLOT * 10 ))
 [ "$PORT_BASE" -ge 33700 ] || PORT_BASE=33700   # a caller-forced low DISPLAY_NUM must not underflow into real ports
 PORT_LOCK_DIR="${VERIFY_TAURI_PORT_LOCK_DIR:-${TMPDIR:-/tmp}/papercusp-tauri-port-locks}"
 PORT_LOCK_ATTEMPTS=0

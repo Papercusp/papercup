@@ -43,7 +43,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
-import { readWatermark } from '../coordination/watermarks';
+import { readWatermark, pickUnreadCursor } from '../coordination/watermarks';
 import { continuationGateFromReads, countPendingInterrupts } from '../coordination/tools/continuation-gate';
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
@@ -64,18 +64,15 @@ export const CONTINUATION_READ_BUDGET_MS = 5_000;
  * (colon registry name + underscore transport variant). Best-effort: any
  * failure returns null (the gate then fails safe toward settling, as before).
  */
-/** P-007 pure cursor pick: the LATER of the turn-END settle watermark and the
- *  owner's last inbox READ — either alone counts; neither ⇒ null (the gate then
- *  blocks, fail-safe toward settling). ISO strings compare lexicographically. */
-export function pickUnreadCursor(
-  wmTs: string | null | undefined,
-  readTs: string | null | undefined,
-): string | null {
-  const a = wmTs || null;
-  const b = readTs || null;
-  if (a && b) return b > a ? b : a;
-  return b ?? a;
-}
+/** P-007 pure cursor pick — the LATER of the turn-END settle watermark and the
+ *  owner's last inbox READ; either alone counts; neither ⇒ null (the gate then
+ *  blocks, fail-safe toward settling).
+ *
+ *  MOVED to ../coordination/watermarks (unread-count-truthfulness-2026-07-27
+ *  P-002): the Sessions-dossier unread badge needs the identical rule, and two
+ *  copies of "what counts as read" would drift. Re-exported here because this
+ *  is where it was published from. */
+export { pickUnreadCursor };
 
 export async function lastInboxReadAt(ownerId: string): Promise<string | null> {
   try {
