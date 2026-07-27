@@ -75,7 +75,7 @@ import { guardResource } from '../locks/resource-lock-guard';
 import { resourceLockDomain } from '../locks/coordination-domain';
 import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
-import { probeServiceStart } from './systemd-service-probe';
+import { probeServiceStart, RESTART_TARGET_UNITS } from './systemd-service-probe';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 const MAX_DRAIN_SEC = 300;
@@ -125,27 +125,30 @@ type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar'
  * a locks-package migration — WI-4780 was the production miss this prevents.
  */
 export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: string; cooldownResource?: string; blastRadius: string }> = {
-  dev: { unit: 'papercup-dev-api.service', resource: 'dev-server', blastRadius: 'the :3070 operator (green release checkout)' },
+  // `unit` comes from RESTART_TARGET_UNITS (systemd-service-probe) so the unit
+  // names have ONE definition — read-only callers that need "which unit runs
+  // this?" import that map instead of this heavyweight module.
+  dev: { unit: RESTART_TARGET_UNITS.dev, resource: 'dev-server', blastRadius: 'the :3070 operator (green release checkout)' },
   staging: {
-    unit: 'papercup-staging-api.service',
+    unit: RESTART_TARGET_UNITS.staging,
     resource: 'staging-server',
     cooldownResource: 'staging-server-cooldown',
     blastRadius: 'the :3170 staging operator',
   },
   gateway: {
-    unit: 'papercup-inference-gateway.service',
+    unit: RESTART_TARGET_UNITS.gateway,
     resource: 'inference-gateway',
     cooldownResource: 'inference-gateway-cooldown',
     blastRadius: 'EVERY agent in the fleet — all LLM egress flows through :8788, so in-flight requests are dropped fleet-wide',
   },
   'bg-host': {
-    unit: 'papercup-bg-host.service',
+    unit: RESTART_TARGET_UNITS['bg-host'],
     resource: 'bg-host',
     cooldownResource: 'bg-host-cooldown',
     blastRadius: 'the background routines/git-sync/DBOS ticker (an in-flight git-sync commit is interrupted)',
   },
   'embed-sidecar': {
-    unit: 'papercup-embed-sidecar.service',
+    unit: RESTART_TARGET_UNITS['embed-sidecar'],
     resource: 'embed-sidecar',
     cooldownResource: 'embed-sidecar-cooldown',
     blastRadius: 'the shared embedding sidecar (:3384) — semantic search / memory recall degrade until it is back',

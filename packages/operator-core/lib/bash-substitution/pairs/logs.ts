@@ -1,0 +1,280 @@
+/**
+ * Equivalence pairs — the SERVICE-LOG family (plan
+ * `bash-to-tool-substitution-2026-07-26`, P-023).
+ *
+ * Population (D-027, measured over the 7d corpus): 487 journalctl atoms / 428
+ * whole commands (420 distinct) across 38 of 86 su sessions, concentrated on six
+ * units (oddsmith-sidecar 152, live-federation-gate 91, bg-host 90, dev-api 43,
+ * staging-api 20, plus a long tail). Proposed replacement: `logs:read`, built in
+ * this same item.
+ *
+ * ── What measuring the corpus decided ───────────────────────────────────────
+ * 413 of 428 commands (96%) pipe the journal into a CLIENT-SIDE filter — `|
+ * grep` 292, `| tail` 102 — and NOT ONE uses journalctl's own `--grep`. So the
+ * family's real shape is "the matching lines from unit U in window W", paid for
+ * by dragging the whole window across a pipe first. The needles are content
+ * markers ('[engine] composition audit:', 'oom|killed process', 'git-sync'),
+ * never structure. `logs:read` therefore pushes the pattern down to `--grep` and
+ * offers NO raw passthrough; the substitution is only faithful because of that.
+ *
+ * ── Why this family is a pair at all, and P-022's was not ───────────────────
+ * D-026 established that a `not-a-substitute` row NEVER reaches an agent
+ * (`match.ts` skips negative rows unconditionally, and the routing generator
+ * emits only `equivalent` pairs), so for the long-job family the registry was
+ * the wrong channel entirely. Here the verdict is genuinely positive and the
+ * overlap test is clean — 0 of 487 atoms are claimed by ANY existing pair — so
+ * the registry row and its CLAUDE.md routing row both render and both fire.
+ *
+ * ── The envelope, read from the tool, not assumed ───────────────────────────
+ * `logs:read` (lib/agent-tools/logs/read.ts) takes
+ * `{ unit?: string | string[1..10], identifier?, since?, until?, grep?(≤500),
+ * level?, limit?(≤1000), system? }` and returns distilled entries. Consequences
+ * that decide coverage below:
+ *  • Output FORMATTING flags are no-ops: the tool always returns
+ *    `{ts, unit, level, message}`, which subsumes `-o cat|short-iso|short-unix|
+ *    json` (the only `-o` values the corpus actually passes to journalctl) and
+ *    `--no-pager`.
+ *  • `--since`/`--until` strings pass through VERBATIM to journalctl, so every
+ *    grammar the corpus uses ('-3min', '30 min ago', '09:40:00', an absolute
+ *    stamp) is expressible without translation.
+ *  • A read that is not a WINDOW QUERY is a different request and is excluded by
+ *    PATTERN rather than failed by the envelope (D-008): `-f`/`--follow`
+ *    (streaming, 4 atoms — the same caveat `capability:read` carries for
+ *    `tail -f`), boot selection, `-k` kernel/dmesg, `--reverse`, cursor
+ *    navigation, arbitrary `FIELD=value` matches, custom `--output-fields`, and
+ *    every journal MAINTENANCE verb (`--vacuum-*`, `--rotate`, `--verify`).
+ *  • `sudo journalctl` is excluded: the tool has no elevation, so an elevated
+ *    read is not a differently-spelled version of the same request.
+ */
+
+import type { CoverageResult, SubstitutionPair } from '../types';
+import { JOURNAL_LEVELS, JOURNAL_READ_MAX_LIMIT } from '../../journal-read';
+
+/** Mirrors `logs:read`'s `unit` array bound. Exported so `pairs/model-drift.test.ts`
+ *  can pin it to the tool's real zod `.max()` (D-015) — the mirror is deliberate,
+ *  the DRIFT is not. */
+export const LOGS_READ_MAX_UNITS = 10;
+/** Mirrors `logs:read`'s `grep` length bound, same rationale. */
+export const LOGS_READ_MAX_GREP = 500;
+/** Mirrors `logs:read`'s `since`/`until` length bound, same rationale. */
+export const LOGS_READ_MAX_WINDOW = 100;
+/** Mirrors `logs:read`'s `limit` ceiling, sourced from the tool's own constant. */
+export const LOGS_READ_MAX_LIMIT = JOURNAL_READ_MAX_LIMIT;
+
+/**
+ * journalctl output formats the distilled projection faithfully subsumes.
+ *
+ * All of these are TEXT RENDERINGS of the same records — the tool returns the
+ * fields they render (`ts`, `unit`, `level`, `message`) structurally, so asking
+ * for one of them is asking for a formatting of what the tool already gives.
+ * Anything else (a field projection, an export stream) is a different request.
+ */
+const SUBSUMED_OUTPUT_FORMATS = new Set([
+  'cat', 'short', 'short-iso', 'short-iso-precise', 'short-precise',
+  'short-unix', 'short-full', 'short-monotonic', 'json', 'json-pretty',
+]);
+
+/**
+ * Atoms this family must never claim, excluded by PATTERN per D-008.
+ *
+ * The first line is the shared shell-dynamism exclusion every family in this
+ * registry uses (`$`/backtick expansion, glob, `find -exec` placeholder, stdout
+ * redirect). `2>/dev/null` is NOT a redirect for this purpose — it is stderr
+ * plumbing and appears on the majority of these commands, so treating it as a
+ * write would empty the family.
+ *
+ * The rest are journalctl modes that are a DIFFERENT QUESTION, not a differently
+ * spelled one. They are listed explicitly rather than left to `cover()` because
+ * D-008's standard is that a pattern claims a command only when every token in
+ * it is expressible — a pattern that claims `journalctl -f` and then fails it in
+ * the envelope reports `needs-widening` for a shape the tool was never meant to
+ * serve, which is how a family that is genuinely equivalent gets scored as if it
+ * were broken.
+ */
+const EXCLUDE_UNEXPRESSIBLE =
+  String.raw`(?![^\n]*[$\`])(?![^\n]*[*?])(?![^\n]*\{\})(?![^\n]*(?:^|\s)1?>)` +
+  // streaming follow — no request/response form
+  String.raw`(?![^\n]*(?:^|\s)(?:-\w*f\b|--follow))` +
+  // boot selection / kernel ring buffer / reverse ordering / cursor navigation
+  String.raw`(?![^\n]*(?:^|\s)(?:-\w*[kbre]\b|--boot|--list-boots|--dmesg|--reverse|--cursor|--after-cursor|--show-cursor|--pager-end))` +
+  // field projection, arbitrary field matches, and the merge/namespace/alternate-journal selectors
+  String.raw`(?![^\n]*--output-fields)(?![^\n]*(?:^|\s)_?[A-Z][A-Z0-9_]*=)` +
+  String.raw`(?![^\n]*(?:^|\s)(?:-\w*[mDNF]\b|--merge|--directory|--file|--root|--machine|--namespace|--field|--fields))` +
+  // journal maintenance verbs — writes, not reads
+  String.raw`(?![^\n]*--(?:vacuum|rotate|verify|flush|sync|relinquish|setup-keys|disk-usage|header|update-catalog))`;
+
+/** One journalctl invocation, parsed into the request it expresses. */
+export interface ParsedJournalCommand {
+  units: string[];
+  identifiers: string[];
+  since: string | null;
+  until: string | null;
+  grep: string | null;
+  level: string | null;
+  limit: number | null;
+  system: boolean;
+  outputFormats: string[];
+  /** Flags with no `logs:read` argument and no no-op reading. */
+  unexpressible: string[];
+}
+
+/** Flags that change nothing about the REQUEST (pager/colour/quiet chrome). */
+const NOOP_FLAGS = new Set([
+  '--no-pager', '--no-hostname', '--no-full', '--full', '--all', '--quiet', '-q',
+  '--utc', '--catalog', '-x', '--no-tail', '--case-sensitive',
+]);
+
+/** Split a shell atom into tokens, honouring single and double quotes. */
+export function tokenizeAtom(atom: string): string[] {
+  const out: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(atom)) !== null) out.push(m[1] ?? m[2] ?? m[3] ?? '');
+  return out;
+}
+
+/** Strip surrounding quotes a token kept from a `--flag="value"` form. */
+function unquote(value: string): string {
+  return value.replace(/^(['"])(.*)\1$/s, '$2');
+}
+
+/**
+ * PURE — parse a journalctl atom into the request it expresses.
+ *
+ * Handles both `--flag value` and `--flag=value` spellings, and the short forms
+ * the corpus actually uses (`-u`, `-t`, `-p`, `-n`, `-o`). An unrecognised flag
+ * lands in `unexpressible`, which is what makes coverage a whitelist rather than
+ * an optimistic guess.
+ */
+export function parseJournalctlAtom(atom: string): ParsedJournalCommand {
+  const tokens = tokenizeAtom(atom).slice(1); // drop the `journalctl` verb
+  const parsed: ParsedJournalCommand = {
+    units: [], identifiers: [], since: null, until: null, grep: null,
+    level: null, limit: null, system: false, outputFormats: [], unexpressible: [],
+  };
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (!token || /^2>/.test(token) || token === '&' || token === '2>&1') continue;
+
+    const eq = token.indexOf('=');
+    const isLong = token.startsWith('--');
+    const name = isLong && eq > -1 ? token.slice(0, eq) : token;
+    const inlineValue = isLong && eq > -1 ? unquote(token.slice(eq + 1)) : null;
+    /** Value for a flag: the inline `=` form, else the next token. */
+    const takeValue = (): string => {
+      if (inlineValue !== null) return inlineValue;
+      const next = tokens[i + 1];
+      i += 1;
+      return next === undefined ? '' : unquote(next);
+    };
+
+    switch (name) {
+      case '-u': case '--unit': case '--user-unit': parsed.units.push(takeValue()); break;
+      case '-t': case '--identifier': parsed.identifiers.push(takeValue()); break;
+      case '--since': case '-S': parsed.since = takeValue(); break;
+      case '--until': case '-U': parsed.until = takeValue(); break;
+      case '--grep': parsed.grep = takeValue(); break;
+      case '-p': case '--priority': parsed.level = takeValue(); break;
+      case '-n': case '--lines': {
+        // `-n` with no numeric operand is journalctl's own default of 10.
+        const next = tokens[i + 1];
+        if (inlineValue !== null) parsed.limit = Number(inlineValue);
+        else if (next !== undefined && /^\d+$/.test(next)) { parsed.limit = Number(next); i += 1; }
+        else parsed.limit = 10;
+        break;
+      }
+      case '-o': case '--output': parsed.outputFormats.push(takeValue()); break;
+      case '--user': break;
+      case '--system': parsed.system = true; break;
+      default:
+        if (NOOP_FLAGS.has(name)) break;
+        // A bare non-flag operand is a journalctl MATCH expression (a unit path
+        // or an executable), which the tool has no argument for.
+        parsed.unexpressible.push(name);
+    }
+  }
+  return parsed;
+}
+
+/** Render the `logs:read` call that reproduces a parsed command. */
+function expressionFor(parsed: ParsedJournalCommand): string {
+  const args: string[] = [];
+  if (parsed.units.length === 1) args.push(`unit:'${parsed.units[0]}'`);
+  else if (parsed.units.length > 1) args.push(`unit:[${parsed.units.map((u) => `'${u}'`).join(', ')}]`);
+  if (parsed.identifiers.length) args.push(`identifier:'${parsed.identifiers[0]}'`);
+  if (parsed.since) args.push(`since:'${parsed.since}'`);
+  if (parsed.until) args.push(`until:'${parsed.until}'`);
+  if (parsed.grep) args.push(`grep:'${parsed.grep}'`);
+  if (parsed.level) args.push(`level:'${parsed.level}'`);
+  if (parsed.limit !== null) args.push(`limit:${parsed.limit}`);
+  if (parsed.system) args.push('system:true');
+  return `logs:read { ${args.join(', ')} }`;
+}
+
+/** PURE — can `logs:read` express this parsed command? */
+export function coverJournalCommand(parsed: ParsedJournalCommand): CoverageResult {
+  if (parsed.unexpressible.length) {
+    return { covered: false, reason: `passes \`${parsed.unexpressible[0]}\`, which logs:read has no argument for` };
+  }
+  if (parsed.units.length > LOGS_READ_MAX_UNITS) {
+    return { covered: false, reason: `names ${parsed.units.length} units; logs:read caps \`unit\` at ${LOGS_READ_MAX_UNITS}` };
+  }
+  if (parsed.identifiers.length > 1) {
+    return { covered: false, reason: `names ${parsed.identifiers.length} syslog identifiers; logs:read takes one` };
+  }
+  if (parsed.level !== null && !(JOURNAL_LEVELS as readonly string[]).includes(parsed.level)) {
+    // A numeric or ranged priority (`-p 0..3`) is a real journalctl form the
+    // tool's enum cannot express — name it rather than silently mapping it.
+    return { covered: false, reason: `priority \`${parsed.level}\` is not one of logs:read's level names (${JOURNAL_LEVELS.join('|')})` };
+  }
+  if (parsed.limit !== null && (!Number.isFinite(parsed.limit) || parsed.limit > LOGS_READ_MAX_LIMIT)) {
+    return { covered: false, reason: `asks for ${parsed.limit} lines; logs:read caps \`limit\` at ${LOGS_READ_MAX_LIMIT}` };
+  }
+  if (parsed.grep !== null && parsed.grep.length > LOGS_READ_MAX_GREP) {
+    return { covered: false, reason: `--grep pattern is ${parsed.grep.length} chars; logs:read caps \`grep\` at ${LOGS_READ_MAX_GREP}` };
+  }
+  for (const [label, value] of [['since', parsed.since], ['until', parsed.until]] as const) {
+    if (value !== null && value.length > LOGS_READ_MAX_WINDOW) {
+      return { covered: false, reason: `\`${label}\` is ${value.length} chars; logs:read caps it at ${LOGS_READ_MAX_WINDOW}` };
+    }
+  }
+  const oddFormat = parsed.outputFormats.find((f) => !SUBSUMED_OUTPUT_FORMATS.has(f));
+  if (oddFormat) {
+    return { covered: false, reason: `asks for \`-o ${oddFormat}\`, which is not a rendering of the fields logs:read returns` };
+  }
+  // A read with NO unit, NO identifier and NO window is a host-wide unbounded
+  // scan; the tool refuses that shape by design (it walks every unit in the
+  // journal), so it is genuinely not expressible rather than merely discouraged.
+  if (!parsed.units.length && !parsed.identifiers.length && !parsed.since) {
+    return { covered: false, reason: 'host-wide read with no window; logs:read requires `since` when neither unit nor identifier scopes the read' };
+  }
+  return { covered: true, expression: expressionFor(parsed) };
+}
+
+/**
+ * P-023 — `journalctl --user -u <unit> --since <w>`: the window read, 91% of the
+ * family. The substitution's value is the SERVER-SIDE filter: the `| grep` that
+ * followed 70% of these commands becomes `grep`, so the non-matching lines are
+ * never read at all rather than read and discarded.
+ */
+export const unitJournalRead: SubstitutionPair = {
+  id: 'logs.unit-journal',
+  intentLabel: 'service-log-read',
+  bashPattern: new RegExp(`^${EXCLUDE_UNEXPRESSIBLE}journalctl\\b`),
+  toolName: 'logs:read',
+  advisoryText:
+    'logs:read { unit, since, grep } pushes the filter down to `journalctl --grep`, so only matching lines are ever read, and collapses repeated identical lines — no `| grep … | tail -n` afterwards. It also names a unit systemd does not know, which a raw journalctl reports as an empty (clean-looking) window.',
+  routing: {
+    want: "a service's log lines in a time window, filtered",
+    use: '`logs:read { unit, since, grep?, level?, limit? }` (filter pushed down to `journalctl --grep`; repeats collapsed)',
+    insteadOf: '`journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` (a streaming `-f` follow, a boot/cursor selection, or `sudo` elevation has no tool form — keep using bash for those)',
+  },
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    return coverJournalCommand(parseJournalctlAtom(atom));
+  },
+};
+
+/** Every pair in the service-log family, in registry order. */
+export const LOGS_PAIRS: SubstitutionPair[] = [unitJournalRead];

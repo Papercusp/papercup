@@ -25,6 +25,7 @@ import { promisify } from 'node:util';
 import * as path from 'node:path';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
+import { probeServiceStart, RESTART_TARGET_UNITS } from './agent-tools/dev/systemd-service-probe';
 
 const pexec = promisify(execFile);
 
@@ -464,6 +465,12 @@ export interface PipelinePosition {
    */
   runtimes: RuntimeOwnership[] | null;
   /**
+   * P-003: whether the process that RUNS this path has actually loaded the code —
+   * process truth, deliberately not derived from git. `deployed` answers a
+   * different question and must never be read as "live".
+   */
+  serving: ServingTruth;
+  /**
    * git-pipeline-agent-state-2026-07-26 P-001: per-stage POSITION x HEALTH,
    * ordered source->live.
    *
@@ -505,6 +512,144 @@ export interface GitSyncLegs {
  */
 export const GIT_SYNC_STALE_AFTER_MS = 25 * 60_000;
 
+/**
+ * P-003: process truth for the SERVING stage.
+ *
+ * `deployed` is a GIT fact — "the release checkout's HEAD is at my sha". It says
+ * nothing about whether the long-lived process that answers requests has ever
+ * LOADED that code. Four agents filed that gap independently
+ * (EI-18740960754854672, EI-18741985436324043, EI-18741004371760803,
+ * EI-18746827803289687), which makes it a missing state surface rather than four
+ * careless readings.
+ *
+ * The comparison is TEMPORAL, never a git read: there is no reliable
+ * sha-of-the-running-process (the checkout can advance under a process that
+ * already imported the old modules), so the honest question is "did this process
+ * start AFTER the code it runs last changed?".
+ */
+export interface ServingTruth {
+  /** The long-lived process this verdict describes (the path's primary runtime owner). */
+  host: RuntimeHost | null;
+  /** Its systemd --user unit. `null` for a host that has none (tauri-desktop is compiled). */
+  unit: string | null;
+  pid: number | null;
+  startedAtMs: number | null;
+  /**
+   * When the code THIS host loads last changed:
+   *  - `deploy`     — a release-checkout host receives code AT DEPLOY TIME, so the
+   *                   deploy is the moment its code changed.
+   *  - `file-mtime` — a working-tree tsx host imports the file itself, so the file's
+   *                   own mtime is what a restart would pick up (committed or not).
+   */
+  codeAsOfMs: number | null;
+  codeAsOfSource: 'deploy' | 'file-mtime' | null;
+  /**
+   * Did the process start AFTER that moment? `true` = it has actually loaded the
+   * code. `false` = it PREDATES the code and is executing an older snapshot.
+   * `null` = unknown — never guessed in either direction.
+   */
+  startedSinceCodeChange: boolean | null;
+  /** Minutes the process is behind the code, when it predates it. */
+  behindMin: number | null;
+  /** The concrete command that makes the code live, when it is not. */
+  restartLever: string | null;
+  /** Why the answer is `null`, when it is. */
+  unknownReason: string | null;
+}
+
+/**
+ * Which long-lived process actually serves each runtime host. NOT the same as
+ * `RuntimeOwnership.restartTarget`: an `operator-release` path's restartTarget is
+ * `staging` (the :3170 host you bounce to EXERCISE an edit), while the process
+ * SERVING it in production is the :3070 release operator. Conflating the two
+ * would probe the wrong process and report a confident wrong answer.
+ */
+const SERVING_UNIT_BY_HOST: Record<RuntimeHost, string | null> = {
+  'operator-release': RESTART_TARGET_UNITS.dev,
+  gateway: RESTART_TARGET_UNITS.gateway,
+  'bg-host': RESTART_TARGET_UNITS['bg-host'],
+  'embed-sidecar': RESTART_TARGET_UNITS['embed-sidecar'],
+  // Compiled into the desktop binary — no unit serves it, so no process probe can answer.
+  'tauri-desktop': null,
+};
+
+/** The lever that makes code live for each host, given its restart target. */
+function servingRestartLever(rt: RuntimeOwnership): string {
+  if (rt.host === 'tauri-desktop') {
+    return 'Rebuild the desktop shell: cd papercusp-desktop && npm run dev';
+  }
+  if (rt.host === 'operator-release') {
+    // The :3070 host loads the RELEASE checkout, so the lever is a real deploy
+    // (which restarts it) — a bare restart would only re-load the same old checkout.
+    return 'PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute';
+  }
+  return rt.restartTarget
+    ? `dev:restart { target: "${rt.restartTarget}", confirm: true }`
+    : 'restart the host process';
+}
+
+/**
+ * PURE verdict for the serving stage — no probing, so it is directly testable.
+ * Unknown inputs produce `startedSinceCodeChange: null` with a REASON, never a
+ * fabricated true/false: a wrong "yes, it's live" here is exactly the failure
+ * this surface exists to remove.
+ */
+export function evaluateServing(args: {
+  runtime: RuntimeOwnership | null;
+  process: { pid: number | null; startedAtMs: number | null } | null;
+  codeAsOfMs: number | null;
+  codeAsOfSource: 'deploy' | 'file-mtime' | null;
+}): ServingTruth {
+  const { runtime, process: proc, codeAsOfMs, codeAsOfSource } = args;
+  const host = runtime?.host ?? null;
+  const unit = host ? SERVING_UNIT_BY_HOST[host] : null;
+  const restartLever = runtime ? servingRestartLever(runtime) : null;
+  const base: ServingTruth = {
+    host,
+    unit,
+    pid: proc?.pid ?? null,
+    startedAtMs: proc?.startedAtMs ?? null,
+    codeAsOfMs,
+    codeAsOfSource,
+    startedSinceCodeChange: null,
+    behindMin: null,
+    restartLever,
+    unknownReason: null,
+  };
+
+  if (!runtime) {
+    return { ...base, unknownReason: 'No path was given (sha-only probe), so no serving process can be identified.' };
+  }
+  if (!unit) {
+    return {
+      ...base,
+      unknownReason:
+        host === 'tauri-desktop'
+          ? 'This code is COMPILED into the desktop binary — no server process serves it, so "is it running?" is answered by rebuilding the shell, not by a process probe.'
+          : 'No systemd unit is known for this host.',
+    };
+  }
+  if (base.startedAtMs === null) {
+    return {
+      ...base,
+      unknownReason: `Could not read ${unit}'s start time (not running, no systemd, or a non-Linux host) — serving state is UNKNOWN, which is not the same as "live".`,
+    };
+  }
+  if (codeAsOfMs === null) {
+    return {
+      ...base,
+      unknownReason: `Read ${unit} (pid ${base.pid}) but not when its code last changed, so the two cannot be compared.`,
+    };
+  }
+
+  const startedSinceCodeChange = base.startedAtMs > codeAsOfMs;
+  return {
+    ...base,
+    startedSinceCodeChange,
+    behindMin: startedSinceCodeChange ? null : Math.max(1, Math.round((codeAsOfMs - base.startedAtMs) / 60_000)),
+  };
+}
+
 /** A stage a change must clear to be live, ordered source->live. */
 export type StageName = 'committed' | 'pushed' | 'gate' | 'main' | 'deployed' | 'serving';
 
@@ -541,6 +686,7 @@ export function computeStages(
     | 'runtime'
     | 'gitSyncLastStatus'
     | 'gitSync'
+    | 'serving'
   >,
 ): StageState[] {
   // A path whose runtime does NOT go through the release pipeline (bg-host, gateway,
@@ -657,14 +803,45 @@ export function computeStages(
     });
   }
 
-  // serving — process truth, deliberately NOT derived from git. P-003 fills it in;
-  // until then it is honestly `unknown` rather than silently implying "live".
+  // serving — P-003. Process truth, deliberately NOT derived from git. This is the
+  // stage that separates "the bytes are on disk at the right sha" from "the process
+  // answering requests has executed them", and it is the ONLY stage that can say
+  // `past`. A change is live when BOTH are true: the code reached this host's source
+  // (the deploy, for a release-checkout host — already `na` for a working-tree host,
+  // which reads the tree directly) AND the process started after the code changed.
+  const sv = p.serving;
+  const codeReachedHost = releaseApplies ? p.positions.deployed : true;
+  const servingHealth: StageHealth =
+    sv.startedSinceCodeChange === false ? 'stalled' : sv.startedSinceCodeChange === true ? 'advancing' : 'unknown';
+  const servingDetail = ((): string | null => {
+    if (sv.startedSinceCodeChange === false) {
+      const src =
+        sv.codeAsOfSource === 'deploy'
+          ? 'the last deploy'
+          : sv.codeAsOfSource === 'file-mtime'
+            ? 'this file changing on disk'
+            : 'the code changing';
+      return (
+        `The process serving this code (${sv.unit}, pid ${sv.pid}) started ~${sv.behindMin}m BEFORE ${src} — ` +
+        `it is executing an OLDER snapshot, so "deployed" here does NOT mean "running". ` +
+        `Waiting cannot fix this; it takes a restart: ${sv.restartLever}.`
+      );
+    }
+    if (sv.startedSinceCodeChange === null) {
+      return sv.unknownReason;
+    }
+    if (!codeReachedHost) {
+      // The process is current, but MY change hasn't reached its source yet — the
+      // deployed stage owns that, so don't editorialise here.
+      return null;
+    }
+    return `${sv.unit} (pid ${sv.pid}) started after the code it runs last changed, so it has actually loaded it.`;
+  })();
   stages.push({
     name: 'serving',
-    position: 'pending',
-    health: 'unknown',
-    detail:
-      'Whether the running process actually loaded this code is not derived from git state. "deployed" is not "running".',
+    position: codeReachedHost && sv.startedSinceCodeChange === true ? 'past' : 'pending',
+    health: servingHealth,
+    detail: servingDetail,
   });
 
   return stages;
@@ -674,7 +851,33 @@ export interface PipelinePositionDeps {
   git?: GitRunner;
   loadDeploy?: () => Promise<DevDeployState>;
   loadSnapshot?: () => Promise<GitPipelineSnapshot>;
+  /**
+   * P-003: when a systemd unit's main process started. Injected by TESTS only —
+   * the default really probes (D-001). A null-by-default dep here would leave the
+   * 4x-filed "deployed != running" gap unfixed while looking implemented, which is
+   * the ship-it-dark failure this plan exists to avoid.
+   */
+  probeUnitStart?: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null>;
+  /** P-003: mtime (ms) of a repo-relative file — what a working-tree tsx host would load. */
+  fileMtimeMs?: (absPath: string) => Promise<number | null>;
 }
+
+/** Default unit-start probe: the shared systemd probe, mapped into ms. */
+const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> => {
+  const info = await probeServiceStart(unit);
+  if (!info.ok || info.secondsSinceStart === undefined) return null;
+  return { pid: info.mainPid ?? null, startedAtMs: Date.now() - info.secondsSinceStart * 1000 };
+};
+
+/** Default file-mtime reader. Fail-soft: an unreadable path is UNKNOWN, never 0. */
+const realFileMtimeMs = async (absPath: string): Promise<number | null> => {
+  try {
+    const { stat } = await import('node:fs/promises');
+    return (await stat(absPath)).mtimeMs;
+  } catch {
+    return null;
+  }
+};
 
 /**
  * EI-18715870370005934: resolve the GITLINK a superproject commit pins for a
@@ -942,6 +1145,36 @@ export async function gitPipelinePosition(
   const caveat = runtime?.releasePipelineApplies ? sharedHostCaveat(inp.path ?? null) : null;
   if (caveat) notes.push(caveat);
 
+  // P-003: process truth for the serving stage. WHICH moment we compare the process
+  // start against depends on how its host receives code, and getting that wrong
+  // inverts the answer:
+  //   - a RELEASE-CHECKOUT host (:3070) gets code at DEPLOY time;
+  //   - a WORKING-TREE tsx host (bg-host / gateway / embed-sidecar) imports the file
+  //     itself, so the file's own mtime is what a restart would pick up — committed
+  //     or not, which is why an uncommitted edit is already "the code" for those.
+  const servingUnit = runtime ? SERVING_UNIT_BY_HOST[runtime.host] : null;
+  let servingProcess: { pid: number | null; startedAtMs: number | null } | null = null;
+  if (servingUnit) {
+    servingProcess = await (deps.probeUnitStart ?? realProbeUnitStart)(servingUnit);
+  }
+  let codeAsOfMs: number | null = null;
+  let codeAsOfSource: 'deploy' | 'file-mtime' | null = null;
+  if (runtime && servingUnit) {
+    if (runtime.releasePipelineApplies) {
+      codeAsOfMs = deploy.deployedAtMs;
+      codeAsOfSource = 'deploy';
+    } else if (inp.path) {
+      codeAsOfMs = await (deps.fileMtimeMs ?? realFileMtimeMs)(path.join(root, inp.path.replace(/^\.?\//, '')));
+      codeAsOfSource = 'file-mtime';
+    }
+  }
+  const serving = evaluateServing({ runtime, process: servingProcess, codeAsOfMs, codeAsOfSource });
+  if (serving.startedSinceCodeChange === false) {
+    notes.push(
+      `SERVING STALE CODE: ${serving.unit} (pid ${serving.pid}) started ~${serving.behindMin}m before the code it runs last changed. A git-derived "deployed" does not mean this process is running your change — ${serving.restartLever}`,
+    );
+  }
+
   const preStages: Omit<PipelinePosition, 'summary' | 'stages'> = {
     input: { path: inp.path ?? null, sha: inp.sha ?? null },
     repoRoot: root,
@@ -976,6 +1209,7 @@ export async function gitPipelinePosition(
     },
     runtime,
     runtimes,
+    serving,
     notes,
   };
   const base: Omit<PipelinePosition, 'summary'> = { ...preStages, stages: computeStages(preStages) };
