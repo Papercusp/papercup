@@ -19,6 +19,11 @@ import {
   type AdmitAnnouncedPeerDeps,
 } from './hive-membership-admission';
 import type { PendingJoinRecord } from './hive-pending-joins-store';
+import { unsafeFederatedPotScope } from './federated-pot-scope';
+
+/** WI-6312: the unit fixture's synthetic hive slug. Certified once here rather than at each
+ *  of the ~19 call sites — this suite never models a joiner topology, so local == federated. */
+const H = unsafeFederatedPotScope('h', 'unit fixture: a synthetic hive slug with no joiner topology');
 
 const joiner = {
   githubUserId: 1001,
@@ -73,20 +78,20 @@ function depsWith(policy: HivePolicy | null, over: Partial<MembershipAdmissionDe
 describe('evaluateJoinAdmission — routes off the policy', () => {
   it('open/null policy ⇒ admit, NO pending recorded', async () => {
     const { deps, recordPendingJoin } = depsWith(null);
-    const out = await evaluateJoinAdmission({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await evaluateJoinAdmission({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toEqual({ outcome: 'admit' });
     expect(recordPendingJoin).not.toHaveBeenCalled();
   });
 
   it('approval ⇒ pending, request RECORDED with the joiner devices', async () => {
     const { deps, recordPendingJoin } = depsWith({ membership: 'approval' });
-    const out = await evaluateJoinAdmission({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await evaluateJoinAdmission({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out.outcome).toBe('pending');
     expect(recordPendingJoin).toHaveBeenCalledTimes(1);
     const arg = recordPendingJoin.mock.calls[0][0];
     expect(arg).toMatchObject({
       workspaceId: 'w',
-      potHomeSlug: 'h',
+      potHomeSlug: H,
       githubUserId: 1001,
       deviceAttestations: joiner.deviceAttestations,
     });
@@ -97,7 +102,7 @@ describe('evaluateJoinAdmission — routes off the policy', () => {
       membership: 'allowlist',
       allowlist: ['someone-else'],
     });
-    const out = await evaluateJoinAdmission({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await evaluateJoinAdmission({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toEqual({ outcome: 'refuse', reason: 'not_allowlisted' });
     expect(recordPendingJoin).not.toHaveBeenCalled();
     expect(upsertHiveMember).not.toHaveBeenCalled();
@@ -105,7 +110,7 @@ describe('evaluateJoinAdmission — routes off the policy', () => {
 
   it('banned ⇒ refuse(banned) even in open mode', async () => {
     const { deps } = depsWith({ membership: 'open', moderation: { bannedGithubIds: ['1001'] } });
-    const out = await evaluateJoinAdmission({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await evaluateJoinAdmission({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toEqual({ outcome: 'refuse', reason: 'banned' });
   });
 });
@@ -114,7 +119,7 @@ describe('approvePendingJoin — trust-admits the joiner', () => {
   it('approve ⇒ upsertHiveMember(with captured devices) + status approved', async () => {
     const pending: PendingJoinRecord = {
       workspaceId: 'w',
-      potHomeSlug: 'h',
+      potHomeSlug: H,
       githubUserId: 1001,
       githubUsername: 'alice',
       displayName: 'Alice',
@@ -130,7 +135,7 @@ describe('approvePendingJoin — trust-admits the joiner', () => {
       getPendingJoin: (async () => pending) as never,
     });
     const res = await approvePendingJoin(
-      { workspaceId: 'w', potHomeSlug: 'h', githubUserId: 1001, decidedByGithubUserId: 9 },
+      { workspaceId: 'w', potHomeSlug: H, githubUserId: 1001, decidedByGithubUserId: 9 },
       deps,
     );
     expect(res.ok).toBe(true);
@@ -147,7 +152,7 @@ describe('approvePendingJoin — trust-admits the joiner', () => {
   it('approve with NO pending row ⇒ no_pending, never trust-admits', async () => {
     const { deps, upsertHiveMember } = depsWith(null, { getPendingJoin: (async () => null) as never });
     const res = await approvePendingJoin(
-      { workspaceId: 'w', potHomeSlug: 'h', githubUserId: 1001, decidedByGithubUserId: 9 },
+      { workspaceId: 'w', potHomeSlug: H, githubUserId: 1001, decidedByGithubUserId: 9 },
       deps,
     );
     expect(res).toEqual({ ok: false, code: 'no_pending' });
@@ -159,7 +164,7 @@ describe('denyPendingJoin — never trust-admits', () => {
   it('deny ⇒ status denied (with reason), NO upsertHiveMember', async () => {
     const { deps, upsertHiveMember, setPendingJoinDecision } = depsWith(null);
     const res = await denyPendingJoin(
-      { workspaceId: 'w', potHomeSlug: 'h', githubUserId: 1001, decidedByGithubUserId: 9, reason: 'spam' },
+      { workspaceId: 'w', potHomeSlug: H, githubUserId: 1001, decidedByGithubUserId: 9, reason: 'spam' },
       deps,
     );
     expect(res).toMatchObject({ ok: true, status: 'denied' });
@@ -172,7 +177,7 @@ describe('denyPendingJoin — never trust-admits', () => {
       setPendingJoinDecision: (async () => null) as never,
     });
     const res = await denyPendingJoin(
-      { workspaceId: 'w', potHomeSlug: 'h', githubUserId: 1001, decidedByGithubUserId: 9 },
+      { workspaceId: 'w', potHomeSlug: H, githubUserId: 1001, decidedByGithubUserId: 9 },
       deps,
     );
     expect(res).toEqual({ ok: false, code: 'no_pending' });
@@ -182,7 +187,7 @@ describe('denyPendingJoin — never trust-admits', () => {
 describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)', () => {
   const memberRow = {
     workspaceId: 'w',
-    potHomeSlug: 'h',
+    potHomeSlug: H,
     githubUserId: 1001,
     githubUsername: 'alice',
     displayName: 'Alice',
@@ -198,7 +203,7 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
       { membership: 'approval' },
       { getHiveMember: (async () => memberRow) as never },
     );
-    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
     expect(upsertHiveMember).toHaveBeenCalledTimes(1);
     expect(upsertHiveMember.mock.calls[0][0]).toMatchObject({ githubUserId: 1001, bindingStatus: 'verified' });
@@ -210,13 +215,13 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
       { membership: 'approval' },
       { getHiveMember: (async () => memberRow) as never },
     );
-    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
     expect(refederateMemberEpochKeys).toHaveBeenCalledTimes(1);
     // Re-grant is scoped to the reconnecting member's announced device pubkeys (BUG-B target).
     expect(refederateMemberEpochKeys.mock.calls[0][0]).toEqual({
       workspaceId: 'w',
-      potHomeSlug: 'h',
+      potHomeSlug: H,
       memberDevicePubkeys: ['devA'],
     });
   });
@@ -231,7 +236,7 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
         }) as never,
       },
     );
-    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toMatchObject({ action: 'admitted', reason: 'already_member' });
   });
 
@@ -239,7 +244,7 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
     const { deps, upsertHiveMember, recordPendingJoin, refederateMemberEpochKeys } = depsWith(null, {
       getHiveMember: (async () => null) as never,
     });
-    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toMatchObject({ action: 'admitted', reason: 'policy_admit' });
     expect(upsertHiveMember).toHaveBeenCalledTimes(1);
     expect(recordPendingJoin).not.toHaveBeenCalled();
@@ -253,7 +258,7 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
       { membership: 'approval' },
       { getHiveMember: (async () => null) as never },
     );
-    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out.action).toBe('pending');
     expect(recordPendingJoin).toHaveBeenCalledTimes(1);
     expect(upsertHiveMember).not.toHaveBeenCalled();
@@ -264,7 +269,7 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
       { membership: 'open', moderation: { bannedGithubIds: ['1001'] } },
       { getHiveMember: (async () => null) as never },
     );
-    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toEqual({ action: 'refuse', reason: 'banned' });
     expect(upsertHiveMember).not.toHaveBeenCalled();
     expect(recordPendingJoin).not.toHaveBeenCalled();
@@ -275,7 +280,7 @@ describe('ownerAdmitOrPend — the owner admission seam (WI-639: wires the gate)
       { membership: 'allowlist', allowlist: ['someone-else'] },
       { getHiveMember: (async () => null) as never },
     );
-    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: 'h', joiner }, deps);
+    const out = await ownerAdmitOrPend({ workspaceId: 'w', potHomeSlug: H, joiner }, deps);
     expect(out).toEqual({ action: 'refuse', reason: 'not_allowlisted' });
     expect(upsertHiveMember).not.toHaveBeenCalled();
     expect(recordPendingJoin).not.toHaveBeenCalled();

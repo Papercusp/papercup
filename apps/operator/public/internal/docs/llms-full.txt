@@ -3585,6 +3585,7 @@ Defined by `SubstitutionPair` in `packages/operator-core/lib/bash-substitution/t
 | `routing.{want,use,insteadOf}` | the three `CLAUDE.md` table cells — display fields, deliberately not derived                      |
 | `expectedVerdict`              | the verdict this pair is RECORDED as carrying — the anti-rot latch                                |
 | `policyTier?`                  | the one authorized way to enter above `observe` (§5)                                              |
+| `holdAtObserve?`               | the mirror: pin this row TO `observe`, whatever its verdict. Value is the required reason (§5)    |
 | `cover(atom)`                  | **the heart** — models what the tool can ACTUALLY express                                         |
 
 `cover()` is where the honesty lives. It must model the tool’s real arguments and real limits, read from the tool definition — not whether the tool is *nominally related* to the command. A `cover()` that returns `{covered:true}` for everything produces an `equivalent` verdict, which unlocks enforcement, which then blocks agents with no alternative. That is the exact failure the equivalence gate exists to prevent (D-001).
@@ -3684,22 +3685,41 @@ So `auditPair(pair, corpus, population?)` takes an optional population, and a pa
 
 Three tiers, reusing what the PreToolUse gate already implements. **Add no fourth mechanism** (D-003).
 
-* **`observe`** — log the match, change nothing the agent sees.
+* **`observe`** — a **staging** state. Emits nothing: both hooks act only on `advise`/`deny`, and `locks:check_command` returns the tier without recording it.
 * **`advise`** — ride out as `additionalContext` on an **allow**. Teach, never block.
 * **`deny`** — hard block. Reserved for rules that **already existed independently**.
 
-### Promotion is staged, and the window is real (P-020)
+### `observe` does not observe — `advise` is the observation window (D-042)
 
-[Section titled “Promotion is staged, and the window is real (P-020)”](#promotion-is-staged-and-the-window-is-real-p-020)
+[Section titled “observe does not observe — advise is the observation window (D-042)”](#observe-does-not-observe--advise-is-the-observation-window-d-042)
 
-1. A new row enters at **`observe`**. Always.
-2. Run it for **48h**. Review hit-rate and false-positive reports.
-3. Promote to **`advise`** only then.
-4. Promote `advise` → `deny` only for a pattern with **zero legitimate use**.
+P-020 originally said: run at `observe` for 48h, then review hit-rate and false-positive reports. That window could not work, and it is worth understanding why before you design another one:
 
-Any agent may file a false positive against a row, and that **pauses its promotion** (§7). This is not ceremony: the shell-write guard false-positived on a `>` inside a heredoc within hours of shipping — which is exactly what the window exists to catch.
+* **Nothing logs an `observe` match.** `pretooluse-bash-resource-gate.sh` acts only on `if _stier in ('advise','deny')`; `coord-hook.ts` is the same shape; `locks:check_command` computes the tier and records nothing.
+* **Hit-rate never depended on the tier.** `bashAtoms` comes from `tool_usage_rollup`, attributed at session-ingest by replaying patterns over transcripts (native `Bash` never reaches `tool_invocations`, D-012). It accrues identically at any tier — `activity:bash-substitution-report` will tell you now.
+* **False positives cannot arrive at `observe` at all.** A false-positive report needs an agent to SEE a claim and disagree. At `observe` nobody is shown anything, so `false_positive_count` is pinned at 0 by construction.
 
-**`equivalent` is not a mandate.** A row can be provably equivalent and still be wrong to enforce, because “the tool can express this” and “the agent should be pushed to use it” are different claims. `capability:git` is an argv pass-through and therefore trivially `equivalent` — and is deliberately held back from auto-promotion (D-011).
+So the window could only ever conclude “48h elapsed, zero false positives” — the same verdict whether the rules were perfect or catastrophic.
+
+**`advise` is the real window.** It is the first visible tier, and it is safe to observe from because it cannot block: the shell hook rides it out on an explicit `allow`, and OMP uses the `followUp` reminder rather than `steer` (which aborts the in-flight tool). The full window and the zero-false-positive bar still gate `advise → deny` — that is the transition P-020’s precedent is actually about (the shell-write guard false-positiving on a `>` inside a heredoc **blocked** work).
+
+**Don’t wait for evidence you could go and measure.** Instead of a passive window, run the documented caveats through the live registry and read the verdicts (§6). That is what promoted these rows: 0/12 false positives across every caveat, `npm ci` still denied as the positive control — and it caught a live defect two days of “observing” would never have surfaced, because observing surfaces nothing.
+
+> **A staging state that emits nothing is not an observation, and time spent in it is not evidence.** Before starting any clock, name the row that will be written while it runs. If nothing writes, the clock is a delay dressed as diligence.
+
+### `equivalent` is not a mandate — a pair may hold itself back
+
+[Section titled “equivalent is not a mandate — a pair may hold itself back”](#equivalent-is-not-a-mandate--a-pair-may-hold-itself-back)
+
+A row can be provably equivalent and still be wrong to enforce: “the tool can express this” and “the agent should be pushed to use it” are different claims. A pair states that with **`holdAtObserve`**, whose value is the required reason:
+
+```ts
+holdAtObserve: 'D-011: capability:git is a pass-through, so this row offers the SAME answer…',
+```
+
+`promoteEarnedRows` skips a held row **and demotes one that has drifted above `observe`**. That self-heal is not tidiness. D-011 recorded this hold for the git-read row in a decision body — and a later promotion that selected on `equivalence_verdict` alone swept it into `advise` anyway, firing the registry’s largest advisory (\~2,500 calls/week across 77 of 86 sessions) for a benefit D-011 had already argued was near-zero for the superuser role. The seeder deliberately never demotes, so nothing would have pulled it back.
+
+> **A constraint that lives only in prose will eventually be violated by someone acting in good faith on the data.** Carry it in the data — `holdAtObserve` is the mirror of `policyTier` (§5) for exactly this reason.
 
 ### The one authorized way past `observe`
 
@@ -38386,6 +38406,129 @@ Live-substrate writes through Autobase can hang on a degraded corestore — if t
 [Section titled “What’s still missing”](#whats-still-missing)
 
 **Update:** the clobber-toast delivery channel has since been built. `packages/operator-core/lib/sync/hyperbee/clobber-events.ts` emits `clobber` events on the server, and `packages/operator-core/lib/endpoint-route/routes/harness/clobber-stream.ts` (`GET /api/harness/:slug/clobber-stream` → `text/event-stream`, Phase 5b P-035) now forwards each emission as an SSE `clobber` event to a browser-side `ClobberToast`. It emits all clobber events globally and relies on the browser-side per-row `hbKey` filter to scope what the user sees (per-harness filtering at the SSE side is deferred — the event doesn’t carry the source harness slug, and the operator boots one harness per process today).
+
+# Surprisal-gated push — declaring a cell's materiality threshold
+
+> P-021. A high-churn cell can declare, at registration, WHICH of its resolver's fields is the material one; a change to anything else is a version bump that the orient fold carries silently instead of raising. Measured: a candidate step on gate.greenCheckpoint.candidate costs 349 fold bytes instead of 719 (51% less), at a measured churn of 335 staging commits/24h. Also records the two failures the design is shaped around — materiality must never MASK a material change, and it is never applied to a subscription silently.
+
+## The problem, in one measurement
+
+[Section titled “The problem, in one measurement”](#the-problem-in-one-measurement)
+
+`gate.greenCheckpoint.candidate` declares `changeInCandidate.judgingSha` as its change signal. That value follows the gate’s in-flight candidate, which is drawn from the staging tip — **335 commits in 24 hours** on this fleet (`git rev-list --count --since="24 hours ago" staging`, 2026-07-27).
+
+Every one of those steps moved the cell’s digest. So every fact that declared `dependsOn: ['gate.greenCheckpoint.candidate']` was re-marked STALE, and every orient that carried such a fact re-rendered a 412-byte paragraph asking the reader to re-verify — for every agent, on every wake, 335 times a day.
+
+But re-read what the cell is *for*: “WHICH commit the gate is judging — a red about a candidate that does not contain your change reads as *your fix did not work* instead of *your fix was not present*.” The question is not which sha. It is **whether the gate is judging your change**, and that answer — `judgingContainsPath` — moves only when *your* file lands, not when the other 334 commits do.
+
+That is D-018 A.2’s rule exactly: *push what changed the SENDER’s own model; everything else stays pull.*
+
+## The declaration
+
+[Section titled “The declaration”](#the-declaration)
+
+`CellSpec.materiality` is optional. Omitting it means “every change is material”, which is the default and today’s behaviour for every other cell.
+
+```ts
+materiality: {
+  path: 'changeInCandidate.judgingContainsPath',
+  why: 'judgingSha follows the staging tip — measured 335 commits/24h — but the question this cell exists to answer is "is the gate judging MY change"…',
+}
+```
+
+`path` is a **second dot-path into the same resolver result**, extracted from the **same dispatch** (`readCell` returns it as `material`). It is a lens, not a computation: no extra resolver call, and nothing the registry has to interpret.
+
+### Why a path and not a threshold DSL
+
+[Section titled “Why a path and not a threshold DSL”](#why-a-path-and-not-a-threshold-dsl)
+
+The obvious alternative is a reduction rule — `{ kind: 'threshold', at: 1 }`, so `consecutiveReds` 0→1 is a flip and 1→2 is a bump. It is refused, on this registry’s own precedent. `cell-registrations.ts` records **twice** that when a declaration cannot state something honestly, the fix belongs in the **resolver**, not the declaration. A registry computing `reds >= 1` would be the registry *deriving a verdict* — exactly what D-038 axis 5 forbids one level up.
+
+So `gate.greenCheckpoint.verdict` genuinely wants materiality and deliberately does **not** have it: its resolver exposes no coarse verdict field to name. When it does, the declaration is one line. Until then it stays un-gated rather than growing a DSL.
+
+### Why `why` is required
+
+[Section titled “Why why is required”](#why-why-is-required)
+
+Every other field in this registry fails **loudly** when it is wrong. This one fails **silently, in the confident direction**: a cell naming the wrong material path stops telling agents about real changes, and nothing surfaces to say so. A reader told “3 changes were not raised” must be able to check the claim that they did not matter. Suppression that cannot be audited is not a threshold, it is a blind spot.
+
+## What the fold does with it
+
+[Section titled “What the fold does with it”](#what-the-fold-does-with-it)
+
+`FactDependencyStatus` gains a fourth value, `immaterial`, and it is deliberately *not* a fourth kind of unknown — it is a **positive** verdict. The raw value moved, the declared material answer did not, and we know both. So it does not block a clean roll-up the way `undeterminable` does.
+
+| verdict          | when                                              | in the fold                              |
+| ---------------- | ------------------------------------------------- | ---------------------------------------- |
+| `fresh`          | raw digest unchanged                              | the existing line                        |
+| `immaterial`     | raw moved, material answer held                   | one short clause; raw values **dropped** |
+| `changed`        | material answer moved (**or** no material anchor) | the full loud paragraph                  |
+| `undeterminable` | could not compare                                 | unchanged                                |
+
+There is **no fourth roll-up status**. `cell-contract.ts` states the rule for its sibling enum: adding a code is a contract change, because every caller’s branch set changes with it. A materially-unchanged fact is not stale, so it rolls up as `fresh`, and the news travels in `immaterial[]` plus the note.
+
+### The measurement
+
+[Section titled “The measurement”](#the-measurement)
+
+Per fact, per orient, for one candidate step:
+
+|                   | note | deps | total   |
+| ----------------- | ---- | ---- | ------- |
+| ungated (today)   | 412  | 192  | **719** |
+| materiality-gated | 55   | 179  | **349** |
+
+**51% smaller**, and it scales linearly: a fold carrying 12 such facts drops from 8628 to 4188 bytes *per orient, per agent*. Asserted as a test, not a claim — `dependency-staleness.test.ts` → “P-021 measurement”.
+
+Three things produce that saving, and each is principled rather than cosmetic:
+
+1. **`was`/`now` are dropped** from an `immaterial` entry. Those are literally “every intermediate version” — the bytes the item says the reader should stop receiving.
+2. **`materialPath` is not copied** onto each verdict row. It is a per-cell registry constant; repeating it per row is denormalisation *and* a transcription that rots when the resolver’s shape moves.
+3. **The note goes quiet.** `note` is the line rendered loudly wherever the fact is delivered, and its job is to prompt an action. A version bump asks for nothing, so a paragraph explaining it is pure cost.
+
+> ⚠ The first attempt at this **failed its own measurement** — the gated verdict came out *larger* than the ungated one (4325 vs 3854 bytes), because the audit metadata added per row outweighed the short shas removed. The fix came from measuring where the bytes actually were, not from reasoning about it. If you extend this, measure first.
+
+## The two failures the design is shaped around
+
+[Section titled “The two failures the design is shaped around”](#the-two-failures-the-design-is-shaped-around)
+
+### 1. Materiality may SUPPRESS a raw change; it must never MASK a material one
+
+[Section titled “1. Materiality may SUPPRESS a raw change; it must never MASK a material one”](#1-materiality-may-suppress-a-raw-change-it-must-never-mask-a-material-one)
+
+The material path and the change-signal path are **siblings in one result**, not a value and a summary of it, so they move independently. The same candidate can be re-judged (`judgingSha` static) while your file lands (`judgingContainsPath` flips).
+
+So the material answer is compared **first**, before the raw digest — a material change is reported `changed` even when the raw value sat still. Gating materiality behind “did the raw value change?” would report that case `fresh`: a false all-clear on precisely the change the reader cares most about, produced by the mechanism meant to protect them.
+
+Every unanchored case degrades to the **loud** reading, never the quiet one:
+
+* a dependency filed before this field existed (no `materialDigest`);
+* a declared path that does not resolve now (registration drift);
+* a materiality path **re-aimed** since the fact was filed — the stored anchor and the fresh reading answer different questions, which is `FactDependency.subject`’s rule verbatim: a comparison that silently changes the question does not give a weaker answer, it gives a wrong one.
+
+### 2. A subscription never gets materiality applied silently
+
+[Section titled “2. A subscription never gets materiality applied silently”](#2-a-subscription-never-gets-materiality-applied-silently)
+
+`state:subscribe` takes `of: 'value' | 'material'`, defaulting to `value`, and **refuses** `of:'material'` on a cell that declares none rather than falling back.
+
+Silently re-pointing a caller’s condition at a coarser sibling path does not narrow it — it evaluates it against a **different domain**. Concretely: `on: {op:'ne', value:'4c871fdc'}`, the natural “wake me when the candidate moves”, aimed at a boolean containment path is `ne` against a sha it can never equal — true on the first poll. The agent would be woken instantly and told it was a material change. A wake is an interrupt (D-044), and a spurious one is a false all-clear that resumes an agent on a condition never established.
+
+## Where this sits relative to D-044
+
+[Section titled “Where this sits relative to D-044”](#where-this-sits-relative-to-d-044)
+
+D-044 draws the line: **coupling decides relevance, surprisal decides whether something is worth an interrupt** — and a pull surface needs no surprisal gate, because the caller asked.
+
+So materiality gates what arrives **unasked**: the wake, and the staleness verdict that rides along on every orient. It does **not** delete anything. `state:read` still returns the current value; `immaterial[]` still names what was suppressed. The fold carries the rest — silently, which is the item’s own word.
+
+## Adding one
+
+[Section titled “Adding one”](#adding-one)
+
+1. Confirm the resolver **already exposes** the coarse answer. If it does not, fix the resolver — do not compute it here.
+2. Check the churn is **real and measured**. The P-020 verdict rule applies: add a knob where churn is measured, never everywhere it would fit. Of the five registered cells, exactly one has it — `deploy.3070.sha` moves 13×/24h and every move is genuinely news; two others are booleans, where a change already *is* a verdict flip.
+3. Declare `path` + `why`. The registration gate refuses a path equal to `changeSignal.path` (a declared no-op), an empty `why`, and materiality on an event-signalled cell (there is no resolver result to path into).
 
 # Surviving an operator wedge: your papercusp-su MCP severs and won't auto-reconnect — bridge over HTTP, and DON'T retry-storm
 

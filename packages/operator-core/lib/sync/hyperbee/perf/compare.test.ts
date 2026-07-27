@@ -5,7 +5,13 @@
 
 import { describe, expect, it } from 'vitest';
 import type { MetricSummary, PerfArtifact } from './artifact';
-import { baselineFromArtifacts, compareArtifacts, entryKey, formatCompareReport } from './compare';
+import {
+  baselineFromArtifacts,
+  baselineFromHistory,
+  compareArtifacts,
+  entryKey,
+  formatCompareReport,
+} from './compare';
 
 function metric(p95: number, unit: MetricSummary['unit'] = 'ms'): MetricSummary {
   return { unit, count: 10, p50: p95 * 0.8, p95, p99: p95 * 1.1, max: p95 * 1.2, mean: p95 * 0.85 };
@@ -190,6 +196,77 @@ describe('p2p-perf comparator', () => {
         { absFloorByUnit: { bytes: 500_000_000 } },
       );
       expect(r.regressions).toHaveLength(0);
+    });
+  });
+
+  describe('rolling reference (WI-2788)', () => {
+    /** A run whose single metric took `v` ms. */
+    const run = (v: number) => [artifact('s.a', { size: 1000 }, { latMs: metric(v) })];
+    /** A noisy series: mostly ~100ms, with tenancy spikes — the real shape. */
+    const noisy = [100, 105, 98, 260, 102, 99, 240, 101, 97, 300, 103, 100, 96, 250, 104];
+
+    it('returns null until enough history has accumulated', () => {
+      expect(baselineFromHistory([run(100), run(101)], { minRuns: 8 })).toBeNull();
+      expect(baselineFromHistory([], {})).toBeNull();
+    });
+
+    it('derives the reference from the recent window, not one capture', () => {
+      const b = baselineFromHistory(noisy.map(run), { quantile: 0.9, window: 15, minRuns: 8 });
+      expect(b).not.toBeNull();
+      const entry = b!.entries.find((e) => e.scenario === 's.a')!;
+      // p90 of the series sits in the upper tail — above the ~100ms mode, below the max.
+      expect(entry.metrics.latMs.p95).toBeGreaterThan(110);
+      expect(entry.metrics.latMs.p95).toBeLessThan(300);
+    });
+
+    it('honours the window: older runs outside it do not move the reference', () => {
+      const ancient = Array.from({ length: 20 }, () => run(9999));
+      const b = baselineFromHistory([...ancient, ...noisy.map(run)], { window: 15, minRuns: 8 })!;
+      expect(b.entries[0].metrics.latMs.p95).toBeLessThan(1000);
+    });
+
+    /**
+     * TEETH. The measured reason a rolling MEDIAN is the wrong statistic: it is
+     * exceeded by ~half of future samples by construction, so on a series whose
+     * spread exceeds the tolerance it manufactures regressions. p90 does not.
+     */
+    it('a median reference flags a NORMAL sample that p90 correctly ignores', () => {
+      const median = baselineFromHistory(noisy.map(run), { quantile: 0.5, window: 15, minRuns: 8 })!;
+      const p90 = baselineFromHistory(noisy.map(run), { quantile: 0.9, window: 15, minRuns: 8 })!;
+      // 250ms is an ordinary tenancy spike — it occurs repeatedly in the series.
+      const sample = run(250);
+      expect(compareArtifacts(median, sample).regressions).toHaveLength(1);
+      expect(compareArtifacts(p90, sample).regressions).toHaveLength(0);
+    });
+
+    /** TEETH. A genuine regression must still be caught under the rolling reference. */
+    it('still flags a real regression well beyond the historical spread', () => {
+      const b = baselineFromHistory(noisy.map(run), { quantile: 0.9, window: 15, minRuns: 8 })!;
+      const r = compareArtifacts(b, run(2000));
+      expect(r.regressions.map((d) => d.metric)).toEqual(['latMs']);
+    });
+
+    it('uses the LOW tail for higher-is-better metrics', () => {
+      const rates = [1000, 1010, 990, 600, 1005, 995, 1002, 998, 1001, 999];
+      const b = baselineFromHistory(
+        rates.map((v) => [artifact('s.r', { size: 1 }, { rate: metric(v, 'ops/sec') })]),
+        { quantile: 0.9, window: 15, minRuns: 8 },
+      )!;
+      // Reference sits at the slow end, so an ordinary 600 ops/sec dip is not a "regression".
+      expect(b.entries[0].metrics.rate.p95).toBeLessThan(1000);
+      expect(
+        compareArtifacts(b, [artifact('s.r', { size: 1 }, { rate: metric(600, 'ops/sec') })]).regressions,
+      ).toHaveLength(0);
+    });
+
+    it('drops a metric that lacks enough observations in the window', () => {
+      const runs = [
+        ...Array.from({ length: 10 }, () => [artifact('s.a', { size: 1 }, { latMs: metric(100) })]),
+        [artifact('s.a', { size: 1 }, { latMs: metric(100), rareMs: metric(50) })],
+      ];
+      const b = baselineFromHistory(runs, { minRuns: 8, window: 15 })!;
+      expect(b.entries[0].metrics.latMs).toBeDefined();
+      expect(b.entries[0].metrics.rareMs).toBeUndefined();
     });
   });
 });

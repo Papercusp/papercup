@@ -22,6 +22,7 @@
 import { expect } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,7 +49,12 @@ const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 // ── Shared identity / swarm constants. The Hive's home slug IS the projection
 // demux scope — both peers project the SAME hive's ops. ──
 export const WORKSPACE_ID = 'ws-hive-fed';
-export const HIVE_SLUG = 'acme-hive'; // the Hive's home_slug
+// WI-6312: branded at the rig's declaration so every consumer certifies once. The rig owns
+// this synthetic slug end-to-end — it writes and reads it — so local == federated here.
+export const HIVE_SLUG = unsafeFederatedPotScope(
+  'acme-hive',
+  'hive-substrate rig: the rig writes and reads its own synthetic hive home slug',
+); // the Hive's home_slug
 export const BINDING = {
   kind: 'local' as const,
   workspace_id: WORKSPACE_ID,

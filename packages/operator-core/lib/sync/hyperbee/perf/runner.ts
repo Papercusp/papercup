@@ -16,6 +16,8 @@
  *   --peers 2,5                                 explicit peer-count sweep
  *   --out <dir>                                 artifact dir (default test-results/p2p-perf)
  *   --baseline <file>                           baseline JSON (default baselines/tier1.json next to this file)
+ *   --reference <rolling|frozen>                advisory reference (default rolling: p90 of recent runs;
+ *                                               falls back to the frozen baseline when history is thin)
  *   --update-baseline                           rewrite the baseline from this run
  *   --gate                                      exit 1 on regressions/SLO violations (OFF by default — D-005)
  *   --slo-only                                  exit 1 only on SLO violations (used by the CI-able invariant path)
@@ -31,7 +33,7 @@
  * mirroring `latitude-e2e.integration.test.ts`'s $0-default posture.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '../../../util/cli-entry';
@@ -39,6 +41,7 @@ import { loadavg, cpus as osCpus } from 'node:os';
 import type { PerfArtifact } from './artifact';
 import {
   baselineFromArtifacts,
+  baselineFromHistory,
   compareArtifacts,
   formatCompareReport,
   type BaselineFile,
@@ -137,9 +140,58 @@ interface Args {
   out: string;
   baseline: string;
   updateBaseline: boolean;
+  /** Which reference the advisory compares against (WI-2788). Default rolling. */
+  reference: 'rolling' | 'frozen';
   gate: boolean;
   sloOnly: boolean;
   summaryJson: string | null;
+}
+
+/**
+ * Load the artifacts of previous runs from the output dir, oldest-first, so a
+ * rolling reference can be derived from them (WI-2788). Skips the current run
+ * and tolerates partial/aborted run dirs — an unparseable artifact is a missing
+ * observation, never a reason to fail the run that is trying to report.
+ */
+function loadRunHistory(outRoot: string, currentRunId: string, limit = 15): PerfArtifact[][] {
+  if (!existsSync(outRoot)) return [];
+  let dirs: string[];
+  try {
+    dirs = readdirSync(outRoot)
+      .filter((d) => d !== currentRunId)
+      .filter((d) => {
+        try {
+          return statSync(join(outRoot, d)).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .sort();
+  } catch {
+    return [];
+  }
+
+  const runs: PerfArtifact[][] = [];
+  for (const d of dirs.slice(-limit)) {
+    const artifacts: PerfArtifact[] = [];
+    let files: string[];
+    try {
+      files = readdirSync(join(outRoot, d));
+    } catch {
+      continue;
+    }
+    for (const f of files) {
+      if (!f.endsWith('.json') || f === 'summary.json') continue;
+      try {
+        const a = JSON.parse(readFileSync(join(outRoot, d, f), 'utf8')) as PerfArtifact;
+        if (a?.scenario && a?.metrics) artifacts.push(a);
+      } catch {
+        // partial/aborted artifact — skip
+      }
+    }
+    if (artifacts.length) runs.push(artifacts);
+  }
+  return runs;
 }
 
 /** Machine-readable run summary (consumed by the P-014 routine handler). */
@@ -147,6 +199,7 @@ export interface RunSummary {
   runId: string;
   profile: string;
   outDir: string;
+  reference?: 'rolling' | 'frozen';
   reportPath: string;
   artifacts: number;
   scenarioFailures: string[];
@@ -203,6 +256,7 @@ function parseArgs(argv: string[]): Args | 'list' {
     sizes: nums(get('--sizes')),
     peers: nums(get('--peers')),
     out: get('--out') ?? join(process.cwd(), 'test-results', 'p2p-perf'),
+    reference: (get('--reference') as 'rolling' | 'frozen' | undefined) ?? 'rolling',
     baseline: get('--baseline') ?? join(HERE, 'baselines', 'tier1.json'),
     updateBaseline: argv.includes('--update-baseline'),
     gate: argv.includes('--gate'),
@@ -329,11 +383,36 @@ async function main(): Promise<void> {
   }
 
   // Baseline comparison (advisory — D-005).
+  //
+  // Reference selection (WI-2788): prefer a ROLLING reference derived from the
+  // recent run history over the frozen capture. Measured over 51 nightlies, the
+  // frozen capture encodes the box tenancy of the minute it was taken and made
+  // the advisory fire on 61% of runs; a rolling p90 holds every metric at <=14%
+  // at the same tolerance. Falls back to the committed file when there is not
+  // enough history (fresh checkout, new scenario) or when forced with
+  // `--reference frozen`.
   let compareText: string | null = null;
   let compared = false;
   let compareReport: ReturnType<typeof compareArtifacts> | null = null;
-  if (existsSync(args.baseline) && !args.updateBaseline) {
+  let referenceKind: 'rolling' | 'frozen' | 'none' = 'none';
+  // `--update-baseline` re-captures the frozen file and deliberately reports no
+  // comparison; it must not silently start comparing against the rolling one.
+  const rolling =
+    args.reference === 'frozen' || args.updateBaseline
+      ? null
+      : baselineFromHistory(loadRunHistory(args.out, runId), { profile: args.profile });
+  if (rolling) {
+    referenceKind = 'rolling';
+    compareReport = compareArtifacts(rolling, artifacts);
+    compared = true;
+    compareText = formatCompareReport(compareReport);
+    console.log(
+      `\n— comparison vs ROLLING reference (advisory; p90 of recent runs, ${rolling.entries.length} entries) —`,
+    );
+    console.log(compareText);
+  } else if (existsSync(args.baseline) && !args.updateBaseline) {
     try {
+      referenceKind = 'frozen';
       const baseline = JSON.parse(readFileSync(args.baseline, 'utf8')) as BaselineFile;
       compareReport = compareArtifacts(baseline, artifacts);
       compared = true;
@@ -400,6 +479,7 @@ async function main(): Promise<void> {
     runId,
     profile: args.profile,
     outDir,
+    reference: referenceKind === 'none' ? undefined : referenceKind,
     reportPath,
     artifacts: artifacts.length,
     scenarioFailures,

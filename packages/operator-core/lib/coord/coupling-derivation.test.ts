@@ -3,8 +3,19 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { deriveCouplingsFromRoster } from './coupling-derivation';
+import {
+  deriveCouplings,
+  deriveCouplingsFromCoordExchange,
+  deriveCouplingsFromHeldFiles,
+  deriveCouplingsFromPlanBlocking,
+  deriveCouplingsFromRoster,
+  type DerivationRow,
+} from './coupling-derivation';
 import { resolveCoupledPeers } from './couplings';
+import {
+  PRESENCE_IDENTITY_FIELDS,
+  PRESENCE_STATE_FIELDS,
+} from '../agent-tools/coordination/presence-payload';
 
 const row = (o: Partial<Record<string, unknown>> & { ownerId: string }) => o;
 
@@ -166,5 +177,273 @@ describe('deriveCouplingsFromRoster ∘ resolveCoupledPeers — the union contra
       },
     ]);
     expect(peers).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE RECURRENCE GUARD (P-013).
+//
+// This module reads roster rows STRUCTURALLY (`DerivationRow` is an interface of
+// optional fields over `unknown[]` inputs), which is what makes it pure and
+// PG-free — and also what makes it silently wrong if a field name drifts from
+// the producer. Every other test here builds its own fixtures, so they would all
+// stay green while the production signal derived nothing. That is not
+// hypothetical: it is exactly what happened to the `currentFiles` signal, which
+// shipped "green (51/51)" reading a field that is real but empty for essentially
+// every live agent. A fixture test cannot tell "wrong field" from "always-empty
+// field"; only a check against the PRODUCER can.
+// ---------------------------------------------------------------------------
+describe('DerivationRow is bound to the real presence producer', () => {
+  const emitted = new Set<string>([...PRESENCE_IDENTITY_FIELDS, ...PRESENCE_STATE_FIELDS]);
+
+  it('reads only fields coord:presence actually emits', () => {
+    // Every key of DerivationRow, listed explicitly: a rename on either side
+    // fails HERE rather than degrading a signal to silence in production.
+    const readFields: (keyof DerivationRow)[] = [
+      'ownerId',
+      'fleetSlug',
+      'currentFiles',
+      'awaitingEventKey',
+      'currentPlanSlug',
+      'claimedItems',
+    ];
+    const missing = readFields.filter((f) => !emitted.has(f));
+    expect(missing).toEqual([]);
+  });
+
+  it('does not read heldFiles from the roster — it is opt-in detail, not a STATE field', () => {
+    // The lock-hold signal deliberately takes an INJECTED map instead of reading
+    // a roster field, because `heldFiles` is attached only under include_detail.
+    // If it ever became a always-emitted STATE field this assertion flips and the
+    // signal should be simplified to read it directly.
+    expect(emitted.has('heldFiles')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-013 querying signals (lock holds, plan blocked-by, recent coord exchange)
+// ---------------------------------------------------------------------------
+
+describe('deriveCouplingsFromHeldFiles', () => {
+  const held = (o: Record<string, string[]>) => new Map(Object.entries(o));
+
+  it('couples peers holding a lock on the same path, naming it', () => {
+    const derived = deriveCouplingsFromHeldFiles(
+      'su-me',
+      held({ 'su-me': ['a/x.ts'], 'su-peer': ['a/x.ts', 'b/y.ts'], 'su-other': ['c/z.ts'] }),
+    );
+    expect(derived).toEqual([{ ownerId: 'su-peer', because: 'you both hold locks in a/x.ts' }]);
+  });
+
+  it('bounds how many shared paths it names and counts the rest', () => {
+    const paths = ['a.ts', 'b.ts', 'c.ts', 'd.ts'];
+    const derived = deriveCouplingsFromHeldFiles('su-me', held({ 'su-me': paths, 'su-peer': paths }));
+    expect(derived[0]?.because).toBe('you both hold locks in a.ts, b.ts (+2 more shared paths)');
+  });
+
+  it('is empty when the caller holds nothing (no self entry ⇒ no overlap)', () => {
+    expect(deriveCouplingsFromHeldFiles('su-me', held({ 'su-peer': ['a.ts'] }))).toEqual([]);
+  });
+
+  it('is deterministic regardless of map insertion order (D-006)', () => {
+    const a = deriveCouplingsFromHeldFiles(
+      'su-me',
+      held({ 'su-me': ['x.ts'], 'su-b': ['x.ts'], 'su-a': ['x.ts'] }),
+    );
+    const b = deriveCouplingsFromHeldFiles(
+      'su-me',
+      held({ 'su-a': ['x.ts'], 'su-me': ['x.ts'], 'su-b': ['x.ts'] }),
+    );
+    expect(a).toEqual(b);
+    expect(a.map((d) => d.ownerId)).toEqual(['su-a', 'su-b']);
+  });
+});
+
+describe('deriveCouplingsFromPlanBlocking', () => {
+  const rows = [
+    row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
+    row({ ownerId: 'su-peer', currentPlanSlug: 'p1', claimedItems: ['P-003'] }),
+  ];
+
+  it('names the peer holding what BLOCKS you', () => {
+    const derived = deriveCouplingsFromPlanBlocking('su-me', rows, [
+      { item: 'P-005', blockedBy: ['P-003'] },
+    ]);
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', because: 'your P-005 is blocked by P-003, which they hold' },
+    ]);
+  });
+
+  it('names the peer BLOCKED ON YOU — the direction an agent cannot discover alone', () => {
+    const derived = deriveCouplingsFromPlanBlocking('su-me', rows, [
+      { item: 'P-003', blockedBy: ['P-005'] },
+    ]);
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', because: 'their P-003 is blocked by P-005, which you hold' },
+    ]);
+  });
+
+  it('does NOT couple across different plans — item ids are plan-local', () => {
+    const derived = deriveCouplingsFromPlanBlocking(
+      'su-me',
+      [
+        row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'OTHER', claimedItems: ['P-003'] }),
+      ],
+      [{ item: 'P-005', blockedBy: ['P-003'] }],
+    );
+    expect(derived).toEqual([]);
+  });
+
+  it('is empty with no edges, and empty when the caller declares no plan', () => {
+    expect(deriveCouplingsFromPlanBlocking('su-me', rows, [])).toEqual([]);
+    expect(
+      deriveCouplingsFromPlanBlocking(
+        'su-me',
+        [row({ ownerId: 'su-me', claimedItems: ['P-005'] }), rows[1]!],
+        [{ item: 'P-005', blockedBy: ['P-003'] }],
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('deriveCouplingsFromCoordExchange', () => {
+  it('couples each distinct partner once', () => {
+    expect(deriveCouplingsFromCoordExchange('su-me', ['su-a', 'su-a', 'su-b'])).toEqual([
+      { ownerId: 'su-a', because: 'recent coord exchange' },
+      { ownerId: 'su-b', because: 'recent coord exchange' },
+    ]);
+  });
+
+  it('never couples the caller to itself', () => {
+    expect(deriveCouplingsFromCoordExchange('su-me', ['su-me'])).toEqual([]);
+  });
+});
+
+describe('deriveCouplings (orchestrator)', () => {
+  const rows = [
+    row({ ownerId: 'su-me', fleetSlug: 'alpha', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
+    row({ ownerId: 'su-peer', fleetSlug: 'alpha', currentPlanSlug: 'p1', claimedItems: ['P-003'] }),
+  ];
+
+  it('unions every signal, accumulating each distinct reason onto the one peer', async () => {
+    const derived = await deriveCouplings('su-me', rows, {
+      heldFiles: async () =>
+        new Map([
+          ['su-me', ['x.ts']],
+          ['su-peer', ['x.ts']],
+        ]),
+      planEdges: async () => [{ item: 'P-005', blockedBy: ['P-003'] }],
+      recentPartners: async () => ['su-peer'],
+    });
+    expect(derived.map((d) => d.because)).toEqual([
+      'same fleet (alpha)',
+      'you both hold locks in x.ts',
+      'your P-005 is blocked by P-003, which they hold',
+      'recent coord exchange',
+    ]);
+    // The union collapses them onto ONE peer, keeping every signal (D-078 (a)) —
+    // which is the whole reason the derived channel carries per-signal reasons.
+    const peers = resolveCoupledPeers('su-me', derived, []);
+    expect(peers).toHaveLength(1);
+    expect(peers[0]?.derivedBecause).toBe(
+      'same fleet (alpha); you both hold locks in x.ts; your P-005 is blocked by P-003, which they hold; recent coord exchange',
+    );
+  });
+
+  it('is FAIL-SOFT PER LEG — one dead source must not cost the others', async () => {
+    const derived = await deriveCouplings('su-me', rows, {
+      heldFiles: async () => {
+        throw new Error('lock DB down');
+      },
+      planEdges: async () => {
+        throw new Error('plan read failed');
+      },
+      recentPartners: async () => ['su-peer'],
+    });
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', because: 'same fleet (alpha)' },
+      { ownerId: 'su-peer', because: 'recent coord exchange' },
+    ]);
+  });
+
+  it('NEVER WIDENS: a source naming a peer outside the roster is dropped', async () => {
+    // The access guarantee must hold even if a source misbehaves (D-044/D-078(c)).
+    const derived = await deriveCouplings('su-me', rows, {
+      recentPartners: async () => ['su-STRANGER', 'su-peer'],
+      heldFiles: async () =>
+        new Map([
+          ['su-me', ['x.ts']],
+          ['su-GHOST', ['x.ts']],
+        ]),
+    });
+    expect(derived.map((d) => d.ownerId)).toEqual(['su-peer', 'su-peer']);
+  });
+
+  it('works with no sources at all (pure roster derivation)', async () => {
+    expect(await deriveCouplings('su-me', rows)).toEqual([
+      { ownerId: 'su-peer', because: 'same fleet (alpha)' },
+    ]);
+  });
+
+  it('skips the plan read entirely when the caller declares no plan', async () => {
+    let called = false;
+    await deriveCouplings('su-me', [row({ ownerId: 'su-me' }), row({ ownerId: 'su-peer' })], {
+      planEdges: async () => {
+        called = true;
+        return [];
+      },
+    });
+    expect(called).toBe(false);
+  });
+
+  it('skips the EXPENSIVE plan read when no peer shares the plan — the common case', async () => {
+    // readPlanBySlug fetches AND parses a whole plan (90KB+ here), so paying it
+    // on every poll to produce nothing is the WI-6126 cost shape. Gated on a
+    // precondition computed from rows already in hand.
+    let called = false;
+    await deriveCouplings(
+      'su-me',
+      [
+        row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'OTHER', claimedItems: ['P-003'] }),
+      ],
+      {
+        planEdges: async () => {
+          called = true;
+          return [];
+        },
+      },
+    );
+    expect(called).toBe(false);
+  });
+
+  it('skips the plan read when peers share the plan but hold NO items', async () => {
+    let called = false;
+    await deriveCouplings(
+      'su-me',
+      [
+        row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'p1', claimedItems: [] }),
+      ],
+      {
+        planEdges: async () => {
+          called = true;
+          return [];
+        },
+      },
+    );
+    expect(called).toBe(false);
+  });
+
+  it('DOES read the plan when a peer on the same plan holds items', async () => {
+    let called = false;
+    await deriveCouplings('su-me', rows, {
+      planEdges: async () => {
+        called = true;
+        return [{ item: 'P-005', blockedBy: ['P-003'] }];
+      },
+    });
+    expect(called).toBe(true);
   });
 });

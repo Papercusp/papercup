@@ -20,7 +20,17 @@ import {
   unsafeFederatedPotScope,
   type FederatedPotScope,
 } from './federated-pot-scope';
-import { listHiveMembers, loadRevokedHivePubkeys } from './hive-membership-store';
+import {
+  listHiveMembers,
+  loadRevokedHivePubkeys,
+  // WI-6312: the write/single-row half, guarded below.
+  getHiveMember,
+  loadHiveMemberDevicePubkeys,
+  upsertHiveMember,
+  addRevokedHivePubkeys,
+  removeHiveMember,
+  removeAllHiveMembers,
+} from './hive-membership-store';
 
 const WS = 'ws-fps';
 const LOCAL = 'my-pot-2'; // the joiner's freeSlug-suffixed local handle
@@ -37,6 +47,28 @@ async function _compileTimeScopeGuards(): Promise<void> {
   await listHiveMembers(WS, LOCAL);
   // @ts-expect-error same for the revocation reader — the security-relevant half
   await loadRevokedHivePubkeys(WS, LOCAL);
+
+  // ── WI-6312: the WRITE + single-row half. The read side above was branded first; these
+  // six were still `string`, so the identical bug stayed reachable on every write path.
+  // Each line documents what the LOCAL handle silently did before the brand.
+  // @ts-expect-error single-row read: returned null, indistinguishable from "not a member",
+  // which silently DEMOTED a real verified member to read-only (pot/member-tier-gate.ts).
+  await getHiveMember(WS, LOCAL, 1);
+  // @ts-expect-error device pubkeys: attestations and revocations are columns of ONE row,
+  // so a scope mismatch between them is how a revoked device passes an admission check.
+  await loadHiveMemberDevicePubkeys(WS, LOCAL, 1);
+  // @ts-expect-error the WRITE: a row written under the local handle is invisible to every
+  // federated reader, and the write reports success.
+  await upsertHiveMember({ workspaceId: WS, potHomeSlug: LOCAL, githubUserId: 1, githubUsername: 'a' });
+  // @ts-expect-error revocation write: lands where the admission union never looks, so the
+  // revocation silently does nothing.
+  await addRevokedHivePubkeys(WS, LOCAL, 1, ['pk']);
+  // @ts-expect-error delete-one: deletes 0 rows and returns 0 — indistinguishable from the
+  // idempotent "already gone", so a leave that never happened reads clean.
+  await removeHiveMember(WS, LOCAL, 1);
+  // @ts-expect-error delete-all: a dissolve drops nothing and the members keep federating
+  // (the G24 teardown silently no-ops).
+  await removeAllHiveMembers(WS, LOCAL);
 }
 
 describe('FederatedPotScope — the compile-time guard (EI-18777176681958978)', () => {

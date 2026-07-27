@@ -26,7 +26,7 @@ import { generateEd25519KeypairDer } from './identity/ed25519';
 import { hiveKeychainId } from './identity/hive-keypair';
 import { insertHiveIfAbsent } from './hive-store';
 import { upsertHiveMember, loadRevokedHivePubkeys, listHiveMembers } from './hive-membership-store';
-import { resolveFederatedPotScope } from './federated-pot-scope';
+import { resolveFederatedPotScope, unsafeFederatedPotScope } from './federated-pot-scope';
 import { applyPot557RenameAndFixups } from './sync/hyperbee/__tests__/_hive-substrate-rig';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
@@ -34,7 +34,13 @@ const WS = 'ws-fedscope';
 /** What THIS box calls the joined Pot — `freeSlug` suffixed it on a local collision. */
 const LOCAL = 'spoon-knife-pot-2';
 /** What the OWNER calls it — the scope every hive-home projection writes under. */
-const OWNER = 'spoon-knife-pot';
+// WI-6312: OWNER is the owner-authored slug — i.e. it IS the federated scope, by definition
+// of this suite's topology. (LOCAL, above, is the joiner's divergent handle and must stay an
+// unbranded string: the whole point of these tests is that it is NOT the federated scope.)
+const OWNER = unsafeFederatedPotScope(
+  'spoon-knife-pot',
+  'fedscope suite: OWNER is the owner-authored slug the projections write under',
+);
 const REVOKED_PK = 'dev-revoked';
 
 /** Source 1 cannot answer inside a per-file schema (it reads the process org PG). */

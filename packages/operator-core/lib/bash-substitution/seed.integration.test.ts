@@ -232,10 +232,19 @@ describe('seedSubstitutionRegistry (real PG)', () => {
         promoted_at: Date | null;
       }>;
 
+      const heldLabels = new Set(
+        ALL_PAIRS.filter((p) => p.holdAtObserve !== undefined).map((p) => p.intentLabel),
+      );
+
       for (const r of rows) {
         if (r.intent_label.startsWith(POLICY_INTENT_PREFIX)) {
           // A declared policy row is not promotion's business in either direction.
           expect(r.tier).toBe('deny');
+          continue;
+        }
+        if (heldLabels.has(r.intent_label)) {
+          // `equivalent` but pinned to the staging tier by its own pair (D-011).
+          expect(r.tier).toBe('observe');
           continue;
         }
         if (r.equivalence_verdict === 'equivalent') {

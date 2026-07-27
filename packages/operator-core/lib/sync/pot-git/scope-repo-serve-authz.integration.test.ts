@@ -27,6 +27,7 @@ import Protomux from 'protomux';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { unsafeFederatedPotScope } from '../../federated-pot-scope';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import { createOrgTestDb } from '../../../test/_org-test-db';
 import { _resetForTests } from '@papercusp/db-org';
@@ -43,7 +44,11 @@ import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket, resolvePotGitPee
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 
 const WORKSPACE_ID = `ws-scope-serve-authz-${randomUUID().slice(0, 8)}`;
-const HIVE = `hive-scope-serve-authz-${randomUUID().slice(0, 8)}`;
+// WI-6312: branded at the declaration — this suite writes and reads its own synthetic slug.
+const HIVE = unsafeFederatedPotScope(
+  `hive-scope-serve-authz-${randomUUID().slice(0, 8)}`,
+  'authz fixture: writes and reads the same synthetic hive slug',
+);
 const TOPIC = Buffer.alloc(32, 21); // a fixed 32-byte stand-in for the hive topic
 const FAKE_HIVE_PUBKEY = Buffer.alloc(32, 22).toString('base64');
 const SCOPE_OWNER_GITHUB_USER_ID = 555001;

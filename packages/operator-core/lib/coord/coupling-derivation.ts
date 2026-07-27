@@ -400,11 +400,34 @@ export async function deriveCouplings(
     }
   };
 
+  // The plan read is the EXPENSIVE leg — `readPlanBySlug` fetches and PARSES a
+  // whole plan, and plans in this repo reach 90KB+ of prose. So it is gated on a
+  // precondition computed purely from rows already in hand: the signal can only
+  // fire if the caller claims items on a plan AND some peer in the roster is on
+  // that same plan holding items of its own. In the common case (nobody else on
+  // your plan) the read never happens at all, rather than being paid on every
+  // poll to produce nothing — the P-013 analogue of the per-process fleet-wide
+  // recomputation costed in WI-6126.
   const myPlan = cleanId(selfRow?.currentPlanSlug);
+  const myItemCount = Array.isArray(selfRow?.claimedItems) ? selfRow.claimedItems.length : 0;
+  let planSignalPossible = false;
+  if (myPlan && myItemCount > 0) {
+    for (const raw of rows) {
+      const row = (raw ?? {}) as DerivationRow;
+      const id = cleanId(row.ownerId);
+      if (!id || id === self) continue;
+      if (cleanId(row.currentPlanSlug) !== myPlan) continue;
+      if (Array.isArray(row.claimedItems) && row.claimedItems.length > 0) {
+        planSignalPossible = true;
+        break;
+      }
+    }
+  }
+
   const [held, partners, edges] = await Promise.all([
     settle(sources.heldFiles, new Map<string, readonly string[]>() as ReadonlyMap<string, readonly string[]>),
     settle(sources.recentPartners, [] as readonly string[]),
-    myPlan && sources.planEdges
+    planSignalPossible && myPlan && sources.planEdges
       ? settle(() => sources.planEdges!(myPlan), [] as readonly PlanBlockingEdge[])
       : Promise.resolve([] as readonly PlanBlockingEdge[]),
   ]);

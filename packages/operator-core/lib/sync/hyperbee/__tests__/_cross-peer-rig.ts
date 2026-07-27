@@ -21,6 +21,7 @@
 import { expect } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
+import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,7 +49,12 @@ export { orgSqlHolder } from './_org-sql-holder';
 
 export const WORKSPACE_ID = 'ws-xpeer-coord';
 export const HARNESS_SLUG = 'xpeer-coord';
-export const HIVE_SLUG = 'shared-hive';
+// WI-6312: branded at the rig's declaration so every consumer certifies once. The rig owns
+// this synthetic slug end-to-end — it writes and reads it — so local == federated here.
+export const HIVE_SLUG = unsafeFederatedPotScope(
+  'shared-hive',
+  'cross-peer rig: the rig writes and reads its own synthetic hive slug',
+);
 export const BINDING = { kind: 'local' as const, workspace_id: WORKSPACE_ID, harness_slug: HARNESS_SLUG };
 
 export const SHARED_PRESENCE_DDL = `

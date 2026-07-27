@@ -111,6 +111,7 @@ Defined by `SubstitutionPair` in `packages/operator-core/lib/bash-substitution/t
 | `routing.{want,use,insteadOf}` | the three `CLAUDE.md` table cells — display fields, deliberately not derived |
 | `expectedVerdict` | the verdict this pair is RECORDED as carrying — the anti-rot latch |
 | `policyTier?` | the one authorized way to enter above `observe` (§5) |
+| `holdAtObserve?` | the mirror: pin this row TO `observe`, whatever its verdict. Value is the required reason (§5) |
 | `cover(atom)` | **the heart** — models what the tool can ACTUALLY express |
 
 `cover()` is where the honesty lives. It must model the tool's real arguments and real
@@ -228,25 +229,68 @@ for homogeneous families; do not use it to rescue a pattern nobody actually runs
 Three tiers, reusing what the PreToolUse gate already implements. **Add no fourth
 mechanism** (D-003).
 
-- **`observe`** — log the match, change nothing the agent sees.
+- **`observe`** — a **staging** state. Emits nothing: both hooks act only on `advise`/`deny`,
+  and `locks:check_command` returns the tier without recording it.
 - **`advise`** — ride out as `additionalContext` on an **allow**. Teach, never block.
 - **`deny`** — hard block. Reserved for rules that **already existed independently**.
 
-### Promotion is staged, and the window is real (P-020)
+### `observe` does not observe — `advise` is the observation window (D-042)
 
-1. A new row enters at **`observe`**. Always.
-2. Run it for **48h**. Review hit-rate and false-positive reports.
-3. Promote to **`advise`** only then.
-4. Promote `advise` → `deny` only for a pattern with **zero legitimate use**.
+P-020 originally said: run at `observe` for 48h, then review hit-rate and false-positive
+reports. That window could not work, and it is worth understanding why before you design
+another one:
 
-Any agent may file a false positive against a row, and that **pauses its promotion** (§7).
-This is not ceremony: the shell-write guard false-positived on a `>` inside a heredoc within
-hours of shipping — which is exactly what the window exists to catch.
+- **Nothing logs an `observe` match.** `pretooluse-bash-resource-gate.sh` acts only on
+  `if _stier in ('advise','deny')`; `coord-hook.ts` is the same shape; `locks:check_command`
+  computes the tier and records nothing.
+- **Hit-rate never depended on the tier.** `bashAtoms` comes from `tool_usage_rollup`,
+  attributed at session-ingest by replaying patterns over transcripts (native `Bash` never
+  reaches `tool_invocations`, D-012). It accrues identically at any tier —
+  `activity:bash-substitution-report` will tell you now.
+- **False positives cannot arrive at `observe` at all.** A false-positive report needs an
+  agent to SEE a claim and disagree. At `observe` nobody is shown anything, so
+  `false_positive_count` is pinned at 0 by construction.
 
-**`equivalent` is not a mandate.** A row can be provably equivalent and still be wrong to
-enforce, because "the tool can express this" and "the agent should be pushed to use it" are
-different claims. `capability:git` is an argv pass-through and therefore trivially
-`equivalent` — and is deliberately held back from auto-promotion (D-011).
+So the window could only ever conclude "48h elapsed, zero false positives" — the same
+verdict whether the rules were perfect or catastrophic.
+
+**`advise` is the real window.** It is the first visible tier, and it is safe to observe from
+because it cannot block: the shell hook rides it out on an explicit `allow`, and OMP uses the
+`followUp` reminder rather than `steer` (which aborts the in-flight tool). The full window and
+the zero-false-positive bar still gate `advise → deny` — that is the transition P-020's
+precedent is actually about (the shell-write guard false-positiving on a `>` inside a heredoc
+**blocked** work).
+
+**Don't wait for evidence you could go and measure.** Instead of a passive window, run the
+documented caveats through the live registry and read the verdicts (§6). That is what
+promoted these rows: 0/12 false positives across every caveat, `npm ci` still denied as the
+positive control — and it caught a live defect two days of "observing" would never have
+surfaced, because observing surfaces nothing.
+
+> **A staging state that emits nothing is not an observation, and time spent in it is not
+> evidence.** Before starting any clock, name the row that will be written while it runs. If
+> nothing writes, the clock is a delay dressed as diligence.
+
+### `equivalent` is not a mandate — a pair may hold itself back
+
+A row can be provably equivalent and still be wrong to enforce: "the tool can express this"
+and "the agent should be pushed to use it" are different claims. A pair states that with
+**`holdAtObserve`**, whose value is the required reason:
+
+```ts
+holdAtObserve: 'D-011: capability:git is a pass-through, so this row offers the SAME answer…',
+```
+
+`promoteEarnedRows` skips a held row **and demotes one that has drifted above `observe`**.
+That self-heal is not tidiness. D-011 recorded this hold for the git-read row in a decision
+body — and a later promotion that selected on `equivalence_verdict` alone swept it into
+`advise` anyway, firing the registry's largest advisory (~2,500 calls/week across 77 of 86
+sessions) for a benefit D-011 had already argued was near-zero for the superuser role. The
+seeder deliberately never demotes, so nothing would have pulled it back.
+
+> **A constraint that lives only in prose will eventually be violated by someone acting in
+> good faith on the data.** Carry it in the data — `holdAtObserve` is the mirror of
+> `policyTier` (§5) for exactly this reason.
 
 ### The one authorized way past `observe`
 

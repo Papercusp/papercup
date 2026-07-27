@@ -130,6 +130,130 @@ export function baselineFromArtifacts(
   };
 }
 
+export interface RollingBaselineOpts {
+  /**
+   * Quantile of the historical p95 series used as the reference. Defaults to
+   * p90 — see the note below on why a MEDIAN is the wrong choice here.
+   */
+  quantile?: number;
+  /** How many most-recent runs to draw the reference from. */
+  window?: number;
+  /** Minimum runs required before a rolling reference is trustworthy. */
+  minRuns?: number;
+  profile?: string;
+}
+
+/**
+ * Build a reference from the RECENT RUN HISTORY instead of one frozen capture
+ * (WI-2788). Returns a `BaselineFile`, so `compareArtifacts` is unchanged — only
+ * the derivation of the reference differs.
+ *
+ * Why this exists: a point-in-time capture encodes the box tenancy of the
+ * minute it was taken. Measured over 51 nightlies, the committed capture sat so
+ * far below typical load that `deltaTick1000Ms` ran +86% above it at the MEDIAN,
+ * and the advisory fired on 61% of runs. Re-capturing does not fix that — the
+ * next capture is just a different quiet minute.
+ *
+ * Why a high quantile and NOT a median: a median reference is exceeded by ~50%
+ * of future samples BY CONSTRUCTION, so unless a metric's spread is tighter than
+ * the tolerance it fires about half the time. Measured, a rolling median made
+ * four metrics WORSE than the frozen baseline (fullMergeMs 14%->51%). The frozen
+ * baseline only worked as well as it did because it captures p95 — a high
+ * quantile. Rolling p90 over 15 runs holds every metric at <=14% (most <=8%) at
+ * an unchanged 0.35 tolerance.
+ *
+ * Why a quantile and not the MAX: with a small window the top-quantile lands on
+ * the window maximum, and a rolling max lets one tenancy spike raise the bar and
+ * mask a genuine regression for the whole window. Keep `window` comfortably
+ * larger than `1/(1-quantile)` so the two stay distinct.
+ */
+export function baselineFromHistory(
+  history: PerfArtifact[][],
+  opts: RollingBaselineOpts = {},
+): BaselineFile | null {
+  const quantile = opts.quantile ?? 0.9;
+  const window = opts.window ?? 15;
+  const minRuns = opts.minRuns ?? 8;
+
+  const recent = history.slice(-window);
+  if (recent.length < minRuns) return null;
+
+  // key -> { scenario, params, metric -> observed p95 series }
+  const byKey = new Map<
+    string,
+    { scenario: string; params: Record<string, string | number | boolean>; series: Map<string, { unit: MetricSummary['unit']; vals: number[] }>; lags: number[] }
+  >();
+
+  for (const run of recent) {
+    for (const a of run) {
+      const key = entryKey(a.scenario, a.params);
+      let e = byKey.get(key);
+      if (!e) {
+        e = { scenario: a.scenario, params: a.params, series: new Map(), lags: [] };
+        byKey.set(key, e);
+      }
+      if (a.loopLag) e.lags.push(a.loopLag.p95Ms);
+      for (const [name, m] of Object.entries(a.metrics)) {
+        if (!m || m.count === 0) continue;
+        let s = e.series.get(name);
+        if (!s) {
+          s = { unit: m.unit, vals: [] };
+          e.series.set(name, s);
+        }
+        s.vals.push(m.p95);
+      }
+    }
+  }
+
+  const quantileOf = (vals: number[], q: number): number => {
+    const sorted = [...vals].sort((x, y) => x - y);
+    const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)));
+    return sorted[idx];
+  };
+
+  const entries: BaselineEntry[] = [];
+  for (const e of byKey.values()) {
+    const metrics: Record<string, MetricSummary> = {};
+    for (const [name, s] of e.series) {
+      if (s.vals.length < minRuns) continue;
+      // For higher-is-better metrics the conservative reference is the LOW tail.
+      const q = s.unit === 'ops/sec' ? 1 - quantile : quantile;
+      const ref = quantileOf(s.vals, q);
+      metrics[name] = {
+        unit: s.unit,
+        count: s.vals.length,
+        p50: ref,
+        p95: ref,
+        p99: ref,
+        max: ref,
+        mean: ref,
+      };
+    }
+    if (!Object.keys(metrics).length) continue;
+    entries.push({
+      scenario: e.scenario,
+      params: e.params,
+      metrics,
+      loopLagP95Ms: e.lags.length ? quantileOf(e.lags, quantile) : null,
+    });
+  }
+
+  if (!entries.length) return null;
+
+  const last = recent[recent.length - 1]?.[0];
+  return {
+    schema: 1,
+    capturedAt: new Date().toISOString(),
+    profile: opts.profile ?? 'rolling',
+    host: {
+      hostname: last?.host.hostname ?? 'unknown',
+      platform: last?.host.platform ?? 'unknown',
+      cpus: last?.host.cpus ?? 0,
+    },
+    entries,
+  };
+}
+
 export function compareArtifacts(
   baseline: BaselineFile,
   artifacts: PerfArtifact[],

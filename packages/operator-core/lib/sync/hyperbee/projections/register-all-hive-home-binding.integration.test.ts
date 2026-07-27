@@ -45,6 +45,9 @@ const HOME = unsafeFederatedPotScope(
 // to it.
 /** @deprecated WI-6312: HOME is itself branded now; kept as an alias for existing call sites. */
 const HOME_SCOPE = HOME;
+/** A DIFFERENT hive's home slug — used only in negative assertions ("not blindly accepted").
+ *  Certified because the assertion is precisely that nothing was written under it. */
+const OTHER_HOME = unsafeFederatedPotScope('other-hive', 'negative assertion: asserts NO row exists under this scope');
 const MEMBER = 'member-repo'; // the harness a joiner actually boots
 const OWN_LOG = 'own-log-hex';
 const REMOTE_LOG = 'remote-log-hex'; // != OWN_LOG → origin='remote' (a federated op)
@@ -180,7 +183,7 @@ describe('A-003 — pot_members/pot_settings reach a member-booted joiner', () =
     await apply(memberOp({ pot_home_slug: 'other-hive', github_user_id: 9 }));
     await apply(settingsOp({ harness_slug: 'other-hive' }));
     expect(await getHiveMember(WS, HOME, 9, db.adminSql)).toBeNull(); // not under our home
-    expect(await getHiveMember(WS, 'other-hive', 9, db.adminSql)).toBeNull(); // and not blindly accepted
+    expect(await getHiveMember(WS, OTHER_HOME, 9, db.adminSql)).toBeNull(); // and not blindly accepted
     expect(await getHiveSetting(WS, 'other-hive', 'theme', db.adminSql)).toBeNull();
     // EI-18771324701216281: same drop, now audible (rate-limited, default-on).
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -359,7 +362,7 @@ describe('EI-18771324701216281 — the demux-drop counter is reachable on a JOIN
     await seedHive(HOME);
     await seedHive('other-hive');
     await joinerApply()(memberOp({ pot_home_slug: 'other-hive', github_user_id: 9 }));
-    expect(await getHiveMember(WS, 'other-hive', 9, db.adminSql)).toBeNull();
+    expect(await getHiveMember(WS, OTHER_HOME, 9, db.adminSql)).toBeNull();
     const rows = await db.adminSql`
       SELECT table_tag, count FROM harness_shared.federation_refused_op_counters
       WHERE workspace_id = ${WS} AND harness_slug = ${HOME} AND reason = 'demux-mismatch'`;

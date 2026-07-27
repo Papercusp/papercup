@@ -42,6 +42,8 @@ const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../../..
 const WS = 'ws-proj';
 // WI-6312: branded at the declaration — the projection writes and reads this same slug.
 const HIVE = unsafeFederatedPotScope('alpha', 'projection fixture: the projection writes under this slug');
+/** A DIFFERENT hive, used only to assert the projection DEMUXES a cross-hive op out. */
+const BETA = unsafeFederatedPotScope('beta', 'negative assertion: asserts the cross-hive op was dropped');
 
 function dev(pk: string): DeviceAttestationEntry {
   return { device_pubkey: pk, gist_id: 'g', gist_url: 'u', device_label: 'd', created_at: 1, signature_by_device: 's' };
@@ -126,7 +128,7 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
 
   it('drops a cross-Hive op (pot_home_slug != the projection scope) AND says so', async () => {
     await seedHive();
-    await seedHive('beta');
+    await seedHive(BETA);
     // EI-18771324701216281: this drop is no longer silent — it emits a default-on
     // (rate-limited) warning. Assert it rather than merely tolerating it: a roster row
     // vanishing without a trace is the exact failure mode that cost WI-559 its diagnosis.
@@ -134,7 +136,7 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
     try {
       await proj().writeToPg(memberRow({ pot_home_slug: 'beta', github_user_id: 9 }), { ts: 1, origin: 'remote', authorPubkey: 'peer' });
       expect(await getHiveMember(WS, HIVE, 9, db.sql)).toBeNull(); // demuxed out
-      expect(await getHiveMember(WS, 'beta', 9, db.sql)).toBeNull(); // this projection is bound to HIVE
+      expect(await getHiveMember(WS, BETA, 9, db.sql)).toBeNull(); // this projection is bound to HIVE
       expect(warn).toHaveBeenCalledTimes(1);
       const msg = String(warn.mock.calls[0][0]);
       expect(msg).toContain(`'${HIVE}'`); // the slug it is bound to
