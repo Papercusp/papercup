@@ -34,7 +34,11 @@ vi.mock('./HiveMemberRail', () => ({
     </div>
   ),
 }));
-vi.mock('./HiveHeaderStrip', () => ({ default: ({ potSlug }: { potSlug: string }) => <div data-testid="hive-header">{potSlug}</div> }));
+// NO HiveHeaderStrip mock: this workspace stopped rendering it on 2026-07-27 —
+// the hive identity/Share cluster moved to the pot bar (AdvPotBar) with the other
+// pot-level chrome. Mocking a component the subject no longer mounts is what made
+// the assertion below pass vacuously in one direction and fail in the other
+// (EI-18814950644299297).
 vi.mock('./HiveWorkspaceCards', () => ({
   default: ({ onCreate }: { onCreate: () => void }) => (
     <div data-testid="workspace-cards">
@@ -107,7 +111,7 @@ describe('HarnessesWorkspace — dock branch', () => {
     expect(screen.getByTestId('dock').textContent).toBe('api');
   });
 
-  it('renders the hive header strip for a multi-member hive', () => {
+  it('renders the member rail for a multi-member hive', () => {
     syncResult = {
       data: [
         project({ slug: 'home', harness_kind: 'hive' }),
@@ -116,15 +120,18 @@ describe('HarnessesWorkspace — dock branch', () => {
       error: null,
     };
     renderWs(<HarnessesWorkspace />, '?slug=home');
-    expect(screen.getByTestId('hive-header').textContent).toBe('home');
     expect(screen.getByTestId('member-rail')).toBeTruthy();
   });
 
-  it('renders NO hive header for a solo non-hive harness', () => {
+  it('mounts the dock for a solo non-hive harness', () => {
+    // The member rail is mounted unconditionally and decides its own visibility
+    // from the member set — that logic belongs to (and is pinned by)
+    // HiveMemberRail.test.tsx, so this suite asserts only the branch it owns:
+    // a solo slug lands on the dock, not the all-mode cards.
     syncResult = { data: [project({ slug: 'solo' })], error: null };
     renderWs(<HarnessesWorkspace />, '?slug=solo');
-    expect(screen.queryByTestId('hive-header')).toBeNull();
-    expect(screen.getByTestId('dock')).toBeTruthy();
+    expect(screen.getByTestId('dock').textContent).toBe('solo');
+    expect(screen.queryByTestId('workspace-cards')).toBeNull();
   });
 });
 

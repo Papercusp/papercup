@@ -1205,6 +1205,17 @@ function ImprovementsView({
     enabled: hiveReady,
   });
   const drafts = draftsSync.data?.[0]?.items ?? [];
+  // WI-6410: the comment above promised "the provenance is still carried for
+  // the section's own copy" — and nothing read it. The envelope was built, the
+  // flag arrived, and this view dropped it on the floor, so a failed drafts read
+  // rendered as no drafts section at all. A comment is not an enforcement
+  // mechanism (the same lesson the server guard's header records); the guard
+  // that now covers this file is.
+  const draftsFault = snapshotFault(
+    draftsSync.error,
+    draftsSync.data?.[0],
+    "Drafts in iteration",
+  );
   const [lane, setLane] = useQueryState(
     "lane",
     parseAsStringEnum<Lane>([...LANES]).withDefault("all"),
@@ -1853,7 +1864,15 @@ function ImprovementsView({
           the Ideas view, owner ask 2026-07-19): broad-scope ideas that became
           draft plans, with their revision state — the Queen↔Scout
           typed-revision loop, watchable instead of invisible. */}
-      {drafts.length > 0 ? (
+      {draftsFault.failed ? (
+        // Deliberately a quiet inline note, NOT a LearningVisualError: this is a
+        // SECONDARY read, and blanking the primary improvements list because a
+        // side section failed would be a worse lie than the one being fixed.
+        // Honest and small beats loud and disproportionate.
+        <p className="pc-learning__quietempty">
+          {draftsFault.message ?? "Drafts in iteration unavailable"}
+        </p>
+      ) : drafts.length > 0 ? (
         <LearningDisclosure
           label="Drafts in iteration"
           subtitle="broad ideas that became draft plans, with revision state"
@@ -3221,6 +3240,10 @@ function ApiaryView({
     staleTime: 30_000,
   });
   const instances = sync.data?.[0]?.instances ?? [];
+  // WI-6410: `sync.error` below covered the TRANSPORT half only. The resolver
+  // catches its own failure and resolves with a degraded payload, so the error
+  // branch was unreachable for exactly the failure mode most likely to happen.
+  const fault = snapshotFault(sync.error, sync.data?.[0], "Benchmark");
   const newest = instances[0];
   const scored = instances.filter((instance) => instance.meanComposite != null);
   const latest = scored[0];
@@ -3318,9 +3341,9 @@ function ApiaryView({
 
       {sync.loading && !sync.data ? (
         <p className="pc-learning__empty">Loading the benchmark…</p>
-      ) : sync.error ? (
+      ) : fault.failed ? (
         <LearningVisualError
-          title="Benchmark unavailable"
+          title={fault.message ?? "Benchmark unavailable"}
           onRetry={() => sync.invalidate()}
         />
       ) : !latest && !pending ? (
@@ -4194,6 +4217,11 @@ function ThroughputView({
   const soakByHive = new Map(
     (soak.data?.[0]?.hives ?? []).map((report) => [report.potSlug, report]),
   );
+  // WI-6410: the throughput fault below folds in `soak.error` (the transport
+  // half) but reads provenance from the THROUGHPUT snapshot only, so a soak read
+  // that failed inside its own resolver was invisible. Checked separately
+  // because the two reads fail independently and this one must not blank the view.
+  const soakFault = snapshotFault(soak.error, soak.data?.[0], "Soak gate");
   // WI-6382/WI-6383: the resolver catches a read failure and returns a
   // SUCCESSFUL empty snapshot (never a 500), so `sync.error` alone left this
   // view's fault path unreachable — a broken or pre-migration install rendered
@@ -4280,7 +4308,22 @@ function ThroughputView({
                     {h.operatingWell ? "operating well" : "needs attention"}
                   </em>
                 </span>
-                {report ? (
+                {!report && soakFault.failed ? (
+                  // WI-6410: `learning.soakReport` is a SECOND degraded-capable
+                  // read in this view, and the fault check above only ever saw
+                  // the throughput one — so a failed soak read silently removed
+                  // the readiness chip, which reads as "no gate" rather than "we
+                  // could not check the gate". A missing safety verdict must not
+                  // look like an absent one.
+                  <span
+                    className="pc-learning__flowchip pc-learning__flowchip--wd-warn"
+                    title={soakFault.message ?? "Soak gate unavailable"}
+                  >
+                    <ShieldCheck size={11} aria-hidden />
+                    soak gate
+                    <strong>UNKNOWN</strong>
+                  </span>
+                ) : report ? (
                   <span
                     className={`pc-learning__flowchip ${report.ready ? "pc-learning__flowchip--wd-good" : "pc-learning__flowchip--wd-warn"}`}
                     title={
