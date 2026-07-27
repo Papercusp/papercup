@@ -447,4 +447,141 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
       resolveServeAdmission({ repoPath: REPO, channel: chanC, inFlight: inFlight.slice(1) }).admit,
     ).toBe(true);
   });
+
+  // ─── WI-6412: rule 0, progress-aware supersession ───────────────────────
+  //
+  // The livelock, from the live bg-host log (2026-07-27 12:02–12:04, pid
+  // 2949152): ONE peer re-requested the same repo every ~15s, and every
+  // re-request superseded our own in-flight `upload-pack`. Nine consecutive
+  // attempts streamed 145MB → 790MB of real pack data and each was discarded at
+  // ~15s, so a ~4.1GB repo could never converge — ~2.4GB served and thrown away
+  // in two minutes, at zero progress.
+  //
+  // The defect is in rule 1's PREMISE, not its implementation: "a second live
+  // request for the same repo on the same channel PROVES the first will never
+  // be read again" is false against a requester that re-drives on a timer, and
+  // the cost of believing it scales with the size of the transfer — it is
+  // maximally wrong exactly when the transfer matters most.
+  describe('rule 0 — an actively streaming serve is never discarded (WI-6412)', () => {
+    const NOW = 1_000_000;
+    const streamed = (msSinceLastWrite: number, bytesOut = 145_081_103): ServeProgress => ({
+      bytesOut,
+      lastWriteAt: NOW - msSinceLastWrite,
+    });
+
+    it('REFUSES the re-request instead of discarding a serve that is streaming right now', () => {
+      const live = serve(chanA, REPO, 1, streamed(200));
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [live],
+        now: NOW,
+      });
+      // The whole point: the in-flight transfer survives the re-request.
+      expect(got.supersede).toEqual([]);
+      // ...and the re-request is refused rather than admitted, because admitting
+      // it would run a SECOND pack-objects over the same multi-GB repo for a
+      // peer that already has a live stream it can just keep reading.
+      expect(got.admit).toBe(false);
+      expect(got.refuseReason).toBe('busy-streaming');
+    });
+
+    // Rule 1 still has to work: this is the case it was built for, and the fix
+    // must not cost it. A serve whose bytes stopped is genuinely abandoned.
+    it('still SUPERSEDES a serve whose last byte is older than the progress window', () => {
+      const stalled = serve(chanA, REPO, 1, streamed(DEFAULT_SERVE_PROGRESS_WINDOW_MS + 1));
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [stalled],
+        now: NOW,
+      });
+      expect(got.admit).toBe(true);
+      expect(got.supersede).toEqual([stalled]);
+    });
+
+    // Keyed on bytes ACTUALLY MOVED, not on a fresh timestamp: a serve that was
+    // admitted a moment ago but has produced nothing is the orphan rule 1
+    // exists to reap, and must not be protected just for being young.
+    it('still SUPERSEDES a serve that has never written a byte, however recent', () => {
+      const orphan = serve(chanA, REPO, 1, { bytesOut: 0, lastWriteAt: NOW });
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [orphan],
+        now: NOW,
+      });
+      expect(got.admit).toBe(true);
+      expect(got.supersede).toEqual([orphan]);
+    });
+
+    it('treats the window boundary itself as still streaming', () => {
+      const edge = serve(chanA, REPO, 1, streamed(DEFAULT_SERVE_PROGRESS_WINDOW_MS));
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [edge],
+        now: NOW,
+      });
+      expect(got.supersede).toEqual([]);
+    });
+
+    // Same input, two windows, opposite verdicts — so the window is provably
+    // consulted rather than incidentally satisfied.
+    it('honours an explicit progressWindowMs in both directions', () => {
+      const live = serve(chanA, REPO, 1, streamed(8_000));
+      const base = { repoPath: REPO, channel: chanA, inFlight: [live], now: NOW };
+      expect(resolveServeAdmission({ ...base, progressWindowMs: 10_000 }).supersede).toEqual([]);
+      expect(resolveServeAdmission({ ...base, progressWindowMs: 5_000 }).supersede).toEqual([live]);
+    });
+
+    // Rule 0 is scoped exactly like rule 1 — same channel AND same repo. A
+    // different peer's live transfer is rule 2's business, not rule 0's, and
+    // must not start refusing unrelated requests.
+    it("a DIFFERENT channel's streaming serve does not trigger rule 0", () => {
+      const other = serve(chanB, REPO, 1, streamed(10));
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [other],
+        now: NOW,
+      });
+      expect(got.admit).toBe(true);
+      expect(got.supersede).toEqual([]);
+    });
+
+    it("the same channel's streaming serve of a DIFFERENT repo does not block", () => {
+      const other = serve(chanA, OTHER, 1, streamed(10));
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [other],
+        now: NOW,
+      });
+      expect(got.admit).toBe(true);
+      expect(got.supersede).toEqual([]);
+    });
+
+    // The end-to-end regression, at the cadence actually observed: a peer
+    // re-requesting every 15s against a serve that keeps streaming must now
+    // discard NOTHING, where the old rule discarded all nine attempts.
+    it('breaks the observed livelock: 9 re-requests at ~15s discard nothing', () => {
+      let servedBytes = 0;
+      let discarded = 0;
+      for (let attempt = 0; attempt < 9; attempt += 1) {
+        const t = NOW + attempt * 15_000;
+        servedBytes += 145_000_000;
+        const got = resolveServeAdmission({
+          repoPath: REPO,
+          channel: chanA,
+          // Still streaming when the re-request lands — the last write is
+          // moments old, not 15s old.
+          inFlight: [serve(chanA, REPO, 1, { bytesOut: servedBytes, lastWriteAt: t - 100 })],
+          now: t,
+        });
+        discarded += got.supersede.length;
+      }
+      expect(discarded).toBe(0);
+    });
+  });
 });

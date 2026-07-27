@@ -25,7 +25,7 @@ import './boot-integrity-first';
 // were silently invisible to background routines). See boot-flag-store.ts.
 import './boot-flag-store';
 import cluster from 'node:cluster';
-import { serve, createAdaptorServer } from '@hono/node-server';
+import { createAdaptorServer } from '@hono/node-server';
 import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
 import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
 import { handler } from './host-handler';

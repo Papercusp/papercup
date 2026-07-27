@@ -24,7 +24,7 @@ import postgres from 'postgres';
 // function silently.
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
-import { checkMigrationDrift, resolveSqlDir } from './migration-drift';
+import { checkMigrationDrift, resolveSqlDir, sqlDirCandidates } from './migration-drift';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 

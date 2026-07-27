@@ -26,13 +26,40 @@ function isRunnerMigration(f: string): boolean {
   return true;
 }
 
+/**
+ * EI-18737837917400418: a packaged/headless deploy (no repo tree above cwd —
+ * e.g. a Tauri sidecar or a standalone rig install) has NO path satisfying any
+ * of the repo-relative candidates below, so it MUST be resolvable via the
+ * documented `PAPERCUSP_PG_SQL_DIR` env var alone. `apps/operator/bin/serve.ts`
+ * (`defaultSqlDir()` callers) already honour that env var; this resolver used
+ * to silently ignore it and try only repo-relative candidates — the boot-apply
+ * safety net (EI-13992) then skipped every boot on such a deploy, unnoticed,
+ * because the miss only logs a `console.warn`. Check the env var FIRST (it is
+ * the explicit, authoritative override set by every headless launcher and by
+ * `papercusp-desktop/src-tauri/src/main.rs`), then fall back to the
+ * repo-relative candidates for a normal in-tree dev/CI run.
+ */
 export function resolveSqlDir(baseDir: string = process.cwd()): string | null {
+  const envDir = process.env.PAPERCUSP_PG_SQL_DIR;
+  if (envDir && fs.existsSync(envDir)) return envDir;
   const candidates = [
     path.resolve(baseDir, 'libs/papercusp/libs/db/sql'),
     path.resolve(baseDir, '../../libs/papercusp/libs/db/sql'),
     path.resolve(baseDir, '../../../libs/papercusp/libs/db/sql'),
   ];
   return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
+
+/** The exact candidates {@link resolveSqlDir} tries, IN ORDER, for diagnostics —
+ *  e.g. logging what was tried when resolution fails (EI-18737837917400418). */
+export function sqlDirCandidates(baseDir: string = process.cwd()): string[] {
+  const envDir = process.env.PAPERCUSP_PG_SQL_DIR;
+  return [
+    ...(envDir ? [`PAPERCUSP_PG_SQL_DIR=${envDir}`] : ['PAPERCUSP_PG_SQL_DIR=<unset>']),
+    path.resolve(baseDir, 'libs/papercusp/libs/db/sql'),
+    path.resolve(baseDir, '../../libs/papercusp/libs/db/sql'),
+    path.resolve(baseDir, '../../../libs/papercusp/libs/db/sql'),
+  ];
 }
 
 /** Path segments from a tree's root down to its migration sql dir — used both

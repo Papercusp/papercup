@@ -21,6 +21,9 @@ import { detectBgJobCheckpointClaim } from "../../checkpoint-bg-job-claim";
 import { getPresence } from "../coordination/presence";
 import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
 import { planItemClaimCollision } from "../../scheduler/plan-item-claim-collision";
+import { resolveAgentIdentity } from "../coordination/identity";
+import { cellReaderFromCtx } from "../cell-reader-ctx";
+import { attachHolderContext } from "./_holder-lens";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -60,7 +63,7 @@ export default defineTool({
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     returns:
-      "{ ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.",
+      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.",
     notWhen:
       "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
     chaining:
@@ -99,6 +102,15 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);
+    // P-030: resolved ONCE for the whole bulk read. The reader is an argument to
+    // the holder lens, never a cache-key dimension — the per-id `cachedRead`
+    // below is deliberately non-principal-scoped, so reader-relative holder
+    // context must be attached to what the cache RETURNS, never to what it
+    // stores. (`cellReaderFromCtx` fails closed on an absent role, by design.)
+    const { reader } = cellReaderFromCtx(
+      resolveAgentIdentity(ctx),
+      ctx as Parameters<typeof cellReaderFromCtx>[1],
+    );
     const env = await runBulk(
       ids,
       async (id) => {
@@ -214,10 +226,19 @@ export default defineTool({
         // a careful reader actually used to catch the live repro (reading the checkpoint directly
         // via work_items:get, not just at claim time).
         const checkpointBgJobWarning = checkpoint ? detectBgJobCheckpointClaim(checkpoint).reason : undefined;
+        // P-030 / D-060: WHO holds this item and WHAT they are trying to do, on
+        // the ordinary read — not only when a claim is REFUSED. A lens onto the
+        // shared P-026 projection, gated by `getCell('agent.goal', reader)`;
+        // total, so a failure costs this field and never the read.
+        const [decorated] = await attachHolderContext(
+          [{ assignee: workItem.assignee ?? null, state: workItem.state ?? null }],
+          reader,
+        ).catch(() => [undefined]);
         return {
           ok: true as const,
           id,
           workItem,
+          ...(decorated?.holder ? { holder: decorated.holder } : {}),
           checkpoint,
           checkpointAgeMs,
           checkpointUpdatedAtMs,

@@ -337,7 +337,7 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
 export default defineTool({
   name: 'plans:add-decision',
   description:
-    "Append one OR many new decisions to a plan. Allocates the next D-NNN id inside a lock (concurrent calls produce non-colliding ids). Auto-bumps frontmatter updated:. Single: { slug, title, body }. Many: items:[{ slug, title, body, refs?, affects? }]. Returns { ok, results:[{ ok, slug, decisionId, propagated_to? | error }], counts } — each result embeds the NEW decisionId; correlate by id, not position; one failure never fails the rest.",
+    "Append one OR many new decisions to a plan. Allocates the next D-NNN id inside a lock (concurrent calls produce non-colliding ids). Auto-bumps frontmatter updated:. Single: { slug, title, body }. Many: items:[{ slug, title, body, refs?, affects? }]. `itemRefs` is accepted as an alias of `refs` (plans:get echoes a decision's refs back under that name; `refs` wins if both are given). Returns { ok, results:[{ ok, slug, decisionId, propagated_to? | error }], counts } — each result embeds the NEW decisionId; correlate by id, not position; one failure never fails the rest.",
   guidance: {
     when: "A decision-shaped output: trade-off resolved, scope ratified, choice made between options. Capture so a fresh agent doesn't relitigate. Add several at once via items:[…].",
     notWhen:

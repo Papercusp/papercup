@@ -4589,6 +4589,26 @@ export async function releaseWorkItem(
       void import('./work-items-events')
         .then((m) => m.emitClaimReleasedEvent(released, { announceClaimable: opts.announceClaimable }))
         .catch(() => {});
+      // EI-18734870651452334: a released claim with NO agent-written checkpoint
+      // is indistinguishable from never-started work — the fast SessionEnd
+      // force-release path (P-002) and the stale-claim reaper backstop (P-001)
+      // both route through THIS function, same as the voluntary release tool,
+      // so this one hook covers all three. Skipped for the internal
+      // claim-then-immediate-release round-trip (announceClaimable:false) —
+      // that path never exposes real held-work to lose. Fire-and-forget,
+      // bounded, fail-soft: never blocks or fails the release itself.
+      if (priorHolder && opts.announceClaimable !== false) {
+        void import('./turn-end-tracking-io')
+          .then((m) =>
+            m.checkpointOnRelease({
+              releasingOwnerId: priorHolder,
+              workspaceId: wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
+              harness: released.harness ?? null,
+              workItemId: released.id,
+            }),
+          )
+          .catch(() => {});
+      }
     }
   };
   if (wi.family === 'issue') {

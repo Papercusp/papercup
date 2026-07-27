@@ -140,6 +140,85 @@ export async function boundedAutoCheckpoint(
   return value;
 }
 
+/** How far back to look for a release-time tool-log tail — generous, since a
+ *  releasing holder's OWN session length is unknown (unlike the turn-end
+ *  sweep, which has the exact `sinceIso` of the last journal row). */
+const RELEASE_CHECKPOINT_LOOKBACK_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * EI-18734870651452334: mechanically checkpoint a work-item AT THE MOMENT its
+ * claim is released, whenever the releasing holder left NO agent-written
+ * checkpoint. Covers every release path that routes through
+ * `releaseWorkItem` — the voluntary `work_items:release` tool, the P-002
+ * SessionEnd fast-path force-release, and the P-001 stale-claim reaper
+ * backstop (`releaseAllWorkItemLeasesForOwner`) — because all three call the
+ * SAME function. Without this, a holder that compacts/dies/gets reaped mid-
+ * work with no checkpoint yet written releases a claim that is
+ * INDISTINGUISHABLE from never-started, actively inviting the next claimant
+ * to rebuild already-shipped work (the exact failure this item reports:
+ * `TimerClassification` + its CI wiring were fully built and never recorded
+ * anywhere before the claim lapsed).
+ *
+ * A no-op (fail-soft, bounded) when a real checkpoint already exists — this
+ * NEVER overwrites agent-authored prose, only fills the gap when there is
+ * none. Best-effort tool-log tail by `ownerId` (not `sessionId`: a release
+ * path only knows the pre-release holder's ownerId, not which of its
+ * sessions is ending) over a generous lookback window, since the exact
+ * turn-boundary `sinceIso` the turn-end sweep has isn't available here.
+ */
+export async function checkpointOnRelease(input: {
+  releasingOwnerId: string;
+  workspaceId: string;
+  harness: string | null;
+  workItemId: string;
+}): Promise<{ written: boolean }> {
+  const { value } = await withBoundedTimeout(checkpointOnReleaseImpl(input), {
+    fallback: { written: false },
+    timeoutMs: TURN_END_SWEEP_BUDGET_MS,
+    label: 'release-time-mechanical-checkpoint',
+  });
+  return value;
+}
+
+async function checkpointOnReleaseImpl(input: {
+  releasingOwnerId: string;
+  workspaceId: string;
+  harness: string | null;
+  workItemId: string;
+}): Promise<{ written: boolean }> {
+  try {
+    const [{ getWorkItemCheckpointWithMeta, setWorkItemCheckpoint }, { toolCallRowsFor }, { renderToolCallLog }] =
+      await Promise.all([
+        import('./work-item-checkpoint'),
+        import('./tool-call-log-store'),
+        import('./tool-call-log'),
+      ]);
+    const ref = { harness: input.harness, workItemId: input.workItemId, workspaceId: input.workspaceId };
+    const existing = await getWorkItemCheckpointWithMeta(ref);
+    if (existing.checkpoint && existing.checkpoint.trim()) return { written: false };
+
+    let toolLog = '';
+    try {
+      const sinceIso = new Date(Date.now() - RELEASE_CHECKPOINT_LOOKBACK_MS).toISOString();
+      const rows = await toolCallRowsFor({ ownerId: input.releasingOwnerId, sinceIso, limit: 400 });
+      toolLog = renderToolCallLog(rows, { maxLines: AUTO_CHECKPOINT_LOG_LINES });
+    } catch {
+      /* the block is still useful with the release note alone */
+    }
+    const block = composeMechanicalCheckpoint({
+      atIso: new Date().toISOString(),
+      journalNote:
+        `${input.releasingOwnerId}'s claim on this item was released with no agent-written checkpoint ` +
+        `— look for already-completed work before rebuilding (EI-18734870651452334).`,
+      toolLog,
+    });
+    await setWorkItemCheckpoint(ref, block);
+    return { written: true };
+  } catch {
+    return { written: false };
+  }
+}
+
 /**
  * The re-wake-guarantee sweep for one turn end: does this owner have a
  * guaranteed re-wake, or is an autonomous session about to silently halt? Reads

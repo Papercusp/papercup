@@ -43,10 +43,34 @@
  * "this is what they are doing about this item". Same rule the goal resolver
  * applies to its own work-item leg, applied to the display side.
  */
+import { z } from 'zod';
 import { resolveHolderContext, type HolderContext } from '../../coord/holder-context';
 import { holderContextSources } from '../coordination/holder-context-sources';
 import { isTerminalStateInput } from '../../work-item-dispatch-states';
 import type { CellReader } from '../../cell-registry';
+
+/**
+ * The WIRE schema for the shared projection — declared ONCE, here, and imported
+ * by every tool that returns a holder.
+ *
+ * ⚠ IT IS A SECOND PLACE THE SHAPE IS WRITTEN DOWN, AND THAT IS EXACTLY THE RISK.
+ * A tool's zod `result` STRIPS undeclared keys (`work_items:list` already carries
+ * a comment about a field silently blanked that way), so a schema that drifts
+ * behind `HolderContext` does not fail — it quietly deletes the new field from
+ * every response. D-093 adding `agreement`/`competing` is precisely such a
+ * moment. `_holder-lens.test.ts` therefore asserts this key set EQUALS the
+ * projection's, so the two cannot diverge; that assertion is what makes one
+ * schema module safer than a literal inlined at each tool.
+ */
+export const HOLDER_CONTEXT_SCHEMA = z.object({
+  goalRef: z.string().nullable(),
+  goalText: z.string().nullable(),
+  assumptions: z.object({ count: z.number(), keys: z.array(z.string()) }),
+  declaredAt: z.string().nullable(),
+  stale: z.boolean().nullable(),
+  agreement: z.string().nullable(),
+  competing: z.array(z.string()),
+});
 
 /**
  * Ceiling on DISTINCT holders resolved for one read.

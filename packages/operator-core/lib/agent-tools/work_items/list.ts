@@ -19,7 +19,7 @@ import {
 } from "../../completion-audit";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { cellReaderFromCtx } from "../cell-reader-ctx";
-import { attachHolderContext } from "./_holder-lens";
+import { attachHolderContext, HOLDER_CONTEXT_SCHEMA } from "./_holder-lens";
 
 /**
  * SWR backstop for work_items:list (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -77,6 +77,22 @@ const WORK_ITEM_ROW = z.object({
    *  FILTER's own value is visible on the rows it returns (the schema strips undeclared
    *  keys, so an omitted field would silently blank a column the caller just filtered on). */
   completionAuthority: z.string().nullable().optional(),
+  /**
+   * P-030 / D-060 — WHO holds this row and WHAT they are trying to do, on the
+   * ORDINARY read rather than only when a claim is refused. The shared P-026
+   * projection (`coord/holder-context.ts`), resolved through
+   * `getCell('agent.goal', reader)` so this surface adds a LENS and never a
+   * second derivation.
+   *
+   * Present only on rows with a LIVE (non-terminal) holder whose goal is
+   * disclosable to the caller. Its absence is deliberately ambiguous between
+   * "no goal declared" and "not readable by you" (D-056) — the row itself is
+   * NEVER dropped either way.
+   */
+  holder: HOLDER_CONTEXT_SCHEMA.optional(),
+  /** P-030 — the distinct-holder cap bit, so this row's holder was never looked
+   *  up. A fact about the READ, never about access (see the lens). */
+  holderOmitted: z.literal("cap").optional(),
 });
 
 // EI-1597: bound each list row's summary so a large backlog can't overflow the agent
@@ -112,9 +128,13 @@ export function boundSummaries<T extends { summary?: string | null }>(
  * appends a visible `(truncated)` notice row carrying the fetch-pointer.
  */
 const LIST_TIER_CAPS = {
-  trimmed: { rows: 40, title: 90, summary: 0 },
-  standard: { rows: 120, title: 160, summary: 140 },
+  trimmed: { rows: 40, title: 90, summary: 0, holder: false },
+  standard: { rows: 120, title: 160, summary: 140, holder: true },
 } as const;
+
+/** The slice of P-030's `HolderContext` the tier shapers project. Structural, so
+ *  the shaper stays free of the shared projection's import. */
+type HolderProjection = { goalRef: string | null; stale: boolean | null; competing: string[] };
 
 export function shapeWorkItemsList(
   data: unknown,
@@ -137,6 +157,14 @@ export function shapeWorkItemsList(
       planItem && typeof planItem === "object"
         ? `${String(planItem.plan_slug ?? "?")}#${String(planItem.item_id ?? "?")}`
         : null;
+    // P-030 in the trimmed tiers: the holder's goal is TWO SHORT SCALARS, not the
+    // whole projection. `goalRef` is a ref (~10 chars) and `stale` a boolean —
+    // together they are exactly what D-060's acceptance asks a reader to see
+    // ("each holder's goal + staleness") at a cost these tiers can carry, while
+    // `goalText`, the assumption keys and `competing` ride the full tier. Null on
+    // every row that has no disclosable holder, so the key set stays UNIFORM and
+    // TOON's tabular form still applies.
+    const holder = r.holder as HolderProjection | undefined;
     return {
       id: r.id ?? null,
       kind: r.kind ?? null,
@@ -148,6 +176,16 @@ export function shapeWorkItemsList(
       severity: r.severity ?? null,
       priority: r.priority ?? null,
       plan_ref: planRef,
+      ...(c.holder
+        ? {
+            holder_goal: holder?.goalRef ?? null,
+            holder_stale: holder?.stale ?? null,
+            // D-092/D-093 survive the trim as a COUNT: a reader must not be told
+            // "this is their goal" while the fact that they hold other claims is
+            // silently dropped by a payload tier. 0 when there are none.
+            holder_competing: holder ? holder.competing.length : null,
+          }
+        : {}),
     };
   };
   const rows = data.slice(0, c.rows).map(project);
@@ -163,6 +201,7 @@ export function shapeWorkItemsList(
       severity: null,
       priority: null,
       plan_ref: null,
+      ...(c.holder ? { holder_goal: null, holder_stale: null, holder_competing: null } : {}),
     });
   }
   return rows;
@@ -333,6 +372,14 @@ export default defineTool({
         return boundSummaries(rows);
       },
     );
-    return { data: items };
+    // P-030: the holder lens runs OUTSIDE the cache, and that placement is an
+    // access requirement rather than a style choice — the cache key above is
+    // deliberately non-principal-scoped, so resolving reader-relative holder
+    // context inside the factory would store one reader's answer and serve it to
+    // every other reader. Total + fail-soft: on any failure the rows are returned
+    // exactly as the cache produced them.
+    const { reader } = cellReaderFromCtx(resolveAgentIdentity(ctx), ctx as Parameters<typeof cellReaderFromCtx>[1]);
+    const withHolders = await attachHolderContext(items, reader).catch(() => items);
+    return { data: withHolders };
   },
 });

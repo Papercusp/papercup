@@ -83,6 +83,11 @@ export interface ListBootHistoryPgOpts {
   harnessSlug?: string;
   kinds?: readonly string[];
   limit?: number;
+  /** EI-18736339540215666: include vitest-fixture rows (origin='test') alongside real
+   *  ones. Default false — a federation-health read/aggregate must not silently count
+   *  test-fixture join/announce churn as real activity. Pass true only when you are
+   *  deliberately debugging the tests themselves. */
+  includeTestOrigin?: boolean;
 }
 
 /**
@@ -109,6 +114,7 @@ export async function listBootHistoryEventsPg(
     SELECT workspace_id, harness_slug, kind, message, ts
     FROM harness_shared.boot_history_events
     WHERE 1=1
+      ${opts.includeTestOrigin ? sql`` : sql`AND origin = 'real'`}
       ${opts.workspaceId ? sql`AND workspace_id = ${opts.workspaceId}` : sql``}
       ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
       ${opts.kinds && opts.kinds.length > 0 ? sql`AND kind = ANY(${[...opts.kinds]})` : sql``}

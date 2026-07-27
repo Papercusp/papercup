@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveRepoFile, readRepoFile } from '@papercusp/test-config';
@@ -12,6 +12,9 @@ import {
   type HolderGoalRecord,
 } from './holder-context';
 import { autoConvertClaimIntent } from '../plan-items/claim-holder';
+import { registerCell, __resetCellRegistryForTests, type CellSpec } from '../cell-registry';
+import { AGENT_GOAL_CELL } from '../cell-registrations';
+import { AGENT_GOAL_CELL_ID } from '../agent-goal-ref';
 
 /**
  * holder-context.test.ts — P-026's behaviour suite AND its D-047 row 7 PARITY
@@ -44,6 +47,19 @@ const goal = (over: Partial<HolderGoalRecord> = {}): HolderGoalRecord => ({
   ...over,
 });
 
+/**
+ * ⚠ THE GOAL LEG NOW PASSES `getCell(AGENT_GOAL_CELL_ID, reader)`, so this suite
+ * must REGISTER the cell or every goal assertion below would pass vacuously
+ * against a closed gate — the "green because it stopped looking" failure the
+ * non-vacuity assertions guard against at the other end of this file. Registering
+ * the REAL spec (not a fixture) also means a change to its `visibility` is felt
+ * here rather than only in production.
+ */
+beforeEach(() => {
+  __resetCellRegistryForTests();
+  registerCell(AGENT_GOAL_CELL);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The shape — D-055's five fields, no more
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,17 +69,72 @@ describe('the D-055 shape is fixed', () => {
    * ⚠ THIS IS THE POINT OF THE WHOLE MODULE. D-055 fixed one shape so that eight
    * injection points do not invent eight; a field added for one consumer's
    * convenience is exactly how that erodes, and it erodes silently because the
-   * extra field breaks nothing. If a successor genuinely needs a sixth field, the
-   * change is a plan Decision amending D-055 and then this list — not a quiet
+   * extra field breaks nothing. If a successor genuinely needs a further field,
+   * the change is a plan Decision amending D-055 and then this list — not a quiet
    * addition to the interface.
+   *
+   * AMENDED ONCE, by **D-093**: `agreement` + `competing`. Not a convenience
+   * field for one consumer — D-092 had already ruled that a losing leg is
+   * "DISCLOSED, never dropped", and this projection was computing both values and
+   * discarding them one line later, so that guarantee reached no reader at all.
+   * The amendment rule itself is unchanged.
    */
-  it('has exactly the five fields D-055 fixed', () => {
+  it('has exactly the seven fields D-055 fixed and D-093 amended', () => {
     const ctx = projectHolderContext(goal(), ['assumption:a'], NOW);
     expect(ctx).not.toBeNull();
     expect(Object.keys(ctx as HolderContext).sort()).toEqual(
-      ['assumptions', 'declaredAt', 'goalRef', 'goalText', 'stale'].sort(),
+      ['agreement', 'assumptions', 'competing', 'declaredAt', 'goalRef', 'goalText', 'stale'].sort(),
     );
     expect(Object.keys((ctx as HolderContext).assumptions).sort()).toEqual(['count', 'keys']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D-093 — the disclosure pair actually reaches the reader
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('D-093 — competing claims are disclosed, never dropped', () => {
+  it('carries the producer\'s agreement verdict and competing refs through', () => {
+    const ctx = projectHolderContext(
+      goal({ agreement: 'divergent', competing: ['WI-6410', 'WI-6402'] }),
+      [],
+      NOW,
+    );
+    expect(ctx?.agreement).toBe('divergent');
+    // Sorted + de-duped, so the value is stable between two readers of the same state.
+    expect(ctx?.competing).toEqual(['WI-6402', 'WI-6410']);
+  });
+
+  it('de-dupes and drops blanks without failing', () => {
+    const ctx = projectHolderContext(
+      goal({ agreement: 'divergent', competing: ['WI-1', ' WI-1 ', '', null as unknown as string] }),
+      [],
+      NOW,
+    );
+    expect(ctx?.competing).toEqual(['WI-1']);
+  });
+
+  it('defaults to (null, []) for a producer that cannot answer', () => {
+    const ctx = projectHolderContext(goal(), [], NOW);
+    expect(ctx?.agreement).toBeNull();
+    expect(ctx?.competing).toEqual([]);
+  });
+
+  /**
+   * ⚠ THE PAIR IS BOUND TO A RESOLVED GOAL. With no `goalRef` there is nothing for
+   * a competing ref to compete WITH, and reporting `divergent` beside an absent
+   * goal would be a verdict about a value the reader cannot see — an unreadable
+   * signal that looks like information.
+   */
+  it('collapses when there is no resolvable goal, even if the producer sent some', () => {
+    const ctx = projectHolderContext(
+      { itemId: '184073', agreement: 'divergent', competing: ['WI-6410'] },
+      ['assumption:a'],
+      NOW,
+    );
+    expect(ctx?.goalRef).toBeNull();
+    expect(ctx?.agreement).toBeNull();
+    expect(ctx?.competing).toEqual([]);
   });
 });
 
@@ -408,6 +479,13 @@ const CONSTRUCTS_SHAPE = (raw: string): boolean => {
 const SHAPE_ALLOWLIST: Record<string, string> = {
   'packages/operator-core/lib/coord/holder-context.ts':
     'defines the projection — the one derivation every consumer reads',
+  'packages/operator-core/lib/agent-tools/work_items/_holder-lens.ts':
+    'P-030: declares the ONE wire schema (HOLDER_CONTEXT_SCHEMA) every holder-bearing tool ' +
+    'imports, and constructs no context — it calls resolveHolderContext. The schema is a ' +
+    'genuine second statement of the shape, so _holder-lens.test.ts asserts its key set ' +
+    'EQUALS the projection\'s: drift deletes fields from the wire silently (zod strips ' +
+    'undeclared keys), and that assertion is the reason one schema module beats a literal ' +
+    'inlined at each tool',
 };
 
 describe('LEG A — only the resolver constructs a HolderContext', () => {

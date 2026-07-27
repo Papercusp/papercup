@@ -873,21 +873,59 @@ export interface ServeAdmission {
  *  multi-GB repo is the regime that was observed to self-amplify. */
 export const DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO = 2;
 
+/** WI-6412: how recently a serve must have written for rule 0 to call it "still
+ *  streaming". Sized against the two clocks that actually matter: a healthy
+ *  transfer at the observed ~23MB/s writes essentially continuously, so 5s is
+ *  far longer than any drain pause a live peer produces; and it is well under
+ *  the ~15s re-request period, so a genuinely abandoned serve is still reaped by
+ *  rule 1 on the very next re-request. Erring long is the safe direction — a
+ *  too-long window briefly refuses a real request (which retries), a too-short
+ *  one restores the livelock. */
+export const DEFAULT_SERVE_PROGRESS_WINDOW_MS = 5_000;
+
 /**
  * Decide whether to admit an inbound serve — the whole concurrency rule, as a
  * pure function so it is directly assertable (the surrounding path needs a live
  * Protomux, a spawned `upload-pack`, and a real repo on disk).
  *
- * TWO rules, in order:
+ * THREE rules, in order:
+ *
+ *  0. PROTECT-IN-PROGRESS (WI-6412). If any in-flight serve of R on C is still
+ *     actively streaming — it has written real bytes within `progressWindowMs`
+ *     — refuse the new request `busy-streaming` and supersede NOTHING.
+ *
+ *     This exists because rule 1's premise below is FALSE against a requester
+ *     that re-drives on a timer, and was observed live: one peer re-requested
+ *     the same repo every ~15s, superseding our own `upload-pack` nine
+ *     consecutive times after it had streamed 145MB → 790MB. ~2.4GB of real
+ *     pack data was served and discarded in two minutes at zero progress, and a
+ *     ~4.1GB repo could not converge at any link speed, because no attempt was
+ *     ever allowed to outlive the re-request period. Note the shape of the
+ *     defect: supersession had no notion of PROGRESS, so it discarded a serve
+ *     that had streamed 790MB exactly as readily as one that had streamed
+ *     nothing — making it maximally destructive precisely when the transfer is
+ *     large, which is the case that matters.
+ *
+ *     Refusing (rather than admitting alongside) is deliberate: the peer already
+ *     has a live stream it can simply keep reading, so admitting would run a
+ *     SECOND `pack-objects` over the same multi-GB repo — the very cost rule 2
+ *     exists to bound.
  *
  *  1. SUPERSEDE. A new request for repo R on channel C means every in-flight
- *     serve of R on C is abandoned. This is sound, not a heuristic: a pot-git
- *     requester drives at most one fetch of a given repo per channel at a time
- *     (the shallow-deepen ladder's rungs are strictly sequential — see
- *     fetch-transport's ladder), so a second live request for the same repo on
- *     the same channel PROVES the first will never be read again. Superseding
- *     is what converts "the peer gave up 3 minutes ago" from something we can
- *     only learn by timing out into something we learn immediately.
+ *     serve of R on C is abandoned — now only reached once rule 0 has
+ *     established that none of them is still moving bytes. The original
+ *     reasoning was: a pot-git requester drives at most one fetch of a given
+ *     repo per channel at a time (the shallow-deepen ladder's rungs are
+ *     strictly sequential — see fetch-transport's ladder), so a second live
+ *     request for the same repo on the same channel proves the first will never
+ *     be read again. Treat that as a heuristic, NOT a proof: it holds for the
+ *     ladder, but nothing stops another leg (e.g. ref-announce re-driving on
+ *     its own ~15s ceiling) from issuing a second request for a repo whose bulk
+ *     transfer is still in flight. Rule 0 is what makes being wrong here cheap.
+ *     Superseding still converts "the peer gave up 3 minutes ago" from
+ *     something we can only learn by timing out into something we learn
+ *     immediately — that case is unaffected, because an abandoned serve is
+ *     exactly one whose bytes have stopped.
  *
  *  2. CAP. After discounting the superseded, if `cap` serves of this repo path
  *     are still in flight, refuse `busy` — FAST. A fast refusal is strictly
@@ -905,10 +943,29 @@ export function resolveServeAdmission(args: {
   /** Every serve in flight in this process, including ones for other repos. */
   inFlight: readonly InFlightServe[];
   cap?: number;
+  now?: number;
+  progressWindowMs?: number;
 }): ServeAdmission {
   const cap = args.cap ?? DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO;
+  const now = args.now ?? Date.now();
+  const windowMs = args.progressWindowMs ?? DEFAULT_SERVE_PROGRESS_WINDOW_MS;
   const sameRepo = args.inFlight.filter((s) => s.repoPath === args.repoPath);
-  const supersede = sameRepo.filter((s) => s.channel === args.channel);
+  const sameChannel = sameRepo.filter((s) => s.channel === args.channel);
+  // Rule 0. Keyed on bytes ACTUALLY MOVED, not merely on a fresh timestamp: a
+  // serve admitted moments ago that has produced nothing is the abandoned
+  // orphan rule 1 exists to reap, and must not be protected just for being
+  // young. (Known residual: a serve still enumerating objects has written no
+  // bytes yet, so it remains supersedable. That is unchanged behaviour and not
+  // the observed livelock — the logged attempts each reached 145MB+ well inside
+  // one re-request period — but it is the next thing to look at if a repo large
+  // enough to spend >15s before its first byte ever exhibits this.)
+  const streaming = sameChannel.filter(
+    (s) => s.progress.bytesOut > 0 && now - s.progress.lastWriteAt <= windowMs,
+  );
+  if (streaming.length > 0) {
+    return { admit: false, refuseReason: 'busy-streaming', supersede: [] };
+  }
+  const supersede = sameChannel;
   const remaining = sameRepo.length - supersede.length;
   if (remaining >= cap) {
     return { admit: false, refuseReason: 'busy', supersede };
@@ -1086,6 +1143,12 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
         'warn',
         `[pot-git] serve SUPERSEDED repo=${superseded.repoKey} peer=${peerTag(state)}` +
           ` id=${superseded.sessionId} after ${Date.now() - superseded.startedAt}ms` +
+          // WI-6412: discarded bytes as a first-class field. ~2.4GB was thrown
+          // away in two minutes and nothing surfaced it — it read as ordinary
+          // "serve FAILED" noise, which is why the livelock went unnoticed
+          // under an unrelated investigation. A nonzero value here is now the
+          // signal that supersession is destroying real work.
+          ` discardedBytes=${superseded.progress.bytesOut}` +
           ` (same channel re-requested the same repo as id=${v.id}; the earlier fetch is abandoned)`,
       );
       standDownServe(superseded, `superseded by a newer request (id=${v.id}) for the same repo`);
