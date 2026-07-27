@@ -34,8 +34,14 @@
  * WHAT THIS DELIBERATELY DOES NOT DO. It does not try to REPAIR a pot whose
  * devices have already diverged (the rig/tower pair today) — it freezes what
  * this device currently uses, which is the safe, local, unambiguous action.
- * Retroactively agreeing on a shared key requires the pot's ANNOUNCED identity
- * (`member_repos`, hive-announce.ts) and is tracked separately. A tempting
+ * Retroactively agreeing on a shared key is A3's job: the owner publishes the
+ * key its store is really named (`repo_key` on the member join link) and every
+ * other device ADOPTS it (`adoptRepoKey`). Which is exactly why every pin
+ * written here is stamped `pot_repo_key_source: 'local'` — it marks the pin as
+ * this device's own GUESS, so an announced key is allowed to override it later.
+ * Without that stamp this pass would be actively HARMFUL: it would cement every
+ * already-diverged install on its wrong key the first time it ran, and A3 could
+ * never repair anything. A tempting
  * alternative — "pin to whichever bare store already exists on disk" — sounds
  * more accurate but is ambiguous exactly where it matters: a device mid-drift
  * holds BOTH stores (the tower has `papercusp.git` AND `gh-1223568103.git`) and
@@ -94,6 +100,9 @@ export async function pinRepoKeysForWorkspace(
       // ability for a later coord change to move it.
       const repoKey = pinRepoKey(entry);
       entry.pot_repo_key = repoKey;
+      // 'local' = this device's own derivation, NOT the owner's announced key.
+      // A3's `adoptRepoKey` relies on this to know it may override the pin.
+      entry.pot_repo_key_source = 'local';
       pinned.push({ slug: entry.slug, repoKey });
     }
 

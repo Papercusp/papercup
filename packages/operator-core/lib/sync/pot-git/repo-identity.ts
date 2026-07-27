@@ -38,6 +38,23 @@
 
 import { parseGithubUrl } from '../../harness/clone-github';
 
+/**
+ * Where a pin CAME FROM — the difference between a guess and the truth.
+ *
+ * `'local'`  — this device DERIVED the key from its own registry entry. It is
+ *              only a guess at the federated identity: correct when the entry
+ *              carries the pot's upstream coords, merely conventional when it
+ *              does not (the bare-slug rung).
+ * `'peer'`   — this device ADOPTED the key the pot's OWNER announced (the join
+ *              link's `repo_key`). This is the authoritative value: it is what
+ *              the store on the owner's disk and the repo on the wire are
+ *              actually named.
+ *
+ * The distinction exists because a LOCAL pin must never be allowed to freeze a
+ * WRONG key in place. See {@link adoptRepoKey}.
+ */
+export type RepoKeySource = 'local' | 'peer';
+
 /** The minimal shape this needs from a harness-registry `ProjectEntry`. */
 export interface RepoIdentityEntry {
   slug: string;
@@ -46,6 +63,9 @@ export interface RepoIdentityEntry {
   /** The PINNED federated repoKey — see {@link canonicalRepoKey}. When set it
    *  wins over every derivation below, permanently. */
   pot_repo_key?: string;
+  /** Provenance of `pot_repo_key` — see {@link RepoKeySource}. Absent ⇒ treat
+   *  as `'local'` (every pin minted before adoption existed was a derivation). */
+  pot_repo_key_source?: RepoKeySource;
 }
 
 /** A repoKey is used verbatim as a filesystem path component AND as a git ref
@@ -55,9 +75,10 @@ export interface RepoIdentityEntry {
  *  module stays pure (no fs). A malformed pin is IGNORED, not thrown — this
  *  runs inside a git-sync tick, which must never die on bad stored state. */
 const SAFE_REPO_KEY = /^[A-Za-z0-9._-]{1,200}$/;
-function validPin(v: unknown): v is string {
+export function isValidRepoKey(v: unknown): v is string {
   return typeof v === 'string' && SAFE_REPO_KEY.test(v) && v !== '.' && v !== '..';
 }
+const validPin = isValidRepoKey;
 
 /** Sanitize an owner/repo pair into a single safe path/ref component. GitHub
  *  owner/repo charset is `[A-Za-z0-9-]` (plus `.`/`_` in repo names), so this
@@ -128,4 +149,64 @@ export function canonicalRepoKey(entry: RepoIdentityEntry): string {
  */
 export function pinRepoKey(entry: RepoIdentityEntry): string {
   return validPin(entry.pot_repo_key) ? entry.pot_repo_key : deriveRepoKey(entry);
+}
+
+/** What {@link adoptRepoKey} decided, so a caller can persist the provenance
+ *  alongside the key (and log a re-key, which strands the old store). */
+export interface AdoptedRepoKey {
+  key: string;
+  source: RepoKeySource;
+  /** True when this REPLACES a different key already pinned on the entry — the
+   *  store at the old key is abandoned and the repo re-bootstraps from the peer. */
+  rekeyedFrom?: string;
+}
+
+/**
+ * ADOPT the pot owner's announced repoKey (A3 — federating the pin,
+ * EI-18788176839043286). This is the rule that makes two devices actually AGREE
+ * rather than agree by luck.
+ *
+ * Pinning alone (`pinRepoKey`) only froze each device's OWN derivation, which
+ * makes a key stable but not shared: a pot created local-first pins the bare
+ * `slug` on its creator, while a device joining after that pot is published to
+ * GitHub derives — and pins — `gh-<id>`. Both sides are now permanently stable
+ * and permanently DIFFERENT, which is the same silent total federation failure
+ * as before, just frozen. The only way out is for one side to stop deriving:
+ * the OWNER mints the key, every other device adopts it verbatim.
+ *
+ * Hence the precedence, which is deliberately NOT "first pin wins":
+ *   1. An `announced` key from the owner ALWAYS wins — including over a key this
+ *      device already pinned LOCALLY. A local pin is a guess; letting a guess
+ *      outrank the owner's actual store name is exactly how a diverged pair gets
+ *      cemented, and it would make the boot backfill (`pinRepoKeysForWorkspace`)
+ *      actively harmful — it would freeze every already-diverged install the
+ *      instant it ran.
+ *   2. An existing `'peer'` pin is kept when nothing is announced, so losing the
+ *      announce (offline, an older owner build) never regresses a device back to
+ *      its own derivation.
+ *   3. Otherwise fall back to `pinRepoKey` — an existing local pin, else today's
+ *      derivation.
+ *
+ * Re-keying is not free: the bare store at the OLD key is left behind and the
+ * repo cold-joins the peer under the new one. That is the CORRECT outcome (the
+ * old store was, by construction, one nobody else was talking to) but the caller
+ * should log `rekeyedFrom` — it is the single highest-signal line for anyone
+ * debugging why a store suddenly changed path.
+ */
+export function adoptRepoKey(
+  entry: RepoIdentityEntry,
+  announcedKey: unknown,
+): AdoptedRepoKey {
+  const current = validPin(entry.pot_repo_key) ? entry.pot_repo_key : undefined;
+  if (isValidRepoKey(announcedKey)) {
+    return {
+      key: announcedKey,
+      source: 'peer',
+      ...(current && current !== announcedKey ? { rekeyedFrom: current } : {}),
+    };
+  }
+  if (current && entry.pot_repo_key_source === 'peer') {
+    return { key: current, source: 'peer' };
+  }
+  return { key: pinRepoKey(entry), source: 'local' };
 }

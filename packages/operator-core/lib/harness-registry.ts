@@ -97,6 +97,16 @@ export interface ProjectEntry {
    * reporting success). Absent ⇒ predates pinning; backfilled on boot.
    */
   pot_repo_key?: string;
+  /**
+   * Provenance of `pot_repo_key` (A3, EI-18788176839043286) — `'peer'` when this
+   * device ADOPTED the key the pot owner announced on the member join link,
+   * `'local'` when it merely derived the key itself. Absent ⇒ `'local'`.
+   *
+   * This is what lets an announced key correct a wrong pin: a locally-derived
+   * pin is a GUESS at the federated identity, and pinning alone would otherwise
+   * cement an already-diverged install forever. See `adoptRepoKey`.
+   */
+  pot_repo_key_source?: 'local' | 'peer';
   /** Upstream default branch (API-authoritative when available, else the fresh
    *  clone's HEAD). Fork-PRs target this instead of assuming 'main'. */
   github_default_branch?: string;

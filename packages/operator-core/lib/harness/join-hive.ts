@@ -47,7 +47,7 @@ import {
   type SeedGitSyncRoutineOutcome,
 } from './git-sync/git-sync-routine';
 import { upsertRemoteHiveIdentity } from '../hive-store';
-import { pinRepoKey } from '../sync/pot-git/repo-identity';
+import { adoptRepoKey } from '../sync/pot-git/repo-identity';
 import { hiveKeychainId } from '../identity/hive-keypair';
 
 // ── Shapes ─────────────────────────────────────────────────────────────────────
@@ -353,13 +353,28 @@ export async function joinHiveAsView(
           ? {}
           : { github_repository_id: link.repoId }),
       };
-      // EI-18788176839043286: freeze the pot-git repoKey now that this member's
-      // upstream coords are settled. The key names both the bare store on disk and
-      // the repo on the wire, so it must never drift afterwards — an unpinned entry
-      // silently re-keys itself the next time these coords change, abandoning its
-      // store and orphaning every peer. `pinRepoKey` is idempotent: an already-pinned
-      // entry keeps its existing key rather than adopting a newly-derived one.
-      next.pot_repo_key = pinRepoKey(next);
+      // EI-18788176839043286: settle the pot-git repoKey now that this member's
+      // upstream coords are known. The key names both the bare store on disk and
+      // the repo on the wire, so it must never drift afterwards.
+      //
+      // A3 — ADOPT, don't derive. `link.repoKey` is the key the OWNER's store is
+      // actually named; taking it verbatim is the only thing that makes the two
+      // devices agree rather than agree by luck. Deriving locally is right only
+      // when this device happens to hold the same upstream coords the owner did —
+      // precisely the assumption that fails for a pot created local-first and
+      // published to GitHub later, where the creator sits on the bare slug and
+      // every joiner derives `gh-<id>`. Falls back to `adoptRepoKey`'s local rungs
+      // when the owner's build predates A3 (no `repo_key` on the link).
+      const adopted = adoptRepoKey(next, link.repoKey);
+      next.pot_repo_key = adopted.key;
+      next.pot_repo_key_source = adopted.source;
+      if (adopted.rekeyedFrom) {
+        console.log(
+          `[join-hive] ${next.slug}: adopted the pot owner's repoKey ${adopted.key} ` +
+            `(was ${adopted.rekeyedFrom}) — the store at the old key is abandoned and ` +
+            `this repo will cold-join the peer under the new one`,
+        );
+      }
       memberEntries.set(next.slug, next);
       return next;
     });

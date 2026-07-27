@@ -67,6 +67,10 @@ export async function enrichLocalHiveDescriptor(
     if (pk) {
       const { parseGithubUrl } = await import('./harness/clone-github');
       const { formatHarnessLink } = await import('./harness/url-scheme');
+      // A3 (EI-18788176839043286): publish the repoKey each member's store is
+      // ACTUALLY named on this device, so a joiner adopts it instead of deriving
+      // its own and silently landing on a different one.
+      const { canonicalRepoKey } = await import('./sync/pot-git/repo-identity');
       const { deriveHiveFederationTopic, topicAsHex } = await import(
         './sync/hyperbee/derive-swarm-topic'
       );
@@ -85,6 +89,7 @@ export async function enrichLocalHiveDescriptor(
             repoOwner: parsed.owner,
             repoName: parsed.repo,
             repoId: m.github_repository_id,
+            repoKey: canonicalRepoKey(m),
           }),
         );
       }

@@ -57,6 +57,16 @@ export interface HarnessLink {
   ownerGithubUserId?: number;
   /** D-007 owner device-attestation gist id (channel-2 anchor). */
   attestationGistId?: string;
+  /**
+   * A3 (EI-18788176839043286): the pot-git repoKey the OWNER's store for this
+   * member is actually named — the federated identity a joiner ADOPTS instead
+   * of deriving its own (`adoptRepoKey`, pot-git/repo-identity.ts).
+   *
+   * Independent of the D-007 owner-binding block above: it rides alone, and a
+   * malformed value is dropped rather than rejecting the link (the joiner just
+   * falls back to deriving, i.e. today's behaviour).
+   */
+  repoKey?: string;
 }
 
 /** Exact set of accepted query-param keys. Any extra key → null. */
@@ -69,7 +79,15 @@ const ALLOWED_PARAMS = new Set([
   'owner_device_pubkey',
   'owner_github_user_id',
   'attestation_gist_id',
+  // A3: the owner's minted pot-git repoKey (optional, stands alone).
+  'repo_key',
 ]);
+
+/** Same charset `pot-git/storage.ts`'s `assertSafeComponent` enforces — a
+ *  repoKey is used verbatim as a path AND git-ref component. Duplicated here
+ *  (rather than imported) to keep this module dependency-free; `repo-identity`'s
+ *  `isValidRepoKey` is the authority and the two are asserted equal in tests. */
+const REPO_KEY_RE = /^[A-Za-z0-9._-]{1,200}$/;
 
 /** 64-char lowercase hex. */
 const TOPIC_RE = /^[0-9a-f]{64}$/;
@@ -162,6 +180,14 @@ export function parseHarnessLink(url: string): HarnessLink | null {
     }
   }
 
+  // A3: the owner's minted repoKey. Stands alone (NOT part of the D-007
+  // all-or-nothing block) and is dropped when malformed — a joiner that cannot
+  // read it simply derives its own key, which is the pre-A3 behaviour.
+  const repoKey = parsed.searchParams.get('repo_key');
+  if (repoKey && REPO_KEY_RE.test(repoKey) && repoKey !== '.' && repoKey !== '..') {
+    link.repoKey = repoKey;
+  }
+
   return link;
 }
 
@@ -186,6 +212,10 @@ export function formatHarnessLink(link: HarnessLink): string {
     p.set('owner_device_pubkey', link.ownerDevicePubkey);
     p.set('owner_github_user_id', String(link.ownerGithubUserId));
     p.set('attestation_gist_id', link.attestationGistId);
+  }
+  // A3: emit the minted repoKey when the caller supplies a well-formed one.
+  if (link.repoKey && REPO_KEY_RE.test(link.repoKey) && link.repoKey !== '.' && link.repoKey !== '..') {
+    p.set('repo_key', link.repoKey);
   }
   return 'papercusp://harness?' + p.toString();
 }
