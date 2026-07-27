@@ -458,13 +458,28 @@ export const curlHealthProbe: SubstitutionPair = {
  * and a verdict that only holds while a second defect masks it is not a
  * verdict. Do not delete it as dead code.
  *
- * Per D-008 the fix for that residue is to NARROW THE PATTERN (splitting the
- * listen-query subset out, as the file-read family did with four patterns) or
- * to WIDEN THE TOOL with a state filter — NOT to lower the bar. Both are real
- * options; neither is done here, because narrowing the pattern requires
- * re-sampling the corpus against the new pattern and this change is already
- * carrying a new verb. `needs-widening` with the failures NAMED is the honest
- * intermediate state, and it is what keeps the pair at tier `observe`.
+ * ── NARROWED 2026-07-27 (P-014, WI-6244) ────────────────────────────────────
+ * The intermediate state above is now cashed in. The residue it named was
+ * re-measured against the whole 7d corpus rather than the 24-atom sample, and
+ * it is still exactly ONE axis and nothing else: of 149 claimed atoms, the 49
+ * misses are 37 ss/netstat without `-l` (all-states), 11 lsof without
+ * `-sTCP:LISTEN`, and 1 UDP. Every one of them asks about ESTABLISHED
+ * connections or UDP — a DIFFERENT QUESTION from "what is listening", which is
+ * this pair's whole `intentLabel`. So the pattern was over-claiming, and the
+ * fix is the narrowing D-008 prescribes, not a widening: requiring listen-ness
+ * takes the pair from 100/149 to **100/100 = `equivalent`** (21 distinct
+ * shapes, 29 sessions) without the tool changing at all.
+ *
+ * This is the P-023 lesson applied a second time: a shape the tool DELIBERATELY
+ * declines is not a shape it is MISSING, and failing it in `cover()` scores a
+ * family `needs-widening` for working as designed. The `cover()` state checks
+ * below are KEPT anyway, as an anti-rot backstop — if the pattern is ever
+ * loosened, they fail loudly instead of the pair silently claiming a question
+ * the tool answers with a wrong subset.
+ *
+ * What the narrowing DROPS is recorded, not discarded — see
+ * `SOCKET_STATE_FINDING`: the established-connection question has no tool form
+ * at all, and it is a third of this family.
  *
  * `^ss(?:\s+-|\s*$)` rather than `^ss\b`: the corpus contains JavaScript
  * heredocs with `ss._blocked=true` and `ss=makeStore()`, which `\b` happily
@@ -477,7 +492,15 @@ export const curlHealthProbe: SubstitutionPair = {
 export const listeningPorts: SubstitutionPair = {
   id: 'service.listening-ports',
   intentLabel: 'listening-socket-query',
-  bashPattern: /^(?:ss|netstat)(?:\s+-|\s*$)|^lsof\b[^\n]*\s-{1,2}i/,
+  // P-014: LISTEN-ness is part of the CLAIM, not something cover() rejects
+  // after the fact. `ss`/`netstat` signal it with an `l` in a flag cluster that
+  // also carries `t` (TCP) and not `u` (UDP); `lsof` signals it with
+  // `-sTCP:LISTEN`. Requiring a FLAG token before the cluster also keeps the
+  // old `^ss(?:\s+-…)` guard against the corpus's JavaScript `ss = makeStore()`
+  // heredocs — a pattern that claims a language's variable names claims no
+  // intent at all.
+  bashPattern:
+    /^(?:ss|netstat)\s+(?:-\S+\s+)*-(?=[a-zA-Z]*l)(?=[a-zA-Z]*t)(?![a-zA-Z]*u)[a-zA-Z]+\b|^lsof\b[^\n]*-sTCP:LISTEN\b/,
   toolName: 'dev:listening_ports',
   advisoryText:
     'dev:listening_ports { port } answers "what is bound here and which process owns it" — the structured ss/lsof/netstat answer, including a same-uid pid + command. Read ownerVisible before pid: a socket owned by ANOTHER user reports ownerVisible:false, which means bound-but-unreadable, not free. It reports TCP LISTEN only, so keep using bash for established connections and for a single call spanning several ports.',
@@ -487,7 +510,7 @@ export const listeningPorts: SubstitutionPair = {
     insteadOf:
       '`ss -ltnp` / `lsof -nP -iTCP:<port> -sTCP:LISTEN` / `netstat -tlnp`. ⚠ LISTEN sockets only — an established-connection query (`ss -tn`, `netstat -an`) or one lsof call spanning several ports still needs bash',
   },
-  expectedVerdict: 'needs-widening',
+  expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     // ── 1. Is this even a LISTEN query? ──────────────────────────────────────
     // The tool returns TCP sockets in LISTEN state and nothing else, so an

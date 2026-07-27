@@ -31,6 +31,14 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
+import {
+  callerEditsInCandidate,
+  excludedCommitsTouchingPath,
+  gitReadFromExecSync,
+  uncommittedPaths,
+  type MissingReason,
+  type PathContainment,
+} from './candidate-contains';
 
 /**
  * WI-4494: the harness whose gate a MANUAL checkpoint run judges — stamped into the detached unit's
@@ -585,6 +593,136 @@ export interface LaunchCheckpointOpts {
    *  harness's gate_health + pipeline history instead of discarding it. Omitted ⇒ the operator-home
    *  gate (this launcher's scope). Pass `null` to explicitly launch a NON-recording run. */
   target?: GateVerdictTarget | null;
+}
+
+/**
+ * P-004 (EI-18752644493166307) — "does the candidate this run judges contain MY edits?"
+ *
+ * The reply already names the candidate. Naming a sha answers a question the caller
+ * cannot check: an agent knows exactly which FILES it edited and nothing about which
+ * commit carries them. So the answer is computed here, in path-space, and returned
+ * with the launch — the moment of the mistake, which is the only place it helps.
+ * (Prose could not: the filer of EI-18752644493166307 had restated the correct rule
+ * to the owner an hour before making both mistakes.)
+ *
+ * Deliberately a SEPARATE async function rather than folded into
+ * `launchDetachedCheckpoint`: that function's steps from the active-run check to
+ * `spawnFn` must stay in ONE tick (see the `cancelStaleAwaits` comment — a caller that
+ * spawns and immediately drives the child's events would otherwise race a listener
+ * that is not attached yet). An `await` in there would break every test in that file
+ * and, worse, intermittently in production. So the tool calls this AFTER the launch
+ * resolves.
+ */
+export interface CheckpointContainment {
+  /** The commit whose containment these verdicts describe. */
+  candidateSha: string | null;
+  /** The integration tip at the time of the check (null when unresolvable). */
+  tipSha: string | null;
+  /** Where the checked path-set came from — caller-declared beats inferred. */
+  source: 'caller-supplied' | 'uncommitted-working-tree';
+  /** Paths the candidate carries byte-identically to the working tree. */
+  included: string[];
+  /** Paths it does NOT carry. A red on any of these is NOT evidence your fix failed. */
+  missing: string[];
+  /** Paths whose containment could not be determined — never counted as included. */
+  unknown: string[];
+  /** Per-path verdict + the lever for each miss. */
+  paths: PathContainment[];
+  /**
+   * The RESOLUTION of the old "if your fix is among them": for each checked path, the
+   * excluded commits (candidate..tip) that actually touch it. Empty when the quiet-cut
+   * excluded nothing, or excluded nothing of yours.
+   */
+  excludedCommitsTouchingYourFiles: { path: string; commits: string[] }[];
+  /** One hard-warning line when `missing` is non-empty; null when everything is in. */
+  warning: string | null;
+}
+
+export async function checkpointCandidateContainment(args: {
+  root?: string;
+  candidateSha: string | null;
+  tipSha?: string | null;
+  /** The files the caller's change touches. Omitted ⇒ inferred from the working tree. */
+  paths?: string[];
+  execFn?: ExecSyncLike;
+}): Promise<CheckpointContainment> {
+  const root = args.root ?? integrationRoot();
+  const execFn = args.execFn ?? defaultExecSync;
+  const git = gitReadFromExecSync(execFn, root);
+
+  // A caller that names its files gets an EXACT answer. One that doesn't gets the
+  // objectively-hazardous set instead: anything uncommitted is invisible to every
+  // committed candidate, so it needs no attribution to be worth warning about. That
+  // inference is what makes this fire for the caller who did not know to ask.
+  const source: CheckpointContainment['source'] = args.paths?.length ? 'caller-supplied' : 'uncommitted-working-tree';
+  const paths = args.paths?.length ? args.paths : await uncommittedPaths(git);
+
+  const verdict = await callerEditsInCandidate(git, args.candidateSha, paths);
+  const tipSha = args.tipSha ?? null;
+
+  const excludedCommitsTouchingYourFiles: { path: string; commits: string[] }[] = [];
+  if (args.candidateSha && tipSha && args.candidateSha !== tipSha) {
+    for (const p of verdict.missing) {
+      const commits = await excludedCommitsTouchingPath(git, args.candidateSha, tipSha, p);
+      if (commits.length) excludedCommitsTouchingYourFiles.push({ path: p, commits });
+    }
+  }
+
+  return {
+    candidateSha: args.candidateSha,
+    tipSha,
+    source,
+    included: verdict.included,
+    missing: verdict.missing,
+    unknown: verdict.unknown,
+    paths: verdict.paths,
+    excludedCommitsTouchingYourFiles,
+    warning: verdict.missing.length ? renderContainmentWarning(verdict.missing, verdict.paths, excludedCommitsTouchingYourFiles, source) : null,
+  };
+}
+
+/**
+ * The warning text. Kept pure + exported so the PHRASING — which is the entire
+ * deliverable of P-004 — is unit-testable without a repo, a systemd unit, or a launch.
+ *
+ * It must do one thing above all: pre-empt the misread. A candidate without your fix
+ * reds on the pre-fix failure with the pre-fix count, and the natural reading of that
+ * is "my fix didn't work". Every branch below therefore says, explicitly, that a red
+ * from this run is not evidence about your change.
+ */
+export function renderContainmentWarning(
+  missing: string[],
+  paths: PathContainment[],
+  excluded: { path: string; commits: string[] }[],
+  source: CheckpointContainment['source'],
+): string {
+  const byReason = (r: MissingReason) => missing.filter((p) => paths.find((x) => x.path === p)?.reason === r);
+  const uncommitted = [...byReason('uncommitted'), ...byReason('absent')];
+  const newer = byReason('newer-commit');
+  const list = (xs: string[]) => `${xs.slice(0, 6).join(', ')}${xs.length > 6 ? ` (+${xs.length - 6} more)` : ''}`;
+
+  const parts: string[] = [
+    `⚠ THIS RUN WILL NOT SEE ${missing.length} of your file(s). A RED from it is NOT evidence your change failed — the suite is testing code WITHOUT it, so it reds on the ORIGINAL failure with the ORIGINAL count.`,
+  ];
+  if (uncommitted.length) {
+    parts.push(
+      `NOT COMMITTED (invisible to the gate, which checks out a commit and cannot see the working tree): ${list(uncommitted)}. Fix: git-sync:run, then re-fire.`,
+    );
+  }
+  if (newer.length) {
+    parts.push(
+      `COMMITTED BUT NEWER THAN THE CANDIDATE (the quiet-cut stepped the judged commit back): ${list(newer)}. Fix: wait out the quiet window (~4 min) and re-fire, or let the next run pick it up.`,
+    );
+  }
+  for (const e of excluded.slice(0, 4)) {
+    parts.push(`'${e.path}' is carried by EXCLUDED commit(s): ${e.commits.slice(0, 3).join(' | ')}`);
+  }
+  if (source === 'uncommitted-working-tree') {
+    parts.push(
+      'These were inferred from the working tree, not declared — pass `paths: [...]` naming the files your change touches for an exact verdict.',
+    );
+  }
+  return parts.join(' ');
 }
 
 /** EI-9672: best-effort `systemctl --user stop` on a checkpoint unit — the piece that was

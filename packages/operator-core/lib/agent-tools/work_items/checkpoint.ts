@@ -200,9 +200,7 @@ export default defineTool({
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
       'next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. ' +
-      'Pass `dependsOn` with the files/items/plan the note is derived from: a reader then gets a MECHANICAL ' +
-      'fresh/stale verdict naming what moved, instead of guessing from the note\'s age — which cannot see a ' +
-      "peer's edit at all.",
+      'Declare `dependsOn` for a real freshness verdict.',
     notWhen:
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
       'channel: use work_items:update for the body, work_items:comment for a note (both exist even if a trimmed ' +

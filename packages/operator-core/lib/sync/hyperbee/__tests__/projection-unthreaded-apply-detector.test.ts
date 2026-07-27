@@ -28,6 +28,7 @@ import {
   applyOpVia,
   registerProjection,
   resetUnthreadedApplyDetectorForTest,
+  setUnthreadedApplyWarnSinkForTest,
   unthreadedSkipOwnOpsApplyCount,
   _clearRegistryForTests,
   type TableProjection,
@@ -47,15 +48,22 @@ function stubProjection(tableTag: string, skipOwnOps: boolean): TableProjection 
   } as TableProjection;
 }
 
-let warn: ReturnType<typeof vi.spyOn>;
+/**
+ * The detector's default sink is SILENT under vitest — this repo runs
+ * `vitest-fail-on-console` and several integration fixtures legitimately build a
+ * scoped apply with no own-log key, so a production warn on that path would red
+ * them all for a diagnostic. A test therefore asserts the detector through the
+ * sink seam + the always-live counter, never through console output.
+ */
+let seen: string[] = [];
 
 beforeEach(() => {
   resetUnthreadedApplyDetectorForTest();
-  warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  seen = [];
+  setUnthreadedApplyWarnSinkForTest((m) => seen.push(m));
 });
 
 afterEach(() => {
-  warn.mockRestore();
   _clearRegistryForTests();
   resetUnthreadedApplyDetectorForTest();
 });
@@ -76,7 +84,7 @@ describe('WI-6210 un-threaded apply detector', () => {
     const p = stubProjection('p2p-work-offers', true);
     expect(await applyOpVia(() => p, put())).toBe(true);
     expect(unthreadedSkipOwnOpsApplyCount()).toBe(1);
-    const msg = String(warn.mock.calls[0]?.[0] ?? '');
+    const msg = seen[0] ?? '';
     expect(msg).toContain('WI-6210 UN-THREADED apply');
     expect(msg).toContain('p2p-work-offers');
     // The stack is the payload: it is what names the offending caller.
@@ -113,7 +121,7 @@ describe('WI-6210 un-threaded apply detector', () => {
       await applyOpVia(() => p, put({ hbKey: `offer-${i}` }));
     }
     expect(unthreadedSkipOwnOpsApplyCount()).toBe(25);
-    expect(warn.mock.calls.length).toBe(20);
-    expect(String(warn.mock.calls[19]?.[0] ?? '')).toContain('further occurrences suppressed');
+    expect(seen.length).toBe(20);
+    expect(seen[19] ?? '').toContain('further occurrences suppressed');
   });
 });

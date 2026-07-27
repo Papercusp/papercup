@@ -28,6 +28,7 @@ import {
   getProjection,
   lwwPick,
   resetUnthreadedApplyDetectorForTest,
+  setUnthreadedApplyWarnSinkForTest,
   unthreadedSkipOwnOpsApplyCount,
   _clearRegistryForTests,
   type ProjectionLookup,
@@ -333,17 +334,17 @@ describe('skipOwnOps — the EI-117 echo breaker (own-log replays on CDC tables)
     // forgeable writerPubkey, which is how a remote publisher's row gets
     // permanently shadowed by this host's own echo. The apply still proceeds
     // (the fix belongs at the caller), but it must be AUDIBLE.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     resetUnthreadedApplyDetectorForTest();
+    const seen: string[] = [];
+    setUnthreadedApplyWarnSinkForTest((m) => seen.push(m));
     try {
       const { lookup, writes } = spyWithFlag(true);
       const applied = await applyOpVia(lookup, putOp({ sourceLogKeyHex: 'OWN-LOG-KEY' }));
       expect(applied).toBe(true);
       expect(writes).toEqual([{ id: 'k' }]);
       expect(unthreadedSkipOwnOpsApplyCount()).toBe(1);
-      expect(String(warn.mock.calls[0]?.[0] ?? '')).toContain('WI-6210 UN-THREADED apply');
+      expect(seen[0] ?? '').toContain('WI-6210 UN-THREADED apply');
     } finally {
-      warn.mockRestore();
       resetUnthreadedApplyDetectorForTest();
     }
   });

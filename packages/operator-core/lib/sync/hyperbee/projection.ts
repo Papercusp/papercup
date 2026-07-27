@@ -258,9 +258,31 @@ function resolveOpProvenance(op: OpEnvelope, applyOpts?: ApplyOpOpts): Provenanc
 const UNTHREADED_APPLY_WARN_CAP = 20;
 let unthreadedApplyWarnCount = 0;
 
-/** Test seam: reset the WI-6210 detector's warn budget between cases. */
+type UnthreadedApplyWarnSink = (message: string) => void;
+
+/**
+ * Default sink. SILENT under vitest on purpose: several integration suites
+ * legitimately build a scoped apply without an own-log key (single-peer
+ * fixtures), and this repo runs `vitest-fail-on-console` — a production warn on
+ * a test-reachable path would turn every one of those suites red for a
+ * diagnostic. The COUNTER below is always live, so a test asserts the detector
+ * by count (or by installing its own sink) rather than by console output.
+ */
+const DEFAULT_UNTHREADED_APPLY_SINK: UnthreadedApplyWarnSink = (message) => {
+  if (process.env.VITEST) return;
+  console.warn(message);
+};
+let unthreadedApplyWarnSink: UnthreadedApplyWarnSink = DEFAULT_UNTHREADED_APPLY_SINK;
+
+/** Test seam: capture the detector's message instead of logging it. */
+export function setUnthreadedApplyWarnSinkForTest(sink?: UnthreadedApplyWarnSink): void {
+  unthreadedApplyWarnSink = sink ?? DEFAULT_UNTHREADED_APPLY_SINK;
+}
+
+/** Test seam: reset the WI-6210 detector's warn budget + sink between cases. */
 export function resetUnthreadedApplyDetectorForTest(): void {
   unthreadedApplyWarnCount = 0;
+  unthreadedApplyWarnSink = DEFAULT_UNTHREADED_APPLY_SINK;
 }
 
 /** Observed count of un-threaded skipOwnOps applies this process (WI-6210). */
@@ -275,7 +297,7 @@ function noteUnthreadedSkipOwnOpsApply(op: OpEnvelope): void {
     unthreadedApplyWarnCount === UNTHREADED_APPLY_WARN_CAP
       ? ' [further occurrences suppressed]'
       : '';
-  console.warn(
+  unthreadedApplyWarnSink(
     `[projection] WI-6210 UN-THREADED apply (no ownLogKeyHex) on a skipOwnOps table — the echo ` +
       `breaker cannot fire and provenance will be stamped origin='local' from the FORGEABLE ` +
       `writerPubkey: table=${op.table ?? '?'} key=${op.hbKey ?? '?'} ` +
