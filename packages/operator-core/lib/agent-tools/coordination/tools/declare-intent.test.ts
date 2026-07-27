@@ -409,3 +409,35 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
     }
   });
 });
+
+/**
+ * EI-18776963284535761 — the handler must PASS `current_files` THROUGH to the store,
+ * never default it. `undefined` is the store's documented "leave untouched" sentinel
+ * (see presence-current-files.integration.test.ts, which proves the store honours it
+ * against real PG); the old `args.current_files ?? []` collapsed that sentinel into an
+ * explicit CLEAR at this exact line. Because `coord:orient` re-declares intent WITHOUT
+ * the arg on every wake, that one `?? []` emptied the column for every agent on the box.
+ *
+ * These guard the SEAM specifically: the store-level integration test would stay green
+ * even if someone re-introduced the default here, because it never goes through the tool.
+ */
+describe('current_files pass-through (EI-18776963284535761)', () => {
+  const filesArg = (): unknown =>
+    (writePresence.mock.calls.at(-1)?.[1] as { currentFiles?: unknown } | undefined)?.currentFiles;
+
+  it('an OMITTED current_files reaches the store as undefined (untouched), not []', async () => {
+    await tool.handler({ intent: 'a bare re-declare, exactly what coord:orient sends' }, ctx);
+    expect(writePresence).toHaveBeenCalled();
+    expect(filesArg()).toBeUndefined();
+  });
+
+  it('an EXPLICIT [] reaches the store as [] (a real clear)', async () => {
+    await tool.handler({ intent: 'off those files now', current_files: [] }, ctx);
+    expect(filesArg()).toEqual([]);
+  });
+
+  it('a declared list reaches the store verbatim', async () => {
+    await tool.handler({ intent: 'editing', current_files: ['a.ts', 'b.ts'] }, ctx);
+    expect(filesArg()).toEqual(['a.ts', 'b.ts']);
+  });
+});

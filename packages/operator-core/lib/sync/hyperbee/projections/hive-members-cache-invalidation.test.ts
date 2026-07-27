@@ -49,10 +49,21 @@ describe('WI-259 P-003 — hive_members apply invalidates the P-002 member-set c
     expect(invalidateHiveMemberDeviceSet).toHaveBeenCalledWith('ws', 'hive-home');
   });
 
-  it('a cross-Hive op (slug mismatch, dropped before apply) does NOT invalidate', async () => {
-    const proj = buildHiveMembersProjection(OPTS);
-    await proj.writeToPg({ ...ROW, pot_home_slug: 'other-hive' }, undefined);
-    expect(invalidateHiveMemberDeviceSet).not.toHaveBeenCalled();
+  it('a cross-Hive op (slug mismatch, dropped before apply) does NOT invalidate — and WARNS', async () => {
+    // The drop path now emits `warnCrossHiveRosterDrop` (an empty pot_members is not evidence
+    // of health), and this suite runs under vitest-fail-on-console — so assert the warning
+    // explicitly rather than letting a deliberate loud signal read as a test failure.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const proj = buildHiveMembersProjection(OPTS);
+      await proj.writeToPg({ ...ROW, pot_home_slug: 'other-hive' }, undefined);
+      expect(invalidateHiveMemberDeviceSet).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('DROPPING federated roster rows'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('an invalid delete key (non-positive id) returns before invalidating', async () => {

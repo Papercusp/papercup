@@ -84,6 +84,28 @@ describe('writeSessionBrief (best-effort upsert)', () => {
     // current_files is serialized to a JSON string before the ::jsonb cast.
     expect(vals).toContain(JSON.stringify(['a.ts', 'b.ts']));
   });
+
+  /**
+   * EI-18776963284535761 — the brief carries the SAME omitted-means-untouched sentinel
+   * as coord_presence: a write that omits currentFiles must bind NULL (which the query
+   * COALESCEs to the stored value), never the literal '[]' that would wipe it. This one
+   * matters doubly because the brief is what a SUCCESSOR reads after its predecessor
+   * dies — a wipe here loses the declared lane exactly when it is most needed.
+   */
+  it('omitting currentFiles binds no "[]" literal (the untouched sentinel)', async () => {
+    const rec = recordingSql();
+    fakeSql = rec.sql;
+    await writeSessionBrief(identity, { intent: 'a bare re-declare' });
+    expect(rec.calls).toHaveLength(1);
+    expect(rec.calls[0]).not.toContain('[]');
+  });
+
+  it('an explicit [] DOES bind "[]" (a real clear)', async () => {
+    const rec = recordingSql();
+    fakeSql = rec.sql;
+    await writeSessionBrief(identity, { intent: 'off those files', currentFiles: [] });
+    expect(rec.calls[0]).toContain('[]');
+  });
 });
 
 describe('getSessionBrief (fail-soft read)', () => {
