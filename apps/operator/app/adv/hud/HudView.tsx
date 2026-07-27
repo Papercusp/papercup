@@ -102,6 +102,13 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     parseAsBoolean.withDefault(false),
   );
   const [openOwner, setOpenOwner] = useQueryState('hudsession', parseAsString);
+  // WI-6367: which session THIS view just launched, and when. Deliberately
+  // useState, not nuqs: it is mid-flight lifecycle state, not user-meaningful
+  // (a shared/reloaded URL must not claim a session is "starting up" — by then
+  // it either registered or failed, and both read correctly without this).
+  const [pendingLaunch, setPendingLaunch] = useState<{ ownerId: string; startedAtMs: number } | null>(
+    null,
+  );
 
   /* P-009 — the board's tab axis, and the two controls the non-session tabs
      need. All three in the URL per the repo's nuqs-by-default policy: which
@@ -445,7 +452,12 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
               // (and SessionChatModal) already take. Null only from an operator
               // predating the pre-pin, in which case we open nothing rather
               // than guessing.
-              if (ownerId) void setOpenOwner(ownerId);
+              if (!ownerId) return;
+              // WI-6367: remember WHEN, so the chat can render the boot window
+              // as "starting up" rather than as the gone-away empty state a
+              // session with no roster row otherwise gets.
+              setPendingLaunch({ ownerId, startedAtMs: Date.now() });
+              void setOpenOwner(ownerId);
             }}
           />
         }
@@ -459,7 +471,15 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       <SessionChatModal
         sessionOwnerId={openOwner}
         ownerLabel={openLabel}
-        onClose={() => void setOpenOwner(null)}
+        pendingLaunch={pendingLaunch}
+        onClose={() => {
+          // WI-6367: the launch context is only meaningful for the modal it
+          // opened — drop it on close so reopening the same session later
+          // (by then a normal, possibly ended, session) gets the normal
+          // empty states rather than a stale "starting up".
+          setPendingLaunch(null);
+          void setOpenOwner(null);
+        }}
       />
     </>
   );

@@ -441,4 +441,24 @@ describe('AgentDossier', () => {
     expect(getByText('This agent is no longer in the live roster.')).toBeTruthy();
     expect(getByText('gone-1')).toBeTruthy();
   });
+
+  // WI-6367: a never-started agent arrives here identically to an ended one
+  // (entry: null). Told which it is, the rail must not use the past tense.
+  it('says the agent is starting up (not "no longer in the live roster") when startingUp is set', () => {
+    const { getByText, queryByText } = render(
+      <AgentDossier ownerId="su-new-1" entry={null} onClose={() => {}} startingUp />,
+    );
+    expect(getByText("Starting up — this agent hasn't registered yet.")).toBeTruthy();
+    expect(queryByText('This agent is no longer in the live roster.')).toBeNull();
+  });
+
+  // A live entry always wins: startingUp is only a tiebreaker for `entry: null`,
+  // so a registered agent must still show its declared intent.
+  it('prefers a real roster entry over startingUp', () => {
+    const { getByText, queryByText } = render(
+      <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} startingUp />,
+    );
+    expect(queryByText("Starting up — this agent hasn't registered yet.")).toBeNull();
+    expect(getByText('refactoring attempt-claim split')).toBeTruthy();
+  });
 });

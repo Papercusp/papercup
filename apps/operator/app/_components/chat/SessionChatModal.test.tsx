@@ -869,4 +869,129 @@ describe('SessionChatModal', () => {
       expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
     });
   });
+
+  // WI-6367 — a session launched seconds ago and a session that ended long ago
+  // are the SAME shape here (no roster row, no resolvable transcript), so the
+  // modal used to greet a brand-new session with past-tense "gone away" copy.
+  // These assert the rendered TEXT, not merely that a branch was taken: the
+  // WI-6363 postmortem was exactly a test that checked a callback had fired
+  // without ever checking what it fired with.
+  describe('WI-6367 starting-up state for a just-launched session', () => {
+    const GONE = 'No recent Claude session found for this agent.';
+    const STARTING = /Starting up — waiting for this session to come online/;
+    const FAILED = /This session hasn't come online/;
+
+    function seedRoster(entries: Array<Record<string, unknown>>) {
+      H.results['advRoster.list'] = {
+        data: [{ active: entries, pending: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    it('says "starting up" (not the gone-away copy) for the session that was just launched', async () => {
+      mockFetchOnce(200, { sessions: [] });
+      render(
+        <SessionChatModal
+          sessionOwnerId="su-new-1"
+          onClose={vi.fn()}
+          pendingLaunch={{ ownerId: 'su-new-1', startedAtMs: Date.now() }}
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-starting-up')).toBeTruthy());
+      expect(screen.getByText(STARTING)).toBeTruthy();
+      // The specific regression: the past-tense copy must be GONE, not merely
+      // accompanied by the new line.
+      expect(screen.queryByText(GONE)).toBeNull();
+    });
+
+    // Non-vacuity guard: identical inputs minus `pendingLaunch` must still take
+    // the old branch. Without this, a bug making `startingUp` always-true would
+    // pass the test above.
+    it('still shows the gone-away copy for the SAME inputs when there was no launch', async () => {
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(GONE)).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-starting-up')).toBeNull();
+    });
+
+    it('does not hijack the empty state of a DIFFERENT session than the one launched', async () => {
+      mockFetchOnce(200, { sessions: [] });
+      render(
+        <SessionChatModal
+          sessionOwnerId="su-someone-else"
+          onClose={vi.fn()}
+          pendingLaunch={{ ownerId: 'su-new-1', startedAtMs: Date.now() }}
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByText(GONE)).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-starting-up')).toBeNull();
+    });
+
+    it('stops saying "starting up" once the session registers in the roster', async () => {
+      seedRoster([{ ownerId: 'su-new-1' }]);
+      mockFetchOnce(200, { sessions: [] });
+      render(
+        <SessionChatModal
+          sessionOwnerId="su-new-1"
+          onClose={vi.fn()}
+          pendingLaunch={{ ownerId: 'su-new-1', startedAtMs: Date.now() }}
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByText(GONE)).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-starting-up')).toBeNull();
+    });
+
+    it('admits the launch failed once the grace window elapses without the session coming online', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        mockFetchOnce(200, { sessions: [] });
+        render(
+          <SessionChatModal
+            sessionOwnerId="su-new-1"
+            onClose={vi.fn()}
+            pendingLaunch={{ ownerId: 'su-new-1', startedAtMs: Date.now() }}
+          />,
+        );
+        await waitFor(() => expect(screen.getByText(STARTING)).toBeTruthy());
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(61_000);
+        });
+
+        expect(screen.getByText(FAILED)).toBeTruthy();
+        expect(screen.queryByText(STARTING)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('passes startingUp through to the dossier rail, so it does not say "no longer in the live roster" either', async () => {
+      mockFetchOnce(200, { sessions: [] });
+      render(
+        <SessionChatModal
+          sessionOwnerId="su-new-1"
+          onClose={vi.fn()}
+          pendingLaunch={{ ownerId: 'su-new-1', startedAtMs: Date.now() }}
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+      expect(lastAgentDossierProps?.startingUp).toBe(true);
+    });
+
+    it('passes startingUp:false to the dossier for an ordinary (not just-launched) session', async () => {
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+      expect(lastAgentDossierProps?.startingUp).toBe(false);
+    });
+  });
 });
