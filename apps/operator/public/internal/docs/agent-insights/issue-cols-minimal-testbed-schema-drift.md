@@ -38,7 +38,7 @@ grep -rl "_work-items-schema" packages/operator-core/lib packages/operator-core/
 ```
 
 **The one still-hand-rolled exception:**
-`packages/operator-core/lib/shared-hive-loop/composition-rig.ts` — the
+`packages/operator-core/lib/shared-pot-loop/composition-rig.ts` — the
 hermetic 2-swarm composition rig — deliberately keeps its **own** condensed
 schema (a `CREATE TABLE` plus manually-maintained `ALTER TABLE ... ADD COLUMN
 IF NOT EXISTS` blocks, each commented with the originating migration number)
@@ -47,7 +47,7 @@ per-column patch the historical "Fix / rule" section below describes — grep
 it directly rather than the whole repo:
 
 ```bash
-grep -n "engineer_issues\|harness_features_consolidated" packages/operator-core/lib/shared-hive-loop/composition-rig.ts
+grep -n "engineer_issues\|harness_features_consolidated" packages/operator-core/lib/shared-pot-loop/composition-rig.ts
 ```
 
 The history below (symptom, root cause, the original grep-everything fix) is

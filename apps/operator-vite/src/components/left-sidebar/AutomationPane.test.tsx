@@ -574,6 +574,28 @@ describe('AutomationPane — non-routine schedules', () => {
     expect(row.textContent).not.toMatch(/·\s*armed/);
   });
 
+  it('does not render an unverified row at full "this is live" weight', () => {
+    // The visual half of the same claim: `.is-active` is opacity 1. Keying it on
+    // `active` (which swallows unknown) made the ROW assert what its own meta
+    // line qualifies — full brightness beside the words "arm state unknown".
+    renderPane({ routines: [{ ...uncontrollable, armedState: 'unknown' as const }] });
+    const row = screen.getByTestId('automation-row-doc-freshness-sweep');
+    expect(row.className).toContain('is-unverified');
+    expect(row.className).not.toContain('is-active');
+  });
+
+  it('still renders a confirmed-armed row at full weight', () => {
+    renderPane({ routines: [{ ...uncontrollable, armedState: 'armed' as const }] });
+    expect(screen.getByTestId('automation-row-doc-freshness-sweep').className).toContain('is-active');
+  });
+
+  it('renders a not-armed row dimmed, with neither class claiming otherwise', () => {
+    renderPane({ routines: [{ ...uncontrollable, armedState: 'disarmed' as const }] });
+    const row = screen.getByTestId('automation-row-doc-freshness-sweep');
+    expect(row.className).not.toContain('is-active');
+    expect(row.className).not.toContain('is-unverified');
+  });
+
   it('leaves a plainly-armed row unsuffixed — the unsurprising case adds no noise', () => {
     // Suffixing every row would bury the two states that CHANGE what the owner
     // should believe; a running schedule showing its cadence already says it.

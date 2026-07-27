@@ -18755,10 +18755,10 @@ Also note: `engineer_issues` and `harness_features_consolidated` are themselves 
 grep -rl "_work-items-schema" packages/operator-core/lib packages/operator-core/test | wc -l
 ```
 
-**The one still-hand-rolled exception:** `packages/operator-core/lib/shared-hive-loop/composition-rig.ts` — the hermetic 2-swarm composition rig — deliberately keeps its **own** condensed schema (a `CREATE TABLE` plus manually-maintained `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` blocks, each commented with the originating migration number) rather than importing the shared fixture. That file still needs the manual per-column patch the historical “Fix / rule” section below describes — grep it directly rather than the whole repo:
+**The one still-hand-rolled exception:** `packages/operator-core/lib/shared-pot-loop/composition-rig.ts` — the hermetic 2-swarm composition rig — deliberately keeps its **own** condensed schema (a `CREATE TABLE` plus manually-maintained `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` blocks, each commented with the originating migration number) rather than importing the shared fixture. That file still needs the manual per-column patch the historical “Fix / rule” section below describes — grep it directly rather than the whole repo:
 
 ```bash
-grep -n "engineer_issues\|harness_features_consolidated" packages/operator-core/lib/shared-hive-loop/composition-rig.ts
+grep -n "engineer_issues\|harness_features_consolidated" packages/operator-core/lib/shared-pot-loop/composition-rig.ts
 ```
 
 The history below (symptom, root cause, the original grep-everything fix) is preserved as-is for context on *why* the shared fixture exists and how the failure looks when a suite is still on the old hand-rolled pattern (as composition-rig.ts is).
@@ -24432,6 +24432,14 @@ The unit tests are **inverse guards**: `http-routes.test.ts` and `cpu-task-worke
 # Node 25 mkdirSync on /proc spins forever — never use /proc as an "unwritable dir" in tests
 
 > fs.mkdirSync('/proc/anything', { recursive:true }) on node 25.9 retries /proc's EPERM in an infinite loop (90% CPU, no throw, no exit). Two fail-soft tests using '/proc/definitely-unwritable' wedged EVERY vitest gate — test:affected, other sessions' gates, and the green-checkpoint suite — for ~4 hours on 2026-07-11. Use a file-as-parent ENOTDIR path instead.
+
+## What this page covers
+
+[Section titled “What this page covers”](#what-this-page-covers)
+
+* the failure signature (vitest fork worker pinned \~90% CPU, R-state, no children, no output)
+* the gdb one-liner that convicts it and the bounded node repro
+* the safe ENOTDIR replacement pattern for “unwritable dir” fail-soft tests
 
 ## The trap
 
@@ -37946,13 +37954,22 @@ That is the full circuit: **file → grade → wake → revise → outcome → p
 
 > Every client-agnostic convention "an owner-directed question must ride a durable channel" — but each of Claude Code / OMP / Codex can enforce it to a different degree, because they expose different hook surfaces. This page is the capability matrix behind that decision (D-002, owner-inbox-single-pane-2026-07-17).
 
+## What this page covers
+
+[Section titled “What this page covers”](#what-this-page-covers)
+
+* the convention every su session is held to (D-001) — durable-channel-or-bounce
+* the per-client hook surface each backend actually exposes, verified in-repo
+* why the Codex gap is a recorded decision, not an open bug
+* what “durable channel” concretely means (`coord:escalate` vs an `<ask>` block)
+
 ## The convention (D-001, universal — binds every su session regardless of client)
 
 [Section titled “The convention (D-001, universal — binds every su session regardless of client)”](#the-convention-d-001-universal--binds-every-su-session-regardless-of-client)
 
 An owner-directed question must ride a **durable, machine-readable channel**, never just a prose sentence at the end of a turn:
 
-1. **Preferred:** `coord:escalate` with structured `options[]` — this already renders as an answerable `AskChoiceCard` in the owner’s Inbox (`apps/operator/app/_components/inbox/InboxPane.tsx`), and answering it round-trips back to the asking session.
+1. **Preferred:** `coord:escalate` with structured `options[]` — this already renders as an answerable `AskChoiceCard` in the owner’s Inbox (`_retired/inbox-pane/InboxPane.tsx`), and answering it round-trips back to the asking session.
 2. **Floor:** an `<ask>` block (`question`, `options[]`, `refs[]`) in `@papercusp/chat-protocol`, living beside the existing `<report>` block (D-001 of `owner-inbox-single-pane-2026-07-17`; parser/schema is P-003’s lane in `libs/generic/chat-protocol`).
 
 A bare turn-ending question in prose — no escalation, no tagged block — is **invisible** to the unified owner Inbox this plan builds. The owner may never see it; the asking session sits blocked on a reply that never surfaces anywhere the owner is looking.
@@ -41372,6 +41389,15 @@ This session, I twice spent meaningful time investigating “new” errors in `l
 # Turn provenance — verified owner-vs-agent labeling
 
 > Why every PTY-injected turn is byte-identical to the owner typing, and the two-layer envelope+ledger protocol (plus the UserPromptSubmit hook) that stamps every prompt VERIFIED agent-origin / UNVERIFIED claim / affirmative OWNER.
+
+## What this page covers
+
+[Section titled “What this page covers”](#what-this-page-covers)
+
+* the ⟦turn-origin⟧ envelope + nonce-ledger protocol and its D-001/D-002 decisions
+* which injectors are enrolled (and why enrollment is MANDATORY)
+* per-backend coverage (Claude verified / Codex Layer-1-only / OMP via the wake pump)
+* how compaction directive-provenance verification uses the stamps
 
 ## The problem: every injected turn impersonates the owner
 

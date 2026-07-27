@@ -3,6 +3,12 @@ URL: /internal/docs/agent-insights/node25-mkdirsync-proc-infinite-loop
 
 fs.mkdirSync('/proc/anything', { recursive:true }) on node 25.9 retries /proc's EPERM in an infinite loop (90% CPU, no throw, no exit). Two fail-soft tests using '/proc/definitely-unwritable' wedged EVERY vitest gate — test:affected, other sessions' gates, and the green-checkpoint suite — for ~4 hours on 2026-07-11. Use a file-as-parent ENOTDIR path instead.
 
+## What this page covers
+
+* the failure signature (vitest fork worker pinned \~90% CPU, R-state, no children, no output)
+* the gdb one-liner that convicts it and the bounded node repro
+* the safe ENOTDIR replacement pattern for "unwritable dir" fail-soft tests
+
 ## The trap
 
 A fail-soft test wants an **unwritable directory** to prove a write path degrades

@@ -3,6 +3,13 @@ URL: /internal/docs/agent-insights/su-owner-ask-capability-matrix
 
 Every client-agnostic convention "an owner-directed question must ride a durable channel" — but each of Claude Code / OMP / Codex can enforce it to a different degree, because they expose different hook surfaces. This page is the capability matrix behind that decision (D-002, owner-inbox-single-pane-2026-07-17).
 
+## What this page covers
+
+* the convention every su session is held to (D-001) — durable-channel-or-bounce
+* the per-client hook surface each backend actually exposes, verified in-repo
+* why the Codex gap is a recorded decision, not an open bug
+* what "durable channel" concretely means (`coord:escalate` vs an `<ask>` block)
+
 ## The convention (D-001, universal — binds every su session regardless of client)
 
 An owner-directed question must ride a **durable, machine-readable channel**,
@@ -10,7 +17,7 @@ never just a prose sentence at the end of a turn:
 
 1. **Preferred:** `coord:escalate` with structured `options[]` — this already
    renders as an answerable `AskChoiceCard` in the owner's Inbox
-   (`apps/operator/app/_components/inbox/InboxPane.tsx`), and answering it
+   (`_retired/inbox-pane/InboxPane.tsx`), and answering it
    round-trips back to the asking session.
 2. **Floor:** an `<ask>` block (`question`, `options[]`, `refs[]`) in
    `@papercusp/chat-protocol`, living beside the existing `<report>` block

@@ -98,36 +98,6 @@ Every verdict is three-valued: an unresolvable read is `null` (unknown), never `
 and never a silent `true`. **A red from a run that does not carry your change is not
 evidence your change failed.**
 
-#### ⚠ `containsPath` is about the FILE, not about YOUR change — pass `marker` when they differ
-
-Both `contains` flags compare the path's **current content** to the candidate's. That
-answers *"is this file byte-identical?"*, which stops being your question the moment a
-**peer commits to the same file after you**: the candidate still carries your change, the
-file is no longer identical, and the verdict reads `false` / `newer-commit`. On a hot
-shared file it never clears — the tip is always newer than the quiet-cut candidate — so
-acting on it re-fires a gate that already has your code, restarting a ~55min clock. That
-cost ~2h of the 2026-07-27 fleet-wide `facts:assert` outage (EI-18797292094433710).
-
-Resolve it in the same call:
-
-```
-dev:pipeline_position { path: 'packages/.../store.ts', marker: 'superseded_at IS NULL' }
-```
-
-`marker` is any distinctive **literal** string from your own edit. The reply then carries
-`markerJudging` / `markerNext` — `present` plus an occurrence `count` — and that verdict
-**outranks** blob identity: a confirmed marker suppresses the "does not contain" warning
-and the re-fire lever, while an absent one keeps warning. It is three-valued on the same
-principle as everything else here, and a failed git read can never produce a confident
-`false` (that would send you to re-fire a gate that already carries your fix).
-
-**Why you must supply it rather than the tool deriving it:** git-sync commits the whole
-shared tree under one identity, so every commit is an `auto-commit` carrying many agents'
-unrelated edits. No commit is identifiably *yours*, which is why an ancestry test has
-nothing sound to check and why listing "commits the candidate lacks" would just print N
-identical subjects. Content you can name is the only decidable input — so the tool now
-does what agents were already doing by hand with `git show <sha>:<path> | grep -c`.
-
 ### `sweepExposure` — what the next tick will commit out of your tree
 
 You do not commit here; git-sync does, on a fixed interval, sweeping whatever is on disk
@@ -164,7 +134,7 @@ complete. Firing it mid-refactor is committing the broken intermediate **on purp
 | is this leg stuck or just slow                            | `stages[].health` (never a position boolean alone)                       |
 | did my work actually reach origin                         | `gitSync.pushedRepos` (not `status`)                                     |
 | is the running process actually executing my code         | `serving.startedSinceCodeChange` (a git `deployed ✓` cannot answer this) |
-| is the gate judging my code                               | `changeInCandidate.judgingContainsPath` — but on a file a peer may have touched since, pass `marker` and read `markerJudging.present` |
+| is the gate judging my code                               | `changeInCandidate.judgingContainsPath`                                  |
 | will the next tick commit my half-finished refactor       | `sweepExposure`                                                          |
 
 ## Anti-patterns

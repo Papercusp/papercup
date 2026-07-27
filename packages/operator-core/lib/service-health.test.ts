@@ -2,6 +2,7 @@
  * diffHealth — pure transition detector (fleet-coordination-painpoints P-017).
  */
 import { EventEmitter } from 'node:events';
+import * as http from 'node:http';
 import { describe, it, expect } from 'vitest';
 import {
   diffHealth,

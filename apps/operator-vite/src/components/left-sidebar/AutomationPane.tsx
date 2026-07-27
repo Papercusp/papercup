@@ -579,11 +579,23 @@ export default function AutomationPane({
 
   const renderRow = (r: AutomationRoutine) => {
     const key = `${r.kind}/${r.name}`;
+    /*
+     * Brightness keys on the ARMED state, not on `active` (WI-6447).
+     *
+     * `active` is a boolean the unknown case gets folded into (`row.armed !==
+     * false`), so an unverifiable row used to render at full opacity — the row
+     * VISUALLY asserting "on" while its own meta line says "arm state unknown".
+     * Three states, three weights: armed reads live, unknown reads unconfirmed,
+     * not-armed reads off. For a routines row `armedState` is derived from
+     * `active`, so nothing about those changes.
+     */
+    const armedClass =
+      r.armedState === 'armed' ? ' is-active' : r.armedState === 'unknown' ? ' is-unverified' : '';
     return (
       <div
         key={key}
         role="listitem"
-        className={`pc-auto__row${r.active ? ' is-active' : ''}${r.needsAttention ? ' is-attention' : ''}`}
+        className={`pc-auto__row${armedClass}${r.needsAttention ? ' is-attention' : ''}`}
         data-testid={`automation-row-${r.name}`}
       >
         <div className="pc-auto__row-main">

@@ -1390,6 +1390,11 @@ body.has-left-sidebar .pc-header {
 .pc-auto__row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px;
   background: var(--bg-2, rgba(255, 255, 255, 0.035)); opacity: 0.55; }
 .pc-auto__row.is-active { opacity: 1; }
+/* WI-6447: a row whose arm state we could not verify (external-process rows —
+   live fire-state needs P-014 federation) must not render at the same weight as
+   a confirmed-live one. Between the two: brighter than "off", dimmer than "on",
+   so the row itself never asserts what only its meta line can qualify. */
+.pc-auto__row.is-unverified { opacity: 0.78; }
 .pc-auto__row-main { display: grid; grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline; column-gap: 6px; row-gap: 0; min-width: 0; flex: 1; }
 .pc-auto__name { font-size: 11.5px; font-weight: 600; color: var(--fg, #e7f7ff);

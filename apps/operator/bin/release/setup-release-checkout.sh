@@ -152,6 +152,47 @@ assert_checkout_landed() {
 assert_checkout_landed
 
 # 2. Submodule SOURCE — git archive at the exact pinned sha (local objects) ---
+# EI-18749180047527506: a `tar -x` that EXITS ZERO is not proof the extraction is
+# COMPLETE — a truncated/interrupted archive stream can still exit 0 having
+# written fewer files than its own manifest promised, silently leaving a
+# submodule tree PARTIAL. That is indistinguishable, downstream, from a real
+# content regression: prompt-blueprint-verb-catalog.test.ts's >150-file
+# scan-sanity floor (guarding this exact submodule tree) has no way to tell
+# "the checkout is genuinely incomplete" from "a candidate deleted files", and
+# a false alarm here holds the WHOLE fleet's green pin. Verify the on-disk file
+# count against the archive's OWN manifest (`tar -tf`) before trusting the
+# extraction; a shortfall is treated exactly like the pre-existing `tar -x`
+# failure path — fall back to the full-tree rsync, which is complete by
+# construction. Named + reads INTEGRATION_ROOT/RELEASE_ROOT from the outer
+# scope so it can be sed-extracted + unit-tested (setup-release-checkout-deps.
+# test.ts pattern) like need_node_modules / sync_one_node_modules /
+# prune_post_pin_workspace_pkgs above.
+extract_submodule_source() {  # <repo-relative path> <pinned sha>
+  local rel_path="$1" sha="$2" tar_file expected actual
+  rm -rf "${RELEASE_ROOT:?}/$rel_path"
+  mkdir -p "$RELEASE_ROOT/$rel_path"
+  tar_file="$(mktemp)"
+  if git -C "$INTEGRATION_ROOT/$rel_path" archive "$sha" >"$tar_file" 2>/dev/null && [ -s "$tar_file" ]; then
+    # tar -tf lists directory entries with a trailing '/'; count only file
+    # entries (matches the on-disk `find -type f` count below). A parse
+    # failure (corrupt/unreadable archive) yields -1 so it never satisfies
+    # the `-ge 0` check and always falls through to the rsync fallback.
+    expected="$(tar -tf "$tar_file" 2>/dev/null | grep -vc '/$' || true)"
+    [ -n "$expected" ] || expected=-1
+    if tar -x -C "$RELEASE_ROOT/$rel_path" -f "$tar_file" 2>/dev/null; then
+      actual="$(find "$RELEASE_ROOT/$rel_path" -type f | wc -l | tr -d ' ')"
+      if [ "$expected" -ge 0 ] && [ "$actual" -ge "$expected" ]; then
+        rm -f "$tar_file"
+        return 0
+      fi
+      log "WARN git archive $rel_path@$sha landed only $actual/$expected file(s) — treating as an incomplete extraction"
+    fi
+  fi
+  rm -f "$tar_file"
+  log "WARN git archive $rel_path@$sha failed or incomplete; rsync'ing integration HEAD (pin may drift)"
+  rsync -a --exclude='node_modules' --exclude='.git' "$INTEGRATION_ROOT/$rel_path/" "$RELEASE_ROOT/$rel_path/"
+}
+
 log "extracting submodule source at pinned shas (git archive, local objects)"
 while IFS= read -r P; do
   [ -n "$P" ] || continue
@@ -159,14 +200,7 @@ while IFS= read -r P; do
   # The gitlink sha recorded at the release worktree's HEAD for this path.
   S="$(git -C "$RELEASE_ROOT" ls-tree HEAD "$P" 2>/dev/null | awk '{print $3}')"
   [ -n "$S" ] || { log "WARN no gitlink sha for $P — skipping"; continue; }
-  rm -rf "${RELEASE_ROOT:?}/$P"
-  mkdir -p "$RELEASE_ROOT/$P"
-  if git -C "$INTEGRATION_ROOT/$P" archive "$S" 2>/dev/null | tar -x -C "$RELEASE_ROOT/$P" 2>/dev/null; then
-    :
-  else
-    log "WARN git archive $P@$S failed; rsync'ing integration HEAD (pin may drift)"
-    rsync -a --exclude='node_modules' --exclude='.git' "$INTEGRATION_ROOT/$P/" "$RELEASE_ROOT/$P/"
-  fi
+  extract_submodule_source "$P" "$S"
 # P-009: read the submodule list from the TARGET commit's .gitmodules blob, NOT the
 # integration tree's current working copy — a submodule added/removed on staging while
 # the target still pins the old set would otherwise be extracted from the wrong list

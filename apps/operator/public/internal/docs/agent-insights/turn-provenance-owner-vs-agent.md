@@ -3,6 +3,13 @@ URL: /internal/docs/agent-insights/turn-provenance-owner-vs-agent
 
 Why every PTY-injected turn is byte-identical to the owner typing, and the two-layer envelope+ledger protocol (plus the UserPromptSubmit hook) that stamps every prompt VERIFIED agent-origin / UNVERIFIED claim / affirmative OWNER.
 
+## What this page covers
+
+* the ⟦turn-origin⟧ envelope + nonce-ledger protocol and its D-001/D-002 decisions
+* which injectors are enrolled (and why enrollment is MANDATORY)
+* per-backend coverage (Claude verified / Codex Layer-1-only / OMP via the wake pump)
+* how compaction directive-provenance verification uses the stamps
+
 ## The problem: every injected turn impersonates the owner
 
 The model API has only `user`/`assistant` roles. Every papercusp injector —

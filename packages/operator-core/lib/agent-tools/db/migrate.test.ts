@@ -431,6 +431,45 @@ describe('isLockTimeoutFailure / lockRetryBackoffMs — pure helpers (EI-9417)',
   });
 });
 
+describe('isDeadlockFailure / isSerializationFailure / isRetryableLockFailure — pure helpers (EI-18747087108453188)', () => {
+  it("matches PG's own deadlock message, case-insensitively, including its DETAIL lines", () => {
+    expect(isDeadlockFailure('ERROR:  deadlock detected')).toBe(true);
+    expect(isDeadlockFailure('error: DEADLOCK DETECTED')).toBe(true);
+    expect(
+      isDeadlockFailure(
+        'ERROR:  deadlock detected\nDETAIL:  Process 1 waits for AccessExclusiveLock on relation 2; blocked by process 3.',
+      ),
+    ).toBe(true);
+  });
+
+  it('isDeadlockFailure does not match an unrelated failure', () => {
+    expect(isDeadlockFailure('ERROR: syntax error at or near "FOO"')).toBe(false);
+    expect(isDeadlockFailure('ERROR:  canceling statement due to lock timeout')).toBe(false);
+    expect(isDeadlockFailure('')).toBe(false);
+  });
+
+  it("matches PG's own serialization-failure message, case-insensitively", () => {
+    expect(isSerializationFailure('ERROR:  could not serialize access due to concurrent update')).toBe(true);
+    expect(
+      isSerializationFailure('error: COULD NOT SERIALIZE ACCESS due to read/write dependencies among transactions'),
+    ).toBe(true);
+  });
+
+  it('isSerializationFailure does not match an unrelated failure', () => {
+    expect(isSerializationFailure('ERROR: syntax error at or near "FOO"')).toBe(false);
+    expect(isSerializationFailure('ERROR:  deadlock detected')).toBe(false);
+    expect(isSerializationFailure('')).toBe(false);
+  });
+
+  it('isRetryableLockFailure is true for all three retryable classes and false for a genuine logic error', () => {
+    expect(isRetryableLockFailure('ERROR:  canceling statement due to lock timeout')).toBe(true);
+    expect(isRetryableLockFailure('ERROR:  deadlock detected')).toBe(true);
+    expect(isRetryableLockFailure('ERROR:  could not serialize access due to concurrent update')).toBe(true);
+    expect(isRetryableLockFailure('ERROR: syntax error at or near "FOO"')).toBe(false);
+    expect(isRetryableLockFailure('')).toBe(false);
+  });
+});
+
 describe('db:migrate — connection-drop retry around guardResource (EI-18159491440495603)', () => {
   beforeEach(() => {
     process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';

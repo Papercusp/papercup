@@ -132,6 +132,11 @@ describe('<LeftSidebar> shell', () => {
       // because a 3-column tab cell fits ~8 characters beside its icon at the
       // rail's 300px minimum; the pane header carries the full word.
       'Convos',
+      // task-manager-no-escape-2026-07-27 — APPENDED for the same reason Convos was.
+      // It reads best between System and Spend (scheduled -> executing -> cost), but
+      // that position is owner-set territory: moving it there is a deliberate
+      // re-order, not a side effect of adding a tab.
+      'Tasks',
     ]);
   });
 
@@ -156,6 +161,7 @@ describe('<LeftSidebar> shell', () => {
       'system',
       'spend',
       'conversations',
+      'tasks',
     ]);
   });
 
