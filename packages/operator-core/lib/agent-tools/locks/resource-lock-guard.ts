@@ -55,6 +55,18 @@ export interface GuardSpec {
   hostLocalOwnerPid?: (owner: string) => number | null;
   /** Fired once per stale holder reclaimed via `hostLocalOwnerPid` — log it loudly. */
   onStaleHolderReclaimed?: (info: { holder: ResourceHolder; pid: number }) => void | Promise<void>;
+  /**
+   * EI-18769559897594065: exclusive-only, drain-wait progress callback — fired
+   * roughly every {@link WAIT_CEILING_MS} (resource-acquire-wait.ts) while still
+   * draining, with the elapsed wait and the current blocking holders. Without
+   * this a caller waiting out `maxDrainSec` gets NO signal for the entire
+   * drain — indistinguishable from a wedge, and (via an MCP client's own
+   * idle-timeout on "no response or progress") can cause the CLIENT to abort
+   * well before the server-side wait/apply actually finishes. A caller wires
+   * this to `ctx.progress` (see db:migrate) so the drain is legible and the
+   * client's own idle clock keeps getting reset.
+   */
+  onTick?: (info: { waited_sec: number; holders: ResourceHolder[] }) => void;
 }
 
 export type GuardOutcome<T> =
@@ -123,6 +135,7 @@ export async function guardResource<T>(
         broadcastResourceDrainStart({ source: coordIdentity, resource, holders, reason }),
       hostLocalOwnerPid: spec.hostLocalOwnerPid,
       onStaleHolderReclaimed: spec.onStaleHolderReclaimed,
+      onTick: spec.onTick,
     });
     if (r.ok) {
       if (r.status !== 'held') {

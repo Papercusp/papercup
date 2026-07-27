@@ -155,7 +155,7 @@ export interface StoredAssumptionDeclaration {
  * loud-but-non-blocking warning instead of silently rewriting an agent's evidence
  * (EI-24 record-and-warn discipline). PURE — no PG required to unit-test.
  *
- * ⚠ Implementation note: this function deliberately builds the NUL character via
+ * ⚠ Implementation note: this function deliberately builds the NUL character at runtime
  * `String.fromCharCode(0)` rather than a `' '`/`'\x00'` source literal —
  * several editors/terminals (and this very toolchain) render an embedded literal
  * NUL byte as a plain space, so writing one directly into a source file is easy

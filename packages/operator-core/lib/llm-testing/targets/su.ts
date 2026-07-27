@@ -603,13 +603,19 @@ class SuSession implements ChatSession {
   /**
    * Produce a tool result for the model. Consults the scenario's
    * `toolOverride` (the existing dispatch-override seam) first; falls back to
-   * a benign stub so the loop can progress without live side effects.
+   * a benign stub so the loop can progress without live side effects — EXCEPT
+   * for `EXEC_TOOLS`, whose fallback is a loud `ok:false` (see EXEC_TOOLS doc):
+   * a silent `{ok:true}` for an unstubbed exec tool is indistinguishable from
+   * "ran and produced nothing", which burns turns debugging a phantom bug
+   * instead of one-turn re-routing (EI-18767979259669887).
    *
    * The fallback must NOT announce that it is a stub: the SUT mirrors result
    * text into its replies, so a self-describing stub leaks the test frame into
    * the behavior under measurement (the SU-S12 first run opened with "we're
    * running inside the LLM-testing stub…", which the judge then flagged —
-   * the EI-133 stub-artifact class at the target level).
+   * the EI-133 stub-artifact class at the target level). The EXEC_TOOLS
+   * message ("tool <name> is not available in this scenario world") avoids
+   * the banned stub/test-harness/llm-testing wording for the same reason.
    */
   private async resolveToolResult(
     name: string,

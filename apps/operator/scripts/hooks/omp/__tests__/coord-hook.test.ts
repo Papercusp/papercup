@@ -5298,7 +5298,13 @@ describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the roun
     ['a word merely CONTAINING a verb', 'echo concatenate the duplicates'],
     ['a path merely containing a verb', 'node scripts/cat-herder.mjs'],
     ['an unrelated npm script', 'npm run lint'],
-    ['a verb only as an argument', 'grep -n cat notes.txt'],
+    // The head here must be one the pre-filter does NOT claim, or this case stops
+    // testing what it names. It used to be `grep -n cat notes.txt`, which became a
+    // FALSE case the moment `grep` was added to SUBSTITUTION_PREFILTER_HEADS for
+    // code-search.definition-lookup: the assertion then failed on `grep` being a
+    // legitimately-claimed head, not on `cat`-as-an-argument. `rg` keeps the shape
+    // (claimed verb appearing only as an argument) with an unclaimed head.
+    ['a verb only as an argument', 'rg -n cat notes.txt'],
     ['an empty command', ''],
   ])('does NOT claim %s (no round-trip)', (_label, command) => {
     expect(substitutionPrefilterHit(command)).toBe(false);
