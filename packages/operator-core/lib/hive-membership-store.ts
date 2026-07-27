@@ -23,6 +23,10 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { DeviceAttestationEntry } from './harness/contributor-row-types';
+// TYPE-ONLY (erased at runtime, so no import cycle with federated-pot-scope, which imports
+// the readers below). EI-18777176681958978: the two READ scopes are branded so a LOCAL pot
+// handle cannot be passed where the FEDERATED (owner-authored) scope is required.
+import type { FederatedPotScope } from './federated-pot-scope';
 
 /** A Hive member row — a contributor admitted to a Hive (all their devices +
  *  the revoked blocklist). Mirrors ContributorRow at Hive grain. */
@@ -129,10 +133,15 @@ const COLS = `workspace_id, pot_home_slug, github_user_id, github_username,
  * Load the UNION of revoked device pubkeys for a Hive — the blocklist the
  * read-admission decider checks first. This is the wire-in point for boot.ts's
  * admission seed/refresh at Hive scope (P-004). Mirrors load-revoked-pubkeys.ts.
+ *
+ * ⚠ SCOPE (EI-18777176681958978): `potHomeSlug` is the FEDERATED (owner-authored) scope the
+ * projections WRITE under — NOT a joiner's local handle. Passing the local handle returns an
+ * EMPTY set, so a revoked member is never refused. Holding a local handle? Use
+ * `loadRevokedHivePubkeysForLocalPot` (federated-pot-scope.ts).
  */
 export async function loadRevokedHivePubkeys(
   workspaceId: string,
-  potHomeSlug: string,
+  potHomeSlug: FederatedPotScope,
   sql?: Sql,
 ): Promise<Set<string>> {
   const rows = (await pg(sql).unsafe(
@@ -186,10 +195,16 @@ export async function getHiveMember(
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
-/** All members of a Hive. */
+/**
+ * All members of a Hive.
+ *
+ * ⚠ SCOPE (EI-18777176681958978): `potHomeSlug` is the FEDERATED (owner-authored) scope the
+ * projections WRITE under — NOT a joiner's local handle, which reads as an empty roster.
+ * Holding a local handle? Use `listHiveMembersForLocalPot` (federated-pot-scope.ts).
+ */
 export async function listHiveMembers(
   workspaceId: string,
-  potHomeSlug: string,
+  potHomeSlug: FederatedPotScope,
   sql?: Sql,
 ): Promise<HiveMemberRecord[]> {
   const rows = (await pg(sql).unsafe(

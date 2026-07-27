@@ -134,12 +134,40 @@ export function serveUploadPack(
     allowOutsideRoot?: boolean;
     /** REQUIRED for any repo in the scopes/ family (§5.3 roster serve gate). */
     scopeServeGrant?: ScopeRepoServeGrant;
+    /**
+     * EI-18776567787336109 (secondary defect): called ONCE, synchronously, the
+     * moment this serve is KNOWN to have failed and — critically — BEFORE the
+     * duplex is ended, so the caller can put the reason on the wire while the
+     * requester's session still exists.
+     *
+     * The ordering is the whole point: ending the duplex sends the end frame,
+     * and the requester DELETES its session on that frame
+     * (serve-wiring.handleEndToClient), so any reason sent afterwards is
+     * silently dropped. Before this hook the serving side knew exactly why it
+     * failed (`timedOut=true`, a guard refusal, a spawn error), logged it
+     * locally, and told the requester NOTHING — the peer saw only a bare EOF
+     * and reported "serve channel closed". That opacity is what made a
+     * 120s-ceiling bug undiagnosable from the joining machine and cost several
+     * diagnosis wakes chasing the wrong half of a two-machine system.
+     */
+    onFailure?: (reason: string) => void;
   } = {},
 ): Promise<TransportResult> {
   return new Promise((resolve) => {
     let stderr = '';
     let settled = false;
     let timedOut = false;
+    let failureReported = false;
+    /** Fire the onFailure hook at most once, never letting it throw into us. */
+    const reportFailure = (reason: string): void => {
+      if (failureReported) return;
+      failureReported = true;
+      try {
+        opts.onFailure?.(reason);
+      } catch {
+        /* best-effort — the channel may already be gone */
+      }
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let hardTimer: ReturnType<typeof setTimeout> | undefined;
     const idleMs = opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
@@ -157,6 +185,7 @@ export function serveUploadPack(
       assertScopeServeAuthorized(repoPath, opts.scopeServeGrant);
     } catch (e) {
       stderr += e instanceof Error ? e.message : String(e);
+      reportFailure(`serve refused: ${e instanceof Error ? e.message : String(e)}`);
       try {
         duplex.end();
       } catch {
@@ -171,6 +200,9 @@ export function serveUploadPack(
     const killChild = (why: string): void => {
       timedOut = true;
       stderr += `\nupload-pack ${why} (served ${bytesServed}B)`;
+      // BEFORE the SIGKILL, so the reason is on the wire ahead of the end frame
+      // the child's 'close' will trigger (see `onFailure`).
+      reportFailure(`upload-pack ${why} (served ${bytesServed}B)`);
       try {
         child.kill('SIGKILL');
       } catch {
@@ -215,6 +247,7 @@ export function serveUploadPack(
     child.stdout.pipe(duplex);
     child.on('error', (e) => {
       stderr += String(e);
+      reportFailure(`upload-pack spawn failed: ${e instanceof Error ? e.message : String(e)}`);
       // WI-6184: END the duplex here too, not only in the 'close' handler. A
       // spawn failure (`spawn git ENOENT` — live-observed once on the tower
       // bg-host) is not guaranteed to also emit 'close', and without an end
@@ -230,6 +263,11 @@ export function serveUploadPack(
       finish(-1);
     });
     child.on('close', (code) => {
+      // A nonzero exit is a real failure the requester must be told about; a
+      // timeout already reported its (more specific) reason from killChild.
+      if ((code ?? -1) !== 0) {
+        reportFailure(`upload-pack exited ${code ?? -1}: ${stderr.trim().slice(0, 200) || 'no stderr'}`);
+      }
       try {
         duplex.end();
       } catch {

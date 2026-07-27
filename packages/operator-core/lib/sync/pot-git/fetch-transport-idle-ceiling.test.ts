@@ -101,6 +101,26 @@ function peerDuplex(): Duplex {
   });
 }
 
+/**
+ * Like {@link peerDuplex}, but records the ORDER of two events into `log`:
+ * `'end'` when `serveUploadPack` ends the duplex (which is what puts the end
+ * frame on the wire) and whatever the caller pushes from `onFailure`.
+ *
+ * Ordering is the entire contract being tested — see the ordering tests below.
+ */
+function orderRecordingDuplex(log: string[]): Duplex {
+  return new Duplex({
+    read() {},
+    write(_chunk, _enc, cb) {
+      cb();
+    },
+    final(cb) {
+      log.push('end');
+      cb();
+    },
+  });
+}
+
 describe('serveUploadPack — idle ceiling', () => {
   /**
    * THE BUG. A peer that is actively sending bytes must not be killed merely

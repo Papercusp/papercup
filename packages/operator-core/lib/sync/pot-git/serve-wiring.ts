@@ -686,7 +686,23 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     state.serverSessions.set(v.id, duplex);
     noteSessionHighWater(state);
     try {
-      const res = await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs, scopeServeGrant });
+      const res = await serveUploadPack(repoPath, duplex, {
+        timeoutMs: cfg.timeoutMs,
+        scopeServeGrant,
+        // EI-18776567787336109 (secondary defect): put the REASON on the wire.
+        // This fires before the duplex ends, which is the only window in which
+        // it can land — the requester deletes its session on the end frame, so
+        // `handleRefuse` would otherwise be a no-op. Reuses the existing
+        // `refuse` frame, so this is a zero-wire-change fix: peers running the
+        // older build already decode and surface it.
+        onFailure: (reason) => {
+          try {
+            state.messages?.refuse.send({ id: v.id, reason });
+          } catch {
+            /* best-effort — the channel may already be gone */
+          }
+        },
+      });
       // WI-6184: the one line that says a real fetch was served, and how it
       // ended. `code === 0` is the success signal; timedOut distinguishes "the
       // requester went away / upload-pack wedged" from a clean nonzero exit.
