@@ -38,6 +38,7 @@ import {
   withCarryNoteWalls,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
+  rescueTaggedCarryNoteBlob,
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
@@ -258,13 +259,30 @@ export default defineTool({
       };
     }
 
+    // EI-18833865002636933 — rescue-by-parse of a MALFORMED structured write. Seen live:
+    // an agent serialized its whole note as one XML-tagged string into `did`, so the cold
+    // wake got a single `## Did` section with literal `</did><left>…<checks>[…]` text in
+    // it — typed checks rows demoted to inert JSON prose, ✓/? badges gone, and NOTHING
+    // saying it had happened. Same philosophy as the `checks` z.preprocess above: the
+    // caller sent the right CONTENT in the wrong SHAPE, so parse it rather than refuse
+    // (refusing would have made this the FOURTH consecutive failed checkpoint that turn,
+    // leaving the cold wake with no note at all).
+    //
+    // Gated on siblings being ABSENT: a well-formed call that merely QUOTES `</did>` in
+    // its prose has left/insight/next set, so it is never touched. rescueTaggedCarryNote-
+    // Blob applies the second half of the guard (the full close-tag signature).
+    const rescued =
+      args.did !== undefined && args.left === undefined && args.insight === undefined && args.next === undefined
+        ? rescueTaggedCarryNoteBlob(args.did)
+        : null;
+    const fields = rescued
+      ? { did: rescued.did, left: rescued.left, insight: rescued.insight, next: rescued.next }
+      : { did: args.did, left: args.left, insight: args.insight, next: args.next };
     const hasStructured =
-      args.did !== undefined || args.left !== undefined || args.insight !== undefined || args.next !== undefined;
+      fields.did !== undefined || fields.left !== undefined || fields.insight !== undefined || fields.next !== undefined;
     // Structured fields win over a raw note (renderCarryNote skips blank sections, so an
     // all-blank structured write renders '' ⇒ a clear). Otherwise the raw note verbatim.
-    const baseNote = hasStructured
-      ? renderCarryNote({ did: args.did, left: args.left, insight: args.insight, next: args.next })
-      : args.note;
+    const baseNote = hasStructured ? renderCarryNote(fields) : args.note;
 
     // P-006 walls merge — commitments are cleared EXPLICITLY, never incidentally:
     //   explicit `walls` wins (its [] is the only true clear); a raw note's own
@@ -276,17 +294,21 @@ export default defineTool({
     const priorCheckParts = splitCarryNoteChecks(priorParts.body);
     const rawParts = splitCarryNoteWalls(baseNote ?? '');
     const rawCheckParts = splitCarryNoteChecks(rawParts.body);
+    // A rescued blob's own rows slot in where the explicit arg would have gone — an
+    // EXPLICIT `walls`/`checks` arg still wins outright (including its `[]` clear).
+    const effectiveWalls = args.walls ?? rescued?.walls;
+    const effectiveChecks = args.checks ?? rescued?.checks;
     const walls =
-      args.walls !== undefined
-        ? normalizeWallEntries(args.walls, priorParts.walls)
+      effectiveWalls !== undefined
+        ? normalizeWallEntries(effectiveWalls, priorParts.walls)
         : rawParts.walls.length > 0
           ? normalizeWallEntries(rawParts.walls, priorParts.walls)
           : priorParts.walls;
     // P-001 (cold-carry-system-hardening-2026-07-19): checks merge — identical
     // explicit-wins / raw-note-section-next / prior-carries-forward semantics as walls.
     const checks =
-      args.checks !== undefined
-        ? normalizeCheckEntries(args.checks, priorCheckParts.checks)
+      effectiveChecks !== undefined
+        ? normalizeCheckEntries(effectiveChecks, priorCheckParts.checks)
         : rawCheckParts.checks.length > 0
           ? normalizeCheckEntries(rawCheckParts.checks, priorCheckParts.checks)
           : priorCheckParts.checks;
@@ -309,8 +331,10 @@ export default defineTool({
     // Fire-and-forget + fully fail-open: a harvest miss must NEVER slow or break the
     // checkpoint write (the same discipline as the SSE-invalidate in capture-core). The
     // leg self-coalesces the verbatim carry-note that persists across consecutive wakes.
-    if (args.insight && args.insight.trim()) {
-      const insightText = args.insight;
+    // Reads `fields.insight`, not `args.insight`: a RESCUED insight is a real insight and
+    // must still reach the observation lane (EI-18833865002636933).
+    if (fields.insight && fields.insight.trim()) {
+      const insightText = fields.insight;
       const harvestHarness = harness !== '*' ? harness : undefined;
       void (async () => {
         try {
@@ -452,6 +476,22 @@ export default defineTool({
             length: stored?.length ?? 0,
             walls: walls.length,
             checks: checks.length,
+            // EI-18833865002636933: NEVER rescue silently. The original defect was that a
+            // mangled note reached the cold wake looking like sloppy authoring, with
+            // nothing saying it had been degraded — so a rescue must announce itself and
+            // teach the correct call shape.
+            ...(rescued
+              ? {
+                  rescued: {
+                    from: 'tagged-blob',
+                    recovered: Object.keys(rescued),
+                    note:
+                      'Your `did` was a whole structured note serialized as one XML-tagged string; it was PARSED ' +
+                      'back into sections + typed rows and stored correctly. Pass { did, left, insight, next, ' +
+                      'checks } as SEPARATE arguments — do not emit section tags inside a field value.',
+                  },
+                }
+              : {}),
             ...(uncheckedClaims.length > 0
               ? {
                   checksLint: {

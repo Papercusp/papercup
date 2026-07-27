@@ -264,6 +264,65 @@ export async function readImprovementItems(
 }
 
 /**
+ * Deps for {@link countImprovementItems}. A separate narrow type, same rationale as
+ * {@link CountObservationDeps} below: adding a required member to the shared
+ * {@link ReadImprovementDeps} would instantly stale every fixture that constructs it
+ * across the tree.
+ */
+export interface CountImprovementDeps {
+  countIssues: (filter: ListIssuesFilter) => Promise<number>;
+}
+
+const defaultCountImprovementDeps: CountImprovementDeps = { countIssues };
+
+/**
+ * The TRUE corpus total for the SAME filter {@link readImprovementItems} applies —
+ * a SQL `COUNT(*)`, not bounded by `limit` and never materialising a row
+ * (EI-18790490225750395 D2: `improvements:digest`'s `digest.total` was reporting
+ * the WINDOW size — it exactly tracked whatever `limit` the caller passed, 5/30/200
+ * in the filed repro — because `buildDigest`'s `total` is just `candidates.length`
+ * over whatever `readImprovementItems` happened to fetch. A caller reading
+ * `total: 30` reasonably read it as "30 captured", when the true corpus was far
+ * larger).
+ *
+ * `harnessScopes` (a per-Hive SET of scopes) sums one `COUNT` per scope — the
+ * shared `countIssues`/`listIssues` SQL only supports a single `scope` equality,
+ * not an IN-list — cheap since a Hive's member-harness set is small (unlike the
+ * corpus itself). `harnessSlug` (a single scope) is one direct `COUNT`.
+ *
+ * `loopOutputOnly` is NOT supported here (no current caller needs it for a count):
+ * fails loudly rather than silently counting the whole untagged corpus under a
+ * name that promises the loop's scoped output, mirroring {@link readByTopic}'s own
+ * fail-loud stance on the same option.
+ */
+export async function countImprovementItems(
+  opts: ReadImprovementOpts = {},
+  deps: CountImprovementDeps = defaultCountImprovementDeps,
+): Promise<number> {
+  if (opts.loopOutputOnly) {
+    throw new Error(
+      'countImprovementItems: loopOutputOnly is not supported for the scalar count (no caller needs it yet) — ' +
+        'resolve issueIds via readLoopOutputIds and count them directly, or extend this function.',
+    );
+  }
+  const origins = opts.origins ?? ORGANIC_ONLY;
+  const base: ListIssuesFilter = {
+    topic: IMPROVEMENT_TOPIC,
+    state: opts.state,
+    signalOrigins: origins,
+  };
+  if (opts.harnessScopes) {
+    if (opts.harnessScopes.length === 0) return 0; // mirrors readByTopic: an empty set matches nothing
+    const counts = await Promise.all(opts.harnessScopes.map((scope) => deps.countIssues({ ...base, scope })));
+    return counts.reduce((a, b) => a + b, 0);
+  }
+  if (opts.harnessSlug) {
+    return deps.countIssues({ ...base, scope: `harness:${opts.harnessSlug}` });
+  }
+  return deps.countIssues(base);
+}
+
+/**
  * Read observation-lane records (turn-end-reflection-observations-2026-06-14
  * D-005) as storage-agnostic candidates. Separate topic from
  * `readImprovementItems` so observations NEVER enter the work/triage pipeline —

@@ -33,6 +33,14 @@ function resolvePgUrl(): string {
   return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
 }
 
+/**
+ * Statuses that mean the gap item is CLOSED and its exemption is withdrawn.
+ * The unified enum folds the legacy tokens onto done/dropped, but rows written
+ * before that fold still carry the originals, so match the whole set — treating a
+ * legacy `resolved` as still-open would silently keep the exemption alive forever.
+ */
+const TERMINAL_STATUSES = new Set(['done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated']);
+
 interface StoredMetric {
   id: string;
   interpretable: boolean;
@@ -62,11 +70,17 @@ async function main() {
     // Which known-gap items have CLOSED. A closed gap withdraws the exemption.
     const refs = [...new Set(Object.values((await import('../packages/operator-core/lib/agent-plane-ratchet')).METRIC_KNOWN_GAPS))].filter(Boolean) as string[];
     if (refs.length > 0) {
-      const items = await sql<Array<{ id: string; state: string }>>`
-        SELECT id, state FROM harness_shared.work_items WHERE id = ANY(${refs})
+      // ⚠ The column is `feature_id`/`status`, NOT `id`/`state` — the work_items
+      // TOOL renames both in its result shape, so the obvious query compiles in
+      // your head and fails in Postgres. And the table is multi-tenant: an
+      // unscoped id filter can match another workspace's row.
+      const items = await sql<Array<{ feature_id: string; status: string }>>`
+        SELECT feature_id, status
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${refs})
       `;
-      closedGaps = new Set(items.filter((i) => i.state === 'done' || i.state === 'dropped').map((i) => i.id));
-      const unknown = refs.filter((r) => !items.some((i) => i.id === r));
+      closedGaps = new Set(items.filter((i) => TERMINAL_STATUSES.has(i.status)).map((i) => i.feature_id));
+      const unknown = refs.filter((r) => !items.some((i) => i.feature_id === r));
       for (const u of unknown) {
         console.error(`⚠ known-gap ref ${u} matches no work-item — the exemption it grants cannot be verified.`);
       }

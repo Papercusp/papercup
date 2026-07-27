@@ -112,29 +112,36 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
     enabled: true,
     summary: { total: rows.length, byState, byClass },
     live,
+    // `?? null` on every nullable field is load-bearing, not defensive noise: the
+    // store types these as `T | null | undefined`, and `JSON.stringify` DROPS an
+    // undefined-valued key entirely. Left alone, a task with no work-item would ship
+    // a row with no `workItemId` key at all rather than an explicit null, so the
+    // client could not distinguish "not attributed" from "field missing" — and the
+    // sync layer's row-delta negotiation diffs on key presence. Normalising here is
+    // what makes the wire shape total.
     rows: rows.map((r) => ({
       taskId: r.taskId,
-      parentTaskId: r.parentTaskId,
+      parentTaskId: r.parentTaskId ?? null,
       rootTaskId: r.rootTaskId,
       class: r.class,
       title: r.title,
       state: r.state,
       launchedBy: r.launchedBy,
-      workItemId: r.workItemId,
-      planSlug: r.planSlug,
+      workItemId: r.workItemId ?? null,
+      planSlug: r.planSlug ?? null,
       startedAt: r.startedAt,
-      endedAt: r.endedAt,
+      endedAt: r.endedAt ?? null,
       confined: r.confined,
-      scopeUnit: r.scopeUnit,
-      rssBytes: r.lastMemoryBytes,
-      peakRssBytes: r.peakMemoryBytes,
-      cpuUsec: r.cpuUsec,
-      pids: r.pidsCurrent,
-      memoryMaxBytes: r.memoryMaxBytes,
-      deadlineAt: r.deadlineAt,
-      exitCode: r.exitCode,
-      exitReason: r.exitReason,
-      logPath: r.logPath,
+      scopeUnit: r.scopeUnit ?? null,
+      rssBytes: r.lastMemoryBytes ?? null,
+      peakRssBytes: r.peakMemoryBytes ?? null,
+      cpuUsec: r.cpuUsec ?? null,
+      pids: r.pidsCurrent ?? null,
+      memoryMaxBytes: r.memoryMaxBytes ?? null,
+      deadlineAt: r.deadlineAt ?? null,
+      exitCode: r.exitCode ?? null,
+      exitReason: r.exitReason ?? null,
+      logPath: r.logPath ?? null,
     })),
   };
 }

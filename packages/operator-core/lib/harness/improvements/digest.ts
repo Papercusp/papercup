@@ -219,6 +219,37 @@ export function titleSimilarity(a: string, b: string): number {
 
 const NEAR_DUP_JACCARD = 0.8;
 
+/** Minimum length of a quoted span to count as an error/exception SIGNATURE rather
+ *  than incidental quoted prose (a short quoted word is not a distinguishing
+ *  identity signal). */
+const QUOTE_SIGNATURE_MIN_LEN = 20;
+/** Upper bound so a runaway/garbled quote (unterminated across a huge body) can't
+ *  produce a pathological match key. */
+const QUOTE_SIGNATURE_MAX_LEN = 400;
+
+/**
+ * Extract normalized quoted-error signatures from free text (EI-18790490225750395
+ * D3) — substrings wrapped in `"…"` or `` `…` ``, lowercased + whitespace-collapsed.
+ * Watchdog-filed items routinely quote the triggering error/exception string
+ * VERBATIM in the title or body; three items filed against the exact same Postgres
+ * error ("no unique or exclusion constraint matching the ON CONFLICT specification")
+ * had entirely different titles and were invisible to title-token dedup — a shared
+ * quoted signature is a far stronger identity signal than title-prose overlap for
+ * exactly this filing pattern.
+ */
+export function extractQuotedSignatures(text: string | undefined): string[] {
+  if (!text) return [];
+  const out: string[] = [];
+  const re = /"([^"]{1,1000})"|`([^`]{1,1000})`/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const raw = m[1] ?? m[2] ?? '';
+    const norm = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (norm.length >= QUOTE_SIGNATURE_MIN_LEN && norm.length <= QUOTE_SIGNATURE_MAX_LEN) out.push(norm);
+  }
+  return out;
+}
+
 /** Above this candidate count the O(n²) near-dup pass is skipped (exact-signature
  *  clusters are still returned). Dedup is best-effort surfacing, NOT a gate
  *  (D-001), so degrading to exact-signature-only on a pathological backlog is safe
@@ -227,22 +258,49 @@ const NEAR_DUP_JACCARD = 0.8;
  *  regex+sort+alloc storm + GC churn that saturated the loop at a 775+ backlog). */
 const NEAR_DUP_MAX_CANDIDATES = 4000;
 
-/** Cluster candidates that are likely duplicates (exact normalized-signature OR
- *  token-overlap ≥ NEAR_DUP_JACCARD). Best-effort surfacing for a cheap merge. */
+/** Cluster candidates that are likely duplicates (a shared quoted error/exception
+ *  signature, exact normalized title-signature, OR title token-overlap ≥
+ *  NEAR_DUP_JACCARD). Best-effort surfacing for a cheap merge. */
 export function findLikelyDuplicates(candidates: ImprovementCandidate[]): DupCluster[] {
-  // 1. exact signature groups — compute each signature ONCE (reused in step 2).
+  const clusters: DupCluster[] = [];
+  const claimed = new Set<string>();
+
+  // 0. quoted-error-signature groups (EI-18790490225750395 D3) — the STRONGEST
+  // identity signal, computed FIRST so it takes priority over the weaker
+  // title-based passes below: candidates quoting an IDENTICAL error/exception
+  // string cluster together even when their titles share no vocabulary at all.
+  const byQuoteSig = new Map<string, Set<string>>();
+  for (const c of candidates) {
+    const sigs = new Set([...extractQuotedSignatures(c.title), ...extractQuotedSignatures(c.body)]);
+    for (const sig of sigs) {
+      const set = byQuoteSig.get(sig) ?? new Set<string>();
+      set.add(c.id);
+      byQuoteSig.set(sig, set);
+    }
+  }
+  for (const [sig, idSet] of byQuoteSig) {
+    if (idSet.size > 1) {
+      // Prefixed so a reader (and a test) can tell a quote-based cluster apart
+      // from a title-signature one at a glance — same `signature` field, an
+      // unambiguous namespace rather than a second field every consumer would
+      // need to learn.
+      clusters.push({ signature: `quote:${sig}`, ids: [...idSet] });
+      idSet.forEach((id) => claimed.add(id));
+    }
+  }
+
+  // 1. exact TITLE signature groups — compute each signature ONCE (reused in step
+  // 2), skipping ids already claimed by the stronger quote-signature pass above.
   const bySig = new Map<string, string[]>();
   const sigById = new Map<string, string>();
   for (const c of candidates) {
     const sig = dedupSignature(c.title);
     sigById.set(c.id, sig);
-    if (!sig) continue;
+    if (!sig || claimed.has(c.id)) continue;
     const arr = bySig.get(sig) ?? [];
     arr.push(c.id);
     bySig.set(sig, arr);
   }
-  const clusters: DupCluster[] = [];
-  const claimed = new Set<string>();
   for (const [signature, ids] of bySig) {
     if (ids.length > 1) {
       clusters.push({ signature, ids });
