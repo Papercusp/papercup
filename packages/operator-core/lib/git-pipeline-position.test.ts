@@ -24,6 +24,8 @@ import {
   computeStages,
   evaluateServing,
   evaluateChangeInCandidate,
+  evaluateSweepExposure,
+  parsePorcelainPaths,
   deriveBlocker,
   type GitRunner,
   type PipelinePosition,
@@ -31,6 +33,7 @@ import {
   type ServingTruth,
   type StageName,
   type StageState,
+  type SweepExposure,
 } from './git-pipeline-position';
 import type { DevDeployState } from './dev-deploy-state';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';

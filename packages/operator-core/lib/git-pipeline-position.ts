@@ -485,6 +485,13 @@ export interface PipelinePosition {
    */
   changeInCandidate: ChangeInCandidate;
   /**
+   * P-006: whether the next git-sync tick will sweep this change into a commit, and
+   * how much of the tree it takes with it. `changeInCandidate` answers "is the judged
+   * commit my code"; this answers the question one step earlier — "what commit is
+   * about to be MADE out of my half-finished tree, and can the gate judge it".
+   */
+  sweepExposure: SweepExposure;
+  /**
    * git-pipeline-agent-state-2026-07-26 P-001: per-stage POSITION x HEALTH,
    * ordered source->live.
    *
@@ -809,6 +816,124 @@ export function evaluateChangeInCandidate(args: {
   return base;
 }
 
+/**
+ * P-006 (EI-18735166063643844, EI-18739606737220804): in this repo an agent CANNOT
+ * commit atomically. git-sync owns commit and fires on a fixed interval, sweeping
+ * whatever happens to be on disk at that instant into one `chore(git-sync):
+ * auto-commit` under its own authorship — mid-edit, mid-refactor, mid-anything.
+ *
+ * So a multi-file change has a WINDOW in which a partial (often non-compiling)
+ * intermediate becomes a real commit, and the green-checkpoint can cut its candidate
+ * INSIDE that window and faithfully judge it. The cost is measured, not theoretical:
+ * a candidate cut at 14:09 produced 29 failures for a retirement whose dependent-fix
+ * commit landed at 14:36 — every one of them already green at tip, and a peer spent a
+ * wake triaging code that was never broken.
+ *
+ * What this surface can honestly add is the WINDOW and the BLAST RADIUS: how many
+ * paths the next sweep will take (never just yours — git-sync commits the whole tree)
+ * and when it fires. Deliberately NO lever: nothing an agent can call makes the commit
+ * atomic, and inventing one here would be the fabricated-action failure P-005's null
+ * levers exist to prevent. This is a timing fact you act on by finishing the set.
+ */
+export interface SweepExposure {
+  /**
+   * The probed path has uncommitted edits, so the next git-sync tick WILL commit it —
+   * whatever state it is in. False for a clean path and for a sha-only probe.
+   */
+  exposed: boolean;
+  /**
+   * How many paths in the WHOLE tree the next sweep would take — the blast radius,
+   * which is the number that matters: >1 means the sweep cannot cut your change alone.
+   * `null` when not measured (clean path / sha-only probe / unreadable status).
+   */
+  dirtyPathCount: number | null;
+  /** A bounded sample of them, so a caller can see whether the sweep spans more than its own edit. */
+  dirtyPathSample: string[];
+  /** ms until git-sync's next scheduled tick; null when the routine's next fire is unknown. */
+  nextSweepInMs: number | null;
+  detail: string | null;
+}
+
+/** Nothing to be exposed to — a clean path, or a sha-only probe. */
+const NO_SWEEP_EXPOSURE: SweepExposure = {
+  exposed: false,
+  dirtyPathCount: null,
+  dirtyPathSample: [],
+  nextSweepInMs: null,
+  detail: null,
+};
+
+/** How many dirty paths to name before summarising the rest as a count. */
+const SWEEP_SAMPLE_LIMIT = 6;
+
+/**
+ * Pure: turn the dirty set + the sweep clock into the caller-facing exposure. Split
+ * from the git read for the same reason evaluateChangeInCandidate is — the phrasing IS
+ * the deliverable, and it must be testable without a repo mid-refactor.
+ */
+export function evaluateSweepExposure(args: {
+  dirtyUncommitted: boolean;
+  /** Tree-wide dirty paths (`git status --porcelain`), or null when not measured. */
+  dirtyPaths: string[] | null;
+  /** git-sync's next scheduled fire (epoch ms), from the routine row. */
+  nextSweepAtMs: number | null;
+  nowMs?: number;
+}): SweepExposure {
+  const { dirtyUncommitted, dirtyPaths, nextSweepAtMs } = args;
+  if (!dirtyUncommitted) return NO_SWEEP_EXPOSURE;
+
+  const now = args.nowMs ?? Date.now();
+  // Never `=== null` a timestamp that came from free-form routine state: `undefined`
+  // slips straight through and renders as "NaN min" (the carry note from P-003).
+  // A next-fire already in the past means the tick is DUE, not negative — clamp to 0.
+  const nextSweepInMs = Number.isFinite(nextSweepAtMs) ? Math.max(0, (nextSweepAtMs as number) - now) : null;
+  const count = dirtyPaths ? dirtyPaths.length : null;
+  const sample = (dirtyPaths ?? []).slice(0, SWEEP_SAMPLE_LIMIT);
+
+  const when =
+    nextSweepInMs === null
+      ? 'at its next tick'
+      : nextSweepInMs < 60_000
+        ? 'within the next MINUTE'
+        : `in ~${Math.round(nextSweepInMs / 60_000)} min`;
+
+  // The single-file case is a genuinely different answer, not a weaker version of the
+  // multi-file one: one dirty path cannot be cut into a partial set, so the sweep is
+  // simply how the change gets committed. Saying "⚠ a broken intermediate may be
+  // judged" there would be a false alarm, and a surface that cries wolf on the common
+  // case is how the real multi-file warning gets skimmed past.
+  if (count !== null && count <= 1) {
+    return {
+      exposed: true,
+      dirtyPathCount: count,
+      dirtyPathSample: sample,
+      nextSweepInMs,
+      detail:
+        `git-sync will commit this file ${when} under its own message (\`chore(git-sync): auto-commit\`) — ` +
+        `you do not commit here. Nothing else in the tree is dirty, so the sweep cannot cut a partial set.`,
+    };
+  }
+
+  const radius =
+    count === null
+      ? 'the whole tree'
+      : `all ${count} dirty path(s)` +
+        (sample.length ? ` (${sample.join(', ')}${count > sample.length ? `, +${count - sample.length} more` : ''})` : '');
+
+  return {
+    exposed: true,
+    dirtyPathCount: count,
+    dirtyPathSample: sample,
+    nextSweepInMs,
+    detail:
+      `⚠ SWEEP-EXPOSED: git-sync commits the WHOLE TREE, so its next tick (${when}) takes ${radius} in ONE auto-commit — ` +
+      `including any file you are mid-way through. The green-checkpoint can then cut its candidate at that commit and ` +
+      `faithfully judge the intermediate, producing a red that does NOT reproduce at tip (EI-18735166063643844). ` +
+      `You cannot make this atomic — git-sync owns commit — so either finish the set before the tick, or read a red ` +
+      `landing in this window against the candidate sha before believing it (dev:pipeline_position reports containment).`,
+  };
+}
+
 /** A stage a change must clear to be live, ordered source->live. */
 export type StageName = 'committed' | 'pushed' | 'gate' | 'main' | 'deployed' | 'serving';
 
@@ -858,6 +983,7 @@ export function computeStages(
     | 'gitSync'
     | 'serving'
     | 'changeInCandidate'
+    | 'sweepExposure'
   >,
 ): StageState[] {
   // A path whose runtime does NOT go through the release pipeline (bg-host, gateway,
@@ -885,14 +1011,28 @@ export function computeStages(
   // committed — about MY CHANGE, not merely the path. `positions.committedLocal`
   // means "this path exists at some commit", which reads as "my change is
   // committed" and is the single most-misread signal in this surface.
+  //
+  // P-006: `git-sync:run` is a TREE-WIDE sweep, not a commit of your file. Told to an
+  // agent halfway through a multi-file refactor, the unqualified lever is an
+  // instruction to commit the broken intermediate ON PURPOSE and hand it to the gate —
+  // exactly the shape EI-18735166063643844 measured happening by accident. The lever
+  // stays (it is still the right move once the set is complete); the blast radius rides
+  // with it so the caller can tell which situation they are in.
+  const sweep = p.sweepExposure;
+  const multiFileSweep = sweep.dirtyPathCount !== null && sweep.dirtyPathCount > 1;
   stages.push({
     name: 'committed',
     position: p.positions.committedLocal && !p.dirtyUncommitted ? 'past' : 'pending',
     health: p.dirtyUncommitted ? 'stalled' : 'advancing',
     detail: p.dirtyUncommitted
-      ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.'
+      ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.' +
+        (sweep.detail ? ` ${sweep.detail}` : '')
       : null,
-    lever: p.dirtyUncommitted ? 'git-sync:run (commit the working tree — the gate cannot see it)' : null,
+    lever: p.dirtyUncommitted
+      ? multiFileSweep
+        ? `git-sync:run (commit the working tree — the gate cannot see it) — ⚠ this sweeps ALL ${sweep.dirtyPathCount} dirty paths in the tree, not just yours; only fire it once the set is complete`
+        : 'git-sync:run (commit the working tree — the gate cannot see it)'
+      : null,
   });
 
   // pushed — P-002. The push leg fails INDEPENDENTLY of the commit leg, and its
@@ -1233,6 +1373,25 @@ async function resolveSubmodulePin(
   return m ? m[1] : null;
 }
 
+/**
+ * P-006: paths out of `git status --porcelain`. Column layout is fixed (`XY <path>`),
+ * and a rename is `XY <old> -> <new>` — take the NEW path, since that is what the
+ * sweep commits. Exported for the test that pins the rename case, which is the one
+ * shape a naive `slice(3)` gets silently wrong.
+ */
+export function parsePorcelainPaths(out: string): string[] {
+  return out
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length > 3)
+    .map((l) => {
+      const rest = l.slice(3);
+      const arrow = rest.indexOf(' -> ');
+      return (arrow >= 0 ? rest.slice(arrow + 4) : rest).replace(/^"|"$/g, '');
+    })
+    .filter((p) => p.length > 0);
+}
+
 /** Parse `.gitmodules` submodule paths (best-effort). */
 async function submodulePaths(git: GitRunner, root: string): Promise<string[]> {
   const out = await git(root, ['config', '--file', '.gitmodules', '--get-regexp', 'path']);
@@ -1264,6 +1423,22 @@ function servingNote(p: Pick<PipelinePosition, 'positions' | 'serving'>): string
 }
 
 /**
+ * P-006: the one-line form of `sweepExposure` — empty unless the sweep would take MORE
+ * than this one file, because only then is there something the reader does not already
+ * know from "+uncommitted edits".
+ */
+function sweepClause(sweep: SweepExposure): string {
+  if (!sweep.exposed || sweep.dirtyPathCount === null || sweep.dirtyPathCount <= 1) return '';
+  const when =
+    sweep.nextSweepInMs === null
+      ? 'next git-sync tick'
+      : sweep.nextSweepInMs < 60_000
+        ? 'next git-sync tick (DUE — under a minute)'
+        : `next git-sync tick (~${Math.round(sweep.nextSweepInMs / 60_000)} min)`;
+  return ` — SWEEP-EXPOSED: the ${when} commits all ${sweep.dirtyPathCount} dirty paths as ONE auto-commit, and the gate can cut its candidate there and judge that intermediate`;
+}
+
+/**
  * P-005: the lead clause — the answer to "is my change live, and if not what is the one
  * thing blocking it", placed FIRST because that is the question the caller arrived with.
  *
@@ -1292,7 +1467,12 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
     return `${label}: no commit found${p.dirtyUncommitted ? ' (uncommitted edits present, not yet committed)' : ''}.`;
   }
   const subj = p.targetSubject ? ` "${p.targetSubject.slice(0, 60)}"` : '';
-  const dirty = p.dirtyUncommitted ? ' ⚠ +uncommitted edits' : '';
+  // P-006: the bare "+uncommitted edits" is true but reads as a note about ONE file.
+  // When the sweep would take several, that is a different fact — a broken intermediate
+  // can be committed and judged — and it belongs in the one line most readers stop at.
+  // Rendered into `dirty` rather than appended at the end so EVERY summary branch
+  // (submodule, non-release runtime, the main line) carries it without three edits.
+  const dirty = p.dirtyUncommitted ? ` ⚠ +uncommitted edits${sweepClause(p.sweepExposure)}` : '';
 
   // WI-5440: a path with MULTIPLE consumers on different activation routes —
   // naming only one (the old single-`runtime` behavior) can confidently route
@@ -1417,9 +1597,17 @@ export async function gitPipelinePosition(
 
   // Dirty (uncommitted) check for a path.
   let dirtyUncommitted = false;
+  // P-006: the blast radius of the next sweep — the WHOLE tree, not this path. Read
+  // only when the probed path is itself dirty, so a clean probe pays nothing for it
+  // (this module is on dev:pipeline_position's hot path).
+  let dirtyPaths: string[] | null = null;
   if (inp.path) {
     const st = await git(gitDir, ['status', '--porcelain', '--', relPath || '.']);
     dirtyUncommitted = !!st && st.length > 0;
+    if (dirtyUncommitted) {
+      const all = await git(gitDir, ['status', '--porcelain']);
+      dirtyPaths = all === null ? null : parsePorcelainPaths(all);
+    }
   }
 
   // Resolve the target sha: explicit sha, else the path's last commit.
@@ -1606,6 +1794,18 @@ export async function gitPipelinePosition(
     };
   }
 
+  // P-006: the sweep window. `routines.gitSync.nextFireAtMs` is the scheduler's own
+  // next-fire, so this reports when the commit will ACTUALLY happen rather than
+  // re-deriving it from an assumed interval that a retuned routine would falsify.
+  const sweepExposure = evaluateSweepExposure({
+    dirtyUncommitted,
+    dirtyPaths,
+    nextSweepAtMs: snap.routines?.gitSync?.nextFireAtMs ?? null,
+  });
+  if (sweepExposure.exposed && (sweepExposure.dirtyPathCount ?? 0) > 1) {
+    notes.push(`SWEEP-EXPOSED: ${sweepExposure.detail}`);
+  }
+
   // Everything computeStages needs, before the stage table — and before deriveBlocker,
   // which reads that table to pick blockedOn/nextAction.
   const preStages: Omit<PipelinePosition, 'summary' | 'stages' | 'blockedOn' | 'nextAction'> = {
@@ -1644,6 +1844,7 @@ export async function gitPipelinePosition(
     runtimes,
     serving,
     changeInCandidate,
+    sweepExposure,
     notes,
   };
   const stages = computeStages(preStages);

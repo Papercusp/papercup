@@ -372,10 +372,22 @@ describe('pot-git publish-guard (real bare repo)', () => {
 
     it('yields identical findings with a 1-byte budget as with an unbounded one', async () => {
       const base = await commit(repo, { 'chunk-base.txt': 'base' });
-      const fakeKey = ['AKIA', 'CHUNKCHUNKCHUNKZ'].join('');
       const files: Record<string, string> = {};
       for (let i = 0; i < 12; i++) files[`src/chunk-${i}.ts`] = `export const v${i} = ${i};\n`.repeat(20);
-      files['deep/buried.env'] = `AWS_ACCESS_KEY_ID=${fakeKey}\n`;
+      // THREE secrets in three separate blobs, deliberately. With a single
+      // planted secret a "scan only the first chunk" regression could survive
+      // on the luck of `rev-list --objects` ordering; with three, any mutant
+      // that stops early yields strictly fewer findings than the unbounded
+      // read no matter what order git enumerates the range in.
+      const keys = ['CHUNKCHUNKCHUNKZ', 'SECONDSECONDSECZ', 'THIRDTHIRDTHIRDZ'].map((s) => ['AKIA', s].join(''));
+      // Each secret sits on LINE 3, never line 1. That makes the assertion
+      // order-independent proof that content is read by its DECLARED SIZE: a
+      // parser that truncated a blob at its first newline would miss all three
+      // whatever order `rev-list --objects` happens to enumerate the range in.
+      const env = (k: string) => `# settings\n# managed file\nAWS_ACCESS_KEY_ID=${k}\n`;
+      files['deep/buried.env'] = env(keys[0]);
+      files['other/second.env'] = env(keys[1]);
+      files['third/third.env'] = env(keys[2]);
       const tip = await commit(repo, files, base);
 
       // scanChunkBytes:1 forces one blob per chunk — the maximum-fragmentation
@@ -388,10 +400,16 @@ describe('pot-git publish-guard (real bare repo)', () => {
         caps: { scanChunkBytes: 64 * 1024 * 1024 },
       });
 
-      const fingerprint = (r: typeof tiny) => r.secretFindings.map((f) => `${f.path}:${f.line}:${f.rule}`);
+      const fingerprint = (r: typeof tiny) => r.secretFindings.map((f) => `${f.path}:${f.line}:${f.rule}`).sort();
       expect(tiny.refusalCode).toBe('secrets');
       expect(fingerprint(tiny)).toEqual(fingerprint(huge));
-      expect(fingerprint(tiny)).toContain('deep/buried.env:1:aws-access-key-id');
+      // All three must be present in the maximally-fragmented read — this is
+      // the assertion that has teeth against an early-stopping scan loop.
+      expect(fingerprint(tiny)).toEqual([
+        'deep/buried.env:3:aws-access-key-id',
+        'other/second.env:3:aws-access-key-id',
+        'third/third.env:3:aws-access-key-id',
+      ]);
     });
 
     it('parses the batch stream byte-exactly: multi-line and BINARY blobs never desync the frame parser', async () => {
@@ -406,7 +424,11 @@ describe('pot-git publish-guard (real bare repo)', () => {
           // Content with NUL bytes: must be SKIPPED as binary, and the frame
           // AFTER it must still be read at the correct byte offset.
           'assets/blob.bin': 'PK  binary payload '.repeat(50),
-          'later/leak.env': `AWS_ACCESS_KEY_ID=${fakeKey}\n`,
+          // Secret on LINE 3, never line 1 — see the equivalence test above. A
+          // parser that truncated each blob at its first newline would miss it
+          // regardless of the order git enumerates the range in, so this
+          // assertion genuinely pins size-driven framing rather than luck.
+          'later/leak.env': `# settings\n# managed file\nAWS_ACCESS_KEY_ID=${fakeKey}\n`,
         },
         base,
       );
@@ -421,7 +443,7 @@ describe('pot-git publish-guard (real bare repo)', () => {
       // Found at its TRUE path and line ⇒ the parser stayed in sync across both
       // the newline-dense blob and the NUL-carrying one.
       expect(res.refusalCode).toBe('secrets');
-      expect(res.secretFindings.some((f) => f.path === 'later/leak.env' && f.line === 1)).toBe(true);
+      expect(res.secretFindings.some((f) => f.path === 'later/leak.env' && f.line === 3)).toBe(true);
       expect(res.secretFindings.some((f) => f.path === 'assets/blob.bin')).toBe(false);
     });
 
