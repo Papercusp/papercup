@@ -326,6 +326,110 @@ describe('rule (f) — total, and fails closed on a missing reader', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE CELL GATE (P-030 acceptance) — the goal leg passes getCell(cell, reader)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * P-030's acceptance is that "every read passes `getCell(cell, reader)`… and a
+ * deliberate bypass of `getCell(cell, reader)` here turns P-028's suite RED".
+ * P-028's three legs gate the REGISTRY (no reader-less accessor, no unchecked
+ * call site); this block gates the CONSUMER — that the goal leg actually consults
+ * the gate, rather than merely being able to.
+ *
+ * Both halves are needed, and neither substitutes for the other: a surface can
+ * honour P-028 perfectly (never touching `getCellUnchecked`) while simply never
+ * asking the registry anything at all.
+ */
+describe('the goal leg passes the P-019 cell gate', () => {
+  const sources = {
+    holderGoal: async () => goal(),
+    holderAssumptionKeys: async () => ['assumption:a'],
+  };
+
+  it('discloses the goal to a reader the cell admits', async () => {
+    const ctx = await resolveHolderContext('su-holder', { ownerId: 'su-reader' }, sources, {
+      nowMs: NOW,
+    });
+    expect(ctx?.goalRef).toBe('P-026');
+  });
+
+  /**
+   * ⚠ AN UNREGISTERED CELL FAILS CLOSED. This is the honest reading of "the goal
+   * cell does not exist in this process" — and it is also the case a successor is
+   * most likely to hit, since the registry is populated by an import side effect
+   * (`agent-tools/cell-registrations-wiring.ts`) that a narrow unit test does not
+   * pull in.
+   */
+  it('discloses NO goal when the cell is not registered', async () => {
+    __resetCellRegistryForTests();
+    const ctx = await resolveHolderContext('su-holder', { ownerId: 'su-reader' }, sources, {
+      nowMs: NOW,
+    });
+    expect(ctx?.goalRef).toBeNull();
+    // …while the assumptions leg, which carries its OWN audience boundary, is
+    // untouched. The gate degrades one field, never the whole projection.
+    expect(ctx?.assumptions.count).toBe(1);
+  });
+
+  /**
+   * ⚠ A REFUSAL IS INDISTINGUISHABLE FROM AN ABSENCE (D-056 / rule b). Re-register
+   * the cell narrowed to a DIFFERENT owner and a stranger must get byte-identical
+   * output to a holder who simply declared no goal — not an error, not a flag, not
+   * a differently-shaped result. Anything else is a probe oracle for the existence
+   * of state the reader may not read.
+   */
+  it('a refused goal read is byte-identical to a holder with no goal', async () => {
+    __resetCellRegistryForTests();
+    registerCell({
+      ...AGENT_GOAL_CELL,
+      visibility: { kind: 'owner', ref: 'su-somebody-else' },
+    } as CellSpec);
+
+    const refused = await resolveHolderContext('su-holder', { ownerId: 'su-reader' }, sources, {
+      nowMs: NOW,
+    });
+    const noGoal = await resolveHolderContext(
+      'su-holder',
+      { ownerId: 'su-reader' },
+      { ...sources, holderGoal: async () => null },
+      { nowMs: NOW },
+    );
+    expect(refused).toEqual(noGoal);
+    expect(refused?.goalRef).toBeNull();
+  });
+
+  it('the gate keys on the SAME id the registration uses', () => {
+    // A hand-typed 'agent.goal' in the gate that drifts from the registration does
+    // not throw — getCell just returns undefined and the surface silently discloses
+    // nothing, forever. One constant is what makes that unreachable.
+    expect(AGENT_GOAL_CELL.cell).toBe(AGENT_GOAL_CELL_ID);
+  });
+
+  /**
+   * ⚠ THE DELIBERATE VIOLATION (P-030 acceptance). Deleting the `getCell` call is
+   * the bypass this whole block exists to catch, and a behavioural test alone
+   * cannot see it: a bypassing implementation returns MORE data, and every
+   * assertion above that expects a goal still passes. Only asserting the CALL is
+   * present catches the removal.
+   */
+  it('DELIBERATE VIOLATION: removing the getCell call is detectable in the source', () => {
+    const src = readRepoFile(__dirname, 'packages/operator-core/lib/coord/holder-context.ts');
+    const code = stripComments(src);
+    expect(
+      code,
+      'the goal leg must gate on getCell(AGENT_GOAL_CELL_ID, reader) — without it this ' +
+        'surface serves a holder\'s goal with no P-019 audience check at all, and it fails ' +
+        'OPEN (more data, no error), so no content assertion can catch it',
+    ).toMatch(/getCell\(\s*AGENT_GOAL_CELL_ID\s*,/);
+
+    // …and the detector is not vacuous: the ungated form must NOT match.
+    expect(/getCell\(\s*AGENT_GOAL_CELL_ID\s*,/.test('const goal = await sources.holderGoal(h);')).toBe(
+      false,
+    );
+  });
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // THE D-047 ROW 7 PARITY GATE — no caller reaches goal data by another route
 // ═════════════════════════════════════════════════════════════════════════════

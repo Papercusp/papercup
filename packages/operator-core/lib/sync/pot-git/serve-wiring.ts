@@ -874,14 +874,26 @@ export interface ServeAdmission {
 export const DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO = 2;
 
 /** WI-6412: how recently a serve must have written for rule 0 to call it "still
- *  streaming". Sized against the two clocks that actually matter: a healthy
- *  transfer at the observed ~23MB/s writes essentially continuously, so 5s is
- *  far longer than any drain pause a live peer produces; and it is well under
- *  the ~15s re-request period, so a genuinely abandoned serve is still reaped by
- *  rule 1 on the very next re-request. Erring long is the safe direction — a
- *  too-long window briefly refuses a real request (which retries), a too-short
- *  one restores the livelock. */
-export const DEFAULT_SERVE_PROGRESS_WINDOW_MS = 5_000;
+ *  streaming".
+ *
+ *  Sized by the ASYMMETRY of being wrong, because the two errors are not
+ *  comparable:
+ *
+ *   - TOO SHORT is unbounded. `lastWriteAt` stamps when a chunk was handed to
+ *     this duplex, so a peer that stops draining — a slow link, a long
+ *     backpressure stall — looks identical to one that vanished. Call a live
+ *     transfer stale and we discard it, and the livelock simply returns for
+ *     slow peers, who are exactly the peers a 4GB transfer is hardest for.
+ *   - TOO LONG is bounded and self-correcting. An abandoned serve holds its
+ *     slot for at most one extra re-request cycle: the next request is refused
+ *     `busy-streaming`, and the one after that (past the window) supersedes it
+ *     normally. Rule 2's cap still bounds concurrency throughout.
+ *
+ *  So this is deliberately generous rather than tight: comfortably longer than
+ *  any plausible drain stall, while still far under the requester's own 120s
+ *  idle ceiling (DEFAULT_FETCH_TIMEOUT_MS), which is the point past which the
+ *  requester has itself given up and the serve is moot either way. */
+export const DEFAULT_SERVE_PROGRESS_WINDOW_MS = 30_000;
 
 /**
  * Decide whether to admit an inbound serve — the whole concurrency rule, as a

@@ -68,7 +68,15 @@ export async function applyPendingMigrationsAtBoot(): Promise<BootMigrateResult 
 export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | null> {
   const sqlDir = resolveSqlDir();
   if (!sqlDir) {
-    console.warn('[boot-migrate] sql dir not found — skipping boot apply');
+    // EI-18737837917400418: this used to be a console.warn — easy to miss on a
+    // packaged/headless boot where nobody is watching the console, and the
+    // silence let the EI-13992 safety net stay dark for a real deploy for days.
+    // Log LOUD, with exactly what was tried, so a misconfigured
+    // PAPERCUSP_PG_SQL_DIR (or a genuinely missing sql dir) is diagnosable from
+    // the boot log alone instead of requiring a live repro.
+    console.error(
+      `[boot-migrate] sql dir not found — skipping boot apply. Candidates tried: ${sqlDirCandidates().join(', ')}`,
+    );
     return null;
   }
 

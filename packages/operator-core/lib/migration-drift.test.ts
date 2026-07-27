@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { computeSchemaAhead, classifyMissingByDeployedTree, resolveDeployedSqlDir } from './migration-drift';
+import { computeSchemaAhead, classifyMissingByDeployedTree, resolveDeployedSqlDir, resolveSqlDir } from './migration-drift';
 
 /**
  * WI-5050 (WI-4070 class): `schemaAhead` flags applied migrations numbered
@@ -81,6 +81,62 @@ describe('classifyMissingByDeployedTree', () => {
   it('is empty-safe', () => {
     expect(classifyMissingByDeployedTree([], [])).toEqual({ missingDeployed: [], missingPendingDeploy: [] });
     expect(classifyMissingByDeployedTree([], null)).toEqual({ missingDeployed: [], missingPendingDeploy: [] });
+  });
+});
+
+/**
+ * EI-18737837917400418: a packaged/headless deploy (a Tauri sidecar, a
+ * standalone rig install) has no repo tree above cwd, so `resolveSqlDir` MUST
+ * be resolvable from `PAPERCUSP_PG_SQL_DIR` alone — it used to try only
+ * repo-relative candidates and silently return null on such a layout, which
+ * skipped the EI-13992 boot-apply safety net on every boot.
+ */
+describe('resolveSqlDir', () => {
+  const tmpRoots: string[] = [];
+  const savedEnv = process.env.PAPERCUSP_PG_SQL_DIR;
+
+  afterEach(() => {
+    for (const p of tmpRoots.splice(0)) fs.rmSync(p, { recursive: true, force: true });
+    if (savedEnv === undefined) delete process.env.PAPERCUSP_PG_SQL_DIR;
+    else process.env.PAPERCUSP_PG_SQL_DIR = savedEnv;
+  });
+
+  it('resolves from PAPERCUSP_PG_SQL_DIR alone with NO repo tree above cwd (packaged layout)', () => {
+    // A cwd with nothing above it resembling libs/papercusp/libs/db/sql — the
+    // packaged-install case that used to fall through to null.
+    const packagedCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-packaged-'));
+    tmpRoots.push(packagedCwd);
+    const envSqlDir = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-env-sql-'));
+    tmpRoots.push(envSqlDir);
+    fs.writeFileSync(path.join(envSqlDir, '001-a.sql'), '-- noop\n');
+
+    process.env.PAPERCUSP_PG_SQL_DIR = envSqlDir;
+    expect(resolveSqlDir(packagedCwd)).toBe(envSqlDir);
+  });
+
+  it('falls back to repo-relative candidates when the env var is unset', () => {
+    delete process.env.PAPERCUSP_PG_SQL_DIR;
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-inrepo-'));
+    tmpRoots.push(parent);
+    const sqlDir = path.join(parent, 'libs/papercusp/libs/db/sql');
+    fs.mkdirSync(sqlDir, { recursive: true });
+    expect(resolveSqlDir(parent)).toBe(sqlDir);
+  });
+
+  it('falls back to repo-relative candidates when the env var points at a nonexistent dir', () => {
+    process.env.PAPERCUSP_PG_SQL_DIR = '/definitely/not/a/real/dir/xyz';
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-inrepo2-'));
+    tmpRoots.push(parent);
+    const sqlDir = path.join(parent, 'libs/papercusp/libs/db/sql');
+    fs.mkdirSync(sqlDir, { recursive: true });
+    expect(resolveSqlDir(parent)).toBe(sqlDir);
+  });
+
+  it('returns null when neither the env var nor any repo-relative candidate exists', () => {
+    process.env.PAPERCUSP_PG_SQL_DIR = '/definitely/not/a/real/dir/xyz';
+    const packagedCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-nothing-'));
+    tmpRoots.push(packagedCwd);
+    expect(resolveSqlDir(packagedCwd)).toBeNull();
   });
 });
 

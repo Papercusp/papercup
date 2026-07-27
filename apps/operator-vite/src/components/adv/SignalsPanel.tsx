@@ -325,9 +325,19 @@ export function SignalsPanel({
       ) : sync.loading && !snap ? (
         <p className="pc-learning__quietempty">Loading signal state…</p>
       ) : cadence == null && ranTicks.length === 0 ? (
+        // WI-6410 (copy only — no behaviour, no data wiring; see the plan's
+        // D-006). The old title was "No signal state recorded yet — the
+        // accumulator sweep has not run on this workspace", which had the two
+        // defects WI-6388 fixed everywhere else on this tab: "accumulator
+        // sweep" is internal vocabulary, and the clause after the dash asserts a
+        // CAUSE this branch cannot establish. The condition here is only
+        // `cadence == null && no ticks`, which is equally consistent with a
+        // fresh install, a paused loop, or a workspace with nothing to score.
+        // State the observed condition; teach what makes data appear.
         <LearningVisualEmpty
           icon={Rss}
-          title="No signal state recorded yet — the accumulator sweep has not run on this workspace."
+          title="No signal state recorded yet"
+          body="This view shows which signals are building toward the next cycle, and whether they are strong enough to fire one. Signal state appears here once this workspace has recorded some."
         />
       ) : (
         <>

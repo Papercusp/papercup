@@ -44,7 +44,11 @@
  * applies to its own work-item leg, applied to the display side.
  */
 import { z } from 'zod';
-import { resolveHolderContext, type HolderContext } from '../../coord/holder-context';
+import {
+  resolveHolderContext,
+  type HolderContext,
+  type HolderContextSources,
+} from '../../coord/holder-context';
 import { holderContextSources } from '../coordination/holder-context-sources';
 import { isTerminalStateInput } from '../../work-item-dispatch-states';
 import type { CellReader } from '../../cell-registry';
@@ -150,7 +154,15 @@ export function rowHasLiveHolder(row: HolderLensRow): boolean {
 export async function attachHolderContext<T extends HolderLensRow>(
   rows: readonly T[],
   reader: CellReader | null | undefined,
-  opts: { nowMs?: number; distinctCap?: number } = {},
+  opts: {
+    nowMs?: number;
+    distinctCap?: number;
+    /** The IO legs, INJECTED — the same split P-026 uses (`coord/holder-context.ts`
+     *  pure, `holder-context-sources.ts` the only part that touches a store). It is
+     *  what lets this lens be unit-tested without a database, and it is why this
+     *  suite needs no module mocking. */
+    sources?: HolderContextSources;
+  } = {},
 ): Promise<(T & HolderLensFields)[]> {
   const out = (rows ?? []).map((r) => ({ ...r })) as (T & HolderLensFields)[];
   // No identified reader ⇒ no reader-relative state, and the rows pass through
@@ -170,7 +182,7 @@ export async function attachHolderContext<T extends HolderLensRow>(
   if (wanted.length === 0) return out;
 
   const resolved = wanted.slice(0, cap);
-  const sources = holderContextSources();
+  const sources = opts.sources ?? holderContextSources();
   const byOwner = new Map<string, HolderContext | null>();
   await Promise.all(
     resolved.map(async (owner) => {

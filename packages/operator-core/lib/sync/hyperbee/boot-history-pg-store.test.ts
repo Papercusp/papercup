@@ -14,7 +14,7 @@
  * index, so they don't depend on that ordering.
  */
 import { describe, expect, it } from 'vitest';
-import { insertBootHistoryEventPg, listBootHistoryEventsPg } from './boot-history-pg-store';
+import { insertBootHistoryEventPg, isVitestOrigin, listBootHistoryEventsPg } from './boot-history-pg-store';
 import type { BootHistoryEntry } from './boot-history';
 
 interface Call {
@@ -70,6 +70,23 @@ describe('insertBootHistoryEventPg', () => {
     const sql = fakeSql([]);
     await insertBootHistoryEventPg({ ...entry, message: undefined }, sql);
     expect(callsOf(sql)[0]!.values).toContain(null);
+  });
+
+  // EI-18736339540215666 recurrence guard: a vitest fixture write must NEVER land as
+  // origin='real' — that's exactly the false-confidence trap this migration fixes.
+  it("stamps origin='test' by default (isVitestOrigin() is true under this very test run)", async () => {
+    expect(isVitestOrigin()).toBe(true);
+    const sql = fakeSql([]);
+    await insertBootHistoryEventPg(entry, sql);
+    expect(callsOf(sql)[0]!.values).toContain('test');
+    expect(callsOf(sql)[0]!.values).not.toContain('real');
+  });
+
+  it('an explicit entry.origin overrides the VITEST-inferred default', async () => {
+    const sql = fakeSql([]);
+    await insertBootHistoryEventPg({ ...entry, origin: 'real' }, sql);
+    expect(callsOf(sql)[0]!.values).toContain('real');
+    expect(callsOf(sql)[0]!.values).not.toContain('test');
   });
 });
 
@@ -131,5 +148,21 @@ describe('listBootHistoryEventsPg', () => {
     const tooLow = fakeSql([]);
     await listBootHistoryEventsPg({ limit: 0 }, tooLow);
     expect(allValues(tooLow)).toContain(1);
+  });
+
+  // EI-18736339540215666 recurrence guard: the default read must exclude test-fixture
+  // rows, and only an EXPLICIT includeTestOrigin:true may pull them in.
+  describe("origin filter (EI-18736339540215666: test-fixture rows must not read as real federation health)", () => {
+    it("defaults to origin='real' only", async () => {
+      const sql = fakeSql([]);
+      await listBootHistoryEventsPg({}, sql);
+      expect(allText(sql)).toContain("AND origin = 'real'");
+    });
+
+    it('omits the origin filter when includeTestOrigin:true is passed explicitly', async () => {
+      const sql = fakeSql([]);
+      await listBootHistoryEventsPg({ includeTestOrigin: true }, sql);
+      expect(allText(sql)).not.toContain('origin');
+    });
   });
 });
