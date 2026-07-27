@@ -297,21 +297,76 @@ export function curlTarget(atom: string): { port: string; path: string } | null 
 }
 
 /** curl was told to throw the response body away — it wants only liveness. */
-const DISCARDS_BODY = /-o\s+\/dev\/null\b/;
+const DISCARDS_BODY = /-o\s*\/dev\/null\b/;
 
 /**
- * P-009 — "is this unit up?" → `dev:service_health`.
+ * P-014: the `curlHealthProbe` pattern, DERIVED from `PROBED_PORTS` so the
+ * claim and the model cannot drift apart. See the pair's header for why this is
+ * computed rather than written out.
+ *
+ * The `-o /dev/null` LOOKAHEAD (rather than a `cover()` rejection) is what makes
+ * the pair claim only the liveness question; the body-reading majority is
+ * `HEALTH_PAYLOAD_FINDING`'s.
+ */
+export function buildProbedPortCurlPattern(ports: string[] = Object.keys(PROBED_PORTS)): RegExp {
+  const alt = [...ports].sort().join('|');
+  return new RegExp(
+    `^curl\\b(?=[^\\n]*-o\\s*/dev/null\\b)[^\\n]*https?://(?:127\\.0\\.0\\.1|localhost):(?:${alt})/(?:api/)?(?:health|version)\\b`,
+  );
+}
+
+/**
+ * The systemd manager an atom is really asking. THREE-valued, not a boolean —
+ * the `logs:read` lesson (P-023), and the corpus corroborates it here too:
+ * `systemctl` with NEITHER flag defaults to `--system`, and every flagless atom
+ * in this family names a genuine system unit (`auditd`, `ufw`, `fail2ban`,
+ * `crowdsec`). Modelling flagless as "user" would have scored those against a
+ * manager that cannot hold the answer.
+ */
+export function systemctlScope(atom: string): 'user' | 'system' {
+  return /(?:^|\s)--user\b/.test(atom) ? 'user' : 'system';
+}
+
+/**
+ * P-009 / P-014 — "is this unit up?" → `dev:service_health`.
  *
  * Scoped to the boolean-liveness verbs (`is-active`, `is-failed`) for the reason
  * given in the header: `status` additionally asks for the journal tail, which
  * this tool cannot produce, so folding it in would enforce an advisory against a
  * question the tool does not answer.
  *
- * The `UNIT_TO_PROBE` branch in `cover()` is the genuine overlap and is what
- * keeps this envelope honest — if the corpus were mostly `is-active
- * papercup-dev-api` this pair would score `equivalent` and the audit would say
- * so. It does not: the units agents actually ask about are the ones nothing
- * probes.
+ * ── RE-DERIVED 2026-07-27 (P-014, WI-6244): the TOOL widened ────────────────
+ * This is the one pair in the family whose residue was NOT a different question.
+ * `systemctl is-active <anything>` and `systemctl is-active papercup-dev-api`
+ * ask the SAME question about different subjects, so narrowing the pattern to
+ * the registry would not have been honest bookkeeping — it would have hidden a
+ * real gap. It was also not possible: the narrowed pattern claims only **19
+ * distinct shapes**, below `MIN_SAMPLE_SIZE`, and `auditPair` rightly refuses a
+ * verdict there. Narrowing could not have closed this verdict at all.
+ *
+ * So the tool widened instead: `dev:service_health { units:[…], scope }` now
+ * answers `is-active`/`is-failed` for ANY unit, in either manager, several at a
+ * time (`probeUnitStates`). That takes the UNCHANGED pattern from 64/114 to
+ * **114/114 = `equivalent`** across 39 distinct shapes and 23 sessions.
+ *
+ * ⚠ WHY THIS WAS WORTH BUILDING RATHER THAN CONCEDING — the widening fixed a
+ * WRONG ANSWER, not just a missing one. `systemctl is-active <unit-that-does-
+ * not-exist>` prints `inactive` (exit 4), and three units in this corpus —
+ * `papercup-auto-deploy`, `papercup-green-checkpoint`, `papercup-pgbouncer` —
+ * are `LoadState=not-found` in BOTH scopes on this host. Every atom querying
+ * them captured stdout with `2>&1` / `2>/dev/null` and none read the exit code,
+ * so agents asked about a phantom unit and read back "inactive": byte-identical
+ * to a real service that is stopped. `unitStates[].known` + `unitsUnknown[]`
+ * separate them. That is the same class as `logs:read`'s `unitsUnknown` and
+ * `dev:listening_ports`' `ownerVisible` — ABSENT EVIDENCE MUST NEVER READ AS
+ * EVIDENCE OF ABSENCE.
+ *
+ * `UNIT_TO_PROBE` / `SUPERVISED_BUT_UNPROBED` are KEPT and still consulted
+ * first, because they name a STRONGER answer than `unitStates` (a real HTTP
+ * probe, or the reconciler's own `healthy` verdict, versus systemd's raw
+ * ActiveState). `EXCLUSION_REASON` is kept for the same reason it was written:
+ * it documents why a unit cannot be REGISTERED, which is still true and is a
+ * different claim from "the tool cannot report its state".
  */
 export const systemctlIsActive: SubstitutionPair = {
   id: 'service.systemctl-is-active',
@@ -319,65 +374,118 @@ export const systemctlIsActive: SubstitutionPair = {
   bashPattern: /^systemctl\s+(?:--\S+\s+)*(?:is-active|is-failed)\b/,
   toolName: 'dev:service_health',
   advisoryText:
-    'dev:service_health answers is-active for EVERY unit in the supervision registry, two ways. Probed (up/down + latency): papercup-dev-api :3070, papercup-staging-api :3170, papercup-bg-host, papercup-embed-sidecar :3384, papercup-oddsmith-sidecar :46229, plus vite :3055 / scout :3350. Registered but unprobed (papercup-inference-gateway, papercup-mcp-proxy, papercup-live-federation-gate + its .timer): supervision[] carries systemd ActiveState verbatim as `activeState` plus `healthy` — read `healthy`, since an `episodic` timer-driven unit like the federation gate is idle, not down, while inactive. OMITTED means the probe could not tell; never read that as down. Keep using systemctl for a unit OUTSIDE the registry (papercusp-db-backup, a green-checkpoint-manual-* run, auditd/pgbouncer at system scope) — service-health.ts NON_PROBED_UNITS records why each is excluded.',
+    'dev:service_health { units:[…], scope:\'user\'|\'system\'|\'all\' } answers is-active/is-failed for ANY unit — pass several at once, and pass scope:\'system\' for auditd/ufw/pgbouncer (a bare `systemctl` defaults to system, `--user` does not). READ unitsUnknown[] FIRST: systemd prints `inactive` for a unit it has never heard of, byte-identical to a stopped one, and three units agents queried in the last week do not exist on this host at all. For a REGISTERED unit the snapshot is richer than ActiveState: services[].up is a real HTTP probe (papercup-dev-api :3070, staging-api :3170, bg-host, embed-sidecar :3384, oddsmith-sidecar :46229, vite :3055, scout :3350), and supervision[].healthy is the reconciler\'s own verdict — an `episodic` timer-driven unit is idle, not down, while inactive.',
   routing: {
-    want: 'whether a systemd unit is currently active',
-    use: '`dev:service_health` — services[].up for the probed set (operator/staging-api/vite/scout/embed-sidecar/oddsmith-sidecar/bg-host), supervision[].{activeState,healthy} for every other registered systemd-user unit',
-    insteadOf: '`systemctl --user is-active <unit>` — still required for a unit outside the supervision registry (papercusp-db-backup, green-checkpoint-manual-*, system-scope auditd/pgbouncer)',
+    want: 'whether a systemd unit is active / failed',
+    use: '`dev:service_health { units:["<unit>"], scope }` — unitStates[].{loadState,activeState,active,failed} for any unit, plus unitsUnknown[] for ones systemd does not know; services[].up / supervision[].healthy for registered units',
+    insteadOf: '`systemctl --user is-active <unit>` — note it prints `inactive` for a unit that does not exist, which the tool reports as unitsUnknown instead',
   },
-  expectedVerdict: 'needs-widening',
+  expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const unit = systemctlUnit(atom);
     if (!unit) {
+      // A glob or `$(…)` names no unit the caller can pass in `units`, which is
+      // a literal list. This is the one shape that stays in bash — and it is
+      // kept as a real branch, not deleted, because the corpus will eventually
+      // contain one.
       return {
         covered: false,
-        reason: 'names no resolvable unit (glob or shell substitution); dev:service_health takes no arguments and cannot be pointed at one',
+        reason: 'names no resolvable unit (glob or shell substitution); `units` takes literal unit names',
       };
     }
-    // WI-6149: MULTI-UNIT in one call (`systemctl is-active fail2ban crowdsec`).
-    // `systemctlUnit` returns only the FIRST token, so without this branch the
-    // atom is scored — and its failure reason reported — against one of the two
-    // units it asked about, silently answering a narrower question than was
-    // asked. Same class as `listeningPorts`' multi-port branch, except this one
-    // IS observable in the frozen sample.
-    const extraUnits = additionalUnits(atom);
-    if (extraUnits.length > 0) {
+    const scope = systemctlScope(atom);
+    // MULTI-UNIT (`systemctl is-active fail2ban crowdsec`) is now EXPRESSIBLE —
+    // `units` is an array and `probeUnitStates` issues one exec for the whole
+    // list. Before the widening this was rejected outright, which was wrong even
+    // then for the observed `is-active papercup-dev-api papercup-staging-api`:
+    // BOTH units were probed, so one snapshot already answered it.
+    const all = [unit, ...additionalUnits(atom)];
+    if (all.length > 1) {
       return {
-        covered: false,
-        reason: `names ${extraUnits.length + 1} units in one call (${[unit, ...extraUnits].join(', ')}); dev:service_health takes no arguments and returns one fixed registry snapshot`,
+        covered: true,
+        expression: `dev:service_health { units: [${all.map((u) => `'${u}'`).join(', ')}], scope: '${scope}' } → unitStates[].{active,failed}, unitsUnknown`,
       };
     }
+    // A registered unit has a STRONGER answer than raw ActiveState, so prefer
+    // it — an HTTP probe actually confirms the unit is SERVING, which
+    // `unitStates` deliberately does not claim (see SUPERVISED_BUT_UNPROBED).
     const probe = UNIT_TO_PROBE[unit];
     if (probe) {
       return { covered: true, expression: `dev:service_health → services.find(s => s.name === '${probe}').up` };
     }
-    // WI-6149: a registered systemd-user unit IS answered — see the note on
-    // SUPERVISED_BUT_UNPROBED for why this counts and what it deliberately does
-    // not claim.
     if (SUPERVISED_BUT_UNPROBED.has(unit)) {
       return {
         covered: true,
         expression: `dev:service_health → supervision.find(s => s.name === '${supervisionNameFor(unit)}').{activeState,healthy}`,
       };
     }
-    // WI-6149: a DELIBERATE exclusion reports WHY it can never be registered —
-    // an unexplained "not registered" reads as an oversight and invites the next
-    // agent to try registering it.
+    // WI-6149's exclusion reasons are still TRUE and still worth carrying — they
+    // say why a unit cannot be REGISTERED — but they no longer make the atom
+    // uncoverable, because `units` reaches a unit without registering it. The
+    // reason rides along in the expression so the distinction survives.
     const excluded = exclusionReasonFor(unit);
-    if (excluded) {
-      return { covered: false, reason: `${unit} ${excluded}; keep using systemctl` };
-    }
     return {
-      covered: false,
-      reason: `${unit} is outside the supervision registry and the probe list entirely — dev:service_health has no argument to name it`,
+      covered: true,
+      expression:
+        `dev:service_health { units: ['${unit}'], scope: '${scope}' } → unitStates[0].{loadState,active,failed}` +
+        (excluded ? ` (unregistered by design: ${unit} ${excluded})` : ''),
     };
   },
 };
 
 /**
+ * The health-payload finding: the DOMINANT curl intent has no tool form.
+ *
+ * P-014 narrowed `curlHealthProbe` to body-DISCARDING probes, which is honest —
+ * but the residue it drops is not small and must not vanish silently. Of 138
+ * loopback health/version curls in the 7d corpus, **79 (57%) read the response
+ * BODY** (no `-o /dev/null`): `/api/health` for pool state and queue depths,
+ * `/api/version` for the build sha, `/api/health/analyst` and
+ * `/api/health/ingestion` on the oddsmith sidecar. `dev:service_health` returns
+ * its OWN diagnostic shape and never the probed service's payload, so this is a
+ * genuinely different question, not a coverage gap in the pair.
+ *
+ * Recorded rather than fixed because the fix is a design decision, not a
+ * widening: either the tool grows a `body: true` passthrough (and inherits every
+ * probed service's payload schema), or the intent stays in bash. Neither should
+ * be decided by a pattern that quietly claims it.
+ */
+export const HEALTH_PAYLOAD_FINDING = {
+  pattern: /^curl\b(?![^\n]*-o\s*\/dev\/null)[^\n]*https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/(?:api\/)?health/,
+  atoms: 79,
+  sessions: 19,
+  verdictWithheld: 'a different question — dev:service_health never returns the probed service\'s own payload',
+  note: 'the majority curl intent is READ THE HEALTH BODY, not "is it up". No tool form today; a `body:true` passthrough is the open design question.',
+} as const;
+
+/**
  * P-009 — "is this local port answering?" → `dev:service_health`.
  *
- * Two independent ways to fail, and the corpus supplies both in bulk:
+ * ── NARROWED 2026-07-27 (P-014, WI-6244) ────────────────────────────────────
+ * Both failure axes named below were re-measured against the whole corpus
+ * (138 atoms, not the 24-atom sample) and both turned out to be shapes the tool
+ * DELIBERATELY declines rather than shapes it is missing:
+ *   • 79 read the BODY — a different question entirely (`HEALTH_PAYLOAD_FINDING`);
+ *   • 17 target a port outside the fixed probe set (:3270, :8788, :18071/2,
+ *     :17701, :15070) — mostly ad-hoc second instances and A/B sidecars, and the
+ *     advisory ALREADY says "keep using curl" for them.
+ * Claiming either and then failing it scored the pair `needs-widening` for
+ * behaving exactly as documented. Requiring `-o /dev/null` AND a probed port
+ * takes it to **42/42 = `equivalent`** (26 distinct shapes, 13 sessions).
+ *
+ * ⚠ The port list in the pattern is BUILT FROM `PROBED_PORTS`, not hand-written.
+ * A hand-written list is a second model of the same tool and would drift the
+ * moment `HEALTH_ENDPOINTS` gains a port — precisely the staleness class D-016's
+ * drift guards exist to catch. Deriving it means adding a probe automatically
+ * widens the claim, the frozen fixture stops matching, and the `expectedVerdict`
+ * latch forces a re-score. That is the designed behaviour, not a surprise.
+ *
+ * :8788 (the inference gateway) was CONSIDERED for a probe and deliberately not
+ * added: every corpus atom hitting it passes `-H 'authorization: Bearer …'`, so
+ * an unauthenticated probe would 401 and manufacture a permanent phantom-DOWN —
+ * the exact class that got :3001 and :4321 removed (EI-188 / EI-276).
+ *
+ * The two original axes, kept for the record:
  *   • the PORT is not probed (`:3170` staging, `:3270`, `:8788` gateway,
  *     `:46229`, `:18071`…) — the tool has no argument to add one; and
  *   • the BODY is wanted, not the status code. `curl … /api/health` without
@@ -393,16 +501,16 @@ export const systemctlIsActive: SubstitutionPair = {
 export const curlHealthProbe: SubstitutionPair = {
   id: 'service.curl-health-probe',
   intentLabel: 'local-service-health-probe',
-  bashPattern: /^curl\b[^\n]*https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/(?:api\/)?(?:health|version)\b/,
+  bashPattern: buildProbedPortCurlPattern(),
   toolName: 'dev:service_health',
   advisoryText:
-    'dev:service_health probes a FIXED set (operator :3070, staging-api :3170, vite :3055, scout :3350, embed-sidecar :3384) and returns its own diagnostic shape — it takes no url/port argument and never returns the /api/health body. :3170 IS covered now, so the CLAUDE.md verify-a-staging-edit workflow (dev:restart{target:"staging"} then check staging-api) needs no curl. For :8788 gateway or any other unprobed port, and whenever you actually READ the health payload, keep using curl.',
+    'dev:service_health probes a FIXED set (operator :3070, staging-api :3170, vite :3055, scout :3350, embed-sidecar :3384, oddsmith-sidecar :46229) and returns up/latency per service — no url/port argument, and never the probed service\'s own /api/health body. :3170 IS covered, so the CLAUDE.md verify-a-staging-edit workflow (dev:restart{target:"staging"} then check staging-api) needs no curl. Keep using curl for an UNPROBED port (:8788 gateway, an ad-hoc second instance) and whenever you actually READ the health payload — that payload is a different question and this tool does not carry it.',
   routing: {
     want: 'whether a local dev service is answering',
     use: '`dev:service_health` — for the probed set (incl. :3170 staging), when you need only up/down',
     insteadOf: '`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:<port>/api/health` — still required for :8788 and other unprobed ports, and whenever you read the body',
   },
-  expectedVerdict: 'needs-widening',
+  expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
     const target = curlTarget(atom);
     if (!target) {
@@ -610,6 +718,30 @@ export const SERVICE_LIFECYCLE_WRITE_FINDING = {
   sessions: 9,
   verdictWithheld: 'sample below MIN_SAMPLE_SIZE (20 distinct) — no verdict may be issued',
   note: 'restart intent already migrated to dev:restart; residue is oddsmith-sidecar (not a target) and start/stop (not expressible).',
+} as const;
+
+/**
+ * The socket-STATE finding: what `listeningPorts`' P-014 narrowing dropped.
+ *
+ * `dev:listening_ports` reports TCP sockets in LISTEN state and nothing else,
+ * so the narrowed pattern no longer claims the other third of the family — but
+ * that third is real and has NO tool form at all: 49 atoms across 14 sessions
+ * asking about ESTABLISHED connections (`ss -tn state established '( dport =
+ * :5432 )'` — who is connected to Postgres/PgBouncer right now, the single
+ * most common shape), `ss -s` (a socket summary), `lsof -i :<port>` without a
+ * state filter, one UDP query, and multi-port `lsof -iTCP:a -iTCP:b`.
+ *
+ * Recorded rather than built because the question is genuinely different — a
+ * connection census, not a bind table — and because deciding whether the tool
+ * grows a `state` filter or a sibling verb is a design call that should be made
+ * on this evidence, not smuggled in under a pattern that claims it.
+ */
+export const SOCKET_STATE_FINDING = {
+  pattern: /^(?:ss|netstat)\s+(?!.*(?:^|\s)-[a-zA-Z]*l)|^lsof\b[^\n]*-{1,2}i(?![^\n]*-sTCP:LISTEN)/,
+  atoms: 49,
+  sessions: 14,
+  verdictWithheld: 'a different question — dev:listening_ports reports LISTEN sockets only',
+  note: 'established-connection census (dport :5432/:6432 dominates), ss -s summary, UDP, and multi-port lsof. No tool form; `state` filter vs sibling verb is the open design question.',
 } as const;
 
 /** Every pair in the service family, in registry order. */

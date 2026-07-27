@@ -134,6 +134,12 @@ export interface LaunchCheckpointResult {
      *  process re-resolves its own candidate ~1-2s later and a git-sync tick in that gap can
      *  shift it — this is "will judge as of launch", not a guarantee. */
     excludedCommits: string[];
+    /** P-004: the FILES those excluded commits touch. `excludedCommits` alone is unusable by
+     *  the reader it is written for — an agent knows which files it edited and nothing about
+     *  which sha carries them, so a sha list forces the resolution back onto the caller (the
+     *  "if your fix is among them" the EI-18752644493166307 filer had to resolve by hand).
+     *  Answering in path-space is what makes the warning actionable. */
+    excludedPaths: string[];
   };
 }
 
@@ -243,6 +249,13 @@ function commitsBetweenSync(root: string, from: string, to: string, execFn: Exec
   if (from === to) return [];
   const out = gitOutput(root, ['log', '--oneline', '--no-decorate', `${from}..${to}`], execFn);
   return out ? out.split('\n').filter(Boolean) : [];
+}
+
+/** P-004: the FILES the `(from, to]` window touches — `commitsBetweenSync` in path-space. */
+function pathsBetweenSync(root: string, from: string, to: string, execFn: ExecSyncLike): string[] {
+  if (from === to) return [];
+  const out = gitOutput(root, ['diff', '--name-only', from, to], execFn);
+  return out ? [...new Set(out.split('\n').filter(Boolean))] : [];
 }
 
 /** WI-5124: exported so `launchDetachedCheckpoint` can report `willJudge` on a fresh launch,
@@ -913,6 +926,13 @@ export function launchDetachedCheckpoint(
     excludedCommits:
       current.current_head && current.current_candidate && current.current_head !== current.current_candidate
         ? commitsBetweenSync(root, current.current_candidate, current.current_head, execFn)
+        : [],
+    // P-004: same window, expressed in the space the caller can actually check. Sync
+    // (`git diff --name-only`) so it stays inside the single-tick constraint this
+    // function's spawn path depends on.
+    excludedPaths:
+      current.current_head && current.current_candidate && current.current_head !== current.current_candidate
+        ? pathsBetweenSync(root, current.current_candidate, current.current_head, execFn)
         : [],
   };
 

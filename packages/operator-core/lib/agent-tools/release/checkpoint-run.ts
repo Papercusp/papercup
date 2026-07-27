@@ -25,7 +25,11 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { launchDetachedCheckpoint, REPLACE_STALE_MIN_AGE_SEC } from '../../release-checkpoint-launch';
+import {
+  checkpointCandidateContainment,
+  launchDetachedCheckpoint,
+  REPLACE_STALE_MIN_AGE_SEC,
+} from '../../release-checkpoint-launch';
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -69,6 +73,12 @@ export default defineTool({
       .describe(
         'EI-9672: when the active run is CONFIRMED stale (candidate_stale:true in a prior already_running reply) AND ≥20 min old (EI-11667: a YOUNG stale run is normal on a busy tree and is refused, not stopped — serial replacement starves the gate of every verdict), stop that run and launch a fresh one. Unlike force, this actually frees the singleton; a run judging the current candidate is never stopped.',
       ),
+    paths: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Repo-relative files your change touches. The reply then reports callerEditsInCandidate { included, missing } — whether the commit this run judges actually CARRIES them. Omit and it infers the set from uncommitted working-tree files instead, which still catches the common miss but cannot see a change you already committed.',
+      ),
   }),
   async handler(args, _ctx) {
     // No in-handler role gate: firing the verdict is verification-only + self-locked (see the
@@ -77,6 +87,15 @@ export default defineTool({
     const result = await launchDetachedCheckpoint({ force: args.force, replaceStale: args.replaceStale });
     if (!result.launched && result.reason === 'already_running' && result.alreadyRunning) {
       const a = result.alreadyRunning;
+      // P-004: a refusal is not a dead end — the in-flight run's verdict IS the one about
+      // to land, so "does THAT candidate carry my files?" is exactly as decisive here as on
+      // a successful launch, and is the difference between waiting for a useful verdict and
+      // waiting for one that cannot mention your change.
+      const containment = await checkpointCandidateContainment({
+        candidateSha: a.candidate ?? null,
+        tipSha: a.current_head ?? null,
+        paths: args.paths,
+      });
       return {
         content: [
           {
@@ -95,6 +114,10 @@ export default defineTool({
               eta_sec: a.eta_sec ?? null,
               replace_refused_young: a.replace_refused_young ?? false,
               held_externally: a.held_externally ?? false,
+              callerEditsInCandidate: containment,
+              // Lead with it: the caller's next move differs entirely depending on whether
+              // the run it is being told to wait for can even see the change.
+              containment_warning: containment.warning,
               note: a.held_externally
                 ? // WI-5685: the shared run-lock (cron + manual serialize on the SAME lock) is held by a
                   // process that is NOT this root's manual unit — almost certainly the hourly cron tick.
@@ -124,11 +147,37 @@ export default defineTool({
     // steps the candidate BACK to an older commit that doesn't have it, guaranteeing a red on
     // tests the caller just fixed. Surface that loudly in the reply instead of leaving it only
     // in the detached process's own /tmp log (which nobody reads when the tool just said ok:true).
+    // P-004 (EI-18752644493166307): the containment check, at the moment of the mistake.
+    // Prose could not do this — the filer had restated the correct rule to the owner an
+    // hour before making both mistakes, which is the evidence that a rule you must recall
+    // at exactly the right instant is a detector that only fires for someone who already
+    // knows. It belongs in the return value.
+    const containment = result.launched
+      ? await checkpointCandidateContainment({
+          candidateSha: result.willJudge?.candidate ?? null,
+          tipSha: result.willJudge?.tip ?? null,
+          paths: args.paths,
+        })
+      : null;
+
     const excluded = result.willJudge?.excludedCommits ?? [];
-    const excludedWarning = excluded.length
-      ? ` ⚠ quiet-cut EXCLUDED ${excluded.length} commit(s) newer than the judged candidate — ` +
-        `if your fix is among them, this run will NOT see it (it gets the NEXT run): ${excluded.slice(0, 5).join(' | ')}${excluded.length > 5 ? ' | …' : ''}`
-      : '';
+    const excludedPaths = result.willJudge?.excludedPaths ?? [];
+    // The old warning ended at "if your fix is among them" — it named SHAS and left the
+    // reader to resolve them, in the one space the reader has no information about. Answer
+    // it instead: when containment resolved the question, say so outright; otherwise at
+    // least name the FILES the excluded window touches, which a caller CAN match against
+    // its own edits.
+    const excludedWarning = containment?.warning
+      ? ` ${containment.warning}`
+      : excluded.length
+        ? ` ⚠ quiet-cut EXCLUDED ${excluded.length} commit(s) newer than the judged candidate (they get the NEXT run). ${
+            excludedPaths.length
+              ? `Those commits touch: ${excludedPaths.slice(0, 8).join(', ')}${excludedPaths.length > 8 ? ` (+${excludedPaths.length - 8} more)` : ''} — if you edited any of them, THIS run judges the older version, and a red from it is not evidence your change failed.`
+              : `Excluded: ${excluded.slice(0, 5).join(' | ')}${excluded.length > 5 ? ' | …' : ''}`
+          }`
+        : containment && containment.included.length
+          ? ` ✓ the judged candidate carries your ${containment.included.length} checked file(s) — this verdict is a real verdict on your change.`
+          : '';
     return {
       content: [
         {
@@ -136,6 +185,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: result.launched,
             ...result,
+            ...(containment ? { callerEditsInCandidate: containment } : {}),
             note: result.launched
               ? result.replacedStale
                 ? `green-checkpoint suite launched (detached, up to ~55 min) after stopping a STALE prior run (was judging ${result.replacedStale.candidate?.slice(0, 12) ?? 'unknown'}, superseded by ${result.replacedStale.current_candidate?.slice(0, 12) ?? 'current staging'}). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.${excludedWarning}`

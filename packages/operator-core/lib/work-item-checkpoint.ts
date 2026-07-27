@@ -214,10 +214,18 @@ export async function setWorkItemCheckpointWithPrior(
         }
         stamps.push({ dep, token, at: now });
       }
+      // Nothing stampable ⇒ CLEAR (null), deliberately, rather than preserving the
+      // prior note's stamps. Preserving them would judge THIS note by the PREVIOUS
+      // note's dependency set, which can read `fresh` for a note whose own
+      // declaration wholly failed — a false fresh. `null` yields `undeclared`, which
+      // routes readers to the time heuristics: an honest "we don't know" beats a
+      // confident wrong answer, and `depsWarnings` tells the author to fix the refs.
       depsPayload =
         stamps.length > 0
           ? { v: DECLARED_DEPS_VERSION, stamps, ...(recomputed ? { recomputed: true } : {}) }
           : null;
+      // Only claim `recomputed` if it actually landed on a stored payload.
+      if (depsPayload === null) recomputed = false;
       if (warnings.length > 0) depsWarnings = warnings;
     }
   }

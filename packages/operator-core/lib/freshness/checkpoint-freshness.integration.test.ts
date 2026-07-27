@@ -301,6 +301,22 @@ describe('dependsOn tri-state', () => {
     expect((await getWorkItemCheckpointFreshness(ref('WI-400')))?.verdict).toBe('fresh');
   });
 
+  it('CLEARS rather than preserving when a new declaration is wholly unresolvable', async () => {
+    // Preserving the prior stamps here would judge the NEW note by the OLD note's
+    // dependency set and could report `fresh` for a note whose own declaration
+    // failed entirely — a false fresh. Clearing yields `undeclared`, routing the
+    // reader to the time heuristics: an honest "we don't know".
+    const dep = await seedFile('j.ts', 'v1');
+    await setWorkItemCheckpointWithPrior(ref('WI-404'), 'first', { dependsOn: [dep] });
+    const res = await setWorkItemCheckpointWithPrior(ref('WI-404'), 'second', {
+      dependsOn: ['file:nope-does-not-exist.ts'],
+    });
+    expect(res.depsStamped).toBe(0);
+    expect(res.recomputed).toBeUndefined();
+    expect(await getWorkItemCheckpointDeps(ref('WI-404'))).toBeNull();
+    expect(await getWorkItemCheckpointFreshness(ref('WI-404'))).toBeUndefined();
+  });
+
   it('CLEARS the declaration on an explicit empty list', async () => {
     const dep = await seedFile('g.ts', 'v1');
     await setWorkItemCheckpointWithPrior(ref('WI-401'), 'first', { dependsOn: [dep] });
