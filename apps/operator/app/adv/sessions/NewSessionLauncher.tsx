@@ -368,11 +368,12 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         options={planOptions}
       />
       {/* Owner ask 2026-07-27 (restated): all four controls — plan, model,
-          effort, + New session — belong together on ONE row, and that row is the
-          one BELOW the HUD tab strip (see .hud__launchrow in hud.css). An
-          earlier pass split them across two lines INSIDE the launcher, which was
-          a misreading of "the row below": the row in question was the tab
-          strip's, not the plan picker's. Flattened back to a single line. */}
+          effort, + New session — belong together on ONE row, and that row is
+          .hud__launchrow, the launcher's own row in the HUD header (it sat below
+          the tab strip when first split out, and moved ABOVE the strip later the
+          same day). An earlier pass split the controls across two lines INSIDE the
+          launcher, which was a misreading of "the row below": the row in question
+          was the tab strip's, not the plan picker's. One line. */}
       <>
         <Combobox
           triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"

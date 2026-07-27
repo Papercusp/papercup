@@ -32,7 +32,11 @@
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  padding: 8px 14px 0;
+  /* Small top padding only: the launch row directly above supplies the vertical
+     rhythm (it is rendered whenever there is a launcher). Keeping a few px means
+     the strip still isn't flush against whatever sits above it when there is no
+     launch row at all. */
+  padding: 4px 14px 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
   flex-wrap: wrap;
@@ -228,22 +232,23 @@
   align-items: center;
 }
 
-/* Owner ask 2026-07-27: the launch cluster gets a row of its OWN, directly below
-   the tab strip. It is a separate row rather than a second line inside
-   .hud__tabs because that strip runs padding-bottom:0 + align-items:flex-end +
-   a bottom border so the selected tab can bridge it (.hud__tab--on) — a second
-   line inside would land under that border and break the bridge.
+/* Owner ask 2026-07-27: the launch cluster gets a row of its OWN, and that row
+   sits ABOVE the tab strip (restated the same day — it was first placed below).
+   It is a separate row rather than a second line inside .hud__tabs because that
+   strip runs padding-bottom:0 + align-items:flex-end + a bottom border so the
+   selected tab can bridge it (.hud__tab--on) — a second line inside would land
+   under that border and break the bridge.
 
    Matches .hud__tabs' horizontal padding so the plan picker lines up with the
-   tabs above it, and carries the strip's own bottom border so the header still
-   reads as one block of chrome above the board. */
+   tabs below it. NO bottom border: it is now flush against the tab strip, and a
+   border between them would cut the header block in two (the strip carries the
+   one border that separates the whole header from the board). */
 .hud__launchrow {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 14px 6px;
   background: var(--bg-2);
   flex: none;
 }

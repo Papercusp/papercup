@@ -29,6 +29,11 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
+// P-008 (b): the cell-read identity injected into the standing-facts fold.
+import { cellReaderFromCtx, type CellReaderCtxLike } from '../../cell-reader-ctx';
+import type { FactDependencyStaleness } from '../../facts/dependency-staleness';
+import type { CellReadEnv } from '../../../cell-read';
+import type { CellReader } from '../../../cell-registry';
 import { resolvePresenceFleet } from '../presence-fleet';
 import { resolveSelfRef } from '../self-marker';
 import { COORD_ROLES } from '../roles';
@@ -498,6 +503,16 @@ export async function composeOrient(
    *  nothing. Injected so composeOrient stays IO-free + unit-testable — the same
    *  contract as pipelineFold / roleFolds. Undefined ⇒ the check never runs. */
   presenceDriftCheck?: () => Promise<string | null>,
+  /** P-008 (b) (unified-agent-state-plane-2026-07-27): the cell-read identity the
+   *  standing-facts fold re-checks declared dependencies under. Resolved by the
+   *  handler via `cellReaderFromCtx(identity, ctx)` and INJECTED — same contract
+   *  as roleFolds / pipelineFold, and for a sharper reason than testability:
+   *  BOTH halves are access-control inputs (P-019 audience + the resolver's role
+   *  gate, D-058), and composeOrient has no ctx, so a value derived in here would
+   *  have to be GUESSED. A guessed role either fails closed (useless) or fails
+   *  open (a leak). Undefined ⇒ the dependency re-check simply does not run and
+   *  facts fold exactly as they did before. */
+  cellIdentity?: { reader: CellReader; env: CellReadEnv },
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   // EI-18731216945970087: only exercised when presence itself found no fleet at all,
@@ -895,7 +910,27 @@ export async function composeOrient(
         // Fail-soft: markStaleSourceFacts returns the facts unmarked on any lookup error.
         const { markStaleSourceFacts } = await import('../../facts/stale-source');
         const marked = await markStaleSourceFacts(kept);
-        result.facts = marked.map((f) => ({
+        // P-008 (b): re-check DECLARED cell dependencies. This is where D-007's
+        // "auto-invalidates ... so no agent has to remember to retract" actually
+        // lands — orient runs on every wake, so an assumption whose ground moved
+        // is flagged to its author without anyone having to think to look.
+        //
+        // The cost is proportionate BY CONSTRUCTION: zero dispatches when no
+        // folded fact declared a dependency (every fold today), and otherwise
+        // one dispatch per DISTINCT cell across the whole fold — not per fact.
+        // An agent that files an assumption buys the re-check; nobody else pays.
+        // Fail-soft twice over: markStaleDependencyFacts returns facts unmarked
+        // on any failure, and this catch covers the imports themselves.
+        let withDeps: Array<(typeof marked)[number] & { depsStale?: FactDependencyStaleness }> = marked;
+        if (cellIdentity && marked.some((f) => f.dependsOn?.length)) {
+          try {
+            const { markStaleDependencyFacts } = await import('../../facts/dependency-staleness');
+            withDeps = await markStaleDependencyFacts(marked, cellIdentity.reader, cellIdentity.env);
+          } catch {
+            withDeps = marked;
+          }
+        }
+        result.facts = withDeps.map((f) => ({
           scope: f.scope,
           ref: f.scopeRef,
           body: f.body,
@@ -905,6 +940,10 @@ export async function composeOrient(
           src: renderFactSrc(f) || null,
           ...(f.audienceScope ? { aud: f.audienceScope } : {}),
           ...(f.sourceStale ? { stale: f.sourceStale } : {}),
+          // P-008 (b): kept DISTINCT from `stale` above. `stale` is a hint (the
+          // anchoring work-item closed); `dependsStale` is a mechanical verdict
+          // on a dependency the fact's own author declared.
+          ...(f.depsStale ? { dependsStale: f.depsStale } : {}),
         }));
       }
       if (withheld.length > 0) {
@@ -1654,6 +1693,17 @@ export default defineTool({
       roleFolds,
       () => pipelinePromise,
       presenceDriftCheck,
+      // P-008 (b): the identity the standing-facts fold re-checks declared cell
+      // dependencies under. Best-effort — an unattributable caller (no ownerId)
+      // gets no re-check rather than a read made under a guessed identity.
+      (() => {
+        try {
+          if (!ownerId) return undefined;
+          return cellReaderFromCtx({ ownerId }, ctx as CellReaderCtxLike);
+        } catch {
+          return undefined;
+        }
+      })(),
     );
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is

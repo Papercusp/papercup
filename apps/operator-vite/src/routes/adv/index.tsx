@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import AdvShell, { ADV_TABS, type AdvTabId } from '../../components/adv/AdvShell';
+import AdvPotBar, { potBarModeForTab } from '../../components/adv/AdvPotBar';
 import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
 import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
 import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
@@ -9,7 +10,7 @@ import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
 import ScheduledCalendarTab from '../../components/adv/ScheduledCalendarTab';
 import HealthTab from '../../components/adv/HealthTab';
-import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
+import AdvHarnessPanelPage from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
 import HudView from '@/app/adv/hud/HudView';
@@ -30,35 +31,30 @@ function AdvIndexPage() {
     // overview-dashboard-2026-06-05 D-001). Keep in sync with AdvShell.
     parseAsStringEnum<AdvTabId>(ADV_TAB_IDS).withDefault('overview'),
   );
-  const title = getAdvTitle(activeTab);
-
-  // The tab body is wrapped in an error boundary so a render crash in ONE tab
-  // (e.g. a hook useMemo over a shape-changed query) can't white-screen the whole
-  // operator — the shell chrome (AgentsRunningPill, tab strip) sits OUTSIDE it and
-  // every other tab stays reachable. key={activeTab} resets it on navigation.
+  // The pot cluster is a per-tab row now, not shell chrome (owner ask
+  // 2026-07-27) — see AdvPotBar. `withStatus` (the running pills + start/stop) is
+  // HUD only. It is rendered HERE rather than inside each tab component for two
+  // reasons: HudBoard/AdvCreateDock/HarnessesWorkspace live under apps/operator/app,
+  // which must not import up-layer from operator-vite/src (the same layering that
+  // made QuickPanelHeaderControls a passed-in slot); and keeping it OUTSIDE the
+  // error boundary means a crashed tab still leaves you a pot selector to switch
+  // away with.
+  const potBar = potBarModeForTab(activeTab);
   return (
-    <AdvShell title={title}>
-      <AdvTabErrorBoundary key={activeTab} tab={activeTab}>
-        {renderAdvTab(activeTab)}
-      </AdvTabErrorBoundary>
+    <AdvShell>
+      {potBar.show ? <AdvPotBar withStatus={potBar.withStatus} /> : null}
+      {/* The tab body is wrapped in an error boundary so a render crash in ONE tab
+          (e.g. a hook useMemo over a shape-changed query) can't white-screen the
+          whole operator — the shell chrome (tab strip) and the pot bar sit OUTSIDE
+          it and every other tab stays reachable. key={activeTab} resets it on
+          navigation. */}
+      <div className="pc-advshell__tabbody">
+        <AdvTabErrorBoundary key={activeTab} tab={activeTab}>
+          {renderAdvTab(activeTab)}
+        </AdvTabErrorBoundary>
+      </div>
     </AdvShell>
   );
-}
-
-function getAdvTitle(tab: AdvTabId): string {
-  if (tab === 'overview') return 'Overview';
-  if (tab === 'hud') return 'HUD';
-  if (tab === 'conversations') return 'Conversations';
-  if (tab === 'learning') return 'Learning';
-  if (tab === 'harnesses') return 'Work';
-  if (tab === 'health') return 'Health';
-  if (tab === 'frames') return 'Frames';
-  if (tab === 'evals') return 'Evaluation';
-  if (tab === 'calendar') return 'Calendar';
-  if (tab in ADV_HARNESS_PANEL_LABELS) {
-    return ADV_HARNESS_PANEL_LABELS[tab as keyof typeof ADV_HARNESS_PANEL_LABELS];
-  }
-  return 'Create';
 }
 
 function renderAdvTab(tab: AdvTabId) {

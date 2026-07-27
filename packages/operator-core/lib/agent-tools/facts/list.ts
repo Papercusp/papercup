@@ -22,7 +22,7 @@ export const FACTS_LIST_EXCERPT_NOTE =
  * provenance quote, which duplicates it) unless `full`. PURE — unit-tested without PG.
  */
 export function projectFact(
-  f: AgentFact & { sourceStale?: FactSourceStaleness },
+  f: AgentFact & { sourceStale?: FactSourceStaleness; depsStale?: FactDependencyStaleness },
   full: boolean,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
@@ -37,8 +37,20 @@ export function projectFact(
     // WI-6052: confidence is now persisted — surface it same as audienceScope
     // (omitted when unset, matching the legacy/unbadged shape).
     ...(f.confidence ? { confidence: f.confidence } : {}),
-    // The staleness flag is NEVER excerpted away — it is the reason to read the list.
+    // P-008 (b): kind/claim follow the same omitted-when-unset convention. `kind`
+    // absent means "not declared", which is a real and distinct state from
+    // 'conclusion' — see FACT_KINDS on why it is never backfilled.
+    ...(f.kind ? { kind: f.kind } : {}),
+    ...(f.claim ? { claim: f.claim } : {}),
+    // The staleness flags are NEVER excerpted away — they are the reason to read
+    // the list. `stale` = the source WORK-ITEM closed (EI-10947, a hint);
+    // `dependsStale` = a DECLARED cell dependency actually changed (P-008 b, a
+    // mechanical verdict). Two different questions, deliberately two fields: a
+    // reader must be able to tell "the anchor closed, this may be stale" from
+    // "the value you relied on is now X".
     ...(f.sourceStale ? { stale: f.sourceStale } : {}),
+    ...(f.dependsOn?.length ? { dependsOn: f.dependsOn } : {}),
+    ...(f.depsStale ? { dependsStale: f.depsStale } : {}),
   };
   if (full) return { ...base, body: f.body, sourceProvenance: f.sourceProvenance };
   const body = f.body ?? '';
@@ -146,11 +158,28 @@ export default defineTool({
     // agent goes "hunting a stale fact to retract" (see guidance), so this is exactly
     // where the answer belongs. Fail-soft: unmarked on any lookup error.
     const marked = await markStaleSourceFacts(facts);
+    // P-008 (b): and re-check every DECLARED cell dependency. This is the read
+    // an agent makes when hunting a stale fact, so it is where a mechanical
+    // "the cell you relied on changed from X to Y" belongs. Costs nothing when
+    // no listed fact declared a dependency (the common case today) — each
+    // DISTINCT cell is dispatched at most once for the whole page. Fail-soft.
+    let annotated: Array<(typeof marked)[number] & { depsStale?: FactDependencyStaleness }> = marked;
+    if (marked.some((f) => f.dependsOn?.length)) {
+      try {
+        const { resolveAgentIdentity } = await import('../coordination/identity');
+        const { cellReaderFromCtx } = await import('../cell-reader-ctx');
+        const { markStaleDependencyFacts } = await import('./dependency-staleness');
+        const { reader, env } = cellReaderFromCtx(resolveAgentIdentity(ctx), ctx);
+        annotated = await markStaleDependencyFacts(marked, reader, env);
+      } catch {
+        annotated = marked;
+      }
+    }
     // EI-10948: bodies are up to 500 chars and the default limit was 50, so a busy
     // harness returned ~56k chars — over the tool-output budget, a HARD error, spilled
     // to a file. The irony that hurt: the one read that shows you your stale facts was
     // the one that blew up. Excerpt by default, exactly as work_items:list already does.
-    const rows = marked.map((f) => projectFact(f, args.full === true));
+    const rows = annotated.map((f) => projectFact(f, args.full === true));
     return {
       data: {
         ok: true,

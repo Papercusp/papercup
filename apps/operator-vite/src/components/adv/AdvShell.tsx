@@ -32,7 +32,6 @@ import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
-import { useLexicon } from '@/lib/useLexicon';
 import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
@@ -303,8 +302,6 @@ export function useAdvScope(): AdvScope {
  * bodies (AdvPotBar).
  */
 export default function AdvShell({ children }: { children: React.ReactNode }) {
-  // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
-  const t = useLexicon();
   const [activeTab, setActiveTab] = useQueryState(
     'tab',
     // Overview is the default landing surface (Brief 23 /

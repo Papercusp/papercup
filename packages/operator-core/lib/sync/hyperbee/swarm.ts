@@ -2731,6 +2731,19 @@ export async function joinHarnessSwarm(
    * used to run inline here; only the orchestration moved out.
    */
   const evictOwnSockets = (): void => {
+    // WI-6324 explicit-presence diagnostic. A forced rejoin is a rare recovery
+    // action, so one line per pass is cheap — and its ABSENCE of detail is what
+    // made "escalated but never reconnected" undiagnosable twice: the eviction
+    // half could silently decline to evict ANYTHING (see the WI-5971 data-path
+    // skip below) and look identical, from every log, to a clean eviction that
+    // simply failed to re-dial. State the outcome positively instead: how many
+    // sockets were considered, how many were actually destroyed, and how many
+    // were SKIPPED as having a proven live data path — with the wire counters
+    // the decision was made on.
+    const considered = mySockets.size;
+    let evicted = 0;
+    let skippedLiveDataPath = 0;
+    const wireDetail: string[] = [];
     for (const socket of mySockets) {
       // WI-5971: WI-5923 made this function fire for EVERY sibling registered
       // on the same (swarm,topic) whenever ANY ONE participant's own link
@@ -2747,7 +2760,15 @@ export async function joinHarnessSwarm(
       // received across 87-146 packets). Skip — never touch — any socket
       // with a DEMONSTRATED live data path; only a genuinely
       // dead-or-unproven one still gets evicted below.
-      if (dataPathProven(readWireStats(socket)) === true) {
+      const wire = readWireStats(socket);
+      const proven = dataPathProven(wire);
+      if (wireDetail.length < 4) {
+        wireDetail.push(
+          `[br=${wire.bytesReceived ?? '?'} pr=${wire.packetsReceived ?? '?'} proven=${proven === null ? 'unknown' : proven}]`,
+        );
+      }
+      if (proven === true) {
+        skippedLiveDataPath++;
         continue;
       }
       swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
@@ -2768,6 +2789,16 @@ export async function joinHarnessSwarm(
       }
       evictIdleZombieSocket(socket);
       mySockets.delete(socket);
+      evicted++;
+    }
+    try {
+      console.info(
+        `[swarm] force-rejoin eviction topic=${topicHex.slice(0, 16)}… considered=${considered} ` +
+          `evicted=${evicted} skippedLiveDataPath=${skippedLiveDataPath}` +
+          (wireDetail.length > 0 ? ` wire=${wireDetail.join('')}` : ''),
+      );
+    } catch {
+      /* diagnostic-only; never let logging break the eviction */
     }
   };
   const rejoinOwnSession = (): void => {

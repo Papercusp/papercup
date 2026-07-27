@@ -305,24 +305,32 @@ export default function HudBoard({
 
   return (
     <div className="hud">
+      {/* The launcher owns a ROW OF ITS OWN, ABOVE the tab strip (owner ask
+          2026-07-27, restated: "put the row with the new session button above the
+          sessions / plans / work items tabs"). Its position has moved several
+          times — far right of the strip behind a spacer, then after the tabs, then
+          ahead of them, then onto its own row below the strip, and now that same
+          row above it. Each ask was about a ROW, not about the order of controls
+          inside the launcher; that is the reading these two document-order
+          assertions in HudBoard.test.tsx pin.
+
+          It stays OUTSIDE the tab bodies (and out of the `role="tablist"`, which
+          must contain only tabs): launching a session is not a thing you do to the
+          sessions board, it is a thing you do from the HUD, so hiding it behind a
+          tab would make it unreachable from the two tabs most likely to make you
+          want it.
+
+          It is also a SIBLING of .hud__tabs rather than a child: that strip runs
+          padding-bottom:0 + align-items:flex-end + a bottom border so the selected
+          tab can BRIDGE the border (.hud__tab--on). A second line inside it would
+          land under that border and break the bridge. */}
+      {headerAction ? <div className="hud__launchrow">{headerAction}</div> : null}
+
       {/* The tab strip owns its own row above the controls, not a slot inside
           them: the controls BELONG to a tab (fleet chips are a session idea),
           so nesting the switch among the things it switches would read as a
           sibling filter rather than the axis it is. */}
       <div className="hud__tabs">
-        {/* The launcher stays OUTSIDE the tab bodies: launching a session is
-            not a thing you do to the sessions board, it is a thing you do from
-            the HUD, and hiding it behind a tab would make it unreachable from
-            the two tabs most likely to make you want it. It has moved through
-            this strip over several owner asks — far right behind a spacer, then
-            after the tabs, then ahead of them — and now sits on its OWN row
-            just below (see .hud__launchrow, rendered after this strip).
-
-            It is also kept OUT of the `role="tablist"` element: that role must
-            contain only tabs, and parking a launch button (three comboboxes and
-            a submit) inside one misreports the strip to a screen reader as a
-            four-tab axis. The tablist role sits on the inner wrapper holding
-            exactly the tabs. */}
         <div className="hud__tablist" role="tablist" aria-label="HUD board">
           {HUD_TABS.map((id) => (
             <button
@@ -338,20 +346,6 @@ export default function HudBoard({
           ))}
         </div>
       </div>
-
-      {/* Owner ask 2026-07-27 (asked several times, and my two previous passes
-          misread it): "move the select plan / model / effort / new session
-          buttons to the row below". I had twice rearranged the controls WITHIN
-          the launcher while it stayed on the tab strip's row — but the row being
-          referred to is the TAB STRIP's. So the launcher now owns a row of its
-          own, directly BELOW the tabs, with all four controls on that one line.
-
-          It is a sibling of .hud__tabs rather than a child because .hud__tabs
-          has padding-bottom:0 + align-items:flex-end + a bottom border so the
-          selected tab can BRIDGE that border (.hud__tab--on). Nesting a second
-          line inside it would put the launcher underneath that border and break
-          the bridge; a separate row keeps the tab chrome intact. */}
-      {headerAction ? <div className="hud__launchrow">{headerAction}</div> : null}
 
       {!onSessions ? (
         entityView ?? null
