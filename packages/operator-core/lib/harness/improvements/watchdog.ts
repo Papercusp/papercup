@@ -903,19 +903,16 @@ export async function doesFileExistOnDisk(filePath: string): Promise<boolean> {
 }
 
 /**
- * red-test: a test file that failed ≥ N times in the window AND whose LATEST run
- * in the window is still a fail — i.e. repeatedly red and currently red, not a
- * one-off dev iteration. Carries the file path (→ the protected-path gate).
- *
- * Workspace scoping (audit P-013): `test_runs` has NO workspace column, so this
- * collector is inherently BOX-GLOBAL — every workspace's tick sees the same
- * red tests. Acceptable on a one-box install; on a multi-workspace host the
- * cross-host tick lock + key dedup keep it to one filed item regardless.
+ * The raw `test_runs` aggregate fetch behind `collectRedTestSignals`, split out
+ * (EI-18767688096795873) so the SQL — in particular the `is_scratch_config`
+ * exclusion — is integration-testable against a real Postgres WITHOUT also
+ * exercising the git-commit / disk-exists debounce IO that follows it (those are
+ * already covered by `debounceRedTestSignals`'s own unit tests with injected fakes).
  */
-export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
+export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Promise<RedTestRow[]> {
   const windowHours = opts.redTestWindowHours ?? 6;
   const minFails = opts.redTestMinFails ?? 3;
-  const rows = await sql<RedTestRow[]>`
+  return sql<RedTestRow[]>`
     WITH recent AS (
       SELECT file_path, framework, status, output_tail, started_at,
              row_number() OVER (PARTITION BY file_path ORDER BY started_at DESC) AS rn
@@ -946,6 +943,21 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
     HAVING count(*) FILTER (WHERE status IN ('fail', 'error')) >= ${minFails}
        AND max(CASE WHEN rn = 1 THEN status END) IN ('fail', 'error')
      LIMIT 20`;
+}
+
+/**
+ * red-test: a test file that failed ≥ N times in the window AND whose LATEST run
+ * in the window is still a fail — i.e. repeatedly red and currently red, not a
+ * one-off dev iteration. Carries the file path (→ the protected-path gate).
+ *
+ * Workspace scoping (audit P-013): `test_runs` has NO workspace column, so this
+ * collector is inherently BOX-GLOBAL — every workspace's tick sees the same
+ * red tests. Acceptable on a one-box install; on a multi-workspace host the
+ * cross-host tick lock + key dedup keep it to one filed item regardless.
+ */
+export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
+  const windowHours = opts.redTestWindowHours ?? 6;
+  const rows = await fetchRedTestRows(sql, opts);
   const signals = redTestSignalsFromRows(rows, windowHours);
   // EI-10102: drop signals for files that were being actively git-committed
   // across their own failure window — a mid-refactor artifact, not a real

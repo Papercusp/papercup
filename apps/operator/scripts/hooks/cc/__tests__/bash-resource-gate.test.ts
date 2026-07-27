@@ -1048,7 +1048,11 @@ describe('background-log-read-race advisory (EI-18764990059061608)', () => {
   /** Holds `path` open for writing until killed — the liveness signal the
    *  advisory's /proc fd scan checks for. */
   function spawnOpenHolder(path: string) {
-    return spawn('bash', ['-c', `exec 3>'${path}'; sleep 30 >&3`], { stdio: 'ignore' });
+    // The second `exec` REPLACES the shell process with `sleep` (no fork) —
+    // a plain `sleep 30 >&3` would fork a CHILD that inherits fd 3 and
+    // outlives `holder.kill()` (which only signals the shell), leaving the
+    // path open under an orphaned pid the "closed" tests never account for.
+    return spawn('bash', ['-c', `exec 3>'${path}'; exec sleep 30 >&3`], { stdio: 'ignore' });
   }
 
   it('fires when the redirected file is still open by a live process', async () => {

@@ -827,6 +827,68 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  // ── EI-18764241942332131: a raw NUL byte anywhere in the completion record used to
+  // reach the terminal state write, where Postgres' jsonb text-input parser rejects it
+  // with the opaque "unsupported Unicode escape sequence" — the completion RECORDED but
+  // the state write silently failed, leaving the item open/claimable with no clue what
+  // went wrong. Sanitizing at the tool boundary (completeOne) means the state write never
+  // even sees the NUL, so a close that would previously have half-failed now succeeds
+  // cleanly, with the caller told what was silently rewritten.
+  //
+  // NUL is built via String.fromCharCode(0) rather than a source literal — several
+  // editors/terminals (and this test file, if edited carelessly) render an embedded raw
+  // NUL byte as a plain space, which would make a hand-typed literal indistinguishable
+  // from a real space and defeat the very thing this test is pinning.
+  describe('nulBytesStrippedWarning — a raw NUL byte in completion evidence is sanitized, not left to fail the state write (EI-18764241942332131)', () => {
+    const NUL = String.fromCharCode(0);
+
+    it('strips an embedded NUL from testResult, closes the item cleanly, and warns', async () => {
+      const issue = { ...item, id: 'WI-9', kind: 'bug', family: 'issue', state: 'open' };
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const dirty = `before${NUL}after`;
+      const r = await one({
+        id: 'WI-9',
+        state: 'resolved',
+        completion: { summary: 'fixed', testsRun: 'vitest', testResult: dirty, verifiedHow: 'unit' },
+      });
+      // The state write must never have SEEN the NUL — proves sanitization happens
+      // before evidence extraction, not merely before the response is rendered.
+      const passedEvidence = setWorkItemStateWithAliasInfo.mock.calls[0]?.[2]?.completionEvidence;
+      expect(passedEvidence.testResult).toBe('beforeafter');
+      expect(passedEvidence.testResult.includes(NUL)).toBe(false);
+      // The close itself must succeed — this is the actual bug: previously the state
+      // write could fail downstream on the very evidence this call supplies.
+      expect(r.ok).not.toBe(false);
+      expect(r.stateError).toBeUndefined();
+      expect(r.workItem.state).toBe('resolved');
+      // The echoed completion record itself is also clean, and the caller is told.
+      expect(r.completion.testResult).toBe('beforeafter');
+      expect(r.nulBytesStrippedWarning).toMatch(/NUL/);
+      expect(r.nulBytesStrippedWarning).toContain('WI-9');
+    });
+
+    it('does not warn (or touch the text) when the completion carries no NUL byte', async () => {
+      const issue = { ...item, id: 'WI-10', kind: 'bug', family: 'issue', state: 'open' };
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+      const r = await one({
+        id: 'WI-10',
+        state: 'resolved',
+        completion: { summary: 'fixed', testsRun: 'vitest', testResult: 'clean text', verifiedHow: 'unit' },
+      });
+      expect(r.completion.testResult).toBe('clean text');
+      expect(r.nulBytesStrippedWarning).toBeUndefined();
+    });
+
+    it('also strips a NUL from `summary` alone (record-only call, no state)', async () => {
+      getWorkItem.mockResolvedValue(item); // state: 'in_progress'
+      const r = await one({ id: 'F-12', completion: { summary: `dup${NUL}licate note` } });
+      expect(r.completion.summary).toBe('duplicate note');
+      expect(r.nulBytesStrippedWarning).toMatch(/NUL/);
+    });
+  });
+
   // ── EI-15982: `stateWarning` (and every other loud caller-facing signal) must serialize
   // BEFORE the bulky `workItem`/`completion`/`reflect` echoes. The per-result context door
   // (result-door.ts) truncates an oversized result's serialized JSON text from the FRONT of

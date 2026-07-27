@@ -528,11 +528,11 @@ export default defineTool({
   description:
     'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified. `self`=your ownerId (your row is `isSelf:true`). Each live agent carries its ordered work-list — `doing`/`queued`/`load` — the placement read. Surfaces `orphaned`/`stalled` claims with a derived `verdict`+`action`: `orphan`/`reclaim` (holder gone) · `held-by-live-agent`/`ask` (live, uncheckpointed — never release) · `residue`/`close` (linked plan item already done/dropped — close, never release). Act on `summary.reclaimable_claims`/`residue_claims`, not raw counts. `progress` distinguishes `never-checkpointed` vs `stale-since`; each row also carries a lifecycle `verdict`, `wakeMode` (auto|manual), and `unanswered` message state. Read this, not a stale coord broadcast. Full field reference: /internal/docs/agent-insights/fleet-assignments-field-reference.',
   guidance: {
-    when: 'Answering "who\'s running / what is X doing / X\'s work-list / how loaded is X / is anyone on plan P" — the state + placement-decision read, instead of scanning coord:inbox or replaying lifecycle messages.',
+    when: 'Answering "who\'s running / what X is doing / X\'s work-list / how loaded X is / who\'s on plan P" — the state + placement-decision read, not coord:inbox scanning.',
     notWhen:
       'You want future-change notifications (subscribe the fleet_assignment change-feed) or full message history (coord:inbox).',
     chaining:
-      'fleet:assignments { plan } → action:\'reclaim\' → work_items:release / plan_items:release, or take it yourself; action:\'ask\' → coord:send the holder and WAIT, never release; action:\'close\' → work_items:complete / work_items:set_state citing the row\'s `residue` field, NEVER release. Never assume "someone\'s on it" from a coord message. fleet:assignments { agent } before messaging about their work.',
+      'fleet:assignments { plan } → action:\'reclaim\' → work_items:release/plan_items:release, or take it; action:\'ask\' → coord:send + WAIT, never release; action:\'close\' → work_items:complete/set_state citing `residue`, NEVER release. Never assume "someone\'s on it" from a coord message; fleet:assignments { agent } before messaging them.',
     // Result-aware (D-003): the work_items:release pointer surfaces with a REAL
     // count ONLY when there are orphaned/stalled claims to reclaim — dynamically
     // gated so a clean fleet pays no "See also:" bloat. The two adjacent-lens

@@ -220,6 +220,76 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
   });
 });
 
+describe('db:migrate — drain/apply progress + timeout safety note (EI-18769559897594065)', () => {
+  const progressCtx = () => {
+    const progress = vi.fn();
+    return { ctx: { role: 'operator', progress } as never, progress };
+  };
+
+  it('wires a spec.onTick callback into guardResource that forwards to ctx.progress as a draining-phase tick', async () => {
+    const { ctx, progress } = progressCtx();
+    h.guardResource.mockImplementation(async (spec: unknown, run: (fence: unknown) => Promise<unknown>) => {
+      const s = spec as { onTick?: (info: { waited_sec: number; holders: unknown[] }) => void };
+      s.onTick?.({ waited_sec: 12, holders: [{ owner: 'su-peer', owner_label: 'peer', mode: 'shared', status: 'draining' }] });
+      return { acquired: true, result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }) };
+    });
+    await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true, max_drain_sec: 45 }, ctx);
+    expect(progress).toHaveBeenCalled();
+    const draining = progress.mock.calls.map((c) => JSON.parse(c[1] as string)).find((p) => p.phase === 'draining');
+    expect(draining).toMatchObject({ phase: 'draining', elapsed_sec: 12, max_drain_sec: 45, remaining_sec: 33 });
+    expect(draining.holders[0]).toMatchObject({ owner: 'su-peer', mode: 'shared' });
+  });
+
+  it('does not throw when ctx has no progress function (older transport shape)', async () => {
+    h.guardResource.mockImplementation(async (spec: unknown, run: (fence: unknown) => Promise<unknown>) => {
+      const s = spec as { onTick?: (info: { waited_sec: number; holders: unknown[] }) => void };
+      s.onTick?.({ waited_sec: 5, holders: [] });
+      return { acquired: true, result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }) };
+    });
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.ok).toBe(true);
+  });
+
+  it('emits an applying-phase progress tick when the psql apply begins (enabled path)', async () => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+    const { ctx, progress } = progressCtx();
+    await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, ctx);
+    const applying = progress.mock.calls.map((c) => JSON.parse(c[1] as string)).find((p) => p.phase === 'applying' && !('retry_attempt' in p));
+    expect(applying).toMatchObject({ phase: 'applying', file: '999-fake.sql' });
+  });
+
+  it('emits a retry-attempt progress tick on attempt 2+ but not on the first attempt', async () => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+    vi.useFakeTimers();
+    h.spawnSync
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'ERROR:  canceling statement due to lock timeout' })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' });
+    const { ctx, progress } = progressCtx();
+    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, ctx);
+    await vi.advanceTimersByTimeAsync(2000);
+    const out = parse(await promise);
+    vi.useRealTimers();
+    expect(out.applied).toBe(true);
+    const retryTicks = progress.mock.calls
+      .map((c) => JSON.parse(c[1] as string))
+      .filter((p) => p.phase === 'applying' && 'retry_attempt' in p);
+    expect(retryTicks).toEqual([{ phase: 'applying', retry_attempt: 2, max_attempts: 5 }]);
+  });
+
+  it('an acquire/drain failure (no DDL ran) carries a note that it is safe to retry immediately', async () => {
+    h.guardResource.mockResolvedValue({
+      acquired: false,
+      reason: 'drain_timeout',
+      holders: [{ owner: 'su-peer', owner_label: 'peer', mode: 'shared', status: 'draining' }],
+    });
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('resource_drain_timeout');
+    expect(out.note).toContain('No DDL was applied');
+    expect(out.note).toContain('Safe to retry');
+  });
+});
+
 describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
   beforeEach(() => {
     process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
