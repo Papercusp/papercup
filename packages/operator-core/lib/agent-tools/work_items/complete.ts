@@ -913,7 +913,18 @@ export default defineTool({
     // refusal, the test-completion gate, the inference/close-intent logic) sees the same value.
     const list: CompleteItem[] = isBulkForm
       ? args.items!.map((it) => ({ ...it, harness: it.harness ?? args.harness, state: it.state ?? args.state }))
-      : [{ id: args.id as string, harness: args.harness, state: args.state, completion: args.completion!, outputPayload: args.outputPayload }];
+      : [{
+          id: args.id as string,
+          harness: args.harness,
+          state: args.state,
+          completion: args.completion!,
+          outputPayload: args.outputPayload,
+          // P-017 (b) gate #2: the refine above guarantees this is present on the
+          // shorthand axis, so the assertion is safe — but it must be threaded HERE or
+          // the declaration the gate just forced would be collected and then dropped on
+          // the floor for every single-complete call.
+          assumptions: args.assumptions!,
+        }];
     const env = await runBulk(list, (it) => completeOne(it, ident, ctx), { keyOf: (it) => ({ id: it.id }) });
     // EI-14676: the generic bulk contract's top-level `ok` means "the batch ran" (see
     // _bulk.ts) — correct for an explicit N-item `items:[…]` batch, where partial failure

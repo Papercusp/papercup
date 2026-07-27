@@ -127,7 +127,10 @@ describe('WI-559 — a STRUCTURAL apply failure defers, it does not abort or dro
     }
 
     // First occurrence only (then every 100th) — not one line per pass.
-    expect(warn.mock.calls.filter((c) => String(c[0]).includes('structural apply deferral'))).toHaveLength(1);
+    const deferralLogs = warn.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes('structural apply deferral'),
+    );
+    expect(deferralLogs).toHaveLength(1);
   });
 
   it('STILL QUARANTINES genuine poison — the narrow predicate must not weaken the WI-255 guard', async () => {
