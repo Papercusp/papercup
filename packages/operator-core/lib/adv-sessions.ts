@@ -987,6 +987,40 @@ export async function recordedLiveOwnerIds(coordOwnerIds: string[]): Promise<Set
 }
 
 /**
+ * When this coord owner FIRST existed — the EARLIEST `started_at` across all of
+ * its adv_sessions rows, as an ISO string (null when it has none on record).
+ *
+ * unread-count-truthfulness-2026-07-27 D-012: the unread cursor's birth floor.
+ * A coord owner id survives respawns/carry-compactions, so this deliberately
+ * takes the EARLIEST row, not the latest — flooring at the latest respawn would
+ * silently drop mail that arrived during an earlier leg of the same owner's life.
+ *
+ * NOT workspace-scoped, same rationale as advSessionsByCoordOwner above (and
+ * the same as its `latest` sibling below) — a coord owner id is globally unique,
+ * and scoping here would make a cross-workspace row read as "never existed",
+ * which floors to null and silently restores the count-from-epoch behaviour.
+ */
+export async function firstAdvSessionStartByCoordOwner(
+  coordOwnerId: string,
+): Promise<string | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ started_at: Date | string | null }>>`
+      SELECT MIN(started_at) AS started_at
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${coordOwnerId}
+    `;
+    const raw = rows[0]?.started_at ?? null;
+    if (raw == null) return null;
+    const d = raw instanceof Date ? raw : new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  } catch (e) {
+    warnUnlessMissingTable(e, 'firstAdvSessionStartByCoordOwner');
+    return null;
+  }
+}
+
+/**
  * The most recent adv_sessions row for ONE coord owner — the await-event
  * wake-handle capture (await-event-primitive-2026-06-05 D-003): events:await
  * stamps this row's {id, agent, session_id, omp_thread_id, cwd, pid} onto the

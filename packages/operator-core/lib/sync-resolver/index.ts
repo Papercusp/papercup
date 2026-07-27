@@ -3427,13 +3427,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'taskManager.inventory': {
     resolve: async (args: unknown) => {
       const a = (args ?? {}) as { state?: string; cls?: string; includeEnded?: boolean; live?: boolean };
-      const [{ getTaskInventory, disabledInventory }, { getFlag }, { FLAGS }] = await Promise.all([
+      const [{ getTaskInventory, disabledInventory }, { isTaskManagerEnabled }] = await Promise.all([
         import('../task-manager/inventory'),
-        import('@papercusp/flags/server'),
-        import('@papercusp/flags'),
+        import('../task-manager/enabled'),
       ]);
-      const enabled = await getFlag(FLAGS.TASK_MANAGER, 'sync:taskManager.inventory').catch(() => true);
-      if (!enabled) return [disabledInventory()];
+      // WI-6499: fail CLOSED via the shared authority — this used to `.catch(() => true)`,
+      // which served a live inventory whenever the flag backend was unreachable.
+      if (!(await isTaskManagerEnabled('sync:taskManager.inventory'))) return [disabledInventory()];
       return [
         await getTaskInventory({
           state: a.state ?? null,

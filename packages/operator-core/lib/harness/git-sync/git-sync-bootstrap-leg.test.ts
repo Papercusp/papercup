@@ -520,6 +520,28 @@ describe('runBootstrapLeg', () => {
     expect(patch.bootstrap).toMatchObject({ ok: true, namespaceCount: 1, skippedExisting: 0 });
   });
 
+  it('EI-18799556647570956: the bootstrap record is stamped with a writer identity (pid+instance+sha) on BOTH the dialed and no-topic-stub paths, so a stale-process race is self-evident instead of reading as a regression', async () => {
+    // Dialed path.
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
+    await runBootstrapLeg(SLUG, WS);
+    const dialedWriter = routinePatchBody(routinesPatch().params).bootstrap as { writer?: unknown };
+    expect(dialedWriter.writer).toMatchObject({ pid: process.pid });
+    expect(dialedWriter.writer).toHaveProperty('instance');
+    expect(dialedWriter.writer).toHaveProperty('sha');
+    expect(typeof (dialedWriter.writer as { instance: unknown }).instance).toBe('string');
+
+    // No-topic-stub path — same stamp shape, so a reader can tell the two apart
+    // from the SAME field regardless of which leg last wrote the record.
+    unsafeMock.mockClear();
+    getBootedHarnessMock.mockReturnValue(null);
+    await runBootstrapLeg(SLUG, WS);
+    const stubWriter = routinePatchBody(routinesPatch().params).bootstrap as { writer?: unknown };
+    expect(stubWriter.writer).toMatchObject({ pid: process.pid });
+    expect(stubWriter.writer).toHaveProperty('instance');
+    expect(stubWriter.writer).toHaveProperty('sha');
+  });
+
   it('falls back to ctx-derived potHomeSlug from entry.slug when hive_slug is absent but self_repo is true', async () => {
     loadHarnessRegistryMock.mockResolvedValue({
       projects: [{ slug: SLUG, self_repo: true }],

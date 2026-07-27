@@ -19,7 +19,7 @@ import { readWatermark, pickUnreadCursor } from './agent-tools/coordination/wate
 import { lastInboxReadAtBatch } from './agent-tools/coordination/inbox-read-freshness';
 import { listHandoffs, type HandoffWithAcceptance } from './agent-tools/coordination/handoffs';
 import { listEscalations, type EscalationRecord } from './agent-tools/coordination/escalations';
-import { latestAdvSessionByCoordOwner } from './adv-sessions';
+import { latestAdvSessionByCoordOwner, firstAdvSessionStartByCoordOwner } from './adv-sessions';
 import {
   ensureBootstrap,
   getTxPool,

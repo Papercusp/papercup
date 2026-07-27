@@ -1,6 +1,5 @@
 import { defineTool } from '@papercusp/agent-mcp';
-import { getFlag } from '@papercusp/flags/server';
-import { FLAGS } from '@papercusp/flags';
+import { isTaskManagerEnabled } from '../../../task-manager/enabled';
 import { getTaskInventory, disabledInventory } from '../../../task-manager/inventory';
 
 /**
@@ -28,8 +27,9 @@ export default defineTool({
   path: '/admin/tasks/inventory',
   auth: { trust: ['verified', 'trusted'] },
   async handler(req): Promise<Response> {
-    const enabled = await getFlag(FLAGS.TASK_MANAGER, 'admin:task-manager').catch(() => true);
-    if (!enabled) return Response.json(disabledInventory());
+    // WI-6499: fail CLOSED via the shared authority — this used to `.catch(() => true)`,
+    // which served a live inventory whenever the flag backend was unreachable.
+    if (!(await isTaskManagerEnabled('admin:task-manager'))) return Response.json(disabledInventory());
 
     const url = new URL(req.url);
     return Response.json(

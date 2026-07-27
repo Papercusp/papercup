@@ -265,9 +265,13 @@ export default function TasksClient(): ReactElement {
 
   if (data && !data.enabled) {
     return (
-      <div style={{ padding: 24, ...mono }}>
-        Task manager is disabled (<code>papercusp-task-manager</code> is off). Spawns still run — they are just
-        unconfined and unledgered. Flip it at <a href="/admin/features">/admin/features</a>.
+      <div style={{ padding: 24, ...mono, maxWidth: 620, lineHeight: 1.5 }}>
+        <strong>Task manager is off.</strong> It is behind <code>papercusp-task-manager</code>, which defaults off while
+        the subsystem is still being tested (WI-6499).
+        <br />
+        <br />
+        Nothing is being confined or ledgered — spawns run exactly as they did before the feature existed, and the 30s
+        reconciler is not running. Turn it on for testing at <a href="/admin/features">/admin/features</a>.
       </div>
     );
   }

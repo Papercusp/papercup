@@ -1937,16 +1937,32 @@ export const FLAGS = {
   // ever restarted. No `process.env.PAPERCUSP_*` gate (`lint:env-feature-gates`).
   SUPERVISOR_AUTO_RESTART: "papercusp-supervisor-auto-restart",
   // task-manager-no-escape-2026-07-27 P-020: the task manager as a whole — cgroup
-  // confinement at the spawn chokepoints, the 30s reconcile, and the Task Manager
-  // pane. DEFAULT ON (derived FLAG_DEFAULTS — finished work never ships dark, and
-  // the feature IS knowing what is running).
+  // confinement at the spawn chokepoints, the 30s reconcile, the processes:* read
+  // surfaces, and the Task Manager pane.
   //
-  // Safe to default ON because the reconciler is REPORT-ONLY by construction (plan
-  // D-010): there is no auto-kill and no auto-freeze code path to gate. The
-  // destructive verbs are all MANUAL and separately capability-gated
-  // (processes:kill / processes:control). OFF ⇒ spawns still run, just unconfined
-  // and unledgered — i.e. exactly today's behaviour, which is the honest kill-switch
-  // for a subsystem that touches every spawn seam on the box.
+  // DEFAULT OFF (DARK_FLAGS, case 'incomplete') [owner 2026-07-27 "put the task
+  // manager behind a testing flag it isn't ready yet"]. It shipped default-ON the
+  // same day; the owner called it back the same day. See WI-6499.
+  //
+  // ⚠ It ALSO shipped with this comment describing gating that did not exist. The
+  // flag had exactly two call sites — the pane's sync query and the /admin/tasks
+  // route — so turning it off blanked the dashboard while every spawn stayed
+  // confined and ledgered, the 30s reconciler kept running, and a `systemd-run`
+  // probe still fired at module import. WI-6499 made the gate real at the seams
+  // this comment always claimed: task-manager/enabled.ts is now the single
+  // authority, and it fails CLOSED (the old sites did `.catch(() => true)` — the
+  // right bias for a finished subsystem, the wrong one for an unready subsystem
+  // that must not self-enable when the flag backend is unreachable).
+  //
+  // OFF ⇒ spawns run unconfined and UNLEDGERED, no reconcile tick, processes:list
+  // reports disabled, pane shows its disabled state — byte-identical to the
+  // pre-feature box.
+  //
+  // GRADUATION: owner's call. The subsystem is built and unit-tested; what is not
+  // established is a sustained window of correct residue classification on a real
+  // box, which is the precondition D-010 already names for anything ever acting on
+  // it. Flip ON for testing, watch `unaccounted`/`foreign` counts settle, then
+  // graduate.
   //
   // NOT a `process.env.PAPERCUSP_*` gate (`lint:env-feature-gates`).
   TASK_MANAGER: "papercusp-task-manager",
@@ -2055,6 +2071,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'WI-5646 (owner decision 2026-07-26): the external-bench BLUEPRINT is now RETIRED — its design premise ("the treatment IS the shipped coding system, byte for byte") died when the per-feature coding spine was retired 2026-06-24 and `coding` was reassigned to the pot/Mug architecture, so it would benchmark a system that no longer exists. This flag stays dark PERMANENTLY and is NOT awaiting graduation — the prior "dark until the P-009 ~50-task pilot proves the end-to-end path" condition is void; that pilot will not run. (Also still true: the grader adapter is incomplete — M2 in-container modality unbuilt — and infra-heavy.) Do NOT flip ON. It gates the eval UI + run/reproducibility stores, which are kept only to read HISTORICAL run data. Benchmarking the pot/Mug architecture is a NEW blueprint + its own flag, not this one.' }],
     [FLAGS.CODEX_GATEWAY_OAUTH_PROXY, { case: 'incomplete', reason: 'WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).' }],
     [FLAGS.ONBOARDING_PREVIEW_FEATURES, { case: 'incomplete', reason: 'owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.' }],
+    [FLAGS.TASK_MANAGER, { case: 'incomplete', reason: 'WI-6499, owner-directed 2026-07-27 ("put the task manager behind a testing flag it isn\'t ready yet") — the flag shipped default-ON that morning and the owner called it back the same day, so this is a TESTING gate on a subsystem that touches every spawn seam on the box, not parked finished work. Two things were true when it landed: the subsystem had never run a sustained window on a real box with correct residue classification (the precondition plan D-010 already names before anything acts on `unaccounted`), and the flag was DECORATIVE — it gated only the pane\'s two read surfaces, so OFF still confined every spawn, still wrote the ledger, still ran the 30s reconciler, and still fired a systemd-run probe at module import. WI-6499 made the gate real (task-manager/enabled.ts, fail-CLOSED) so OFF is now byte-identical to the pre-feature box: unconfined + unledgered spawns, no reconcile, processes:list reports disabled. GRADUATION: owner flips ON for testing, watches unaccounted/foreign counts settle over a sustained window, then removes this entry.' }],
     // PER_POT_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
     // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
     // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when
@@ -2303,7 +2320,22 @@ export const DARK_FLAGS_REVIEW_BY = '2026-08-09';
 // 12→13 under this session's standing AUTO-mode grant (owner directive 2026-07-03:
 // ZERO owner-confirm pauses) and disclosed via the work-item completion + this comment,
 // per the established precedent for this exact bug class elsewhere in this file.
-export const DARK_FLAGS_HIGH_WATERMARK = 13;
+//
+// 2026-07-27 (WI-6499) — 13→14 for papercusp-task-manager, on an EXPLICIT owner
+// directive the same day the flag shipped default-ON: "put the task manager behind a
+// testing flag it isn't ready yet". This is the sign-off path the policy names, not a
+// quiet append — the owner asked for the dark entry directly, so no graduation trade
+// was sought (the set was at 13/13 with zero candidates ready at the 2026-07-26 review,
+// which is unchanged a day later).
+//
+// It is also NOT the parking-lot abuse this ceiling polices, and the distinction is
+// worth stating because the entry looks like it: the abuse is FINISHED work hidden
+// behind a flag nobody flips. Here the owner is the one asking for the gate, on a
+// subsystem that intercepts every spawn on the box and has never run a sustained
+// correctness window — and the flip back ON is a testing action the owner performs,
+// not a ceremony awaiting an agent. Expected to graduate quickly; if it is still here
+// at the next review, that is the signal to chase.
+export const DARK_FLAGS_HIGH_WATERMARK = 14;
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /

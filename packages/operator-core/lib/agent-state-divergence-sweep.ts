@@ -40,6 +40,7 @@ import {
   type DivergenceCall,
   type DivergenceReport,
 } from './agent-state-divergence';
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { claimWatchdogFire, recentWatchdogFires } from './pot/watchdog';
 import { openEscalation } from './agent-tools/coordination/escalations';
 import { sendMessage } from './agent-tools/coordination/messages';
@@ -203,6 +204,38 @@ export async function loadRecentCalls(opts: {
   }));
 }
 
+/**
+ * Which of these goal refs are already FINISHED (P-010, EI-18830083673617307).
+ *
+ * ⚠ DERIVED FROM `ANY_FAMILY_TERMINAL_STATES`, NEVER RE-LISTED. A goal ref can be
+ * either kind-family (EI-/WI- issue, F- feature) and the two spell their terminals
+ * differently, so the union is the only correct set here. That constant's own
+ * docstring records what re-listing costs: placement-watchdog hand-copied the union,
+ * missed the `done`/`dropped` added by work-item-status-full-unify, and reported
+ * ~88% phantoms because every consumer reads "not in the set ⇒ still active" — which
+ * is exactly how THIS function is read too.
+ *
+ * Returns only the terminal subset; a ref absent from `work_items` entirely is NOT
+ * treated as terminal, because "I could not find it" is not "it is finished".
+ */
+export async function loadTerminalGoalRefs(opts: {
+  workspaceId: string;
+  goalRefs: readonly string[];
+  sql?: Sql;
+}): Promise<Set<string>> {
+  const refs = [...new Set(opts.goalRefs.filter((r) => r != null && r !== ''))];
+  if (refs.length === 0) return new Set();
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<{ feature_id: string }[]>`
+    SELECT feature_id
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId}
+       AND feature_id = ANY(${refs as string[]}::text[])
+       AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+  `;
+  return new Set(rows.map((r) => r.feature_id));
+}
+
 // ── the sweep ────────────────────────────────────────────────────────────────
 
 export interface DivergenceSweepOutcome {
@@ -220,6 +253,7 @@ export interface DivergenceSweepResult {
 
 export interface DivergenceSweepDeps {
   loadRecentCalls?: typeof loadRecentCalls;
+  loadTerminalGoalRefs?: typeof loadTerminalGoalRefs;
   recentWatchdogFires?: typeof recentWatchdogFires;
   claimWatchdogFire?: typeof claimWatchdogFire;
   openEscalation?: typeof openEscalation;
@@ -256,16 +290,39 @@ export async function divergenceSweep(deps: DivergenceSweepDeps = {}): Promise<D
     };
   }
 
+  // P-010: resolve which cited goals are already finished, so the stamped leg
+  // cannot page about drift between two CLOSED work-items — a finding no
+  // re-declaration could ever reconcile, and the half of
+  // EI-18830083673617307 that made the alert unactionable rather than merely loud.
+  //
+  // ⚠ FAIL CLOSED, not open. If this read fails we do NOT fall back to the
+  // unfiltered behaviour: that is precisely the bug, and a silent fallback would
+  // reinstate it exactly when the DB is least healthy. The goal leg is withheld
+  // for this sweep instead; the sampling leg, which needs no goal state, is
+  // unaffected.
+  let terminalGoalRefs: Set<string> | undefined;
+  let terminalLoadError: string | null = null;
+  try {
+    terminalGoalRefs = await (deps.loadTerminalGoalRefs ?? loadTerminalGoalRefs)({
+      workspaceId,
+      goalRefs: calls.map((c) => c.goalRef).filter((g): g is string => g != null && g !== ''),
+      sql: deps.sql,
+    });
+  } catch (e) {
+    terminalLoadError = e instanceof Error ? e.message : String(e);
+  }
+
   // `now` is threaded in so the detector can apply CONVERGENCE_SETTLE_MS — a run
   // whose fix may simply not have happened yet is deferred to a later sweep
   // instead of being reported as un-converged.
-  const report = detectIntentActionDivergence(calls, { now });
+  const report = detectIntentActionDivergence(calls, { now, terminalGoalRefs });
 
   // The per-leg delivery gate (P-011's ordering rule, applied per leg because
   // the stamped leg is structurally empty until P-009 deploys while the sampling
   // leg has live input today). A finding from a leg that could not really run is
   // not deliverable, however it looks.
   const allowed = new Set(deliverableKinds(report.coverage));
+  if (terminalLoadError) allowed.delete('goal-drift-within-intent');
 
   if (report.divergences.length === 0) {
     const z = report.structuralZero;
@@ -288,7 +345,9 @@ export async function divergenceSweep(deps: DivergenceSweepDeps = {}): Promise<D
         outcomes.push({
           key,
           outcome: 'suppressed',
-          reason: `leg '${d.kind}' did not have enough coverage to deliver from`,
+          reason: terminalLoadError && d.kind === 'goal-drift-within-intent'
+            ? `goal state unresolvable, so terminal goals could not be excluded — withheld rather than risk paging about closed work: ${terminalLoadError}`
+            : `leg '${d.kind}' did not have enough coverage to deliver from`,
         });
         continue;
       }

@@ -485,9 +485,29 @@ export function detectIntentActionDivergence(
     if (c.goalRef != null && c.goalRef !== '') goalStampedCalls += 1;
   }
 
+  const terminalGoals = opts.terminalGoalRefs;
+  const terminalFilterApplied = terminalGoals !== undefined;
+  let terminalGoalCallsExcluded = 0;
+  let bucketsCollapsedByTerminal = 0;
+
   let comparableBuckets = 0;
   for (const bucket of buckets.values()) {
-    const withGoal = bucket.filter((c) => c.goalRef != null && c.goalRef !== '');
+    const allWithGoal = bucket.filter((c) => c.goalRef != null && c.goalRef !== '');
+
+    // Drop calls whose goal is already finished. A drift BETWEEN two closed goals
+    // is unactionable by construction: there is no re-declaration the recipient
+    // could make that would reconcile an intent with work that is already done,
+    // so paging about it spends attention and buys nothing.
+    const withGoal = terminalGoals
+      ? allWithGoal.filter((c) => !terminalGoals.has(c.goalRef as string))
+      : allWithGoal;
+    terminalGoalCallsExcluded += allWithGoal.length - withGoal.length;
+
+    // Counted BEFORE the `< 2` bail so the suppression is visible rather than
+    // silent: a bucket that WAS comparable and is not any more is the whole
+    // measurable effect of this filter.
+    if (allWithGoal.length >= 2 && withGoal.length < 2) bucketsCollapsedByTerminal += 1;
+
     if (withGoal.length < 2) continue;
     // Counted BEFORE the distinctness test, and the distinction is load-bearing:
     // this is the "could be compared" denominator, not the "did diverge"
@@ -690,6 +710,9 @@ export function detectIntentActionDivergence(
     // Same distinction as `comparableBuckets`: an agent whose every failure
     // self-corrected was genuinely examined and genuinely came back clean.
     samplingLegRan: failuresSeen > 0,
+    terminalFilterApplied,
+    terminalGoalCallsExcluded,
+    bucketsCollapsedByTerminal,
   };
 
   return {
@@ -707,6 +730,10 @@ function round4(n: number): number {
 function zeroReasonFor(c: DivergenceCoverage): DivergenceZeroReason {
   if (c.callsExamined === 0) return 'no-calls';
   if (!c.stampedLegRan && !c.samplingLegRan) return 'nothing-comparable';
+  // Ordered BEFORE `stamped-legs-empty`, which blames a missing stamp. When the
+  // stamp was present and the goals were merely finished, that explanation is
+  // wrong in a way that sends the reader to fix the wrong thing.
+  if (!c.stampedLegRan && c.bucketsCollapsedByTerminal > 0) return 'all-goals-terminal';
   if (!c.stampedLegRan) return 'stamped-legs-empty';
   return 'agreement';
 }
@@ -720,6 +747,8 @@ export function explainZero(reason: DivergenceZeroReason): string {
       return 'STRUCTURAL ZERO — calls exist but NONE carried an intent stamp and NONE failed, so neither the stamped legs nor the sampling legs could run. This is not "no divergence": nothing was compared.';
     case 'stamped-legs-empty':
       return "PARTIAL — the sampling legs ran and found nothing, but stampFillRate is 0 so the intent/goal legs never ran. Until P-009's stamp is DEPLOYED every call carries NULL, and a zero here says nothing about intent↔action divergence.";
+    case 'all-goals-terminal':
+      return 'STRUCTURAL ZERO — intent buckets carried goal stamps, but every comparable bucket collapsed because its goals are already CLOSED. Nothing was compared. Not a missing stamp (the stamps were there) and not agreement (no live pair was examined).';
     case 'agreement':
       return 'A REAL ZERO — intent buckets were compared and the goals held within them agree.';
   }
