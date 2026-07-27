@@ -1573,7 +1573,9 @@ export async function gitPipelinePosition(
     };
   }
 
-  const preStages: Omit<PipelinePosition, 'summary' | 'stages'> = {
+  // Everything computeStages needs, before the stage table — and before deriveBlocker,
+  // which reads that table to pick blockedOn/nextAction.
+  const preStages: Omit<PipelinePosition, 'summary' | 'stages' | 'blockedOn' | 'nextAction'> = {
     input: { path: inp.path ?? null, sha: inp.sha ?? null },
     repoRoot: root,
     submodule,

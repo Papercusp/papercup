@@ -120,21 +120,38 @@ export function resolveProjectPath(root: string, project: string): string | null
  * Real tsconfigs near the repo root, so a refusal names what the caller could
  * have meant. This is the whole reason the refusal is useful rather than merely
  * correct: an agent who typed `-p .` out of habit needs the list, not a scolding.
+ *
+ * The buckets are INTERLEAVED rather than concatenated. Filling the cap in
+ * order put all 12 slots into `packages/` (it alone holds more than the cap), so
+ * an agent who meant `apps/operator-vite` was handed twelve suggestions with not
+ * one `apps/` entry among them — a list that is technically correct and
+ * practically useless. Caught by live verification, not by the unit suite.
  */
 export function suggestProjects(root: string): string[] {
-  const found: string[] = [];
+  const byBucket: string[][] = [];
   for (const bucket of SUGGEST_ROOTS) {
     const dir = resolve(root, bucket);
     if (!existsSync(dir)) continue;
     let entries: string[];
     try { entries = readdirSync(dir); } catch { continue; }
+    const found: string[] = [];
     for (const entry of entries.sort()) {
-      if (found.length >= MAX_SUGGESTIONS) return found;
       const candidate = join(dir, entry, 'tsconfig.json');
       if (existsSync(candidate)) found.push(relative(root, candidate));
     }
+    if (found.length > 0) byBucket.push(found);
   }
-  return found;
+
+  const interleaved: string[] = [];
+  for (let i = 0; interleaved.length < MAX_SUGGESTIONS; i += 1) {
+    const before = interleaved.length;
+    for (const bucket of byBucket) {
+      if (interleaved.length >= MAX_SUGGESTIONS) break;
+      if (i < bucket.length) interleaved.push(bucket[i]);
+    }
+    if (interleaved.length === before) break; // every bucket exhausted
+  }
+  return interleaved;
 }
 
 export default defineTool({

@@ -514,3 +514,94 @@ describe('logs.ts model tracks the real logs:read (D-015)', () => {
     expect(unitJournalRead.expectedVerdict).toBe('equivalent');
   });
 });
+
+// ── build:typecheck ↔ pairs/typecheck.ts ────────────────────────────────────
+
+/** Parse an args payload through `build:typecheck`'s REAL zod schema. */
+function typecheckAccepts(args: Record<string, unknown>): boolean {
+  return (buildTypecheck as unknown as { args: { safeParse: (a: unknown) => { success: boolean } } })
+    .args.safeParse(args).success;
+}
+
+describe('typecheck.ts model tracks the real build:typecheck (D-015)', () => {
+  it('BUILD_TYPECHECK_MAX_PROJECT is the real `project` length bound', () => {
+    expect(typecheckAccepts({ project: 'a'.repeat(BUILD_TYPECHECK_MAX_PROJECT) })).toBe(true);
+    expect(
+      typecheckAccepts({ project: 'a'.repeat(BUILD_TYPECHECK_MAX_PROJECT + 1) }),
+      `pairs/typecheck.ts refuses a project path longer than ${BUILD_TYPECHECK_MAX_PROJECT}; the tool must agree`,
+    ).toBe(false);
+  });
+
+  it('BUILD_TYPECHECK_MAX_FILES is the real `files` array bound', () => {
+    const files = (n: number) => Array.from({ length: n }, (_, i) => `lib/f${i}.ts`);
+    expect(typecheckAccepts({ project: 'packages/operator-core', files: files(BUILD_TYPECHECK_MAX_FILES) })).toBe(true);
+    expect(typecheckAccepts({ project: 'packages/operator-core', files: files(BUILD_TYPECHECK_MAX_FILES + 1) })).toBe(false);
+  });
+
+  it('`project` is still REQUIRED — an optional one would reintroduce the no-op this pair exists to refuse', () => {
+    // The whole correctness argument (NO_OP_TYPECHECK_FINDING) is that a
+    // defaulted project is exactly the silent zero-file check. If someone ever
+    // makes it optional, the model's cwd-relative exclusion stops making sense
+    // and this must be re-audited rather than quietly inherited.
+    expect(typecheckAccepts({}), 'build:typecheck accepted a call with NO project').toBe(false);
+    expect(typecheckAccepts({ project: '' })).toBe(false);
+  });
+
+  it('build:typecheck still takes no output-file / reporter argument — the pattern excludes redirects on that basis', () => {
+    expectArgSurface(
+      buildTypecheck,
+      'build:typecheck',
+      ['project', 'files', 'maxErrors', 'timeoutMs', 'incremental'],
+      'pairs/typecheck.ts excludes an stdout redirect BY PATTERN because the tool produces no artifact, and treats ' +
+        'every compiler option except --incremental as unexpressible. A new arg may mean the pattern is wrongly narrow.',
+    );
+    for (const artifact of ['outputFile', 'outFile', 'reporter', 'format', 'json']) {
+      expect(argKeys(buildTypecheck), `build:typecheck gained a '${artifact}' arg — re-audit the redirect exclusion`).not.toContain(artifact);
+    }
+  });
+
+  it('every flag cover() treats as expressible maps to a real arg or is a no-op flag', () => {
+    // `--noEmit` and `--pretty` are unconditional tool behaviour (no arg);
+    // `-p`/`--project` and `--incremental` must be REAL args, or cover() is
+    // promising an expression an agent cannot evaluate.
+    const real = argKeys(buildTypecheck);
+    expect(real).toContain('project');
+    expect(real).toContain('incremental');
+    expect([...EXPRESSIBLE_FLAGS].sort()).toEqual(['--incremental', '--noEmit', '--pretty', '-p', '--project'].sort());
+  });
+
+  it('cover() emits expressions built only from real build:typecheck args', () => {
+    expectExpressionUsesRealArgs(
+      tscProjectTypecheck,
+      'npx tsc --noEmit -p packages/operator-core/tsconfig.json 2>&1',
+      buildTypecheck,
+      ['project'],
+    );
+  });
+
+  it('the no-op codes the tool refuses on are still the ones the finding is about', () => {
+    // If TS5057/TS5058 stop being treated as "checked nothing", the tool starts
+    // reporting a clean zero for the corpus's single most common shape and the
+    // pair's whole correctness argument evaporates silently.
+    for (const code of ['TS5057', 'TS5058', 'TS18003']) {
+      expect(NO_INPUT_CODES.has(code), `${code} is no longer treated as a zero-file check`).toBe(true);
+    }
+    expect(tscProjectTypecheck.advisoryText).toContain('TS5057');
+    expect(tscProjectTypecheck.expectedVerdict).toBe('equivalent');
+  });
+
+  it('the pattern still REQUIRES --noEmit (a command without it emits — a different request)', () => {
+    expect(tscProjectTypecheck.bashPattern.test('npx tsc --noEmit -p packages/engine/tsconfig.json')).toBe(true);
+    expect(
+      tscProjectTypecheck.bashPattern.test('npx tsc -p packages/engine/tsconfig.build.json 2>&1'),
+      'the pattern claimed an EMITTING tsc run — this exact atom took the first draft to needs-widening',
+    ).toBe(false);
+  });
+
+  it('the pattern still refuses a cwd-relative project — the largest deliberate exclusion', () => {
+    for (const atom of ['npx tsc --noEmit -p . 2>&1', 'npx tsc --noEmit -p tsconfig.json 2>&1', 'npx tsc --noEmit 2>&1']) {
+      expect(tscProjectTypecheck.bashPattern.test(atom), `pattern claimed "${atom}", whose cwd the atom no longer carries`).toBe(false);
+    }
+    expect(NO_OP_TYPECHECK_FINDING.droppedAtoms).toBeGreaterThan(0);
+  });
+});

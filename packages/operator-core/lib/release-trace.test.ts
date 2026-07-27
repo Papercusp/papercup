@@ -84,6 +84,12 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       missingReason: null,
       detail: null,
     },
+    // P-005 made these REQUIRED. null/null is correct here for the same reason as above:
+    // these fixtures carry an empty `stages` table, so there is no pending stage to derive
+    // a blocker from — and null/null is the honest reading of that ("nothing pending"),
+    // not a placeholder.
+    blockedOn: null,
+    nextAction: null,
     summary: 'ok',
     notes: [],
     ...over,

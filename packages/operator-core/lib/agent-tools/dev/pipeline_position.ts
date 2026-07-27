@@ -109,13 +109,21 @@ export default defineTool({
     // at the GLOBAL key (fires on every deploy, always live) — deploy:await refines
     // it to the per-sha key. Only when the change isn't deployed yet is a wait useful.
     const deployed = result.positions?.deployed === true;
-    const awaitable = deployed
-      ? undefined
-      : {
-          hint: 'Not live yet — instead of re-polling, sleep on the deploy: deploy:await (or events:await the key below), then END YOUR TURN. You are re-invoked when it lands. See events:catalog for all awaitable keys.',
-          event: buildKey('deploy'), // global `release:deployed` — check payload.sha on wake
-          sugar: 'deploy:await',
-        };
+    // P-005 coherence: "sleep on the deploy" is only true advice when the deploy is what
+    // the change is actually waiting for. If an EARLIER stage owns the next move — the work
+    // is uncommitted, the push leg is faulted, the gate is red or judging a candidate
+    // without this change — then sleeping on `release:deployed` waits for an event that
+    // will land and carry someone else's code, while the thing that would actually help
+    // goes undone. Two contradictory instructions in one payload is worse than one, so the
+    // awaitable defers to `nextAction` whenever there IS one.
+    const awaitable =
+      deployed || result.nextAction
+        ? undefined
+        : {
+            hint: 'Not live yet — instead of re-polling, sleep on the deploy: deploy:await (or events:await the key below), then END YOUR TURN. You are re-invoked when it lands. See events:catalog for all awaitable keys.',
+            event: buildKey('deploy'), // global `release:deployed` — check payload.sha on wake
+            sugar: 'deploy:await',
+          };
     return { data: { ...result, ...(awaitable ? { awaitable } : {}) } };
   },
 });

@@ -24,6 +24,7 @@ import {
   computeStages,
   evaluateServing,
   evaluateChangeInCandidate,
+  deriveBlocker,
   type GitRunner,
   type PipelinePosition,
   type ChangeInCandidate,
@@ -567,6 +568,8 @@ describe('gitPipelinePosition (P-002)', () => {
       changeInCandidate: NO_CANDIDATE,
       notes: [],
       stages: [],
+      blockedOn: null,
+      nextAction: null,
     };
     expect(summarizePosition(base)).toContain('deployed ✗');
     expect(summarizePosition(base)).not.toContain('(live)');
@@ -1155,6 +1158,8 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       changeInCandidate: NO_CANDIDATE,
       notes: [],
       stages: [],
+      blockedOn: null,
+      nextAction: null,
     });
 
     // stale process: the summary must actively CONTRADICT the deployed tick
@@ -1360,6 +1365,8 @@ describe('changeInCandidate (P-004)', () => {
       changeInCandidate: NO_CANDIDATE,
       notes: [],
       stages: [],
+      blockedOn: null,
+      nextAction: null,
       ...over,
     });
 
@@ -1478,5 +1485,268 @@ describe('changeInCandidate (P-004)', () => {
       expect(res.changeInCandidate.nextContainsPath).toBeNull();
       expect(res.summary).not.toMatch(/⚠ The gate run/);
     });
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * P-005 — blockedOn + nextAction.
+ *
+ * `stages[]` gives six position×health readings. This answers the question the caller
+ * actually arrived with: "is my change live, and if not what is the ONE thing blocking
+ * it" — the task that cost 11 tool calls and 4 hand-diffs on 2026-07-26 and STILL went
+ * wrong twice, because deciding which of six stages owned the next move was left to the
+ * reader.
+ *
+ * The invariant these protect: THREE distinct states. Collapsing "waiting is correct"
+ * into "here is a lever" manufactures busywork (and, on the push/deploy legs, an
+ * unnecessary forced run); collapsing it into "nothing is pending" claims the change is
+ * live when it is not.
+ * ------------------------------------------------------------------------- */
+describe('deriveBlocker (P-005)', () => {
+  const st = (name: StageName, position: 'past' | 'pending' | 'na', lever: string | null = null): StageState => ({
+    name,
+    position,
+    health: 'advancing',
+    detail: null,
+    lever,
+  });
+
+  it('nothing pending ⇒ null/null — the change is live', () => {
+    expect(deriveBlocker([st('committed', 'past'), st('serving', 'past')])).toEqual({
+      blockedOn: null,
+      nextAction: null,
+    });
+  });
+
+  it('picks the FIRST pending stage — a later stage cannot advance until an earlier one has', () => {
+    const r = deriveBlocker([
+      st('committed', 'past'),
+      st('pushed', 'pending', 'git-sync:run'),
+      st('gate', 'pending', 'release:checkpoint-run'),
+    ]);
+    expect(r.blockedOn).toBe('pushed');
+    expect(r.nextAction).toBe('git-sync:run');
+  });
+
+  it('SKIPS `na` stages — they are not on this change\'s route, so they cannot block it', () => {
+    // The bg-host/gateway case: gate/main/deployed are `na`, and reporting one of them as
+    // the blocker would send the caller to wait for a deploy that can never carry the code.
+    const r = deriveBlocker([
+      st('committed', 'past'),
+      st('pushed', 'past'),
+      st('gate', 'na'),
+      st('main', 'na'),
+      st('deployed', 'na'),
+      st('serving', 'pending', 'dev:restart { target: "bg-host" }'),
+    ]);
+    expect(r.blockedOn).toBe('serving');
+    expect(r.nextAction).toBe('dev:restart { target: "bg-host" }');
+  });
+
+  it('a pending stage with NO lever reports the block with a null action — waiting IS the answer', () => {
+    const r = deriveBlocker([st('committed', 'past'), st('pushed', 'pending', null)]);
+    expect(r.blockedOn).toBe('pushed');
+    // Distinct from "nothing is pending" (blockedOn null) and from "do this" (action set).
+    expect(r.nextAction).toBeNull();
+  });
+});
+
+describe('stage levers (P-005)', () => {
+  type StageInput = Parameters<typeof computeStages>[0];
+  const lever = (name: StageName, over: Partial<StageInput>): string | null => {
+    const stages = computeStages({
+      dirtyUncommitted: false,
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      verdictProvenance: {
+        lastGreenSha: 'g',
+        lastGreenShortSha: 'g',
+        lastGreenAgeMs: 1,
+        mainFastForwarded: true,
+        deployedBehindGreenPin: 0,
+        deployOrigin: 'gate-green',
+      },
+      gitSyncLastStatus: 'synced',
+      gitSync: HEALTHY_GIT_SYNC,
+      serving: HEALTHY_SERVING,
+      changeInCandidate: NO_CANDIDATE,
+      runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
+      ...over,
+    });
+    const s = stages.find((x) => x.name === name);
+    if (!s) throw new Error(`no stage ${name}`);
+    return s.lever;
+  };
+
+  it('uncommitted work routes to git-sync:run', () => {
+    expect(lever('committed', { dirtyUncommitted: true })).toMatch(/git-sync:run/);
+  });
+
+  /**
+   * The push leg between ticks is the case a lever would actively HARM: git-sync pushes
+   * within ~10 min on its own, so offering a forced run invites needless work. A FAULTED
+   * leg never self-clears, so it must not read the same way.
+   */
+  it('a healthy push leg between ticks offers NO lever; a faulted one does', () => {
+    const healthy = lever('pushed', {
+      positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+    });
+    expect(healthy).toBeNull();
+
+    const faulted = lever('pushed', {
+      positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+      gitSync: { ...HEALTHY_GIT_SYNC, consecutiveErrorTicks: 3, errors: ['boom'] },
+    });
+    expect(faulted).toMatch(/git-sync:run/);
+
+    const conflicted = lever('pushed', {
+      positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+      gitSync: { ...HEALTHY_GIT_SYNC, conflicts: ['libs/x'] },
+    });
+    expect(conflicted).toMatch(/merge-resolver/);
+  });
+
+  it('containment OUTRANKS a red gate — judging a candidate without your change buys nothing', () => {
+    const l = lever('gate', {
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      changeInCandidate: { ...NO_CANDIDATE, judgingContainsPath: false, missingReason: 'uncommitted' },
+    });
+    expect(l).toMatch(/git-sync:run/);
+    expect(l).not.toMatch(/fix the reds/);
+  });
+
+  it('a red gate with the change present routes to fixing the reds, not waiting', () => {
+    const l = lever('gate', {
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    });
+    expect(l).toMatch(/fix the reds/);
+  });
+
+  it('`main` never offers a lever — it advances only as a consequence of the gate', () => {
+    expect(
+      lever('main', {
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        verdictProvenance: {
+          lastGreenSha: 'g',
+          lastGreenShortSha: 'g',
+          lastGreenAgeMs: 1,
+          mainFastForwarded: false,
+          deployedBehindGreenPin: 0,
+          deployOrigin: 'gate-green',
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('the force-deploy lever appears ONLY once the change is in main', () => {
+    // Offering it earlier would ship a sha that does not carry the change — which looks
+    // like progress and is not.
+    const notInMain = lever('deployed', {
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+    });
+    expect(notInMain).toBeNull();
+
+    const inMain = lever('deployed', {
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
+    });
+    expect(inMain).toMatch(/deploy-cli\.ts --execute/);
+  });
+
+  /**
+   * EI-11120's shape: restarting a host whose source has NOT yet received the code
+   * restarts it onto the SAME old bytes, which reads as "I did the thing and nothing
+   * changed".
+   */
+  it('the restart lever appears ONLY once the code reached the host', () => {
+    const STALE = { ...HEALTHY_SERVING, startedSinceCodeChange: false, behindMin: 30, restartLever: 'RESTART_ME' };
+    const notDeployed = lever('serving', {
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
+      serving: STALE,
+    });
+    expect(notDeployed).toBeNull();
+
+    const deployed = lever('serving', {
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      serving: STALE,
+    });
+    expect(deployed).toBe('RESTART_ME');
+  });
+});
+
+describe('P-005 ACCEPTANCE TEST — one call answers "is it live, and if not what is blocking it"', () => {
+  const run = (over: {
+    dirty?: boolean;
+    contains?: Record<string, string[]>;
+    servingStale?: boolean;
+    deployedAtMs?: number;
+  }) =>
+    gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git: fakeGit({ pathCommit: 'abc1234567', subject: 'my fix', dirty: over.dirty, contains: over.contains ?? {} }),
+        loadDeploy: async () => deploy(over.deployedAtMs ? { deployedAtMs: over.deployedAtMs } : {}),
+        loadSnapshot: async () => snap(),
+        resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: null }),
+      },
+    );
+
+  it('uncommitted ⇒ blocked at COMMITTED, and the summary LEADS with the lever', async () => {
+    const res = await run({ dirty: true, contains: { HEAD: ['abc1234567'] } });
+    expect(res.blockedOn).toBe('committed');
+    expect(res.nextAction).toMatch(/git-sync:run/);
+    // Leading, not buried: this is the whole deliverable — the answer is the first thing read.
+    expect(res.summary).toMatch(/^BLOCKED AT COMMITTED → /);
+  });
+
+  it('committed but not pushed ⇒ blocked at PUSHED, and says plainly there is nothing to do', async () => {
+    const res = await run({ contains: { HEAD: ['abc1234567'] } });
+    expect(res.blockedOn).toBe('pushed');
+    expect(res.nextAction).toBeNull();
+    expect(res.summary).toMatch(/^WAITING AT PUSHED \(nothing to do/);
+  });
+
+  it('pushed but not in main ⇒ blocked at GATE', async () => {
+    const res = await run({ contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'] } });
+    expect(res.blockedOn).toBe('gate');
+  });
+
+  it('in main but not deployed ⇒ blocked at DEPLOYED, with the force-deploy lever', async () => {
+    const res = await run({
+      contains: { HEAD: ['abc1234567'], 'origin/staging': ['abc1234567'], 'origin/main': ['abc1234567'] },
+    });
+    expect(res.blockedOn).toBe('deployed');
+    expect(res.nextAction).toMatch(/deploy-cli\.ts --execute/);
+  });
+
+  it('deployed but the process predates the code ⇒ blocked at SERVING, with the restart lever', async () => {
+    // The 4x-filed class: every git tick is ✓ and the change is still NOT running.
+    const res = await run({
+      contains: {
+        HEAD: ['abc1234567'],
+        'origin/staging': ['abc1234567'],
+        'origin/main': ['abc1234567'],
+        deployedsha0: ['abc1234567'],
+      },
+      deployedAtMs: Date.now(), // deploy NOW; the mocked process started 60s ago ⇒ stale
+    });
+    expect(res.blockedOn).toBe('serving');
+    expect(res.nextAction).toMatch(/deploy-cli\.ts --execute/);
+    expect(res.summary).toMatch(/^BLOCKED AT SERVING → /);
+  });
+
+  it('fully live ⇒ null/null, and the summary carries no blocked/waiting lead at all', async () => {
+    const res = await run({
+      contains: {
+        HEAD: ['abc1234567'],
+        'origin/staging': ['abc1234567'],
+        'origin/main': ['abc1234567'],
+        deployedsha0: ['abc1234567'],
+      },
+    });
+    expect(res.blockedOn).toBeNull();
+    expect(res.nextAction).toBeNull();
+    expect(res.summary).not.toMatch(/BLOCKED AT|WAITING AT/);
   });
 });
