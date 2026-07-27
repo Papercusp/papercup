@@ -33,7 +33,14 @@
  * Candidate-side absent + tree-side present ⇒ a NEW file, which no commit can carry
  * (the case a `git diff` against a commit cannot see at all). Tree-side unreadable
  * ⇒ `null`, "unknown", never "fine".
+ *
+ * That rule is now contract-level for every state cell, not a local discipline:
+ * unified-agent-state-plane-2026-07-27 #D-038 axis 2. Its corollary is why
+ * `unknownReason` below is an ENUMERATED code rather than the prose it started
+ * as — see `cell-contract.ts`.
  */
+
+import { cellUnknown, type CellUnknown } from './cell-contract';
 
 /**
  * A git read scoped to one repo: trimmed stdout on success, `''` for a successful
@@ -78,8 +85,13 @@ export interface PathContainment {
   /** true = the candidate carries exactly this working-tree content. null = could not tell. */
   inCandidate: boolean | null;
   reason: MissingReason | null;
-  /** Present when `inCandidate` is null: why the comparison could not be made. */
-  unknownReason: string | null;
+  /**
+   * Present when `inCandidate` is null: why the comparison could not be made —
+   * ENUMERATED, never prose (D-038 axis 2 corollary). A caller branches on
+   * `code` (`not-applicable` is final; `resolver-failed` is retry-or-escalate);
+   * `detail` carries the sentence this field used to hold on its own.
+   */
+  unknownReason: CellUnknown | null;
 }
 
 /**
@@ -101,7 +113,12 @@ export async function classifyPathsAgainstCandidate(
       path,
       inCandidate: null,
       reason: null,
-      unknownReason: 'No candidate commit could be resolved, so there is nothing to compare against.',
+      // No candidate was supplied at all, so containment is not a question that
+      // applies yet — a retry with the same inputs cannot change it.
+      unknownReason: cellUnknown(
+        'not-applicable',
+        'No candidate commit could be resolved, so there is nothing to compare against.',
+      ),
     }));
   }
   // The candidate COMMIT must resolve before any per-path verdict is meaningful. Without
@@ -119,7 +136,12 @@ export async function classifyPathsAgainstCandidate(
       path,
       inCandidate: null,
       reason: null,
-      unknownReason: `Candidate commit '${candidateSha.slice(0, 12)}' does not resolve in this repo — containment is UNKNOWN, not missing.`,
+      // A sha WAS supplied and this repo could not resolve it — a fetch, or a
+      // read against the right checkout, may still answer. Not `not-applicable`.
+      unknownReason: cellUnknown(
+        'resolver-failed',
+        `Candidate commit '${candidateSha.slice(0, 12)}' does not resolve in this repo — containment is UNKNOWN, not missing.`,
+      ),
     }));
   }
   return Promise.all(
@@ -133,7 +155,10 @@ export async function classifyPathsAgainstCandidate(
           path,
           inCandidate: null,
           reason: null,
-          unknownReason: `Could not read '${path}' from the working tree (deleted, or outside this repo) — containment is UNKNOWN, not confirmed.`,
+          unknownReason: cellUnknown(
+            'resolver-failed',
+            `Could not read '${path}' from the working tree (deleted, or outside this repo) — containment is UNKNOWN, not confirmed.`,
+          ),
         };
       }
       if (candidateBlob === treeBlob) return { path, inCandidate: true, reason: null, unknownReason: null };

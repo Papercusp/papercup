@@ -11,14 +11,26 @@
 import { describe, expect, it } from 'vitest';
 import { decideRefAnnounceReceiveCursor, type RefAnnounceReceiveResult } from './ref-announce-tick';
 
-// The cursor decision only reads `result.action` (+ `stderr` for a failure).
-// A non-failed stand-in uses `noop` — every non-`fetch-failed` action is
-// treated the same way (advance past), so this avoids constructing a full
-// signed `fetched` snapshot.
-const failed = (device: string, stderr = 'no live swarm dial yet'): RefAnnounceReceiveResult => ({
+// The cursor decision only reads `result.action` (+ `stderr`/`timedOut`/`code`
+// for a failure). A non-failed stand-in uses `noop` — every non-`fetch-failed`
+// action is treated the same way (advance past), so this avoids constructing a
+// full signed `fetched` snapshot.
+const failed = (
+  device: string,
+  stderr = 'no live swarm dial yet',
+  // WI-6277: the discriminators the log site needs to tell a ceiling timeout
+  // from a real git error. Defaulted so existing cases read unchanged.
+  extra: { timedOut?: boolean; code?: number } = {},
+): RefAnnounceReceiveResult => ({
   device,
   version: 1,
-  result: { action: 'fetch-failed', stderr, budgetState: null },
+  result: {
+    action: 'fetch-failed',
+    stderr,
+    timedOut: extra.timedOut ?? false,
+    code: extra.code ?? 128,
+    budgetState: null,
+  },
 });
 const ok = (device: string): RefAnnounceReceiveResult => ({
   device,
@@ -39,7 +51,9 @@ describe('decideRefAnnounceReceiveCursor (EI-15335)', () => {
     const d = decideRefAnnounceReceiveCursor([ok('A'), failed('B', 'dial destroyed'), ok('C')], [10, 11, 12], 12);
     expect(d.held).toBe(true);
     expect(d.cursor).toBe(10);
-    expect(d.fetchFailed).toEqual([{ rowId: 11, device: 'B', stderr: 'dial destroyed' }]);
+    expect(d.fetchFailed).toEqual([
+      { rowId: 11, device: 'B', stderr: 'dial destroyed', timedOut: false, code: 128 },
+    ]);
   });
 
   it('a failure on the FIRST row holds the cursor at the row before it (no advance at all)', () => {
@@ -78,5 +92,27 @@ describe('decideRefAnnounceReceiveCursor (EI-15335)', () => {
     const d = decideRefAnnounceReceiveCursor([failed('A')], [100], 5);
     expect(d.cursor).toBe(5);
     expect(d.held).toBe(true);
+  });
+
+  it('WI-6277: carries timedOut/code through, so a SIGKILLed git is not reported as an empty string', () => {
+    // THE LIVE REGRESSION (P-302 rig, 2026-07-27): the ceiling path SIGKILLs
+    // git, a killed process writes NO stderr, and this carrier only forwarded
+    // `stderr` — so the operator line ended in a bare colon and a timeout, a
+    // transient dial miss and a real git error were indistinguishable while
+    // replication sat stuck re-dialing every tick.
+    //
+    // stderr is deliberately EMPTY here: that is exactly what the kill produces,
+    // and it is why `stderr` alone cannot carry this failure.
+    const d = decideRefAnnounceReceiveCursor([failed('B', '', { timedOut: true, code: -1 })], [11], 11);
+    expect(d.fetchFailed).toEqual([{ rowId: 11, device: 'B', stderr: '', timedOut: true, code: -1 }]);
+  });
+
+  it('WI-6277: a real git exit is distinguishable from a ceiling timeout', () => {
+    // The other side of the discriminator — a non-zero exit with real stderr
+    // must NOT be reported as a timeout, or the operator chases the wrong cause.
+    const d = decideRefAnnounceReceiveCursor([failed('C', 'fatal: bad object', { code: 128 })], [11], 11);
+    expect(d.fetchFailed[0]?.timedOut).toBe(false);
+    expect(d.fetchFailed[0]?.code).toBe(128);
+    expect(d.fetchFailed[0]?.stderr).toBe('fatal: bad object');
   });
 });

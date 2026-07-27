@@ -33,6 +33,7 @@ import {
   type MissingReason,
   type PathContainment,
 } from './candidate-contains';
+import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
 
 const pexec = promisify(execFile);
 
@@ -587,8 +588,13 @@ export interface ServingTruth {
   behindMin: number | null;
   /** The concrete command that makes the code live, when it is not. */
   restartLever: string | null;
-  /** Why the answer is `null`, when it is. */
-  unknownReason: string | null;
+  /**
+   * Why the answer is `null`, when it is — ENUMERATED, never prose (D-038 axis 2
+   * corollary). `code` is what a caller branches on (`not-applicable` is a final
+   * answer; `resolver-failed` is retry-or-escalate); `detail` carries the human
+   * sentence this field used to hold on its own.
+   */
+  unknownReason: CellUnknown | null;
 }
 
 /**
@@ -652,15 +658,26 @@ export function evaluateServing(args: {
   };
 
   if (!runtime) {
-    return { ...base, unknownReason: 'No path was given (sha-only probe), so no serving process can be identified.' };
+    return {
+      ...base,
+      unknownReason: cellUnknown(
+        'not-applicable',
+        'No path was given (sha-only probe), so no serving process can be identified.',
+      ),
+    };
   }
   if (!unit) {
     return {
       ...base,
-      unknownReason:
+      // BOTH branches are `not-applicable`, not `resolver-failed`: nothing was
+      // attempted and failed here — there is structurally no process to ask
+      // about, so no retry can ever turn this into an answer.
+      unknownReason: cellUnknown(
+        'not-applicable',
         host === 'tauri-desktop'
           ? 'This code is COMPILED into the desktop binary — no server process serves it, so "is it running?" is answered by rebuilding the shell, not by a process probe.'
           : 'No systemd unit is known for this host.',
+      ),
     };
   }
   // Number.isFinite, not `=== null`: these two timestamps come from a subprocess
@@ -674,13 +691,24 @@ export function evaluateServing(args: {
   if (startedAtMs === null) {
     return {
       ...base,
-      unknownReason: `Could not read ${unit}'s start time (not running, no systemd, or a non-Linux host) — serving state is UNKNOWN, which is not the same as "live".`,
+      // The probe RAN and came back empty — a later read may well succeed, so
+      // the caller's lever is retry-or-escalate, not "stop asking".
+      unknownReason: cellUnknown(
+        'resolver-failed',
+        `Could not read ${unit}'s start time (not running, no systemd, or a non-Linux host) — serving state is UNKNOWN, which is not the same as "live".`,
+      ),
     };
   }
   if (codeMs === null) {
     return {
       ...base,
-      unknownReason: `Read ${unit} (pid ${base.pid}) but not when its code last changed, so the two cannot be compared — serving state is UNKNOWN, not "live".`,
+      // Distinct from the case above: ONE of the two operands read fine. More
+      // INPUT is the lever, which is a different response from retrying a probe
+      // that failed outright — exactly the branch prose could not express.
+      unknownReason: cellUnknown(
+        'insufficient-data',
+        `Read ${unit} (pid ${base.pid}) but not when its code last changed, so the two cannot be compared — serving state is UNKNOWN, not "live".`,
+      ),
     };
   }
 
@@ -1201,7 +1229,7 @@ export function computeStages(
       );
     }
     if (sv.startedSinceCodeChange === null) {
-      return sv.unknownReason;
+      return sv.unknownReason ? formatCellUnknown(sv.unknownReason) : null;
     }
     if (!codeReachedHost) {
       // The process is current, but MY change hasn't reached its source yet — the

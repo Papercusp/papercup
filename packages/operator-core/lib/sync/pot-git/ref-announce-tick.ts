@@ -324,7 +324,16 @@ export async function runRefAnnounceReceiveTick(
       results.push({
         device,
         version: incoming.version,
-        result: { action: 'fetch-failed', stderr, budgetState: budgetStates.get(device) ?? null },
+        result: {
+          action: 'fetch-failed',
+          stderr,
+          // A THROWN receive: no git process ran (so no exit status) and this is
+          // not the ceiling path. `stderr` already carries the exception message,
+          // which is the informative part here.
+          timedOut: false,
+          code: -1,
+          budgetState: budgetStates.get(device) ?? null,
+        },
       });
     }
   }
@@ -370,7 +379,7 @@ export function decideRefAnnounceReceiveCursor(
   rowIds: readonly number[],
   fallbackCursor: number,
 ): RefAnnounceReceiveCursorDecision {
-  const fetchFailed: { rowId: number; device: string; stderr: string }[] = [];
+  const fetchFailed: RefAnnounceReceiveCursorDecision['fetchFailed'] = [];
   let oldestFailedRowId: number | null = null;
   for (let i = 0; i < rowIds.length; i++) {
     const res = results[i];

@@ -551,7 +551,11 @@ vi.mock("@papercusp/sync", () => ({
 // flag hook so assertions pin the ROUTED KEY, not a pack word (restore-pot-lexicon P-006).
 vi.mock("@/lib/useLexicon", () => ({ useLexicon: () => (k: string) => k }));
 
-import LearningTab, { ScoutView } from "./LearningTab";
+import LearningTab, {
+  ARMING_AGENTS_LANE,
+  ARMING_SIDEBAR_TAB,
+  ScoutView,
+} from "./LearningTab";
 
 beforeEach(() => {
   nuqsState.lview = "improvements";
@@ -1270,7 +1274,9 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     expect(screen.getByText(/routes surviving ideas here/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
     expect(nuqsState.lsb).toBe(true);
-    expect(nuqsState.lst).toBe("blender");
+    // MUST be a live LeftSidebar tab id — 'blender' was retired, which silently
+    // turned this button into a no-op (see ARMING_SIDEBAR_TAB).
+    expect(nuqsState.lst).toBe("agents");
     fireEvent.click(
       screen.getByRole("button", { name: /How the cycle engine is doing/ }),
     );
@@ -1754,11 +1760,13 @@ describe("LearningTab — P-009 first-run orientation", () => {
     expect(screen.queryByText(/learns as you work/)).toBeNull();
   });
 
-  it("the banner's Open Arming deep-links the left rail to the Blender pane", () => {
+  it("the banner's Open Arming deep-links the rail to the LIVE Arming tab (agents), not the retired blender id", () => {
     render(<LearningTab />);
     fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
     expect(nuqsState.lsb).toBe(true);
-    expect(nuqsState.lst).toBe("blender");
+    expect(nuqsState.lst).toBe(ARMING_SIDEBAR_TAB);
+    expect(nuqsState.lst).toBe("agents"); // pinned: a non-TAB_IDS value is silently dropped
+    expect(nuqsState.qAgents).toBe(ARMING_AGENTS_LANE); // lands on the Arming lane
   });
 
   it("renders the visible view gloss for the active view (same source as the tab tooltips)", () => {
