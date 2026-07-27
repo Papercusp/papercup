@@ -52,6 +52,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       mergedRepos: [],
       conflicts: [],
       errors: [],
+      pushMode: 'push',
     },
     // git-pipeline-agent-state-2026-07-26 P-001 made this REQUIRED. Empty is correct
     // for these fixtures: they assert release-trace's own lineage logic, which reads

@@ -68,7 +68,8 @@ afterEach(() => {
 describe("ExperimentsPanel", () => {
   it("renders a run with its arms, the winner highlight, cost, and decision", () => {
     result = {
-      data: runs,
+      // WI-6395: the read is enveloped now — `[{ items }]`, not a flat row array.
+      data: [{ items: runs }],
       loading: false,
       fetching: false,
       error: null,
@@ -91,7 +92,8 @@ describe("ExperimentsPanel", () => {
 
   it("renders the nothing-run empty state on an empty ledger", () => {
     result = {
-      data: [],
+      // An OBSERVED empty — the read succeeded and there is nothing to show.
+      data: [{ items: [] }],
       loading: false,
       fetching: false,
       error: null,
@@ -103,7 +105,7 @@ describe("ExperimentsPanel", () => {
 
   it("degrades to the empty state on a malformed row set (defensive guard)", () => {
     result = {
-      data: [{ totally: "unexpected" }],
+      data: [{ items: [{ totally: "unexpected" }] }],
       loading: false,
       fetching: false,
       error: null,
@@ -111,6 +113,34 @@ describe("ExperimentsPanel", () => {
     };
     render(<ExperimentsPanel />);
     expect(screen.getByText("No experiment runs")).toBeTruthy();
+  });
+
+  // WI-6395: the whole point of the envelope. The resolver converts a data-layer
+  // failure into a SUCCESSFUL empty read (never a 500), so `sync.error` stays
+  // null and the panel used to render its calm "No experiment runs" — telling
+  // the reader nothing has run, when in truth nothing could be READ.
+  it("shows a degraded read as a fault, not as 'no experiment runs'", () => {
+    result = {
+      data: [
+        {
+          items: [],
+          unavailable: true,
+          unavailableKind: "pre-migration",
+          unavailableReason: "experiment_runs does not exist",
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null, // the point: a data-layer fault with NO transport error
+      invalidate: vi.fn(),
+    };
+    render(<ExperimentsPanel />);
+    expect(screen.queryByText("No experiment runs")).toBeNull();
+    expect(
+      screen.getByText(
+        "The experiment registry not available yet — this install hasn't created its storage (experiment_runs does not exist)",
+      ),
+    ).toBeTruthy();
   });
 
   it("renders the empty state while loading with no data", () => {

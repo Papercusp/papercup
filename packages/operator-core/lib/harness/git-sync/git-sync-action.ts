@@ -1144,22 +1144,20 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     // caller/config value if one was already set.
     if (cfg.pushSubmoduleOrigins === undefined) cfg.pushSubmoduleOrigins = true;
   }
-  // EI-18812945811758018: record the EFFECTIVE push mode, so READ surfaces can tell
-  // "this member never pushes, BY DESIGN" apart from "the push leg is broken". An empty
-  // `last_pushed` means opposite things in those two cases, and with no recorded mode a
-  // reader cannot distinguish them: dev:pipeline_position read both as a fault and
-  // prescribed `git-sync:run` — a lever that is structurally INERT on a bridged hive
-  // (a forced run commits and still pushes nothing, exactly as designed).
+  // EI-18812945811758018: the EFFECTIVE push mode for this tick, recorded later as part
+  // of recordOutcome's SINGLE metadata write (never its own patch — a skipped tick must
+  // still write nothing, and the settle write is asserted as the only one).
   //
-  // Written on EVERY tick, not just the commit-only branch, so the value can never go
-  // stale after a member's hive mode changes.
-  await patchRoutineMetadata(slug, workspaceId, {
-    push_mode: cfg.push
-      ? 'push'
-      : gate.hiveGitMode
-        ? `commit-only:${gate.hiveGitMode}`
-        : 'commit-only:config',
-  });
+  // Read surfaces need this to tell "this member never pushes, BY DESIGN" apart from
+  // "the push leg is broken": an empty `last_pushed` means opposite things in those two
+  // cases. Without it dev:pipeline_position read both as a fault and prescribed
+  // `git-sync:run` — a lever structurally INERT on a bridged hive (a forced run commits
+  // and still pushes nothing, exactly as designed).
+  const effectivePushMode = cfg.push
+    ? 'push'
+    : gate.hiveGitMode
+      ? `commit-only:${gate.hiveGitMode}`
+      : 'commit-only:config';
 
   // P-006: per-slug resource first (auto-registered), then the routine's extras
   // (papercup: legacy 'git-sync' + 'libs-papercusp-submodule' — the back-off protocol).

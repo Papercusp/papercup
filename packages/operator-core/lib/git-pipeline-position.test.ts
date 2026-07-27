@@ -48,6 +48,9 @@ const HEALTHY_GIT_SYNC = {
   mergedRepos: [],
   conflicts: [],
   errors: [],
+  // EI-18812945811758018: the baseline is a member that DOES push, so the existing
+  // push-leg assertions keep their original meaning.
+  pushMode: 'push',
 };
 
 /** P-003: a serving process that started AFTER the code it runs — i.e. actually live. */
@@ -1095,6 +1098,56 @@ describe('computeStages: position x health', () => {
     expect(stage(s, 'pushed').position).toBe('pending');
     expect(stage(s, 'pushed').detail).toMatch(/does NOT mean pushed/);
     expect(stage(s, 'pushed').detail).toMatch(/pushed NOTHING/);
+  });
+
+  describe('EI-18812945811758018: a COMMIT-ONLY member never pushes, by design', () => {
+    // The miss this guards: on a bridged hive git-sync is commit-only (the GitHub bridge
+    // is the sole origin pusher), so `pushedRepos: []` is CORRECT. The surface reported
+    // it as `advancing` and prescribed `git-sync:run` — a lever that cannot move origin
+    // here. An agent followed it, the forced run pushed nothing (as designed), and that
+    // was read as confirmation of a push bug and filed CRITICAL. The premise was wrong.
+    const commitOnly = { ...HEALTHY_GIT_SYNC, pushedRepos: [], pushMode: 'commit-only:bridged' };
+
+    it('reads `disabled`, NOT `advancing` — this leg is never going to move here', () => {
+      const s = computeStages(input({ positions: unpushed, gitSync: commitOnly }));
+      expect(stage(s, 'pushed').health).toBe('disabled');
+    });
+
+    it('NEVER prescribes git-sync:run as the push lever (the whole bug)', () => {
+      const s = computeStages(input({ positions: unpushed, gitSync: commitOnly }));
+      expect(stage(s, 'pushed').lever).toBeNull();
+    });
+
+    it('names the design AND the real lever instead of "pushed NOTHING"', () => {
+      const s = computeStages(input({ positions: unpushed, gitSync: commitOnly }));
+      const detail = stage(s, 'pushed').detail ?? '';
+      expect(detail).toMatch(/COMMIT-ONLY/);
+      expect(detail).toMatch(/bridged/);
+      expect(detail).toMatch(/GREENING THE GATE/);
+      // Must NOT reuse the push-fault wording that caused the misdiagnosis.
+      expect(detail).not.toMatch(/does NOT mean pushed/);
+    });
+
+    it('a REAL fault still outranks commit-only — conflicts/errors stay loud', () => {
+      // Teeth: commit-only must not become a blanket excuse that swallows genuine
+      // faults on the commit/fetch/merge half, which a commit-only member still has.
+      const conflicted = computeStages(
+        input({ positions: unpushed, gitSync: { ...commitOnly, conflicts: ['libs/papercusp'] } }),
+      );
+      expect(stage(conflicted, 'pushed').health).toBe('broken');
+      const erroring = computeStages(
+        input({ positions: unpushed, gitSync: { ...commitOnly, consecutiveErrorTicks: 3 } }),
+      );
+      expect(stage(erroring, 'pushed').health).toBe('broken');
+    });
+
+    it('an UNKNOWN pushMode (older routine rows) is NOT treated as commit-only', () => {
+      // Absent evidence must not silently suppress a real push fault — a pre-record row
+      // has to keep the original "synced but pushed NOTHING" warning.
+      const s = computeStages(input({ positions: unpushed, gitSync: { ...HEALTHY_GIT_SYNC, pushedRepos: [], pushMode: null } }));
+      expect(stage(s, 'pushed').health).not.toBe('disabled');
+      expect(stage(s, 'pushed').detail).toMatch(/does NOT mean pushed/);
+    });
   });
 
   it('EI-18750935999066024: a FAULTING push leg is `broken`, not "not yet"', () => {

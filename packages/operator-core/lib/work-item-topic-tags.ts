@@ -32,6 +32,18 @@
  *
  * Each write is a SINGLE idempotent statement (no read-modify-write window), and
  * tolerates a non-array legacy value in the tag slot rather than throwing.
+ *
+ * EI-18810823481386446 (why this returns an OUTCOME, not a bare boolean): the
+ * issue-family write targets `harness_shared.engineer_issues`, a VIEW whose
+ * INSTEAD OF trigger deliberately `RETURN NULL`s any local UPDATE against a
+ * federated (`origin='remote'`) row — 0 rows, empty RETURNING, no error. The old
+ * `Promise<boolean>` collapsed that into the SAME `false` an idempotent re-tag
+ * returns, and the caller discarded it, so `work_items:tag` answered `ok:true`
+ * having written nothing. That cost a fleet member two claim cycles: an agent
+ * tagged remote rows to steer admission, built a `{ not: tags in [...] }` claim-spec
+ * leg on top, and the fence was silently inert. So a 0-row write is now CLASSIFIED
+ * (one extra probe on the exceptional path only) — `already` and `remote-origin`
+ * are different answers and must never again share a return value.
  */
 import { getOrgPg } from '@papercusp/db-org';
 
@@ -79,18 +91,52 @@ export interface SyncTopicTagArgs {
 }
 
 /**
+ * Why the write did or did not reach the claim-visible tag field.
+ *
+ * `already` and `remote-origin` are BOTH "0 rows updated" at the SQL layer and were
+ * indistinguishable before EI-18810823481386446 — one is success, the other is a
+ * federated row this node may not write. They must never collapse again.
+ */
+export type TopicTagMirrorOutcome =
+  /** a row was updated by this call */
+  | 'applied'
+  /** the tag field already matched the request — nothing to do, still correct */
+  | 'already'
+  /** federated row (origin='remote'): its authoring peer owns it; the view's INSTEAD OF trigger refuses local writes */
+  | 'remote-origin'
+  /** no claim-visible row matched (wrong workspace/harness, or the row does not exist) */
+  | 'no-row'
+  /** the row exists, is locally writable, and STILL did not reach the requested state (concurrent writer) */
+  | 'blocked';
+
+export interface TopicTagMirrorResult {
+  outcome: TopicTagMirrorOutcome;
+  /** true ⇒ the claim-spec-visible tag field NOW reflects the request (applied or already). */
+  mirrored: boolean;
+  /** true ⇒ THIS call wrote a row (the old boolean return). */
+  changed: boolean;
+}
+
+const mirrorResult = (outcome: TopicTagMirrorOutcome): TopicTagMirrorResult => ({
+  outcome,
+  mirrored: outcome === 'applied' || outcome === 'already',
+  changed: outcome === 'applied',
+});
+
+/**
  * Mirror one topic tag into the claim-spec-visible tag field for this item's
- * family. Returns whether a row was actually changed (false = already in the
- * desired state, or no such row).
+ * family, reporting WHY when it did not land ({@link TopicTagMirrorOutcome}).
  *
  * FAILS SOFT is deliberately NOT the policy here: the caller (`tagWorkItem`)
  * treats a throw as a failed tag, because a tag that only half-lands is exactly
  * the split-brain this module exists to remove.
  */
-export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<boolean> {
+export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<TopicTagMirrorResult> {
   const { sql } = getOrgPg();
   const { id, workspaceId, topic } = args;
   const remove = args.remove === true;
+  // The state the caller ASKED for: tag present after an add, absent after a remove.
+  const desiredHasTag = !remove;
 
   if (args.family === 'feature') {
     // `tags` is a jsonb ARRAY column. `jsonb || <scalar>` appends ('[]'::jsonb ||
@@ -117,7 +163,17 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<b
              AND feature_id = ${id}
              AND NOT ${hasFeatureTagSql(sql, topic)}
           RETURNING feature_id`;
-    return rows.length > 0;
+    if (rows.length > 0) return mirrorResult('applied');
+    // 0 rows: the row may simply already be in the desired state, or not exist at
+    // all under this workspace/harness. One probe on the exceptional path only.
+    const probe = await sql<{ has_tag: boolean }[]>`
+        SELECT ${hasFeatureTagSql(sql, topic)} AS has_tag
+          FROM harness_shared.harness_features_consolidated
+         WHERE workspace_id = ${workspaceId}
+           AND ${args.harness ? sql`harness_slug = ${args.harness}` : sql`TRUE`}
+           AND feature_id = ${id}`;
+    if (probe.length === 0) return mirrorResult('no-row');
+    return mirrorResult(probe.every((r) => r.has_tag === desiredHasTag) ? 'already' : 'blocked');
   }
 
   // issue-family: the JS evaluator reads `payload.tags`, so maintain exactly that
@@ -147,5 +203,17 @@ export async function syncTopicTagToClaimTags(args: SyncTopicTagArgs): Promise<b
            AND issue_id = ${id}
            AND NOT ${hasIssueTagSql(sql, topic)}
         RETURNING issue_id`;
-  return rows.length > 0;
+  if (rows.length > 0) return mirrorResult('applied');
+  // 0 rows on the issue side has THREE distinct causes and the SQL layer reports
+  // them identically (EI-18810823481386446). Probe once — `origin` is read from the
+  // same view the UPDATE targeted, so it is exactly the value the INSTEAD OF
+  // trigger's own guard consults.
+  const probe = await sql<{ origin: string | null; has_tag: boolean }[]>`
+      SELECT origin, ${hasIssueTagSql(sql, topic)} AS has_tag
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${workspaceId}
+         AND issue_id = ${id}`;
+  if (probe.length === 0) return mirrorResult('no-row');
+  if (probe.some((r) => r.origin === 'remote')) return mirrorResult('remote-origin');
+  return mirrorResult(probe.every((r) => r.has_tag === desiredHasTag) ? 'already' : 'blocked');
 }

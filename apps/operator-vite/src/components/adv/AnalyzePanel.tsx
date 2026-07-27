@@ -320,7 +320,11 @@ function groupIdeasByLens<T extends { lens?: string | null } | null | undefined>
 /** P-007: on-demand loader for one cycle's FULL artifacts. Mounts only when its
  *  parent disclosure is open (Radix unmounts closed cycles), so this single-cycle
  *  sync query fires per expand — learning.analyze itself ships only the summary. */
-function CycleDetailLoader({ cycleId }: { cycleId: string }) {
+// Exported for AnalyzePanel.test.tsx: its three states (fault / in-flight /
+// genuinely empty) are only reachable by driving this loader directly — the
+// parent mounts it behind a Radix disclosure, and testing through that would
+// assert on the disclosure, not on the state machine that actually broke.
+export function CycleDetailLoader({ cycleId }: { cycleId: string }) {
   const sync = useSyncQuery<AnalyzeCycle>({
     queryName: "learning.analyzeCycle",
     args: { cycleId },

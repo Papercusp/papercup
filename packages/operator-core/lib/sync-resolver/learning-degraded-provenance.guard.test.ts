@@ -179,10 +179,43 @@ describe('WI-6382 guard — learning.* catches must not return a bare empty', ()
     expect(violations).toEqual([]);
   });
 
-  it('flat-array catch returns are the ONLY exemption, and are genuinely flat', () => {
-    // A bare `[]` has nowhere to hang a flag — a real shape constraint, not a
-    // waiver. Record them so the exemption stays visible and countable rather
-    // than becoming an unexamined blanket.
+  // WI-6395 TIGHTENS THIS FROM A COUNT TO A NAMED LIST.
+  //
+  // The exemption was always honest — a bare `[]` genuinely has nowhere to hang
+  // a flag — but "however many there happen to be" is not a rule a future edit
+  // can violate. It let a NEW flat-array resolver inherit the exemption silently,
+  // which is how an exemption becomes a blanket. Naming the survivors makes the
+  // set SHRINK-ONLY: fixing one requires deleting its line here, and adding one
+  // requires arguing for it in a diff.
+  //
+  // Why each survivor is still here (WI-6395 fixed the rest):
+  //   learning.hiveList — flat, but its only consumers are three files under
+  //     apps/operator/app/**, which is the RETIRED standalone-webapp path
+  //     (repo-conventions § retired surfaces). Enveloping it would break
+  //     preserved-not-active code for zero live users. Resolve the retired
+  //     question first; do not "fix" this one reflexively.
+  const FLAT_ARRAY_EXEMPT = new Set(['learning.hiveList']);
+
+  it('the flat-array exemption is a NAMED, shrink-only list — not a blanket', () => {
+    const flat = CATCH_RETURNS.filter((r) => isFlatArrayReturn(r.text));
+    for (const r of flat) expect(r.text).toMatch(/^\[\s*\]\s*;?$/);
+    const unexpected = flat
+      .filter((r) => !FLAT_ARRAY_EXEMPT.has(r.resolver))
+      .map((r) => `${r.resolver} (index.ts:${r.line})`);
+    expect(
+      unexpected,
+      'a NEW flat-array catch appeared. Give it degraded provenance (envelope it as ' +
+        '`[{ items, ...degraded }]`, the shape the other learning.* reads use) — or, if it ' +
+        'genuinely cannot carry one, add it to FLAT_ARRAY_EXEMPT above WITH the reason.',
+    ).toEqual([]);
+    // ...and the list may not carry a name that no longer needs it.
+    const stale = [...FLAT_ARRAY_EXEMPT].filter(
+      (name) => !flat.some((r) => r.resolver === name),
+    );
+    expect(stale, 'these no longer return a flat [] — delete them from FLAT_ARRAY_EXEMPT').toEqual([]);
+  });
+
+  it('flat-array catch returns are genuinely flat', () => {
     const flat = CATCH_RETURNS.filter((r) => isFlatArrayReturn(r.text));
     for (const r of flat) expect(r.text).toMatch(/^\[\s*\]\s*;?$/);
     // Every catch return is now accounted for by exactly one of the three
