@@ -222,6 +222,52 @@ describe('P-109 legs iv+iii: foreign clone provision → quarantine fetch + judg
     await defaultRunGit(['reset', '-q', '--hard', 'HEAD~1'], clonePath);
   });
 
+  it('WI-6258: the secrets scan is CHUNK-INVARIANT — a 1-byte budget finds exactly what an unbounded one does', async () => {
+    // The bound added in WI-6258 must cost NO coverage. A 1-byte budget is the
+    // pathological partition (one blob per `cat-file --batch`), so if chunking
+    // could ever change the verdict it changes it here.
+    //
+    // The secrets sit on LINE 3 of files committed in a deliberate order, with
+    // the LAST one carrying a key: a first-chunk-only regression, or an
+    // off-by-one in the frame parser, drops precisely that finding.
+    const key = (s: string) => 'AKIA' + s;
+    const env = (k: string) => `# settings\n# managed file\nAWS_ACCESS_KEY_ID=${k}\n`;
+    await commitAs(clonePath, ORIGIN, 'a/first.env', env(key('J7QK3RTZ2WLPX4NA')), 'first');
+    // Newline-dense filler: content full of LFs is what desynchronises a parser
+    // that scans for delimiters instead of honouring the declared size.
+    await commitAs(clonePath, ORIGIN, 'a/filler.ts', 'const line = 1;\n'.repeat(400), 'filler');
+    await commitAs(clonePath, ORIGIN, 'z/last.env', env(key('Q2ZP9WLDK4RTX7NB')), 'last');
+
+    const judge = async (scanChunkBytes: number) =>
+      quarantineFetchAndJudge({
+        targetRepoPath: hostRepo,
+        foreignClonePath: clonePath,
+        sourceBranch: 'staging',
+        foreignRef: FOREIGN_REF,
+        targetTip: hostTip,
+        originGithubUserIds: [444],
+        offerId: 'offer-q1',
+        caps: { scanChunkBytes },
+      });
+
+    const chunked = await judge(1);
+    const whole = await judge(1024 * 1024 * 1024);
+
+    const fmt = (r: Awaited<ReturnType<typeof judge>>) =>
+      r.secretFindings.map((f) => `${f.path}:${f.line}:${f.rule}`).sort();
+    // Identical findings AND identical verdict — not merely "both refused".
+    expect(fmt(chunked)).toEqual(fmt(whole));
+    expect(chunked.refusalCode).toBe(whole.refusalCode);
+    expect(chunked.refusalCode).toBe('secrets');
+    // Both secrets found, including the one in the LAST blob of the range.
+    expect(fmt(chunked)).toHaveLength(2);
+    expect(fmt(chunked).some((f) => f.startsWith('z/last.env:'))).toBe(true);
+    // Line 3, not line 1 — proves the framing survived the newline-dense filler.
+    expect(fmt(chunked).every((f) => f.split(':')[1] === '3')).toBe(true);
+
+    await defaultRunGit(['reset', '-q', '--hard', 'HEAD~3'], clonePath);
+  });
+
   it('leg iii: the X2 author spoof REFUSES at the quarantine (early-loud P-110)', async () => {
     await commitAs(clonePath, OWNER, 'spoof.txt', 'evil\n', 'spoofed', ORIGIN);
     const r = await quarantineFetchAndJudge({
