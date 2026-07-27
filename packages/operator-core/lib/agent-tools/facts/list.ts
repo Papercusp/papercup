@@ -8,6 +8,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { listFacts, factVersions, FACT_SCOPES, type AgentFact } from '../../agent-facts/store';
 import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
 import { markStaleSourceFacts, type FactSourceStaleness } from './stale-source';
+import type { FactDependencyStaleness } from './dependency-staleness';
 
 /** EI-10948: was 50 × (500-char body + a 160-char provenance quote) ≈ 56k chars. */
 export const FACTS_LIST_DEFAULT_LIMIT = 25;

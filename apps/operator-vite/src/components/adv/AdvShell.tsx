@@ -20,33 +20,17 @@ import {
   ListChecks,
   MessageCircle,
   MonitorPlay,
-  Plus,
   Settings,
-  Share2,
   TrendingUp,
   Trophy,
 } from 'lucide-react';
-import { Checkbox } from '@/app/harness/Checkbox';
-import { Select, type SelectEntry, type SelectOption } from '@/app/harness/Select';
+import type { SelectEntry, SelectOption } from '@/app/harness/Select';
 import { Popover } from '@/app/harness/Popover';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
-import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
-import { Tooltip } from '@/app/harness/Tooltip';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
-import { defaultFetchShareMeta, type HiveShareVisibility } from '@/app/harness/ShareHiveDialog';
-import AdvNowRunning from './AdvNowRunning';
-import HivesRunningPill from './HivesRunningPill';
-import AgentsRunningPill from './AgentsRunningPill';
-// The header pill/toolbar-button base + hives popover styles (moved out of this
-// file's inline <style> so the pills are portable to the Quick Panel popup —
-// quick-panel-status-pills-2026-07-13 D-001). The AdvShell-only button variants
-// (--start/--stop/--new/--share/--shared/--waiting) stay inline and cascade off
-// the `.pc-advshell__action` base defined here.
-import './adv-header-pills.css';
-import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 import { useLexicon } from '@/lib/useLexicon';
 import { useShortcutAction } from '@/lib/hotkeys';
@@ -240,7 +224,9 @@ export function pushRecentSecondaryTab(recents: readonly AdvTabId[], id: AdvTabI
   return [id, ...recents.filter((r) => r !== id)].slice(0, RECENT_SECONDARY_TABS_MAX);
 }
 
-type HarnessProjectLite = {
+/** One row of the `harnessProjects.lite` registry read. Exported for AdvPotBar,
+ *  which renders the selector over the SAME (deduped) query. */
+export type HarnessProjectLite = {
   slug: string;
   path?: string;
   hasState?: boolean;
@@ -272,17 +258,26 @@ export function tabOverflowState(
 }
 
 /**
- * The pot scope every /adv tab INHERITS from the top-bar selector (owner
- * directive 2026-07-26: "the pot should be inherited by the currently selected
- * pot" — no per-tab pot pickers). `hive` is the hive HOME slug the top-bar
- * selection resolves to (a member harness resolves to its hive; '' = All Pots
- * ⇒ workspace-wide); `ready` is false while the projects list — the
- * member→hive mapping — is still loading, so scoped queries can gate on it
- * instead of firing with a half-resolved lens.
+ * The pot scope every /adv tab reads. ONE selection, shared by every tab — it
+ * lives on the URL (`?slug=` + `?scope=`), so a tab never keeps its own private
+ * pot state (owner directive 2026-07-26: "the pot should be inherited by the
+ * currently selected pot").
+ *
+ * What changed 2026-07-27 (owner ask): the WRITE side moved. The selector used to
+ * be a single instance in this shell's header bar, above the tab strip; that bar
+ * is gone and the cluster now renders inside each pot-scoped tab as its first row
+ * (AdvPotBar / POT_BAR_TAB_IDS). The axes, the precedence and this context are
+ * unchanged — "inherited" still means "read from the URL", it just isn't picked
+ * from a global bar any more.
+ *
+ * `hive` is the hive HOME slug the selection resolves to (a member harness
+ * resolves to its hive; '' = All Pots ⇒ workspace-wide); `ready` is false while
+ * the projects list — the member→hive mapping — is still loading, so scoped
+ * queries can gate on it instead of firing with a half-resolved lens.
  */
 export interface AdvScope {
   allMode: boolean;
-  /** The raw top-bar selection (?slug=), null under All Pots. */
+  /** The raw selection (?slug=), null under All Pots. */
   slug: string | null;
   /** Hive home the selection resolves to; '' ⇒ workspace-wide. */
   hive: string;
@@ -296,13 +291,18 @@ export function useAdvScope(): AdvScope {
   return useContext(AdvScopeContext);
 }
 
-export default function AdvShell({
-  title = 'Advanced',
-  children,
-}: {
-  title?: string;
-  children: React.ReactNode;
-}) {
+/**
+ * The /adv shell. Chrome = the tab strip (+ the two URL-mounted modals); the tab
+ * bodies — and, on the pot-scoped ones, the pot bar — are `children`.
+ *
+ * There is deliberately NO title/kicker bar any more (owner ask 2026-07-27:
+ * "remove the whole ADVANCED ORCHESTRATION / HUD bar so the tabs sit at the very
+ * top"). The tab strip names the section, so the bar was a second, redundant
+ * label — and its right half carried a pot selector that implied it scoped
+ * workspace-level tabs too. Both went; the cluster moved into the pot-scoped tab
+ * bodies (AdvPotBar).
+ */
+export default function AdvShell({ children }: { children: React.ReactNode }) {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
   const t = useLexicon();
   const [activeTab, setActiveTab] = useQueryState(
@@ -406,9 +406,6 @@ export default function AdvShell({
   });
   const projects = projectsData ?? [];
   const projectLoadError = projectsError ? String(projectsError.message ?? projectsError) : null;
-  // Workspace display name for the selector's root-group header (falls back to
-  // the raw id until the registry read lands).
-  const workspaceLabel = useWorkspaceLabel();
   // Create-harness flow. The dialog open-state is URL-backed (nuqs) so it
   // survives refresh and is agent-controllable; `refreshProjects()` re-queries
   // the registry once a harness is created so the selector picks it up.
@@ -458,17 +455,16 @@ export default function AdvShell({
   }, [projects.length]);
 
   // "All harnesses" mode: list views (Plans, Sessions) span the whole
-  // workspace. The single-harness widgets (Share, now-running, Discord)
-  // have no single target, so blank them out.
+  // workspace; the single-pot widgets (Share, now-running, Discord — all in
+  // AdvPotBar now) have no single target, so they blank out.
   const allMode = scopeMode === 'all';
   const singleSlug = allMode ? null : activeSlug;
   const activeProject = singleSlug ? projects.find((p) => p.slug === singleSlug) : undefined;
   // Sharing happens at the HIVE level (comb-retire-per-harness-sharing-2026-06-11):
-  // the header Share affordance publishes the active hive to the P2P directory.
-  // `is_shared` (a legacy `.papercusp/shared.json` per-harness share) only
-  // surfaces as a passive badge — no new per-harness shares can be created.
+  // the Share affordance (in AdvPotBar) publishes the active hive to the P2P
+  // directory; this shell only mounts the modal it opens, so it needs to know
+  // whether the active pot IS a hive.
   const activeIsHive = activeProject?.harness_kind === 'hive';
-  const activeIsShared = !!activeProject?.is_shared;
 
   // The inherited pot scope for every tab (useAdvScope above). A selected
   // member harness resolves to its hive home via the lite payload's
@@ -483,32 +479,8 @@ export default function AdvShell({
     [allMode, singleSlug, activeIsHive, activeProject?.hive_slug, projects.length, projectLoadError],
   );
 
-  // The active HIVE's directory share-state (comb-hive-native-sharing-2026-06-11):
-  // a hive is "shared" once its owned directory listing is `public` or `invite`
-  // (`private` = withdrawn, null = never published). This rides the discovery
-  // registry meta, NOT `is_shared` (which only tracks the legacy per-harness
-  // `.papercusp/shared.json`), so we read it the same way HiveHeaderStrip does —
-  // a one-shot owner-meta fetch scoped to just the active hive (cheap; only when
-  // a hive is selected). Re-run on `shareOpen` toggles so a just-completed share
-  // flips the header's Share button to a Shared badge without a manual reload.
-  const [hiveShareViz, setHiveShareViz] = useState<HiveShareVisibility | null>(null);
-  useEffect(() => {
-    if (!activeIsHive || !singleSlug) {
-      setHiveShareViz(null);
-      return;
-    }
-    let alive = true;
-    void defaultFetchShareMeta(singleSlug)
-      .then((meta) => {
-        if (!alive) return;
-        setHiveShareViz(meta?.found ? (meta.visibility ?? 'private') : null);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [activeIsHive, singleSlug, shareOpen]);
-  const activeHiveShared = hiveShareViz === 'public' || hiveShareViz === 'invite';
+  // (The Share-button → Shared-badge swap reads the active hive's directory
+  // share-state; that lives with the button, in AdvPotBar.)
 
   // Tab visibility follows scope: under "All Pots" only the workspace-level
   // tabs (Overview/Create/Harnesses/Conversations) make sense, so the per-pot
@@ -615,126 +587,12 @@ export default function AdvShell({
   return (
     <div className="pc-advshell">
       <header className="pc-advshell__header">
-        {/* Combined row: title · selector · status bar · action buttons */}
-        <div className="pc-advshell__header-top">
-          <div className="pc-advshell__copy">
-            <span className="pc-advshell__kicker">Advanced orchestration</span>
-            <h1>{title}</h1>
-          </div>
-          {/* Pot label + selector + sub-pot toggle + New + Share — all inline */}
-          <div className="pc-advshell__selector">
-            <span className="pc-advshell__selector-label">{t('pot')}</span>
-            <Select
-              value={allMode ? ALL_HARNESSES_OPTION : (activeSlug ?? '')}
-              onChange={async (next) => {
-                if (next === '__loading') return;
-                if (next === ALL_HARNESSES_OPTION) {
-                  // Route "all" to the scope axis — leave ?slug= holding the
-                  // last real harness so switching back is one click. Persist
-                  // the ALL choice too so a fresh load restores it (the
-                  // projects/lite effect replays this on load).
-                  void setScopeMode('all');
-                  if (typeof window !== 'undefined') {
-                    window.localStorage.setItem(
-                      wsLocalKey('harness.activeProject'),
-                      ALL_HARNESSES_OPTION,
-                    );
-                  }
-                  return;
-                }
-                // Picking a concrete harness exits "all" mode, back to the
-                // sub-harness-union default so the choice actually scopes views.
-                // SEQUENTIAL (await): the custom nuqs adapter merges each write
-                // over the live search, so a same-tick scope+slug pair collides
-                // and the scope write is lost — the pick would stay stranded in
-                // all-mode. Exit all-mode first, then set the slug.
-                if (allMode) await setScopeMode('expanded');
-                await setActiveSlug(next);
-                // BUGFIX: picking a hive must RESET the within-hive member focus (?harness=)
-                // so the Harnesses dock re-scopes to THIS hive instead of staying pinned to a
-                // sub-hive the user had drilled into (e.g. selecting `papercusp` while
-                // `?harness=hive-canary` lingered → panels kept showing hive-canary, because
-                // the child IS a valid member so the stale-guard never cleared it). Sequential
-                // await — the custom nuqs adapter merges each write, so a same-tick pair collides.
-                await setActiveHarness(null);
-                if (next && typeof window !== 'undefined') {
-                  window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
-                }
-              }}
-              disabled={projects.length === 0}
-              ariaLabel={`Select ${t('pot')}`}
-              placeholder={projectLoadError ? `Failed to load ${t('pot', { plural: true })}` : `Select ${t('pot')}`}
-              options={buildHarnessSelectOptions(projects, projectLoadError, t('pot', { plural: true }), workspaceLabel)}
-              triggerClassName="pc-advshell__select-trigger"
-            />
-            {/* Sub-harness union is meaningless under "all" (everything is
-                already included), so the toggle only shows for a single pick. */}
-            {!allMode && (
-              <Tooltip label={`Include sub-${t('pot', { plural: true, lower: true })} in list views (plans, sessions). Editor views still focus a single ${t('pot')}.`}>
-                <label className="pc-advshell__scope-toggle">
-                  <Checkbox
-                    checked={scopeMode === 'expanded'}
-                    onChange={(checked) => void setScopeMode(checked ? 'expanded' : 'self')}
-                    ariaLabel={`Include sub-${t('pot', { plural: true, lower: true })}`}
-                  />
-                  <span>sub-{t('pot', { plural: true, lower: true })}</span>
-                </label>
-              </Tooltip>
-            )}
-            <Tooltip label={`Create or add a new ${t('pot')}`}>
-              <button
-                type="button"
-                className="pc-advshell__action pc-advshell__action--new"
-                onClick={() => void setCreateOpen(true)}
-              >
-                <Plus size={13} aria-hidden /> New
-              </button>
-            </Tooltip>
-            {!allMode && activeSlug && activeIsHive && (
-              activeHiveShared ? (
-                // Already shared to the directory → a passive Shared badge in
-                // place of the Share button (manage/change visibility from the
-                // Work tab's hive header).
-                <Tooltip label={`${activeSlug} is shared to the directory (${hiveShareViz}) — manage sharing from the Work tab`}>
-                  <span className="pc-advshell__action pc-advshell__action--shared">
-                    <Check size={13} aria-hidden /> Shared
-                  </span>
-                </Tooltip>
-              ) : (
-                <Tooltip label={`Share ${activeSlug} — publish the ${t('pot', { lower: true })} to the P2P directory so others can join`}>
-                  <button
-                    type="button"
-                    className="pc-advshell__action pc-advshell__action--share"
-                    onClick={() => void setShareOpen(true)}
-                  >
-                    <Share2 size={13} aria-hidden /> Share
-                  </button>
-                </Tooltip>
-              )
-            )}
-            {!allMode && activeSlug && !activeIsHive && activeIsShared && (
-              <span
-                className="pc-advshell__action pc-advshell__action--shared"
-                title={`${activeSlug} carries a legacy per-harness share (shared.json) — sharing now happens at the ${t('pot', { lower: true })} level`}
-              >
-                <Check size={13} aria-hidden /> Shared
-              </span>
-            )}
-          </div>
-          {/* Always-visible central hive control (hive-control-surface): the
-              "N running" pill + click-to-expand per-hive start/stop, so hive
-              state is visible/flippable from the header, not just inside a hive. */}
-          <HivesRunningPill />
-          {/* Workspace-wide "N agents running" pill → fleet-grouped roster popover
-              (agents-running-roster). Replaces the overflowing per-agent pills once
-              there are more than a few agents. */}
-          <AgentsRunningPill />
-          {/* Inline status: dot + label + pills + start/stop */}
-          <AdvNowRunning slug={singleSlug} />
-          <DiscordBadge slug={singleSlug} />
-        </div>
-
-        {/* Tab strip */}
+        {/* The tab strip is the TOPMOST chrome (owner ask 2026-07-27). What used
+            to sit above it — the "ADVANCED ORCHESTRATION / <title>" copy and the
+            pot cluster + status pills — is gone from here: the copy was a second
+            label for what the strip already names, and the cluster now renders
+            inside each pot-scoped tab body (AdvPotBar), where the scope it sets
+            is actually the scope you are looking at. */}
         <Tabs.Root
           value={activeTab}
           onValueChange={(value) => void setActiveTab(value as AdvTabId)}
@@ -908,175 +766,21 @@ export default function AdvShell({
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
           box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.025);
         }
-        .pc-advshell__header-top {
-          display: flex;
-          align-items: center;
-          /* Wrap instead of colliding: at narrow panel widths the fixed-width
-             selector row used to draw OVER the clipped h1 (learning-tab-
-             visibility P-007 — owner-reported glitch 2026-07-18). */
-          flex-wrap: wrap;
-          gap: 14px;
-          min-width: 0;
-          padding: 8px 12px;
-        }
-        .pc-advshell__copy { display: grid; gap: 4px; min-width: 0; }
-        .pc-advshell__kicker {
-          color: color-mix(in oklab, var(--accent-strong, var(--accent-soft)), transparent 26%);
-          font-size: 10px;
-          font-weight: 760;
-          letter-spacing: 0;
-          line-height: 1;
-          text-transform: uppercase;
-        }
-        .pc-advshell__header h1 {
-          margin: 0;
-          font-size: 22px;
-          font-weight: 760;
-          line-height: 1;
-          letter-spacing: 0;
-          color: var(--fg, #e7f7ff);
-          /* Never paint under a neighbor — truncate (P-007). */
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .pc-advshell__selector {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-shrink: 0;
-        }
-        .pc-advshell__selector-label {
-          color: var(--fg-mute, #7f9bb4);
-          font-size: 10px;
-          font-weight: 760;
-          letter-spacing: 0;
-          line-height: 1;
-          text-transform: uppercase;
-          white-space: nowrap;
-          flex-shrink: 0;
-        }
-        .pc-advshell__scope-toggle {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          text-transform: none;
-          letter-spacing: normal;
-          font-size: 9.5px;
-          font-weight: 600;
-          color: var(--fg-mute, #7f9bb4);
-          cursor: pointer;
-        }
-        .pc-advshell__scope-toggle input {
-          margin: 0;
-          width: 12px;
-          height: 12px;
-          cursor: pointer;
-          accent-color: var(--accent, #38bdf8);
-        }
-        .pc-advshell__select-trigger {
-          display: inline-flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-          min-height: 34px;
-          min-width: 190px;
-          border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
-          border-radius: 10px;
-          background: var(--bg-popover, #0d1829);
-          color: var(--fg, #e7f7ff);
-          font-size: 12px;
-          font-weight: 650;
-          padding: 0 11px;
-          cursor: pointer;
-          outline: none;
-        }
-        .pc-advshell__select-trigger[data-disabled] {
-          color: var(--fg-mute, #7f9bb4);
-          cursor: default;
-        }
-        /* The .pc-advshell__action base + :disabled and the hives pill/popover
-           rules were moved to the shared adv-header-pills.css (imported at the top
-           of this file) so the HivesRunningPill + AgentsRunningPill render styled in
-           the Quick Panel popup too, which does not mount AdvShell
-           (quick-panel-status-pills-2026-07-13 D-001). The AdvShell-only button
-           variants below cascade off that shared base. */
-        .pc-advshell__action--start {
-          background: rgba(34, 197, 94, 0.16);
-          color: #86efac;
-          border-color: rgba(34, 197, 94, 0.38);
-        }
-        .pc-advshell__action--start:hover:not(:disabled) {
-          background: rgba(34, 197, 94, 0.26);
-        }
-        .pc-advshell__action--stop {
-          background: rgba(239, 68, 68, 0.12);
-          color: #fca5a5;
-          border-color: rgba(239, 68, 68, 0.34);
-        }
-        .pc-advshell__action--stop:hover {
-          background: rgba(239, 68, 68, 0.22);
-        }
-        .pc-advshell__action--new {
-          background: rgba(167, 139, 250, 0.16);
-          color: #c4b5fd;
-          border-color: rgba(167, 139, 250, 0.4);
-        }
-        .pc-advshell__action--new:hover {
-          background: rgba(167, 139, 250, 0.28);
-          color: #e7f7ff;
-        }
-        .pc-advshell__action--share {
-          background: color-mix(in srgb, var(--accent), transparent 86%);
-          color: var(--accent-soft);
-          border-color: color-mix(in srgb, var(--accent), transparent 62%);
-        }
-        .pc-advshell__action--share:hover {
-          background: color-mix(in srgb, var(--accent), transparent 74%);
-          color: #e7f7ff;
-        }
-        /* Shared = a non-interactive status badge (green "done" tint) shown in
-           place of the Share button once the harness has been shared. */
-        .pc-advshell__action--shared {
-          background: rgba(34, 197, 94, 0.16);
-          color: #86efac;
-          border-color: rgba(34, 197, 94, 0.4);
-          cursor: default;
-        }
-        /* Amber "N plans waiting" nudge — started plans with no running
-           harness to pick them up. Matches the Plans tab's amber accent. */
-        .pc-advshell__action--waiting {
-          background: rgba(245, 158, 11, 0.14);
-          color: #fcd34d;
-          border-color: rgba(245, 158, 11, 0.4);
-        }
-        .pc-advshell__action--waiting:hover {
-          background: rgba(245, 158, 11, 0.24);
-          color: #fde68a;
-        }
+        /* The pot cluster's rules (selector · sub-pots · New/Share) moved to
+           adv-pot-bar.css, and AdvNowRunning's (--start/--stop/--waiting, the
+           status bar) to the shared adv-header-pills.css, when the cluster left
+           this header for the tab bodies (owner ask 2026-07-27). A stylesheet that
+           only applies "while AdvShell happens to be mounted" is exactly the
+           fragility adv-header-pills.css was extracted to fix
+           (quick-panel-status-pills-2026-07-13 D-001) — so the rules travel with
+           the components that own them, not with this shell. */
         @keyframes pc-advshell-pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.4; }
         }
-        .pc-advshell__idle {
-          font-size: 11px;
-          font-style: italic;
-          color: rgba(220, 214, 248, 0.5);
-          white-space: nowrap;
-        }
-
-        /* ── Harness status bar (inline in header row) ───────────────── */
-        .pc-advshell__harness-bar {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex: 1;
-          min-width: 0;
-          padding-left: 10px;
-          margin-left: 2px;
-          border-left: 1px solid var(--border, rgba(125, 211, 252, 0.18));
-        }
-        .pc-advshell__tabs { position: relative; min-width: 0; display: flex; align-items: flex-end; padding: 0 12px; }
+        /* The strip is now the FIRST row of the header, so it carries the top
+           padding the removed title row used to provide. */
+        .pc-advshell__tabs { position: relative; min-width: 0; display: flex; align-items: flex-end; padding: 6px 12px 0; }
         .pc-advshell__tab-label { display: inline; }
         .pc-advshell__tablist {
           display: inline-flex;
@@ -1275,6 +979,13 @@ export default function AdvShell({
            panes (Plans, Sessions) scroll there; tabs that don't (e.g.
            Insights) scroll here instead of growing the shell + window. */
         .pc-advshell__body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+        /* The tab body, BELOW the pot bar (which is `flex: none` chrome inside
+           .pc-advshell__body). It carries the same fallback-scroller contract the
+           body has, because with a sibling row above it the body's own height is
+           no longer the tab's height: a tab that manages its own overflow gets a
+           definite height to lay out against (`.hud { height: 100% }` resolves
+           here), and a tab that doesn't scrolls here rather than being clipped. */
+        .pc-advshell__tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 
         /* Flat in-page buttons. Action buttons / pills inside the page body
            get NO embossed bevel, raised drop-shadow, glow, or hover-lift —

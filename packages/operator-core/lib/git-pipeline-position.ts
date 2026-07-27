@@ -1891,12 +1891,8 @@ export async function gitPipelinePosition(
       ),
     });
   }
-  if (verdictUnknown.length > 0) {
-    notes.push(
-      `${verdictUnknown.length} verdict leg(s) could NOT be measured and their reported values are defaults, not evidence: ` +
-        verdictUnknown.map((v) => `${v.leg} — ${formatCellUnknown(v.unknown)}`).join(' | '),
-    );
-  }
+  // Leg 4 is pushed further down, once `changeInCandidate` has been resolved — see the
+  // note there for why that leg exists at all.
 
   // EI-10895: classify against the SUPERPROJECT-relative path (a submodule path is
   // resolved inside its own repo above, but the runtime map keys on the repo-relative
@@ -1975,6 +1971,55 @@ export async function gitPipelinePosition(
         'Containment is not measured for a submodule path: the gate judges the SUPERPROJECT, which stores only a gitlink for this submodule. ' +
         'Whether your change is in the judged build depends on the PIN the superproject candidate carries — check that the superproject has committed the bumped gitlink.',
     };
+  }
+
+  /**
+   * P-007 leg 4 — `changeInCandidate.judgingSha`, the headline of the
+   * `gate.greenCheckpoint.candidate` cell. It goes `null` THREE ways, and only one of
+   * them is an answer:
+   *   · no gate run is in flight — a MEASURED absence and a final answer. Not hoisted:
+   *     "nothing is judging right now" is exactly what the caller asked. (`missingReason`
+   *     is legitimately null here too; that is not an unexplained absence.)
+   *   · a sha-only probe — there is no path to compare, so the question does not apply.
+   *   · a submodule path — the gate judges the SUPERPROJECT, which stores only a gitlink,
+   *     so a blob comparison across that boundary compares nothing.
+   *
+   * The last two are `not-applicable`: FINAL, no lever, do not retry. They must not read
+   * as "no run in flight", which invites the caller to wait for a verdict that will never
+   * be about their code.
+   *
+   * ⚠ WHY `missingReason` DOES NOT COVER THIS, though it looks like the obvious hoist.
+   * It answers a DIFFERENT question: when a containment verdict came back FALSE, which
+   * lever fixes it (uncommitted / newer-commit / absent). It is null in both cases above
+   * — nothing was compared, so no lever applies — and the submodule branch carries its
+   * reason as FREE-TEXT `detail` instead. That is the very mistake cell-contract.ts was
+   * written about: three surfaces independently reported the reason as prose, which a
+   * human can read and a program cannot branch on. This is a fourth instance of it, in
+   * the same file. The prose stays (it is genuinely useful); the branchable code is here.
+   */
+  if (!relPath) {
+    verdictUnknown.push({
+      leg: 'changeInCandidate.judgingSha',
+      unknown: cellUnknown(
+        'not-applicable',
+        'this was a sha-only probe, so there is no path whose presence in the judged candidate could be checked — not "no run is in flight"',
+      ),
+    });
+  } else if (submodule) {
+    verdictUnknown.push({
+      leg: 'changeInCandidate.judgingSha',
+      unknown: cellUnknown(
+        'not-applicable',
+        `the gate judges the superproject, which stores only a gitlink for submodule '${submodule}', so candidate containment is not measurable for this path — check the committed gitlink pin instead`,
+      ),
+    });
+  }
+
+  if (verdictUnknown.length > 0) {
+    notes.push(
+      `${verdictUnknown.length} verdict leg(s) were NOT measured, so their reported values are defaults rather than evidence: ` +
+        verdictUnknown.map((v) => `${v.leg} [${v.unknown.code}] — ${formatCellUnknown(v.unknown)}`).join(' | '),
+    );
   }
 
   // P-006: the sweep window. `routines.gitSync.nextFireAtMs` is the scheduler's own

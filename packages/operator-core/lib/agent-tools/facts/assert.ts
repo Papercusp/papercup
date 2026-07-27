@@ -21,9 +21,12 @@ import {
   FACT_SCOPES,
   FACT_BODY_MAX_CHARS,
   FACT_CONFIDENCE_LEVELS,
+  FACT_KINDS,
+  FACT_MAX_DEPENDENCIES,
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
   WALL_DEFAULT_TTL_SEC,
+  type FactDependency,
   type FactSourceProvenance,
 } from '../../agent-facts/store';
 import { resolveScopeRefAlias } from './scope-ctx';
@@ -171,6 +174,25 @@ export default defineTool({
       .describe(
         "Evidence strength (WI-6052): 'verified' (you confirmed it directly / it's replicated), 'provisional' (a single run / one data point — plausible but unreplicated), or 'suspected' (a hunch / a peer's hedge relayed second-hand). Omit = legacy/unset, renders unbadged, ordinary TTL. Setting 'provisional'/'suspected' shortens the default TTL so a hedge can't quietly calcify into settled fact. Never write a peer's provisional evidence at higher confidence than they stated it.",
       ),
+    kind: z
+      .enum(FACT_KINDS)
+      .optional()
+      .describe(
+        "P-008: the claim MODALITY — 'conclusion' (a settled finding), 'assumption' (provisional; pair it with dependsOn so it goes stale on its own terms), or 'convention' (normative: \"we do X here\"). This is NOT `scope`: scope says who the fact is ABOUT, kind says what kind of claim it is. Omit = not declared (never rewritten to 'conclusion' — a modality nobody stated is not one).",
+      ),
+    dependsOn: z
+      .array(z.string().min(1).max(200))
+      .max(FACT_MAX_DEPENDENCIES)
+      .optional()
+      .describe(
+        `P-008: the CELL ids this fact rests on (max ${FACT_MAX_DEPENDENCIES}), e.g. ["pipeline.myChange"]. Each is READ AND DIGESTED NOW, so a later reader is told mechanically that "the cell you relied on changed from X to Y" instead of guessing from the fact's age. This is what makes an assumption auto-invalidate (D-007) — without it, an assumption is just a conclusion with a weaker badge. A cell that cannot be read is recorded as such and never later reported fresh; it never blocks the write.`,
+      ),
+    claim: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        'P-008: the optional TYPED assertion a contradiction detector can compare, e.g. { subject: "cell:gate.greenCheckpoint.verdict", assertion: "unrelated-to-my-change" }. `body` stays the prose humans read. Omit freely — a fact without a claim is fully valid, just invisible to the detector.',
+      ),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
     acceptTruncation: z
@@ -261,6 +283,25 @@ export default defineTool({
     // green-checkpoint typecheck leg. The still-present WALL_DEFAULT_TTL_SEC
     // import, unused without this line, is what gave the accident away.
     const ttlSec = args.ttlSec ?? (args.slot === 'wall' ? WALL_DEFAULT_TTL_SEC : undefined);
+    // P-008 (b): resolve the declared cell dependencies to DIGESTS now, so a
+    // later read can answer "did what this rests on change?" mechanically
+    // (D-007/D-012) rather than by eyeballing the fact's age. Fail-soft in two
+    // layers: captureFactDependencies already records a per-cell unknown for a
+    // cell it cannot read, and this catch covers the registry/dispatcher being
+    // unavailable wholesale. Losing the DECLARATION is bad; losing the FACT
+    // because a resolver was down would be worse, and is the failure mode this
+    // table's write path has been hardened against twice already.
+    let dependsOn: FactDependency[] = [];
+    if (args.dependsOn?.length) {
+      try {
+        const { cellReaderFromCtx } = await import('../cell-reader-ctx');
+        const { captureFactDependencies } = await import('./dependency-staleness');
+        const { reader, env } = cellReaderFromCtx(identity, ctx);
+        dependsOn = await captureFactDependencies(args.dependsOn, reader, env);
+      } catch {
+        dependsOn = [];
+      }
+    }
     const fact = await assertFact({
       scope: args.scope,
       scopeRef: scopeRef ?? null,
@@ -270,6 +311,9 @@ export default defineTool({
       audienceScope: args.audienceScope ?? null,
       sourceProvenance,
       confidence: args.confidence ?? null,
+      kind: args.kind ?? null,
+      ...(dependsOn.length > 0 ? { dependsOn } : {}),
+      ...(args.claim ? { claim: args.claim } : {}),
       ttlSec,
       createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
@@ -286,6 +330,32 @@ export default defineTool({
     // it is a mid-sentence INSTRUCTION presented as complete, to every future
     // agent, until someone retracts it. Keep the write; stop calling it clean.
     const truncation = truncationField(slotted.body, fact.body);
+    // P-008 (b): the same disclosure discipline, for dependencies. A cell the
+    // caller DECLARED but that could not be read is stored honestly (it will
+    // read `undeterminable` forever, never `fresh`) — but a silent `ok:true`
+    // would let the agent believe it had armed auto-invalidation when it had
+    // not. That is exactly the "silent after-the-fact" gap
+    // EI-18685042986450096 closed for truncation, so it is closed here too,
+    // warn-only: no field at all on the clean case.
+    const unresolvedDeps = fact.dependsOn.filter((d) => !d.digest);
+    const droppedDeps = (args.dependsOn ?? []).filter(
+      (c) => !fact.dependsOn.some((d) => d.cell === c.trim()),
+    );
+    const dependencyWarning =
+      unresolvedDeps.length > 0 || droppedDeps.length > 0
+        ? {
+            ...(unresolvedDeps.length > 0
+              ? {
+                  unresolved: unresolvedDeps.map((d) => ({ cell: d.cell, reason: d.unknown })),
+                }
+              : {}),
+            ...(droppedDeps.length > 0 ? { dropped: droppedDeps } : {}),
+            note:
+              'These declared dependencies carry NO comparison anchor, so this fact can never be reported fresh or stale ' +
+              'on their account — only `undeterminable`. A cell name that does not resolve is usually a typo or a cell ' +
+              'outside your audience: check state:read { } for the cells you may read.',
+          }
+        : null;
     return {
       content: [
         {
@@ -294,6 +364,7 @@ export default defineTool({
             ok: true,
             fact,
             ...(truncation ? { truncated: truncation } : {}),
+            ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...provenanceFields,
           }),
         },
