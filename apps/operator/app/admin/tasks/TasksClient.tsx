@@ -185,6 +185,45 @@ const TASK_COLUMNS: TableColumn<Row>[] = [
   },
 ];
 
+const PROC_COLUMNS: TableColumn<LiveProcess>[] = [
+  {
+    key: 'owned',
+    header: '',
+    headerStyle: head,
+    // A dot, not a word: this column repeats on every row and the label belongs in
+    // the section header, not 400 times down the page.
+    render: (p) => (
+      <span
+        title={p.owned ? 'enrolled — inside our slice, attributable' : 'unenrolled — visible but not attributable'}
+        style={{ color: p.owned ? 'var(--good, #4ade80)' : 'var(--muted, #888)' }}
+      >
+        {p.owned ? '●' : '○'}
+      </span>
+    ),
+    cellStyle: cell,
+  },
+  { key: 'pid', header: 'pid', headerStyle: head, render: (p) => p.pid, cellStyle: cell },
+  {
+    key: 'cmd',
+    header: 'process',
+    headerStyle: head,
+    // Full cmdline on hover — the short name is for scanning, the title for identifying.
+    render: (p) => <span title={p.cmdline ?? ''}>{shortCmd(p.cmdline)}</span>,
+    cellStyle: cell,
+  },
+  {
+    key: 'cgroup',
+    header: 'cgroup',
+    headerStyle: head,
+    render: (p) => (
+      <span title={p.cgroupPath} style={{ opacity: 0.7 }}>
+        {p.cgroupPath.split('/').pop() || p.cgroupPath}
+      </span>
+    ),
+    cellStyle: cell,
+  },
+];
+
 export default function TasksClient(): ReactElement {
   const [stateFilter, setStateFilter] = useQueryState('state', parseAsString);
   const [classFilter, setClassFilter] = useQueryState('class', parseAsString);
@@ -218,6 +257,7 @@ export default function TasksClient(): ReactElement {
   const error = q.error?.message ?? null;
 
   const live = data?.live ?? null;
+  const liveProcs = useMemo(() => data?.liveProcesses ?? [], [data]);
   const unaccountedGroups = useMemo(() => {
     const u = live && 'unaccounted' in live ? (live as { unaccounted?: unknown }).unaccounted : undefined;
     return Array.isArray(u) ? (u as { cgroupPath: string; pids: number[]; sample: string }[]) : [];
