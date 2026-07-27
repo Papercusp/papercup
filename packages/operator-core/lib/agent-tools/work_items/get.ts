@@ -15,7 +15,7 @@ import { COORD_ROLES } from "../coordination/roles";
 import { getWorkItem, getWorkItemDetail } from "../../work-items";
 import { mergeIds, runBulk, bulkContent } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
-import { getWorkItemCheckpointWithMeta } from "../../work-item-checkpoint";
+import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness } from "../../work-item-checkpoint";
 import { computeCheckpointStaleness } from "../../checkpoint-staleness";
 import { detectBgJobCheckpointClaim } from "../../checkpoint-bg-job-claim";
 import { getPresence } from "../coordination/presence";
@@ -60,7 +60,7 @@ export default defineTool({
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     returns:
-      "{ ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointStale` — the assignee kept working after that checkpoint.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.",
+      "{ ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.",
     notWhen:
       "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
     chaining:
@@ -163,8 +163,24 @@ export default defineTool({
         // from it." Warn-only, bounded (only for a fetched item that HAS a checkpoint
         // + assignee — never a hot per-tick loop), fail-soft (a presence read miss
         // just omits the signal). Returned only when actually stale, to stay lean.
+        //
+        // P-007/D-013: the DECLARED-dependency verdict, which OVERRIDES the time
+        // heuristics when the checkpoint's author declared what it derives from.
+        // The heuristics above/below are proxies for "did anything this note depends
+        // on change?"; when that question can be answered mechanically, the proxy is
+        // not just redundant but WRONG in both directions — it calls an untouched
+        // 3h-old note stale, and it cannot see a peer's edit at all (it keys on the
+        // assignee's own activity). Undefined ⇒ nothing declared ⇒ fall back.
+        const checkpointFreshness = checkpoint
+          ? await getWorkItemCheckpointFreshness({ harness: workItem.harness, workItemId: workItem.id }).catch(
+              () => undefined,
+            )
+          : undefined;
+        const freshnessDeclared = checkpointFreshness !== undefined;
         let checkpointStale: ReturnType<typeof computeCheckpointStaleness> | undefined;
-        if (checkpoint && checkpointUpdatedAtMs != null && workItem.assignee) {
+        // Skip the presence round-trip entirely when a declared verdict already
+        // answers the question authoritatively.
+        if (!freshnessDeclared && checkpoint && checkpointUpdatedAtMs != null && workItem.assignee) {
           const assigneePresence = await getPresence(workItem.assignee).catch(() => null);
           const activeAt = assigneePresence?.lastActiveAt ? Date.parse(assigneePresence.lastActiveAt) : null;
           const staleness = computeCheckpointStaleness({
@@ -205,6 +221,7 @@ export default defineTool({
           checkpoint,
           checkpointAgeMs,
           checkpointUpdatedAtMs,
+          ...(checkpointFreshness ? { checkpointFreshness } : {}),
           ...(checkpointStale ? { checkpointStale } : {}),
           ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),
           ...(planItemBlocked ? { planItemBlocked } : {}),

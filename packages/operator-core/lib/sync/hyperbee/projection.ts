@@ -371,6 +371,34 @@ export async function applyOpVia(
  * for any caller that still has a single-harness global view.
  */
 export async function applyHyperbeeOpToPg(op: OpEnvelope): Promise<boolean> {
+  // WI-6210 DETECTOR. This global apply carries NO `ApplyOpOpts`, so it has no
+  // `ownLogKeyHex` — and for a projection that sets `skipOwnOps` that is not a
+  // harmless legacy nicety, it is a provenance CORRUPTION path: with no own-log
+  // key, (1) `skipOwnOps` cannot recognise this host's own echo and re-applies
+  // it, and (2) `resolveOpProvenance` defaults `origin` to 'local' and attributes
+  // by the FORGEABLE `writerPubkey`. Observed live on the p2p first-green rig
+  // (2026-07-27): frame a applied b's publisher-signed seat offer correctly
+  // (origin='remote', b's wire clock), then re-applied its own capture echo
+  // through this path ~120ms later, re-stamping the row origin='local' with a
+  // locally-generated clock NEWER than the wire — after which every redelivery
+  // of b's genuine op lost the LWW compare (9 `lww_superseded` drops) and the
+  // federated record stayed permanently shadowed, with no repair path.
+  //
+  // The fix belongs at the caller (thread `ownLogKeyHex`, or use the per-harness
+  // scoped apply), so this does not change behaviour — it makes the class
+  // AUDIBLE, and it is the recurrence guard for it: the failure was invisible in
+  // both the logs and the database, which is the only reason it survived four
+  // gate runs and three wrong diagnoses. The stack names the caller.
+  const p = registry.get(op.tableTag);
+  if (p?.skipOwnOps === true && op.type === 'put') {
+    console.warn(
+      `[projection] GLOBAL apply (no ownLogKeyHex) for a skipOwnOps table — provenance will be ` +
+        `stamped origin='local' and this host's own echo cannot be skipped: table=${op.tableTag} ` +
+        `key=${op.hbKey ?? '?'} sourceLog=${op.sourceLogKeyHex?.slice(0, 8) ?? 'none'} ` +
+        `(WI-6210). Caller should pass ownLogKeyHex / use buildHarnessProjectionApply.\n` +
+        `${new Error('global-apply call site').stack ?? ''}`,
+    );
+  }
   return applyOpVia((tableTag) => registry.get(tableTag) ?? null, op);
 }
 

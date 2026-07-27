@@ -103,6 +103,25 @@ export type BootstrapPhase = 'tip' | 'deepen' | 'unshallow' | 'seed';
 /** Git-config key holding the adaptive deepen rung size, persisted on the
  *  local repo so the ladder's tuning survives process restarts. */
 const DEEPEN_CONFIG_KEY = 'papercusp.bootstrapDeepen';
+/**
+ * Git-config key holding the `--unshallow` ESCALATION LATCH.
+ *
+ * WI-6241: this MUST be persisted, not a per-call local. The latch is set when
+ * a deepen rung lands but moves the shallow boundary not at all — the signal
+ * that only `--unshallow` can finish the job. But the unshallow rung needs a
+ * channel, and the only channel a call reliably has is the FIRST duplex the
+ * caller hands in; every later rung depends on `dial()`, which returns null
+ * whenever the peer cannot serve a second fetch. A per-call latch therefore
+ * spends the one good channel on a deepen rung ALREADY KNOWN to be a no-op,
+ * escalates, finds no channel for the escalated rung, and forgets — so the
+ * next tick repeats it forever. Observed live: a joiner pinned at
+ * `papercusp.bootstrapDeepen`=64 (the initial value — the no-op branch skips
+ * adaptation), "+1 rung, still shallow" every tick, ~3 s against a 150 s
+ * budget. Persisting the latch lets the NEXT tick open directly in
+ * `unshallow`, spending its first, always-available duplex on the rung that
+ * can actually converge.
+ */
+const UNSHALLOW_LATCH_CONFIG_KEY = 'papercusp.bootstrapForceUnshallow';
 /** Rung-size bounds + starting point for the adaptive `--deepen` ladder. */
 export const MIN_DEEPEN_COMMITS = 16;
 export const INITIAL_DEEPEN_COMMITS = 64;
@@ -281,6 +300,29 @@ async function writeDeepenStep(repoPath: string, runGit: RunGit, n: number): Pro
   return clamped;
 }
 
+/** Read the persisted `--unshallow` escalation latch (WI-6241). Absent/unset ⇒
+ *  false, so a repo that has never escalated behaves exactly as before. */
+async function readUnshallowLatch(repoPath: string, runGit: RunGit): Promise<boolean> {
+  const r = await runGit(['config', '--get', UNSHALLOW_LATCH_CONFIG_KEY], repoPath);
+  return r.code === 0 && r.stdout.trim() === 'true';
+}
+
+/** Persist (or clear) the escalation latch. Fail-soft by contract: losing this
+ *  write only costs the ladder one wasted no-op deepen rung on the next tick —
+ *  the pre-WI-6241 behaviour — so it must never abort a rung that succeeded.
+ *  `--unset` exits non-zero when the key is already absent; that is a no-op,
+ *  not an error. */
+async function writeUnshallowLatch(repoPath: string, runGit: RunGit, on: boolean): Promise<void> {
+  try {
+    await runGit(
+      on ? ['config', UNSHALLOW_LATCH_CONFIG_KEY, 'true'] : ['config', '--unset', UNSHALLOW_LATCH_CONFIG_KEY],
+      repoPath,
+    );
+  } catch {
+    /* ignore — see the fail-soft note above */
+  }
+}
+
 /**
  * G-8: seed the hive repo's MISSING namespaces (any member's work + the
  * integrator's published staging, which lives inside its namespace) from one
@@ -361,7 +403,13 @@ export async function bootstrapFromPeer(
   // everything it will hand us at that granularity). One `--unshallow` rung
   // then finishes the job. Without this the ladder could spin forever landing
   // no-op rungs.
-  let forceUnshallow = false;
+  //
+  // WI-6241: seeded from the PERSISTED latch, so a tick that already learned
+  // "deepen cannot make headway" opens directly in `unshallow` and spends its
+  // first (always-available) duplex on that rung. Held per-call only, the
+  // escalation was forgotten every tick and the repo stayed shallow forever —
+  // see UNSHALLOW_LATCH_CONFIG_KEY.
+  let forceUnshallow = await readUnshallowLatch(localRepoPath, runGit);
 
   /** Close a duplex we accepted but never spent a rung on, so a caller's dialed
    *  stream is not left open when the ladder short-circuits (already complete,
@@ -456,7 +504,11 @@ export async function bootstrapFromPeer(
     if (phase === 'deepen') {
       const after = await readShallowBoundary(localRepoPath);
       if (after === before) {
-        forceUnshallow = true; // deepen can't make headway — escalate
+        // deepen can't make headway — escalate, and REMEMBER it (WI-6241) so
+        // the next tick starts on the unshallow rung instead of re-spending
+        // its one good channel on this same no-op deepen.
+        forceUnshallow = true;
+        await writeUnshallowLatch(localRepoPath, runGit, true);
       } else {
         // Steer on how long the rung actually took (see the control-law note
         // above): grow only when it finished well inside the target, shrink
@@ -474,7 +526,11 @@ export async function bootstrapFromPeer(
         deepenNext = await writeDeepenStep(localRepoPath, runGit, scaled);
       }
     } else if (phase === 'unshallow') {
+      // The escalated rung landed: history is whole, so retire the latch (both
+      // in-call and persisted) or every future tick would re-run `--unshallow`
+      // on an already-complete repo.
       forceUnshallow = false;
+      await writeUnshallowLatch(localRepoPath, runGit, false);
     }
   }
 

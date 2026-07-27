@@ -95,7 +95,8 @@ import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { setWorkItemCheckpoint, setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
 import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -142,6 +143,28 @@ function joinCheckpoint(prior: string | null, addendum: string): string {
   const keep = CHECKPOINT_CAP - TRUNCATION_MARKER.length;
   // keep <= 0 only if CHECKPOINT_CAP is absurdly small; guard against a negative slice.
   return TRUNCATION_MARKER + joined.slice(joined.length - Math.max(keep, 0));
+}
+
+/**
+ * P-007/D-013: the declared-dependency arg, shared by the single shorthand and
+ * `items[]`. Tri-state — OMITTED preserves the existing declaration (so an append
+ * or a plain re-write never silently drops it), `[]` clears it, a list re-stamps.
+ */
+function dependsOnSpec() {
+  return z
+    .array(z.string().min(1).max(300))
+    .max(24)
+    .optional()
+    .describe(
+      'P-007 freshness: what this checkpoint is derived FROM, as `kind:ref` tags — ' +
+        `supported kinds: ${SUPPORTED_DEP_KINDS.join(', ')} ` +
+        '(e.g. "file:packages/operator-core/lib/x.ts", "work-item:WI-6198", "plan:my-plan-slug"). ' +
+        "Each is resolved to a version token and stamped NOW, so a later reader is told WHICH dependency " +
+        'moved instead of guessing from the checkpoint\'s age. Declaring them makes an OLD checkpoint ' +
+        'readable as fresh when nothing moved, and — the case no age threshold can catch — a SECONDS-OLD ' +
+        "one as stale when a PEER changed a file it depends on. Omit to keep the previous declaration; " +
+        'pass [] to clear it.',
+    );
 }
 
 const itemSpec = z.object({
@@ -202,6 +225,7 @@ export default defineTool({
       confirmShrink: looseBoolean().describe(
         'single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.',
       ),
+      dependsOn: dependsOnSpec(),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',
@@ -218,6 +242,7 @@ export default defineTool({
             harness: args.harness,
             append: args.append,
             confirmShrink: args.confirmShrink,
+            dependsOn: args.dependsOn,
           },
         ];
     const env = await runBulk(
@@ -388,6 +413,27 @@ export default defineTool({
           /** P-003: first 80 chars of what was stored — eyeball-check without a re-read. */
           storedHead: stored !== null ? stored.slice(0, 80) : null,
           by: ident.ownerId,
+          // P-007/D-013: what the freshness axis recorded for this write. Absent
+          // entirely when the caller declared nothing (the common case today), so
+          // an undeclared checkpoint's result shape is unchanged.
+          ...(depsStamped !== undefined ? { depsStamped } : {}),
+          ...(depsRecomputed
+            ? {
+                recomputed: true as const,
+                recomputedNote:
+                  'the checkpoint this replaced had already gone stale (a declared dependency had moved), so ' +
+                  'readers are told this note was rebuilt after its world changed rather than being continuously valid.',
+              }
+            : {}),
+          ...(depsWarnings
+            ? {
+                depsWarnings,
+                depsWarningNote:
+                  'these declared dependencies were NOT stamped — a dependency that cannot resolve would look ' +
+                  'declared but could never invalidate, so it is dropped rather than silently kept. Fix the ref ' +
+                  'and re-declare.',
+              }
+            : {}),
           // WI-3801 lint + P-014 turn-ref verification/origin stamp — warn-only,
           // absent (no fields) on the overwhelming common clean case.
           ...(stored !== null ? await carryProvenanceFields(stored, ident.ownerId) : {}),

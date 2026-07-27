@@ -54,6 +54,24 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     stages: [],
     runtime: null,
     runtimes: null,
+    // P-003 (2e1280dcd1) made `serving` REQUIRED on PipelinePosition. All-null is the
+    // correct value here for the same reason `runtime`/`runtimes` are null: these
+    // fixtures assert release-trace's own LINEAGE logic (`positions` /
+    // `verdictProvenance`), and never probe a live process. `unknownReason` states
+    // that explicitly rather than leaving a bare null that reads as "probed, found
+    // nothing" — the distinction ServingTruth exists to preserve.
+    serving: {
+      host: null,
+      unit: null,
+      pid: null,
+      startedAtMs: null,
+      codeAsOfMs: null,
+      codeAsOfSource: null,
+      startedSinceCodeChange: null,
+      behindMin: null,
+      restartLever: null,
+      unknownReason: 'fixture: no serving probe (lineage-only test)',
+    },
     summary: 'ok',
     notes: [],
     ...over,
