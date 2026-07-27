@@ -30,7 +30,12 @@ import {
   type ForeignAdmissionResult,
   admitForeignMergeHead,
 } from './foreign-merge-admission';
-import { type SecretFinding, scanForSecrets } from './secrets-guard';
+import { type SecretFinding } from './secrets-guard';
+import {
+  type BlobEntry,
+  DEFAULT_SCAN_CHUNK_BYTES,
+  scanTextBlobsChunked,
+} from './chunked-blob-scan';
 
 /** Default per-blob cap — matches GitHub's hard limit posture (a blob the
  *  bridge could never egress should not enter a shared ODB either). */
@@ -39,11 +44,23 @@ export const DEFAULT_MAX_BLOB_BYTES = 100 * 1024 * 1024;
 export const DEFAULT_MAX_TOTAL_NEW_BYTES = 500 * 1024 * 1024;
 /** Default cap on NEW object count per pass (flood control, D-014 posture). */
 export const DEFAULT_MAX_NEW_OBJECTS = 50_000;
+/**
+ * Default ceiling on blob CONTENT resident during the secrets scan (WI-6258).
+ *
+ * A RESOURCE bound on this guard's own work, NOT an admission policy: it
+ * changes how much is read at a time, never what is admitted or refused — so
+ * it is never waivable and never traded against coverage.
+ */
+export const DEFAULT_QUARANTINE_SCAN_CHUNK_BYTES = DEFAULT_SCAN_CHUNK_BYTES;
 
 export interface QuarantineCaps {
   maxBlobBytes?: number;
   maxTotalNewBytes?: number;
   maxNewObjects?: number;
+  /** Peak bytes of blob content resident during the secrets scan
+   *  ({@link DEFAULT_QUARANTINE_SCAN_CHUNK_BYTES}). Bounds memory, never
+   *  coverage: every text blob is still scanned, just not all at once. */
+  scanChunkBytes?: number;
 }
 
 export interface QuarantineFetchInput {
@@ -151,6 +168,7 @@ export async function quarantineFetchAndJudge(
     maxBlobBytes: input.caps?.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES,
     maxTotalNewBytes: input.caps?.maxTotalNewBytes ?? DEFAULT_MAX_TOTAL_NEW_BYTES,
     maxNewObjects: input.caps?.maxNewObjects ?? DEFAULT_MAX_NEW_OBJECTS,
+    scanChunkBytes: input.caps?.scanChunkBytes ?? DEFAULT_QUARANTINE_SCAN_CHUNK_BYTES,
   };
   const res: QuarantineFetchResult = {
     admit: false,
@@ -251,14 +269,16 @@ export async function quarantineFetchAndJudge(
     );
     if (batch.code !== 0) return refuse('error', `cat-file --batch-check failed: ${batch.stderr.trim()}`);
     const pathByOid = new Map(entries.map((e) => [e.oid, e.path] as const));
-    const blobOids: string[] = [];
+    const blobs: BlobEntry[] = [];
     for (const line of batch.stdout.split('\n')) {
       const [oid, type, sizeS] = line.trim().split(/\s+/);
       if (!oid || !type) continue;
       const bytes = Number(sizeS ?? 0);
       res.newTotalBytes += Number.isFinite(bytes) ? bytes : 0;
       if (type === 'blob') {
-        blobOids.push(oid);
+        // Keep the size `--batch-check` just reported: it is what lets the
+        // secrets scan below be partitioned without a second stat pass.
+        blobs.push({ oid, path: pathByOid.get(oid) ?? '', bytes: Number.isFinite(bytes) ? bytes : 0 });
         if (bytes > caps.maxBlobBytes) {
           res.oversizeBlobs.push({ oid, path: pathByOid.get(oid) ?? '', bytes });
         }
@@ -277,17 +297,31 @@ export async function quarantineFetchAndJudge(
       return refuse('total-over-cap', `${res.newTotalBytes} new bytes > cap ${caps.maxTotalNewBytes}`);
     }
 
-    // 5. Secrets scan (G-10 sibling) over NEW text blobs, capped read.
-    const files: { path: string; content: string }[] = [];
-    for (const oid of blobOids) {
-      const p = pathByOid.get(oid) ?? '';
-      if (!p) continue;
-      const show = await runGit(['cat-file', 'blob', oid], quarantine);
-      if (show.code !== 0) continue; // unreadable blob → identity/size already judged it
-      if (show.stdout.includes('\0')) continue; // binary — the size caps own this class
-      files.push({ path: p, content: show.stdout });
-    }
-    res.secretFindings = scanForSecrets(files);
+    // 5. Secrets scan (G-10 sibling) over NEW text blobs, read in BOUNDED
+    //    chunks (WI-6258), sharing publish-guard's machinery via
+    //    ./chunked-blob-scan so the two guards cannot drift apart.
+    //
+    //    This guard judges UNTRUSTED peer input. The caps above already bound
+    //    the range hard (maxNewObjects / maxBlobBytes / maxTotalNewBytes), so
+    //    unlike WI-6254's case this was never unbounded — but a range sitting
+    //    just inside those caps could still burst ~1GB of UTF-16 JS string by
+    //    holding every text blob at once, and did it while spawning one git
+    //    process PER BLOB. Peak resident content is now one chunk.
+    //
+    //    Fail-CLOSED on an unreadable chunk, matching this module's posture.
+    //    That is a deliberate tightening: the old per-blob loop `continue`d
+    //    past a failed `cat-file`, so a blob that could not be read was
+    //    silently treated as clean — a fail-OPEN hole in a guard whose whole
+    //    job is judging hostile input. An individual `missing` object is still
+    //    tolerated (inside readTextBlobs), which is the benign case that
+    //    `continue` was actually there for.
+    const { findings, error: scanError } = await scanTextBlobsChunked(
+      blobs,
+      quarantine,
+      caps.scanChunkBytes,
+    );
+    if (scanError) return refuse('error', scanError);
+    res.secretFindings = findings;
     if (res.secretFindings.length > 0) return refuse('secrets');
 
     // 6. P-110 identity admission over the quarantine (early-loud; the
