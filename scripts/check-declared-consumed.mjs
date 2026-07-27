@@ -632,6 +632,17 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  // Say exactly what was established. With a knownUnbuilt row in the report,
+  // "everything has a reader and a writer" is FALSE — and a gate that overstates
+  // its own result on the happy path is the same defect, one level up, as the
+  // fields it is here to police.
+  if (roll.knownUnbuilt > 0) {
+    console.log(
+      `✓ no NEW unconsumed declaration — but ${roll.knownUnbuilt} filed gap${roll.knownUnbuilt === 1 ? '' : 's'} above ` +
+        `${roll.knownUnbuilt === 1 ? 'is' : 'are'} still unconsumed and reported, not fixed.\n`,
+    );
+    return;
+  }
   console.log('✓ every declared field/column of this plane has both a live writer and a live reader.\n');
 }
 

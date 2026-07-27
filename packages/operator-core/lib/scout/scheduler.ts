@@ -742,28 +742,45 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
     },
     runCycle: opts.runCycle,
     async persistRouted(records, cycleId) {
+      // WI-6338: per-record error isolation. This ledger write happens AFTER the
+      // cycle already captured the underlying issues (payload.sourceRole +
+      // improvement-source:Scout topic, both set atomically in captureImprovement) —
+      // so an unguarded loop meant one record's insert throwing silently dropped the
+      // scout_routed_ideas row for it AND every remaining record in the same cycle,
+      // while their issues stayed captured+tagged: exactly the "tagged Scout-source
+      // but no routed-ideas row" divergence class the provenance-divergence health
+      // leg (system-health/compute.ts collectScout) now measures. Isolate per record
+      // so one bad insert can't starve its siblings; a failure is loud (console.error)
+      // but never aborts the cycle.
       for (const r of records) {
-        await recordRoutedIdea({
-          // LEDGER-GAP FIX (scorecard-blender-pipeline-fixes-2026-07-11 P-003):
-          // the in-cycle idea id is POSITIONAL (`scout-idea-<lens>-<slot>-<n>`,
-          // ideators.ts) — identical across cycles — and the ledger upserts
-          // ON CONFLICT (idea_id), so every cycle's routings OVERWROTE the
-          // previous cycle's rows (441 routing events/7d collapsed into ~4
-          // surviving rows) while the overwritten row KEPT the old idea's
-          // grade/outcome — corrupted learning signal. Prefixing the cycle id
-          // makes each cycle's routings land as their own rows; the su-ideate
-          // paths (capture bridge / route-idea) key by stable artifact ids and
-          // are untouched.
-          ideaId: `${cycleId}:${r.ideaId}`,
-          lens: r.lens,
-          rail: r.rail,
-          routedRef: r.routedRef,
-          harnessSlug,
-          cycleId,
-          title: r.title,
-          addressesPatternRefs: r.addressesPatternRefs,
-          ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-        });
+        try {
+          await recordRoutedIdea({
+            // LEDGER-GAP FIX (scorecard-blender-pipeline-fixes-2026-07-11 P-003):
+            // the in-cycle idea id is POSITIONAL (`scout-idea-<lens>-<slot>-<n>`,
+            // ideators.ts) — identical across cycles — and the ledger upserts
+            // ON CONFLICT (idea_id), so every cycle's routings OVERWROTE the
+            // previous cycle's rows (441 routing events/7d collapsed into ~4
+            // surviving rows) while the overwritten row KEPT the old idea's
+            // grade/outcome — corrupted learning signal. Prefixing the cycle id
+            // makes each cycle's routings land as their own rows; the su-ideate
+            // paths (capture bridge / route-idea) key by stable artifact ids and
+            // are untouched.
+            ideaId: `${cycleId}:${r.ideaId}`,
+            lens: r.lens,
+            rail: r.rail,
+            routedRef: r.routedRef,
+            harnessSlug,
+            cycleId,
+            title: r.title,
+            addressesPatternRefs: r.addressesPatternRefs,
+            ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+          });
+        } catch (e) {
+          console.error(
+            `[scout/scheduler] persistRouted: recordRoutedIdea failed for ${cycleId}:${r.ideaId} (routedRef=${r.routedRef}) — ` +
+              `this idea's issue was already captured+tagged but will NOT have a scout_routed_ideas row (WI-6338 divergence): ${e instanceof Error ? e.message : e}`,
+          );
+        }
       }
     },
     async persistStageArtifacts(cycle, cycleId) {
