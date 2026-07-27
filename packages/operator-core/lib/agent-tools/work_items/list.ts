@@ -251,7 +251,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "Filter to items assigned to this agent (feature → taken_by; issue → assignee). Use `mine: true` instead to mean \"me\" without naming your own id.",
+        "Filter to items assigned to this agent (feature → taken_by; issue → assignee). The literal \"self\" resolves to YOU (as it does in work_items:claim / claim_next / create's assign_to); `mine: true` is the same request.",
       ),
     mine: z
       .boolean()
@@ -324,7 +324,25 @@ export default defineTool({
     // EI-6506: `mine` resolves to the CALLER's own agent identity — an explicit
     // `assignee` wins if both are passed (mine is the no-args-needed convenience,
     // not an override of a deliberate lookup of someone else's work).
-    const assignee = args.assignee ?? (args.mine ? resolveAgentIdentity(ctx).ownerId : undefined);
+    //
+    // EI-18821495781915490: `assignee: 'self'` means the CALLER too. Every sibling
+    // that takes an owner resolves that literal — work_items:claim, claim_next and
+    // create's `assign_to` (EI-9274) — so an agent taught the token by one of them
+    // reasonably spells it here. This tool alone passed it through verbatim, asking
+    // PG for an ownerId of "self", which no row can have.
+    //
+    // RESOLVED rather than rejected because of the DIRECTION it failed in: the
+    // result was `[]`, which reads as "you hold nothing" — the exact answer an agent
+    // acts on when deciding whether anything needs flushing before a compaction,
+    // handoff, or wind-down. Observed live: it produced a false "nothing to
+    // checkpoint" immediately before a session:request-compaction, and only the
+    // compaction tripwire caught it. A wrong empty list is not recoverable by the
+    // caller; a hard error would have been, but silence was worse than either.
+    const selfOwnerId = (): string => resolveAgentIdentity(ctx).ownerId;
+    const assignee =
+      args.assignee === "self"
+        ? selfOwnerId()
+        : (args.assignee ?? (args.mine ? selfOwnerId() : undefined));
     // Cache the expensive list read (cache-expensive-tool-reads P-005). Non-principal-
     // scoped (depends only on workspace + the filter args). The bounding is folded INTO
     // the cached factory so the stored value is the final, deterministic-per-args result.

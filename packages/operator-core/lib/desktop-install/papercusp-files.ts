@@ -1528,8 +1528,20 @@ async function installClaudeHooks(
       const dst = path.join(destDir, name);
       // Libraries are imported, not exec'd — 0644. Hooks stay 0755.
       const mode = CC_HOOK_LIB_FILES.has(name) ? 0o644 : 0o755;
-      await fs.writeFile(dst, data, { mode });
-      await fs.chmod(dst, mode);
+      // EI-18755593630003816: write to a same-directory temp file then rename() into
+      // place, NOT a direct in-place fs.writeFile. This path is shared across every
+      // agent session on the box (one `home`/HOME dir), and installClaudeHooks re-runs
+      // on every psu launch/bootstrap — so a concurrent PreToolUse hook invocation can
+      // open this EXACT file mid a plain writeFile's truncate-then-write, observe a
+      // truncated/partial script, and hard-refuse with a spurious shell-syntax error
+      // (observed live: a bash heredoc's un-terminated body fell through to the shell
+      // parser because the terminator line hadn't been written yet). rename(2) is
+      // atomic on the same filesystem, so a concurrent reader always sees either the
+      // whole old file or the whole new one, never a torn prefix.
+      const tmp = `${dst}.psu-install.${process.pid}.tmp`;
+      await fs.writeFile(tmp, data, { mode });
+      await fs.chmod(tmp, mode);
+      await fs.rename(tmp, dst);
       installed.push(name);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;

@@ -215,3 +215,14 @@ probehome.*/
 # regenerable build artifact landing in the tree because nothing ignored it.
 # Regenerate it any time with the compose script; it must never be tracked.
 .rig-sidecar-current/
+
+# GitNexus code-graph index — a regenerable ARTIFACT, never source. Same class as
+# the two entries above, and armed the same way: `npx gitnexus analyze` (the setup
+# step libs/papercusp/plugins/gitnexus-bridge's README tells you to run once per
+# repo) writes its whole graph DB to <repo>/.gitnexus/, and nothing ignored it. A
+# 121-file repo's index is already 27MB; this tree has ~11k tracked TS/TSX files,
+# so the first analyze here would hand git-sync's blanket `git add -A` an index
+# orders of magnitude past the pot-git publish guard's 500MB cap — the exact
+# self-perpetuating freeze documented in the .appimage-extract entry above.
+# Ignored BEFORE the first index rather than after (WI-6445).
+.gitnexus/
