@@ -86,3 +86,67 @@ describe('dev:pipeline_position multi-consumer paths (WI-5440)', () => {
     expect(out.data.note).toMatch(/operator-release/);
   });
 });
+
+/**
+ * P-005: the payload must not carry TWO contradictory instructions.
+ *
+ * `awaitable` says "sleep on the deploy". That is true advice only when the deploy is
+ * genuinely what the change waits for. When an EARLIER stage owns the next move — the work
+ * is uncommitted, the push leg is faulted, the gate is red or judging a candidate without
+ * this change — sleeping on `release:deployed` waits for an event that will land carrying
+ * someone else's code, while the thing that would actually help goes undone. Emitting both
+ * is worse than emitting either.
+ */
+describe('dev:pipeline_position awaitable defers to nextAction (P-005)', () => {
+  type Out = { data: Record<string, unknown> };
+
+  const base = {
+    input: { path: 'apps/operator/app/x.ts', sha: null },
+    repoRoot: '/repo',
+    submodule: null,
+    targetSha: 'sha0000001',
+    targetShortSha: 'sha000000',
+    targetSubject: 'subj',
+    dirtyUncommitted: false,
+    deployedSha: 'sha0000001',
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    verdictProvenance: {
+      lastGreenSha: 'sha0000001',
+      lastGreenShortSha: 'sha000000',
+      lastGreenAgeMs: 1000,
+      mainFastForwarded: true,
+      deployedBehindGreenPin: 0,
+      deployOrigin: 'gate-green',
+    },
+    gitSyncLastStatus: 'synced',
+    runtime: { host: 'operator-release', releasePipelineApplies: true, restartTarget: 'dev', activation: 'deploy' },
+    runtimes: [{ host: 'operator-release', releasePipelineApplies: true, restartTarget: 'dev', activation: 'deploy' }],
+    summary: 'stub summary',
+    notes: [],
+  };
+
+  it('SUPPRESSES the deploy-await when an earlier stage owns the next move', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...base,
+      positions: { committedLocal: false, onStaging: false, inMain: false, deployed: false },
+      blockedOn: 'committed',
+      nextAction: 'git-sync:run (commit the working tree — the gate cannot see it)',
+    } as unknown as PipelinePosition);
+
+    const out = (await tool.handler({ path: 'apps/operator/app/x.ts' } as never, {} as never)) as Out;
+    expect(out.data.awaitable).toBeUndefined();
+    expect(out.data.nextAction).toMatch(/git-sync:run/);
+  });
+
+  it('STILL offers the deploy-await when waiting really is the answer', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...base,
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
+      blockedOn: 'deployed',
+      nextAction: null,
+    } as unknown as PipelinePosition);
+
+    const out = (await tool.handler({ path: 'apps/operator/app/x.ts' } as never, {} as never)) as Out;
+    expect(out.data.awaitable).toMatchObject({ sugar: 'deploy:await' });
+  });
+});

@@ -61,6 +61,8 @@ import capabilityRead, { DEFAULT_LIMIT } from '../../agent-tools/capability/read
 import capabilityGit, { REFUSED_SUBCOMMANDS } from '../../agent-tools/capability/git';
 import testingRun from '../../agent-tools/testing/run';
 import logsRead from '../../agent-tools/logs/read';
+import buildTypecheck from '../../agent-tools/build/typecheck';
+import { NO_INPUT_CODES } from '../../tsc-diagnostics';
 import { JOURNAL_LEVELS, JOURNAL_SCOPES } from '../../journal-read';
 import { assertSingleReadStatement } from '../../pg-read-query';
 
@@ -83,6 +85,13 @@ import {
   LOGS_READ_MAX_UNITS,
   LOGS_READ_MAX_WINDOW,
 } from './logs';
+import {
+  tscProjectTypecheck,
+  BUILD_TYPECHECK_MAX_FILES,
+  BUILD_TYPECHECK_MAX_PROJECT,
+  EXPRESSIBLE_FLAGS,
+  NO_OP_TYPECHECK_FINDING,
+} from './typecheck';
 
 // The shared D-016 assertions. Extracted so the service family's guard
 // (service-model-drift.test.ts, dev:listening_ports) asserts through the SAME

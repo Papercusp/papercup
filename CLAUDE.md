@@ -445,6 +445,7 @@ row says so and bash remains correct.
 | to run specific test files and see which tests failed | `testing:run { files: [...] }` | `npm run test:file -- <paths> 2>&1 \| tail -60` (a run redirected to a log file is not this — the tool writes no artifact) |
 | to run test files without hand-picking a Vitest config | `testing:run { files: [...] }` | `npx vitest run <path>` (a root-level run can match zero files and still exit 0 — the router refuses that) |
 | a service's log lines in a time window, filtered | `logs:read { unit, since, grep?, level?, limit? }` (filter pushed down to `journalctl --grep`; repeats collapsed) | `journalctl --user -u <unit> --since <w> \| grep <pat> \| tail -n` (a streaming `-f` follow, a boot/cursor selection, or `sudo` elevation has no tool form — keep using bash for those) |
+| to typecheck a project and see the errors | `build:typecheck { project: "packages/operator-core" }` | `npx tsc --noEmit -p <project> 2>&1 \| grep …` (the tool refuses a run that checked ZERO files — `-p .` does that here, and a `grep` over its one-line error prints nothing, which reads as clean) |
 
 <!-- END GENERATED gen:tool-routing -->
 
@@ -561,8 +562,19 @@ drown your one new one.
 to another workspace — **`libs/generic/*`, `libs/papercusp/*`, `apps/*`, other
 `packages/*`** — is typechecked by NEITHER `lint:tsc` NOR vitest, so a type-only
 regression there is invisible to *both* routine checks and first reds the
-**green-checkpoint**. Editing outside operator-core? Also run that workspace's own tsc
-directly: `npx tsc -p <workspace>/tsconfig.json --noEmit` (EI-18719561823587590).
+**green-checkpoint**. Editing outside operator-core? Also typecheck that workspace —
+**`build:typecheck { project: "<workspace>" }`** (EI-18719561823587590).
+
+> ⚠ Use the tool, not a hand-run `npx tsc -p . --noEmit`, and this is a correctness
+> point rather than a style one: **there is no root `tsconfig.json` in this repo** (only
+> `tsconfig.base.json`), so from the repo root `-p .` and `-p tsconfig.json` fail
+> instantly with TS5057/TS5058 having typechecked **zero files**. Those are the two most
+> common project operands in the whole 7d corpus, and 45 of 425 decidable `tsc`
+> invocations (11%, across 24 of 86 sessions) checked nothing. What makes it expensive is
+> how it reads: 42% of those runs were piped into `grep`, and a `grep <my-file>` over a
+> one-line TS5057 prints **nothing at all** — indistinguishable from "my file is clean" —
+> while `2>&1 | tail` throws away tsc's exit code too. `build:typecheck` refuses a
+> zero-file run instead of reporting a clean zero, and names the projects that do exist.
 
 **The trigger to watch: adding a REQUIRED field to a shared interface** (or renaming
 / re-typing one). Every fixture that constructs that type elsewhere goes stale

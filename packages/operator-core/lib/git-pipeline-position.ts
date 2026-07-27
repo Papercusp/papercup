@@ -1098,10 +1098,27 @@ export function computeStages(
 export function deriveBlocker(stages: StageState[]): {
   blockedOn: StageName | null;
   nextAction: string | null;
+  /** The stage `nextAction` belongs to — differs from `blockedOn` when a LATER stage is the actionable one. */
+  actionOwner: StageName | null;
 } {
-  const blocking = stages.find((s) => s.position === 'pending');
-  if (!blocking) return { blockedOn: null, nextAction: null };
-  return { blockedOn: blocking.name, nextAction: blocking.lever };
+  const pending = stages.filter((s) => s.position === 'pending');
+  if (!pending.length) return { blockedOn: null, nextAction: null, actionOwner: null };
+
+  // `blockedOn` is where the change SITS: the first pending stage, since a later stage
+  // cannot advance until an earlier one has.
+  const blockedOn = pending[0].name;
+
+  // But the ACTION may belong further down. Caught by a live run: a change sitting at a
+  // healthy `pushed` leg (git-sync pushes within ~10 min — genuinely "wait") with the gate
+  // RED at 5 consecutive reds behind it reported nextAction: null, i.e. "nothing to do",
+  // while a red gate held main for the whole fleet. That is a FALSE ALL-CLEAR on the one
+  // thing the caller most owns ("the reds are yours to fix, not a queue to wait in").
+  //
+  // So scan the pending stages IN ORDER for the first real lever. An earlier stage's lever
+  // still wins when it has one — you cannot usefully green a gate for a change that is not
+  // committed yet — but a self-advancing leg no longer masks an actionable stage behind it.
+  const owner = pending.find((s) => s.lever !== null) ?? null;
+  return { blockedOn, nextAction: owner?.lever ?? null, actionOwner: owner?.name ?? null };
 }
 
 export interface PipelinePositionDeps {
@@ -1248,8 +1265,15 @@ function servingNote(p: Pick<PipelinePosition, 'positions' | 'serving'>): string
  */
 function leadClause(p: Omit<PipelinePosition, 'summary'>): string {
   if (!p.blockedOn) return '';
-  const label = p.blockedOn.toUpperCase();
-  return p.nextAction ? `BLOCKED AT ${label} → ${p.nextAction}. ` : `WAITING AT ${label} (nothing to do — this leg is advancing on its own). `;
+  const at = p.blockedOn.toUpperCase();
+  if (!p.nextAction) return `WAITING AT ${at} (nothing to do — this leg is advancing on its own). `;
+  // When the lever belongs to a LATER stage than where the change sits, say both: "the leg
+  // you are on is fine, but this one is not". Collapsing them would either hide that the
+  // change is still upstream, or hide that something downstream is actionable now.
+  const owner = p.stages.find((s) => s.lever === p.nextAction && s.position === 'pending');
+  return owner && owner.name !== p.blockedOn
+    ? `AT ${at} (advancing on its own) — but ${owner.name.toUpperCase()} IS BLOCKED → ${p.nextAction}. `
+    : `BLOCKED AT ${at} → ${p.nextAction}. `;
 }
 
 export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string {
@@ -1614,6 +1638,9 @@ export async function gitPipelinePosition(
     notes,
   };
   const stages = computeStages(preStages);
-  const base: Omit<PipelinePosition, 'summary'> = { ...preStages, stages, ...deriveBlocker(stages) };
+  // `actionOwner` is consumed by the summary's lead clause (which re-finds it from
+  // `stages`), so it is not part of the public position shape.
+  const { blockedOn, nextAction } = deriveBlocker(stages);
+  const base: Omit<PipelinePosition, 'summary'> = { ...preStages, stages, blockedOn, nextAction };
   return { ...base, summary: summarizePosition(base) };
 }

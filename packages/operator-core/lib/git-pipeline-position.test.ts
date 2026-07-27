@@ -1515,7 +1515,38 @@ describe('deriveBlocker (P-005)', () => {
     expect(deriveBlocker([st('committed', 'past'), st('serving', 'past')])).toEqual({
       blockedOn: null,
       nextAction: null,
+      actionOwner: null,
     });
+  });
+
+  /**
+   * Caught by a LIVE run, not a fixture. A change sitting at a healthy `pushed` leg
+   * (git-sync pushes within ~10 min — genuinely "wait") with the gate RED at 5 consecutive
+   * reds behind it reported nextAction: null, i.e. "nothing to do", while a red gate held
+   * main for the entire fleet. That is a FALSE ALL-CLEAR on the one thing the caller most
+   * owns: "the reds are yours to fix, not a queue to wait in."
+   */
+  it('a self-advancing early stage must NOT mask an actionable stage behind it', () => {
+    const r = deriveBlocker([
+      st('committed', 'past'),
+      st('pushed', 'pending', null), // healthy, between ticks — waiting is correct HERE
+      st('gate', 'pending', 'fix the reds, then release:checkpoint-run'),
+    ]);
+    // Where the change SITS is still reported honestly…
+    expect(r.blockedOn).toBe('pushed');
+    // …but the actionable thing is surfaced, and attributed to the stage that owns it.
+    expect(r.nextAction).toMatch(/fix the reds/);
+    expect(r.actionOwner).toBe('gate');
+  });
+
+  it('an EARLIER stage with a lever still wins — you cannot green a gate for uncommitted work', () => {
+    const r = deriveBlocker([
+      st('committed', 'pending', 'git-sync:run'),
+      st('gate', 'pending', 'fix the reds'),
+    ]);
+    expect(r.blockedOn).toBe('committed');
+    expect(r.nextAction).toBe('git-sync:run');
+    expect(r.actionOwner).toBe('committed');
   });
 
   it('picks the FIRST pending stage — a later stage cannot advance until an earlier one has', () => {
@@ -1543,11 +1574,12 @@ describe('deriveBlocker (P-005)', () => {
     expect(r.nextAction).toBe('dev:restart { target: "bg-host" }');
   });
 
-  it('a pending stage with NO lever reports the block with a null action — waiting IS the answer', () => {
-    const r = deriveBlocker([st('committed', 'past'), st('pushed', 'pending', null)]);
+  it('a pending stage with NO lever anywhere reports the block with a null action — waiting IS the answer', () => {
+    const r = deriveBlocker([st('committed', 'past'), st('pushed', 'pending', null), st('gate', 'pending', null)]);
     expect(r.blockedOn).toBe('pushed');
     // Distinct from "nothing is pending" (blockedOn null) and from "do this" (action set).
     expect(r.nextAction).toBeNull();
+    expect(r.actionOwner).toBeNull();
   });
 });
 
