@@ -551,7 +551,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
           popup is a pure function of props, the CALLER owns the open-id param. */}
       <PlanPopupModal
         planSlug={openPlanSlug}
-        harnessSlug={openPlanRow?.harnessSlug ?? harnessSlug}
+        harnessSlug={openPlanRow?.harness ?? harnessSlug}
         planTitle={openPlanRow?.title ?? null}
         onClose={() => void setOpenPlanSlug(null)}
       />

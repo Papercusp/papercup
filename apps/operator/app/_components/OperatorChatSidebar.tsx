@@ -592,7 +592,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                `if (!harnessSlug) return` guard and EVERY WI-/EI-/F- ref pill in
                the chat is inert — the same dead-click the curator card's
                drill-in had (P-003). The sidebar never passed it. */
-            harnessSlug={harnessSlug}
+            harnessSlug={harnessSlug ?? undefined}
           />
         )}
         {/* M6: askUserLocal renderer host. Mounted once per sidebar so any
