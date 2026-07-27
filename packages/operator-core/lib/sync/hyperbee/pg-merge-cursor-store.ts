@@ -64,8 +64,18 @@ export async function _resetPgMergeCursorPoolForTests(): Promise<void> {
  * (WI-559: fed-b bound the shared hive to its local slug and discarded ~49.7k rows this
  * way). Making the stamp part of the row is what lets a CORRECTED binding self-heal on a
  * cold boot — stale progress simply does not load, so the fold restarts from 0 through
- * the right scope. Pre-migration rows carry NULL, which matches only a NULL binding
- * (non-hive harnesses and hive owners resume unchanged; a joiner re-folds exactly once).
+ * the right scope.
+ *
+ * UPGRADE COST (measured, not assumed — fed-b rig 2026-07-27): pre-migration rows carry
+ * NULL, which matches only a NULL binding. A genuinely non-hive harness folds under NULL
+ * and is unaffected, but EVERY hive-peered harness re-folds once — the JOINER *and* the
+ * OWNER's home harness, because the binding is the whole
+ * `hiveHomeProjectionSlug ?? ownPotHomeSlug ?? memberHomeRebindSlug` chain and
+ * `ownPotHomeSlug` is non-null for an owner (only `joinerPotHomeSlug` is
+ * remote_hive-gated). On a large log that one-shot re-fold is the very shape WI-2105
+ * guards against, so it is deliberately made survivable rather than cheap: positions
+ * persist INTRA-pass under the NEW stamp, so the re-fold is monotonic and a watchdog
+ * restart resumes it instead of restarting it.
  */
 export function createPgMergeCursorStore(
   workspaceId: string,

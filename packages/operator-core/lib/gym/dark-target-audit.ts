@@ -109,8 +109,15 @@ export function auditDarkLearningTargets(input: {
 
   const dark: DarkTargetFinding[] = [];
   const liveKeys: LearningGymTarget['key'][] = [];
+  const notAutoloopEligible: LearningGymTarget['key'][] = [];
 
   for (const t of targets) {
+    // Only a prompt-override surface can be auto-optimized by an autoloop; the others
+    // are judged corpus-wide and have no row to be "dark" about (see the field doc).
+    if (t.promptSurface !== 'prompt-override') {
+      notAutoloopEligible.push(t.key);
+      continue;
+    }
     const harness = input.resolveHarness(t);
     const row = harness ? byHarness.get(harness) : undefined;
     let reason: DarkTargetReason | null = null;
@@ -136,14 +143,16 @@ export function auditDarkLearningTargets(input: {
 
   dark.sort((a, b) => SEVERITY[a.reason] - SEVERITY[b.reason] || a.key.localeCompare(b.key));
 
+  const eligible = targets.length - notAutoloopEligible.length;
   return {
     dark,
     liveKeys,
-    registered: targets.length,
+    notAutoloopEligible,
+    registered: eligible,
     headline:
       dark.length === 0
         ? ''
-        : `${dark.length} of ${targets.length} registered learning target(s) produce NO signal: ` +
+        : `${dark.length} of ${eligible} autoloop-eligible learning target(s) produce NO signal: ` +
           `${dark.map((d) => `${d.key} (${d.reason})`).join(', ')}. ` +
           'A dark target is not an error and fires no gate — it is only visible if something says so, which is why this line exists.',
   };

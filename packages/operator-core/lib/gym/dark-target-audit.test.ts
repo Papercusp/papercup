@@ -10,13 +10,17 @@ import { describe, expect, it } from 'vitest';
 import { auditDarkLearningTargets, type DarkAuditAutoloopRow } from './dark-target-audit';
 import type { LearningGymTarget } from './learning-targets';
 
-const target = (key: string, signals: string[] = ['drillResolveRate']): LearningGymTarget =>
+const target = (
+  key: string,
+  signals: string[] = ['drillResolveRate'],
+  promptSurface = 'prompt-override',
+): LearningGymTarget =>
   ({
     key,
     title: `${key} title`,
     role: 'worker',
     blueprintId: 'implement',
-    promptSurface: 'prompt-override',
+    promptSurface,
     signals,
     drillClasses: ['*'],
     rationale: 'because',
@@ -42,7 +46,7 @@ describe('auditDarkLearningTargets', () => {
     expect(a.dark).toHaveLength(1);
     expect(a.dark[0]!.reason).toBe('disabled');
     expect(a.dark[0]!.detail).toContain('drillResolveRate'); // names the signal it WOULD produce
-    expect(a.headline).toContain('1 of 1 registered learning target(s) produce NO signal');
+    expect(a.headline).toContain('1 of 1 autoloop-eligible learning target(s) produce NO signal');
     expect(a.liveKeys).toEqual([]);
   });
 
@@ -99,6 +103,26 @@ describe('auditDarkLearningTargets', () => {
     // unregistered (scout-ideators) → disabled (triage) → never-ran (implement)
     expect(a.dark.map((d) => d.reason)).toEqual(['unregistered', 'disabled', 'never-ran']);
     expect(a.registered).toBe(3);
+  });
+
+  it('EXCLUDES targets with no prompt-override surface instead of crying wolf', () => {
+    // The triage classifier is a persona and the Scout ideators are code-constructed
+    // lenses: seed-learning-gym-targets.ts gives them NO autoloop row by design, so
+    // flagging them dark would be a false alarm — but they must still be listed, so
+    // "excluded by design" never looks like "quietly missing".
+    const a = auditDarkLearningTargets({
+      rows: [row()],
+      resolveHarness: onPapercusp,
+      targets: [
+        target('implement-worker'),
+        target('triage-classifier', ['triageAccuracy'], 'persona'),
+        target('scout-ideators', ['mttsh'], 'code-constructed'),
+      ],
+    });
+    expect(a.dark).toEqual([]); // implement-worker is armed; the other two are excluded
+    expect(a.notAutoloopEligible).toEqual(['triage-classifier', 'scout-ideators']);
+    expect(a.registered).toBe(1); // the denominator counts only eligible targets
+    expect(a.headline).toBe('');
   });
 
   it('the headline explains WHY silence was the bug, so a reader cannot dismiss it', () => {
