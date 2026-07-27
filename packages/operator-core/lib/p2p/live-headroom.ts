@@ -62,7 +62,6 @@ export type HeadroomReason =
   | 'gateway_unreachable'
   | 'gateway_paused'
   | 'window_rejected'
-  | 'wholesale_throttled'
   | 'no_healthy_accounts'
   | 'utilization_unknown'
   | 'derated_by_utilization'
@@ -89,14 +88,19 @@ export function remoteLiveHeadroom(h: GatewayHeadroom, allotmentRemaining: numbe
   if (h.reachable !== true) {
     return zero('gateway_unreachable', `inference gateway unreachable (${h.error ?? 'no /stats'}) — remote capacity unknown, failing closed`);
   }
-  if (h.paused === true) {
-    return zero('gateway_paused', `gateway paused until ${new Date(h.pausedUntil ?? 0).toISOString()}`);
-  }
-  if (h.rejected === true) {
-    return zero('window_rejected', `binding rate window '${h.window ?? 'unified'}' is hard-rejected (resets in ${h.resetInSec ?? '?'}s)`);
-  }
+  // ORDER MATTERS: ask the COMPOSITE predicate first, never `paused`/`rejected` on their own.
+  // `isWholesaleThrottled` returns FALSE for a paused-or-rejected gateway that still has
+  // priority-tier capacity to fall back on — so short-circuiting on the raw flags would zero out a
+  // host that can in fact serve, and would make this branch dead code besides. The raw flags are
+  // used only to NAME the reason once the composite has already said "throttled".
   if (isWholesaleThrottled(h)) {
-    return zero('wholesale_throttled', 'gateway is wholesale-throttled (no priority-tier capacity to fall back on)');
+    if (h.paused === true) {
+      return zero('gateway_paused', `gateway paused until ${new Date(h.pausedUntil ?? 0).toISOString()} with no tier capacity to fall back on`);
+    }
+    return zero(
+      'window_rejected',
+      `binding rate window '${h.window ?? 'unified'}' is hard-rejected (resets in ${h.resetInSec ?? '?'}s) with no tier capacity to fall back on`,
+    );
   }
   if (h.healthyAccounts === 0) {
     return zero('no_healthy_accounts', 'pool reports 0 serviceable accounts — every account is walled or paused');

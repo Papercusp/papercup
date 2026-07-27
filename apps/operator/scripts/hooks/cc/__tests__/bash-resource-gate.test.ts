@@ -1338,6 +1338,54 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
     expect(denyReason(out)).toContain('EI-18664655909328670');
   });
 
+  /**
+   * EI-18809538554039853. The in-place legs above keyed on `(?:^|\s)-i\S*`, which
+   * requires the flag TOKEN to begin with `-i`. Unix short flags bundle, so the
+   * in-place flag is routinely NOT first: `perl -0pi -e ...` is `-0` `-p` `-i`, and
+   * it is the idiomatic spelling for a slurp-mode in-place rewrite — i.e. exactly the
+   * multi-line edit someone reaches for INSTEAD of Edit. Hit live 2026-07-27.
+   *
+   * This is the dangerous direction of failure: an over-block is a nuisance (use
+   * Edit), but an under-block silently bypasses the file-lock hook on a tree shared
+   * by the whole fleet, which is the entire point of the guard.
+   */
+  const CLUSTERED_INPLACE: Array<[string, string]> = [
+    ['`perl -0pi` (slurp + in-place, the form hit live)', "perl -0pi -e 's/a/b/' apps/operator/foo.ts"],
+    ['`perl -pi` (the most common bundling)', "perl -pi -e 's/a/b/' apps/operator/foo.ts"],
+    ['`perl -ni`', "perl -ni -e 'print' apps/operator/foo.ts"],
+    ['`perl -pi.bak` (bundled AND suffixed)', "perl -pi.bak -e 's/a/b/' apps/operator/foo.ts"],
+    ['`ruby -pi`', "ruby -pi -e 'gsub!(/a/,\"b\")' apps/operator/foo.rb"],
+    ['`sed -ni` (sed bundles too)', "sed -ni 's/a/b/p' apps/operator/foo.ts"],
+  ];
+  for (const [label, command] of CLUSTERED_INPLACE) {
+    it(`denies ${label} — the in-place flag is not the first in the cluster`, () => {
+      const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain('EI-18664655909328670');
+    });
+  }
+
+  /**
+   * The other side of the same fix. A cluster scan that merely asks "does this token
+   * contain an i?" would deny `-Mstrict`, `-Iinc`, `-e '...if...'` — all extremely
+   * common and none of them in-place. Perl/sed short flags that take a VALUE consume
+   * the rest of their token, so the scan must stop at the first such flag.
+   */
+  const NOT_INPLACE: Array<[string, string]> = [
+    ['`-Mstrict` — the module name merely contains an i', "perl -Mstrict -e 'print 1' apps/operator/foo.ts"],
+    ['`-Ilib` — an include dir containing an i', "perl -Ilib/inc -e 'print 1' apps/operator/foo.ts"],
+    ['`-e` code containing the letter i', "perl -e 'print if 1' apps/operator/foo.ts"],
+    ['plain `sed` with no in-place flag', "sed 's/a/b/' apps/operator/foo.ts"],
+  ];
+  for (const [label, command] of NOT_INPLACE) {
+    it(`still ALLOWS ${label} — reading a tree file is not writing it`, () => {
+      const out = runGate(bashCmd(command, { cwd: CANON }), CANON_ENV);
+      // Allow = silence (or at least: not THIS guard's deny).
+      if (out.stdout.trim()) {
+        expect(out.stdout).not.toContain('EI-18664655909328670');
+      }
+    });
+  }
+
   it('fires WITH NO agent marker at all — unconditional, like the shell-write guard', () => {
     const command = `python3 -c "open('apps/operator/generated.ts', 'w').write('x')"`;
     expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));

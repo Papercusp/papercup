@@ -784,6 +784,38 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'wall-fact-lapse-sweep' },
   );
 
+  // unified-agent-state-plane-2026-07-27 P-010: the intent↔action divergence
+  // detector (MAST FM-2.6). D-016 puts it in the STRUCTURAL tier and D-047 row
+  // 15 records its enforcement as "they run on their own" — so it is a sweep,
+  // never a tool: D-046 refuses another pull read over `tool_invocations`
+  // (three exist, all three dead). Notifies the agent ITSELF first and the
+  // leader only on a repeat; debounced per (owner, tool) inside the sweep.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { divergenceSweep } = await import('../agent-state-divergence-sweep');
+        const { outcomes, report } = await divergenceSweep();
+        for (const o of outcomes) {
+          if (o.outcome === 'error') console.warn(`[intent-action-divergence] error: ${o.key} — ${o.reason}`);
+          else if (o.outcome === 'escalated') console.warn(`[intent-action-divergence] ${o.reason}`);
+        }
+        // The stamp fill rate is P-015's measurement and the one number that
+        // says whether the stamped leg is alive yet — log it where a sweep is
+        // already writing, so nobody has to run a query to find out.
+        if (report && report.coverage.callsExamined > 0) {
+          console.info(
+            `[intent-action-divergence] examined ${report.coverage.callsExamined} calls, ` +
+              `stampFillRate=${report.coverage.stampFillRate}, ` +
+              `thrashRuns=${report.coverage.thrashRuns}/${report.coverage.failuresSeen} failures`,
+          );
+        }
+      } catch (e) {
+        console.warn(`[intent-action-divergence] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'intent-action-divergence-sweep' },
+  );
+
   // GYM-2 (gym-unwedge-scout-novelty-2026-07-02, generalized across roles by WI-4632):
   // the chronic-autoloop-failure escalator — a cycle red >= threshold consecutive fires
   // files ONE observation + requests an immediate overwatch wake, per 24h per (harness,

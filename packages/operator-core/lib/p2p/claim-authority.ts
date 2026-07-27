@@ -66,12 +66,22 @@ export interface AxisAvailability {
    */
   allotmentRemaining: number;
   /**
-   * PHYSICS. Real-time capacity RIGHT NOW: remote = account balance / rate-limit
-   * room (existing gateway logic); local = free foreign slots from the
-   * concurrent-inference snapshot (M12: 0 / fail-closed until those deltas land;
-   * host-interactive always preempts a local slot).
+   * PHYSICS. Real-time capacity RIGHT NOW, read live from the inference gateway by
+   * `live-headroom.ts` (WI-3590): remote = this host's policy cap derated by the binding rate
+   * window's utilization (the gateway reports rate room, not dollars — see that module's doc);
+   * local = free foreign slots on the local-backend pool. M12 still holds: host-interactive work
+   * always preempts a local slot, so this is an offerable count, not a reservation. Any unknown
+   * (gateway down, paused, hard-rejected, no serviceable accounts, no utilization data) resolves
+   * to 0 — PHYSICS can only ever lower what POLICY allowed.
    */
   liveHeadroom: number;
+  /**
+   * Optional human-readable provenance for `liveHeadroom` ("window '5h' at 82% — 18% of the
+   * 1000000 usd-micros cap is spendable now"). Surfaced on a `no_live_headroom` refusal so a
+   * P-004 receipt records WHY a claim was refused instead of a bare zero. Absent on a caller that
+   * builds `AxisAvailability` by hand.
+   */
+  liveHeadroomDetail?: string;
 }
 
 /** What the host can serve for a fleet, per axis. `null` = the host serves no allotment on that axis (M11 default-zero). */
@@ -160,7 +170,9 @@ export function evaluateClaimAuthority(
         axis,
         code,
         available,
-        detail: `${axis} axis unavailable [D-007 POLICY×PHYSICS]: allotment-remaining ${allotRem}, live headroom ${headroom} (need >= ${minViable})`,
+        detail:
+          `${axis} axis unavailable [D-007 POLICY×PHYSICS]: allotment-remaining ${allotRem}, live headroom ${headroom} (need >= ${minViable})` +
+          (code === 'no_live_headroom' && avail.liveHeadroomDetail ? ` — ${avail.liveHeadroomDetail}` : ''),
       });
       continue;
     }
