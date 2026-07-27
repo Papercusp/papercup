@@ -344,3 +344,66 @@ describe('registration refuses rather than admits-and-flags', () => {
     expect(getCell('session.state', { ownerId: 'su-a' })).toBeUndefined();
   });
 });
+
+describe('P-021 — materiality is optional, but a declared one must be able to do work', () => {
+  const ruleOf = (spec: CellSpec) => validateCellSpec(spec).filter((r) => r.axis === 'materiality').map((r) => r.rule);
+
+  it('OMITTING it is valid and is the default — every change is material', () => {
+    // The default must stay free: a field you have to opt OUT of is a field
+    // every author pays for, and D-010 makes cheapness the adoption precondition.
+    expect(ruleOf(pipelineCell())).toEqual([]);
+  });
+
+  it('accepts a path into the same result that differs from the changeSignal path', () => {
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      materiality: { path: 'positions.serving', why: 'the headline follows every commit; this is the question.' },
+    };
+    expect(ruleOf(spec)).toEqual([]);
+  });
+
+  it('REFUSES a materiality path equal to the changeSignal path — a declared no-op', () => {
+    const changeSignal = pipelineCell().changeSignal as { kind: 'poll'; tool: string; path: string };
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      materiality: { path: changeSignal.path, why: 'why not' },
+    };
+    expect(ruleOf(spec)).toContain('materiality-is-changesignal-path');
+  });
+
+  it('REFUSES an unjustified suppression — `why` is required', () => {
+    // Every other field here fails LOUDLY when wrong. This one fails SILENTLY
+    // and in the confident direction: a wrong material path stops telling agents
+    // about real changes and nothing surfaces to say so. A reader told "N
+    // changes were not raised" must be able to check the claim.
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      materiality: { path: 'positions.serving', why: '   ' },
+    };
+    expect(ruleOf(spec)).toContain('materiality-unjustified');
+  });
+
+  it('REFUSES a path-less declaration', () => {
+    const spec: CellSpec = { ...pipelineCell(), materiality: { path: '', why: 'because' } };
+    expect(ruleOf(spec)).toContain('materiality-path-missing');
+  });
+
+  it('REFUSES materiality on an EVENT-signalled cell — there is no result to path into', () => {
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      changeSignal: { kind: 'event', key: 'release:deployed' },
+      materiality: { path: 'positions.serving', why: 'because' },
+    };
+    expect(ruleOf(spec)).toContain('materiality-on-event-cell');
+  });
+
+  it('registration THROWS on a bad materiality, so a half-declared suppression is absent not live', () => {
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      cell: 'mat.broken',
+      materiality: { path: 'positions.serving', why: '' },
+    };
+    expect(() => registerCell(spec)).toThrow(CellRegistrationError);
+    expect(getCell('mat.broken', { ownerId: 'su-a' })).toBeUndefined();
+  });
+});

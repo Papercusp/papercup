@@ -50,7 +50,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { distillVitestRun } from '../../testing-run-store';
-import { inferWorkspaceRoot } from '../../testing-domain-glob';
+import { resolveCapabilityBaseDir } from '../capability/base-dir';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
@@ -122,8 +122,18 @@ export default defineTool({
       .describe('Cap the returned failures list (default 20). Counts stay complete; `failuresTruncated` flags the cut.'),
   }),
   async handler(args, ctx) {
-    void ctx;
-    const root = inferWorkspaceRoot();
+    // EI-1754, again: this tool must judge the tree the AGENT is editing, not the
+    // one the operator happens to run from. `inferWorkspaceRoot()` walks up from
+    // `process.cwd()`, and the :3070 operator runs FROM the release checkout
+    // (papercup-release, pinned to green `main`) — so a superuser's testing:run
+    // routed every path into the RELEASE tree. Two failure modes, and the silent
+    // one is the dangerous one: a test file present in BOTH trees ran against the
+    // stale release copy and came back GREEN for an edit it never saw; a
+    // staging-only NEW test file came back `route_error: does not exist`.
+    // `resolveCapabilityBaseDir` is the same projectDir → PAPERCUSP_INTEGRATION_ROOT
+    // → cwd resolver every capability tool (read/write/edit/bash/inspect) already
+    // uses, so this tool now reads the same tree those tools write.
+    const root = resolveCapabilityBaseDir(ctx);
     const runId = randomUUID();
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a

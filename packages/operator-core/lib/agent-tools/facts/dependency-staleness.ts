@@ -280,7 +280,15 @@ export function evaluateDependencyStaleness(
     // all-clear on precisely the change the reader cares most about, produced by
     // the mechanism meant to protect them. So materiality can only ever SUPPRESS
     // a raw change, never MASK a material one.
-    const materiallyComparable = dep.materialDigest !== undefined && now.materialDigest !== undefined;
+    //
+    // ⚠ AND THE PATH MUST MATCH. If the spec's materiality path has been re-aimed
+    // since the fact was filed, the stored anchor and the fresh reading are
+    // answers to DIFFERENT QUESTIONS, and comparing them is not a weaker check —
+    // it is a wrong one. This is `FactDependency.subject`'s rule verbatim, for
+    // the same reason: a comparison that silently changes the question reports
+    // "unchanged" about something nobody asked.
+    const pathStable = dep.materialPath === undefined || now.materialPath === undefined || dep.materialPath === now.materialPath;
+    const materiallyComparable = dep.materialDigest !== undefined && now.materialDigest !== undefined && pathStable;
     if (materiallyComparable && now.materialDigest !== dep.materialDigest) {
       verdicts.push({
         ...base,
@@ -307,8 +315,13 @@ export function evaluateDependencyStaleness(
       verdicts.push({
         ...baseWithoutRaw,
         status: 'immaterial',
+        // `material` (the ANSWER) is carried — it is what lets a reader audit the
+        // suppression. `materialPath` is NOT: it is a registry CONSTANT, and
+        // copying it onto every row of every fact in every fold is both the
+        // repetition this item exists to remove and a transcription that rots
+        // when the resolver's shape moves (`state:subscribe`'s own warning). The
+        // path lives on the spec, which is where a reader should get it.
         ...(now.material ? { material: now.material } : {}),
-        ...(now.materialPath ? { materialPath: now.materialPath } : {}),
       });
       immaterial.push(dep.cell);
       continue;
@@ -349,15 +362,16 @@ function renderNote(
     // about what was suppressed and against which declared answer, because a
     // suppression a reader cannot audit is a blind spot rather than a threshold.
     if (immaterial.length > 0) {
-      const detail = verdicts
-        .filter((v) => v.status === 'immaterial')
-        .map((v) => `${v.cell} (${v.materialPath ?? 'material'}=${v.material ?? '?'})`)
-        .join('; ');
-      const rest = verdicts.filter((v) => v.status === 'fresh').length;
-      return (
-        `✓ MATERIALLY UNCHANGED — ${detail} moved, but the declared material answer did not, so the intermediate ` +
-        `values are not reproduced here${rest > 0 ? ` (${rest} other dependency${rest === 1 ? '' : 'ies'} unchanged)` : ''}.`
-      );
+      // ⚠ SHORT BY DESIGN — this is the "carries the rest SILENTLY" half.
+      //
+      // `note` is documented as the line rendered LOUDLY wherever the fact is
+      // delivered, and its job is to PROMPT AN ACTION: the stale note asks the
+      // reader to re-verify. A version bump asks for nothing, so a paragraph
+      // explaining it is pure cost — paid per fact, per fold, per agent, 335
+      // times a day. The audit trail does not live here: it lives in the
+      // machine-readable `immaterial[]` and each dep's `material` answer, which
+      // a reader can check without every reader paying to be told.
+      return `✓ no material change (${immaterial.length} version bump${immaterial.length === 1 ? '' : 's'} not reproduced).`;
     }
     return `✓ every declared dependency (${verdicts.map((v) => v.cell).join(', ')}) still reads as it did when this fact was filed.`;
   }

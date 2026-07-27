@@ -60,7 +60,7 @@ import {
   summariseByFile,
   syntaxBrokenFiles,
 } from '../../tsc-diagnostics';
-import { inferWorkspaceRoot } from '../../testing-domain-glob';
+import { resolveCapabilityBaseDir } from '../capability/base-dir';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
@@ -206,8 +206,12 @@ export default defineTool({
       .describe('Allow tsc to use a warm tsconfig.tsbuildinfo. Default false — EI-487: an incremental run UNDER-reports errors in files the cache has not reindexed, which read as green for days. Only set true when you want a fast re-check and already know the tree is warm.'),
   }),
   async handler(args, ctx) {
-    void ctx;
-    const root = inferWorkspaceRoot();
+    // EI-1754 (same defect as testing:run): `inferWorkspaceRoot()` walks up from
+    // `process.cwd()`, and the :3070 operator runs FROM the release checkout — so
+    // this tool typechecked the RELEASE tree, not the tree the agent just edited,
+    // and reported it clean. Use the same projectDir → PAPERCUSP_INTEGRATION_ROOT
+    // → cwd resolver every capability tool uses.
+    const root = resolveCapabilityBaseDir(ctx);
     const started = Date.now();
 
     // Pre-flight the project so the refusal can be specific and name alternatives.

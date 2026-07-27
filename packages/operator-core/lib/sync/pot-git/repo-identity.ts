@@ -88,23 +88,42 @@ function safeSegment(v: string): string {
 }
 
 /**
- * DERIVE a repoKey from `entry`'s current upstream coords — the three-step
- * ladder in the module header. Exported for the PIN-MINTING sites only
- * (`pinRepoKey`); everything on a hot path must call {@link canonicalRepoKey},
- * which honours an existing pin first.
+ * EVERY repoKey this entry could legitimately have been keyed under, BEST RUNG
+ * FIRST — the three-step ladder in the module header, materialized rather than
+ * short-circuited.
+ *
+ * {@link deriveRepoKey} answers "what would this entry derive TODAY"; this
+ * answers "what has this entry EVER been able to derive", which is the question
+ * {@link supersededRepoKeys} needs. They are one list read two ways precisely so
+ * they cannot drift: a fourth rung added here is automatically both derivable
+ * and recognizable-as-abandoned, and a change to rung ORDER can never make the
+ * derivation and the abandonment set disagree about which rung is canonical.
  */
-export function deriveRepoKey(entry: RepoIdentityEntry): string {
+export function repoKeyLadder(entry: RepoIdentityEntry): string[] {
+  const rungs: string[] = [];
   const id = entry.github_repository_id;
   if (typeof id === 'number' && Number.isFinite(id) && id > 0) {
-    return `gh-${id}`;
+    rungs.push(`gh-${id}`);
   }
   if (entry.github_remote) {
     const parsed = parseGithubUrl(entry.github_remote);
     if (parsed) {
-      return `gh-${safeSegment(parsed.owner)}--${safeSegment(parsed.repo)}`;
+      rungs.push(`gh-${safeSegment(parsed.owner)}--${safeSegment(parsed.repo)}`);
     }
   }
-  return entry.slug;
+  rungs.push(entry.slug);
+  return [...new Set(rungs)];
+}
+
+/**
+ * DERIVE a repoKey from `entry`'s current upstream coords — the best rung of
+ * {@link repoKeyLadder}. Exported for the PIN-MINTING sites only
+ * (`pinRepoKey`); everything on a hot path must call {@link canonicalRepoKey},
+ * which honours an existing pin first.
+ */
+export function deriveRepoKey(entry: RepoIdentityEntry): string {
+  // The ladder always ends with `entry.slug`, so it is never empty.
+  return repoKeyLadder(entry)[0]!;
 }
 
 /**
@@ -209,4 +228,109 @@ export function adoptRepoKey(
     return { key: current, source: 'peer' };
   }
   return { key: pinRepoKey(entry), source: 'local' };
+}
+
+// ─── superseded stores (WI-6364, fix C) ──────────────────────────────────────
+
+/**
+ * The keys that name a store for `entry` but are NO LONGER what this device
+ * writes under — its ABANDONED aliases.
+ *
+ * Re-keying is a documented, expected event ({@link adoptRepoKey}'s
+ * `rekeyedFrom`, and `canonicalRepoKey`'s own account of the tower gaining a
+ * `github_repository_id` on 2026-07-20). What was NOT accounted for is that the
+ * bare store at the old key stays on disk and keeps ANSWERING fetches: the
+ * serve path's only gate is "does this path have a HEAD", which an abandoned
+ * store passes forever. A peer still pinned on the old key therefore gets a
+ * real, internally-consistent pack from a store frozen at the moment of the
+ * re-key, and every artifact on its side reports success. Live on the tower
+ * 2026-07-27: `papercusp.git` (2.5 GB, every ref frozen at 2026-07-20) served
+ * alongside the live `gh-1223568103.git` for seven days.
+ *
+ * WHY THE LADDER AND NOT "anything != canonical": one bare store per
+ * `(potHomeSlug, repoKey)` means MANY unrelated repos legitimately live under
+ * one pot (a member repo, `hive-canary`, …). Treating every non-canonical key
+ * as abandoned would refuse all of them. A LOWER RUNG OF THIS ENTRY'S OWN
+ * LADDER is exactly and only the set of names this entry itself once minted, so
+ * the verdict is derived from the same code that produced the divergence.
+ */
+export function supersededRepoKeys(entry: RepoIdentityEntry): string[] {
+  const canonical = canonicalRepoKey(entry);
+  return repoKeyLadder(entry).filter((k) => k !== canonical && isValidRepoKey(k));
+}
+
+/** A requested repoKey identified as one entry's abandoned alias. */
+export interface SupersededRepoKeyVerdict {
+  /** The key the peer asked for — the abandoned one. */
+  requested: string;
+  /** The key that entry is keyed under NOW — what the peer should ask for. */
+  canonical: string;
+  /** The registry entry whose re-key stranded `requested` (diagnostics). */
+  entrySlug: string;
+}
+
+/**
+ * Decide whether `requestedKey` addresses a SUPERSEDED store, given every
+ * registry entry served under one pot. Pure; the serve path's decision function.
+ *
+ * TWO GUARDS, both load-bearing:
+ *  1. A key that is the CANONICAL key of ANY entry is never superseded — checked
+ *     FIRST, across the whole set. Without it, one entry's abandoned alias could
+ *     shadow another entry's live key (an adopted pin need not be on its own
+ *     ladder, so the two sets are not disjoint by construction) and this fix
+ *     would refuse a healthy fetch — strictly worse than the bug it closes.
+ *  2. Only a lower rung of an entry's OWN ladder qualifies — see
+ *     {@link supersededRepoKeys}.
+ *
+ * Returns null for "serve it" so the caller's default stays today's behavior.
+ */
+export function findSupersededRepoKey(
+  requestedKey: string,
+  entries: readonly RepoIdentityEntry[],
+): SupersededRepoKeyVerdict | null {
+  if (!isValidRepoKey(requestedKey)) return null;
+  for (const entry of entries) {
+    if (canonicalRepoKey(entry) === requestedKey) return null; // guard 1 — live key
+  }
+  for (const entry of entries) {
+    if (supersededRepoKeys(entry).includes(requestedKey)) {
+      return { requested: requestedKey, canonical: canonicalRepoKey(entry), entrySlug: entry.slug };
+    }
+  }
+  return null;
+}
+
+/**
+ * Refusal-reason prefix for a superseded-store request. The reason CARRIES THE
+ * CANONICAL KEY, which is what makes this refusal self-healing rather than
+ * merely loud: the requester adopts the key out of the refusal and its next
+ * tick dials the store that is actually being written to. Rides the existing
+ * `refuse` frame (a plain string), so it is a zero-wire-change addition — a
+ * peer on an older build simply sees an unfamiliar refusal reason and retries,
+ * which is strictly better than being served week-old bytes.
+ */
+export const SUPERSEDED_REPO_KEY_REFUSAL_PREFIX = 'superseded-repo-key:';
+
+/** Build the refusal reason a server sends for {@link findSupersededRepoKey}. */
+export function supersededRepoKeyRefusal(canonicalKey: string): string {
+  return `${SUPERSEDED_REPO_KEY_REFUSAL_PREFIX}${canonicalKey}`;
+}
+
+/**
+ * Recover the canonical key a peer named in its refusal, or null.
+ *
+ * Parses out of the FULL destroy-error text a requester actually holds
+ * (`pot-git serve refused: superseded-repo-key:gh-123`), not just a bare
+ * reason — that string is the only form the dialing side ever sees
+ * (serve-wiring's `handleRefuse` destroys the duplex with it and
+ * `runBootstrapLeg` reads `duplex.errored.message`). ALWAYS re-validates:
+ * this value comes off the wire from another device and is about to become a
+ * filesystem path component and a git ref component.
+ */
+export function parseSupersededRepoKeyRefusal(message: unknown): string | null {
+  if (typeof message !== 'string') return null;
+  const at = message.indexOf(SUPERSEDED_REPO_KEY_REFUSAL_PREFIX);
+  if (at < 0) return null;
+  const key = message.slice(at + SUPERSEDED_REPO_KEY_REFUSAL_PREFIX.length).trim();
+  return isValidRepoKey(key) ? key : null;
 }

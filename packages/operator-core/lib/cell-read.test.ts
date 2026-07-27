@@ -281,3 +281,51 @@ describe('readCell — path drift', () => {
     }
   });
 });
+
+describe('P-021 — the material lens rides the SAME dispatch', () => {
+  const withMateriality = () =>
+    spec({
+      materiality: { path: 'serving.startedSinceCodeChange', why: 'the headline follows every commit; this is the question.' },
+    });
+
+  it('extracts the material answer WITHOUT a second resolver call', () => {
+    // Axis 5 applied to materiality: the material answer is a LENS on the one
+    // derivation. If declaring it cost an extra dispatch, a registry of them
+    // would multiply the resolver load the fold already budgets for
+    // (STALENESS_READ_BUDGET), and the cheap declaration D-010 requires would
+    // stop being cheap.
+    registerCell(withMateriality());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: { startedSinceCodeChange: false } });
+
+    return readCell('test.cell', READER, ENV).then((r) => {
+      expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1);
+      expect(r.status).toBe('value');
+      if (r.status === 'value') {
+        expect(r.value).toBe(true);
+        expect(r.material).toEqual({ path: 'serving.startedSinceCodeChange', value: false });
+      }
+    });
+  });
+
+  it('OMITS `material` when the cell declares none — no behaviour change for the other cells', async () => {
+    registerCell(spec());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') expect(r.material).toBeUndefined();
+  });
+
+  it('⚠ OMITS `material` when the declared path does NOT resolve — never reports it as unchanged', async () => {
+    // Registration drift. Omitting forces the caller to the LOUD reading; the
+    // alternative (a present-but-empty material answer) would let a broken
+    // declaration silently certify a moved cell as materially unchanged, which
+    // is the one failure this field must not be able to cause.
+    registerCell(withMateriality());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    const r = await readCell('test.cell', READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') expect(r.material).toBeUndefined();
+  });
+});

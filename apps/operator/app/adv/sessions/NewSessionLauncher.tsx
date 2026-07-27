@@ -247,16 +247,21 @@ export interface NewSessionLauncherProps {
    *  (`advRoster.list`) is SSE-invalidated on any `adv_sessions` write, so
    *  the new session appears on its own.
    *
-   *  Owner ask 2026-07-27: it also carries `advSessionId` — the id of the
-   *  `adv_sessions` row just recorded — so a caller can OPEN the new session's
-   *  chat instead of leaving the human to find it on a board. It is the only
-   *  handle to the new session that exists at this moment: the roster's owner
-   *  id does not exist yet (a pending launch is keyed `pending:adv:<id>`, and
-   *  a booted one gets its real coord owner id later), so a caller resolves it
-   *  by matching `advSessionId` on the roster rather than guessing either form.
-   *  `null` when the launch reported success without an id (a warning-path
-   *  launch that may not have opened a window). */
-  onLaunched?: (advSessionId: number | null) => void;
+   *  Owner ask 2026-07-27: it also carries the new session's COORD OWNER ID, so
+   *  a caller can OPEN its chat instead of leaving the human to find it on a
+   *  board. `launch-su` pre-pins this id (`psu --owner-id=`) and returns it, so
+   *  it is known at launch time and stable from then on — it is the same key
+   *  the chat surfaces are already keyed by (`hudsession`).
+   *
+   *  WI-6363: this used to be `advSessionId`, which could never work. On the
+   *  terminal path launch-su records NO adv_sessions row (psu self-registers one
+   *  asynchronously once it boots), so the response carried no id at all and this
+   *  callback always fired with `null` — the chat never opened. Do not "restore"
+   *  the row id here: it does not exist yet at this moment.
+   *
+   *  `null` when the launch reported success without an id (an older operator
+   *  that predates the pre-pinned owner id). */
+  onLaunched?: (ownerId: string | null) => void;
 }
 
 /**
@@ -340,13 +345,13 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
           `Agent launch ${target}${chosenModel ? ` (${chosenModel})` : ''} may not have opened a window.`,
           { description: result.warning, duration: 8000 },
         );
-        onLaunched?.(result.advSessionId ?? null);
+        onLaunched?.(result.ownerId ?? null);
       } else if (result.ok) {
         toast.success(
           `Agent launched ${target}${chosenModel ? ` (${chosenModel})` : ''}.`,
           { duration: 3000 },
         );
-        onLaunched?.(result.advSessionId ?? null);
+        onLaunched?.(result.ownerId ?? null);
       } else if (result.installCmd) {
         toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
       } else {

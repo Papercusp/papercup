@@ -149,16 +149,19 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   /**
    * Owner ask 2026-07-27: "when you click +new session the gui chat with them
    * should show up". The launcher hands back the `adv_sessions` id it just
-   * recorded; the chat is keyed by ROSTER OWNER ID, which does not exist yet at
-   * that moment — so park the id here and let the effect below open the chat as
-   * soon as the roster carries a row for it.
+   * recorded; the chat is keyed by ROSTER OWNER ID.
    *
-   * Deliberately `useState` rather than nuqs: this is a one-shot handoff between
-   * the launch call and the next roster push (a lifecycle value), and it is
-   * CONSUMED — cleared the instant it resolves. The user-meaningful result, which
-   * session's chat is open, is already in the URL as `hudsession`.
+   * WI-6363: that owner id is now known AT LAUNCH — `launch-su` pre-pins it via
+   * `psu --owner-id=` and returns it — so the launch handler sets `hudsession`
+   * directly (see `headerAction` below) and there is nothing to park here.
+   *
+   * This deliberately does NOT wait for the roster to carry a row first. The
+   * previous version parked an `advSessionId` and resolved it against the roster,
+   * which could never fire: on the terminal path launch-su records no
+   * adv_sessions row at all, so the id was always null. Opening the chat straight
+   * away is also the better behaviour — the modal is a live sync surface, so it
+   * populates as the session boots rather than making the human wait for it.
    */
-  const [awaitingLaunchId, setAwaitingLaunchId] = useState<number | null>(null);
 
   const attention = useInboxAttention();
 
@@ -197,30 +200,6 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     // to land in `parked`; see deriveColumn step 1c for why that was backwards.
     return [...(payload.active ?? []), ...(payload.pending ?? [])];
   }, [roster.data]);
-
-  /**
-   * Open the chat for a session the human just launched (owner ask 2026-07-27).
-   *
-   * Why it resolves through the roster instead of opening an id directly: the
-   * launcher only knows the `adv_sessions` row id, and a session's owner id is
-   * DIFFERENT depending on how far it has booted — `pending:adv:<id>` while it is
-   * still a recorded-but-unstarted row, then its real coord owner id once it comes
-   * up. Matching on `advSessionId` is the one key that is stable across that
-   * transition, so this opens the chat at whichever stage the roster reaches first
-   * and never races the boot.
-   *
-   * `entries` includes the pending tier, so in the common case the row is already
-   * there on the next SSE push and the chat opens immediately. If it never arrives
-   * (a launch that recorded no row), nothing opens and `awaitingLaunchId` simply
-   * stays set until the next launch replaces it — no spurious modal, no timer.
-   */
-  useEffect(() => {
-    if (awaitingLaunchId == null) return;
-    const match = entries.find((e) => e.advSessionId === awaitingLaunchId);
-    if (!match) return;
-    setAwaitingLaunchId(null);
-    void setOpenOwner(match.ownerId);
-  }, [awaitingLaunchId, entries, setOpenOwner]);
 
   // `null` in the URL array marks the solo group — encoded as the literal
   // "solo" because a URL array cannot carry a null.
@@ -458,7 +437,18 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         sessionQuery={rawSessionQuery}
         onSessionQuery={(q) => void setSessionQuery(q === '' ? null : q)}
         searchActive={searchOwners !== null}
-        headerAction={<NewSessionLauncher onLaunched={(id) => setAwaitingLaunchId(id)} />}
+        headerAction={
+          <NewSessionLauncher
+            onLaunched={(ownerId) => {
+              // WI-6363: `ownerId` is the pre-pinned coord owner id the new
+              // session registers as, so it is exactly the key `hudsession`
+              // (and SessionChatModal) already take. Null only from an operator
+              // predating the pre-pin, in which case we open nothing rather
+              // than guessing.
+              if (ownerId) void setOpenOwner(ownerId);
+            }}
+          />
+        }
         tab={tab as HudTabId}
         onSelectTab={(next) => void setTab(next)}
         entityView={entityView}

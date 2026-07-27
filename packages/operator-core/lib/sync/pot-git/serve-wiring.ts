@@ -77,6 +77,12 @@ import { POT_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
 import { authorizeScopeRepoServe, type ScopeRepoServeGrant } from './scope-serve-gate';
 import { getScopeRoster } from '../../p2p/scope-roster';
 import { resolveGithubUserIdForDevicePubkey } from '../hyperbee/hive-member-identity-set';
+import {
+  findSupersededRepoKey,
+  supersededRepoKeyRefusal,
+  type SupersededRepoKeyVerdict,
+} from './repo-identity';
+import { loadHarnessRegistry } from '../../harness-registry';
 
 export { POT_GIT_PROTOCOL };
 
@@ -736,6 +742,19 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       });
       if (!decision.ok) return refuse(`scope-repo:${decision.refusal.reason}`);
       scopeServeGrant = decision.grant;
+    }
+    // WI-6364 (fix C): REFUSE A SUPERSEDED STORE rather than serve week-old
+    // bytes out of it. Checked BEFORE the existence gate below deliberately —
+    // both outcomes are correct for an abandoned key, but this one CARRIES THE
+    // REPAIR (the canonical key), so it is strictly the more useful of the two
+    // and must not be pre-empted by a bare `no-such-repo` on a device that
+    // never held the old store at all. Non-scope keys only: a `scopes/` repo is
+    // addressed by scope id, not by the registry's repoKey ladder.
+    if (!wireScopeId) {
+      const superseded = await resolveSupersededRepoKey(cfg.potHomeSlug, v.repoKey);
+      if (superseded) {
+        return refuse(supersededRepoKeyRefusal(superseded.canonical));
+      }
     }
     // EI-8863/WI-3643 finding (su-95401d6d's handoff): an unknown-but-validly
     // NAMED repoKey (no traversal, no unsafe chars — so hiveGitRepoPath above

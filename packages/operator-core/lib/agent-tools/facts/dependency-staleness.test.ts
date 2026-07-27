@@ -228,3 +228,198 @@ describe('subject keying — a caller-relative cell is a different question per 
     expect(v?.deps[0].detail).toContain('read-budget-exceeded');
   });
 });
+
+/**
+ * P-021 — SURPRISAL-GATED PUSH: the materiality threshold in the fold.
+ *
+ * The subject throughout is the real registered case with its real measured
+ * churn: `gate.greenCheckpoint.candidate` declares `changeInCandidate.judgingSha`
+ * (which follows the staging tip — 335 commits/24h) while the question it exists
+ * to answer is `changeInCandidate.judgingContainsPath` (which moves only when the
+ * subject's own file lands).
+ */
+const CANDIDATE = 'gate.greenCheckpoint.candidate';
+const MATERIAL_PATH = 'changeInCandidate.judgingContainsPath';
+const SUBJECT = 'packages/operator-core/lib/cell-registry.ts';
+
+/** A dependency filed while the gate judged `sha`, with the path contained or not. */
+const candidateDep = (sha: string, contained: boolean): FactDependency => ({
+  cell: CANDIDATE,
+  subject: SUBJECT,
+  observedAt: '2026-07-27T08:55:00.000Z',
+  digest: digestCellValue(sha),
+  observed: sha,
+  materialDigest: digestCellValue(contained),
+  material: String(contained),
+  materialPath: MATERIAL_PATH,
+});
+
+/** What that cell resolves to now. */
+const candidateNow = (sha: string, contained: boolean): CurrentCellObservation => ({
+  digest: digestCellValue(sha),
+  observed: sha,
+  materialDigest: digestCellValue(contained),
+  material: String(contained),
+  materialPath: MATERIAL_PATH,
+});
+
+/** Strip the material anchor — a fact filed before P-021, i.e. today's behaviour. */
+const unanchor = (d: FactDependency): FactDependency => {
+  const c = { ...d };
+  delete (c as { materialDigest?: string }).materialDigest;
+  return c;
+};
+
+const keyed = (o: CurrentCellObservation) => now({ [observationKey(CANDIDATE, SUBJECT)]: o });
+
+describe('P-021 materiality — a version bump is carried, not raised', () => {
+  it('raw value moved but the material answer held ⇒ immaterial, and the fact is NOT stale', () => {
+    const v = evaluateDependencyStaleness([candidateDep('4c871fdc', true)], keyed(candidateNow('a63daa83', true)));
+    expect(v?.status).toBe('fresh');
+    expect(v?.immaterial).toEqual([CANDIDATE]);
+    expect(v?.changed).toEqual([]);
+    expect(v?.deps[0].status).toBe('immaterial');
+  });
+
+  it('DROPS the intermediate raw values — that omission IS the deliverable', () => {
+    // "agents learn of material changes WITHOUT RECEIVING EVERY INTERMEDIATE
+    // VERSION". `was`/`now` ARE those versions, so an immaterial entry must not
+    // carry them — and the key must be genuinely absent, not merely undefined.
+    const entry = evaluateDependencyStaleness(
+      [candidateDep('4c871fdc', true)],
+      keyed(candidateNow('a63daa83', true)),
+    )!.deps[0];
+    expect(Object.prototype.hasOwnProperty.call(entry, 'was')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(entry, 'now')).toBe(false);
+    expect(JSON.stringify(entry)).not.toContain('a63daa83');
+    expect(JSON.stringify(entry)).not.toContain('4c871fdc');
+  });
+
+  it('keeps the suppression AUDITABLE, but in the MACHINE channel rather than the prose', () => {
+    // A suppression a reader cannot check is a blind spot, not a threshold. But
+    // the audit belongs where it is free: `immaterial[]` names what was
+    // suppressed and each dep carries the material ANSWER, so a reader can check
+    // it without EVERY reader paying a paragraph to be told.
+    const v = evaluateDependencyStaleness([candidateDep('4c871fdc', true)], keyed(candidateNow('a63daa83', true)));
+    expect(v?.immaterial).toEqual([CANDIDATE]);
+    expect(v?.deps[0].material).toBe('true');
+    // The note must stay SHORT and must NOT claim the cell stood still.
+    expect(v?.note).not.toContain('still reads as it did');
+    expect(v!.note.length).toBeLessThan(80);
+  });
+
+  it('does NOT copy the registry-constant materialPath onto every verdict row', () => {
+    // Repeating a per-cell constant on every dep of every fact of every fold is
+    // both the repetition this item removes and a transcription that rots when
+    // the resolver's shape moves. The path lives on the spec.
+    const entry = evaluateDependencyStaleness(
+      [candidateDep('4c871fdc', true)],
+      keyed(candidateNow('a63daa83', true)),
+    )!.deps[0];
+    expect(Object.prototype.hasOwnProperty.call(entry, 'materialPath')).toBe(false);
+  });
+
+  it('⚠ a RE-AIMED materiality path falls back to LOUD — it is a different question', () => {
+    // Same rule as FactDependency.subject: a comparison that silently changes
+    // the question does not give a weaker answer, it gives a wrong one.
+    const filed = candidateDep('4c871fdc', true);
+    const reAimed: CurrentCellObservation = {
+      ...candidateNow('a63daa83', true),
+      materialPath: 'changeInCandidate.nextContainsPath',
+    };
+    const v = evaluateDependencyStaleness([filed], keyed(reAimed));
+    expect(v?.status).toBe('stale');
+    expect(v?.changed).toEqual([CANDIDATE]);
+  });
+
+  it('a MATERIAL change is still loud — containment flipping is the news', () => {
+    const v = evaluateDependencyStaleness([candidateDep('4c871fdc', true)], keyed(candidateNow('a63daa83', false)));
+    expect(v?.status).toBe('stale');
+    expect(v?.changed).toEqual([CANDIDATE]);
+    expect(v?.immaterial).toEqual([]);
+    expect(v?.note).toContain('STALE');
+  });
+
+  it('⚠ materiality can SUPPRESS a raw change but must never MASK a material one', () => {
+    // The ordering guard. The two paths are SIBLINGS in one result and move
+    // independently: the same candidate can be re-judged (judgingSha static)
+    // while the subject's own file lands (judgingContainsPath flips). Comparing
+    // materiality only *after* a raw-digest change would report this `fresh` —
+    // a false all-clear on precisely the change the reader cares most about,
+    // produced by the mechanism meant to protect them.
+    const v = evaluateDependencyStaleness([candidateDep('4c871fdc', false)], keyed(candidateNow('4c871fdc', true)));
+    expect(v?.status).toBe('stale');
+    expect(v?.changed).toEqual([CANDIDATE]);
+  });
+
+  it('an UNANCHORED dependency falls back to LOUD, never to "materially unchanged"', () => {
+    // A fact filed before this field existed has no `materialDigest`. The safe
+    // direction is today's behaviour; the opposite default would let a schema
+    // gap silently certify a moved cell as unchanged.
+    const v = evaluateDependencyStaleness([unanchor(candidateDep('4c871fdc', true))], keyed(candidateNow('a63daa83', true)));
+    expect(v?.status).toBe('stale');
+    expect(v?.changed).toEqual([CANDIDATE]);
+  });
+
+  it('falls back to LOUD when the material path stops resolving NOW (registration drift)', () => {
+    const nowNoMaterial: CurrentCellObservation = { digest: digestCellValue('a63daa83'), observed: 'a63daa83' };
+    const v = evaluateDependencyStaleness([candidateDep('4c871fdc', true)], keyed(nowNoMaterial));
+    expect(v?.status).toBe('stale');
+    expect(v?.changed).toEqual([CANDIDATE]);
+  });
+
+  it('a cell declaring NO materiality is completely unaffected (opt-in, not a behaviour change)', () => {
+    const v = evaluateDependencyStaleness(
+      [dep()],
+      now({ 'pipeline.myChange': { digest: digestCellValue('serving'), observed: 'serving' } }),
+    );
+    expect(v?.status).toBe('stale');
+    expect(v?.immaterial).toEqual([]);
+  });
+});
+
+/**
+ * THE DONE-CONDITION MEASUREMENT.
+ *
+ * The item is done "when a high-churn cell can be registered such that agents
+ * learn of material changes without receiving every intermediate version,
+ * MEASURED AGAINST THE FOLD'S PAYLOAD SIZE". So the saving is asserted here as a
+ * number, in the units the fold actually pays: serialized bytes.
+ *
+ * The BEFORE arm is not a mock of the old code — it is the SAME function over an
+ * unanchored dependency, which is exactly how every fact behaved before this
+ * change and how every pre-existing fact still behaves.
+ */
+describe('P-021 measurement — the fold payload a version bump costs', () => {
+  const foldBytes = (deps: FactDependency[], o: CurrentCellObservation) =>
+    JSON.stringify(evaluateDependencyStaleness(deps, keyed(o))).length;
+
+  it('one version bump on one fact costs less than half of the ungated verdict', () => {
+    const after = foldBytes([candidateDep('4c871fdc', true)], candidateNow('a63daa83', true));
+    const before = foldBytes([unanchor(candidateDep('4c871fdc', true))], candidateNow('a63daa83', true));
+    expect(after).toBeLessThan(before / 2);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[P-021] fold bytes, 1 fact: ungated ${before} → gated ${after} (${Math.round((1 - after / before) * 100)}% saved)`,
+    );
+  });
+
+  it('the saving scales with the fold — the verdict is paid PER FACT, per orient', () => {
+    // ⚠ MODEL THE FOLD THE WAY IT IS ACTUALLY BUILT. `markStaleDependencyFacts`
+    // attaches a SEPARATE verdict — its own note and its own dep rows — to EVERY
+    // fact that declared the dependency. So N facts resting on one churny cell is
+    // N verdicts, not one verdict with N deps. (Getting this wrong understates
+    // the saving badly: a single fact with 12 copies of one dependency amortises
+    // the note across rows that `dedupeCells` would have collapsed anyway.)
+    const o = candidateNow('a63daa83', true);
+    const facts = 12;
+    const after = Array.from({ length: facts }, () => foldBytes([candidateDep('4c871fdc', true)], o)).reduce((a, b) => a + b, 0);
+    const before = Array.from({ length: facts }, () => foldBytes([unanchor(candidateDep('4c871fdc', true))], o)).reduce((a, b) => a + b, 0);
+    expect(after).toBeLessThan(before / 2);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[P-021] fold bytes, ${facts} facts on one high-churn cell: ungated ${before} → gated ${after} ` +
+        `(${before - after} bytes saved per orient, per agent)`,
+    );
+  });
+});

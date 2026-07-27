@@ -95,6 +95,89 @@ describe('parseInsightFrontmatter', () => {
   });
 });
 
+/**
+ * EI-18792873324746237 — "shipped from ideas" silently excluded every shipped
+ * work item.
+ *
+ * The WHERE clause filtered `ei.state IN ('resolved','closed')`, the PRE-unify
+ * spellings. After the work-item-status-full-unify writer-flip every live row
+ * stores `done`/`dropped`, so the wi:-routed branch matched NOTHING: measured on
+ * the live DB, 0 rows selected against 137 genuinely shipped ideas. The panel
+ * still rendered — populated only by the plan branch — so nothing looked broken.
+ *
+ * These tests pin the two halves of the fix: the query must be able to MATCH a
+ * live row, and the outcome must be classified honestly once it does.
+ */
+describe('shipped-from-ideas outcome classification (EI-18792873324746237)', () => {
+  /** A sql stub recording the values bound by the shipped-from-ideas query
+   *  ONLY — scoped deliberately, so the assertion below cannot be satisfied by
+   *  some other leg that happens to bind the same string. */
+  function recordingSqlStub(handler: (text: string) => unknown[]) {
+    const bound: unknown[][] = [];
+    const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      if (text.includes('scout_routed_ideas')) bound.push(values);
+      return Promise.resolve(handler(text));
+    };
+    return { sql: fn as never, bound };
+  }
+
+  /** Route the shipped-from-ideas query to `rows`; every other leg returns []. */
+  function stubReturning(rows: unknown[]) {
+    return recordingSqlStub((text) => (text.includes('scout_routed_ideas') ? rows : []));
+  }
+
+  const idea = (ideaId: string, outcome: string, rail = 'improvement') => ({
+    idea_id: ideaId,
+    title: `idea ${ideaId}`,
+    rail,
+    routed_ref: rail === 'improvement' ? `wi:EI-${ideaId}` : `plan:${ideaId}`,
+    outcome,
+    completed_at: '2026-07-20T00:00:00.000Z',
+  });
+
+  it('binds the CANONICAL unified spelling, so the query can match a live row', async () => {
+    // The regression itself: a query naming only 'resolved'/'closed' selects
+    // nothing from a post-flip table. Assert 'done' is actually bound.
+    const { sql, bound } = stubReturning([]);
+    await readRetainExtras(sql, 'ws-1', okDeps);
+    expect(bound).toHaveLength(1); // the shipped-from-ideas query ran exactly once
+    expect(bound.flat(2)).toContain('done');
+  });
+
+  it('counts a `done` work item as shipped', async () => {
+    const { sql } = stubReturning([idea('1', 'done')]);
+    const snap = await readRetainExtras(sql, 'ws-1', okDeps);
+    expect(snap.shippedFromIdeas.map((s) => [s.outcome, s.shipped])).toEqual([['done', true]]);
+  });
+
+  it('accepts the legacy `resolved` alias too — pre-flip rows still read as shipped', async () => {
+    const { sql } = stubReturning([idea('2', 'resolved')]);
+    const snap = await readRetainExtras(sql, 'ws-1', okDeps);
+    expect(snap.shippedFromIdeas[0]!.shipped).toBe(true);
+  });
+
+  it('does NOT count an abandoned item as shipped', async () => {
+    // `dropped` (and its legacy alias `closed`) mean the loop gave up. Marking
+    // them shipped overstates the loop's output — the failure mode the old
+    // client-side list had, where `closed` scored as a win.
+    const { sql } = stubReturning([idea('3', 'dropped'), idea('4', 'closed')]);
+    const snap = await readRetainExtras(sql, 'ws-1', okDeps);
+    expect(snap.shippedFromIdeas.every((s) => s.shipped === false)).toBe(true);
+  });
+
+  it('classifies a routed PLAN by the plan vocabulary, not the work-item one', async () => {
+    // The two rails end in different vocabularies. A plan lands only at
+    // 'shipped'; 'active' survives the WHERE clause but is in-progress, and
+    // used to be scored as a win by the client's hand-written list.
+    const { sql } = stubReturning([idea('5', 'shipped', 'plan'), idea('6', 'active', 'plan')]);
+    const snap = await readRetainExtras(sql, 'ws-1', okDeps);
+    const byId = new Map(snap.shippedFromIdeas.map((s) => [s.ideaId, s.shipped]));
+    expect(byId.get('5')).toBe(true);
+    expect(byId.get('6')).toBe(false);
+  });
+});
+
 describe('readRecentInsightDocs', () => {
   it('lists newest docs by discovered date, capped', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'insights-'));

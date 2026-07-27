@@ -130,6 +130,44 @@ describe('launch-su', () => {
     expect(oneliner).toContain('--plan=my-plan');
   });
 
+  // WI-6363. The owner ask ("clicking +new session should open the gui chat
+  // with them") was unimplementable because THIS route told the caller nothing
+  // it could key a chat off: the terminal path records no adv_sessions row (psu
+  // self-registers one asynchronously), so the response carried only
+  // {status, agent, terminal, pid}. It now PRE-PINS the coord owner id via
+  // `psu --owner-id=` and returns it. Both halves are asserted because either
+  // one alone is silently useless: an id returned but not passed to psu binds
+  // the chat to an owner the session never runs as (the exact split-identity
+  // failure WI-5002 added the flag for), and an id passed but not returned
+  // leaves the caller with nothing again.
+  it('pre-pins a coord owner id, passes it to psu, and returns it (terminal path)', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup' });
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    // Must satisfy bootstrap-su's validator, else it 400s the boot.
+    expect(json.ownerId).toMatch(/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/);
+    expect(lastOneliner()).toContain(`--owner-id=${json.ownerId}`);
+  });
+
+  it('pre-pins the owner id on the deferred path too, so the pui-run session binds to it', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', defer_spawn: true });
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.ownerId).toMatch(/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/);
+    // No terminal spawns here — the args are persisted as launch_argv instead,
+    // so assert the recorded argv (not the oneliner) carries the pin.
+    const recorded = recordAdvSessionMock.mock.calls.at(-1)?.[0] as { launchArgv?: string[] };
+    expect(recorded?.launchArgv).toContain(`--owner-id=${json.ownerId}`);
+  });
+
+  it('mints a DIFFERENT owner id per launch (a reused id is refused as already-bound)', async () => {
+    const a = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
+    vi.clearAllMocks();
+    killSpy.mockReturnValue(true);
+    const b = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
+    expect(a.ownerId).not.toBe(b.ownerId);
+  });
+
   it('uses --no-plan when no plan is given', async () => {
     await callPost({ agent: 'omp', harness_slug: 'papercup' });
     expect(lastOneliner()).toContain('--no-plan');

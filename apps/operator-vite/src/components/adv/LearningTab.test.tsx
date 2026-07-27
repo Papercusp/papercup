@@ -825,8 +825,124 @@ describe("LearningTab — Improvements view (default)", () => {
     render(<LearningTab />);
     expect(screen.queryByText("The loop has not produced anything here yet")).toBeNull();
     expect(screen.getByText("Cache-warmup plan draft")).toBeTruthy();
-    // An unfiled idea states its pipeline position rather than leaving it blank.
-    expect(screen.getAllByText("not filed yet").length).toBeGreaterThanOrEqual(1);
+    // An unfiled idea states its pipeline position rather than leaving it
+    // blank — in the P-004 public vocabulary, not the storage words.
+    expect(screen.getAllByText("not ready yet").length).toBeGreaterThanOrEqual(1);
+  });
+
+  // ── P-004: the pipeline-state vocabulary ──────────────────────────────────
+  // The words are the deliverable, so they are asserted literally. The point of
+  // the change is that a reader never meets the storage vocabulary
+  // (open/assignee/resolved) or the retired approval vocabulary
+  // (review/auto/"waits for your review"), because the loop is full-auto and
+  // grading is the only human control.
+
+  it("labels an unclaimed filed item 'approved', not by its triage tier", () => {
+    render(<LearningTab />);
+    // The fixture holds one tier:'auto' and one tier:'human' item, both
+    // unassigned. Under the retired vocabulary they read as two DIFFERENT
+    // things ("auto" vs "review"); they are in fact in the same pipeline
+    // position, and now say so.
+    expect(screen.getAllByText("approved").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("shows no human-approval affordance anywhere in the Improve list", () => {
+    render(<LearningTab />);
+    // The exact strings the tier chip used. A row must never again imply that
+    // work is queued behind a human decision.
+    expect(screen.queryByTitle("Waits for your review")).toBeNull();
+    expect(screen.queryByTitle("An agent may fix this on its own")).toBeNull();
+    expect(screen.queryByText("review")).toBeNull();
+    // ...and the facet that sliced by that gate is gone with it: filtering by a
+    // property no row displays is not a coherent control.
+    expect(screen.queryByText("Tier")).toBeNull();
+  });
+
+  it("says 'in flight' when an agent holds the item", () => {
+    improvementsResult = {
+      data: [
+        {
+          ...improvementsDigest,
+          autoEligible: [
+            { ...improvementsDigest.autoEligible[0], assignee: "su-abc123" },
+          ],
+          humanQueue: [],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.getAllByText("in flight").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("reads the COLLAPSED lifecycle, so a resolved item is 'shipped' and a closed one is 'dropped'", () => {
+    // Guard for the vocabulary-confusion class behind EI-18792873324746237.
+    // ScoredItem.state is the 3-value lifecycle (open|resolved|closed), NOT the
+    // raw work-item enum (done|dropped|...) the server's SQL sees. If someone
+    // "aligns" this derivation with the server's word list, `resolved` stops
+    // matching and every shipped row silently reads as `approved` — which is
+    // exactly the shape of failure that put a permanent 0 on this tab.
+    improvementsResult = {
+      data: [
+        {
+          ...improvementsDigest,
+          autoEligible: [
+            { ...improvementsDigest.autoEligible[0], state: "resolved" },
+          ],
+          humanQueue: [
+            { ...improvementsDigest.humanQueue[0], state: "closed" },
+          ],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.getAllByText("shipped").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("dropped").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("counts the funnel's shipped stage WITHOUT folding in the abandoned ones", () => {
+    // EI-18792873324746237 regression guard. `dropped` is reported separately
+    // and must never be added to `done`: an idea the loop gave up on is not one
+    // it delivered, and summing them overstates the loop's output.
+    scoutResult = {
+      data: [
+        {
+          ...scoutSnapshot,
+          improveFunnel: {
+            routed: 825,
+            filed: 598,
+            claimed: 12,
+            done: 137,
+            dropped: 7,
+          },
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    // The funnel lives inside the "How the loop is doing" disclosure, and Radix
+    // Collapsible does not mount closed content — open it before querying.
+    fireEvent.click(screen.getByText("How the loop is doing"));
+    const funnel = screen.getByLabelText("Idea-to-work funnel");
+    expect(funnel.textContent).toContain("137");
+    // 144 = 137 shipped + 7 dropped — the sum the old query would have produced.
+    expect(funnel.textContent).not.toContain("144");
+    // The funnel speaks the SAME words as the row chips, not the storage ones.
+    expect(funnel.textContent).toContain("shipped");
+    expect(funnel.textContent).toContain("in flight");
+    expect(funnel.textContent).toContain("approved");
+    expect(funnel.textContent).not.toContain("filed as work");
+    expect(funnel.textContent).not.toContain("claimed");
   });
 
   it("skips the dashboard and duplicate decision rail for a sparse queue", () => {

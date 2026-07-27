@@ -19,7 +19,17 @@ import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
  *  because inferring it from the default implementation narrows to
  *  `{ ok: true }`, which then rejects every mockResolvedValueOnce for the
  *  warning and failure paths below. */
-type LaunchResult = { ok: boolean; warning?: string; error?: string; installCmd?: string };
+type LaunchResult = {
+  ok: boolean;
+  warning?: string;
+  error?: string;
+  installCmd?: string;
+  /** WI-6363: the pre-pinned coord owner id launch-su returns. NOTE the shape
+   *  here must track the REAL endpoint — the bug this guards existed because
+   *  the old fixture supplied an `advSessionId` the live response never sends,
+   *  so `onLaunched` was asserted to have FIRED but never with WHAT. */
+  ownerId?: string;
+};
 
 const h = vi.hoisted(() => ({
   planListData: { plans: [] as Array<Record<string, unknown>>, loading: false },
@@ -338,6 +348,32 @@ describe('NewSessionLauncher', () => {
     // onLaunched still fires — the session row genuinely may exist; the
     // warning is advisory, not a hard failure.
     expect(onLaunched).toHaveBeenCalledTimes(1);
+  });
+
+  // WI-6363 REGRESSION GUARD. The bug: this callback carried `advSessionId`,
+  // which launch-su's terminal path never returns (it records no adv_sessions
+  // row — psu self-registers one later), so onLaunched always fired with null
+  // and the HUD chat never opened. The old tests missed it because they only
+  // asserted onLaunched had been CALLED, never with WHAT — so assert the value.
+  it('hands the pre-pinned coord owner id to onLaunched (not a row id)', async () => {
+    h.launchAgent.mockResolvedValueOnce({ ok: true, ownerId: 'su-11111111-2222-3333-4444-555555555555' });
+    const onLaunched = vi.fn();
+    render(<NewSessionLauncher onLaunched={onLaunched} />, { wrapper: withNuqsTestingAdapter() });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledTimes(1));
+    expect(onLaunched).toHaveBeenCalledWith('su-11111111-2222-3333-4444-555555555555');
+  });
+
+  // Non-vacuity companion: an operator that predates the pre-pin returns no
+  // ownerId, and we must pass null rather than invent a handle — a caller keys
+  // a chat off this, so a wrong-but-truthy value would open the WRONG session.
+  it('passes null to onLaunched when the launch response carries no ownerId', async () => {
+    h.launchAgent.mockResolvedValueOnce({ ok: true });
+    const onLaunched = vi.fn();
+    render(<NewSessionLauncher onLaunched={onLaunched} />, { wrapper: withNuqsTestingAdapter() });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledTimes(1));
+    expect(onLaunched).toHaveBeenCalledWith(null);
   });
 
   it('toasts an error and does not call onLaunched when launchAgent fails', async () => {

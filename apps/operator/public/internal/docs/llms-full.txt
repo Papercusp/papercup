@@ -12948,7 +12948,7 @@ The 2026-07-10 version of this section carried two claims that were DISPROVEN th
 * **WI-4070 (tower↔VM federation dead again since \~2026-07-13) — ACTIVE, root-caused, fix in flight (git lane su-71c69).** A NEW wedge, distinct from the 07-10 one: the VM operator ran a **stale Jul-9 dev-source tree** (post-mig-557 DB vs pre-557 code); VM rebooted with the fix 2026-07-16. Tower-side reads during the wedge: `origin=remote` newest 2026-07-13 09:14 EDT; the 4 VM-side merge cursors frozen 2026-07-15 15:48; tower’s own log advancing normally throughout.
 * **Retired-route class in the live gate + smokes — FIXED 2026-07-16.** The mig-557 lexicon sweep renamed `GET /api/discovery/hives` → `/api/discovery/pots` (and `join-hive` → `join-pot`), but the two-instance smokes + `federation-asserts.sh` still curled the retired route → 404 `{"error":"not_found"}` → the whole discovery leg (and the hourly live-federation gate’s content-matrix run) red-failed with a misleading “announce never crossed” signature. Fixed across the smoke family (`fed_hive_dir_row`, from-repo/directory/content-matrix smokes, rows key `hiveId`→`potId`) and guarded in `federation-asserts.selftest.sh` so the class self-announces.
 * **GO/NO-GO gate 1b (WI-2009 + WI-2102) — BOTH halves now independently verified (2026-07-16).** The ledger’s “WI-2009 half not independently re-verified” flag is cleared: the leg-3 backlog-stall detector + poll re-attempt + epoch-gate defer semantics re-verified at HEAD (`outbox-drain-stall.test.ts` 14/14 + drain family 29/29).
-* **WI-3646 (hive\_slug federation regression) — FIXED + live-rig verified 2026-07-09/10.** `hive:create` from an existing harness never wrote `hive_slug` onto the owner’s source-harness registry row, so `potHomeSlugForHarness` / `resolveHiveSwarmBinding` returned null and the harness never swarm-bound — silent zero federation of the owner’s own content. Root cause was three stacked instances of the same “missing-slug field silently dropped” bug class (`packages/operator-core/lib/agent-tools/pot/_create.ts`, `_create_from_repo.ts`, `harness/create.ts`). Fixed + regression-tested (53 + 98 + 3 tests) and live-rig re-verified (content/plan/coord/concurrent-LWW/ coord-controlplane scenarios all converge end-to-end).
+* **WI-3646 (hive\_slug federation regression) — FIXED + live-rig verified 2026-07-09/10.** `pot:create` (then named `hive:create`) from an existing harness never wrote `hive_slug` onto the owner’s source-harness registry row, so `potHomeSlugForHarness` / `resolveHiveSwarmBinding` returned null and the harness never swarm-bound — silent zero federation of the owner’s own content. Root cause was three stacked instances of the same “missing-slug field silently dropped” bug class (`packages/operator-core/lib/agent-tools/pot/_create.ts`, `_create_from_repo.ts`, `harness/create.ts`). Fixed + regression-tested (53 + 98 + 3 tests) and live-rig re-verified (content/plan/coord/concurrent-LWW/ coord-controlplane scenarios all converge end-to-end).
 * **WI-3869 (`coord_event_log` unbounded surface scan) — FIXED 2026-07-10.** A per-surface read with no `LIMIT`/cursor full-scanned the entire event log on every call, degrading `coord:presence`/`fleet:status`/`coord:orient` as the log grows (one query observed running 130s, causing 55s presence timeouts and a live fleet rendering as empty/“looks paused” in the UI even though members were alive). Fixed in `packages/operator-core/lib/agent-tools/coordination/feed.ts` with a bounded `LIMIT` + id-cursor window; regression-pinned in `feed.test.ts` (18/18, asserts every raw per-surface read carries a bounded numeric limit).
 
 Both WI-3646 and WI-3869 tests are wired into the affected-test gate via the existing `hive/**/*.test.ts`, `harness/**/*.test.ts`, and `coordination/**/*.test.ts` domain globs in `packages/operator-core/lib/testing-domains-registry.ts` — no additional registration was needed.
@@ -13322,10 +13322,10 @@ Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use `'d
 
 [Section titled “8. Operator workspace-scoped HOME silently breaks BOTH the superuser token AND gh-auth (D-007)”](#8-operator-workspace-scoped-home-silently-breaks-both-the-superuser-token-and-gh-auth-d-007)
 
-A peer can look healthy (API up, boots, serves requests) while `hive:membership_decide` fails `no_owner_identity` and `fed.sh <vm> mcp`/`api` fail `superuser_invalid_bearer` — **without any VM reset or gh-auth wipe (§6) having happened.** Root cause, isolated live on fed-a (2026-06-25, plan `shared-hive-public-release-2026-06-22` D-007): the VM’s operator process was launched with a **workspace-scoped `HOME`** (`/home/tester/.papercusp-workspaces/default`), not the login user’s real home (`/home/tester`). Two independent failures trace to the same single cause:
+A peer can look healthy (API up, boots, serves requests) while `pot:membership_decide` fails `no_owner_identity` and `fed.sh <vm> mcp`/`api` fail `superuser_invalid_bearer` — **without any VM reset or gh-auth wipe (§6) having happened.** Root cause, isolated live on fed-a (2026-06-25, plan `shared-hive-public-release-2026-06-22` D-007): the VM’s operator process was launched with a **workspace-scoped `HOME`** (`/home/tester/.papercusp-workspaces/default`), not the login user’s real home (`/home/tester`). Two independent failures trace to the same single cause:
 
 1. **`superuser_invalid_bearer`** — the operator reads its own superuser token from `$HOME/.papercusp/superuser-token` using **its own process `HOME`**, but `fed.sh`’s `api`/`mcp` verbs SSH in and read `~/.papercusp/superuser-token`, which expands against the **SSH login shell’s** `HOME` (`/home/tester`). When the two differ, the script reads the wrong file (or nothing) and the token never matches.
-2. **`hive:membership_decide` → `no_owner_identity`** — `resolveLocalGithubIdentity` shells `gh auth token`, which reads `$HOME/.config/gh/hosts.yml` under the **operator’s** `HOME`. `gh auth login` run from an interactive SSH session authenticates the **login shell’s** `HOME` (`/home/tester/.config/gh`) — a different, workspace-UNSCOPED path — so the operator’s own `gh auth token` call sees “not authenticated” even though `ssh ... gh auth status` reports logged in.
+2. **`pot:membership_decide` → `no_owner_identity`** — `resolveLocalGithubIdentity` shells `gh auth token`, which reads `$HOME/.config/gh/hosts.yml` under the **operator’s** `HOME`. `gh auth login` run from an interactive SSH session authenticates the **login shell’s** `HOME` (`/home/tester/.config/gh`) — a different, workspace-UNSCOPED path — so the operator’s own `gh auth token` call sees “not authenticated” even though `ssh ... gh auth status` reports logged in.
 
 Diagnose it by comparing the two:
 
@@ -36610,6 +36610,151 @@ Migration 165 fires `NOTIFY fleet_assignment` (`<workspace>::<source>::<agent>`)
 [Section titled “The lifecycle messages are projections, not the record”](#the-lifecycle-messages-are-projections-not-the-record)
 
 The auto-emits (”▶ now working on…”, ”✓ DONE…”, “Taking X”) fire *after* the table write (`onlyOnSuccess`) and render *from* it — they are one-directional, human-readable projections (`packages/operator-core/lib/coord-lifecycle/lifecycle-rules.ts`, `packages/operator-core/lib/agent-tools/work_items/complete.ts`). Combined with Brief 28’s audience scoping ([coord-emit-subscription-scoping](/internal/docs/agent-insights/coord-emit-subscription-scoping)), they reach only watching subscribers. If you find code (or a prompt) deriving “who’s on what” from these messages, that’s the bug — point it at the view.
+
+# The state-read inventory — which reads become cells, which delegate, which stay bespoke
+
+> P-020's verdict on all 38 grandfathered bespoke state reads. The finding is that they collapse into ~8 QUESTIONS, so 'which tool do I call' is a one-question-many-doors problem, not a catalog-size problem. The verdicts live in the gate script itself (VERDICTS, keyed to BASELINE, CI-checked for completeness) rather than in this page, because a doc drifts from the set it describes and drift is the failure the plan exists to fix. Also records the discipline that stops the registry becoming surface #29: a single-door read stays bespoke even when it IS live state, and a read with 0 calls is never promoted.
+
+## The one-paragraph version
+
+[Section titled “The one-paragraph version”](#the-one-paragraph-version)
+
+There were 38 grandfathered bespoke state reads. They answer about **8 questions**. That gap — not the size of the tool catalog — is what “which tool do I call?” actually is, and it is what the cell registry exists to close. Of the 38: **7 own a derivation and become cells**, **8 re-derive a value someone else owns and must delegate**, and **23 correctly stay bespoke**. The verdicts are not in this page; they are in `scripts/check-no-bespoke-state-read.mjs` as a `VERDICTS` map keyed to the same `BASELINE` the gate enforces, so “every grandfathered tool has a verdict” is a CI-checked property rather than a claim. This page is the argument behind them.
+
+## Why the verdicts are not written down here
+
+[Section titled “Why the verdicts are not written down here”](#why-the-verdicts-are-not-written-down-here)
+
+The obvious deliverable for “inventory the state reads and give each a verdict” is a table in a document. That is the wrong artifact, for the reason this whole plan exists: a table in a doc is a **transcription** of `BASELINE`, and it starts drifting from `BASELINE` the first time `BASELINE` changes. An inventory that silently disagrees with the set it describes is worse than no inventory, because it reads authoritative.
+
+So the verdict lives beside the thing it describes:
+
+```js
+export const VERDICTS = new Map([
+  ['coord:presence', { verdict: 'cell', cluster: 'presence', calls: 648, reason: '…' }],
+  …
+]);
+```
+
+and `verdictGaps()` fails the gate if a grandfathered tool has no verdict, if a verdict names a tool that is not grandfathered, if a verdict has an unknown kind, or if its reason is short enough to be a rubber stamp. Retiring a tool has to update both maps or CI goes red.
+
+One carve-out matters. A verdict **may** outlive its baseline entry, but only if it records *how* the tool left, in an `adopted` note held to the same minimum length as an exemption reason. Without that, the inventory would erode exactly as the work succeeded — every retirement deleting the record of what was decided and why. With it, `BASELINE` shrinks (the ratchet) while `VERDICTS` accumulates the history.
+
+## The three verdicts
+
+[Section titled “The three verdicts”](#the-three-verdicts)
+
+They are deliberately non-overlapping, and they are D-038 axis 5 (“one derivation, many lenses”) applied per tool.
+
+| verdict     | meaning                                                                 | what happens                                                                    |
+| ----------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `cell`      | the tool **owns** a live-state derivation that other surfaces re-derive | register the cell(s) here; the tool declares `@cell-lens` over its own resolver |
+| `delegates` | the tool **re-derives** a value another tool owns                       | it must consume the cell instead of computing a second answer                   |
+| `bespoke`   | stays as it is                                                          | with a stated reason                                                            |
+
+`cell` tools are the **resolvers**. `delegates` tools are the **duplication sites**, and therefore the refactor and retirement candidates. If you are looking for where the work is, it is the `delegates` column.
+
+## The discipline that keeps the registry from becoming surface #29
+
+[Section titled “The discipline that keeps the registry from becoming surface #29”](#the-discipline-that-keeps-the-registry-from-becoming-surface-29)
+
+This is the part most likely to be got wrong by a well-meaning successor, so it is stated as a rule rather than left to taste.
+
+> **A read can be genuinely live state and still correctly stay bespoke.**
+
+If exactly one tool answers a question and nothing re-derives it, promoting it to a cell **adds a registry entry without removing a door**. That is precisely the D-010 failure the plan opens with: `predicate_watches` shipped, correct in principle, 0 rows across all tenants — a registry nobody registers into is not neutral, it is one more place to look. The registry earns its keep by collapsing *duplicated* doors, not by cataloguing every read.
+
+The same logic kills the tempting move of promoting everything with a `status` in its name: **a read with 0 calls in 30 days is never promoted**. Registering a value nobody asks for is the `predicate_watches` failure at cell scale. Eight of the 38 baseline entries have zero calls; none became a cell.
+
+This is why the rollup is `7 cell · 8 delegates · 23 bespoke` and not `38 cells`, and why the unit test asserts `bespoke > cell` — a registry that swallowed everything would be the failure mode, not the goal.
+
+## The evidence the verdicts were assigned from
+
+[Section titled “The evidence the verdicts were assigned from”](#the-evidence-the-verdicts-were-assigned-from)
+
+Two dimensions, both measured rather than judged.
+
+**Call volume** (`tool_invocations`, 30d, 2026-07-27 — note the table’s retention is about 30 days, so `calls_all == calls_30d` for every row):
+
+| tool                    | calls | distinct callers |
+| ----------------------- | ----- | ---------------- |
+| `coord:presence`        | 648   | 635              |
+| `dev:pipeline_position` | 310   | 288              |
+| `fleet:status`          | 263   | 256              |
+| `pot:status`            | 202   | 202              |
+| `accounts:status`       | 179   | 179              |
+| `fleet:capacity`        | 144   | 144              |
+| `dev:service_health`    | 134   | 126              |
+| `events:status`         | 121   | 121              |
+| …29 more, tailing to 0  |       |                  |
+
+**The shape that matters is the ratio.** `calls ≈ distinct callers` on nearly every hot entry — 202/202, 179/179, 144/144, 121/121. These are **once-per-session orientation reads**: every agent asks exactly once, on waking, and never again. That is the cell shape, and it is the strongest single piece of evidence that the clustering below is real rather than aesthetic. A tool with 500 calls from 3 callers would be a hot *loop*, which is a different problem with a different fix (`state:subscribe`, not `state:read`).
+
+**Resolver eligibility**, which constrains *how* a cell can be registered rather than whether it should be:
+
+* `effect` is **inferred**, not declared — write-ish capability suffixes (`:write`/`:admin`/`:delete`/`:manage`/`:execute`) or the `WRITE_CAPABILITIES` set mean `write`; everything else means `read` (`libs/generic/tooldef/src/define-tool.ts`). None of the 38 declares `effect` inline and all 38 infer `read`, so **effect is not the constraint** — every one of them is eligible as a resolver.
+* The real constraint is caller-relativity. A cell declaring `callerRelativity: 'global'` is dispatched with `{}`, so its resolver **must answer bare**. Exactly 6 of the 38 require an argument — `accounts:link-status`, `egress:health`, `fleet:status`, `harness:health`, `plan_items:status`, `watchdog:status` — and are therefore `parameter`-relative, not global. The other 32 answer bare.
+
+> ⚠ Two traps worth inheriting. First, a tool’s argument schema field is **`args:`**, not `input:` — an extractor keyed on `input:` reports “takes no arguments” for *every* tool and looks entirely plausible. Second, this exact mistake already shipped once: three global cells resolved to `insufficient-data` because `dev:pipeline_position` rejected a no-arg call (D-067 defect 2, fixed in P-007). Before promising any global cell, check its resolver answers `{}` — or it registers dead, and a registration that reads as an error is worse than no registration.
+
+## The finding: 38 tools, \~8 questions
+
+[Section titled “The finding: 38 tools, \~8 questions”](#the-finding-38-tools-8-questions)
+
+| # | the question agents are actually asking | doors                                                                                                                                                                                            | calls/30d |
+| - | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
+| A | can I get inference capacity right now? | `fleet:capacity` · `accounts:status` · `gateway:status` · `dev:rate_governor_status` · `egress:health` · `accounts:link-status` · `setup:status`                                                 | 431       |
+| B | who is alive, and on what?              | `coord:presence` · `fleet:status` · `scheduler:running` · `plan_items:status` (+ the annex below)                                                                                                | 963       |
+| C | is my code live?                        | `dev:pipeline_position` · `dev:build_status` · `deploy:status`                                                                                                                                   | 390       |
+| D | is the box / service healthy?           | `dev:service_health` · `dev:pg_health` · `dev:processes` · `dev:dogfood_substrate_status` · `harness:health` · `storage:usage` · `dev:listening_ports`                                           | 170       |
+| E | is the background machinery running?    | `events:status` · `watchdog:status` · `schedule:inventory` · `autoloop:status` · `improvements:watchdog-status` · `dev:stall_waker_status` · `operator:trigger_state` · `plugins:runtime_status` | 216       |
+| F | what is the pot / harness doing?        | `pot:status` · `harness:status` · `curation:state-of-pot` · `autonomy:graduation_status`                                                                                                         | 225       |
+| G | local / UI / demo                       | `ui:get_state` · `operator:credentials_status` · `voice:status` · `dev:state_counter`                                                                                                            | 15        |
+| H | work-item hygiene                       | `work_items:redundancy_status`                                                                                                                                                                   | 1         |
+
+Cluster A is the clearest case: **six doors onto one question**, four of which read the same gateway `/stats` oracle. Cluster C is the one already solved — all five registered cells project `dev:pipeline_position`, which is what the answer looks like when it works.
+
+Two entries in the table are traps rather than duplication, and are called out in their verdicts so nobody “fixes” them:
+
+* **`deploy:status` is not `deploy.3070.sha`.** The names rhyme; the questions do not. `deploy:status` reads a *harness’s* deployment record and frame handle. The cell reads the *operator release* pipeline. Merging them on name similarity would be a real regression.
+* **`schedule:inventory` is not a target — it is the precedent.** It is a catalog of every scheduled thing, and it is already the single anti-sprawl door for its own domain. This plan generalises what it did; it does not replace it.
+
+## What has actually been retired so far
+
+[Section titled “What has actually been retired so far”](#what-has-actually-been-retired-so-far)
+
+One entry, deliberately: **`dev:pipeline_position`**, taking `BASELINE` from 38 → 37. It was the free one — it is *already* the resolver behind all five registered cells, so declaring `@cell-lens git.pipelinePosition` cost one comment and moved it onto the intended path. Its verdict survives in `VERDICTS` with an `adopted` note.
+
+Retirement is staged on purpose. The gating deliverable of P-020 is the inventory and the verdicts; the remaining adoptions are ordinary work, and each one now has a written target and a mechanism that makes the shrink visible on every gate run:
+
+```plaintext
+✓ no UNDECLARED state-read tool — 39 state-read tool(s) in scope · 37 grandfathered …
+  P-020 inventory: 38 tool(s) verdicted — 7 become a cell · 8 delegate to one · 23 stay
+  bespoke; 1 adopted so far, 37 still grandfathered.
+```
+
+**To retire the next one:** register its cell(s) in `packages/operator-core/lib/cell-registrations.ts`, add `// @cell-lens <cell.id>` inside the tool’s `defineTool({ … })` literal (the marker must be *inside* the literal — ownership is attributed to the enclosing call), delete its `BASELINE` entry, and add an `adopted` note to its verdict. The gate will tell you if you missed a step.
+
+## The limitation this inventory has, stated rather than papered over
+
+[Section titled “The limitation this inventory has, stated rather than papered over”](#the-limitation-this-inventory-has-stated-rather-than-papered-over)
+
+The inventory covers what the gate’s signature selects, and that signature is **syntactic over the tool name**. It misses state reads with unremarkable names — and the miss is larger than the gate’s own header suggests.
+
+`fleet:assignments` is **the single most-called live-state read in the system — 5,883 calls across 5,851 distinct callers in 30 days**, roughly 9× `coord:presence`. It is not in `BASELINE` and not flagged, because “assignments” is not in `STATE_NOUNS` — even though it answers the canonical live-state question the coordination plane exists to answer. Others missed the same way: `blender:success-metrics` (656), `facts:list` (584), `coord:walls` (392), `locks:list` (245), `work_items:burn_down` (73), `pot:get` (50), `coord:roster` (22), `coord:conditions` (16), `dev:pg_active_queries` (5).
+
+Summed, the missed population is **7,926 calls against the whole baseline’s 2,411** — the reads the gate does not police are called more than 3× as often as the ones it does.
+
+This does not make the gate wrong — its stated guarantee is narrow and precise (“the state reads it *does* name cannot grow silently”) and that guarantee holds. It bounds what the guarantee is *worth*, and it bounds this inventory’s completeness. Tracked as **EI-18791777695307535**, with the recommendation that selection eventually invert from naming to measured call volume, since that is the only variant that cannot be evaded by choosing a different word.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [Reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction) — cluster C’s already-solved shape
+* `scripts/check-no-bespoke-state-read.mjs` — the gate, the baseline, and the verdicts
+* `packages/operator-core/lib/cell-read.ts` — the two access gates, and why `unknown` is in-band and branchable rather than an error
+* Plan `unified-agent-state-plane-2026-07-27` — D-010 (the gate ships with the registry), D-038 (the axes), D-065 (sibling cells over one resolver), D-067 (the global-dispatch trap)
 
 # Static-scan guard false positives live in the EVIDENCE predicate, not the identifier
 

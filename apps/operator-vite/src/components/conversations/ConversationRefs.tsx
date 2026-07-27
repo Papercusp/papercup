@@ -35,6 +35,7 @@ import { parseWorkRefs } from '@/app/_components/chat/parse-work-refs';
 import { HydratedWorkRefPill } from '@/app/_components/chat/HydratedWorkRefPill';
 import WorkItemPopupModal from '@/app/_components/work-items/WorkItemPopupModal';
 import PlanPopupModal from '@/app/_components/plans/PlanPopupModal';
+import { Tooltip } from '@/app/harness/Tooltip';
 // Relative, not `@/…`: `@` points at the operator (Next) tree, so an
 // intra-operator-vite import must be relative or it will not resolve.
 import {
@@ -163,14 +164,15 @@ export function ConversationRefLink({
   // plan / conversation: no work-item store to hydrate against, so a plain
   // activatable chip carrying the ref verbatim.
   return (
-    <button
-      type="button"
-      className={`pc-convref__chip pc-convref__chip--${refValue.kind}${className ? ` ${className}` : ''}`}
-      onClick={() => onOpen(refValue)}
-      title={`Open ${refValue.kind} ${refValue.ref}`}
-    >
-      {refValue.ref}
-    </button>
+    <Tooltip label={`Open ${refValue.kind} ${refValue.ref}`}>
+      <button
+        type="button"
+        className={`pc-convref__chip pc-convref__chip--${refValue.kind}${className ? ` ${className}` : ''}`}
+        onClick={() => onOpen(refValue)}
+      >
+        {refValue.ref}
+      </button>
+    </Tooltip>
   );
 }
 
