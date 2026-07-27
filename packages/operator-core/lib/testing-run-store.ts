@@ -541,6 +541,54 @@ export function distillVitestRun(
   return out;
 }
 
+/**
+ * Merge the per-group distilled runs of ONE logical test run into a single result.
+ *
+ * EI-18822211427354845: `scripts/test-files.mjs` routes a multi-workspace request into
+ * one `vitest run` PER owning workspace config, so a run spanning N workspaces produces
+ * N JSON reports, not one. The caller previously read a single report path and reported
+ * that group as if it were the whole run — a two-workspace request whose first group was
+ * RED came back `passed:7, failed:0, failures:[]`, describing only the second group.
+ *
+ * Counts sum. `failures` concatenates, re-applying `maxFailures` across the COMBINED list
+ * so the cap means the same thing it does for one group; `failuresTruncated` is sticky —
+ * true if any input truncated OR the merge itself cut the list. `durationMs` sums, because
+ * the router runs groups SEQUENTIALLY (a max would under-report a multi-group run); it
+ * stays null only when every group reported null.
+ */
+export function mergeDistilledRuns(
+  runs: DistilledTestRun[],
+  opts?: { maxFailures?: number },
+): DistilledTestRun {
+  const maxFailures = opts?.maxFailures ?? DEFAULT_MAX_FAILURES;
+  const merged: DistilledTestRun = {
+    passed: 0, failed: 0, skipped: 0, files: 0,
+    failures: [], failuresTruncated: false, durationMs: null,
+  };
+  let sawDuration = false;
+  let durationTotal = 0;
+
+  for (const run of runs) {
+    if (!run) continue;
+    merged.passed += run.passed;
+    merged.failed += run.failed;
+    merged.skipped += run.skipped;
+    merged.files += run.files;
+    if (run.failuresTruncated) merged.failuresTruncated = true;
+    for (const failure of run.failures) {
+      if (merged.failures.length < maxFailures) merged.failures.push(failure);
+      else merged.failuresTruncated = true;
+    }
+    if (typeof run.durationMs === 'number') {
+      sawDuration = true;
+      durationTotal += run.durationMs;
+    }
+  }
+
+  merged.durationMs = sawDuration ? durationTotal : null;
+  return merged;
+}
+
 /** A postgres-js-like tagged-template client; injectable so the persist path is unit-testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown>;
 

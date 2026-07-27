@@ -144,7 +144,10 @@ trap 'rm -f "$DRIVE"' EXIT
 # and thin for the heaviest one (`improvements` aggregates the funnel plus the
 # full idea/work lists), and a loaded box stretches every one of them.
 PAINT_TIMEOUT_MS="${VERIFY_LEARNING_PAINT_TIMEOUT_MS:-45000}"
-PAINT_ATTEMPTS="${VERIFY_LEARNING_PAINT_ATTEMPTS:-2}"
+PAINT_ATTEMPTS="${VERIFY_LEARNING_PAINT_ATTEMPTS:-3}"
+# Consecutive satisfying polls required before a view counts as settled — see
+# the debounce note on SETTLED below. 1 restores the old instantaneous check.
+SETTLE_POLLS="${VERIFY_LEARNING_SETTLE_POLLS:-3}"
 
 # ── the drive ────────────────────────────────────────────────────────────────
 # Every emitted token is SPACE-FREE and NEWLINE-FREE on purpose. The bridge
@@ -190,12 +193,20 @@ PAINT_ATTEMPTS="${VERIFY_LEARNING_PAINT_ATTEMPTS:-2}"
     # empty state. `.pc-learning__hivepick` is the tab's own rendering of the
     # inherited pot, so its presence is the app telling us the lens resolved.
     if hive_aware "$V"; then
-      SCOPE_CLAUSE="if(!document.querySelector('.pc-learning__hivepick'))return false;"
+      SCOPE_CLAUSE="if(!document.querySelector('.pc-learning__hivepick'))ok=false;"
     else
       SCOPE_CLAUSE=""
     fi
 
-    SETTLED="location.href.indexOf('vnonce=$NONCE')>=0&&(/hit an error/.test(document.body.innerText)||(function(){var p=document.querySelector('.pc-learning__viewpane:not([hidden])');if(!p)return false;if(/Loading [^\\n]*…/.test(p.innerText))return false;${SCOPE_CLAUSE}return p.innerText.trim().length>0;})())"
+    # DEBOUNCED, and that is load-bearing rather than defensive. The pot lens
+    # resolves BEFORE the scoped read fires, so there is a window in which the
+    # chip is present and the view is not YET loading — an instantaneous check
+    # passes there and the probe a moment later lands on "Loading what the loop
+    # produced…". Observed on exactly the two pot-scoped, data-heavy views
+    # (improvements, gym) while every other view passed. So the condition must
+    # hold across CONSECUTIVE polls, not once. A full reload clears the counter
+    # for free, so it never carries across navigations.
+    SETTLED="location.href.indexOf('vnonce=$NONCE')>=0&&(/hit an error/.test(document.body.innerText)||(function(){var p=document.querySelector('.pc-learning__viewpane:not([hidden])');var ok=true;if(!p)ok=false;else if(/Loading [^\\n]*…/.test(p.innerText))ok=false;else if(p.innerText.trim().length===0)ok=false;${SCOPE_CLAUSE}if(!ok){window.__pcSettled=0;return false;}window.__pcSettled=(window.__pcSettled||0)+1;return window.__pcSettled>=$SETTLE_POLLS;})())"
 
     PROBE="(function(){var p=document.querySelector('.pc-learning__viewpane:not([hidden])');var t=p?p.innerText:'';return ['VERDICT~$V','pane='+(p?1:0),'visible='+(p?p.getAttribute('data-view'):'-'),'boundary='+(/hit an error/.test(document.body.innerText)?1:0),'scoped='+(document.querySelector('.pc-learning__hivepick')?1:0),'loading='+(/Loading [^\\n]*…/.test(t)?1:0),'chars='+t.trim().length].join('~');})()"
 
@@ -212,14 +223,28 @@ PAINT_ATTEMPTS="${VERIFY_LEARNING_PAINT_ATTEMPTS:-2}"
     # The retry is inside the drive on purpose — the instance is already booted,
     # so a second attempt costs seconds, where a second harness run costs a full
     # ~2min boot. A real defect still fails every attempt; only a flake recovers.
-    echo "V_SETTLED=0; V_TIMEDOUT=true; V_RESULT=''"
+    # RENAV distinguishes the two reasons an attempt can fail, because they want
+    # opposite remedies. A TIMEOUT means the page never arrived — re-navigate. A
+    # probe that came back `loading=1` means the page arrived and is mid-fetch —
+    # re-navigating there just restarts the same race (and the first version of
+    # this loop did exactly that, reporting x1 because it treated a successful
+    # wait as settled without consulting the probe that contradicted it). Wait
+    # and re-probe instead; a view that genuinely never finishes still fails
+    # every attempt, which is the outcome we want.
+    echo "V_SETTLED=0; V_TIMEDOUT=true; V_RESULT=''; RENAV=1"
     echo "for attempt in \$(seq 1 $PAINT_ATTEMPTS); do"
-    echo "  tauri-agent-tools eval --pid \"\$P\" \"location.href='$URL'; 'go'\" >/dev/null 2>&1"
+    echo "  [ \"\$RENAV\" = 1 ] && tauri-agent-tools eval --pid \"\$P\" \"location.href='$URL'; 'go'\" >/dev/null 2>&1"
     echo "  if tauri-agent-tools wait --pid \"\$P\" --eval \"$SETTLED\" --timeout $PAINT_TIMEOUT_MS >/dev/null 2>&1; then V_TIMEDOUT=false; else V_TIMEDOUT=true; fi"
     echo "  V_RESULT=\"\$(tauri-agent-tools eval --pid \"\$P\" \"$PROBE\" 2>&1 | tr -d ' \\n\"')\""
     # A boundary trip is DEFINITIVE — retrying a crash just burns the budget.
     echo "  case \"\$V_RESULT\" in *'boundary=1'*) V_SETTLED=1 ;; esac"
-    echo "  [ \"\$V_TIMEDOUT\" = false ] && V_SETTLED=1"
+    # The PROBE is the authority, not the wait: settled means the wait concluded
+    # AND the measurement agrees the view is not still loading.
+    echo "  if [ \"\$V_SETTLED\" != 1 ] && [ \"\$V_TIMEDOUT\" = false ]; then"
+    echo "    case \"\$V_RESULT\" in *'loading=1'*) RENAV=0 ;; *) V_SETTLED=1 ;; esac"
+    echo "  else"
+    echo "    [ \"\$V_SETTLED\" = 1 ] || RENAV=1"
+    echo "  fi"
     echo "  [ \"\$V_SETTLED\" = 1 ] && break"
     echo "done"
     echo "echo \"TIMEDOUT:$V:\$V_TIMEDOUT ATTEMPTS:$V:\$attempt\""

@@ -9,6 +9,8 @@ import {
   listedFiles,
   looksLikeMidInstallCorruption,
   looksLikeSilentCollectionFailure,
+  perGroupVitestArgs,
+  withoutOutputFileArg,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
   // line of this multi-line import, so the suppression directive itself must
@@ -24,6 +26,55 @@ describe('test-files router', () => {
     expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/tooldef'));
     expect(route.config).toBe('vitest.config.ts');
     expect(route.requested).toBe('src/strict-args.test.ts');
+  });
+
+  // EI-18822211427354845: every group used to receive the SAME `--outputFile`, so each
+  // group's report overwrote the previous one and only the last survived — the caller
+  // then reported one group as the whole run (`failed:0, failures:[]` for a red tree).
+  describe('per-group report paths (EI-18822211427354845)', () => {
+    const args = ['--reporter=json', '--outputFile=/tmp/x/report.json'];
+
+    it('leaves a single-group run byte-identical to the caller request', () => {
+      expect(perGroupVitestArgs(args, 0, 1)).toEqual(args);
+    });
+
+    it('keeps group 0 on the original path so a not-yet-deployed consumer still finds it', () => {
+      // Load-bearing for the rollout: the router is spawned from the working tree
+      // immediately, its consumer only goes live on the next deploy.
+      expect(perGroupVitestArgs(args, 0, 3)).toEqual(args);
+    });
+
+    it('gives every later group a DISTINCT path so no group can overwrite another', () => {
+      expect(perGroupVitestArgs(args, 1, 3)).toEqual(['--reporter=json', '--outputFile=/tmp/x/report.1.json']);
+      expect(perGroupVitestArgs(args, 2, 3)).toEqual(['--reporter=json', '--outputFile=/tmp/x/report.2.json']);
+      const paths = [0, 1, 2].map((i) => perGroupVitestArgs(args, i, 3).join(' '));
+      expect(new Set(paths).size).toBe(3);
+    });
+
+    it('handles the two-arg form and an extensionless path', () => {
+      expect(perGroupVitestArgs(['--outputFile', '/tmp/x/report.json'], 1, 2))
+        .toEqual(['--outputFile', '/tmp/x/report.1.json']);
+      expect(perGroupVitestArgs(['--outputFile=/tmp/x/report'], 1, 2))
+        .toEqual(['--outputFile=/tmp/x/report.1.json']);
+    });
+
+    it('never splits a DOTTED DIRECTORY in the middle', () => {
+      expect(perGroupVitestArgs(['--outputFile=/tmp/my.dir/report'], 1, 2))
+        .toEqual(['--outputFile=/tmp/my.dir/report.1.json']);
+    });
+
+    it('passes unrelated vitest args through untouched', () => {
+      expect(perGroupVitestArgs(['-t', 'my test', '--reporter=json'], 1, 2))
+        .toEqual(['-t', 'my test', '--reporter=json']);
+    });
+
+    it('strips --outputFile for the detail-recovery re-runs, in both arg forms', () => {
+      // Those re-run individual files only to print detail; keeping the path would
+      // clobber the group's real report with a single file's results.
+      expect(withoutOutputFileArg(args)).toEqual(['--reporter=json']);
+      expect(withoutOutputFileArg(['--outputFile', '/tmp/x/report.json', '--reporter=json']))
+        .toEqual(['--reporter=json']);
+    });
   });
 
   it('groups only files sharing one cwd and config', () => {

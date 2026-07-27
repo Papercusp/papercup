@@ -282,6 +282,38 @@ function setOf(raw: unknown): ReadonlySet<string> {
   return new Set();
 }
 
+/**
+ * EI-... (WI-6154): look up a `kind='system'` principal's capabilities BY ROLE
+ * NAME, with NO bearer-hash check — this is for INTROSPECTION/SIMULATION only
+ * (e.g. `agent_tools:list { asRole }` answering "what would this role see?"),
+ * never for real auth. `resolveBearer`/`loadCapabilities` above require a
+ * verified bearer hash and MUST stay the only path a real dispatch trusts.
+ *
+ * Returns `null` when no system_principals row exists for that role name
+ * (the role has no restricted principal — a caller simulating it should NOT
+ * synthesize a capability gate that wouldn't exist in reality) — distinct
+ * from an EMPTY set (a row exists but grants zero capabilities, e.g. the
+ * intentionally-capability-less `worker` row). Callers must not conflate the
+ * two: `null` ⇒ skip the capability gate (matches "no principal" dispatch
+ * behavior); an empty set ⇒ enforce the gate with zero grants (matches a real
+ * worker's dispatch-time denial).
+ */
+export async function lookupSystemPrincipalCapabilitiesByRole(
+  workspaceId: string,
+  role: string,
+): Promise<ReadonlySet<string> | null> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<Array<{ capabilities: unknown }>>`
+      SELECT capabilities
+        FROM harness_shared.system_principals
+       WHERE workspace_id = ${workspaceId} AND name = ${role}
+       LIMIT 1
+    `;
+    if (!rows.length) return null;
+    return setOf(rows[0].capabilities);
+  });
+}
+
 /** Invalidate cache entry. Called by the LISTEN handler when capabilities change. */
 export function invalidate(workspaceId: string, slug: string): void {
   CACHE.delete(cacheKey(workspaceId, slug));

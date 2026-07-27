@@ -120,12 +120,19 @@ export function groupRoutes(routes) {
  * `aggregateGroupResults` already sums across groups, so the report the router emits
  * must follow the same rule rather than being last-writer-wins.
  *
- * A MULTI-group run gives each group a distinct `<base>.<index><ext>`. A SINGLE-group
- * run is left byte-identical to the caller's requested path, so existing callers (and
- * the common case) are completely unaffected.
+ * Group 0 KEEPS the caller's exact path; only groups 1..N-1 are suffixed
+ * `<base>.<index><ext>`. That is deliberate and load-bearing for the rollout: this
+ * script is spawned fresh from the working tree on every run, while its `testing:run`
+ * consumer is server-side code that only goes live on the next deploy. Suffixing EVERY
+ * group would mean the not-yet-updated consumer finds no file at the path it asked for
+ * and hard-fails `no_report` on every multi-workspace run during that window. Leaving
+ * group 0 in place keeps an old consumer working exactly as well as it did before (it
+ * reads one group's report), while a NEW consumer merges every `*.json` in the private
+ * temp dir it owns and gets the complete run. A single-group run is byte-identical to
+ * the caller's request either way.
  */
 export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
-  if (groupCount <= 1) return vitestArgs;
+  if (groupCount <= 1 || groupIndex === 0) return vitestArgs;
   const perGroupPath = (p) => {
     const dot = p.lastIndexOf('.');
     const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf(sep));
@@ -409,7 +416,7 @@ export function main(argv = process.argv.slice(2)) {
     // default would read a large suite's output as an ENOBUFS-killed-child failure.
     const result = spawnSync(
       'npx',
-      ['vitest', 'run', ...configArgs, ...exact, ...vitestArgs],
+      ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
       { cwd: group.cwd, env: process.env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
     );
     if (result.stdout) process.stdout.write(result.stdout);
@@ -445,7 +452,7 @@ export function main(argv = process.argv.slice(2)) {
         );
         for (const file of exact) {
           console.error(`\n>>> re-running ${file} alone for detail`);
-          spawnSync('npx', ['vitest', 'run', ...configArgs, file, ...vitestArgs], {
+          spawnSync('npx', ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)], {
             cwd: group.cwd,
             env: process.env,
             stdio: 'inherit',

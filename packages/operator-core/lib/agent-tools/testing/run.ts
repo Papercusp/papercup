@@ -45,11 +45,11 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { distillVitestRun } from '../../testing-run-store';
+import { distillVitestRun, mergeDistilledRuns } from '../../testing-run-store';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
@@ -182,17 +182,33 @@ export default defineTool({
         return { data: { ok: false, runId, error: 'route_error', routerOutput: outcome.output.slice(-2000) } };
       }
 
-      let reportText: string;
+      // EI-18822211427354845: the router runs ONE `vitest run` per owning workspace
+      // config, so a request spanning several workspaces writes SEVERAL reports —
+      // `report.json`, `report.0.json`, `report.1.json`, … Reading only `reportPath`
+      // distilled whichever group happened to write last and reported it as the whole
+      // run: a two-workspace request with a RED first group returned `failed:0,
+      // failures:[]`. `dir` is a private mkdtemp this handler owns, so every *.json in
+      // it belongs to THIS run and can be merged without any output parsing.
+      let reportTexts: string[];
       try {
-        reportText = await readFile(reportPath, 'utf8');
+        const names = (await readdir(dir)).filter((n) => n.endsWith('.json')).sort();
+        reportTexts = (
+          await Promise.all(names.map((n) => readFile(join(dir, n), 'utf8').catch(() => null)))
+        ).filter((t): t is string => t !== null);
       } catch {
+        reportTexts = [];
+      }
+      if (reportTexts.length === 0) {
         // Exit 1 with no report is the REFUSED false-green (the router bailed
         // before running anything) — the one case where "no results" is the
         // answer, and must never read as a pass.
         return { data: { ok: false, runId, error: 'no_report', routerOutput: outcome.output.slice(-2000) } };
       }
 
-      const run = distillVitestRun(reportText, root, { maxFailures: args.maxFailures });
+      const run = mergeDistilledRuns(
+        reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: args.maxFailures })),
+        { maxFailures: args.maxFailures },
+      );
       return {
         data: {
           ok: run.failed === 0 && outcome.code === 0,
