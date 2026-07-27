@@ -413,6 +413,27 @@ write_stop_script() {
 # SELF-terminate once Xvfb is gone AND the port is free (it holds the lock through
 # that drain), so a next run reusing this display can't collide with a straggler.
 [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
+# EI-18745117818375852: the group-kill above only reaches \$TAURI_PID's OWN
+# process group — under load, dev-operator-ifneeded.sh's WI-3042 restart-on-
+# nonzero-exit supervisor can have already spawned replacement sidecars that
+# escaped that group (observed: the run's original hono-host plus five
+# restart attempts, all bound to the SAME \$DEV_PORT, only one of them under
+# \$TAURI_PID). Reap by PORT, not by tracked pid: every bin/hono-host.ts
+# process whose real /proc/<pid>/environ carries OUR OPERATOR_DEV_PORT is
+# unambiguously ours to kill (mirrors the pid-by-environ idiom this script
+# already uses for isolation verification, above). Best-effort — a missing
+# /proc entry or a transient pgrep race never fails teardown.
+for _p in \$(pgrep -f "bin/hono-host.ts" 2>/dev/null); do
+  _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
+  grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
+  kill -TERM "\$_p" 2>/dev/null
+done
+sleep 1
+for _p in \$(pgrep -f "bin/hono-host.ts" 2>/dev/null); do
+  _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
+  grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
+  kill -9 "\$_p" 2>/dev/null
+done
 [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
 # EI-18816386093046558: SIGKILL gives Xvfb no chance to unlink /tmp/.X11-unix/X<N>,
 # so EVERY run leaked its own socket (97 had accumulated, the oldest from 07-13).

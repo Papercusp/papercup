@@ -59,6 +59,23 @@ export interface ExperimentRunSummary {
   createdAt: string;
 }
 
+/**
+ * WI-6443. `created_at` is `timestamptz`, so `(r.created_at as Date)` LOOKS safe
+ * — but a type ASSERTION is not a runtime guard, and on this read path the value
+ * arrives as a string. `.toISOString` was therefore undefined and threw, taking
+ * the whole `learning.experiments` read with it: the Experiments view rendered
+ * "The experiment registry unavailable (r.created_at.toISOString is not a
+ * function)" for every user, and had never once shown an experiment.
+ *
+ * The sibling read (learning-analyze-read.ts) already guards the SAME column at
+ * runtime. Coerce, never assert, at a driver boundary.
+ */
+function isoAt(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  const d = new Date(v as string | number);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : String(v ?? '');
+}
+
 export class PgExperimentLedger implements ExperimentLedger {
   constructor(private readonly sql: Sql) {}
 
@@ -84,7 +101,7 @@ export class PgExperimentLedger implements ExperimentLedger {
       totalCostUsd: Number(r.total_cost_usd),
       budgetExhausted: Boolean(r.budget_exhausted),
       decision: r.decision as string,
-      createdAt: (r.created_at as Date).toISOString(),
+      createdAt: isoAt(r.created_at),
     }));
   }
 

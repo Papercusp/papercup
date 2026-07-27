@@ -14,6 +14,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
+// Resolves through the mock below, which spreads the REAL module — so this is the
+// genuine constant, and asserting the route used it catches a value drift that a
+// hand-copied literal in the mock would have hidden.
+import { DISPLAY_TERMINAL_LAUNCH } from '../../adv-sessions';
 
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
 const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
@@ -37,7 +41,17 @@ vi.mock('node:os', async () => {
 const { recordAdvSessionMock } = vi.hoisted(() => ({
   recordAdvSessionMock: vi.fn(async (_opts: unknown) => 99),
 }));
-vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+// Spread the REAL module rather than listing exports by hand: launch-su.ts also
+// reads the plain-value export DISPLAY_TERMINAL_LAUNCH, and a hand-listed factory
+// silently omits any export it does not name — the omission only surfaces when the
+// route actually READS it, as an unhandled rejection at call time rather than a
+// load-time error (EI-18818702968703959: red 3x/6h). Spreading means a new export
+// added to adv-sessions can never leave this mock stale, and the constant's VALUE
+// can never drift from the real one. Safe here — adv-sessions has no module-load
+// side effects (only declarations), and 4 sibling suites already mock it this way.
+vi.mock('../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../adv-sessions')>()),
+  endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
 }));
 
@@ -221,12 +235,27 @@ describe('launch-su', () => {
     expect(notifySyncInvalidateMock).toHaveBeenCalledWith('roster');
   });
 
-  it('the live (non-deferred) spawn path does NOT fire a roster invalidation', async () => {
-    // The active roster tier is presence-primary; a live spawn refreshes it via
-    // its own coord_presence invalidation, so the launch route stays quiet here.
+  it('the live (non-deferred) spawn path records a `terminal` row AND wakes the roster', async () => {
+    // WI-6376 (owner ask 2026-07-25): the terminal path used to write no row at
+    // all, so between the click and psu's own registration the session appeared
+    // in NO column. It now records the launch immediately, keyed to the pre-pinned
+    // coord owner, and pushes it to open boards — the boot window is short and a
+    // card that appears late is the same defect in miniature.
+    //
+    // This assertion previously read `not.toHaveBeenCalled()` (the pre-WI-6376
+    // behaviour) and kept PASSING after the behaviour changed, because the suite's
+    // adv-sessions mock omitted DISPLAY_TERMINAL_LAUNCH: the route threw while
+    // building the record and never reached the invalidation below. It was a
+    // vacuous guard, not a green one (EI-18818702968703959).
     await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    expect(notifySyncInvalidateMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
+    // display MUST be 'terminal', never 'workbench' — 'workbench' is D-006's pui
+    // pane queue, and a terminal launch already has its own terminal.
+    const opts = recordAdvSessionMock.mock.calls[0]![0] as { display?: string; mode?: string };
+    expect(opts.display).toBe(DISPLAY_TERMINAL_LAUNCH);
+    expect(opts.display).toBe('terminal');
+    expect(notifySyncInvalidateMock).toHaveBeenCalledWith('roster');
   });
 
   it('agent-less launch resolves the CONFIGURED backend (claude-code → claude)', async () => {

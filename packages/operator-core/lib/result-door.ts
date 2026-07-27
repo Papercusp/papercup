@@ -70,6 +70,33 @@ export interface ResultDoorOpts {
   ownerId?: string | null;
 }
 
+// EI-18745696571494110: some tools truncate individual FIELDS inside their own
+// JSON body (coord:inbox's per-entry `body_truncated`, plan/list summaries'
+// `summary_truncated`, …) independently of this door's own budget — there is
+// no shared `_meta` marker for this (unlike `payloadProjection` above), because
+// each tool bakes its own field-level cutoff into the body it serializes. When
+// that happens on a result that ALSO overflows the door, the spill faithfully
+// preserves the tool's output — but that output was already missing the field
+// content, so "page the spill instead of re-running" is a dead end: the spill
+// can never contain what the tool itself never serialized. Detect the generic
+// `"<name>_truncated": true` shape textually (cheap, tool-agnostic) and swap
+// the footer/header wording so the reader is pointed at re-calling the tool
+// with a wider field-level limit instead of paging a spill that cannot help.
+const INNER_TRUNCATION_MARKER_REGEX = /"(\w*_truncated)"\s*:\s*true\b/g;
+
+/** Distinct `*_truncated: true` marker names found in `text` (capped — this
+ *  feeds advisory wording, not an audit). Empty when none are present. */
+function detectInnerTruncationMarkers(text: string): string[] {
+  const found = new Set<string>();
+  INNER_TRUNCATION_MARKER_REGEX.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INNER_TRUNCATION_MARKER_REGEX.exec(text))) {
+    found.add(m[1]);
+    if (found.size >= 5) break;
+  }
+  return [...found];
+}
+
 function isTextItem(it: unknown): it is { type: 'text'; text: string } {
   return (
     !!it &&
