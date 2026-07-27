@@ -92,7 +92,13 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
       expect(placeholders).toBe(ins.params.length);
       expect(ins.sql).toContain('invoked_at');
     }
-    const [t1, t2] = inserts.map((i) => Date.parse(String(i.params[i.params.length - 1])));
+    // invoked_at is $26 (params index 25). Addressed by its FIXED position, not
+    // as "the last param": P-009 appended three declaration columns after it,
+    // and the trailing-index form silently read goal_ref instead — parsing null
+    // to NaN, which fails as an unhelpful "expected NaN" rather than naming the
+    // cause. A column added later must not be able to re-point this assertion.
+    const P_INVOKED_AT = 25;
+    const [t1, t2] = inserts.map((i) => Date.parse(String(i.params[P_INVOKED_AT])));
     // Both timestamps are real dispatch-window times…
     expect(t1).toBeGreaterThanOrEqual(before - 5);
     expect(t2).toBeLessThanOrEqual(after + 5);

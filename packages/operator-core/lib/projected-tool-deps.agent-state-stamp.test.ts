@@ -26,6 +26,18 @@ vi.mock('./agent-tools/coordination/dispatch-heartbeat', () => ({
   maybeBeatPresenceOnDispatch: vi.fn(),
 }));
 
+/**
+ * The stamp is keyed off the SAME owner id the dispatcher writes to
+ * `coord_owner_id`, so the test has to control it. A synthetic ctx does not
+ * resolve to a real agent (resolveAgentIdentity throws → coord_owner_id null),
+ * which would leave every stamp legitimately null and the assertions vacuous.
+ */
+const TEST_OWNER = 'su-stamp-test-owner';
+vi.mock('./agent-tools/coordination/identity', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resolveAgentIdentity: vi.fn(() => ({ ownerId: TEST_OWNER, ownerLabel: 'su · stamp-test' })),
+}));
+
 const captured: Array<{ sql: string; params: unknown[] }> = [];
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -117,20 +129,15 @@ describe('P-009 declaration stamp on tool_invocations', () => {
   });
 
   it('stamps the declared intent, assumption watermark and goal of THIS caller', async () => {
-    // Seed against the owner id the dispatcher actually resolves for this ctx,
-    // rather than guessing it — the stamp is keyed off exactly that value.
-    const probe = await recordAndRead();
-    const ownerId = probe.params[P_COORD_OWNER];
-    expect(typeof ownerId, 'ctx must resolve to an owner id for this test to mean anything').toBe(
-      'string',
-    );
-    captured.length = 0;
-
-    noteIntentDeclared(ownerId as string, 12331);
-    noteAssumptionAsserted(ownerId as string, 3368);
-    noteGoalClaimed(ownerId as string, 'WI-6393');
+    noteIntentDeclared(TEST_OWNER, 12331);
+    noteAssumptionAsserted(TEST_OWNER, 3368);
+    noteGoalClaimed(TEST_OWNER, 'WI-6393');
 
     const insert = await recordAndRead();
+    // Guard the premise: if the stamp were keyed off a different id than the one
+    // written to coord_owner_id, the assertions below could pass for the wrong
+    // reason (or silently go vacuous).
+    expect(insert.params[P_COORD_OWNER]).toBe(TEST_OWNER);
     expect(insert.params[P_INTENT_EVENT]).toBe(12331);
     expect(insert.params[P_ASSUMPTION_SET]).toBe(3368);
     expect(insert.params[P_GOAL_REF]).toBe('WI-6393');
@@ -148,15 +155,11 @@ describe('P-009 declaration stamp on tool_invocations', () => {
   });
 
   it('clears the goal once released, so later calls are not attributed to it', async () => {
-    const probe = await recordAndRead();
-    const ownerId = probe.params[P_COORD_OWNER] as string;
-    captured.length = 0;
-
-    noteGoalClaimed(ownerId, 'WI-6393');
+    noteGoalClaimed(TEST_OWNER, 'WI-6393');
     expect((await recordAndRead()).params[P_GOAL_REF]).toBe('WI-6393');
     captured.length = 0;
 
-    noteGoalClaimed(ownerId, null);
+    noteGoalClaimed(TEST_OWNER, null);
     expect((await recordAndRead()).params[P_GOAL_REF]).toBeNull();
   });
 });

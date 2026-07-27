@@ -22,6 +22,11 @@ export default defineTool({
     seeAlso: ['setup:status (verify the git step went ok)'],
   },
   requirePrincipal: false,
+  // EI-18803497769946984: shells out to git config and never reads ctx.tx — holding the
+  // ambient workspace transaction across that wait trips
+  // idle_in_transaction_session_timeout (60s), surfacing as a bare
+  // `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: ['operator', 'debugger'],
   args: z.object({
     name: z.string().min(1).max(200).describe('Commit author name, e.g. "Ada Lovelace"'),

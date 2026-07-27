@@ -229,6 +229,12 @@ export default defineTool({
   capability: 'locks:write',
   timeoutSec: MAX_DRAIN_SEC + 30,
   requirePrincipal: false,
+  // EI-18803497769946984: this handler drains, then shells out to systemctl, and never
+  // reads ctx.tx — and its own timeoutSec is already well past Postgres's
+  // idle_in_transaction_session_timeout (60s), so holding the ambient workspace tx
+  // across the wait guarantees the backend is killed and the call fails as a bare
+  // `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     confirm: z.boolean().optional(),

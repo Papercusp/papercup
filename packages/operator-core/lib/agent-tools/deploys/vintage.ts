@@ -131,6 +131,11 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
+  // EI-18803497769946984: shells out and never reads ctx.tx — holding the ambient
+  // workspace transaction across that wait trips idle_in_transaction_session_timeout
+  // (60s), surfacing as a bare `write CONNECTION_CLOSED 127.0.0.1:6432`.
+  // See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: ['operator', 'architect', 'debugger', 'release-manager', 'release-fixer', 'cup'],
   args: z.object({ workspace: z.string().min(1).optional() }),
   async handler(args) {

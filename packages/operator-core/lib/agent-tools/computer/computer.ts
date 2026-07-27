@@ -243,6 +243,11 @@ export default defineTool({
   },
   capability: 'capability:computer',
   requirePrincipal: false,
+  // EI-18803497769946984: shells out to drive the desktop and never reads ctx.tx —
+  // holding the ambient workspace transaction across that wait trips
+  // idle_in_transaction_session_timeout (60s), surfacing as a bare
+  // `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   timeoutSec: 30,
   args: computerArgs,
