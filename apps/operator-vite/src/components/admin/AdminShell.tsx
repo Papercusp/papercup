@@ -28,6 +28,9 @@ const TABS: ReadonlyArray<{ href: string; label: string; term?: TermKey }> = [
   { href: '/admin/dogfood-substrate', label: 'Substrate' },
   { href: '/admin/dbos', label: 'DBOS' },
   { href: '/admin/schedules', label: 'Schedules' },
+  // Sibling of Schedules by design: that page inventories everything RECURRING,
+  // this one everything RUNNING (task-manager-no-escape-2026-07-27 P-018).
+  { href: '/admin/tasks', label: 'Tasks' },
   { href: '/admin/cupboard-moderation', label: 'Cupboard', term: 'cupboard' },
 ];
 

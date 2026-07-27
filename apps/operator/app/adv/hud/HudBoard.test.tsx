@@ -508,6 +508,20 @@ describe('header layout (owner asks 2026-07-27)', () => {
     expect(within(launchRow as HTMLElement).getByTestId('launcher')).toBeTruthy();
   });
 
+  it('marks the board tabs data-shadow-ok so the shell reset cannot strip their bridge (EI-18772095428507037)', () => {
+    // The adv shell body carries `box-shadow: none !important` on every non-focus
+    // -visible button, which silently killed .hud__tab--on's 1px bridge shadow —
+    // invisible to unit tests (they cannot read computed style) and to devtools'
+    // rule list. The opt-out attribute is the only thing keeping it alive, so its
+    // ABSENCE is what this asserts; nothing else would notice its removal.
+    const { container } = renderBoard([entry()]);
+    const tabs = container.querySelectorAll('[role="tab"]');
+    expect(tabs.length).toBeGreaterThan(0);
+    for (const t of tabs) {
+      expect(t.hasAttribute('data-shadow-ok'), 'every board tab needs the opt-out').toBe(true);
+    }
+  });
+
   it('keeps the launch button out of the tablist (a11y: a tablist holds only tabs)', () => {
     const { container } = renderBoard([entry()]);
     const tablist = container.querySelector('[role="tablist"]')!;

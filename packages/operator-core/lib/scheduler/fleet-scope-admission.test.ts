@@ -1032,8 +1032,13 @@ describe('fleet scope assignment admission (P-016)', () => {
       const genuinelyDrained = { ...divergentBreakdown, claimable: 0 };
       const miss = fleetScopedMiss(divergentScope, [], { issueBreakdown: genuinelyDrained });
       expect(miss.windDown).toBe(true);
-      expect(miss.error).toMatch(/NOT allowed to fall through to the generic backlog/);
-      expect(miss.advice).toMatch(/FLOOR-GATED miss \(WI-5561\)/);
+      // EI-18741523426513509: this shape (matchedByFilter > 0, claimable === 0, not
+      // divergent/unconfirmed/paused/cooldown) is exactly the floor-gated case, which now gets
+      // its own named reason + error instead of the old generic "no claimable work-item matched"
+      // message that was indistinguishable-by-shape from a diagnosis failure.
+      expect(miss.reason).toBe('all_matches_gated');
+      expect(miss.error).toMatch(/POOL BLOCKED, NOT SPEC-BROKEN/);
+      expect(miss.advice).toMatch(/FLOOR-GATED miss \(WI-5561/);
       expect(miss.excludedBreakdownSummary).toMatch(/genuinely floor-gated/);
       expect(miss.excludedBreakdownSummary).not.toMatch(/NOT floor-gated/);
     });

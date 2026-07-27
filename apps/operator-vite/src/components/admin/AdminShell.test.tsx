@@ -50,6 +50,7 @@ const TAB_HREFS = [
   '/admin/dogfood-substrate',
   '/admin/dbos',
   '/admin/schedules',
+  '/admin/tasks',
   '/admin/cupboard-moderation',
 ];
 

@@ -339,6 +339,12 @@ export default function HudBoard({
               role="tab"
               className={`hud__tab${tab === id ? ' hud__tab--on' : ''}`}
               aria-selected={tab === id}
+              // EI-18772095428507037: opt out of the adv shell's blanket
+              // `box-shadow: none !important` on in-page buttons. That reset
+              // targets DECORATIVE bevels; .hud__tab--on's shadow is STRUCTURAL
+              // (it bridges the tab strip's border into the board below), and the
+              // blanket rule silently stripped it with no way to tell.
+              data-shadow-ok=""
               onClick={() => onSelectTab(id)}
             >
               <span className="hud__tab-row">{HUD_TAB_LABEL[id]}</span>
