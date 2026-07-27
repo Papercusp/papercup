@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { devDeployState, resetDevDeployStateCache } from './dev-deploy-state';
+import { classifyCommitRefFailure, devDeployState, resetDevDeployStateCache } from './dev-deploy-state';
 
 function git(repo: string, args: string[]): string {
   return execFileSync('git', ['-C', repo, ...args], {
@@ -94,6 +94,45 @@ afterAll(() => {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
+});
+
+// EI-18788901632987174: commitRef's catch-all used to collapse "the ref does
+// not exist" and "the git call itself failed" into the same bare `null` —
+// two states that demand OPPOSITE caller responses (final vs
+// retry-or-escalate). classifyCommitRefFailure is the pure function that now
+// makes the distinction; these messages are git's REAL stderr text (verified
+// live: `git log -1 <ref>^{commit}` for an absent ref vs a nonexistent repo
+// path vs a plain non-repo directory).
+describe('classifyCommitRefFailure (EI-18788901632987174)', () => {
+  it('an ABSENT ref classifies as not-applicable (final — retrying resolves nothing)', () => {
+    const message =
+      "Command failed: git -C /repo log -1 --format=%H nonexistent-ref^{commit}\n" +
+      "fatal: ambiguous argument 'nonexistent-ref^{commit}': unknown revision or path not in the working tree.\n" +
+      "Use '--' to separate paths from revisions, like this:\n" +
+      "'git <command> [<revision>...] -- [<file>...]'\n";
+    const got = classifyCommitRefFailure('nonexistent-ref', '/repo', message);
+    expect(got.code).toBe('not-applicable');
+    expect(got.detail).toContain('nonexistent-ref');
+  });
+
+  it('a BROKEN git invocation (missing repo dir) classifies as resolver-failed (retry-or-escalate)', () => {
+    const message =
+      "Command failed: git -C /tmp/does-not-exist-dir-xyz log -1 --format=%H main^{commit}\n" +
+      "fatal: cannot change to '/tmp/does-not-exist-dir-xyz': No such file or directory\n";
+    const got = classifyCommitRefFailure('main', '/tmp/does-not-exist-dir-xyz', message);
+    expect(got.code).toBe('resolver-failed');
+  });
+
+  it('a BROKEN git invocation (not a git repository) classifies as resolver-failed, DIFFERENT from an absent ref', () => {
+    const message =
+      'fatal: not a git repository (or any parent up to mount point /)\n' +
+      'Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n';
+    const got = classifyCommitRefFailure('main', '/tmp/not-a-repo', message);
+    expect(got.code).toBe('resolver-failed');
+    expect(got.code).not.toBe(
+      classifyCommitRefFailure('nonexistent-ref', '/repo', 'unknown revision or path not in the working tree').code,
+    );
+  });
 });
 
 describe('devDeployState', () => {

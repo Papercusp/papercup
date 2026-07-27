@@ -2015,6 +2015,23 @@ export function suIdeateVerdict(
   };
 }
 
+/**
+ * WI-6338: the divergence fraction (loop-output.ts `provenanceDivergence`) past
+ * which the three learning-loop authorship records disagree enough to matter.
+ * Chosen well below the ~0.49 that went unnoticed live (2026-07-27 measurement:
+ * 422/825 agreed everywhere ⇒ divergence ≈ 0.49) so the Health tab flags drift
+ * long before it reaches that scale again.
+ */
+export const PROVENANCE_DIVERGENCE_WARN_THRESHOLD = 0.15;
+
+/** PURE: does this divergence fraction cross the WI-6338 warn threshold? */
+export function crossesProvenanceDivergenceThreshold(
+  divergence: number,
+  threshold: number = PROVENANCE_DIVERGENCE_WARN_THRESHOLD,
+): boolean {
+  return Number.isFinite(divergence) && divergence > threshold;
+}
+
 async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
   return panelSafe<ScoutHealth>('scout', async () => {
     const { readScoutTicks } = await import('../scout/tick-ledger');
@@ -2036,12 +2053,27 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
          WHERE workspace_id = ${ctx.ws}`;
       grading = { gradedInWindow: rows[0]?.graded ?? 0, ungraded: rows[0]?.ungraded ?? 0 };
     } catch { /* grading read unavailable */ }
-    const data: ScoutHealth = { ...scoutHealthVerdict(ticks, ctx.now), suIdeate, grading };
-    // 'warn' (not 'crit') on transport-death: this panel exists to make Scout
-    // OBSERVABLE so the Overwatch can rate ideation-quality + escalate per judgment —
-    // not to auto-fire an infra BLOCKER via the liveness catch-all (Scout being dead
-    // stalls R&D but does not wedge the running system).
-    const status: PanelStatus = data.transportDeath ? 'warn' : data.lastRanAt == null ? 'unknown' : 'ok';
+    // WI-6338: the recurrence guard — compute + surface the three-record
+    // authorship divergence so it can never again drift to ~50% unnoticed.
+    let provenanceDivergence: ScoutHealth['provenanceDivergence'] = null;
+    try {
+      const { readLoopOutputIds, provenanceDivergence: divergenceOf } = await import('../harness/improvements/loop-output');
+      const { counts } = await readLoopOutputIds();
+      const value = divergenceOf(counts);
+      provenanceDivergence = { value, counts, crossesWarnThreshold: crossesProvenanceDivergenceThreshold(value) };
+    } catch { /* provenance-divergence read unavailable */ }
+    const data: ScoutHealth = { ...scoutHealthVerdict(ticks, ctx.now), suIdeate, grading, provenanceDivergence };
+    // 'warn' (not 'crit') on transport-death OR a crossed provenance-divergence
+    // threshold: this panel exists to make Scout OBSERVABLE so the Overwatch can
+    // rate ideation-quality + escalate per judgment — not to auto-fire an infra
+    // BLOCKER via the liveness catch-all (neither condition wedges the running
+    // system; both stall/corrupt R&D signal quietly if nobody notices).
+    const status: PanelStatus =
+      data.transportDeath || data.provenanceDivergence?.crossesWarnThreshold
+        ? 'warn'
+        : data.lastRanAt == null
+          ? 'unknown'
+          : 'ok';
     const suNote =
       data.suIdeate && data.suIdeate.passesInWindow > 0
         ? ` · su-ideate: ${data.suIdeate.passesInWindow} pass(es)/24h (${data.suIdeate.ideasFiled} filed)`

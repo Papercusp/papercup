@@ -767,6 +767,22 @@ export interface ScoutHealth {
     gradedInWindow: number;
     ungraded: number;
   } | null;
+  /**
+   * Learning-loop authorship provenance divergence (WI-6338): how far apart the
+   * three independent "the learning loop produced this" records — `payload.sourceRole
+   * = 'Scout'`, the `improvement-source:Scout` topic tag, and a `scout_routed_ideas`
+   * row — have drifted, as a fraction of their union (harness/improvements/loop-output.ts
+   * `provenanceDivergence`; 0 = perfect agreement, 1 = no id recorded by all three).
+   * A ~50% divergence went unnoticed for a long time precisely because nothing ever
+   * computed or surfaced it — this leg is the recurrence guard. `crossesWarnThreshold`
+   * mirrors `scoutDivergenceStatus`'s own threshold so the Health tab and any other
+   * consumer agree on when it matters. Read failure ⇒ null (never fabricate 0).
+   */
+  provenanceDivergence: {
+    value: number;
+    counts: { bySourceRole: number; byTopic: number; byRoutedIdea: number; union: number };
+    crossesWarnThreshold: boolean;
+  } | null;
 }
 
 /** A rating shared by the three tool-efficiency metrics (mirrors each metric

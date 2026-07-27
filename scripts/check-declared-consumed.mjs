@@ -79,7 +79,37 @@ const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), 
 export const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', 'target', 'coverage',
   '_retired', '.turbo', 'out', '.venv', 'venv', '__pycache__',
+  // Vacuous pass (5) — see `looksGenerated`. Storybook's published bundle is the
+  // instance that actually fired here.
+  'storybook-static',
 ]);
+
+/**
+ * A minified/bundled artifact is not a consumer — vacuous pass (5).
+ *
+ * This one was found the hard way, and it is the most dangerous of the set
+ * because it produces confident, plausible-looking numbers. The first green run
+ * of this sweep reported `CellSpec.ordered` as CONSUMED with 46 readers. All 46
+ * were `.ordered` inside `storybook-static/**` webpack bundles — minified
+ * third-party code where two-letter property names collide with anything. The
+ * field is in fact read by nothing, which is the defect the gate exists to find,
+ * and a build artifact checked into the tree had hidden it perfectly.
+ *
+ * Detection is by line length rather than by path, because the next bundle will
+ * live somewhere this list does not name: source is written in lines, generated
+ * code is not.
+ */
+export function looksGenerated(src) {
+  const nl = src.indexOf('\n');
+  if (nl === -1) return src.length > 2000;
+  let start = 0;
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] !== '\n') continue;
+    if (i - start > 2000) return true;
+    start = i + 1;
+  }
+  return src.length - start > 2000;
+}
 
 const SCAN_EXT = new Set(['.ts', '.tsx', '.mts', '.mjs', '.js']);
 
@@ -324,8 +354,15 @@ export function classifyTsField(source, name) {
 
   const propAtLineStart = new RegExp(`^\\s*(?:readonly\\s+)?${name}\\s*\\??\\s*:`);
   // `.name` NOT followed by `=` (but `==`/`===`/`=>` are comparisons, not writes).
-  const assign = new RegExp(`\\.\\s*${name}\\s*=(?!=|>)`);
-  const access = new RegExp(`\\.\\s*${name}\\b`);
+  //
+  // The `(?<!\.)` is load-bearing: without it the third dot of a SPREAD matches,
+  // so `[...ordered.map(f)]` — a local array in an unrelated codegen script —
+  // registered as a read of `CellSpec.ordered` and single-handedly turned the
+  // field's verdict from write-only to consumed. A generic English word used as
+  // a field name has no shortage of such collisions, which is why every rule
+  // here has to be about SYNTAX rather than about text.
+  const assign = new RegExp(`(?<!\\.)\\.\\s*${name}\\s*=(?!=|>)`);
+  const access = new RegExp(`(?<!\\.)\\.\\s*${name}\\b`);
   const destructure = new RegExp(`\\{[^{}]*\\b${name}\\b[^{}]*\\}\\s*=[^=]`);
 
   for (let i = 0; i < lines.length; i++) {
@@ -369,17 +406,15 @@ export function classifySqlColumn(source, column) {
   for (let m; (m = occ.exec(src)); ) hits.push(m.index);
   if (hits.length === 0) return { writes, reads };
 
-  const ranges = interfaceRanges(src);
+  const { ranges, lineStarts } = prepared;
   const clauses = [];
   SQL_CLAUSE_RE.lastIndex = 0;
   for (let m; (m = SQL_CLAUSE_RE.exec(src)); ) {
     clauses.push({ index: m.index, kw: m[1].toLowerCase().replace(/\s+/g, ' ') });
   }
 
-  // Line starts, computed once: slicing the prefix per occurrence is quadratic
-  // and on this tree that alone took the sweep past two minutes.
-  const lineStarts = [0];
-  for (let i = 0; i < src.length; i++) if (src[i] === '\n') lineStarts.push(i + 1);
+  // Line lookup by binary search over precomputed starts: slicing the prefix per
+  // occurrence is quadratic, and on this tree that alone cost minutes.
   const lineOf = (idx) => {
     let lo = 0;
     let hi = lineStarts.length - 1;
@@ -465,6 +500,12 @@ export function* walkSource(dir, rel = '') {
 
 const ROOTS = ['packages', 'libs', 'apps', 'scripts', 'bin'];
 
+/** Every identifier any target cares about — the cheap pre-filter in `main`. */
+const TARGET_NAMES = [
+  ...DECLARED_FIELDS.map((t) => t.name),
+  ...DECLARED_COLUMNS.map((t) => t.name),
+];
+
 async function main() {
   const files = [];
   for (const root of ROOTS) {
@@ -474,6 +515,7 @@ async function main() {
   }
 
   const rows = [];
+  let generated = 0;
   const fieldAcc = new Map(DECLARED_FIELDS.map((t) => [t.id, { declarations: [], writes: [], reads: [] }]));
   const columnAcc = new Map(DECLARED_COLUMNS.map((t) => [t.id, { writes: [], reads: [] }]));
 
@@ -481,11 +523,15 @@ async function main() {
   for (const f of files) {
     let src;
     try { src = readFileSync(f.abs, 'utf8'); } catch { continue; }
+    // Cheap gate before the expensive normalisation: most files name no target.
+    if (!TARGET_NAMES.some((n) => src.includes(n))) continue;
+    if (looksGenerated(src)) { generated++; continue; }
+    const prepared = prepareSource(src);
 
     for (const target of DECLARED_FIELDS) {
       if (!src.includes(target.name)) continue;
       const acc = fieldAcc.get(target.id);
-      const c = classifyTsField(src, target.name);
+      const c = classifyTsField(prepared, target.name);
       for (const ln of c.declarations) acc.declarations.push(`${f.rel}:${ln}`);
       // Vacuous pass (3): the declaring module never counts as its own consumer.
       if (f.rel === target.declaredIn) continue;
@@ -497,7 +543,7 @@ async function main() {
       // Scope: only a file that names the TABLE can be touching its columns.
       if (!src.includes(target.table) || !src.includes(target.name)) continue;
       const acc = columnAcc.get(target.id);
-      const c = classifySqlColumn(src, target.name);
+      const c = classifySqlColumn(prepared, target.name);
       for (const ln of c.writes) acc.writes.push(`${f.rel}:${ln}`);
       for (const ln of c.reads) acc.reads.push(`${f.rel}:${ln}`);
     }
@@ -533,7 +579,7 @@ async function main() {
   const mark = { consumed: '✓', 'write-only': '✗', 'read-only': '✗', inert: '✗', 'not-declared': '?' };
 
   console.log('\nDECLARED-VS-CONSUMED SWEEP — agent-state plane (P-002)\n');
-  console.log(`  scanned ${files.length} non-test source files under ${ROOTS.join(', ')}\n`);
+  console.log(`  scanned ${files.length} non-test source files under ${ROOTS.join(', ')} (${generated} generated/minified skipped)\n`);
   for (const r of rows) {
     const w = r.sites.writes.length;
     const rd = r.sites.reads.length;

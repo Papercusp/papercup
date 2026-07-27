@@ -218,6 +218,18 @@ function resolveConfig(): Pick<
 const REF_ABSENT_STDERR = /unknown revision or path not in the working tree|not a valid object name|bad revision/i;
 
 /**
+ * Classify a failed `commitRef` attempt's error message into the two
+ * cell-contract codes that matter here — split out as a pure function (no git,
+ * no fs) so the classification itself is directly unit-testable without
+ * spawning a real git process per branch. See {@link commitRef}.
+ */
+export function classifyCommitRefFailure(ref: string, repo: string, message: string): CellUnknown {
+  return REF_ABSENT_STDERR.test(message)
+    ? cellUnknown('not-applicable', `ref ${ref} does not exist in ${repo}`)
+    : cellUnknown('resolver-failed', `git failed resolving ${ref} in ${repo}: ${message}`);
+}
+
+/**
  * Resolve a ref's sha + commit date + subject in `repo`. Distinguishes the two
  * ways this can fail (cell-contract.ts's in-band-unknown discipline) instead of
  * collapsing both into the same bare `null`:
@@ -262,12 +274,7 @@ async function commitRef(repo: string, ref: string): Promise<CommitRefResult> {
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return {
-      ref: null,
-      unknown: REF_ABSENT_STDERR.test(message)
-        ? cellUnknown('not-applicable', `ref ${ref} does not exist in ${repo}`)
-        : cellUnknown('resolver-failed', `git failed resolving ${ref} in ${repo}: ${message}`),
-    };
+    return { ref: null, unknown: classifyCommitRefFailure(ref, repo, message) };
   }
 }
 

@@ -450,13 +450,41 @@ export function claimableStatesForKinds(kinds: readonly string[]): string[] | un
   return ['open'];
 }
 
+/**
+ * WI-6342: a fleet named as a "nonp2p" drain (the exact convention
+ * `p2p-lane-fence.ts`'s own module doc already assumes — see its comment about
+ * avoiding a false-positive on "a fleet literally named 'nonp2p-bug-drain'")
+ * gets zero p2p/federation/rig awareness from `buildFleetKindClaimSpec`'s bare
+ * kind-only filter: a p2p/dht/federation-tagged item (e.g. WI-6342, a
+ * papercup-isolated-dht liveness bug) was served straight to a single-box
+ * member who cannot execute it. This is the SAME regression class as
+ * WI-5265/WI-5272/WI-5639/WI-6050 — a p2p-lane-fence silently missing from a
+ * fleet's claim spec — recurring via a NEW code path (the auto-generated
+ * "-kinds" spec `fleet:launch-on-plan` builds when a leader passes
+ * `claimKinds` with no hand-authored spec yet) that was never wired to the
+ * `p2p-lane` fence macro at all. Detected purely from the fleet slug (the
+ * established naming convention for this drain-fleet family) since
+ * `buildFleetKindClaimSpec` has no other signal of "this fleet's mandate
+ * excludes P2P work" available to it.
+ */
+export function isNonP2pDrainFleetSlug(fleetSlug: string): boolean {
+  return /nonp2p/i.test(fleetSlug);
+}
+
 export function buildFleetKindClaimSpec(fleetSlug: string, kinds: readonly string[]): Record<string, unknown> {
   const states = claimableStatesForKinds(kinds);
   return {
     specVersion: '1.0',
     specId: `fleet-launch-${fleetSlug}-kinds`,
     revision: 1,
-    view: { filter: { field: 'kind', op: 'in', value: [...kinds] } },
+    view: {
+      filter: { field: 'kind', op: 'in', value: [...kinds] },
+      // WI-6342: compose the shared p2p/federation/rig title-fence in for a
+      // "nonp2p"-named drain fleet — see isNonP2pDrainFleetSlug above.
+      // validateClaimSpec expands `fence` into `view.filter` (AND-composed
+      // with the kind filter) at write time (claim-spec.ts, WI-6050).
+      ...(isNonP2pDrainFleetSlug(fleetSlug) ? { fence: 'p2p-lane' } : {}),
+    },
     rank: DEFAULT_CLAIM_SPEC.rank,
     limits: DEFAULT_CLAIM_SPEC.limits,
     // P-010: auto-include `open` for an issue-family drain so the lane doesn't starve.

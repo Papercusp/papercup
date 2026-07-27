@@ -21,6 +21,7 @@ import launchOnPlan, {
   buildFleetKindClaimSpec,
   buildFleetPlanClaimSpec,
   isLeaderAuthoredClaimSpec,
+  isNonP2pDrainFleetSlug,
   mergeKindIntoClaimSpec,
   clampFleetTopUpToCapacity,
   composeMemberLaunchContext,
@@ -31,7 +32,9 @@ import launchOnPlan, {
   isSelfPublishedSeatOffer,
   type MemberLaunchOpts,
 } from './launch-on-plan';
-import { DEFAULT_CLAIM_SPEC, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
+import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
+import type { WorkItem } from '../../work-items';
 
 const base: MemberLaunchOpts = {
   fleetSlug: 'atlas-fleet',
