@@ -91,6 +91,16 @@ beforeAll(async () => {
         SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint::text || ':stub';
       $hlc_stub$;
 
+    -- (WI-6249 / mig-699) The real function calls hlc_recv() on both remote paths
+    -- (a fed_ts-moving UPDATE, and a remote INSERT carrying fed_hlc) — this minimal
+    -- fixture stubs it as a no-op, same as hlc_now above, so loading the CURRENT
+    -- migration body doesn't error on a function real production always has defined
+    -- (mig 314/459/460, long before this one) but this stand-alone schema does not.
+    CREATE OR REPLACE FUNCTION harness_shared.hlc_recv(remote text) RETURNS void
+      LANGUAGE sql AS $hlc_recv_stub$
+        SELECT NULL::void;
+      $hlc_recv_stub$;
+
     CREATE TABLE harness_shared.fed_generated_col_probe (
       workspace_id  text NOT NULL,
       row_id        text NOT NULL,

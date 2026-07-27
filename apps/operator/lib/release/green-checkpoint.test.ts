@@ -967,6 +967,7 @@ describe('runGreenCheckpoint', () => {
       const c1 = await commit('a', '1', 'c1');
       await git(repo, ['branch', 'ready', c1]);
       const c2 = await commit('a', '2', 'c2');
+      await commit('unrelated.ts', 'x', 'c3'); // tip strictly newer — the rescue WOULD be eligible
       const { deps } = stubDeps(false, ['lint:identity-leak']);
       deps.resolveTip = async () => revParse(repo, 'HEAD');
       expect(deps.runGateAtRef).toBeUndefined();
@@ -981,6 +982,7 @@ describe('runGreenCheckpoint', () => {
       const c1 = await commit('a', '1', 'c1');
       await git(repo, ['branch', 'ready', c1]);
       const c2 = await commit('a', '2', 'c2');
+      await commit('unrelated.ts', 'x', 'c3'); // tip strictly newer — the rescue WOULD be eligible
       const calls: string[] = [];
       // '@papercusp/operator-vite' (a build break) is deliberately NOT in NON_TEST_GATE_SCRIPTS.
       const { deps } = stubDeps(false, ['@papercusp/operator-vite']);

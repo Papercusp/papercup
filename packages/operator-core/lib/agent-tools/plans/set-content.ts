@@ -76,6 +76,12 @@ const argsSchema = z.object({
     .describe(
       'A body that shrinks the plan to under 20% of its current size is rejected as a probable mass deletion (`suspicious_shrink`) unless this is true. Pass it only when the shrink is intentional — e.g. archiving prose that moved elsewhere.',
     ),
+  allowStatusRegression: z
+    .boolean()
+    .optional()
+    .describe(
+      'A write with no expectedVersion/expectedHash that would move an item BACKWARD off a terminal (done/dropped) status is rejected as `item_status_regression` (almost always a stale-read clobber of someone else\'s completed work) unless this is true. Pass it only when the regression is intentional — e.g. genuinely reopening a wrongly-closed item. Carrying expectedVersion/expectedHash from a fresh plans:get avoids needing this at all.',
+    ),
 });
 
 export type SetContentValue =
@@ -97,6 +103,13 @@ export type SetContentValue =
       droppedDecisions?: number;
     }
   | { ok: false; code: 'would_orphan_frontmatter' }
+  | {
+      ok: false;
+      code: 'item_status_regression';
+      /** Items that would move backward off a terminal (done/dropped)
+       *  status — see detectStatusRegressions. */
+      regressions: StatusRegressionEntry[];
+    }
   | {
       ok: false;
       code: 'lint_failed';
@@ -280,6 +293,17 @@ export async function evaluateSetContent(
     expectedVersion?: number;
     meta?: { version: number; contentHash: string } | null;
     allowShrink?: boolean;
+    /**
+     * EI-18756269998422483: opt this call into the item-status-regression
+     * guard (detectStatusRegressions). Only the whole-document rewriters
+     * (set-content, set-content-chunk) pass this — plans:edit's exact-match
+     * requirement is already its OWN concurrency guard (see edit.ts's header)
+     * and is deliberately left out of this additional check.
+     */
+    wholeDocumentRewrite?: boolean;
+    /** Explicit override: the regression is intentional (e.g. reopening a
+     *  wrongly-closed item) even though no CAS baseline was supplied. */
+    allowStatusRegression?: boolean;
   } = {},
 ): Promise<{ newBody: string | null; value: SetContentValue }> {
   if (current === null) {
@@ -344,6 +368,32 @@ export async function evaluateSetContent(
   if (!opts.allowShrink) {
     const shrink = detectSuspiciousShrink(current, body, currentParsed, proposed);
     if (shrink) return { newBody: null, value: shrink };
+  }
+
+  // 1c. Status-regression guard (EI-18756269998422483) — a whole-document
+  //     rewriter (set-content / set-content-chunk) with NO CAS baseline (no
+  //     expectedVersion/expectedHash to prove the caller's copy is fresh) that
+  //     moves an item BACKWARD off a terminal (done/dropped) status is almost
+  //     certainly built from a stale read silently reverting someone else's
+  //     completed work — exactly how a plan item's `done` status was observed
+  //     to silently revert to `todo` mid-session with none of the writes in
+  //     between ever naming that item. A CAS-VERIFIED write is provably fresh,
+  //     so an intentional regression through it (e.g. genuinely reopening a
+  //     wrongly-closed item) is allowed without the escape hatch; a CAS-less
+  //     write needs `allowStatusRegression: true` to say the regression is
+  //     deliberate. Scoped to whole-document rewriters only — plans:set-status
+  //     is immune by construction (it only ever touches the one named item),
+  //     and plans:edit's exact-match requirement is already its own
+  //     concurrency guard (its header explains why it opts out).
+  if (opts.wholeDocumentRewrite && !opts.allowStatusRegression) {
+    const hadCasBaseline =
+      (opts.expectedVersion != null && opts.meta?.version != null) || Boolean(expectedHash);
+    if (!hadCasBaseline) {
+      const regressions = detectStatusRegressions(currentParsed, proposed);
+      if (regressions.length > 0) {
+        return { newBody: null, value: { ok: false, code: 'item_status_regression', regressions } };
+      }
+    }
   }
 
   // 2. Legacy-boundary guard — a real plan must not be silently
@@ -448,6 +498,8 @@ export default defineTool({
           expectedVersion: args.expectedVersion,
           meta,
           allowShrink: args.allowShrink,
+          wholeDocumentRewrite: true,
+          allowStatusRegression: args.allowStatusRegression,
         }),
     );
 

@@ -383,6 +383,93 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     }
   });
 
+  it('EI-18826235967595309: a SYMLINKED ALIAS of the canonical tree is editable and keys identically; an alias of a same-origin sibling is still refused', async () => {
+    // `<ws>/papercup -> papercusp` is a REAL shape in this workspace: the alias
+    // survives the papercup→papercusp rename and is still referenced by path
+    // (CLAUDE.md's `papercup/papercusp-desktop`), so agents and scripts DO edit
+    // through it. Editing through the alias IS editing the canonical tree, so it
+    // must be allowed — and the guard gets that right only because it compares
+    // `os.path.realpath(root)` against the canonical tree. Nothing pinned it.
+    //
+    // This was filed as a major "the guard has a hole" bug before the symlink was
+    // noticed: probing the alias reads the canonical tree's OWN `.git`, so it
+    // presents as a same-project checkout with a matching origin, i.e. exactly
+    // the shape the guard is supposed to refuse — and it was observed to allow a
+    // live edit. The allow is correct; the premise was wrong.
+    //
+    // Both directions are asserted because they fail in OPPOSITE ways:
+    //   • alias→canonical wrongly DENIED — every edit through `papercup/` starts
+    //     refusing. The obvious regression, but note the guard is fail-open on
+    //     its own exceptions, so a broken realpath comparison can also surface as
+    //     an allow that is right by accident.
+    //   • alias→non-canonical wrongly ALLOWED — a symlink LAUNDERS a stranding
+    //     hazard past the guard. That is the silent data-loss this guard exists
+    //     to prevent, and a symlink is the one shape that can smuggle it through
+    //     the same realpath normalization that makes the first case correct.
+    const gitBack = fs.readFileSync(join(repo, '.git'), 'utf8');
+    fs.rmSync(join(repo, '.git'));
+    try {
+      // Canonical tree with a READABLE origin, so the same-origin comparison in
+      // the second half is decided by origin rather than by an unreadable config.
+      fs.mkdirSync(join(repo, '.git'));
+      fs.writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
+      fs.writeFileSync(
+        join(repo, '.git', 'config'),
+        '[remote "origin"]\n\turl = git@github.com:Papercusp/papercup.git\n',
+      );
+
+      // (a) alias → canonical: allowed, and keyed IDENTICALLY to a direct edit.
+      // The key assertion is not decoration: if the alias produced a different
+      // repo-relative key, two agents editing the same logical file — one via
+      // `papercusp/`, one via `papercup/` — would take non-colliding locks and
+      // clobber each other, silently, with the lock system reporting success.
+      fs.symlinkSync('papercusp', join(ws, 'papercup'));
+      nextInner = { ok: true, lock_id: 'alias-lock' };
+      const viaAlias = await run({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(ws, 'papercup', 'sub/aliased.ts') },
+        tool_use_id: 'tu-alias-canonical',
+        session_id: 's',
+        cwd: join(ws, 'papercup'),
+      });
+      expect(viaAlias.status).toBe(0);
+      expect(viaAlias.stdout).toBe(''); // allow = no decision emitted
+      expect(lastRequest?.body.params.arguments.paths).toEqual(['sub/aliased.ts']);
+      expect(fs.readFileSync(join(cache, 'tu-alias-canonical.lock'), 'utf8')).toBe('alias-lock');
+
+      // (b) alias → same-origin sibling: still refused. The symlink must not
+      // launder the stranding hazard; work left in papercup-release is never
+      // committed by git-sync no matter which name it was reached through.
+      const release = join(ws, 'papercup-release');
+      fs.mkdirSync(join(release, 'sub'), { recursive: true });
+      fs.mkdirSync(join(release, '.git'));
+      fs.writeFileSync(join(release, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      fs.writeFileSync(
+        join(release, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/Papercusp/papercup.git\n',
+      );
+      fs.symlinkSync('papercup-release', join(ws, 'papercup-rel-alias'));
+      const viaHazardAlias = await run({
+        tool_name: 'Edit',
+        tool_input: { file_path: join(ws, 'papercup-rel-alias', 'sub/x.ts') },
+        tool_use_id: 'tu-alias-hazard',
+        session_id: 's',
+        cwd: join(ws, 'papercup-rel-alias'),
+      });
+      expect(viaHazardAlias.status).toBe(0);
+      const out = JSON.parse(viaHazardAlias.stdout);
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(out.hookSpecificOutput.permissionDecisionReason).toContain('worktree guard');
+      expect(fs.existsSync(join(cache, 'tu-alias-hazard.lock'))).toBe(false);
+    } finally {
+      fs.rmSync(join(repo, '.git'), { recursive: true, force: true });
+      fs.writeFileSync(join(repo, '.git'), gitBack);
+      fs.rmSync(join(ws, 'papercup'), { recursive: true, force: true });
+      fs.rmSync(join(ws, 'papercup-rel-alias'), { recursive: true, force: true });
+      fs.rmSync(join(ws, 'papercup-release'), { recursive: true, force: true });
+    }
+  });
+
   // ── EI-9478: transient workspace-contention must never be rendered as a foreign hold ──
   // The server's per-workspace advisory-lock wait can time out (commonly THIS
   // session's own parallel edits racing each other, or a starved PG pool). That

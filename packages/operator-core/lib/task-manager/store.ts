@@ -303,6 +303,37 @@ export async function getTask(taskId: string, inject?: Sql): Promise<TaskRow | n
   return rows[0] ? toRow(rows[0]) : null;
 }
 
+/**
+ * EI-18759519171684432: look up a `capability:bash` background job's ledger row by
+ * its `bash_id` (the id `bash-jobs.ts`'s in-memory JOBS map keys on — a DIFFERENT
+ * id from `task_id`). `startBackground` stamps `detail.bashJobId` at registration
+ * time specifically so this join is possible: the in-memory registry is
+ * process-bound and capped (EI-8855 wipes it on any restart, and old entries get
+ * pruned under load), but this ledger row is the DURABLE half of the same job's
+ * identity — it survives both. `bash_output`'s stranded-job path uses this to
+ * distinguish "tracking lost, process still alive" from "genuinely gone" instead of
+ * guessing from operator uptime alone. Newest match wins (a bash_id is a random
+ * UUID slice, so more than one row is not expected in practice, but ORDER BY makes
+ * the tie-break deterministic rather than DB-order-dependent).
+ */
+export async function getTaskByBashJobId(
+  bashJobId: string,
+  opts: { workspaceId?: string } = {},
+  inject?: Sql,
+): Promise<TaskRow | null> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql`
+    SELECT * FROM harness_shared.task_ledger
+     WHERE workspace_id = ${ws}
+       AND class = 'bash-job'
+       AND detail ->> 'bashJobId' = ${bashJobId}
+     ORDER BY started_at DESC
+     LIMIT 1
+  `;
+  return rows[0] ? toRow(rows[0]) : null;
+}
+
 /** The whole tree a task belongs to — what "kill this and everything it started"
  *  and the pane's tree view both read. */
 export async function getSubtree(rootTaskId: string, inject?: Sql): Promise<TaskRow[]> {

@@ -12,9 +12,8 @@
  * look almost exactly like an exempt one but are NOT, and must still be reported. If an
  * edit to the lint ever makes one of those go quiet, that is the regression.
  */
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -207,34 +206,29 @@ describe('check-assert-integrity: pragma suppression', () => {
  * not a guard, so the real-tree scan is asserted HERE too, where the live gate will see it.
  */
 describe('check-assert-integrity: the real rig scripts stay clean', () => {
-  const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-  const SCOPE = resolve(REPO, 'papercusp-desktop/bin');
-
-  const shellScripts = (dir: string): string[] => {
-    const out: string[] = [];
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return out;
-    }
-    for (const e of entries) {
-      const full = resolve(dir, e.name);
-      if (e.isDirectory()) out.push(...shellScripts(full));
-      else if (e.name.endsWith('.sh')) out.push(full);
-    }
-    return out;
-  };
+  // EI-18826354392040658: this describe block used to hand-roll its OWN directory walker
+  // (a plain `.sh` filter, no `.selftest.sh` exclusion) instead of reusing the real lint's
+  // `scriptsInScope()`. That duplicate drifted from the canonical walker — which
+  // deliberately excludes `*.selftest.sh` because those files assert ON these R1/R2/R3
+  // shapes deliberately, as fixtures for testing the checker itself — so this test scanned
+  // federation-asserts.selftest.sh, found the R1-shaped example code its heredoc GENERATES
+  // as a throwaway fixture, and flagged it as if it were live assertion code. `npm run
+  // lint:assert-integrity` (the real, live gate) never had this false positive: it always
+  // used the correct exclusion. Importing the real walker instead of re-deriving it means
+  // this test's scope can never again drift from the live lint's scope.
+  const tracked: string[] = scriptsInScope();
 
   it('scans a non-trivial number of scripts (an empty scan is NOT a pass)', () => {
     // papercusp-desktop is a submodule: if it is not checked out, this walk finds nothing and
     // a "no findings" result would mean "I never looked" — the exact can-falsely-pass shape.
-    expect(shellScripts(SCOPE).length).toBeGreaterThanOrEqual(10);
+    expect(tracked.length).toBeGreaterThanOrEqual(10);
   });
 
   it('reports no can-falsely-pass shapes across papercusp-desktop/bin', () => {
-    const findings = shellScripts(SCOPE).flatMap((f) => run(readFileSync(f, 'utf8')).map((x) => ({ ...x, file: f })));
-    const rendered = findings.map((f) => `${f.file.replace(REPO, '')}:${f.line} [${f.rule}]`).join('\n');
+    const findings = tracked.flatMap((f: string) =>
+      run(readFileSync(resolve(ROOT, f), 'utf8')).map((x) => ({ ...x, file: f })),
+    );
+    const rendered = findings.map((f) => `${f.file}:${f.line} [${f.rule}]`).join('\n');
     expect(rendered).toBe('');
   });
 });
