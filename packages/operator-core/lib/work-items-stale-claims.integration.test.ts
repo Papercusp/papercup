@@ -217,6 +217,27 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect(row.taken_by).toBeNull();
   });
 
+  it('EI-18838076935151132: a reaper-released claim is attributed to the REAPER, not the former holder', async () => {
+    // Attribution defect #2: before the fix, the reaper never touched
+    // last_released_by/at at all, so an involuntary release was indistinguishable
+    // from "never released" — no detector could tell it apart from a holder that
+    // simply never had its claim released. Assert the reaper now stamps a
+    // reaper-prefixed, reason-tagged marker that can never collide with a real
+    // ownerId (so the release-cooldown floor in get-next.ts can't misfire against
+    // it) and is greppable via `last_released_by LIKE 'reaper:%'`.
+    await seedItem('F-901', 'opspawn-dead-901', 30);
+    await markKnown('opspawn-dead-901');
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(1);
+    expect(r.released[0].reason).toBe('dead');
+    const [row] = await sql<{ last_released_by: string | null; last_released_at: Date | null }[]>`
+      SELECT last_released_by, last_released_at
+        FROM harness_shared.work_items WHERE feature_id = 'F-901'`;
+    expect(row.last_released_by).toBe('reaper:dead');
+    expect(row.last_released_by).not.toBe('opspawn-dead-901');
+    expect(row.last_released_at).not.toBeNull();
+  });
+
   it('a holder with a FRESH presence heartbeat is alive — claim kept', async () => {
     await seedItem('F-002', 'su-alive-1', 30);
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-alive-1', now())`;
@@ -668,6 +689,24 @@ describe('reclaimStaleIssueClaims (issue-family reaper, GAP 2 / P-005 / D-009)',
     expect(r.released).toHaveLength(1);
     expect(r.released[0]).toMatchObject({ issue_id: 'EI-1', kind: 'bug', former_assignee: 'opspawn-dead-bug' });
     expect(await assigneeOf('EI-1')).toBeNull();
+  });
+
+  it('EI-18838076935151132: a reaper-released issue claim is attributed to the REAPER, not the former holder', async () => {
+    // The engineer_issues VIEW's own INSTEAD OF trigger (mig 499/513) self-stamps
+    // last_released_by = OLD.assignee the instant assignee clears — correct for a
+    // VOLUNTARY release, but backwards for a reaper-initiated one (the holder never
+    // acted). Assert the follow-up base-table UPDATE overrides it to the same
+    // reaper-prefixed marker convention as the feature-family leg.
+    await seedIssue('EI-901', 'bug', 'opspawn-dead-issue-901', 30);
+    await markKnown('opspawn-dead-issue-901');
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(1);
+    const [row] = await sql<{ last_released_by: string | null; last_released_at: Date | null }[]>`
+      SELECT last_released_by, last_released_at
+        FROM harness_shared.work_items WHERE feature_id = 'EI-901'`;
+    expect(row.last_released_by).toBe('reaper:dead');
+    expect(row.last_released_by).not.toBe('opspawn-dead-issue-901');
+    expect(row.last_released_at).not.toBeNull();
   });
 
   it('a dead-holder OPEN change → assignee cleared', async () => {

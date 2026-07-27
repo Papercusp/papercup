@@ -13,7 +13,7 @@ import { composePlaneMeasurement } from './agent-plane-measurement';
 import type { DivergenceReport, DivergenceCoverage } from './agent-state-divergence';
 
 function coverage(over: Partial<DivergenceCoverage> = {}): DivergenceCoverage {
-  return {
+  const base: DivergenceCoverage = {
     callsExamined: 0,
     stampedCalls: 0,
     goalStampedCalls: 0,
@@ -32,8 +32,11 @@ function coverage(over: Partial<DivergenceCoverage> = {}): DivergenceCoverage {
     terminalFilterApplied: false,
     terminalGoalCallsExcluded: 0,
     bucketsCollapsedByTerminal: 0,
-    ...over,
   };
+  // Annotate the defaults, THEN merge — spreading a Partial<T> directly into an
+  // object literal that must satisfy T re-widens every overridable field to
+  // `T[k] | undefined`, which does not assign back to T.
+  return { ...base, ...over };
 }
 
 function report(over: Partial<DivergenceReport> = {}): DivergenceReport {

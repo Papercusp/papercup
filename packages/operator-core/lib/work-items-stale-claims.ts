@@ -538,6 +538,25 @@ export async function reclaimStaleWorkItemClaims(
              WHEN d.former_status <> ALL(${nonRequeue}::text[])
                THEN (CASE WHEN d.former_requeue_count + 1 >= ${cap} THEN 'blocked' ELSE 'open' END)
              ELSE d.former_status END,
+           -- EI-18838076935151132 (attribution defect #2 of 2): before this fix the
+           -- reaper never touched last_released_by/last_released_at at all, so an
+           -- INVOLUNTARY (sweep-initiated) release was silently indistinguishable from
+           -- "never released" to every downstream reader — no detector could ever fire
+           -- on "this holder lost its claim without acting", and the reporter found
+           -- exactly that: four LIVE, actively-working holders' claims freed with no
+           -- audit trail naming the reaper as the actor. A VOLUNTARY release
+           -- (work-items.ts's releaseWorkItem / the engineer_issues view trigger) stamps
+           -- last_released_by = the releasing HOLDER's own id, which is correct there —
+           -- the holder chose to let go. A reaper-initiated release is the opposite: the
+           -- holder did NOT act, so attributing it to the holder erases the very signal
+           -- an operator/detector needs. Stamping a reaper-prefixed, REASON-tagged marker
+           -- here (never equal to any real ownerId) means (a) the release-cooldown floor
+           -- (scheduler/get-next.ts's `last_released_by <> candidate`) can never misfire
+           -- against it, and (b) any detector/audit can find every involuntary release
+           -- with `last_released_by LIKE 'reaper:%'` and read WHY off the suffix
+           -- (dead / spawn-exit / stalled) without a join.
+           last_released_by = 'reaper:' || d.reason,
+           last_released_at = now(),
            updated_ts = ${Date.now()}
       FROM reclaimable d
      WHERE f.workspace_id = d.workspace_id
@@ -663,6 +682,27 @@ export async function reclaimStaleIssueClaims(
       FROM dead d
      WHERE e.workspace_id = d.workspace_id AND e.issue_id = d.issue_id
     RETURNING d.workspace_id, d.issue_id, d.kind, d.former_assignee, d.assigned_by`;
+  // EI-18838076935151132 (attribution defect #2, issue-family leg): the UPDATE above
+  // targets the `engineer_issues` VIEW, whose INSTEAD OF trigger
+  // (engineer_issues_view_dml — mig 499/513) already self-stamps
+  // `last_released_by = OLD.assignee` the instant `assignee` goes non-null -> null, on
+  // the (correct-for-a-VOLUNTARY-release) assumption that clearing assignee IS the
+  // release action. For THIS reaper that assumption is exactly backwards: the holder
+  // never acted, so attributing the release to them is the same erasure bug as the
+  // feature-family leg had (see reclaimStaleWorkItemClaims above) — just baked into
+  // the trigger instead of an omitted column. Overwrite it right after, directly on the
+  // base table (bypassing the view/trigger, which only fires on assignee-transitions),
+  // with the SAME reaper-prefixed marker convention: never equal to a real ownerId (so
+  // the release-cooldown floor can't misfire), greppable via `last_released_by LIKE
+  // 'reaper:%'`. This reaper has no per-row reason split (unlike the feature-family
+  // leg) — every row it frees is the DEAD leg — so the marker is always 'reaper:dead'.
+  if (released.length > 0) {
+    await sql`
+      UPDATE harness_shared.work_items
+         SET last_released_by = 'reaper:dead', last_released_at = now()
+       WHERE feature_id = ANY(${released.map((r) => r.issue_id)}::text[])
+         AND item_kind IN ('bug', 'change')`;
+  }
   // EI-6480: clear the stale per-Hive claim LEASE for every issue this sweep just returned to
   // the OPEN pool. Unlike the feature reaper (whose work_items.harness_slug IS the bare lease
   // key), an issue lease is keyed on the claiming agent's bare harness which engineer_issues
