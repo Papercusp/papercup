@@ -53,6 +53,8 @@ import {
   buildWorkItemBoard,
   HUD_ENTITY_COLUMNS,
   HUD_TABS,
+  HUD_WORK_ITEM_FETCH_STATES,
+  rollUpStateCounts,
   type HudEntityColumnId,
   type HudTabId,
   type HudWorkItemInput,
@@ -75,12 +77,14 @@ interface RosterPayload {
  *  minute-or-coarser granularity, so a faster tick would only cost renders. */
 const CLOCK_TICK_MS = 15_000;
 
-/** How many work-item rows the Work items tab pulls. The store carries ~1800
- *  in this harness; the board caps what it RENDERS per column anyway, so this
- *  is about how much of the tail the counts are honest over, not about DOM
- *  size. Matches the work-items panel's own page size rather than inventing a
- *  second number. */
-const WORK_ITEM_FETCH_LIMIT = 500;
+/** Work-item CARDS pulled per status (P-004). 12 statuses × 40 ≈ 480 rows —
+ *  about what the old single 500-row window cost, but spread so every column is
+ *  actually represented instead of whichever statuses happened to be touched
+ *  most recently. The board renders at most
+ *  HUD_ENTITY_DEFAULT_MAX_PER_COLUMN (60) per column regardless; counts come
+ *  from the store-wide aggregate, so under-fetching a column understates no
+ *  number, it only means more of it sits behind "+N more". */
+const WORK_ITEM_PER_STATE = 40;
 
 /** A work-item id (WI-/EI-/F-), anchored. The Work items board also carries
  *  UNATTRIBUTED ASK cards folded into needs-you (`askToCard` ids them `ask:<id>`
@@ -398,18 +402,40 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   const harnessSlug = useResolvedHarnessSlug();
   const workItems = useSyncQuery<HudWorkItemInput>({
     queryName: 'workItems.byHarness',
-    args: { harnessSlug, limit: WORK_ITEM_FETCH_LIMIT },
+    // P-004: a FAIR slice per status, not one `updated_ts DESC` window across
+    // all of them. The old window (limit 500 of 27,514) held zero of the 45
+    // needs-human rows — recently-touched `done` work crowded them out — so the
+    // needs-you column rendered no work items while reporting a count. This
+    // asks for every status the board maps, bounded, and costs LESS data.
+    args: {
+      harnessSlug,
+      states: HUD_WORK_ITEM_FETCH_STATES,
+      perState: WORK_ITEM_PER_STATE,
+    },
     // Only fetch when the tab is actually showing: this is the heaviest read
     // on the surface and the HUD's default tab is Sessions.
     enabled: tab === 'items' && Boolean(harnessSlug),
   });
+  /* The counts the board REPORTS come from a store-wide aggregate, never from
+     the sampled cards — reusing the existing `workItems.stats` feed rather than
+     adding a second counting path. */
+  const workItemStats = useSyncQuery<{ state?: string | null; n?: number | null }>({
+    queryName: 'workItems.stats',
+    args: { harnessSlug },
+    enabled: tab === 'items' && Boolean(harnessSlug),
+  });
+  const itemTotals = useMemo(
+    () => (workItemStats.data ? rollUpStateCounts(workItemStats.data) : null),
+    [workItemStats.data],
+  );
   const itemBoard = useMemo(
     () =>
       buildWorkItemBoard(workItems.data ?? [], board.unattributed, {
         nowMs,
         query: entityQuery,
+        totals: itemTotals,
       }),
-    [workItems.data, board.unattributed, nowMs, entityQuery],
+    [workItems.data, board.unattributed, nowMs, entityQuery, itemTotals],
   );
 
   /* ── Card → popup (P-002) ───────────────────────────────────────────────

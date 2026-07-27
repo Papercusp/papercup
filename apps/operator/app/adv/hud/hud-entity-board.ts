@@ -134,6 +134,22 @@ export interface HudEntityBuildOptions {
   maxPerColumn?: number;
   /** Substring filter over ref/title/context, case-insensitive. */
   query?: string;
+  /**
+   * TRUE per-column totals over the whole store (P-004), when the caller can
+   * supply them — the cards it passes are only a bounded sample.
+   *
+   * The docblock on `maxPerColumn` above promised "`counts` and `total` always
+   * report the true numbers". That was false: counts were derived from whatever
+   * rows happened to be fetched, so on `papercusp` the Work items tab reported
+   * "201 needs you" (which were 201 unattributed ASKS and zero work items,
+   * because none of the 45 real needs-human rows were inside the fetched
+   * window) and "197 ready" against an actual 13,126. Every number on the board
+   * was a window artifact wearing the clothes of a total.
+   *
+   * Supplying `totals` makes that promise true. Omitted ⇒ counts fall back to
+   * the cards present, which is the honest answer when there is nothing better.
+   */
+  totals?: Partial<Record<HudEntityColumnId, number>> | null;
 }
 
 export const HUD_ENTITY_DEFAULT_MAX_PER_COLUMN = 60;
@@ -194,6 +210,46 @@ const SETTLED_STATES: ReadonlySet<string> = new Set([
   'passed',
   'deprecated',
 ]);
+
+/**
+ * The statuses the Work items tab fetches cards for (P-004), one bounded slice
+ * each — see `workItems.byHarness`'s `states` arg for why a single
+ * `updated_ts DESC` window is the wrong sample for a status-grouped board.
+ *
+ * Derived from the SAME vocabulary `workItemColumn` maps below (every branch it
+ * names, plus the two `ready` states), so a status added to one is a visible
+ * omission in the other rather than a column that silently stops loading.
+ */
+export const HUD_WORK_ITEM_FETCH_STATES: readonly string[] = [
+  'needs-human',
+  'wip',
+  'in-progress',
+  'blocked',
+  'open',
+  'todo',
+  ...SETTLED_STATES,
+];
+
+/**
+ * Roll a `{ state, n }` aggregate (the `workItems.stats` feed) up into TRUE
+ * per-column totals, through the SAME `workItemColumn` mapping the cards use —
+ * so the counts and the cards can never disagree about which column a status
+ * belongs to. That shared mapping is the reason this rollup lives here in TS
+ * rather than as a GROUP BY over a column expression in SQL.
+ */
+export function rollUpStateCounts(
+  rows: readonly { state?: string | null; n?: number | null }[],
+): Record<HudEntityColumnId, number> {
+  const out = Object.fromEntries(
+    HUD_ENTITY_COLUMNS.map((id) => [id, 0]),
+  ) as Record<HudEntityColumnId, number>;
+  for (const r of rows) {
+    const n = typeof r.n === 'number' && Number.isFinite(r.n) ? r.n : 0;
+    if (n <= 0) continue;
+    out[workItemColumn(r.state)] += n;
+  }
+  return out;
+}
 
 export function workItemColumn(state: string | null | undefined): HudEntityColumnId {
   const s = normalizeState(state);
@@ -296,18 +352,47 @@ function assemble(
     byColumn.get(card.column)!.push(card);
   }
 
+  /* True totals REPLACE the sampled counts — but only when no query is active.
+     A filter's whole contract on this board is that "the counts above always
+     describe what is actually on screen"; a store-wide total would break that
+     the moment you typed into the box. So filtering falls back to counting the
+     matches, which is then genuinely the right number. */
+  const filtering = q.length > 0;
+  const totals = filtering ? null : opts.totals ?? null;
+  if (totals) {
+    for (const id of HUD_ENTITY_COLUMNS) {
+      const t = totals[id];
+      // Never report FEWER than the cards actually held: the ask cards folded
+      // into needs-you are not work items and so are not in the store-side
+      // totals, and a count below the visible card count reads as a bug.
+      if (typeof t === 'number' && Number.isFinite(t)) {
+        counts[id] = Math.max(t, counts[id]);
+      }
+    }
+  }
+
   const columns = HUD_ENTITY_COLUMNS.map((id) => {
     const all = byColumn.get(id)!.slice().sort((a, b) => a.sortKey - b.sortKey);
+    const cards = all.slice(0, max);
     return {
       id,
       label: HUD_ENTITY_COLUMN_LABEL[id],
       empty: empty[id],
-      cards: all.slice(0, max),
-      hidden: Math.max(0, all.length - max),
+      cards,
+      // Hidden is measured against the COUNT, not the sample: with true totals
+      // the rows this board never fetched are hidden too, and saying so is the
+      // difference between a bounded view and a wrong one.
+      hidden: Math.max(0, counts[id] - cards.length),
     };
   });
 
-  return { columns, counts, total: kept.length };
+  return {
+    columns,
+    counts,
+    total: totals
+      ? HUD_ENTITY_COLUMNS.reduce((n, id) => n + counts[id], 0)
+      : kept.length,
+  };
 }
 
 /* ── plans ───────────────────────────────────────────────────────────────── */

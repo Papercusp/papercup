@@ -2071,23 +2071,59 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // degradation. The resolver body already Math.min-clamps to
       // WORK_ITEMS_MAX_LIMIT, so an over-large request is bounded server-side.
       limit: z.number().int().positive().default(2000),
+      /**
+       * hud-open-destinations-and-true-counts-2026-07-27 P-004 — a FAIR window.
+       *
+       * The single `limit` window above is ordered `updated_ts DESC` across
+       * every status at once, which makes it a poor sample for any board that
+       * groups BY status: measured live on `papercusp` (27,514 rows), a 500-row
+       * window held `done 264, open 197, resolved 21, dropped 9, blocked 8,
+       * closed 1` and **zero** of the 45 `needs-human` rows — so the HUD's
+       * "needs you" column rendered no work items at all while claiming a count.
+       * Recently-touched terminal work simply crowds out everything else.
+       *
+       * Passing `states` fetches up to `perState` rows for EACH status named,
+       * so every group the caller intends to render is actually represented.
+       * Costs less data than one big window, not more.
+       */
+      states: z.array(z.string().max(40)).max(20).optional(),
+      perState: z.number().int().positive().max(200).optional(),
     }),
     resolve: async (args) => {
-      const { harnessSlug, kind, state, limit } = args as {
+      const { harnessSlug, kind, state, limit, states, perState } = args as {
         harnessSlug: string;
         kind?: string;
         state?: string;
         limit: number;
+        states?: string[];
+        perState?: number;
       };
       const [{ listEnrichedWorkItems }, { isWorkItemKind, countWorkItems }] = await Promise.all([
         import('../endpoint-route/routes/harness/work-items'),
         import('../work-items'),
       ]);
       const k = kind && isWorkItemKind(kind) ? kind : undefined;
-      const [rows, total] = await Promise.all([
-        listEnrichedWorkItems({ harness: harnessSlug, kind: k, state, limit }),
-        countWorkItems({ harness: harnessSlug, kind: k, state }),
-      ]);
+      const [rows, total] = states && states.length > 0
+        ? await Promise.all([
+            Promise.all(
+              states.map((s) =>
+                listEnrichedWorkItems({
+                  harness: harnessSlug,
+                  kind: k,
+                  state: s,
+                  limit: perState ?? 60,
+                }),
+              ),
+            ).then((perStateRows) => perStateRows.flat()),
+            // The TRUE corpus total, deliberately NOT scoped to `states` — it is
+            // what row[0]._meta.total is for (see below), and a total that only
+            // counted the sampled states would restate the sample, not the store.
+            countWorkItems({ harness: harnessSlug, kind: k }),
+          ])
+        : await Promise.all([
+            listEnrichedWorkItems({ harness: harnessSlug, kind: k, state, limit }),
+            countWorkItems({ harness: harnessSlug, kind: k, state }),
+          ]);
       // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
       // envelope) so the UI shows "N of TOTAL" instead of the capped length.
       // P-006: drop the heavy per-row `summary` (avg ~694 chars, the dominant
