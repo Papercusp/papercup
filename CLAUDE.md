@@ -103,6 +103,36 @@ in `schedule:inventory` (*visibility ≠ control*). A bare `setInterval` fails
 `lint:no-raw-setinterval` (the BASELINE is empty). Full model:
 [the scheduler layer model](/internal/docs/agent-insights/two-tier-scheduler-and-timer-visibility).
 
+## Spawning: no unenrolled `detached` spawn, and never kill by name
+
+The process analogue of the scheduler rule above. A `detached: true` spawn creates a
+process meant to **outlive the call that made it** — the root of a subtree — so it must be
+enrolled in the task ledger: **`managedSpawn`** (`task-manager/managed-spawn.ts`) for an
+async seam, **`beginSyncEnrolment` + `completeSyncEnrolment` + `finishSyncEnrolment`**
+(`task-manager/enroll-sync.ts`) for a sync one. `lint:no-unenrolled-spawn` fails a new
+un-enrolled site; genuinely-not-ours lifetimes (a human terminal window, a pre-operator
+bootstrap, a release cut that survives the restart it performs) go in that guard's
+ALLOWLIST **with a reason**. Ordinary short-lived spawns need nothing — cgroup membership
+is inherited, so a `git rev-parse` inside an already-confined process is already accounted
+for. That inheritance is the whole design: confine the ROOTS, and the kernel accounts for
+every descendant, including ones that double-fork and reparent to init.
+
+⛔ **Never kill by name or pattern.** `pkill -f '<binary>'` has twice killed the owner's
+live desktop window and peer agents' Xvfb instances. Use **`processes:kill { taskId }`** —
+it kills the whole cgroup subtree and cannot reach a recycled pid (PID wrap happens ~daily
+here under fleet load). An `identity_mismatch` refusal is the rail working, not a bug. To
+relieve pressure without losing work, **`processes:freeze`** beats killing.
+
+| you want | use | not |
+|---|---|---|
+| what is running AND WHY (who launched it, for which work-item, what it costs) | `processes:list` | `ps`/`pgrep` — kernel-shaped, zero provenance |
+| the six tracked AGENT process kinds | `dev:processes` (unchanged, deliberately narrow) | `processes:list` |
+| a real whole-host process list | plain `ps`/`pgrep` (never gated) | `processes:list` — it will answer wrong, not empty |
+
+Human pane: `/admin/tasks` (sibling of `/admin/schedules` — that one inventories everything
+RECURRING, this one everything RUNNING). Full model:
+[the task manager and the no-escape property](/internal/docs/agent-insights/task-manager-and-the-no-escape-property).
+
 ## Deployment model: desktop is the product; the standalone webapp is RETIRED
 
 Shipping target = the Tauri desktop app; **desktop SSE is the sync path that

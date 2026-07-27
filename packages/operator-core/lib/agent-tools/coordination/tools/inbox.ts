@@ -94,29 +94,16 @@ const COORD_KINDS = [
   "plan_event",
 ] as const;
 
-/** Ambient system-broadcast categories excluded from the default inbox — they
- *  are high-volume status firehoses (service up/down, rate-limit pauses, and the
- *  per-git-sync doc-freshness RE-VERIFY digest) that bury addressed work. Every
- *  one is broadcast to '*' and actionable to almost no single reader, so on a busy
- *  fleet they drown out directed messages (EI-2826/EI-2871: a doc-drift flood
- *  literally BURIED a peer's "details inside" build-blocker so it was never read).
- *  `doc-drift` earns its place here even though it's individually useful: the
- *  fan-out is to `*`, not to the doc's owner, so for ~every recipient it is pure
- *  noise — the right long-term fix is owner/subscriber targeting (EI-2826 opt c),
- *  but exclude-by-default (opt a) unburies the channel for the whole fleet NOW.
- *  Still `message`s (D-002); opt back in via include_ambient. */
-const AMBIENT_CATEGORIES = new Set([
-  "service-health",
-  "agent-governor",
-  "doc-drift",
-  // EI-386: named-resource drain/back-up templates (resource-broadcast.ts) —
-  // stamped for classification consistency with the others above. In practice
-  // these are always sent to specific holders/waiters, never `to: ['*']`, so
-  // isAmbientBroadcast's broadcast-only guard (below) keeps them visible to
-  // the recipient who must act; this entry only takes effect if a future
-  // caller ever genuinely broadcasts one to '*'.
-  "resource-locks",
-]);
+// The default-visibility rules (ambient exclusion, intent-declare exclusion,
+// repeated-broadcast coalescing) were RELOCATED to `../inbox-visibility` so the
+// owner-visible unread counter can apply the SAME rules without importing this
+// defineTool module (unread-count-truthfulness-2026-07-27 P-005 / D-006).
+// Re-exported here so this module's public surface is unchanged.
+export {
+  excludeIntentDeclares,
+  isAmbientBroadcast,
+  coalesceRepeatedBroadcasts,
+} from "../inbox-visibility";
 
 const DEFAULT_INBOX_LIMIT = 50;
 
@@ -166,96 +153,6 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
     }
     return out;
   });
-}
-
-/** P-005 (fleet-member-dx-improvements-2026-07-10) pure rule: exclude peers'
- *  auto `now working on:` intent-declare messages (lifecycle:'intent') from the
- *  default read — they are presence state re-broadcast to every @plan/@fleet
- *  subscriber, and on a busy fleet they dominate the window and make
- *  `summary.total` meaningless (observed: the bulk of a 2,332-message inbox).
- *  KEPT when the caller opted in (`includeIntents`) OR passed a sender `from`
- *  filter (a sender-scoped read wants that sender's status line). Pure. */
-export function excludeIntentDeclares<T extends Record<string, unknown>>(
-  entries: readonly T[],
-  opts: { includeIntents?: boolean; from?: string | null },
-): { kept: T[]; excluded: number } {
-  if (opts.includeIntents || opts.from) return { kept: [...entries], excluded: 0 };
-  // Only machine-authored lifecycle projections are presence noise. A directed,
-  // contextual message must never disappear merely because a producer reused the
-  // `intent` lifecycle label; `auto:true` is the authoritative projection stamp.
-  const kept = entries.filter(
-    (e) => !(e["lifecycle"] === "intent" && e["auto"] === true),
-  );
-  return { kept, excluded: entries.length - kept.length };
-}
-
-/** Ambient suppression is intentionally broadcast-only. Category labels describe
- * content, not delivery importance; a system or peer may send the same category
- * directly to one agent, and that addressed traffic must remain visible. Mixed
- * `['*', owner]` delivery is also treated as directed. */
-export function isAmbientBroadcast(e: Record<string, unknown>): boolean {
-  const category = e["category"];
-  const recipients = e["to"];
-  return (
-    typeof category === "string" &&
-    AMBIENT_CATEGORIES.has(category) &&
-    Array.isArray(recipients) &&
-    recipients.length > 0 &&
-    recipients.every((recipient) => recipient === "*")
-  );
-}
-
-/** EI-6144 ambient/broadcast coalescing: collapse REPEATED categorized system
- *  broadcasts — same sender, kind, category, and verbatim summary, addressed to
- *  '*' — into ONE row (the newest of the group), annotated `repeat_count` +
- *  `first_seen_ts`. Watchdog/status firehoses re-emit the same line for hours;
- *  without this they fill the `limit` window with repetition and crowd distinct
- *  signal out. Only categorized broadcasts coalesce: direct messages (a peer
- *  legitimately saying the same thing twice) and uncategorized rows pass
- *  through untouched. Read-time only — the log keeps every row. Ascending
- *  order is preserved (each group's newest keeps its original position). Pure. */
-export function coalesceRepeatedBroadcasts<T extends Record<string, unknown>>(
-  entries: readonly T[],
-): Array<Record<string, unknown>> {
-  type Group = { lastIdx: number; count: number; firstTs: string };
-  const groups = new Map<string, Group>();
-  const keyOf = (e: Record<string, unknown>): string | null => {
-    const category = e["category"];
-    const summary = e["summary"];
-    const to = e["to"];
-    if (typeof category !== "string" || !category) return null;
-    if (typeof summary !== "string" || !summary) return null;
-    if (!Array.isArray(to) || !to.includes("*")) return null;
-    return `${String(e["from"] ?? "")}\x00${String(e["kind"] ?? "")}\x00${category}\x00${summary}`;
-  };
-  entries.forEach((e, i) => {
-    const key = keyOf(e);
-    if (key === null) return;
-    const ts = typeof e["ts"] === "string" ? (e["ts"] as string) : "";
-    const g = groups.get(key);
-    if (!g) groups.set(key, { lastIdx: i, count: 1, firstTs: ts });
-    else {
-      g.count += 1;
-      g.lastIdx = i; // entries are ascending — the latest index is the newest
-      if (ts && (!g.firstTs || ts < g.firstTs)) g.firstTs = ts;
-    }
-  });
-  if (![...groups.values()].some((g) => g.count > 1))
-    return entries as unknown as Array<Record<string, unknown>>;
-  const out: Array<Record<string, unknown>> = [];
-  entries.forEach((e, i) => {
-    const key = keyOf(e);
-    if (key === null) {
-      out.push(e);
-      return;
-    }
-    const g = groups.get(key)!;
-    if (i !== g.lastIdx) return; // an older duplicate — folded into the newest
-    out.push(
-      g.count > 1 ? { ...e, repeat_count: g.count, first_seen_ts: g.firstTs } : e,
-    );
-  });
-  return out;
 }
 
 /** WI-1444 severe-event condition lifecycle: annotate every entry whose

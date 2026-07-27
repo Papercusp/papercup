@@ -27,6 +27,15 @@ import {
   type QueueResult,
 } from './agent-tools/locks/su-lock-store';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
+// unread-count-truthfulness-2026-07-27 P-005 / D-006: the SAME default-visibility
+// rules coord:inbox applies, imported from the pure module they were relocated to
+// (never re-implemented here — a second copy would drift from the reader).
+import {
+  isAmbientBroadcast,
+  excludeIntentDeclares,
+  coalesceRepeatedBroadcasts,
+} from './agent-tools/coordination/inbox-visibility';
+import { collectRetractedIds, suppressRetracted } from './agent-tools/coordination/retraction';
 import { readCodexHomeDiagnostics, type CodexHomeDiagnostics } from './role-codex-home';
 import {
   nativeSessionHandleForAdvSession,
@@ -352,19 +361,42 @@ export function deriveCoordState(
   // ts values are ISO strings and compare lexicographically — the same
   // assumption `byTs` above already relies on.
   //
-  // NOT yet coord:inbox semantics, deliberately: coord:inbox excludes ambient
-  // system broadcasts and collapses repeats, and this does neither, so a
-  // broadcast-heavy window still over-counts relative to what the agent is
-  // actually shown. That is Phase 2 (P-004/P-005) and is kept out of this
-  // change-set per D-001.
-  const unreadCount = messages.filter(
+  // Phase 2 (P-004/P-005, D-006) then narrowed this to what the agent is
+  // actually SHOWN: the count is the INTERSECTION of the predicate above and a
+  // DEFAULT `coord:inbox` read, so it can only ever go down, never up. The four
+  // visibility rules are REUSED from coord:inbox's own modules — never a second
+  // copy, since a counter that disagrees with the reader is this plan's bug.
+  //
+  // Applied in coord:inbox's own order (tools/inbox.ts): retraction → ambient →
+  // intent-declare → coalesce. Deliberately NOT applied: the display `limit`
+  // (a badge capped at the page size would be a new lie, and D-003 forbade
+  // capping) and the opt-in `from`/`unanswered_only` narrowing (caller-supplied,
+  // not "what a default read shows"). The `kind:'message'` narrowing STAYS:
+  // reading "agree with coord:inbox" literally would ADD acks/handoffs and
+  // raise the number, which is the opposite of this plan's purpose.
+  const unreadCandidates = messages.filter(
     (m) =>
       m.kind === 'message' &&
       m.from !== owner &&
       (recipientsOf(m).includes(owner) || recipientsOf(m).includes('*')) &&
       (!readCursor || m.ts > readCursor) &&
       !acked.has(m.msg_id),
-  ).length;
+  );
+  // Retraction markers are collected from the FULL raw window, not the unread
+  // slice — the "disregard that" notice may sit either side of the cursor.
+  const visible = suppressRetracted(unreadCandidates, collectRetractedIds(messages)).filter(
+    (m) => !isAmbientBroadcast(m as unknown as Record<string, unknown>),
+  );
+  // Intent declares are the LARGER of the two Phase-2 legs and are NOT
+  // broadcasts: they fan out addressed to each @plan/@fleet subscriber, so the
+  // recipient predicate above counts every one (measured 2026-07-27: up to 68%
+  // of one agent's counted messages over 12h).
+  const { kept: withoutIntents } = excludeIntentDeclares(
+    visible as unknown as Array<Record<string, unknown>>,
+    {},
+  );
+  // A coalesced group is ONE row in the reader, so it counts once.
+  const unreadCount = coalesceRepeatedBroadcasts(withoutIntents).length;
 
   const openHandoffs: CoordHandoffSummary[] = handoffs
     .filter((h) => h.record.from === owner || recipientsOf(h.record).includes(owner))
