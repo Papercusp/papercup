@@ -74,6 +74,7 @@ describe('compactCoverage', () => {
     directlyClaimed: false,
     directHolder: null,
     directActivity: null,
+    holder: null,
     level: 'full',
     workers: ['su-aaa'],
     lastActivityAt: null,
@@ -93,6 +94,38 @@ describe('compactCoverage', () => {
   it('omits empty workers + links arrays to keep the payload small', () => {
     const lean: PlanItemCoverage = { ...base, links: [], workers: [], level: 'none' };
     expect(compactCoverage(lean)).toEqual({ level: 'none' });
+  });
+
+  it('carries the direct holder + their declared goal (P-029/D-060)', () => {
+    // The item's whole point: a reader browsing what is taken sees WHY, without
+    // having to attempt a claim and be refused.
+    const held: PlanItemCoverage = {
+      ...base,
+      directlyClaimed: true,
+      directHolder: 'su-bbb',
+      holder: {
+        ownerId: 'su-bbb',
+        ownerLabel: 'su · su-bbb',
+        goalText: 'Land the auth refactor',
+        declaredAt: '2026-07-27T11:58:00.000Z',
+        stale: false,
+      },
+    };
+    expect(compactCoverage(held).holder).toEqual({
+      ownerId: 'su-bbb',
+      ownerLabel: 'su · su-bbb',
+      goalText: 'Land the auth refactor',
+      declaredAt: '2026-07-27T11:58:00.000Z',
+      stale: false,
+    });
+  });
+
+  it('omits `holder` entirely when nothing is directly claimed — but never drops the row', () => {
+    // D-056: an absent holder must not be inferable as a missing ROW, or peer
+    // visibility leaks through the shape of the list.
+    const out = compactCoverage(base);
+    expect('holder' in out).toBe(false);
+    expect(out.level).toBe('full');
   });
 });
 
@@ -129,6 +162,7 @@ describe('coverageCollisions (EI-6074)', () => {
     directlyClaimed: false,
     directHolder: null,
     directActivity: null,
+    holder: null,
     level: 'none',
     workers: [],
     lastActivityAt: null,
