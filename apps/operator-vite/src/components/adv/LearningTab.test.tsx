@@ -1437,6 +1437,52 @@ describe("LearningTab — Benchmark view", () => {
     expect(screen.getByText("No throughput recorded yet")).toBeTruthy();
   });
 
+  // WI-6383 live-drive finding: every Throughput assertion until now ran against an
+  // EMPTY snapshot, so the per-pot card path — the whole point of the view — had never
+  // been rendered by any test in its life. That is what 15 days of unreachability buys:
+  // not just no users, no coverage either. Real-shaped data, one pot, one tick.
+  it("renders the per-pot throughput cards from a populated snapshot (WI-6383)", () => {
+    nuqsState.lview = "throughput";
+    throughputResult = {
+      data: [
+        {
+          hives: [
+            {
+              potSlug: "alpha-hive",
+              latest: {
+                potSlug: "alpha-hive",
+                tickAt: new Date(Date.now() - 60_000).toISOString(),
+                frontierDepth: 7,
+                cupsBusy: 3,
+                cupsCap: 4,
+                utilization: 0.75,
+                placements: 2,
+                completed: 5,
+                mttcMs: 930_000,
+                stuckCount: 1,
+                questionRungs: { self: 4, peer: 1 },
+              },
+              recent: [],
+              operatingWell: false,
+            },
+          ],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.queryByText("No throughput recorded yet")).toBeNull();
+    expect(screen.getByLabelText("alpha-hive throughput health")).toBeTruthy();
+    expect(screen.getByLabelText("alpha-hive throughput")).toBeTruthy();
+    expect(screen.getByText("3/4")).toBeTruthy(); // cups busy / cap
+    expect(screen.getByText("75%")).toBeTruthy(); // utilization
+    expect(screen.getByText("needs attention")).toBeTruthy(); // operatingWell:false
+    expect(screen.getByLabelText("alpha-hive question rungs")).toBeTruthy();
+  });
+
   // WI-6382's panel sweep skipped ThroughputView because no user could open it.
   // Making it reachable without this would ship the exact defect that item
   // closed: an unreadable substrate rendering as a calm "nothing yet" card that

@@ -358,8 +358,37 @@ describe('the scan strips comments before matching', () => {
  * is precisely what the `goalRef`-alone note below already warned about. This is
  * that same warning, applied to the axis it missed.
  */
+/**
+ * ⚠ AND ON CODE ONLY — comments and string literals are PROSE ABOUT the concept,
+ * never a construction of it. This was the third false positive in forty minutes
+ * and the one that named the root cause.
+ *
+ * `agent-tools/sessions/timeline.ts` is P-024's READ tool. It never assembles a
+ * HolderContext; it mentions `goalRef` in a JSDoc comment and in its own `description`
+ * / `guidance` strings — because it is the tool that reads goals and assumptions, so
+ * its documentation necessarily discusses both. Scanning raw file text made writing
+ * ACCURATE DOCS about this plan's own concepts a way to red the fleet's gate, which is
+ * an actively harmful incentive.
+ *
+ * Tightening the proximity window again would only have postponed the next instance.
+ * Stripping is the fix that ends the class: a construction site is `{ goalRef: x,
+ * assumptions: y }` in real code — bare identifiers, which survive stripping — while
+ * every prose mention disappears. Deliberately applied to LEG A ALONE: legs B and C
+ * hunt SQL that lives INSIDE template literals, so stripping strings there would blind
+ * them completely.
+ */
+function codeOnly(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ') // block comments, incl. JSDoc
+    .replace(/(^|[^:])\/\/[^\n]*/gm, '$1 ') // line comments (the [^:] spares `https://`)
+    .replace(/`(?:\\[\s\S]|[^`\\])*`/g, ' `` ') // template literals
+    .replace(/'(?:\\.|[^'\\\n])*'/g, " '' ")
+    .replace(/"(?:\\.|[^"\\\n])*"/g, ' "" ');
+}
+
 const SHAPE_PROXIMITY_CHARS = 400;
-const CONSTRUCTS_SHAPE = (code: string): boolean => {
+const CONSTRUCTS_SHAPE = (raw: string): boolean => {
+  const code = codeOnly(raw);
   for (const m of code.matchAll(/\bgoalRef\b/g)) {
     const at = m.index ?? 0;
     const window = code.slice(
@@ -426,6 +455,25 @@ describe('LEG A — only the resolver constructs a HolderContext', () => {
     expect(
       CONSTRUCTS_SHAPE(`const { goalRef, assumptions } = await resolveHolderContext(o, r, s);`),
     ).toBe(false);
+
+    // ⚠ PROSE ABOUT THE CONCEPT IS NOT A CONSTRUCTION OF IT — the third false
+    // positive (sessions/timeline.ts, P-024's read tool). Documenting this plan's
+    // own vocabulary accurately must never red the fleet's gate.
+    expect(
+      CONSTRUCTS_SHAPE(`/** Present ONLY on a \`goalRef\`-filtered read; counts assumptions. */`),
+    ).toBe(false);
+    expect(CONSTRUCTS_SHAPE(`// returns the goalRef and its assumptions`)).toBe(false);
+    expect(
+      CONSTRUCTS_SHAPE(
+        `description: "Filter by goalRef; rows carry the goal and assumptions live at call time.",`,
+      ),
+    ).toBe(false);
+    // ...but a construction hiding BELOW a doc comment is still caught.
+    expect(
+      CONSTRUCTS_SHAPE(
+        `/** builds the ctx */\nconst c = { goalRef: r, assumptions: { count, keys } };`,
+      ),
+    ).toBe(true);
   });
 });
 

@@ -30,6 +30,7 @@ import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, access, readdir, rm, stat, unlink } from 'node:fs/promises';
+import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 
 /** Per-call override for {@link defaultRunGit}'s kill-timeout. */
 export interface RunGitOptions {
@@ -62,9 +63,16 @@ export type RunGit = (
   opts?: RunGitOptions,
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
-/** Default RunGit — bounded, C-locale, never-throw. `cwd` is the bare repo (git
- *  operates on it via -C-equivalent cwd; bare repos need no worktree). */
-export const defaultRunGit: RunGit = (args, cwd, opts) =>
+/**
+ * Local (in-process) RunGit — bounded, C-locale, never-throw. `cwd` is the bare
+ * repo (git operates on it via -C-equivalent cwd; bare repos need no worktree).
+ *
+ * ⚠ Forking from THIS process is expensive in proportion to its own RSS — see
+ * {@link defaultRunGit}. Prefer `defaultRunGit`, which routes through the
+ * spawner sidecar when one is available and falls back to this. This is
+ * exported so the fallback path stays directly testable.
+ */
+export const runGitLocal: RunGit = (args, cwd, opts) =>
   new Promise((resolve) => {
     const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
     let stdout = '';
@@ -95,6 +103,67 @@ export const defaultRunGit: RunGit = (args, cwd, opts) =>
       finish(code ?? -1);
     });
   });
+
+/**
+ * Default RunGit — bounded, C-locale, never-throw.
+ *
+ * Routes through the SPAWNER SIDECAR when one is enabled, falling back to
+ * {@link runGitLocal} on any sidecar problem (so a sidecar fault degrades
+ * performance, never correctness). The child `git` is identical either way:
+ * same argv, same cwd, same C-locale env, same captured output.
+ *
+ * ## Why (EI-18808838427010743 — measured on the live bg-host)
+ *
+ * `fork()` copies the calling process's page tables, so the parent-side cost of
+ * spawning ANY child scales with the PARENT's RSS, charged as synchronous
+ * system time on the main thread. Measured here: ~40 ms of blocked event loop
+ * per GB of parent RSS. The bg-host runs at ~4.2 GB, so each `git` call from it
+ * cost ~165 ms of dead loop — for plumbing git finishes in ~4 ms.
+ *
+ * pot-git reads refs one-git-process-per-ref ({@link readNamespaceRef} is a
+ * single `rev-parse`), and callers loop over them: `collectGateableHeads`,
+ * `readSigrefs`, `handleRefAnnouncement`, `runOwnHeadPublishTick`,
+ * `runRefAnnouncePublishTick`, `checkPublishGuard`, `bootstrapFromPeer`. A 150s
+ * CPU profile caught the result — bursts at 98% main-thread busy with 83% of it
+ * inside `spawn()`, and multi-second stretches where the loop was dead. Peer
+ * sockets were dying mid-transfer (EI-18808621019872598) because UDX/hyperswarm
+ * keepalives and timers cannot fire while the loop is blocked, which made a
+ * multi-GB pot repo unable to converge at all.
+ *
+ * The sidecar is small, so ITS fork is cheap (~3 ms measured); this process
+ * pays only a Unix-socket round-trip. Set `PAPERCUSP_POT_GIT_SPAWN_SIDECAR=0`
+ * to force the local path for this subsystem alone.
+ */
+export const defaultRunGit: RunGit = async (args, cwd, opts) => {
+  const timeoutMs = opts?.timeoutMs ?? 60_000;
+  if (gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR')) {
+    try {
+      return await runGitViaSpawnerSidecar(args, cwd, timeoutMs, {
+        ...process.env,
+        LC_ALL: 'C',
+        LANG: 'C',
+      });
+    } catch (e) {
+      // Fall through to the local spawn. Warn once per distinct reason rather
+      // than per call: this runs in the hot ref-read path, and a log line per
+      // git call would itself become a cost worth profiling.
+      warnSidecarFallbackOnce(e);
+    }
+  }
+  return runGitLocal(args, cwd, opts);
+};
+
+/** Distinct sidecar-fallback reasons already logged (see {@link defaultRunGit}). */
+const loggedSidecarFallbacks = new Set<string>();
+
+function warnSidecarFallbackOnce(e: unknown): void {
+  const reason = e instanceof Error ? e.message : String(e);
+  if (loggedSidecarFallbacks.has(reason)) return;
+  // Bound the set — a pathological source of unique messages must not leak.
+  if (loggedSidecarFallbacks.size > 32) loggedSidecarFallbacks.clear();
+  loggedSidecarFallbacks.add(reason);
+  console.warn(`[pot-git] spawner-sidecar git unavailable, using local spawn: ${reason}`);
+}
 
 /**
  * The run-git seam for plumbing that takes its INPUT SET ON STDIN — the

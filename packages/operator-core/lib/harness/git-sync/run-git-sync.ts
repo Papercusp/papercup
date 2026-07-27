@@ -37,7 +37,7 @@ import { spawn } from 'node:child_process';
 import { lstat, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
-import { isSidecarEnabledFromEnv } from '../../process-supervision/sidecar-spawn-shared';
+import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
 import { detectUnsafeDeletions } from './deletion-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
@@ -119,39 +119,7 @@ export const gitTimeoutMsFor = (args: string[]): number =>
  *  sidecar shares) instead of a hand-rolled inline check — behavior is
  *  unchanged (this was already the ONE call site with the `_MODE` guard). */
 export function gitSyncSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isSidecarEnabledFromEnv(
-    {
-      enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
-      modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
-      explicitVar: 'PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR',
-    },
-    env,
-  );
-}
-
-async function runGitViaSpawnerSidecar(
-  args: string[],
-  cwd: string,
-  timeoutMs: number,
-  env: NodeJS.ProcessEnv,
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const { spawnSpawnerSidecar } = await import('../../fleet/spawner-sidecar-spawn');
-  const { getSpawnerIpcClient } = await import('../../fleet/spawner-ipc-client');
-  await spawnSpawnerSidecar();
-  const client = getSpawnerIpcClient();
-  return client.call<{ code: number; stdout: string; stderr: string }>(
-    'process:exec',
-    {
-      command: 'git',
-      args,
-      cwd,
-      env,
-      timeoutMs,
-    },
-    // The sidecar process owns the actual timeout. Keep the client timeout longer
-    // so it does not race a legitimate timeout response.
-    { timeoutMs: timeoutMs + 35_000 },
-  );
+  return gitSidecarEnabled('PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR', env);
 }
 
 const runGitLocalBounded = (
