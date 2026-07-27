@@ -2818,6 +2818,14 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       { graceMs: 0 },
     );
     await handle.mergeNow();
+    // WI-6324: the repair swaps in the fresh session and judges it within this
+    // SAME pass, before that session has merged anything — so its merge cursor is
+    // still 0 here. Catch-up only becomes OBSERVABLE on the next pass, once the
+    // cursor has actually advanced to the writer's length. (Previously this test
+    // "confirmed" on the first pass only because a zero-length view trivially
+    // satisfied `knownLength <= mergedPosition` — it was reading not-yet-started
+    // as finished, which is precisely the production bug WI-6324 fixes.)
+    await handle.mergeNow();
 
     expect(sessions).toHaveLength(1);
     const confirmed = listBootHistory({
@@ -2827,7 +2835,14 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     });
     expect(confirmed).toHaveLength(1);
     expect(confirmed[0]!.message).toContain('repair CONFIRMED');
-    expect(confirmed[0]!.message).toContain('caught up');
+    // WI-6324: this fixture now recovers via the `advanced` arm — the merge cursor
+    // genuinely moves 0 → 3 on the second pass. It used to report 'caught up', but
+    // only by way of the zero-length shortcut this test no longer takes. Under the
+    // corrected semantics a "caught up but NOT advanced" confirmation requires the
+    // cursor to already be at/past a POSITIVE writer length at repair time, which
+    // is a different scenario than the one staged here; 'ingest resumed' is the
+    // honest description of what actually happened.
+    expect(confirmed[0]!.message).toContain('ingest resumed');
     // THE POINT: the outcome carries the incident clock. Nothing else in the
     // system records how long the log was actually broken — the repair-APPLIED
     // line reads as an instant fix.

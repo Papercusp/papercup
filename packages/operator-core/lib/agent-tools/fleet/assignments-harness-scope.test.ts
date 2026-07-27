@@ -87,6 +87,10 @@ function cov(ref: string): PlanItemCoverage {
     directlyClaimed: true,
     directHolder: 'someone',
     directActivity: 'alive',
+    // P-029/D-060 made `holder` required on PlanItemCoverage — the claim's holder
+    // WITH its declared goal, so a reader browsing what is taken need not collide
+    // with the holder to learn why. Mirrors directHolder for this fixture.
+    holder: { ownerId: 'someone', ownerLabel: null, goalText: null, declaredAt: null, stale: null },
     level: 'partial',
     workers: ['someone'],
     lastActivityAt: new Date(),

@@ -34,6 +34,11 @@ function issueRow(over: Partial<EngineerIssueRow> = {}): EngineerIssueRow {
     linked_feature_id: null,
     created_by: null,
     created_at: new Date(1000).toISOString(),
+    // WI-6327: post-mig-688 ops carry the authoritative epoch-ms creation instant, and
+    // it — not created_at — is what the EI-13285 collision guard compares. Default rows
+    // therefore model a CURRENT op; the legacy (created_ts-less) shape is exercised
+    // explicitly by the fail-open test below.
+    created_ts: 1000,
     ...over,
   };
 }
@@ -348,6 +353,7 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
           title: 'unrelated remote replication-liveness issue',
           state: 'resolved',
           created_at: new Date(999_000).toISOString(),
+          created_ts: 999_000,
         }),
         { ts: 999, origin: 'remote', authorPubkey: 'peer-b' },
       );
@@ -366,6 +372,51 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       const afterRealEdit = await getIssue('EI-13236');
       expect(afterRealEdit?.title).toBe('edited by the same author');
       expect(afterRealEdit?.state).toBe('resolved');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  // WI-6327 — the production failure the EI-13285 guard actually produced. The capture
+  // trigger never emitted a creation timestamp for the issue family, so the drain
+  // fabricated `created_at: new Date().toISOString()` on EVERY op. The guard compared
+  // that drain-time "now" against the local row's real created_ts, found them days
+  // apart, and refused the write — for 10,070 distinct issue_ids on the P-302 rig. No
+  // issue update could land on a peer that already held the row: claims, state changes
+  // and completion evidence all silently stopped converging (~1GB/hr of warnings was the
+  // only outward sign).
+  //
+  // A pre-688 op is indistinguishable from a genuine collision on timestamp alone — its
+  // fabricated created_at looks exactly like a different issue's real one — so the guard
+  // must key on `created_ts`, which only an authoritative op carries, and FAIL OPEN when
+  // it is absent. Refusing a write is the destructive branch; it needs evidence, not a
+  // value the mapper invented.
+  it('APPLIES a legacy op that carries no created_ts — the guard fails open rather than judging a fabricated timestamp (WI-6327)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      await p.writeToPg(issueRow({ issue_id: 'EI-6327', title: 'original' }), {
+        ts: 100,
+        origin: 'remote',
+        authorPubkey: 'peer-a',
+      });
+
+      // The legacy shape: no created_ts, and a created_at that (like every pre-688 op)
+      // disagrees wildly with the stored row because it was stamped at drain time.
+      const legacy = issueRow({
+        issue_id: 'EI-6327',
+        title: 'a genuine later edit, shipped by a pre-688 peer',
+        state: 'resolved',
+        created_at: new Date(Date.now()).toISOString(),
+      });
+      delete (legacy as { created_ts?: number | null }).created_ts;
+
+      await p.writeToPg(legacy, { ts: 500, origin: 'remote', authorPubkey: 'peer-a' });
+
+      const after = await getIssue('EI-6327');
+      expect(after?.title).toBe('a genuine later edit, shipped by a pre-688 peer');
+      expect(after?.state).toBe('resolved');
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('EI-13285 id collision'));
     } finally {
       warnSpy.mockRestore();
     }

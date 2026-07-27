@@ -28,7 +28,8 @@ function claim(itemId: string, ownerName: string, mode: 'availability' | 'activi
 }
 function merged(over: Partial<MergedPlanItemState> & Pick<MergedPlanItemState, 'itemId' | 'disposition'>): MergedPlanItemState {
   return {
-    itemStatus: 'todo', assignment: null, claim: null, inPlan: true, ...over,
+    // P-029/D-060 made `holder` required on MergedPlanItemState; unheld ⇒ null.
+    itemStatus: 'todo', assignment: null, claim: null, holder: null, inPlan: true, ...over,
   };
 }
 

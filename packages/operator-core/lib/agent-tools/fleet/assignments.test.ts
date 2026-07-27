@@ -721,6 +721,8 @@ describe('filterActiveCoverage (EI-9015)', () => {
     directlyClaimed: false,
     directHolder: null,
     directActivity: null,
+    // P-029/D-060 made `holder` required on PlanItemCoverage; unclaimed ⇒ null.
+    holder: null,
     level,
     workers: [],
     lastActivityAt,
