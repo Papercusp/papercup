@@ -1419,6 +1419,74 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
     const command = `python3 -c "open('apps/operator/generated.ts', 'w').write('x')  # it's fine"`;
     expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
+
+  /**
+   * EI-18800669297694465 — the literal scan treated a PROSE SENTENCE as a path.
+   *
+   * The fourth false positive in this family, and the same shape as the three
+   * above: something that is not a path is resolved as one. A log line like
+   * `print("wrote /tmp/x.mts")` is a single quoted literal containing a `/`
+   * and a `.`, so it cleared both filters — and because the literal does not
+   * START with `/`, `_resolve_write_target` treated the WHOLE sentence as a
+   * RELATIVE path and joined it onto the cwd, producing
+   * `<canon>/wrote /tmp/x.mts` — inside the tree. Denied.
+   *
+   * Every real path in the repro was absolute under /tmp. Worse, the refusal's
+   * own remedy text says "Genuinely a scratch/log file? Write it outside the
+   * tree (~/.papercusp/scratch or /tmp)" — which is exactly what the command
+   * did. A guard whose refusal describes the thing you just did teaches agents
+   * to distrust it on the cases where it is RIGHT.
+   *
+   * The fix: a path CANDIDATE may not contain whitespace. No tracked path in
+   * this repo has a space (verified: `git ls-files | grep -c ' '` → 0), so an
+   * in-tree target — the only thing this guard gates — cannot contain one.
+   * A whitespace-bearing literal is split and each token tested on its own,
+   * so the embedded `/tmp/...` is still examined, and correctly cleared.
+   */
+  it('allows the exact repro: a /tmp heredoc write whose script PRINTS a sentence containing a /tmp path', () => {
+    const command =
+      "cd /tmp && python3 - <<'EOF'\n" +
+      "open('/tmp/promote-substitution-tiers.mts','w').write('x')\n" +
+      'print("wrote /tmp/promote-substitution-tiers.mts")\n' +
+      'EOF';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it.each([
+    ['a log sentence naming a relative tree path', `python3 -c "open('/tmp/o.txt','w').write('x'); print('wrote apps/operator/generated.ts')"`],
+    ['an error message mentioning a tree file', `python3 -c "open('/tmp/o.txt','w').write('x'); print('failed to parse packages/operator-core/lib/x.ts')"`],
+  ])('allows %s — prose is not a write target', (_label, command) => {
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  /**
+   * The masking control for the narrowing above. If tokenizing had been
+   * implemented as "a literal containing whitespace is skipped entirely", a
+   * real in-tree write would sail through whenever its literal sat next to
+   * any spaced string — so each token must still be tested individually.
+   */
+  it('still denies a real in-tree write in a script that ALSO prints a spaced sentence (masking control)', () => {
+    const command =
+      "python3 - <<'EOF'\n" +
+      "open('apps/operator/generated.ts','w').write('x')\n" +
+      'print("wrote it out just fine")\n' +
+      'EOF';
+    const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  it('quotes back a real path token, never a prose fragment, as the offending reference', () => {
+    const command =
+      "python3 - <<'EOF'\n" +
+      "print('about to write apps/operator/generated.ts now')\n" +
+      "open('apps/operator/generated.ts','w').write('x')\n" +
+      'EOF';
+    const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    // The cited reference must be the path itself — not the sentence that
+    // happens to contain it, which is what made the original message unusable.
+    expect(reason).toContain('`apps/operator/generated.ts`');
+    expect(reason).not.toContain('about to write');
+  });
 });
 
 /**

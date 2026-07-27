@@ -453,6 +453,19 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
     });
   });
 
+  it('REJECTS a `screenshot` run cited with no output path — the words alone satisfy the text gate', async () => {
+    // The text check passes on the mere phrase "tauri-agent-tools screenshot", so this
+    // reaches the artifact check with nothing to inspect and nothing that could have failed.
+    const verdict = await verifyLiveDroveUiArtifacts({
+      verifiedHow: 'live-drove-ui',
+      testsRun: 'tauri-agent-tools screenshot --pid 1234',
+      testResult: 'looked right',
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.basis).toBe('none');
+    expect(verdict.reason).toContain('no image path');
+  });
+
   it('resolves a relative citation against the given cwd', async () => {
     const verdict = await verifyLiveDroveUiArtifacts(
       { verifiedHow: 'live-drove-ui', testResult: 'see ./blank.png' },

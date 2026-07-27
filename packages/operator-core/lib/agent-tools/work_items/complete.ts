@@ -517,8 +517,8 @@ async function completeOne(
       "verifiedHow to 'unit'/'manual'/'integration' and re-send.";
   } else if (falseLiveDroveUiClose) {
     stateError =
-      `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} and cites an artifact, ` +
-      `but the artifact is not evidence: ${artifactVerdict?.reason}. A capture of a window that never painted ` +
+      `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id}, but its cited evidence ` +
+      `does not hold up: ${artifactVerdict?.reason}. A capture of a window that never painted ` +
       'exits 0 and writes a normal-looking file, so citing it proves a command ran, not that any UI was seen ' +
       '(scripts/verify-tauri-headless.sh warns about exactly this when the box has no real GPU GL). ' +
       'Strongest fix, and cheaper than another screenshot: cite a `tauri-agent-tools check --pid <pid> --eval ' +
@@ -834,7 +834,7 @@ export default defineTool({
   description:
     "Finish one OR many work-items with a STRUCTURED completion record (whatLanded/migrations/tests/deferred) — the system renders + broadcasts it, never narrate in prose. A terminal `state` converges the whole finish: item state + plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning` (see seeAlso for idempotency + batch-result semantics).",
   guidance: {
-    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. A CLOSE claiming `verifiedHow:\'live-drove-ui\'` with no cited screenshot/tauri-agent-tools artifact in testsRun/testResult/filesChanged is REJECTED (WI-5891). Duplicate? set `completion.duplicateOf` to the surviving id.',
+    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. A CLOSE claiming `verifiedHow:\'live-drove-ui\'` is REJECTED unless testsRun/testResult/filesChanged cite a REAL artifact — the cited image is opened, and a blank or non-existent capture is refused (WI-5891, EI-18797014705631713). A `tauri-agent-tools check` run is accepted on its own. Duplicate? set `completion.duplicateOf` to the surviving id.',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.',
     chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox.',
     seeAlso: [

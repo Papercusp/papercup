@@ -605,9 +605,17 @@ export async function verifyLiveDroveUiArtifacts(
 
   const paths = citedImagePaths(evidence);
   if (paths.length === 0) {
-    // No artifact of either kind. isBackedLiveDroveUiClaim already covers this case;
-    // reported here too so one call answers the whole question.
-    return { ok: false, basis: 'none', artifacts: [], reason: 'cites no artifact of any kind' };
+    // Reachable in a way worth naming precisely: the text gate is satisfied by the mere
+    // words "tauri-agent-tools screenshot", so a run cited WITHOUT its output path lands
+    // here. Nothing was falsified and nothing can be inspected, so the citation is empty.
+    return {
+      ok: false,
+      basis: 'none',
+      artifacts: [],
+      reason:
+        'it names a `screenshot`/`capture` run but no image path, and neither of those commands ' +
+        'can fail — so nothing in this completion could have come out false',
+    };
   }
 
   const cwd = opts.cwd ?? process.cwd();
