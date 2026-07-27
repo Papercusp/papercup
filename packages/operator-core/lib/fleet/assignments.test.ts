@@ -6,16 +6,30 @@
  * holder has no presence row must still produce an agent group (orphan), not be
  * silently dropped the way a presence-primary join would.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+// EI-18763117665515043: resolveTerminalPlanItemResidue dynamic-imports both of
+// these — mocked here so the unit tests never touch PG (the same pattern
+// agent-tools/work_items/get.plan-item-blocked.test.ts uses for the identical
+// planItemLaneBlockReason wiring on the self-select-observe path).
+const getWorkItem = vi.fn();
+vi.mock('../work-items', () => ({ getWorkItem: (...a: unknown[]) => getWorkItem(...a) }));
+const planItemLaneBlockReason = vi.fn();
+vi.mock('../scheduler/plan-item-lane-guard', () => ({
+  planItemLaneBlockReason: (...a: unknown[]) => planItemLaneBlockReason(...a),
+}));
+
 import {
   ACTIVE_TOOL_CALL_WINDOW_MS,
   deriveActivity,
   downgradeEndedHolders,
   groupByAgent,
   isReclaimCandidate,
+  isResidueCandidate,
   orphanedClaims,
   reclaimableClaims,
   reconcileOrphanedWithVerdicts,
+  resolveTerminalPlanItemResidue,
   stalledClaims,
   summarizeOrphan,
   upgradeRecordedLiveHolders,
@@ -460,6 +474,141 @@ describe('summarizeOrphan — WI-5975', () => {
     const asHolder: HolderActivity[] = states.map((sessionState) => ({ sessionState }));
     const backToOracle: (SessionState | null | undefined)[] = asHolder.map((h) => h.sessionState);
     expect(backToOracle).toEqual(states);
+  });
+
+  // EI-18763117665515043: `fleet:assignments` reported verdict:'orphan'/
+  // action:'reclaim' for a claim whose LINKED plan item was already `done` — the
+  // reclaim verdict never cross-checked the plan-item lane the way
+  // `work_items:get`'s own `planItemBlocked` already does. `residue` (when
+  // passed) must OVERRIDE the liveness-derived verdict entirely, in BOTH
+  // directions (a dead holder AND a demonstrably live one).
+  describe('residue overrides the liveness verdict entirely (EI-18763117665515043)', () => {
+    const residue = { planSlug: 'p', itemId: 'P-007', effectiveStatus: 'done' };
+
+    it('a DEAD holder whose claim is residue reports residue/close, not orphan/reclaim', () => {
+      const deadResidue = summarizeOrphan(heldByLive, { sessionState: 'ended' }, undefined, residue);
+      expect(deadResidue.verdict).toBe('residue');
+      expect(deadResidue.action).toBe('close');
+      expect(deadResidue.residue).toEqual(residue);
+      expect(isReclaimCandidate(deadResidue)).toBe(false);
+      expect(isResidueCandidate(deadResidue)).toBe(true);
+    });
+
+    it('a LIVE holder whose claim is residue ALSO reports residue/close, not held-by-live-agent/ask', () => {
+      const liveResidue = summarizeOrphan(
+        heldByLive,
+        { sessionState: 'live', lastToolCallAt: '2026-07-27T19:00:00.000Z' },
+        undefined,
+        residue,
+      );
+      expect(liveResidue.verdict).toBe('residue');
+      expect(liveResidue.action).toBe('close');
+      expect(isResidueCandidate(liveResidue)).toBe(true);
+    });
+
+    it('no residue ⇒ unchanged liveness-derived verdict (the pre-existing behaviour)', () => {
+      const s = summarizeOrphan(heldByLive, { sessionState: 'ended' }, undefined, null);
+      expect(s.verdict).toBe('orphan');
+      expect(isResidueCandidate(s)).toBe(false);
+    });
+
+    it('isResidueCandidate/isReclaimCandidate are mutually exclusive', () => {
+      const dead = summarizeOrphan(heldByLive, { sessionState: 'ended' }, undefined, residue);
+      expect(isReclaimCandidate(dead)).toBe(false);
+      expect(isResidueCandidate(dead)).toBe(true);
+    });
+  });
+});
+
+describe('resolveTerminalPlanItemResidue — EI-18763117665515043', () => {
+  beforeEach(() => {
+    getWorkItem.mockReset();
+    planItemLaneBlockReason.mockReset();
+  });
+
+  const claimRow = (over: Partial<FleetAssignmentRow> = {}): FleetAssignmentRow => ({
+    ...base,
+    source: 'work_item_claim',
+    workItemId: 'WI-6211',
+    harnessSlug: 'papercusp',
+    ...over,
+  });
+
+  it('resolves a terminal (done) linked plan item into the map', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-6211', harness: 'papercusp', family: 'issue', payload: {} });
+    planItemLaneBlockReason.mockResolvedValue({
+      reason: 'plan-item p#P-007 is already done — its work-item is stale residue of completed/abandoned work, not open work',
+      planSlug: 'p',
+      itemId: 'P-007',
+      effectiveStatus: 'done',
+    });
+    const map = await resolveTerminalPlanItemResidue([claimRow()]);
+    expect(getWorkItem).toHaveBeenCalledWith('WI-6211', 'papercusp');
+    expect(map.get('WI-6211')).toMatchObject({ planSlug: 'p', itemId: 'P-007', effectiveStatus: 'done' });
+  });
+
+  it('resolves a dropped linked plan item too', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-6211', harness: 'papercusp', family: 'issue', payload: {} });
+    planItemLaneBlockReason.mockResolvedValue({
+      reason: 'plan-item p#P-007 is already dropped',
+      planSlug: 'p',
+      itemId: 'P-007',
+      effectiveStatus: 'dropped',
+    });
+    const map = await resolveTerminalPlanItemResidue([claimRow()]);
+    expect(map.get('WI-6211')?.effectiveStatus).toBe('dropped');
+  });
+
+  it('never treats blocked/needs-human as residue (only done/dropped)', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-6211', harness: 'papercusp', family: 'issue', payload: {} });
+    planItemLaneBlockReason.mockResolvedValue({
+      reason: 'plan-item p#P-007 is effectively blocked',
+      planSlug: 'p',
+      itemId: 'P-007',
+      effectiveStatus: 'blocked',
+    });
+    const map = await resolveTerminalPlanItemResidue([claimRow()]);
+    expect(map.has('WI-6211')).toBe(false);
+  });
+
+  it('a clear lane (no block reason) yields no residue entry', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-6211', harness: 'papercusp', family: 'issue', payload: {} });
+    planItemLaneBlockReason.mockResolvedValue(null);
+    const map = await resolveTerminalPlanItemResidue([claimRow()]);
+    expect(map.size).toBe(0);
+  });
+
+  it('ignores presence rows and rows with no workItemId', async () => {
+    const map = await resolveTerminalPlanItemResidue([base, claimRow({ workItemId: null })]);
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(map.size).toBe(0);
+  });
+
+  it('dedupes several claim rows naming the SAME work-item into ONE lookup', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-6211', harness: 'papercusp', family: 'issue', payload: {} });
+    planItemLaneBlockReason.mockResolvedValue({
+      reason: 'r',
+      planSlug: 'p',
+      itemId: 'P-007',
+      effectiveStatus: 'done',
+    });
+    await resolveTerminalPlanItemResidue([
+      claimRow({ agentId: 'su-a' }),
+      claimRow({ agentId: 'su-b' }),
+    ]);
+    expect(getWorkItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('best-effort: a lookup failure for one id omits it, never throws', async () => {
+    getWorkItem.mockRejectedValue(new Error('pg down'));
+    const map = await resolveTerminalPlanItemResidue([claimRow()]);
+    expect(map.size).toBe(0);
+  });
+
+  it('an empty/no-claim input never dynamic-imports anything', async () => {
+    const map = await resolveTerminalPlanItemResidue([base]);
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(map.size).toBe(0);
   });
 });
 

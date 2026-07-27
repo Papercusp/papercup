@@ -155,11 +155,12 @@ export interface StoredAssumptionDeclaration {
  * loud-but-non-blocking warning instead of silently rewriting an agent's evidence
  * (EI-24 record-and-warn discipline). PURE — no PG required to unit-test.
  *
- * ⚠ Implementation note: this function deliberately builds the NUL character at runtime
- * `String.fromCharCode(0)` rather than a `' '`/`'\x00'` source literal —
- * several editors/terminals (and this very toolchain) render an embedded literal
- * NUL byte as a plain space, so writing one directly into a source file is easy
- * to do by accident and would trip `lint:no-nul-bytes` on this very file.
+ * Implementation note for future editors: the NUL character below is produced at
+ * runtime by calling the string-from-character-code constructor with zero. Do not
+ * replace that call with a literal character typed into this source file: several
+ * editors and terminals display an embedded raw NUL byte as an ordinary blank
+ * space, so a hand-typed literal is easy to get wrong without any visual sign,
+ * and this repository lints tracked source files against containing one.
  */
 export function stripNulBytesDeep<T>(value: T): { value: T; stripped: boolean } {
   const NUL = String.fromCharCode(0);

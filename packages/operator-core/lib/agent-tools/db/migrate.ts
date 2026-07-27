@@ -212,9 +212,14 @@ async function runMigrationWithLockRetry(
   script: string,
   spawn: (cmd: string, args: string[], opts: { input: string; encoding: 'utf8' }) => SpawnResult = spawnSync,
   maxAttempts = LOCK_RETRY_MAX_ATTEMPTS,
+  // EI-18769559897594065: fired once per attempt (including the first) so a
+  // caller can surface retry progress instead of the whole multi-attempt,
+  // backoff-retried apply going silent — see db:migrate's emitProgress wiring.
+  onAttempt?: (attempt: number, maxAttempts: number) => void,
 ): Promise<{ result: SpawnResult; attempts: number }> {
   let result: SpawnResult;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    onAttempt?.(attempt, maxAttempts);
     result = spawn('psql', [url, '-v', 'ON_ERROR_STOP=1'], { input: script, encoding: 'utf8' });
     if (result.status === 0) return { result, attempts: attempt };
     if (attempt >= maxAttempts || !isRetryableLockFailure(result.stderr ?? '')) return { result, attempts: attempt };
@@ -298,6 +303,19 @@ export default defineTool({
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
     const coordIdentity = resolveAgentIdentity(ctx);
     const enabled = process.env.PAPERCUSP_ALLOW_DB_MIGRATE === '1';
+    const effectiveMaxDrainSec = args.max_drain_sec ?? DEFAULT_DRAIN_SEC;
+
+    // EI-18769559897594065: capture ctx.progress safely (older shapes / shim
+    // callers may not have it — same defensive pattern as locks:acquire's own
+    // drain-wait heartbeat). Wired into guardResource's onTick below so a
+    // caller sees drain progress instead of total silence, and — because
+    // ctx.progress refreshes the transport's own idle-timeout deadline
+    // (tooldef D2) — a genuinely-still-draining wait no longer looks
+    // indistinguishable from a wedge to an MCP client watching for "response
+    // or progress".
+    const emitProgress =
+      (ctx as { progress?: (pct: number | undefined, msg?: string) => void }).progress ??
+      (() => undefined);
 
     const outcome = await withConnectionRetry(() =>
       guardResource(
@@ -308,8 +326,20 @@ export default defineTool({
           coordIdentity,
           resource: 'db-schema',
           mode: 'exclusive',
-          maxDrainSec: args.max_drain_sec ?? DEFAULT_DRAIN_SEC,
+          maxDrainSec: effectiveMaxDrainSec,
           reason: `apply migration ${args.file}`,
+          onTick: ({ waited_sec, holders }) => {
+            emitProgress(
+              undefined,
+              JSON.stringify({
+                phase: 'draining',
+                elapsed_sec: waited_sec,
+                max_drain_sec: effectiveMaxDrainSec,
+                remaining_sec: Math.max(0, effectiveMaxDrainSec - waited_sec),
+                holders: holders.map(holderJson),
+              }),
+            );
+          },
       },
       async (fence) => {
         if (!enabled) {
@@ -445,10 +475,23 @@ export default defineTool({
         // postgres-js can't, and it's gated behind PAPERCUSP_ALLOW_DB_MIGRATE
         // + the db-schema lock. Not runtime/shipped data-plane code. Mirrored
         // in @papercusp/export-state's no-psql-shellout ALLOW set.
+        // EI-18769559897594065: the drain is over (onTick above stops firing
+        // the moment guardResource's run() starts) — emit one more tick so a
+        // caller watching progress sees the phase change instead of silence
+        // resuming right as the (potentially multi-attempt, backoff-retried)
+        // apply begins.
+        emitProgress(undefined, JSON.stringify({ phase: 'applying', file: path.basename(args.file) }));
         // EI-9417: retries automatically on "canceling statement due to lock
         // timeout" against a hot coordination table (coord_presence et al) —
         // see runMigrationWithLockRetry above.
-        const { result: r, attempts } = await runMigrationWithLockRetry(url, script);
+        const { result: r, attempts } = await runMigrationWithLockRetry(url, script, undefined, undefined, (attempt, maxAttempts) => {
+          if (attempt > 1) {
+            emitProgress(
+              undefined,
+              JSON.stringify({ phase: 'applying', retry_attempt: attempt, max_attempts: maxAttempts }),
+            );
+          }
+        });
         if (r.status !== 0) {
           // WI-6002: before trusting this failure, check whether it's actually
           // the schema_migrations duplicate-key guard tripping on a migration
