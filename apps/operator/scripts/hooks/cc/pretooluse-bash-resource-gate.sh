@@ -1382,10 +1382,15 @@ _SUBST_ENV_RE = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+')
 # here, because `npm` fronts nearly every build/test/lint command in this repo
 # and `npm run lint` must keep paying nothing. That shape is matched as a PHRASE
 # by _SUBSTITUTION_PHRASE_RE below instead.
+#
+# P-023 adds 'journalctl' (the service-log family → `logs:read`). The pair's own
+# pattern excludes the non-window shapes (follow, boot selection, kernel,
+# cursors, maintenance verbs) and elevated reads, so this only decides which
+# atoms pay the operator round-trip at all.
 _SUBSTITUTION_HEADS = frozenset((
     'sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl', 'git',
     'ss', 'netstat', 'lsof',
-    'npx', 'vitest',
+    'npx', 'vitest', 'journalctl',
 ))
 
 # Narrow phrases a substitution row claims whose bare head is too common for the

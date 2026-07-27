@@ -71,8 +71,16 @@ describe('buildJournalctlArgs', () => {
 
   it('reads --user by default and --system only when asked (kernel/OOM records)', () => {
     expect(buildJournalctlArgs({ units: ['a.service'] })).toContain('--user');
-    expect(buildJournalctlArgs({ units: ['a.service'], system: true })).toContain('--system');
-    expect(buildJournalctlArgs({ units: ['a.service'], system: true })).not.toContain('--user');
+    expect(buildJournalctlArgs({ units: ['a.service'], scope: 'system' })).toContain('--system');
+    expect(buildJournalctlArgs({ units: ['a.service'], scope: 'system' })).not.toContain('--user');
+  });
+
+  it("scope 'all' passes NEITHER flag — that IS how journalctl says 'everything I can see'", () => {
+    const args = buildJournalctlArgs({ units: ['a.service'], scope: 'all' });
+    expect(args).not.toContain('--user');
+    expect(args).not.toContain('--system');
+    // …and it is still a real read, not an empty argv.
+    expect(args).toContain('-u');
   });
 
   it('asks journalctl for limit+1 rows so `truncated` is measured, not guessed', () => {
@@ -350,6 +358,12 @@ describe('readJournal — an empty result from a unit that does not exist', () =
     const exec: JournalExec = async () => { throw Object.assign(new Error('nope'), { code: 'ENOENT' }); };
     await readJournal({ units: ['a.service'] }, exec, probe);
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('tells the probe WHICH journal was read, so it asks the right systemd manager', async () => {
+    const probe = vi.fn(async () => []);
+    await readJournal({ units: ['systemd-oomd.service'], scope: 'system' }, execReturning(''), probe);
+    expect(probe).toHaveBeenCalledWith(['systemd-oomd.service'], 'system');
   });
 });
 

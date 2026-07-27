@@ -1356,6 +1356,12 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
   // SUBSTITUTION_PHRASE_RE below.
   'npx',
   'vitest',
+  // P-023 (service-log family) → `logs:read`. `logs.unit-journal` claims
+  // window-query `journalctl` reads; the pair's own pattern excludes the
+  // non-window shapes (`-f` follow, boot selection, `-k`, cursors, maintenance
+  // verbs) and elevated reads, so this head only decides which atoms pay the
+  // round-trip at all.
+  'journalctl',
 ]);
 
 /**

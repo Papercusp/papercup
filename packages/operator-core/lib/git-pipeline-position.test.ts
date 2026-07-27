@@ -905,3 +905,209 @@ describe('computeStages: position x health', () => {
     expect(names).toEqual(['committed', 'pushed', 'gate', 'main', 'deployed', 'serving']);
   });
 });
+
+/**
+ * git-pipeline-agent-state-2026-07-26 P-003 — serving-process truth.
+ *
+ * The class these encode was filed FOUR times independently
+ * (EI-18740960754854672, EI-18741985436324043, EI-18741004371760803,
+ * EI-18746827803289687): `deployed` is a git fact, and reading it as "live" is
+ * wrong whenever the serving process booted before the code landed. Four
+ * rediscoveries of one fact is a missing state surface, so these assert the
+ * SURFACE never claims liveness without process evidence.
+ */
+describe('evaluateServing: process truth, never a git inference', () => {
+  const releaseRuntime = classifyRuntimeOwner('packages/operator-core/lib/x.ts')!;
+  const bgHostRuntime = classifyRuntimeOwner('packages/operator-core/lib/scout/cycle.ts')!;
+
+  it('a process that started BEFORE the deploy is NOT serving the deployed code', () => {
+    const sv = evaluateServing({
+      runtime: releaseRuntime,
+      process: { pid: 99, startedAtMs: 1_000_000 },
+      codeAsOfMs: 1_000_000 + 45 * 60_000, // deploy landed 45m AFTER boot
+      codeAsOfSource: 'deploy',
+    });
+    expect(sv.startedSinceCodeChange).toBe(false);
+    expect(sv.behindMin).toBe(45);
+    // and it must name the lever, not merely report the gap
+    expect(sv.restartLever).toContain('deploy-cli.ts --execute');
+  });
+
+  it('a process that started AFTER the deploy has genuinely loaded it', () => {
+    const sv = evaluateServing({
+      runtime: releaseRuntime,
+      process: { pid: 99, startedAtMs: 2_000_000 },
+      codeAsOfMs: 1_000_000,
+      codeAsOfSource: 'deploy',
+    });
+    expect(sv.startedSinceCodeChange).toBe(true);
+    expect(sv.behindMin).toBeNull();
+  });
+
+  it('probes the SERVING unit, not the restart target (an operator-release path is served by :3070, not :3170)', () => {
+    // restartTarget for a release path is `staging` — the host you bounce to
+    // EXERCISE an edit. Probing that process would answer about the wrong one.
+    expect(releaseRuntime.restartTarget).toBe('staging');
+    const sv = evaluateServing({
+      runtime: releaseRuntime,
+      process: { pid: 1, startedAtMs: 2 },
+      codeAsOfMs: 1,
+      codeAsOfSource: 'deploy',
+    });
+    expect(sv.unit).toBe('papercup-dev-api.service');
+  });
+
+  it('an UNREADABLE process start is UNKNOWN, never "live" (fail-soft in the honest direction)', () => {
+    const sv = evaluateServing({
+      runtime: releaseRuntime,
+      process: null,
+      codeAsOfMs: 1_000,
+      codeAsOfSource: 'deploy',
+    });
+    expect(sv.startedSinceCodeChange).toBeNull();
+    expect(sv.unknownReason).toMatch(/UNKNOWN, which is not the same as "live"/);
+  });
+
+  it('a sha-only probe (no path) cannot identify a serving process and says so', () => {
+    const sv = evaluateServing({ runtime: null, process: null, codeAsOfMs: null, codeAsOfSource: null });
+    expect(sv.startedSinceCodeChange).toBeNull();
+    expect(sv.host).toBeNull();
+    expect(sv.unknownReason).toMatch(/sha-only probe/);
+  });
+
+  it('a working-tree host compares against FILE MTIME, because it imports the tree — not the deploy', () => {
+    // bg-host tsx-loads the working tree, so an uncommitted edit IS its code; the
+    // deploy is irrelevant to it (EI-11120). Same comparison service-health's
+    // evaluateBgHostCodeDrift makes, generalised from hot-paths to one file.
+    const sv = evaluateServing({
+      runtime: bgHostRuntime,
+      process: { pid: 7, startedAtMs: 1_000_000 },
+      codeAsOfMs: 1_000_000 + 10 * 60_000,
+      codeAsOfSource: 'file-mtime',
+    });
+    expect(sv.unit).toBe('papercup-bg-host.service');
+    expect(sv.startedSinceCodeChange).toBe(false);
+    expect(sv.restartLever).toContain('bg-host');
+  });
+});
+
+describe('the serving STAGE and summary never claim "live" off a git fact', () => {
+  type StageInput = Parameters<typeof computeStages>[0];
+  const stage = (stages: StageState[], name: StageName): StageState => {
+    const s = stages.find((x) => x.name === name);
+    if (!s) throw new Error(`no stage ${name}`);
+    return s;
+  };
+  const base = (serving: ServingTruth, over: Partial<StageInput> = {}): StageInput => ({
+    dirtyUncommitted: false,
+    positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    verdictProvenance: {
+      lastGreenSha: 'g',
+      lastGreenShortSha: 'g',
+      lastGreenAgeMs: 1,
+      mainFastForwarded: true,
+      deployedBehindGreenPin: 0,
+      deployOrigin: 'gate-green',
+    },
+    gitSyncLastStatus: 'synced',
+    gitSync: HEALTHY_GIT_SYNC,
+    runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
+    ...over,
+    serving,
+  });
+
+  const STALE: ServingTruth = {
+    ...HEALTHY_SERVING,
+    startedAtMs: 1_000,
+    codeAsOfMs: 100_000,
+    startedSinceCodeChange: false,
+    behindMin: 30,
+  };
+
+  it('THE 4x-FILED BUG: deployed ✓ + a process older than the deploy is NOT past the serving stage', () => {
+    const s = computeStages(base(STALE));
+    // deployed is genuinely past — the git fact is true...
+    expect(stage(s, 'deployed').position).toBe('past');
+    // ...and that is exactly why serving must be the one to say "no".
+    expect(stage(s, 'serving').position).toBe('pending');
+    expect(stage(s, 'serving').health).toBe('stalled');
+    expect(stage(s, 'serving').detail).toMatch(/does NOT mean "running"/);
+    // waiting is futile here; the detail must name the restart, not suggest patience
+    expect(stage(s, 'serving').detail).toMatch(/Waiting cannot fix this/);
+  });
+
+  it('deployed ✓ + a process younger than the deploy IS past the serving stage', () => {
+    const s = computeStages(base(HEALTHY_SERVING));
+    expect(stage(s, 'serving').position).toBe('past');
+    expect(stage(s, 'serving').health).toBe('advancing');
+  });
+
+  it('not deployed yet ⇒ serving is pending even when the process is current (the deploy stage owns that wait)', () => {
+    const s = computeStages(
+      base(HEALTHY_SERVING, { positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false } }),
+    );
+    expect(stage(s, 'serving').position).toBe('pending');
+    expect(stage(s, 'serving').health).toBe('advancing');
+    expect(stage(s, 'serving').detail).toBeNull();
+  });
+
+  it('an UNKNOWN serving verdict is health=unknown with its reason — not silently "advancing"', () => {
+    const unknown: ServingTruth = {
+      ...HEALTHY_SERVING,
+      startedAtMs: null,
+      pid: null,
+      startedSinceCodeChange: null,
+      unknownReason: 'could not read the unit',
+    };
+    const s = computeStages(base(unknown));
+    expect(stage(s, 'serving').health).toBe('unknown');
+    expect(stage(s, 'serving').position).toBe('pending');
+    expect(stage(s, 'serving').detail).toBe('could not read the unit');
+  });
+
+  it('summarizePosition drops the bare "(live)" and qualifies it with process evidence', () => {
+    const mk = (serving: ServingTruth): Omit<PipelinePosition, 'summary'> => ({
+      input: { path: 'a.ts', sha: null },
+      repoRoot: '/repo',
+      submodule: null,
+      submodulePin: null,
+      targetSha: 'aaaaaaa',
+      targetShortSha: 'aaaaaaa',
+      targetSubject: 'subj',
+      dirtyUncommitted: false,
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      deployedSha: 'deployedsha0',
+      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      verdictProvenance: {
+        lastGreenSha: 'readysha0',
+        lastGreenShortSha: 'readysha',
+        lastGreenAgeMs: 1000,
+        mainFastForwarded: true,
+        deployedBehindGreenPin: 0,
+        deployOrigin: 'gate-green',
+      },
+      gitSyncLastStatus: 'synced',
+      gitSync: HEALTHY_GIT_SYNC,
+      runtime: classifyRuntimeOwner('a.ts'),
+      runtimes: classifyRuntimeOwners('a.ts'),
+      serving,
+      notes: [],
+      stages: [],
+    });
+
+    // stale process: the summary must actively CONTRADICT the deployed tick
+    const stale = summarizePosition(mk(STALE));
+    expect(stale).toMatch(/NOT LIVE/);
+    expect(stale).not.toMatch(/\(live\)/);
+
+    // confirmed: "live" is allowed, but only with the reason attached
+    const live = summarizePosition(mk(HEALTHY_SERVING));
+    expect(live).toContain('live — the serving process started after this code landed');
+
+    // unknown: neither "live" nor a false alarm
+    const unknown = summarizePosition(mk({ ...HEALTHY_SERVING, startedSinceCodeChange: null }));
+    expect(unknown).toMatch(/UNKNOWN — not confirmed live/);
+    expect(unknown).not.toMatch(/NOT LIVE/);
+  });
+});

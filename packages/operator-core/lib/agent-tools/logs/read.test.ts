@@ -109,7 +109,7 @@ describe('logs:read — ok reflects the READ, not the line count', () => {
 });
 
 describe('logs:read — arguments reach journalctl unchanged', () => {
-  it('forwards grep, level, window, limit and system verbatim', async () => {
+  it('forwards grep, level, window, limit and scope verbatim', async () => {
     await call({
       unit: 'papercup-bg-host',
       grep: 'oom|killed process',
@@ -117,7 +117,7 @@ describe('logs:read — arguments reach journalctl unchanged', () => {
       since: '-2 hours',
       until: '09:40:00',
       limit: 50,
-      system: true,
+      scope: 'system',
     });
     expect(readJournalMock.mock.calls[0][0]).toMatchObject({
       grep: 'oom|killed process',
@@ -125,7 +125,12 @@ describe('logs:read — arguments reach journalctl unchanged', () => {
       since: '-2 hours',
       until: '09:40:00',
       limit: 50,
-      system: true,
+      scope: 'system',
     });
+  });
+
+  it("accepts scope 'all' — the read that spans both journals", async () => {
+    expect(payloadOf(await call({ unit: 'systemd-oomd', scope: 'all' })).ok).toBe(true);
+    expect(readJournalMock.mock.calls[0][0].scope).toBe('all');
   });
 });
