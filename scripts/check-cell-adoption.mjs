@@ -87,6 +87,13 @@
  * register at runtime, in their owners' modules, so a static scanner cannot see
  * the map. It checks the id is well-formed only.
  *
+ * And it scans `git ls-files`, so a brand-new tool file is invisible until it is
+ * TRACKED: an author who runs this locally seconds after creating the file gets a
+ * false green. That is inherited from the setInterval guard and is acceptable for
+ * the gating path it protects — git-sync commits this tree continuously and CI
+ * runs on committed code, so the window closes on its own — but it does mean a
+ * local green is not proof, and CI's verdict is the one that counts.
+ *
  *   node scripts/check-cell-adoption.mjs
  */
 import { execSync } from 'node:child_process';

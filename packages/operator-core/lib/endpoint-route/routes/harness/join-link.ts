@@ -131,6 +131,11 @@ async function defaultSeedOwnerBinding(
         didSeed = true;
         const entry: DiscoveredHive = {
           potId: input.potId,
+          // WI-559: this potId is a DERIVED GUESS (`${repoName}-pot`), not an
+          // owner-authored slug — there is no announce here to take one from. Mark it so
+          // identity consumers (loadAnnouncedHiveHomeSlug → the federation demux key)
+          // skip it; display/keying consumers are unaffected.
+          potIdSynthetic: true,
           title: '',
           description: '',
           ownerGithubLogin: input.ownerGithubLogin,

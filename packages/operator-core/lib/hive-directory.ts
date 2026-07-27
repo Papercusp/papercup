@@ -59,6 +59,20 @@ export type { SignedHiveAnnounce, HiveVisibility } from './sync/hyperbee/hive-an
 /** A hive discovered on the directory topic (verified), as listed to UI surfaces. */
 export interface DiscoveredHive {
   potId: string;
+  /**
+   * WI-559 — set when `potId` is a LOCAL GUESS rather than the owner's authored slug.
+   * The D-007 join-link seed (`defaultSeedOwnerBinding`) mints a synthetic descriptor
+   * from a VERIFIED (hivePubkey → ownerDevicePubkey) binding but has no announce to
+   * take the slug from, so it derives `${repoName}-pot` — designed to match what a real
+   * announce stamps, but a guess nonetheless, and it is add-if-absent so it can outlive
+   * the real beacon.
+   *
+   * Anything using `potId` as an IDENTITY (notably `loadAnnouncedHiveHomeSlug`, which
+   * resolves the federation demux key) MUST skip these: canonicalizing a joiner onto a
+   * guessed slug would break federation that currently works. Display/keying consumers
+   * may keep using it. Absent/false ⇒ the slug came from a signed announce.
+   */
+  potIdSynthetic?: boolean;
   title: string;
   description: string;
   ownerGithubLogin: string;

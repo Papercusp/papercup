@@ -284,6 +284,19 @@ describe('canonicalHiveHomeSlug — the federation demux key (WI-559)', () => {
     expect(await canonical('loner')).toBeNull();
   });
 
+  // The hole this fix could otherwise have OPENED. The D-007 join-link seed
+  // (defaultSeedOwnerBinding) writes a descriptor with a VERIFIED hivePubkey but a
+  // DERIVED potId (`${repoName}-pot`), add-if-absent, so it can outlive the real
+  // beacon. Trusting that guess as the demux key could rebind a joiner whose local slug
+  // was already CORRECT onto a wrong one — turning a repair into a regression. Skipped
+  // via `potIdSynthetic`; loadAnnouncedHiveHomeSlug enforces it (mocked out here, so
+  // this asserts the CONTRACT the resolver depends on).
+  it('a SYNTHETIC seed slug is never treated as the owner-authored answer', async () => {
+    pollutedJoiner();
+    announces.clear(); // the announce store yields nothing for a synthetic-only entry
+    expect(await canonical('joined-member')).toBe('octocat-spoon-knife');
+  });
+
   it('survives the collision case the origin fix can never reach (freeSlug suffix)', async () => {
     // A local name collision suffixed the view slug at join time — the potId was CORRECT
     // and the slugs still disagree. Only pubkey-keyed resolution fixes this.

@@ -168,6 +168,7 @@
     "scan:retirement-surface": "node scripts/scan-retirement-surface.mjs",
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
     "lint:no-raw-setinterval": "node scripts/check-no-raw-setinterval.mjs",
+    "lint:cell-adoption": "node scripts/check-cell-adoption.mjs",
     "lint:timer-classification": "node scripts/check-timer-classification.mjs",
     "lint:no-wire-compression": "node scripts/check-no-wire-compression.mjs",
     "lint:no-eager-execfile-promisify": "node scripts/check-no-eager-execfile-promisify.mjs",

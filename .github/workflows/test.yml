@@ -243,6 +243,17 @@ jobs:
       - name: Lint no raw setInterval
         run: npm run lint:no-raw-setinterval
 
+      # cell-adoption gate (unified-agent-state-plane-2026-07-27 P-005 / D-010):
+      # a NEW bespoke state-read tool must declare, inside its defineTool literal,
+      # either `@cell-lens <cell.id>` (it projects a registered cell) or a reasoned
+      # `@not-a-cell <why>`. D-010 makes this a PRECONDITION of the cell registry
+      # (P-003) shipping, not a follow-up: predicate_watches proved that a correct
+      # substrate nobody adopts is surface #29, strictly worse than today.
+      # GATING on a NEW undeclared state read; a shrink-only BASELINE grandfathers
+      # the pre-existing ones (emptied by P-020, which retires them onto cells).
+      - name: Lint cell adoption
+        run: npm run lint:cell-adoption
+
       # timer-classification guard (stop-discarded-dedup-and-audit-server-polling-
       # 2026-07-26 P-011): every managedSetInterval/PeriodicCheck registration must
       # declare a D-004 push-don't-poll classification (must-sample | timeout-reaper |

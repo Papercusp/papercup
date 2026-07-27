@@ -28,6 +28,7 @@ vi.mock('./operator-state-pg', () => ({
 }));
 
 import {
+  loadAnnouncedHiveHomeSlug,
   loadHiveOwnerDeviceBindings,
   loadHiveOwnerDevicePubkey,
 } from './hive-membership-store';

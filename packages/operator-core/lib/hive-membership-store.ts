@@ -366,8 +366,19 @@ export async function loadAnnouncedHiveHomeSlug(
   hivePubkey: string,
 ): Promise<string | null> {
   if (typeof hivePubkey !== 'string' || hivePubkey.length === 0) return null;
-  const pick = (h?: { hivePubkey?: string; potId?: string }): string | null => {
+  const pick = (h?: {
+    hivePubkey?: string;
+    potId?: string;
+    potIdSynthetic?: boolean;
+  }): string | null => {
     if (!h || h.hivePubkey !== hivePubkey) return null;
+    // WI-559: SKIP a synthetic descriptor. The D-007 join-link seed mints a verified
+    // (hivePubkey → ownerDevicePubkey) binding but DERIVES its potId (`${repoName}-pot`)
+    // because it has no announce to read one from, and it is add-if-absent so it can
+    // outlive the real beacon. Trusting that guess as the demux key could rebind a
+    // joiner whose local slug was already CORRECT onto a wrong one — turning this repair
+    // into a regression. A guessed slug is exactly what this function exists to replace.
+    if (h.potIdSynthetic === true) return null;
     const potId = typeof h.potId === 'string' ? h.potId.trim() : '';
     return potId.length > 0 ? potId : null;
   };

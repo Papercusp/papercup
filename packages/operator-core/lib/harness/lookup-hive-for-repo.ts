@@ -259,11 +259,38 @@ export async function lookupHiveForRepo(
     if (res.ok) {
       const listing = res.listing;
       if (listing?.hive_pubkey) {
+        // WI-559 — DO NOT hand back a display TITLE as the `potId` identity.
+        //
+        // The Cupboard listing carries no home-slug field, so this leg used to set
+        // `potId: listing.hive_title ?? owner/repo` — the same expression feeding both
+        // `potId` and `title`, which is the tell that one of them is a stand-in. On the
+        // 2-machine rig that produced `kebab('octocat/Spoon-Knife')` =
+        // 'octocat-spoon-knife' as the joiner's view slug while the owner's home slug
+        // was 'spoon-knife-pot'. (That mismatch no longer causes the federation blackout
+        // it once did — the demux key is resolved from the hive PUBKEY now, see
+        // canonicalHiveHomeSlug — but a display string must still not masquerade as an
+        // identity, and a joiner whose slug matches the owner's is plainly better.)
+        //
+        // The owner's signed announce is the authority, so prefer the directory entry
+        // for THIS hive_pubkey; the title-derived value stays only as the last-resort
+        // LOCAL naming affordance (join-hive freeSlug-suffixes it anyway).
+        const announcedPotId = ((): string | undefined => {
+          try {
+            const dir = deps.getDirectory ? deps.getDirectory() : getHiveDirectory();
+            const byPubkey = dir
+              .listDiscoveredHives()
+              .find((h) => h.hivePubkey === listing.hive_pubkey && h.potIdSynthetic !== true);
+            const slug = byPubkey?.potId?.trim();
+            return slug && slug.length > 0 ? slug : undefined;
+          } catch {
+            return undefined; // directory unavailable — fall back to the local derivation
+          }
+        })();
         return {
           kind: 'hive',
           coords,
           hive: {
-            potId: listing.hive_title ?? `${coords.owner}/${coords.repo}`,
+            potId: announcedPotId ?? listing.hive_title ?? `${coords.owner}/${coords.repo}`,
             title: listing.hive_title ?? `${coords.owner}/${coords.repo}`,
             ...(listing.publisher_github_login
               ? { ownerGithubLogin: listing.publisher_github_login }
