@@ -815,6 +815,17 @@ export interface StageState {
   health: StageHealth;
   /** Why it reads this way, and the concrete lever when it is not advancing. */
   detail: string | null;
+  /**
+   * P-005: the ONE concrete thing that moves this stage, extracted from `detail` prose
+   * into a field — or `null` when waiting genuinely IS the correct move.
+   *
+   * The distinction is the point. Every stage can produce prose; only some have an
+   * action. Burying "there is nothing to do but wait" inside a paragraph that also
+   * explains the mechanism reads as "here is a problem", and an agent that must
+   * decide-from-prose which of six stages owns the next move is doing the work this
+   * surface exists to do for it. `null` here is a POSITIVE answer, not a missing one.
+   */
+  lever: string | null;
 }
 
 /**
@@ -851,6 +862,9 @@ export function computeStages(
     position: 'na',
     health: 'disabled',
     detail: naDetail,
+    // An `na` stage is not on this change's route at all, so it never owns the next move —
+    // the RESTART that does is the serving stage's lever, not this one's.
+    lever: null,
   });
 
   const stages: StageState[] = [];
@@ -865,6 +879,7 @@ export function computeStages(
     detail: p.dirtyUncommitted
       ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.'
       : null,
+    lever: p.dirtyUncommitted ? 'git-sync:run (commit the working tree — the gate cannot see it)' : null,
   });
 
   // pushed — P-002. The push leg fails INDEPENDENTLY of the commit leg, and its
@@ -899,11 +914,23 @@ export function computeStages(
     }
     return null;
   })();
+  // The push leg is the clearest case for a null lever: when it is simply BETWEEN ticks,
+  // waiting is not a fallback, it is the right answer — git-sync will push within ~10 min.
+  // A lever here would invite a needless forced run. But a FAULTED leg will never
+  // self-clear, so waiting there is the wrong answer and must not read the same.
+  const pushedLever = !p.positions.onStaging
+    ? gs.conflicts.length > 0
+      ? 'a merge-resolver must clear the git-sync conflicts — this leg cannot self-heal'
+      : pushedHealth === 'broken' || pushedHealth === 'stalled'
+        ? 'git-sync:run (the push leg is not advancing on its own)'
+        : null
+    : null;
   stages.push({
     name: 'pushed',
     position: p.positions.onStaging ? 'past' : 'pending',
     health: pushedHealth,
     detail: pushedDetail,
+    lever: pushedLever,
   });
 
   if (!releaseApplies) {
@@ -936,6 +963,19 @@ export function computeStages(
           : gateHealth === 'stalled'
             ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
             : null,
+      // Containment outranks the gate's own health: firing a verdict on a candidate that
+      // cannot see your change buys nothing, so fixing THAT comes before greening reds.
+      lever: !p.positions.inMain
+        ? notInCandidate
+          ? cic.missingReason === 'uncommitted' || cic.missingReason === 'absent'
+            ? 'git-sync:run (the judged candidate does not contain your change yet)'
+            : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
+          : g.fireStale
+            ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
+            : gateHealth === 'stalled'
+              ? 'fix the reds, then release:checkpoint-run — a red gate holds main for everyone and is yours to green, not a queue to wait in'
+              : null
+        : null,
     });
 
     stages.push({
@@ -946,6 +986,10 @@ export function computeStages(
         p.verdictProvenance.mainFastForwarded === false
           ? 'main is not fast-forwarded to the newest green pin — un-gated commits sit ahead of it.'
           : null,
+      // main advances only as a CONSEQUENCE of a green verdict — there is no lever that
+      // acts on it directly, so anything offered here would send the caller at the wrong
+      // stage. The gate above owns this move.
+      lever: null,
     });
 
     // 'ahead-of-gate' means the live code was force-deployed PAST the gate, so
