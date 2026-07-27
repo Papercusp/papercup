@@ -15,7 +15,7 @@ import HivesRunningPill from './HivesRunningPill';
 import AgentsRunningPill from './AgentsRunningPill';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION } from './adv-harness-selection';
-import { buildHarnessSelectOptions, type AdvTabId, type HarnessProjectLite } from './AdvShell';
+import { buildHarnessSelectOptions, type HarnessProjectLite } from './AdvShell';
 import './adv-header-pills.css';
 import './adv-pot-bar.css';
 
@@ -47,43 +47,9 @@ import './adv-pot-bar.css';
  * can never disagree with the shell about what pots exist.
  */
 
-/**
- * Tabs that render the pot bar. These are the tabs whose CONTENT depends on the
- * selected pot, so they are the tabs that must be able to change it:
- *
- *   hud        — the cluster's home (owner ask 2026-07-27); its Work-items board
- *                is per-pot (useResolvedHarnessSlug), and the status pills live
- *                here. The only entry rendered `withStatus`.
- *   overview   — the work-item tiles scope to `?slug=` when one is picked.
- *   plans      — the Create dock's plan list resolves a pot the same way.
- *   harnesses  — "Work" IS the per-pot work view.
- *   learning   — filters observations/ideas by the inherited pot (useAdvScope).
- *   insights · settings · docs · git · testing · prs
- *              — AdvHarnessPanelPage: every one of these is a single-pot panel
- *                (one repo, one docs tree, one settings form).
- *
- * Deliberately absent: calendar, health, frames, evals, conversations. Those
- * aggregate the whole workspace, and giving them a pot picker that changes
- * nothing on screen is the confusion this change set out to remove.
- */
-export const POT_BAR_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
-  'hud',
-  'overview',
-  'plans',
-  'harnesses',
-  'learning',
-  'insights',
-  'settings',
-  'docs',
-  'git',
-  'testing',
-  'prs',
-]);
-
-/** Whether a tab shows the bar, and whether it also shows the status pills. */
-export function potBarModeForTab(tab: AdvTabId): { show: boolean; withStatus: boolean } {
-  return { show: POT_BAR_TAB_IDS.has(tab), withStatus: tab === 'hud' };
-}
+/* WHICH tabs render this row (POT_BAR_TAB_IDS / potBarModeForTab) is deliberately
+   NOT in this file — it lives in the pure `adv-pot-bar-tabs.ts` so the route can
+   ask without importing the component and its four status children. */
 
 export default function AdvPotBar({ withStatus = false }: { withStatus?: boolean }) {
   const t = useLexicon();

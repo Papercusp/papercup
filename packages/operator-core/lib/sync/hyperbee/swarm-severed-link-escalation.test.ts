@@ -389,6 +389,88 @@ describe('joinHarnessSwarm severed-link escalation ladder (EI-13317)', () => {
     expect(destroy).toHaveBeenCalledTimes(1);
   });
 
+  /** A socket whose UDX counters show bytes ALREADY received — i.e.
+   *  `dataPathProven() === true`. Every socket that completed a Noise
+   *  handshake looks like this, INCLUDING a zombie that has replicated
+   *  nothing since (measured on the WI-6324 repro: br=988 pr=3). */
+  function makeFakeSocketWithProvenDataPath() {
+    const destroy = vi.fn();
+    const socket = {
+      on: () => {},
+      once: () => {},
+      destroy,
+      rawStream: { bytesReceived: 988, packetsReceived: 3 },
+    };
+    return { socket, destroy };
+  }
+
+  it('WI-6324: the ESCALATING participant evicts its own socket even when bytes were already received (a zombie has a proven data path — cumulative counters cannot mean "replicating now")', async () => {
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    const handle = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      severedEscalationMs: 10 * 60_000,
+    });
+    handles.push(handle);
+
+    // The exact shape that made the repro fail: connected, handshaked (so
+    // bytesReceived > 0 forever), then replicating nothing.
+    const { socket, destroy } = makeFakeSocketWithProvenDataPath();
+    f.emitConnection(socket);
+
+    await handle.forceRejoin();
+
+    // Before this fix the WI-5971 data-path guard skipped it (evicted=0), so
+    // Hyperswarm still believed the peer connected, never re-dialled, and the
+    // repair ladder detected-but-never-healed.
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(f.leaves).toHaveLength(1);
+    expect(f.joins).toHaveLength(2);
+  });
+
+  it('WI-5971 preserved: a SIBLING on the same topic keeps its proven-live socket when someone else escalates — and still evicts it once ITS own detector fires', async () => {
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    // Two participants on the SAME topic share ONE TopicRejoinCoordinator, so
+    // one's forced rejoin drags the other through eviction too (WI-5923). That
+    // is precisely the case WI-5971 protects.
+    const handleA = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      severedEscalationMs: 10 * 60_000,
+    });
+    handles.push(handleA);
+    const handleB = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      severedEscalationMs: 10 * 60_000,
+    });
+    handles.push(handleB);
+
+    // The fake swarm keeps only the LAST registered connection listener, so
+    // this socket is tracked by B alone — B is the healthy sibling here.
+    const { socket, destroy } = makeFakeSocketWithProvenDataPath();
+    f.emitConnection(socket);
+
+    // A escalates. B is only a bystander, so its actively-replicating socket
+    // must NOT be destroyed just because a co-tenant's link died.
+    await handleA.forceRejoin();
+    expect(destroy).not.toHaveBeenCalled();
+
+    // When B's OWN detector fires, B is the escalating participant and its
+    // link is by definition proven dead — so it evicts. This is why sparing a
+    // sibling never strands a zombie: the owner always gets its own pass.
+    await handleB.forceRejoin();
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
   it('the severed-link ladder (rung a) never attempts a redundant destroy — a genuinely closed socket is already pruned', async () => {
     vi.useFakeTimers();
     const f = makeFakeSwarm();

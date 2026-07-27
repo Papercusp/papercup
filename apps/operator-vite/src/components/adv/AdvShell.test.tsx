@@ -222,7 +222,6 @@ beforeEach(() => {
   shortcutHandlers.clear();
   localStorage.clear();
   invalidateSpy.mockClear();
-  hiveShareMeta = null;
   stubProjects();
 });
 

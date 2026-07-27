@@ -71,6 +71,8 @@ export function renderRoutingBlock(pairs: SubstitutionPair[]): string {
     '> sample of real commands (`packages/operator-core/lib/bash-substitution/`), and',
     '> the PreToolUse gate enforces the SAME registry. Do not hand-edit: the source is',
     '> `pairs/*.ts`, and `npm run gen:tool-routing:check` fails the build on drift.',
+    '> Adding a row, promoting one, or arguing with a gate that blocked you:',
+    '> [bash vs tool routing](/internal/docs/agent-insights/bash-vs-tool-routing).',
     '',
     '| you want | use | not |',
     '|---|---|---|',

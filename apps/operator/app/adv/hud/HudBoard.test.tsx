@@ -491,17 +491,19 @@ describe('header layout (owner asks 2026-07-27)', () => {
     entry({ ownerId: 'su-2222', currentPlanSlug: 'beta-plan' }),
   ];
 
-  it('puts the launcher on its OWN row, AFTER the tab strip — not inside it', () => {
+  it('puts the launcher on its OWN row, ABOVE the tab strip — not inside it', () => {
     const { container } = renderBoard([entry()]);
     const tabs = container.querySelector('.hud__tabs');
     const launchRow = container.querySelector('.hud__launchrow');
     expect(tabs, '.hud__tabs must exist').toBeTruthy();
-    expect(launchRow, 'the launcher needs a row of its own below the tabs').toBeTruthy();
+    expect(launchRow, 'the launcher needs a row of its own above the tabs').toBeTruthy();
 
     // Not nested inside the tab strip — that is the layout being corrected.
     expect(tabs!.contains(launchRow!)).toBe(false);
-    // DOCUMENT_POSITION_FOLLOWING === the launcher row comes AFTER the tabs.
-    expect(tabs!.compareDocumentPosition(launchRow!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // DOCUMENT_POSITION_PRECEDING === the launcher row comes BEFORE the tabs
+    // (owner ask 2026-07-27, restated: "put the row with the new session button
+    // above the sessions / plans / work items tabs" — it sat below them first).
+    expect(tabs!.compareDocumentPosition(launchRow!) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
     // …and it is the launcher that lives there.
     expect(within(launchRow as HTMLElement).getByTestId('launcher')).toBeTruthy();
   });

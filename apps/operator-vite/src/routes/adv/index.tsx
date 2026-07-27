@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import AdvShell, { ADV_TABS, type AdvTabId } from '../../components/adv/AdvShell';
-import AdvPotBar, { potBarModeForTab } from '../../components/adv/AdvPotBar';
+import AdvPotBar from '../../components/adv/AdvPotBar';
+import { potBarModeForTab } from '../../components/adv/adv-pot-bar-tabs';
 import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
 import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
 import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
