@@ -303,7 +303,7 @@ describe('axis 5 — one derivation, many lenses', () => {
   it('re-registering the SAME resolver is idempotent, not a conflict', () => {
     registerCell(sessionCell());
     expect(() => registerCell(sessionCell())).not.toThrow();
-    expect(listCells()).toHaveLength(1);
+    expect(listCells({ ownerId: 'su-a' })).toHaveLength(1);
   });
 });
 
@@ -341,6 +341,6 @@ describe('registration refuses rather than admits-and-flags', () => {
     expect(err).toBeInstanceOf(CellRegistrationError);
     const axes = new Set(err!.rejections.map((r) => r.axis));
     expect([...axes].sort()).toEqual([1, 2, 4, 5]);
-    expect(getCell('session.state')).toBeUndefined();
+    expect(getCell('session.state', { ownerId: 'su-a' })).toBeUndefined();
   });
 });

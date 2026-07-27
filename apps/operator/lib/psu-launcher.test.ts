@@ -2693,15 +2693,22 @@ describe('composeResumeModelSpec + resume model menu (WI-4889 — menu, not free
 // operator-core twins; THIS suite is what makes the twins trustworthy — it fails
 // the build the moment psu's menu and the UI's source of truth diverge.
 describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)', () => {
+  // psu-launcher.mjs ships no type declarations (it is exec'd directly by node),
+  // so anything imported from it lands as `any`. Naming the row shape here keeps
+  // these assertions from adding yet more implicit-any noise to this file.
+  type PsuMenuRow = { name: string; value: string; backend?: string };
+  const psuModels = RESUME_MODEL_MENU as PsuMenuRow[];
+  const psuEffortRows = RESUME_EFFORT_MENU as PsuMenuRow[];
+
   it('CLOUD_MODEL_MENU carries EXACTLY psu\'s base models, in the same order', () => {
-    expect(CLOUD_MODEL_MENU.map((c) => c.value)).toEqual(RESUME_MODEL_MENU.map((c) => c.value));
+    expect(CLOUD_MODEL_MENU.map((c) => c.value)).toEqual(psuModels.map((c) => c.value));
   });
 
   it('each twin row keeps psu\'s backend tag — a codex model can never be mislabelled claude', () => {
     for (const row of CLOUD_MODEL_MENU) {
-      const psuRow = RESUME_MODEL_MENU.find((c) => c.value === row.value);
+      const psuRow = psuModels.find((c) => c.value === row.value);
       expect(psuRow, `no psu row for ${row.value}`).toBeTruthy();
-      expect(row.backend, row.value).toBe(psuRow.backend);
+      expect(row.backend, row.value).toBe(psuRow!.backend);
       // and the tag agrees with the launcher's own resolver, not just the literal
       expect(cloudModelBackendHint(row.value), row.value).toBe(row.backend);
     }
@@ -2709,8 +2716,8 @@ describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)'
 
   it('each twin label is psu\'s menu text minus the redundant "<alias> — " prefix', () => {
     for (const row of CLOUD_MODEL_MENU) {
-      const psuRow = RESUME_MODEL_MENU.find((c) => c.value === row.value);
-      expect(psuRow.name, row.value).toBe(`${row.value} — ${row.label}`);
+      const psuRow = psuModels.find((c) => c.value === row.value);
+      expect(psuRow!.name, row.value).toBe(`${row.value} — ${row.label}`);
     }
   });
 
@@ -2727,7 +2734,7 @@ describe('CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS ↔ psu menus parity (WI-6300)'
   });
 
   it('MODEL_EFFORT_LEVELS is exactly psu\'s effort menu minus the empty model-default row', () => {
-    const psuEfforts = RESUME_EFFORT_MENU.map((c) => c.value).filter((v) => v !== '');
+    const psuEfforts = psuEffortRows.map((c) => c.value).filter((v) => v !== '');
     expect([...MODEL_EFFORT_LEVELS]).toEqual(psuEfforts);
     // the two the launcher was missing, pinned explicitly so a regression names itself
     expect([...MODEL_EFFORT_LEVELS]).toContain('xhigh');
