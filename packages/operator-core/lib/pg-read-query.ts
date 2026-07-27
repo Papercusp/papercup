@@ -394,18 +394,27 @@ export async function buildTenantScopeAdvisory(
 
   if (genericOffenders.length) {
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-    const suggested: string[] = [];
-    if (opts.workspaceId) suggested.push(`workspace_id = ${quote(opts.workspaceId)}`);
-    if (opts.harnessSlug) suggested.push(`harness_slug = ${quote(opts.harnessSlug)}`);
-    const actionable = suggested.length
-      ? ` Add: ${suggested.join(' AND ')}.`
-      : ' Add the resolved workspace_id/harness_slug scope predicate(s).';
-    parts.push(
-      `⚠ tenant scope: ${genericOffenders.join(', ')} — multi-tenant, but this filtered query has no ` +
-        'workspace_id/harness_slug predicate — a bare slug/id filter can silently match ANOTHER ' +
-        `tenant's rows and read as stale/diverged state.${actionable} ` +
-        '(agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).',
-    );
+    // Per-table: only name/suggest a column this SPECIFIC table actually has —
+    // never blindly append harness_slug (or workspace_id) from opts, since a
+    // sibling table in the same joined query can lack one of them (the exact
+    // "names a nonexistent column" shape of EI-18749676091756794).
+    for (const off of genericOffenders) {
+      const cols = [off.hasWorkspaceId ? 'workspace_id' : null, off.hasHarnessSlug ? 'harness_slug' : null]
+        .filter(Boolean)
+        .join(' + ');
+      const suggested: string[] = [];
+      if (off.hasWorkspaceId && opts.workspaceId) suggested.push(`workspace_id = ${quote(opts.workspaceId)}`);
+      if (off.hasHarnessSlug && opts.harnessSlug) suggested.push(`harness_slug = ${quote(opts.harnessSlug)}`);
+      const actionable = suggested.length
+        ? ` Add: ${suggested.join(' AND ')}.`
+        : ` Add the resolved ${cols.replaceAll(' + ', '/')} scope predicate(s).`;
+      parts.push(
+        `⚠ tenant scope: ${off.table} (keyed by ${cols}) — multi-tenant, but this filtered query has no ` +
+          `${cols.replaceAll(' + ', '/')} predicate — a bare slug/id filter can silently match ANOTHER ` +
+          `tenant's rows and read as stale/diverged state.${actionable} ` +
+          '(agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).',
+      );
+    }
   }
 
   return parts.join(' ');

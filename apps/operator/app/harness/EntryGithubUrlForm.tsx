@@ -1002,7 +1002,8 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           <span>
             A live status beacon (active agents, queue depth, current focus) is published on the{' '}
             {hiveLower} directory so collaborators can see this {hiveLower} is alive — automatic for
-            public {hiveLower}s. You can turn it off anytime from the {hiveLower} header.
+            public {hiveLower}s. You can turn it off anytime from the {hiveLower} bar at the top of
+            any {hiveLower} tab.
           </span>
         </div>
       )}

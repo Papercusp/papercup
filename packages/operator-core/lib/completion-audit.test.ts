@@ -14,7 +14,7 @@
  * matters — an audit silently keying on the wrong field — fails here, without needing
  * a live Postgres.
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -473,6 +473,93 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
     );
     expect(verdict.ok).toBe(false);
     expect(verdict.artifacts[0].resolved).toBe(join(dir, 'blank.png'));
+  });
+
+  // EI-18822892068318552 — the false NEGATIVE, which is the costlier direction for this
+  // gate than the false positive it was built to stop. Repo-relative is how every path in
+  // this repo is written, but the operator's cwd is not the repo root, so a real capture
+  // was reported as non-existent. The trap is what that teaches: the cheapest way to clear
+  // the error is to downgrade verifiedHow to 'manual' — the exact under-claiming the gate
+  // exists to prevent.
+  describe('resolves a REPO-RELATIVE citation, not only a cwd-relative one', () => {
+    let repo: string;
+    let nested: string;
+    const savedRepoRootEnv = process.env.PAPERCUSP_REPO_ROOT;
+
+    beforeAll(async () => {
+      repo = await mkdtemp(join(tmpdir(), 'completion-audit-repo-'));
+      // A VALID .git entry — a dir with HEAD. hasValidGitEntry deliberately refuses a
+      // stray empty `.git` (WI-4722), so an empty mkdir here would not mark a root.
+      await mkdir(join(repo, '.git'), { recursive: true });
+      await writeFile(join(repo, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
+      await mkdir(join(repo, '.papercusp-artifacts'), { recursive: true });
+      await writeFile(join(repo, '.papercusp-artifacts', 'wi6443-experiments.png'), contentPng());
+      // Where the operator actually runs from: deeper in the tree, so the citation does
+      // NOT resolve against it.
+      nested = join(repo, 'apps', 'operator');
+      await mkdir(nested, { recursive: true });
+    });
+
+    afterAll(async () => {
+      if (savedRepoRootEnv === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+      else process.env.PAPERCUSP_REPO_ROOT = savedRepoRootEnv;
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    it('ACCEPTS the real file when cwd is deeper than the repo root (the reported case)', async () => {
+      delete process.env.PAPERCUSP_REPO_ROOT; // proves the git-root walk carries it alone
+      const verdict = await verifyLiveDroveUiArtifacts(
+        {
+          verifiedHow: 'live-drove-ui',
+          testResult: 'drove the Experiments view, capture at .papercusp-artifacts/wi6443-experiments.png',
+        },
+        { cwd: nested },
+      );
+      expect(verdict.ok).toBe(true);
+      expect(verdict.artifacts[0].status).toBe('content');
+      expect(verdict.artifacts[0].resolved).toBe(join(repo, '.papercusp-artifacts', 'wi6443-experiments.png'));
+    });
+
+    it('ACCEPTS via PAPERCUSP_REPO_ROOT when no git root is reachable from cwd', async () => {
+      const elsewhere = await mkdtemp(join(tmpdir(), 'completion-audit-cwd-'));
+      process.env.PAPERCUSP_REPO_ROOT = repo;
+      try {
+        const verdict = await verifyLiveDroveUiArtifacts(
+          { verifiedHow: 'live-drove-ui', testResult: 'see .papercusp-artifacts/wi6443-experiments.png' },
+          { cwd: elsewhere },
+        );
+        expect(verdict.ok).toBe(true);
+        expect(verdict.artifacts[0].status).toBe('content');
+      } finally {
+        await rm(elsewhere, { recursive: true, force: true });
+      }
+    });
+
+    // The negative control: widening the search must not blunt the gate.
+    it('still REJECTS a citation that is absent under EVERY base — and names the bases tried', async () => {
+      delete process.env.PAPERCUSP_REPO_ROOT;
+      const verdict = await verifyLiveDroveUiArtifacts(
+        { verifiedHow: 'live-drove-ui', testResult: 'see .papercusp-artifacts/never-captured.png' },
+        { cwd: nested },
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.artifacts[0].status).toBe('missing');
+      // The whole point of the fix's second half: a diagnosable message, not a flat
+      // assertion the reporter can disprove with one `ls`.
+      expect(verdict.reason).toContain('looked under');
+      expect(verdict.reason).toContain(repo);
+      expect(verdict.artifacts[0].basesTried).toEqual([nested, repo]);
+    });
+
+    it('leaves an ABSOLUTE citation on exactly one candidate — nothing to explain', async () => {
+      const verdict = await verifyLiveDroveUiArtifacts(
+        { verifiedHow: 'live-drove-ui', testResult: `see ${join(repo, 'nope.png')}` },
+        { cwd: nested },
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.artifacts[0].basesTried).toBeUndefined();
+      expect(verdict.reason).not.toContain('looked under');
+    });
   });
 });
 

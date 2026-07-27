@@ -35,9 +35,10 @@
 
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, resolve as resolvePath } from 'node:path';
+import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import { getOrgPg } from '@papercusp/db-org';
+import { hasValidGitEntry } from './agent-tools/locks/valid-git-entry';
 import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence } from './coord-lifecycle/records';
 import type { WorkItemCompletionAuthority } from './work-item-completion-authority';
@@ -492,6 +493,13 @@ export interface CitedArtifact {
   status: CitedArtifactStatus;
   /** Human-readable detail — the blankness reason, or why it could not be judged. */
   detail?: string;
+  /**
+   * EI-18822892068318552: every base a RELATIVE citation was tried against, absolute.
+   * Populated only when the citation was relative (an absolute path has exactly one
+   * candidate and needs no explaining). Carried so a `missing` verdict can SAY where it
+   * looked instead of asserting a flat non-existence the reporter can disprove in one `ls`.
+   */
+  basesTried?: string[];
 }
 
 export interface LiveDroveUiArtifactVerdict {
@@ -550,23 +558,94 @@ export function citesAssertionBearingRun(evidence: CompletionVerificationEvidenc
   );
 }
 
+/**
+ * EI-18822892068318552 — why a relative citation gets MORE than one candidate base.
+ *
+ * Agents write paths the way this repo writes paths: repo-relative
+ * (`.papercusp-artifacts/wi6443-experiments.png`). The operator process's cwd is NOT
+ * the repo root, so resolving against `process.cwd()` alone reported a real, correct,
+ * already-inspected capture as "does not exist". That is the worst possible false
+ * negative for this particular gate: the flat non-existence claim reads as "your capture
+ * silently failed" (sending the reporter to re-run a ~2min harness boot for a file that
+ * was already right there), and the CHEAPEST way to make the error go away is to
+ * downgrade `verifiedHow` to `'manual'` — the exact under-claiming the gate exists to
+ * prevent. A guard whose easiest escape is weakening your own evidence is mis-calibrated.
+ *
+ * Order matters and is deliberate: cwd FIRST, so nothing that resolved before resolves
+ * differently now, then the two ways the repo root is knowable —
+ *  - `PAPERCUSP_REPO_ROOT`, the explicit pointer console-launcher stamps on every spawned
+ *    agent (EI-10938) and therefore the most authoritative when present;
+ *  - a git-root walk up from cwd, via the shared {@link hasValidGitEntry} (WI-4722: a
+ *    stray empty `.git` must not pass), for hosts/processes that carry no such env.
+ *
+ * Widening the search can only turn a `missing` into a real judgement — it never
+ * condemns something it previously accepted.
+ */
+export function artifactResolutionBases(cwd: string): string[] {
+  const bases: string[] = [resolvePath(cwd)];
+  if (process.env.PAPERCUSP_MUTATION_PROBE === '1') return bases; // TEMPORARY — negative control, reverted below
+  const add = (dir: string | null | undefined): void => {
+    if (!dir || !dir.trim()) return;
+    const abs = resolvePath(dir.trim());
+    if (!bases.includes(abs)) bases.push(abs);
+  };
+
+  add(process.env.PAPERCUSP_REPO_ROOT);
+
+  let dir = resolvePath(cwd);
+  for (let i = 0; i < 16; i += 1) {
+    if (hasValidGitEntry(dir)) {
+      add(dir);
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return bases;
+}
+
 async function inspectCitedArtifact(cited: string, cwd: string): Promise<CitedArtifact> {
   // `~/shot.png` is a perfectly ordinary way to write a path down; expanding it here is
   // the difference between judging the real file and condemning a path that never existed.
   const expanded = cited.startsWith('~/') ? resolvePath(homedir(), cited.slice(2)) : cited;
   const hasDirectory = expanded.includes('/');
-  const resolved = isAbsolute(expanded) ? expanded : hasDirectory ? resolvePath(cwd, expanded) : null;
-  if (!resolved) {
+  if (!isAbsolute(expanded) && !hasDirectory) {
     return { cited, resolved: null, status: 'unresolvable', detail: 'bare filename — no directory to resolve against' };
   }
 
-  let size: number;
-  try {
-    const info = await stat(resolved);
-    if (!info.isFile()) return { cited, resolved, status: 'unjudged', detail: 'not a regular file' };
-    size = info.size;
-  } catch {
-    return { cited, resolved, status: 'missing', detail: 'no such file on this host' };
+  // An absolute citation has exactly one candidate; a relative one is tried against each
+  // base in turn (see artifactResolutionBases) and the FIRST that holds a regular file wins.
+  const absolute = isAbsolute(expanded);
+  const bases = absolute ? [] : artifactResolutionBases(cwd);
+  const candidates = absolute ? [expanded] : bases.map((base) => resolvePath(base, expanded));
+  const basesTried = absolute ? undefined : bases;
+
+  let resolved: string | null = null;
+  let size = 0;
+  let sawNonFile = false;
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate);
+      if (!info.isFile()) {
+        sawNonFile = true;
+        continue;
+      }
+      resolved = candidate;
+      size = info.size;
+      break;
+    } catch {
+      // keep looking — a miss under one base says nothing about the others
+    }
+  }
+
+  if (!resolved) {
+    // Report the first candidate as `resolved` so existing readers still get a concrete
+    // path, and let `basesTried` carry the rest.
+    const shown = candidates[0] ?? null;
+    if (sawNonFile) return { cited, resolved: shown, status: 'unjudged', detail: 'not a regular file', basesTried };
+    return { cited, resolved: shown, status: 'missing', detail: 'no such file on this host', basesTried };
   }
 
   if (size === 0) {
@@ -636,9 +715,19 @@ export async function verifyLiveDroveUiArtifacts(
     );
   }
   if (missing.length > 0) {
+    // EI-18822892068318552: say WHERE we looked. A bare "does not exist" about a file the
+    // reporter can `ls` in one command reads as a flat contradiction, so the honest
+    // response to it is to distrust the gate (or to downgrade verifiedHow to silence it).
+    // Naming the bases turns it into something diagnosable in the same breath.
+    const where = missing
+      .map((a) => {
+        const bases = a.basesTried ?? [];
+        if (bases.length === 0) return a.cited;
+        return `${a.cited} (looked under ${bases.join(' and ')})`;
+      })
+      .join(', ');
     parts.push(
-      `${missing.length === 1 ? 'the cited artifact does not exist' : `none of the ${missing.length} cited artifacts exist`}: ` +
-        missing.map((a) => a.cited).join(', '),
+      `${missing.length === 1 ? 'the cited artifact does not exist' : `none of the ${missing.length} cited artifacts exist`}: ${where}`,
     );
   }
   return { ok: false, basis: 'image', artifacts, reason: parts.join(' — and ') };

@@ -639,10 +639,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // hive.beaconConsent — the Hive header's owner-consent read (WI-4137 / P-010).
-  // The query is deliberately keyed by the Hive home slug: a pot_settings write
-  // on one Hive must not refetch every open HiveHeaderStrip. The accessor keeps
-  // the default-deny behavior (missing or failed settings read => false).
+  // hive.beaconConsent — the pot bar's beacon-toggle owner-consent read (WI-4137 /
+  // P-010; consumer is HiveBeaconToggle since 2026-07-27, previously the deleted
+  // HiveHeaderStrip). The query is deliberately keyed by the Hive home slug: a
+  // pot_settings write on one Hive must not refetch every open toggle — and the
+  // toggle now renders on EVERY pot-scoped tab, so that scoping matters more than
+  // it did. The accessor keeps the default-deny behavior (missing or failed
+  // settings read => false).
   'hive.beaconConsent': {
     argsSchema: z.object({ potId: z.string().trim().min(1).max(120) }),
     resolve: async (rawArgs) => {

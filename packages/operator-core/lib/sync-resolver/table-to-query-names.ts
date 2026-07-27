@@ -454,8 +454,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.pot_members': ['dev.assignableMembers'],
   // pot_settings backs the owner-steering:* keys (queen-steering-panel B-01/C-1)
   // and per-Pot beacon consent. Steering remains a workspace-wide fold; beacon
-  // consent is keyed by the changed row's natural harness_slug so only that
-  // HiveHeaderStrip refreshes after a federated write.
+  // consent is keyed by the changed row's natural harness_slug so only that pot's
+  // HiveBeaconToggle refreshes after a federated write.
   'harness_shared.pot_settings': [
     'hive.steering',
     { name: 'hive.beaconConsent', scope: potHomeSlugScope },
