@@ -35,9 +35,57 @@
 // never propagated to these sibling parsers, even though that function's own header
 // says it "mirrors parseFailedFiles's file regexes ... so the two stay in sync".
 // Strip first, then match. Do not re-introduce a "tolerant regex" that skips this.
+/**
+ * @param {string} text
+ * @returns {string}
+ */
 export function stripVitestAnsi(text) {
   // eslint-disable-next-line no-control-regex -- SGR codes are the thing being removed.
   return String(text).replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * The path shape of a vitest test file, as a regex SOURCE FRAGMENT rather than a RegExp.
+ *
+ * Exported as a string because its two consumers embed it in different line-anchored
+ * matchers: this module scans whole outputs with `matchAll` (`gm`), while
+ * green-checkpoint.ts's `parseFailingFilesByWorkspace` walks line-by-line with `exec`
+ * (no flags) because it must track the enclosing `>>> <workspace>` header. A shared
+ * RegExp could not serve both; a shared fragment can.
+ */
+export const VITEST_TEST_FILE_SOURCE = String.raw`\S+\.(?:test|spec)\.[cm]?[jt]sx?`;
+
+/**
+ * ` ❯ lib/x/y.test.ts (22 tests | 1 failed) 85ms` — vitest's per-file ROLLUP row.
+ *
+ * The load-bearing matcher of the two: vitest prints only the first few `FAIL` rows but
+ * emits a rollup for EVERY failing file, so this is what names a large red run in full.
+ *
+ * A FACTORY rather than a shared `RegExp` const, deliberately: a `g`-flagged RegExp
+ * carries mutable `lastIndex`, so a single module-level instance shared across callers
+ * silently resumes mid-string on its second use. That failure is state-dependent and
+ * order-dependent — exactly the kind that survives a test suite and reappears in the
+ * gate. Each caller gets a fresh object.
+ *
+ * @param {string} [flags] RegExp flags — `'gm'` to scan a whole output, `''` per line.
+ * @returns {RegExp}
+ */
+export function vitestSummaryFailRow(flags = '') {
+  return new RegExp(String.raw`^\s*❯\s+(${VITEST_TEST_FILE_SOURCE})\s+\([^)]*\bfailed\b[^)]*\)`, flags);
+}
+
+/**
+ * `FAIL  lib/x/y.test.ts …` — a failed-SUITE row (transform/setup errors).
+ *
+ * Distinct from the rollup above and not redundant with it: a file that fails to
+ * transform or whose setup throws never reaches the rollup, so this is the only row
+ * that names it. See `vitestSummaryFailRow` for why this is a factory.
+ *
+ * @param {string} [flags] RegExp flags — `'gm'` to scan a whole output, `''` per line.
+ * @returns {RegExp}
+ */
+export function vitestSuiteFailRow(flags = '') {
+  return new RegExp(String.raw`^\s*FAIL\s+(${VITEST_TEST_FILE_SOURCE})\b`, flags);
 }
 
 export function parseSummaryFailedCounts(text) {
@@ -62,18 +110,15 @@ export function parseSummaryFailedCounts(text) {
  * exactly how green-checkpoint.ts got the strip and these did not.
  *
  * Returns [] (never null) so callers can length-check without a guard.
+ *
+ * @param {string} text
+ * @returns {string[]}
  */
 export function parseFailedTestFiles(text) {
   if (!text) return [];
   const plain = stripVitestAnsi(text);
   const files = new Set();
-  // ` ❯ lib/x/y.test.ts (22 tests | 1 failed) 85ms` — failed-file summary rows.
-  for (const m of plain.matchAll(/^\s*❯\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\s+\([^)]*\bfailed\b[^)]*\)/gm)) {
-    files.add(m[1]);
-  }
-  // `FAIL  lib/x/y.test.ts …` — failed-suite rows (transform/setup errors).
-  for (const m of plain.matchAll(/^\s*FAIL\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\b/gm)) {
-    files.add(m[1]);
-  }
+  for (const m of plain.matchAll(vitestSummaryFailRow('gm'))) files.add(m[1]);
+  for (const m of plain.matchAll(vitestSuiteFailRow('gm'))) files.add(m[1]);
   return [...files];
 }

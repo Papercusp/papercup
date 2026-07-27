@@ -39,6 +39,16 @@ import { runPerfGate, perfGatePolicyFromEnv } from './perf-gate';
 import { runDesktopPerfGate, desktopPerfGatePolicyFromFlags } from './desktop-perf-gate';
 import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
 import { heldGateAlert } from './held-gate-alarm';
+// WI-6441 — the ONE seam that parses vitest's output. Reaching across into `scripts/`
+// (rather than the reverse) mirrors `operator-core/lib/content-lint/conflict-markers.ts`
+// and for the same reason: those scripts are invoked by bare `node`, with no TS/tsx, so
+// they must stay dependency-free; this module already runs under tsx/vitest everywhere,
+// so it is the side that can afford the import.
+import {
+  stripVitestAnsi,
+  vitestSummaryFailRow,
+  vitestSuiteFailRow,
+} from '../../../../scripts/lib/vitest-summary.mjs';
 
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
@@ -633,11 +643,14 @@ export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
  *  would otherwise see `\x1b[41m FAIL \x1b[0m …` and miss: a red verdict on
  *  2026-07-10 carried `failingTests: []` for exactly this reason (0 raw matches, 5
  *  after stripping), sending triage at the wrong test for hours. Strip first, match
- *  second — always. */
-export function stripAnsi(s: string): string {
-  // eslint-disable-next-line no-control-regex -- SGR codes are the thing being removed.
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
-}
+ *  second — always.
+ *
+ *  WI-6441: re-exported from the shared seam rather than reimplemented. This file had
+ *  its own byte-identical copy, which is how EI-18819483316574031 happened in reverse —
+ *  the strip lived HERE and its sibling parsers in `scripts/` went without it for weeks
+ *  while a comment asserted the two were "in lock-step". Kept under the local name
+ *  because `green-checkpoint-canary.ts` and the suites import `stripAnsi` from here. */
+export const stripAnsi: (s: string) => string = stripVitestAnsi;
 
 /** Extract a stable failure signature from the FULL suite output (NOT the 2000-char
  *  tail, which can truncate the markers). Covers every shape the gate's runners emit:
@@ -957,17 +970,24 @@ export interface FailingFile {
  * (`.test.`/`.spec.`) — never the bare workspace markers `extractFailingTests` also
  * returns (those aren't files and can't be handed to `vitest run`).
  *
- * Mirrors `parseFailedFiles`'s file regexes in affected-tests.mjs so the two stay in
- * lock-step. Pure + total: empty output ⇒ `[]`, never throws.
+ * The row matchers come from `scripts/lib/vitest-summary.mjs` (WI-6441), which is what
+ * the comment this replaced only CLAIMED: it said these regexes "mirror
+ * `parseFailedFiles`'s in affected-tests.mjs so the two stay in lock-step", and that
+ * assertion was false for weeks — the sibling copy was ANSI-blind while this one was not
+ * (EI-18819483316574031), so the gate's last line of defence sat dead in production. A
+ * comment cannot keep two copies in sync; an import can. Note the WORKSPACE ATTRIBUTION
+ * below is deliberately NOT shared — only the row shapes are.
+ *
+ * Pure + total: empty output ⇒ `[]`, never throws.
  */
 export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] {
-  const TEST_FILE = /\S+\.(?:test|spec)\.[cm]?[jt]sx?/;
   // `>>> <ws> :: npm run <script>` — the affected runner's per-workspace section header.
+  // Local by design: this shape belongs to scripts/affected-tests.mjs's own sectioning,
+  // not to vitest's output, so it is not part of the shared vitest seam.
   const HEADER = /^\s*>>>\s+(\S+)\s+::\s+npm run\b/;
-  // `❯ lib/x/y.test.ts (22 tests | 1 failed) 85ms` — a failed-file summary row.
-  const SUMMARY_FAIL = new RegExp(`^\\s*❯\\s+(${TEST_FILE.source})\\s+\\([^)]*\\bfailed\\b[^)]*\\)`);
-  // `FAIL  lib/x/y.test.ts …` — a failed-suite row (transform/setup errors).
-  const SUITE_FAIL = new RegExp(`^\\s*FAIL\\s+(${TEST_FILE.source})\\b`);
+  // Unflagged: both are applied per-line with `.exec` below, so no `lastIndex` state.
+  const SUMMARY_FAIL = vitestSummaryFailRow();
+  const SUITE_FAIL = vitestSuiteFailRow();
 
   // Strip ANSI FIRST: every matcher below is line-anchored, and vitest colourizes both
   // the rollup and ` FAIL ` rows. Without this the parse silently returned [] on real

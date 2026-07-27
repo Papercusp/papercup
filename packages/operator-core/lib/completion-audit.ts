@@ -583,7 +583,6 @@ export function citesAssertionBearingRun(evidence: CompletionVerificationEvidenc
  */
 export function artifactResolutionBases(cwd: string): string[] {
   const bases: string[] = [resolvePath(cwd)];
-  if (process.env.PAPERCUSP_MUTATION_PROBE === '1') return bases; // TEMPORARY — negative control, reverted below
   const add = (dir: string | null | undefined): void => {
     if (!dir || !dir.trim()) return;
     const abs = resolvePath(dir.trim());

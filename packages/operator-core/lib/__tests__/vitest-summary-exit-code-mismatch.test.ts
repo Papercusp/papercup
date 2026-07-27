@@ -24,7 +24,9 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// @ts-expect-error vitest-summary.mjs is a standalone Node script without declarations.
+// Declarations are GENERATED (`npm run gen:declarations`, WI-6441) — the
+// `@ts-expect-error` that used to sit here is gone rather than left behind, because an
+// unused one is itself a TS2578 error once the module gains types.
 import { parseSummaryFailedCounts, parseFailedTestFiles } from '../../../../scripts/lib/vitest-summary.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -147,5 +149,44 @@ describe('affected-tests.mjs cross-checks the summary against the exit code (EI-
     // quarantine/failed-count bookkeeping below picks it up — a cross-check
     // that only logs a warning without changing the verdict fixes nothing.
     expect(source).toMatch(/r = \{ \.\.\.r, status: 1 \};/);
+  });
+});
+
+/**
+ * WI-6441 — the THIRD reader of vitest output.
+ *
+ * EI-18819483316574031 consolidated `affected-tests.mjs` (above) onto the shared seam,
+ * but `green-checkpoint.ts` kept its own `stripAnsi` + its own test-file/rollup/suite
+ * regexes. That is the precise configuration the incident was about: green-checkpoint
+ * HAD the ANSI strip and its sibling did not, and the only thing asserting they matched
+ * was a comment claiming they were "in lock-step" — which had been false for weeks while
+ * the gate's last line of defence sat dead in production.
+ *
+ * Note what is deliberately NOT asserted here: that the two parsers produce equal output.
+ * They must not — `parseFailedTestFiles` returns a flat file list and
+ * `parseFailingFilesByWorkspace` returns per-workspace attribution with rollup-over-FAIL
+ * precedence. Only the SHARED SUB-EXPRESSIONS are shared; the divergent logic stays local.
+ * An equality test would either force a false merge of the two behaviours or pass
+ * vacuously, and neither would have caught the original drift.
+ */
+describe('green-checkpoint.ts reads vitest output through the shared seam (WI-6441)', () => {
+  const source = readFileSync(resolve(REPO_ROOT, 'apps/operator/lib/release/green-checkpoint.ts'), 'utf8');
+
+  it('imports the shared ANSI strip + row matchers rather than redefining them', () => {
+    expect(source).toMatch(
+      /import \{[^}]*\bstripVitestAnsi\b[^}]*\} from '\.\.\/\.\.\/\.\.\/\.\.\/scripts\/lib\/vitest-summary\.mjs'/s,
+    );
+    expect(source).toMatch(/\bvitestSummaryFailRow\b/);
+    expect(source).toMatch(/\bvitestSuiteFailRow\b/);
+  });
+
+  // The negative control. Without these three, the assertions above pass just as happily
+  // with the old private copies still sitting in the file next to the new import — i.e.
+  // they would confirm the seam EXISTS while the drift it prevents continued unchanged.
+  it('keeps no private copy of the regexes the shared module now owns', () => {
+    // The SGR strip: one implementation, or the next fix propagates to one of them again.
+    expect(source).not.toMatch(/replace\(\/\\x1b\\\[\[0-9;\]\*m\/g/);
+    // The test-file path shape, previously duplicated as a local `TEST_FILE` const.
+    expect(source).not.toMatch(/\\\.\(\?:test\|spec\)\\\./);
   });
 });

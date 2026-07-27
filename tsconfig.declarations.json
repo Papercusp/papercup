@@ -56,6 +56,7 @@
   "files": [
     "scripts/lib/quarantine.mjs",
     "scripts/lib/sync-write.mjs",
+    "scripts/lib/vitest-summary.mjs",
     "scripts/proc-guard.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
     "scripts/check-vacuous-negative-assertions.mjs",

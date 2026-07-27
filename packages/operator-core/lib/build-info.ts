@@ -19,11 +19,29 @@
  * build, even though the shipped app has a real version (tauri.conf.json).
  * Mirrors the working PAPERCUSP_BUILD_SHA pattern: prefer an explicit
  * `PAPERCUSP_BUILD_VERSION` (set at build time from tauri.conf.json's version,
- * see papercusp-desktop/bin/release-local.sh), else fall back to
- * npm_package_version, else '0.0.0'.
+ * see papercusp-desktop/bin/release-local.sh — forwarded into the sidecar's
+ * env by src-tauri/src/main.rs), else fall back to npm_package_version, else
+ * '0.0.0'.
+ *
+ * EI-18751304112302229: build-desktop-sidecar.sh ALSO bakes the version
+ * directly into the bundle via esbuild `--define`, for any build path that
+ * doesn't go through main.rs's env-forward — but a `--define` is a SYNTACTIC
+ * rewrite of the exact literal expression it names, and this file never
+ * writes `process.env.npm_package_version` verbatim (it reads through the
+ * `opts.env ?? process.env` injectable-seam alias below), so a define
+ * targeting that expression can never match here. Read the baked identifier
+ * directly instead — same idiom as `__PAPERCUSP_BUNDLED_SIDECAR__`
+ * (util/cli-entry.ts): the identifier itself is the literal, so there is no
+ * alias for esbuild to miss.
  */
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+// Injected by esbuild `--define` only in the desktop-sidecar bundle (see
+// papercusp-desktop/bin/build-desktop-sidecar.sh). Absent (bare reference
+// would throw ReferenceError) under tsx/dev/test/the non-bundled operator —
+// read it via `typeof` so the reference never throws.
+declare const __PAPERCUSP_SIDECAR_VERSION__: string | undefined;
 
 export interface BuildInfo {
   /** Short git sha of the running checkout, or null if unresolved. */
@@ -36,10 +54,15 @@ export interface BuildInfo {
 export function resolveBuildInfo(opts: {
   env?: NodeJS.ProcessEnv;
   gitSha?: () => string | null;
+  /** Test seam for the esbuild-baked `__PAPERCUSP_SIDECAR_VERSION__` global. */
+  bakedVersion?: string;
 } = {}): BuildInfo {
   const env = opts.env ?? process.env;
   const envVersion = env.PAPERCUSP_BUILD_VERSION?.trim();
-  const version = envVersion || env.npm_package_version || '0.0.0';
+  const bakedVersion =
+    opts.bakedVersion ??
+    (typeof __PAPERCUSP_SIDECAR_VERSION__ !== 'undefined' ? __PAPERCUSP_SIDECAR_VERSION__ : undefined);
+  const version = envVersion || bakedVersion || env.npm_package_version || '0.0.0';
   const envSha = env.PAPERCUSP_BUILD_SHA?.trim();
   if (envSha) return { sha: envSha, version };
   const gitSha = opts.gitSha ?? defaultGitSha;

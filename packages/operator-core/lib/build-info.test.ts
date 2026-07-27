@@ -75,4 +75,47 @@ describe('resolveBuildInfo', () => {
       expect(r.version).toBe('1.2.3');
     });
   });
+
+  // EI-18751304112302229: the WI-2644 bake used --define:process.env.npm_package_version,
+  // which esbuild can only match as a literal member expression — this file never
+  // writes that expression verbatim (it reads through the `opts.env ?? process.env`
+  // seam alias), so the define had nothing to rewrite and the bake was silently a
+  // no-op on every packaged build not launched via main.rs's PAPERCUSP_BUILD_VERSION
+  // forward. Fixed by baking a dedicated `__PAPERCUSP_SIDECAR_VERSION__` global
+  // (matching the __PAPERCUSP_BUNDLED_SIDECAR__ idiom) and reading it directly —
+  // exercised here via the `bakedVersion` test seam (the real global is injected by
+  // esbuild --define and is `undefined` under vitest).
+  describe('bakedVersion / __PAPERCUSP_SIDECAR_VERSION__ (EI-18751304112302229)', () => {
+    it('falls back to bakedVersion when neither env var is set', () => {
+      const r = resolveBuildInfo({
+        env: {} as NodeJS.ProcessEnv,
+        gitSha: () => 'deadbee',
+        bakedVersion: '0.0.13',
+      });
+      expect(r.version).toBe('0.0.13');
+    });
+
+    it('prefers PAPERCUSP_BUILD_VERSION over bakedVersion when both are set', () => {
+      const r = resolveBuildInfo({
+        env: { PAPERCUSP_BUILD_VERSION: '0.0.14' } as NodeJS.ProcessEnv,
+        gitSha: () => 'deadbee',
+        bakedVersion: '0.0.13',
+      });
+      expect(r.version).toBe('0.0.14');
+    });
+
+    it('prefers bakedVersion over npm_package_version', () => {
+      const r = resolveBuildInfo({
+        env: { npm_package_version: '0.0.1' } as NodeJS.ProcessEnv,
+        gitSha: () => 'deadbee',
+        bakedVersion: '0.0.13',
+      });
+      expect(r.version).toBe('0.0.13');
+    });
+
+    it('falls back to 0.0.0 when bakedVersion, PAPERCUSP_BUILD_VERSION, and npm_package_version are all unset', () => {
+      const r = resolveBuildInfo({ env: {} as NodeJS.ProcessEnv, gitSha: () => 'deadbee' });
+      expect(r.version).toBe('0.0.0');
+    });
+  });
 });

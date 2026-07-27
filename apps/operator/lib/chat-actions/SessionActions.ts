@@ -24,7 +24,6 @@
  * desktop webkit2gtk build fails silently (WI-3988/WI-3989). The routes
  * parse the raw body as JSON regardless of content-type.
  */
-import { z } from 'zod';
 import { registerChatAction } from './registry';
 import type { ChatActionContext } from './types';
 
@@ -65,9 +64,6 @@ export function canFocusWindow(ctx: SessionActionCtx): boolean {
   return Boolean(ctx.windowId) || ctx.advSessionId != null;
 }
 
-const CHOICE_IDS = ['resume', 'fork', 'focus'] as const;
-type Choice = (typeof CHOICE_IDS)[number];
-
 const postText = (url: string, payload: unknown) =>
   fetch(url, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(payload) });
 
@@ -101,49 +97,63 @@ export async function focusWindow(ctx: SessionActionCtx): Promise<void> {
   }
 }
 
+/**
+ * THREE DIRECT BUTTONS, not one collapsed picker
+ * (gui-chat-session-controls-2026-07-25 P-015, owner ask 2026-07-27:
+ * "add the same resume/fork/focus buttons to the chat popup, the same ones
+ * that show up in the turn history in the agents running dropdown").
+ *
+ * P-006 originally shipped these as a SINGLE `session-actions` entry whose
+ * `params` opened a radio card — so reaching Fork cost click → card → pick →
+ * confirm, and the three buttons the owner was looking for never appeared as
+ * buttons at all. AgentInspectorModal (the agents-running dropdown this is
+ * meant to mirror) renders them as three INDEPENDENT one-click buttons, each
+ * gated by its own predicate. These three registrations restore that parity.
+ *
+ * Each declares NO `params`: per ChatAction.params' contract, an action
+ * without it goes straight from click to `run`, which is the one-click
+ * behaviour being matched. The availability predicates are unchanged and
+ * still the single source of truth — each button simply consumes the ONE
+ * predicate that governs it, instead of all three being OR-ed behind a single
+ * entry (which is what let a session with, say, only a focusable window still
+ * advertise a generic "Session" button).
+ *
+ * Icons/labels mirror AgentInspectorModal's verbatim (↻ / ⑂) so the two
+ * surfaces read as the same control, per the owner's "the same ones".
+ */
 registerChatAction({
-  id: 'session-actions',
-  label: 'Session',
+  id: 'session-resume',
+  label: 'Resume in new terminal',
+  icon: '↻',
   group: 'session',
   available: (ctx) => {
     const c = ctx as SessionActionCtx;
-    return Boolean(c.sessionOwnerId) && (resumableSessionId(c) !== null || canFocusWindow(c));
+    return Boolean(c.sessionOwnerId) && resumableSessionId(c) !== null;
   },
-  params: async (ctx) => {
+  run: async (ctx) => launchInNewTerminal(ctx as SessionActionCtx, false),
+});
+
+registerChatAction({
+  id: 'session-fork',
+  label: 'Fork in new terminal',
+  icon: '⑂',
+  group: 'session',
+  available: (ctx) => {
     const c = ctx as SessionActionCtx;
-    const resumable = resumableSessionId(c) !== null;
-    const forkable = resumable && canForkSession(c);
-    const focusable = canFocusWindow(c);
-    const options: { id: Choice; label: string; hint: string }[] = [];
-    if (resumable) {
-      options.push({
-        id: 'resume',
-        label: 'Resume in new terminal',
-        hint: '`-r <id>` — resumes the transcript in place; opens a second CLI if the source is still live',
-      });
-    }
-    if (forkable) {
-      options.push({
-        id: 'fork',
-        label: 'Fork in new terminal',
-        hint: '`-r <id> --fork-session` — branches a fresh session; the source (if live) keeps running untouched',
-      });
-    }
-    if (focusable) {
-      options.push({ id: 'focus', label: 'Focus window', hint: "Raise this agent's terminal window" });
-    }
-    return {
-      prompt: 'Session action',
-      dataSchema: z.object({ picks: z.tuple([z.enum(CHOICE_IDS)]) }),
-      presentation: { kind: 'radio', options },
-      allowDecline: true,
-    };
+    // Fork needs BOTH a resumable id and a claude backend — `--fork-session`
+    // is claude-only, so a forkable-but-unresumable session cannot exist.
+    return Boolean(c.sessionOwnerId) && resumableSessionId(c) !== null && canForkSession(c);
   },
-  run: async (ctx, value) => {
+  run: async (ctx) => launchInNewTerminal(ctx as SessionActionCtx, true),
+});
+
+registerChatAction({
+  id: 'session-focus',
+  label: 'Focus window',
+  group: 'session',
+  available: (ctx) => {
     const c = ctx as SessionActionCtx;
-    const [choice] = (value as { picks: [Choice] }).picks;
-    if (choice === 'resume') return launchInNewTerminal(c, false);
-    if (choice === 'fork') return launchInNewTerminal(c, true);
-    return focusWindow(c);
+    return Boolean(c.sessionOwnerId) && canFocusWindow(c);
   },
+  run: async (ctx) => focusWindow(ctx as SessionActionCtx),
 });

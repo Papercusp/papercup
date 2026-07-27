@@ -407,3 +407,66 @@ describe('buildTenantScopeAdvisory — per-table overrides (EI-18669912007336072
     expect(advisory).not.toContain('agent_facts');
   });
 });
+
+// EI-18749676091756794: the generic heuristic prescribed a WRONG query for
+// harness_shared.tool_usage_rollup — it named a `harness_slug` column the
+// table does not have at all, and even after dropping that, the real tenant
+// workspace id matches ZERO rows because the table is keyed by a CORPUS
+// NAMESPACE ('default'), not a tenant. An unscoped read is the correct one
+// for these tables, so the advisory must stay silent for them.
+describe('buildTenantScopeAdvisory — corpus-namespaced tables (EI-18749676091756794)', () => {
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it('is silent for tool_usage_rollup even though it has a workspace_id column and no scope predicate', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'tool_usage_rollup', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'tool_usage_rollup', column_name: 'tool_name' },
+      { table_schema: 'harness_shared', table_name: 'tool_usage_rollup', column_name: 'calls' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT count(*) FROM harness_shared.tool_usage_rollup WHERE tool_name = 'coord:orient'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+  });
+
+  it('is silent for session_turns the same way', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'session_turns', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'session_turns', column_name: 'session_id' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.session_turns WHERE session_id = 'x'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+  });
+
+  it('never names a column absent from the offending table — a workspace_id-only table gets no harness_slug suggestion', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'workspace_only_table', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'workspace_only_table', column_name: 'id' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.workspace_only_table WHERE id = 1",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('workspace_id');
+    expect(advisory).not.toContain('harness_slug');
+  });
+
+  it('still fires generically for a real tenant table joined alongside a corpus-namespaced one, while the corpus table is silenced', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'tool_usage_rollup', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'harness_slug' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM harness_shared.tool_usage_rollup u JOIN harness_shared.harness_plans p ' +
+        "ON true WHERE u.tool_name = 'x'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('harness_plans');
+    expect(advisory).not.toContain('tool_usage_rollup');
+  });
+});
