@@ -287,6 +287,7 @@ describe('AdvConversationsTab — Create-style shell', () => {
       conversation: null,
       thread: null,
       chat: 'chat-mail-thread',
+      cmsg: null,
       fmsg: null,
     });
   });
@@ -327,6 +328,7 @@ describe('AdvConversationsTab — Create-style shell', () => {
       conversation: null,
       thread: null,
       chat: null,
+      cmsg: null,
       fmsg: null,
     });
   });
@@ -659,21 +661,25 @@ describe('AdvConversationsTab — unified communication views', () => {
 
   it('still collapses one conversation mirrored into two different stores', () => {
     // The case the semantic signature exists for, and the one it must keep
-    // handling after P-005 narrowed it to CROSS-source only.
+    // handling after P-005 narrowed it to CROSS-source only: a coord thread can
+    // be a standalone deliberation OR the timeline attached to a Q&A
+    // conversation, and in the second case both stores describe ONE thing.
     const rows = composeUnifiedConversationRows({
-      deliberations: [{
-        thread_id: 'th-mirror', parent_kind: 'issue', parent_ref: 'WI-9', title: 'shared subject',
-        created_by: 'architect', harness_slug: 'papercusp', created_at: TS(5), last_post_at: TS(5), post_count: 2,
+      questions: [{
+        id: 'conv-mirror', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
+        title: 'shared subject', asker_id: 'architect', topics: [], promoted_issue_id: null,
+        created_ts: TS(6), updated_ts: TS(6),
       }],
-      agentMessages: [{
-        msg_id: 'ms-mirror', kind: 'message', from: 'architect', to: [], summary: 'shared subject',
-        body: null, harness_slug: 'papercusp', plan_slug: null, lifecycle: null,
-        audience: ['@object:issue:WI-9'], broadcast: false, reply_count: 0, ts: TS(6), last_reply_ts: null,
+      deliberations: [{
+        thread_id: 'th-mirror', parent_kind: null, parent_ref: null, title: 'shared subject',
+        created_by: 'architect', harness_slug: 'papercusp', created_at: TS(5), last_post_at: TS(5), post_count: 2,
       }],
     }, 50);
 
-    // Identical title/actor/pot/relatedRef across two stores → one row survives.
-    expect(rows).toHaveLength(1);
+    // Same title/actor/pot and no distinguishing related ref → one row survives,
+    // and it is the one with the most recent activity (TS counts BACK from now,
+    // so the thread's TS(5) is newer than the question's TS(6)).
+    expect(rows.map((row) => row.sourceId)).toEqual(['th-mirror']);
   });
 
   it('composes agent↔agent coord messages as a curated source with routing and reply counts', () => {

@@ -68,6 +68,9 @@ interface SendMsg {
   blocking?: boolean;
   /** ENVELOPE (D-011). A goal REF, never prose — the receiver queries its LIVE state. */
   why?: MessageWhy;
+  /** P-033: which fields a NON-AGENT sender (the operator GUI) DERIVED rather
+   *  than authored, so measurement never counts them as sender intent. */
+  fieldProvenance?: Record<string, string>;
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
@@ -307,6 +310,17 @@ const reportArg = z
     'Structured status card (ReportBlock): { title?, plans:[{ title, status?, summary?, items?:[{ id?, text, status? }] }] }. Sent to ["human"] it renders as a 📋 card in the owner\'s Inbox (fleet updates, status digests) instead of plain text. Statuses like blocked/failing surface it as an Alert; a genuine decision still goes through coord:escalate. Invalid shape → loud report_invalid refusal (nothing sent).',
   );
 
+/** P-033. Which fields a NON-AGENT sender (the operator GUI) derived rather than
+ *  authored — so the D-070 measurement can exclude them instead of counting a
+ *  derived value as sender intent. Agents never pass this: they author. */
+const fieldProvenanceArg = z
+  .record(z.string(), z.string())
+  .optional()
+  .describe(
+    'Non-agent senders only (the operator GUI wrapper). Marks which fields were DERIVED rather ' +
+      'than authored, so adoption measurement never counts them as sender intent.',
+  );
+
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
@@ -344,6 +358,7 @@ const itemSpec = z.object({
   hive: hiveArg,
   allHive: allHiveArg,
   report: reportArg,
+  fieldProvenance: fieldProvenanceArg,
 });
 
 /**
@@ -572,6 +587,13 @@ async function sendOne(
   if (fieldStamp.premisesClassified) extra.premisesClassified = fieldStamp.premisesClassified;
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
+  // P-033: ride the envelope so a reader (and the D-070 adoption measurement)
+  // can tell an owner-GUI-derived value from an agent-authored one. Without
+  // this stamp the derived defaults would silently inflate every adoption
+  // number this plan is judged on — the P-029 failure, mechanised.
+  if (msg.fieldProvenance && Object.keys(msg.fieldProvenance).length) {
+    extra.fieldProvenance = msg.fieldProvenance;
+  }
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
   // (dbos/periodic-workflows.ts) can select it with a simple `<= now` compare —
   // no need to re-derive "elapsed since send" from `ts` at sweep time. Positive
@@ -1166,6 +1188,7 @@ export default defineTool({
     // per-section.
     blocking: blockingArg,
     why: whyArg,
+    fieldProvenance: fieldProvenanceArg,
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),
     related_msg_id: z
@@ -1220,6 +1243,7 @@ export default defineTool({
             body: args.body,
             blocking: args.blocking,
             why: args.why,
+            fieldProvenance: args.fieldProvenance,
             files: args.files,
             plan_slug: args.plan_slug,
             related_msg_id: args.related_msg_id,

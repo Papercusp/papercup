@@ -35,6 +35,7 @@ import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
+import { applyOwnerMessageDefaults } from '../../../agent-tools/coordination/owner-message';
 
 // Shared with the Planning inbox's ack-dismiss filter (plans/attention.ts) so
 // "Acknowledge" actually dismisses: the human acks AS this owner here, and the
@@ -94,6 +95,16 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   } catch {
     return Response.json({ error: { code: 'invalid_json', message: 'request body must be JSON' } }, { status: 400 });
   }
+  // P-033: a GUI sender is not an agent and cannot author the protocol fields
+  // coord:send now requires — D-048 made `expects` REQUIRED with no default, and
+  // every GUI call site (the HUD session chat, the Agents-pill composer + nudge)
+  // posts without it, so all three have been failing validation since it landed.
+  // The wrapper fills the gaps HONESTLY and STAMPS what it filled, so the D-070
+  // measurement never counts a GUI-derived value as sender intent. Applied here,
+  // at the one route every GUI sender already goes through, rather than at each
+  // call site — three are broken today and patching them one by one leaves the
+  // trap armed for the fourth.
+  const dispatchBody = verb === 'send' ? applyOwnerMessageDefaults(body) : body;
   const url = new URL(req.url);
   const result = await handleHttpToolRequest(
     {
@@ -101,7 +112,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       pathname: `/api/agent-tools/coord/${verb}`,
       searchParams: adminSearchParams(url.searchParams),
       headers: collectHeaders(req),
-      body,
+      body: dispatchBody,
     },
     HOST_EXTRAS,
   );
