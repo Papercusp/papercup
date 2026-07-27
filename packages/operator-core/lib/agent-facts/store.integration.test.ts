@@ -44,6 +44,10 @@ beforeAll(async () => {
     '462-agent-facts-fed-key.sql',
     '574-agent-facts-audience-provenance.sql',
     '671-add-agent-facts-confidence.sql',
+    // P-008 (a): swaps the identity index for its PARTIAL form. This list is
+    // exactly the guard that catches an ON CONFLICT spec drifting away from the
+    // live index — the mig-461 break this file was written for.
+    '689-agent-facts-append-versioning.sql',
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper
     // (lifted from this file's own former inline version).
