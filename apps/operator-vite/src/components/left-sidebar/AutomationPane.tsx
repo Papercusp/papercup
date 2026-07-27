@@ -64,6 +64,7 @@ import {
 import { Tooltip } from '@/app/harness/Tooltip';
 import {
   AGENT_FAMILY_ORDER,
+  armedStateLabel,
   FAMILY_LABEL,
   SYSTEM_FAMILY_ORDER,
   type RoutineFamily,
@@ -171,7 +172,7 @@ export function rowLabel(r: AutomationRoutine): string {
  * activity, which is almost always the reason it stalled.
  */
 export function rowMeta(r: AutomationRoutine): string {
-  if (r.kind === 'triggered') return r.triggerLabel ?? 'on an event';
+  if (r.kind === 'triggered') return withArmedState(r, r.triggerLabel ?? 'on an event');
   if (r.liveness === 'stalled') {
     if (r.kind === 'loop') {
       return r.ownerLastActiveAt
@@ -180,7 +181,30 @@ export function rowMeta(r: AutomationRoutine): string {
     }
     return `stalled · last ran ${agoLabel(r.lastFiredAt)}`;
   }
-  return r.cadence ?? 'event-driven';
+  return withArmedState(r, r.cadence ?? 'event-driven');
+}
+
+/**
+ * Append the armed state to a row's meta line when it is anything other than
+ * plainly armed.
+ *
+ * WI-6447 (owner ask 2026-07-27, "can you make whether its enabled or not
+ * visible in the display"): a cadence alone — "every 1m" — reads as a schedule
+ * that IS running every minute. Most in-process sweeps report `armed: false`
+ * (not armed in this process) and rendered identically to live ones, so the pane
+ * listed sweeps whose state the owner could not see. The external-process rows
+ * are worse: their arm state is genuinely UNKNOWN (live fire-state needs P-014
+ * federation), and the old boolean funnel made unknown read as on.
+ *
+ * `armed` adds nothing — a running schedule showing its cadence is already the
+ * unsurprising case, and suffixing every row would just add noise. The two
+ * states that CHANGE what the owner should believe are the ones that get said
+ * out loud. A stalled row is left alone: it already explains itself, and
+ * "stalled · not armed" would be two ways of saying the same thing.
+ */
+function withArmedState(r: AutomationRoutine, base: string): string {
+  if (r.armedState === 'armed') return base;
+  return `${base} · ${armedStateLabel(r.armedState)}`;
 }
 
 /**

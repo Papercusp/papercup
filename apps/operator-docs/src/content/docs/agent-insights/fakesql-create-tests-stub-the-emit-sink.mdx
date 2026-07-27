@@ -2,10 +2,12 @@
 title: "A createWorkItem test with a fakeSql must stub the emitAwaitedEvent sink"
 description: "Tests that drive createWorkItem against a fakeSql leak a fire-and-forget lifecycle emit into the real await engine, tripping vitest-fail-on-console in a LATER test — stub ./events/await/engine emitAwaitedEvent."
 discovered: 2026-07-11
-tags: ["testing\nflaky-tests\nwork-items\nvitest"]
+tags: ["testing", "flaky-tests", "work-items", "vitest"]
 status: active
 documents:
-  - "packages/operator-core/lib/work-items-created-event-hook.test.ts\npackages/operator-core/lib/work-items-urgent.test.ts\npackages/operator-core/lib/work-items-events.ts"
+  - "packages/operator-core/lib/work-items-created-event-hook.test.ts"
+  - "packages/operator-core/lib/work-items-urgent.test.ts"
+  - "packages/operator-core/lib/work-items-events.ts"
 normative: true
 governs:
   - writing a createWorkItem test with a fakeSql
