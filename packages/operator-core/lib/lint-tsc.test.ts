@@ -9,8 +9,10 @@
  * The script's pure functions are imported directly (same pattern as apps/operator's
  * psu-pty-host / ptool script tests).
  */
-import { existsSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import {
   parseTscErrors,
@@ -19,6 +21,8 @@ import {
   parseExplicitFiles,
   decidePerFile,
   effectiveBaselineByFile,
+  exportedTypeNames,
+  filesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
   TSC_COMMAND,
@@ -508,5 +512,152 @@ describe('operator-vite gate wiring (EI-18649014117371738)', () => {
     expect(core!.baselineFile).toMatch(/packages\/operator-core\/\.tsc-baseline\.json$/);
     // A stale path here would silently degrade to the old absent⇒0 false-red, so pin that it resolves.
     expect(existsSync(core!.baselineFile)).toBe(true);
+  });
+});
+
+// EI-18756182128903253 — `--mine`/`--files` is structurally BLIND to the single most common
+// gate-redding change shape: adding a REQUIRED field to a shared exported interface. By
+// definition the new type errors that causes land in files the caller did NOT change (the
+// fixtures/constructors that build that type) — so the caller's own `--mine` reads clean and
+// the break first surfaces hours later at the fleet-wide green-checkpoint. Fix: widen attribution
+// to any file that references a type/interface/class/enum one of the CHANGED files also exports.
+describe('exportedTypeNames + filesReferencingTypeNames (EI-18756182128903253)', () => {
+  let dir: string;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('extracts exported interface/type/class/enum names, ignoring non-exported and local ones', () => {
+    dir = mkdtempSync(join(tmpdir(), 'lint-tsc-type-names-'));
+    writeFileSync(
+      join(dir, 'shape.ts'),
+      [
+        'interface NotExported { x: number }',
+        'export interface PipelinePosition { serving: string }',
+        'export type ServingTruth = { ok: boolean };',
+        'export class Widget {}',
+        'export enum Mode { A, B }',
+        'export default function foo() {}',
+      ].join('\n'),
+    );
+    const names = exportedTypeNames(dir, ['shape.ts']);
+    expect(names).toEqual(new Set(['PipelinePosition', 'ServingTruth', 'Widget', 'Mode']));
+  });
+
+  it('returns an empty set and never throws for an unreadable/missing file', () => {
+    dir = mkdtempSync(join(tmpdir(), 'lint-tsc-type-names-'));
+    expect(exportedTypeNames(dir, ['does-not-exist.ts'])).toEqual(new Set());
+  });
+
+  it('filesReferencingTypeNames finds a whole-word reference and ignores an unrelated file', () => {
+    dir = mkdtempSync(join(tmpdir(), 'lint-tsc-type-names-'));
+    writeFileSync(join(dir, 'fixture.ts'), 'const p: PipelinePosition = { serving: "x" };');
+    writeFileSync(join(dir, 'unrelated.ts'), 'const q = 1 + 1;');
+    const referencing = filesReferencingTypeNames(dir, ['fixture.ts', 'unrelated.ts'], new Set(['PipelinePosition']));
+    expect(referencing).toEqual(new Set(['fixture.ts']));
+  });
+
+  it('filesReferencingTypeNames does not partial-match a substring of a longer identifier', () => {
+    dir = mkdtempSync(join(tmpdir(), 'lint-tsc-type-names-'));
+    writeFileSync(join(dir, 'decoy.ts'), 'const x: PipelinePositionExtended = {} as any;');
+    const referencing = filesReferencingTypeNames(dir, ['decoy.ts'], new Set(['PipelinePosition']));
+    expect(referencing).toEqual(new Set());
+  });
+
+  it('short-circuits to an empty set with zero type names — never opens a file needlessly', () => {
+    dir = mkdtempSync(join(tmpdir(), 'lint-tsc-type-names-'));
+    writeFileSync(join(dir, 'anything.ts'), 'export const x = 1;');
+    expect(filesReferencingTypeNames(dir, ['anything.ts'], new Set())).toEqual(new Set());
+  });
+});
+
+// The RECURRENCE GUARD named in the filed bug: "a unit test over lint-tsc's scoping constructing
+// the exact shape — file A adds a required field, unchanged file B breaks — asserting --mine does
+// NOT report clean. That test fails today." This exercises decidePerFile directly with the
+// typeReferencedFiles wiring runTscBaselineGate now computes, reproducing the measured live
+// instance (PipelinePosition.serving made required in git-pipeline-position.ts,
+// release-trace.test.ts's unchanged fixture broke).
+describe('decidePerFile + typeReferencedFiles — the required-field-on-a-shared-interface shape', () => {
+  const brokenFree: string[] = [];
+
+  it('a regression OUTSIDE changedFiles gates when it references a type the changed file exports', () => {
+    // git-pipeline-position.ts (changed, exports PipelinePosition) added a required field;
+    // release-trace.test.ts (NOT in the diff) never updated its fixture and now fails to compile.
+    const typeReferencedFiles = new Set(['packages/operator-core/lib/release-trace.test.ts']);
+    const r = decidePerFile({
+      currentByFile: {
+        'packages/operator-core/lib/git-pipeline-position.ts': 0,
+        'packages/operator-core/lib/release-trace.test.ts': 1,
+      },
+      baselineByFile: {
+        'packages/operator-core/lib/git-pipeline-position.ts': 0,
+        'packages/operator-core/lib/release-trace.test.ts': 0,
+      },
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['packages/operator-core/lib/git-pipeline-position.ts']),
+      typeReferencedFiles,
+    });
+    // This is the assertion the filed bug says fails today (pre-fix, --mine reported ok-peer-drift
+    // or ok here because release-trace.test.ts is not in changedFiles).
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual([
+      'packages/operator-core/lib/release-trace.test.ts',
+    ]);
+    expect(r.typeAttributed!.map((x: { file: string }) => x.file)).toEqual([
+      'packages/operator-core/lib/release-trace.test.ts',
+    ]);
+  });
+
+  it('WITHOUT typeReferencedFiles the identical input false-passes as ok-peer-drift — pins the exact live bug', () => {
+    // Byte-identical to the first test's inputs, minus typeReferencedFiles: this is precisely
+    // "--mine reads clean" from the filed report — release-trace.test.ts has a baseline entry (it
+    // is a KNOWN file), so absent any type-reference signal it is dismissed as benign peer drift
+    // rather than gated, even though it is the direct, real consequence of the changed file.
+    const r = decidePerFile({
+      currentByFile: {
+        'packages/operator-core/lib/git-pipeline-position.ts': 0,
+        'packages/operator-core/lib/release-trace.test.ts': 1,
+      },
+      baselineByFile: {
+        'packages/operator-core/lib/git-pipeline-position.ts': 0,
+        'packages/operator-core/lib/release-trace.test.ts': 0,
+      },
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['packages/operator-core/lib/git-pipeline-position.ts']),
+      // no typeReferencedFiles — the pre-fix behaviour
+    });
+    expect(r.verdict).toBe('ok-peer-drift');
+    expect(r.peerDrift!.map((x: { file: string }) => x.file)).toEqual([
+      'packages/operator-core/lib/release-trace.test.ts',
+    ]);
+  });
+
+  it('a file NOT referencing any changed-file type stays peer drift even with typeReferencedFiles active for others', () => {
+    const r = decidePerFile({
+      currentByFile: { 'a.ts': 0, 'unrelated.ts': 1, 'referencing.ts': 1 },
+      baselineByFile: { 'a.ts': 0, 'unrelated.ts': 0, 'referencing.ts': 0 },
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['a.ts']),
+      typeReferencedFiles: new Set(['referencing.ts']),
+    });
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['referencing.ts']);
+    // unrelated.ts has no baseline entry, so it is a NEW file, not peer drift — but it must NOT be
+    // attributed either (it is neither changed nor type-referenced).
+    expect(r.newFiles!.map((x: { file: string }) => x.file)).toEqual(['unrelated.ts']);
+  });
+
+  it('a file directly in changedFiles is attributed but NOT counted in typeAttributed (no double-widening)', () => {
+    const r = decidePerFile({
+      currentByFile: { 'a.ts': 1 },
+      baselineByFile: { 'a.ts': 0 },
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['a.ts']),
+      typeReferencedFiles: new Set(['a.ts']), // even if it were (redundantly) also type-referenced
+    });
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
+    expect(r.typeAttributed).toEqual([]); // changedFiles wins; not double-counted as type-attributed
   });
 });

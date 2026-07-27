@@ -1184,15 +1184,18 @@ describe('code-search pattern boundaries (WI-6445)', () => {
   });
 
   /**
-   * The pair is pinned to `observe` because the tool it names has no data for
-   * this repo. That hold must live in the DATA — a promotion selecting on
+   * The pair is pinned to `observe` because the code graph it names has no
+   * refresh owner. That hold must live in the DATA — a promotion selecting on
    * `equivalence_verdict` alone cannot read a decision body (D-042).
    */
   it('is held at observe despite an equivalent verdict, and says why', () => {
     expect(gitnexusDefinitionLookup.expectedVerdict).toBe('equivalent');
     expect(gitnexusDefinitionLookup.holdAtObserve).toBeTruthy();
-    expect(gitnexusDefinitionLookup.holdAtObserve).toMatch(/gitnexus analyze/);
+    expect(gitnexusDefinitionLookup.holdAtObserve).toMatch(/re-index|refresh/i);
     expect(assertPolicyTier(gitnexusDefinitionLookup)).toBe('observe');
-    expect(GITNEXUS_INDEX_FINDING.papercuspIndexed).toBe(false);
+    // The hold is only honest while nobody owns the refresh; when a scheduled
+    // re-index lands, THIS is the assertion that should fail and force the
+    // hold to be re-decided rather than quietly outlived.
+    expect(GITNEXUS_INDEX_FINDING.refreshOwner).toBeNull();
   });
 });

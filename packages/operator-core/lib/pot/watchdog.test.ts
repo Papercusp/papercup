@@ -417,9 +417,18 @@ describe('scopedFireReason — a scoped fire must be findable by its own key', (
     expect(scopedFireReason(reason, 'su-a:work_items:claim', 'tick')).toBe(reason);
   });
 
-  it('repairs a reason that omits the key, so the debounce can match', () => {
-    const out = scopedFireReason('you called it 3×', 'su-a:work_items:claim', 'tick');
-    expect(out).toContain('su-a:work_items:claim');
+  it('repairs a reason that omits the key, and warns so the caller gets fixed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = scopedFireReason('you called it 3×', 'su-a:work_items:claim', 'tick');
+      expect(out).toContain('su-a:work_items:claim');
+      // The repair keeps the alarm working; the warning is what stops it being
+      // silent, which is the property that let the original bug run for weeks.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('would never match');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('is a no-op when no scopeKey is in play — unscoped callers are unaffected', () => {

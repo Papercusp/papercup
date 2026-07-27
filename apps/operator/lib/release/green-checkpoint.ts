@@ -814,6 +814,42 @@ export function classifyRedAgainstTip(input: {
   };
 }
 
+/* ── non-test GATE re-triage (EI-18759362119598634) ──────────────────────────
+ *
+ * The re-triage above only ever re-runs FAILING FILES — but a lint / typecheck red
+ * never appears in `failingFiles` (parseFailingFilesByWorkspace maps test FILES only),
+ * so a red made entirely of these gate signatures fell straight past the rescue: no
+ * file to re-run ⇒ no rescue ⇒ the red held the gate even after a peer's fix landed.
+ * That is precisely backwards — a lint red is DETERMINISTIC and REPO-WIDE, so it
+ * red-pins EVERY later candidate until a human notices, which is exactly the class
+ * that most needs the auto-refire. Observed live 2026-07-27: an identity-leak lint
+ * red on one already-fixed line held for 90s past the fix with nothing to rescue it.
+ *
+ * Each id below is a single fast, deterministic, repo-wide npm script — the same
+ * shape as re-running a named test file, just not test-shaped — so it is cheap to
+ * re-verify at tip without paying for a full suite re-run. Deliberately NOT
+ * comprehensive: a build break (`@papercusp/operator-vite`) or an unreadable
+ * package.json are real but heavier/less clean to re-verify this way, so they are
+ * left out and fall back to today's plain-red behaviour rather than guessing.
+ */
+
+export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
+  'lint:tsc': ['lint:tsc'],
+  'lint:migrations': ['lint:migrations'],
+  'lint:identity-leak': ['lint:no-owner-name-tags', 'lint:no-box-identity', 'lint:no-identity-literals'],
+  'lint:design-primitives': ['lint:design-primitives'],
+};
+
+/** `failingTests` for a red that is ENTIRELY non-test gate failures — never a test
+ *  file/workspace name (those go through `runTestsAtRef` via `failingFiles`), and
+ *  never an unmapped signature (see above). Returns the gate ids to re-verify, or
+ *  `[]` when the red is not gate-only (nothing for this path to do; the caller's
+ *  existing file-based or default handling applies unchanged). */
+export function nonTestGateIdsFrom(failingTests: string[] | undefined): string[] {
+  const ids = failingTests ?? [];
+  return ids.length > 0 && ids.every((id) => id in NON_TEST_GATE_SCRIPTS) ? ids : [];
+}
+
 /* ── deploy-staleness alarm ───────────────────────────────────────────────────
  * A held gate is loud; a gate that greens but whose PIN never moves is silent. On
  * 2026-07-09/10 the release pin sat ~18h behind tip with owner-priority UI invisible,
@@ -2203,6 +2239,51 @@ export async function runGreenCheckpoint(
           refireAttempts: (opts.refireAttempts ?? 0) + 1,
         });
       }
+    } else {
+      // EI-18759362119598634: the LINT/TYPECHECK sibling of the rescue above. A gate
+      // red (lint:tsc / lint:migrations / lint:identity-leak / lint:design-primitives)
+      // never populates `failingFiles` — that list is test-FILE-only — so it fell
+      // straight past the file-based rescue with nothing to re-run and was held red
+      // even once a peer's fix landed. When `failingTests` names ONLY known gate ids,
+      // re-verify them by re-running just those script(s) at tip.
+      const gateIds = failingFiles.length === 0 ? nonTestGateIdsFrom(failingTests) : [];
+      if (tip && tip !== candidate && gateIds.length > 0 && deps.runGateAtRef) {
+        deps.log(`red at ${candidate.slice(0, 8)}; re-running ${gateIds.length} non-test gate(s) at tip ${tip.slice(0, 8)}: ${gateIds.join(', ')}`);
+        const tipRun = await deps.runGateAtRef(tip, gateIds).catch((e: unknown) => {
+          deps.log(`tip gate re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`);
+          return null;
+        });
+        const verdict = classifyRedAgainstTip({
+          candidate,
+          tip,
+          failingTests: failingTests ?? [],
+          tipRetest: tipRun ? { ran: true, pass: tipRun.pass } : null,
+          refireAttempts: opts.refireAttempts ?? 0,
+          maxRefires: autoRefireCapFromEnv(),
+        });
+        retriage = { ...verdict, tip };
+        deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}${tipRun ? ` (${tipRun.summary})` : ''}`);
+
+        if (verdict.autoRefire) {
+          await deps.broadcast(
+            `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${gateIds.length} gate(s) pass at tip: ${gateIds.join(', ')})`,
+          ).catch(() => {});
+          await deps
+            .recordInFlightRetriage?.({
+              fromCandidate: candidate,
+              refiringCandidate: tip,
+              refireAttempt: (opts.refireAttempts ?? 0) + 1,
+              maxRefires: autoRefireCapFromEnv(),
+              failingFiles: gateIds,
+            })
+            .catch(() => {});
+          return runGreenCheckpoint(cfg, deps, {
+            ...opts,
+            candidate: tip,
+            refireAttempts: (opts.refireAttempts ?? 0) + 1,
+          });
+        }
+      }
     }
 
     // P-016 (D-010): longest-green-PREFIX FF. With the gate ARMED, a red TIP no longer
@@ -3239,6 +3320,30 @@ export function realCheckpointDeps(
           { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
         ).catch((e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }));
         summaries.push(`${workspace}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
+        if (r.code !== 0) return { pass: false, summary: summaries.join('; ') };
+      }
+      return { pass: true, summary: summaries.join('; ') };
+    },
+    // EI-18759362119598634: the LINT/TYPECHECK sibling of runTestsAtRef above — re-run
+    // EXACTLY the named non-test GATE script(s) (see NON_TEST_GATE_SCRIPTS) at `ref`, in
+    // the same checkpoint tree / setupTree contract runTestsAtRef relies on. A gate red
+    // never populates `failingFiles` (that list is test-FILE-only), so without this seam
+    // it fell straight past the stale-candidate rescue with nothing to re-run.
+    async runGateAtRef(ref, gateIds) {
+      // Same honest-absence contract as runTestsAtRef: a setupTree throw here propagates
+      // to the caller's .catch(() => null), which reads as tipRetest=null → 'tip re-run
+      // unavailable' — never a fabricated REPRODUCE for a tip we never actually checked out.
+      await this.setupTree(ref);
+      const verifiedHead = await revParse(cfg.checkpointRoot, 'HEAD').catch(() => 'unresolved');
+      const headNote = `verified-head=${verifiedHead.slice(0, 12)} (requested ${ref.slice(0, 12)})`;
+      const scripts = [...new Set(gateIds.flatMap((id) => NON_TEST_GATE_SCRIPTS[id] ?? []))];
+      const env = buildGreenCheckpointEnv(null);
+      const summaries: string[] = [headNote];
+      for (const script of scripts) {
+        const r = await exec('npm', ['run', script], { cwd: cfg.checkpointRoot, env, allowNonZero: true }).catch(
+          (e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }),
+        );
+        summaries.push(`${script}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
         if (r.code !== 0) return { pass: false, summary: summaries.join('; ') };
       }
       return { pass: true, summary: summaries.join('; ') };

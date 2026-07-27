@@ -787,10 +787,26 @@ def _canonical_tree_root():
         return None
 
 
+# EI-18760311552821358: a `NAME:PATH` target is a REMOTE/CONTAINER destination
+# (`docker cp local.sh container:/tmp/c.sh`, `scp`/`rsync` `host:/path` — the
+# `\bcp\b` scan above matches the `cp` inside `docker cp` too, so this leg
+# needs to recognize it), not a host path at all. Treating the bit after the
+# colon as a path and joining it against cwd resolves it INSIDE the tree
+# whenever cwd happens to be in the tree — a false positive, since the write
+# actually lands inside the container's filesystem and can never touch the
+# host tree at that argument position. Same "unsafe/not-a-local-path, fail
+# open" precedent as the `$`/backtick/`~`/glob checks below: a real local
+# filename containing a colon (rare, but legal on Linux) is a false negative
+# this trades away deliberately, same tradeoff already made for those.
+_CONTAINER_REF_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*:')
+
+
 def _resolve_write_target(raw_target, cwd):
     if not raw_target or any(ch in raw_target for ch in ('$', '`', '~', '*', '?', '[')):
         return None
     if raw_target.startswith('/dev/') or raw_target in ('&1', '&2'):
+        return None
+    if _CONTAINER_REF_RE.match(raw_target):
         return None
     try:
         return os.path.realpath(
@@ -1045,7 +1061,12 @@ def _shell_write_guard():
                 'Write tool instead — they claim the lock and validate the worktree for '
                 'you (for a copy: Read the source, then Write the destination). '
                 'Genuinely a scratch/log file? Write it outside the tree '
-                '(~/.papercusp/scratch or /tmp).' % (_construct, _raw)
+                '(~/.papercusp/scratch or /tmp). NOTHING in this Bash call ran — the whole '
+                'command was rejected before execution (EI-18760311552821358), including '
+                'any earlier statement in a `&&`/`;`-chained compound command (e.g. a '
+                'leading heredoc write) — re-issue the whole command after fixing the '
+                'target, do not assume an earlier part of it already ran.'
+                % (_construct, _raw)
             )
 
 

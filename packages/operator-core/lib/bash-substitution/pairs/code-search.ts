@@ -33,15 +33,26 @@
  * hoping. For "where is this defined" that is faithful, and the reference graph
  * it adds is strictly more than grep could give.
  *
- * ── ⚠ THE PAIR IS HELD AT `observe`, AND THE HOLD IS THE POINT ───────────────
- * See {@link GITNEXUS_INDEX_FINDING} and the `holdAtObserve` on the pair below.
- * At authoring time gitnexus had NEVER INDEXED THIS REPO, so every call this
- * advisory would recommend returns `Symbol 'x' not found`. That gap is INVISIBLE
- * to this harness by construction: `cover()` models the tool's ARGUMENT
+ * ── ⚠ THE FAILURE CLASS THIS PAIR ALMOST SHIPPED ─────────────────────────────
+ * When this pair was written, gitnexus had NEVER INDEXED THIS REPO —
+ * `list_repos` returned only an unrelated checkout, and `context` probes for
+ * real papercusp symbols returned `Symbol not found`. Every call this advisory
+ * recommends would have hit an empty index.
+ *
+ * That gap is INVISIBLE to this harness by construction, and the point
+ * generalises well past this pair: `cover()` models the tool's ARGUMENT
  * ENVELOPE, and `gitnexus.context { name: "managedSetInterval" }` is a perfectly
- * well-formed call — it just has no data behind it. The harness would happily
- * derive `equivalent`. This is a new failure class for the registry: an
- * ENVELOPE-FAITHFUL, DATA-EMPTY substitution.
+ * well-formed call — it simply had no data behind it. The harness derives
+ * `equivalent` and every test passes. Call it an ENVELOPE-FAITHFUL, DATA-EMPTY
+ * substitution: the registry can prove a tool ACCEPTS the question and cannot
+ * prove it ANSWERS it. Any future pair naming a tool with a backing store — an
+ * index, a cache, a projection — needs a liveness probe that the equivalence
+ * harness does not supply.
+ *
+ * The index has since been built (see {@link GITNEXUS_INDEX_FINDING}), so the
+ * original blocker is resolved. The pair stays pinned to `observe` for a
+ * DIFFERENT and still-open reason — index staleness with no owner. See
+ * `holdAtObserve` below.
  *
  * ── The kinds this claims, and the ones it deliberately does not ─────────────
  * Only `function` / `class` / `interface`. gitnexus's own `context` schema names
@@ -66,16 +77,30 @@ import type { CoverageResult, SubstitutionPair } from '../types';
  * row). So the condition is carried where the promotion can see it.
  */
 export const GITNEXUS_INDEX_FINDING = {
-  /** `gitnexus.list_repos`, measured 2026-07-27. */
-  indexedRepos: ['sheets-clone'],
-  papercuspIndexed: false,
-  probe: "gitnexus.context { name: 'managedSetInterval' } and { name: 'SubstitutionPair' }",
-  probeResult: "Symbol '…' not found (both)",
-  setupStep: 'npx gitnexus analyze . --skip-agents-md --name papercusp',
+  /** Before: `list_repos` returned exactly one, unrelated, checkout. */
+  indexedBefore: false,
+  probeBefore: "gitnexus.context { name: 'managedSetInterval' } → \"Symbol 'managedSetInterval' not found\"",
+  /** After: `npx gitnexus analyze . --skip-agents-md --name papercusp`, 309.2s. */
+  indexedAt: '2026-07-27',
+  indexStats: { nodes: 234_905, edges: 373_483, clusters: 6067, flows: 300 },
+  probeAfter:
+    "gitnexus.context { name: 'managedSetInterval', kind: 'Function', repo: 'papercusp' } → found at " +
+    'libs/generic/scheduled-registry/src/index.ts:221-262 with 24 incoming callers; ' +
+    "{ name: 'SubstitutionPair', kind: 'Interface' } → found at " +
+    'packages/operator-core/lib/bash-substitution/types.ts:72-157. Both claimed kinds verified.',
+  refreshStep: 'npx gitnexus analyze . --skip-agents-md --name papercusp',
+  /**
+   * ⚠ `--skip-agents-md` is REQUIRED, not cosmetic: the default rewrites a
+   * gitnexus section into CLAUDE.md and AGENTS.md, which in this repo are prompt
+   * SOURCES spliced into every agent's context — and CLAUDE.md additionally holds
+   * the generated routing table this very registry owns.
+   */
+  refreshOwner: null,
   note:
-    'The bridge README documents this as a once-per-repo setup step; it had never been run for papercusp. ' +
-    'An advisory promoted to `advise` before that lands would send every agent doing a definition lookup ' +
-    'to a tool that returns nothing — strictly worse than the grep it replaced.',
+    'The index is a LOCAL, MANUALLY-BUILT artifact under <repo>/.gitnexus (gitignored). Nothing re-indexes it: ' +
+    'on a tree where git-sync commits every few minutes it starts decaying immediately, and gitnexus reports ' +
+    'this only as an advisory `commitsBehind` on list_repos. That unowned decay — not the original empty index — ' +
+    'is what now pins this pair to `observe`.',
 } as const;
 
 /**
@@ -396,11 +421,11 @@ export const gitnexusDefinitionLookup: SubstitutionPair = {
     want: 'to find where a symbol is DEFINED (and who calls it)',
     use: '`gitnexus.context { name: "managedSetInterval", kind: "Function" }`',
     insteadOf:
-      '`grep -rn "export function managedSetInterval" --include=*.ts libs packages` (grep gives the one matching line; the code graph gives the definition plus callers/callees). ⚠ requires the repo to be indexed — `npx gitnexus analyze` — and exhaustive/exact text search is still grep\'s job',
+      '`grep -rn "export function managedSetInterval" --include=*.ts libs packages` (grep gives one matching line; the graph gives the definition plus callers/callees). ⚠ the index is refreshed by hand (`npx gitnexus analyze`) so it can lag new code; exhaustive exact-text search is still grep\'s job',
   },
   expectedVerdict: 'equivalent',
   holdAtObserve:
-    'gitnexus has not indexed this repo: at authoring time list_repos returned only `sheets-clone`, and context probes for real papercusp symbols (managedSetInterval, SubstitutionPair) both returned "Symbol not found". Promoting this to `advise` before `npx gitnexus analyze . --skip-agents-md --name papercusp` has run — and a probe confirms a papercusp symbol resolves — would nudge every agent doing a definition lookup toward a tool with no data behind it. The equivalence harness CANNOT catch this: cover() models the argument envelope, and the call is well-formed; it is simply empty. See GITNEXUS_INDEX_FINDING.',
+    'The code graph has NO REFRESH OWNER. The index this pair depends on was built by hand on 2026-07-27 (`npx gitnexus analyze`, 234,905 nodes) and nothing re-indexes it — on a tree where git-sync commits every few minutes it decays from the moment it is written, and a definition lookup against a stale graph answers with a symbol that has moved or misses one that is new. Promote only once a scheduled re-index exists (the two-tier scheduler: a `tier:durable` routine or a `tier:ephemeral` blueprint schedule — never a bare setInterval) AND a fresh probe resolves a symbol added since the last analyze. The ORIGINAL blocker — no index at all — is resolved and verified for both claimed kinds; see GITNEXUS_INDEX_FINDING.',
   cover(atom: string): CoverageResult {
     return coverDefinitionLookup(parseGrepAtom(atom));
   },
