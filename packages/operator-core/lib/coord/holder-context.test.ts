@@ -941,13 +941,44 @@ describe('LEG C — assumptions are never keyed off the unpopulated `kind` colum
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('the resolver has a live consumer', () => {
-  it('enrich-busy (D-055 A1) resolves holder context through the shared resolver', () => {
+  /**
+   * ⚠ RE-EXPRESSED BY P-012 (agent-state-plane-verification-2026-07-27), INTENT
+   * UNCHANGED. This describe exists to prove `resolveHolderContext` is not dead
+   * code — "acceptance requires at least one" live consumer. It used to prove that
+   * by asserting `enrich-busy.ts` calls `resolveHolderContext(` and builds
+   * `holderContextSources()` ITSELF.
+   *
+   * That spelling became the thing P-012 forbids. `enrichBusy` was the ONLY
+   * surface reaching past the wiring layer to the pure resolver — in the same
+   * directory as `locks/queue.ts`, which already went through the shared fan-out —
+   * so the tree held two copies of "resolve once per holder", and the local one was
+   * missing HOLDER_ADVISORY_DISTINCT_CAP's bound entirely. Pinning the direct call
+   * made the divergence a REQUIREMENT.
+   *
+   * So the consumer assertion now follows the real chain: enrich-busy →
+   * `resolveHolderAdvisoryMap` → the wiring layer → `resolveHolderContext`. The
+   * resolver has MORE live consumers than before, not fewer; they simply all arrive
+   * through one door. `holder-context-parity.test.ts` gates that door.
+   */
+  it('enrich-busy (D-055 A1) resolves holder context through the shared wiring', () => {
     const src = readRepoFile(__dirname, 'packages/operator-core/lib/agent-tools/locks/enrich-busy.ts');
-    expect(src).toMatch(/resolveHolderContext\(/);
-    expect(src).toMatch(/holderContextSources\(\)/);
-    // It must pass the BLOCKED caller through as the reader, not a default one:
-    // holder context is reader-relative, and a defaulted audience fails open.
-    expect(src).toMatch(/reader\s*\?\s*holderContextSources\(\)\s*:\s*null/);
+    expect(src).toMatch(/resolveHolderAdvisoryMap\(/);
+    // ...and does NOT keep a second copy of the binding the wiring layer owns.
+    expect(src).not.toMatch(/(^|[^.\w])resolveHolderContext\s*\(/m);
+
+    // UNCHANGED RULE, still load-bearing: it must pass the BLOCKED caller through as
+    // the reader, not a default one — holder context is reader-relative, and a
+    // defaulted audience fails OPEN. Without a reader there is no fan-out at all.
+    expect(src).toMatch(/reader\s*\?\s*owners\s*:\s*\[\]/);
+  });
+
+  /** The wiring layer is where the pure resolver is actually invoked. */
+  it('the wiring layer is the one place the pure resolver is called', () => {
+    const wiring = readRepoFile(
+      __dirname,
+      'packages/operator-core/lib/agent-tools/coordination/holder-advisory.ts',
+    );
+    expect(wiring).toMatch(/resolveHolderContext\(/);
   });
 });
 
