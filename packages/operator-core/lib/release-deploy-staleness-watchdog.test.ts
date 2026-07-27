@@ -16,6 +16,34 @@ vi.mock('./git-pipeline-stats', () => ({ gitPipelineSnapshot: (...a: unknown[]) 
 const computeDeployStatus = vi.fn();
 vi.mock('./release-deploy-launch', () => ({ computeDeployStatus: (...a: unknown[]) => computeDeployStatus(...a) }));
 
+// EI-16537 paging rails. The `sql` fake answers by statement shape: the escalation-row
+// SELECT (the one-shot latch), and the recovery UPDATE whose `count` is the "were we
+// alarmed?" test. Every reference is behind a closure so vi.mock's hoisting never
+// dereferences these consts before they initialize.
+let escalationRows: { escalation: unknown }[] = [];
+let recoveryUpdateCount = 0;
+const sqlStatements: string[] = [];
+const fakeSql = (strings: TemplateStringsArray, ..._vals: unknown[]): Promise<unknown> => {
+  const text = strings.join('?').trim();
+  sqlStatements.push(text);
+  if (/^SELECT/i.test(text)) return Promise.resolve(escalationRows);
+  if (/^UPDATE/i.test(text)) return Promise.resolve(Object.assign([], { count: recoveryUpdateCount }));
+  return Promise.resolve(Object.assign([], { count: 1 }));
+};
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: (s: TemplateStringsArray, ...v: unknown[]) => fakeSql(s, ...v) }),
+}));
+
+const notifyAttention = vi.fn().mockResolvedValue(undefined);
+vi.mock('./attention-notify', () => ({ notifyAttention: (...a: unknown[]) => notifyAttention(...a) }));
+
+const broadcastSevereEvent = vi.fn().mockResolvedValue(true);
+const broadcastSevereEventResolved = vi.fn().mockResolvedValue(true);
+vi.mock('./severe-event-broadcast', () => ({
+  broadcastSevereEvent: (...a: unknown[]) => broadcastSevereEvent(...a),
+  broadcastSevereEventResolved: (...a: unknown[]) => broadcastSevereEventResolved(...a),
+}));
+
 import {
   evaluateDeployStaleness,
   deployStalenessThresholdSec,
@@ -85,6 +113,9 @@ describe('releaseDeployStalenessSweep', () => {
   afterEach(() => {
     vi.clearAllMocks();
     delete process.env.PAPERCUSP_DEPLOY_STALENESS_THRESHOLD_SEC;
+    escalationRows = [];
+    recoveryUpdateCount = 0;
+    sqlStatements.length = 0;
   });
 
   it('alerts + records a fire when stale and not already debounced', async () => {
@@ -133,5 +164,99 @@ describe('releaseDeployStalenessSweep', () => {
   it('degrades to outcome:error, never throws, on a snapshot failure', async () => {
     gitPipelineSnapshot.mockRejectedValueOnce(new Error('pg down'));
     await expect(releaseDeployStalenessSweep({})).resolves.toMatchObject({ outcome: 'error' });
+  });
+
+  /**
+   * EI-16537 — the alert has to LEAVE this process. Before this, a stale finding
+   * produced only a console.warn + a ledger row; measured live, the sweep fired
+   * correctly for 96h of unshipped code and paged nobody.
+   */
+  describe('paging rails (EI-16537)', () => {
+    const stale = () => {
+      computeDeployStatus.mockReturnValue(status('green-deployable', Date.now() - 5 * HOUR));
+      recentWatchdogFires.mockResolvedValueOnce(0);
+    };
+
+    it('pages the owner AND the fleet and writes a durable escalation row on a fresh stale episode', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      stale();
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(res).toMatchObject({ outcome: 'alerted', paged: true });
+      expect(notifyAttention).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'intervention', importance: 'urgent' }),
+      );
+      expect(broadcastSevereEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ conditionKey: 'release-deploy-staleness:papercusp', oneShot: true }),
+      );
+      expect(sqlStatements.some((s) => /^INSERT INTO harness_shared\.harness_escalations/i.test(s))).toBe(true);
+      warn.mockRestore();
+    });
+
+    it('is ONE-SHOT until recovery: an episode already escalated never re-pages', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      stale();
+      escalationRows = [{ escalation: { kind: 'release-deploy-staleness-watchdog' } }];
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      // Still an alert for the ledger/EI leg (which keeps its own backoff) — but the
+      // human/fleet rails stay silent for the rest of the episode.
+      expect(res).toMatchObject({ outcome: 'alerted', paged: false });
+      expect(notifyAttention).not.toHaveBeenCalled();
+      expect(broadcastSevereEvent).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('retracts the page once the pipeline recovers', async () => {
+      computeDeployStatus.mockReturnValue(status('up-to-date', Date.now()));
+      recoveryUpdateCount = 1;
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(res).toMatchObject({ outcome: 'healthy', recovered: true });
+      expect(broadcastSevereEventResolved).toHaveBeenCalledWith(
+        expect.objectContaining({ conditionKey: 'release-deploy-staleness:papercusp' }),
+      );
+    });
+
+    it('a routinely-healthy pass retracts nothing and broadcasts nothing', async () => {
+      computeDeployStatus.mockReturnValue(status('up-to-date', Date.now()));
+      recoveryUpdateCount = 0;
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(res).toMatchObject({ outcome: 'healthy', recovered: false });
+      expect(broadcastSevereEventResolved).not.toHaveBeenCalled();
+    });
+
+    it('alarm and recovery share ONE conditionKey — otherwise the all-clear never supersedes the alarm', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      stale();
+      await releaseDeployStalenessSweep({ installSlug: 'oddsmith' });
+
+      computeDeployStatus.mockReturnValue(status('up-to-date', Date.now()));
+      recoveryUpdateCount = 1;
+      await releaseDeployStalenessSweep({ installSlug: 'oddsmith' });
+
+      const alarmKey = (broadcastSevereEvent.mock.calls[0]?.[0] as { conditionKey?: string }).conditionKey;
+      const clearKey = (broadcastSevereEventResolved.mock.calls[0]?.[0] as { conditionKey?: string }).conditionKey;
+      expect(alarmKey).toBe('release-deploy-staleness:oddsmith');
+      expect(clearKey).toBe(alarmKey);
+      warn.mockRestore();
+    });
+
+    it('a paging failure never breaks the sweep, and one dead rail never silences the other', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      stale();
+      notifyAttention.mockRejectedValueOnce(new Error('push service down'));
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(res.outcome).toBe('alerted');
+      expect(broadcastSevereEvent).toHaveBeenCalled();
+      warn.mockRestore();
+    });
   });
 });

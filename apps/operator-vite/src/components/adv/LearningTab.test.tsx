@@ -566,7 +566,6 @@ const setTestingFlag = (on: boolean) =>
 import LearningTab, {
   ARMING_AGENTS_LANE,
   ARMING_SIDEBAR_TAB,
-  ScoutView,
 } from "./LearningTab";
 
 beforeEach(() => {
@@ -659,7 +658,11 @@ afterEach(() => cleanup());
 describe("LearningTab — Improvements view (default)", () => {
   it("renders the scoreboard from the digest rollups", () => {
     render(<LearningTab />);
-    expect(screen.getByRole("tab", { name: /Backlog/ })).toBeTruthy();
+    // Improve now holds ONE view, so it renders no view-tab strip at all —
+    // the same shape Analyze (Pipeline) and Retain (Learnings) already had.
+    // Assert the merged pane itself rather than a tab that correctly no
+    // longer exists.
+    expect(screen.getByLabelText("Where these came from")).toBeTruthy();
     expect(screen.getByText("135")).toBeTruthy(); // captured (stat line)
     // open now rides the quiet header signal ("117 open") rather than a standalone
     // hero number (owner ask 2026-07-19: header pill + metric tiles → one stat line).
@@ -682,7 +685,7 @@ describe("LearningTab — Improvements view (default)", () => {
   it("filters the backlog through the quick-search box, Work-Queue style (owner ask 2026-07-19)", () => {
     nuqsState.impq = "massacre";
     render(<LearningTab />);
-    expect(screen.getByLabelText("Search improvements")).toBeTruthy();
+    expect(screen.getByLabelText("Search ideas and work")).toBeTruthy();
     expect(
       screen.getByText("Peer restarts massacre in-flight spawns"),
     ).toBeTruthy();
@@ -702,12 +705,18 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(screen.getByRole("tab", { name: "Improve" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Verify" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Retain" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Ideas" })).toBeTruthy();
+    // Ideas is GONE (P-003): it merged into Improvements, so Improve holds one
+    // list rather than two views over the same population.
+    expect(screen.queryByRole("tab", { name: "Ideas" })).toBeNull();
     // Gym is NOT here by default any more: it rides FLAGS.TESTING (default off)
     // because it is not public-release ready [owner 2026-07-27]. The flag-ON
     // case is the next test.
     expect(screen.queryByRole("tab", { name: "Gym" })).toBeNull();
-    expect(screen.getByRole("tab", { name: /Backlog/ })).toBeTruthy();
+    // Improve now holds ONE view, so it renders no view-tab strip at all —
+    // the same shape Analyze (Pipeline) and Retain (Learnings) already had.
+    // Assert the merged pane itself rather than a tab that correctly no
+    // longer exists.
+    expect(screen.getByLabelText("Where these came from")).toBeTruthy();
     expect(
       screen
         .getByRole("tab", { name: "Improve" })
@@ -737,11 +746,15 @@ describe("LearningTab — Improvements view (default)", () => {
       nuqsState.lview = "gym";
       render(<LearningTab />);
       expect(screen.queryByRole("tab", { name: "Gym" })).toBeNull();
-      // Landed on Improve → Backlog (the default), not an empty pane.
+      // Landed on Improve → Improvements (the default), not an empty pane.
       expect(
         screen.getByRole("tab", { name: "Improve" }).getAttribute("aria-selected"),
       ).toBe("true");
-      expect(screen.getByRole("tab", { name: /Backlog/ })).toBeTruthy();
+      // Improve now holds ONE view, so it renders no view-tab strip at all —
+    // the same shape Analyze (Pipeline) and Retain (Learnings) already had.
+    // Assert the merged pane itself rather than a tab that correctly no
+    // longer exists.
+    expect(screen.getByLabelText("Where these came from")).toBeTruthy();
     });
   });
 
@@ -769,7 +782,9 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(screen.getByText("Nothing in this lane")).toBeTruthy();
+    expect(
+      screen.getByText("The loop has not produced anything here yet"),
+    ).toBeTruthy();
   });
 
   it("skips the dashboard and duplicate decision rail for a sparse queue", () => {
@@ -802,10 +817,10 @@ describe("LearningTab — Improvements view (default)", () => {
 
   it("renders the P-041 flow strip above the scoreboard — in/out, net, median age, recurrence, watchdog health", () => {
     render(<LearningTab />);
-    // Loop diagnostics live behind the "How the capture loop is doing"
+    // Loop diagnostics live behind the "How the loop is doing"
     // disclosure (owner ask 2026-07-19b) — open it first.
     fireEvent.click(
-      screen.getByRole("button", { name: /How the capture loop is doing/ }),
+      screen.getByRole("button", { name: /How the loop is doing/ }),
     );
     const strip = screen.getByLabelText("Improvement flow (trailing window)");
     expect(strip).toBeTruthy();
@@ -866,10 +881,10 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    // Loop diagnostics live behind the "How the capture loop is doing"
+    // Loop diagnostics live behind the "How the loop is doing"
     // disclosure (owner ask 2026-07-19b) — open it first.
     fireEvent.click(
-      screen.getByRole("button", { name: /How the capture loop is doing/ }),
+      screen.getByRole("button", { name: /How the loop is doing/ }),
     );
     const strip = screen.getByLabelText("Improvement flow (trailing window)");
     expect(strip.textContent).toMatch(/dispatch\s*6\s*fired \/\s*3\s*fixed/);
@@ -1026,15 +1041,18 @@ describe("LearningTab — unified Signals views", () => {
     expect(screen.getByRole("tab", { name: "Rubrics" })).toBeTruthy();
   });
 
-  it("renders Ideas inside Improve", () => {
+  it("renders the merged loop-output list inside Improve, and redirects the retired ?lview=ideas to it (P-003)", () => {
+    // `ideas` is a RETIRED view id. It must not render a dead pane, and it must
+    // not leave the URL naming a view nobody is looking at.
     nuqsState.lview = "ideas";
     render(<LearningTab />);
-    expect(screen.getByText("Routed ideas")).toBeTruthy();
+    expect(screen.getByLabelText("Where these came from")).toBeTruthy();
     expect(
       screen
         .getByRole("tab", { name: "Improve" })
         .getAttribute("aria-selected"),
     ).toBe("true");
+    expect(nuqsSetters.lview).toHaveBeenCalledWith("improvements");
   });
 
   it("renders Rubrics inside Observe and drills into a rubric", () => {
@@ -1058,14 +1076,14 @@ describe("LearningTab — unified Signals views", () => {
   });
 
   it("keeps a visited sync pane mounted when navigating to another stage", () => {
-    nuqsState.lview = "ideas";
+    nuqsState.lview = "pipeline";
     const { rerender } = render(<LearningTab />);
-    expect(document.querySelector('[data-view="ideas"]')).not.toBeNull();
+    expect(document.querySelector('[data-view="pipeline"]')).not.toBeNull();
 
     nuqsState.lview = "observations";
     rerender(<LearningTab />);
     expect(
-      document.querySelector('[data-view="ideas"]')?.hasAttribute("hidden"),
+      document.querySelector('[data-view="pipeline"]')?.hasAttribute("hidden"),
     ).toBe(true);
     expect(
       document
@@ -1075,21 +1093,23 @@ describe("LearningTab — unified Signals views", () => {
   });
 
   it("bounds warm panes to the current view and two recent views", () => {
-    nuqsState.lview = "ideas";
+    nuqsState.lview = "pipeline";
     const { rerender } = render(<LearningTab />);
     for (const next of ["observations", "rubrics", "benchmark"]) {
       nuqsState.lview = next;
       rerender(<LearningTab />);
     }
-    expect(document.querySelector('[data-view="ideas"]')).toBeNull();
+    expect(document.querySelector('[data-view="pipeline"]')).toBeNull();
     expect(document.querySelectorAll(".pc-learning__viewpane")).toHaveLength(3);
     expect(document.querySelector('[data-view="observations"]')).not.toBeNull();
     expect(document.querySelector('[data-view="rubrics"]')).not.toBeNull();
     expect(document.querySelector('[data-view="benchmark"]')).not.toBeNull();
   });
 
-  it("clears transient idea detail when leaving Ideas", () => {
-    nuqsState.lview = "ideas";
+  it("clears transient idea-grade detail when leaving the merged Improve view", () => {
+    // Grading moved onto the merged list with the P-003 merge, so ?grade= is
+    // now cleared on leaving `improvements` — the view that owns it.
+    nuqsState.lview = "improvements";
     nuqsState.grade = "idea-1";
     const { rerender } = render(<LearningTab />);
     nuqsState.lview = "observations";
@@ -1269,327 +1289,44 @@ describe("LearningTab — Benchmark view", () => {
   });
 });
 
-describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", () => {
-  beforeEach(() => {
-    nuqsState.lview = "ideas";
-  });
+// RETIRED with the Ideas view (P-003, learning-tab-surface-public-release):
+// these covered `ScoutView`, which no longer exists — the Ideas ledger merged
+// into Improvements. The BEHAVIOUR they pinned did not go away with the
+// component, so P-005 re-establishes each contract against the merged view
+// (rendered as <LearningTab /> at ?lview=improvements, with BOTH
+// learning.improvements and learning.scout mocked):
+//
+//   1. routed ideas appear as rows carrying rail label, lens, and outcome
+//      (pending suppressed on the chip, shown in the trace)
+//   2. tick-economics strip contents behind the loop disclosure, and its
+//      "none yet" degradation on a legacy payload with no ticks
+//   3. teaching empty state + the "Open Arming" action landing on lst=agents
+//      (ARMING_SIDEBAR_TAB — 'blender' was retired and silently no-op'd it)
+//   4. the pipeline trace: resolved wi: titles without the raw id, readable
+//      typed refs, prefix-stripped routed ref (never "plan: plan:…"), the
+//      "ungraded"/"none recorded" GAPS rendering rather than vanishing
+//   5. a trace's routed chip deep-linking a plan to Create → Plans
+//   6. the rail filter's aria-pressed round-trip
 
-  it("renders the scoreboard, the routed-idea ledger rows, and the last-tick chip", () => {
-    render(<ScoutView />);
-    // Scoreboard: totalRouted stat + one Stat per rail (labelled via RAIL_META).
-    expect(screen.getAllByText("4").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("plan draft").length).toBeGreaterThanOrEqual(1); // rail stat label + ledger row rail label
-    expect(screen.getAllByText("3").length).toBeGreaterThanOrEqual(1);
-    // The per-item ledger (replaced the by-rail rows): openable rows with
-    // title, producing lens, and the classified outcome (pending suppressed).
-    expect(screen.getByText("Routed ideas")).toBeTruthy();
-    expect(screen.getByText("Cache-warmup plan draft")).toBeTruthy();
-    expect(screen.queryByText("Tighter scoper prompt")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /Graded ideas/ }));
-    expect(screen.getByText("Tighter scoper prompt")).toBeTruthy();
-    // "reframing" appears on the stack's lens badge AND in the card's
-    // always-visible trace lens stage.
-    expect(screen.getAllByText("reframing").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("won")).toBeTruthy(); // classified outcome shown
-    // The card-head outcome chip still SUPPRESSES pending (the trace's outcome
-    // stage is where "pending" legitimately shows).
-    expect(
-      [...document.querySelectorAll(".pc-learning__score")].some(
-        (el) => el.textContent === "pending",
-      ),
-    ).toBe(false);
-    expect(
-      screen.getAllByRole("button", { name: /Cache-warmup|Tighter scoper/ })
-        .length,
-    ).toBe(2); // rows are openable
-    // P-002 strip: the instruments now live behind the "How the cycle engine
-    // is doing" disclosure (owner ask 2026-07-19b — plain glance line up top,
-    // gauges on demand). Open it, then assert the tick economics.
-    fireEvent.click(
-      screen.getByRole("button", { name: /How the cycle engine is doing/ }),
-    );
-    const strip = screen.getByLabelText("scout tick economics, newest first");
-    expect(strip.textContent).toContain("min-interval");
-    expect(strip.textContent).toContain("8→3");
-    expect(strip.textContent).toContain("completed");
-    expect(strip.textContent).toContain("$1.62");
-  });
-
-  it("renders the graceful empty state when nothing has been routed and no tick exists (legacy pre-P-002 payload shape)", () => {
-    scoutResult = {
-      data: [{ totalRouted: 0, railCounts: [], lastTick: null }],
-      loading: false,
-      fetching: false,
-      error: null,
-      invalidate: vi.fn(),
-    };
-    render(<ScoutView />);
-    // P-009 teaching empty: title + body + the one arming action.
-    expect(screen.getByText("No routed ideas yet")).toBeTruthy();
-    expect(screen.getByText(/routes surviving ideas here/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
-    expect(nuqsState.lsb).toBe(true);
-    // MUST be a live LeftSidebar tab id — 'blender' was retired, which silently
-    // turned this button into a no-op (see ARMING_SIDEBAR_TAB).
-    expect(nuqsState.lst).toBe("agents");
-    fireEvent.click(
-      screen.getByRole("button", { name: /How the cycle engine is doing/ }),
-    );
-    expect(
-      screen.getByLabelText("scout tick economics, newest first").textContent,
-    ).toContain("none yet");
-  });
-
-  it("shows an ungraded card's FULL pipeline trace inline — no click-to-reveal (owner ask 2026-07-19)", () => {
-    render(<ScoutView />);
-    const trace = screen.getByLabelText(
-      "Pipeline trace for Cache-warmup plan draft",
-    );
-    // Grounding: a RESOLVED wi: ref shows its title alone (the raw id lives in
-    // the tooltip — owner ask 2026-07-19e); the readable typed ref renders as-is.
-    expect(trace.textContent).toContain(
-      "coord invariant: wake-queue depth growth",
-    );
-    expect(trace.textContent).not.toContain("EI-100 ·");
-    expect(trace.textContent).toContain("workspace:some-standing-fact");
-    // Lens + origin, the routed artifact, the grade GAP, and the outcome.
-    expect(trace.textContent).toContain("reframing");
-    expect(trace.textContent).toContain("scout");
-    // The routed chip shows rail label + prefix-stripped ref ("plan draft ·
-    // scout-cache-warmup"), never the doubled "plan: plan:…" form.
-    expect(trace.textContent).toContain("scout-cache-warmup");
-    expect(trace.textContent).not.toContain("plan:scout-cache-warmup");
-    expect(trace.textContent).toContain("ungraded"); // the gap IS the signal
-    expect(trace.textContent).toContain("pending");
-    // The card TITLE deep-links to the routed artifact (a plan → Create tab).
-    fireEvent.click(
-      screen.getByRole("button", { name: "Cache-warmup plan draft" }),
-    );
-    expect(nuqsSetters.plan).toHaveBeenCalledWith("scout-cache-warmup");
-    expect(nuqsSetters.view).toHaveBeenCalledWith("plans");
-    expect(nuqsSetters.tab).toHaveBeenCalledWith("plans");
-  });
-
-  it("renders the trace's grounding gap dimmed when no refs were recorded (P-004)", () => {
-    nuqsState.itrace = "idea-2";
-    render(<ScoutView />);
-    fireEvent.click(screen.getByRole("button", { name: /Graded ideas/ }));
-    const trace = screen.getByLabelText(
-      "Pipeline trace for Tighter scoper prompt",
-    );
-    expect(trace.textContent).toContain("none recorded");
-    expect(trace.textContent).toContain("★4 · brain"); // graded stage filled (t('brain') echoes)
-    expect(trace.textContent).toContain("won");
-  });
-
-  it("splits ungraded ideas into an 8-item decision queue + an 'earlier' disclosure, each as per-lens overlapping stacks", () => {
-    // 10 ungraded ideas, all one lens → one stack in the decision queue (top
-    // card visible, 8 total) and one stack of the remaining 2 behind the
-    // "Earlier ungraded ideas" disclosure (owner ask 2026-07-19 — the cards
-    // OVERLAP, so only the top of each stack shows its title at a time).
-    const recent = Array.from({ length: 10 }, (_, index) => ({
-      ...scoutSnapshot.recent[0],
-      ideaId: `queue-${index}`,
-      title: `Queue idea ${index + 1}`,
-    }));
-    scoutResult = {
-      data: [
-        {
-          ...scoutSnapshot,
-          totalRouted: 10,
-          railCounts: [{ rail: "plan", count: 10 }],
-          recent,
-        },
-      ],
-      loading: false,
-      fetching: false,
-      error: null,
-      invalidate: vi.fn(),
-    };
-    const { rerender } = render(<ScoutView />);
-    // Decision queue: one lens stack. The active card is live; the stacked
-    // cards behind it are mounted (their content is what makes the deck
-    // animation seamless) but aria-hidden + inert.
-    expect(
-      screen.getByText("Queue idea 1").closest('[aria-hidden="true"]'),
-    ).toBeNull();
-    expect(
-      screen.getByText("Queue idea 2").closest('[aria-hidden="true"]'),
-    ).toBeTruthy();
-    // The stack holds 8 (of 10; the other 2 are "earlier") → 8 position dots,
-    // the last labelled "8 of 8".
-    expect(screen.getByLabelText("Go to card 8 of 8")).toBeTruthy();
-    // Step the deck: the next idea becomes the live top card.
-    fireEvent.click(screen.getAllByRole("button", { name: "Next card" })[0]);
-    expect(
-      screen.getByText("Queue idea 2").closest('[aria-hidden="true"]'),
-    ).toBeNull();
-    // The remaining 2 live behind the "Earlier ungraded ideas" disclosure.
-    fireEvent.click(
-      screen.getByRole("button", { name: /Earlier ungraded ideas/ }),
-    );
-    expect(screen.getByText("Queue idea 9")).toBeTruthy();
-    const planFilter = screen
-      .getByLabelText("Idea routing")
-      .querySelector("button") as HTMLButtonElement;
-    fireEvent.click(planFilter);
-    rerender(<ScoutView />);
-    expect(
-      screen
-        .getByLabelText("Idea routing")
-        .querySelector("button")
-        ?.getAttribute("aria-pressed"),
-    ).toBe("true");
-  });
-});
-
-describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, scout-idea-grading-2026-06-12)", () => {
-  beforeEach(() => {
-    nuqsState.lview = "ideas";
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    );
-  });
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("shows the inline star grader ON the ungraded card, and attribution on graded rows", () => {
-    render(<ScoutView />);
-    // The star grader lives on the card itself now (owner ask 2026-07-19d) —
-    // five radios, visible at rest, no popup to open.
-    expect(screen.getByRole("radio", { name: "Grade 3 of 5" })).toBeTruthy();
-    expect(
-      screen.getByRole("radiogroup", { name: "Grade this idea" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/ungraded — a grade teaches the generator/),
-    ).toBeTruthy();
-    // idea-2 is Queen-graded ★4 in the fixture (gradedBy:'Queen' is the raw server
-    // value) → the graded ROW keeps its attribution chip + popover affordance.
-    fireEvent.click(screen.getByRole("button", { name: /Graded ideas/ }));
-    expect(screen.getByText("★4 · brain")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Review idea grade" }),
-    ).toBeTruthy();
-  });
-
-  it("writes a star click through the blender:grade-idea proxy optimistically and invalidates", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ applied: true }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<ScoutView />);
-    // Clicking a star on the card grades IMMEDIATELY (no popup, no save step).
-    fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
-    // Optimistic: the row leaves the ungraded queue and joins reviewed history.
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /Graded ideas/ }).textContent,
-      ).toContain("2"),
-    );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      RequestInit,
-    ];
-    expect(url).toBe("/api/agent-tools/scout/grade-idea");
-    expect(JSON.parse(String(init.body))).toEqual({
-      ideaId: "idea-1",
-      grade: 5,
-    });
-    await waitFor(() => expect(scoutResult.invalidate).toHaveBeenCalled());
-  });
-
-  it("rolls back the optimistic grade and surfaces the error when the write fails", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: false,
-      status: 404,
-      json: async () => ({}),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<ScoutView />);
-    fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
-    await waitFor(() =>
-      expect(screen.getByRole("alert").textContent).toContain("HTTP 404"),
-    );
-    expect(screen.queryByText("★5 · Owner")).toBeNull(); // rolled back to ungraded
-  });
-
-  it("opens the note popover from ?grade=<ideaId>, gates save on a grade, and saves grade + note together", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ applied: true }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-    nuqsState.grade = "idea-1";
-    render(<ScoutView />);
-    // ?grade=<ideaId> opens the card's INLINE note editor (no popup). Save is
-    // disabled until a star is picked; a star picked while the editor is open
-    // waits for Save so grade + note submit together.
-    const panel = screen
-      .getByRole("radio", { name: "Grade 2 of 5" })
-      .closest(".pc-learning__stargrade") as HTMLElement;
-    expect(panel).toBeTruthy();
-    const save0 = within(panel).getByRole("button", {
-      name: "save grade",
-    }) as HTMLButtonElement;
-    expect(save0.disabled).toBe(true);
-    fireEvent.click(within(panel).getByRole("radio", { name: "Grade 2 of 5" }));
-    fireEvent.change(within(panel).getByLabelText("Grade feedback"), {
-      target: { value: "Too speculative" },
-    });
-    const save = within(panel).getByRole("button", {
-      name: "save grade",
-    }) as HTMLButtonElement;
-    expect(save.disabled).toBe(false);
-    fireEvent.click(save);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const [, init] = fetchMock.mock.calls[0] as unknown as [
-      string,
-      RequestInit,
-    ];
-    expect(JSON.parse(String(init.body))).toEqual({
-      ideaId: "idea-1",
-      grade: 2,
-      feedback: "Too speculative",
-    });
-  });
-
-  it("renders the lens-weight strip as shares sorted descending, hidden when absent", () => {
-    // Default fixture carries no lensWeights → no strip.
-    render(<ScoutView />);
-    expect(screen.queryByLabelText("Lens sampling weights")).toBeNull();
-    cleanup();
-    scoutResult = {
-      data: [
-        { ...scoutSnapshot, lensWeights: { reframing: 3, analogical: 1 } },
-      ],
-      loading: false,
-      fetching: false,
-      error: null,
-      invalidate: vi.fn(),
-    };
-    render(<ScoutView />);
-    // Always visible under a standard header — no disclosure to open
-    // (owner ask 2026-07-19).
-    expect(screen.getByText("Lens weights")).toBeTruthy();
-    expect(
-      screen.getByText(/the ideator's learned creative-lens steering/),
-    ).toBeTruthy();
-    const strip = screen.getByLabelText("Lens sampling weights");
-    expect(strip.textContent).toContain("75%");
-    expect(strip.textContent).toContain("25%");
-    // Sorted descending: reframing (75%) before analogical (25%).
-    expect(strip.textContent!.indexOf("reframing")).toBeLessThan(
-      strip.textContent!.indexOf("analogical"),
-    );
-  });
-});
+// RETIRED with the Ideas view (P-003) — grading contracts P-005 must
+// re-establish against the merged view. These are the ones that matter most:
+// grading is the ONLY row control the owner kept, so it is the one behaviour
+// the merge must not have quietly broken.
+//
+//   7. a grade POSTs {ideaId, grade, feedback?} to
+//      /api/agent-tools/scout/grade-idea and invalidates the scout read
+//   8. the optimistic grade ROLLS BACK and surfaces the error on a failed write
+//   9. ?grade=<ideaId> opens the grade panel, save is gated on a star, and
+//      grade + note submit together
+//  10. attribution ("★4 · brain") renders on already-graded rows, with the
+//      regrade affordance still live
+//  11. lens weights render as shares sorted descending, and are absent when the
+//      snapshot carries no weights
+//
+// NOTE for P-005: the merged row grades through a Popover + GradePanel, NOT the
+// card's inline star radios — the card-stack browser went away with the merge,
+// so assertions keyed on `.pc-learning__stargrade` need retargeting rather than
+// copying.
 
 describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-042's per-tab picker)", () => {
   const badge = () => document.querySelector(".pc-learning__hivepick");
@@ -1830,7 +1567,7 @@ describe("LearningTab — P-009 first-run orientation", () => {
   it("renders the visible view gloss for the active view (same source as the tab tooltips)", () => {
     render(<LearningTab />);
     const strap = document.querySelector(".pc-learning__strap");
-    expect(strap?.textContent).toContain("WORK queue");
+    expect(strap?.textContent).toContain("What the learning loop produced");
   });
 });
 

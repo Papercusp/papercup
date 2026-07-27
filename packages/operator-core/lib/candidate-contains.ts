@@ -30,8 +30,10 @@
  *   - `git rev-parse --verify <sha>:<path>` → the blob the candidate carries
  *   - `git hash-object -- <path>`           → the blob the working tree holds
  * Equal ⇒ the candidate carries exactly what you have. Different ⇒ it does not.
- * Candidate-side absent + tree-side present ⇒ a NEW file, which no commit can carry
- * (the case a `git diff` against a commit cannot see at all). Tree-side unreadable
+ * Candidate-side absent + tree-side present ⇒ a NEW file (the case a `git diff`
+ * against a commit cannot see at all) — but NOT necessarily an uncommitted one: a new
+ * file committed after the candidate is absent there and committed here, so HEAD, not
+ * the candidate, decides which lever the caller needs. Tree-side unreadable
  * ⇒ `null`, "unknown", never "fine".
  *
  * That rule is now contract-level for every state cell, not a local discipline:
@@ -76,7 +78,10 @@ export async function blobInWorkingTree(git: GitRead, relPath: string): Promise<
  *  - `newer-commit` → it IS committed, but in a commit newer than the candidate
  *                     (quiet-cut, or the candidate simply lags). Re-fire once the
  *                     quiet window passes, or wait for the next run.
- *  - `absent`       → the candidate has no such path at all (a new file).
+ *  - `absent`       → the candidate has no such path AND no HEAD was supplied to ask
+ *                     whether a newer commit carries it, so committed-ness is genuinely
+ *                     unknown. With a HEAD (the default) this collapses into one of the
+ *                     two above, because those name a lever and this does not.
  */
 export type MissingReason = 'uncommitted' | 'newer-commit' | 'absent';
 
@@ -162,8 +167,26 @@ export async function classifyPathsAgainstCandidate(
         };
       }
       if (candidateBlob === treeBlob) return { path, inCandidate: true, reason: null, unknownReason: null };
-      if (!candidateBlob) return { path, inCandidate: false, reason: 'absent', unknownReason: null };
+      // A path ABSENT from the candidate is NOT self-evidently uncommitted. A brand-new
+      // file committed AFTER the candidate is absent there and fully committed here — the
+      // single commonest case on this tree, because the quiet-cut deliberately steps the
+      // judged commit back ~4 min behind the tip. Answering `absent` without consulting
+      // HEAD therefore sent callers to `git-sync:run`, a NO-OP for an already-committed
+      // file, while the real lever (wait out the quiet window / let the next run pick it
+      // up) went unnamed. So HEAD decides this case exactly as it decides the modified
+      // one below; `absent` now survives only when there is no HEAD to ask.
       const headBlob = committedSha ? await blobAtCommit(git, committedSha, path) : null;
+      if (!candidateBlob) {
+        if (!committedSha) return { path, inCandidate: false, reason: 'absent', unknownReason: null };
+        return {
+          path,
+          inCandidate: false,
+          // HEAD carries exactly this content ⇒ committed, merely newer than the candidate.
+          // HEAD lacks it or differs ⇒ the edit really has not left the working tree.
+          reason: headBlob === treeBlob ? 'newer-commit' : 'uncommitted',
+          unknownReason: null,
+        };
+      }
       return {
         path,
         inCandidate: false,

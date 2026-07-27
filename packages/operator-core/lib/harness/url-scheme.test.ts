@@ -113,3 +113,49 @@ describe('url-scheme: D-007 owner binding', () => {
     expect(parseHarnessLink(url)!.hivePubkey).toBeUndefined();
   });
 });
+
+describe('url-scheme: A3 repo_key — the owner-minted pot-git repoKey', () => {
+  it('round-trips the repoKey', () => {
+    const url = formatHarnessLink({ ...base, repoKey: 'gh-1223568103' });
+    expect(url).toContain('repo_key=gh-1223568103');
+    expect(parseHarnessLink(url)!.repoKey).toBe('gh-1223568103');
+  });
+
+  it('rides ALONE — it is not part of the D-007 all-or-nothing owner binding', () => {
+    // The owner binding is absent here; the repoKey must still arrive, or a pot
+    // whose owner has no attestation could never federate its key.
+    const parsed = parseHarnessLink(formatHarnessLink({ ...base, repoKey: 'papercusp' }))!;
+    expect(parsed.repoKey).toBe('papercusp');
+    expect(parsed.hivePubkey).toBeUndefined();
+  });
+
+  it('omits the param entirely when no repoKey is supplied (pre-A3 links are unchanged)', () => {
+    const url = formatHarnessLink(base);
+    expect(url).not.toContain('repo_key');
+    expect(parseHarnessLink(url)!.repoKey).toBeUndefined();
+  });
+
+  it('still parses a link that carries no repo_key — an older owner build', () => {
+    const url = `papercusp://harness?topic=${TOPIC}&github=octo%2Frepo&repo_id=12345`;
+    const parsed = parseHarnessLink(url);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.repoKey).toBeUndefined();
+  });
+
+  it('DROPS a malformed repo_key instead of rejecting the whole link', () => {
+    // A repoKey becomes a filesystem path component and a git ref component, so
+    // traversal/junk must never survive — but losing the key must degrade to
+    // "derive locally", not to an unjoinable link.
+    for (const bad of ['..', '.', 'a%2Fb', 'a%20b', 'x'.repeat(201)]) {
+      const url = `papercusp://harness?topic=${TOPIC}&github=octo%2Frepo&repo_id=12345&repo_key=${bad}`;
+      const parsed = parseHarnessLink(url);
+      expect(parsed, `link with repo_key=${bad} must still parse`).not.toBeNull();
+      expect(parsed!.repoKey, `repo_key=${bad} must be dropped`).toBeUndefined();
+    }
+  });
+
+  it('format refuses to emit a malformed repoKey', () => {
+    expect(formatHarnessLink({ ...base, repoKey: '../etc' })).not.toContain('repo_key');
+    expect(formatHarnessLink({ ...base, repoKey: '..' })).not.toContain('repo_key');
+  });
+});

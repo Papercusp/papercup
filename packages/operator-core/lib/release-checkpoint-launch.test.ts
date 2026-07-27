@@ -969,10 +969,21 @@ describe('renderContainmentWarning (P-004)', () => {
     expect(newer).not.toMatch(/Fix: git-sync:run/);
   });
 
-  it('a NEW file is grouped with uncommitted — the same lever applies', () => {
+  /**
+   * `absent` used to be folded into the NOT-COMMITTED bucket on the premise that a new
+   * file "no commit can carry". False: a new file committed after the candidate is absent
+   * there and committed here — the commonest shape on this tree, since the quiet-cut steps
+   * the judged commit ~4 min behind the tip. The classifier now resolves that against HEAD,
+   * so `absent` reaches this renderer ONLY when there was no HEAD to ask. Asserting
+   * "NOT COMMITTED … Fix: git-sync:run" on that residue would state a lever that is a no-op
+   * whenever the file was in fact already committed.
+   */
+  it('an absent-but-unknown miss does NOT claim "not committed", and prescribes no false lever', () => {
     const w = renderContainmentWarning(['new.test.ts'], [p('new.test.ts', 'absent')], [], 'caller-supplied');
-    expect(w).toMatch(/NOT COMMITTED/);
+    expect(w).toMatch(/committed-ness UNKNOWN/);
     expect(w).toMatch(/new\.test\.ts/);
+    expect(w).not.toMatch(/NOT COMMITTED/);
+    expect(w).not.toMatch(/Fix: git-sync:run/);
   });
 
   /**

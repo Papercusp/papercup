@@ -826,8 +826,13 @@ export function renderContainmentWarning(
   source: CheckpointContainment['source'],
 ): string {
   const byReason = (r: MissingReason) => missing.filter((p) => paths.find((x) => x.path === p)?.reason === r);
-  const uncommitted = [...byReason('uncommitted'), ...byReason('absent')];
+  const uncommitted = byReason('uncommitted');
   const newer = byReason('newer-commit');
+  // `absent` no longer means "not committed" — the classifier resolves that against HEAD
+  // and only falls back to `absent` when it had no HEAD to ask. Folding it into the
+  // NOT-COMMITTED bucket asserted a lever (`git-sync:run`) that is a no-op for the file
+  // this actually described most often: a new file already committed past the candidate.
+  const unknownCommit = byReason('absent');
   const list = (xs: string[]) => `${xs.slice(0, 6).join(', ')}${xs.length > 6 ? ` (+${xs.length - 6} more)` : ''}`;
   const declared = source === 'caller-supplied';
 
@@ -849,6 +854,11 @@ export function renderContainmentWarning(
   if (newer.length) {
     parts.push(
       `COMMITTED BUT NEWER THAN THE CANDIDATE (the quiet-cut stepped the judged commit back): ${list(newer)}. Fix: wait out the quiet window (~4 min) and re-fire, or let the next run pick it up.`,
+    );
+  }
+  if (unknownCommit.length) {
+    parts.push(
+      `NOT IN THE CANDIDATE, committed-ness UNKNOWN (no HEAD was available to check whether a newer commit carries them): ${list(unknownCommit)}. Check with \`git log -1 -- <path>\` before assuming either lever.`,
     );
   }
   // The resolution of "if your fix is among them": which excluded commit carries which file.

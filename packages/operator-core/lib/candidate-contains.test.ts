@@ -110,8 +110,52 @@ describe('classifyPathsAgainstCandidate', () => {
   });
 
   it('a NEW file absent from the candidate is missing, not silently fine', async () => {
+    // HEAD lacks it too, so this one really is uncommitted — and naming that is strictly
+    // more useful than `absent`, which names no lever. See MISFIRE 3 for why the two
+    // cases must be told apart rather than both reported as "not committed".
     const git = fakeGit({ tree: { 'new.test.ts': OTHER } });
     const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['new.test.ts']);
+    expect(r.inCandidate).toBe(false);
+    expect(r.reason).toBe('uncommitted');
+  });
+
+  /**
+   * MISFIRE 3 — the live misread that motivated this case. A file NEW since the candidate
+   * is absent there by definition, and the classifier concluded `absent` without asking
+   * HEAD whether a newer commit already carries it. The renderer then folded `absent` into
+   * "NOT COMMITTED … Fix: git-sync:run" — a NO-OP for an already-committed file, while the
+   * real lever (wait out the quiet window / let the next run pick it up) went unnamed.
+   *
+   * This is the single commonest shape on this tree, because the quiet-cut deliberately
+   * steps the judged commit ~4 min behind the tip: every new file committed in that window
+   * lands here. Observed 2026-07-27 on WI-6126, where the tool's own
+   * `excludedCommitsTouchingYourFiles` simultaneously named the commit carrying the file it
+   * was calling uncommitted.
+   */
+  it('MISFIRE 3 — a NEW file already committed past the candidate is newer-commit, NOT uncommitted', async () => {
+    const git = fakeGit({
+      // The candidate has no such path (new file); HEAD carries exactly the tree content.
+      blobs: { 'HEAD:new.ts': OTHER },
+      tree: { 'new.ts': OTHER },
+    });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['new.ts']);
+    expect(r.inCandidate).toBe(false);
+    expect(r.reason).toBe('newer-commit');
+  });
+
+  it('a new file whose HEAD copy DIFFERS from the tree is still uncommitted', async () => {
+    // Committed once, then edited again: the working-tree content genuinely has not
+    // been committed, so git-sync:run IS the right lever here.
+    const git = fakeGit({ blobs: { 'HEAD:new.ts': SAME }, tree: { 'new.ts': OTHER } });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['new.ts']);
+    expect(r.reason).toBe('uncommitted');
+  });
+
+  it('absent survives only when there is no HEAD to ask about committed-ness', async () => {
+    // committedSha explicitly null ⇒ the question cannot be answered, so the honest
+    // report is `absent` rather than a guessed lever.
+    const git = fakeGit({ tree: { 'new.ts': OTHER } });
+    const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['new.ts'], null);
     expect(r.inCandidate).toBe(false);
     expect(r.reason).toBe('absent');
   });
@@ -165,12 +209,15 @@ describe('classifyPathsAgainstCandidate', () => {
     expect(rs[0].unknownReason?.detail).toMatch(/does not resolve in this repo/);
   });
 
-  it('…but a RESOLVING candidate that truly lacks the path still reports absent', async () => {
+  it('…but a RESOLVING candidate that truly lacks the path is still a definitive miss', async () => {
     // The guard above must not swallow the genuine new-file case it sits in front of.
+    // The verdict stays FALSE (a miss, never UNKNOWN); only the lever is now named
+    // precisely — HEAD lacks it here too, so it is uncommitted.
     const git = fakeGit({ tree: { 'new.ts': OTHER } }); // commit resolves; the PATH is absent
     const [r] = await classifyPathsAgainstCandidate(git, 'deadbeefdeadbeef', ['new.ts']);
     expect(r.inCandidate).toBe(false);
-    expect(r.reason).toBe('absent');
+    expect(r.reason).toBe('uncommitted');
+    expect(r.unknownReason).toBeNull();
   });
 });
 

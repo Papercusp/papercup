@@ -73,6 +73,76 @@ const clampedLimitOpt = (cap: number) =>
     .transform((v) => Math.min(v, cap))
     .optional();
 
+// ─── conversations.agentMessage* (conversations-agent-messages-2026-07-27) ───
+
+/**
+ * The `coord_event_log.surface` values that carry agent-to-agent conversation.
+ * `plan-events` is deliberately absent: a plan lifecycle beat is telemetry about
+ * a plan, not a message between agents.
+ */
+const CURATED_COORD_SURFACES = ['messages', 'escalations', 'handoffs'] as const;
+
+/**
+ * Envelope kinds that can ROOT a curated conversation.
+ *
+ * Excluded on purpose, and this list is the whole difference between a readable
+ * pane and a firehose: `notify` (5,012/week — subscription fan-out, not a
+ * message anyone wrote), `plan_event`, `subscribe`/`unsubscribe`. `ack` is
+ * excluded too but for the opposite reason — an ack is never a root, it renders
+ * as a REPLY under the message it acknowledges.
+ */
+const CURATED_COORD_ROOT_KINDS = [
+  'message',
+  'escalation',
+  'escalation_resolved',
+  'handoff',
+  'handoff_accepted',
+  'contract',
+] as const;
+
+/** The subset of a coord envelope's jsonb body these resolvers read. */
+interface CoordEnvelopeBody {
+  kind?: unknown;
+  from?: unknown;
+  to?: unknown;
+  summary?: unknown;
+  body?: unknown;
+  plan_slug?: unknown;
+  lifecycle?: unknown;
+  audience?: unknown;
+}
+
+const asStr = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
+const asStrArray = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+
+/**
+ * Flatten a `coord_event_log` row into the flat `AgentMessageRow` wire shape the
+ * Conversations surfaces consume (apps/operator-vite/src/components/
+ * conversations/unified-conversations.ts). The jsonb envelope stays server-side:
+ * shipping raw `body` would make every client re-derive these fields and drift.
+ */
+function toAgentMessageRow(row: Record<string, unknown>): Record<string, unknown> {
+  const body = (row.body ?? {}) as CoordEnvelopeBody;
+  const to = asStrArray(body.to);
+  return {
+    msg_id: row.msg_id as string,
+    kind: asStr(body.kind) ?? '',
+    from: asStr(body.from) ?? '',
+    to,
+    summary: asStr(body.summary),
+    body: asStr(body.body),
+    harness_slug: (row.harness_slug as string | null) ?? null,
+    plan_slug: asStr(body.plan_slug),
+    lifecycle: asStr(body.lifecycle),
+    audience: asStrArray(body.audience),
+    broadcast: to.includes('*'),
+    reply_count: Number(row.reply_count ?? 0),
+    ts: new Date(row.ts as string).toISOString(),
+    last_reply_ts: row.last_reply_ts ? new Date(row.last_reply_ts as string).toISOString() : null,
+  };
+}
+
 // Default cap for the unbounded agentRunsConsolidated.bySlug list read (P-004,
 // whole-app-sync-payload-audit-2026-07-19). Matches the workItems.byHarness window —
 // the run-history grid ships recent activity, not unbounded history. The true total
@@ -5325,6 +5395,122 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // conversations.messageList / conversations.messageDetail (work-item mail
   // read queries over harness_shared.messages_consolidated) retired here —
   // see retire-work-item-mail-surface-2026-07-26 P-004 / _retired/work-item-mail/RESTORE.md.
+
+  // conversations.agentMessage* — agent↔agent `coord:send` traffic as a CURATED
+  // conversation source (conversations-agent-messages-2026-07-27 P-001/P-002).
+  //
+  // This is the highest-volume conversation type in the system (82,440
+  // agent-authored envelopes; 10,633 `message` in a single week) and until now
+  // it had no curated home at all: its only rendering was the /adv Raw-events
+  // firehose, which defaults to `system_only` — so that view showed the ~1.6k
+  // SYSTEM envelopes and filtered out the ~10.6k AGENT ones. Owner, 2026-07-27:
+  // "I see agents sending messages to each other all the time but I only see 51
+  // chat messages and 85 decision messages."
+  //
+  // Deliberately NOT routed through readCoordFeed (`dev.coordFeed`): that reader
+  // fetches bounded per-surface windows and filters in memory, which is right for
+  // a debugging firehose but cannot answer "the newest N agent CONVERSATIONS"
+  // without over-fetching. These are direct indexed reads instead.
+  'conversations.agentMessageList': {
+    argsSchema: z.object({
+      limit: clampedLimit(500, 100),
+      harness: z.string().optional(),
+      kinds: z.array(z.string()).optional(),
+    }),
+    resolve: async (args) => {
+      const { limit, harness, kinds } = args as { limit: number; harness?: string; kinds?: string[] };
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const kindFilter = kinds && kinds.length > 0 ? kinds : [...CURATED_COORD_ROOT_KINDS];
+      const [rows, totalRows] = await Promise.all([
+        sql`
+          SELECT c.msg_id,
+                 c.ts,
+                 c.harness_slug,
+                 c.body,
+                 (SELECT count(*)::int
+                    FROM harness_shared.coord_event_log r
+                   WHERE r.body ? 'related_msg_id'
+                     AND r.body ->> 'related_msg_id' = c.msg_id) AS reply_count,
+                 (SELECT max(r.ts)
+                    FROM harness_shared.coord_event_log r
+                   WHERE r.body ? 'related_msg_id'
+                     AND r.body ->> 'related_msg_id' = c.msg_id) AS last_reply_ts
+            FROM harness_shared.coord_event_log c
+           WHERE c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
+             AND c.body ->> 'kind' = ANY(${kindFilter}::text[])
+             AND NOT (c.body ? 'related_msg_id')
+             AND COALESCE(c.body ->> 'from', '') !~* '^system($|[-_:/.])'
+             AND (${harness ?? null}::text IS NULL OR c.harness_slug = ${harness ?? null})
+           ORDER BY c.id DESC
+           LIMIT ${limit}`,
+        sql<{ n: number }[]>`
+          SELECT count(*)::int AS n
+            FROM harness_shared.coord_event_log c
+           WHERE c.surface = ANY(${[...CURATED_COORD_SURFACES]}::text[])
+             AND c.body ->> 'kind' = ANY(${kindFilter}::text[])
+             AND NOT (c.body ? 'related_msg_id')
+             AND COALESCE(c.body ->> 'from', '') !~* '^system($|[-_:/.])'
+             AND (${harness ?? null}::text IS NULL OR c.harness_slug = ${harness ?? null})`,
+      ]);
+      return attachListMeta(rows.map(toAgentMessageRow), { total: totalRows[0]?.n ?? rows.length });
+    },
+  },
+  'conversations.agentMessageDetail': {
+    argsSchema: z.object({ id: z.string().min(1) }),
+    resolve: async (args) => {
+      const { id } = args as { id: string };
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      // The reply chain is walked transitively (an ack ON an ack), bounded by
+      // depth and row count so a pathological cycle in the data can never turn
+      // one pane read into an unbounded recursion. `msg_id` is the join key and
+      // is indexed; the child edge is indexed by migration 691.
+      const [root, replies] = await Promise.all([
+        sql`
+          SELECT msg_id, ts, harness_slug, body,
+                 0::int AS reply_count, NULL::timestamptz AS last_reply_ts
+            FROM harness_shared.coord_event_log
+           WHERE msg_id = ${id}
+           ORDER BY id ASC
+           LIMIT 1`,
+        sql`
+          WITH RECURSIVE chain AS (
+            SELECT c.id, c.msg_id, c.ts, c.body, 1 AS depth
+              FROM harness_shared.coord_event_log c
+             WHERE c.body ? 'related_msg_id' AND c.body ->> 'related_msg_id' = ${id}
+            UNION ALL
+            SELECT c.id, c.msg_id, c.ts, c.body, chain.depth + 1
+              FROM harness_shared.coord_event_log c
+              JOIN chain ON c.body ->> 'related_msg_id' = chain.msg_id
+             WHERE c.body ? 'related_msg_id' AND chain.depth < 8
+          )
+          SELECT DISTINCT ON (msg_id) msg_id, ts, body
+            FROM chain
+           ORDER BY msg_id, id ASC
+           LIMIT 200`,
+      ]);
+      if (!root[0]) return [];
+      const ordered = [...replies].sort(
+        (a, b) => new Date(a.ts as string).getTime() - new Date(b.ts as string).getTime(),
+      );
+      return [
+        {
+          message: toAgentMessageRow({ ...root[0], reply_count: ordered.length, last_reply_ts: ordered.at(-1)?.ts ?? null }),
+          replies: ordered.map((r) => {
+            const body = (r.body ?? {}) as CoordEnvelopeBody;
+            return {
+              msg_id: r.msg_id as string,
+              kind: typeof body.kind === 'string' ? body.kind : '',
+              from: typeof body.from === 'string' ? body.from : '',
+              to: Array.isArray(body.to) ? body.to.filter((t): t is string => typeof t === 'string') : [],
+              summary: typeof body.summary === 'string' ? body.summary : null,
+              body: typeof body.body === 'string' ? body.body : null,
+              ts: new Date(r.ts as string).toISOString(),
+            };
+          }),
+        },
+      ];
+    },
+  },
 
   // sidebar.hives — every p2p-swarm peer (`shared_presence` — remote installs
   // whose announces the peer-log projected), INCLUDING stale ones (a hive that

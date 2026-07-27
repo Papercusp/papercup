@@ -208,6 +208,16 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Tag and subscriber changes alter the Q&A list/detail projections even
   // though the conversation scalar row itself does not change.
   'harness_shared.coord_entity_subscriptions': ['conversations.questionDetail'],
+  // Agent↔agent coord traffic as a curated conversation source
+  // (conversations-agent-messages-2026-07-27). A new envelope can be a new
+  // conversation ROOT (list) or a REPLY that changes an existing root's reply
+  // count and last-activity sort key (list AND detail), and the row carries no
+  // trigger id matching the detail key, so detail full-busts by name — the same
+  // stance coord_threads/coord_thread_posts already take above.
+  'harness_shared.coord_event_log': [
+    'conversations.agentMessageList',
+    'conversations.agentMessageDetail',
+  ],
   // harness_shared.messages_consolidated entry retired with the work-item
   // mail read queries — see retire-work-item-mail-surface-2026-07-26 P-004.
   'harness_shared.harness_feature_notes': ['featureNotes.byHarness'],

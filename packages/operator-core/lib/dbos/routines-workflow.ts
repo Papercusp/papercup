@@ -682,6 +682,11 @@ async function routinesTickImpl(): Promise<void> {
   // whenever the green pin has been deployable-but-not-live longer than the
   // threshold. Never ships/restarts anything itself — alert only. Fail-soft;
   // kill switch: PAPERCUSP_DEPLOY_STALENESS_THRESHOLD_SEC<=0.
+  // EI-16537: it also PAGES now — urgent owner notifyAttention + a fleet severe-event
+  // broadcast + a durable harness_escalations row, one-shot until recovery. The warn
+  // below is only a local trace; it was for months the alert's ONLY destination, which
+  // is how 96h of unshipped owner-facing code went unnoticed with the sweep firing
+  // correctly the whole time.
   await DBOS.runStep(
     async () => {
       const { releaseDeployStalenessSweep } = await import('../release-deploy-staleness-watchdog');

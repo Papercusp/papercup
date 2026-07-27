@@ -295,6 +295,162 @@ export const BASELINE = new Set([
   'work_items:redundancy_status',
 ]);
 
+/**
+ * ──────────────────────────────────────────────────────────────────────────────
+ * VERDICTS — P-020 (D-018 A.3): the per-tool disposition of every grandfathered read.
+ *
+ * WHY THIS LIVES HERE AND NOT IN A DOCUMENT. P-020's deliverable is an inventory with
+ * a verdict on every entry. Written as a doc it would be a snapshot that drifts from
+ * BASELINE the first time BASELINE changes — and drift is the whole failure this plan
+ * exists to fix. Keyed to the SAME set the gate enforces, the verdict cannot drift:
+ * `verdictGaps()` makes "every entry has a verdict" a MECHANICAL property, checked in
+ * CI, and retiring a tool deletes it from both maps or the check fails.
+ *
+ * THE THREE VERDICTS are deliberately non-overlapping, and they are the D-038 axis-5
+ * distinction ("one derivation, many lenses") applied per tool:
+ *
+ *   'cell'      — this tool OWNS a live-state derivation that other surfaces re-derive.
+ *                 Register the cell(s) here; the tool becomes a declared `@cell-lens`
+ *                 over its own resolver. These are the RESOLVERS.
+ *   'delegates' — this tool RE-DERIVES a value another tool owns. It must CONSUME the
+ *                 cell instead of computing its own answer. These are the duplication
+ *                 sites, and therefore the refactor/retirement candidates.
+ *   'bespoke'   — stays as it is, with a stated reason.
+ *
+ * ⚠ THE MOST IMPORTANT REASON-CLASS IS 'single door'. A read can be genuinely live
+ * state and STILL correctly stay bespoke: if exactly one tool answers the question and
+ * nothing re-derives it, promoting it to a cell adds a registry entry without removing
+ * a door — which is precisely the D-010 failure (`predicate_watches`: shipped, correct,
+ * 0 rows, surface #29). The registry earns its keep by collapsing DUPLICATED doors, not
+ * by cataloguing every read. A dead read (0 calls/30d) is likewise never promoted:
+ * registering a value nobody asks for is that same failure at cell scale.
+ *
+ * Verdicts assigned 2026-07-27 from measured evidence, not taste — `tool_invocations`
+ * call volume over 30d (`calls`, with the distinct-caller count in the reason where it
+ * carries the argument) crossed with the resolver-eligibility constraints. `calls` is a
+ * DATED OBSERVATION, not a live value: it is here to show the verdict's grounding, and
+ * a stale count never changes what the gate does.
+ */
+export const VERDICT_KINDS = ['cell', 'delegates', 'bespoke'];
+
+export const VERDICTS = new Map([
+  // ── Cluster A — "can I get inference capacity right now?" (6 doors, 431 calls/30d)
+  ['fleet:capacity', { verdict: 'cell', cluster: 'capacity', calls: 144,
+    reason: 'Owns the gateway /stats capacity derivation (spare slots = cap − inFlight − queued). Register inference.capacity.spareSlots + inference.pool.healthyAccounts as global cells here; gateway:status and dev:rate_governor_status then consume them instead of re-reading the same oracle.' }],
+  ['accounts:status', { verdict: 'cell', cluster: 'capacity', calls: 179,
+    reason: 'Owns per-account rate-limit state; 179 calls across 179 distinct callers — one read per agent, the orientation shape. Register account.available as a parameter-relative cell keyed by account id.' }],
+  ['gateway:status', { verdict: 'delegates', cluster: 'capacity', calls: 34,
+    reason: 'Re-presents the SAME gateway /stats oracle fleet:capacity owns. Keep the per-tier admission detail and nextVerb; consume inference.capacity.* rather than deriving a second answer to one question.' }],
+  ['dev:rate_governor_status', { verdict: 'delegates', cluster: 'capacity', calls: 70,
+    reason: 'Its paused-buckets and effective-vs-configured concurrency overlap the admission state above. AIMD detail stays bespoke; the shared values delegate.' }],
+  ['egress:health', { verdict: 'bespoke', cluster: 'capacity', calls: 4,
+    reason: 'An ACTIVE PROBE, not a standing value: builds a dispatcher and echoes the exit IP per provider allocation. A cell caches a value others read; this one must be performed to be true.' }],
+  ['accounts:link-status', { verdict: 'bespoke', cluster: 'capacity', calls: 0,
+    reason: 'A one-shot poll of a held OAuth link flow, keyed to a single linkId. Flow-scoped and single-consumer — never shared state. 0 calls/30d.' }],
+  ['setup:status', { verdict: 'bespoke', cluster: 'capacity', calls: 0,
+    reason: 'Owner-facing Setup-Wizard step aggregation, not agent state. 0 calls/30d — promoting a read nobody makes is the D-010 failure.' }],
+
+  // ── Cluster B — "who is alive / on what?" (the largest cluster)
+  ['coord:presence', { verdict: 'cell', cluster: 'presence', calls: 648,
+    reason: 'Owns the unified presence oracle (presence-derivation-unification-2026-07-17) and is the surface D-038 axis 5 cites as its model. 648 calls / 635 distinct callers ≈ one per agent. Register agent.sessionState (parameter) + fleet.wakeable (global); the derivation is already unified, only the cell face is missing.' }],
+  ['fleet:status', { verdict: 'delegates', cluster: 'presence', calls: 263,
+    reason: 'Re-derives member liveness that coord:presence owns. Requires `fleet` ⇒ parameter relativity. Keep the fleet identity/roster split; consume agent.sessionState for the liveness verdict.' }],
+  ['scheduler:running', { verdict: 'delegates', cluster: 'presence', calls: 35,
+    reason: 'Bee-run liveness re-derives both presence and claim state. The live-execution join is worth keeping; the two inputs should be read as cells.' }],
+  ['plan_items:status', { verdict: 'delegates', cluster: 'presence', calls: 17,
+    reason: 'Explicitly merges the DURABLE assignment with the LIVE claim. The durable half is a record read and stays; the live-claim half must delegate rather than re-derive.' }],
+
+  // ── Cluster C — "is my code live?" (already the 5 registered cells)
+  ['dev:pipeline_position', { verdict: 'cell', cluster: 'pipeline', calls: 310,
+    reason: 'ALREADY the resolver behind all five registered cells (git.pipelinePosition, gate.greenCheckpoint.verdict/.candidate, deploy.3070.sha, git.mainBehindStaging). Owes only its `@cell-lens` declaration; P-007 already made its no-arg call legal so global cells resolve.' }],
+  ['dev:build_status', { verdict: 'delegates', cluster: 'pipeline', calls: 46,
+    reason: 'Local build mtime + server reachability duplicates dev:service_health probing and the serving leg of git.pipelinePosition. Consume both rather than answering a third time.' }],
+  ['deploy:status', { verdict: 'bespoke', cluster: 'pipeline', calls: 34,
+    reason: 'NOT the same question as deploy.3070.sha despite the name: this reads a HARNESS deployment record + its frame handle, not the operator release pipeline. Conflating them by name similarity is the error to avoid; single door, no re-derivation.' }],
+
+  // ── Cluster D — "is the box / service healthy?"
+  ['dev:service_health', { verdict: 'cell', cluster: 'host-health', calls: 134,
+    reason: 'Owns the dev-service probe (:3070/:3170/:3055/… + supervisor flap state); 134 calls / 126 callers. Register service.up as a parameter-relative cell so dev:build_status and setup wizards stop re-probing.' }],
+  ['dev:pg_health', { verdict: 'bespoke', cluster: 'host-health', calls: 14,
+    reason: 'Single door: nothing else derives PG version/connection counts. Live state, but registering it adds a registry entry without removing a door (D-010).' }],
+  ['dev:processes', { verdict: 'bespoke', cluster: 'host-health', calls: 7,
+    reason: 'Deliberately narrow inventory of six tracked agent process kinds; single door, no duplication.' }],
+  ['dev:listening_ports', { verdict: 'bespoke', cluster: 'host-health', calls: 0,
+    reason: 'Single door for the ss/lsof answer; 0 calls/30d. No shared demand to justify a cell.' }],
+  ['dev:dogfood_substrate_status', { verdict: 'bespoke', cluster: 'host-health', calls: 13,
+    reason: 'Hyperbee substrate diagnostic mirroring one admin route; single door, single consumer.' }],
+  ['harness:health', { verdict: 'delegates', cluster: 'host-health', calls: 1,
+    reason: 'Consolidated per-harness verdict overlapping harness:status. Requires `slug` ⇒ parameter relativity. One harness-state derivation should serve both.' }],
+  ['storage:usage', { verdict: 'bespoke', cluster: 'host-health', calls: 1,
+    reason: 'Sizing/trim-safety report over PG tables and on-disk stores — an analytic rollup, not a live-state value agents coordinate on.' }],
+
+  // ── Cluster E — "is the background machinery running?"
+  ['events:status', { verdict: 'cell', cluster: 'machinery', calls: 121,
+    reason: 'Owns await/wake state and is natively CALLER-RELATIVE ("your active awaits") — the axis-3 shape the cell contract was built for. 121 calls / 121 distinct callers: exactly one per agent.' }],
+  ['schedule:inventory', { verdict: 'bespoke', cluster: 'machinery', calls: 27,
+    reason: 'A CATALOG of every scheduled thing, not a live-state value — and already the single anti-sprawl door for its own domain. It is the precedent this plan generalises, not a target of it.' }],
+  ['autoloop:status', { verdict: 'bespoke', cluster: 'machinery', calls: 23,
+    reason: 'Reads autoloop_state rows per harness; single door, no re-derivation elsewhere.' }],
+  ['watchdog:status', { verdict: 'bespoke', cluster: 'machinery', calls: 38,
+    reason: 'Id-keyed diagnostic that currently supports exactly one watchdog (su-ideate-ungraded). Too narrow to be a shared cell; revisit if it generalises across watchdogs.' }],
+  ['improvements:watchdog-status', { verdict: 'bespoke', cluster: 'machinery', calls: 6,
+    reason: 'Tick-ledger inspection for one watchdog; a record read over its history, not a current-state value.' }],
+  ['dev:stall_waker_status', { verdict: 'bespoke', cluster: 'machinery', calls: 1,
+    reason: 'Runtime counters for one poll loop; single door, 1 call/30d.' }],
+  ['operator:trigger_state', { verdict: 'bespoke', cluster: 'machinery', calls: 0,
+    reason: 'A fingerprint consumed machine-to-machine by the background scanner to decide rescans — not an agent-facing read. 0 agent calls/30d.' }],
+  ['plugins:runtime_status', { verdict: 'bespoke', cluster: 'machinery', calls: 0,
+    reason: 'Plugin-host introspection; single door, 0 calls/30d.' }],
+
+  // ── Cluster F — "what is the pot / harness doing?"
+  ['pot:status', { verdict: 'cell', cluster: 'pot', calls: 202,
+    reason: 'Owns the Pot operator state (started/paused, pending wake, floor, watchdog signal); 202 calls / 202 distinct callers — one per agent, the orientation shape. Register pot.started + pot.pendingWake.' }],
+  ['harness:status', { verdict: 'delegates', cluster: 'pot', calls: 9,
+    reason: 'Phase/status/budget per harness overlaps both pot:status and harness:health. One harness-state derivation, three doors — consume it.' }],
+  ['curation:state-of-pot', { verdict: 'bespoke', cluster: 'pot', calls: 14,
+    reason: 'A deterministic DIGEST over a corpus (meta-patterns, chronic deferrals) — a computed report about history, not current system state.' }],
+  ['autonomy:graduation_status', { verdict: 'bespoke', cluster: 'pot', calls: 0,
+    reason: 'Trust-graduation standings computed from the tripwire ledger — a record rollup, and 0 calls/30d.' }],
+
+  // ── Cluster G — local / UI / demo
+  ['ui:get_state', { verdict: 'bespoke', cluster: 'local', calls: 13,
+    reason: 'Per-browser-tab URL state ("what is the user looking at"). Scoped to one tab/client, never fleet-shared; single door.' }],
+  ['operator:credentials_status', { verdict: 'bespoke', cluster: 'local', calls: 2,
+    reason: 'Masked set/not-set presence for voice credentials — configuration, not live state.' }],
+  ['voice:status', { verdict: 'bespoke', cluster: 'local', calls: 0,
+    reason: 'Live voice channel/mute/peers, but 0 calls/30d and no second derivation. No shared demand.' }],
+  ['dev:state_counter', { verdict: 'bespoke', cluster: 'local', calls: 0,
+    reason: 'A DEMO fixture that ticks a counter to exercise ctx.publishState — not a real state read at all. The one unambiguous outright-deletion candidate in this baseline; it is here only because the name signature catches it.' }],
+
+  // ── Cluster H — work-item hygiene
+  ['work_items:redundancy_status', { verdict: 'bespoke', cluster: 'work-items', calls: 1,
+    reason: 'An analysis report over work-item overlap, computed on demand; not a standing value anything coordinates on.' }],
+]);
+
+/**
+ * The mechanical form of P-020's done-condition: every grandfathered tool carries a
+ * verdict, and no verdict names a tool that is not grandfathered. Pure (-> gaps) so the
+ * unit test can assert it without a tree scan.
+ */
+export function verdictGaps() {
+  const missing = [...BASELINE].filter((n) => !VERDICTS.has(n));
+  const extra = [...VERDICTS.keys()].filter((n) => !BASELINE.has(n));
+  const badKind = [...VERDICTS.entries()]
+    .filter(([, v]) => !VERDICT_KINDS.includes(v.verdict))
+    .map(([n]) => n);
+  const unreasoned = [...VERDICTS.entries()]
+    .filter(([, v]) => !v.reason || v.reason.length < MIN_EXEMPTION_REASON)
+    .map(([n]) => n);
+  return { missing, extra, badKind, unreasoned };
+}
+
+/** Rollup of verdicts by kind — printed on every run so the disposition stays visible. */
+export function verdictRollup() {
+  const out = Object.fromEntries(VERDICT_KINDS.map((k) => [k, 0]));
+  for (const v of VERDICTS.values()) if (v.verdict in out) out[v.verdict] += 1;
+  return out;
+}
+
 export const isExcluded = (f) =>
   f.includes('/_retired/') ||
   f.includes('/node_modules/') ||
@@ -378,6 +534,20 @@ function main() {
     console.error('        This read is genuinely not live system state (a record read, a catalog,');
     console.error('        a report). State WHY; the count of exemptions is printed on every run.');
     console.error(`\n  ${offenders.length} offender(s). Do NOT add to BASELINE — it is shrink-only (P-020 empties it).`);
+    process.exit(1);
+  }
+
+  // P-020: the inventory must stay complete. A tool grandfathered without a verdict is
+  // exactly the drift this map exists to prevent, so it FAILS rather than warns — the
+  // cost of a missing verdict is one sentence, the cost of silent drift is the plan.
+  const gaps = verdictGaps();
+  if (gaps.missing.length || gaps.extra.length || gaps.badKind.length || gaps.unreasoned.length) {
+    console.error('✗ no-bespoke-state-read gate: the P-020 VERDICTS map and BASELINE have diverged.\n');
+    if (gaps.missing.length) console.error(`    ${gaps.missing.length} grandfathered tool(s) with NO verdict: ${gaps.missing.join(', ')}`);
+    if (gaps.extra.length) console.error(`    ${gaps.extra.length} verdict(s) for a tool no longer grandfathered — delete them: ${gaps.extra.join(', ')}`);
+    if (gaps.badKind.length) console.error(`    ${gaps.badKind.length} verdict(s) with an unknown kind (expected ${VERDICT_KINDS.join('|')}): ${gaps.badKind.join(', ')}`);
+    if (gaps.unreasoned.length) console.error(`    ${gaps.unreasoned.length} verdict(s) without a real reason (>= ${MIN_EXEMPTION_REASON} chars): ${gaps.unreasoned.join(', ')}`);
+    console.error('\n  Retiring a tool removes it from BOTH maps. Adding one is not allowed at all.');
     process.exit(1);
   }
 

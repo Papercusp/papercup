@@ -433,13 +433,21 @@ describe('boot-all — substrate orchestrator', () => {
   it('P-078: the DEFAULT discovery reads the PG registry and boots only entries with a LIVE project path', async () => {
     const liveDir = mkdtempSync(join(tmpdir(), 'boot-all-live-'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // NOT mockResolvedValueOnce: boot-all now loads the registry TWICE per
+    // workspace — pinRepoKeysForWorkspace (EI-18788176839043286) reads it before
+    // discover() does. A one-shot value was silently eaten by the pin step, so
+    // discovery saw the default empty mock and attempted 0 boots. Overriding the
+    // implementation for the duration of the test is robust to the call COUNT
+    // changing again; it is restored in `finally` because the shared mock carries
+    // a default implementation that later tests rely on.
+    const prevRegistryImpl = loadHarnessRegistryMock.getMockImplementation();
     try {
-      loadHarnessRegistryMock.mockResolvedValueOnce({
+      loadHarnessRegistryMock.mockImplementation(async () => ({
         projects: [
           { slug: 'live-h', path: liveDir },
           { slug: 'dead-h', path: '/nonexistent/papercusp-boot-all-test' },
         ],
-      });
+      }));
       const result = await bootAllHarnessesForActiveWorkspace({
         workspaceIds: ['ws-pg-default-discovery'],
         // NO discoverHarnessSlugs override — exercises harnessSlugsFromPgRegistry.
@@ -452,6 +460,7 @@ describe('boot-all — substrate orchestrator', () => {
       expect(result.results[0]).toMatchObject({ harnessSlug: 'live-h' });
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('dead-h'));
     } finally {
+      loadHarnessRegistryMock.mockImplementation(prevRegistryImpl!);
       warnSpy.mockRestore();
       rmSync(liveDir, { recursive: true, force: true });
     }
@@ -469,8 +478,11 @@ describe('boot-all — substrate orchestrator', () => {
     // (the WI-779 thundering-herd guard stays intact).
     const liveClone = mkdtempSync(join(tmpdir(), 'boot-all-member-'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // See the P-078 test above: pinRepoKeysForWorkspace reads the registry before
+    // discover() does, so a one-shot value never reaches discovery.
+    const prevRegistryImpl = loadHarnessRegistryMock.getMockImplementation();
     try {
-      loadHarnessRegistryMock.mockResolvedValueOnce({
+      loadHarnessRegistryMock.mockImplementation(async () => ({
         projects: [
           // The joined-hive HOME view — gist-backed; its dir is ABSENT here.
           {
@@ -484,7 +496,7 @@ describe('boot-all — substrate orchestrator', () => {
           // A live member clone — control (real on-disk checkout).
           { slug: 'member-h', path: liveClone, hive_slug: 'joined-hive' },
         ],
-      });
+      }));
       const booted: string[] = [];
       const result = await bootAllHarnessesForActiveWorkspace({
         workspaceIds: ['ws-joined-hive'],
@@ -504,6 +516,7 @@ describe('boot-all — substrate orchestrator', () => {
       // The thundering-herd guard is intact: dead code-checkout debris is skipped.
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('dead-clone'));
     } finally {
+      loadHarnessRegistryMock.mockImplementation(prevRegistryImpl!);
       warnSpy.mockRestore();
       rmSync(liveClone, { recursive: true, force: true });
     }

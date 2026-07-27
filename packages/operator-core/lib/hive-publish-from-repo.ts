@@ -30,6 +30,7 @@ import {
 import { saveOwnedHiveMeta } from './hive-directory-meta';
 import { parseGithubUrl } from './harness/clone-github';
 import { formatHarnessLink } from './harness/url-scheme';
+import { canonicalRepoKey } from './sync/pot-git/repo-identity';
 import { formatHiveInviteLink } from './harness/hive-invite-link';
 import {
   deriveHiveFederationTopic,
@@ -356,6 +357,10 @@ async function publishListingForMeta(
           repoOwner: parsed.owner,
           repoName: parsed.repo,
           repoId: m.github_repository_id,
+          // A3 (EI-18788176839043286): publish the repoKey this member's pot-git
+          // store is ACTUALLY named, so the joiner adopts it instead of deriving
+          // its own and landing on a store nobody else is talking to.
+          repoKey: canonicalRepoKey(m),
           // D-007: thread the verified owner binding so a direct-link joiner can
           // seed hive_directory_cache at join (re-verified channel-2 there). hivePubkey
           // is required (the joiner re-derives the topic from it; the link topic is a

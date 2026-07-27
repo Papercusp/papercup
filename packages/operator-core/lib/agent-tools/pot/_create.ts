@@ -678,6 +678,12 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
               // an entry already pinned by the boot backfill keeps its existing key,
               // which is what protects an ESTABLISHED pot from this same re-key.
               entry.pot_repo_key = pinRepoKey(entry);
+              // A3: this device OWNS the pot, so its key is the one announced on
+              // the member join links and adopted verbatim by every joiner —
+              // whatever value it settles on becomes the shared one. Stamped
+              // 'local' because it is still a local derivation (the owner never
+              // joins its own pot, so nothing will ever override it).
+              entry.pot_repo_key_source = 'local';
               await saveHarnessRegistry(reg2, ws);
             }
             if (publish.recoveredFromPushFailure) {

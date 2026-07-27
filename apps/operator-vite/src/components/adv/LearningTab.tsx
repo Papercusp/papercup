@@ -1006,6 +1006,17 @@ interface LoopRow {
   idea: ScoutRoutedItem | null;
 }
 
+/** Is THIS row the deep-link target (`?lsel`)?
+ *
+ *  Both operands must be checked, not just compared: a row with no work item
+ *  has `item?.id === undefined`, so a bare `row.item?.id === lsel` reports TRUE
+ *  for every unfiled idea whenever `lsel` is itself nullish — which scroll-
+ *  jacks the list and (in jsdom) throws on the un-implemented scrollIntoView.
+ *  The pre-merge row compared an always-present string and could not hit this. */
+function isSelectedRow(row: LoopRow, lsel: string | null): boolean {
+  return lsel != null && row.item != null && row.item.id === lsel;
+}
+
 /** Recency for the merged sort, in days, from whichever half the row has.
  *  Work items carry `ageDays` from the digest; ideas carry a routing instant. */
 function rowAgeDays(row: LoopRow, nowMs: number): number {
@@ -1684,7 +1695,7 @@ function ImprovementsView({
               key={row.key}
               row={row}
               ctx={rowCtx}
-              selected={row.item?.id === lsel}
+              selected={isSelectedRow(row, lsel)}
             />
           ))}
         </ul>
@@ -1804,7 +1815,7 @@ function WindowedImprovementList({
             key={row.key}
             row={row}
             ctx={ctx}
-            selected={row.item?.id === lsel}
+            selected={isSelectedRow(row, lsel)}
           />
         ))}
       </ul>
@@ -1816,7 +1827,7 @@ function WindowedImprovementList({
                 key={row.key}
                 row={row}
                 ctx={ctx}
-                selected={row.item?.id === lsel}
+                selected={isSelectedRow(row, lsel)}
               />
             ))}
           </ul>

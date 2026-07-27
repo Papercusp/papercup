@@ -44,6 +44,42 @@ describe('enrichLocalHiveDescriptor (P-004)', () => {
     expect(out.memberLinks![1]).toContain('repo_id=200');
   });
 
+  // A3 (EI-18788176839043286): the announce is where the owner PUBLISHES the
+  // repoKey its store is really named. Without this stamp a joiner has nothing
+  // to adopt and falls back to deriving its own — the divergence A3 exists to end.
+  it('stamps each member link with the repoKey that member is PINNED to, not a re-derivation', async () => {
+    const out = await enrichLocalHiveDescriptor(desc(), {
+      loadPubkey: async () => PK,
+      deriveMemberRepos: async () => [],
+      loadRegistry: async () => ({
+        projects: [
+          {
+            slug: 'shop',
+            path: '/a',
+            hive_slug: 'shop-hive',
+            github_remote: 'https://github.com/acme/shop',
+            github_repository_id: 100,
+            // Pinned to the bare slug: this pot was created local-first and
+            // published later, so the store on disk is `shop`, NOT `gh-100`.
+            pot_repo_key: 'shop',
+          },
+          {
+            slug: 'docs',
+            path: '/b',
+            hive_slug: 'shop-hive',
+            github_remote: 'https://github.com/acme/docs',
+            github_repository_id: 200,
+          },
+        ],
+      }),
+    });
+    // The pinned member announces its PIN — a joiner adopting `gh-100` here
+    // would talk to a store that does not exist.
+    expect(out.memberLinks![0]).toContain('repo_key=shop');
+    // The unpinned member announces today's derivation.
+    expect(out.memberLinks![1]).toContain('repo_key=gh-200');
+  });
+
   it('no workspaceId → returned unchanged (legacy descriptors)', async () => {
     const d = desc({ workspaceId: undefined });
     expect(await enrichLocalHiveDescriptor(d)).toBe(d);

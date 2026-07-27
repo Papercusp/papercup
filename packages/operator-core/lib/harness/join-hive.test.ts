@@ -79,6 +79,88 @@ describe('joinHiveAsView (P-007)', () => {
     });
   });
 
+  // ── A3: the joiner ADOPTS the owner's repoKey (EI-18788176839043286) ──────
+  // Pinning alone only froze each device's own derivation, which makes a key
+  // stable but not SHARED. These cases pin down the half that makes two devices
+  // actually agree.
+  describe('A3 — pot-git repoKey adoption', () => {
+    const keyedLink = (repo: string, id: number, repoKey: string) =>
+      `${link(repo, id)}&repo_key=${repoKey}`;
+
+    it("adopts the repoKey the OWNER announced instead of deriving its own", async () => {
+      const { deps, calls } = fakes();
+      // The owner's store is named `papercusp` (the pot was created local-first,
+      // before it was ever published). Deriving locally from the link's coords
+      // would produce `gh-1223568103` — a different store and a different wire
+      // key, i.e. the silent total federation failure this fixes.
+      const res = await joinHiveAsView(
+        {
+          potId: 'shop-hive',
+          memberLinks: [keyedLink('shop', 1223568103, 'papercusp')],
+          workspaceId: 'ws',
+        },
+        deps,
+      );
+      expect(res.ok).toBe(true);
+
+      const shop = calls.registry.find((p) => p.slug === 'shop')!;
+      expect(shop.pot_repo_key).toBe('papercusp');
+      expect(shop.pot_repo_key_source).toBe('peer');
+      // The coords still land — adoption changes the KEY, not the upstream.
+      expect(shop.github_repository_id).toBe(1223568103);
+    });
+
+    it('falls back to its own derivation when the owner build announces no repo_key', async () => {
+      const { deps, calls } = fakes();
+      await joinHiveAsView(
+        { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        deps,
+      );
+      const shop = calls.registry.find((p) => p.slug === 'shop')!;
+      expect(shop.pot_repo_key).toBe('gh-100');
+      expect(shop.pot_repo_key_source).toBe('local');
+    });
+
+    it('RE-KEYS a member already pinned locally to the wrong value — the repair path', async () => {
+      // The live rig/tower shape: this device pinned the bare slug from its own
+      // registry while the owner's store is gh-1223568103. An ESTABLISHED member
+      // re-joining takes the `already_registered` path (matched on repo id), so
+      // this also proves the repair reaches a member that is not re-cloned.
+      const { deps, calls } = fakes([
+        {
+          slug: 'shop',
+          path: '/joined/shop',
+          hive_slug: 'shop-hive',
+          github_repository_id: 1223568103,
+          pot_repo_key: 'shop',
+          pot_repo_key_source: 'local',
+        },
+      ]);
+      await joinHiveAsView(
+        {
+          potId: 'shop-hive',
+          memberLinks: [keyedLink('shop', 1223568103, 'gh-1223568103')],
+          workspaceId: 'ws',
+        },
+        deps,
+      );
+      const shop = calls.registry.find((p) => p.slug === 'shop')!;
+      expect(shop.pot_repo_key).toBe('gh-1223568103');
+      expect(shop.pot_repo_key_source).toBe('peer');
+    });
+
+    it('ignores a malformed announced key rather than writing it into a store path', async () => {
+      const { deps, calls } = fakes();
+      await joinHiveAsView(
+        { potId: 'shop-hive', memberLinks: [`${link('shop', 100)}&repo_key=..`], workspaceId: 'ws' },
+        deps,
+      );
+      const shop = calls.registry.find((p) => p.slug === 'shop')!;
+      expect(shop.pot_repo_key).toBe('gh-100');
+      expect(shop.pot_repo_key_source).toBe('local');
+    });
+  });
+
   it('a local harness owning the hive name is never clobbered — the view slug suffixes', async () => {
     const { deps, calls } = fakes([{ slug: 'shop-hive', path: '/local/own' }]);
     const res = await joinHiveAsView(
