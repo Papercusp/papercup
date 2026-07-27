@@ -245,6 +245,20 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('skipped-locked', false)).toBe('noop');
   });
 
+  it('EI-18757975681519069: migrations-pending is a NON-VERDICT, not a red', () => {
+    // The gate aborted BEFORE running the suite because the dev PG is known to be
+    // behind the candidate, so this tick said nothing about the code. Counting a
+    // non-verdict toward the red streak is the identical false-increment bug
+    // EI-2615 fixed for lock contention — and it would be self-reinforcing here:
+    // a stale schema would inflate consecutiveReds, which escalates as a broken
+    // build, sending agents after test failures that are really a missing column.
+    // The genuine "migration never applies" case is covered by the same backstop
+    // as skipped-locked — fireStale on last-fire/last-green age.
+    expect(classifyGateStallStatus('migrations-pending', false)).toBe('noop');
+    // …and a moved pin still wins, exactly as for every other status.
+    expect(classifyGateStallStatus('migrations-pending', true)).toBe('reset');
+  });
+
   it('every other non-green verdict still counts as a red (crash / not-green / etc.)', () => {
     for (const status of ['not-green', 'error', 'create-failed', 'not-fast-forward']) {
       expect(classifyGateStallStatus(status, false)).toBe('red');

@@ -589,13 +589,22 @@ export type GateStallClass = 'reset' | 'noop' | 'red';
  *     separate `fireStale` signal (last-fire / last-green age,
  *     green-stall-watchdog.ts) — so leave `gate_health` untouched here rather
  *     than double-count healthy contention as a red.
+ *   - 'noop': `status === 'migrations-pending'` (EI-18757975681519069) — the
+ *     same reasoning one step earlier. The gate ABORTED before judging because
+ *     the dev PG is known to be behind the candidate, so this tick produced no
+ *     verdict about the code at all; counting a non-verdict as a red is the
+ *     identical false-increment bug EI-2615 fixed for lock contention. And it
+ *     is covered by the identical backstop: a migration that never applies
+ *     means the gate stops rendering verdicts, which `fireStale` (last-fire /
+ *     last-green age) already alarms on — so "inconclusive" can never go
+ *     silent, it just stops being mislabelled as a broken build.
  *   - 'red': every other non-green verdict (not-green / error / create-failed /
  *     not-fast-forward / …) still counts toward the stall streak.
  */
 export function classifyGateStallStatus(status: string, pinMoved: boolean): GateStallClass {
   const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
   if (isGreen || pinMoved) return 'reset';
-  if (status === 'skipped-locked') return 'noop';
+  if (status === 'skipped-locked' || status === 'migrations-pending') return 'noop';
   return 'red';
 }
 

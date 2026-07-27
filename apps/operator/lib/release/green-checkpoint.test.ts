@@ -477,6 +477,58 @@ describe('runGreenCheckpoint', () => {
     expect(runGreenIdx).toBeGreaterThan(migrateIdx);
   });
 
+  it('EI-18757975681519069: a preflight that leaves migrations PENDING aborts the run as inconclusive — it never judges against a schema known to be behind', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true); // stub would otherwise report GREEN
+    deps.ensureMigrationsCurrent = async () => {
+      calls.push('ensureMigrationsCurrent');
+      return { applied: 0, failed: [{ file: '680-carry-note-declared-deps.sql', error: 'canceling statement due to lock timeout' }] };
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: false, candidate: c2, green: null, reason: 'migrations-pending' });
+    // The load-bearing assertion: the suite is never RUN, so no verdict about the
+    // code can be manufactured from a stale schema, and `main` is never advanced
+    // on one either. Judging here is what produced the false red + the phantom
+    // "ambient host load" diagnosis this fix exists to prevent.
+    expect(calls).not.toContain('runGreen');
+    expect(calls).not.toContain('advance');
+  });
+
+  it('EI-18757975681519069: the abort names the offending migration + its error, so the reason is diagnosable from the log alone', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logs: string[] = [];
+    const { deps } = stubDeps(true);
+    const priorLog = deps.log;
+    deps.log = (s: string) => {
+      logs.push(s);
+      priorLog?.(s);
+    };
+    deps.ensureMigrationsCurrent = async () => ({
+      applied: 0,
+      failed: [{ file: '680-carry-note-declared-deps.sql', error: 'canceling statement due to lock timeout' }],
+    });
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const line = logs.find((l) => l.includes('migration preflight')) ?? '';
+    expect(line).toContain('680-carry-note-declared-deps.sql');
+    expect(line).toContain('canceling statement due to lock timeout');
+    expect(line).toContain('INCONCLUSIVE');
+  });
+
+  it('EI-18757975681519069: a preflight reporting applied>0 with NO failures judges normally — the abort is scoped to a known-behind schema', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.ensureMigrationsCurrent = async () => ({ applied: 3, failed: [] });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, candidate: c2, green: true, reason: 'advanced' });
+    expect(calls).toContain('runGreen');
+  });
+
   it('EI-13992: a THROWING ensureMigrationsCurrent is swallowed — the gate still runs + judges normally (never blocks on the preflight)', async () => {
     const c1 = await commit('a', '1', 'c1');
     await git(repo, ['branch', 'ready', c1]);

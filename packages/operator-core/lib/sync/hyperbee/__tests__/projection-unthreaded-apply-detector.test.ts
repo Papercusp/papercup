@@ -37,15 +37,17 @@ import {
 const OWN_LOG = 'a'.repeat(64);
 const REMOTE_LOG = 'b'.repeat(64);
 
-function stubProjection(tableTag: string, skipOwnOps: boolean): TableProjection {
+type StubRow = Record<string, unknown>;
+
+function stubProjection(tableTag: string, skipOwnOps: boolean): TableProjection<StubRow> {
   return {
     tableTag,
     composeKey: () => '',
-    decodeValue: (raw) => raw as Record<string, unknown> | null,
+    decodeValue: (raw: unknown) => raw as StubRow | null,
     writeToPg: vi.fn(async () => {}),
     deleteFromPg: vi.fn(async () => {}),
     ...(skipOwnOps ? { skipOwnOps: true } : {}),
-  } as TableProjection;
+  } as TableProjection<StubRow>;
 }
 
 /**

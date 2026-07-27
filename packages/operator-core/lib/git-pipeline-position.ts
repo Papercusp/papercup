@@ -495,6 +495,19 @@ export interface PipelinePosition {
    * "live" while the process served older code, filed 4x independently).
    */
   stages: StageState[];
+  /**
+   * P-005: the stage actually holding this change up — the first `pending` stage in
+   * source→live order — or `null` when nothing is pending (it is live).
+   */
+  blockedOn: StageName | null;
+  /**
+   * P-005: the ONE thing to do about it, or `null` when waiting is the honest answer.
+   *
+   * Read WITH `blockedOn`: null/null means live; a stage with a null action means the leg
+   * is healthy and will advance on its own. See deriveBlocker for why those three states
+   * must stay distinct.
+   */
+  nextAction: string | null;
   /** One human-readable line. */
   summary: string;
   notes: string[];
@@ -1003,6 +1016,14 @@ export function computeStages(
       detail: ahead
         ? 'The deployed sha carries commits the green pin does NOT — it was force-deployed past the gate. "deployed" does not mean "tested" here.'
         : null,
+      // Only offer the force-deploy once the change is actually IN main — suggesting it
+      // earlier would ship a sha that does not carry the change, which looks like progress
+      // and is not. release-trigger ships a green pin within ~15 min on its own, so this is
+      // the "you may not need to do anything" case; the lever exists for when you do.
+      lever:
+        !p.positions.deployed && p.positions.inMain
+          ? 'PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute (or wait ≤15 min for release-trigger)'
+          : null,
     });
   }
 
@@ -1045,9 +1066,42 @@ export function computeStages(
     position: codeReachedHost && sv.startedSinceCodeChange === true ? 'past' : 'pending',
     health: servingHealth,
     detail: servingDetail,
+    // A restart is the lever ONLY once the code has actually reached this host — offering
+    // it while the deploy is still pending would restart the process onto the SAME old
+    // code and read as "I did the thing and nothing changed" (EI-11120's shape).
+    lever: codeReachedHost && sv.startedSinceCodeChange === false ? sv.restartLever : null,
   });
 
   return stages;
+}
+
+/**
+ * P-005: the single next lever, and which stage owns it.
+ *
+ * `stages[]` gives six position×health readings; this answers the question a caller
+ * actually arrives with — "is my change live, and if not what is the ONE thing blocking
+ * it". That task cost 11 tool calls and 4 hand-diffs on 2026-07-26 and still went wrong
+ * twice, because deciding WHICH of six stages owns the next move was left to the reader.
+ *
+ * The first `pending` stage in source→live order is the blocker: stages are ordered, and
+ * a later stage cannot advance until an earlier one has. `na` stages are skipped — they
+ * are not on this change's route, so they can never block it.
+ *
+ * THE THREE STATES ARE DISTINCT, and collapsing any two is the bug this must not have:
+ *   blockedOn null, nextAction null  → nothing is pending; the change is live.
+ *   blockedOn set,  nextAction null  → blocked, and WAITING IS CORRECT (a healthy leg
+ *                                      between ticks). Inventing a lever here is worse
+ *                                      than none: it manufactures busywork and, for the
+ *                                      push/deploy legs, an unnecessary forced run.
+ *   blockedOn set,  nextAction set   → blocked, and here is the one thing to do.
+ */
+export function deriveBlocker(stages: StageState[]): {
+  blockedOn: StageName | null;
+  nextAction: string | null;
+} {
+  const blocking = stages.find((s) => s.position === 'pending');
+  if (!blocking) return { blockedOn: null, nextAction: null };
+  return { blockedOn: blocking.name, nextAction: blocking.lever };
 }
 
 export interface PipelinePositionDeps {
@@ -1183,6 +1237,21 @@ function servingNote(p: Pick<PipelinePosition, 'positions' | 'serving'>): string
   return ' (deployed, but whether the serving process has loaded it is UNKNOWN — not confirmed live)';
 }
 
+/**
+ * P-005: the lead clause — the answer to "is my change live, and if not what is the one
+ * thing blocking it", placed FIRST because that is the question the caller arrived with.
+ *
+ * Everything after it is supporting evidence. The old summary opened with a row of ticks,
+ * which is a state DUMP: correct, complete, and leaving the reader to work out which of
+ * six positions owns their next move. That derivation is exactly what went wrong twice on
+ * 2026-07-26.
+ */
+function leadClause(p: Omit<PipelinePosition, 'summary'>): string {
+  if (!p.blockedOn) return '';
+  const label = p.blockedOn.toUpperCase();
+  return p.nextAction ? `BLOCKED AT ${label} → ${p.nextAction}. ` : `WAITING AT ${label} (nothing to do — this leg is advancing on its own). `;
+}
+
 export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string {
   const tick = (b: boolean) => (b ? '✓' : '✗');
   const label = p.input.path ?? p.input.sha ?? '(none)';
@@ -1276,7 +1345,7 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
     p.changeInCandidate.judgingContainsPath === false || p.changeInCandidate.nextContainsPath === false
       ? ` ⚠ ${p.changeInCandidate.detail}`
       : '';
-  return `${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
+  return `${leadClause(p)}${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
     p.positions.onStaging,
   )} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${servingNote(
     p,
@@ -1542,6 +1611,7 @@ export async function gitPipelinePosition(
     changeInCandidate,
     notes,
   };
-  const base: Omit<PipelinePosition, 'summary'> = { ...preStages, stages: computeStages(preStages) };
+  const stages = computeStages(preStages);
+  const base: Omit<PipelinePosition, 'summary'> = { ...preStages, stages, ...deriveBlocker(stages) };
   return { ...base, summary: summarizePosition(base) };
 }

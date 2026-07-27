@@ -240,7 +240,7 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'desktop-perf-held' | 'delta-held' | 'cupboard-hygiene-held' | 'skipped-locked';
+  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'desktop-perf-held' | 'delta-held' | 'cupboard-hygiene-held' | 'skipped-locked' | 'migrations-pending';
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
    *  launcher stamped the record target into the env. Read by the routine, which then does NOT
    *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
@@ -1896,20 +1896,57 @@ export async function runGreenCheckpoint(
   await deps.setupTree(candidate);
   // EI-13992: preflight — apply any pending migrations to the live dev PG BEFORE
   // judging, so a run of this gate can never red-pin itself on schema drift caused
-  // by main sitting frozen (see CheckpointDeps.ensureMigrationsCurrent doc). Never
-  // blocks the run: a failure here just means migrations stay pending, same as
-  // today; the suite still runs and reports its own real verdict.
+  // by main sitting frozen (see CheckpointDeps.ensureMigrationsCurrent doc).
+  //
+  // EI-18757975681519069 — FAIL-CLOSED when the apply FAILS. This preflight used to
+  // log the failure and judge anyway ("the suite still runs and reports its own real
+  // verdict"), which was the false premise: a suite judged against a schema we KNOW
+  // is behind the candidate does not produce a real verdict, it produces a red made
+  // of missing-column failures wearing the candidate's name. That is EI-13992's own
+  // deadlock ("dev PG behind → tests asserting new columns fail → gate stays red")
+  // surviving intact in the one case the preflight was built for — it only ever
+  // helped when the apply SUCCEEDED, which is the case that never needed help.
+  // Observed 2026-07-27: migration 680 hit a transient lock_timeout, the gate judged
+  // anyway, failed exactly the two test files needing that migration's column, and
+  // reported "ambient host load starving the isolated re-run" — sending two agents
+  // after a phantom flake while `main` sat frozen behind a verdict that was never
+  // about the code.
+  //
+  // So: a KNOWN-behind schema aborts the run as INCONCLUSIVE (green: null) instead
+  // of rendering a verdict. This adds no new wedge — a permanently-broken migration
+  // froze `main` before this change too, just with a misleading reason attached —
+  // and `classifyGateStallStatus` treats it as a no-op rather than a red so it never
+  // inflates the red streak, exactly like 'skipped-locked'. The separate fireStale
+  // signal (last-fire / last-green age) still catches a gate that stops rendering
+  // verdicts entirely, which is what stops "inconclusive" from becoming silent.
+  //
+  // NOTE the asymmetry with the catch below, which is deliberate: a THROWING
+  // preflight means the schema state is UNKNOWN (dev PG unreachable, no answer
+  // either way), and unknown is not a reason to stop judging — that path keeps
+  // today's behaviour. Only an affirmative `failed.length > 0` is knowledge.
   if (deps.ensureMigrationsCurrent) {
+    let pendingAfterPreflight: { file: string; error: string }[] = [];
     try {
       const migrated = await deps.ensureMigrationsCurrent();
       if (migrated && migrated.applied > 0) {
         deps.log(`migration preflight: applied ${migrated.applied} pending migration(s) to the dev PG before judging`);
       }
       if (migrated && migrated.failed.length > 0) {
-        deps.log(`migration preflight: ${migrated.failed.length} migration(s) failed to apply (left pending): ${migrated.failed.map((f) => f.file).join(', ')}`);
+        pendingAfterPreflight = migrated.failed;
       }
     } catch (e) {
       deps.log(`migration preflight skipped (${e instanceof Error ? e.message : e})`);
+    }
+    if (pendingAfterPreflight.length > 0) {
+      const detail = pendingAfterPreflight.map((f) => `${f.file}: ${f.error}`).join('; ');
+      deps.log(
+        `migration preflight: ${pendingAfterPreflight.length} migration(s) failed to apply (left pending) — ` +
+          `ABORTING this run as INCONCLUSIVE rather than judging ${candidate.slice(0, 8)} against a schema known to be ` +
+          `behind it. A red from a stale schema is not a verdict about the code, and its failing tests read as ` +
+          `unrelated flakes. Fix the migration (or let it retry — a transient lock_timeout usually clears) and the ` +
+          `next run judges normally. Pending: ${detail}`,
+      );
+      return { advanced: false, candidate, from: lastReady, green: null, reason: 'migrations-pending' };
     }
   }
   // EI-18666996942859193: tree-drift preflight — name a drifted checkpoint tree as its
