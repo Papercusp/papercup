@@ -48,7 +48,7 @@
  */
 
 import type { CoverageResult, SubstitutionPair } from '../types';
-import { JOURNAL_LEVELS, JOURNAL_READ_MAX_LIMIT } from '../../journal-read';
+import { JOURNAL_LEVELS, JOURNAL_READ_MAX_LIMIT, type JournalScope } from '../../journal-read';
 
 /** Mirrors `logs:read`'s `unit` array bound. Exported so `pairs/model-drift.test.ts`
  *  can pin it to the tool's real zod `.max()` (D-015) — the mirror is deliberate,
@@ -103,6 +103,24 @@ const EXCLUDE_UNEXPRESSIBLE =
   // journal maintenance verbs — writes, not reads
   String.raw`(?![^\n]*--(?:vacuum|rotate|verify|flush|sync|relinquish|setup-keys|disk-usage|header|update-catalog))`;
 
+/**
+ * A claimed read must be SCOPED — by a unit, a syslog identifier, or at least a
+ * window. `logs:read` refuses a host-wide read with no `since` on purpose: it
+ * walks every unit in the journal (measured 25.97s versus 7.58s unit-scoped on
+ * the same 1.2GB journal, for a read that returned 17 bytes).
+ *
+ * That refusal is expressed HERE, in the pattern, and not left to `cover()`,
+ * because a shape the tool deliberately declines is not a shape it is missing —
+ * failing it in the envelope would score this family `needs-widening` for
+ * working exactly as designed. Two corpus atoms fall outside (`journalctl -o cat`,
+ * `journalctl --user -n 20`); they keep using bash, and the routing row says so.
+ * `coverJournalCommand` still checks the same condition, deliberately: if this
+ * lookahead is ever loosened, the envelope refuses honestly instead of silently
+ * claiming a read the tool would reject at runtime.
+ */
+const REQUIRE_SCOPE =
+  String.raw`(?=[^\n]*(?:^|\s)(?:-[utS]\b|--unit|--user-unit|--identifier|--since))`;
+
 /** One journalctl invocation, parsed into the request it expresses. */
 export interface ParsedJournalCommand {
   units: string[];
@@ -112,7 +130,15 @@ export interface ParsedJournalCommand {
   grep: string | null;
   level: string | null;
   limit: number | null;
-  system: boolean;
+  /**
+   * Which journal the command asked for. `--user` and `--system` are DIFFERENT
+   * JOURNALS and passing neither is a third request (everything visible), so
+   * this is three-valued. 18 claimed atoms across 6 sessions pass neither, and
+   * every one targets a system unit (`systemd-oomd`, `pgbouncer`,
+   * `kopia-snapshots`) — collapsing them onto `--user` would have expressed each
+   * as a read of a journal that cannot contain the answer.
+   */
+  scope: JournalScope;
   outputFormats: string[];
   /** Flags with no `logs:read` argument and no no-op reading. */
   unexpressible: string[];
@@ -150,12 +176,17 @@ export function parseJournalctlAtom(atom: string): ParsedJournalCommand {
   const tokens = tokenizeAtom(atom).slice(1); // drop the `journalctl` verb
   const parsed: ParsedJournalCommand = {
     units: [], identifiers: [], since: null, until: null, grep: null,
-    level: null, limit: null, system: false, outputFormats: [], unexpressible: [],
+    // `all` is the correct INITIAL value, not a default we picked: it is what
+    // journalctl does when neither --user nor --system is passed.
+    level: null, limit: null, scope: 'all', outputFormats: [], unexpressible: [],
   };
 
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
-    if (!token || /^2>/.test(token) || token === '&' || token === '2>&1') continue;
+    // Shell plumbing that is not an operand: stderr redirection, backgrounding,
+    // and a trailing `\` line-continuation (8 atoms in the corpus end with one,
+    // because `atomize` normalises a multi-line command and keeps the marker).
+    if (!token || /^2>/.test(token) || token === '&' || token === '2>&1' || token === '\\') continue;
 
     const eq = token.indexOf('=');
     const isLong = token.startsWith('--');
@@ -185,8 +216,8 @@ export function parseJournalctlAtom(atom: string): ParsedJournalCommand {
         break;
       }
       case '-o': case '--output': parsed.outputFormats.push(takeValue()); break;
-      case '--user': break;
-      case '--system': parsed.system = true; break;
+      case '--user': parsed.scope = 'user'; break;
+      case '--system': parsed.scope = 'system'; break;
       default:
         if (NOOP_FLAGS.has(name)) break;
         // A bare non-flag operand is a journalctl MATCH expression (a unit path
@@ -208,7 +239,8 @@ function expressionFor(parsed: ParsedJournalCommand): string {
   if (parsed.grep) args.push(`grep:'${parsed.grep}'`);
   if (parsed.level) args.push(`level:'${parsed.level}'`);
   if (parsed.limit !== null) args.push(`limit:${parsed.limit}`);
-  if (parsed.system) args.push('system:true');
+  // `user` is the tool's default, so only a non-default scope needs stating.
+  if (parsed.scope !== 'user') args.push(`scope:'${parsed.scope}'`);
   return `logs:read { ${args.join(', ')} }`;
 }
 
@@ -261,7 +293,7 @@ export function coverJournalCommand(parsed: ParsedJournalCommand): CoverageResul
 export const unitJournalRead: SubstitutionPair = {
   id: 'logs.unit-journal',
   intentLabel: 'service-log-read',
-  bashPattern: new RegExp(`^${EXCLUDE_UNEXPRESSIBLE}journalctl\\b`),
+  bashPattern: new RegExp(`^${EXCLUDE_UNEXPRESSIBLE}${REQUIRE_SCOPE}journalctl\\b`),
   toolName: 'logs:read',
   advisoryText:
     'logs:read { unit, since, grep } pushes the filter down to `journalctl --grep`, so only matching lines are ever read, and collapses repeated identical lines — no `| grep … | tail -n` afterwards. It also names a unit systemd does not know, which a raw journalctl reports as an empty (clean-looking) window.',

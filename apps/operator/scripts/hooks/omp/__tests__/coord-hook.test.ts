@@ -141,6 +141,7 @@ import {
   reportTurnAskIngest,
   _resetOpenAskGatesForTests,
   SUBSTITUTION_PREFILTER_HEADS,
+  SUBSTITUTION_PHRASE_RE,
   RESOURCE_PREFILTER_RE,
   SUBST_SPLIT_RE,
   SUBST_RUNNER_RE,
@@ -5375,6 +5376,15 @@ describe('cross-path parity with the shell hook (D-005 — the duplicated pre-fi
     const shellHeads = [...m![1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
     expect(shellHeads.length).toBeGreaterThan(0);
     expect([...shellHeads].sort()).toEqual([...SUBSTITUTION_PREFILTER_HEADS].sort());
+  });
+
+  // The phrase pre-filter is the SAME "fix one, fix both" tax as the atomizer
+  // regexes below: it exists because `npm` is too common a head to list in the
+  // set above, so `npm run test:file` is claimed as a phrase on both paths.
+  // Widen it on one hook only and the router shape pays the round-trip there and
+  // silently skips it on the other — invisible without this assertion.
+  it('the substitution PHRASE pre-filter matches the shell hook byte-for-byte', () => {
+    expect(SUBSTITUTION_PHRASE_RE.source).toBe(pyRaw('_SUBSTITUTION_PHRASE_RE'));
   });
 
   it('the three atomizer regexes match the shell hook byte-for-byte', () => {

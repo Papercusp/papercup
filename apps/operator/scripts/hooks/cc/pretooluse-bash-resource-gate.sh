@@ -1374,10 +1374,24 @@ _SUBST_ENV_RE = re.compile(r'^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+')
 # decides which atoms it actually claims — notably only `lsof` calls carrying an
 # `-i`/`--i` socket selector. This set only decides which heads pay the operator
 # round-trip at all, so it lists the bare verbs.
+#
+# P-021 adds 'npx'/'vitest' (the test family → `testing:run`): `tests.raw-vitest`
+# claims `(npx )?vitest run <paths>`, so the head after runner/env stripping is
+# either `npx` or the bare `vitest`. Its sibling `tests.router-files` claims
+# `npm run test:file -- <paths>`, whose head is `npm` — deliberately NOT listed
+# here, because `npm` fronts nearly every build/test/lint command in this repo
+# and `npm run lint` must keep paying nothing. That shape is matched as a PHRASE
+# by _SUBSTITUTION_PHRASE_RE below instead.
 _SUBSTITUTION_HEADS = frozenset((
     'sed', 'cat', 'head', 'tail', 'psql', 'systemctl', 'curl', 'git',
     'ss', 'netstat', 'lsof',
+    'npx', 'vitest',
 ))
+
+# Narrow phrases a substitution row claims whose bare head is too common for the
+# set above (see the P-021 note). Byte-for-byte twin of the TS hook's
+# SUBSTITUTION_PHRASE_RE; tested against the atom AFTER runner/env stripping.
+_SUBSTITUTION_PHRASE_RE = re.compile(r'^npm\s+run\s+test:file\b')
 
 
 def _substitution_prefilter_hit(cmd):
@@ -1390,6 +1404,8 @@ def _substitution_prefilter_hit(cmd):
             atom = stripped
         if not atom:
             continue
+        if _SUBSTITUTION_PHRASE_RE.search(atom):
+            return True
         head = atom.split()[0].split('/')[-1].strip('({`$\'"')
         if head in _SUBSTITUTION_HEADS:
             return True

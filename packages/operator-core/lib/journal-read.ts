@@ -66,6 +66,20 @@ export const JOURNAL_LEVELS = [
 ] as const;
 export type JournalLevel = (typeof JOURNAL_LEVELS)[number];
 
+/**
+ * Which journal to read — journalctl's own three-way choice, not a boolean.
+ *
+ * `--user` and `--system` are DIFFERENT JOURNALS, and passing NEITHER is a third,
+ * distinct request: journalctl then shows every message the caller can see. This
+ * started life as a `system: boolean`, which silently collapsed that third case
+ * onto `--user`; the corpus contains 18 such reads across 6 sessions and every
+ * one of them targets a SYSTEM unit (`systemd-oomd`, `pgbouncer`,
+ * `kopia-snapshots`), so each would have come back convincingly empty.
+ */
+export const JOURNAL_SCOPES = ['user', 'system', 'all'] as const;
+export type JournalScope = (typeof JOURNAL_SCOPES)[number];
+export const JOURNAL_DEFAULT_SCOPE: JournalScope = 'user';
+
 export interface JournalEntry {
   /** ISO-8601 UTC. Derived from `__REALTIME_TIMESTAMP` (microseconds since the
    *  epoch), NOT from a locale-formatted string — same reasoning as
@@ -135,8 +149,8 @@ export interface JournalReadOptions {
   /** `-p`: this severity AND MORE SEVERE, matching journalctl's own semantics. */
   level?: JournalLevel;
   limit?: number;
-  /** Read the SYSTEM journal instead of `--user`. 5% of measured commands. */
-  system?: boolean;
+  /** Which journal to read. Default `user`. */
+  scope?: JournalScope;
 }
 
 /** Fields we ask journalctl for. Restricting them is what keeps `-o json`
@@ -168,7 +182,11 @@ export const JOURNAL_OUTPUT_FIELDS = [
  * calls already do.
  */
 export function buildJournalctlArgs(opts: JournalReadOptions): string[] {
-  const args: string[] = [opts.system ? '--system' : '--user', '--no-pager', '-o', 'json'];
+  const scope = opts.scope ?? JOURNAL_DEFAULT_SCOPE;
+  // `all` passes NEITHER flag — that is exactly how journalctl expresses "every
+  // message this caller can see". Emitting one of the two would narrow it.
+  const args: string[] = scope === 'all' ? [] : [scope === 'system' ? '--system' : '--user'];
+  args.push('--no-pager', '-o', 'json');
   args.push(`--output-fields=${JOURNAL_OUTPUT_FIELDS.join(',')}`);
   for (const unit of opts.units ?? []) args.push('-u', unit);
   if (opts.identifier) args.push('-t', opts.identifier);
@@ -341,27 +359,35 @@ const defaultExec: JournalExec = (args) =>
   execFileAsync('journalctl', args, { timeout: JOURNAL_TIMEOUT_MS, maxBuffer: JOURNAL_MAX_BUFFER });
 
 /** Resolves each requested unit to whether systemd knows it. */
-export type UnitLoadProbe = (units: string[], system: boolean) => Promise<string[]>;
+export type UnitLoadProbe = (units: string[], scope: JournalScope) => Promise<string[]>;
+
+/** Does THIS systemd manager report the unit as not-found? Null ⇒ cannot tell. */
+async function unitIsUnknownTo(manager: '--user' | '--system', unit: string): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileAsync('systemctl', [manager, 'show', '-p', 'LoadState', unit], { timeout: 3000 });
+    return /^LoadState=not-found$/m.test(stdout.trim());
+  } catch {
+    return null;
+  }
+}
 
 /**
- * Which of these units does systemd NOT know? `LoadState=not-found` is the
- * determinate answer; anything else (including a probe failure) reports nothing,
- * because a FALSE "that unit does not exist" is worse than saying nothing at all.
+ * Which of these units does systemd NOT know?
+ *
+ * `LoadState=not-found` is the determinate answer; anything else (including a
+ * probe failure) reports NOTHING, because a false "that unit does not exist" is
+ * worse than saying nothing at all. Under scope `all` a unit counts as unknown
+ * only when BOTH managers deny it — the read spanned both journals, so denial by
+ * one proves nothing.
  */
-export const defaultUnitLoadProbe: UnitLoadProbe = async (units, system) => {
+export const defaultUnitLoadProbe: UnitLoadProbe = async (units, scope) => {
+  const managers: Array<'--user' | '--system'> =
+    scope === 'all' ? ['--user', '--system'] : [scope === 'system' ? '--system' : '--user'];
   const unknown: string[] = [];
   await Promise.all(
     units.map(async (unit) => {
-      try {
-        const { stdout } = await execFileAsync(
-          'systemctl',
-          [system ? '--system' : '--user', 'show', '-p', 'LoadState', unit],
-          { timeout: 3000 },
-        );
-        if (/^LoadState=not-found$/m.test(stdout.trim())) unknown.push(unit);
-      } catch {
-        // Cannot tell ⇒ say nothing.
-      }
+      const verdicts = await Promise.all(managers.map((m) => unitIsUnknownTo(m, unit)));
+      if (verdicts.every((v) => v === true)) unknown.push(unit);
     }),
   );
   return unknown;
@@ -394,7 +420,7 @@ export async function readJournal(
   /** Zero lines from a named unit is ambiguous — resolve it before returning. */
   const withUnknownUnits = async (result: JournalReadResult): Promise<JournalReadResult> => {
     if (result.entries.length || !units.length || !result.journalAvailable) return result;
-    return { ...result, unitsUnknown: await probeUnits(units, opts.system === true) };
+    return { ...result, unitsUnknown: await probeUnits(units, opts.scope ?? JOURNAL_DEFAULT_SCOPE) };
   };
 
   let stdout: string;

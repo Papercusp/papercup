@@ -5,8 +5,10 @@ import {
   classifyRuntimeOwner,
   classifyRuntimeOwners,
   computeStages,
+  evaluateServing,
   type GitRunner,
   type PipelinePosition,
+  type ServingTruth,
   type StageName,
   type StageState,
 } from './git-pipeline-position';
@@ -23,6 +25,20 @@ const HEALTHY_GIT_SYNC = {
   mergedRepos: [],
   conflicts: [],
   errors: [],
+};
+
+/** P-003: a serving process that started AFTER the code it runs — i.e. actually live. */
+const HEALTHY_SERVING: ServingTruth = {
+  host: 'operator-release',
+  unit: 'papercup-dev-api.service',
+  pid: 4242,
+  startedAtMs: 2_000,
+  codeAsOfMs: 1_000,
+  codeAsOfSource: 'deploy',
+  startedSinceCodeChange: true,
+  behindMin: null,
+  restartLever: 'PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute',
+  unknownReason: null,
 };
 
 /** A fake `git` runner keyed by arg shape + a per-ref containment map. */
@@ -500,6 +516,7 @@ describe('gitPipelinePosition (P-002)', () => {
       gitSync: HEALTHY_GIT_SYNC,
       runtime: classifyRuntimeOwner('a.ts'),
       runtimes: classifyRuntimeOwners('a.ts'),
+      serving: HEALTHY_SERVING,
       notes: [],
       stages: [],
     };
@@ -749,6 +766,7 @@ describe('computeStages: position x health', () => {
     },
     gitSyncLastStatus: 'synced',
     gitSync: HEALTHY_GIT_SYNC,
+    serving: HEALTHY_SERVING,
     runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
     ...over,
   });

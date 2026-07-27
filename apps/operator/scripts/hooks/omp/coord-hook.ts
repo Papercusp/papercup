@@ -1346,7 +1346,33 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
   'ss',
   'netstat',
   'lsof',
+  // P-021 (test family) → `testing:run`. `tests.raw-vitest` claims
+  // `(npx )?vitest run <paths>`, so after runner/env stripping the head is
+  // either `npx` or the bare `vitest`. Its sibling `tests.router-files` claims
+  // `npm run test:file -- <paths>`, whose head is `npm` — deliberately NOT
+  // listed here: `npm` fronts nearly every build/test/lint command in this repo
+  // and the committed negative case `npm run lint` must keep paying nothing.
+  // That one shape is matched as a PHRASE instead, by
+  // SUBSTITUTION_PHRASE_RE below.
+  'npx',
+  'vitest',
 ]);
+
+/**
+ * Narrow PHRASES a substitution row can claim whose bare atom head is too
+ * common to put in the head set above. The head set is a cheap hash lookup and
+ * therefore all-or-nothing per verb: listing `npm` to reach
+ * `tests.router-files` (`npm run test:file -- <paths>`) would make every
+ * `npm run …` in the repo pay the operator round-trip and would break the
+ * committed "does NOT claim an unrelated npm script" case. So the phrase is
+ * matched instead — same question, one verb narrower.
+ *
+ * Duplicated in the shell hook as `_SUBSTITUTION_PHRASE_RE` for the same
+ * no-imports reason as the three atomizer regexes, and guarded by the same
+ * byte-for-byte parity test. Tested against the atom AFTER runner/env
+ * stripping, so `sudo npm run test:file …` is claimed too.
+ */
+export const SUBSTITUTION_PHRASE_RE = /^npm\s+run\s+test:file\b/;
 
 /** Resource-registry pre-filter — mirrors the shell hook's `_needs_check` regex.
  *  Exported for the same reason as the three atomizer regexes above: so the
@@ -1365,6 +1391,7 @@ export function substitutionPrefilterHit(command: string): boolean {
       atom = stripped;
     }
     if (!atom) continue;
+    if (SUBSTITUTION_PHRASE_RE.test(atom)) return true;
     const first = atom.split(/\s+/).filter(Boolean)[0] ?? '';
     const head = (first.split('/').pop() ?? '').replace(/^[({`$'"]+|[)}`$'"]+$/g, '');
     if (head && SUBSTITUTION_PREFILTER_HEADS.has(head)) return true;

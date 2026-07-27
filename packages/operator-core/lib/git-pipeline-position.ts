@@ -915,6 +915,25 @@ async function submodulePaths(git: GitRunner, root: string): Promise<string[]> {
 }
 
 /** Pure: render the one-line human summary from the resolved facts. */
+/**
+ * P-003: what the summary is allowed to say after `deployed ✓`.
+ *
+ * This used to be an unconditional ` (live)` derived from `positions.deployed` —
+ * a GIT fact stating a PROCESS conclusion. That one word is the thing four agents
+ * independently filed: it reads as "your change is running" when the serving
+ * process may have booted long before the deploy and still be executing older
+ * code. Never claim "live" without process evidence.
+ */
+function servingNote(p: Pick<PipelinePosition, 'positions' | 'serving'>): string {
+  const sv = p.serving;
+  if (sv.startedSinceCodeChange === false) {
+    return ` ⚠ but NOT LIVE — ${sv.unit} has been up ~${sv.behindMin}m longer than the code it serves (still running the older snapshot; ${sv.restartLever})`;
+  }
+  if (!p.positions.deployed) return '';
+  if (sv.startedSinceCodeChange === true) return ' (live — the serving process started after this code landed)';
+  return ' (deployed, but whether the serving process has loaded it is UNKNOWN — not confirmed live)';
+}
+
 export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string {
   const tick = (b: boolean) => (b ? '✓' : '✗');
   const label = p.input.path ?? p.input.sha ?? '(none)';
@@ -939,7 +958,17 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
   // the ACTIVATION instead, and demote the git ticks to what they actually mean here
   // (durability + peer visibility, not liveness).
   if (p.runtime && !p.runtime.releasePipelineApplies) {
-    return `${label} @${p.targetShortSha}${subj}: runs in ${p.runtime.host} — NOT carried by the staging→main→:3070 deploy. ${
+    // P-003: for a working-tree host the ONLY question that matters is whether it
+    // has restarted since this file changed — the git ticks cannot answer it, and
+    // this is the exact shape of the bg-host-runs-stale-routine-code class.
+    const sv = p.serving;
+    const live =
+      sv.startedSinceCodeChange === false
+        ? ` ⚠ RUNNING STALE: ${sv.unit} started ~${sv.behindMin}m before this file last changed on disk, so the host is still executing the OLD version — ${sv.restartLever}.`
+        : sv.startedSinceCodeChange === true
+          ? ` ✓ ${sv.unit} started after this file last changed, so the running host has loaded it.`
+          : '';
+    return `${label} @${p.targetShortSha}${subj}: runs in ${p.runtime.host} — NOT carried by the staging→main→:3070 deploy.${live} ${
       p.runtime.activation
     } (git position: committed ${tick(p.positions.committedLocal)} · staging ${tick(
       p.positions.onStaging,
@@ -983,9 +1012,9 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
           : '';
   return `${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
     p.positions.onStaging,
-  )} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${
-    p.positions.deployed ? ' (live)' : ''
-  }${dirty}.`;
+  )} · main ${tick(p.positions.inMain)}${gateNote} · deployed ${tick(p.positions.deployed)}${servingNote(
+    p,
+  )}${dirty}.`;
 }
 
 export async function gitPipelinePosition(

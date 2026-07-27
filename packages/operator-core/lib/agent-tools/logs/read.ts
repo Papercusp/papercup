@@ -36,6 +36,7 @@ import {
   JOURNAL_READ_DEFAULT_LIMIT,
   JOURNAL_READ_DEFAULT_SINCE,
   JOURNAL_READ_MAX_LIMIT,
+  JOURNAL_SCOPES,
   readJournal,
 } from '../../journal-read';
 
@@ -74,8 +75,8 @@ export default defineTool({
       .describe("Minimum severity: this level AND MORE SEVERE (journalctl `-p` semantics), so level:'err' also returns crit/alert/emerg."),
     limit: z.number().int().min(1).max(JOURNAL_READ_MAX_LIMIT).optional()
       .describe(`Max rows returned, newest kept (default ${JOURNAL_READ_DEFAULT_LIMIT}). Collapsed repeats count as ONE row.`),
-    system: z.boolean().optional()
-      .describe('Read the SYSTEM journal instead of `--user`. Kernel/OOM records live there, not in the user journal.'),
+    scope: z.enum(JOURNAL_SCOPES).optional()
+      .describe("Which journal: 'user' (default, the papercup-* units), 'system' (kernel/OOM records, pgbouncer, systemd-oomd — a DIFFERENT journal, not a filter), or 'all' (everything you can see). If a unit you know exists comes back with unitsUnknown naming it, you are reading the wrong journal."),
   }),
   async handler(args, ctx) {
     void ctx;
@@ -106,7 +107,7 @@ export default defineTool({
       grep: args.grep,
       level: args.level,
       limit: args.limit,
-      system: args.system,
+      scope: args.scope,
     });
 
     return { data: { ok: result.journalError === null, ...result } };
