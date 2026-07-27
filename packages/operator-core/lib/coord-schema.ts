@@ -35,8 +35,12 @@ import {
 } from './agent-tools/coordination/cue-authority';
 import {
   detectAuthorityClaim,
+  hasSelfReportedConfidence,
+  readEvidence,
   readRelayProvenance,
+  renderEvidenceTag,
   renderRelayQuoteSuffix,
+  SELF_REPORTED_CONFIDENCE_TAG,
   UNVERIFIED_CLAIM_TAG,
 } from './agent-tools/coordination/relay-provenance';
 import {
@@ -414,8 +418,30 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
       });
       bodyRefsSuffix = renderBodyRefsSuffix(hits);
     }
+    // P-010: the EVIDENCE BAND on a finding/escalation renders as an inline
+    // `⊢ <band> (confidence: <derived>)` suffix — distinct from `↪` (relay) and
+    // `⤷` (reply). Confidence is always shown DERIVED from the band, so a reader
+    // never has to wonder whether a number was measured or generated.
+    //
+    // D-015 (P-009) is binding: this is DESCRIPTIVE only. It changes how much
+    // weight a reader gives the line, never what the runtime executes — the
+    // transition path cannot even see it (CoordTransitionIntent has no
+    // provenance field).
+    const evidence = readEvidence(e as unknown as Record<string, unknown>);
+    const evidenceSuffix = evidence ? ` ⊢ ${renderEvidenceTag(evidence)}` : '';
+    // A sender that ALSO smuggled its own confidence number gets it discarded and
+    // said so out loud (Reasoning Contamination Effect — a generated number reads
+    // as measured). Scoped to lines actually participating in the band protocol
+    // (a stamp present, or a finding/escalation), so an unrelated system envelope
+    // that happens to carry a `probability` field is never falsely flagged.
+    const rec = e as unknown as Record<string, unknown>;
+    const bandSurface = evidence !== null || e.kind === 'escalation' || rec.category === 'finding';
+    const selfReportedFlag =
+      bandSurface && hasSelfReportedConfidence(rec) ? `${SELF_REPORTED_CONFIDENCE_TAG} ` : '';
     const text = tag ? `[${tag}] ${body}` : body;
-    lines.push(`${glyph} ${handle} ${claimFlag}${text}${relaySuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}`);
+    lines.push(
+      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}`,
+    );
   }
   return lines.join('\n');
 }

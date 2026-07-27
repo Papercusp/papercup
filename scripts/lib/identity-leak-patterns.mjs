@@ -1,7 +1,23 @@
 /**
- * identity-leak-patterns.mjs — the ONE detector for named owner-provenance tags in
- * shipped source, shared by the gate lint and the edit-time hook (EI-18670349543629060,
- * EI-18670296139788697).
+ * identity-leak-patterns.mjs — the ONE detector for the whole IDENTITY-LEAK FAMILY in
+ * shipped source, shared by the gate lints and the edit-time hook (EI-18670349543629060,
+ * EI-18670296139788697, EI-18759401203875869).
+ *
+ * THREE CLASSES, THREE GATE LINTS, ONE MODULE. Each class has a `find*` matcher below and a
+ * gate script that imports it — never its own copy:
+ *
+ *   class 1  named owner-provenance tags   `findOwnerNameLeaks`     check-no-owner-name-tags.mjs
+ *   class 2  hardcoded home paths          `findBoxIdentityPaths`   check-no-box-identity.mjs
+ *   class 3  bare box-identity literals    `findIdentityLiterals`   check-no-identity-literals.mjs
+ *
+ * All three are also run by the EDIT-TIME advisory hook
+ * (apps/operator/scripts/hooks/cc/pretooluse-content-lint.mjs), which is the point of hosting
+ * them together: classes 2 and 3 were gate-only until EI-18759401203875869, and the leak that
+ * proved it — a `/home/<user>/…` path written into a doc — was in exactly those two classes while
+ * class 1, the only one with edit-time coverage, did not apply. Five consecutive red gates and 60
+ * stranded commits, over one hardcoded home directory, because the cheapest possible detector ran
+ * only in the most expensive possible place. If you add a class-4 lint, put its matcher HERE and
+ * give it hook coverage in the same change — the hook suite asserts that pairing.
  *
  * WHY THIS MODULE EXISTS (two bugs, one root)
  *
@@ -39,6 +55,9 @@
  * The NAMED form stays correct on carry surfaces (work items, facts, checkpoints, plans) —
  * those are internal and never packed into the bundle.
  */
+
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 
 /**
  * Names that identify NOBODY: the stand-ins a test fixture or doc example uses on purpose,
@@ -162,3 +181,251 @@ export const FIX_HINT =
   'The named form stays correct on CARRY SURFACES (work items, facts, checkpoints,\n' +
   'plans) — those are internal and never packed into the bundle. Do NOT silence this\n' +
   'by adding the name to PLACEHOLDER_NAMES: shipping that name is the bug.';
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════
+ * CLASS 2 — HARDCODED HOME PATHS  (`/home/<user>/…`, `/Users/<user>/…`, and the munged form)
+ *
+ * Ported VERBATIM out of scripts/check-no-box-identity.mjs (EI-18759401203875869); that script
+ * now imports these instead of carrying its own copy, for the same reason class 1 is shared — an
+ * edit-time advisory that disagrees with the gate is worse than no advisory at all.
+ *
+ * MACHINE-AGNOSTIC BY DESIGN, unlike class 3: this matches a path SHAPE, not a value, so it
+ * behaves identically on every contributor's checkout. That is deliberate — a lint keyed to one
+ * machine only works on one machine, which is the bug it is preventing. See
+ * check-no-box-identity.mjs's header for the full rationale and the 0.0.8 cut that motivated it.
+ * ════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/** Home dirs that are NOT a person: shared installs, CI runners, containers. */
+export const GENERIC_USERS = new Set([
+  'linuxbrew', 'dev', 'runner', 'user', 'ubuntu', 'root', 'node', 'builder',
+  'vscode', 'codespace', 'shared', 'Shared', 'ci', 'agent',
+  // Service/VM accounts that belong to the PRODUCT, not to a person: the account
+  // inside a deployed frame, the WSL distro, the Windows VM's stock account, and
+  // the placeholder a doc/test uses on purpose. Naming these is not a leak.
+  // Keep this list to non-personal accounts only — it is not a place to silence
+  // a real name to make the build pass.
+  'pcusp', 'papercusp', 'papercup', 'tester', 'User', 'x',
+  // Stand-ins that name nobody: test fixtures and doc examples.
+  'test', 'testuser', 'owner', 'host', 'whoever', 'all', 'paper', 'submission',
+  // The canonical fake identities. The identity SCRUBBER's own tests
+  // (release-content-scrub.test.ts, gate-release-site.test.ts) must contain
+  // realistic-looking home paths — that is the input they scrub — so the rule
+  // "no /home/<user>/ in source" fires on the one place a fake home path is the
+  // entire point. These name no person; they are the John-Doe set.
+  'jdoe', 'alice', 'bob', 'buildbot', 'otheruser', 'someuser',
+  // WI-4776: illustrative placeholder SEGMENTS used in docs to show the SHAPE of
+  // a path (e.g. `/absolute/home/path` in a tool-arg example) — the word after
+  // /home/ there is not a username at all, just prose continuing the sentence.
+  'path',
+]);
+
+/** Anonymous by construction: a redaction (`/home/.../`, `/home/<user>/`) or a
+ *  1–2 char stand-in a test/doc uses precisely because it names nobody. */
+export const isRedactedUser = (user) =>
+  /^[.<{$%]/.test(user) || user === '$USER' || user === 'USER' || user.length <= 2;
+
+/** `/home/instructions.txt` is a FILE that lives in /home — not a person's home
+ *  directory. A home dir never carries a file extension, so a segment ending in
+ *  one names nobody and cannot be a box-identity leak. (The real thing this lint
+ *  hunts is always `/home/<user>/…` or a bare `/home/<user>`, and neither has an
+ *  extension — so this costs the check nothing.) */
+const isFileInHome = (seg) => /\.[A-Za-z0-9]{1,5}$/.test(seg);
+
+const HOME_PATH = /\/(home|Users)\/([A-Za-z0-9._-]+)(?=[/'"`\s\\)\]:,;]|$)/g;
+
+/** A home path ending a SENTENCE swallows the full stop: `/home/jdoe.` captures the
+ *  user as "jdoe." — which then matches no placeholder and no real user, and reports a
+ *  fake identity as a real leak. A `.` is legal INSIDE a username (`john.doe`) but a
+ *  home directory never ENDS in one, so a trailing dot is always punctuation. Strip it
+ *  before classifying (the lookahead can't: it must still allow the dot mid-name). */
+const stripTrailingDots = (user) => user.replace(/\.+$/, '');
+
+/** The SAME home dir with its slashes munged to dashes — the form Claude uses to
+ *  name a session/project directory (`/home/dev/x` → `-home-dev-x`). This lint
+ *  passed a clean 0 while `apps/tui/src/transcript.rs` sat there holding the
+ *  owner's real home path in exactly this shape: a slash-based regex cannot see a
+ *  string that has no slashes in it, and the release gate caught it only at CUT
+ *  time, inside a 2.6GB tarball — the most expensive possible moment to learn it.
+ *
+ *  Anchored to a quote / slash / whitespace boundary so ordinary kebab-case
+ *  ("some-home-page-header") cannot trip it, and the user segment stops at the
+ *  first dash — for a dashed username that yields a prefix, which is all we need:
+ *  it is not a GENERIC_USER, so we flag the line and print it. */
+const MUNGED_HOME = /(^|["'`/\s])-(home|Users)-([A-Za-z0-9._]+)(?=-)/g;
+
+/** Cheap whole-text pre-filter, same as the per-file one the gate script applied: text with no
+ *  `/home/`-shaped bigram anywhere cannot hold this class, so skip the line scan entirely. */
+export const BOX_IDENTITY_FAST_REJECT = /[/-](home|Users)[/-]/;
+
+/**
+ * Find hardcoded home paths in `text`.
+ *
+ * @param {string} text file contents (or, at edit time, just the incoming edit)
+ * @returns {{line:number,user:string,text:string}[]} one row per leak
+ */
+export function findBoxIdentityPaths(text) {
+  if (!text || !BOX_IDENTITY_FAST_REJECT.test(text)) return [];
+  const findings = [];
+  text.split('\n').forEach((line, i) => {
+    for (const m of line.matchAll(HOME_PATH)) {
+      const user = stripTrailingDots(m[2]);
+      if (GENERIC_USERS.has(user) || isRedactedUser(user) || isFileInHome(user)) continue;
+      findings.push({ line: i + 1, user, text: line.trim().slice(0, 110) });
+    }
+    for (const m of line.matchAll(MUNGED_HOME)) {
+      const user = m[3];
+      if (GENERIC_USERS.has(user) || isRedactedUser(user)) continue;
+      findings.push({ line: i + 1, user, text: line.trim().slice(0, 110) });
+    }
+  });
+  return findings;
+}
+
+/** The one fix text for class 2, shared by the gate lint and the edit-time advisory. */
+export const BOX_IDENTITY_FIX_HINT =
+  'FIX by deriving the path, not by adding an exception:\n' +
+  '    node/ts   os.homedir()  ·  path relative to import.meta.url / __dirname\n' +
+  '    shell     "$HOME"  ·  git -C "$(dirname "$0")" rev-parse --show-toplevel\n' +
+  '    systemd   %h\n' +
+  '    config    a machine-local ~/.papercusp/*.env, read at run time';
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════
+ * CLASS 3 — BARE BOX-IDENTITY LITERALS  (this box's git name/email, hostname, OS account)
+ *
+ * Ported VERBATIM out of scripts/check-no-identity-literals.mjs (EI-18759401203875869), which
+ * now imports these. MUST MIRROR identity_literals() / needs_word_boundary() / is_vendor() from
+ * papercusp-desktop/bin/audit-release-bundle.py — memory ef6e21c4 / WI-4419: "the two MUST agree
+ * or it's a false-green." Keep them in lockstep if either changes.
+ *
+ * WHY THIS CLASS IS BOX-SPECIFIC (deliberately unlike class 2): it has to know what "this box's
+ * identity" actually IS in order to search for it, exactly as the release audit does — both
+ * resolve git config / hostname / OS account AT RUN TIME, and neither hardcodes a value. On a CI
+ * runner with a bot/absent git identity it degrades to a no-op, which is expected, not a bug: the
+ * box that matters is the one that actually cuts releases.
+ *
+ * THE LITERALS ARE A PARAMETER, NOT AN INTERNAL LOOKUP. `findIdentityLiterals` takes the resolved
+ * entries so a caller can pass SYNTHETIC ones. That seam is what makes this class testable at all:
+ * this module is tracked source, so it is scanned by the very lint it implements, and a fixture
+ * spelling a real box identity would fail the gate from inside the guard written to prevent that.
+ * ════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/** Accounts/hosts that identify NOBODY — mirrors identity_literals()'s own
+ *  exclusions (`user not in (root, runner, build, ubuntu)`, `host not startswith
+ *  (runner, ci-, localhost)`) plus class 2's GENERIC_USERS, so a CI runner or
+ *  shared box never self-flags. */
+export const GENERIC_ACCOUNTS = new Set([
+  'root', 'runner', 'build', 'ubuntu', 'node', 'vscode', 'codespace', 'ci', 'agent',
+  'linuxbrew', 'dev', 'user', 'shared', 'Shared', 'pcusp', 'papercusp', 'papercup',
+]);
+
+/** A host that names no machine of ours. */
+export const isGenericHost = (h) => /^(runner|ci-|localhost)/i.test(h);
+
+/**
+ * identity_literals() ported from audit-release-bundle.py — same sources, same exclusions.
+ * Returns `{ key: value }` for whatever resolves on THIS box (possibly empty on a bare/CI box).
+ *
+ * @param {(cmd: string, args: string[]) => string} [readCmd] injection seam for tests
+ * @returns {Record<string,string>}
+ */
+export function resolveIdentityLiterals(readCmd) {
+  const run =
+    readCmd ??
+    ((cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', timeout: 5000 }).toString());
+  const lits = {};
+  try {
+    const account = os.userInfo().username;
+    if (account && !GENERIC_ACCOUNTS.has(account)) lits['build-user-name'] = account;
+  } catch { /* best-effort */ }
+  try {
+    const host = os.hostname();
+    if (host && !isGenericHost(host)) lits['build-hostname'] = host;
+  } catch { /* best-effort */ }
+  for (const [key, cfg] of [['build-git-email', 'user.email'], ['build-git-name', 'user.name']]) {
+    try {
+      const v = run('git', ['config', '--get', cfg]).trim();
+      if (v) lits[key] = v;
+    } catch { /* unset — nothing to hunt */ }
+  }
+  return lits;
+}
+
+/** needs_word_boundary() ported verbatim: a SHORT alnum literal must match as a
+ *  whole word (case-sensitive) or it drowns in false positives — a three-letter
+ *  first name also hits a matching file extension, a longer proper noun that
+ *  starts with it, and vendored POS-lexicon entries (same rationale as class 1's
+ *  refusal to hunt bare names). */
+export const needsWordBoundary = (lit) => lit.length < 6 && /^[A-Za-z0-9]+$/.test(lit);
+
+/** is_vendor() ported verbatim: a low-entropy (short/common) literal is only
+ *  hunted OUTSIDE node_modules — a bare first name is not vendor's fault to
+ *  carry; a high-entropy literal (email, hostname, a longer account name) is still
+ *  hunted everywhere, because that DOES mean our own build baked it in. */
+export const isVendorPath = (p) => p.startsWith('node_modules/') || p.includes('/node_modules/');
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** The match rule for one literal — word-anchored and case-sensitive when low-entropy. */
+export function literalPattern(lit) {
+  return needsWordBoundary(lit)
+    ? new RegExp(`\\b${escapeRegExp(lit)}\\b`) // case-sensitive, same as the audit
+    : new RegExp(escapeRegExp(lit));
+}
+
+/**
+ * Find bare box-identity literals in `text`.
+ *
+ * @param {string} text file contents (or, at edit time, just the incoming edit)
+ * @param {[string,string][]} entries `Object.entries(resolveIdentityLiterals())` — or synthetic
+ *   ones in a test. Empty ⇒ no findings (the bare/CI-box no-op).
+ * @param {{vendor?: boolean}} [opts] `vendor` ⇒ the path is under node_modules, so low-entropy
+ *   literals are not hunted (is_vendor() scoping).
+ * @returns {{line:number,key:string,text:string}[]} one row per leak
+ */
+export function findIdentityLiterals(text, entries, opts = {}) {
+  if (!text || !entries || entries.length === 0) return [];
+  const vendor = opts.vendor === true;
+  const findings = [];
+  const lines = text.split('\n');
+  for (const [key, lit] of entries) {
+    const lowEntropy = needsWordBoundary(lit);
+    if (lowEntropy && vendor) continue; // is_vendor() scoping — bare short names only outside vendor
+    const rx = new RegExp(literalPattern(lit).source, 'g');
+    for (let i = 0; i < lines.length; i++) {
+      if (rx.test(lines[i])) {
+        findings.push({ line: i + 1, key, text: lines[i].trim().slice(0, 120) });
+      }
+      rx.lastIndex = 0;
+    }
+  }
+  return findings;
+}
+
+/** The one fix text for class 3, shared by the gate lint and the edit-time advisory. */
+export const IDENTITY_LITERAL_FIX_HINT =
+  'FIX: remove the literal, or use the sanctioned provenance form that keeps the meaning\n' +
+  '  without the name — `[owner:<name> <date>]` -> `[owner <date>]` (see\n' +
+  '  check-no-owner-name-tags.mjs) — never add an exception to make the build pass.';
+
+/**
+ * Class 3 polices a WIDER path set than its two siblings, so it needs its own skip predicate.
+ * Ported verbatim from check-no-identity-literals.mjs's SKIP: `scratchpad/` and `scratch/` are
+ * excluded because — unlike classes 1 and 2 — this rule hunts BARE literals with no structural
+ * anchor (no `[owner:` tag, no `/home/` shape), which widens its surface to catch things like a
+ * scratch investigation artifact that RECORDS a past leak as data (e.g. a lexicon-audit dump),
+ * which is not itself a leak. Neither dir is in stage-source-tree.sh's ship allowlist, so
+ * excluding them costs nothing real. The rule's own script is excluded because it necessarily
+ * describes the class in prose.
+ */
+export const IDENTITY_LITERAL_EXTRA_SKIP = [
+  /^scratchpad\//,
+  /^scratch\//,
+  /^scripts\/check-no-identity-literals\.mjs$/,
+];
+
+/** True when `file` is outside the shipped-source set the CLASS-3 rule polices. */
+export function isSkippedPathForIdentityLiterals(file) {
+  return isSkippedPath(file) || IDENTITY_LITERAL_EXTRA_SKIP.some((re) => re.test(file));
+}
