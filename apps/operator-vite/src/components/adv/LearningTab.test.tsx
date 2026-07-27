@@ -551,6 +551,8 @@ vi.mock("@papercusp/sync", () => ({
 // flag hook so assertions pin the ROUTED KEY, not a pack word (restore-pot-lexicon P-006).
 vi.mock("@/lib/useLexicon", () => ({ useLexicon: () => (k: string) => k }));
 
+import { setFlagPayload } from "@papercusp/flags/client";
+import { FLAGS } from "@papercusp/flags";
 import LearningTab, {
   ARMING_AGENTS_LANE,
   ARMING_SIDEBAR_TAB,
@@ -687,13 +689,49 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(screen.getByRole("tab", { name: "Verify" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Retain" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Ideas" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Gym" })).toBeTruthy();
+    // Gym is NOT here by default any more: it rides FLAGS.TESTING (default off)
+    // because it is not public-release ready [owner 2026-07-27]. The flag-ON
+    // case is the next test.
+    expect(screen.queryByRole("tab", { name: "Gym" })).toBeNull();
     expect(screen.getByRole("tab", { name: /Backlog/ })).toBeTruthy();
     expect(
       screen
         .getByRole("tab", { name: "Improve" })
         .getAttribute("aria-selected"),
     ).toBe("true");
+  });
+
+  /** The Gym gate (WI-6315) [owner 2026-07-27: "Put all the gym features behind a
+   *  testing flag, it isnt ready at all"]. Both directions are pinned: hiding it
+   *  by default is the release requirement, and the flag-ON path must still be
+   *  the full tab — a gate that silently deleted the view would be a different
+   *  bug from the one being fixed. The deep-link case matters because `?lview=`
+   *  is bookmarkable and appears in reports, so a stale gym link must LAND
+   *  somewhere real rather than render a pane the tab no longer offers. */
+  describe("Gym view gating (FLAGS.TESTING)", () => {
+    afterEach(() => {
+      setFlagPayload({ flags: {}, evaluatedAt: new Date().toISOString() });
+    });
+
+    it("shows the Gym view when FLAGS.TESTING is on", () => {
+      setFlagPayload({
+        flags: { [FLAGS.TESTING]: true },
+        evaluatedAt: new Date().toISOString(),
+      });
+      render(<LearningTab />);
+      expect(screen.getByRole("tab", { name: "Gym" })).toBeTruthy();
+    });
+
+    it("redirects a stale ?lview=gym deep-link to the default view when the flag is off", () => {
+      nuqsState.lview = "gym";
+      render(<LearningTab />);
+      expect(screen.queryByRole("tab", { name: "Gym" })).toBeNull();
+      // Landed on Improve → Backlog (the default), not an empty pane.
+      expect(
+        screen.getByRole("tab", { name: "Improve" }).getAttribute("aria-selected"),
+      ).toBe("true");
+      expect(screen.getByRole("tab", { name: /Backlog/ })).toBeTruthy();
+    });
   });
 
   it("uses visual hierarchy instead of explanatory prose", () => {

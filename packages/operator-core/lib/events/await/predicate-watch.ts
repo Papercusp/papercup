@@ -389,26 +389,113 @@ export function configurePredicateDispatch(fn: PredicateDispatchFn | null): void
 }
 
 /**
- * One poll of the row's tool through the NORMAL dispatcher, under the registrant's
- * role envelope. Mirrors events/dispatch-reaction.ts's ctx EXCEPT: `role` is the
- * STORED registrant role and gateBypass covers only { capability, quota } — the
- * ROLE GATE IS ENFORCED on every poll, so a role that loses access to the tool
- * stops being able to poll it (the resulting errors deactivate the row). Audited
- * via tool_invocations like every dispatch (spawnId 'predicate-watch').
+ * The role envelope a read-only tool dispatch runs under. Deliberately small: every
+ * field is already known at both call sites, so resolving one costs no lookup.
  */
-async function dispatchPredicateTool(row: PredicateWatchRow): Promise<unknown> {
-  const projected = lookupByMcpName(row.tool);
-  if (!projected) throw new Error(`unknown tool "${row.tool}"`);
-  if (projected.effect !== 'read') throw new Error(`tool "${row.tool}" is not read-only (effect=${projected.effect ?? 'unset'})`);
-  const result = await withWorkspace(row.workspaceId, async (tx) => {
+/**
+ * A read-only dispatch that did not produce a value, carrying the dispatcher's OWN
+ * error code rather than a flattened string.
+ *
+ * `message` is deliberately `"<code>: <message>"` — byte-identical to what the
+ * predicate poller recorded before this was extracted, so `last_error` rows and the
+ * 5-consecutive-errors deactivation are unchanged. The `code` is the ADDITION: the
+ * cell read has to distinguish "you may not read through this resolver" from "the
+ * measurement failed", and those demand opposite caller responses. Flattening a
+ * branchable code into prose is precisely the defect `cell-contract.ts` exists to
+ * prevent — preserved for a human reader, destroyed for a program.
+ */
+export class ReadOnlyDispatchError extends Error {
+  override readonly name = 'ReadOnlyDispatchError';
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Dispatcher codes that mean THE CALLER MAY NOT READ THROUGH THIS TOOL, as opposed to
+ * the measurement having been attempted and failed. Enumerated from
+ * `DispatchProjectedErrorCode`'s access family (dispatch-stack.ts) rather than matched
+ * on message text.
+ *
+ * The distinction is load-bearing for a cell read (D-058): an access refusal is NOT
+ * retryable by this caller — the lever is to obtain the role, or to ask a peer who has
+ * it — whereas a resolver failure is retry-or-escalate. Reporting one as the other
+ * sends the reader down the wrong path.
+ */
+const ACCESS_DENIED_CODES = new Set([
+  'role_not_allowed',
+  'missing_role',
+  'missing_capability',
+  'capability_denied',
+  'authorization_denied',
+  'unauthorized',
+  'ungated',
+]);
+
+/** True when a failed read-only dispatch was refused for ACCESS, not measurement. */
+export function isAccessDenialCode(code: string): boolean {
+  return ACCESS_DENIED_CODES.has(code);
+}
+
+export interface ReadOnlyDispatchEnv {
+  workspaceId: string;
+  harnessSlug: string | null;
+  /** The role the call runs under. NOT bypassed — see `dispatchReadOnlyTool`. */
+  role: string;
+  /** Who the dispatch is on behalf of. Audit only (the principal slug). */
+  onBehalfOf: string;
+  /** `tool_invocations.spawn_id` for the audit row — names the calling subsystem. */
+  spawnId: string;
+}
+
+/**
+ * ONE dispatch of a READ-ONLY projected tool under a caller's role envelope.
+ *
+ * Extracted from `dispatchPredicateTool` (unified-agent-state-plane-2026-07-27 P-004 /
+ * D-058) so the synchronous cell read (`cell-read.ts` → `state:read`) and the poller
+ * share ONE derivation rather than two dispatches that can drift on the security
+ * properties below. That is D-038 axis 5 applied to the dispatch itself: the poller is
+ * now a lens on this, not a second implementation.
+ *
+ * TWO PROPERTIES ARE LOAD-BEARING AND MUST NOT BE RELAXED BY EITHER CALLER:
+ *
+ *  1. READ-ONLY. A tool whose `effect` is anything but `read` is REFUSED. A cell
+ *     resolver is a measurement; if reading a cell could mutate, "read it at the
+ *     moment of acting" — the whole justification for cells — would be unsafe advice.
+ *  2. THE ROLE GATE IS ENFORCED. `gateBypass` covers ONLY { capability, quota }; the
+ *     call runs under the SUPPLIED role, so a role that loses access to the tool stops
+ *     being able to read through it. This is a SECOND access gate, independent of
+ *     `canReadCell` — the two can disagree, and D-058 requires that disagreement be
+ *     rendered as an enumerated unknown rather than swallowed.
+ *
+ * Audited via tool_invocations like every dispatch. Throws on refusal or failure; the
+ * caller decides whether that is an error or an unknown.
+ */
+export async function dispatchReadOnlyTool(
+  tool: string,
+  args: Record<string, unknown>,
+  env: ReadOnlyDispatchEnv,
+): Promise<unknown> {
+  const projected = lookupByMcpName(tool);
+  if (!projected) throw new ReadOnlyDispatchError('unknown_tool', `unknown tool "${tool}"`);
+  if (projected.effect !== 'read') {
+    throw new ReadOnlyDispatchError(
+      'not_read_only',
+      `tool "${tool}" is not read-only (effect=${projected.effect ?? 'unset'})`,
+    );
+  }
+  const result = await withWorkspace(env.workspaceId, async (tx) => {
     const ctx: UnifiedToolContext = {
-      workspaceId: row.workspaceId,
-      harnessSlug: row.harnessSlug ?? '*',
-      role: row.role,
+      workspaceId: env.workspaceId,
+      harnessSlug: env.harnessSlug ?? '*',
+      role: env.role,
       featureId: null,
       chunkId: null,
       runId: globalThis.crypto.randomUUID(),
-      spawnId: 'predicate-watch',
+      spawnId: env.spawnId,
       parentSpawnId: null,
       uiClientId: null,
       isSuperuser: false,
@@ -420,18 +507,35 @@ async function dispatchPredicateTool(row: PredicateWatchRow): Promise<unknown> {
       emit: () => {},
       signal: new AbortController().signal,
       principal: {
-        slug: `system:predicate-watch:${row.ownerId}`,
-        workspaceId: row.workspaceId,
+        slug: `system:${env.spawnId}:${env.onBehalfOf}`,
+        workspaceId: env.workspaceId,
         capabilities: new Set(['*']),
       },
       tx,
     };
-    return dispatchProjectedTool(projected, row.tool, row.args, ctx, PROJECTED_DEPS);
+    return dispatchProjectedTool(projected, tool, args, ctx, PROJECTED_DEPS);
   });
   if (!result.ok) {
-    throw new Error(result.error ? `${result.error.code}: ${result.error.message}` : 'dispatch failed');
+    // Message text is UNCHANGED from before the extraction, so predicate_watches'
+    // `last_error` + the consecutive-error deactivation behave identically; the `code`
+    // is carried alongside rather than in place of it.
+    throw new ReadOnlyDispatchError(
+      result.error?.code ?? 'dispatch_failed',
+      result.error ? `${result.error.code}: ${result.error.message}` : 'dispatch failed',
+    );
   }
   return extractToolPayload(result.result);
+}
+
+/** One poll of the row's tool — a LENS on `dispatchReadOnlyTool`, not a second dispatch. */
+async function dispatchPredicateTool(row: PredicateWatchRow): Promise<unknown> {
+  return dispatchReadOnlyTool(row.tool, row.args, {
+    workspaceId: row.workspaceId,
+    harnessSlug: row.harnessSlug,
+    role: row.role,
+    onBehalfOf: row.ownerId,
+    spawnId: 'predicate-watch',
+  });
 }
 
 /* ── Eval + poller ─────────────────────────────────────────────────────────── */

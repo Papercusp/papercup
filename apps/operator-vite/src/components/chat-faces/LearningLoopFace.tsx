@@ -16,6 +16,8 @@
  * defensively and rendered as "—" when the wording drifts, never invented.
  */
 import { useMemo } from "react";
+import { useFlag } from "@papercusp/flags/client";
+import { FLAGS } from "@papercusp/flags";
 import { useQueryState, parseAsString } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 // The shared design primitive — a bare `title=` on a <button> is blocked by
@@ -44,6 +46,8 @@ const STAGE_LINKS: ReadonlyArray<{ id: string; label: string; lview: string }> =
 export default function LearningLoopFace() {
   const [, setTab] = useQueryState("tab", parseAsString);
   const [, setLview] = useQueryState("lview", parseAsString);
+  // The Gym rides FLAGS.TESTING (LearningTab's TESTING_ONLY_VIEWS).
+  const testingOn = useFlag(FLAGS.TESTING);
 
   const readiness = useSyncQuery<ReleaseReadinessSnapshot>({
     queryName: "learning.releaseReadiness",
@@ -110,7 +114,11 @@ export default function LearningLoopFace() {
         lview: "benchmark",
         tone: "warn",
       });
-    if (pendingProposals > 0)
+    // Gated with the Gym view itself (LearningTab's TESTING_ONLY_VIEWS): with
+    // FLAGS.TESTING off the Gym is not in the tab, so this row would advertise a
+    // decision on a surface the user cannot open — and its `lview: "gym"` link
+    // would bounce to the default view.
+    if (testingOn && pendingProposals > 0)
       attention.push({ text: `${pendingProposals} gym proposal(s) pending decision`, lview: "gym", tone: "warn" });
     if (reviewQueue > 0)
       attention.push({ text: `${reviewQueue} backlog item(s) await human review`, lview: "improvements", tone: "dim" });
@@ -129,7 +137,7 @@ export default function LearningLoopFace() {
       runningLoops,
       attention: attention.slice(0, 3),
     };
-  }, [report, gymSnap, digest, banked]);
+  }, [report, gymSnap, digest, banked, testingOn]);
 
   const loading = !report && !readiness.error && readiness.data === undefined;
 
@@ -205,7 +213,9 @@ export default function LearningLoopFace() {
             {derived.ticks != null ? (
               <p className="pc-lf__note">
                 live window <strong>{derived.ticks} tick(s)</strong>
-                {derived.runningLoops > 0 ? <> · {derived.runningLoops} gym loop(s) armed</> : null}
+                {testingOn && derived.runningLoops > 0 ? (
+                  <> · {derived.runningLoops} gym loop(s) armed</>
+                ) : null}
               </p>
             ) : null}
           </section>

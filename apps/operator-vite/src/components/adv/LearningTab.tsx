@@ -90,6 +90,8 @@ import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { usePromptDialog } from "@/app/harness/usePromptDialog";
 import { hiveHomeLabel } from "@/lib/hive-label";
 import { useLexicon } from "@/lib/useLexicon";
+import { useFlag } from "@papercusp/flags/client";
+import { FLAGS } from "@papercusp/flags";
 import LearningInfraHealthChip from "./LearningInfraHealthChip";
 import LearningEfficacyPanel from "./LearningEfficacyPanel";
 import RubricsPanel from "@/app/_components/RubricsPanel";
@@ -280,6 +282,39 @@ const STAGES: ReadonlyArray<{
   },
 ];
 
+/** Views hidden from the Learning tab unless FLAGS.TESTING is on.
+ *
+ *  The Gym is NOT public-release ready [owner 2026-07-27: "Put all the gym
+ *  features behind a testing flag, it isnt ready at all and I dont want to get
+ *  that ready now."]. It rides FLAGS.TESTING — the SAME flag that
+ *  already hides the `/dev/gym` route (design-simplification P-013) — so every
+ *  gym surface sits behind ONE switch, and no new dark flag has to be minted
+ *  (which would spend DARK_FLAGS_HIGH_WATERMARK budget to gate what an existing
+ *  flag already gates).
+ *
+ *  WHY it is not ready, measured 2026-07-27 (WI-6315): the gym optimizes prompt
+ *  overrides for `coding-solo`'s worker/validator roles — 8 and ZERO live tool
+ *  invocations respectively — on a generated 4-line stub substrate whose only
+ *  build gate is `node --check`, scored by an LLM composite rather than an
+ *  observed outcome. The Improve→Gym arrow is decorative as well: 0.6% of
+ *  triaged ideas route to it, and a routed idea only becomes hint text in the
+ *  proposer prompt. A public user opening Improve would see a loop that visibly
+ *  does not close.
+ *
+ *  {@link STAGES} stays the single catalog: this filters a COPY, so the
+ *  flag-ON path is byte-identical to what shipped before the gate. */
+const TESTING_ONLY_VIEWS: ReadonlySet<LView> = new Set<LView>(["gym"]);
+
+function visibleStages(testingOn: boolean): typeof STAGES {
+  if (testingOn) return STAGES;
+  return STAGES.map((stage) => ({
+    ...stage,
+    views: stage.views.filter((candidate) => !TESTING_ONLY_VIEWS.has(candidate.id)),
+    // A stage whose every view is gated would render an empty pane rather than
+    // disappear, so drop it — today none is (Improve keeps Ideas + Backlog).
+  })).filter((stage) => stage.views.length > 0);
+}
+
 function stageForView(view: LView): LearningStage | null {
   return (
     STAGES.find((stage) =>
@@ -426,9 +461,19 @@ export default function LearningTab() {
   const [rubricId, setRubricId] = useQueryState("rrubric", parseAsString);
   const [, setGradeDetail] = useQueryState("grade", parseAsString);
   const [, setRetainDetail] = useQueryState("lretain", parseAsString);
-  const view: LView = (LVIEWS as readonly string[]).includes(lview)
+  // FLAGS.TESTING gates the Gym view (see TESTING_ONLY_VIEWS). Resolve it here
+  // so a stale `?lview=gym` deep-link — a bookmark, an old link in a report, the
+  // param left in the URL when the flag is turned off — lands on the default
+  // view instead of rendering a pane the tab no longer offers.
+  const testingOn = useFlag(FLAGS.TESTING);
+  const stages = useMemo(() => visibleStages(testingOn), [testingOn]);
+  const requestedView: LView = (LVIEWS as readonly string[]).includes(lview)
     ? (lview as LView)
     : "improvements";
+  const view: LView =
+    !testingOn && TESTING_ONLY_VIEWS.has(requestedView)
+      ? "improvements"
+      : requestedView;
 
   // Pot lens INHERITED from the top-bar pot selector (owner directive
   // 2026-07-26: "the pot should be inherited by the currently selected pot" —
@@ -443,7 +488,7 @@ export default function LearningTab() {
   const hiveReady = !hiveAware || scope.ready;
   const activeStage = stageForView(view);
   const activeStageMeta =
-    STAGES.find((stage) => stage.id === activeStage) ?? null;
+    stages.find((stage) => stage.id === activeStage) ?? null;
   const [viewStatuses, setViewStatuses] = useState<
     Partial<Record<LView, LearningViewStatus>>
   >({});
@@ -545,15 +590,17 @@ export default function LearningTab() {
         className="pc-learning__stages"
         value={activeStage ?? ""}
         onValueChange={(next) => {
-          const stage = STAGES.find((candidate) => candidate.id === next);
-          if (stage) void setLview(stage.views[0].id);
+          // `stages`, not STAGES: clicking a stage lands on its FIRST VISIBLE
+          // view, so a gated view can never be selected by the stage nav.
+          const stage = stages.find((candidate) => candidate.id === next);
+          if (stage?.views[0]) void setLview(stage.views[0].id);
         }}
       >
         <Tabs.List
           className="pc-learning__stage-list"
           aria-label="Learning loop stage"
         >
-          {STAGES.map((stage, index) => {
+          {stages.map((stage, index) => {
             const Icon = stage.icon;
             const status = stageStatus(stage, viewStatuses);
             const semantic = status ? statusSemantic(status) : null;
@@ -585,7 +632,7 @@ export default function LearningTab() {
                   ) : null}
                 </span>
                 <span className="pc-learning__stage-label">{stage.label}</span>
-                {index < STAGES.length - 1 ? (
+                {index < stages.length - 1 ? (
                   <span className="pc-learning__stage-line" aria-hidden />
                 ) : null}
               </Tabs.Trigger>

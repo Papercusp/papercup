@@ -976,6 +976,30 @@ const OP_CHAT_SIDEBAR_CSS = `
   .op-chat-header-main .op-chat-face-toggle {
     padding: 0 6px;
   }
+
+  /* OWNER ASK 2026-07-27 ("the learning tab button is too hard to see — make it
+     have the text Learning like the pot health button"): 🎓 Learning is EXEMPT
+     from the icon-only collapse above and keeps its label at every width the
+     button itself renders at, exactly like [🫖 Pot Health] and the [🥤 Papercup]
+     wordmark. A bare graduation-cap glyph was not self-evident — the owner could
+     not tell what the button was, which is the whole point of a label.
+
+     This deliberately re-spends some of the header width the rule above was
+     reclaiming. That trade is now explicitly the owner's call and supersedes the
+     WI-5162 "cut cleanly rather than squeeze" default FOR THIS ONE FACE — Fleet
+     and Peers still collapse to icons, so the row gives up one label's width, not
+     three. The shared truncation treatment (`overflow:hidden; text-overflow:
+     ellipsis`) still applies, so if a narrow sidebar does run out of room the
+     label ellipsises instead of overflowing the row. */
+  .op-chat-header-main .op-chat-face-toggle--learning .op-chat-pot-toggle-label {
+    display: block;
+  }
+  /* …and with the label back, match [🫖 Pot Health]'s pill padding rather than
+     the tightened icon-only padding, so the two read as the matched pair the
+     owner asked for. */
+  .op-chat-header-main .op-chat-face-toggle--learning {
+    padding: 0 10px;
+  }
 }
 
 /* EI-13551: the voice-control cluster (.op-chat-controls) is flex: 0 0 auto

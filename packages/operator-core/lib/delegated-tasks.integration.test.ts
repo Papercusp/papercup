@@ -111,6 +111,12 @@ beforeAll(async () => {
       description text,
       created_at bigint NOT NULL DEFAULT 0,
       updated_at bigint NOT NULL DEFAULT 0,
+      -- WI-559 (mig 686): hive-store's SELECT_COLS reads canonical_pot_home_slug on EVERY
+      -- select, including the listHives() this suite exercises — so a hand-built pots table
+      -- omitting it fails with `column "canonical_pot_home_slug" does not exist`. Nullable
+      -- here (production adds NOT NULL + a defaulting trigger); rowToRecord resolves
+      -- `canonical_pot_home_slug ?? pot_home_slug`, which is the value 686 backfills anyway.
+      canonical_pot_home_slug text,
       PRIMARY KEY (workspace_id, pot_home_slug)
     )`);
 }, 90_000);

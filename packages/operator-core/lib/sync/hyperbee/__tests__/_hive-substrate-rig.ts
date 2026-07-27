@@ -223,6 +223,29 @@ export async function applyPot557RenameAndFixups(sql: postgres.Sql): Promise<voi
         ALTER TABLE harness_shared.hive_settings RENAME TO pot_settings;
       END IF;
     END $$;
+    -- EI-18777176681958978: CONSTRAINTS DO NOT FOLLOW A TABLE RENAME — they keep their
+    -- original names, so after the rename above this rig still carried 185's
+    -- hive_members_hive_fkey / hive_members_pkey while production carries the 557 names.
+    -- That is not cosmetic: a LATER migration that guards on the PRODUCTION constraint name
+    -- SILENTLY NO-OPS here. Migration 686 (repoint pot_members_pot_fkey at
+    -- canonical_pot_home_slug) does exactly that (AND c.conname = 'pot_members_pot_fkey'),
+    -- so a test replaying 185 -> this helper -> 686 got an FK still demanding the LOCAL handle
+    -- and a divergent-joiner INSERT failed with a constraint name that does not exist in the
+    -- live DB (verified 2026-07-27: live pot_members has ONE fkey, pot_members_pot_fkey,
+    -- already pointing at canonical_pot_home_slug). Mirror 557's explicit renames (its lines
+    -- 74-75) so the rig's constraint names match production.
+    DO $$ BEGIN
+      IF to_regclass('harness_shared.pot_members') IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'hive_members_pkey'
+                     AND conrelid = 'harness_shared.pot_members'::regclass) THEN
+          ALTER TABLE harness_shared.pot_members RENAME CONSTRAINT hive_members_pkey TO pot_members_pkey;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'hive_members_hive_fkey'
+                     AND conrelid = 'harness_shared.pot_members'::regclass) THEN
+          ALTER TABLE harness_shared.pot_members RENAME CONSTRAINT hive_members_hive_fkey TO pot_members_pot_fkey;
+        END IF;
+      END IF;
+    END $$;
   `);
   // mig 565 (P-011 live-verification finding, 2026-07-11): ALTER TABLE ... RENAME COLUMN
   // does NOT rewrite function bodies — capture_hive_members_outbox() (mig 189/477's live
@@ -303,6 +326,29 @@ export async function applyPot557RenameAndFixups(sql: postgres.Sql): Promise<voi
   // apply the archive-102 baseline for that table, which predates mig 495.
   if ((await sql.unsafe(`SELECT to_regclass('harness_shared.substrate_outbox') AS t`))[0]?.t) {
     await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS drained_log_key TEXT`);
+  }
+  // WI-559 (mig 686): the FEDERATED scope key on the Pot identity row. These rigs build
+  // `pots` from archive-184 + the 557 rename, both of which predate 686 — but hive-store's
+  // SELECT_COLS reads `canonical_pot_home_slug` UNCONDITIONALLY on every SELECT/RETURNING,
+  // so without this column insertHiveIfAbsent() throws `column "canonical_pot_home_slug"
+  // does not exist` and takes down every rig-built suite in beforeAll. That is exactly what
+  // happened when 686 landed: 13 files use this rig and none of them reference the gym or
+  // the pots schema directly, so the breakage surfaced far from its cause.
+  //
+  // Deliberately NULLABLE here, unlike production. 686 makes it NOT NULL and installs a
+  // BEFORE-INSERT trigger defaulting it to pot_home_slug; the rig would have to mirror the
+  // trigger too, or every INSERT that omits the column (hive-store's COLS omits it ON
+  // PURPOSE — see its comment) would fail. Nullable + the backfill below is behaviorally
+  // equivalent for these tests, because rowToRecord resolves
+  // `canonical_pot_home_slug ?? pot_home_slug` — the same value 686 backfills, so the
+  // fallback can never disagree with the stored column.
+  if ((await sql.unsafe(`SELECT to_regclass('harness_shared.pots') AS t`))[0]?.t) {
+    await sql.unsafe(
+      `ALTER TABLE harness_shared.pots ADD COLUMN IF NOT EXISTS canonical_pot_home_slug TEXT`,
+    );
+    await sql.unsafe(
+      `UPDATE harness_shared.pots SET canonical_pot_home_slug = pot_home_slug WHERE canonical_pot_home_slug IS NULL`,
+    );
   }
 }
 
