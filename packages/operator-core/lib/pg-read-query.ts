@@ -274,6 +274,27 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
   },
 };
 
+/**
+ * Tables whose `workspace_id` is a CORPUS NAMESPACE (always the literal
+ * `'default'`, per `bash-substitution/report.ts`'s `ROLLUP_CORPUS_WORKSPACE`),
+ * NOT a tenant discriminator — the generic workspace_id/harness_slug heuristic
+ * below is actively wrong for them in two ways at once (EI-18749676091756794):
+ *
+ *   1. `harness_slug` does not exist as a column on these tables at all, so
+ *      the generic "actionable" suggestion named a column PG then rejects
+ *      with "column does not exist".
+ *   2. Even after dropping that column, the real tenant workspace id (e.g.
+ *      'papercusp-workspace') matches ZERO rows — every row is written under
+ *      the literal 'default' — so "correcting" an unscoped query per the
+ *      advisory turns a right answer into a silent, confidence-inspiring
+ *      empty result.
+ *
+ * So for these tables an UNSCOPED read is the correct one; suppress the
+ * generic advisory entirely rather than try to "fix" it into a still-wrong
+ * predicate.
+ */
+const CORPUS_NAMESPACED_TABLES = new Set(['tool_usage_rollup', 'session_turns']);
+
 /** The bare (unqualified) table name — `schema.table` → `table`. */
 function bareTableName(ref: string): string {
   const i = ref.lastIndexOf('.');
@@ -344,16 +365,14 @@ export async function buildTenantScopeAdvisory(
     overrideOffenders.push({ table: t, override });
   }
 
-  const genericOffenders: string[] = [];
+  const genericOffenders: Array<{ table: string; hasWorkspaceId: boolean; hasHarnessSlug: boolean }> = [];
   if (genericTables.length && !genericMentioned) {
     const info = await readTenantScopeInfo(genericTables, opts.client);
     for (const t of genericTables) {
+      if (CORPUS_NAMESPACED_TABLES.has(bareTableName(t))) continue; // see CORPUS_NAMESPACED_TABLES doc
       const i = info.get(t);
       if (!i || (!i.hasWorkspaceId && !i.hasHarnessSlug)) continue;
-      const cols = [i.hasWorkspaceId ? 'workspace_id' : null, i.hasHarnessSlug ? 'harness_slug' : null]
-        .filter(Boolean)
-        .join(' + ');
-      genericOffenders.push(`${t} (keyed by ${cols})`);
+      genericOffenders.push({ table: t, hasWorkspaceId: i.hasWorkspaceId, hasHarnessSlug: i.hasHarnessSlug });
       if (genericOffenders.length >= 3) break;
     }
   }

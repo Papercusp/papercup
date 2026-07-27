@@ -15,7 +15,14 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { z } from 'zod';
 import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
-import { listChatActions } from '@/lib/chat-actions/registry';
+// Import the BARREL, not `chat-actions/registry` directly: the barrel's
+// side-effect imports (`import './SessionActions'` etc.) are what REGISTER the
+// concrete actions. Importing the registry module alone gets you a working
+// `listChatActions` over an EMPTY registry — so the bar rendered `null` and the
+// whole action bar was invisible in the app, while unit tests stayed green
+// because they import the action modules directly. Keep this pointed at the
+// barrel; the shorter-looking `/registry` path is the bug.
+import { listChatActions } from '@/lib/chat-actions';
 import type { ChatAction, ChatActionContext } from '@/lib/chat-actions/types';
 
 async function confirmed(action: ChatAction, ctx: ChatActionContext): Promise<boolean> {
