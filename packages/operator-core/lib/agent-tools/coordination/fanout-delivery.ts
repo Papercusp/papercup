@@ -44,9 +44,15 @@ export interface InjectEvent {
   extra?: Record<string, unknown>;
 }
 
-/** The minimal sink the delivery primitive needs (coordLog satisfies it). */
+/** The minimal sink the delivery primitive needs (coordLog satisfies it).
+ *
+ *  The result is `unknown` because this primitive genuinely ignores it: the real
+ *  log now resolves to the append's sequence number (P-009 — `intent_event_id`
+ *  points at it), while a test double resolving to void must keep satisfying the
+ *  sink. Narrowing this to either concrete type would reject the other for no
+ *  gain to a caller that never reads it. */
 export interface InjectSink {
-  appendLine(surface: 'messages', writerKey: string, line: CoordEnvelope): Promise<void>;
+  appendLine(surface: 'messages', writerKey: string, line: CoordEnvelope): Promise<unknown>;
 }
 
 /** Decide whether a subscriber in `mode` should receive `ev`. Only the mention

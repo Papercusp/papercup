@@ -3265,7 +3265,12 @@ function ApiaryView({
           onRetry={() => sync.invalidate()}
         />
       ) : !latest && !pending ? (
-        <LearningVisualEmpty icon={Gauge} title="No benchmark runs" />
+        // WI-6388: teaching copy per LearningVisualEmpty's own contract.
+              <LearningVisualEmpty
+                icon={Gauge}
+                title="No benchmark runs"
+                body={`This view compares each ${t("pot", { lower: true })} against the same benchmark set, so regressions show up as a score drop. Runs appear here once a benchmark has been run.`}
+              />
       ) : (
         <>
           {!latest && pending ? (
@@ -3505,9 +3510,11 @@ function HiveEvalTrendView({
       />
 
       {!latest ? (
+        // WI-6388: teaching copy per LearningVisualEmpty's own contract.
         <LearningVisualEmpty
           icon={Activity}
           title={`No ${t("pot")}-eval runs`}
+          body={`This view tracks how each ${t("pot", { lower: true })}'s evaluation scores move over time. A trend appears here after two or more evaluations.`}
         />
       ) : (
         <>
@@ -3748,7 +3755,12 @@ function BakeoffTrendView({
       />
 
       {!latest || !latestMeta || !latestComposite ? (
-        <LearningVisualEmpty icon={Repeat2} title="No bake-offs" />
+        // WI-6388: teaching copy per LearningVisualEmpty's own contract.
+              <LearningVisualEmpty
+                icon={Repeat2}
+                title="No bake-offs"
+                body="A bake-off runs two configurations against the same work and reports which did better. Results appear here once one has finished."
+              />
       ) : (
         <>
           <div className="pc-learning-visual__layout">

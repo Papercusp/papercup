@@ -170,7 +170,17 @@ export function EkgPanel({
           onRetry={() => sync.invalidate()}
         />
       ) : shifts.length === 0 ? (
-        <LearningVisualEmpty icon={Activity} title="No behavioral shifts" />
+        // WI-6388: `body` is the design system's own contract for this
+        // component (LearningVisuals.tsx: "what this view shows → what makes
+        // data appear"), and 10 of 12 uses were title-only. On a fresh install
+        // the empty state IS the view, so a bare title is most of the tab's
+        // first-run experience. Note this branch now means a GENUINE empty —
+        // a failed read renders as an error above (WI-6382).
+        <LearningVisualEmpty
+          icon={Activity}
+          title="No behavioral shifts"
+          body="This view compares how the fleet is behaving now against its recent baseline, and flags what changed. Shifts appear here once there is enough recent activity to compare."
+        />
       ) : (
         <>
           <div className="pc-learning-visual__layout pc-learning-visual__layout--ekg">

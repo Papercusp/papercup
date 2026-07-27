@@ -113,6 +113,9 @@ beforeAll(async () => {
     '143-agent-activity.sql',
     '188-work-item-claims.sql',
     '472-carry-notes.sql',
+    // carry-note.ts selects `deps` (680). Same stale-list trap as the
+    // agent-facts migrations in dead-end-matcher-io.
+    '680-carry-note-declared-deps.sql',
     '605-session-turn-journal.sql',
     '609-session-cursor.sql',
     '610-push-delivery.sql',

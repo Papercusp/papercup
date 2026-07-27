@@ -128,7 +128,12 @@ export function MugWakeEfficiencyPanel({
           onRetry={() => sync.invalidate()}
         />
       ) : wakes === 0 ? (
-        <LearningVisualEmpty icon={Coffee} title={`No ${t("brain")} wakes`} />
+        // WI-6388: teaching copy per LearningVisualEmpty's own contract.
+        <LearningVisualEmpty
+          icon={Coffee}
+          title={`No ${t("brain")} wakes`}
+          body={`This view shows how efficiently each ${t("brain", { lower: true })} wake used its context — how much was re-read from cache versus paid for again. Wakes appear here as they happen.`}
+        />
       ) : (
         <>
           <div className="pc-learning-visual__layout">

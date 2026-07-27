@@ -992,8 +992,43 @@ import { PROJECTED_DEPS } from '../../../projected-tool-deps';
  * `ctx.principal` not `ctx.tx`, is unaffected) and then runs the handler with
  * no ambient tx at all.
  */
+/**
+ * EI-18803497769946984: how long a handler may hold the ambient workspace tx before
+ * we say so out loud. Postgres kills an idle transaction at
+ * `idle_in_transaction_session_timeout` (60s on this deployment), so this fires with
+ * ~15s of headroom — while the call is still alive and the tool name is still known.
+ *
+ * Without this the failure is SILENT until it is already fatal, and what the caller
+ * receives (`write CONNECTION_CLOSED 127.0.0.1:6432`) names neither the tool nor the
+ * cause — it reads as a PgBouncer/infra outage. That mis-read is the expensive part:
+ * the condition ran ~31 kills/day for an unknown period and was diagnosed three
+ * separate times as a pooler problem before being traced back to here.
+ */
+const IDLE_TX_WARN_MS = 45_000;
+
+/**
+ * Warn if `p` is still pending after {@link IDLE_TX_WARN_MS} while its caller holds a
+ * workspace transaction open. Purely observational — it never alters the result, and
+ * the timer is unref'd so it cannot hold the process alive.
+ */
+function warnIfHoldingWorkspaceTxTooLong<T>(toolName: string, p: Promise<T>): Promise<T> {
+  const timer = setTimeout(() => {
+    console.warn(
+      `[mcp-tool] idle-tx-risk: "${toolName}" has held its ambient workspace transaction ` +
+        `for ${IDLE_TX_WARN_MS / 1000}s without settling. Postgres kills an idle transaction at ` +
+        `idle_in_transaction_session_timeout (60s), which reaches the caller as a bare ` +
+        `"write CONNECTION_CLOSED 127.0.0.1:6432" that names neither this tool nor this cause. ` +
+        `If this handler never reads ctx.tx, declare skipWorkspaceTx: true on it (EI-18803497769946984).`,
+    );
+  }, IDLE_TX_WARN_MS);
+  timer.unref?.();
+  return p.finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 async function dispatchWithSynthesizedTx<T>(
-  tool: { crossWorkspace?: boolean; skipWorkspaceTx?: boolean },
+  tool: { name?: string; crossWorkspace?: boolean; skipWorkspaceTx?: boolean },
   spawnCtx: BuiltSpawnContext,
   baseCtx: UnifiedToolContext,
   run: (ctx: UnifiedToolContext) => Promise<T>,
@@ -1031,7 +1066,10 @@ async function dispatchWithSynthesizedTx<T>(
           tx,
           principal: await synthesizeDispatchPrincipal(tx, spawnCtx),
         };
-        return run(ctx);
+        // EI-18803497769946984: this is the ONE branch that holds a transaction open
+        // for the whole handler, so it is the only one that can trip the 60s idle
+        // timeout. Name the tool while we still can.
+        return warnIfHoldingWorkspaceTxTooLong(tool.name ?? '<unnamed tool>', run(ctx));
       }),
     );
   }

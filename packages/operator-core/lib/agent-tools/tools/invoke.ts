@@ -99,6 +99,21 @@ export default defineTool({
   },
   capability: 'agent_tools:read',
   requirePrincipal: false,
+  // EI-18803497769946984: this handler is a PURE DELEGATOR — it never touches
+  // `ctx.tx`, it just awaits `ctx.dispatchTool(...)`. Without this flag it holds a
+  // workspace transaction open for the ENTIRE inner tool's runtime, so dispatching
+  // any slow target (build:typecheck, release:deploy, testing:run) leaves that tx
+  // IDLE past idle_in_transaction_session_timeout (60s here). Postgres then kills the
+  // backend, PgBouncer reports "server conn crashed?", and the caller sees a bare
+  // `write CONNECTION_CLOSED 127.0.0.1:6432` at ~60s — an error that reads as an infra
+  // outage but is really this ambient tx timing out.
+  //
+  // ⚠ This is WHY fixing only the inner tool was not enough. release:deploy and
+  // capability:bash already carry skipWorkspaceTx, yet tools:invoke→<them> kept
+  // failing at ~60s, because the OUTER delegator still held its own tx (each incident
+  // killed a PAIR of backends from one process — outer + inner). Measured: 33 of 33
+  // ~60s handler_error kills in the trailing 7d were tools:invoke.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     /** Exact MCP tool name in colon form, e.g. "flags:set". */

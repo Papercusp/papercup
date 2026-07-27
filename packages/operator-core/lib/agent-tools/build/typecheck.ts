@@ -190,6 +190,12 @@ export default defineTool({
   },
   capability: 'operator:write',
   requirePrincipal: false,
+  // EI-18803497769946984: the handler shells out to `tsc` and blocks for as long as
+  // that takes (observed up to 141s) without ever reading `ctx.tx`. Holding the
+  // ambient workspace transaction across that wait trips
+  // idle_in_transaction_session_timeout (60s) and surfaces as a bare
+  // `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     project: z.string().min(1).max(400)

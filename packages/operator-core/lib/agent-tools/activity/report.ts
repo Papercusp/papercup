@@ -77,6 +77,12 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
+  // EI-18803497769946984: this handler never reads `ctx.tx`, but it is the single
+  // hottest tool on the box and under load has run past 110s — long enough for the
+  // ambient workspace transaction to trip idle_in_transaction_session_timeout (60s)
+  // and fail as a bare `write CONNECTION_CLOSED 127.0.0.1:6432`.
+  // See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES],
   args: z.object({
     /** The reporting worker's coordination identity (PAPERCUSP_SID). */

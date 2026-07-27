@@ -131,7 +131,12 @@ export function RedQueenPanel({
           onRetry={() => sync.invalidate()}
         />
       ) : classes.length === 0 ? (
-        <LearningVisualEmpty icon={HeartPulse} title="No self-heal drills" />
+        // WI-6388: see EkgPanel — teaching copy per the component's contract.
+        <LearningVisualEmpty
+          icon={HeartPulse}
+          title="No self-heal drills"
+          body="This view measures how quickly the system detects and repairs deliberately planted faults. Results appear here after a drill has run."
+        />
       ) : (
         <>
           <div className="pc-learning-visual__layout pc-learning-visual__layout--rq">

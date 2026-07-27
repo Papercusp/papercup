@@ -32,6 +32,11 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
+  // EI-18803497769946984: the handler drives an external snapshot and blocks for its
+  // duration (observed 134s) without reading `ctx.tx`. Holding the ambient workspace
+  // transaction across that wait trips idle_in_transaction_session_timeout (60s).
+  // See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES],
   args: z.object({
     reason: z.enum([

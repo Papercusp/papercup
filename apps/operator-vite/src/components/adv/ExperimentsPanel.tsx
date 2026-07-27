@@ -168,7 +168,12 @@ export function ExperimentsPanel({
           onRetry={() => sync.invalidate()}
         />
       ) : !latest ? (
-        <LearningVisualEmpty icon={FlaskConical} title="No experiment runs" />
+        // WI-6388: see EkgPanel — teaching copy per the component's contract.
+        <LearningVisualEmpty
+          icon={FlaskConical}
+          title="No experiment runs"
+          body="This view scores head-to-head experiments — which variant won, and what it cost. Runs appear here once an experiment has completed."
+        />
       ) : (
         <>
           <div className="pc-learning-visual__layout">

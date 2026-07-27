@@ -109,6 +109,14 @@ beforeAll(async () => {
     '461-agent-facts-federation.sql',
     '462-agent-facts-fed-key.sql',
     '574-agent-facts-audience-provenance.sql',
+    // assertFact reads/writes superseded_at + supersedes_id (689), the
+    // depends-on/kind/claim columns (690) and the federation stamp regime
+    // (693). Omitting them here fails with a bare `column "superseded_at" does
+    // not exist` that looks nothing like "this fixture's migration list is
+    // stale" — keep this list in step with what agent-facts/store.ts queries.
+    '689-agent-facts-append-versioning.sql',
+    '690-agent-facts-depends-on-kind-claim.sql',
+    '693-agent-facts-federation-stamp-regime.sql',
     '610-push-delivery.sql',
   ]) {
     await applyMigrationForTest(db.sql, join(SQL_DIR, m));

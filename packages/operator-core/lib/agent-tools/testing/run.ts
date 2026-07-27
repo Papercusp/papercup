@@ -108,6 +108,11 @@ export default defineTool({
   },
   capability: 'operator:write',
   requirePrincipal: false,
+  // EI-18803497769946984: the handler shells out to Vitest and blocks for the whole
+  // run without ever reading `ctx.tx`. Holding the ambient workspace transaction
+  // across that wait trips idle_in_transaction_session_timeout (60s), surfacing as a
+  // bare `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     files: z.array(z.string().min(1)).min(1).max(50)

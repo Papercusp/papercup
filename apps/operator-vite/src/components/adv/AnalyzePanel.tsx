@@ -112,9 +112,14 @@ export function AnalyzePanel({
       ) : sync.loading && !snap ? (
         <p className="pc-learning__quietempty">Loading cycle artifacts…</p>
       ) : cycles.length === 0 ? (
+        // WI-6388: was "…they land when the next <scout> cycle fires with the
+        // stage-artifact persist live on this host" — internal vocabulary, and
+        // a cause this branch cannot establish (see the note in FrontierPanel).
+        // State the user-visible condition instead.
         <LearningVisualEmpty
           icon={Workflow}
-          title={`No cycle artifacts persisted yet — they land when the next ${t("scout")} cycle fires with the stage-artifact persist live on this host.`}
+          title="No analysis cycles yet"
+          body={`This view shows what each ${t("scout")} analysis cycle produced, stage by stage. A cycle appears here after the next one finishes.`}
         />
       ) : (
         <div className="pc-analyze__cycles">

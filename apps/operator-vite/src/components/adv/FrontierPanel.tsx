@@ -154,9 +154,20 @@ export function FrontierPanel({
       ) : sync.loading && !snap ? (
         <p className="pc-learning__quietempty">Loading frontier lanes…</p>
       ) : lanes.length === 0 ? (
+        // WI-6388: the old title asserted a CAUSE it cannot establish — "the
+        // singleton materializer has not run on this workspace". Two problems.
+        // (a) A public user has no idea what a singleton materializer is; it is
+        // a debugging note addressed to whoever wrote the subsystem. (b) It is
+        // a specific, authoritative diagnosis that may simply be FALSE: until
+        // WI-6382 an unreadable substrate arrived here as a normal empty, so
+        // this line confidently sent the reader to investigate the wrong thing.
+        // Now that a degraded read renders as an error above, THIS branch means
+        // a genuine observed empty — so say what the view is for and what makes
+        // data appear, and claim nothing about why it hasn't yet.
         <LearningVisualEmpty
           icon={Radar}
-          title="No learning-loop rows yet — the singleton materializer has not run on this workspace."
+          title="No learning loops yet"
+          body="This view tracks each automated learning loop in the workspace — whether it is running, and whether what it produces is actually used. Loops appear here once one has run at least once."
         />
       ) : (
         <div className="pc-frontier__scroll">
