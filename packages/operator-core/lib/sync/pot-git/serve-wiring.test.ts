@@ -41,13 +41,13 @@ describe('pot-git session-leak detector (EI-18765930091826096 recurrence guard)'
 
   it('stays SILENT below the threshold — a healthy peer never emits this line', () => {
     const state = withSessions(SESSION_LEAK_WARN_AT - 1, 0);
-    noteSessionHighWater(state);
+    expect(noteSessionHighWater(state)).toBe(false);
     expect(state.sessionWarnHighWater).toBe(0);
   });
 
   it('fires once the live session total reaches the threshold', () => {
     const state = withSessions(SESSION_LEAK_WARN_AT, 0);
-    noteSessionHighWater(state);
+    expect(noteSessionHighWater(state)).toBe(true);
     expect(state.sessionWarnHighWater).toBe(SESSION_LEAK_WARN_AT);
   });
 
@@ -57,26 +57,27 @@ describe('pot-git session-leak detector (EI-18765930091826096 recurrence guard)'
     // serving side's `git upload-pack`.
     const client = Math.floor(SESSION_LEAK_WARN_AT / 2);
     const state = withSessions(client, SESSION_LEAK_WARN_AT - client);
-    noteSessionHighWater(state);
+    expect(noteSessionHighWater(state)).toBe(true);
     expect(state.sessionWarnHighWater).toBe(SESSION_LEAK_WARN_AT);
   });
 
   it('does NOT re-report at the same level — a sustained leak cannot become the storm', () => {
+    // Asserts the EMISSION DECISION, not the high-water value: the value is
+    // identical whether a repeat call warned or stayed quiet, so a value-only
+    // assertion here passes against a detector that warns every single time.
     const state = withSessions(SESSION_LEAK_WARN_AT, 0);
-    noteSessionHighWater(state);
-    const afterFirst = state.sessionWarnHighWater;
+    expect(noteSessionHighWater(state)).toBe(true);
     // Re-registering at an unchanged count (the shape a steady leak produces
-    // while it plateaus) must be a no-op.
-    noteSessionHighWater(state);
-    noteSessionHighWater(state);
-    expect(state.sessionWarnHighWater).toBe(afterFirst);
+    // while it plateaus) must emit nothing further.
+    expect(noteSessionHighWater(state)).toBe(false);
+    expect(noteSessionHighWater(state)).toBe(false);
   });
 
   it('reports again only on a NEW high-water — which is the signal that it is still climbing', () => {
     const state = withSessions(SESSION_LEAK_WARN_AT, 0);
-    noteSessionHighWater(state);
+    expect(noteSessionHighWater(state)).toBe(true);
     state.clientSessions.set(999, {} as never);
-    noteSessionHighWater(state);
+    expect(noteSessionHighWater(state)).toBe(true);
     expect(state.sessionWarnHighWater).toBe(SESSION_LEAK_WARN_AT + 1);
   });
 
@@ -85,12 +86,12 @@ describe('pot-git session-leak detector (EI-18765930091826096 recurrence guard)'
     // settle. Re-reporting every oscillation would make a HEALTHY peer noisy and
     // bury a real climb.
     const state = withSessions(SESSION_LEAK_WARN_AT + 4, 0);
-    noteSessionHighWater(state);
+    expect(noteSessionHighWater(state)).toBe(true);
     const peak = state.sessionWarnHighWater;
     state.clientSessions.clear();
-    noteSessionHighWater(state);
+    expect(noteSessionHighWater(state)).toBe(false);
     for (let i = 0; i < SESSION_LEAK_WARN_AT + 1; i++) state.clientSessions.set(i, {} as never);
-    noteSessionHighWater(state);
+    expect(noteSessionHighWater(state)).toBe(false);
     expect(state.sessionWarnHighWater).toBe(peak);
   });
 });

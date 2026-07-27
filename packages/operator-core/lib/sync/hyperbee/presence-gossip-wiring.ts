@@ -47,6 +47,117 @@ import { listHiveMembers, loadRevokedHivePubkeys } from '../../hive-membership-s
 /** Membership-set cache TTL — a beat must not hit PG per frame. */
 const MEMBER_CACHE_TTL_MS = Number(process.env.PAPERCUSP_PRESENCE_MEMBER_CACHE_MS) || 30_000;
 
+/** Throttle for the inbound-admission warnings — first occurrence fires at once,
+ *  then at most one line per window per topic. */
+const ADMISSION_WARN_INTERVAL_MS = 300_000;
+
+export interface AdmissionReporterOpts {
+  now: () => number;
+  /** Override the throttle window (tests). */
+  warnIntervalMs?: number;
+  /** Log seams (tests). Default console. */
+  warn?: (msg: string) => void;
+  info?: (msg: string) => void;
+}
+
+export interface AdmissionReporter {
+  /** The binding's admitted-device set resolved EMPTY — this node can admit no peer at all. */
+  noteEmptyMembership(topicHex: string, workspaceId: string, potHomeSlug: string): void;
+  /** A frame arrived for a topic no binding is registered under. */
+  noteUnregisteredTopic(topicHex: string): void;
+  /** A verified frame was rejected because its signer is not an admitted device. */
+  noteRejected(topicHex: string, devicePubkey: string, admittedCount: number): void;
+  /** A frame was admitted — closes out a rejection streak on that topic. */
+  noteAdmitted(topicHex: string): void;
+}
+
+/**
+ * EI-18769392276881557 — the pure, testable core of the INBOUND admission signal.
+ *
+ * The receiver's membership gate is deliberately fail-closed: an unregistered
+ * topic, or a signer that is not an attested device of the topic's hive, drops
+ * the frame. That is correct. What was a defect is that it dropped SILENTLY —
+ * no line, no counter, not even at debug — so a node that rejects EVERY inbound
+ * presence frame looks exactly like a node nobody is talking to.
+ *
+ * WI-559 is the case in point: fed-b's binding for the shared topic resolved to
+ * a hive with ZERO `pot_members` rows, so its admitted map was empty and it
+ * dropped every frame fed-a sent, while fed-a (holding the mirror rows) admitted
+ * fed-b normally. The result was a perfectly one-directional presence link with
+ * clean logs on both machines, which reads like a network/DHT fault and sent the
+ * investigation to the wrong end of the wire for weeks.
+ *
+ * An EMPTY admitted set is reported SEPARATELY from an individual rejection on
+ * purpose: "I can admit nobody on this topic" is a misconfiguration of THIS
+ * node, whereas "this one sender is not a member" is the gate working. Reporting
+ * them the same way is what makes the misconfiguration hide inside normal
+ * defensive noise.
+ *
+ * Purely observational: it never throws and never changes an admission verdict.
+ */
+export function createAdmissionReporter(opts: AdmissionReporterOpts): AdmissionReporter {
+  const warnIntervalMs = opts.warnIntervalMs ?? ADMISSION_WARN_INTERVAL_MS;
+  const warn = opts.warn ?? ((m: string) => console.warn(m));
+  const info = opts.info ?? ((m: string) => console.info(m));
+  const rejectStreak = new Map<string, number>();
+  const lastWarnAt = new Map<string, number>();
+
+  /** True when this (topic, channel) should emit now: first occurrence, or the window elapsed. */
+  const due = (key: string, first: boolean): boolean => {
+    const nowMs = opts.now();
+    const last = lastWarnAt.get(key);
+    if (first || last === undefined || nowMs - last >= warnIntervalMs) {
+      lastWarnAt.set(key, nowMs);
+      return true;
+    }
+    return false;
+  };
+
+  return {
+    noteEmptyMembership(topicHex, workspaceId, potHomeSlug) {
+      const key = `empty:${topicHex}`;
+      if (!due(key, !lastWarnAt.has(key))) return;
+      warn(
+        `[presence-gossip] NO admitted devices for topic ${topicHex.slice(0, 12)}… ` +
+          `(${workspaceId}::${potHomeSlug}) — harness_shared.pot_members has no attested device for ` +
+          `that hive scope, so this node will DROP EVERY inbound presence frame on this topic. ` +
+          `Peers will look absent here while this node stays visible to them (one-directional presence).`,
+      );
+    },
+    noteUnregisteredTopic(topicHex) {
+      const key = `unregistered:${topicHex}`;
+      if (!due(key, !lastWarnAt.has(key))) return;
+      warn(
+        `[presence-gossip] inbound frame for UNREGISTERED topic ${topicHex.slice(0, 12)}… — ` +
+          `no binding is registered under it, so the frame is dropped fail-closed. ` +
+          `Expected briefly during boot; sustained means a topic was joined but never registered.`,
+      );
+    },
+    noteRejected(topicHex, devicePubkey, admittedCount) {
+      const streak = (rejectStreak.get(topicHex) ?? 0) + 1;
+      rejectStreak.set(topicHex, streak);
+      const key = `reject:${topicHex}`;
+      if (!due(key, streak === 1)) return;
+      warn(
+        `[presence-gossip] REJECTED inbound presence frame on topic ${topicHex.slice(0, 12)}… — ` +
+          `signer ${devicePubkey.slice(0, 12)}… is not an attested device of this hive ` +
+          `(${admittedCount} admitted device(s) known; ${streak} rejection(s) so far). ` +
+          `That peer is invisible to this node's presence, lock-authority and runner election.`,
+      );
+    },
+    noteAdmitted(topicHex) {
+      const streak = rejectStreak.get(topicHex) ?? 0;
+      if (streak > 0) {
+        rejectStreak.set(topicHex, 0);
+        info(
+          `[presence-gossip] inbound presence ADMITTED again on topic ${topicHex.slice(0, 12)}… ` +
+            `after ${streak} rejected frame(s)`,
+        );
+      }
+    },
+  };
+}
+
 /** The writer half a caller registers when the PRESENCE_GOSSIP flag is on:
  *  this machine's current row + its device signer (the caller owns the
  *  identity — wire-presence resolves it off the booted handle's own log). */
@@ -97,7 +208,11 @@ let deps: PresenceGossipWiringDeps = {
   getSwarm: () => getSharedSwarm(),
 };
 
-async function admittedDeviceMap(binding: TopicBinding): Promise<Map<string, number>> {
+async function admittedDeviceMap(
+  binding: TopicBinding,
+  topicHex?: string,
+  reporter?: AdmissionReporter,
+): Promise<Map<string, number>> {
   const now = Date.now();
   if (binding.members && now - binding.members.at < MEMBER_CACHE_TTL_MS) {
     return binding.members.admitted;

@@ -543,17 +543,27 @@ function shouldLogRefusal(key: string, now: number): { log: boolean; suppressed:
  */
 const SESSION_LEAK_WARN_AT = 8;
 
-function noteSessionHighWater(state: ChannelState): void {
+/**
+ * Returns whether it EMITTED (callers ignore it; tests do not). The
+ * once-per-new-high-water suppression is the property most likely to rot into
+ * either a per-session storm or total silence, and neither is observable from
+ * the outside: `potGitLog` is a no-op under vitest, and the high-water VALUE is
+ * identical whether a repeat call warned or correctly stayed quiet. Returning
+ * the decision is what makes suppression assertable at all — without it those
+ * cases pass against a detector that warns every single time.
+ */
+function noteSessionHighWater(state: ChannelState): boolean {
   const client = state.clientSessions.size;
   const server = state.serverSessions.size;
   const total = client + server;
-  if (total < SESSION_LEAK_WARN_AT || total <= state.sessionWarnHighWater) return;
+  if (total < SESSION_LEAK_WARN_AT || total <= state.sessionWarnHighWater) return false;
   state.sessionWarnHighWater = total;
   potGitLog(
     'warn',
     `[pot-git] sessions HIGH client=${client} server=${server} peer=${peerTag(state)} ` +
       `(>= ${SESSION_LEAK_WARN_AT}; sessions are released per-fetch, so a climbing count is a LEAK — see EI-18765930091826096)`,
   );
+  return true;
 }
 
 /** Short, log-safe tag for the peer that opened this serve session. Uses the
