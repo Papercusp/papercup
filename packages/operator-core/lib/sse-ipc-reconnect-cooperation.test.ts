@@ -15,10 +15,11 @@
  *
  * Plan: calltool-endpoint-seam-2026-06-01 (Phase D, P-007 / D-006).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { createResilientEventSource } from '@papercusp/sse';
 import {
   IpcEventSource,
+  configureDesktopIpc,
   type DispatchEndpointStreamFn,
   type EndpointStreamEvent,
 } from '@papercusp/desktop-ipc';
@@ -86,6 +87,17 @@ const HEAD_OK: EndpointStreamEvent = {
   data: { status: 200, headers: { 'content-type': 'text/event-stream' } },
 };
 
+// WI-6257 added a STARTUP GRACE (DEFAULT_IPC_STARTUP_GRACE_MS = 3000): for the
+// first few seconds of a source's life, "IPC isn't up yet" (`invoke_failed`) is
+// RETRIED rather than treated as a dead backend, because the webview opens its
+// streams before the Rust IPC handle has connected. Correct — but it made the
+// fatal path below unreachable from a test, whose whole `waitFor` budget (1500ms)
+// fits inside the grace, so the source never terminated and the wrapper never
+// rebuilt (EI-18766012007545598). Each test now pins the grace it means to
+// exercise instead of riding the default, and both sides of the branch are
+// covered — the grace path is what silently broke the fatal one.
+afterEach(() => configureDesktopIpc({ ipcStartupGraceMs: undefined }));
+
 describe('SSE-over-IPC reconnect cooperation (createResilientEventSource × IpcEventSource)', () => {
   it('a transient drop keeps ONE IpcEventSource alive (no wrapper recreate)', async () => {
     const { dispatch, conns } = makeDispatch();
@@ -121,6 +133,9 @@ describe('SSE-over-IPC reconnect cooperation (createResilientEventSource × IpcE
   });
 
   it('a fatal error (readyState CLOSED) DOES make the wrapper rebuild', async () => {
+    // Grace 0 = "the bridge has had its chance", which is the state this test is
+    // about: a backend still unavailable AFTER the grace is genuinely dead.
+    configureDesktopIpc({ ipcStartupGraceMs: 0 });
     const { dispatch, conns } = makeDispatch();
     const made: IpcEventSource[] = [];
     const handle = createResilientEventSource({
@@ -142,6 +157,45 @@ describe('SSE-over-IPC reconnect cooperation (createResilientEventSource × IpcE
     conns[0]!.push({ kind: 'error', code: 'invoke_failed', message: 'state not managed' });
     await waitFor(() => made.length === 2);
     expect(made).toHaveLength(2);
+
+    handle.close();
+  });
+
+  it('WI-6257: INSIDE the startup grace the same error WAITS for the bridge — no rebuild, no native fallback', async () => {
+    // The other half of the branch, and the one whose absence let the grace land
+    // while silently disabling the fatal-path test above. A boot-era stream that
+    // races the IPC handshake must retry on the SAME source: rebuilding would
+    // hand it to native HTTP, and a long-lived SSE connection then holds one of
+    // libsoup's ~6 per-host sockets for the life of the page — the starvation
+    // WI-6257 exists to prevent.
+    configureDesktopIpc({ ipcStartupGraceMs: 3_000 });
+    const { dispatch, conns } = makeDispatch();
+    const made: IpcEventSource[] = [];
+    const handle = createResilientEventSource({
+      url: '/api/zero-harness/sse',
+      handlers: { update: () => {} },
+      eventSourceCtor: makeCtor(dispatch, made),
+      zombieTimeoutMs: 0,
+      maxConsecutiveFailures: 0,
+      initialBackoffMs: 5,
+    });
+
+    await waitFor(() => conns.length === 1);
+    conns[0]!.push(HEAD_OK);
+    await waitFor(() => handle.status === 'open');
+    expect(made).toHaveLength(1);
+
+    // "Not up YET" → the source re-dispatches on ITSELF rather than dying.
+    conns[0]!.push({ kind: 'error', code: 'invoke_failed', message: 'state not managed' });
+    await waitFor(() => conns.length === 2);
+
+    // THE ASSERTION: a retry on the same source, NOT a wrapper rebuild.
+    expect(made).toHaveLength(1);
+
+    // And it still works once the bridge comes up.
+    conns[1]!.push(HEAD_OK);
+    await waitFor(() => handle.status === 'open');
+    expect(made).toHaveLength(1);
 
     handle.close();
   });

@@ -1,7 +1,7 @@
 # Authoring an LLM-testing scenario
 
 A scenario is one declarative TypeScript file under
-`apps/operator/lib/llm-testing/scenarios/<target>/<id>.ts`. The runner
+`packages/operator-core/lib/llm-testing/scenarios/<target>/<id>.ts`. The runner
 imports it, drives a sim-user / SUT / judge loop, asserts, and persists.
 
 This guide is what you read **before** writing a new one. It assumes
@@ -32,7 +32,7 @@ ready.
 
 ## 2. Pick a target
 
-`apps/operator/lib/llm-testing/targets/index.ts` lists what's registered:
+`packages/operator-core/lib/llm-testing/targets/index.ts` lists what's registered:
 - **`operator`** — the chat surface at `/api/agent-mcp/operator-converse`
 - **`oracle`** — read-only assistant at `/api/oracle/chat`
 - **`architect`** — harness-scoped, at `/api/agent-tools/architect/chat`
@@ -192,8 +192,9 @@ the kind enum:
 ```
 
 If you find yourself writing the same `custom` shape in 3+ scenarios,
-promote it to a built-in kind (or run `pnpm llm-test
-promote-candidates` once novel judge findings recur — see §8).
+promote it to a built-in kind (or run
+`npm run llm-test -- promote-candidates` once novel judge findings
+recur — see §8).
 
 ---
 
@@ -252,7 +253,7 @@ export ANTHROPIC_API_KEY=sk-ant-…
 cd papercusp-desktop && npm run dev   # in another terminal
 
 cd apps/operator
-pnpm llm-test --scenario op-S99-example --no-matrix
+npm run llm-test -- --scenario op-S99-example --no-matrix
 ```
 
 `--no-matrix` forces N=1 for fast iteration. Drop it for the real run.
@@ -276,8 +277,8 @@ Look at the run row in the UI:
 
 If a judge finding keeps surfacing across scenarios, run:
 ```bash
-pnpm llm-test promote-candidates
-pnpm llm-test promote --shape <hash>
+npm run llm-test -- promote-candidates
+npm run llm-test -- promote --shape <hash>
 ```
 
 The second command scaffolds `asserts/promoted-<short>.ts` you fill
@@ -309,7 +310,7 @@ the lineage is auditable.
 ## 11. Quick reference — file structure for one scenario
 
 ```
-apps/operator/lib/llm-testing/
+packages/operator-core/lib/llm-testing/
 ├── scenarios/
 │   └── <target>/
 │       └── <ID>-name.ts        ← export default SCENARIO
@@ -317,4 +318,4 @@ apps/operator/lib/llm-testing/
 └── __tests__/runner-aggregate.test.ts  ← update the registry assertion
 ```
 
-Run `pnpm llm-test --list` to confirm it shows up.
+Run `npm run llm-test -- --list` to confirm it shows up.

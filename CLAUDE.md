@@ -732,7 +732,7 @@ tools-md-sync test; after a substantial SU-playbook edit run
 Every new test goes in **exactly one** of: **Vitest**
 `<package>/lib/**/<name>.test.ts` · **Playwright**
 `apps/operator/e2e/<name>.spec.ts` · **Cargo** `#[cfg(test)]` · **LLM
-scenarios** `apps/operator/lib/llm-testing/scenarios/<role>/`. **Never** new
+scenarios** `packages/operator-core/lib/llm-testing/scenarios/<role>/`. **Never** new
 `.mjs` integration scripts or tsx smoke scripts (CI lint P-038 fails the build).
 `npm --prefix apps/operator run lint:tests` guards registry coverage — if it
 fires for a new subsystem, widen a domain in
