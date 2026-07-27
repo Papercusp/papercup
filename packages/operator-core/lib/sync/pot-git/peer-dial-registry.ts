@@ -173,7 +173,10 @@ const lastRegisteredAt = new Map<string, number>();
 const registrationWaiters = new Map<string, Array<() => void>>();
 
 function sightingKey(topicHex: string, devicePubkeyBase64: string): string {
-  return `${topicHex} ${devicePubkeyBase64}`;
+  // '|' is safe as a separator: topicHex is hex and devicePubkeyBase64 is base64,
+  // so neither side can contain it. (Do NOT use a NUL here — it makes this file
+  // read as BINARY to grep/rg and silently hides it from every text search.)
+  return `${topicHex}|${devicePubkeyBase64}`;
 }
 
 /** Record a (topic, device) registration and wake anyone waiting to dial it. */
@@ -777,10 +780,19 @@ export const _testing = {
   wiredTopics,
   trackedMuxers,
   healSweep,
+  // EI-18740968796318403 dial-gap handling — exposed so a unit test can drive the
+  // registered/de-registered/re-registered sequence without standing up protomux.
+  lastRegisteredAt,
+  registrationWaiters,
+  noteRegistered,
+  RECENT_SIGHTING_MS,
+  DEFAULT_REGISTRATION_WAIT_MS,
   reset(): void {
     registryByTopic.clear();
     wiredTopics.clear();
     trackedMuxers.clear();
+    lastRegisteredAt.clear();
+    registrationWaiters.clear();
     if (healSweepTimer) {
       healSweepTimer.stop();
       healSweepTimer = null;

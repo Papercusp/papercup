@@ -615,10 +615,21 @@ export function evaluateProgramSuccess(
                 'A champion crowned on this corpus has proven only that it can edit a toy file, so promotions from it are not evidence of learning. ' +
                 'Populate a real task corpus (plan gym-real-fitness-signal-2026-07-27 P-001) — this bar stays RED until every active task is real.',
             }
-          : {
-              status: 'pass' as const,
-              observed: `all ${corpus.realCount} active gym task(s) for ${corpus.harnessSlug ?? 'this harness'} are drawn from a REAL corpus (corpus='real')`,
-            }),
+          : (corpus.realScoredRuns ?? 0) <= 0
+            ? {
+                status: 'unknown' as const,
+                observed:
+                  `${corpus.realCount} real gym task(s) are LABELLED for ${corpus.harnessSlug ?? 'this harness'}, but NONE has a scored run yet — ` +
+                  'the corpus is declared, not exercised.',
+                unknownReason:
+                  'a real label with no scored run proves nothing: rows can be inserted for tasks the runner cannot actually execute, so this bar refuses to pass on labels alone and waits for observed scores against real tasks',
+              }
+            : {
+                status: 'pass' as const,
+                observed:
+                  `all ${corpus.realCount} active gym task(s) for ${corpus.harnessSlug ?? 'this harness'} are drawn from a REAL corpus (corpus='real'), ` +
+                  `with ${corpus.realScoredRuns} scored run(s) against them`,
+              }),
   });
 
   const passed = criteria.filter((c) => c.status === 'pass').length;
@@ -791,7 +802,25 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
         if (r.corpus === 'real') realCount += Number(r.n);
         else syntheticCount += Number(r.n); // unknown labels count as synthetic
       }
-      return { realCount, syntheticCount, ...(harnessSlug ? { harnessSlug } : {}) };
+      // How many runs against REAL tasks were actually scored. Read only when the
+      // corpus is otherwise clean — the bar fails on any synthetic task before it ever
+      // consults this, so the extra query is skipped on the (current) failing path.
+      let realScoredRuns = 0;
+      if (realCount > 0 && syntheticCount === 0) {
+        const scored = (await sql`
+          SELECT count(*)::int AS n
+            FROM harness_gym_durable.gym_scores s
+            JOIN harness_gym_durable.gym_runs r
+              ON r.workspace_id = s.workspace_id AND r.harness_slug = s.harness_slug AND r.run_id = s.run_id
+            JOIN harness_gym_durable.gym_tasks t
+              ON t.workspace_id = r.workspace_id AND t.harness_slug = r.harness_slug AND t.task_id = r.task_id
+           WHERE t.corpus = 'real'
+             ${harnessSlug ? sql`AND s.harness_slug = ${harnessSlug}` : sql``}
+             ${opts.workspaceId ? sql`AND s.workspace_id = ${opts.workspaceId}` : sql``}
+        `) as Array<{ n: number }>;
+        realScoredRuns = Number(scored[0]?.n ?? 0);
+      }
+      return { realCount, syntheticCount, realScoredRuns, ...(harnessSlug ? { harnessSlug } : {}) };
     } catch {
       return undefined;
     }

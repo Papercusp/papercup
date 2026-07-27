@@ -77,6 +77,8 @@ const inputs = (
 const REAL_CORPUS: ProgramSuccessInputs['gymCorpus'] = {
   realCount: 3,
   syntheticCount: 0,
+  // A real corpus only counts once it has been RUN: labels alone rate `unknown`.
+  realScoredRuns: 9,
   harnessSlug: 'papercusp',
 };
 
@@ -684,6 +686,33 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
       gymCorpus: { realCount: 0, syntheticCount: 0, harnessSlug: 'papercusp' },
     });
     expect(bar(empty, 'fitness-signal-is-real').status).toBe('unknown');
+
+    // THE LABEL LOOPHOLE: an all-real corpus that has never been RUN must not pass.
+    // Inserting `corpus='real'` rows the runner cannot execute would otherwise green
+    // the gate while the gym still learns nothing — the same "certify the description,
+    // not the behaviour" mistake one level up.
+    const labelledOnly = evaluateProgramSuccess({
+      ...green(),
+      gymCorpus: { realCount: 4, syntheticCount: 0, realScoredRuns: 0, harnessSlug: 'papercusp' },
+    });
+    expect(bar(labelledOnly, 'fitness-signal-is-real').status).toBe('unknown');
+    expect(bar(labelledOnly, 'fitness-signal-is-real').observed).toContain('declared, not exercised');
+    expect(labelledOnly.verdict).toBe('incomplete');
+
+    // Omitting the count entirely is the same as zero — never an implicit pass.
+    const noRunField = evaluateProgramSuccess({
+      ...green(),
+      gymCorpus: { realCount: 4, syntheticCount: 0, harnessSlug: 'papercusp' },
+    });
+    expect(bar(noRunField, 'fitness-signal-is-real').status).toBe('unknown');
+
+    // Only labels + observed scores together pass.
+    const exercised = evaluateProgramSuccess({
+      ...green(),
+      gymCorpus: { realCount: 4, syntheticCount: 0, realScoredRuns: 12, harnessSlug: 'papercusp' },
+    });
+    expect(bar(exercised, 'fitness-signal-is-real').status).toBe('pass');
+    expect(bar(exercised, 'fitness-signal-is-real').observed).toContain('12 scored run(s)');
   });
 
   it('a single FAIL dominates any number of passes', () => {
