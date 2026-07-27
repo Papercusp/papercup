@@ -201,6 +201,12 @@ test.describe('global keyboard shortcuts (dispatcher → router/nuqs effects)', 
 
     await page.keyboard.press('Control+i');
     await expect.poll(() => new URL(page.url()).searchParams.get('tab')).toBe('conversations');
-    await expect(page.locator('.pc-advshell__copy h1')).toHaveText('Conversations');
+    // Conversations is a secondary tab (D-001), so the shell's signal is the
+    // "More" trigger's active state. It used to be the header `<h1>` title too —
+    // that whole title bar was removed 2026-07-27 by owner ask so the tab strip
+    // sits at the very top.
+    await expect(page.getByRole('button', { name: 'More sections' })).toHaveClass(
+      /pc-advshell__more-trigger--active/,
+    );
   });
 });

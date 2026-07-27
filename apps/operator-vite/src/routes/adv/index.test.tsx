@@ -1,15 +1,21 @@
 // @vitest-environment jsdom
 /**
- * adv/index.test.tsx — the /adv tab router. The ?tab= nuqs enum selects both
- * the AdvShell title and which tab surface renders (a big switch). Covers every
- * branch: the eight first-class tabs, the Create dock (plans), the harness-panel
- * tabs (brainstorm/prs/insights/git/testing → AdvHarnessPanelPage with the panel
- * id), and the overview default when ?tab is absent. Every tab child + AdvShell
- * are stubbed to markers.
+ * adv/index.test.tsx — the /adv tab router. The ?tab= nuqs enum selects which tab
+ * surface renders (a big switch) and whether that tab gets the pot bar. Covers
+ * every branch: the ten first-class tabs, the Create dock (plans), the
+ * harness-panel tabs (prs/insights/git/testing → AdvHarnessPanelPage with the
+ * panel id), and the overview default when ?tab is absent. Every tab child +
+ * AdvShell + AdvPotBar are stubbed to markers.
+ *
+ * The AdvShell `title` prop is GONE (owner ask 2026-07-27: the "ADVANCED
+ * ORCHESTRATION / <title>" bar was removed so the tabs sit at the very top), so
+ * the per-tab assertion is now "the right surface, with/without the pot bar"
+ * rather than "the right surface, with the right title".
  *
  * Seams: @tanstack/react-router (createFileRoute → Route), nuqs (real adapter
- * for ?tab=), AdvShell (exposes its title prop + ADV_TABS for the enum),
- * AdvHarnessPanelPage (exposes ADV_HARNESS_PANEL_LABELS).
+ * for ?tab=), AdvShell (ADV_TABS for the enum), AdvPotBar (marker; the REAL
+ * potBarModeForTab decides, from the pure adv-pot-bar-tabs module),
+ * AdvHarnessPanelPage.
  */
 import type { JSX } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -21,8 +27,8 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 
 vi.mock('../../components/adv/AdvShell', () => ({
-  default: ({ title, children }: { title: string; children: React.ReactNode }) => (
-    <div data-testid="adv-shell" data-title={title}>{children}</div>
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="adv-shell">{children}</div>
   ),
   // Inlined (not a top-level const) — vi.mock factories are hoisted above
   // module-scope declarations, so referencing an outer `const` throws.
@@ -31,6 +37,14 @@ vi.mock('../../components/adv/AdvShell', () => ({
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings',
     'docs', 'git', 'testing',
   ].map((id) => ({ id })),
+}));
+// The pot bar itself is mocked (it mounts a selector + four live status pills);
+// the DECISION of which tabs get it is the real adv-pot-bar-tabs module, so these
+// assertions pin the shipped behaviour, not a test-local copy of the rule.
+vi.mock('../../components/adv/AdvPotBar', () => ({
+  default: ({ withStatus }: { withStatus?: boolean }) => (
+    <div data-testid="pot-bar" data-with-status={withStatus ? '1' : '0'} />
+  ),
 }));
 vi.mock('../../components/adv/AdvOverviewTab', () => ({ default: () => <div data-testid="tab-overview" /> }));
 vi.mock('../../components/adv/AdvConversationsTab', () => ({ default: () => <div data-testid="tab-conversations" /> }));
@@ -41,10 +55,6 @@ vi.mock('../../components/adv/ScheduledCalendarTab', () => ({ default: () => <di
 vi.mock('../../components/adv/HealthTab', () => ({ default: () => <div data-testid="tab-health" /> }));
 vi.mock('../../components/adv/AdvHarnessPanelPage', () => ({
   default: ({ panel }: { panel: string }) => <div data-testid="harness-panel" data-panel={panel} />,
-  ADV_HARNESS_PANEL_LABELS: {
-    prs: 'PRs', insights: 'Insights',
-    settings: 'Settings', docs: 'Docs', git: 'Git', testing: 'Testing',
-  },
 }));
 vi.mock('@/app/adv/harnesses/HarnessesWorkspace', () => ({ default: () => <div data-testid="tab-harnesses" /> }));
 vi.mock('@/app/adv/hud/HudView', () => ({ default: () => <div data-testid="tab-hud" /> }));
@@ -57,55 +67,66 @@ const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 function renderAdv(searchParams = '') {
   return render(<NuqsTestingAdapter searchParams={searchParams}><Comp /></NuqsTestingAdapter>);
 }
-const title = () => screen.getByTestId('adv-shell').getAttribute('data-title');
+/** The pot bar marker, or null when this tab does not carry one. */
+const potBar = () => screen.queryByTestId('pot-bar');
 
 afterEach(cleanup);
 
 describe('/adv tab router', () => {
   const FIRST_CLASS = [
-    { tab: 'overview', t: 'Overview', child: 'tab-overview' },
+    { tab: 'overview', child: 'tab-overview', bar: true, pills: false },
     // HUD is a first-class tab (owner ask 2026-07-25) — /adv/HUD redirects here.
-    { tab: 'hud', t: 'HUD', child: 'tab-hud' },
-    { tab: 'conversations', t: 'Conversations', child: 'tab-conversations' },
-    { tab: 'learning', t: 'Learning', child: 'tab-learning' },
+    // It is also where the pot cluster + status pills moved (owner ask 2026-07-27).
+    { tab: 'hud', child: 'tab-hud', bar: true, pills: true },
+    { tab: 'conversations', child: 'tab-conversations', bar: false, pills: false },
+    { tab: 'learning', child: 'tab-learning', bar: true, pills: false },
     // Label renamed Working → Work (owner ask 2026-07-26); id stays 'harnesses'.
-    { tab: 'harnesses', t: 'Work', child: 'tab-harnesses' },
-    { tab: 'health', t: 'Health', child: 'tab-health' },
-    { tab: 'frames', t: 'Frames', child: 'tab-frames' },
-    { tab: 'evals', t: 'Evaluation', child: 'tab-evals' },
-    { tab: 'calendar', t: 'Calendar', child: 'tab-calendar' },
-    { tab: 'plans', t: 'Create', child: 'tab-create-dock' },
+    { tab: 'harnesses', child: 'tab-harnesses', bar: true, pills: false },
+    { tab: 'health', child: 'tab-health', bar: false, pills: false },
+    { tab: 'frames', child: 'tab-frames', bar: false, pills: false },
+    { tab: 'evals', child: 'tab-evals', bar: false, pills: false },
+    { tab: 'calendar', child: 'tab-calendar', bar: false, pills: false },
+    { tab: 'plans', child: 'tab-create-dock', bar: true, pills: false },
   ] as const;
 
-  it.each(FIRST_CLASS)('renders the $tab surface with title "$t"', ({ tab, t, child }) => {
+  it.each(FIRST_CLASS)('renders the $tab surface (pot bar: $bar, pills: $pills)', ({ tab, child, bar, pills }) => {
     renderAdv(`?tab=${tab}`);
-    expect(title()).toBe(t);
     expect(screen.getByTestId(child)).toBeTruthy();
+    if (!bar) {
+      expect(potBar(), `${tab} aggregates the workspace — no pot picker`).toBeNull();
+      return;
+    }
+    expect(potBar(), `${tab} is pot-scoped — it needs its own pot picker`).toBeTruthy();
+    expect(potBar()!.getAttribute('data-with-status')).toBe(pills ? '1' : '0');
   });
 
   // ('brainstorm' removed 2026-07-13 — the surface lives in the Quick Panel popup now; P-010.)
-  const PANELS = [
-    { tab: 'prs', t: 'PRs' },
-    { tab: 'insights', t: 'Insights' },
-    { tab: 'git', t: 'Git' },
-    { tab: 'testing', t: 'Testing' },
-  ] as const;
+  const PANELS = ['prs', 'insights', 'git', 'testing'] as const;
 
-  it.each(PANELS)('routes the $tab tab to the harness panel page', ({ tab, t }) => {
+  it.each(PANELS)('routes the %s tab to the harness panel page, with a pot bar (it is a per-pot panel)', (tab) => {
     renderAdv(`?tab=${tab}`);
-    expect(title()).toBe(t);
     expect(screen.getByTestId('harness-panel').getAttribute('data-panel')).toBe(tab);
+    expect(potBar()).toBeTruthy();
+    expect(potBar()!.getAttribute('data-with-status')).toBe('0');
   });
 
   it('defaults to the overview surface when ?tab is absent', () => {
     renderAdv('');
-    expect(title()).toBe('Overview');
     expect(screen.getByTestId('tab-overview')).toBeTruthy();
   });
 
   it('falls back to overview for an unknown ?tab value (enum guard)', () => {
     renderAdv('?tab=bogus');
-    expect(title()).toBe('Overview');
     expect(screen.getByTestId('tab-overview')).toBeTruthy();
+  });
+
+  it('keeps the pot bar OUTSIDE the tab error boundary, so a crashed tab is still escapable', () => {
+    const { container } = renderAdv('?tab=hud');
+    const bar = potBar()!;
+    const body = container.querySelector('.pc-advshell__tabbody')!;
+    expect(body).toBeTruthy();
+    expect(body.contains(bar), 'the bar must not be inside the boundary-wrapped body').toBe(false);
+    // …and it comes first, so it reads as the tab's top row.
+    expect(bar.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

@@ -23,6 +23,7 @@ import { stringify as stringifyYaml } from 'yaml';
 import { getOrgPg } from '@papercusp/db-org';
 import type { DeploymentConfig } from '@papercusp/deployment-driver';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../../harness-registry';
+import { pinRepoKey } from '../../sync/pot-git/repo-identity';
 import { operatorResolveExtends, availableHiveBlueprintIds } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../blueprint/_resolve';
 import { POT_BLUEPRINT_ID, declarePotTimeWake, recordPotWake } from '../../pot/wake';
@@ -664,6 +665,19 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
               entry.github_remote = publish.remote;
               if (publish.repoId) entry.github_repository_id = publish.repoId;
               entry.github_default_branch = publish.defaultBranch ?? committed.branch;
+              // EI-18788176839043286: stamping the coords above is the exact instant a
+              // pot's pot-git repoKey would flip from `slug` to `gh-<id>` — a different
+              // bare-store path AND a different wire key, which silently abandons the
+              // old store and orphans every peer still keyed on it (live: the P-302 rig
+              // sat 7 days on the tower's abandoned store while reporting ok:true).
+              // PIN it so it can never drift again. Deliberately AFTER the stamp: this
+              // is the fresh create+publish flow, no peer exists yet, so the
+              // upstream-derived `gh-<id>` is the right value and a later joiner
+              // derives the same one. (Pinning BEFORE the stamp would freeze it to the
+              // bare slug and REGRESS the new-pot case — see the work-item.) Idempotent:
+              // an entry already pinned by the boot backfill keeps its existing key,
+              // which is what protects an ESTABLISHED pot from this same re-key.
+              entry.pot_repo_key = pinRepoKey(entry);
               await saveHarnessRegistry(reg2, ws);
             }
             if (publish.recoveredFromPushFailure) {

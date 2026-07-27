@@ -181,11 +181,23 @@ export default defineTool({
         "P-008: the claim MODALITY — 'conclusion' (a settled finding), 'assumption' (provisional; pair it with dependsOn so it goes stale on its own terms), or 'convention' (normative: \"we do X here\"). This is NOT `scope`: scope says who the fact is ABOUT, kind says what kind of claim it is. Omit = not declared (never rewritten to 'conclusion' — a modality nobody stated is not one).",
       ),
     dependsOn: z
-      .array(z.string().min(1).max(200))
+      .array(
+        z.union([
+          z.string().min(1).max(200),
+          z.object({
+            cell: z.string().min(1).max(200),
+            as: z
+              .string()
+              .max(200)
+              .optional()
+              .describe('The SUBJECT, for a cell whose callerRelativity is "parameter" — same meaning as state:read { as }.'),
+          }),
+        ]),
+      )
       .max(FACT_MAX_DEPENDENCIES)
       .optional()
       .describe(
-        `P-008: the CELL ids this fact rests on (max ${FACT_MAX_DEPENDENCIES}), e.g. ["pipeline.myChange"]. Each is READ AND DIGESTED NOW, so a later reader is told mechanically that "the cell you relied on changed from X to Y" instead of guessing from the fact's age. This is what makes an assumption auto-invalidate (D-007) — without it, an assumption is just a conclusion with a weaker badge. A cell that cannot be read is recorded as such and never later reported fresh; it never blocks the write.`,
+        `P-008: the CELL ids this fact rests on (max ${FACT_MAX_DEPENDENCIES}) — either a bare id ("deploy.3070.sha") or { cell, as } when the cell is caller-relative ({ cell: "git.pipelinePosition", as: "packages/operator-core/lib/x.ts" }). Each is READ AND DIGESTED NOW, so a later reader is told mechanically that "the cell you relied on changed from X to Y" instead of guessing from the fact's age. This is what makes an assumption auto-invalidate (D-007) — without it, an assumption is just a conclusion with a weaker badge. A cell that cannot be read is recorded as such and never later reported fresh; it never blocks the write. Run state:read { } to see the cells you may declare.`,
       ),
     claim: z
       .record(z.string(), z.unknown())
@@ -292,12 +304,19 @@ export default defineTool({
     // because a resolver was down would be worse, and is the failure mode this
     // table's write path has been hardened against twice already.
     let dependsOn: FactDependency[] = [];
-    if (args.dependsOn?.length) {
+    const declaredCells = (args.dependsOn ?? []).map((d) => (typeof d === 'string' ? d : d.cell));
+    if (declaredCells.length > 0) {
       try {
         const { cellReaderFromCtx } = await import('../cell-reader-ctx');
         const { captureFactDependencies } = await import('./dependency-staleness');
         const { reader, env } = cellReaderFromCtx(identity, ctx);
-        dependsOn = await captureFactDependencies(args.dependsOn, reader, env);
+        // A caller-relative cell needs its SUBJECT, or the read comes back
+        // `insufficient-data` and the dependency can never be compared.
+        const subjects: Record<string, string> = {};
+        for (const d of args.dependsOn ?? []) {
+          if (typeof d !== 'string' && d.as) subjects[d.cell] = d.as;
+        }
+        dependsOn = await captureFactDependencies(declaredCells, reader, env, subjects);
       } catch {
         dependsOn = [];
       }
@@ -338,9 +357,7 @@ export default defineTool({
     // EI-18685042986450096 closed for truncation, so it is closed here too,
     // warn-only: no field at all on the clean case.
     const unresolvedDeps = fact.dependsOn.filter((d) => !d.digest);
-    const droppedDeps = (args.dependsOn ?? []).filter(
-      (c) => !fact.dependsOn.some((d) => d.cell === c.trim()),
-    );
+    const droppedDeps = declaredCells.filter((c) => !fact.dependsOn.some((d) => d.cell === c.trim()));
     const dependencyWarning =
       unresolvedDeps.length > 0 || droppedDeps.length > 0
         ? {
@@ -352,8 +369,10 @@ export default defineTool({
             ...(droppedDeps.length > 0 ? { dropped: droppedDeps } : {}),
             note:
               'These declared dependencies carry NO comparison anchor, so this fact can never be reported fresh or stale ' +
-              'on their account — only `undeterminable`. A cell name that does not resolve is usually a typo or a cell ' +
-              'outside your audience: check state:read { } for the cells you may read.',
+              'on their account — only `undeterminable`. `absent` = no such cell for you (a typo, or outside your ' +
+              'audience). `insufficient-data` usually means the cell is CALLER-RELATIVE and you passed a bare id — ' +
+              'declare it as { cell, as: "<subject>" } instead. Run state:read { } for the cells you may read and ' +
+              'their callerRelativity.',
           }
         : null;
     return {

@@ -8,6 +8,12 @@ import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { runHiveControl } from './hive-control';
+// This bar's OWN styles (.pc-advshell__harness-bar / __idle and the
+// --start/--stop/--waiting button variants). They used to live in AdvShell's
+// inline <style>, which only worked while this rendered inside AdvShell's header;
+// it renders inside AdvPotBar now (owner ask 2026-07-27), so it carries its own
+// stylesheet like the sibling pills do (quick-panel-status-pills D-001).
+import './adv-header-pills.css';
 
 interface Props {
   slug: string | null;

@@ -28,6 +28,10 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
     positionsUnknown: [],
+    // P-007 made this REQUIRED on PipelinePosition, and empty is the semantically
+    // correct value rather than a compiler-silencer: these fixtures describe a fully
+    // measured pipeline, so no verdict leg is degraded.
+    verdictUnknown: [],
     deployedSha: deployed,
     gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
     verdictProvenance: {

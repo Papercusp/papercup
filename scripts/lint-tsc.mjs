@@ -33,7 +33,9 @@
  *
  * Usage:
  *   npm run lint:tsc              # CI gate: any file above its baseline fails, and is NAMED
- *   npm run lint:tsc -- --mine    # only fail on regressions in files YOU changed (git status)
+ *   npm run lint:tsc -- --mine    # fail on regressions in files DIRTY IN THE TREE (git status).
+ *                                 # On this shared checkout that is yours AND every peer's — prefer
+ *                                 # --files below, which is the only trustworthy attribution here.
  *   npm run lint:tsc -- --files=path/a.ts,path/b.ts
  *                                 # EI-18731016038876755: scope to EXACTLY these files instead of
  *                                 # guessing from `git status` — the safe choice on a shared,
@@ -64,6 +66,7 @@ import {
   parseExplicitFiles,
   decidePerFile,
   effectiveBaselineByFile,
+  formatAttributionHeadline,
   runTscBaselineGate,
 } from './lib/tsc-baseline-gate.mjs';
 
@@ -75,6 +78,7 @@ export {
   parseExplicitFiles,
   decidePerFile,
   effectiveBaselineByFile,
+  formatAttributionHeadline,
 };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

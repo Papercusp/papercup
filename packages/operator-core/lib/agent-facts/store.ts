@@ -191,6 +191,17 @@ export interface FactSourceProvenance {
 export interface FactDependency {
   /** The cell id this fact rests on, e.g. `pipeline.myChange`. */
   cell: string;
+  /**
+   * The SUBJECT the cell was read about, for a `callerRelativity:'parameter'`
+   * cell (`state:read`'s `as`). Absent for global/ambient cells.
+   *
+   * ⚠ STORED, NOT RE-DERIVED, AND THAT IS LOAD-BEARING. The re-read at staleness
+   * time MUST use the same subject the digest was taken under, or the comparison
+   * silently answers a different question — "has the pipeline position of file A
+   * changed?" checked against file B is not a weaker answer, it is a wrong one,
+   * and it would report `changed` on two files that both sat perfectly still.
+   */
+  subject?: string;
   /** ISO timestamp the cell was read at assert time. */
   observedAt: string;
   /** Stable digest of the observed value. Absent iff `unknown` is set. */
@@ -449,6 +460,7 @@ export function parseFactDependencies(raw: unknown): FactDependency[] {
     if ((digest === undefined) === (unknown === undefined)) continue;
     out.push({
       cell,
+      ...(typeof d.subject === 'string' && d.subject ? { subject: d.subject } : {}),
       observedAt,
       ...(digest ? { digest } : {}),
       ...(unknown ? { unknown } : {}),
@@ -488,6 +500,7 @@ export function normalizeFactDependencies(
     seen.add(cell);
     out.push({
       cell,
+      ...(d.subject ? { subject: d.subject } : {}),
       observedAt: d.observedAt || new Date().toISOString(),
       ...(hasDigest ? { digest: d.digest } : {}),
       ...(hasUnknown ? { unknown: d.unknown } : {}),

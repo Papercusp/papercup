@@ -201,14 +201,42 @@ export interface ReadImprovementOpts {
    * ['drill']; an all-origins inspection read passes SIGNAL_ORIGINS).
    */
   origins?: readonly SignalOrigin[];
+  /**
+   * Restrict to what the LEARNING LOOP produced — the Improve view's scope
+   * (learning-tab-surface-public-release-2026-07-27 P-001 / D-002).
+   *
+   * Without it, the improvement topic is the whole captured corpus: 8,272 rows, of
+   * which 8,202 also render in the Work tab (99.93% — measured 2026-07-27). That
+   * duplication is the entire reason the Learning tab's Improve list needed scoping;
+   * "everything tagged `papercusp-improvement`" is a topic, not a provenance.
+   *
+   * Resolves via {@link ReadImprovementDeps.readLoopOutputIds} (the three-record
+   * union — see `loop-output.ts`) and is applied as a SQL `issueIds` predicate, so
+   * `limit` still bounds the SCOPED set rather than the corpus.
+   */
+  loopOutputOnly?: boolean;
 }
 
 /** Injectable dependency seam so the adapter is unit-testable without PG. */
 export interface ReadImprovementDeps {
   listIssues: (filter: ListIssuesFilter) => Promise<EngineerIssue[]>;
+  /**
+   * Resolves the learning-loop provenance union — required ONLY when
+   * {@link ReadImprovementOpts.loopOutputOnly} is set.
+   *
+   * OPTIONAL on purpose: making it required would instantly stale every fixture
+   * constructing `ReadImprovementDeps` across the tree — in files this change never
+   * touches, which neither `test:affected` nor the per-file tsc baseline selects.
+   * That is the exact trap this file already documents at {@link CountObservationDeps}
+   * and CLAUDE.md calls out as the #1 cause of silent cross-tree breakage.
+   */
+  readLoopOutputIds?: () => Promise<readonly string[]>;
 }
 
-const defaultDeps: ReadImprovementDeps = { listIssues };
+const defaultDeps: ReadImprovementDeps = {
+  listIssues,
+  readLoopOutputIds: async () => (await (await import('./loop-output')).readLoopOutputIds()).ids,
+};
 
 /**
  * Deps for {@link countObservationFilingsSince}. Deliberately a SEPARATE, narrow type
@@ -293,11 +321,30 @@ async function readByTopic(
   deps: ReadImprovementDeps,
 ): Promise<ImprovementCandidate[]> {
   const origins = opts.origins ?? ORGANIC_ONLY;
+
+  // Learning-loop provenance scope (P-001/D-002). Resolved BEFORE the read so it
+  // becomes a SQL predicate: `limit` is applied by Postgres, so post-filtering the
+  // result would take the first N of the whole corpus and then shrink it — returning
+  // an arbitrary fraction of the real answer while looking like it worked.
+  let issueIds: readonly string[] | undefined;
+  if (opts.loopOutputOnly) {
+    if (!deps.readLoopOutputIds) {
+      // Fail loudly. Silently ignoring the scope would return the ENTIRE improvement
+      // corpus under a name that promises the loop's output — reinstating the exact
+      // 8,202-row Work-tab duplication this option exists to remove.
+      throw new Error(
+        'readByTopic: loopOutputOnly requires deps.readLoopOutputIds (see improvements/loop-output.ts)',
+      );
+    }
+    issueIds = await deps.readLoopOutputIds();
+  }
+
   const issues = await deps.listIssues({
     topic,
     state: opts.state,
     limit: opts.limit ?? 500,
     signalOrigins: origins,
+    ...(issueIds ? { issueIds } : {}),
   });
 
   // Origin gate (frontier P-002/D-002): enforced HERE as well as in the SQL

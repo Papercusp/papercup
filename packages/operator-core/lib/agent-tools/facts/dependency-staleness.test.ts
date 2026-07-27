@@ -13,6 +13,7 @@ import {
   digestCellValue,
   renderObservedValue,
   evaluateDependencyStaleness,
+  observationKey,
   type CurrentCellObservation,
 } from './dependency-staleness';
 import { FACT_DEPENDENCY_OBSERVED_CHARS, type FactDependency } from '../../agent-facts/store';
@@ -171,5 +172,50 @@ describe('evaluateDependencyStaleness', () => {
   it('carries observedAt onto each verdict so a reader can see HOW OLD the anchor is', () => {
     const v = evaluateDependencyStaleness([dep()], now({}));
     expect(v?.deps[0].observedAt).toBe('2026-07-27T00:00:00.000Z');
+  });
+});
+
+describe('subject keying — a caller-relative cell is a different question per subject', () => {
+  it('reads the observation under the (cell, subject) key, not the bare cell id', () => {
+    const d = dep({ cell: 'git.pipelinePosition', subject: 'a.ts', digest: digestCellValue('deployed') });
+    // Keyed by cell alone this would miss and report undeterminable.
+    const v = evaluateDependencyStaleness(
+      [d],
+      now({ [observationKey('git.pipelinePosition', 'a.ts')]: { digest: digestCellValue('deployed') } }),
+    );
+    expect(v?.status).toBe('fresh');
+    expect(v?.deps[0].subject).toBe('a.ts');
+  });
+
+  it('⚠ does NOT match another subject\'s reading — the wrong-answer case, not merely a weaker one', () => {
+    // Two files both sitting perfectly still would otherwise report `changed`
+    // against each other.
+    const d = dep({ cell: 'git.pipelinePosition', subject: 'a.ts', digest: digestCellValue('deployed') });
+    const v = evaluateDependencyStaleness(
+      [d],
+      now({ [observationKey('git.pipelinePosition', 'b.ts')]: { digest: digestCellValue('pushed') } }),
+    );
+    expect(v?.status).toBe('undeterminable');
+    expect(v?.changed).toEqual([]);
+  });
+
+  it('keeps two subjects of the same cell independent', () => {
+    const v = evaluateDependencyStaleness(
+      [
+        dep({ cell: 'c', subject: 'a.ts', digest: digestCellValue('deployed') }),
+        dep({ cell: 'c', subject: 'b.ts', digest: digestCellValue('deployed') }),
+      ],
+      now({
+        [observationKey('c', 'a.ts')]: { digest: digestCellValue('deployed') },
+        [observationKey('c', 'b.ts')]: { digest: digestCellValue('moved'), observed: 'moved' },
+      }),
+    );
+    expect(v?.status).toBe('stale');
+    expect(v?.deps.map((x) => x.status)).toEqual(['fresh', 'changed']);
+  });
+
+  it('observationKey keeps a subjectless cell as its bare id (no key churn for global cells)', () => {
+    expect(observationKey('deploy.3070.sha')).toBe('deploy.3070.sha');
+    expect(observationKey('c', 'x')).not.toBe(observationKey('c', 'y'));
   });
 });

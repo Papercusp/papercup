@@ -656,6 +656,25 @@ export interface ListIssuesFilter {
    *  filter (the generic work-item surface shows everything); the LEARNING read
    *  seam (read-items.ts) is what defaults to organic-only. */
   signalOrigins?: readonly SignalOrigin[];
+  /**
+   * Restrict to an EXPLICIT set of issue ids (learning-tab-surface P-001).
+   *
+   * Exists because "the work the learning loop produced" is not expressible as a
+   * column or a single tag — provenance is recorded in THREE places that disagree
+   * (payload.sourceRole='Scout' 615 rows · the `improvement-source:Scout` topic 662 ·
+   * a `scout_routed_ideas.routed_ref` row 585; union 823, measured 2026-07-27 → WI-6338).
+   * The caller resolves that union once and passes the id set here.
+   *
+   * MUST be a SQL predicate rather than a post-hoc `.filter()` on the caller's side:
+   * `limit` is applied in Postgres, so filtering after the fact would take the first
+   * N of the UNFILTERED set and then shrink it — silently returning an arbitrary
+   * fraction of the real answer.
+   *
+   * An EMPTY array matches NOTHING (`= ANY('{}')` is false for every row), mirroring
+   * `readImprovementItems`' `harnessScopes` empty-set semantics: "a scope with no
+   * members has no rows of its own", never "no filter".
+   */
+  issueIds?: readonly string[];
   limit?: number;
   /**
    * WI-3649: when true, exclude a federated (origin='remote') row — the issue-family
@@ -742,6 +761,22 @@ export interface ListIssuesFilter {
  * `aliased` selects the unaliased (bare `engineer_issues` table) vs `ei.`-prefixed
  * (topic-joined subqueries) column form — every call site here uses one or the other.
  */
+/**
+ * The {@link ListIssuesFilter.issueIds} predicate, in ONE place so the six
+ * call sites (list / count / countByState, each in an unaliased and an
+ * `ei.`-aliased form) cannot drift apart — the WI-5512 parity rule this file
+ * states for `createdBy`/`createdAfter` applies identically here: the list, the
+ * total and the histogram must never disagree about what the filter means.
+ *
+ * `aliased` selects the `ei.`-prefixed column form used inside the topic-joined
+ * subqueries, matching {@link issueAdmissibleWhereSql}.
+ */
+function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: readonly string[]) {
+  return aliased
+    ? sql`ei.issue_id = ANY(${ids as string[]}::text[])`
+    : sql`issue_id = ANY(${ids as string[]}::text[])`;
+}
+
 function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   return aliased
     ? sql`(
@@ -810,6 +845,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${
          filter.topic
            ? sql`EXISTS (
@@ -880,6 +916,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
@@ -908,6 +945,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit
@@ -969,6 +1007,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
@@ -996,8 +1035,10 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
          AND ${
            filter.audit
@@ -1052,6 +1093,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
@@ -1085,6 +1127,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit

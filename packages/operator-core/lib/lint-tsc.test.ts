@@ -19,6 +19,7 @@ import {
   parseExplicitFiles,
   decidePerFile,
   effectiveBaselineByFile,
+  formatAttributionHeadline,
   TSC_COMMAND,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
@@ -49,6 +50,29 @@ describe('operator-vite TSC_COMMAND (EI-847)', () => {
     expect(OPERATOR_VITE_TSC_COMMAND).toContain('apps/operator-vite/tsconfig.json');
     expect(OPERATOR_VITE_TSC_COMMAND).toContain('--incremental false');
     expect(OPERATOR_VITE_TSC_COMMAND).toContain('--noEmit');
+  });
+});
+
+describe('formatAttributionHeadline — the gate may only claim authorship it can actually prove', () => {
+  // WHY THIS IS PINNED. `--mine` derives "your" files from `git status`, and this repo has ONE
+  // working tree shared by the whole fleet with every agent's edits unstaged until the next
+  // git-sync tick. So under --mine the set is "dirty right now" — yours AND every peer's — and
+  // a headline saying "YOU changed" over it is simply false. It was filed four separate times
+  // (EI-18731016038876755, which added --files, plus three duplicates) because each agent
+  // independently burned time chasing a peer's error in a file they had never opened. The
+  // costlier direction is the inverse: your OWN regression arrives amid peer noise under the
+  // same "YOU changed" label, so the natural read is "fleet drift, not mine" and it ships.
+  it('does NOT claim authorship for a git-inferred (--mine) set, and says how to scope it', () => {
+    const headline = formatAttributionHeadline({ count: 1, explicit: false });
+    expect(headline).not.toMatch(/YOU changed/i);
+    expect(headline).toContain('DIRTY IN THE WORKING TREE');
+    expect(headline).toContain('--files=');
+  });
+
+  it('DOES claim authorship for an explicitly-named (--files) set — there it is a fact', () => {
+    const headline = formatAttributionHeadline({ count: 2, explicit: true });
+    expect(headline).toContain('YOU NAMED');
+    expect(headline).toContain('2 file(s)');
   });
 });
 

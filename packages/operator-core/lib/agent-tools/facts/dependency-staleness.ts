@@ -112,6 +112,8 @@ export type FactDependencyStatus = 'fresh' | 'changed' | 'undeterminable';
 
 export interface FactDependencyVerdict {
   cell: string;
+  /** The subject the cell was read about, when it is caller-relative. */
+  subject?: string;
   status: FactDependencyStatus;
   /** When the fact was filed against this cell. */
   observedAt: string;
@@ -168,9 +170,13 @@ export function evaluateDependencyStaleness(
   const undeterminable: string[] = [];
 
   for (const dep of deps) {
-    const now = current.get(dep.cell);
+    // Keyed by cell AND subject: the same cell read about two different subjects
+    // is two different questions, and collapsing them would compare one file's
+    // pipeline position against another's.
+    const now = current.get(observationKey(dep.cell, dep.subject));
     const base: FactDependencyVerdict = {
       cell: dep.cell,
+      ...(dep.subject ? { subject: dep.subject } : {}),
       status: 'undeterminable',
       observedAt: dep.observedAt,
       ...(dep.observed ? { was: dep.observed } : {}),
@@ -270,9 +276,10 @@ export async function captureFactDependencies(
   const observedAt = new Date().toISOString();
   const out: FactDependency[] = [];
   for (const cell of wanted) {
+    const subject = subjects?.[cell];
     let obs: CurrentCellObservation;
     try {
-      obs = await observeCell(cell, reader, env, subjects?.[cell]);
+      obs = await observeCell(cell, reader, env, subject);
     } catch {
       // readCell is documented TOTAL, but this is a write path on a shared
       // table: a belt here costs nothing and a thrown assert costs a fact.
@@ -280,6 +287,8 @@ export async function captureFactDependencies(
     }
     out.push({
       cell,
+      // Persisted so the re-read asks the SAME question — see FactDependency.subject.
+      ...(subject ? { subject } : {}),
       observedAt,
       ...(obs.digest
         ? { digest: obs.digest, ...(obs.observed ? { observed: obs.observed } : {}) }
@@ -309,13 +318,24 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
   env: CellReadEnv,
 ): Promise<Array<T & { depsStale?: FactDependencyStaleness }>> {
   if (facts.length === 0) return [];
-  const cells = dedupeCells(facts.flatMap((f) => (f.dependsOn ?? []).map((d) => d.cell)));
-  if (cells.length === 0) return facts.map((f) => ({ ...f }));
+  // De-duplicate on (cell, subject), not on cell alone: two facts resting on the
+  // same cell about DIFFERENT subjects need two reads, and one read reused for
+  // both would answer the wrong question for one of them.
+  const targets = new Map<string, { cell: string; subject?: string }>();
+  for (const f of facts) {
+    for (const d of f.dependsOn ?? []) {
+      const key = observationKey(d.cell, d.subject);
+      if (!targets.has(key) && targets.size < FACT_MAX_DEPENDENCIES * 4) {
+        targets.set(key, { cell: d.cell, ...(d.subject ? { subject: d.subject } : {}) });
+      }
+    }
+  }
+  if (targets.size === 0) return facts.map((f) => ({ ...f }));
 
   const current = new Map<string, CurrentCellObservation>();
   try {
-    for (const cell of cells) {
-      current.set(cell, await observeCell(cell, reader, env));
+    for (const [key, t] of targets) {
+      current.set(key, await observeCell(t.cell, reader, env, t.subject));
     }
   } catch {
     // Fail-soft: return everything unmarked rather than half-marked. A partial
@@ -349,6 +369,17 @@ async function observeCell(
   }
   if (read.status === 'unknown') return { unknown: read.unknown.code };
   return { unknown: 'absent' };
+}
+
+/**
+ * The key a cell OBSERVATION is stored under. A caller-relative cell answers a
+ * different question per subject, so the subject is part of the identity of the
+ * reading — keying on the bare cell id would let one file's pipeline position
+ * stand in for another's. Shared by the write and read halves so they cannot
+ * disagree about what counts as "the same observation". PURE.
+ */
+export function observationKey(cell: string, subject?: string): string {
+  return subject ? `${cell} ${subject}` : cell;
 }
 
 /** Trim, drop empties, de-duplicate, and bound — shared by both halves so the

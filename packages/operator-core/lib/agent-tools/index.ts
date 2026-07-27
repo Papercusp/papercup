@@ -35,6 +35,12 @@ import './delta-flag-wiring';
 // annotator appended to every tool result ≥65%. See context-gauge-wiring.ts.
 import './context-gauge-wiring';
 
+// unified-agent-state-plane-2026-07-27: install the built-in CELL registrations.
+// Until this existed, registerBuiltinCells() was called only by tests, so every
+// running operator served an EMPTY cell registry — state:read returned a cheerful
+// empty directory and every cell read `absent`. See cell-registrations-wiring.ts.
+import './cell-registrations-wiring';
+
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
 // code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.

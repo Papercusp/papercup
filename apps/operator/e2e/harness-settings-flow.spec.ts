@@ -131,9 +131,9 @@ test.describe('harness settings surface (/adv?tab=settings)', () => {
     const mounted = await gotoSettings(page);
     test.skip(!mounted, SKIP_MSG_BLANK);
 
-    // Landed on the tab: shell title + selected trigger agree
-    // (getAdvTitle in routes/adv/index.tsx).
-    await expect(page.locator('.pc-advshell__copy h1')).toHaveText('Settings');
+    // Landed on the tab: the selected trigger says so. (The shell's `<h1>` title
+    // was the other half of this assertion until 2026-07-27, when the owner had
+    // the whole title bar removed so the tab strip sits at the very top.)
     await expect(
       page.getByRole('tab', { name: 'settings', exact: true }),
     ).toHaveAttribute('aria-selected', 'true');
@@ -203,7 +203,6 @@ test.describe('harness settings surface (/adv?tab=settings)', () => {
     const params = new URL(page.url()).searchParams;
     expect(params.get('tab')).toBe('settings');
     expect(params.get('slug')).toBe(SLUG);
-    await expect(page.locator('.pc-advshell__copy h1')).toHaveText('Settings');
     await expect(
       page.getByRole('tab', { name: 'settings', exact: true }),
     ).toHaveAttribute('aria-selected', 'true');

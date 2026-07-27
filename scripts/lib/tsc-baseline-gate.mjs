@@ -277,6 +277,33 @@ function formatRow(r) {
 }
 
 /**
+ * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.
+ *
+ * This is a pure function purely so the wording is TESTABLE, because the wording is where
+ * the bug was. `--files` means the caller NAMED the files, so "you changed" is a fact.
+ * `--mine` infers them from `git status` — and this repo has ONE working tree shared by the
+ * whole fleet, with every agent's edits unstaged until the next git-sync tick, so that set is
+ * "dirty right now": yours AND every peer's. Claiming "YOU changed" over it is false, and it
+ * is expensively false in BOTH directions — you chase a peer's error believing it is yours,
+ * or your own genuine regression arrives amid peer noise under the same label and you dismiss
+ * the lot as fleet drift. Filed four separate times before the wording was fixed
+ * (EI-18731016038876755, which added `--files`, plus three later duplicates).
+ *
+ * @param {{count: number, explicit: boolean}} opts
+ * @returns {string}
+ */
+export function formatAttributionHeadline({ count, explicit }) {
+  if (explicit) {
+    return `❌ ${count} file(s) YOU NAMED added type errors above their baseline:`;
+  }
+  return (
+    `❌ ${count} file(s) DIRTY IN THE WORKING TREE added type errors above their baseline — ` +
+    `on this shared checkout that set is yours AND every peer's, so a file here may not be yours ` +
+    `(re-run with --files=<the files you edited> to scope it to your own):`
+  );
+}
+
+/**
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
  * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
  *
@@ -400,7 +427,9 @@ export function runTscBaselineGate({
       process.exit(1);
       break;
     case 'fail-attributed':
-      console.error(`❌ ${result.attributed.length} file(s) YOU changed added type errors above their baseline:`);
+      console.error(
+        formatAttributionHeadline({ count: result.attributed.length, explicit: explicitFiles !== null }),
+      );
       for (const r of result.attributed) console.error(formatRow(r));
       if (result.newFiles.length > 0) {
         console.error(`   (also ${result.newFiles.length} NEW file(s) with errors — see below)`);

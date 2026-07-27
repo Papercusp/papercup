@@ -72,11 +72,12 @@ const PROJECTS_LITE = {
 /**
  * The FULL tab set, mirroring ADV_TABS in
  * apps/operator-vite/src/components/adv/AdvShell.tsx (declaration order).
- * `label` is both the trigger/menu-item's accessible name (rendered lowercase
- * on the strip, title-case in the More menu) and the shell `<h1>` title
- * (getAdvTitle in routes/adv/index.tsx). The strip-contents test below fails
- * if PRIMARY_TAB_IDS (or this list) drifts from the real ADV_TABS /
- * PRIMARY_ADV_TAB_IDS.
+ * `label` is the trigger/menu-item's accessible name (rendered lowercase on the
+ * strip, title-case in the More menu). It was ALSO the shell's `<h1>` title until
+ * 2026-07-27, when the owner had the whole title bar removed so the strip sits at
+ * the very top — see expectActiveSection for what replaced reading the title. The
+ * strip-contents test below fails if PRIMARY_TAB_IDS (or this list) drifts from
+ * the real ADV_TABS / PRIMARY_ADV_TAB_IDS.
  */
 const TABS = [
   { id: 'overview', label: 'Overview' },
@@ -193,9 +194,35 @@ async function gotoAdv(page: Page, search: string): Promise<boolean> {
     .catch(() => false);
 }
 
-/** The shell header's title — flips with the active tab (getAdvTitle). */
-function shellTitle(page: Page) {
-  return page.locator('.pc-advshell__copy h1');
+/**
+ * "Which section am I on" — WITHOUT a title bar to read it off. The shell's
+ * `<h1>` (and the whole "ADVANCED ORCHESTRATION / <title>" row it sat in) was
+ * removed 2026-07-27 by owner ask so the tab strip sits at the very top, so the
+ * durable signals are the two the shell still renders: a PRIMARY tab marks itself
+ * aria-selected, and a SECONDARY tab (no strip entry, D-001) lights the "More"
+ * trigger — plus `?tab=`, which is the actual store.
+ */
+async function expectActiveSection(page: Page, id: string): Promise<void> {
+  const label = TABS.find((t) => t.id === id)!.label.toLowerCase();
+  if (PRIMARY_TAB_IDS.has(id)) {
+    await expect(page.getByRole('tab', { name: label, exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  } else {
+    await expect(page.getByRole('tab', { name: label, exact: true })).toHaveCount(0);
+    await expect(moreTrigger(page)).toHaveClass(/pc-advshell__more-trigger--active/);
+  }
+  await expect
+    .poll(
+      () => {
+        const v = tabParam(page);
+        // nuqs clearOnDefault may strip `tab=overview` — equivalent state.
+        return v === null && id === 'overview' ? 'overview' : v;
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(id);
 }
 
 /** The "More sections" trigger — only rendered while secondary tabs exist
@@ -243,13 +270,10 @@ test.describe('/adv shell tab navigation (P-011)', () => {
       const mounted = await gotoAdv(page, `?tab=${tab.id}&slug=${SLUG}&scope=expanded`);
       test.skip(!mounted, SKIP_MSG);
 
-      // Landed on the tab: the shell title reflects it regardless of whether
-      // it has its own strip entry — content is driven by `activeTab`, not
-      // strip membership (AdvShell.tsx: panel content renders imperatively
-      // off activeTab; Tabs.Content stubs are forceMount/display:none a11y
-      // shims only).
-      await expect(shellTitle(page)).toHaveText(tab.label);
-
+      // Landed on the tab regardless of whether it has its own strip entry —
+      // content is driven by `activeTab`, not strip membership (AdvShell.tsx:
+      // panel content renders imperatively off activeTab; Tabs.Content stubs are
+      // forceMount/display:none a11y shims only).
       if (isPrimary) {
         await expect(
           page.getByRole('tab', { name: tab.label.toLowerCase(), exact: true }),
@@ -281,37 +305,25 @@ test.describe('/adv shell tab navigation (P-011)', () => {
     test.skip(!mounted, SKIP_MSG);
 
     // No ?tab= → the default landing surface (Overview).
-    await expect(shellTitle(page)).toHaveText('Overview');
+    await expectActiveSection(page, 'overview');
 
     // Click → URL reflects the selection (the agent/deep-link contract).
     // 'hud' and 'harnesses' (Work) are both PRIMARY tabs, so they click
     // directly off the strip.
     await page.getByRole('tab', { name: 'hud', exact: true }).click();
-    await expect.poll(() => tabParam(page), { timeout: 10_000 }).toBe('hud');
-    await expect(shellTitle(page)).toHaveText('HUD');
+    await expectActiveSection(page, 'hud');
 
     await page.getByRole('tab', { name: 'work', exact: true }).click();
-    await expect.poll(() => tabParam(page), { timeout: 10_000 }).toBe('harnesses');
-    await expect(shellTitle(page)).toHaveText('Work');
+    await expectActiveSection(page, 'harnesses');
 
     // Reload → the nuqs state round-trips (URL is the store, not useState).
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await expect(shellTitle(page)).toHaveText('Work');
-    await expect(page.getByRole('tab', { name: 'work', exact: true })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    await expectActiveSection(page, 'harnesses');
 
     // Back to the default tab: nuqs clearOnDefault drops the param (or
     // writes the default literally — both encode "overview").
     await page.getByRole('tab', { name: 'overview', exact: true }).click();
-    await expect(shellTitle(page)).toHaveText('Overview');
-    await expect
-      .poll(() => {
-        const v = tabParam(page);
-        return v === null || v === 'overview';
-      }, { timeout: 10_000 })
-      .toBe(true);
+    await expectActiveSection(page, 'overview');
   });
 
   test('selecting a secondary tab from the "More" menu writes ?tab=, closes the menu, and survives reload', async ({ page }) => {
@@ -324,34 +336,29 @@ test.describe('/adv shell tab navigation (P-011)', () => {
     // "role":"option" on CommandItem) — Git lives in the "Build" group.
     await page.getByRole('option', { name: 'Git', exact: true }).click();
 
-    await expect.poll(() => tabParam(page), { timeout: 10_000 }).toBe('git');
-    await expect(shellTitle(page)).toHaveText('Git');
+    // Git never gets its own strip tab; the trigger reflects the selection.
+    await expectActiveSection(page, 'git');
     // The popover closes on select (AdvShell's onSelect calls setMoreOpen(false)).
     await expect(page.getByRole('option', { name: 'Git', exact: true })).toHaveCount(0);
-    // Git never gets its own strip tab; the trigger reflects the selection.
-    await expect(page.getByRole('tab', { name: 'git', exact: true })).toHaveCount(0);
-    await expect(moreTrigger(page)).toHaveClass(/pc-advshell__more-trigger--active/);
 
     // Reload → the nuqs state round-trips even for a secondary tab.
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await expect(shellTitle(page)).toHaveText('Git');
-    await expect(moreTrigger(page)).toHaveClass(/pc-advshell__more-trigger--active/);
+    await expectActiveSection(page, 'git');
   });
 
   test('?scope=all still shows only the primary tabs, and pins a per-pot deep link instead of snapping to Overview', async ({ page }) => {
     await stubShellApis(page);
     // Git is a per-pot tab — hidden from the workspace-level strip. Since
     // owner ask 2026-06-17 the shell KEEPS a deep-linked per-pot tab pinned
-    // (title + ?tab= unchanged) rather than snapping back to Overview, so its
-    // body can show the "pick a pot" prompt (AdvShell.tsx's `visibleTabs`
-    // append + the comment at "owner ask 2026-06-17"). The pinned tab is
-    // still secondary (D-001), so it surfaces via the "More" trigger's active
-    // state, never as its own strip tab.
+    // (?tab= unchanged) rather than snapping back to Overview, so its body can
+    // show the "pick a pot" prompt (AdvShell.tsx's `visibleTabs` append + the
+    // comment at "owner ask 2026-06-17"). The pinned tab is still secondary
+    // (D-001), so it surfaces via the "More" trigger's active state, never as
+    // its own strip tab.
     const mounted = await gotoAdv(page, `?tab=git&slug=${SLUG}&scope=all`);
     test.skip(!mounted, SKIP_MSG);
 
-    await expect(shellTitle(page)).toHaveText('Git');
-    expect(tabParam(page)).toBe('git');
+    await expectActiveSection(page, 'git');
 
     // The strip shows exactly the primary tabs — same set as single-pot mode,
     // since every PRIMARY_ADV_TAB_IDS member is also a WORKSPACE_TAB_IDS

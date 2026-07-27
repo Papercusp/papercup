@@ -569,7 +569,7 @@ work IS the task.
 ```bash
 npm run test:affected                  # unit only — fast, default
 npm run test:affected:integration      # also runs *.integration.test.ts
-npm run lint:tsc -- --mine             # TYPES — vitest does not typecheck (see below)
+npm run lint:tsc -- --files=<the files you edited>   # TYPES — vitest does not typecheck
 ```
 
 ⚠ **`test:affected` is TYPE-BLIND — a green run does NOT mean your change compiles.**
@@ -577,10 +577,21 @@ Vitest transforms via esbuild/swc, and neither `scripts/affected-tests.mjs` nor
 `lint:affected-gate` invokes `tsc` at all. So a type-only regression is invisible to
 the routine loop and first surfaces at the **green-checkpoint** hours later, where it
 reds the gate for the whole fleet and costs a peer the diagnosis. **Run
-`npm run lint:tsc -- --mine` after editing** — it gates a PER-FILE baseline scoped to
-the files *you* changed (fail-soft, never gates peer drift), which is what makes it
-usable while operator-core still carries ~200 pre-existing errors that would otherwise
-drown your one new one.
+`npm run lint:tsc -- --files=packages/operator-core/lib/a.ts,…/b.ts` after editing** —
+it gates a PER-FILE baseline scoped to exactly the files you name (fail-soft), which is
+what makes it usable while operator-core still carries ~200 pre-existing errors that
+would otherwise drown your one new one.
+
+> ⚠ **Name the files; do NOT use `--mine` on this tree.** `--mine` infers "your" files
+> from `git status`, and this repo has ONE working tree shared by the whole fleet with
+> every agent's edits sitting unstaged until the next git-sync tick — so `--mine` means
+> "dirty in the tree", i.e. *yours and every peer's*, and it will report a file you never
+> opened as "1 file(s) YOU changed". This is one of the most-repeatedly-filed frictions
+> here (EI-18731016038876755, which added `--files` precisely to fix it, plus three
+> later duplicates). Both directions cost you: you chase a peer's error believing it is
+> yours, or — worse — your own genuine regression arrives amid peer noise all labelled
+> "YOU changed" and you dismiss the lot as fleet drift. `--files` is the only form whose
+> attribution is trustworthy here.
 
 ⚠⚠ **`lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
 `tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`). A change confined

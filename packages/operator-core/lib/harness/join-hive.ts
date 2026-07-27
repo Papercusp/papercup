@@ -47,6 +47,7 @@ import {
   type SeedGitSyncRoutineOutcome,
 } from './git-sync/git-sync-routine';
 import { upsertRemoteHiveIdentity } from '../hive-store';
+import { pinRepoKey } from '../sync/pot-git/repo-identity';
 import { hiveKeychainId } from '../identity/hive-keypair';
 
 // ── Shapes ─────────────────────────────────────────────────────────────────────
@@ -352,6 +353,13 @@ export async function joinHiveAsView(
           ? {}
           : { github_repository_id: link.repoId }),
       };
+      // EI-18788176839043286: freeze the pot-git repoKey now that this member's
+      // upstream coords are settled. The key names both the bare store on disk and
+      // the repo on the wire, so it must never drift afterwards — an unpinned entry
+      // silently re-keys itself the next time these coords change, abandoning its
+      // store and orphaning every peer. `pinRepoKey` is idempotent: an already-pinned
+      // entry keeps its existing key rather than adopting a newly-derived one.
+      next.pot_repo_key = pinRepoKey(next);
       memberEntries.set(next.slug, next);
       return next;
     });
