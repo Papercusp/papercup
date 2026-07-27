@@ -243,6 +243,16 @@ jobs:
       - name: Lint no raw setInterval
         run: npm run lint:no-raw-setinterval
 
+      # no-unenrolled-detached-spawn guard (task-manager-no-escape-2026-07-27 P-016):
+      # the PROCESS analogue of the setInterval guard above. A `detached: true` spawn
+      # is a process meant to OUTLIVE the call that made it — the root of a subtree —
+      # so it must be enrolled in the task ledger (task-manager/enroll-sync or
+      # managed-spawn) or carry an explicit allowlist entry with a reason. Scoped to
+      # detached spawns rather than all ~813 spawn sites on purpose: cgroup membership
+      # is inherited, so confining ROOTS accounts for their descendants automatically.
+      - name: Lint no unenrolled detached spawn
+        run: npm run lint:no-unenrolled-spawn
+
       # no-bespoke-state-read gate (unified-agent-state-plane-2026-07-27 P-005 / D-010,
       # named by D-016's enforcement-tier table):
       # a NEW bespoke state-read tool must declare, inside its defineTool literal,

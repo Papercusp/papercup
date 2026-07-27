@@ -172,6 +172,7 @@
     "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",
     "scan:retirement-surface": "node scripts/scan-retirement-surface.mjs",
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
+    "lint:no-unenrolled-spawn": "node scripts/check-no-unenrolled-detached-spawn.mjs",
     "lint:no-raw-setinterval": "node scripts/check-no-raw-setinterval.mjs",
     "lint:no-bespoke-state-read": "node scripts/check-no-bespoke-state-read.mjs",
     "lint:timer-classification": "node scripts/check-timer-classification.mjs",

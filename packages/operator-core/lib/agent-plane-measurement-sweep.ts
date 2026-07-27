@@ -243,7 +243,7 @@ async function defaultRecordMeasurement(
        metrics, interpretable_count, metric_count, summary, producer_version)
     VALUES (${ctx.workspaceId}, ${ctx.harnessSlug}, ${m.measuredAt},
             ${new Date(m.windowStartMs).toISOString()}, ${new Date(m.windowEndMs).toISOString()},
-            ${db.json(m.metrics as unknown as object)}, ${m.interpretableCount}, ${m.metrics.length},
+            ${db.json(m.metrics as unknown as Parameters<typeof db.json>[0])}, ${m.interpretableCount}, ${m.metrics.length},
             ${m.summary}, ${PLANE_MEASUREMENT_PRODUCER_VERSION})
   `;
 }

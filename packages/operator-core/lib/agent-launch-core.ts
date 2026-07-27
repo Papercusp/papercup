@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { mapAdvSessionRow, type AdvSessionRow } from './adv-sessions';
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
-import { MIN_COMPACTION_LIMIT_TOKENS } from './agent-config-constants';
+import { composeLaunchModelSpec, MIN_COMPACTION_LIMIT_TOKENS } from './agent-config-constants';
 
 /** Match `psu` as a command token — start of line, or after whitespace / a
  *  shell separator — followed by whitespace. Shared by every injector. */
@@ -461,41 +461,23 @@ export function foldMemberSpec(
   };
 }
 
-/** Reasoning-effort tails psu recognizes on a `<model>:<effort>` spec (psu-launcher
- *  validateModelSpec / modelArgsFor). Anything else after a `:` is part of the model
- *  id itself (bedrock's `…-v2:0`) and must never be mistaken for an effort. */
-const LAUNCH_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-
 /**
  * Compose the psu `--model` value from a model id + an optional separate effort
  * (per-member-declarative-launch-specs D-001). A `MemberSpec` names `model` and
  * `effort` independently — the wire form psu understands is the single suffixed
  * spec, so they are joined HERE.
  *
- * An explicit `effort` REPLACES a recognized effort tail already on the spec
- * (member > fleet precedence would otherwise be silently lost to the base spec's
- * suffix). Effort without a model is refused: psu has no standalone effort flag,
- * so there is nothing to attach it to and it would vanish.
+ * WI-6321: the IMPLEMENTATION now lives in the client-safe `agent-config-constants`
+ * so the GUI launcher shares it rather than carrying a third copy that dropped
+ * effort silently. This wrapper survives only to keep the `memberLaunchCommand:`
+ * prefix on the error (fleet-launch callers match on it) and the local name.
  */
 export function composeModelSpec(model?: string, effort?: string): string | undefined {
-  if (!effort) return model;
-  if (!model) {
-    throw new Error(
-      `memberLaunchCommand: effort ${JSON.stringify(effort)} needs a model — psu carries effort only as a ` +
-        `\`<model>:<effort>\` spec, so an effort with no model would be dropped. Set model too, or drop effort.`,
-    );
+  try {
+    return composeLaunchModelSpec(model, effort);
+  } catch (e) {
+    throw new Error(`memberLaunchCommand: ${e instanceof Error ? e.message : String(e)}`);
   }
-  if (!(LAUNCH_EFFORTS as readonly string[]).includes(effort)) {
-    throw new Error(
-      `memberLaunchCommand: unrecognized effort ${JSON.stringify(effort)} — psu accepts ${LAUNCH_EFFORTS.join('|')}.`,
-    );
-  }
-  const colon = model.lastIndexOf(':');
-  const base =
-    colon > 0 && (LAUNCH_EFFORTS as readonly string[]).includes(model.slice(colon + 1).toLowerCase())
-      ? model.slice(0, colon)
-      : model;
-  return `${base}:${effort}`;
 }
 
 /** Shell-quote free-form values that are embedded in the scripted psu command. */

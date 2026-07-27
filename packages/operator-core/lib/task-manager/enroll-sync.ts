@@ -43,10 +43,18 @@ export interface SyncEnrolment {
  * landed yet (first job after boot) or this host cannot make user scopes at all
  * (a container, macOS). Both still get a ledger row.
  */
-export function beginSyncEnrolment(spec: Pick<TaskSpec, 'class'> & Partial<TaskSpec>): SyncEnrolment {
+export function beginSyncEnrolment(
+  spec: Pick<TaskSpec, 'class'> & Partial<TaskSpec>,
+  opts: {
+    /** Caller-side veto (a feature flag, a platform check). `false` never confines;
+     *  `true`/omitted still defers to the probe. Enrolment happens either way — the
+     *  LEDGER row is not the part anyone should be able to turn off. */
+    confine?: boolean;
+  } = {},
+): SyncEnrolment {
   const taskId = newTaskId();
   const probe = scopeSupportKnown();
-  const confined = probe?.ok === true;
+  const confined = opts.confine !== false && probe?.ok === true;
   const scopeUnit = confined ? scopeUnitForTask(taskId) : null;
 
   return {

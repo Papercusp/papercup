@@ -3,12 +3,24 @@
  * (cb4b9's buildScoutCycleDeps + runScoutCycle), supplying the three
  * irreducibly-injected deps a Scout cycle owns:
  *
- * RETIRED the bespoke `system:scout-cycle` action (deterministic-blueprints-migration
- * -2026-06-13 P-130): scout now runs as the `scout` BLUEPRINT — its seed fires
- * `system:blueprint-run {blueprintId:'scout'}` → the `blender:cycle` deterministic step
- * → `runScoutCycleTick` (which calls `productionScoutRunner` below). This module no
- * longer registers a system action; it stays as the home of `productionScoutRunner`
- * (the blender:cycle op's production cycle deps) + noopArchive/setScoutArchiveBuilder.
+ * The bespoke `system:scout-cycle` ROUTINE ACTION was retired at
+ * deterministic-blueprints-migration-2026-06-13 P-130 in favor of the `scout`
+ * BLUEPRINT — its seed fires `system:blueprint-run {blueprintId:'scout'}` →
+ * the `blender:cycle` deterministic step → `runScoutCycleTick` (which calls
+ * `productionScoutRunner` below). That remains the primary, workspace-singleton
+ * Scout path.
+ *
+ * EI-18741240128927188: P-130 retired the *workspace-singleton* action, but the
+ * PER-POT `system:scout-cycle` routine row provisioned INACTIVE at pot:create
+ * (`lib/pot/provision-learning-loop.ts` P-020, one day after P-130) was never
+ * migrated off it — its own docstring promises "bring-up human-gated" arming,
+ * but nothing registered a `system:scout-cycle` handler, so arming that row
+ * silently ticked "no handler registered … skipping" forever. Fixed by
+ * self-registering HERE, reusing the exact same `productionScoutRunner` the
+ * blueprint path already uses — so a per-pot arm and the workspace singleton
+ * run byte-identical cycle logic, and the shared `runScoutCycleTick`
+ * single-flight claim (keyed by scope) still dedupes them to one fire per
+ * cadence window if both are ever live for the same scope at once.
  * Injected deps:
  *
  *   - llmCall — the real stateless LLM client (lib/llm-testing/llm-client; it satisfies
@@ -22,13 +34,12 @@
  *     archive. Falls back to a NO-OP if the archive is unavailable (e.g. PG/migration
  *     193 absent) — the broad + concrete rails are unaffected.
  *
- * No side-effect registration: the scout blueprint's deterministic step
- * (`blueprint-steps/ops/scout-cycle.ts`) imports `productionScoutRunner` directly.
- * The per-hive scout routine is provisioned INACTIVE at pot:create
- * (lib/hive/provision-learning-loop.ts) — bring-up human-gated (D-002).
+ * `productionScoutRunner` is used TWO ways: imported directly by the scout
+ * blueprint's deterministic step, and wired here as the `system:scout-cycle`
+ * per-pot routine action's runner (registerScoutCycleAction, below).
  */
 
-import { type ScoutCycleRunner } from './scout-cycle-action';
+import { registerScoutCycleAction, type ScoutCycleRunner } from './scout-cycle-action';
 import { admissionDenialFrom, isCapacityError, type CapacityFallbackEvent } from './capacity-errors';
 import { readScoutPoolSnapshot } from './capacity-probe';
 import { runScoutCycle } from './cycle';
@@ -458,5 +469,9 @@ function isFlushable(a: ArchivePort): a is ScoutArchivePort {
   return typeof (a as ScoutArchivePort).flush === 'function';
 }
 
-// No self-registration: `system:scout-cycle` is RETIRED (P-130). Scout runs via the
-// `scout` blueprint; the blender:cycle op imports `productionScoutRunner` above.
+// EI-18741240128927188: register `system:scout-cycle` so the PER-POT routine row
+// `provision-learning-loop.ts` seeds (INACTIVE, per-pot budget) actually fires when
+// an owner arms it — reusing the SAME `productionScoutRunner` the `scout` blueprint's
+// `blender:cycle` step already runs (byte-identical cycle logic; the workspace-
+// singleton path via `system:blueprint-run` is unaffected and remains primary).
+registerScoutCycleAction(productionScoutRunner);

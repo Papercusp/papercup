@@ -113,7 +113,10 @@ describe('reconcileTick — happy path', () => {
   });
 
   it('persists an unaccounted group and reports it', async () => {
-    const notify = vi.fn(async () => {});
+    const sent: { summary: string; kind: 'message' | 'escalation' }[] = [];
+    const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
+      sent.push(msg);
+    });
     const out = await reconcileTick({
       listLive: async () => [],
       scan: () =>
@@ -131,7 +134,7 @@ describe('reconcileTick — happy path', () => {
     });
     expect(out.unaccountedPersisted).toBe(1);
     expect(notify).toHaveBeenCalledOnce();
-    expect(vi.mocked(notify).mock.calls[0]![0].summary).toMatch(/unaccounted cgroup/);
+    expect(sent[0]!.summary).toMatch(/unaccounted cgroup/);
   });
 
   it('keeps a closed scope attached to its ORIGINAL task id rather than forking a phantom', async () => {
@@ -197,14 +200,17 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
   });
 
   it('escalates a degraded scan rather than staying quiet', async () => {
-    const notify = vi.fn(async () => {});
+    const sent: { summary: string; kind: 'message' | 'escalation' }[] = [];
+    const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
+      sent.push(msg);
+    });
     await reconcileTick({
       listLive: async () => [row({ taskId: 'iii999' })],
       scan: () => scanResult([], { ownedRootExists: false }),
       fs: memFs({}),
       notify,
     });
-    expect(vi.mocked(notify).mock.calls[0]![0].kind).toBe('escalation');
+    expect(sent[0]!.kind).toBe('escalation');
   });
 
   it('an empty scan on an EMPTY ledger is not degraded — nothing to get wrong', async () => {
@@ -233,7 +239,10 @@ describe('reconcileTick — dryRun', () => {
 
 describe('reconcileTick — notification discipline', () => {
   it('says nothing at all on a clean tick', async () => {
-    const notify = vi.fn(async () => {});
+    const sent: { summary: string; kind: 'message' | 'escalation' }[] = [];
+    const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
+      sent.push(msg);
+    });
     await reconcileTick({ listLive: async () => [], scan: () => scanResult([]), fs: memFs({}), notify });
     expect(notify).not.toHaveBeenCalled();
   });
@@ -241,7 +250,10 @@ describe('reconcileTick — notification discipline', () => {
   it('does not re-notify an unchanged condition every tick', async () => {
     // 30s cadence x a per-tick broadcast = 2,880 messages/day, which is how a
     // signal becomes noise and then gets muted.
-    const notify = vi.fn(async () => {});
+    const sent: { summary: string; kind: 'message' | 'escalation' }[] = [];
+    const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
+      sent.push(msg);
+    });
     const args = {
       listLive: async () => [],
       scan: () =>
@@ -258,7 +270,10 @@ describe('reconcileTick — notification discipline', () => {
   });
 
   it('re-notifies when the condition CHANGES', async () => {
-    const notify = vi.fn(async () => {});
+    const sent: { summary: string; kind: 'message' | 'escalation' }[] = [];
+    const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
+      sent.push(msg);
+    });
     await reconcileTick({
       listLive: async () => [],
       scan: () =>

@@ -613,6 +613,28 @@ export function fleetScopedMiss(
   // the exact shape that let a starved fleet confidently self-diagnose "not a spec bug" for
   // 4.5h (see diagnoseFleetScopeIssueFloorMiss's doc comment).
   const specEmpty = !paused && breakdown != null && breakdown.matchedByFilter === 0;
+  // EI-18741523426513509: the spec's filter DID match real rows, but every one is presently
+  // excluded by a TRANSIENT claim floor (an uncleared plan-lane blocker, a peer's claim-hold,
+  // needs-human, a federation-detector gate, …) — the pool is legitimately, honestly empty
+  // RIGHT NOW and will very likely clear on its own the moment the gating condition lifts
+  // (observed live: an externalBlocker plan-lane gate cleared in ~90s with two idle members
+  // claiming unaided the instant it did). This is the OPPOSITE remedy from `specEmpty`: await
+  // or re-poll, never rewrite the spec. Naming it distinctly (instead of leaving `reason`
+  // absent, indistinguishable-by-shape from "diagnosis merely unavailable") is what stops a
+  // member from inventing a spec-authoring hypothesis for what is actually ordinary floor
+  // gating, and stops a leader from "fixing" a claim spec that was never broken.
+  // Deliberately excludes divergent/unconfirmedSurvivors (those require breakdown.claimable >
+  // 0 survivors; this requires exactly 0) and cooldown (reported as its own distinct reason
+  // below, since a cooldown clears on a known wall-clock schedule rather than an event).
+  const floorGated =
+    !paused &&
+    !cooldown &&
+    !divergent &&
+    !unconfirmedSurvivors &&
+    !specEmpty &&
+    breakdown != null &&
+    breakdown.matchedByFilter > 0 &&
+    breakdown.claimable === 0;
   // EI-15185: derive the ready-made `payload_filter` for a `work-item:claimable`
   // idle-park await from the member's OWN claim-spec view — the missing "how do I
   // scope this await" answer that led members to register an UNSCOPED await and
@@ -707,6 +729,11 @@ export function fleetScopedMiss(
     // relayed report) can branch on this WITHOUT digging into excludedBreakdown.matchedByFilter.
     // Absent for every other miss shape — this is deliberately the loud, rare case.
     ...(specEmpty ? { reason: 'spec_matches_nothing' as const } : {}),
+    // EI-18741523426513509: named, top-level reason for the floor-gated (transient) case — the
+    // effect-vs-cause counterpart of `spec_matches_nothing` above. A caller (or a leader reading
+    // a relayed report) can branch on this WITHOUT digging into excludedBreakdown to tell "your
+    // spec is wrong, fix it" apart from "your spec is fine, the pool is momentarily gated, wait".
+    ...(floorGated ? { reason: 'all_matches_gated' as const } : {}),
     // WI-5947: quotable provenance for the survivor reading — 'confirmed-twice' is what makes a
     // divergence report credible, and its ABSENCE is what tells a reader (or a leader receiving a
     // relayed report) that the claim was never confirmed. Present whenever survivors were seen.

@@ -87,7 +87,18 @@ import { initAgentGovernorObserver } from '../agent-governor-observer';
 import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';
 import { initRateLimitConfig } from '../rate-limit-config';
 import { recordUsageHeaders } from '../agent-usage-telemetry';
-import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
+import { SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
+import {
+  beginSyncEnrolment,
+  completeSyncEnrolment,
+  finishSyncEnrolment,
+} from '../task-manager/enroll-sync';
+import { warmScopeProbe } from '../task-manager/managed-spawn';
+
+// Warm the scope probe so the first agent turn after boot can already be enrolled
+// into a NAMED scope (task-manager P-009). Fire-and-forget — an agent turn must
+// never wait on the task manager's readiness.
+warmScopeProbe();
 
 // Audit P-015 (EI-172): read these env knobs LAZILY, per spawn — as module-init
 // consts they froze at first import, so setting/changing the env after host boot
@@ -528,9 +539,23 @@ function runChild(
     }
     let timedOut = false;
     const launchedAt = Date.now();
-    const [spawnCommand, ...spawnArgs] = useScope
-      ? buildIsolatedScopeArgv([command, ...args], agentSpawnScopeMemoryMaxG())
-      : [command, ...args];
+    // task-manager-no-escape-2026-07-27 P-009: this is the single biggest subtree
+    // on the box — an agent CLI plus everything it goes on to run — so it is the
+    // spawn most worth naming. The scope was already isolated (WI-1499); what
+    // changes here is that it is now a NAMED scope carrying a ledger key, which is
+    // what makes the whole subtree addressable and attributable instead of merely
+    // memory-capped. Enrolment happens even when the scope flag is off: the ledger
+    // row is not the part that should be switchable.
+    const enrolment = beginSyncEnrolment(
+      {
+        class: 'agent-session',
+        memoryMaxBytes: agentSpawnScopeMemoryMaxG() * 1024 ** 3,
+        runtimeMaxSec: timeoutMs ? Math.ceil(timeoutMs / 1000) : null,
+      },
+      { confine: useScope },
+    );
+    const wrapped = enrolment.wrap(command, args);
+    const [spawnCommand, ...spawnArgs] = [wrapped.binary, ...wrapped.argv];
     // `detached: true` puts the child in its OWN process group so we can reap the
     // WHOLE tree on abort/timeout, not just the immediate child. In dev the spawn is
     // `node <tsx-cli> invoke-once.ts`, and the tsx CLI forks a worker (invoke-once,
@@ -550,6 +575,20 @@ function runChild(
     if (child.pid != null) {
       try { onChildPid?.(child.pid); } catch { /* recording is best-effort */ }
     }
+    completeSyncEnrolment(
+      enrolment,
+      {
+        class: 'agent-session',
+        title: `agent turn: ${role}`,
+        argv: [command, ...args],
+        cwd: projectDir,
+        launchedBy: `orchestrator:${role}`,
+        memoryMaxBytes: agentSpawnScopeMemoryMaxG() * 1024 ** 3,
+        runtimeMaxSec: timeoutMs ? Math.ceil(timeoutMs / 1000) : null,
+        detail: { role, scopeRequested: useScope },
+      },
+      child.pid ?? null,
+    );
     let stdout = '';
     let stderr = '';
     let killGrace: ReturnType<typeof setTimeout> | null = null;
@@ -600,10 +639,23 @@ function runChild(
       if (settled) return;
       if (isScopeLaunchFailure(code)) {
         settled = true;
+        // The retry gets its OWN enrolment (a fresh runChild call); close this row
+        // with the real reason so the ledger shows a scope failure rather than a
+        // phantom agent turn that exited non-zero for no visible cause.
+        finishSyncEnrolment(enrolment, {
+          state: 'exited',
+          exitCode: code,
+          exitReason: 'scope launch failed — retried unconfined',
+        });
         resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, false));
         return;
       }
       settled = true;
+      finishSyncEnrolment(enrolment, {
+        state: timedOut ? 'timed_out' : aborted ? 'killed' : 'exited',
+        exitCode: code,
+        exitReason: timedOut ? 'agent turn timeout' : aborted ? 'aborted (fleet:cancel)' : null,
+      });
       // A child we aborted may exit 0 (it caught SIGTERM and shut down) or via the
       // signal — normalize to a non-zero "aborted" outcome so callers don't read a
       // cancelled run as a clean success.
@@ -641,11 +693,17 @@ function runChild(
       if (settled) return;
       if (useScope && !aborted) {
         settled = true;
+        finishSyncEnrolment(enrolment, {
+          state: 'exited',
+          exitCode: null,
+          exitReason: `scope spawn error — retried unconfined: ${err instanceof Error ? err.message : String(err)}`,
+        });
         resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, false));
         return;
       }
       settled = true;
       const msg = err instanceof Error ? err.message : String(err);
+      finishSyncEnrolment(enrolment, { state: 'exited', exitCode: null, exitReason: `spawn error: ${msg}` });
       console.error(`[dbos-invoke] role=${role} spawn error: ${msg}`);
       resolve({ output: '', exitCode: 1, stderr: msg, rawStdoutTail: rawStdoutTail(stdout) });
     });

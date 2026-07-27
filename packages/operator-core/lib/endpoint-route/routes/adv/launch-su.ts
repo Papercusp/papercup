@@ -57,6 +57,20 @@ const launchSu = defineTool({
       context_size?: string | null;
       resume_session_id?: string | null;
       kickoff?: { kind?: string } | null;
+      // WI-6321 (owner ask 2026-07-27): psu-parity launch options the GUI could
+      // not express, so every GUI launch was silently unfleeted and on the
+      // default system credential.
+      // named-su-agent-fleets P-006: `fleet` = an existing slug to JOIN;
+      // `fleet_name` = a NEW fleet's title (this session becomes its LEADER),
+      // with `fleet_scheme` naming its colour. psu derives the slug from the
+      // name, so a new fleet sends the name and lets the launcher slugify.
+      fleet?: string | null;
+      fleet_name?: string | null;
+      fleet_scheme?: string | null;
+      // psu-account-chooser: 'default' | 'auto' | a pool account id. ALWAYS sent
+      // by a GUI launch — psu with no --account opens an INTERACTIVE picker,
+      // which would hang a spawned session waiting for a human at a terminal.
+      account?: string | null;
       // pui-reactive-session-panes D-006: record a pending workbench launch
       // instead of spawning a terminal — the pui reactively opens the pane that
       // RUNS it (the single launcher). The pane materializes via the roster.
@@ -92,6 +106,32 @@ const launchSu = defineTool({
     const resumeSessionId = body.resume_session_id?.trim() || null;
     if (model && !MODEL_RE.test(model)) return json({ status: 'error', error: 'invalid model' }, 400);
     if (resumeSessionId && !SESSION_ID_RE.test(resumeSessionId)) return json({ status: 'error', error: 'invalid resume session id' }, 400);
+
+    // WI-6321: fleet + account. Every value below is interpolated into a psu
+    // argv token, so each is shape-guarded here rather than trusted — the same
+    // discipline the harness/plan slugs above get.
+    const fleet = body.fleet?.trim() || null;
+    if (fleet && !SLUG_RE.test(fleet)) return json({ status: 'error', error: 'invalid fleet slug' }, 400);
+    const fleetName = body.fleet_name?.trim() || null;
+    // A fleet TITLE is human text (psu slugifies it), so it cannot take SLUG_RE.
+    // Bound it and exclude shell/argv-hostile characters instead.
+    if (fleetName && !/^[\w .,'’&()\/-]{1,80}$/u.test(fleetName)) {
+      return json({ status: 'error', error: 'invalid fleet name' }, 400);
+    }
+    const fleetScheme = body.fleet_scheme?.trim() || null;
+    if (fleetScheme && !/^[A-Za-z0-9 _-]{1,60}$/.test(fleetScheme)) {
+      return json({ status: 'error', error: 'invalid fleet scheme' }, 400);
+    }
+    if (fleet && fleetName) {
+      return json(
+        { status: 'error', error: 'pass fleet (join an existing one) or fleet_name (create a new one), not both' },
+        400,
+      );
+    }
+    const account = body.account?.trim() || null;
+    if (account && !isLaunchAccountValue(account)) {
+      return json({ status: 'error', error: 'invalid account' }, 400);
+    }
 
     // su-context-size-variants: 'full' loads the whole superuser catalog;
     // 'trimmed' uses each client's native soft-trim. Omitted ⇒ the launcher
@@ -182,6 +222,10 @@ const launchSu = defineTool({
     psuArgs.push(plan ? `--plan=${plan}` : '--no-plan');
     if (model) psuArgs.push(`--model=${model}`);
     if (contextSize) psuArgs.push(`--context-size=${contextSize}`);
+    // WI-6321 — same flags, same order psu's own psuLaunchArgvRecord emits them,
+    // so a GUI launch and a terminal launch produce an identical launch_argv.
+    if (account) psuArgs.push(`--account=${account}`);
+    if (fleetSlug) psuArgs.push(`--fleet=${fleetSlug}`);
     if (resumeSessionId) psuArgs.push(`--resume-session=${resumeSessionId}`);
     if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);
     // hive-agent-tabs P-006: a New-plan launch IS the Planner — launch the

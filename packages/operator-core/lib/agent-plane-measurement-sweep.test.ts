@@ -211,7 +211,7 @@ describe('planeMeasurementSweep', () => {
     const out = await planeMeasurementSweep({
       ...stubs,
       lastMeasuredAtMs: async () => null,
-      recordMeasurement: async (m) => void recorded.push(m),
+      recordMeasurement: async (m: unknown) => void recorded.push(m),
       divergence: report({ coverage: coverage({ callsExamined: 10, failuresSeen: 2, thrashRuns: 1 }) }),
     } as never);
     expect(out.outcome).toBe('recorded');

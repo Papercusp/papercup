@@ -328,6 +328,84 @@ function nearestCloudAlias(letters: string): { alias: string | null; dist: numbe
     peel + the error message stay identical to psu-launcher's inline `low|…|max`. */
 const EFFORT_SUFFIX_RE = new RegExp(`^(${MODEL_EFFORT_LEVELS.join('|')})$`, 'i');
 
+/**
+ * Compose psu's `--model` wire value from a model id + a SEPARATE effort choice.
+ *
+ * THE one implementation (WI-6321, owner ask 2026-07-27: "the options in the gui
+ * should match the exact same options that the psu utility uses because it should
+ * share the same code for getting the options"). There were three, and they did not
+ * agree: `agent-launch-core.composeModelSpec` threw on effort-without-model, while
+ * NewSessionLauncher's copy returned the model and DROPPED the effort silently — so
+ * the GUI could send a launch whose reasoning-effort choice simply evaporated. This
+ * module is the client-safe one (see the file header), so it can be the single home
+ * both a server launcher and the renderer import.
+ *
+ * psu has no standalone effort flag — effort rides the spec as `<model>:<effort>` —
+ * so an effort with no model has nowhere to go and is an ERROR, never a silent drop.
+ * An explicit effort REPLACES a recognized effort tail already on the spec.
+ */
+export function composeLaunchModelSpec(model?: string | null, effort?: string | null): string | undefined {
+  const m = model?.trim() || undefined;
+  const e = effort?.trim() || undefined;
+  if (!e) return m;
+  if (!m) {
+    throw new Error(
+      `effort ${JSON.stringify(e)} needs a model — psu carries effort only as a ` +
+        `\`<model>:<effort>\` spec, so an effort with no model would be dropped. Set model too, or drop effort.`,
+    );
+  }
+  if (!(MODEL_EFFORT_LEVELS as readonly string[]).includes(e)) {
+    throw new Error(`unrecognized effort ${JSON.stringify(e)} — psu accepts ${MODEL_EFFORT_LEVELS.join('|')}.`);
+  }
+  const colon = m.lastIndexOf(':');
+  const base =
+    colon > 0 && (MODEL_EFFORT_LEVELS as readonly string[]).includes(m.slice(colon + 1).toLowerCase())
+      ? m.slice(0, colon)
+      : m;
+  return `${base}:${e}`;
+}
+
+// ── psu launch option vocabularies (WI-6321) ────────────────────────────────
+// The client-safe twins of psu-launcher's own picker menus, so the GUI launcher
+// offers EXACTLY what `psu` offers. Held to the launcher value-for-value by the
+// parity suite in apps/operator/lib/psu-launcher.test.ts — the same discipline
+// CLOUD_MODEL_MENU / MODEL_EFFORT_LEVELS already carry (WI-6300). Add an option
+// to psu and the parity test fails until it is surfaced here too.
+
+/** Initial-context size variants — psu `--context-size=`. `null` (Native) means
+ *  send no flag at all, byte-identical to a pre-feature launch. Twin of
+ *  psu-launcher's SU_CONTEXT_CHOICES. */
+export const SU_CONTEXT_SIZES = ['full', 'trimmed'] as const;
+export type SuContextSizeValue = (typeof SU_CONTEXT_SIZES)[number];
+
+/** Static measured baseline estimates shown beside each variant. Twin of
+ *  psu-launcher's SU_CONTEXT_TOKEN_ESTIMATES. */
+export const SU_CONTEXT_TOKEN_ESTIMATES: Record<SuContextSizeValue, string> = {
+  full: '~180k',
+  trimmed: '~70k',
+};
+
+/** psu's picker default (highlighted row). Twin of SU_CONTEXT_DEFAULT. */
+export const SU_CONTEXT_DEFAULT: SuContextSizeValue = 'trimmed';
+
+/**
+ * The two non-pool account modes psu's `--account=` accepts, alongside a concrete
+ * pool-account id (the account-routing-3-options grammar):
+ *   default — the system/CLI login, no gateway pin
+ *   auto    — gateway-routed with failover across the pool
+ * A launch with NO `--account` opens psu's INTERACTIVE picker, which would block a
+ * GUI-spawned session forever — so the GUI always sends one.
+ */
+export const LAUNCH_ACCOUNT_MODES = ['default', 'auto'] as const;
+export type LaunchAccountMode = (typeof LAUNCH_ACCOUNT_MODES)[number];
+
+/** Shape of an `--account=` value: a mode above, or a pool account id. Mirrors the
+ *  value guard in agent-launch-core's injectAccountArg so the GUI cannot compose a
+ *  value the scripted path would refuse. */
+export function isLaunchAccountValue(v: string): boolean {
+  return /^[A-Za-z0-9._:-]{1,120}$/.test(v);
+}
+
 /** Result of {@link validateCloudModelSpec}: ok, plus a corrective `message` on reject. */
 export interface CloudModelSpecResult {
   ok: boolean;
