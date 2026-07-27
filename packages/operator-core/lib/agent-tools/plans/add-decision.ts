@@ -33,6 +33,9 @@ const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
   .describe('Item IDs this decision relates to. Appear in the body as P-NNN tokens.');
 
+const ITEM_REFS_ALIAS_DESC =
+  'Alias for `refs` (EI-18735663944089262) — plans:get returns a decision\'s item refs under this exact name (itemRefs), so accepting it here means a read-then-write roundtrip does not need a field rename. Prefer `refs`; if both are given, `refs` wins.';
+
 const AFFECTS = z
   .array(z.string().min(1))
   .max(20)
@@ -45,6 +48,7 @@ const itemSpec = z.object({
   title: hardText(LIMITS.SHORT_TITLE),
   body: hardText(5000),
   refs: REFS.optional(),
+  itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
   affects: AFFECTS.optional(),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
@@ -57,6 +61,7 @@ const argsSchema = z
     title: hardText(LIMITS.SHORT_TITLE).optional(),
     body: hardText(5000).optional(),
     refs: REFS.optional(),
+    itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
     affects: AFFECTS.optional(),
     items: z
       .array(itemSpec)

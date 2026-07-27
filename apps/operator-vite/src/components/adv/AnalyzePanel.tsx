@@ -74,6 +74,12 @@ export function AnalyzePanel({
   });
   const snap = sync.data?.[0];
   const cycles = snap?.cycles ?? [];
+  // WI-6410: `sync.error` alone covers only the TRANSPORT half. When the
+  // resolver catches its own read failure it RESOLVES successfully with a
+  // degraded payload — sync.error is falsy, cycles is [], and the view claimed
+  // "No analysis cycles yet". snapshotFault reads both halves; it is the same
+  // helper this file already uses one function below for learning.analyzeCycle.
+  const fault = snapshotFault(sync.error, snap, "Pipeline");
 
   const status: "neutral" | "good" | "warn" | "bad" = sync.error
     ? "bad"
@@ -105,9 +111,9 @@ export function AnalyzePanel({
           </button>
         }
       />
-      {sync.error ? (
+      {fault.failed ? (
         <LearningVisualError
-          title="The pipeline read failed"
+          title={fault.message ?? "Pipeline unavailable"}
           onRetry={() => sync.invalidate()}
         />
       ) : sync.loading && !snap ? (

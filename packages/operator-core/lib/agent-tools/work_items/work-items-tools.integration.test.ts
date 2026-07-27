@@ -339,7 +339,11 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     // 'closed' is a terminal issue-family state → the completion-integrity gate
     // (work-items.ts setWorkItemState) requires a non-empty completionRef.
     const closed = await setStateOne({ id: bugId, state: 'closed', completionRef: 'test: closing bug b' });
-    expect((closed.workItem as Record<string, unknown>).state).toBe('closed');
+    // Terminal-state UNIFICATION (work-items.ts): the legacy per-family terminals now
+    // normalize onto done/dropped — issue `closed`→`dropped`, and the closed-vs-resolved
+    // nuance is preserved in `terminal_reason`, not in `state`. Accepting 'closed' here
+    // WOULD BE the regression; asserting the unified terminal is the point.
+    expect((closed.workItem as Record<string, unknown>).state).toBe('dropped');
     const progressed = await setStateOne({ id: featId, state: 'in_progress', harness: 'papercup' });
     expect((progressed.workItem as Record<string, unknown>).state).toBe('in_progress');
 
@@ -434,7 +438,11 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
     const tagged = await tagOne({ id, topic: 'shop' });
-    expect(tagged).toEqual({ ok: true, id, topic: 'shop' });
+    // toMatchObject, not toEqual: this asserts "tag returns a SUCCESS envelope", and an
+    // exact deep-equal made it break every time the envelope gained a field (it did —
+    // the `mirrored`/`mirrorOutcome` reporting from EI-18810823481386446). Pin the
+    // contract this test is about, not the envelope's exact key set.
+    expect(tagged).toMatchObject({ ok: true, id, topic: 'shop' });
     const subscribed = await call(subscribeTool, { id, mode: 'digest' });
     expect(subscribed.ok).toBe(true);
     expect((subscribed.results as { ok: boolean }[])[0]!.ok).toBe(true);
@@ -590,7 +598,10 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
       harness: 'papercup',
       completionRef: 'test: settling the parent',
     });
-    expect((settled.workItem as Record<string, unknown>).state).toBe('passed');
+    // Terminal unification: feature `passed`→`done` (+terminal_reason). What this line
+    // guards is the PRECONDITION that the parent is genuinely settled before the
+    // expand-guard is exercised — a unified terminal satisfies that just as well.
+    expect((settled.workItem as Record<string, unknown>).state).toBe('done');
 
     const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }] });
     expect(res.ok).toBe(false);
@@ -609,7 +620,8 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
       harness: 'papercup',
       completionRef: 'test: deprecating the parent',
     });
-    expect((settled.workItem as Record<string, unknown>).state).toBe('deprecated'); // precondition actually held
+    // Terminal unification: feature `deprecated`→`dropped` (+terminal_reason).
+    expect((settled.workItem as Record<string, unknown>).state).toBe('dropped'); // precondition actually held
 
     const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }], force: true });
     expect(res.ok).toBe(true);

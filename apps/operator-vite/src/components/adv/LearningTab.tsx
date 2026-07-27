@@ -3517,6 +3517,11 @@ function HiveEvalTrendView({
     staleTime: 30_000,
   });
   const instances = sync.data?.[0]?.instances ?? [];
+  // WI-6410: the resolver has carried degraded provenance since WI-6382, but
+  // this view dropped it — `?? []` collapsed a FAILED read into the same value
+  // as a genuinely empty one, so the empty state below claimed "a trend appears
+  // after two or more evaluations" when the truth was that we could not read.
+  const fault = snapshotFault(sync.error, sync.data?.[0], `${t("pot")} eval`);
   const latest = instances[0];
   const previous = instances[1];
   const compositeDelta =
@@ -3568,8 +3573,15 @@ function HiveEvalTrendView({
         }
       />
 
-      {!latest ? (
+      {fault.failed ? (
+        <LearningVisualError
+          title={fault.message ?? `${t("pot")} eval unavailable`}
+          onRetry={() => sync.invalidate()}
+        />
+      ) : !latest ? (
         // WI-6388: teaching copy per LearningVisualEmpty's own contract.
+        // WI-6410: this branch now means a GENUINE empty — a failed read
+        // renders as an error above.
         <LearningVisualEmpty
           icon={Activity}
           title={`No ${t("pot")}-eval runs`}
@@ -3715,6 +3727,11 @@ function BakeoffTrendView({
     staleTime: 30_000,
   });
   const rows = sync.data?.[0]?.rows ?? [];
+  // WI-6410: `sync.error` used to feed ONLY the onStatus tint, so a failed read
+  // fell through to the "No bake-offs" empty state — whose body ("Results
+  // appear here once one has finished") is an active lie when the truth is that
+  // the read failed. The resolver already reports this; the view was discarding it.
+  const fault = snapshotFault(sync.error, sync.data?.[0], "Framework bake-off");
   // Each bet's CURRENT standing — rows arrive newest-first, so the first verdict per flag is latest
   // (the same logic as the canonical latestVerdictByFlag formatter; inlined to keep the client bundle
   // free of an operator-core value import).
@@ -3772,11 +3789,16 @@ function BakeoffTrendView({
             {meta.label}
           </span>
           <span className={`pc-learning__delta pc-learning__delta--${dc.tone}`}>
-            Δcomp {dc.text}
+            composite {dc.text}
           </span>
+          {/* WI-6410: was `Δgate {toFixed(2)}` — the RAW fraction, while the hero
+              metric above renders this SAME quantity ×100 as "pp". One number,
+              two scales, one screen. Percentage points is the scale that reads,
+              so both now use it. ("Δcomp"/"Δgate" also went to plain words: this
+              is a public-release surface, and neither was defined anywhere on it.) */}
           <span className="pc-learning__benchmeta">
-            Δgate {r.deltaGatePassRate >= 0 ? "+" : ""}
-            {r.deltaGatePassRate.toFixed(2)}
+            outcome gate {r.deltaGatePassRate >= 0 ? "+" : "−"}
+            {Math.abs(r.deltaGatePassRate * 100).toFixed(1)}pp
           </span>
         </span>
         <span className="pc-learning__meta">
@@ -3813,13 +3835,20 @@ function BakeoffTrendView({
         }
       />
 
-      {!latest || !latestMeta || !latestComposite ? (
+      {fault.failed ? (
+        <LearningVisualError
+          title={fault.message ?? "Framework bake-off unavailable"}
+          onRetry={() => sync.invalidate()}
+        />
+      ) : !latest || !latestMeta || !latestComposite ? (
         // WI-6388: teaching copy per LearningVisualEmpty's own contract.
-              <LearningVisualEmpty
-                icon={Repeat2}
-                title="No bake-offs"
-                body="A bake-off runs two configurations against the same work and reports which did better. Results appear here once one has finished."
-              />
+        // WI-6410: reached only on a GENUINE empty now — a failed read renders
+        // as an error above, so this copy's promise is honest again.
+        <LearningVisualEmpty
+          icon={Repeat2}
+          title="No bake-offs"
+          body="A bake-off runs two configurations against the same work and reports which did better. Results appear here once one has finished."
+        />
       ) : (
         <>
           <div className="pc-learning-visual__layout">

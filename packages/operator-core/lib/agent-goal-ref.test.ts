@@ -174,12 +174,36 @@ describe('resolveAgentGoal — a losing leg is disclosed, never dropped', () => 
     expect(g.competing).toEqual(['unified-agent-state-plane-2026-07-27#P-026']);
   });
 
-  it('discloses the fleet mission an item claim outranks', () => {
+  /**
+   * ⚠ THE MEASURED EXCEPTION. Running the resolver over the live fleet returned
+   * `divergent` for 12 of 16 owners — and NINE were nothing but "holds a
+   * work-item AND is in a fleet", i.e. every ordinary fleet member. A mission is
+   * the container the work happens in, not a rival goal, so counting it as
+   * divergence would make the signal fire constantly and carry no information.
+   */
+  it('does NOT treat a fleet mission as a competing claim — it is the container', () => {
     const g = resolveAgentGoal({
       workItems: [{ id: 'WI-5624' }],
       fleet: { slug: 'nonp2p-bug-drain-0727' },
     })!;
-    expect(g.competing).toEqual(['fleet:nonp2p-bug-drain-0727']);
+    expect(g.ref).toBe('WI-5624');
+    expect(g.competing).toEqual([]);
+    expect(g.agreement).toBe('sole');
+  });
+
+  it('still reports the fleet mission as the GOAL when nothing more specific is held', () => {
+    const g = resolveAgentGoal({ fleet: { slug: 'nonp2p-bug-drain-0727' } })!;
+    expect(g.ref).toBe('fleet:nonp2p-bug-drain-0727');
+    expect(g.source).toBe('fleet-mission');
+    expect(g.agreement).toBe('sole');
+  });
+
+  it('a fleet mission never dilutes a genuine item-level divergence', () => {
+    const g = resolveAgentGoal({
+      workItems: [{ id: 'WI-6404', takenAt: '2026-07-27T15:00:00Z' }, { id: 'WI-6402' }],
+      fleet: { slug: 'some-fleet' },
+    })!;
+    expect(g.competing).toEqual(['WI-6402']);
     expect(g.agreement).toBe('divergent');
   });
 
