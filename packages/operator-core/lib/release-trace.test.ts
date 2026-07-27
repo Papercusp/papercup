@@ -84,6 +84,16 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       missingReason: null,
       detail: null,
     },
+    // P-006 made `sweepExposure` REQUIRED. `dirtyUncommitted` is false in this fixture, so
+    // "not exposed" is the semantically correct value, not a compiler-silencer: a clean
+    // path has nothing for the next git-sync tick to sweep.
+    sweepExposure: {
+      exposed: false,
+      dirtyPathCount: null,
+      dirtyPathSample: [],
+      nextSweepInMs: null,
+      detail: null,
+    },
     // P-005 made these REQUIRED. null/null is correct here for the same reason as above:
     // these fixtures carry an empty `stages` table, so there is no pending stage to derive
     // a blocker from — and null/null is the honest reading of that ("nothing pending"),

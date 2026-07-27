@@ -1944,7 +1944,9 @@ describe('sweep exposure (P-006)', () => {
     });
     expect(s.nextSweepInMs).toBe(0);
     expect(s.detail).toMatch(/within the next MINUTE/);
-    expect(s.detail).not.toMatch(/-\d/);
+    // No negative window can render ("in ~-10 min"). Scoped to the rendered duration —
+    // the detail legitimately carries a hyphenated issue id.
+    expect(s.detail).not.toMatch(/~-\d+ min/);
   });
 
   it('carry note (2): an UNDEFINED next-fire renders as unknown, never "NaN min"', () => {
