@@ -27,6 +27,8 @@ import {
   registerProjection,
   getProjection,
   lwwPick,
+  resetUnthreadedApplyDetectorForTest,
+  unthreadedSkipOwnOpsApplyCount,
   _clearRegistryForTests,
   type ProjectionLookup,
   type ProvenanceContext,

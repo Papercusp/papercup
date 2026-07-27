@@ -13,7 +13,7 @@ import { supervisionSnapshot, isActiveStateDown, type SupervisionStatusEntry, ty
 import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
-import { probeServiceStart, type ServiceStartInfo } from "./systemd-service-probe";
+import { probeServiceStart, probeUnitStates, type ServiceStartInfo } from "./systemd-service-probe";
 
 function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
   return s.gaveUp ? "gave-up" : s.respawnAttemptsInWindow > 0 ? "damping" : "ok";
@@ -227,7 +227,7 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe dev services now (:3070 operator, :3170 staging, :3055 vite, :3350 scout, :46229 oddsmith-sidecar, Tauri desktop, bg-host ticker) and return per-service latency/status/URL plus supervisor flap state alongside the standard runtime fields. Each HTTP-probed entry carries the exact `url` it hit — read it instead of guessing a port. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. `supervision[]` (systemd-user) carries systemd\'s verbatim `activeState` plus `healthy`, the verdict — read `healthy`, not `active`: an `episodic` timer-driven unit is idle, not down, while inactive. Omitted = the probe could not tell, never "down". First read for connection-refused, process-running-with-no-window, or "which port is the operator on" symptoms.',
+    'Probe dev services now (:3070 operator, :3170 staging, :3055 vite, :3350 scout, :46229 oddsmith-sidecar, Tauri desktop, bg-host ticker) and return per-service latency/status/URL plus supervisor flap state alongside the standard runtime fields. Each HTTP-probed entry carries the exact `url` it hit — read it instead of guessing a port. The "bg-host-ticker" is separate from :3070; if it is down, nextVerb points at the bg-host restart rather than the operator. An intentionally absent desktop is absent, not failed. `supervision[]` (systemd-user) carries systemd\'s verbatim `activeState` plus `healthy`, the verdict — read `healthy`, not `active`: an `episodic` timer-driven unit is idle, not down, while inactive. Omitted = the probe could not tell, never "down". Pass `units:[...]` (+ `scope:\'user\'|\'system\'|\'all\'`) to answer `systemctl is-active|is-failed` for ANY unit, registry or not: `unitStates[]` carries LoadState/ActiveState/SubState, and `unitsUnknown[]` names units systemd never heard of — read that first, because a nonexistent unit reports `inactive` exactly like a stopped one. First read for connection-refused, process-running-with-no-window, or "which port is the operator on" symptoms.',
   guidance: {
     when: 'Confirm which dev services are up before testing against one; VERIFY A STAGING EDIT — after `dev:restart { target:\'staging\' }`, "staging-api" IS "then probe :3170"; find the canonical local URL/port for the operator or vite instead of guessing; diagnose a "connection refused" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the "bg-host-ticker" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).',
     notWhen:
@@ -253,8 +253,39 @@ export default defineTool({
     "curator",
     "cup",
   ],
-  args: z.object({}),
-  async handler() {
+  args: z.object({
+    /**
+     * P-014: the arbitrary-unit escape hatch. Everything above answers "is it
+     * up" for a FIXED registry; this answers it for any unit systemd knows —
+     * which is what `systemctl is-active` is actually asked about (50 of 114
+     * such atoms in the 7d corpus name a unit no registry can reach).
+     */
+    units: z
+      .array(z.string().min(1).max(200))
+      .max(20)
+      .optional()
+      .describe(
+        "systemd units to report state for — the tool form of `systemctl is-active|is-failed <unit>...`. Bare names get `.service` appended; `.timer`/`.socket`/`.scope` etc are used as given. Returns unitStates[] with LoadState + ActiveState + SubState, and unitsUnknown[] for units NO queried scope has heard of — read that first, because systemd prints `inactive` for a unit that does not exist, which is byte-identical to a stopped one.",
+      ),
+    /**
+     * Three-valued for the `logs:read` reason: --user and --system are separate
+     * managers, and a boolean forces a caller asking about a system unit to
+     * query a manager that cannot hold the answer.
+     */
+    scope: z
+      .enum(["user", "system", "all"])
+      .optional()
+      .describe(
+        "Which systemd manager `units` is looked up in: 'user' (default — every papercup-* unit), 'system' (auditd, ufw, pgbouncer), or 'all' to query both and merge. Only meaningful with `units`.",
+      ),
+  }),
+  async handler({ units, scope }) {
+    // The unit query is ADDITIVE and independent of the fixed probe set: a
+    // caller passing `units` still gets the full snapshot, because "is this one
+    // unit up" and "what is the state of everything" are usually asked in the
+    // same breath and a second round-trip for the other half is the cost this
+    // whole plan exists to remove.
+    const unitStates = units?.length ? await probeUnitStates(units, scope ?? "user") : null;
     const services = await probeAll();
     const supervision = await overlaySystemdRestartRecency(
       overlayNodeChildSupervision(
@@ -276,6 +307,17 @@ export default defineTool({
             // reconciler's own flap state, the node-child sidecars from THEIR OWN respawn
             // modules (P-006) — no second probe pass, everything here is sync/in-memory.
             supervision,
+            // P-014: only present when `units` was asked for — an empty key on
+            // every other call would train callers to ignore it.
+            ...(unitStates
+              ? {
+                  unitStates: unitStates.states,
+                  unitsUnknown: unitStates.unitsUnknown,
+                  ...(unitStates.scopesUnavailable.length
+                    ? { scopesUnavailable: unitStates.scopesUnavailable }
+                    : {}),
+                }
+              : {}),
             ...buildServiceHealthDiagnostic(services, supervision),
           }),
         },

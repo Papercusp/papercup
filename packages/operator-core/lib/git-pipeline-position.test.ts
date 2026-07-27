@@ -25,6 +25,7 @@ import {
   evaluateServing,
   type GitRunner,
   type PipelinePosition,
+  type ChangeInCandidate,
   type ServingTruth,
   type StageName,
   type StageState,
@@ -56,6 +57,20 @@ const HEALTHY_SERVING: ServingTruth = {
   behindMin: null,
   restartLever: 'PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute',
   unknownReason: null,
+};
+
+/**
+ * P-004: the "nothing to report" containment verdict. Every fixture below defaults to
+ * it so no existing case accidentally depends on gate-candidate containment — a case
+ * that means to exercise it says so explicitly.
+ */
+const NO_CANDIDATE: ChangeInCandidate = {
+  judgingSha: null,
+  judgingContainsPath: null,
+  nextCandidateSha: null,
+  nextContainsPath: null,
+  missingReason: null,
+  detail: null,
 };
 
 /** A fake `git` runner keyed by arg shape + a per-ref containment map. */
@@ -548,6 +563,7 @@ describe('gitPipelinePosition (P-002)', () => {
       runtime: classifyRuntimeOwner('a.ts'),
       runtimes: classifyRuntimeOwners('a.ts'),
       serving: HEALTHY_SERVING,
+      changeInCandidate: NO_CANDIDATE,
       notes: [],
       stages: [],
     };
@@ -798,6 +814,7 @@ describe('computeStages: position x health', () => {
     gitSyncLastStatus: 'synced',
     gitSync: HEALTHY_GIT_SYNC,
     serving: HEALTHY_SERVING,
+    changeInCandidate: NO_CANDIDATE,
     runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
     ...over,
   });
@@ -1053,6 +1070,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
     },
     gitSyncLastStatus: 'synced',
     gitSync: HEALTHY_GIT_SYNC,
+    changeInCandidate: NO_CANDIDATE,
     runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
     ...over,
     serving,
@@ -1133,6 +1151,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       runtime: classifyRuntimeOwner('a.ts'),
       runtimes: classifyRuntimeOwners('a.ts'),
       serving,
+      changeInCandidate: NO_CANDIDATE,
       notes: [],
       stages: [],
     });

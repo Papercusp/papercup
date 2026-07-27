@@ -29,7 +29,7 @@ const getWorkItemCheckpointWithMeta = vi.fn();
 // P-007: `getWorkItemCheckpointFreshness` returns undefined by default = the
 // checkpoint declared no dependencies, so these suites keep exercising the TIME
 // heuristics (the documented fallback). The override case gets its own suite below.
-const getWorkItemCheckpointFreshness = vi.fn(async () => undefined as unknown);
+const getWorkItemCheckpointFreshness = vi.fn();
 vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...a: unknown[]) => getWorkItemCheckpointWithMeta(...a),
   getWorkItemCheckpointFreshness: (...a: unknown[]) => getWorkItemCheckpointFreshness(...a),

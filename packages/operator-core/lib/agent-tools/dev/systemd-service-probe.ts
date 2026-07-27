@@ -82,6 +82,185 @@ export function parseSystemctlShowOutput(stdout: string): Map<string, string> {
   return props;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * Arbitrary-unit state query (bash-to-tool-substitution-2026-07-26, P-014).
+ *
+ * WHY THIS EXISTS, measured rather than assumed: `dev:service_health` answers
+ * "is it up" only for the units in its own fixed registry, and the corpus says
+ * that is not the question agents ask. Of 114 `systemctl is-active|is-failed`
+ * atoms in the 7d window (23 sessions), 50 name a unit the registry cannot
+ * reach — a transient `papercup-green-checkpoint-manual-<rand>` scope, a
+ * timer-driven oneshot, a SYSTEM-scope unit (`auditd`, `ufw`, `pgbouncer`), or
+ * a unit that does not exist at all. Narrowing the substitution pattern to the
+ * registry instead leaves 19 distinct shapes — below the harness's
+ * MIN_SAMPLE_SIZE — so the pattern could not have earned a verdict either way.
+ * The tool had to widen.
+ *
+ * ⚠ THE DEFECT THIS FIXES IS NOT COVERAGE, IT IS A WRONG ANSWER. `systemctl
+ * is-active <unit-that-does-not-exist>` prints `inactive` and exits 4. Three
+ * units in the corpus — `papercup-auto-deploy`, `papercup-green-checkpoint`,
+ * `papercup-pgbouncer` — are LoadState=not-found in BOTH scopes on this host,
+ * and every atom querying them captured stdout (`2>&1` / `2>/dev/null`) without
+ * reading the exit code. So an agent asked about a phantom unit and read back
+ * "inactive": byte-identical to a real service that is stopped. That is the
+ * same class as `logs:read`'s `unitsUnknown` (a typo'd unit is byte-identical
+ * to a healthy silent one) and as `dev:listening_ports`' `ownerVisible` — ABSENT
+ * EVIDENCE MUST NEVER READ AS EVIDENCE OF ABSENCE. `known` is the field that
+ * separates them, and `unitsUnknown` is what surfaces it without being read.
+ *
+ * ⚠ SCOPE IS THREE-VALUED, NOT A BOOLEAN, for the reason `logs:read` learned the
+ * hard way: `--user` and `--system` are different journals/managers, and a unit
+ * absent from one is simply not there. A boolean would force a caller asking
+ * about `auditd` (system) and `papercup-dev-api` (user) in one breath to pick a
+ * manager that cannot hold half the answer, and get a confident `not-found`.
+ * `'all'` queries both and merges.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Which systemd manager to ask. `all` asks both and merges. */
+export type SystemdScope = 'user' | 'system' | 'all';
+
+/** One unit's state as systemd reports it. */
+export interface UnitState {
+  /** The resolved unit name (`.service` appended when no unit-type suffix was given). */
+  unit: string;
+  /** The manager that answered. */
+  scope: 'user' | 'system';
+  /**
+   * systemd's `LoadState` — `loaded` | `not-found` | `masked` | `error` | `bad-setting`.
+   * THE field that separates "stopped" from "never heard of it".
+   */
+  loadState: string;
+  /** systemd's `ActiveState` verbatim: active | activating | inactive | deactivating | failed | reloading. */
+  activeState: string;
+  /** systemd's `SubState` (running/dead/exited/waiting/…) — the detail behind ActiveState. */
+  subState?: string;
+  /**
+   * `loadState === 'loaded'`. FALSE means systemd has no such unit, and
+   * `activeState` on such a row is a systemd default (`inactive`), NOT a
+   * measurement — never read it as "the service is down".
+   */
+  known: boolean;
+  /** `activeState === 'active'` — the literal `systemctl is-active` answer, for a KNOWN unit only. */
+  active: boolean;
+  /** `activeState === 'failed'` — the literal `systemctl is-failed` answer. */
+  failed: boolean;
+}
+
+/** What a unit-state query returns. */
+export interface UnitStateResult {
+  states: UnitState[];
+  /**
+   * Units NO queried scope has heard of. Present so a caller that never reads
+   * `known` still cannot mistake a phantom unit for a stopped service — the
+   * `logs:read` `unitsUnknown` contract, deliberately identical.
+   */
+  unitsUnknown: string[];
+  /** Scopes that could not be queried at all (no systemd, non-linux, exec error). */
+  scopesUnavailable: Array<'user' | 'system'>;
+}
+
+/** The properties one `systemctl show` call asks for. `Id` is what maps a block back to a unit. */
+const UNIT_STATE_PROPS = ['Id', 'LoadState', 'ActiveState', 'SubState'] as const;
+
+/**
+ * PURE — split a multi-unit `systemctl show` stdout into one property map per
+ * unit. systemd separates unit blocks with a BLANK LINE and names each with
+ * `Id=`; a unit it has never heard of still gets a full block
+ * (`LoadState=not-found`, `ActiveState=inactive`), which is exactly why the
+ * caller must read `LoadState` and not `ActiveState`.
+ *
+ * Split out for direct unit testing — the blank-line framing is the one thing
+ * that would silently mis-attribute every state to the wrong unit.
+ */
+export function parseMultiUnitShowOutput(stdout: string): Map<string, string>[] {
+  const blocks: Map<string, string>[] = [];
+  for (const block of stdout.split(/\n\s*\n/)) {
+    if (!block.trim()) continue;
+    const props = parseSystemctlShowOutput(block);
+    if (props.size > 0) blocks.push(props);
+  }
+  return blocks;
+}
+
+/** PURE — one parsed `systemctl show` block to a `UnitState`. */
+export function unitStateFromProps(props: Map<string, string>, scope: 'user' | 'system', fallbackUnit: string): UnitState {
+  const loadState = props.get('LoadState') ?? 'error';
+  const activeState = props.get('ActiveState') ?? 'inactive';
+  const subState = props.get('SubState');
+  return {
+    unit: props.get('Id') ?? fallbackUnit,
+    scope,
+    loadState,
+    activeState,
+    ...(subState ? { subState } : {}),
+    known: loadState === 'loaded',
+    // A unit systemd does not know is never "active" — guard it here so a
+    // caller reading `active` alone can't be misled either.
+    active: loadState === 'loaded' && activeState === 'active',
+    failed: activeState === 'failed',
+  };
+}
+
+/** The exec seam, injectable so the whole path is testable without systemd. */
+export type SystemctlExec = (args: string[]) => Promise<string>;
+
+const defaultSystemctlExec: SystemctlExec = async (args) => {
+  // `systemctl show` exits 0 even for a not-found unit, but a manager that is
+  // entirely absent (no user bus) exits non-zero — execFile rejects there, and
+  // the caller records the scope as unavailable rather than inventing states.
+  const { stdout } = await run('systemctl', args, { timeout: 5000 });
+  return stdout;
+};
+
+/**
+ * Ask systemd for the state of arbitrary units — the tool form of
+ * `systemctl [--user|--system] is-active|is-failed <unit>...`.
+ *
+ * ONE exec per scope regardless of unit count (`systemctl show` takes a unit
+ * LIST), which is also why the multi-unit shape agents actually write
+ * (`is-active papercup-dev-api papercup-staging-api`) is expressible here and
+ * was not before.
+ */
+export async function probeUnitStates(
+  units: string[],
+  scope: SystemdScope = 'user',
+  exec: SystemctlExec = defaultSystemctlExec,
+): Promise<UnitStateResult> {
+  const resolved = units.map(resolveUnitName);
+  const scopes: Array<'user' | 'system'> = scope === 'all' ? ['user', 'system'] : [scope];
+  const states: UnitState[] = [];
+  const scopesUnavailable: Array<'user' | 'system'> = [];
+
+  if (process.platform !== 'linux') {
+    return { states: [], unitsUnknown: [], scopesUnavailable: scopes };
+  }
+
+  for (const s of scopes) {
+    let stdout: string;
+    try {
+      stdout = await exec([
+        s === 'user' ? '--user' : '--system',
+        'show',
+        ...UNIT_STATE_PROPS.flatMap((p) => ['-p', p]),
+        ...resolved,
+      ]);
+    } catch {
+      scopesUnavailable.push(s);
+      continue;
+    }
+    const blocks = parseMultiUnitShowOutput(stdout);
+    blocks.forEach((props, i) => states.push(unitStateFromProps(props, s, resolved[i] ?? resolved[0] ?? '')));
+  }
+
+  // Unknown EVERYWHERE, not merely in one scope: a unit that is `not-found`
+  // under --user but `loaded` under --system is found, and reporting it as
+  // unknown would recreate the very confusion this field exists to remove.
+  const knownUnits = new Set(states.filter((st) => st.known).map((st) => st.unit));
+  const unitsUnknown = resolved.filter((u) => !knownUnits.has(u));
+
+  return { states, unitsUnknown, scopesUnavailable };
+}
+
 export async function probeServiceStart(unit: string): Promise<ServiceStartInfo> {
   // Linux/systemd-only (a Windows desktop runs this sidecar under WSL, still
   // process.platform === 'linux', so it is NOT short-circuited — the try/catch
