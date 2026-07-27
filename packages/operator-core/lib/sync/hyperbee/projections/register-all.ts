@@ -286,7 +286,13 @@ function withHiveHomeApplyGuard<Row>(
   guard: {
     workspaceId: string;
     boundSlug: string;
-    resolveHomeLogKeyHex: () => string | null;
+    /**
+     * EI-18771324701216281: OPTIONAL. Absent on a JOINER, where the home is remote and
+     * never locally booted — the exclusion has nothing to exclude. It must not gate the
+     * counter (see the DEMUX-DROP OBSERVABILITY duty above), which is the whole reason
+     * this parameter became optional.
+     */
+    resolveHomeLogKeyHex?: () => string | null;
     sql?: import('postgres').Sql;
   },
 ): TableProjection<Row> {
@@ -299,7 +305,7 @@ function withHiveHomeApplyGuard<Row>(
   return {
     ...p,
     writeToPg: async (row, provenance) => {
-      const homeLog = guard.resolveHomeLogKeyHex();
+      const homeLog = guard.resolveHomeLogKeyHex?.() ?? null;
       if (homeLog && provenance?.sourceLogKeyHex === homeLog) return; // home fold owns home-log ops
       const slug = rowSlug(row);
       if (slug !== undefined && slug !== guard.boundSlug) {
@@ -317,7 +323,7 @@ function withHiveHomeApplyGuard<Row>(
       return p.writeToPg(row, provenance);
     },
     deleteFromPg: async (key, delTs, delHlc, provenance) => {
-      const homeLog = guard.resolveHomeLogKeyHex();
+      const homeLog = guard.resolveHomeLogKeyHex?.() ?? null;
       if (homeLog && provenance?.sourceLogKeyHex === homeLog) return; // home fold owns home-log ops
       return p.deleteFromPg(key, delTs, delHlc, provenance);
     },
@@ -341,14 +347,37 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
       ? { ...opts, harnessSlug: opts.potHomeSlug }
       : opts;
   // WI-3734: when boot threads the owned-home resolver, every hiveScoped projection
-  // gets the home-log-exclusion + demux-drop-counting apply guard. Identity (zero
-  // behavior change) when the resolver is absent — every pre-WI-3734 path.
+  // gets the home-log-exclusion + demux-drop-counting apply guard.
+  //
+  // EI-18771324701216281: the wrap USED to be gated on `opts.resolveHomeLogKeyHex` alone,
+  // which made the demux-drop counter UNREACHABLE on joiners — the exact population the
+  // demux bug afflicts. boot.ts only sets that resolver for `memberHomeRebindSlug`, and
+  // that block returns undefined when `remote_hive === true`, i.e. for every joiner. So on
+  // a joiner `hh()` was the identity function and `federation_refused_op_counters` could
+  // never bump: WI-5136's counter read EMPTY, and that emptiness read as HEALTH. It cost
+  // real diagnosis time on WI-559, where a zero drop-count was nearly taken as evidence the
+  // fold was fine while ~49,762 ops were in fact being discarded.
+  //
+  // The guard's two duties are INDEPENDENT and are now gated independently:
+  //   - HOME-LOG EXCLUSION needs the resolver; without it `homeLog` is null and nothing is
+  //     excluded — which is already the correct, intended behavior for a joiner (the home
+  //     is remote and never locally booted, so there is nothing to exclude).
+  //   - DEMUX-DROP OBSERVABILITY needs only a bound hive-home slug to compare rows against.
+  // Wrapping therefore keys on EITHER signal. Apply behavior is unchanged in the newly
+  // covered case (no resolver ⇒ no exclusion; the projection's own `harness_slug` guard
+  // still performs the actual drop) — the only difference is that the drop is now COUNTED.
+  //
+  // Kept surgical to the hive-home-BOUND set (`potHomeSlug` set and ≠ own slug). A harness
+  // that is its own home is deliberately left unwrapped: identity, exactly as before.
+  const hiveHomeBound = Boolean(opts.potHomeSlug && opts.potHomeSlug !== opts.harnessSlug);
   const hh = <Row,>(p: TableProjection<Row>): TableProjection<Row> =>
-    opts.resolveHomeLogKeyHex
+    opts.resolveHomeLogKeyHex || hiveHomeBound
       ? withHiveHomeApplyGuard(p, {
           workspaceId: opts.workspaceId,
           boundSlug: hiveScoped.harnessSlug,
-          resolveHomeLogKeyHex: opts.resolveHomeLogKeyHex,
+          ...(opts.resolveHomeLogKeyHex
+            ? { resolveHomeLogKeyHex: opts.resolveHomeLogKeyHex }
+            : {}),
           sql: opts.sql,
         })
       : p;

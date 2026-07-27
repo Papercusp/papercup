@@ -43,6 +43,7 @@ import {
 import { getSharedSwarm } from './swarm';
 import { applySessionPresenceSet } from './session-presence-store';
 import { listHiveMembers, loadRevokedHivePubkeys } from '../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../federated-pot-scope';
 
 /** Membership-set cache TTL — a beat must not hit PG per frame. */
 const MEMBER_CACHE_TTL_MS = Number(process.env.PAPERCUSP_PRESENCE_MEMBER_CACHE_MS) || 30_000;
@@ -234,9 +235,17 @@ async function admittedDeviceMap(
   if (binding.members && now - binding.members.at < MEMBER_CACHE_TTL_MS) {
     return binding.members.admitted;
   }
+  // EI-18777176681958978: certified, not resolved — `binding.potHomeSlug` IS the federated
+  // scope: wire-presence.ts resolves it through `canonicalHiveHomeSlug` (its documented
+  // `resolveHive` default) precisely so this admission gate reads the scope the projections
+  // write. This is READER GROUP A, the one population that was already correct.
+  const scope = unsafeFederatedPotScope(
+    binding.potHomeSlug,
+    'wire-presence resolveHive default = canonicalHiveHomeSlug (WI-559) — the presence topic binding carries the owner-authored scope',
+  );
   const [members, revoked] = await Promise.all([
-    deps.listHiveMembers(binding.workspaceId, binding.potHomeSlug),
-    deps.loadRevokedHivePubkeys(binding.workspaceId, binding.potHomeSlug),
+    deps.listHiveMembers(binding.workspaceId, scope),
+    deps.loadRevokedHivePubkeys(binding.workspaceId, scope),
   ]);
   const revokedSet = new Set(revoked);
   // Root fix (audit D-013): keep the device_pubkey → attested github_user_id

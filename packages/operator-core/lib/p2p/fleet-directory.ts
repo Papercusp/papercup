@@ -22,7 +22,14 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { verifyEd25519 } from '../identity/ed25519';
-import { listHiveMembers, loadRevokedHivePubkeys } from '../hive-membership-store';
+// EI-18777176681958978: `deps.potSlug` is a LOCAL pot handle (the work-intake tick passes
+// `potHomeSlugForHarness(...) ?? installSlug`), so the publisher-set resolve must
+// canonicalize before reading membership/revocations — otherwise on a joiner every
+// directory record resolves against an empty roster and an empty revocation set.
+import {
+  listHiveMembersForLocalPot,
+  loadRevokedHivePubkeysForLocalPot,
+} from '../federated-pot-scope';
 import type { ScopeId } from '../sync/pot-git/scope-repo';
 import type { FleetDirectory } from './scope-roster';
 import type { PublisherSet } from './offer-authorship';
@@ -371,8 +378,8 @@ export class PgFleetDirectory implements FleetDirectory {
     let revoked: Set<string>;
     try {
       row = await getFleetRecord(ws, this.deps.potSlug, owner, scope.slug, this.deps.sqlOverride);
-      members = await listHiveMembers(ws, this.deps.potSlug, this.deps.sqlOverride);
-      revoked = await loadRevokedHivePubkeys(ws, this.deps.potSlug, this.deps.sqlOverride);
+      members = await listHiveMembersForLocalPot(ws, this.deps.potSlug, this.deps.sqlOverride);
+      revoked = await loadRevokedHivePubkeysForLocalPot(ws, this.deps.potSlug, this.deps.sqlOverride);
     } catch {
       return refusedPublisherSet(owner); // PG edge failure ⇒ refuse, never guess
     }

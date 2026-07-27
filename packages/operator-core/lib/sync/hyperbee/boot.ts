@@ -1432,8 +1432,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         const { potHomeSlugForHarness } = await import('../../hive-federation');
         const hiveHome = await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
         if (hiveHome) {
-          const { loadRevokedHivePubkeys } = await import('../../hive-membership-store');
-          for (const pk of await loadRevokedHivePubkeys(opts.workspaceId, hiveHome)) {
+          // EI-18777176681958978: `potHomeSlugForHarness` returns the LOCAL handle, but the
+          // revocations are projected under the OWNER-authored scope. Reading the local
+          // handle on a joiner seeded an EMPTY revoked set — i.e. THIS seed, whose whole job
+          // is refusing an already-revoked peer on first contact, refused nobody. Resolve
+          // the federated scope first (a no-op on an owner).
+          const { loadRevokedHivePubkeysForLocalPot } = await import('../../federated-pot-scope');
+          for (const pk of await loadRevokedHivePubkeysForLocalPot(opts.workspaceId, hiveHome)) {
             base.add(pk);
           }
         }
@@ -3952,8 +3957,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       hiveHomeProjectionSlug ??
       (await potHomeSlugForHarness(opts.workspaceId, opts.harnessSlug).catch(() => null));
     if (!potHomeSlug) return null;
-    const { listHiveMembers } = await import('../../hive-membership-store');
-    const members = await listHiveMembers(opts.workspaceId, potHomeSlug).catch(() => []);
+    // EI-18777176681958978: `hiveHomeProjectionSlug` is already the federated scope, but the
+    // `potHomeSlugForHarness` FALLBACK is the local handle — resolve either way (idempotent
+    // on an already-federated scope) so this identity resolve can't read an empty roster.
+    const { listHiveMembersForLocalPot } = await import('../../federated-pot-scope');
+    const members = await listHiveMembersForLocalPot(opts.workspaceId, potHomeSlug).catch(
+      () => [],
+    );
     return resolveLocalAnnounceIdentityFromHiveMembers({ members });
   }
 

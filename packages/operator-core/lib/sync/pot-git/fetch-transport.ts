@@ -244,7 +244,14 @@ export function serveUploadPack(
       armIdle();
     });
     duplex.pipe(child.stdin);
-    child.stdout.pipe(duplex);
+    // `{ end: false }` is load-bearing, not a style choice. The default
+    // `end: true` ends the duplex the instant child.stdout hits EOF — which is
+    // BEFORE the child's 'close' event, so the end frame would always beat the
+    // failure reason onto the wire and the requester (which deletes its session
+    // on that frame) could never be told why a nonzero exit happened. Ending is
+    // now done explicitly in the 'close'/'error' handlers below, after
+    // `reportFailure`, so the ordering is ours rather than a pipe side effect.
+    child.stdout.pipe(duplex, { end: false });
     child.on('error', (e) => {
       stderr += String(e);
       reportFailure(`upload-pack spawn failed: ${e instanceof Error ? e.message : String(e)}`);

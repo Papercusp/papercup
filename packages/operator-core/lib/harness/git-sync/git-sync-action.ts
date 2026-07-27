@@ -75,7 +75,12 @@ import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
 import { openHiveGitDuplexToDevice } from '../../sync/pot-git/peer-dial-registry';
 import { Duplex } from 'node:stream';
-import { listHiveMembers } from '../../hive-membership-store';
+// EI-18777176681958978: `potHomeSlug` here is the LOCAL registry handle
+// (`entry.hive_slug ?? entry.slug`), which on a joiner can differ from the
+// OWNER-authored scope the pot_members projection writes under — reading it directly
+// returns an EMPTY roster. The *ForLocalPot wrapper resolves the federated scope first
+// (a no-op on an owner).
+import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
 import { resolveUsageActor } from '../usage-actor';
 import { loadCachedLocalAnnounceIdentity } from '../../sync/hyperbee/local-announce-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
@@ -1677,7 +1682,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       actor?.devicePubkey ??
       (await loadCachedLocalAnnounceIdentity().catch(() => null))?.devicePubkeyBase64;
 
-    const members = await listHiveMembers(workspaceId, potHomeSlug);
+    const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];
@@ -1984,7 +1989,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
     const actor = await resolveUsageActor();
     if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
 
-    const members = await listHiveMembers(workspaceId, potHomeSlug);
+    const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];
@@ -2220,7 +2225,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     // gh unauthenticated — no device identity to sign/integrate as
     if (!actor) return void (await decline('no_device_identity'));
 
-    const members = await listHiveMembers(workspaceId, potHomeSlug);
+    const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];
@@ -2479,7 +2484,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // fed-event (below), or this device's own bridge never sees it.
     const repoKey = canonicalRepoKey(entry);
 
-    const members = await listHiveMembers(workspaceId, potHomeSlug);
+    const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];

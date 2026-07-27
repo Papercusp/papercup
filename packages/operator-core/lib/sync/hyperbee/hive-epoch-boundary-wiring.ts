@@ -27,11 +27,18 @@ import { advanceEpochAndWrap, type WrappedEpochKeyRow } from './hive-epoch-bound
 import { resolveHiveEpochCrypto } from './hive-epoch-serving';
 import { putWrappedKeys } from './hive-epoch-keys-store';
 import { getHiveEpoch } from './hive-epoch-state';
+import type { HiveMemberRecord } from '../../hive-membership-store';
+// EI-18777176681958978: the membership/revocation reads here are reached BOTH from the
+// hive-scoped rekey path (already the owner-authored scope) AND from
+// `reconcileOwnedHiveEpochKeys`, which enumerates `harness_shared.pots.pot_home_slug` — the
+// LOCAL handle. Resolving is idempotent on an already-federated scope, so the
+// *ForLocalPot wrappers are correct for both entry points; passing a local handle straight
+// through would read an empty roster (no devices wrapped) and an empty revocation set (a
+// revoked device silently re-granted the current epoch key, the C-001 failure).
 import {
-  listHiveMembers,
-  loadRevokedHivePubkeys,
-  type HiveMemberRecord,
-} from '../../hive-membership-store';
+  listHiveMembersForLocalPot,
+  loadRevokedHivePubkeysForLocalPot,
+} from '../../federated-pot-scope';
 import { loadHivePubkey } from '../../identity/hive-keypair';
 
 /**
@@ -98,7 +105,7 @@ export async function loadAllHiveMemberDevicePubkeys(
   potHomeSlug: string,
   sql?: Sql,
 ): Promise<string[]> {
-  const members = await listHiveMembers(workspaceId, potHomeSlug, sql);
+  const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug, sql);
   const out = new Set<string>();
   for (const m of members) {
     for (const a of m.deviceAttestations ?? []) {
@@ -149,7 +156,7 @@ export async function advanceEpochOnHiveBoundary(
   const {
     resolveCrypto = resolveHiveEpochCrypto,
     loadAllMemberPubkeys = loadAllHiveMemberDevicePubkeys,
-    loadRevokedPubkeys = loadRevokedHivePubkeys,
+    loadRevokedPubkeys = loadRevokedHivePubkeysForLocalPot,
     resolveAuthorPubkey = loadHivePubkey,
     persistWrappedKeys = putWrappedKeys,
     advanceAndWrap = advanceEpochAndWrap,
@@ -353,7 +360,7 @@ export async function reconcileEpochKeysForCurrentMembers(
   } = {},
 ): Promise<BoundaryRekeyResult> {
   if (!opts.enabled) return { applied: false, reason: 'flag-disabled' };
-  const loadMembers = seams.loadMembers ?? listHiveMembers;
+  const loadMembers = seams.loadMembers ?? listHiveMembersForLocalPot;
   const members = await loadMembers(opts.workspaceId, opts.potHomeSlug, opts.sql);
   // C-001: a revoked device must NEVER be re-granted the current key — exclude the UNION of every
   // member row's revoked_pubkeys blocklist (a revocation written on one member's row applies hive-wide).
@@ -445,7 +452,7 @@ export async function reconcileOwnedHiveEpochKeys(
 ): Promise<{ scanned: number; reconciled: number }> {
   if (!opts.enabled) return { scanned: 0, reconciled: 0 };
   const getCurrentEpoch = seams.getCurrentEpoch ?? getHiveEpoch;
-  const loadMembers = seams.loadMembers ?? listHiveMembers;
+  const loadMembers = seams.loadMembers ?? listHiveMembersForLocalPot;
   const listHives =
     seams.listHives ??
     (async (sql?: Sql) => {

@@ -61,7 +61,14 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     ['a fix reference', 'this was fixed in abc1234, which predates the refactor'],
     // Hex-shaped things that are not shas.
     ['a hex colour', 'the token resolves to #a1b2c3d and the contrast still passes'],
-    ['a uuid fragment', 'session su-8d9a671c-ccda-4aa9-b4f4-8f0d1c7a4804 is live'],
+    // THE ONE THAT ACTUALLY BIT: agent ids travel in coord messages beside words like
+    // "live"/"running" constantly, and `\b` treats `-` as a boundary — so a naive sha
+    // pattern matched the uuid's 8- and 12-char hex segments and would have fired on a
+    // large share of real traffic. Both the prefixed and bare forms are pinned.
+    ['a prefixed agent id', 'session su-8d9a671c-ccda-4aa9-b4f4-8f0d1c7a4804 is live'],
+    ['a bare uuid (leading segment, no prefix)', '8d9a671c-ccda-4aa9-b4f4-8f0d1c7a4804 is running'],
+    ['an id in a deploy sentence', 'agent su-2846407f-4f4c-4313-8db8-dce7592e269d deployed the change'],
+    ['a hyphenated identifier', 'the branch deadbeef-fix is now on staging'],
     // Pure digits are numbers far more often than shas — the pattern requires an a-f.
     ['a 7-digit number', 'the sweep processed 1234567 rows in the window'],
     ['a row count', 'tool_invocations holds 5461000 rows over 30 days'],

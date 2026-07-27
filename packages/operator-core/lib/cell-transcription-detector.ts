@@ -86,10 +86,21 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     cell: 'git.pipelinePosition',
     field: 'positions.deployed / serving.startedSinceCodeChange',
     what: 'a commit sha stated as the deployed/serving/gate position',
-    // 7-40 hex, word-bounded, and REQUIRING at least one a-f letter: a pure-digit run
-    // like "1234567" is a number far more often than a sha, and admitting it is a
-    // large false-positive surface for no recall worth having.
-    value: /\b(?=[0-9a-f]{7,40}\b)[0-9a-f]*[a-f][0-9a-f]*\b/gi,
+    // 7-40 hex, REQUIRING at least one a-f letter: a pure-digit run like "1234567" is
+    // a number far more often than a sha, and admitting it is a large false-positive
+    // surface for no recall worth having.
+    //
+    // ⚠ The lookaround is load-bearing, and a plain `\b` is NOT enough — this was a
+    // real false positive caught by the suite, not a hypothetical. `\b` treats `-` as a
+    // boundary, so every AGENT ID matched: `su-8d9a671c-ccda-4aa9-b4f4-8f0d1c7a4804`
+    // offers `8d9a671c` and `8f0d1c7a4804` as "shas", and ids travel in coord messages
+    // beside words like "live" constantly — it would have fired on a large share of
+    // real traffic, which is exactly the EI-10949 channel-poisoning failure.
+    //
+    // So the run must not ABUT an alphanumeric, a hyphen, or a '#': that excludes uuid
+    // segments (both interior and leading, via the trailing lookahead), hyphenated
+    // identifiers, and hex colours, while leaving a standalone sha untouched.
+    value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
     context:
       /\b(deploy(ed|ing|ment)?|serving|serves|live|release[d]?|candidate|gate|green[- ]?checkpoint|staging|main|:3070|:3170|running|shipped)\b/i,
   },

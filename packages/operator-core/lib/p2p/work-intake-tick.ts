@@ -55,7 +55,15 @@ import type { P2pEffectiveTier } from './rollout-tiers';
 import { resolveMaxRolloutTier } from './rollout-tiers';
 import { readP2pSettings } from './settings';
 import { PgFleetDirectory } from './fleet-directory';
-import { listHiveMembers, loadRevokedHivePubkeys } from '../hive-membership-store';
+// EI-18777176681958978: the tick is handed a LOCAL pot handle
+// (work-intake-action.ts: `potHomeSlugForHarness(...) ?? ctx.installSlug`), so both reads
+// must resolve the OWNER-authored scope the pot_members projection writes under. Reading
+// the local handle on a joiner returns an empty roster AND an empty revocation set — the
+// latter meaning a revoked device's offer would be trusted.
+import {
+  listHiveMembersForLocalPot,
+  loadRevokedHivePubkeysForLocalPot,
+} from '../federated-pot-scope';
 import { currentGrantorEpoch } from './grant-store';
 import { hostAvailability as buildHostAvailability } from './host-availability';
 import { emitP2pReceipt, type EmitP2pReceiptResult } from './receipts';
@@ -122,8 +130,8 @@ export async function resolveAttestedGithubUserId(
   sql?: Sql,
 ): Promise<number | null> {
   const [members, revoked] = await Promise.all([
-    listHiveMembers(workspaceId, potHomeSlug, sql),
-    loadRevokedHivePubkeys(workspaceId, potHomeSlug, sql),
+    listHiveMembersForLocalPot(workspaceId, potHomeSlug, sql),
+    loadRevokedHivePubkeysForLocalPot(workspaceId, potHomeSlug, sql),
   ]);
   if (revoked.has(devicePubkey)) return null;
   const member = members.find((m) => m.deviceAttestations?.some((a) => a?.device_pubkey === devicePubkey));

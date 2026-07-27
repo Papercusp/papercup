@@ -16,7 +16,13 @@
  * gate) resolves the conservative fallback, never a grant.
  */
 
-import { listHiveMembers } from '../../hive-membership-store';
+// EI-18777176681958978: the gate's `potHomeSlug` arrives from a content projection's opts
+// several hops up (coord-message / bee-claim-spec → resolveAuthorCommsTier), so its
+// provenance is not provable HERE. Resolve rather than certify: idempotent when it is
+// already the federated scope, and the fix when it is a joiner's local handle. Reading the
+// wrong scope makes the device→user map EMPTY, which fails every author to
+// FALLBACK_COMMS_TIER — silently quarantining legitimate remote coord messages.
+import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
 import {
   effectiveCommsTier,
   FALLBACK_COMMS_TIER,
@@ -39,10 +45,14 @@ interface TierCacheEntry {
 const tiers = new Map<string, TierCacheEntry>(); // key ws::home::user
 
 export interface CommsTierGateDeps {
-  listHiveMembers: typeof listHiveMembers;
+  /** Takes a LOCAL pot handle; the default resolves the federated read scope itself. */
+  listHiveMembers: typeof listHiveMembersForLocalPot;
   effectiveCommsTier: typeof effectiveCommsTier;
 }
-let deps: CommsTierGateDeps = { listHiveMembers, effectiveCommsTier };
+let deps: CommsTierGateDeps = {
+  listHiveMembers: listHiveMembersForLocalPot,
+  effectiveCommsTier,
+};
 
 async function deviceToUser(
   workspaceId: string,

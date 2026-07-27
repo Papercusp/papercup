@@ -38,6 +38,7 @@ import { convertPlanItem } from '../../../plan-items/convert';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
+import { cellTranscriptionHint } from '../../../cell-transcription-detector';
 
 /**
  * EI-9484 — "coord:declare-intent timing out repeatedly": the watchdog observed
@@ -300,6 +301,14 @@ export default defineTool({
       ? { ...record, fleetSlug: fleet?.fleetSlug ?? null, fleetRole: fleet?.fleetRole ?? null }
       : record;
     const overCoverageHint = broadIntentHint(args.intent, !!(args.items && args.items.length > 0));
+    // P-017 (c) / D-016 / D-047 row 4: "this value has a cell, read it". A declared
+    // intent that TRANSCRIBES a cell-backed value (a deployed sha, a behind-count) is
+    // stating something that was true when it was copied and rots silently afterwards
+    // — and peers read intents to decide what to do. DETECTOR, never a gate: this is a
+    // string on the result, the declare always succeeds, and a deliberate historical
+    // quote is legitimate. Pure + total (never throws), so it needs no timeout budget
+    // like the pivot leg below.
+    const cellHint = cellTranscriptionHint(args.intent);
     // P-015: mechanical pivot detection between consecutive intents (plan D-006
     // — extractive embedding use only; deterministic lexical fallback). A sharp
     // pivot usually means the previous approach dead-ended — the nudge points
@@ -337,6 +346,7 @@ export default defineTool({
             presence,
             ...(claims ? { claims } : {}),
             ...(overCoverageHint ? { overCoverageHint } : {}),
+            ...(cellHint ? { cellHint } : {}),
             ...(pivotField ?? {}),
           }),
         },

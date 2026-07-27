@@ -196,6 +196,100 @@ describe('serveUploadPack — idle ceiling', () => {
   }, 20_000);
 });
 
+/**
+ * EI-18776567787336109, SECONDARY DEFECT — the serving side must TELL the
+ * requester why it failed.
+ *
+ * THE BUG: the server knew exactly why a serve died (`timedOut=true`, a guard
+ * refusal, a nonzero exit), wrote it to its own log, and sent the peer nothing
+ * but a bare end frame. The joining machine saw only "pot-git: serve channel
+ * closed" — a message that cannot distinguish a server-side timeout from a
+ * dropped transport. Diagnosing the 120s ceiling was therefore IMPOSSIBLE from
+ * the joiner, and cost several wakes chasing the wrong half of the system.
+ *
+ * ⚠ WHY ORDERING IS ASSERTED, NOT JUST DELIVERY: the requester DELETES its
+ * session when the end frame arrives (serve-wiring.handleEndToClient), so a
+ * reason emitted after the duplex ends is silently dropped and the fix would be
+ * decorative. `onFailure` firing BEFORE 'end' is the actual contract.
+ */
+describe('serveUploadPack — failure reason reaches the requester', () => {
+  it('reports an idle-ceiling kill, BEFORE ending the duplex', async () => {
+    const repo = repoWithCommit();
+    const log: string[] = [];
+    const duplex = orderRecordingDuplex(log); // live, but never sends anything
+
+    const res = await serveUploadPack(repo, duplex, {
+      timeoutMs: 300,
+      allowOutsideRoot: true,
+      onFailure: (reason) => log.push(`fail:${reason}`),
+    });
+
+    expect(res.timedOut).toBe(true);
+    // Delivered at all...
+    const failure = log.find((l) => l.startsWith('fail:'));
+    expect(failure).toBeDefined();
+    expect(failure).toContain('300ms idle');
+    // ...and delivered while the requester still has a session to destroy.
+    expect(log.indexOf(failure as string)).toBeLessThan(log.indexOf('end'));
+  }, 20_000);
+
+  it('reports a PRE-SPAWN guard refusal, BEFORE ending the duplex', async () => {
+    // No `allowOutsideRoot`, so the serve guard rejects the tmpdir path before
+    // git is ever spawned. This path used to end the duplex silently too.
+    const repo = repoWithCommit();
+    const log: string[] = [];
+    const duplex = orderRecordingDuplex(log);
+
+    const res = await serveUploadPack(repo, duplex, {
+      onFailure: (reason) => log.push(`fail:${reason}`),
+    });
+
+    expect(res.code).toBe(-1);
+    const failure = log.find((l) => l.startsWith('fail:'));
+    expect(failure).toBeDefined();
+    expect(failure).toContain('serve refused');
+    expect(log.indexOf(failure as string)).toBeLessThan(log.indexOf('end'));
+  }, 20_000);
+
+  it('reports a nonzero upload-pack exit, with git’s own stderr', async () => {
+    // A real directory that is NOT a repo: upload-pack spawns, then exits
+    // nonzero in ~30ms. Distinct from both cases above.
+    const notARepo = mkdtempSync(join(tmpdir(), 'hg-not-a-repo-'));
+    dirs.push(notARepo);
+    const log: string[] = [];
+    const duplex = orderRecordingDuplex(log);
+
+    const res = await serveUploadPack(notARepo, duplex, {
+      allowOutsideRoot: true,
+      onFailure: (reason) => log.push(`fail:${reason}`),
+    });
+
+    expect(res.code).not.toBe(0);
+    const failure = log.find((l) => l.startsWith('fail:'));
+    expect(failure).toBeDefined();
+    expect(failure).toContain('upload-pack exited');
+    expect(log.indexOf(failure as string)).toBeLessThan(log.indexOf('end'));
+  }, 20_000);
+
+  it('stays silent on a CLEAN serve — a healthy fetch must not be told it failed', async () => {
+    const repo = repoWithCommit();
+    const log: string[] = [];
+    const duplex = orderRecordingDuplex(log);
+    // v2 flush-only request: upload-pack advertises, sees the flush, exits 0.
+    duplex.push('0000');
+
+    const res = await serveUploadPack(repo, duplex, {
+      timeoutMs: 5_000,
+      allowOutsideRoot: true,
+      onFailure: (reason) => log.push(`fail:${reason}`),
+    });
+
+    expect(res.code).toBe(0);
+    expect(res.timedOut).toBe(false);
+    expect(log.filter((l) => l.startsWith('fail:'))).toEqual([]);
+  }, 20_000);
+});
+
 describe('stale shallow.lock sweep — liveness beats age', () => {
   /**
    * The age gate rested on "we SIGKILL any fetch at timeoutMs, so no live fetch

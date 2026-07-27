@@ -26,6 +26,7 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { getHiveBySlug } from '../../../hive-store';
 import { listHiveMembers, loadRevokedHivePubkeys } from '../../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 import { verifyEd25519 } from '../../../identity/ed25519';
 import {
   fleetDirectorySignedBytes,
@@ -112,9 +113,17 @@ async function realVerifyFleetDirectory(
 
     // (a)+(b) normal path: an owner-attested, non-revoked DEVICE key signed it.
     // Fresh membership read per op — security path, no TTL cache.
-    const revoked = await loadRevokedHivePubkeys(opts.workspaceId, opts.harnessSlug, opts.sql);
+    // EI-18777176681958978: certified, not resolved — this projection IS one of the writers.
+    // register-all's `hiveScoped` spread sets `harnessSlug` to the federated bind scope
+    // (`opts.potHomeSlug`, boot's resolveHiveHomeProjectionSlug → joinerPotHomeSlug →
+    // canonicalHiveHomeSlug), so reading under it agrees with the write side by construction.
+    const scope = unsafeFederatedPotScope(
+      opts.harnessSlug,
+      "register-all hiveScoped: this projection's own bind scope IS the federated pot scope",
+    );
+    const revoked = await loadRevokedHivePubkeys(opts.workspaceId, scope, opts.sql);
     if (!revoked.has(row.signer_device_pubkey)) {
-      const members = await listHiveMembers(opts.workspaceId, opts.harnessSlug, opts.sql);
+      const members = await listHiveMembers(opts.workspaceId, scope, opts.sql);
       const ownerMember = members.find((m) => m.githubUserId === record.ownerGithubUserId);
       const signerAttestedToOwner = !!ownerMember?.deviceAttestations?.some(
         (a) => a?.device_pubkey === row.signer_device_pubkey,

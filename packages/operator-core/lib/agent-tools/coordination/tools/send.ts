@@ -36,6 +36,7 @@ import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../f
 import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkItemResult } from '../../_bulk';
+import { cellTranscriptionHint } from '../../../cell-transcription-detector';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
@@ -928,6 +929,8 @@ async function sendOne(
     }
   }
 
+  const cellHint = cellTranscriptionHint([msg.summary, msg.body].filter(Boolean).join('\n'));
+
   return {
     ok: true,
     to: env.to,
@@ -961,6 +964,16 @@ async function sendOne(
     // attempted for them. Never an error: this IS how you close a loop with a
     // departed correspondent.
     ...(goneRepliedTo.length ? { recipients_gone: goneRepliedTo } : {}),
+    // P-017 (c) / D-016 / D-047 row 4: "this value has a cell, read it". Computed on
+    // the SENT text (summary + body) and reported on THIS message's result.
+    //
+    // Placed here — after the send has already succeeded — on purpose. It is a
+    // DETECTOR, so it must be impossible for it to affect delivery: the message is
+    // persisted and woken before this line runs, the helper is pure and total (never
+    // throws, returns null on anything unparseable), and a hit changes nothing except
+    // adding a string the sender can read. A transcribed value is worth flagging
+    // precisely because a message OUTLIVES the value it quotes.
+    ...(cellHint ? { cellHint } : {}),
   };
 }
 
