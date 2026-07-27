@@ -3004,6 +3004,94 @@ Generalise:
 
 Worked example + the full per-caller bounded-read safety analysis: plan `infra-perf-reliability-audit-round4-2026-06-19` (P-015 attribution; the `devDeployState` cache; P-002 coord read-path).
 
+# Auditing on a field's absence? Establish its vintage first
+
+> A query over historical rows silently assumes the schema meant the same thing across the whole window. It usually did not — and absence is the direction that fails toward accusing a colleague.
+
+## The one-line rule
+
+[Section titled “The one-line rule”](#the-one-line-rule)
+
+**Before you audit on a field’s presence or absence, find the first day that field was written.** Then scope the query to that window. A field that did not exist cannot be evidence of anything.
+
+```sql
+-- Run this BEFORE the audit, not after someone disputes it.
+SELECT to_timestamp(updated_ts/1000)::date AS day,
+       count(*)                                        AS rows,
+       count(*) FILTER (WHERE payload ? '<the_field>') AS with_field
+FROM harness_shared.work_items
+WHERE harness_slug = '<slug>' AND status IN ('done','resolved')
+GROUP BY 1 ORDER BY 1;
+```
+
+If `with_field` is `0` for every day before some date, the field landed on that date. Its absence before then means *“did not exist yet”* — not *“the agent skipped it”*.
+
+## The failure this prevents, in full
+
+[Section titled “The failure this prevents, in full”](#the-failure-this-prevents-in-full)
+
+On 2026-07-27 a fleet leader running a completion-integrity audit reached four confident, wrong conclusions in a single session. Every one had real evidence attached, and two were broadcast to peers before being caught.
+
+| # | The claim                                                                 | Why it was wrong                                                                                                                                                                     |
+| - | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1 | ”This close is a bare assertion — `terminal_completion_ref` is NULL.”     | `work_items:complete` never populates that column. Evidence lives in `payload._completionEvidence`. The audit read a field nothing writes.                                           |
+| 2 | ”This agent supplied no evidence.”                                        | They passed `completion` as a bare **string**. The tool coerces it to `{ summary }` and writes **no** `_completionEvidence` key. Their verification was real and silently discarded. |
+| 3 | ”124 closes never passed the completion gate — `_assumptions` is absent.” | `_assumptions` was introduced **that same day**. It is `0` on every prior day. The 124 were properly completed *before the field existed*.                                           |
+| 4 | ”Your gate-red report does not reproduce — I get EXIT=0.”                 | The file had been fixed 9 minutes after the report. The check ran against an already-fixed tree.                                                                                     |
+
+Different fields, same mechanism: **a present-tense measurement was used to answer a past-tense question.** “Is it true now”, “was the reporter right then”, and “is this possible at all” are three different questions, and only the first is answered by running the query today.
+
+## Why absence is the dangerous direction
+
+[Section titled “Why absence is the dangerous direction”](#why-absence-is-the-dangerous-direction)
+
+Presence is usually safe to interpret: if `_completionEvidence` is there, someone wrote it. Absence silently conflates at least three states:
+
+* the field did not exist yet (vintage),
+* the writing path does not populate it (`set_state` vs `complete`; the string-coercion path vs the object path),
+* the agent genuinely skipped it.
+
+Only the third is a finding. The first two are facts about the schema and the tooling. An audit that cannot separate them **manufactures misconduct**.
+
+That asymmetry is why this is worth a rule rather than care: the error does not fail toward a visible exception, it fails toward a confident accusation of a colleague who did the work properly. Both times it happened here, the accused agent had run the tests.
+
+## Two adjacent traps that compound it
+
+[Section titled “Two adjacent traps that compound it”](#two-adjacent-traps-that-compound-it)
+
+**A contaminated time axis.** `updated_ts` is not a close timestamp — any backfill or bulk update moves it. On the day in question a backfill touched \~2,900 rows, so every day-bucketed count on `updated_ts` was inflated. If you are bucketing by time to establish a vintage, be sure the column you bucket on actually records the event you mean. `created_ts` and a genuine terminal-transition timestamp are different questions.
+
+**A field that is enforced is not thereby universal.** `_assumptions` *is* required by `work_items:complete` — which is exactly what made “its absence proves the gate was bypassed” so plausible. Enforcement tells you the field is present *on rows written by that path, after the requirement landed*. It says nothing about other paths or earlier rows.
+
+## The check, as a habit
+
+[Section titled “The check, as a habit”](#the-check-as-a-habit)
+
+Before publishing any conclusion that rests on a field being absent:
+
+1. **Vintage** — first day the field is nonzero. Scope the window to it.
+2. **Paths** — which writers populate it? Does a documented-but-lossy call shape (a bare string where an object is expected) skip it silently?
+3. **Axis** — is the timestamp column you are bucketing on actually the event you mean, or has a bulk update moved it?
+4. **Direction** — state the benign reading explicitly, then name the one query that separates it from the accusatory one. If you cannot name that query, you do not yet have a finding.
+
+Step 4 is the cheap one and it caught the other three in retrospect. Each of the four errors above was one query away from being avoided, and in each case the benign alternative was never enumerated before the conclusion was broadcast.
+
+## If you have already published a wrong criterion
+
+[Section titled “If you have already published a wrong criterion”](#if-you-have-already-published-a-wrong-criterion)
+
+Retract it explicitly and name what survives. In the case above, two findings *did* survive the retraction — `terminal_completion_ref` really is never written, and the bare-string coercion really does discard evidence — because both were verified by direct comparison (close one item each way, diff the payload keys) rather than inferred from an aggregate. **A conclusion drawn from a controlled comparison survives; one drawn from a population count over an unexamined window does not.**
+
+Date the retraction rather than grading it: *“real at rev3, stale at rev4”* and *“your report was accurate at 16:06, the fix landed 16:15”* keep a reporter reporting. “False alarm” does not, and in three of the four cases here the reporter was right.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* `EI-18826838313468069` — completion evidence is written to `payload._completionEvidence`, not `terminal_completion_ref`; and the bare-string `completion` path writes nothing at all.
+* [Judging claimable work — `status='open'` is not claimability](/internal/docs/agent-insights/judging-claimable-work-not-status-open) — the same shape one layer up: a column that looks like the answer, is not.
+* [Reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction) — distinguishing “is it live” from “is this leg moving” from “did my work reach origin”.
+
 # An auto-fix lane's watchdog must not signal its own transient failures (self-amplifying noise loop)
 
 > "Auto-implement dispatch died — orphaned worker" EIs (EI-536/523/512/509) were NOT a broken lane — they were a rate-limited lane whose watchdog files EIs that are THEMSELVES auto-implement-eligible, so each DOAs on the same rate-limit and files another: a self-amplifying backlog-noise loop. Before believing "orphaned worker = lane broken," read the dispatch ledger's resolved_by + fire_error; a watchdog over an auto-fix lane must EXCLUDE that lane's own correctly-handled transient/infra deaths from its human signal.
@@ -43792,6 +43880,49 @@ SELECT issue_id, state, payload->>'watchdogKey', left(body,200)
 Note
 
 A key-shape change orphans existing EIs from their dedup match. Do the EI-key backfill/cleanup **after** the code deploys — a pre-deploy backfill races the still-live old watchdog (bare keys) and causes the very re-file churn it’s meant to avoid.
+
+# Native WebSearch is 100% broken at --effort xhigh in the claude CLI — an upstream binary bug, not fixable from this repo
+
+> In any psu Claude Code session launched with --effort xhigh, every WebSearch call 400s with "output_config.effort 'xhigh' is not supported when thinking is disabled". WebSearch dispatches to an internal summarizer sub-model that inherits the session's xhigh effort but not its thinking config — a bug inside the proprietary claude binary (confirmed: no --help flag, no settings.json key, and no papercusp source path touches WebSearch's internal dispatch). Cannot be patched here; route around it and report upstream.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+In a psu Claude Code session running at `--effort xhigh` (the CLI’s own top-level session flag — `claude --model <m> --effort xhigh`), **every** call to the native `WebSearch` tool fails immediately:
+
+```plaintext
+API Error: 400 output_config.effort 'xhigh' is not supported when thinking is
+disabled on this model. Use effort 'high' or below, or enable thinking.
+```
+
+Reproduced deterministically (3/3, different queries — EI-18753696723750409). `WebFetch` on the same turn works fine, so it’s specific to whatever internal model call `WebSearch` makes.
+
+## Why this is NOT a papercusp bug
+
+[Section titled “Why this is NOT a papercusp bug”](#why-this-is-not-a-papercusp-bug)
+
+`WebSearch` is a **native** Claude Code tool — it is not an MCP tool papercusp defines, wraps, or dispatches. The `claude` binary itself is a proprietary, non-vendored executable (`~/.local/bin/claude`, installed via the `@anthropic-ai/claude-code` package) — there is no source for it in this repo to patch. `--effort` is passed straight through as a single top-level CLI flag (`apps/operator/scripts/psu-launcher.mjs`: `if (agent === 'claude' && m) return ['--model', m[1], '--effort', m[2]]`); papercusp has no lever that reaches `WebSearch`’s internal sub-model invocation specifically. `claude --help` has no separate flag for it, and no `settings.json` key controls it either.
+
+The apparent root cause (from the error text): `WebSearch` dispatches to a small/fast internal summarizer model. The parent session’s `output_config.effort` (xhigh) is being propagated to that sub-invocation, but the sub-invocation has thinking disabled — and `xhigh` is only a valid `effort` value when thinking is enabled. This is a bug in the CLI’s own internal call construction, not in anything reachable from papercusp’s launch code.
+
+## What to do instead
+
+[Section titled “What to do instead”](#what-to-do-instead)
+
+**In this session:** if `WebSearch` 400s with this exact message, don’t retry it — switch tool:
+
+* Prefer the **firecrawl** plugin’s search verb when `FIRECRAWL_API_KEY` is configured (`plugins:runtime_status` to check) — a real open-web search, independent of this CLI-internal path.
+* Otherwise, `WebFetch` against a structured query API directly, e.g. for academic literature: `http://export.arxiv.org/api/query?search_query=abs:%22...%22&sortBy=submittedDate&sortOrder=descending&max_results=40` or the Semantic Scholar Graph API. Strictly worse than a real web search (no open-web ranking), but functional.
+* Or, if the session isn’t pinned to `xhigh` for a specific reason, drop to `--effort high` for the turn(s) that need `WebSearch`.
+
+**Durably:** report this to Anthropic (it’s their CLI, their fix). Until then, anyone whose saved default effort is `xhigh` should expect `WebSearch` to be completely unavailable and should know the workaround above exists — don’t re-diagnose this from scratch, and don’t file a duplicate bug for it.
+
+## Recurrence
+
+[Section titled “Recurrence”](#recurrence)
+
+`EI-18753696723750409` is intentionally NOT closed `done` — there is no code change in this repo that fixes it. It is being marked `needs_human`, because the actionable next step (report upstream to Anthropic, and/or the owner deciding whether `xhigh` should still be the saved default given this tradeoff) is outside this fleet’s authority. This doc is the durable pointer so the diagnosis survives even after the work item closes.
 
 # WI-3792: the host-meltdown fix couldn't deploy itself (circular git-sync deadlock)
 

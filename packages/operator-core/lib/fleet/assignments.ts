@@ -970,11 +970,29 @@ export function summarizeOrphan(
   // was already fetched and documented as the working-vs-wedged discriminator, but the
   // verdict consulted only `sessionState`, so an actively-invoking `parked` holder was
   // reported orphan/reclaim. Fuse it: no tool-call signal ⇒ unchanged prior behaviour.
-  const liveHolder =
-    isRecentlyActive(holder, nowMs) ||
-    (holder?.sessionState != null
-      ? !ORACLE_CONFIRMED_GONE.has(holder.sessionState)
-      : r.holderAlive === true);
+  //
+  // EI-18779583390738111: that fusion used to be `isRecentlyActive(...) || <sessionState
+  // check>` — a plain OR that let a recent tool call override EVERY confirmed-gone
+  // sessionState, `ended` included. That produced a same-payload self-contradiction: the
+  // `agents[]` row for the SAME holder sets `alive:false` for exactly `ended` (and
+  // `suspect`/`draining`, see reconcileWakeability in agent-tools/fleet/assignments.ts),
+  // so a claim row could read `held-by-live-agent`/`ask` while the payload's own agents[]
+  // row for that holder read `alive:false`/dead. `ended` fires only on the SessionEnd/Stop
+  // lifecycle event (session-death-claim-release-2026-07-11), which ALREADY unconditionally
+  // released every claim that session held — a confirmed, PERMANENT termination that a
+  // tool call recorded before the session died cannot walk back. `suspect`/`draining` stay
+  // overridable (the EI-18716042694888410 incident): those are heuristic, transitional
+  // reads that can be wrong while the process is still very much alive.
+  const liveHolder = (() => {
+    const sessionState = holder?.sessionState;
+    if (sessionState == null) {
+      // No oracle signal at all — degrade to the pre-oracle heartbeat/recency behaviour.
+      return isRecentlyActive(holder, nowMs) || r.holderAlive === true;
+    }
+    if (sessionState === 'ended') return false; // confirmed, permanent — never overridable.
+    if (ORACLE_CONFIRMED_GONE.has(sessionState)) return isRecentlyActive(holder, nowMs);
+    return true; // live / parked / recorded — documented alive states.
+  })();
   return {
     ...base,
     verdict: liveHolder ? 'held-by-live-agent' : 'orphan',

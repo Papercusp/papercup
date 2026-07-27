@@ -35,6 +35,7 @@ import {
   upgradeRecordedLiveHolders,
   type FleetAssignmentRow,
   type HolderActivity,
+  type PlanItemLaneBlock,
 } from './assignments';
 import { classifyItemActivity, isReclaimable, type ItemActivity } from '../item-activity';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
@@ -483,7 +484,18 @@ describe('summarizeOrphan — WI-5975', () => {
   // passed) must OVERRIDE the liveness-derived verdict entirely, in BOTH
   // directions (a dead holder AND a demonstrably live one).
   describe('residue overrides the liveness verdict entirely (EI-18763117665515043)', () => {
-    const residue = { planSlug: 'p', itemId: 'P-007', effectiveStatus: 'done' };
+    // `reason` is REQUIRED on PlanItemLaneBlock (scheduler/plan-item-lane-guard.ts).
+    // Worded exactly as the real terminal/residue producer emits it (same file, the
+    // `is already <status> — its work-item is stale residue…` branch) so the
+    // `toEqual(residue)` assertions below compare against a realistic block rather
+    // than a stub that could drift from what production actually hands us.
+    const residue: PlanItemLaneBlock = {
+      planSlug: 'p',
+      itemId: 'P-007',
+      effectiveStatus: 'done',
+      reason:
+        'plan-item p#P-007 is already done — its work-item is stale residue of completed/abandoned work, not open work',
+    };
 
     it('a DEAD holder whose claim is residue reports residue/close, not orphan/reclaim', () => {
       const deadResidue = summarizeOrphan(heldByLive, { sessionState: 'ended' }, undefined, residue);
