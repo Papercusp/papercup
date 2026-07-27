@@ -1155,11 +1155,15 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
         'warn',
         `[pot-git] serve SUPERSEDED repo=${superseded.repoKey} peer=${peerTag(state)}` +
           ` id=${superseded.sessionId} after ${Date.now() - superseded.startedAt}ms` +
-          // WI-6412: discarded bytes as a first-class field. ~2.4GB was thrown
-          // away in two minutes and nothing surfaced it — it read as ordinary
-          // "serve FAILED" noise, which is why the livelock went unnoticed
-          // under an unrelated investigation. A nonzero value here is now the
-          // signal that supersession is destroying real work.
+          // WI-6412: discarded bytes as a first-class field ON THE DECISION
+          // LINE. The count was not entirely absent before — it could be
+          // recovered from the losing serve's stderr on a LATER "serve FAILED"
+          // line ("upload-pack aborted: superseded ... (served 789537440B)").
+          // But it sat inside a stderr string on the line that reports a
+          // FAILURE, not on the line where we CHOSE to discard, so ~2.4GB of
+          // destroyed work in two minutes read as ordinary failure noise. A
+          // nonzero value here says supersession destroyed real work, at the
+          // moment it decided to.
           ` discardedBytes=${superseded.progress.bytesOut}` +
           ` (same channel re-requested the same repo as id=${v.id}; the earlier fetch is abandoned)`,
       );

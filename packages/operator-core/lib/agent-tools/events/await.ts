@@ -482,6 +482,57 @@ export default defineTool({
       }
     }
 
+    // ── EI-18734910825871393-class fix: the `plan-item:done:<slug>:<id>` LATCH,
+    // same shape as the work-item:done latch just above. `plan-item:done:<slug>:<id>`
+    // fires exactly once, on the real →done edge (plan-item-events.ts: "never a
+    // re-set of an already-done item") — so a registration made after that edge can
+    // only ever time out. Live repro (2026-07-26): an await registered ~76s AFTER
+    // the item's done-fire slept the FULL default timeout (3600s) instead of
+    // resolving immediately, on a fleet where plan-item:done events fire in quick
+    // succession (an orient-check-then-await sequence easily straddles one).
+    //
+    // Deliberately NOT a blanket `event_key_fires`-latch check (the bug's own
+    // suggested fix): that table accumulates fires for EVERY key including
+    // RECURRING ones (work-item:claimable, coord:inbox-wake:<owner>, …), so
+    // treating "a fire exists" as "already satisfied" there would falsely
+    // short-circuit every SUBSEQUENT await on a recurring key using its ancient
+    // first-ever fire — a much worse regression than the race being fixed. Instead
+    // this probes the plan item's CURRENT LIVE effectiveStatus (mirrors
+    // liveSettledProbe's approach above, not an event-history read) — a plan item
+    // can only be 'done' via that one-shot edge, so live-status=='done' is exactly
+    // equivalent to "the event already fired" without the recurring-key hazard.
+    // Best-effort + time-bounded: an unreadable/ambiguous probe registers normally.
+    const planItemDoneMatch = patternAwait ? null : /^plan-item:done:([^:]+):([^:]+)$/.exec(eventKey);
+    if (planItemDoneMatch) {
+      const [, planSlug, planItemId] = planItemDoneMatch;
+      const probe = await withBoundedTimeout(
+        (async () => {
+          const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+          const { harnessSlug } = await resolvePlanScope({
+            harnessSlug: typeof harnessRaw === 'string' ? harnessRaw : undefined,
+          });
+          return planItemEffectiveStatus(harnessSlug, planSlug, planItemId);
+        })(),
+        { fallback: null, timeoutMs: 1_500, label: 'events-await:planItemDoneLatch' },
+      );
+      if (probe.value === 'done') {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                already_done: true,
+                event: eventKey,
+                item_state: 'done',
+                advice: `Plan item ${planSlug}#${planItemId} is ALREADY done — "${eventKey}" fired when it settled and will not fire again. Do not wait; proceed with the work this settle unblocks now.`,
+              }),
+            },
+          ],
+        };
+      }
+    }
+
     // ── linking-notify-family-hardening P-006: the unblocked-key LATCH.
     // `work-item:unblocked:<id>` fires only on a blocked→unblocked EDGE, so a
     // registration against an item with NO live blocker (or already settled)

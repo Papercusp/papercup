@@ -51,6 +51,8 @@ import {
 } from '../../coord/holder-context';
 import { holderContextSources } from '../coordination/holder-context-sources';
 import { isTerminalStateInput } from '../../work-item-dispatch-states';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { cellReaderFromCtx, type CellReaderCtxLike } from '../cell-reader-ctx';
 import type { CellReader } from '../../cell-registry';
 
 /**
@@ -92,6 +94,32 @@ export const HOLDER_CONTEXT_SCHEMA = z.object({
  * item names as the trigger to re-litigate the reversal.
  */
 export const HOLDER_LENS_DISTINCT_CAP = 40;
+
+/**
+ * Resolve the {@link CellReader} for a holder-lens call, or `null`.
+ *
+ * ⚠⚠ IT MUST NEVER THROW, AND THE FIRST VERSION OF THIS DID — caught by the
+ * existing `work_items:get` suite, which is the only reason it is a helper.
+ * `resolveAgentIdentity` THROWS for a caller it cannot attribute, and BOTH tools
+ * that use this lens declare `requirePrincipal: false` — i.e. an unattributed
+ * caller is explicitly legitimate for them. Calling it unguarded turns "we cannot
+ * name you, so you get no reader-relative state" (correct, and a no-op for the
+ * read) into "your work-item read fails" — an enrichment failing the operation it
+ * decorates, which is the ONE thing P-026 rule (f) forbids.
+ *
+ * A null reader FAILS CLOSED downstream: `resolveHolderContext` refuses an
+ * unidentified reader, so an unattributable caller simply sees no `holder`.
+ */
+export function holderLensReader(ctx: CellReaderCtxLike): CellReader | null {
+  try {
+    return cellReaderFromCtx(
+      resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]),
+      ctx,
+    ).reader;
+  } catch {
+    return null;
+  }
+}
 
 /** The row fields this lens needs. Structural, so it never drags a work-item row
  *  type (or its schema) into the shared projection. */

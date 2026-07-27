@@ -328,12 +328,13 @@ function startRequestServers(): void {
   // listens itself, byte-identical to serve()'s own listen(port, hostname, cb) except
   // for the retry wrapper.
   const server: ReturnType<typeof createAdaptorServer> = createAdaptorServer({ fetch: handler });
+  const httpServer = server as unknown as import('node:http').Server;
   if (cluster.isWorker) {
-    listenWithEaddrinuseRetry(server, { port, host: hostname, reusePort: true }, () =>
+    listenWithEaddrinuseRetry(httpServer, { port, host: hostname, reusePort: true }, () =>
       onListening(port),
     );
   } else {
-    listenWithEaddrinuseRetry(server, { port, host: hostname }, () => onListening(port));
+    listenWithEaddrinuseRetry(httpServer, { port, host: hostname }, () => onListening(port));
   }
 
   // B2 (infra-fail-fast-build-integrity P-006) — the "safe half": explicit inbound

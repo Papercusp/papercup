@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   attachHolderContext,
   rowHasLiveHolder,
+  holderLensReader,
   HOLDER_CONTEXT_SCHEMA,
   HOLDER_LENS_DISTINCT_CAP,
 } from './_holder-lens';
@@ -296,5 +297,34 @@ describe('the fan-out is bounded and the read cannot fail', () => {
 
   it('tolerates an empty list', async () => {
     expect(await attachHolderContext([], reader)).toEqual([]);
+  });
+
+  /**
+   * ⚠ THE REGRESSION THIS FILE ACTUALLY CAUGHT, and it is the rule the whole
+   * projection is built around, broken by the wiring rather than the derivation.
+   *
+   * `resolveAgentIdentity` THROWS for a caller it cannot attribute, and BOTH
+   * tools carrying this lens declare `requirePrincipal: false` — an unattributed
+   * caller is explicitly legitimate for them. Resolving the reader unguarded
+   * therefore turned "we cannot name you, so no reader-relative state" into "your
+   * work-item read fails": an enrichment failing the operation it decorates,
+   * which is the one thing P-026 rule (f) forbids. Caught by the existing
+   * `work_items:get` suite, which is why the guarded seam is a named export
+   * instead of two inline calls.
+   */
+  it('holderLensReader returns null for an unattributable ctx instead of throwing', () => {
+    expect(() => holderLensReader({} as never)).not.toThrow();
+    expect(holderLensReader({} as never)).toBeNull();
+    // …and a null reader is simply a no-op for the read, never a failure.
+    expect(holderLensReader({ role: 'su' } as never)).toBeNull();
+  });
+
+  it('a null reader leaves every row intact', async () => {
+    const rows = await attachHolderContext([row('A', 'su-a', 'open')], null, {
+      sources: sourcesFor({ 'su-a': { itemId: 'WI-6407' } }),
+      nowMs: NOW,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].holder).toBeUndefined();
   });
 });

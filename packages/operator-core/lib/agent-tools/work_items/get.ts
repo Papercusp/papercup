@@ -21,9 +21,7 @@ import { detectBgJobCheckpointClaim } from "../../checkpoint-bg-job-claim";
 import { getPresence } from "../coordination/presence";
 import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
 import { planItemClaimCollision } from "../../scheduler/plan-item-claim-collision";
-import { resolveAgentIdentity } from "../coordination/identity";
-import { cellReaderFromCtx } from "../cell-reader-ctx";
-import { attachHolderContext } from "./_holder-lens";
+import { attachHolderContext, holderLensReader } from "./_holder-lens";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -106,11 +104,11 @@ export default defineTool({
     // the holder lens, never a cache-key dimension — the per-id `cachedRead`
     // below is deliberately non-principal-scoped, so reader-relative holder
     // context must be attached to what the cache RETURNS, never to what it
-    // stores. (`cellReaderFromCtx` fails closed on an absent role, by design.)
-    const { reader } = cellReaderFromCtx(
-      resolveAgentIdentity(ctx),
-      ctx as Parameters<typeof cellReaderFromCtx>[1],
-    );
+    // stores. `holderLensReader` returns null rather than throwing for a caller
+    // this tool cannot attribute: `requirePrincipal: false` above makes such a
+    // caller LEGITIMATE here, so an unguarded identity resolve would let the
+    // enrichment fail the read it decorates.
+    const reader = holderLensReader(ctx as Parameters<typeof holderLensReader>[0]);
     const env = await runBulk(
       ids,
       async (id) => {
