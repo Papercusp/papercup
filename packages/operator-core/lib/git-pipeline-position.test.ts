@@ -13,6 +13,18 @@ import {
 import type { DevDeployState } from './dev-deploy-state';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 
+/** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
+const HEALTHY_GIT_SYNC = {
+  status: 'synced',
+  lastSyncedAtMs: Date.now(),
+  syncAgeMs: 0,
+  consecutiveErrorTicks: 0,
+  pushedRepos: ['papercusp'],
+  mergedRepos: [],
+  conflicts: [],
+  errors: [],
+};
+
 /** A fake `git` runner keyed by arg shape + a per-ref containment map. */
 function fakeGit(opts: {
   submodules?: string[];
@@ -485,6 +497,7 @@ describe('gitPipelinePosition (P-002)', () => {
         deployOrigin: 'stale-behind-gate',
       },
       gitSyncLastStatus: 'synced',
+      gitSync: HEALTHY_GIT_SYNC,
       runtime: classifyRuntimeOwner('a.ts'),
       runtimes: classifyRuntimeOwners('a.ts'),
       notes: [],
@@ -735,6 +748,7 @@ describe('computeStages: position x health', () => {
       deployOrigin: 'gate-green',
     },
     gitSyncLastStatus: 'synced',
+    gitSync: HEALTHY_GIT_SYNC,
     runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
     ...over,
   });
@@ -762,10 +776,53 @@ describe('computeStages: position x health', () => {
     expect(stage(s, 'committed')).toMatchObject({ position: 'past', health: 'advancing', detail: null });
   });
 
-  it('EI-18753105351266788: the pushed stage warns that the git-sync status word hides push', () => {
-    const s = computeStages(input({ positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false } }));
+  const unpushed = { committedLocal: true, onStaging: false, inMain: false, deployed: false };
+
+  it('EI-18753105351266788: "synced" with NOTHING pushed says so explicitly', () => {
+    // The trap: status 'synced' is reachable with pushedRepos empty, and the old
+    // surface forwarded only that word. The caller must be told the tick pushed
+    // nothing rather than left to infer "reached origin" from "synced".
+    const s = computeStages(input({ positions: unpushed, gitSync: { ...HEALTHY_GIT_SYNC, pushedRepos: [] } }));
     expect(stage(s, 'pushed').position).toBe('pending');
-    expect(stage(s, 'pushed').detail).toMatch(/does NOT distinguish/i);
+    expect(stage(s, 'pushed').detail).toMatch(/does NOT mean pushed/);
+    expect(stage(s, 'pushed').detail).toMatch(/pushed NOTHING/);
+  });
+
+  it('EI-18750935999066024: a FAULTING push leg is `broken`, not "not yet"', () => {
+    // The 2h52m / 19-stranded-commit freeze. Commits kept landing locally, so every
+    // position boolean looked plausible; only the leg's own health distinguishes
+    // "waiting will fix this" from "waiting is futile".
+    const s = computeStages(
+      input({
+        positions: unpushed,
+        gitSync: { ...HEALTHY_GIT_SYNC, consecutiveErrorTicks: 4, errors: ['push failed: permission denied'] },
+      }),
+    );
+    expect(stage(s, 'pushed').health).toBe('broken');
+    expect(stage(s, 'pushed').detail).toMatch(/FAULTING/);
+    expect(stage(s, 'pushed').detail).toMatch(/waiting will not clear this/i);
+  });
+
+  it('a git-sync tick far past its interval is `stalled`, with the age named', () => {
+    const s = computeStages(
+      input({ positions: unpushed, gitSync: { ...HEALTHY_GIT_SYNC, syncAgeMs: 172 * 60_000 } }),
+    );
+    expect(stage(s, 'pushed').health).toBe('stalled');
+    expect(stage(s, 'pushed').detail).toMatch(/172 min ago/);
+    expect(stage(s, 'pushed').detail).toMatch(/not simply "not yet"/);
+  });
+
+  it('merge conflicts block origin and name the resolver, not a retry', () => {
+    const s = computeStages(
+      input({ positions: unpushed, gitSync: { ...HEALTHY_GIT_SYNC, conflicts: ['apps/operator/x.tsx'] } }),
+    );
+    expect(stage(s, 'pushed').health).toBe('broken');
+    expect(stage(s, 'pushed').detail).toMatch(/merge-resolver/);
+  });
+
+  it('a healthy pushed change is past/advancing with no noise', () => {
+    const s = computeStages(input());
+    expect(stage(s, 'pushed')).toMatchObject({ position: 'past', health: 'advancing', detail: null });
   });
 
   it('EI-11120: stages off the release route are `na`, never "pending" — waiting would never end', () => {

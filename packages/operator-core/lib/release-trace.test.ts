@@ -38,6 +38,16 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       deployOrigin: 'gate-green',
     },
     gitSyncLastStatus: 'ok',
+    gitSync: {
+      status: 'ok',
+      lastSyncedAtMs: 1,
+      syncAgeMs: 0,
+      consecutiveErrorTicks: 0,
+      pushedRepos: [],
+      mergedRepos: [],
+      conflicts: [],
+      errors: [],
+    },
     // git-pipeline-agent-state-2026-07-26 P-001 made this REQUIRED. Empty is correct
     // for these fixtures: they assert release-trace's own lineage logic, which reads
     // `positions`/`verdictProvenance` and never the stage table.

@@ -327,4 +327,73 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       await new Promise<void>((r) => badServer.close(() => r()));
     }
   });
+
+  it('EI-18752434722211671: a peer that never opens AND never closes the channel fails soft instead of hanging forever', async () => {
+    // THE ROOT CAUSE OF A DEVICE-WIDE GIT-SYNC WEDGE (P-302 rig, 2026-07-26).
+    // Every other failure path here is a peer that says NO — refused, closed,
+    // pre-destroyed — and each already fails fast. This is the peer that says
+    // NOTHING: the connection is live and the noise handshake completes, but
+    // nothing on the far end ever accepts OR rejects the pot-git channel, so
+    // our `open` control frame goes out and no `onopen`/`onclose` ever comes
+    // back. `waitOpened` used to be an unbounded promise settled ONLY by those
+    // two events, so this hung the caller FOREVER — and it runs strictly
+    // BEFORE any duplex exists, so `fetchOverDuplex`'s fetch ceiling could not
+    // cover it. Live consequence: a git-sync DBOS fire checkpointed 8 steps,
+    // entered `git-sync:ref-announce`, never recorded a 9th, and held the
+    // routine's dedup pin across 3 DBOS recovery attempts — rejecting every
+    // subsequent git-sync enqueue on that device for hours.
+    //
+    // Pre-fix this test does not fail an assertion; it hits the vitest
+    // timeout, which is exactly the production symptom.
+    const deadSockPath = join(root, 'dead-peer.sock');
+    const deadServer = createServer({ allowHalfOpen: true }, (srvConn) => {
+      srvConn.on('error', () => {});
+      // A REAL SecretStream (so the handshake completes and we get past
+      // `await opened`) deliberately never wired to pot-git serve — no
+      // `wireHiveGitServe`, no Protomux, nothing to answer or refuse.
+      const deadNoiseSrv = new SecretStream(false, srvConn);
+      deadNoiseSrv.on('error', () => {});
+      deadNoiseSrv.resume(); // swallow our frames; reply to none of them
+    });
+    await new Promise<void>((r) => deadServer.listen(deadSockPath, () => r()));
+    const deadSocket = await new Promise<Socket>((resolve, reject) => {
+      const s = connect({ path: deadSockPath, allowHalfOpen: true });
+      s.once('connect', () => resolve(s));
+      s.once('error', reject);
+    });
+    deadSocket.on('error', () => {});
+    const deadNoise = new SecretStream(true, deadSocket);
+    deadNoise.on('error', () => {});
+    await deadNoise.opened;
+
+    try {
+      const t0 = Date.now();
+      const duplex = await openHiveGitFetchDuplex(
+        deadNoise,
+        TOPIC,
+        { repoKey: 'repo-1' },
+        { openTimeoutMs: 500 },
+      );
+      const elapsed = Date.now() - t0;
+      // It RETURNED — the whole point. And it returned the documented
+      // fail-soft shape, so the calling leg reports `fetch-failed` and
+      // re-dials next tick rather than wedging the routine.
+      expect(duplex.destroyed).toBe(true);
+      expect(elapsed).toBeLessThan(10_000);
+      // The fail-soft duplex feeds `fetchOverDuplex`'s already-destroyed fast
+      // path — so a wedged peer costs ONE short ceiling, not a stacked one.
+      const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/never4'], {
+        timeoutMs: 15_000,
+      });
+      expect(res.code).not.toBe(0);
+      expect(res.timedOut).toBe(false);
+    } finally {
+      try {
+        deadSocket.destroy();
+      } catch {
+        /* ignore */
+      }
+      await new Promise<void>((r) => deadServer.close(() => r()));
+    }
+  });
 });

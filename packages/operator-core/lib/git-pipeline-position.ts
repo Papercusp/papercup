@@ -434,7 +434,20 @@ export interface PipelinePosition {
      */
     deployOrigin: 'gate-green' | 'stale-behind-gate' | 'ahead-of-gate' | 'unknown';
   };
+  /**
+   * Kept for back-compat. PREFER `gitSync` — this single word cannot answer the
+   * question callers actually have: `'synced'` is reachable with nothing pushed.
+   */
   gitSyncLastStatus: string | null;
+  /**
+   * P-002 (EI-18753105351266788): the commit leg and the push leg are SEPARATE,
+   * and `lastStatus` collapses them. run-git-sync already computes per-repo
+   * pushed/merged/conflict/error detail and the snapshot already carries it — it
+   * was simply dropped here, leaving agents to infer "reached origin" from a word
+   * that does not mean that. EI-18750935999066024 is the cost: origin/staging
+   * frozen 2h52m with 19 stranded commits, read as "not yet".
+   */
+  gitSync: GitSyncLegs;
   /**
    * EI-10895: which process actually RUNS this path, and therefore whether the
    * staging→main→:3070 pipeline is its activation path at all. `null` for a
@@ -466,6 +479,32 @@ export interface PipelinePosition {
   notes: string[];
 }
 
+/**
+ * P-002: git-sync's two legs, reported separately. `status` is the raw routine word
+ * kept for continuity; every other field is what actually answers "did my work
+ * reach origin, and is that leg even alive?".
+ */
+export interface GitSyncLegs {
+  status: string | null;
+  /** When the last tick completed, and how long ago — the liveness of the leg itself. */
+  lastSyncedAtMs: number | null;
+  syncAgeMs: number | null;
+  /** >0 means the routine is FAULTING, not merely idle. */
+  consecutiveErrorTicks: number;
+  /** Repos the last tick actually PUSHED. Empty with status 'synced' is the trap. */
+  pushedRepos: string[];
+  mergedRepos: string[];
+  conflicts: string[];
+  errors: string[];
+}
+
+/**
+ * git-sync ticks roughly every 10 min, so a tick age past ~2.5 intervals means the
+ * routine is not merely between ticks — it has stopped advancing. Used only to
+ * classify HEALTH; never to claim a position.
+ */
+export const GIT_SYNC_STALE_AFTER_MS = 25 * 60_000;
+
 /** A stage a change must clear to be live, ordered source->live. */
 export type StageName = 'committed' | 'pushed' | 'gate' | 'main' | 'deployed' | 'serving';
 
@@ -495,7 +534,13 @@ export interface StageState {
 export function computeStages(
   p: Pick<
     PipelinePosition,
-    'dirtyUncommitted' | 'positions' | 'gate' | 'verdictProvenance' | 'runtime' | 'gitSyncLastStatus'
+    | 'dirtyUncommitted'
+    | 'positions'
+    | 'gate'
+    | 'verdictProvenance'
+    | 'runtime'
+    | 'gitSyncLastStatus'
+    | 'gitSync'
   >,
 ): StageState[] {
   // A path whose runtime does NOT go through the release pipeline (bg-host, gateway,
@@ -529,13 +574,43 @@ export function computeStages(
       : null,
   });
 
+  // pushed — P-002. The push leg fails INDEPENDENTLY of the commit leg, and its
+  // failure is silent: commits keep accumulating locally while origin freezes. The
+  // health here is what tells a caller whether waiting can possibly help.
+  const gs = p.gitSync;
+  const stale = gs.syncAgeMs !== null && gs.syncAgeMs > GIT_SYNC_STALE_AFTER_MS;
+  const pushedHealth: StageHealth =
+    gs.consecutiveErrorTicks > 0 || gs.errors.length > 0
+      ? 'broken'
+      : gs.conflicts.length > 0
+        ? 'broken'
+        : stale
+          ? 'stalled'
+          : 'advancing';
+  const pushedDetail = ((): string | null => {
+    if (gs.consecutiveErrorTicks > 0 || gs.errors.length > 0) {
+      return `git-sync is FAULTING (${gs.consecutiveErrorTicks} consecutive error tick(s))${
+        gs.errors.length ? `: ${gs.errors.slice(0, 2).join('; ')}` : ''
+      }. Commits may keep landing locally while origin stays frozen — waiting will not clear this.`;
+    }
+    if (gs.conflicts.length > 0) {
+      return `git-sync hit merge CONFLICTS (${gs.conflicts.slice(0, 3).join(', ')}) — a merge-resolver must clear them before anything reaches origin.`;
+    }
+    if (stale) {
+      return `git-sync's last tick was ${Math.round((gs.syncAgeMs ?? 0) / 60_000)} min ago (ticks are ~10 min) — the leg is not advancing, so this is not simply "not yet".`;
+    }
+    if (!p.positions.onStaging) {
+      return `Committed locally but NOT yet on origin/staging. Status "${gs.status ?? 'unknown'}" does NOT mean pushed — the last tick pushed ${
+        gs.pushedRepos.length ? gs.pushedRepos.join(', ') : 'NOTHING'
+      }. Force one: git-sync:run.`;
+    }
+    return null;
+  })();
   stages.push({
     name: 'pushed',
     position: p.positions.onStaging ? 'past' : 'pending',
-    health: 'unknown',
-    detail: p.positions.onStaging
-      ? null
-      : `Not on origin/staging yet. git-sync's last status was "${p.gitSyncLastStatus ?? 'unknown'}" — that word does NOT distinguish "committed locally" from "pushed to origin".`,
+    health: pushedHealth,
+    detail: pushedDetail,
   });
 
   if (!releaseApplies) {
@@ -881,6 +956,16 @@ export async function gitPipelinePosition(
     deployedSha,
     gate,
     gitSyncLastStatus: snap.gitSync.lastStatus,
+    gitSync: {
+      status: snap.gitSync.lastStatus,
+      lastSyncedAtMs: snap.gitSync.lastSyncedAtMs,
+      syncAgeMs: snap.gitSync.lastSyncedAtMs === null ? null : Date.now() - snap.gitSync.lastSyncedAtMs,
+      consecutiveErrorTicks: snap.gitSync.consecutiveErrorTicks,
+      pushedRepos: snap.gitSync.lastPushed,
+      mergedRepos: snap.gitSync.lastMerged,
+      conflicts: snap.gitSync.lastConflicts,
+      errors: snap.gitSync.lastErrors,
+    },
     runtime,
     runtimes,
     notes,

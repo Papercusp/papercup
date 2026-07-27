@@ -226,4 +226,41 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     expect(r2.action).toBe('fetched');
     expect(await readNamespaceRef(mirrorRepo, devB.pubkeyBase64, 'refs/heads/work')).toBe(sha4);
   });
+
+  it('EI-18752434722211671: an openStream that never resolves fails soft instead of hanging the receive', async () => {
+    // `timeoutMs` used to bound only the FETCH; the `await opts.openStream()`
+    // immediately before it was unbounded. `openStream` is caller-supplied
+    // code that dials a live peer (and, in git-sync-action, reads Postgres
+    // first) — on the P-302 rig it reached a protomux channel that neither
+    // opened nor closed, so this await never settled and the whole DBOS
+    // git-sync fire wedged, holding its dedup pin for hours.
+    const sha5 = await mintCommit(serverRepo, 'B work 5');
+    await writeNamespaceRef(serverRepo, devB.pubkeyBase64, 'refs/heads/work', sha5);
+    await buildSigrefs(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: ++now });
+    const ann = await buildRefAnnouncement(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: now });
+    const mirroredBefore = (await readSigrefs(mirrorRepo, devB.pubkeyBase64))?.version;
+    expect(mirroredBefore).toBeLessThan(ann.version); // the fetch is genuinely needed
+
+    let dialed = false;
+    const t0 = Date.now();
+    const r = await handleRefAnnouncement(mirrorRepo, ann, {
+      allowedDevices: members(),
+      nowMs: now,
+      openStream: () => {
+        dialed = true;
+        return new Promise<never>(() => {}); // never settles — the live hang
+      },
+      timeoutMs: 250,
+    });
+    const elapsed = Date.now() - t0;
+
+    expect(dialed).toBe(true);
+    expect(r.action).toBe('fetch-failed'); // pre-fix: never reached at all
+    if (r.action !== 'fetch-failed') return;
+    expect(r.stderr).toContain('openStream did not resolve');
+    expect(elapsed).toBeLessThan(10_000);
+    // The version fence was NOT consumed — the next tick re-dials this same
+    // announcement rather than leaving a permanent namespace-mirror gap.
+    expect((await readSigrefs(mirrorRepo, devB.pubkeyBase64))?.version).toBe(mirroredBefore);
+  });
 });
