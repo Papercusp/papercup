@@ -1249,6 +1249,13 @@ import './events/status';
 // standing event-key INJECT subscription (watch:create wake:false targetKind:'event')
 // — the wake:false sibling of events:cancel, mirroring topics:unsubscribe's shape.
 import './events/unsubscribe';
+// unified-agent-state-plane-2026-07-27 P-004: the CELL read/subscribe pair.
+// `state:subscribe` is a preset over `watch:create` in exactly the sense
+// events:await is (D-007) — it resolves a cell name to the (tool, args, path)
+// triple the cell already declares, and adds NO second subscription mechanism.
+// Imported AFTER events/watch because it delegates to that tool's handler.
+import './state/read';
+import './state/subscribe';
 // event-await-discoverability-and-coverage-2026-07-03 P-002 — the awaitable-key
 // catalog ("what can I wait on instead of polling?"), rendered from the SSOT
 // registry events/await/catalog.ts.

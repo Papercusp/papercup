@@ -104,6 +104,15 @@ export async function enrichBusy(rows: AcquireBusy[]): Promise<BusyJson[]> {
     const p = byOwner.get(b.owner) ?? null;
     const intent = p?.intent?.trim();
     if (intent && intent !== PLACEHOLDER_INTENT) json.holder_intent = intent;
+    // ⚠ DECLARED files ONLY — never derive this from the holder's lock holdings
+    // (EI-18776963284535761). The holder holds a lock on `b.path` by definition (that is
+    // why this row is contended), so a lock-derived `currentFiles` makes this term
+    // CONSTANT-TRUE, the veto below always fires, and `holder_intent_diverged` can never
+    // be reported again. That is the mirror image of the bug this comment came from: the
+    // column used to be wiped by every coord:orient, making the term constant-FALSE and
+    // the veto dead — so a live, actively-focused holder got advertised as "likely
+    // orphaned". Both directions are silent. The signal only means anything while it is
+    // what the holder SAID they are on, independent of what they hold.
     if (p?.currentFiles?.includes(b.path)) json.holder_focused = true;
     // EI-10433: flag a likely-orphaned lock — the holder's CURRENT declared
     // intent has moved off the lock's OWN stated intent and they aren't focused

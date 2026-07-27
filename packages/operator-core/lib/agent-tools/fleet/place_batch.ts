@@ -38,6 +38,7 @@ import { FLAGS } from '@papercusp/flags';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { listPresence } from '../coordination/presence';
+import { liveLockedPaths } from '../locks/live-lock-paths';
 import type { PlacementBee, PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
 import { softText, clampText, LIMITS } from '../limits';
@@ -191,9 +192,17 @@ export default defineTool({
     let tasks = gathered.tasks;
     let skipped = gathered.skipped;
     if (await getFlag(FLAGS.TOUCH_SET_EXCLUSION, 'system').catch(() => false)) {
+      // EI-18776963284535761: the presence half of this union (declared current_files)
+      // was empty for EVERY live agent — coord:orient wiped it on every wake — so
+      // "active peer lane" avoidance could never actually see a peer. The declared read
+      // stays (it is the intent signal, and now survives a wake), but the LIVE LOCK
+      // PLANE is the authoritative, automatic answer to "who is on this file": the
+      // PreToolUse edit hook takes a lock on every Edit/Write, with no agent discipline
+      // required. Fail-soft on both halves.
       const inUse = [
         ...bees.flatMap((b) => b.currentFiles ?? []),
         ...(await gatherLivePresenceCurrentFiles(workspaceId)),
+        ...(await liveLockedPaths()),
       ];
       const { admitted, deferred } = admitConflictFree(tasks, inUse);
       tasks = admitted;
