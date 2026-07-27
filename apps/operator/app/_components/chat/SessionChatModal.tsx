@@ -107,6 +107,12 @@ const BANNER_STYLE: React.CSSProperties = {
 
 const ERROR_BANNER_STYLE: React.CSSProperties = { ...BANNER_STYLE, color: 'var(--bad, #f87171)' };
 
+/** WI-6367: how long a just-launched session may take to register before the
+ *  modal stops saying "starting up" and admits it did not come online. Sized
+ *  well past a normal psu boot (a few seconds) so a slow-but-fine launch is
+ *  never mislabelled as failed. */
+const STARTUP_GRACE_MS = 60_000;
+
 // hud-first-nav-and-dossier-2026-07-26 P-003: the AgentDossier right rail.
 // Side-by-side on a wide window (the Modal's own contentStyle widens to make
 // room, below in the component); on a narrow window it renders as an
@@ -452,12 +458,22 @@ export default function SessionChatModal({
   sessionOwnerId,
   ownerLabel,
   onClose,
+  pendingLaunch = null,
 }: {
   /** The inbox item's ownerAgentId — null hides the modal. */
   sessionOwnerId: string | null;
   /** Friendly display label, when the caller has one (falls back to the raw id). */
   ownerLabel?: string | null;
   onClose: () => void;
+  /** WI-6367: the session this modal was opened for was JUST LAUNCHED by the
+   *  caller and has not booted yet. Without this, a brand-new session is
+   *  indistinguishable from a long-gone one — both simply have no roster row —
+   *  so the modal greeted a session that had not started with the past-tense
+   *  "no longer in the live roster" / "no recent Claude session" copy, which
+   *  reads as "it died". Passing the launch moment lets the boot window render
+   *  as "starting up" instead. Self-clears: as soon as the session registers
+   *  (roster row) or its transcript resolves, the normal branches take over. */
+  pendingLaunch?: { ownerId: string; startedAtMs: number } | null;
 }) {
   const [resolved, setResolved] = useState<SessionListRow | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -564,6 +580,37 @@ export default function SessionChatModal({
     return actionRosterEntry as unknown as RosterEntry;
   }, [actionRosterEntry]);
 
+  // ── WI-6367: the "starting up" window ──────────────────────────────────────
+  // True while THIS modal is showing the session the caller just launched, and
+  // that session has neither registered in the roster nor produced a transcript
+  // yet. Both of those are reactive (advRoster.list pushes; the resolve effect
+  // re-runs), so this flips off on its own the moment the session comes online —
+  // no clearing handshake with the caller.
+  const startingUp =
+    pendingLaunch != null &&
+    sessionOwnerId != null &&
+    pendingLaunch.ownerId === sessionOwnerId &&
+    !actionRosterEntry &&
+    !resolved;
+
+  // A launch that never comes online (psu exits at boot — e.g. no usable
+  // display) would otherwise sit on "starting up" forever, which is the same
+  // class of lie as the copy this fixes, just in the hopeful direction. After
+  // the grace window we say plainly that it did not come up. One-shot timeout,
+  // not an interval — nothing here needs a ticking clock.
+  const [startupTimedOut, setStartupTimedOut] = useState(false);
+  useEffect(() => {
+    setStartupTimedOut(false);
+    if (!startingUp) return;
+    const elapsed = Date.now() - pendingLaunch.startedAtMs;
+    if (elapsed >= STARTUP_GRACE_MS) {
+      setStartupTimedOut(true);
+      return;
+    }
+    const t = setTimeout(() => setStartupTimedOut(true), STARTUP_GRACE_MS - elapsed);
+    return () => clearTimeout(t);
+  }, [startingUp, pendingLaunch?.startedAtMs]);
+
   // Open/collapsed state via nuqs (never useState) — deep-linkable + agent
   // -driveable, per the plan item's requirement. Defaults open: every
   // conversation opened from the HUD should carry the dossier unless the
@@ -660,6 +707,15 @@ export default function SessionChatModal({
               {resolveError}
             </div>
           </div>
+        ) : startingUp ? (
+          // WI-6367: a session launched seconds ago has no roster row and no
+          // transcript yet — the same shape as one that ended long ago. Say
+          // which it is, in the present tense, instead of the gone-away copy.
+          <div style={BANNER_STYLE} data-testid="session-chat-starting-up">
+            {startupTimedOut
+              ? "This session hasn't come online. The launch may have failed — try launching it again."
+              : 'Starting up — waiting for this session to come online…'}
+          </div>
         ) : !resolved ? (
           <div style={BANNER_STYLE}>No recent Claude session found for this agent.</div>
         ) : streamUrl && sessionOwnerId ? (
@@ -693,6 +749,10 @@ export default function SessionChatModal({
             <AgentDossier
               ownerId={sessionOwnerId ?? ''}
               entry={dossierEntry}
+              // WI-6367: same never-started-vs-ended distinction as the banner
+              // above — without it the rail says "no longer in the live roster"
+              // about a session that has not started yet.
+              startingUp={startingUp}
               onClose={() => void setDossierOpen(false)}
             />
           </div>
