@@ -26,6 +26,8 @@ import {
   MIN_SAMPLE_SIZE,
 } from './equivalence';
 import { ALL_PAIRS } from './pairs';
+import { unsafeDependencyInstall } from './pairs/dependency-install';
+import { assertPolicyTier, POLICY_INTENT_PREFIX } from './types';
 import { catFileRead, headFileRead, sedRangeRead, tailFileRead, FILE_READ_PAIRS } from './pairs/file-read';
 import { psqlDescribe, psqlSelectRead } from './pairs/postgres';
 import { psProcessQuery } from './pairs/process';
@@ -880,5 +882,119 @@ describe('git-read pattern boundaries', () => {
     expect(claims('psql -d papercusp -c "SELECT 1"')).toBe(false);
     expect(claims('ps aux')).toBe(false);
     expect(claims('systemctl --user is-active papercup-bg-host.service')).toBe(false);
+  });
+});
+
+/**
+ * P-028 — the registry's first and only `deny`. Its false-positive budget is
+ * ~0, because a wrongly-blocked agent's remaining moves are to route around the
+ * guard (which the playbook forbids) or to stall. Every boundary below was
+ * measured against the 7d corpus before the row shipped; they are committed
+ * here rather than left in a probe script because THIS is the row where a
+ * silent widening does real damage.
+ */
+describe('dependency-install deny boundaries (P-028)', () => {
+  const claims = (atom: string) =>
+    matchingAtoms(unsafeDependencyInstall, [{ sid: 's', ts: 't', atom }]).length === 1;
+
+  it('claims the whole-tree reify, which is the shape that corrupts a shared tree', () => {
+    expect(claims('npm install')).toBe(true);
+    expect(claims('npm ci')).toBe(true);
+    expect(claims('npm i')).toBe(true);
+    expect(claims('npm install --legacy-peer-deps 2>&1')).toBe(true);
+    expect(claims('npm install --legacy-peer-deps > /tmp/install.log 2>&1 &')).toBe(true);
+  });
+
+  it('never claims the SAFE form it is telling agents to use', () => {
+    // The one false positive that would make the rule unsatisfiable.
+    expect(claims('npm run install:safe')).toBe(false);
+    expect(claims('npm run install:safe -- ci')).toBe(false);
+    expect(claims('npm run install:safe -- install --legacy-peer-deps')).toBe(false);
+  });
+
+  it('never claims an unrelated npm script', () => {
+    expect(claims('npm run lint:tsc')).toBe(false);
+    expect(claims('npm run test:affected')).toBe(false);
+    expect(claims('npm run build')).toBe(false);
+  });
+
+  /**
+   * D-038. 24 of the 60 install-shaped atoms in the corpus are the right-hand
+   * FRAGMENT of a `grep -E "npm install|npm ci" <file>` split on the `|` inside
+   * the quoted pattern. Denying those blocks the mid-install diagnostic this
+   * repo's own guidance prescribes — strictly worse than the incident it guards.
+   */
+  it('never claims the atomizer fragments a grep-for-install produces', () => {
+    expect(claims('npm install\\')).toBe(false);
+    expect(claims('npm ci\\')).toBe(false);
+    expect(claims('npm ci"')).toBe(false);
+    expect(claims('npm ci" bin/mac-vm-build.sh')).toBe(false);
+    expect(claims('npm i "')).toBe(false);
+    expect(claims("npm install' 2>&1")).toBe(false);
+  });
+
+  /**
+   * `install:safe` always runs npm with `cwd: REPO_ROOT`, so it is not a
+   * substitute for an install into a scratch tree — one corpus session created
+   * `/tmp/adbc-test` and installed into it. A named package operand is the only
+   * signal available on a single atom, so it is the exclusion.
+   */
+  it('never claims an install that names a package, which may target another tree', () => {
+    expect(claims('npm install apache-arrow@21 --silent 2>&1')).toBe(false);
+    expect(claims('npm install @apache-arrow/adbc-driver-manager apache-arrow postgres')).toBe(false);
+    expect(claims('npm install --prefix /tmp/other-tree')).toBe(false);
+  });
+
+  it('never claims a command that changes nothing', () => {
+    expect(claims('npm install --dry-run --no-audit --no-fund 2>&1')).toBe(false);
+  });
+
+  it('does not claim a different verb that merely starts with the same letters', () => {
+    expect(claims('npm-check-updates')).toBe(false);
+    expect(claims('npm installer-thing')).toBe(false);
+    expect(claims('npm init -y')).toBe(false);
+  });
+
+  it('renders a pass-through invocation, flags intact and redirects dropped', () => {
+    expect(unsafeDependencyInstall.cover('npm install --legacy-peer-deps 2>&1').expression).toBe(
+      'npm run install:safe -- --legacy-peer-deps',
+    );
+    expect(unsafeDependencyInstall.cover('npm ci').expression).toBe('npm run install:safe -- ci');
+    expect(unsafeDependencyInstall.cover('npm install').expression).toBe('npm run install:safe');
+  });
+});
+
+/**
+ * The guard on the ONE documented way past the observe-first staging (D-003).
+ * Without it, `policyTier` would be a field any pair could set to reach `deny`
+ * on its author's say-so — precisely the "the gate invents policy" failure the
+ * tier system exists to prevent.
+ */
+describe('policy tier authorization', () => {
+  it('defaults every ordinary pair to observe, whatever its verdict', () => {
+    const ordinary = ALL_PAIRS.filter((p) => p.policyTier === undefined);
+    expect(ordinary.length).toBeGreaterThan(0);
+    for (const pair of ordinary) expect(assertPolicyTier(pair)).toBe('observe');
+  });
+
+  it('honours a policy tier on a policy-violation intent', () => {
+    expect(unsafeDependencyInstall.intentLabel.startsWith(POLICY_INTENT_PREFIX)).toBe(true);
+    expect(assertPolicyTier(unsafeDependencyInstall)).toBe('deny');
+  });
+
+  it('refuses a tier escalation on an ordinary cost-argument intent', () => {
+    expect(() => assertPolicyTier({ ...sedRangeRead, policyTier: 'deny' })).toThrow(
+      /not a 'policy-violation:/,
+    );
+    expect(() => assertPolicyTier({ ...sedRangeRead, policyTier: 'advise' })).toThrow(
+      /never asserted/,
+    );
+  });
+
+  it('keeps deny out of what an equivalence score alone can unlock', () => {
+    // maxTierFor is the score-driven ceiling; it must never reach `deny`, so the
+    // policy hatch stays the only route to it and stays auditable.
+    expect(maxTierFor('equivalent')).toBe('advise');
+    expect(maxTierFor('needs-widening')).toBe('observe');
   });
 });

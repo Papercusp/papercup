@@ -99,6 +99,10 @@ export const unsafeDependencyInstall: SubstitutionPair = {
       'a bare `npm install` / `npm ci` — it rewrites `node_modules/.bin` under every other agent\'s in-flight test run, and two overlapping installs corrupt a package durably. ⚠ NOT claimed: an install naming a package operand (it may target a scratch tree `install:safe` cannot reach) or `--dry-run`',
   },
   expectedVerdict: 'equivalent',
+  // The plan's only row that enters above `observe`. Authorized by D-003, NOT
+  // by the green verdict above — see the header. `assertPolicyTier` enforces
+  // that the `policy-violation:` intent prefix is present before this is honoured.
+  policyTier: 'deny',
   cover(atom: string): CoverageResult {
     if (NON_MUTATING.test(atom)) {
       return {

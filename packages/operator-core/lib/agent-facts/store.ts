@@ -145,6 +145,16 @@ export interface AgentFact {
   createdBy: string;
   updatedAt: string;
   expiresAt: string;
+  /**
+   * P-008 (a): this VERSION's immutable row id — the thing a D-003 pointer names
+   * (P-009's `assumption_set_id`). Optional because the fold/list reads do not
+   * select it; present on an assert result and on every {@link factVersions} row.
+   */
+  id?: number;
+  /** P-008 (a): when this version was replaced; null/absent ⇒ it is CURRENT. */
+  supersededAt?: string | null;
+  /** P-008 (a): the id of the version this one replaced; null for the first. */
+  supersedesId?: number | null;
 }
 
 export interface AssertFactInput {
@@ -436,53 +446,75 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       ? input.ttlSec
       : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
   const confidence = input.confidence ?? null;
-  // The arbiter is mig 461's 5-column identity (per-source partitioning, H6):
-  // a LOCAL assert always writes the source_hive-NULL ('') partition, so the
-  // coalesce(source_hive,'') dimension must be IN the inference spec — the old
-  // 4-column spec matched no unique index after 461 and errored EVERY assert
-  // at plan time (found 2026-07-03: zero fact writes since 461 applied).
+  // P-008 (a): APPEND-VERSIONING, not upsert-in-place (migration 689).
+  //
+  // This used to be ON CONFLICT DO UPDATE SET body = EXCLUDED.body — which
+  // DESTROYED the prior value, violating D-003's invariant that "a pointed-at
+  // record is never mutated; corrections append, and the pointer keeps naming
+  // the old one." P-009 stamps a pointer AT a fact record, so an in-place
+  // rewrite silently changes what an already-stamped pointer resolves to.
+  //
+  // One statement, so it is atomic without an explicit transaction: the CTE
+  // supersedes the current version (taking its row lock) and the INSERT writes
+  // the new one chained to it via `supersedes_id`. The identity index is now
+  // PARTIAL (`WHERE superseded_at IS NULL`), so it still guarantees exactly one
+  // CURRENT version per identity while leaving the superseded tail free.
+  //
+  // ⚠ LOCAL PARTITION ONLY (`source_hive IS NULL`), matching the cap-eviction
+  // and retract paths below: superseding must never touch another hive's
+  // independent observation of the same identity (H6).
+  //
+  // A `retracted_at` row is superseded like any other, which is what revives the
+  // identity — the previous code expressed that as `retracted_at = NULL` on the
+  // mutated row, i.e. by erasing the evidence that it had ever been retracted.
+  // The retraction now survives, on the version that carried it.
   const rows = await sql<AgentFactRow[]>`
+    WITH superseded AS (
+      UPDATE harness_shared.agent_facts
+         SET superseded_at = now()
+       WHERE workspace_id = ${ws} AND scope = ${input.scope}
+         AND coalesce(scope_ref, '') = ${ref ?? ''} AND key = ${key}
+         AND source_hive IS NULL
+         AND superseded_at IS NULL
+      RETURNING id, harness_slug
+    )
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
-       audience_scope, source_provenance, confidence)
+       audience_scope, source_provenance, confidence, supersedes_id)
     VALUES
-      (${ws}, ${input.potHomeSlug ?? null}, ${input.scope}, ${ref}, ${key}, ${body},
+      (${ws},
+       -- keep an already-stamped federation identity when a later assert omits
+       -- it (never NULL it back out) — carried forward off the superseded row,
+       -- since there is no longer an UPDATE branch to COALESCE against.
+       COALESCE(${input.potHomeSlug ?? null}, (SELECT harness_slug FROM superseded)),
+       ${input.scope}, ${ref}, ${key}, ${body},
        ${input.sourceRef ?? null}, ${input.createdBy},
        now() + make_interval(secs => ${ttl}), ${input.shareable === true},
        ${audienceScope},
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,
-       ${confidence})
-    ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))
-    DO UPDATE SET body = EXCLUDED.body,
-                  source_ref = EXCLUDED.source_ref,
-                  -- keep an already-stamped federation identity when a later
-                  -- assert omits it (never NULL it back out)
-                  harness_slug = COALESCE(EXCLUDED.harness_slug, harness_shared.agent_facts.harness_slug),
-                  updated_at = now(),
-                  expires_at = EXCLUDED.expires_at,
-                  retracted_at = NULL,
-                  shareable = EXCLUDED.shareable,
-                  -- P-007: a re-assert REPLACES audience + provenance + confidence
-                  -- — the fresh assert is the current truth (omitting them clears,
-                  -- matching source_ref's existing replace semantics).
-                  audience_scope = EXCLUDED.audience_scope,
-                  source_provenance = EXCLUDED.source_provenance,
-                  confidence = EXCLUDED.confidence
-    RETURNING scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+       ${confidence},
+       (SELECT id FROM superseded))
+    RETURNING id, superseded_at::text, supersedes_id,
+              scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
               confidence, created_by, updated_at::text, expires_at::text`;
   // Cap enforcement — evict oldest-updated live facts past the cap for this
   // (scope, ref). LOCAL partition only (H6): the local writer's cap must never
   // evict foreign-source observations (those are bounded per-source by the
   // substrate rate caps + each sender's own cap).
+  // P-008 (a): the cap counts CURRENT versions only. Counting the superseded
+  // tail would make the cap a function of how often facts were CORRECTED rather
+  // than how many exist — a heavily-revised fact would evict its own neighbours.
   await sql`
     UPDATE harness_shared.agent_facts SET retracted_at = now()
      WHERE source_hive IS NULL
+       AND superseded_at IS NULL
        AND (workspace_id, scope, coalesce(scope_ref,''), key) IN (
        SELECT workspace_id, scope, coalesce(scope_ref,''), key
          FROM harness_shared.agent_facts
         WHERE workspace_id = ${ws} AND scope = ${input.scope}
           AND coalesce(scope_ref,'') = ${ref ?? ''}
           AND source_hive IS NULL
+          AND superseded_at IS NULL
           AND retracted_at IS NULL AND expires_at > now()
         ORDER BY updated_at DESC
        OFFSET ${FACTS_PER_SCOPE_CAP})`;
@@ -503,11 +535,15 @@ export async function retractFact(
   // source's independent observation of the same identity. Your retraction
   // federates to peers' copies of YOUR partition via the mig-461/462 update
   // capture; foreign partitions retract via the projection's deleteFromPg.
+  // P-008 (a): retract the CURRENT version. A retraction is a state change on
+  // the live value, not a new version — it does not fork the chain, and the
+  // superseded tail must stay untouched or history would be rewritten by it.
   const rows = await sql<{ key: string }[]>`
     UPDATE harness_shared.agent_facts SET retracted_at = now()
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${args.key.trim()}
        AND source_hive IS NULL
+       AND superseded_at IS NULL
        AND retracted_at IS NULL
     RETURNING key`;
   return rows.length > 0;
@@ -567,6 +603,10 @@ export async function foldFacts(
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws} AND scope = ${sel.scope}
          AND coalesce(scope_ref,'') = ${ref}
+         -- P-008 (a): CURRENT versions only. A fold that saw the superseded tail
+         -- would serve an agent both the corrected value and the value it
+         -- corrected, as peers.
+         AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
          AND ${keyPrefix ? sql`key LIKE ${keyPrefix + '%'}` : sql`TRUE`}
          AND ${
@@ -639,6 +679,9 @@ export async function listLapsedWallFacts(
     SELECT workspace_id, scope, scope_ref, key, body, created_by, expires_at::text
       FROM harness_shared.agent_facts
      WHERE key LIKE ${WALL_KEY_PREFIX + '%'}
+       -- P-008 (a): only the CURRENT version of a wall can be lapsed. A
+       -- superseded version's expiry is a historical fact, not a page.
+       AND superseded_at IS NULL
        AND retracted_at IS NULL
        AND expires_at < now()
      ORDER BY expires_at ASC
@@ -719,6 +762,10 @@ interface AgentFactRow {
   created_by: string;
   updated_at: string;
   expires_at: string;
+  /** P-008 (a) — selected only where the caller needs version identity. */
+  id?: string | number | null;
+  superseded_at?: string | null;
+  supersedes_id?: string | number | null;
 }
 
 /** Defensive validation of a raw `confidence` DB value against the 3-tier
@@ -748,6 +795,16 @@ function rowToFact(r: AgentFactRow): AgentFact {
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,
+    // P-008 (a): version identity, emitted ONLY when the query selected it —
+    // omitted rather than nulled, so a reader can tell "this read did not ask
+    // for version identity" from "this row has no predecessor" (`supersedesId:
+    // null`). `id` arrives as a bigint, which node-postgres hands back as a
+    // string; coerce once here so every consumer sees a number.
+    ...(r.id != null ? { id: Number(r.id) } : {}),
+    ...(r.superseded_at !== undefined ? { supersededAt: r.superseded_at } : {}),
+    ...(r.supersedes_id !== undefined
+      ? { supersedesId: r.supersedes_id == null ? null : Number(r.supersedes_id) }
+      : {}),
   };
 }
 

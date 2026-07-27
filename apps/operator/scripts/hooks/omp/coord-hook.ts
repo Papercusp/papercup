@@ -1386,8 +1386,13 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
  * no-imports reason as the three atomizer regexes, and guarded by the same
  * byte-for-byte parity test. Tested against the atom AFTER runner/env
  * stripping, so `sudo npm run test:file …` is claimed too.
+ *
+ * P-028 adds `npm install|ci|i` here for exactly the same reason, not in the
+ * head set: `npm run lint` and friends must keep paying nothing. The pair's own
+ * pattern is far narrower again (flags-only whole-tree reifies); this phrase
+ * only decides which atoms pay the round-trip at all.
  */
-export const SUBSTITUTION_PHRASE_RE = /^npm\s+run\s+test:file\b/;
+export const SUBSTITUTION_PHRASE_RE = /^npm\s+run\s+test:file\b|^npm\s+(?:install|ci|i)(?=\s|$)/;
 
 /** Resource-registry pre-filter — mirrors the shell hook's `_needs_check` regex.
  *  Exported for the same reason as the three atomizer regexes above: so the

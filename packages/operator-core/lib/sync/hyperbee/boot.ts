@@ -2069,9 +2069,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // vitest suite runs under vitest-fail-on-console (shouldFailOnError/Warn),
     // and this diagnostic is meant to be always-on/grep-able in production
     // logs (same rationale as that line), not a test-suppressed console.error.
+    // WI-6324: report whether the swarm handle is actually ATTACHED. `void
+    // swarmHandle?.forceRejoin()` swallows an unset handle silently — no promise is
+    // created, so the `.catch` below never runs — which made "rejoin dispatched" and
+    // "rejoin never attempted" produce byte-identical logs. The comment above claims
+    // the handle is always set by the time an episode can fire; this makes that
+    // claim OBSERVABLE instead of assumed, in production as well as under test.
     console.info(
       `[replication-liveness] repair-exhausted: forcing topic rejoin ` +
-        `log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${kind}`,
+        `log=${logKeyHex.slice(0, 12)}… harness=${opts.harnessSlug} kind=${kind} ` +
+        `swarm=${swarmHandle ? 'attached' : 'UNSET (rejoin NOT dispatched)'}`,
     );
     void swarmHandle?.forceRejoin().catch((e) => {
       recordBootEvent(
