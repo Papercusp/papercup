@@ -1752,6 +1752,11 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     // outcome, which is not the contract.
     const row = rowFor("Tighter scoper prompt");
     const meta = row.querySelector(".pc-learning__meta");
+    // Pin that we are looking at the real meta cell FIRST — every assertion
+    // below is a negative, and a negative against an element that silently
+    // stopped matching passes for the wrong reason.
+    expect(txt(meta)).toContain("analogical");
+    expect(txt(meta)).toContain("not ready yet");
     expect(txt(meta)).not.toContain("won");
     expect(txt(meta)).not.toContain("pending");
 
@@ -1919,6 +1924,29 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     expect(txt(rows.find((r) => txt(r).startsWith("lens")))).toContain(
       "reframing",
     );
+  });
+
+  it("4c. falls back to the raw ref when the server resolved no title for it", () => {
+    // The falsifying twin of contract 4's title assertion. Same ref, same chip,
+    // title lookup empty ⇒ the id renders. If 4 were passing because the chip
+    // happens to print whatever it is given, this test could not differ from it
+    // — that it DOES is what proves 4 is reading a real resolution.
+    scoutResult = {
+      ...scoutResult,
+      data: [{ ...scoutSnapshot, groundingTitles: {} }],
+    };
+    nuqsState.itrace = "idea-1";
+    render(<LearningTab />);
+
+    const wiChip = Array.from(
+      screen
+        .getByLabelText("Pipeline trace for Cache-warmup plan draft")
+        .querySelectorAll(".pc-learning__tracechip"),
+    ).find((c) => txt(c).startsWith("wi"))!;
+    // Degrade to the id rather than rendering an empty chip: an unresolvable
+    // ref is still evidence, and the reader can look it up by hand.
+    expect(txt(wiChip)).toBe("wiEI-100");
+    expect(txt(wiChip)).not.toContain("coord invariant");
   });
 
   it("4b. renders 'none recorded' when an idea has no grounding at all", () => {

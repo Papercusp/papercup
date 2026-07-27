@@ -491,6 +491,32 @@ jobs:
       - name: Lint vacuous negative test assertions
         run: npm run lint:vacuous-negatives
 
+      # Migration forward-compatibility guard (EI-18797473716313783): a migration runs
+      # against the SHARED database immediately, but :3070 keeps serving the RELEASE
+      # checkout until the next commit -> green-checkpoint -> deploy cycle finishes. For
+      # that whole window the database is NEWER than the code querying it, so destructive
+      # DDL is not "a schema change" — it is a live change to a contract the currently
+      # deployed binary still depends on.
+      #
+      # Migration 689 did, in ONE file, `CREATE UNIQUE INDEX ... WHERE superseded_at IS
+      # NULL` plus `DROP INDEX agent_facts_identity`. The deployed release's facts:assert
+      # used an un-predicated `ON CONFLICT (...)`, and Postgres cannot infer a PARTIAL
+      # unique index unless the conflict target repeats the predicate — so dropping the
+      # old non-partial index left no inferable arbiter and EVERY facts:assert call failed
+      # fleet-wide for ~3 HOURS, silently breaking the mandated durable-conclusion path
+      # for every looping agent. The code fix was written ~2h41m AFTER the migration
+      # applied; during that window staging source and staging schema were mutually
+      # inconsistent, which is exactly what this guard turns into a red.
+      #
+      # GATING on destructive/narrowing DDL without an explicit
+      # `-- FORWARD-COMPAT: <reason>` acknowledgment. Fix by splitting expand/contract.
+      # Migrations are immutable once applied, so enforcement starts at 693 (the first
+      # migration authored after this guard landed) rather than rewriting history.
+      # The checker self-tests its own detector against embedded positive/negative
+      # fixtures and refuses to report green on an empty scan (D-076 §4 non-vacuity).
+      - name: Lint migration forward compatibility
+        run: npm run lint:migration-forward-compat
+
       # Insight-doc citation guard (WI-1576): an agent-insights doc's `documents:`
       # frontmatter citation that no longer resolves on disk (the cited file was
       # renamed/moved/deleted and the doc never updated) silently points an agent
