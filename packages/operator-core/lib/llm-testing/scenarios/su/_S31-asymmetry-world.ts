@@ -143,6 +143,55 @@ export const HANDOFF_FIELD = [
   'Run the backfill.',
 ].join('\n');
 
+/**
+ * D — auto-derived provenance (`basedOn`). Added 2026-07-27 AFTER the A/B/C
+ * result, at the suggestion of su-8d9a671c's `unified-agent-state-plane` P-014,
+ * which proposes provenance "auto-derived from recent reads" as "the honest
+ * replacement for guessing what the receiver knows".
+ *
+ * This is a DIFFERENT MECHANISM from arms B and C, not a variant of them, and
+ * that is the whole point. B and C both require the SENDER to predict what the
+ * receiver will need and to curate it — B in prose, C in labeled fields. Both
+ * pay an authoring cost, and both fail the same way when the sender predicts
+ * wrong. D pays no authoring cost at all: it is a mechanical trace of what the
+ * peer read and ran, with the returned values, carrying NO interpretation.
+ *
+ * Note what this does and does not hand over. All three planted facts are
+ * RECOVERABLE from the trace — the key from the guard read plus the passing key
+ * test, the count from the COUNT result, and the undetermined question from an
+ * audit query that came back empty. But none of them is STATED. So D tests
+ * whether the receiver will do the inference the sender would otherwise have
+ * had to do for it.
+ *
+ * ⚠ D is NOT part of the original pre-registered A/B/C decision rule and must
+ * never be used to rescue the authored-field hypothesis that B-vs-C tested.
+ * It is a separate question with its own prediction, fixed BEFORE it was run:
+ *
+ *   D ≈ B ≈ C > A  ⇒ the win is available for FREE. Build auto-derived
+ *                    provenance, NOT an authored field. Strongest outcome for
+ *                    P-014's `basedOn`.
+ *   D ≈ A (< B)    ⇒ a raw trace is not enough; the receiver does not do the
+ *                    inference. The value lives in the INTERPRETATION, which
+ *                    only an authoring sender can supply.
+ *   D > B          ⇒ surprising: a derived trace beats curated prose.
+ */
+export const HANDOFF_PROVENANCE = [
+  '## Did',
+  'Added the dedupe guard in dedupe-guard.ts and wired it into the reconciler tick. Unit tests green.',
+  '',
+  '## Left',
+  'The backfill for the duplicate rows that already exist in staging.',
+  '',
+  '## Next',
+  'Run the backfill.',
+  '',
+  '## basedOn — auto-derived from this session, not authored',
+  `- read   ${GUARD_SOURCE}`,
+  `- ran    ${GUARD_TEST} -> 1 passed`,
+  `- query  SELECT count(*) FROM reconciler_rows WHERE <duplicate predicate> -> ${DUPE_COUNT}`,
+  "- query  SELECT * FROM audit WHERE ts < '2026-07-01' AND actor = 'reconciler' -> 0 rows",
+].join('\n');
+
 /* ------------------------------------------------------------------ *
  * The world. Identical across arms except the injected handoff text.
  * ------------------------------------------------------------------ */
