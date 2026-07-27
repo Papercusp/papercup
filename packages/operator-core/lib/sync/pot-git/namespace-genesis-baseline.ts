@@ -41,10 +41,18 @@ export const MAX_FRONTIER_CANDIDATES = 16;
 /**
  * Ref classes that are PROOF content already left a machine. Deliberately a
  * closed allow-list rather than "everything but mine" — see the function doc.
- * Each entry is a bare prefix with no globbing character, which `--glob` turns
- * into a `<prefix>/*` prefix match (no ambiguity about whether `*` crosses `/`).
+ * Each entry is a bare prefix, which `--glob` expands to a `<prefix>/*` match.
  * The FIRST entry must stay the namespaces prefix: the self-exclude is placed
  * immediately before it, and `--exclude` binds only to the next glob.
+ *
+ * ⚠ Verified against git 2.43 rather than assumed — the near-miss formulations:
+ *   `--exclude=refs/namespaces/<self>` (bare)  → does NOT exclude. The
+ *      prefix-append rule that `--glob` applies does NOT apply to `--exclude`.
+ *   `--exclude=refs/namespaces/<self>/* --all` → excludes, but `--all` then
+ *      contributes any LOCAL `refs/heads/*`, which is not exposed content. In a
+ *      store that has one, the target's own history reads as already-exposed and
+ *      the guard judges NOTHING. That is the under-guard direction; the closed
+ *      allow-list is what rules it out.
  */
 export const EXPOSED_REF_GLOBS = ['refs/namespaces', 'refs/bootstrap-quarantine', 'refs/remotes'] as const;
 
@@ -89,7 +97,7 @@ export async function deriveNamespaceGenesisBaseline(
       namespaceRefFullName,
       [
         '--not',
-        `--exclude=refs/namespaces/${selfNamespaceHex}`,
+        `--exclude=refs/namespaces/${selfNamespaceHex}/*`,
         ...EXPOSED_REF_GLOBS.map((g) => `--glob=${g}`),
       ],
       runGit,

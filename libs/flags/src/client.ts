@@ -106,6 +106,31 @@ export interface SubscribeToFlagStreamHooks {
   onStatusChange?: (status: ResilientEventSourceStatus) => void;
 }
 
+/**
+ * One shared flag stream per endpoint, ref-counted across callers.
+ *
+ * WHY (owner incident 2026-07-26/27 — "gym runs never show up"): this function
+ * used to open a NEW EventSource per call, and the operator has two independent
+ * callers — `FlagStreamSubscriber` (mounted app-wide) and `flag-hooks`' module
+ * subscription — so every page held TWO identical `/api/flags/stream` sockets.
+ * A browser engine allows only ~6 connections per host and a standing stream
+ * holds one for life; the page was measured at 7 standing streams, leaving ZERO
+ * slots, so every REST fetch queued forever and data panes sat on "Loading…".
+ * Callers are independent by design (neither should have to know about the
+ * other), so the dedupe belongs HERE: identical endpoint ⇒ one socket, with each
+ * caller's hooks fanned out and the socket released when the last one closes.
+ */
+const sharedFlagStreams = new Map<
+  string,
+  { source: StreamSubscription; hooks: Set<SubscribeToFlagStreamHooks> }
+>();
+
+/** Test seam — drop shared stream state between cases. */
+export function _resetFlagStreamSharing(): void {
+  for (const entry of sharedFlagStreams.values()) entry.source.close();
+  sharedFlagStreams.clear();
+}
+
 export function subscribeToFlagStream(
   endpoint = "/api/flags/stream",
   hooks?: SubscribeToFlagStreamHooks,
@@ -113,28 +138,58 @@ export function subscribeToFlagStream(
   if (typeof EventSource === "undefined") {
     return { close: () => {} };
   }
-  const source = createResilientEventSource({
-    url: endpoint,
-    withCredentials: true,
+  // Fresh identity per call so two callers passing the SAME hooks object (or
+  // none) still count as two subscribers.
+  const myHooks: SubscribeToFlagStreamHooks = {
     onOpen: hooks?.onOpen,
     onStatusChange: hooks?.onStatusChange,
-    handlers: {
-      flag_changed: () => {
-        void loadFlags().catch(() => {
-          // network errors are non-fatal; we keep using the cached payload
-        });
+  };
+  let entry = sharedFlagStreams.get(endpoint);
+  if (!entry) {
+    const hookSet = new Set<SubscribeToFlagStreamHooks>();
+    const source = createResilientEventSource({
+      url: endpoint,
+      withCredentials: true,
+      // Fan out to every live subscriber. Read the set at call time so a
+      // subscriber that joins after the stream opened still gets its updates.
+      onOpen: () => {
+        for (const h of [...hookSet]) h.onOpen?.();
       },
-      flags_payload: (data) => {
-        try {
-          const payload = JSON.parse(data) as FlagPayload;
-          setFlagPayload(payload);
-        } catch {
-          // ignore malformed events
-        }
+      onStatusChange: (status) => {
+        for (const h of [...hookSet]) h.onStatusChange?.(status);
       },
-    },
-  });
+      handlers: {
+        flag_changed: () => {
+          void loadFlags().catch(() => {
+            // network errors are non-fatal; we keep using the cached payload
+          });
+        },
+        flags_payload: (data) => {
+          try {
+            const payload = JSON.parse(data) as FlagPayload;
+            setFlagPayload(payload);
+          } catch {
+            // ignore malformed events
+          }
+        },
+      },
+    });
+    entry = { source: { close: () => source.close() }, hooks: hookSet };
+    sharedFlagStreams.set(endpoint, entry);
+  }
+  entry.hooks.add(myHooks);
+  let closed = false;
   return {
-    close: () => source.close(),
+    close: () => {
+      if (closed) return; // idempotent — a double close must not free a peer's socket
+      closed = true;
+      const live = sharedFlagStreams.get(endpoint);
+      if (!live) return;
+      live.hooks.delete(myHooks);
+      if (live.hooks.size === 0) {
+        live.source.close();
+        sharedFlagStreams.delete(endpoint);
+      }
+    },
   };
 }
