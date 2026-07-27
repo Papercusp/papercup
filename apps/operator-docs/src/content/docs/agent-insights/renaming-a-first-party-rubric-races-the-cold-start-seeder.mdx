@@ -1,6 +1,9 @@
 ---
 title: Renaming a first-party rubric races the cold-start seeder — always clear the placeholder row first
 description: A migration that renames a bundled rubric's on-disk directory MUST also delete a same-id owner='first-party-bundle' placeholder row, or the seeder can win the race and leave a spurious duplicate.
+normative: true
+governs:
+  - renaming a first-party rubric
 ---
 
 Filed live during the cup-lexicon rename (EI-8912 / WI-3618, 2026-07-10) while

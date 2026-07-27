@@ -471,6 +471,30 @@ describe('startingLaunchesToRosterEntries (WI-6376 — terminal launch boot wind
     expect(e.display).not.toBe('workbench');
   });
 
+  it("classifies a role-less psu launch as 'su' so the board's DEFAULT su-only filter shows it", () => {
+    // FOUND LIVE 2026-07-27, not by a unit test: the card was BUILT but invisible
+    // unless ?hudall=true, because classifyAgentPane only yields 'su' for a
+    // role-less session whose coord id has the psu `su-` prefix — and this mapper
+    // was not passing ownerId, so it fell to 'cup' and isSuSession filtered it out.
+    // The board defaults to su-only, so "renders" and "is visible" were not the
+    // same claim, which is exactly what the live check exists to separate.
+    const [e] = startingLaunchesToRosterEntries(
+      [adv({ id: 94, display: 'terminal', coordOwnerId: 'su-abc', role: null })],
+      'box-1',
+    );
+    expect(e.agentPaneKind).toBe('su');
+  });
+
+  it('still honours an explicit role over the su- prefix (a planner stays a planner)', () => {
+    // Non-vacuity guard: the ownerId must not override a real role, or a New-plan
+    // launch would lose its planner pane kind.
+    const [e] = startingLaunchesToRosterEntries(
+      [adv({ id: 95, display: 'terminal', coordOwnerId: 'su-abc', role: 'planner' })],
+      'box-1',
+    );
+    expect(e.agentPaneKind).toBe('planner');
+  });
+
   it('falls back to a synthetic id for a pre-WI-6363 row with no pre-pinned owner', () => {
     const row = adv({ id: 93, display: 'terminal', coordOwnerId: null });
     const [e] = startingLaunchesToRosterEntries([row], 'box-1');

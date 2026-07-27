@@ -8,6 +8,9 @@ documents:
   - the failure signature (vitest fork worker pinned ~90% CPU, R-state, no children, no output)
   - the gdb one-liner that convicts it and the bounded node repro
   - the safe ENOTDIR replacement pattern for "unwritable dir" fail-soft tests
+normative: true
+governs:
+  - choosing an unwritable dir in a test
 ---
 
 ## The trap

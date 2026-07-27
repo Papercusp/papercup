@@ -6,6 +6,9 @@ tags: ["testing\nflaky-tests\nwork-items\nvitest"]
 status: active
 documents:
   - "packages/operator-core/lib/work-items-created-event-hook.test.ts\npackages/operator-core/lib/work-items-urgent.test.ts\npackages/operator-core/lib/work-items-events.ts"
+normative: true
+governs:
+  - writing a createWorkItem test with a fakeSql
 ---
 
 # A createWorkItem test with a fakeSql must stub the emitAwaitedEvent sink

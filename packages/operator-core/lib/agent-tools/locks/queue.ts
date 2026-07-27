@@ -9,6 +9,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { ensureBootstrap, getTxPool, readQueue } from './su-lock-store';
 import { acquireWithContentionRetry } from './contention-retry';
+import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/holder-advisory';
 
 export default defineTool({
   name: 'locks:queue',

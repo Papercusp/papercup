@@ -13,6 +13,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { getWorkItem, commentWorkItem } from '../../work-items';
 import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../../work-items-release-request';
+import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
@@ -88,6 +89,42 @@ export default defineTool({
       extra: { auto: true, lifecycle: 'release_request_resolved', work_item: args.id, resolution: 'holder-declined' },
     }).catch(() => {});
 
-    return json({ ok: true, id: args.id, resolution: 'holder-declined', requestedBy: resolved.by, reason: args.reason ?? null });
+    /**
+     * P-027 / D-055 A3 — THE ROLES INVERT HERE, AND THAT IS WHY THIS DISCLOSES THE
+     * REQUESTER RATHER THAN THE HOLDER.
+     *
+     * P-027's text asks for "the holder's goal … in the request path AND in the
+     * decline". In the request path the reader is the REQUESTER, so the holder's
+     * goal is exactly right. At the decline the caller IS the holder (enforced by
+     * the `not_holder` guard above), so injecting the holder's context here would
+     * show an agent its OWN goal — the precise case D-055 refuses by name for
+     * `work_items:checkpoint` ("re-injected to the item's OWN holder"). Doing it
+     * anyway would satisfy the sentence and violate the ruling behind it.
+     *
+     * The genuinely-blocked reader at this moment is the holder deciding how firm
+     * to be, and the party they are contending with is the REQUESTER — whose goal
+     * predicts whether this push-back settles it or escalates. So the same
+     * projection is rendered against the other participant.
+     *
+     * ⚠ The requester's own notification is deliberately NOT enriched: it is
+     * delivered to a DIFFERENT reader, and holder context is reader-relative by
+     * construction. Fabricating a CellReader for the recipient would default the
+     * audience — and a defaulted access check fails OPEN, which is the one thing
+     * `resolveHolderContext` refuses to do.
+     */
+    const requesterContext = await resolveHolderAdvisory({
+      holder: resolved.by,
+      reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
+      // D-094: never report the requester as "also competing on" this very item.
+      subjectRef: args.id,
+    });
+    return json({
+      ok: true,
+      id: args.id,
+      resolution: 'holder-declined',
+      requestedBy: resolved.by,
+      ...(requesterContext ? { requesterContext } : {}),
+      reason: args.reason ?? null,
+    });
   },
 });

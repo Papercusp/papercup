@@ -734,7 +734,21 @@ export function startingLaunchesToRosterEntries(
   localHost: string,
 ): RosterEntry[] {
   return rows.map((r) => {
-    const pane = classifyAgentPane({ role: r.role, launch: launchHintFromArgv(r.launchArgv) });
+    // `ownerId` is passed for the same reason the ACTIVE path passes it
+    // (mergeRosterEntries): classifyAgentPane only returns kind 'su' for a
+    // role-less session whose coord id carries the psu `su-` prefix. Without it a
+    // terminal launch classified as 'cup', and the board's DEFAULT "su sessions
+    // only" filter (isSuSession — agentPaneKind === 'su') hid the card outright:
+    // found live 2026-07-27, the card existed but was visible only with
+    // ?hudall=true. Passing it also holds the invariant that matters here — the
+    // card must not CHANGE KIND the moment the session registers its presence,
+    // which is the one thing that would make it flicker or jump columns.
+    // The pending tier cannot do this: its owner id is synthetic.
+    const pane = classifyAgentPane({
+      role: r.role,
+      launch: launchHintFromArgv(r.launchArgv),
+      ownerId: r.coordOwnerId,
+    });
     return {
       // Fall back to a synthetic id only for a pre-WI-6363 row that carries no
       // pre-pinned owner; such a row can still be SEEN, it just cannot be opened.

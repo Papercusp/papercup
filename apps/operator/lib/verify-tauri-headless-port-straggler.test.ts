@@ -44,7 +44,11 @@ describe('EI-11559 — verify-tauri-headless holds the port lock until its sidec
     expect(src).toContain('verify-tauri-headless');
     // The whole premise: ports are DERIVED from the display, so a straggler on a
     // reused display collides. If this coupling is gone, revisit the guard.
-    expect(src).toMatch(/PORT_BASE=\$\(\( 33700 \+ \(DISPLAY_NUM - 90\) \* 10 \)\)/);
+    // EI-18816386093046558 bounded the derivation into a wrapped 60-slot window
+    // (PORT_SLOT then PORT_BASE) instead of the original single-line unbounded
+    // formula this regex used to match — same premise (display -> port), new shape.
+    expect(src).toMatch(/PORT_SLOT=\$\(\( \(DISPLAY_NUM - 90\) % 60 \)\)/);
+    expect(src).toMatch(/PORT_BASE=\$\(\( 33700 \+ PORT_SLOT \* 10 \)\)/);
   });
 
   it('normal teardown holds the lock: it drains the ports BEFORE releasing the flock', () => {

@@ -26,6 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { getWorkItem, commentWorkItem } from '../../work-items';
 import { setWorkItemReleaseRequest, readWorkItemReleaseRequest, type ReleaseRequestOnSilence } from '../../work-items-release-request';
+import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
 
 const ON_SILENCE_VALUES = ['reclaim', 'escalate', 'nothing'] as const;
 
@@ -106,13 +107,37 @@ export default defineTool({
       });
     }
 
+    // P-027 / D-055 A3 — resolved ONCE for every path below that names the holder.
+    // Guarded + total: an unattributable caller or a dead store costs the advisory
+    // and nothing else, and NOTHING here can change whether the request is filed.
+    const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
+    const holderContext = await resolveHolderAdvisory({
+      holder,
+      reader,
+      // D-094: never report the holder as "also competing on" the very item this
+      // request is about.
+      subjectRef: args.id,
+    });
+
     const existing = readWorkItemReleaseRequest(item.payload);
     if (existing && !existing.resolved && existing.by !== ident.ownerId) {
+      // The blocking party here is the PRIOR REQUESTER, not the holder — you are
+      // being told to coordinate with `existing.by`, so it is THEIR goal that
+      // predicts whether they will stand down. Both are disclosed because they
+      // answer different questions: `holderContext` = will the item free up at
+      // all, `existingRequesterContext` = should I wait behind this request.
+      const existingRequesterContext = await resolveHolderAdvisory({
+        holder: existing.by,
+        reader,
+        subjectRef: args.id,
+      });
       return json({
         ok: false,
         id: args.id,
         error: 'request_already_pending',
         existing: { by: existing.by, deadlineAt: existing.deadlineAt, onSilence: existing.onSilence, reason: existing.reason },
+        ...(holderContext ? { holderContext } : {}),
+        ...(existingRequesterContext ? { existingRequesterContext } : {}),
         hint: `${existing.by} already has a pending release request on ${args.id} (deadline ${new Date(existing.deadlineAt).toISOString()}) — wait for it to resolve, or coordinate with ${existing.by} instead of filing a second one.`,
       });
     }
@@ -158,6 +183,12 @@ export default defineTool({
       ok: true,
       id: args.id,
       holder,
+      // P-027 / D-055 A3 — THE question this tool exists to answer is "will they
+      // actually give it up?", and the holder's declared goal is the single best
+      // predictor available. Disclosed at the moment the request is filed, so the
+      // requester can judge the deadline/consequence they just committed to
+      // rather than discovering the holder's lane only when they push back.
+      ...(holderContext ? { holderContext } : {}),
       requestedBy: ident.ownerId,
       deadlineAt,
       deadlineIso,
