@@ -33,8 +33,10 @@
  *     auto-file to the improvements backlog. Tier 3 stays on-demand (D-004).
  *   - `system:scout-cycle` — hive-creative-ideation-2026-06-08 P-008 (the Scout
  *     autonomous-ideation cadence; D-010). Self-gates on idle/friction + budget;
- *     provisioned INACTIVE per-hive at pot:create
- *     (lib/hive/provision-learning-loop.ts), bring-up human-gated.
+ *     provisioned INACTIVE per-pot at pot:create
+ *     (lib/pot/provision-learning-loop.ts), bring-up human-gated. Registered by
+ *     `register-scout-action.ts` (EI-18741240128927188 — was exported but never
+ *     called, so arming the per-pot row silently no-op'd).
  *   - `system:session-dir-gc` — the per-session isolation-dir janitor (the EI-155
  *     follow-on). Sweeps `session-claude/`, `session-mcp/`, codex homes of
  *     not-live, not-resumable sessions past a retention window. Seeded INACTIVE
@@ -256,9 +258,13 @@ import './improvement-actions';
 // (P-006) + the knowledge-hygiene cleanup routine (P-008).
 import './knowledge-pack-actions';
 import './p2p-perf-actions';
-// (scout's bespoke system:scout-cycle action is RETIRED — P-130; scout runs via the
-//  `scout` blueprint. register-scout-action no longer registers anything; the
-//  blender:cycle op lazy-imports productionScoutRunner from it directly.)
+// `system:scout-cycle` — the workspace-singleton bespoke action was retired at
+// P-130 (scout now runs via the `scout` blueprint's `blender:cycle` step). EI-18741240128927188:
+// the PER-POT routine row `provision-learning-loop.ts` seeds INACTIVE at pot:create was left
+// unwired though — its own docstring promised human-gated bring-up, but nothing registered a
+// `system:scout-cycle` handler, so arming it silently no-op'd forever. register-scout-action.ts
+// now self-registers it, reusing the SAME `productionScoutRunner` blender:cycle already runs.
+import '../../scout/register-scout-action';
 import './session-dir-gc-action';
 // `system:telemetry-retention` — daily prune of the unbounded high-volume
 // diagnostic tables (route_invocations/tool_invocations); infra-audit R2 (plan
@@ -349,9 +355,10 @@ import './unclaimed-work-digest-action';
 // graduation + iq-battery-gen [the hybrid eval engine, D-013]). Their seeds fire
 // `system:blueprint-run {blueprintId}`; the lib logic lives on as each op's impl (the
 // shared `run<Loop>` orchestration); the no-retired-style guard (P-132) blocks
-// re-wiring. Scout's `system:scout-cycle` registration is retired in
-// register-scout-action.ts (that module also provides `productionScoutRunner`, the
-// blender:cycle op's dependency, so the file stays).
+// re-wiring. Scout's WORKSPACE-SINGLETON `system:scout-cycle` registration stays
+// retired this way — the blueprint is what runs it — but the PER-POT arming path
+// (provision-learning-loop.ts) needed the action re-registered; see
+// register-scout-action.ts (imported above, near p2p-perf-actions) and EI-18741240128927188.
 // queen-autonomy-policy-2026-06-13 B-16: the auto-revert tripwire + graduation
 // sweep (`system:autonomy-trust-scan`). Self-gates on MUG_AUTONOMY_ARMED (P-092);
 // the seed routine ships INACTIVE (go-live activates it).

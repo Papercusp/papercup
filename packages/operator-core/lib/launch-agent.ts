@@ -32,6 +32,22 @@ export interface LaunchAgentOpts extends LaunchOpts {
    * the client's native default.
    */
   contextSize?: SuContextSize;
+  /**
+   * WI-6321 — psu-parity launch options. Before these, a GUI launch could express
+   * neither, so every one was silently unfleeted and on the default system
+   * credential while `psu` offered both.
+   *
+   * `fleet` JOINS an existing fleet by slug; `fleetName` CREATES one (this session
+   * leads it), optionally forcing its colour via `fleetScheme`. Pass one or the
+   * other — launch-su rejects both together.
+   */
+  fleet?: string | null;
+  fleetName?: string | null;
+  fleetScheme?: string | null;
+  /** psu `--account=`: 'default' (system/CLI login) | 'auto' (gateway-routed with
+   *  failover) | a pool account id. A GUI launch should ALWAYS send one — psu with
+   *  no --account opens an interactive picker that would hang the spawn. */
+  account?: string | null;
 }
 
 export interface LaunchAgentResult {
@@ -91,6 +107,12 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     resume_session_id: opts.resumeSessionId ?? null,
     kickoff: opts.kickoff ?? null,
     defer_spawn: opts.deferSpawn ?? false,
+    // WI-6321 — psu parity. Null-safe: an omitted option keeps the previous
+    // behaviour exactly (launch-su treats null as "not supplied").
+    fleet: opts.fleet ?? null,
+    fleet_name: opts.fleetName ?? null,
+    fleet_scheme: opts.fleetScheme ?? null,
+    account: opts.account ?? null,
   });
   let lastError = 'no spawn path available';
   for (const url of launchSuEndpoints()) {

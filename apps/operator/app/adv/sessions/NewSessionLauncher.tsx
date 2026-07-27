@@ -37,7 +37,12 @@ import type { SuAgent } from '@papercusp/operator-core/lib/su-agents';
 import {
   CLOUD_MODEL_MENU,
   MODEL_EFFORT_LEVELS,
+  composeLaunchModelSpec,
+  LAUNCH_ACCOUNT_MODES,
+  SU_CONTEXT_SIZES,
+  SU_CONTEXT_TOKEN_ESTIMATES,
 } from '@papercusp/operator-core/lib/agent-config-constants';
+import { useSuLaunchOptions } from './use-su-launch-options';
 import {
   formatAbsoluteUpdated,
   formatRelativeUpdated,
@@ -134,11 +139,100 @@ export function modelBackend(model: string): SuAgent | undefined {
   return CLOUD_MODEL_MENU.find((c) => c.value === base)?.backend as SuAgent | undefined;
 }
 
+/**
+ * WI-6321 (owner ask 2026-07-27: the GUI "should share the same code for getting
+ * the options"): this used to be a THIRD private copy of spec composition, and it
+ * disagreed with the others — given an effort but no model it returned the model
+ * (i.e. `null`) and DROPPED the effort silently, so a human who picked "xhigh"
+ * with the default model launched at the backend's default effort and was never
+ * told. `composeLaunchModelSpec` is the one implementation; it THROWS on that
+ * case, and `launch` below turns the throw into a visible message.
+ *
+ * Kept as a named wrapper (not an import rename) because the null-for-empty
+ * return is what this component's callers and tests expect.
+ */
 export function composeModelSpec(model: string, effort: string): string | null {
-  const m = model.trim();
-  if (!m) return null;
-  const e = effort.trim();
-  return e ? `${m}:${e}` : m;
+  return composeLaunchModelSpec(model, effort) ?? null;
+}
+
+// ── psu-parity option families (WI-6321) ────────────────────────────────────
+// Each mirrors a picker `psu` shows at launch. The LIVE ones (fleet, account)
+// read psu's own options endpoint via useSuLaunchOptions; the static ones derive
+// from agent-config-constants, which the psu-launcher parity suite pins.
+
+export const FLEET_SELECT_NONE = '__no_fleet__';
+export const FLEET_SELECT_NEW = '__new_fleet__';
+export const ACCOUNT_SELECT_DEFAULT = 'default';
+export const CONTEXT_SELECT_NATIVE = '__native_context__';
+
+/** Fleet rows: "no fleet" (psu's own first row + default), "create a new fleet…"
+ *  previewing the colour it would get, then every durable fleet with its bound
+ *  colour as a swatch — psu's `pickFleet`, rendered.
+ *
+ *  Pure — exported for unit-test access. */
+export function buildFleetOptions(
+  fleets: Array<{ slug: string; title: string | null; color?: { name?: string } | null }>,
+  nextSchemeName?: string | null,
+): ComboboxOption[] {
+  return [
+    { value: FLEET_SELECT_NONE, label: 'No fleet', detail: 'Run unfleeted (default)' },
+    {
+      value: FLEET_SELECT_NEW,
+      label: '+ Create a new fleet…',
+      detail: nextSchemeName ? `New fleet — colour ${nextSchemeName}` : 'This session leads it',
+    },
+    ...fleets.map((f) => ({
+      value: f.slug,
+      label: f.title?.trim() || f.slug,
+      detail: f.color?.name ? `join · ${f.color.name}` : 'join',
+      keywords: [f.slug],
+    })),
+  ];
+}
+
+/** Account rows: psu's two non-pool modes, then any gateway pool accounts. The
+ *  pool is empty unless the gateway is on, exactly as psu's picker shows it.
+ *
+ *  Pure — exported for unit-test access. */
+export function buildAccountOptions(
+  accounts: Array<{ id: string; label?: string | null; detail?: string | null }>,
+): ComboboxOption[] {
+  const MODE_DETAIL: Record<string, string> = {
+    default: 'System / CLI login — no gateway pin',
+    auto: 'Gateway-routed with failover across the pool',
+  };
+  return [
+    ...LAUNCH_ACCOUNT_MODES.map((m) => ({
+      value: m,
+      label: m === 'default' ? 'Default account' : 'Auto (gateway)',
+      detail: MODE_DETAIL[m],
+    })),
+    ...accounts.map((a) => ({
+      value: a.id,
+      label: a.label?.trim() || a.id,
+      detail: a.detail?.trim() || `Pinned pool account`,
+      keywords: [a.id],
+    })),
+  ];
+}
+
+/** Context-size rows — the twin of psu's SU_CONTEXT_CHOICES. "Native" sends no
+ *  flag at all, which is byte-identical to a pre-feature launch.
+ *
+ *  Pure — exported for unit-test access. */
+export function buildContextSizeOptions(): ComboboxOption[] {
+  const DETAIL: Record<string, string> = {
+    full: 'Whole tool catalog up-front',
+    trimmed: 'Core spine, native soft-trim',
+  };
+  return [
+    { value: CONTEXT_SELECT_NATIVE, label: 'Native context', detail: "The client's own default" },
+    ...SU_CONTEXT_SIZES.map((v) => ({
+      value: v,
+      label: `${v === 'full' ? 'Full' : 'Trimmed'} · ${SU_CONTEXT_TOKEN_ESTIMATES[v]}`,
+      detail: DETAIL[v],
+    })),
+  ];
 }
 
 /**
@@ -282,6 +376,37 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [launching, setLaunching] = useState(false);
+  // WI-6321 — the psu-parity options. All local useState for the same reason the
+  // model/plan picks are: a mid-edit draft of a session that does not exist yet,
+  // not a shareable view (see the module header's nuqs-vs-useState note).
+  const [fleet, setFleet] = useState(FLEET_SELECT_NONE);
+  const [newFleetName, setNewFleetName] = useState('');
+  const [fleetScheme, setFleetScheme] = useState('');
+  const [account, setAccount] = useState<string>(ACCOUNT_SELECT_DEFAULT);
+  const [contextSize, setContextSize] = useState(CONTEXT_SELECT_NATIVE);
+
+  // psu's OWN option source — see use-su-launch-options' header. Keyed to the
+  // backend the picked model implies, because pool pinning is per-backend.
+  const launchOptions = useSuLaunchOptions(null, modelBackend(model) ?? 'claude');
+  const fleetOptions = useMemo(
+    () => buildFleetOptions(launchOptions.fleets, launchOptions.nextScheme?.name),
+    [launchOptions.fleets, launchOptions.nextScheme],
+  );
+  const accountOptions = useMemo(
+    () => buildAccountOptions(launchOptions.accounts),
+    [launchOptions.accounts],
+  );
+  const contextOptions = useMemo(() => buildContextSizeOptions(), []);
+  const schemeOptions = useMemo(
+    () =>
+      launchOptions.schemes.map((s) => ({
+        value: s.name,
+        label: s.name,
+        detail: s.bg,
+      })),
+    [launchOptions.schemes],
+  );
+  const creatingFleet = fleet === FLEET_SELECT_NEW;
 
   const planList = usePlanList({ includeArchived: true, includeLegacy: true });
   const selectedPlan = useMemo(
@@ -305,10 +430,25 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
     // CONTEXT, never a requirement, and `launchAgent` already accepts a null
     // planSlug (it takes a null `slug` on this path too).
     if (launching) return;
+    // WI-6321: creating a fleet needs a name. Caught before the spawn so the
+    // human fixes it here rather than getting a terminal that opens and dies.
+    if (creatingFleet && !newFleetName.trim()) {
+      toast.error('Name the new fleet, or pick "No fleet".');
+      return;
+    }
+    // P-008: effort rides on the model spec as "<model>:<effort>". The shared
+    // composer THROWS on effort-without-model (psu has no standalone effort
+    // flag). Surfacing that is the point — the old private copy dropped the
+    // effort silently, so the session launched at the default and nobody knew.
+    let chosenModel: string | null;
+    try {
+      chosenModel = composeModelSpec(model, effort);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Invalid model/effort combination.');
+      return;
+    }
     setLaunching(true);
     try {
-      // P-008: effort rides on the model spec as "<model>:<effort>".
-      const chosenModel = composeModelSpec(model, effort);
       const label = selectedPlan
         ? selectedPlan.title?.trim() || selectedPlan.slug
         : 'su session';
@@ -336,6 +476,16 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         // toast. Picking any of sol / luna / terra could therefore never work.
         // The menu already knows each model's backend; send it (owner bug 2026-07-27).
         agent: modelBackend(model),
+        // WI-6321 — psu parity. `fleet` JOINS by slug; `fleetName` CREATES (the
+        // server slugifies + allocates the row, so the GUI never invents a slug).
+        fleet: creatingFleet || fleet === FLEET_SELECT_NONE ? null : fleet,
+        fleetName: creatingFleet ? newFleetName.trim() : null,
+        fleetScheme: creatingFleet ? fleetScheme.trim() || null : null,
+        // ALWAYS sent: a psu launch with no --account opens an interactive
+        // picker, which would hang a GUI-spawned terminal waiting for a human.
+        account: account || ACCOUNT_SELECT_DEFAULT,
+        contextSize:
+          contextSize === CONTEXT_SELECT_NATIVE ? undefined : (contextSize as 'full' | 'trimmed'),
       });
       if (result.ok && result.warning) {
         // EI-18696184925888288: launch-su's spawn call succeeded but the
@@ -351,6 +501,16 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
           `Agent launched ${target}${chosenModel ? ` (${chosenModel})` : ''}.`,
           { duration: 3000 },
         );
+        // A launch that CREATED a fleet added a row to the very list this
+        // picker renders — re-read it so the new fleet is joinable straight
+        // away, and drop back to it rather than leaving the create row armed
+        // (which would silently create a second fleet on the next launch).
+        if (creatingFleet) {
+          launchOptions.refresh();
+          setFleet(FLEET_SELECT_NONE);
+          setNewFleetName('');
+          setFleetScheme('');
+        }
         onLaunched?.(result.ownerId ?? null);
       } else if (result.installCmd) {
         toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
@@ -360,7 +520,20 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
     } finally {
       setLaunching(false);
     }
-  }, [model, effort, launching, selectedPlan, onLaunched]);
+  }, [
+    model,
+    effort,
+    launching,
+    selectedPlan,
+    onLaunched,
+    fleet,
+    creatingFleet,
+    newFleetName,
+    fleetScheme,
+    account,
+    contextSize,
+    launchOptions,
+  ]);
 
   return (
     <div

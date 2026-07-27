@@ -222,16 +222,16 @@ export const SENTINEL_TARGET_ROLES: readonly string[] = ['system:loop-wake'];
  */
 export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   // ── spends ───────────────────────────────────────────────────────────────
-  // ⚠ `system:scout-cycle` and `system:template-gym` are deliberately ABSENT.
-  // Both are live `target_role` values in harness_shared.routines — template-gym on
-  // an ACTIVE row — but neither is registered at boot: `registerScoutCycleAction()`
-  // is exported and never called, and nothing registers template-gym at all, so the
-  // tick logs "no handler registered … skipping" and the routine silently does
-  // nothing while presenting as running. Classifying them here would launder that
-  // bug into a normal row; leaving them out makes them `unknown`, which routes them
-  // to Needs-you. Filed as EI-18741229858124453 (template-gym) and
-  // EI-18741240128927188 (scout-cycle) — when either is wired, the registry
+  // ⚠ `system:template-gym` is deliberately ABSENT. It is a live `target_role` value
+  // in harness_shared.routines on an ACTIVE row, but nothing registers it at boot, so
+  // the tick logs "no handler registered … skipping" and the routine silently does
+  // nothing while presenting as running. Classifying it here would launder that bug
+  // into a normal row; leaving it out makes it `unknown`, which routes it to
+  // Needs-you. Filed as EI-18741229858124453 — when it is wired, the registry
   // cross-check will demand its classification.
+  // (`system:scout-cycle` was the SAME class of bug — EI-18741240128927188,
+  // `registerScoutCycleAction()` exported but never called — fixed by
+  // register-scout-action.ts's self-registration; classified below now that it's live.)
   'system:blueprint-run': { spend: 'llm', why: 'Launches a blueprint agent (the Mug/Cup hive launch path)' },
   'system:plan-run': { spend: 'llm', why: 'Mints a plan run and dispatches its items to agents' },
   'system:overwatch-launch': { spend: 'llm', why: 'Launches the overwatch (Kettle) session' },
@@ -240,6 +240,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:hive-canary': { spend: 'llm', why: 'Queues a canary feature the autonomous pipeline carries end to end' },
   'system:unguarded-halt-rescue': { spend: 'llm', why: 'Wakes halted sessions, and a wake bills a turn' },
   'system:loop-wake': { spend: 'llm', why: "Delivers a wake to the loop's owning session" },
+  'system:scout-cycle': { spend: 'llm', why: 'Runs a budgeted Scout ideation cycle (in-process LLM ideators/critics)' },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },

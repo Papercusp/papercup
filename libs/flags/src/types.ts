@@ -1936,6 +1936,20 @@ export const FLAGS = {
   // IS the feature). OFF ⇒ report-only everywhere — probes + notifications still run, nothing is
   // ever restarted. No `process.env.PAPERCUSP_*` gate (`lint:env-feature-gates`).
   SUPERVISOR_AUTO_RESTART: "papercusp-supervisor-auto-restart",
+  // task-manager-no-escape-2026-07-27 P-020: the task manager as a whole — cgroup
+  // confinement at the spawn chokepoints, the 30s reconcile, and the Task Manager
+  // pane. DEFAULT ON (derived FLAG_DEFAULTS — finished work never ships dark, and
+  // the feature IS knowing what is running).
+  //
+  // Safe to default ON because the reconciler is REPORT-ONLY by construction (plan
+  // D-010): there is no auto-kill and no auto-freeze code path to gate. The
+  // destructive verbs are all MANUAL and separately capability-gated
+  // (processes:kill / processes:control). OFF ⇒ spawns still run, just unconfined
+  // and unledgered — i.e. exactly today's behaviour, which is the honest kill-switch
+  // for a subsystem that touches every spawn seam on the box.
+  //
+  // NOT a `process.env.PAPERCUSP_*` gate (`lint:env-feature-gates`).
+  TASK_MANAGER: "papercusp-task-manager",
   // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror): gates the cross-machine federation
   // of SHAREABLE memories (memory:remember with shareable=true). When ON, shareable memories
   // capture to the peer-log and federate to other hives; receive-side projections apply remote

@@ -44,18 +44,27 @@ const INTERNAL_VOCABULARY = [
 ];
 
 /**
- * SignalsPanel.tsx is EXEMPT — and this is the one exemption in the file.
+ * Currently EMPTY — and the empty set is the correct state, not an oversight.
  *
  * The Observe sub-view (Signals / Observations / Rubrics) is code-frozen by
  * plan decision D-001 of learning-tab-surface-public-release-2026-07-27:
- * [owner 2026-07-27] "just leave the observe tab as it is now". Its copy
- * defect ("the accumulator sweep has not run on this workspace") is REAL and is
- * recorded on WI-6388; it must not be fixed without an explicit owner
- * exception. The exemption is therefore an owner directive, not a waiver of
- * convenience — which is why it names its source here rather than being a bare
- * entry in a skip list.
+ * [owner 2026-07-27] "just leave the observe tab as it is now". That freeze
+ * STILL STANDS and is why this list exists at all.
+ *
+ * SignalsPanel.tsx was listed here for the copy defect recorded on WI-6388
+ * ("the accumulator sweep has not run on this workspace") — but that string
+ * had already been removed from the panel on 2026-07-18, nine days before this
+ * guard was written on 2026-07-27. The exemption was therefore stale the moment
+ * it was authored: it described a defect the code no longer had, and the
+ * "still describes reality" check below correctly flagged it.
+ *
+ * Dropping it changes NO user-facing copy — SignalsPanel already satisfies the
+ * guard. It only stops exempting a file that complies, so the freeze is fully
+ * preserved while the panel gains real coverage. Do NOT re-add an entry here to
+ * silence a failure: an entry is an OWNER directive naming its source, never a
+ * waiver of convenience.
  */
-const FROZEN_BY_OWNER = new Set(["SignalsPanel.tsx"]);
+const FROZEN_BY_OWNER = new Set<string>([]);
 
 function panelSources(): Array<{ file: string; src: string }> {
   return readdirSync(DIR)
@@ -135,17 +144,27 @@ describe("WI-6388 guard — Learning empty states teach, and never leak internal
   // The exemption must stay HONEST: if SignalsPanel ever stops violating (an
   // owner exception is granted and the copy is fixed), this fails so the
   // exemption is removed rather than lingering as an unexamined skip.
-  it("the frozen-by-owner exemption still describes reality", () => {
-    const signals = ALL_USAGES.filter((u) => u.file === "SignalsPanel.tsx");
-    if (signals.length === 0) return; // panel gone/renamed — nothing to assert
-    const stillViolates = signals.some(
-      ({ text }) =>
-        INTERNAL_VOCABULARY.some((t) => text.toLowerCase().includes(t.toLowerCase())) ||
-        (!/\bbody=/.test(text) && !/\baction=/.test(text)),
-    );
-    expect(
-      stillViolates,
-      "SignalsPanel no longer violates — drop it from FROZEN_BY_OWNER (D-001 exemption is now stale)",
-    ).toBe(true);
+  // Every exemption must still EARN its place: the panel it names must actually
+  // still violate. An exemption for an already-clean file is dead weight that
+  // silently withholds coverage — which is exactly what happened to the original
+  // SignalsPanel.tsx entry (see the FROZEN_BY_OWNER comment above).
+  //
+  // Iterates the set rather than naming one file, so a future entry is checked
+  // too. With the set empty this passes with nothing to assert — that is the
+  // intended resting state, and the two guards above then cover every panel.
+  it("every frozen-by-owner exemption still describes reality", () => {
+    for (const file of FROZEN_BY_OWNER) {
+      const usages = ALL_USAGES.filter((u) => u.file === file);
+      if (usages.length === 0) continue; // panel gone/renamed — nothing to assert
+      const stillViolates = usages.some(
+        ({ text }) =>
+          INTERNAL_VOCABULARY.some((t) => text.toLowerCase().includes(t.toLowerCase())) ||
+          (!/\bbody=/.test(text) && !/\baction=/.test(text)),
+      );
+      expect(
+        stillViolates,
+        `${file} no longer violates — drop it from FROZEN_BY_OWNER (its D-001 exemption is now stale)`,
+      ).toBe(true);
+    }
   });
 });

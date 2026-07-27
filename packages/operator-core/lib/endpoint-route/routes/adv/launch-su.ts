@@ -25,6 +25,8 @@ import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn'
 import { DISPLAY_TERMINAL_LAUNCH, recordAdvSession } from '../../../adv-sessions';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
+import { isLaunchAccountValue } from '../../../agent-config-constants';
+import { activeWorkspaceId } from '../../../workspace-registry';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
@@ -131,6 +133,33 @@ const launchSu = defineTool({
     const account = body.account?.trim() || null;
     if (account && !isLaunchAccountValue(account)) {
       return json({ status: 'error', error: 'invalid account' }, 400);
+    }
+
+    // Resolve the fleet to a SLUG before composing argv. `--fleet=<slug>` is the
+    // only fleet flag psu's arg parser understands — its `fleetName`/`fleetScheme`
+    // are set exclusively by its own INTERACTIVE picker, so forwarding
+    // `--fleet-name=` would be a dead token psu silently ignores (checked against
+    // the parser, not assumed). Creating the row here is also the more honest
+    // split: fleet creation is durable operator state, and doing it now means a
+    // failure surfaces as a 400 instead of a terminal that opens and dies.
+    let fleetSlug = fleet;
+    if (fleetName) {
+      try {
+        const { createFleetIfAbsent, fleetSlugFromName } = await import('../../../agent-fleets-store');
+        const slug = fleetSlugFromName(fleetName);
+        if (!slug) return json({ status: 'error', error: 'fleet name produced an empty slug' }, 400);
+        await createFleetIfAbsent({
+          workspaceId: activeWorkspaceId(),
+          fleetSlug: slug,
+          title: fleetName,
+          // null ⇒ the store allocates the next unused catalog scheme, which is
+          // exactly what the picker previewed as `nextScheme`.
+          colorScheme: fleetScheme,
+        });
+        fleetSlug = slug;
+      } catch (e: any) {
+        return json({ status: 'error', error: `could not create fleet: ${e?.message ?? 'unknown error'}` }, 500);
+      }
     }
 
     // su-context-size-variants: 'full' loads the whole superuser catalog;
