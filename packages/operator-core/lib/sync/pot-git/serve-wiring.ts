@@ -292,6 +292,9 @@ interface ChannelState {
   /** Sessions where WE are the requester (id allocated by us). */
   clientSessions: Map<number, FrameDuplex>;
   nextClientId: number;
+  /** Highest live session total already reported by `noteSessionHighWater`, so
+   *  a sustained leak reports once per NEW high-water instead of per session. */
+  sessionWarnHighWater: number;
 }
 
 const stateByMuxer = new WeakMap<object, Map<string, ChannelState>>();
@@ -337,6 +340,7 @@ function newState(): ChannelState {
     serverSessions: new Map(),
     clientSessions: new Map(),
     nextClientId: 1,
+    sessionWarnHighWater: 0,
   };
 }
 

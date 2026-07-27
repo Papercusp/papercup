@@ -155,6 +155,10 @@ import { SU_S30_BUG_FILING_UNCONDITIONAL } from './su/S30-bug-filing-uncondition
 import { SU_S31A_ASYMMETRY_CONTROL } from './su/S31a-asymmetry-control';
 import { SU_S31B_ASYMMETRY_PROSE } from './su/S31b-asymmetry-prose';
 import { SU_S31C_ASYMMETRY_FIELD } from './su/S31c-asymmetry-field';
+// SU-S31d: added after the A/B/C result, testing auto-derived provenance (`basedOn`) — a
+// different MECHANISM from B/C, which both require the sender to curate. Not part of the
+// pre-registered A/B/C rule; see ./su/S31d-asymmetry-provenance.ts.
+import { SU_S31D_ASYMMETRY_PROVENANCE } from './su/S31d-asymmetry-provenance';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Mug grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './mug/Q01-grade-routed-on-triage';
@@ -306,6 +310,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S31A_ASYMMETRY_CONTROL,
   SU_S31B_ASYMMETRY_PROSE,
   SU_S31C_ASYMMETRY_FIELD,
+  SU_S31D_ASYMMETRY_PROVENANCE,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

@@ -120,6 +120,7 @@ describe('scenario registry', () => {
       'su-S31a-asymmetry-control',
       'su-S31b-asymmetry-prose',
       'su-S31c-asymmetry-field',
+      'su-S31d-asymmetry-provenance',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',

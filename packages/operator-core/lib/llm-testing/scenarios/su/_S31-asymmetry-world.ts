@@ -186,7 +186,7 @@ export const HANDOFF_PROVENANCE = [
   'Run the backfill.',
   '',
   '## basedOn — auto-derived from this session, not authored',
-  `- read   ${GUARD_SOURCE}`,
+  `- read   ${GUARD_FILE}`,
   `- ran    ${GUARD_TEST} -> 1 passed`,
   `- query  SELECT count(*) FROM reconciler_rows WHERE <duplicate predicate> -> ${DUPE_COUNT}`,
   "- query  SELECT * FROM audit WHERE ts < '2026-07-01' AND actor = 'reconciler' -> 0 rows",
