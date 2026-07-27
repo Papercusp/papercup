@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { MetricSummary, PerfArtifact } from './artifact';
-import { baselineFromArtifacts, compareArtifacts, entryKey } from './compare';
+import { baselineFromArtifacts, compareArtifacts, entryKey, formatCompareReport } from './compare';
 
 function metric(p95: number, unit: MetricSummary['unit'] = 'ms'): MetricSummary {
   return { unit, count: 10, p50: p95 * 0.8, p95, p99: p95 * 1.1, max: p95 * 1.2, mean: p95 * 0.85 };
@@ -99,5 +99,97 @@ describe('p2p-perf comparator', () => {
 
   it('params key is order-insensitive', () => {
     expect(entryKey('x', { b: 2, a: 1 })).toBe(entryKey('x', { a: 1, b: 2 }));
+  });
+
+  // WI-2788 — the absolute floor used to be a single scalar applied to the raw
+  // value of every metric. Measured over 54 nightlies, that made three metrics
+  // fire on 100% of their comparisons BY CONSTRUCTION rather than by regression.
+  describe('sub-floor baselines (WI-2788)', () => {
+    const tiny = baselineFromArtifacts(
+      [artifact('s.tiny', { size: 1 }, { latMs: metric(1) })],
+      'ci',
+    );
+
+    it('does not manufacture a regression when clearing the floor implies exceeding tolerance', () => {
+      // baseline 1ms, floor 5ms: ANY sample that clears the floor is >= 6ms,
+      // i.e. >= +500% — so a "regression" here is guaranteed by arithmetic and
+      // says nothing about the code. Before the fix this reported +1900%.
+      const r = compareArtifacts(tiny, [artifact('s.tiny', { size: 1 }, { latMs: metric(20) })]);
+      expect(r.regressions).toHaveLength(0);
+      expect(r.notComparable).toHaveLength(1);
+      expect(r.notComparable[0]).toMatchObject({
+        metric: 'latMs',
+        reason: 'baseline-below-floor',
+        baseline: 1,
+        current: 20,
+        floor: 5,
+      });
+    });
+
+    it('reports the skip instead of silently dropping it', () => {
+      const r = compareArtifacts(tiny, [artifact('s.tiny', { size: 1 }, { latMs: metric(20) })]);
+      const text = formatCompareReport(r);
+      expect(text).toContain('not comparable');
+      expect(text).toContain('latMs');
+    });
+
+    it('still judges a metric whose baseline is comfortably above the floor', () => {
+      // baseline 100ms: floor 5 < tolerance*baseline (35), so both the floor and
+      // the relative test carry information and a real regression still flags.
+      const r = compareArtifacts(base, [
+        artifact('s.a', { size: 1000 }, { latMs: metric(150), rate: metric(1000, 'ops/sec') }),
+      ]);
+      expect(r.notComparable).toHaveLength(0);
+      expect(r.regressions.map((d) => d.metric)).toContain('latMs');
+    });
+
+    it('honours the boundary exactly at absFloor === tolerance * baseline', () => {
+      // baseline 14.285ms * 0.35 = 4.99875 < 5 -> not comparable;
+      // baseline 15ms * 0.35 = 5.25 > 5 -> comparable.
+      const justUnder = compareArtifacts(
+        baselineFromArtifacts([artifact('s.b', { size: 1 }, { latMs: metric(14.285) })], 'ci'),
+        [artifact('s.b', { size: 1 }, { latMs: metric(40) })],
+      );
+      expect(justUnder.notComparable).toHaveLength(1);
+      const justOver = compareArtifacts(
+        baselineFromArtifacts([artifact('s.b', { size: 1 }, { latMs: metric(15) })], 'ci'),
+        [artifact('s.b', { size: 1 }, { latMs: metric(40) })],
+      );
+      expect(justOver.notComparable).toHaveLength(0);
+      expect(justOver.regressions).toHaveLength(1);
+    });
+  });
+
+  describe('per-unit absolute floors (WI-2788)', () => {
+    it('uses a byte-scaled floor so RSS noise does not flag', () => {
+      // A 5-BYTE floor never suppressed anything on a ~370MB RSS baseline.
+      const rssBase = baselineFromArtifacts(
+        [artifact('s.rss', { size: 1 }, { childRssPeak: metric(370_000_000, 'bytes') })],
+        'ci',
+      );
+      const jitter = compareArtifacts(rssBase, [
+        artifact('s.rss', { size: 1 }, { childRssPeak: metric(370_010_000, 'bytes') }),
+      ]);
+      expect(jitter.regressions).toHaveLength(0);
+      expect(jitter.notComparable).toHaveLength(0);
+
+      const real = compareArtifacts(rssBase, [
+        artifact('s.rss', { size: 1 }, { childRssPeak: metric(600_000_000, 'bytes') }),
+      ]);
+      expect(real.regressions.map((d) => d.metric)).toContain('childRssPeak');
+    });
+
+    it('lets a caller override the floor per unit', () => {
+      const rssBase = baselineFromArtifacts(
+        [artifact('s.rss', { size: 1 }, { childRssPeak: metric(370_000_000, 'bytes') })],
+        'ci',
+      );
+      const r = compareArtifacts(
+        rssBase,
+        [artifact('s.rss', { size: 1 }, { childRssPeak: metric(600_000_000, 'bytes') })],
+        { absFloorByUnit: { bytes: 500_000_000 } },
+      );
+      expect(r.regressions).toHaveLength(0);
+    });
   });
 });

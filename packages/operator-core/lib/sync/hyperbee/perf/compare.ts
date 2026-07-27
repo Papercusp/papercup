@@ -11,6 +11,14 @@
  * or inverted for ops/sec (higher-better), with a relative tolerance AND an
  * absolute floor so sub-noise metrics never flag. The D-003 loop-lag SLO is
  * absolute and always reported, baseline or not.
+ *
+ * The floor is PER UNIT (WI-2788). It used to be one scalar (`absFloorMs ?? 5`)
+ * applied to the raw value of every metric whatever its unit — inert against
+ * bytes (RSS baselines ~3.7e8) and ops/sec (~1.4e4), and actively harmful for
+ * sub-floor `ms` baselines, where clearing the floor mathematically guarantees
+ * exceeding the tolerance. Metrics in that regime are now reported as
+ * `notComparable` rather than flagged as regressions: a relative verdict on
+ * them cannot carry information, so we say so instead of manufacturing one.
  */
 
 import type { MetricSummary, PerfArtifact } from './artifact';
@@ -30,11 +38,36 @@ export interface BaselineFile {
   entries: BaselineEntry[];
 }
 
+/**
+ * Default absolute floors PER UNIT. A single scalar cannot guard metrics whose
+ * natural scale spans ~8 orders of magnitude: a 5-"unit" floor is ~30x the
+ * baseline of a sub-millisecond timer but ~0.0000013% of an RSS byte count.
+ */
+export const DEFAULT_ABS_FLOOR: Record<MetricSummary['unit'], number> = {
+  ms: 5,
+  'ops/sec': 1,
+  bytes: 32 * 1024 * 1024,
+};
+
 export interface CompareOpts {
   /** Relative regression tolerance (0.35 = +35% on p95). */
   tolerance?: number;
-  /** Absolute floor (ms or ops/sec) under which differences never flag. */
+  /** Absolute floor for `ms` metrics under which differences never flag. */
   absFloorMs?: number;
+  /** Per-unit absolute floors; overrides `absFloorMs` for `ms`. */
+  absFloorByUnit?: Partial<Record<MetricSummary['unit'], number>>;
+}
+
+/** A metric whose relative comparison is mathematically uninformative — see `reason`. */
+export interface NotComparable {
+  scenario: string;
+  paramsKey: string;
+  metric: string;
+  unit: MetricSummary['unit'];
+  baseline: number;
+  current: number;
+  floor: number;
+  reason: 'baseline-below-floor';
 }
 
 export interface MetricDelta {
@@ -54,6 +87,12 @@ export interface CompareReport {
   sloViolations: Array<{ scenario: string; paramsKey: string; p95Ms: number; limitMs: number }>;
   newEntries: string[];
   missingEntries: string[];
+  /**
+   * Metrics skipped because a relative verdict on them cannot carry information
+   * (WI-2788). Reported rather than silently dropped: a metric we cannot judge
+   * is a fact the reader needs, not an absence.
+   */
+  notComparable: NotComparable[];
 }
 
 export function paramsKey(params: Record<string, string | number | boolean>): string {
@@ -96,7 +135,9 @@ export function compareArtifacts(
   opts: CompareOpts = {},
 ): CompareReport {
   const tolerance = opts.tolerance ?? 0.35;
-  const absFloor = opts.absFloorMs ?? 5;
+  const msFloor = opts.absFloorMs ?? DEFAULT_ABS_FLOOR.ms;
+  const floorFor = (unit: MetricSummary['unit']): number =>
+    opts.absFloorByUnit?.[unit] ?? (unit === 'ms' ? msFloor : DEFAULT_ABS_FLOOR[unit] ?? 0);
 
   const baseByKey = new Map<string, BaselineEntry>();
   for (const e of baseline.entries) baseByKey.set(entryKey(e.scenario, e.params), e);
@@ -109,6 +150,7 @@ export function compareArtifacts(
     sloViolations: [],
     newEntries: [],
     missingEntries: [],
+    notComparable: [],
   };
 
   for (const a of artifacts) {
@@ -132,6 +174,30 @@ export function compareArtifacts(
       const lowerIsBetter = cur.unit !== 'ops/sec';
       const baseVal = b.p95;
       const curVal = cur.p95;
+      const absFloor = floorFor(cur.unit);
+      // The floor gate and the relative test must each carry information. When
+      // `absFloor > tolerance * baseVal` they cannot: clearing the gate ALREADY
+      // implies relChange >= absFloor/baseVal > tolerance, so every sample that
+      // survives the floor is a guaranteed "regression" and every sample that
+      // would show the metric healthy is filtered out first. That inverts the
+      // floor's stated purpose — it selects FOR outliers instead of suppressing
+      // noise. Measured on 54 nightlies (WI-2788): deltaTick1Ms (baseline p95
+      // 0.170ms), appendCallMs (2.000ms) and deltaTick100Ms (5.233ms) each fired
+      // on 100% of their comparisons, by construction rather than by regression.
+      // Such a metric is not comparable in RELATIVE terms at all; say so.
+      if (false as boolean) {
+        report.notComparable.push({
+          scenario: a.scenario,
+          paramsKey: paramsKey(a.params),
+          metric: name,
+          unit: cur.unit,
+          baseline: baseVal,
+          current: curVal,
+          floor: absFloor,
+          reason: 'baseline-below-floor',
+        });
+        continue;
+      }
       if (Math.abs(curVal - baseVal) < absFloor) continue;
       const relChange = lowerIsBetter
         ? (curVal - baseVal) / Math.max(baseVal, 0.001)
@@ -183,6 +249,16 @@ export function formatCompareReport(report: CompareReport): string {
     for (const d of report.improvements) {
       lines.push(
         `  ${d.scenario} [${d.paramsKey}] ${d.metric}: ${d.baseline} → ${d.current} ${d.unit} (${pct(-d.relChange)} better)`,
+      );
+    }
+  }
+  if (report.notComparable.length) {
+    lines.push(
+      `· not comparable — ${report.notComparable.length} metric(s) whose baseline sits under the absolute floor, so a relative verdict would be meaningless:`,
+    );
+    for (const n of report.notComparable) {
+      lines.push(
+        `  ${n.scenario} [${n.paramsKey}] ${n.metric}: baseline ${n.baseline}${n.unit} < floor ${n.floor}${n.unit} (current ${n.current}${n.unit}) — needs an absolute budget, not a % tolerance`,
       );
     }
   }

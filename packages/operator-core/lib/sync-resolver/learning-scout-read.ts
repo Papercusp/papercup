@@ -618,24 +618,22 @@ export async function readScoutSnapshot(
   // that resolution; under any other pot lens they are excluded (D-002 — never
   // misfile unattributable rows into a pot).
   //
-  // Parameterised by the COLUMN REFERENCE, and deliberately so: an unqualified
-  // predicate cannot be reused by a query that aliases the table, and the
-  // tempting workaround — writing the rule out a second time next to the
-  // aliased query — is exactly how the improve funnel below came to apply this
-  // scope to its first stage and NOT to its later ones, rendering an impossible
-  // funnel that GREW under a pot lens (156 ideas → 605 approved). One rule, one
-  // definition, every caller.
-  const routedPotFilterOn = (col: ReturnType<Sql>) =>
-    memberSlugs
-      ? hive === PLATFORM_POT_SLUG
-        ? sql`AND (${col} IN ${sql(memberSlugs)} OR ${col} IS NULL)`
-        : sql`AND ${col} IN ${sql(memberSlugs)}`
-      : sql``;
-  const routedPotFilter = routedPotFilterOn(sql`harness_slug`);
+  // ⚠ EVERY query over scout_routed_ideas must alias it `sri` and reuse THIS
+  // fragment. The alias is not cosmetic: the predicate names a qualified column,
+  // so an un-aliased query cannot take it, and the tempting workaround — writing
+  // the rule out a second time beside the aliased query — is exactly how the
+  // improve funnel below came to scope its FIRST stage and not its later ones,
+  // rendering an impossible funnel that GREW under a pot lens (observed live:
+  // 156 ideas → 605 approved). One rule, one definition, every leg.
+  const routedPotFilter = memberSlugs
+    ? hive === PLATFORM_POT_SLUG
+      ? sql`AND (sri.harness_slug IN ${sql(memberSlugs)} OR sri.harness_slug IS NULL)`
+      : sql`AND sri.harness_slug IN ${sql(memberSlugs)}`
+    : sql``;
   const rails = (await sql`
     SELECT rail, count(*)::int AS count
-      FROM harness_shared.scout_routed_ideas
-     WHERE workspace_id = ${workspaceId}
+      FROM harness_shared.scout_routed_ideas sri
+     WHERE sri.workspace_id = ${workspaceId}
        ${routedPotFilter}
      GROUP BY rail
      ORDER BY count DESC, rail ASC
@@ -653,8 +651,8 @@ export async function readScoutSnapshot(
     SELECT idea_id, lens, rail, routed_ref, title, routed_at, outcome,
            human_grade, human_feedback, graded_by, origin, cycle_id,
            addresses_pattern_refs, harness_slug
-      FROM harness_shared.scout_routed_ideas
-     WHERE workspace_id = ${workspaceId}
+      FROM harness_shared.scout_routed_ideas sri
+     WHERE sri.workspace_id = ${workspaceId}
        ${routedPotFilter}
      ORDER BY routed_at DESC
      LIMIT 50
@@ -976,7 +974,7 @@ export async function readScoutSnapshot(
        WHERE sri.workspace_id = ${workspaceId}
          AND sri.rail = 'improvement'
          AND sri.routed_ref LIKE 'wi:%'
-         ${routedPotFilterOn(sql`sri.harness_slug`)}
+         ${routedPotFilter}
     `) as Array<Record<string, unknown>>;
     const row = funnelRows[0];
     if (row) {

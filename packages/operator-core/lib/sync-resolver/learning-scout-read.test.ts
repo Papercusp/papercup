@@ -770,4 +770,58 @@ describe('pot lens (pot-scope-all-learnings P-005)', () => {
     expect(texts.some((t) => t.includes('pot_slug ='))).toBe(false);
     expect(texts.some((t) => t.includes('harness_slug IN'))).toBe(false);
   });
+
+  // RECURRENCE GUARD for the improve-funnel scope split, found live in the Tauri
+  // shell on 2026-07-27: the funnel rendered "156 ideas → 605 approved" — a
+  // funnel that GREW — because stage 1 (totalRouted) was pot-scoped while
+  // filed/claimed/done/dropped came from a query carrying no pot predicate at
+  // all. Same class as EI-18792873324746237: funnel stages computed over
+  // different populations, rendering a number that reads as broken.
+  //
+  // ⚠ Asserting on SQL TEXT cannot catch this class. The pot predicate is built
+  // ONCE and interpolated, so it appears in the recorded text exactly once no
+  // matter how many legs actually use it — the text-based tests above would stay
+  // green with the funnel completely unscoped. This pins REFERENCE identity
+  // instead: every leg over scout_routed_ideas must interpolate the SAME
+  // fragment object.
+  it('applies the SAME pot filter to every scout_routed_ideas leg — funnel included', async () => {
+    const calls: Array<{ text: string; vals: unknown[]; ret: unknown }> = [];
+    const base = fakeSql({});
+    const rec = (strings: TemplateStringsArray | string[], ...vals: unknown[]) => {
+      const ret = (base as unknown as (s: unknown, ...v: unknown[]) => unknown)(
+        strings,
+        ...vals,
+      );
+      if (Array.isArray(strings))
+        calls.push({ text: (strings as readonly string[]).join(' '), vals, ret });
+      return ret;
+    };
+    await readScoutSnapshot(rec as unknown as Sql, 'ws-1', {
+      hive: 'oddsmith',
+      hiveMemberSlugs: ['oddsmith', 'odds-web'],
+    });
+
+    const filter = calls.find((c) => c.text.includes('sri.harness_slug IN'));
+    expect(filter, 'the pot filter fragment was never built').toBeTruthy();
+
+    for (const [leg, marker] of [
+      ['rail counts', 'GROUP BY rail'],
+      ['recent items', 'idea_id'],
+      ['improve funnel', "sri.rail = 'improvement'"],
+    ] as const) {
+      const q = calls.find((c) => c.text.includes(marker));
+      expect(q, `no query matched the ${leg} leg`).toBeTruthy();
+      expect(
+        q!.vals.includes(filter!.ret),
+        `the ${leg} leg does not interpolate the pot filter — it will read workspace-wide while its siblings are pot-scoped, which is what made the funnel grow`,
+      ).toBe(true);
+    }
+
+    // NEGATIVE CONTROL — without this the check above could pass vacuously (an
+    // `includes` that is somehow always true proves nothing). The tick leg is
+    // scoped by `pot_slug`, NOT by this fragment, so it must NOT carry it.
+    const ticks = calls.find((c) => c.text.includes('scout_ticks'));
+    expect(ticks, 'no query matched the ticks leg').toBeTruthy();
+    expect(ticks!.vals.includes(filter!.ret)).toBe(false);
+  });
 });
