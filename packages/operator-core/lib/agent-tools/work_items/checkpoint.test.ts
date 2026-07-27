@@ -475,25 +475,34 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.shrinkWarning).toBeUndefined();
     });
 
-    it('does NOT warn on a clear (nothing to compare)', async () => {
+    // P-007: every path now goes through setWorkItemCheckpointWithPrior (the plain
+    // setWorkItemCheckpoint was only a wrapper over it), so the clear/append paths
+    // also get the prior length and the declared-dependency stamping. What these two
+    // assert is the INVARIANT that survived the unification — a clear and an append
+    // must never arm the shrink guard — rather than which function got called.
+    it('does NOT warn on a clear (nothing to compare) and never arms the guard', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-      setWorkItemCheckpoint.mockResolvedValue(null);
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: null, priorLength: 19348 });
       const r = await one({ id: 'WI-7' }); // blank checkpoint ⇒ clear
       expect(r.ok).toBe(true);
       expect(r.cleared).toBe(true);
       expect(r.shrinkWarning).toBeUndefined();
-      // A clear never touches the *WithPrior path (nothing to warn about).
-      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: unknown }];
+      expect(call[2].guard).toBeUndefined();
     });
 
     it('does NOT warn on append mode (append reads + folds the prior explicitly; can\'t hit this failure mode)', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       getWorkItemCheckpoint.mockResolvedValueOnce('P'.repeat(5000));
-      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string) => ({
+        stored: text,
+        priorLength: 5000,
+      }));
       const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
       expect(r.ok).toBe(true);
       expect(r.shrinkWarning).toBeUndefined();
-      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: unknown }];
+      expect(call[2].guard).toBeUndefined();
     });
 
     it('the default suite delegate (no override) never produces a shrinkWarning — priorLength:0 never trips the threshold', async () => {
@@ -547,13 +556,17 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(call[2].guard).toBeUndefined();
     });
 
-    it('append:true never invokes the guard path at all (goes through setWorkItemCheckpoint, not WithPrior)', async () => {
+    it('append:true never arms the guard, so a huge prior can never block an addendum', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       getWorkItemCheckpoint.mockResolvedValueOnce('P'.repeat(20000));
-      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string) => ({
+        stored: text,
+        priorLength: 20000,
+      }));
       const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
       expect(r.ok).toBe(true);
-      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: unknown }];
+      expect(call[2].guard).toBeUndefined();
     });
 
     it('a per-item confirmShrink:true overrides a batch-level default of false/omitted', async () => {

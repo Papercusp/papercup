@@ -26,8 +26,13 @@ vi.mock('../../work-items', () => ({
 }));
 
 const getWorkItemCheckpointWithMeta = vi.fn();
+// P-007: `getWorkItemCheckpointFreshness` returns undefined by default = the
+// checkpoint declared no dependencies, so these suites keep exercising the TIME
+// heuristics (the documented fallback). The override case gets its own suite below.
+const getWorkItemCheckpointFreshness = vi.fn(async () => undefined as unknown);
 vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...a: unknown[]) => getWorkItemCheckpointWithMeta(...a),
+  getWorkItemCheckpointFreshness: (...a: unknown[]) => getWorkItemCheckpointFreshness(...a),
 }));
 
 // EI-15184: stub only getPresence (spread the real module so its other exports —
@@ -53,6 +58,10 @@ beforeEach(() => {
   getWorkItem.mockReset();
   getWorkItemDetail.mockReset();
   getWorkItemCheckpointWithMeta.mockReset();
+  // P-007: default to "no dependencies declared" so every pre-existing suite keeps
+  // exercising the time-heuristic fallback; the override suite opts in explicitly.
+  getWorkItemCheckpointFreshness.mockReset();
+  getWorkItemCheckpointFreshness.mockResolvedValue(undefined);
   getPresence.mockReset();
   getPresence.mockResolvedValue(null);
 });
@@ -149,6 +158,57 @@ describe('work_items:get — checkpointStale (EI-15184 relative staleness)', () 
     const r = await one({ id: 'WI-23' });
     expect(r).toMatchObject({ ok: true, id: 'WI-23', checkpoint: 'x' });
     expect(r.checkpointStale).toBeUndefined();
+  });
+
+  // P-007/D-013: when the checkpoint's author DECLARED what it derives from, that
+  // mechanical verdict is authoritative and the activity heuristic is suppressed —
+  // the heuristic is a proxy for the same question and gets it wrong in both
+  // directions (it cannot see a peer's change at all).
+  it('OVERRIDES the activity heuristic with the declared-dependency verdict', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-24', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', assignee: 'su-peer' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'declared deps', updatedAtMs: cpMs });
+    // The assignee kept working 25m past the checkpoint — the heuristic WOULD fire.
+    getPresence.mockResolvedValue({ ownerId: 'su-peer', lastActiveAt: new Date(cpMs + 25 * 60_000).toISOString() });
+    getWorkItemCheckpointFreshness.mockResolvedValue({
+      verdict: 'fresh',
+      declared: 2,
+      changed: [],
+      unresolvable: [],
+      reason: 'all 2 declared dependencies are unchanged',
+    });
+
+    const r = await one({ id: 'WI-24' });
+    expect(r.checkpointFreshness).toMatchObject({ verdict: 'fresh', declared: 2 });
+    expect(r.checkpointStale).toBeUndefined();
+    // and it skips the presence round-trip entirely rather than computing a
+    // verdict it is going to discard.
+    expect(getPresence).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a stale declared verdict with the dependency that moved', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-25', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', assignee: null });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'rig is intact', updatedAtMs: Date.now() });
+    getWorkItemCheckpointFreshness.mockResolvedValue({
+      verdict: 'stale',
+      declared: 1,
+      changed: [{ dep: 'file:shared.ts', was: 'sha256:before', now: 'sha256:after' }],
+      unresolvable: [],
+      reason: '1 of 1 declared dependency changed since this note was written: file:shared.ts.',
+    });
+    const r = await one({ id: 'WI-25' });
+    expect(r.checkpointFreshness.verdict).toBe('stale');
+    expect(r.checkpointFreshness.changed[0].dep).toBe('file:shared.ts');
+  });
+
+  it('fail-soft: a freshness read failure falls back to the heuristic', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-26', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', assignee: 'su-peer' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'x', updatedAtMs: cpMs });
+    getWorkItemCheckpointFreshness.mockRejectedValue(new Error('freshness pg down'));
+    getPresence.mockResolvedValue({ ownerId: 'su-peer', lastActiveAt: new Date(cpMs + 25 * 60_000).toISOString() });
+    const r = await one({ id: 'WI-26' });
+    expect(r).toMatchObject({ ok: true, id: 'WI-26' });
+    expect(r.checkpointFreshness).toBeUndefined();
+    expect(r.checkpointStale?.stale).toBe(true);
   });
 
   it('does not flag when there is no checkpoint even if the assignee is active', async () => {
