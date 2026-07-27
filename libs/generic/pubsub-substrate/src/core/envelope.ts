@@ -78,6 +78,70 @@ export function isExecutableCoordKind(kind: string): kind is CoordExecutableKind
   return EXECUTABLE_KIND_SET.has(kind);
 }
 
+/**
+ * The authority-bearing PROJECTION of an envelope — the only fields the runtime
+ * may consult when deciding a state transition.
+ *
+ * P-009's invariant ("the runtime never infers a state transition from prose") is
+ * enforced here STRUCTURALLY rather than by convention: `body` and `summary` are
+ * absent from this type, so a transition path holding a CoordTransitionIntent
+ * cannot read prose even by mistake — that is a compile error, not a code-review
+ * note. This applies the plan's own D-004 to itself ("a rule that matters gets an
+ * enum, a validator, or structural removal — never a sentence in a description");
+ * before this, the guarantee WAS a sentence, re-honoured by hand at each fold.
+ *
+ * This is the "binding indirection" P-009 names: an agent PROPOSES in `body` — a
+ * slot the protocol chose, preserved verbatim for audit — and the runtime BINDS
+ * only what is declared in typed fields.
+ */
+export interface CoordTransitionIntent {
+  /** Always an executable kind — the sole authority for the transition. */
+  kind: CoordExecutableKind;
+  msg_id: string;
+  from: string;
+  to: string[];
+  ts: string;
+  /** Which prior event this acts on (acceptances / expiries / re-pings). */
+  related_msg_id?: string;
+}
+
+/**
+ * The ONE sanctioned door from a raw envelope to a state transition.
+ *
+ * Returns a body-free {@link CoordTransitionIntent} when — and only when — the
+ * envelope's DECLARED `kind` is a member of {@link COORD_EXECUTABLE_KINDS}.
+ * Returns null for every conversational kind and every unknown string, however
+ * imperative its prose: a `message` whose body reads "handoff accepted, you are
+ * released" is a CLAIM, and this function is precisely where a claim stops being
+ * a transition.
+ *
+ * Authority is read from `kind` alone — no branch below inspects `body` or
+ * `summary`, and the returned value cannot carry them. Defensive by design
+ * (never throws) and FAIL-CLOSED: a malformed envelope yields null, i.e. no
+ * transition, rather than a partially-trusted one.
+ */
+export function readCoordTransitionIntent(
+  env: Record<string, unknown> | null | undefined,
+): CoordTransitionIntent | null {
+  if (!env || typeof env !== 'object') return null;
+  const { kind, msg_id, from, ts, to, related_msg_id } = env as Record<string, unknown>;
+  if (typeof kind !== 'string' || !isExecutableCoordKind(kind)) return null;
+  if (typeof msg_id !== 'string' || msg_id.length === 0) return null;
+  if (typeof from !== 'string' || from.length === 0) return null;
+  if (typeof ts !== 'string' || ts.length === 0) return null;
+  const recipients = Array.isArray(to) ? to.filter((t): t is string => typeof t === 'string') : [];
+  return {
+    kind,
+    msg_id,
+    from,
+    ts,
+    to: recipients,
+    ...(typeof related_msg_id === 'string' && related_msg_id.length > 0
+      ? { related_msg_id }
+      : {}),
+  };
+}
+
 export interface CoordEnvelope {
   /** ISO-8601 UTC. */
   ts: string;

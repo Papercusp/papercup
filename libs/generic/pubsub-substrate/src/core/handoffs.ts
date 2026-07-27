@@ -9,7 +9,37 @@
  * per-event-file I/O lives behind the CoordEventLog seam.
  */
 
-import { type CoordEnvelope, compareByTsThenId } from './envelope';
+import {
+  type CoordEnvelope,
+  type CoordExecutableKind,
+  compareByTsThenId,
+  isExecutableCoordKind,
+} from './envelope';
+
+/**
+ * The handoff-family kinds, declared ONCE. Both `HandoffRecord['kind']` and the
+ * `isHandoffRecord` guard derive from this, so the type and the runtime check can
+ * no longer drift apart — the D-014 failure mode ("a re-listed set is how the two
+ * taxonomies drifted"), which this file previously reproduced by listing the four
+ * literals twice.
+ */
+export const HANDOFF_KINDS = [
+  'handoff',
+  'handoff_accepted',
+  'handoff_expired',
+  'handoff_repinged',
+] as const;
+
+export type HandoffKind = (typeof HANDOFF_KINDS)[number];
+
+/** Compile-time proof that every handoff kind is an EXECUTABLE coord kind — so a
+ *  handoff can drive a transition (P-009) and stays inside the closed set. If a
+ *  handoff kind is ever dropped from COORD_EXECUTABLE_KINDS this stops compiling. */
+type _HandoffKindsAreExecutable = HandoffKind extends CoordExecutableKind ? true : never;
+const _handoffKindsAreExecutable: _HandoffKindsAreExecutable = true;
+void _handoffKindsAreExecutable;
+
+const HANDOFF_KIND_SET: ReadonlySet<string> = new Set(HANDOFF_KINDS);
 
 export interface OpenHandoffInput {
   to: string[];
@@ -22,7 +52,7 @@ export interface OpenHandoffInput {
 }
 
 export interface HandoffRecord extends CoordEnvelope {
-  kind: 'handoff' | 'handoff_accepted' | 'handoff_expired' | 'handoff_repinged';
+  kind: HandoffKind;
   next_action?: string;
   files_modified?: string[];
 }

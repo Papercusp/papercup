@@ -15,6 +15,7 @@ vi.mock('@papercusp/sse', () => ({ createResilientEventSource: vi.fn() }));
 
 import { createResilientEventSource } from '@papercusp/sse';
 import {
+  _resetFlagStreamSharing,
   getFlagSnapshot,
   setFlagPayload,
   subscribeToFlagStream,
@@ -156,5 +157,87 @@ describe('readInitialPayload — seed from globalThis.__PAPERCUSP_FLAGS__', () =
     } finally {
       delete (globalThis as Record<string, unknown>).__PAPERCUSP_FLAGS__;
     }
+  });
+});
+
+/**
+ * Socket-budget regression guard (owner incident 2026-07-26/27): the operator has
+ * two independent flag-stream callers (FlagStreamSubscriber + flag-hooks). One
+ * socket per caller pushed the page past the engine's ~6-connections-per-host
+ * budget, starving every REST fetch ("Loading…" forever).
+ */
+describe('subscribeToFlagStream — one shared socket per endpoint', () => {
+  beforeEach(() => {
+    _resetFlagStreamSharing();
+    vi.stubGlobal('EventSource', class {} as unknown as typeof EventSource);
+  });
+  afterEach(() => _resetFlagStreamSharing());
+
+  const stub = () => {
+    const close = vi.fn();
+    vi.mocked(createResilientEventSource).mockReturnValue({
+      close,
+      status: 'open',
+      lastEventId: null,
+      setUrl: vi.fn(),
+      reconnect: vi.fn(),
+    } as unknown as ReturnType<typeof createResilientEventSource>);
+    return close;
+  };
+
+  it('opens ONE stream for two independent callers', () => {
+    stub();
+    const a = subscribeToFlagStream();
+    const b = subscribeToFlagStream();
+    expect(createResilientEventSource).toHaveBeenCalledTimes(1);
+    expect(a).not.toBe(b);
+  });
+
+  it('keeps the socket while any caller is live, and closes it on the last', () => {
+    const close = stub();
+    const a = subscribeToFlagStream();
+    const b = subscribeToFlagStream();
+    a.close();
+    expect(close).not.toHaveBeenCalled(); // b still needs the stream
+    b.close();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('is idempotent per handle — a double close cannot free a peer’s socket', () => {
+    const close = stub();
+    const a = subscribeToFlagStream();
+    subscribeToFlagStream();
+    a.close();
+    a.close();
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('re-opens after the last caller closed (a later mount still gets a stream)', () => {
+    stub();
+    subscribeToFlagStream().close();
+    subscribeToFlagStream();
+    expect(createResilientEventSource).toHaveBeenCalledTimes(2);
+  });
+
+  it('fans onOpen/onStatusChange out to every live caller', () => {
+    stub();
+    const openA = vi.fn();
+    const openB = vi.fn();
+    const statusA = vi.fn();
+    subscribeToFlagStream(undefined, { onOpen: openA, onStatusChange: statusA });
+    subscribeToFlagStream(undefined, { onOpen: openB });
+    const opts = vi.mocked(createResilientEventSource).mock.calls[0]![0];
+    opts.onOpen?.();
+    opts.onStatusChange?.('open');
+    expect(openA).toHaveBeenCalledTimes(1);
+    expect(openB).toHaveBeenCalledTimes(1);
+    expect(statusA).toHaveBeenCalledWith('open');
+  });
+
+  it('separate endpoints keep separate streams', () => {
+    stub();
+    subscribeToFlagStream('/api/flags/stream');
+    subscribeToFlagStream('/api/flags/stream?scope=other');
+    expect(createResilientEventSource).toHaveBeenCalledTimes(2);
   });
 });

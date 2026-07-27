@@ -64,23 +64,55 @@ function isValidSnapshotDelta(data: unknown): data is SnapshotDelta {
 }
 
 /**
- * Subscribes to /api/operator/state-snapshot. Returns:
- *   - cards: flattened OpenCardWithRun[] across all runs, ordered by
- *     (runId, createdAt). Empty until the first snapshot arrives.
- *   - connected: true once the EventSource is open.
+ * ONE shared snapshot stream for the whole app, ref-counted across hook callers.
  *
- * The hook owns one EventSource for its lifetime. Caller controls
- * when to mount it by gating with a conditional render.
+ * WHY (owner incident 2026-07-26/27 — "gym runs never show up"): this hook used
+ * to open its own EventSource per calling component, and two components call it
+ * (`OperatorConversationProvider` and `PendingCardsBar`), so every page held TWO
+ * identical `/api/operator/state-snapshot?delta=1` sockets. A browser engine
+ * allows only ~6 connections per host and a standing stream holds one for life;
+ * the page measured 7 standing streams — ZERO slots left — so every REST fetch
+ * queued forever and data panes (the Gym tab among them) sat on "Loading…".
+ *
+ * The stream state lives here, module-scope, and the hook just mirrors it into
+ * React state. Semantics are unchanged for callers: still "connected once open",
+ * still the same reduced card map — but N callers now cost ONE socket, and the
+ * socket is released when the last caller unmounts.
  */
-export function useStateSnapshots(): {
-  cards: OpenCardWithRun[];
-  connected: boolean;
-  byRun: Map<string, SnapshotEnvelope>;
-} {
-  const [byRun, setByRun] = useState<Map<string, SnapshotEnvelope>>(() => new Map());
-  const [connected, setConnected] = useState(false);
+type SnapshotStoreListener = () => void;
 
-  useEffect(() => {
+const snapshotStore: {
+  byRun: Map<string, SnapshotEnvelope>;
+  connected: boolean;
+  listeners: Set<SnapshotStoreListener>;
+  refs: number;
+  source: { close: () => void } | null;
+} = { byRun: new Map(), connected: false, listeners: new Set(), refs: 0, source: null };
+
+function emitSnapshotStore(): void {
+  for (const l of [...snapshotStore.listeners]) l();
+}
+
+/** Apply a stream event to the shared map, then notify subscribers. */
+function applySnapshotEvent(ev: Parameters<typeof reduceSnapshotEvent>[1]): void {
+  snapshotStore.byRun = reduceSnapshotEvent(snapshotStore.byRun, ev);
+  emitSnapshotStore();
+}
+
+/** Test seam — drop shared stream + state between cases. */
+export function _resetSnapshotStore(): void {
+  snapshotStore.source?.close();
+  snapshotStore.source = null;
+  snapshotStore.byRun = new Map();
+  snapshotStore.connected = false;
+  snapshotStore.refs = 0;
+  snapshotStore.listeners.clear();
+}
+
+/** Open the shared stream on the first subscriber; close it on the last. */
+function acquireSnapshotStream(): () => void {
+  snapshotStore.refs += 1;
+  if (!snapshotStore.source) {
     const source = createResilientEventSource({
       // Always advertise delta-capability; the SERVER decides whether to actually send
       // deltas (gated by the papercusp-state-snapshot-deltas flag, default OFF). The
@@ -90,8 +122,16 @@ export function useStateSnapshots(): {
       // feed the same shared connectivity signal @papercusp/sync's own SSE
       // transport reports to, so a down operator surfaces as ONE consolidated
       // "operator connection lost" toast instead of silent reconnect churn.
-      onOpen: () => { setConnected(true); reportSyncReachable(); },
-      onError: () => { setConnected(false); reportSyncUnreachable(); },
+      onOpen: () => {
+        snapshotStore.connected = true;
+        reportSyncReachable();
+        emitSnapshotStore();
+      },
+      onError: () => {
+        snapshotStore.connected = false;
+        reportSyncUnreachable();
+        emitSnapshotStore();
+      },
       handlers: {
         snapshot: (raw) => {
           // @papercusp/sse hands handlers the raw event data string; parse here.
@@ -110,7 +150,7 @@ export function useStateSnapshots(): {
             console.warn('[useStateSnapshots] dropping malformed snapshot', parsed);
             return;
           }
-          setByRun((prev) => reduceSnapshotEvent(prev, { kind: 'snapshot', env: parsed }));
+          applySnapshotEvent({ kind: 'snapshot', env: parsed });
         },
         // P-009 data-carrying delta (received only when the stream is opened with
         // ?delta=1). reduceSnapshotEvent applies it on top of the run's current
@@ -129,11 +169,57 @@ export function useStateSnapshots(): {
             console.warn('[useStateSnapshots] dropping malformed delta', parsed);
             return;
           }
-          setByRun((prev) => reduceSnapshotEvent(prev, { kind: 'delta', delta: parsed }));
+          applySnapshotEvent({ kind: 'delta', delta: parsed });
         },
       },
     });
-    return () => source.close();
+    snapshotStore.source = { close: () => source.close() };
+  }
+  let released = false;
+  return () => {
+    if (released) return; // idempotent — never free a peer's socket twice
+    released = true;
+    snapshotStore.refs -= 1;
+    if (snapshotStore.refs <= 0) {
+      snapshotStore.refs = 0;
+      snapshotStore.source?.close();
+      snapshotStore.source = null;
+      snapshotStore.connected = false;
+      emitSnapshotStore();
+    }
+  };
+}
+
+/**
+ * Subscribes to /api/operator/state-snapshot. Returns:
+ *   - cards: flattened OpenCardWithRun[] across all runs, ordered by
+ *     (runId, createdAt). Empty until the first snapshot arrives.
+ *   - connected: true once the EventSource is open.
+ *
+ * Every caller shares ONE app-wide EventSource (see acquireSnapshotStream);
+ * caller controls whether it is mounted at all by gating with a conditional
+ * render.
+ */
+export function useStateSnapshots(): {
+  cards: OpenCardWithRun[];
+  connected: boolean;
+  byRun: Map<string, SnapshotEnvelope>;
+} {
+  const [byRun, setByRun] = useState<Map<string, SnapshotEnvelope>>(() => snapshotStore.byRun);
+  const [connected, setConnected] = useState(() => snapshotStore.connected);
+
+  useEffect(() => {
+    const sync = () => {
+      setByRun(snapshotStore.byRun);
+      setConnected(snapshotStore.connected);
+    };
+    snapshotStore.listeners.add(sync);
+    const release = acquireSnapshotStream();
+    sync(); // adopt whatever the shared store already holds
+    return () => {
+      snapshotStore.listeners.delete(sync);
+      release();
+    };
   }, []);
 
   const cards = useMemo<OpenCardWithRun[]>(() => {
