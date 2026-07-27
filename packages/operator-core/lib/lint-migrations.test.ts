@@ -17,9 +17,11 @@ import {
   findUnguardedConstraintRename,
   findUnguardedReslug,
   findLiteralTenantDefault,
+  findUniqueIndexShapeSwap,
   duplicateNumberGroups,
   unreservedNumbers,
   ENFORCED_FROM,
+  INDEX_SWAP_ENFORCED_FROM,
   // eslint-disable-next-line import/no-relative-packages
 } from '../../../scripts/lint-migrations.mjs';
 
@@ -216,6 +218,116 @@ describe('the real libs/papercusp/libs/db/sql/ directory (gate wiring)', () => {
         );
     }
     expect(violations).toEqual([]);
+  });
+
+  // EI-18786592200395716. The instances (461, 564, 689) are applied history and
+  // grandfathered; this stops the CLASS. Same gate-run block as the checks above,
+  // so a NEW same-migration index swap reds here rather than an hour into a
+  // fleet-wide write outage.
+  it('has no same-migration unique-index shape swap in an enforced-era migration', () => {
+    const violations: string[] = [];
+    for (const f of files) {
+      const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+      if (num < INDEX_SWAP_ENFORCED_FROM) continue; // applied history: immutable (sha256-verified)
+      const hits = findUniqueIndexShapeSwap(readFileSync(join(SQL_DIR, f), 'utf8'));
+      if (hits.length)
+        violations.push(
+          `${f}: ${hits.map((h: { index: string; dropped: string[] }) => `${h.index} ← ${h.dropped.join('/')}`).join(', ')}`,
+        );
+    }
+    expect(violations).toEqual([]);
+  });
+});
+
+/**
+ * EI-18786592200395716 — migration 689 made `agent_facts_identity` PARTIAL and
+ * dropped the old index in the same file. PostgreSQL infers an ON CONFLICT target
+ * by MATCHING a unique index, so every spec written against the old shape then
+ * matched no index and failed AT PLAN TIME — every write, not just conflicting
+ * ones. On a shared DB the migration lands when any operator boots while code
+ * lands per-deploy, so `facts:assert` was down fleet-wide for an hour with the
+ * fix already committed. 461 did the same to this table in 2026-07 and 564 to
+ * memory_canonical, so the guard is for a three-time class.
+ */
+describe('findUniqueIndexShapeSwap (the migration-461/564/689 outage class)', () => {
+  const SWAP_689 = `CREATE UNIQUE INDEX IF NOT EXISTS agent_facts_identity_current
+  ON harness_shared.agent_facts
+     (workspace_id, scope, COALESCE(scope_ref, ''::text), key)
+  WHERE superseded_at IS NULL;
+DROP INDEX IF EXISTS harness_shared.agent_facts_identity;`;
+
+  it('flags a partial-index replacement that drops its predecessor in the same file', () => {
+    const hits = findUniqueIndexShapeSwap(SWAP_689);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      index: 'agent_facts_identity_current',
+      table: 'agent_facts',
+      partial: true,
+    });
+    expect(hits[0].dropped).toContain('agent_facts_identity');
+  });
+
+  it('flags a same-NAME rebuild (the 461/564 shape, where only the columns change)', () => {
+    // The dropped index's own shape is unknowable from a DROP, so a same-name
+    // drop+recreate is flagged too — it is the exact 461 statement pair that
+    // produced zero fact writes until 2026-07-03.
+    const hits = findUniqueIndexShapeSwap(
+      `DROP INDEX IF EXISTS harness_shared.agent_facts_identity;
+       CREATE UNIQUE INDEX IF NOT EXISTS agent_facts_identity
+         ON harness_shared.agent_facts (workspace_id, scope, key, coalesce(source_hive, ''));`,
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ table: 'agent_facts', partial: false });
+  });
+
+  it('does NOT flag a drop of an index on an UNRELATED table (the migration-506 false positive)', () => {
+    // 506 drops a spawned_agents index and creates unique indexes on four other
+    // tables ~190 lines later. A creates-unique-and-drops rule would fire here;
+    // the table-scoped rule must not.
+    expect(
+      findUniqueIndexShapeSwap(
+        `DROP INDEX IF EXISTS harness_shared.spawned_agents_fleet_slug_running_idx;
+         CREATE UNIQUE INDEX IF NOT EXISTS cross_hive_asks_correlation_pot_uniq
+           ON harness_shared.cross_hive_asks (workspace_id, correlation_id);`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('does NOT flag a two-phase migration that only CREATES the new index', () => {
+    expect(
+      findUniqueIndexShapeSwap(
+        `CREATE UNIQUE INDEX IF NOT EXISTS agent_facts_identity_current
+           ON harness_shared.agent_facts (workspace_id, key) WHERE superseded_at IS NULL;`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('does NOT flag the later phase that only DROPS the old index', () => {
+    expect(
+      findUniqueIndexShapeSwap('DROP INDEX IF EXISTS harness_shared.agent_facts_identity;'),
+    ).toEqual([]);
+  });
+
+  it('honours the allow-index-swap pragma when it carries a reason', () => {
+    expect(
+      findUniqueIndexShapeSwap(
+        `-- lint-migrations: allow-index-swap brand-new table, no deployed readers\n${SWAP_689}`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('still flags a bare pragma with no reason', () => {
+    expect(findUniqueIndexShapeSwap(`-- lint-migrations: allow-index-swap\n${SWAP_689}`)).toHaveLength(1);
+  });
+
+  it('ignores a swap that appears only inside a comment', () => {
+    expect(
+      findUniqueIndexShapeSwap(
+        `-- DROP INDEX IF EXISTS harness_shared.agent_facts_identity;
+         -- CREATE UNIQUE INDEX agent_facts_identity ON harness_shared.agent_facts (key);
+         SELECT 1;`,
+      ),
+    ).toEqual([]);
   });
 });
 

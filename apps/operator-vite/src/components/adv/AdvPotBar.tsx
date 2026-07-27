@@ -30,8 +30,8 @@ import './adv-pot-bar.css';
  * workspace-scoped (HUD aggregates every session in the workspace, Calendar every
  * pot's schedule), so a global pot picker over them was confusing. That bar is
  * gone. The cluster now renders as the FIRST ROW INSIDE each tab that is genuinely
- * pot-scoped (POT_BAR_TAB_IDS below), with the status pills on HUD — the owner's
- * chosen home for them.
+ * pot-scoped (POT_BAR_TAB_IDS in adv-pot-bar-tabs.ts), with the status pills on
+ * HUD — the owner's chosen home for them.
  *
  * It writes exactly the SAME URL axes the shell used to own, so nothing
  * downstream changed: `?slug=` (the pot), `?scope=` (self | expanded | all),

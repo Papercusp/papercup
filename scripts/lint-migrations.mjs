@@ -27,12 +27,23 @@
  *      fresh-DB integration test in the repo (WI-4547). It looks guarded, so
  *      review misses it; the guarded DO-block form passes. Enforced from
  *      ENFORCED_FROM (applied history is immutable and already survived).
- *   4. UNRESERVED NUMBER — every NNN ≥ ENFORCED_FROM must have a row in
+ *   4. UNIQUE-INDEX SHAPE SWAP — dropping a table's index in the SAME migration
+ *      that creates its unique replacement. PostgreSQL infers an `ON CONFLICT`
+ *      target by MATCHING a unique index, so changing that index's shape breaks
+ *      every spec written against the old one AT PLAN TIME — every write. On a
+ *      shared database the migration lands when any operator boots while code
+ *      lands per-deploy, so this breaks every not-yet-deployed reader even when
+ *      the code fix rides in the same commit. Already caused three outages on
+ *      these tables (461, 564, 689). Must be two-phase. Enforced from
+ *      INDEX_SWAP_ENFORCED_FROM; `-- lint-migrations: allow-index-swap <reason>`
+ *      opts a genuinely-safe swap out.
+ *   5. UNRESERVED NUMBER — every NNN ≥ ENFORCED_FROM must have a row in
  *      harness_shared.migration_reservations (i.e. was allocated via
  *      db:next-migration, not `ls | tail`). Skipped with a notice when PG is
  *      unreachable (CI without a database).
  *
- * Checks 1–3 are pure-filesystem and always run. Exit 1 on any violation.
+ * All checks but the last are pure-filesystem and always run. Exit 1 on any
+ * violation.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -257,6 +268,121 @@ export function duplicateNumberGroups(filenames, enforcedFrom = ENFORCED_FROM) {
     .map(([num, files]) => ({ num, files: files.sort() }));
 }
 
+/**
+ * Enforcement boundary for the UNIQUE-INDEX SHAPE SWAP check (below).
+ *
+ * Deliberately its OWN boundary rather than the shared ENFORCED_FROM: three
+ * already-applied files (113, 461, 564, 689) carry this pattern, and two of them
+ * (564, 689) sit ABOVE ENFORCED_FROM. Applied migrations are immutable — the
+ * runner verifies each by sha256, so editing one now would break its recorded
+ * checksum — so they are grandfathered and this lint exists to stop the NEXT one.
+ * 690 is the current max on disk; enforcement starts at the next number.
+ *
+ * Bump this ONLY when deliberately re-grandfathering more applied history —
+ * NEVER to silence a genuinely new violation. To ship a swap that is actually
+ * safe, use the documented pragma instead (see findUniqueIndexShapeSwap).
+ */
+export const INDEX_SWAP_ENFORCED_FROM = 691;
+
+/** Bare relation/index name: drop quotes and any schema qualifier. */
+function bareName(ident) {
+  const s = String(ident).replace(/"/g, '');
+  const dot = s.lastIndexOf('.');
+  return (dot === -1 ? s : s.slice(dot + 1)).toLowerCase();
+}
+
+/**
+ * The migration-461/689 class: DROPPING a table's unique index in the SAME
+ * migration that creates its replacement.
+ *
+ * WHY THIS IS A BREAKING CHANGE, AND WHY REVIEW KEEPS MISSING IT. PostgreSQL
+ * infers an `ON CONFLICT` target by MATCHING A UNIQUE INDEX. Change that index's
+ * shape — add/remove a partial `WHERE` predicate, change the column set, change
+ * an expression — and every `ON CONFLICT` spec written against the OLD shape
+ * matches NO index and fails AT PLAN TIME. Not just on conflicting rows: EVERY
+ * WRITE.
+ *
+ * On a SHARED database that is a deploy-ordering trap, not a code bug. The
+ * migration lands the instant ANY operator boots, while the matching code lands
+ * only on each operator's OWN deploy — so between those two moments every
+ * not-yet-deployed reader is writing against an index that no longer exists. The
+ * migration and its code fix can be authored perfectly, in one commit, and the
+ * outage still happens.
+ *
+ * THIS TABLE HAS NOW DONE IT THREE TIMES. Migration 461 widened
+ * `agent_facts_identity` from 4 columns to 5; the surviving 4-column spec errored
+ * every assert and there were ZERO fact writes until it was caught on 2026-07-03.
+ * Migration 564 repeated the shape on `memory_canonical` ("rebuild the identity to
+ * include the source dimension" — the same authored pattern, verbatim). Migration
+ * 689 then made `agent_facts_identity` PARTIAL (`WHERE superseded_at IS NULL`) and
+ * dropped the old one in the same file, taking `facts:assert` down fleet-wide for
+ * the whole window between the migration reaching the shared DB and the code
+ * reaching the `:3070` release operator — a full hour, during which agents that
+ * did not check the return value silently lost conclusions they believed durable.
+ * 689's own header even DOCUMENTS this exact failure mode and still shipped it,
+ * which is precisely why this needs to be mechanical rather than a review note.
+ *
+ * THE FIX SHAPE IS TWO-PHASE, and it is always available:
+ *   migration N   — CREATE the new index, LEAVE the old one in place.
+ *   (deploy the code that uses the new shape everywhere)
+ *   migration N+k — DROP the old index.
+ * Both shapes coexist in phase one, so old and new readers each still infer.
+ *
+ * SCOPE. Flags a file that creates a UNIQUE index on table T and drops SOME index
+ * on T. Table-scoped on purpose: migration 506 drops an index on `spawned_agents`
+ * and creates unrelated unique indexes on four other tables ~190 lines away, which
+ * a naive creates-unique-and-drops rule would false-positive on. The dropped
+ * index's own shape is deliberately NOT consulted — a DROP names only the index,
+ * never its definition, so it is unknowable from this file; and since two-phase is
+ * always possible, "dropped it in the same migration" is sufficient to flag.
+ *
+ * ESCAPE HATCH. A swap that is genuinely safe (a brand-new table with no
+ * deployed readers, an index no `ON CONFLICT` can target) may carry
+ *
+ *     -- lint-migrations: allow-index-swap <why it is safe>
+ *
+ * anywhere in the file. It requires a written reason precisely so the claim is
+ * reviewable — an unexplained pragma is itself flagged.
+ */
+export function findUniqueIndexShapeSwap(sqlText) {
+  const raw = String(sqlText);
+  // Pragma is a COMMENT, so read it from raw text before stripping.
+  // The reason must be on the SAME line as the pragma: a `\s+` here would let the
+  // newline satisfy it and the next statement stand in as the "reason", so a bare
+  // unexplained pragma would silently opt out — the exact hole this check exists
+  // to close.
+  if (/--[ \t]*lint-migrations:[ \t]*allow-index-swap[ \t]+\S+/i.test(raw)) return [];
+
+  const stripped = stripSqlBodies(raw);
+
+  const dropped = [];
+  const dropRe = /\bDROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?((?:"?[\w$]+"?\.)?"?[\w$]+"?)/gi;
+  let d;
+  while ((d = dropRe.exec(stripped)) !== null) dropped.push(bareName(d[1]));
+  if (!dropped.length) return [];
+
+  const hits = [];
+  const createRe =
+    /\bCREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?((?:"?[\w$]+"?\.)?"?[\w$]+"?)\s+ON\s+((?:"?[\w$]+"?\.)?"?[\w$]+"?)([^;]*)/gi;
+  let c;
+  while ((c = createRe.exec(stripped)) !== null) {
+    const index = bareName(c[1]);
+    const table = bareName(c[2]);
+    // Same-table drops: PG's conventional index naming is `<table>_<cols>_idx`,
+    // and an identity index is named for its table. Require the table name as a
+    // prefix so an unrelated drop elsewhere in a large migration does not match.
+    const conflicts = dropped.filter((n) => n === table || n.startsWith(`${table}_`));
+    if (!conflicts.length) continue;
+    hits.push({
+      index,
+      table,
+      partial: /\bWHERE\b/i.test(c[3] ?? ''),
+      dropped: [...new Set(conflicts)],
+    });
+  }
+  return hits;
+}
+
 /** NNN ≥ enforcedFrom present on disk but absent from the reservations set. */
 export function unreservedNumbers(fileNums, reservedNums, enforcedFrom = ENFORCED_FROM) {
   return fileNums.filter((n) => n >= enforcedFrom && !reservedNums.has(n)).sort((a, b) => a - b);
@@ -363,7 +489,25 @@ async function main() {
     );
   }
 
-  // 6. unreserved numbers (PG optional)
+  // 6. unique-index SHAPE SWAP in one migration (the 461/564/689 class)
+  //
+  // Its own boundary (INDEX_SWAP_ENFORCED_FROM), not ENFORCED_FROM: 564 and 689
+  // already carry this pattern above 494 and are applied+ledgered, so they are
+  // grandfathered exactly like the other checks' legacy files.
+  for (const f of files) {
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
+    if (num < INDEX_SWAP_ENFORCED_FROM) continue;
+    const hits = findUniqueIndexShapeSwap(readFileSync(join(SQL_DIR, f), 'utf8'));
+    if (!hits.length) continue;
+    failed = true;
+    console.error(
+      `✗ ${f}: drops a ${hits.map((h) => h.table).join('/')} index in the SAME migration that creates its unique replacement (${hits
+        .map((h) => `${h.index}${h.partial ? ' [partial]' : ''} ← drops ${h.dropped.join(', ')}`)
+        .join(' · ')}) — PostgreSQL infers an ON CONFLICT target by MATCHING a unique index, so changing that index's shape (partial predicate, column set, expression) makes every ON CONFLICT spec written against the old shape match NO index and fail AT PLAN TIME: every write, not just conflicting ones. On a SHARED database the migration lands the instant ANY operator boots while the matching code lands only per-deploy, so this is a breaking change to every not-yet-deployed reader even when the code fix is in the same commit. It has already caused this outage three times on these tables (461 → zero fact writes until 2026-07-03; 564 repeated it on memory_canonical; 689 took facts:assert down fleet-wide for an hour). Make it TWO-PHASE: migration N creates the new index and LEAVES the old one, then migration N+k drops the old one once the code is deployed everywhere. If the swap is genuinely safe, say why with "-- lint-migrations: allow-index-swap <reason>".`,
+    );
+  }
+
+  // 7. unreserved numbers (PG optional)
   const fileNums = files
     .map((f) => /^(\d+)-/.exec(f)?.[1])
     .filter(Boolean)
@@ -380,7 +524,7 @@ async function main() {
   }
 
   if (failed) process.exit(1);
-  console.log(`✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, reservations≥${ENFORCED_FROM})`);
+  console.log(`✓ lint:migrations — ${files.length} files clean (dup-NNN, raw BEGIN/COMMIT, RENAME CONSTRAINT, tenant DEFAULT, work_items reslug guard, index-shape swap≥${INDEX_SWAP_ENFORCED_FROM}, reservations≥${ENFORCED_FROM})`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

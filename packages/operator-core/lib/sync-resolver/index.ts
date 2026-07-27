@@ -2903,10 +2903,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // narrows the feed to that Hive's member-harness scopes (D-008). Omit ⇒
         // the whole workspace (papercusp + every harness).
         hive: z.string().max(120).optional(),
+        // learning-tab-surface P-002 / D-002: provenance scope. Omitted ⇒ 'loop'
+        // (what the learning loop produced). 'all' restores the pre-P-002 view of
+        // every captured improvement — 8,272 rows, 8,202 of which also render in
+        // the Work tab, which is why it is no longer the default.
+        scope: z.enum(['loop', 'all']).optional(),
       })
       .optional(),
     resolve: async (args) => {
-      const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number; hive?: string };
+      const a = (args ?? {}) as {
+        state?: 'open' | 'resolved' | 'closed';
+        limit?: number;
+        hive?: string;
+        scope?: 'loop' | 'all';
+      };
       // PRECOMPUTED (phase2 P-003, WI-5460 follow-up) — but ONLY the DEFAULT variant.
       // buildDigest + human-queue ranking + flow-metrics over the whole improvement
       // corpus was measured 0.4-0.5s on this user-facing read; the routine now fills
@@ -2915,7 +2925,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // (ws, harness_slug, key) with NO arg dimension, so a NON-default view (a
       // state filter, a custom limit, or the per-Hive lens) cannot be served from
       // the snapshot and falls through to the live inline compute.
-      const isDefaultVariant = a.state === undefined && a.limit === undefined && a.hive === undefined;
+      // `scope` participates because the snapshot stores the DEFAULT scope ('loop').
+      // An explicit scope:'loop' is still the default variant (same bytes); only
+      // scope:'all' is a genuinely different population and must miss the snapshot.
+      const isDefaultVariant =
+        a.state === undefined && a.limit === undefined && a.hive === undefined && a.scope !== 'all';
       let rows: Array<Record<string, unknown>>;
       if (isDefaultVariant) {
         const { readDerivedSnapshotRows } = await import('../derived-reads/registry');

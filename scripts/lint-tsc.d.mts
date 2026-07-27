@@ -68,3 +68,17 @@ export function decidePerFile(args: {
   updateFlag?: boolean;
   changedFiles?: Set<string> | null;
 }): PerFileGateResult;
+
+/**
+ * Parse `--files=a.ts,b.ts` into an explicit changed-set. `null` when the flag is absent
+ * (falls through to `--mine`/bare); an EMPTY Set means "scoped to zero files", which is a
+ * caller bug rather than a silent no-op. EI-18731016038876755.
+ */
+export function parseExplicitFiles(argv: string[]): Set<string> | null;
+
+/**
+ * The headline for an ATTRIBUTED failure, worded per how the changed-set was DERIVED —
+ * `--files` (the caller named them) may claim authorship, `--mine` (inferred from
+ * `git status` on a tree the whole fleet shares) may not. EI-18788983174587495.
+ */
+export function formatAttributionHeadline(opts: { count: number; explicit: boolean }): string;

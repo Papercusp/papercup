@@ -53,6 +53,33 @@ describe('operator-vite TSC_COMMAND (EI-847)', () => {
   });
 });
 
+describe('scripts/lint-tsc.d.mts stays in sync with scripts/lint-tsc.mjs', () => {
+  // WHY. `packages/operator-core/tsconfig.json` sets `allowJs: false`, so TS never reads the
+  // .mjs — it reads the HAND-MAINTAINED `lint-tsc.d.mts` beside it. Add an export to the .mjs
+  // and forget the declaration and every importer gets `TS2305: has no exported member`, in a
+  // file whose only sin was importing it. That is not hypothetical: `parseExplicitFiles` was
+  // added by EI-18731016038876755 and never declared, so this test file carried a permanent
+  // baseline of 1 error that everyone had learned to look past — which is exactly how the NEXT
+  // one hides. (It duly did: `formatAttributionHeadline` made it 2.) A silent, hand-synced
+  // projection with no drift check is the same defect D-020 fixed for the substitution
+  // registry's CLAUDE.md/DB projections; this is that check for this one.
+  it('declares every runtime export (a missing declaration is TS2305 for every importer)', () => {
+    const dts = readFileSync(
+      new URL('../../../scripts/lint-tsc.d.mts', import.meta.url),
+      'utf8',
+    );
+    const declared = new Set(
+      [...dts.matchAll(/^export\s+(?:declare\s+)?(?:function|const)\s+([A-Za-z0-9_$]+)/gm)].map(
+        (m) => m[1],
+      ),
+    );
+    const runtimeExports = Object.keys(lintTscModule).filter((k) => k !== 'default');
+    const undeclared = runtimeExports.filter((name) => !declared.has(name));
+
+    expect(undeclared, `undeclared in lint-tsc.d.mts: ${undeclared.join(', ')}`).toEqual([]);
+  });
+});
+
 describe('formatAttributionHeadline — the gate may only claim authorship it can actually prove', () => {
   // WHY THIS IS PINNED. `--mine` derives "your" files from `git status`, and this repo has ONE
   // working tree shared by the whole fleet with every agent's edits unstaged until the next

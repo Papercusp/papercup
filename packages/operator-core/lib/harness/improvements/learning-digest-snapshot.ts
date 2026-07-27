@@ -25,6 +25,20 @@ export interface LearningImprovementsArgs {
   limit?: number;
   /** A Hive HOME slug narrows to that Hive's member-harness scopes; omit ⇒ whole workspace. */
   hive?: string;
+  /**
+   * Provenance scope (learning-tab-surface-public-release-2026-07-27 P-002 / D-002).
+   *
+   * `'loop'` (THE DEFAULT) = only what the learning loop produced — the union of the
+   * three Scout provenance records (`loop-output.ts`). `'all'` = every captured
+   * improvement, the pre-P-002 behaviour.
+   *
+   * Defaulting to `'loop'` rather than taking a flag is deliberate and load-bearing
+   * for LATENCY, not just semantics: the resolver serves only its DEFAULT variant
+   * from the precomputed snapshot, so if the Learning tab had to pass an explicit
+   * arg to get its own scope, every mount would miss the snapshot and pay the
+   * 0.4-0.5s inline compute. The default IS the tab's view.
+   */
+  scope?: 'loop' | 'all';
 }
 
 /**
@@ -65,6 +79,10 @@ export async function computeLearningImprovementsSnapshot(
     state: a.state,
     limit: a.limit,
     ...(harnessScopes ? { harnessScopes } : {}),
+    // D-002: 'loop' is the default — see LearningImprovementsArgs.scope. Passing the
+    // flag explicitly (rather than letting read-items default it) keeps the scope
+    // decision visible at the one call site that owns the Learning tab's semantics.
+    ...(a.scope === 'all' ? {} : { loopOutputOnly: true }),
   });
   // Human lane ordered by the ONE ranker (frontier P-040; feature #1 is
   // consume-edges P-022's blocking impact) — the owner's queue leads with

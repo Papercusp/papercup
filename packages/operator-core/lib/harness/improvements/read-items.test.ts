@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { issueToCandidate, readImprovementItems, readObservationItems, IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
-import type { EngineerIssue } from '../../issues-engineer';
+import type { EngineerIssue, ListIssuesFilter } from '../../issues-engineer';
 
 function issue(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
   return {
@@ -336,5 +336,60 @@ describe('issueToCandidate — payload.ideation surfacing (su-ideate-learning-su
       }),
     );
     expect(c.ideation).toEqual({ cheapExperiment: { hypothesis: 'a real hypothesis' } });
+  });
+});
+
+describe('loopOutputOnly — the Improve view scope (learning-tab-surface P-001 / D-002)', () => {
+  const seen: ListIssuesFilter[] = [];
+  const capture = (rows: EngineerIssue[] = []) => ({
+    listIssues: async (f: ListIssuesFilter) => {
+      seen.push(f);
+      return rows;
+    },
+  });
+
+  beforeEach(() => {
+    seen.length = 0;
+  });
+
+  it('pushes the provenance union into the SQL filter, NOT a post-hoc filter', async () => {
+    // The whole point: `limit` is applied by Postgres. If the scope were applied
+    // after the read we would get the first N of the 8,272-row corpus and THEN
+    // shrink it — an arbitrary fraction of the real answer that still looks fine.
+    await readImprovementItems(
+      { loopOutputOnly: true, limit: 500 },
+      { ...capture(), readLoopOutputIds: async () => ['EI-1', 'EI-2', 'EI-3'] },
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.issueIds).toEqual(['EI-1', 'EI-2', 'EI-3']);
+    expect(seen[0]?.topic).toBe(IMPROVEMENT_TOPIC);
+    expect(seen[0]?.limit).toBe(500);
+  });
+
+  it('an EMPTY union matches nothing rather than falling back to the whole corpus', async () => {
+    await readImprovementItems(
+      { loopOutputOnly: true },
+      { ...capture(), readLoopOutputIds: async () => [] },
+    );
+    // [] must reach SQL as an empty ANY() (matches no row) — NOT be dropped as
+    // falsy, which would silently widen the scope back to every captured improvement.
+    expect(seen[0]?.issueIds).toEqual([]);
+  });
+
+  it('THROWS when the scope is requested without a resolver, instead of silently widening', async () => {
+    await expect(readImprovementItems({ loopOutputOnly: true }, capture())).rejects.toThrow(
+      /readLoopOutputIds/,
+    );
+  });
+
+  it('omits issueIds entirely when the scope is off — byte-identical to the old read', async () => {
+    await readImprovementItems({}, capture());
+    expect(seen[0]).not.toHaveProperty('issueIds');
+  });
+
+  it('observations never carry the loop-output scope (separate topic, D-005)', async () => {
+    await readObservationItems({}, capture());
+    expect(seen[0]?.topic).toBe(OBSERVATION_TOPIC);
+    expect(seen[0]).not.toHaveProperty('issueIds');
   });
 });

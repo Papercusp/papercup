@@ -358,13 +358,20 @@ registerDerivedRead({
 registerDerivedRead({
   key: 'learning.improvements',
   ttlMs: 90_000,
-  producerVersion: 1,
+  // BUMPED for learning-tab-surface P-002/D-002: the default variant's POPULATION
+  // changed (every captured improvement → only what the learning loop produced), so
+  // a cached v1 row is not merely stale, it answers a different question. The bump
+  // invalidates it instead of serving the old corpus under the new view's name.
+  producerVersion: 2,
   scope: 'workspace',
   compute: async () => {
     const { computeLearningImprovementsSnapshot } = await import(
       '../harness/improvements/learning-digest-snapshot'
     );
-    // The DEFAULT variant: no state filter, default limit, whole workspace (no hive lens).
+    // The DEFAULT variant: no state filter, default limit, whole workspace (no hive
+    // lens), and the DEFAULT provenance scope ('loop' — LearningImprovementsArgs.scope).
+    // Keeping this call argument-free is what keeps the tab's own view on the fast
+    // path: the resolver only serves its default variant from this snapshot.
     return computeLearningImprovementsSnapshot({});
   },
 });
