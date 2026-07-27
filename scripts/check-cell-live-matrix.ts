@@ -177,7 +177,7 @@ async function main(): Promise<void> {
     const holders = await sql<Array<{ taken_by: string }>>`
       SELECT taken_by FROM harness_shared.work_items
       WHERE taken_by IS NOT NULL AND status NOT IN ('done','dropped','resolved','closed','passed','deprecated')
-      ORDER BY updated_at DESC LIMIT 1
+      ORDER BY updated_ts DESC LIMIT 1
     `;
     liveHolder = holders[0]?.taken_by ?? null;
   } finally {

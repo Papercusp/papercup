@@ -70,6 +70,8 @@ describe('improvements:triage tool', () => {
   const mockDigest = (p: Partial<ImprovementDigest>): ImprovementDigest => ({
     generatedAt: new Date(0).toISOString(),
     total: 0,
+    returned: 0,
+    windowed: false,
     open: 0,
     byKind: { bug: 0, change: 0, feature: 0 },
     bySeverity: {},
@@ -77,6 +79,7 @@ describe('improvements:triage tool', () => {
     autoEligible: [],
     humanQueue: [],
     likelyDuplicates: [],
+    likelyDuplicatesScope: null,
     recurringSignatures: [],
     headline: 'test digest',
     ...p,

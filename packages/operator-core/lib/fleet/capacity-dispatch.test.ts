@@ -484,6 +484,109 @@ test('EI-12282 — zero usable accounts but ZERO gateway slots is the ordinary s
   assert.match(r.advice, /SATURATED/);
 });
 
+test('EI-18791793869559327 — recurrence guard: usable>0 but ALL usable accounts sustainedlyLimited MUST NOT read abundant/factor 1', () => {
+  // The exact measured disagreement from the bug report: fleet:capacity said "abundant → place broadly"
+  // while accounts:status showed every serving account sustainedlyLimited (penalties firing every ~15s).
+  const hr = {
+    reachable: true,
+    utilization: 0.1,
+    paused: false,
+    queueDepth: 0,
+    priorityTiers: { healthyAccounts: 3, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 0 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 10,
+    accountAvailability: { provider: 'claude', total: 3, available: 2, usable: 2, sustainedlyLimitedCount: 2 },
+  });
+  assert.equal(r.poolExhausted, false, 'accounts ARE usable — this is not the all-dead case');
+  assert.equal(r.degraded, true, 'every usable account is sustainedlyLimited → DEGRADED, not abundant');
+  assert.equal(r.sustainedlyLimitedAccounts, 2);
+  assert.ok(r.factor < 1, `factor must be capped below 1, got ${r.factor}`);
+  assert.ok(r.factor <= CFG.degradedFactorCap, `factor must be at/under the degraded cap, got ${r.factor}`);
+  assert.ok(r.recommendedHeadroom! < 10, 'recommendedHeadroom must be clamped, not the full raw headroom');
+  assert.doesNotMatch(r.advice, /^abundant/);
+  assert.match(r.advice, /DEGRADED/);
+  assert.match(r.advice, /sustainedly rate-limited/);
+});
+
+test('EI-18791793869559327 — no false alarm: usable accounts NOT all sustainedlyLimited stays abundant', () => {
+  const hr = {
+    reachable: true,
+    utilization: 0.1,
+    paused: false,
+    queueDepth: 0,
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 10,
+    // 1 of 4 usable accounts is sustainedlyLimited — not ALL of them, so this must stay abundant.
+    accountAvailability: { provider: 'claude', total: 4, available: 4, usable: 4, sustainedlyLimitedCount: 1 },
+  });
+  assert.equal(r.degraded, false);
+  assert.equal(r.factor, 1);
+  assert.equal(r.recommendedHeadroom, 10);
+  assert.match(r.advice, /abundant/);
+});
+
+test('EI-18791793869559327 — sustainedlyLimitedCount omitted ⇒ fail-safe, byte-identical to before this fix', () => {
+  const hr = {
+    reachable: true,
+    utilization: 0.1,
+    paused: false,
+    queueDepth: 0,
+    priorityTiers: { healthyAccounts: 3, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 10,
+    accountAvailability: { provider: 'claude', total: 3, available: 2, usable: 2 }, // no sustainedlyLimitedCount
+  });
+  assert.equal(r.degraded, false, 'no data ⇒ never fires (fail-safe-omit, same contract as the other optional fields)');
+  assert.equal(r.sustainedlyLimitedAccounts, null);
+  assert.equal(r.factor, 1);
+  assert.match(r.advice, /abundant/);
+});
+
+test('EI-18791793869559327 — poolExhausted takes precedence over degraded (usable<=0 already covers this)', () => {
+  const hr = {
+    reachable: true,
+    utilization: 0.5,
+    paused: true,
+    queueDepth: 0,
+    priorityTiers: { healthyAccounts: 7, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 1, queued: 2 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 13,
+    accountAvailability: { provider: 'claude', total: 7, available: 1, usable: 0, sustainedlyLimitedCount: 0 },
+  });
+  assert.equal(r.poolExhausted, true);
+  assert.equal(r.degraded, false, 'usable<=0 → poolExhausted already fired; degraded requires usable>0');
+  assert.equal(r.factor, 0);
+  assert.match(r.advice, /EXHAUSTED/);
+});
+
+test('EI-18791793869559327 — degraded suppressed during the fresh-gateway restart grace', () => {
+  const hr = {
+    reachable: true,
+    utilization: 0.1,
+    paused: false,
+    queueDepth: 0,
+    processUptimeMs: 4_000, // within the 30s restart grace
+    priorityTiers: { healthyAccounts: 2, tier1Reserve: 2, tiers: [{ tier: 3, cap: 16, inFlight: 0, queued: 0 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 10,
+    accountAvailability: { provider: 'claude', total: 2, available: 2, usable: 2, sustainedlyLimitedCount: 2 },
+  });
+  assert.equal(r.restartRecovering, true);
+  assert.equal(r.degraded, false, 'restart grace wins, same rationale as poolExhausted suppression');
+  assert.equal(r.factor, 1);
+});
+
 test('the floor never manufactures slots — a 0-slot pool stays 0 even when paused', () => {
   const d = computeCapacityHeadroom(0, { reachable: true, paused: true });
   assert.equal(d.headroom, 0, 'no raw headroom → no spawns; the floor lets work flow, it does not invent slots');

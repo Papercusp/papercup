@@ -179,6 +179,7 @@
     "lint:plane-producers": "node scripts/check-plane-producers.mjs",
     "lint:declared-consumed": "node scripts/check-declared-consumed.mjs",
     "lint:plane-ratchet": "npx tsx scripts/check-plane-ratchet.ts",
+    "lint:cell-matrix": "npx tsx scripts/check-cell-live-matrix.ts",
     "lint:timer-classification": "node scripts/check-timer-classification.mjs",
     "lint:no-wire-compression": "node scripts/check-no-wire-compression.mjs",
     "lint:no-eager-execfile-promisify": "node scripts/check-no-eager-execfile-promisify.mjs",

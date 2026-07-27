@@ -319,3 +319,63 @@ describe('no-bespoke-state-read guard:the shrink-only baseline', () => {
     expect(STATE_NOUNS).toContain('presence');
   });
 });
+
+describe('no-bespoke-state-read guard:EI-18791777695307535 — the fleet:assignments miss', () => {
+  // The bug this describe block exists for: fleet:assignments is the single busiest
+  // live-state read in the corpus (5,883 calls/30d, ~9x coord:presence) and was
+  // completely invisible to the original signature because "assignments" was not a
+  // STATE_NOUN. Locked here the same way WI-6464 locked its own regression, so a
+  // future edit cannot silently narrow STATE_NOUNS back to missing it.
+  it('FLAGS fleet:assignments — the specific miss this bug fixes', () => {
+    expect(isStateReadCandidate({ name: 'fleet:assignments', capability: null })).toBe(true);
+  });
+
+  it('exports the widened vocabulary', () => {
+    for (const noun of ['assignments', 'roster', 'walls', 'conditions', 'locks', 'burn_down']) {
+      expect(STATE_NOUNS, `STATE_NOUNS should contain "${noun}"`).toContain(noun);
+    }
+  });
+
+  it('FLAGS every tool the widening newly catches', () => {
+    for (const name of [
+      'fleet:assignments',
+      'coord:roster',
+      'coord:walls',
+      'coord:conditions',
+      'locks:list',
+      'locks:queue',
+      'locks:check_command',
+      'work_items:burn_down',
+    ]) {
+      expect(isStateReadCandidate({ name, capability: null }), `${name} should trip the widened signature`).toBe(true);
+    }
+  });
+
+  it('grandfathers every newly-caught tool with a verdict — the widening must not red the build', () => {
+    // Reseeding these (pre-existing, not new) tools into BASELINE is the second-wave
+    // analog of the original 2026-07-27 seed. Each must carry a verdict or
+    // verdictGaps() fails the whole gate.
+    for (const name of [
+      'fleet:assignments',
+      'coord:roster',
+      'coord:walls',
+      'coord:conditions',
+      'locks:list',
+      'locks:queue',
+      'locks:check_command',
+      'work_items:burn_down',
+    ]) {
+      expect(BASELINE.has(name), `${name} should be grandfathered`).toBe(true);
+      expect(VERDICTS.has(name), `${name} should carry a verdict`).toBe(true);
+    }
+    expect(verdictGaps()).toEqual({ missing: [], extra: [], badKind: [], unreasoned: [] });
+  });
+
+  it('does not blanket-exempt every locks:* tool — only the ones the widened noun actually selects', () => {
+    // locks:acquire / locks:acquire_resource / locks:release are mutations (declare a
+    // write capability or a mutating verb) and must stay unflagged.
+    expect(isStateReadCandidate({ name: 'locks:acquire', capability: 'locks:write' })).toBe(false);
+    expect(isStateReadCandidate({ name: 'locks:acquire_resource', capability: 'locks:write' })).toBe(false);
+    expect(isStateReadCandidate({ name: 'locks:release', capability: 'locks:write' })).toBe(false);
+  });
+});
