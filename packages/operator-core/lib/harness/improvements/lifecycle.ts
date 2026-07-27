@@ -28,7 +28,27 @@ export type IdeaLifecycleState =
   | 'recurred';
 
 export interface IdeaLifecyclePayload {
-  /** Current lifecycle state */
+  /**
+   * Current IMPROVEMENT-FUNNEL state.
+   *
+   * ⚠ THIS IS NOT THE WORK-ITEM'S STATUS, and it is not a mirror of one
+   * (agent-state-plane-verification-2026-07-27 D-001). The axis is
+   * captured → triaged → applied → verified; there is deliberately NO member
+   * meaning "the unit finished", so `'open'` on a `done` work-item is TRUE, not
+   * stale — it says the idea never went through improvement triage, which is the
+   * common case for anything closed as a duplicate. Measured 2026-07-27: 3,683 of
+   * 7,430 terminal rows (49.6%) read `'open'`, and none of them is wrong.
+   *
+   * ⚠ DO NOT advance this on a terminal close. The only states to advance INTO are
+   * `applied`/`verified`, which are funnel completions read by learning-slo,
+   * digest and decay — writing them on close would fabricate thousands of
+   * improvements that were never applied.
+   *
+   * Asking "is this unit finished?" — derive from `ANY_FAMILY_TERMINAL_STATES`
+   * (work-item-dispatch-states.ts) over `work_items.status`, never from here.
+   * Reading this key as liveness is the inference that produced
+   * EI-18830083673617307's misdiagnosis.
+   */
   state: IdeaLifecycleState;
   /** When state was set */
   stateUpdatedAt: string;

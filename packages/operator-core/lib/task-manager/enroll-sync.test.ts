@@ -15,11 +15,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // vi.hoisted — the mock factories below are hoisted above ordinary `const`s.
 const m = vi.hoisted(() => ({
-  taskManagerEnabledSync: vi.fn<[], boolean>(),
-  scopeSupportKnown: vi.fn<[], { ok: boolean; reason?: string } | null>(),
-  registerTask: vi.fn(async () => ({}) as never),
-  markSpawned: vi.fn(async () => ({}) as never),
-  closeTask: vi.fn(async () => ({}) as never),
+  taskManagerEnabledSync: vi.fn<() => boolean>(),
+  scopeSupportKnown: vi.fn<() => { ok: boolean; reason?: string } | null>(),
+  registerTask: vi.fn(async (..._a: unknown[]) => ({})),
+  markSpawned: vi.fn(async (..._a: unknown[]) => ({})),
+  closeTask: vi.fn(async (..._a: unknown[]) => ({})),
 }));
 const { taskManagerEnabledSync, scopeSupportKnown, registerTask, markSpawned, closeTask } = m;
 
