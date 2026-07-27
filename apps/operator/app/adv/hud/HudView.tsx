@@ -24,8 +24,9 @@
  * board is deep-linkable and agent-driveable via ui:get_state / ui:dispatch.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringLiteral, useQueryState } from 'nuqs';
 import SessionChatModal from '@/app/_components/chat/SessionChatModal';
 import { scopeInboxItems, useInboxAttention } from '@/app/_components/inbox/use-inbox-pending';
@@ -123,6 +124,16 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     parseAsString.withDefault(''),
   );
 
+  /* The SESSIONS board's own search (owner ask 2026-07-26). Separate param from
+     `hudq`: that one filters the entity tabs' loaded rows, this one searches
+     something the roster payload does not even contain, and sharing a param
+     would drop a value on every tab switch (same reasoning as `hudecol`). */
+  const [rawSessionQuery, setSessionQuery] = useQueryState(
+    'hudsq',
+    parseAsString.withDefault(''),
+  );
+  const sessionQuery = useDebouncedValue(rawSessionQuery, 300);
+
   // Ticking clock so relative ages stay honest between roster pushes.
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -187,15 +198,88 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     [planParam],
   );
 
+  /* ── Sessions transcript search ──────────────────────────────────────────
+     The owner asked for the entity tabs' filter on the Sessions tab, searching
+     the FULL TURN HISTORY of every returned session — not the roster metadata.
+     That text is not in the roster payload at all, so this cannot be a client
+     filter like `hudq`: it reuses the EXISTING
+     GET /api/adv/sessions/search-transcripts route (the shared @papercusp/search
+     `session_turn` source that also backs the agents pill and `sessions:search`),
+     exactly as PlanSessionsTab does — never a forked searcher.
+
+     Matches roll up to ownerIds and filter the roster BEFORE buildHudBoard, so
+     the column counts keep describing what is actually on screen — the same
+     model-not-view rule the entity boards' search already follows. */
+  const [searchOwners, setSearchOwners] = useState<Set<string> | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchSeq = useRef(0);
+
+  useEffect(() => {
+    const q = sessionQuery.trim();
+    // <2 chars is "not searching yet", NOT "no matches" — it must clear the
+    // filter rather than empty the board.
+    if (q.length < 2) {
+      setSearchOwners(null);
+      setSearchError(null);
+      setSearching(false);
+      return;
+    }
+    const seq = ++searchSeq.current;
+    const ctl = new AbortController();
+    setSearching(true);
+    setSearchError(null);
+    (async () => {
+      try {
+        const r = await fetch(
+          `/api/adv/sessions/search-transcripts?q=${encodeURIComponent(q)}&limit=100`,
+          { signal: ctl.signal },
+        );
+        const body = (await r.json()) as {
+          ok?: boolean;
+          sessions?: {
+            active: { ownerId?: string | null } | null;
+            session: { coordOwnerId?: string | null } | null;
+          }[];
+          error?: string;
+        };
+        if (seq !== searchSeq.current) return; // superseded by a newer keystroke
+        if (!r.ok || body.ok === false) {
+          setSearchError(body.error ?? `search failed (${r.status})`);
+          setSearchOwners(new Set());
+          return;
+        }
+        const owners = new Set<string>();
+        for (const s of body.sessions ?? []) {
+          const id = s.active?.ownerId ?? s.session?.coordOwnerId ?? null;
+          if (id) owners.add(id);
+        }
+        setSearchOwners(owners);
+      } catch (e) {
+        if (ctl.signal.aborted || seq !== searchSeq.current) return;
+        setSearchError(e instanceof Error ? e.message : 'search failed');
+        setSearchOwners(new Set());
+      } finally {
+        if (seq === searchSeq.current) setSearching(false);
+      }
+    })();
+    return () => ctl.abort();
+  }, [sessionQuery]);
+
+  const searchedEntries = useMemo(
+    () => (searchOwners ? entries.filter((e) => searchOwners.has(e.ownerId)) : entries),
+    [entries, searchOwners],
+  );
+
   const board = useMemo(
     () =>
-      buildHudBoard(entries, asks, {
+      buildHudBoard(searchedEntries, asks, {
         nowMs,
         suOnly: !allAgents,
         fleets: selectedFleets,
         plans: selectedPlans,
       }),
-    [entries, asks, nowMs, allAgents, selectedFleets, selectedPlans],
+    [searchedEntries, asks, nowMs, allAgents, selectedFleets, selectedPlans],
   );
 
   const onToggleFleet = useCallback(
@@ -329,8 +413,11 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         suOnly={!allAgents}
         onToggleSuOnly={() => void setAllAgents((v) => !v)}
         onOpenSession={(ownerId) => void setOpenOwner(ownerId)}
-        loading={roster.loading}
-        error={roster.error ? String(roster.error) : null}
+        loading={roster.loading || searching}
+        error={roster.error ? String(roster.error) : searchError}
+        sessionQuery={rawSessionQuery}
+        onSessionQuery={(q) => void setSessionQuery(q === '' ? null : q)}
+        searchActive={searchOwners !== null}
         headerAction={<NewSessionLauncher />}
         tab={tab as HudTabId}
         onSelectTab={(next) => void setTab(next)}

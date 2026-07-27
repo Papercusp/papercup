@@ -158,9 +158,109 @@ describe('startPresenceAnnounceLoop — the write-side driver', () => {
     await h.tickOnce();
     await h.tickOnce();
     expect(append).not.toHaveBeenCalled();
-    // identity resolution is cached after the first resolve (even when null it is
-    // resolved once; null is the "undefined → resolve" sentinel only on first tick)
+    // EI-18768167802573425: an unresolved identity is re-attempted, but THROTTLED to
+    // identityRetryMs — the clock is frozen here, so both ticks fall inside the first
+    // window and only ONE resolution is attempted (a truly gh-unauthenticated box must
+    // not re-probe its keychain every 5s tick). The retry itself is covered below.
     expect(calls).toBe(1);
+    h.stop();
+  });
+
+  // ── EI-18768167802573425 ──────────────────────────────────────────────────
+  // A null identity used to be cached as permanently as a success (the
+  // `identity === undefined` memo guard), so ONE transient failure on the first
+  // tick — gh token not yet readable, keychain not yet decryptable, a registry
+  // blip racing substrate boot — left the node announcing NOTHING, silently, for
+  // the whole process lifetime. Only a restart cleared it.
+  it('RE-ATTEMPTS a null identity after the retry window (a transient failure must not latch forever)', async () => {
+    const append = vi.fn(async () => {});
+    let calls = 0;
+    let t = NOW;
+    const h = startPresenceAnnounceLoop({
+      resolveIdentity: async () => {
+        calls++;
+        return null;
+      },
+      getState: () => STATE,
+      append,
+      intervalMs: 5_000,
+      identityRetryMs: 60_000,
+      now: () => t,
+      ...noopTimer(),
+    });
+    await h.tickOnce();
+    expect(calls).toBe(1);
+    // Many ticks inside the window → still exactly one attempt (throttled).
+    t = NOW + 59_999;
+    await h.tickOnce();
+    await h.tickOnce();
+    expect(calls).toBe(1);
+    // Window elapsed → re-attempt.
+    t = NOW + 60_000;
+    await h.tickOnce();
+    expect(calls).toBe(2);
+    h.stop();
+  });
+
+  it('RECOVERS: a transient identity failure resolves on a later attempt and announcing begins', async () => {
+    const append = vi.fn(async () => {});
+    const recovered: number[] = [];
+    const unresolved: number[] = [];
+    let t = NOW;
+    let failuresLeft = 1; // the first attempt throws-equivalent (null), then succeeds
+    const h = startPresenceAnnounceLoop({
+      resolveIdentity: async () => {
+        if (failuresLeft > 0) {
+          failuresLeft--;
+          return null;
+        }
+        return ID;
+      },
+      getState: () => STATE,
+      append,
+      intervalMs: 5_000,
+      identityRetryMs: 60_000,
+      now: () => t,
+      onIdentityUnresolved: (attempt) => unresolved.push(attempt),
+      onIdentityRecovered: (afterAttempts) => recovered.push(afterAttempts),
+      ...noopTimer(),
+    });
+    await h.tickOnce();
+    // Pre-fix this was terminal: never announces again for the process lifetime.
+    expect(append).not.toHaveBeenCalled();
+    expect(unresolved).toEqual([1]);
+    t = NOW + 60_000;
+    await h.tickOnce();
+    expect(append).toHaveBeenCalledOnce(); // presence is live again
+    expect(recovered).toEqual([2]);
+    h.stop();
+  });
+
+  it('caches a SUCCESSFUL identity — never re-resolves once resolved', async () => {
+    const append = vi.fn(async () => {});
+    const recovered: number[] = [];
+    let calls = 0;
+    let t = NOW;
+    const h = startPresenceAnnounceLoop({
+      resolveIdentity: async () => {
+        calls++;
+        return ID;
+      },
+      getState: () => STATE,
+      append,
+      intervalMs: 5_000,
+      identityRetryMs: 60_000,
+      now: () => t,
+      onIdentityRecovered: (n) => recovered.push(n),
+      ...noopTimer(),
+    });
+    await h.tickOnce();
+    t = NOW + 600_000; // far past the retry window
+    await h.tickOnce();
+    await h.tickOnce();
+    expect(calls).toBe(1);
+    // A first-attempt success is not a "recovery" — never announce a non-event.
+    expect(recovered).toEqual([]);
     h.stop();
   });
 

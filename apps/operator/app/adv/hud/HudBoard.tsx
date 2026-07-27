@@ -88,6 +88,17 @@ export interface HudBoardProps {
   loading: boolean;
   error: string | null;
   /**
+   * Sessions-board search box (owner ask 2026-07-26). Unlike the entity tabs'
+   * filter this does NOT narrow rows already on screen — HudView runs it against
+   * every session's full TURN HISTORY server-side and hands down an already
+   * narrowed `board`, so this component stays presentation-only.
+   */
+  sessionQuery?: string;
+  onSessionQuery?: (q: string) => void;
+  /** True while a transcript search is narrowing the board — drives the empty copy,
+   *  so "no session matched your search" never reads as "no sessions are running". */
+  searchActive?: boolean;
+  /**
    * Slot rendered at the right edge of the board header, before the
    * su-only toggle — the "+ New session" launch control
    * (hud-consolidation-2026-07-26 P-001). A slot rather than a fixed
@@ -270,6 +281,9 @@ export default function HudBoard({
   loading,
   error,
   headerAction,
+  sessionQuery = '',
+  onSessionQuery,
+  searchActive = false,
   tab,
   onSelectTab,
   entityView,
@@ -371,6 +385,23 @@ export default function HudBoard({
           })}
         </div>
 
+        {/* Searches every session's FULL TRANSCRIPT, not the card text — the
+            roster carries only metadata, so "which session was I debugging the
+            gym gate in" is unanswerable from the board itself. Placed beside the
+            plan filter (not in .hud__fleets) for the nowrap/overflow reason
+            documented on the plan filter below. */}
+        {onSessionQuery ? (
+          <input
+            type="search"
+            className="hud__search"
+            value={sessionQuery}
+            placeholder="Search transcripts…"
+            aria-label="Search session transcripts"
+            data-testid="hud-session-search"
+            onChange={(e) => onSessionQuery(e.target.value)}
+          />
+        ) : null}
+
         <span className="hud__spacer" />
 
         {/* The plan filter lives in THIS row, not down among the fleet chips,
@@ -447,9 +478,14 @@ export default function HudBoard({
         <p className="hud__state">Reading the session roster…</p>
       ) : board.total === 0 ? (
         <p className="hud__state">
-          {suOnly
-            ? 'No su sessions are running. Launch one with the psu command, or from the New session button — either way it appears here.'
-            : 'No agents on the roster.'}
+          {/* A search that matched nothing must NOT render as "no sessions are
+              running" — that reads as an empty roster and sends you looking for
+              a launch bug instead of clearing the filter. */}
+          {searchActive
+            ? 'No session transcript matched that search. Sessions whose history has not been indexed yet will not appear — clear the search to see the full board.'
+            : suOnly
+              ? 'No su sessions are running. Launch one with the psu command, or from the New session button — either way it appears here.'
+              : 'No agents on the roster.'}
         </p>
       ) : (
         <div className="hud__cols" style={focusColumn ? { gridTemplateColumns: '1fr' } : undefined}>

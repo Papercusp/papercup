@@ -126,6 +126,43 @@ function renderBoard(
   return { props, ...render(<HudBoard {...props} />) };
 }
 
+// Sessions transcript search (owner ask 2026-07-26). The board stays
+// presentation-only: HudView runs the search against every session's full turn
+// history and passes an already-narrowed `board`, so these pin the CONTRACT
+// (input shows, edits report up, empty copy tells the truth) — not the search.
+describe('HudBoard — sessions transcript search', () => {
+  it('renders no search box when the sessions tab has no handler wired', () => {
+    const { queryByTestId } = renderBoard([entry()]);
+    expect(queryByTestId('hud-session-search')).toBeNull();
+  });
+
+  it('renders the search box and reports every keystroke up', async () => {
+    const onSessionQuery = vi.fn();
+    const { getByTestId } = renderBoard([entry()], { onSessionQuery, sessionQuery: '' });
+    const box = getByTestId('hud-session-search');
+    fireEvent.change(box, { target: { value: 'gym gate' } });
+    expect(onSessionQuery).toHaveBeenCalledWith('gym gate');
+  });
+
+  // The regression that matters: a search matching nothing must not render as an
+  // empty roster, or you go hunting for a launch bug instead of clearing the box.
+  it('an empty board under an ACTIVE search says the search matched nothing, not that no sessions run', () => {
+    const { getByText, queryByText } = renderBoard([], {
+      onSessionQuery: vi.fn(),
+      sessionQuery: 'nothing matches this',
+      searchActive: true,
+    });
+    expect(getByText(/No session transcript matched that search/i)).toBeTruthy();
+    expect(queryByText(/No su sessions are running/i)).toBeNull();
+  });
+
+  it('an empty board with NO search still says no sessions are running', () => {
+    const { getByText, queryByText } = renderBoard([], { onSessionQuery: vi.fn(), searchActive: false });
+    expect(getByText(/No su sessions are running/i)).toBeTruthy();
+    expect(queryByText(/No session transcript matched/i)).toBeNull();
+  });
+});
+
 describe('HudBoard', () => {
   it('renders all five state columns', () => {
     renderBoard([entry()]);

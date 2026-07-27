@@ -3,7 +3,7 @@
  * handle + injected identity/hive-slug/timer seams (no swarm, no PG, no gh).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   wirePresenceAnnounceForHarness,
   publishPresenceTombstoneForHarness,
@@ -94,15 +94,27 @@ describe('wirePresenceAnnounceForHarness (P-008 publisher wiring)', () => {
     expect((appended[0].value as { hive_slug?: string | null }).hive_slug).toBeNull();
   });
 
-  it('gh-unauthenticated (resolveIdentity null) → ticks but never appends', async () => {
+  it('gh-unauthenticated (resolveIdentity null) → ticks but never appends, and SAYS SO', async () => {
     const { handle, appended } = mockHandle();
-    const loop = await wirePresenceAnnounceForHarness(handle, {
-      resolveIdentity: async () => null,
-      resolveHiveSlug: async () => 'my-hive',
-      setIntervalFn: noTick,
-    });
-    await loop!.tickOnce();
-    expect(appended).toHaveLength(0);
+    // EI-18768167802573425: "no identity → announce nothing" used to be entirely
+    // silent, which is how a node could be invisible to every peer with clean
+    // logs. The wiring now warns on each (throttled) failed attempt.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const loop = await wirePresenceAnnounceForHarness(handle, {
+        resolveIdentity: async () => null,
+        resolveHiveSlug: async () => 'my-hive',
+        setIntervalFn: noTick,
+      });
+      await loop!.tickOnce();
+      expect(appended).toHaveLength(0);
+      const msg = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(msg).toContain('no swarm identity');
+      expect(msg).toContain('ws::repo-a');
+      expect(msg).toContain('announcing NOTHING');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('a failed hive-slug resolution → announces harness-scoped (hive_slug null), never throws', async () => {
