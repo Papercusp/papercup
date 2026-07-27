@@ -514,6 +514,28 @@ export function checkpointRunLockDir(logDir: string, integrationRoot: string): s
   return path.join(logDir, `.green-checkpoint-run-${h.toString(36)}.lock`);
 }
 
+/** EI-18757156963245979: the run's own PHASE, published beside the run-lock so the LAUNCH
+ *  side can tell "healthy run about to deliver a verdict" from "wedged run worth replacing".
+ *
+ *  `delivering` = the suite has finished and this process is in the verdict path
+ *  (stale-red re-triage, auto-refire, prefix salvage). That phase is seconds-to-minutes
+ *  from either greening or RE-FIRING the gate onto a newer tip, so it is the single worst
+ *  moment to kill the run — and it is exactly the moment the old age-only replace guard
+ *  selected for (REPLACE_STALE_MIN_AGE_SEC=1200s vs an observed 1180s suite: run e4a93f8b
+ *  became "replaceable" ~20s after its suite ended and was SIGTERMed 85s into re-triage).
+ *
+ *  Deliberately a SEPARATE file from owner.json: that one is written once at acquire and
+ *  deleted by the release path keyed on its token — mutating it per-phase would race the
+ *  release. Best-effort in every direction; a missing/garbled marker simply degrades to the
+ *  age-based decision, never to a crash. */
+export function writeCheckpointRunPhase(lockDir: string, phase: 'suite' | 'delivering'): void {
+  try {
+    writeFileSync(path.join(lockDir, 'phase.json'), JSON.stringify({ phase, at: new Date().toISOString() }));
+  } catch {
+    /* best-effort: the phase marker is an optimization for the launch side, never load-bearing here */
+  }
+}
+
 export function acquireCheckpointRunLock(
   lockDir: string,
   opts: {
@@ -2049,6 +2071,12 @@ export async function runGreenCheckpoint(
     // signature does not reproduce at tip, so tryLongestGreenPrefix would localize "failing
     // workspaces" from a PHANTOM failure and under-advance `main` to a prefix chosen to
     // dodge it. Triage the red before reasoning from it.
+    // EI-18757156963245979: the suite is DONE and everything below is the verdict path
+    // (re-triage -> auto-refire -> prefix salvage). Publish that phase so a concurrent
+    // `release:checkpoint-run { replaceStale: true }` refuses to stop us here: this window
+    // is where a stale red gets VOIDED and the gate re-fired onto a newer tip, and killing
+    // it discards the rescue and costs a full suite. Best-effort; never throws.
+    writeCheckpointRunPhase(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot), 'delivering');
     const tip = await deps.resolveTip?.().catch(() => null) ?? null;
     let retriage: (RedTriage & { tip: string | null }) | undefined;
     // Re-running needs a workspace per file (the cwd for `npm run test --workspace`), so a

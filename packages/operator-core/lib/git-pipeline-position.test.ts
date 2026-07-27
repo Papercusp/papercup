@@ -23,6 +23,7 @@ import {
   classifyRuntimeOwners,
   computeStages,
   evaluateServing,
+  evaluateChangeInCandidate,
   type GitRunner,
   type PipelinePosition,
   type ChangeInCandidate,
@@ -1169,5 +1170,310 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
     const unknown = summarizePosition(mk({ ...HEALTHY_SERVING, startedSinceCodeChange: null }));
     expect(unknown).toMatch(/UNKNOWN — not confirmed live/);
     expect(unknown).not.toMatch(/NOT LIVE/);
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * P-004 — "is the commit the gate is judging even MY code?"
+ *
+ * EI-18752644493166307: two gate runs judged candidates that did not contain the
+ * caller's fix. The wasted runs were the cheap part. The expensive part is that a
+ * candidate WITHOUT your fix reds on the PRE-FIX failure with the PRE-FIX count,
+ * which reads as "your fix did not work" instead of "your fix was not present" —
+ * and sends you off to re-debug code that was already correct.
+ *
+ * So these cases assert the READING, not the field: every path that can produce that
+ * misread must be closed by text that names it.
+ * ------------------------------------------------------------------------- */
+describe('changeInCandidate (P-004)', () => {
+  const contained = (over: Partial<ChangeInCandidate> = {}): ChangeInCandidate => ({
+    ...NO_CANDIDATE,
+    ...over,
+  });
+
+  describe('evaluateChangeInCandidate', () => {
+    it('a sha-only probe reports nothing rather than inventing a verdict', () => {
+      const r = evaluateChangeInCandidate({
+        relPath: null,
+        candidates: { judgingSha: 'aaa', nextCandidateSha: 'bbb' },
+        judging: null,
+        next: null,
+      });
+      expect(r).toEqual(NO_CANDIDATE);
+    });
+
+    it('THE misread: an in-flight run without your file says a RED is not your fix failing', () => {
+      const r = evaluateChangeInCandidate({
+        relPath: 'a.ts',
+        candidates: { judgingSha: 'cand1234567890', nextCandidateSha: 'cand1234567890' },
+        judging: { path: 'a.ts', inCandidate: false, reason: 'uncommitted', unknownReason: null },
+        next: null,
+      });
+      expect(r.judgingContainsPath).toBe(false);
+      expect(r.missingReason).toBe('uncommitted');
+      // The whole point: pre-empt "my fix didn't work".
+      expect(r.detail).toMatch(/NOT evidence your change failed/);
+      // …and name the lever that actually applies to THIS reason.
+      expect(r.detail).toMatch(/git-sync:run/);
+    });
+
+    it('a quiet-cut miss routes to the quiet-window lever, NOT to "commit it"', () => {
+      // Naming this 'uncommitted' would send the caller to git-sync:run — which cannot
+      // help, because the change is already committed. Wrong lever = another wasted run.
+      const r = evaluateChangeInCandidate({
+        relPath: 'a.ts',
+        candidates: { judgingSha: null, nextCandidateSha: 'cand1234567890' },
+        judging: null,
+        next: { path: 'a.ts', inCandidate: false, reason: 'newer-commit', unknownReason: null },
+      });
+      expect(r.nextContainsPath).toBe(false);
+      expect(r.detail).toMatch(/quiet-cut/);
+      expect(r.detail).not.toMatch(/git-sync:run/);
+    });
+
+    it('the IN-FLIGHT run outranks the hypothetical next candidate — its verdict is the one landing', () => {
+      const r = evaluateChangeInCandidate({
+        relPath: 'a.ts',
+        candidates: { judgingSha: 'inflight123456', nextCandidateSha: 'nextcand123456' },
+        judging: { path: 'a.ts', inCandidate: false, reason: 'newer-commit', unknownReason: null },
+        next: { path: 'a.ts', inCandidate: true, reason: null, unknownReason: null },
+      });
+      expect(r.detail).toMatch(/IN FLIGHT/);
+      expect(r.detail).toMatch(/inflight1234/);
+    });
+
+    it('a confirmed-contained candidate says the verdict IS about your change', () => {
+      const r = evaluateChangeInCandidate({
+        relPath: 'a.ts',
+        candidates: { judgingSha: 'inflight123456', nextCandidateSha: null },
+        judging: { path: 'a.ts', inCandidate: true, reason: null, unknownReason: null },
+        next: null,
+      });
+      expect(r.detail).toMatch(/real verdict on your change/);
+    });
+
+    it('an UNKNOWN containment claims nothing in either direction', () => {
+      const r = evaluateChangeInCandidate({
+        relPath: 'a.ts',
+        candidates: { judgingSha: 'inflight123456', nextCandidateSha: null },
+        judging: { path: 'a.ts', inCandidate: null, reason: null, unknownReason: 'unreadable' },
+        next: null,
+      });
+      expect(r.judgingContainsPath).toBeNull();
+      expect(r.detail).toBeNull();
+    });
+  });
+
+  describe('the gate stage leads with containment', () => {
+    type StageInput = Parameters<typeof computeStages>[0];
+    const gateStage = (over: Partial<StageInput>) => {
+      const stages = computeStages({
+        dirtyUncommitted: false,
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+        verdictProvenance: {
+          lastGreenSha: 'g',
+          lastGreenShortSha: 'g',
+          lastGreenAgeMs: 1,
+          mainFastForwarded: true,
+          deployedBehindGreenPin: 0,
+          deployOrigin: 'gate-green',
+        },
+        gitSyncLastStatus: 'synced',
+        gitSync: HEALTHY_GIT_SYNC,
+        serving: HEALTHY_SERVING,
+        changeInCandidate: NO_CANDIDATE,
+        runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
+        ...over,
+      });
+      const s = stages.find((x) => x.name === 'gate');
+      if (!s) throw new Error('no gate stage');
+      return s;
+    };
+
+    it('a RED gate + a candidate lacking your file must not read as one signal', () => {
+      // These are the two readings the incident conflated. A bare "gate is RED (3
+      // consecutive)" next to a candidate that cannot contain the fix is exactly what
+      // sends someone back to re-debug correct code — so containment leads, and the red
+      // is explicitly demoted to "not about you yet".
+      const s = gateStage({
+        gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+        changeInCandidate: contained({
+          judgingSha: 'cand1234567890',
+          judgingContainsPath: false,
+          missingReason: 'uncommitted',
+          detail: 'candidate does not contain it',
+        }),
+      });
+      expect(s.health).toBe('stalled');
+      expect(s.detail).toMatch(/candidate does not contain it/);
+      expect(s.detail).toMatch(/do NOT read that red as your change failing/);
+    });
+
+    it('leaves the normal red-gate message alone when containment is not in question', () => {
+      const s = gateStage({
+        gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      });
+      expect(s.detail).toMatch(/Gate is RED \(3 consecutive\)/);
+    });
+
+    it('containment also outranks a WEDGED gate — a verdict that cannot mention you is worse news', () => {
+      const s = gateStage({
+        gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: true, fireStaleReason: 'no tick' },
+        changeInCandidate: contained({
+          nextCandidateSha: 'cand1234567890',
+          nextContainsPath: false,
+          missingReason: 'newer-commit',
+          detail: 'a fire now would judge older code',
+        }),
+      });
+      expect(s.detail).toMatch(/a fire now would judge older code/);
+    });
+  });
+
+  describe('summarizePosition', () => {
+    const base = (over: Partial<Omit<PipelinePosition, 'summary'>> = {}): Omit<PipelinePosition, 'summary'> => ({
+      input: { path: 'a.ts', sha: null },
+      repoRoot: '/repo',
+      submodule: null,
+      submodulePin: null,
+      targetSha: 'aaaaaaa',
+      targetShortSha: 'aaaaaaa',
+      targetSubject: 'subj',
+      dirtyUncommitted: false,
+      positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      deployedSha: 'deployedsha0',
+      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      verdictProvenance: {
+        lastGreenSha: 'readysha0',
+        lastGreenShortSha: 'readysha',
+        lastGreenAgeMs: 1000,
+        mainFastForwarded: true,
+        deployedBehindGreenPin: 0,
+        deployOrigin: 'gate-green',
+      },
+      gitSyncLastStatus: 'synced',
+      gitSync: HEALTHY_GIT_SYNC,
+      runtime: classifyRuntimeOwner('a.ts'),
+      runtimes: classifyRuntimeOwners('a.ts'),
+      serving: HEALTHY_SERVING,
+      changeInCandidate: NO_CANDIDATE,
+      notes: [],
+      stages: [],
+      ...over,
+    });
+
+    it('appends the containment warning LAST — where a reader stops', () => {
+      const s = summarizePosition(
+        base({
+          changeInCandidate: contained({
+            judgingSha: 'cand1234567890',
+            judgingContainsPath: false,
+            detail: 'the judged candidate lacks this file',
+          }),
+        }),
+      );
+      expect(s).toMatch(/the judged candidate lacks this file$/);
+    });
+
+    it('stays silent when containment is unknown — no verdict is better than a wrong one', () => {
+      expect(summarizePosition(base())).not.toMatch(/⚠ The gate run/);
+    });
+
+    /**
+     * The EI names this line specifically. For a working-tree tsx host the reassurance
+     * "even an uncommitted edit is what it loads on restart" is TRUE — of the RESTART
+     * consumer. The green-checkpoint is a second consumer of the same file and judges a
+     * COMMITTED candidate, for which the same edit is invisible. The filer read the true
+     * half as blanket permission and fired the gate dirty.
+     */
+    it('qualifies the working-tree reassurance for the GATE consumer when the path is dirty', () => {
+      const bgPath = 'packages/operator-core/lib/inference-gateway/admission.ts';
+      const rt = classifyRuntimeOwner(bgPath);
+      expect(rt?.releasePipelineApplies).toBe(false);
+
+      const dirty = summarizePosition(
+        base({
+          input: { path: bgPath, sha: null },
+          dirtyUncommitted: true,
+          runtime: rt,
+          runtimes: classifyRuntimeOwners(bgPath),
+        }),
+      );
+      expect(dirty).toMatch(/even an uncommitted edit is what it loads on restart/);
+      expect(dirty).toMatch(/GREEN GATE is a different consumer/);
+      expect(dirty).toMatch(/INVISIBLE to it/);
+
+      // …and it must NOT fire when there is nothing uncommitted to be blind to.
+      const clean = summarizePosition(
+        base({ input: { path: bgPath, sha: null }, runtime: rt, runtimes: classifyRuntimeOwners(bgPath) }),
+      );
+      expect(clean).not.toMatch(/GREEN GATE is a different consumer/);
+    });
+  });
+
+  describe('gitPipelinePosition wiring', () => {
+    it('reports containment against BOTH candidates and notes the miss', async () => {
+      const git: GitRunner = async (_repo, args) => {
+        if (args[0] === 'config') return null;
+        if (args[0] === 'status') return 'M a.ts';
+        if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
+        if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
+        if (args[0] === 'rev-list') return '0';
+        // The candidate carries an OLD blob; the working tree has a new one. (Both must be
+        // real hex — the reader rejects non-sha output rather than trusting it.)
+        if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'judging1:a.ts') return '0'.repeat(40);
+        if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'HEAD:a.ts') return '0'.repeat(40);
+        if (args[0] === 'hash-object') return 'f'.repeat(40);
+        return null;
+      };
+      const res = await gitPipelinePosition(
+        { path: 'a.ts' },
+        {
+          git,
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () => snap(),
+          resolveGateCandidates: async () => ({ judgingSha: 'judging1', nextCandidateSha: 'judging1' }),
+        },
+      );
+      expect(res.changeInCandidate.judgingSha).toBe('judging1');
+      expect(res.changeInCandidate.judgingContainsPath).toBe(false);
+      expect(res.changeInCandidate.missingReason).toBe('uncommitted');
+      expect(res.notes.join(' ')).toMatch(/CANDIDATE DOES NOT CONTAIN THIS FILE/);
+    });
+
+    it('does NOT claim containment across a submodule boundary — the gate judges the PIN', async () => {
+      // The superproject stores a gitlink, not submodule content, so a blob comparison
+      // there compares nothing. Reporting `true` would be the same absence-reads-as-
+      // evidence trap EI-18715870370005934 already cost a false "abort the run".
+      const git = fakeGit({
+        submodules: ['libs/generic/thing'],
+        pathCommit: 'abc1234567',
+        contains: { HEAD: ['abc1234567'] },
+      });
+      const res = await gitPipelinePosition(
+        { path: 'libs/generic/thing/src/x.ts' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.changeInCandidate.judgingContainsPath).toBeNull();
+      expect(res.changeInCandidate.nextContainsPath).toBeNull();
+      expect(res.changeInCandidate.detail).toMatch(/gitlink/);
+    });
+
+    it('a failing candidate resolver degrades to UNKNOWN, never to a false all-clear', async () => {
+      const git = fakeGit({ pathCommit: 'abc1234567', contains: { HEAD: ['abc1234567'] } });
+      const res = await gitPipelinePosition(
+        { path: 'a.ts' },
+        {
+          git,
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () => snap(),
+          resolveGateCandidates: async () => ({ judgingSha: null, nextCandidateSha: null }),
+        },
+      );
+      expect(res.changeInCandidate.judgingContainsPath).toBeNull();
+      expect(res.changeInCandidate.nextContainsPath).toBeNull();
+      expect(res.summary).not.toMatch(/⚠ The gate run/);
+    });
   });
 });

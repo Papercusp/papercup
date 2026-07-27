@@ -175,6 +175,18 @@ export interface ActiveCheckpointCheck {
    *  REPLACE_STALE_MIN_AGE_SEC — the stop was refused (a young stale run is healthy-in-progress
    *  on a busy tree, not wedged; see the constant's doc for the 2026-07-13 replace-storm). */
   replace_refused_young?: boolean;
+  /** EI-18757156963245979: the run has finished its SUITE and is in the verdict path
+   *  (stale-red re-triage -> auto-refire -> prefix salvage), as published by the run itself
+   *  in the run-lock's `phase.json`. Such a run is seconds-to-minutes from a verdict — and
+   *  may VOID a stale red and re-fire onto a newer tip — so it is never replaceable, at any
+   *  age. Undefined when the marker is absent/unreadable (older run, or the phase file was
+   *  never written): the decision then degrades to the age test alone, as before. */
+  delivering?: boolean;
+  /** EI-18757156963245979: set when a `replaceStale:true` request was refused because the run
+   *  is `delivering`. Distinct from `replace_refused_young` on purpose — "too young to be
+   *  wedged" and "too close to done to interrupt" are different reasons to wait, and a caller
+   *  that sees this one knows a verdict is imminent rather than ~20 minutes out. */
+  replace_refused_delivering?: boolean;
   /** WI-5685: true when this active run was detected via the shared file-based RUN LOCK, not
    *  the manual systemd unit — almost certainly the hourly cron tick (or another out-of-band
    *  invocation). The holder's own log path isn't known, so `candidate` is instead resolved
@@ -353,6 +365,18 @@ function defaultReadLockOwner(lockDir: string): { pid?: number; startedAt?: stri
   }
 }
 
+/** EI-18757156963245979: default reader for the run-lock's `phase.json` — the marker the RUN
+ *  itself publishes (green-checkpoint.ts's `writeCheckpointRunPhase`) when it leaves the suite
+ *  and enters the verdict path. Real fs; injectable for tests. Never throws: a missing or
+ *  malformed marker returns null and the replace decision degrades to the age test alone. */
+function defaultReadRunPhase(lockDir: string): { phase?: string; at?: string } | null {
+  try {
+    return JSON.parse(readFileSync(path.join(lockDir, 'phase.json'), 'utf8')) as { phase?: string; at?: string };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * WI-5685 root fix: is the green-checkpoint RUN LOCK — the file-based, per-root lock
  * `acquireCheckpointRunLock` in green-checkpoint.ts serializes EVERY invocation on, cron
@@ -432,6 +456,7 @@ export function checkActiveCheckpointRun(
   readLogHead: (logPath: string) => string | null = defaultReadLogHead,
   pidAlive: (pid: number) => boolean = defaultPidAlive,
   readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null = defaultReadLockOwner,
+  readRunPhase: (lockDir: string) => { phase?: string; at?: string } | null = defaultReadRunPhase,
 ): ActiveCheckpointCheck {
   const unit = checkpointUnitForRoot(root);
   const r = execFn('systemctl', [
@@ -493,6 +518,9 @@ export function checkActiveCheckpointRun(
   const candidateMatch = logHead?.match(/checkpointing candidate (\S+)/);
   const candidate = candidateMatch ? candidateMatch[1] : null;
   const current = currentCheckpointCandidate(root, execFn);
+  // EI-18757156963245979: read the run's OWN published phase. A run past its suite is in the
+  // verdict path (re-triage -> auto-refire -> salvage) and must not be replaced at any age.
+  const runPhase = readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root));
   return {
     active: true,
     unit,
@@ -502,6 +530,7 @@ export function checkActiveCheckpointRun(
     started_at: startedAt,
     elapsed_sec: elapsedSec,
     eta_sec: etaSec,
+    ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
   };
 }
 
@@ -514,6 +543,37 @@ export function checkActiveCheckpointRun(
  *  true EI-9672 wedged-salvage case); younger runs — and runs whose age systemd cannot report —
  *  are refused with `replace_refused_young` so callers wait for the verdict instead. */
 export const REPLACE_STALE_MIN_AGE_SEC = 20 * 60;
+
+/** Why a `replaceStale:true` request was (not) allowed to stop the in-flight run. */
+export type ReplaceDecision = { replace: true } | { replace: false; reason: 'not_stale' | 'young' | 'delivering' };
+
+/** Pure replace policy — extracted so the rule is testable rather than inline in the launch
+ *  path (EI-18757156963245979; the bug below shipped precisely because the decision had no
+ *  test of its own).
+ *
+ *  ORDER IS LOAD-BEARING: `delivering` is checked BEFORE the age test, because the two
+ *  disagree exactly where it matters. `REPLACE_STALE_MIN_AGE_SEC` encodes "old enough to
+ *  plausibly be wedged (past the fastest full-suite duration)" — but on a loaded box the
+ *  suite REACHES that duration, so a healthy run crosses the age line at the very moment it
+ *  finishes its suite and starts the verdict path. Measured 2026-07-27: candidate e4a93f8b's
+ *  suite ran 1180s against the 1200s threshold, so it became "replaceable" ~20s after the
+ *  suite ended and a peer's replaceStale call SIGTERMed it 85s into the stale-red re-triage —
+ *  discarding the auto-refire that would have re-fired the gate onto a newer tip. Four
+ *  consecutive runs died that way; `main` sat 49 commits behind with nothing actually broken.
+ *
+ *  So age alone is a bad proxy for "wedged": it protects YOUNG runs (which have the most work
+ *  left) and kills MATURE ones (which are about to deliver). The run's own published phase is
+ *  the direct signal, and it wins. Age remains the fallback for a run that never published a
+ *  phase (older build, or wedged before it got that far) — which is also the genuine
+ *  EI-9672 salvage case this flag exists for. */
+export function classifyReplaceRequest(
+  active: Pick<ActiveCheckpointCheck, 'candidate_stale' | 'elapsed_sec' | 'delivering'>,
+): ReplaceDecision {
+  if (!active.candidate_stale) return { replace: false, reason: 'not_stale' };
+  if (active.delivering) return { replace: false, reason: 'delivering' };
+  const oldEnough = typeof active.elapsed_sec === 'number' && active.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC;
+  return oldEnough ? { replace: true } : { replace: false, reason: 'young' };
+}
 
 /** Pure: the full `systemd-run` argv for the detached green-checkpoint suite. Mirrors
  *  release-deploy-launch.ts's buildSystemdRunArgv (PATH passthrough so the unit doesn't depend
@@ -843,19 +903,21 @@ export function launchDetachedCheckpoint(
       // superseded candidate) can be replaced instead of refused. Deliberately narrow: a
       // run judging the CURRENT candidate is never touched, replaceStale or not.
       if (opts.replaceStale && active.candidate_stale) {
-        // EI-11667: only a run OLD enough to plausibly be wedged (past the fastest full-suite
-        // duration) may be replaced. A young stale run is healthy-in-progress on a busy tree;
-        // stopping it is how the 2026-07-13 replace-storm starved the gate of every verdict.
-        const oldEnough =
-          typeof active.elapsed_sec === 'number' && active.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC;
-        if (!oldEnough) {
+        // EI-11667 (age) + EI-18757156963245979 (phase): see classifyReplaceRequest for why a
+        // run in its verdict path is never replaceable, and why age alone was the wrong axis.
+        const decision = classifyReplaceRequest(active);
+        if (!decision.replace) {
           return Promise.resolve({
             launched: false,
             unit,
             argv: [],
             logPath,
             reason: 'already_running',
-            alreadyRunning: { ...active, replace_refused_young: true },
+            alreadyRunning: {
+              ...active,
+              ...(decision.reason === 'young' ? { replace_refused_young: true } : {}),
+              ...(decision.reason === 'delivering' ? { replace_refused_delivering: true } : {}),
+            },
           });
         }
         const stop = stopActiveCheckpointUnit(unit, execFn);

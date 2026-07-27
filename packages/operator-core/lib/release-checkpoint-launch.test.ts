@@ -28,6 +28,7 @@ import {
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
   REPLACE_STALE_MIN_AGE_SEC,
+  classifyReplaceRequest,
 } from './release-checkpoint-launch';
 
 // 2026-07-10: every run wrote to /tmp/<unit>.log, so the natural response to a red —
