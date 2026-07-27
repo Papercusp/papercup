@@ -11,9 +11,11 @@
  * exactly the vacuous guard it exists to prevent.
  */
 import { describe, expect, it } from 'vitest';
+// Typed via scripts/check-vacuous-negative-assertions.d.mts — deliberately NOT a
+// `@ts-ignore`. Suppressing TS7016 here would silence the whole import, so these tests
+// could go on asserting against a judge shape the script no longer has: a test that
+// cannot notice its subject changed, which is this file's own subject matter.
 // eslint-disable-next-line import/no-relative-packages
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- plain .mjs lint script, no type declarations
 import {
   driftFragment,
   extractNegativeLiterals,

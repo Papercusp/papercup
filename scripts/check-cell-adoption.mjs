@@ -237,6 +237,23 @@ export function judgeToolDef(row) {
  * `@cell-lens` or a reasoned `@not-a-cell` instead. P-020 removes entries from
  * here as it retires each tool onto a cell; the goal state is empty.
  */
+/**
+ * The date by which the BASELINE must be EMPTY (i.e. P-020 has retired the
+ * grandfathered reads onto cells). Past this date, a non-empty baseline FAILS.
+ *
+ * Shrink-only is not self-enforcing: a baseline with no deadline is just a
+ * permanent exemption list that happens to be sorted, and this repo has already
+ * watched that specific rot happen — `KNOWN_DARK_FLAGS` became a parking lot for
+ * finished work and its ceiling got quietly raised 22 -> 24 -> 25 -> 26 for the
+ * same bug class. The countermeasure that worked there was an expiring
+ * `DARK_FLAGS_REVIEW_BY`, so this mirrors it deliberately.
+ *
+ * ⚠ If you are here because the gate just went red on this: the fix is P-020
+ * (retire the tools onto cells), or an explicit, recorded decision to move the
+ * date. It is NOT to delete the check.
+ */
+export const BASELINE_REVIEW_BY = '2026-10-25';
+
 export const BASELINE = new Set([
   'accounts:link-status',
   'accounts:status',
@@ -284,6 +301,14 @@ export const isExcluded = (f) =>
   f.includes('/dist/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||
   !/\.ts$/.test(f);
+
+/**
+ * Has the grandfather period expired? Pure (today -> boolean) so the expiry is
+ * unit-testable without waiting for the calendar.
+ */
+export function baselineExpired(today = new Date().toISOString().slice(0, 10)) {
+  return BASELINE.size > 0 && today > BASELINE_REVIEW_BY;
+}
 
 /** Scan the tracked tree. Returns offenders + the visibility counters. */
 export function findOffenders() {
@@ -353,6 +378,16 @@ function main() {
     console.error('        This read is genuinely not live system state (a record read, a catalog,');
     console.error('        a report). State WHY; the count of exemptions is printed on every run.');
     console.error(`\n  ${offenders.length} offender(s). Do NOT add to BASELINE — it is shrink-only (P-020 empties it).`);
+    process.exit(1);
+  }
+
+  if (baselineExpired()) {
+    console.error('✗ cell-adoption gate: the BASELINE grandfather period has EXPIRED.');
+    console.error(`    ${BASELINE.size} tool(s) are still grandfathered past BASELINE_REVIEW_BY=${BASELINE_REVIEW_BY}.`);
+    console.error('\n  Shrink-only was the promise; this is the date it comes due. Retire them onto');
+    console.error('  cells (P-020, unified-agent-state-plane-2026-07-27) and delete their entries.');
+    console.error('  Moving the date instead is a recorded plan decision, not a quiet edit — and');
+    console.error('  deleting this check is how KNOWN_DARK_FLAGS became a parking lot.');
     process.exit(1);
   }
 

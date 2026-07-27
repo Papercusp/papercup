@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS } from '../../../scripts/check-cell-adoption.mjs';
+import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired } from '../../../scripts/check-cell-adoption.mjs';
 
 /** Build the text of a defineTool literal, optionally carrying a marker. */
 const toolSrc = (name: string, opts: { capability?: string; marker?: string } = {}) => `
@@ -182,6 +182,22 @@ describe('cell-adoption guard: the shrink-only baseline', () => {
     for (const name of BASELINE) {
       expect(isStateReadCandidate({ name, capability: null }), `${name} should trip the signature`).toBe(true);
     }
+  });
+
+  it('EXPIRES — a grandfather set with no deadline is a permanent exemption list', () => {
+    // The countermeasure is copied from DARK_FLAGS_REVIEW_BY on purpose: this repo
+    // has already watched an undated allowlist (KNOWN_DARK_FLAGS) rot into a
+    // parking lot whose ceiling got quietly raised for the same bug class.
+    expect(baselineExpired('2099-01-01')).toBe(true);
+    expect(baselineExpired(BASELINE_REVIEW_BY)).toBe(false); // due date itself is still green
+    expect(baselineExpired('2026-07-27')).toBe(false);
+  });
+
+  it('stops expiring once the baseline is actually empty', () => {
+    // The deadline exists to force P-020, not to red the build forever after it.
+    // Guards the branch order: size check must come before the date compare.
+    const emptied = new Set();
+    expect(emptied.size > 0 && '2099-01-01' > BASELINE_REVIEW_BY).toBe(false);
   });
 
   it('exports the state nouns it was calibrated from', () => {
