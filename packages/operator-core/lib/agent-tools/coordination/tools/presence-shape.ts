@@ -25,7 +25,7 @@ const clip = (s: unknown, n: number): string | null =>
 
 export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
   const d = data as
-    | ({ active?: unknown[] } & Record<string, unknown>)
+    | ({ active?: unknown[]; expanded?: unknown[] } & Record<string, unknown>)
     | null
     | undefined;
   if (!d || !Array.isArray(d.active)) return data;
@@ -86,6 +86,19 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       intent: `showing ${c.rows} of ${d.active.length} — narrow with owner/hive/scope, or payloadTier:"full"`,
     });
   }
+  // P-031 leg (d): the opt-in `expanded[]` coupling block rides at top level, so
+  // it survives `{...d}` untouched — but its per-entry `intent` is copied from a
+  // base row, and at a trimmed/standard tier those rows had their intent clipped.
+  // Clip it here too, or the OPT-IN block ends up carrying longer text than the
+  // roster it sits beside. The entries themselves are already capped upstream
+  // (COUPLED_EXPANSION_MAX), so only the text needs bounding.
+  const expanded = Array.isArray(d.expanded)
+    ? d.expanded.map((e) => {
+        const r = (e ?? {}) as Record<string, unknown>;
+        return typeof r.intent === "string" ? { ...r, intent: clip(r.intent, c.intent) } : r;
+      })
+    : undefined;
+
   // Keep the small top-level fields (as_of/scope/summary/self) verbatim.
-  return { ...d, active: rows };
+  return { ...d, active: rows, ...(expanded ? { expanded } : {}) };
 }

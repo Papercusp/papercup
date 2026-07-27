@@ -121,6 +121,63 @@ describe("shapeCoordPresence (P-022)", () => {
     const weird = { error: "nope" };
     expect(shapeCoordPresence(weird, "trimmed")).toBe(weird);
   });
+
+  // P-031 leg (d) — the opt-in coupling block.
+  describe("expanded[] (include_coupling)", () => {
+    const longIntent =
+      "Wiring the P-031 union consumer into coord:presence and re-verifying it live on the staging operator at :3170 before flipping anything";
+    const coupled = {
+      ...snapshot,
+      expanded: [
+        {
+          ownerId: "su-0001",
+          expandedBecause: "coupled — declared by su-0000: both editing sync-resolver",
+          source: "declared",
+          reason: "both editing sync-resolver",
+          declaredBy: "su-0000",
+          inRoster: true,
+          ownerLabel: "su · 1",
+          sessionState: "live",
+          intent: longIntent,
+          intentStale: false,
+          lastActiveSecAgo: 7,
+        },
+      ],
+      expandedTotal: 1,
+    };
+
+    it("survives every tier — an opt-in block the caller explicitly asked for is never dropped", () => {
+      for (const tier of ["trimmed", "standard"] as const) {
+        const out = shapeCoordPresence(coupled, tier) as {
+          expanded: Record<string, unknown>[];
+          expandedTotal: number;
+        };
+        expect(out.expanded).toHaveLength(1);
+        expect(out.expandedTotal).toBe(1);
+        expect(out.expanded[0].ownerId).toBe("su-0001");
+        // expandedBecause is the whole point of the block — never clipped away.
+        expect(out.expanded[0].expandedBecause).toBe(coupled.expanded[0].expandedBecause);
+      }
+    });
+
+    it("clips the block's intent to the SAME cap as the base rows, so the opt-in block is never heavier per entry", () => {
+      for (const tier of ["trimmed", "standard"] as const) {
+        const out = shapeCoordPresence(coupled, tier) as { expanded: Record<string, unknown>[] };
+        expect(String(out.expanded[0].intent).length).toBeLessThanOrEqual(
+          PRESENCE_TIER_CAPS[tier].intent,
+        );
+      }
+    });
+
+    it("leaves the base rows byte-identical whether the block is present or not (D-053)", () => {
+      const withBlock = shapeCoordPresence(coupled, "trimmed") as Record<string, unknown>;
+      const without = shapeCoordPresence(snapshot, "trimmed") as Record<string, unknown>;
+      expect(JSON.stringify(withBlock.active)).toBe(JSON.stringify(without.active));
+      expect(withBlock.summary).toBe(without.summary);
+      // …and no block appears when the caller did not opt in.
+      expect(without).not.toHaveProperty("expanded");
+    });
+  });
 });
 
 function agentRow(i: number, overrides: Record<string, unknown> = {}) {

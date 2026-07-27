@@ -2539,6 +2539,98 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     expect(exhaustedEvents()).toHaveLength(1);
   });
 
+  // WI-6324: the ZERO-KNOWLEDGE false confirmation. Every other test of this
+  // ladder hands the confirmation a writer "well ahead" (length 1000), so the
+  // `caughtUp` arm was never exercised with a zero-length view — and that is
+  // precisely the state a FRESH re-attached session is in. `knownLength` is the
+  // writer's length AS KNOWN TO OUR REPLICA, so a session that has just been
+  // re-opened (or one on a zombie connection that never delivers) reports 0 until
+  // replication actually delivers something. A bare `knownLength <= mergedPosition`
+  // then reads 0 <= 0 as "caught up" and CONFIRMS the repair — deleting the
+  // confirmation record and disarming the escalation ladder in exactly the case
+  // the ladder exists for. Observed as a deterministic red in the
+  // connected_never_replicated repro (`repair-confirmed: ingest recovered ...
+  // mergedPosition=0`, two seconds after the forced rejoin, nothing landing after).
+  //
+  // TEETH: on the pre-fix code the first mergeNow() below records NO
+  // confirmation-failed event and no second session is ever opened, so both
+  // assertions fail.
+  it('WI-6324: a re-attached session that knows NOTHING about the writer (knownLength 0) is NOT falsely confirmed as caught up — the ladder keeps escalating', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const workspaceId = 'ws-repair-confirm-6324';
+    const harnessSlug = 's-repair-confirm-6324';
+    const keyHex = 'b2'.repeat(32);
+
+    // The re-opened session is a FRESH zombie: it has learned nothing from the
+    // writer yet, so `length` is 0 (NOT 1000 as in the WI-5340 test above — that
+    // difference is the whole point of this test). `get` throws so mergedPosition
+    // genuinely never advances, matching a real zombie rather than a cursor race.
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const fresh: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
+        keyHex: k,
+        length: 0,
+        contiguousLength: 0,
+        get: async () => {
+          throw new Error('WI-6324 test: simulated zombie — block fetch never resolves');
+        },
+        update: async () => {},
+        prefetch: () => {},
+        has: () => false,
+        close: vi.fn(async () => {}),
+        peersCount: () => 1,
+      };
+      sessions.push(fresh);
+      return fresh;
+    });
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      openRemoteLogOverride,
+      replicationStallGraceMs: 0,
+    });
+    cleanups.push(() => handle.close());
+
+    const stale = fakeCloseableRemoteLog(keyHex);
+    handle.admitted.set(keyHex, stale);
+
+    const confirmationFailedEvents = () =>
+      listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair_confirmation_failed' as BootHistoryKind],
+      });
+
+    // One genuine episode (the writer IS ahead at detection time) applies repair
+    // attempt 1. The same pass's confirmation check then judges the freshly
+    // re-attached session — which reports knownLength 0.
+    sampleReplicationLiveness(
+      workspaceId,
+      harnessSlug,
+      { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
+      { graceMs: 0 },
+    );
+    await handle.mergeNow();
+    expect(sessions).toHaveLength(1);
+    expect(
+      confirmationFailedEvents(),
+      'a zero-length view is ABSENCE of evidence, not evidence of catch-up — the repair must be judged ineffective, not confirmed',
+    ).toHaveLength(1);
+
+    // And because it was judged ineffective, the ladder synthesizes attempt 2 on
+    // the next pass. On the pre-fix code the confirmation was deleted as
+    // "recovered", so no second session was ever opened.
+    await handle.mergeNow();
+    expect(
+      sessions,
+      'the escalation ladder must still be armed after a zero-knowledge sample',
+    ).toHaveLength(2);
+  });
+
   // WI-5481 (live-fed gate stamp=171739): checkRepairConfirmation used to
   // DELETE the outstanding confirmation unconditionally the moment its grace
   // window elapsed — even when the sample it judged against had ZERO live

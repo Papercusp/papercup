@@ -47,7 +47,7 @@ export default defineTool({
     // coordination-layer bug). `summary.active` is a COUNT, not the roster — do not confuse
     // the two `active` keys at different nesting levels.
     returns:
-      '{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), self?: string (your own ownerId, only when resolvable), etag, as_of, scope }. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }. With include_coupling: an APPENDED expanded[] ({ ownerId, expandedBecause, source: derived|declared|both, reason?, declaredBy?, inRoster, ownerLabel, sessionState, intent, intentStale, lastActiveSecAgo }) + expandedTotal — `active` is unchanged by it. `intent` there is the peer\'s DECLARED INTENT, not a goal; goal + assumptions arrive with P-016/P-008. expanded[] is reader-relative and NOT etag-tracked, so a `since:` stub can lag a coupling change.',
+      '{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), self?: { ownerId, ownerLabel } (you, only when resolvable), etag, as_of, scope }. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }. With include_coupling: an APPENDED expanded[] ({ ownerId, expandedBecause, source: derived|declared|both, reason?, declaredBy?, inRoster, ownerLabel, sessionState, intent, intentStale, lastActiveSecAgo }) + expandedTotal — `active` is unchanged by it. `intent` there is the peer\'s DECLARED INTENT, not a goal; goal + assumptions arrive with P-016/P-008. expanded[] is reader-relative and NOT etag-tracked, so a `since:` stub can lag a coupling change.',
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always
@@ -297,8 +297,8 @@ export default defineTool({
     let expansion: ReturnType<typeof buildCoupledExpansion> | null = null;
     if (args.include_coupling === true && self) {
       try {
-        const edges = await listCouplingsFor(self, c.workspaceId ?? undefined);
-        const peers = resolveCoupledPeers(self, [], edges);
+        const edges = await listCouplingsFor(self.ownerId, c.workspaceId ?? undefined);
+        const peers = resolveCoupledPeers(self.ownerId, [], edges);
         expansion = buildCoupledExpansion(peers, active);
       } catch {
         /* fail-soft — a coupling read must never degrade the roster */
