@@ -39,10 +39,18 @@ export class InMemoryCoordLog implements CoordEventLog {
     return this.seq;
   }
 
-  async appendLine(surface: LineSurface, _writerKey: string, line: CoordEnvelope): Promise<void> {
+  async appendLine(
+    surface: LineSurface,
+    _writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<number | null> {
     const arr = this.lines.get(surface) ?? [];
-    arr.push({ id: this.nextSeq(), envelope: line });
+    // This store DOES mint a monotonic sequence, so it can answer the contract's
+    // "point AT this record" question rather than degrading to null.
+    const id = this.nextSeq();
+    arr.push({ id, envelope: line });
     this.lines.set(surface, arr);
+    return id;
   }
 
   async readLines(surface: LineSurface): Promise<CoordEnvelope[]> {

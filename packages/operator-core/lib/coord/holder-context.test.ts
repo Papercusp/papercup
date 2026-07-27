@@ -453,19 +453,30 @@ describe('LEG B — the goal producer has one reader', () => {
  * invites — and `kind` is populated on 13 of 2,076 rows. Such a query typechecks,
  * passes every hand-built fixture, and derives nothing in production. Only a
  * check against the producer catches it, so it is pinned here as a constant.
+ *
+ * What is gated is a kind-ONLY read. A predicate that also covers the LEGACY
+ * assumption form (D-087 R2: `confidence:'suspected'`, which is how every row
+ * filed before migration 690 is discriminated) does NOT derive nothing live —
+ * the legacy leg is exactly what picks up the 2,063 rows where `kind IS NULL`.
+ * Flagging those too made this gate fire on the correct backward-compatible
+ * implementation (`isAssumptionFact`, `listAssumptionFacts`) rather than on the
+ * defect, which is the one outcome that gets a real guard deleted.
  */
 const ASSUMPTION_KIND_FILTER_RE = /kind\s*(?:=|===)\s*['"`]assumption['"`]/;
-const ASSUMPTION_KIND_FILTER = (code: string): boolean => ASSUMPTION_KIND_FILTER_RE.test(code);
+const LEGACY_ASSUMPTION_FALLBACK_RE = /confidence\s*(?:=|===)\s*['"`]suspected['"`]/;
+const ASSUMPTION_KIND_FILTER = (code: string): boolean =>
+  ASSUMPTION_KIND_FILTER_RE.test(code) && !LEGACY_ASSUMPTION_FALLBACK_RE.test(code);
 
 describe('LEG C — assumptions are never keyed off the unpopulated `kind` column', () => {
   it('no file filters facts by kind = assumption', () => {
     const offenders = scanLib(ASSUMPTION_KIND_FILTER);
     expect(
       offenders,
-      `these files filter agent_facts by kind='assumption': ${offenders.join(', ')}. That ` +
-        `column is populated on 13 of 2,076 rows (D-083 §2), so the query derives nothing ` +
-        `live while passing every fixture. Assumptions are the holder's live owner-scoped ` +
-        `facts BY KEY.`,
+      `these files filter agent_facts by kind='assumption' with NO legacy fallback: ` +
+        `${offenders.join(', ')}. That column is populated on 13 of 2,076 rows (D-083 §2), ` +
+        `so a kind-only query derives nothing live while passing every fixture. Either read ` +
+        `the holder's live owner-scoped facts BY KEY, or cover the legacy form too ` +
+        `(confidence='suspected', D-087 R2) the way isAssumptionFact does.`,
     ).toEqual([]);
   });
 
@@ -483,6 +494,29 @@ describe('LEG C — assumptions are never keyed off the unpopulated `kind` colum
     // The correct production form — fold by scope + key — must NOT trip it.
     expect(
       ASSUMPTION_KIND_FILTER_RE.test(`foldFacts([{ scope: 'owner', scopeRef: owner }])`),
+    ).toBe(false);
+
+    // …and the SCANNED predicate (not just the regex) still fires on a kind-ONLY
+    // read, which is the defect D-083 §2 is about.
+    expect(ASSUMPTION_KIND_FILTER(`AND kind = 'assumption'`)).toBe(true);
+  });
+
+  /**
+   * The other half of the rule: covering the LEGACY form is the CORRECT fix, so
+   * it must not read as the violation. Pinned because flagging it is what made
+   * this gate fire on `isAssumptionFact` / `listAssumptionFacts` — a guard that
+   * reds on the correct implementation is a guard someone deletes.
+   */
+  it('a kind filter that ALSO covers the legacy form is not a violation', () => {
+    expect(
+      ASSUMPTION_KIND_FILTER(
+        `AND (kind = 'assumption' OR (kind IS NULL AND confidence = 'suspected'))`,
+      ),
+    ).toBe(false);
+    expect(
+      ASSUMPTION_KIND_FILTER(
+        `if (f.kind != null) return f.kind === 'assumption';\nreturn f.confidence === 'suspected';`,
+      ),
     ).toBe(false);
   });
 });

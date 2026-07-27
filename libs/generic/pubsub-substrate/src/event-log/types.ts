@@ -36,8 +36,18 @@ export interface CoordEventLog {
    * Append one envelope to a single-writer line stream. For `messages`,
    * `writerKey` is the sender's ownerId (its outbox); for `plan-events`
    * it is ignored (one logical stream).
+   *
+   * Resolves to the append's SEQUENCE NUMBER when the backing store assigns one
+   * — a monotonic per-store id a later reader can point AT this exact record
+   * with. Stores with no such number (in-memory, file-per-line) return null;
+   * callers must treat null as "this store does not mint sequence numbers",
+   * never as a failed append (a failure throws).
    */
-  appendLine(surface: LineSurface, writerKey: string, line: CoordEnvelope): Promise<void>;
+  appendLine(
+    surface: LineSurface,
+    writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<number | null>;
 
   /** Read every line across a line surface (union of all keyed files). */
   readLines(surface: LineSurface, opts?: ReadLinesOpts): Promise<CoordEnvelope[]>;

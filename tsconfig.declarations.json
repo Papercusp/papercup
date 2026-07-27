@@ -1,0 +1,55 @@
+// Declaration generation for the repo's plain-JS `.mjs` modules that TypeScript
+// files import (WI-6394).
+//
+// A `.mjs` with no sibling `.d.mts` costs every TS importer a TS7016 ("implicitly
+// has an 'any' type"), which then gets absorbed into that file's permanent
+// per-file tsc baseline — where it silently tolerates the NEXT real error in the
+// same file. That is the whole reason this exists.
+//
+// WHY GENERATED RATHER THAN HAND-WRITTEN. The repo's earlier convention was a
+// hand-maintained sibling `.d.mts` (see `scripts/lint-tsc.d.mts`). That file has
+// drifted from its `.mjs` twice — `parseExplicitFiles`, then
+// `formatAttributionHeadline` — and each drift made the missing export a TS2305
+// for every importer and cost that file a permanent baselined error. It now needs
+// its own hand-written drift test to police it. A hand-synced projection of a
+// source it cannot see change is the defect; adding more of them scales the
+// defect. Generating from the source removes the class instead.
+//
+// Even with NO JSDoc the emit is worth having: tsc still infers every return type
+// and const literal from the implementation, so only undocumented parameters land
+// as `any` — a strict improvement on the entire module being `any`.
+//
+// ADDING A MODULE: append it to `files` below, run `npm run gen:declarations`, and
+// commit the emitted `.d.mts` beside it. `npm run gen:declarations:check` (and the
+// vitest drift test) will then hold it in sync.
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    // Emitting this repo's own surface, not typechecking its dependencies.
+    "skipLibCheck": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    // `rootDir` and `outDir` are BOTH the repo root, deliberately: that makes each
+    // `.d.mts` land beside its own `.mjs` regardless of which directory it lives
+    // in, so one config can serve `scripts/` and `packages/` together. Set only
+    // `outDir` and tsc infers a "common source directory" and re-appends it,
+    // emitting a nested mirror tree (TS5011).
+    "rootDir": ".",
+    "outDir": "."
+  },
+  // `files`, NOT `include`. Because `outDir` is `.`, tsc adds it to the implicit
+  // `exclude`, and `exclude` filters `include` — together they cancel out to zero
+  // inputs (TS18003 "No inputs were found"). `exclude` does not apply to `files`.
+  // An explicit list is also the honest surface: a glob would silently start
+  // emitting declarations for every future script in the repo.
+  "files": [
+    "scripts/lib/quarantine.mjs",
+    "scripts/check-transitive-boundary.mjs",
+    "scripts/check-vite-externalized-warnings.mjs",
+    "scripts/lint-migrations.mjs",
+    "packages/operator-core/lib/inference-gateway/watchdog.mjs"
+  ]
+}

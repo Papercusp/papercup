@@ -105,13 +105,21 @@ export class FsCoordLog implements CoordEventLog {
     return out;
   }
 
-  async appendLine(surface: LineSurface, writerKey: string, line: CoordEnvelope): Promise<void> {
+  async appendLine(
+    surface: LineSurface,
+    writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<number | null> {
     if (surface === 'messages') {
       await appendJsonl(join(this.lineDir('messages'), `${sanitise(writerKey)}.jsonl`), line);
     } else {
       // plan-events: writerKey ignored; rotate by current month.
       await appendJsonl(this.planEventsFile(), line);
     }
+    // JSONL-per-writer mints no cross-stream sequence number: a byte offset is
+    // not stable across rotation and a line index is per-file, so neither can
+    // name this record globally. Null per the contract — the append succeeded.
+    return null;
   }
 
   async readLines(surface: LineSurface, opts: ReadLinesOpts = {}): Promise<CoordEnvelope[]> {

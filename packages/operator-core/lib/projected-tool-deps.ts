@@ -54,6 +54,7 @@ import {
 import { telemetryBufferConfig } from "./telemetry-buffer-config";
 import { recordDecisionLedger } from "./decision-ledger/emit";
 import { resolveAgentIdentity } from "./agent-tools/coordination/identity";
+import { readAgentStateStamp } from "./agent-state-stamp";
 
 /**
  * Serialize to a Postgres-`jsonb`-safe JSON string. Postgres `jsonb` (and `text`)
@@ -209,9 +210,11 @@ const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
     window_key, duration_ms, status, output_ref, output_size,
     error_message, args_json, transport, event_count, metadata_json,
     principal_kind, principal_auth_method, principal_trust, error_code,
-    coord_owner_id, invoked_at)
+    coord_owner_id, invoked_at,
+    intent_event_id, assumption_set_id, goal_ref)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-         $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26::timestamptz)`;
+         $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26::timestamptz,
+         $27,$28,$29)`;
 
 // P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
 // via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
@@ -402,6 +405,7 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   } catch {
     coordOwnerId = null;
   }
+  const stamp = readAgentStateStamp(coordOwnerId);
   return {
     workspaceId: input.ctx.workspaceId,
     params: [
@@ -436,6 +440,15 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
       // invoked_at (EI-7040): the dispatch-settle wall-clock, NOT the flush
       // time — see the note on TELEMETRY_INSERT_SQL.
       new Date().toISOString(),
+      // P-009 / D-011 / D-014: the caller's DECLARED STATE at call time — the
+      // intent it declared, the assumption watermark it had reached, and the
+      // goal it holds. ONE Map.get off `coordOwnerId` (lib/agent-state-stamp);
+      // no query, no computation, and a miss yields nulls rather than blocking.
+      // Reuses the identity already resolved above, so an unattributable ctx
+      // (coordOwnerId null) simply stamps three NULLs like it stamps no owner.
+      stamp.intentEventId,
+      stamp.assumptionSetId,
+      stamp.goalRef,
     ],
   };
 }

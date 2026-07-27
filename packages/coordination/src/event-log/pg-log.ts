@@ -378,7 +378,11 @@ export class PgCoordLog implements CoordEventLog {
     return this.opts.getSql();
   }
 
-  async appendLine(surface: LineSurface, writerKey: string, line: CoordEnvelope): Promise<void> {
+  async appendLine(
+    surface: LineSurface,
+    writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<number | null> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // `::text::jsonb` (not bare `::jsonb`): the explicit text cast forces

@@ -189,12 +189,24 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
 });
 
 describe('learning.apiary — pre-baseline degrade (P-042)', () => {
-  it('returns [{ instances: [] }] when the benchmark read fails (gen-0 baseline is owner-gated)', async () => {
+  // A 42P01 is the PRE-MIGRATION case, so the snapshot must carry the degraded
+  // marker rather than a bare empty: per degraded-snapshot.ts, a snapshot WITHOUT
+  // `unavailable` means "a genuine, trustworthy empty". Asserting the bare
+  // `[{ instances: [] }]` here would pin exactly the render this degrade exists to
+  // prevent — "nothing has happened yet" for a substrate that isn't there yet.
+  it('marks the snapshot pre-migration-unavailable when the benchmark read fails (gen-0 baseline is owner-gated)', async () => {
     readApiaryInstanceSummaries.mockRejectedValue(
       Object.assign(new Error('relation "harness_shared.cup_keeper_instances" does not exist'), { code: '42P01' }),
     );
     const rows = (await resolveNamedQueryV2('learning.apiary', {})) as Array<{ instances: unknown[] }>;
-    expect(rows).toEqual([{ instances: [] }]);
+    expect(rows).toEqual([
+      {
+        instances: [],
+        unavailable: true,
+        unavailableKind: 'pre-migration',
+        unavailableReason: 'relation "harness_shared.cup_keeper_instances" does not exist',
+      },
+    ]);
     expect(warn).toHaveBeenCalled();
   });
 
