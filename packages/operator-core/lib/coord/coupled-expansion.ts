@@ -106,18 +106,25 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 export function expandedBecauseOf(peer: CoupledPeer): string {
   const why = (peer.reason ?? '').trim();
   const by = (peer.declaredBy ?? '').trim();
+  // D-078 (a): a derivation now names the SIGNAL that fired. When it supplies
+  // none, each branch keeps its ORIGINAL phrasing verbatim — an unlabelled
+  // derivation is still a true edge, and widening the channel must not reword
+  // output that no derivation has opted into yet.
+  const signal = (peer.derivedBecause ?? '').trim();
   switch (peer.source) {
     case 'declared':
       return why
         ? `coupled — declared by ${by || 'an agent'}: ${why}`
         : `coupled — declared by ${by || 'an agent'}`;
-    case 'both':
+    case 'both': {
+      const head = signal || 'derived';
       return why
-        ? `coupled — derived, and declared by ${by || 'an agent'}: ${why}`
-        : `coupled — derived, and declared by ${by || 'an agent'}`;
+        ? `coupled — ${head}, and declared by ${by || 'an agent'}: ${why}`
+        : `coupled — ${head}, and declared by ${by || 'an agent'}`;
+    }
     case 'derived':
     default:
-      return 'coupled — derived from shared working state';
+      return `coupled — ${signal || 'derived from shared working state'}`;
   }
 }
 

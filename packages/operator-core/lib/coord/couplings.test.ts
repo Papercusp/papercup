@@ -52,24 +52,54 @@ describe('peerOf', () => {
   });
 });
 
+/** A derived coupling, as P-013's derivation hands it to the union (D-078 (a)). */
+const d = (ownerId: string, because = 'same fleet') => ({ ownerId, because });
+
 describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
   it('unions both sources and labels where each peer came from', () => {
-    const peers = resolveCoupledPeers('su-me', ['su-derived', 'su-both'], [
+    const peers = resolveCoupledPeers('su-me', [d('su-derived'), d('su-both', 'shared lock')], [
       edge('su-me', 'su-declared', { reason: 'same file' }),
       edge('su-me', 'su-both'),
     ]);
     expect(peers).toEqual([
-      { ownerId: 'su-both', source: 'both', reason: null, declaredBy: 'su-declarer' },
+      {
+        ownerId: 'su-both',
+        source: 'both',
+        reason: null,
+        declaredBy: 'su-declarer',
+        derivedBecause: 'shared lock',
+      },
       { ownerId: 'su-declared', source: 'declared', reason: 'same file', declaredBy: 'su-declarer' },
-      { ownerId: 'su-derived', source: 'derived' },
+      { ownerId: 'su-derived', source: 'derived', derivedBecause: 'same fleet' },
     ]);
+  });
+
+  it('D-078 (a): accumulates EVERY distinct signal when a peer is coupled several ways', () => {
+    // The whole reason the derived channel carries a reason rather than a bare id:
+    // a peer can trip several derivations at once, and which ones fired is the most
+    // useful half of the answer.
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [d('su-peer', 'same fleet'), d('su-peer', 'recent coord exchange')],
+      [],
+    );
+    expect(peers).toEqual([
+      { ownerId: 'su-peer', source: 'derived', derivedBecause: 'same fleet; recent coord exchange' },
+    ]);
+  });
+
+  it('a derivation that states no signal still yields a true edge', () => {
+    // An unlabelled derivation is still a real coupling — it must not vanish, and
+    // must not render as an empty reason.
+    const peers = resolveCoupledPeers('su-me', [{ ownerId: 'su-peer', because: '  ' }], []);
+    expect(peers).toEqual([{ ownerId: 'su-peer', source: 'derived' }]);
   });
 
   it('a suppression beats a DERIVED coupling — the property decouple exists for', () => {
     // D-061 R4: a decouple cannot un-make the derivation (the shared lock is still
     // held), so if suppression lost to it the edge would silently return next tick
     // and the agent would rightly conclude decoupling is broken.
-    const peers = resolveCoupledPeers('su-me', ['su-peer'], [
+    const peers = resolveCoupledPeers('su-me', [d('su-peer', 'shared lock')], [
       edge('su-me', 'su-peer', { state: 'suppressed' }),
     ]);
     expect(peers).toEqual([]);
@@ -93,12 +123,16 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
   });
 
   it('never returns the reader itself, and dedupes a repeated derivation', () => {
-    const peers = resolveCoupledPeers('su-me', ['su-me', 'su-peer', 'su-peer', '  '], []);
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [d('su-me'), d('su-peer'), d('su-peer'), d('  ')],
+      [],
+    );
     expect(peers.map((p) => p.ownerId)).toEqual(['su-peer']);
   });
 
   it('is stable-ordered, so a caller diffing two reads sees real changes only', () => {
-    const peers = resolveCoupledPeers('su-me', ['su-c', 'su-a'], [edge('su-me', 'su-b')]);
+    const peers = resolveCoupledPeers('su-me', [d('su-c'), d('su-a')], [edge('su-me', 'su-b')]);
     expect(peers.map((p) => p.ownerId)).toEqual(['su-a', 'su-b', 'su-c']);
   });
 

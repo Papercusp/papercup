@@ -52,7 +52,7 @@ export interface UpsertHiveMemberInput {
   /** ⚠ SCOPE (WI-6312): the FEDERATED (owner-authored) scope. A row written under a
    *  joiner's LOCAL handle is the exact mirror of the read bug — no federated reader will
    *  ever see it, and the write reports success. */
-  potHomeSlug: FederatedPotScope;
+  potHomeSlug: string;
   githubUserId: number;
   githubUsername: string;
   displayName?: string | null;
@@ -194,7 +194,7 @@ export async function listWorkspaceMembers(
  */
 export async function getHiveMember(
   workspaceId: string,
-  potHomeSlug: FederatedPotScope,
+  potHomeSlug: string,
   githubUserId: number,
   sql?: Sql,
 ): Promise<HiveMemberRecord | null> {
@@ -236,7 +236,7 @@ export async function listHiveMembers(
  */
 export async function loadHiveMemberDevicePubkeys(
   workspaceId: string,
-  potHomeSlug: FederatedPotScope,
+  potHomeSlug: string,
   githubUserId: number,
   sql?: Sql,
 ): Promise<string[]> {
@@ -597,7 +597,7 @@ export async function addRevokedHivePubkeys(
   workspaceId: string,
   /** ⚠ SCOPE (WI-6312): FEDERATED. A revocation written under the local handle lands where
    *  the admission union never looks — the revocation silently does nothing. */
-  potHomeSlug: FederatedPotScope,
+  potHomeSlug: string,
   ownerGithubUserId: number,
   pubkeys: string[],
   sql?: Sql,
@@ -633,7 +633,7 @@ export async function removeHiveMember(
   /** ⚠ SCOPE (WI-6312): FEDERATED. Under the local handle this deletes 0 rows and returns
    *  0 — which is indistinguishable from the idempotent "already gone", so a departure
    *  that never happened reads as a clean one. */
-  potHomeSlug: FederatedPotScope,
+  potHomeSlug: string,
   githubUserId: number,
   sql?: Sql,
 ): Promise<number> {
@@ -659,7 +659,7 @@ export async function removeAllHiveMembers(
   workspaceId: string,
   /** ⚠ SCOPE (WI-6312): FEDERATED. Under the local handle a dissolve drops nothing and the
    *  hive's members keep federating — the G24 teardown silently no-ops. */
-  potHomeSlug: FederatedPotScope,
+  potHomeSlug: string,
   sql?: Sql,
 ): Promise<number> {
   assertStorableWorkspaceId(workspaceId, 'removeAllHiveMembers');

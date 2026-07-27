@@ -226,7 +226,16 @@ export interface OrientResult {
    *  only for its fleet's members), and `src` is provenance-hydrated — a typed
    *  verified sourceRef renders `<ref> ✓ "<verbatim quote>"`, an unresolvable
    *  one renders `✗unverified` loudly. */
-  facts?: Array<{ scope: string; ref: string | null; body: string; src: string | null; aud?: string }> | null;
+  /** P-008 (c): `changed` marks a fact asserted/superseded since this caller last
+   *  oriented (D-012's watermark surface). Absent = unchanged, or a bootstrap read. */
+  facts?: Array<{
+    scope: string;
+    ref: string | null;
+    body: string;
+    src: string | null;
+    aud?: string;
+    changed?: true;
+  }> | null;
   /** Present iff queen-loop steering facts were withheld from a responsive caller
    *  (P-002) — transparent, never a silent drop. Pull live state via pot:get-steering. */
   factsWithheld?: { count: number; reason: string };
@@ -930,6 +939,34 @@ export async function composeOrient(
             withDeps = marked;
           }
         }
+        // P-008 (c) / D-012: facts are a WATERMARK SURFACE. The fold above stays a
+        // FULL read — that is the property D-012 chose watermarks for ("read with
+        // watermark 0 and you get current state", so a compacted/respawned agent is
+        // correct immediately). What the cursor adds is the separate question layered
+        // on top: which of these did I not already have? Marked per-fact below.
+        //
+        // Best-effort and non-fatal by construction: a watermark outage must degrade
+        // to today's unmarked full fold, never break orientation.
+        let changedCells: ReadonlySet<string> = new Set();
+        if (ownerId) {
+          try {
+            const [{ factsCellDelta, FACTS_CELL_SURFACE }, { readWatermark, writeWatermark }] = await Promise.all([
+              import('../../../agent-facts/cells'),
+              import('../watermarks'),
+            ]);
+            const wm = await readWatermark(ownerId);
+            const delta = factsCellDelta(withDeps, wm.cursors?.[FACTS_CELL_SURFACE]);
+            changedCells = new Set(delta.changed.map((f) => `${f.scope} ${f.scopeRef ?? ''} ${f.key}`));
+            // Advance deterministically at fold time, like messages_shown_ts (EI-2042)
+            // rather than at turn end: the agent HAS been shown these. Only write when
+            // the position actually moved, so a quiet fold costs no row write.
+            if (delta.nextCursor && delta.nextCursor !== wm.cursors?.[FACTS_CELL_SURFACE]) {
+              await writeWatermark(ownerId, { cursors: { [FACTS_CELL_SURFACE]: delta.nextCursor } });
+            }
+          } catch {
+            changedCells = new Set();
+          }
+        }
         result.facts = withDeps.map((f) => ({
           scope: f.scope,
           ref: f.scopeRef,
@@ -953,6 +990,10 @@ export async function composeOrient(
           // Emitted ONLY when declared, so the common case (a legacy fact with
           // no kind) stays byte-identical and this costs the fold nothing.
           ...(f.kind ? { kind: f.kind } : {}),
+          // P-008 (c) / D-012: asserted or superseded since this caller last
+          // oriented. Emitted ONLY when true, so an unchanged fold — and every
+          // bootstrap read, which marks nothing — stays byte-identical to before.
+          ...(changedCells.has(`${f.scope} ${f.scopeRef ?? ''} ${f.key}`) ? { changed: true as const } : {}),
           ...(f.kind === 'convention'
             ? {
                 // D-016's tier — and `cite`, the ref to pass verbatim as a

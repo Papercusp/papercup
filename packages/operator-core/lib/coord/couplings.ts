@@ -65,6 +65,21 @@ export interface CouplingEdge {
   expiresAt: string | null;
 }
 
+/**
+ * One DERIVED coupling, as P-013's derivation hands it to the union (D-078 (a)).
+ *
+ * Carries the SIGNAL, not just the id. A flat `string[]` loses why the edge
+ * exists, which forces every derived entry to render the same contentless
+ * `expandedBecause` — and `expandedBecause` is the one field P-013's contract
+ * requires to be meaningful. A populated-but-uninformative field is the P-029
+ * error D-053 already called out, so the reason travels WITH the id.
+ */
+export interface DerivedCoupling {
+  ownerId: string;
+  /** The specific signal, e.g. "same fleet" or "you both hold locks in packages/x". */
+  because: string;
+}
+
 /** One coupled peer as a reader sees it, with WHY it is coupled. */
 export interface CoupledPeer {
   ownerId: string;
@@ -72,6 +87,12 @@ export interface CoupledPeer {
   /** Present for a declared edge — the stated why, and who stated it. */
   reason?: string | null;
   declaredBy?: string;
+  /**
+   * Present when a DERIVATION produced this edge (`derived` or `both`) — the
+   * signal(s) that fired, joined with "; " when a peer is coupled several ways.
+   * Distinct from `reason`, which is a HUMAN's stated why on a declared edge.
+   */
+  derivedBecause?: string;
 }
 
 export const COUPLING_REASON_MAX = 500;
@@ -198,7 +219,7 @@ export function peerOf(edge: Pick<CouplingEdge, 'agentA' | 'agentB'>, ownerId: s
  */
 export function resolveCoupledPeers(
   ownerId: string,
-  derived: readonly string[],
+  derived: readonly DerivedCoupling[],
   declaredEdges: readonly CouplingEdge[],
 ): CoupledPeer[] {
   const id = ownerId.trim();
@@ -210,16 +231,34 @@ export function resolveCoupledPeers(
     if (e.state === 'suppressed') suppressed.add(peer);
     else declared.set(peer, e);
   }
+  // Dedupe derived peers while KEEPING every distinct signal: P-013 has five
+  // derivations and a peer can trip several at once ("same fleet" AND "recent
+  // coord exchange"). Collapsing those to one id would throw away the most
+  // useful half of the answer, so signals accumulate per peer.
+  const derivedSignals = new Map<string, string[]>();
+  for (const d of derived) {
+    const peer = (d?.ownerId ?? '').trim();
+    if (!peer || peer === id) continue;
+    const why = (d?.because ?? '').trim();
+    const existing = derivedSignals.get(peer);
+    if (existing) {
+      if (why && !existing.includes(why)) existing.push(why);
+    } else {
+      derivedSignals.set(peer, why ? [why] : []);
+    }
+  }
   const out: CoupledPeer[] = [];
   const seen = new Set<string>();
-  for (const peer of new Set(derived.map((d) => d.trim()).filter((d) => d && d !== id))) {
+  for (const [peer, signals] of derivedSignals) {
     if (suppressed.has(peer)) continue;
     seen.add(peer);
     const d = declared.get(peer);
+    const because = signals.join('; ');
+    const derivedWhy = because ? { derivedBecause: because } : {};
     out.push(
       d
-        ? { ownerId: peer, source: 'both', reason: d.reason, declaredBy: d.declaredBy }
-        : { ownerId: peer, source: 'derived' },
+        ? { ownerId: peer, source: 'both', reason: d.reason, declaredBy: d.declaredBy, ...derivedWhy }
+        : { ownerId: peer, source: 'derived', ...derivedWhy },
     );
   }
   for (const [peer, e] of declared) {
