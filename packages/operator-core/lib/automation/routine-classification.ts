@@ -68,6 +68,49 @@ export type RoutineKind = 'scheduled' | 'triggered' | 'loop';
 export type RoutineLiveness = 'running' | 'stalled' | 'dormant';
 
 /**
+ * Is the schedule ARMED — and do we know?
+ *
+ * WI-6447. `schedule-inventory` reports `armed: true | false | null`, and the
+ * catalog used to funnel all three through `const active = row.armed !== false`,
+ * which maps the UNKNOWN case onto the optimistic one. The 7 external-process
+ * rows (gateway-self-heal, gateway-token-refresh, psu-supervisor-heartbeat, …)
+ * all report `null` with the note "static manifest — live fire-state requires
+ * P-014 federation" — nothing has checked them, yet the pane rendered them as
+ * running.
+ *
+ * `unknown` is therefore a FIRST-CLASS state, exactly as it is for `spend`: a
+ * row we cannot verify must not be able to look healthy. This is the same defect
+ * class as the two this module already exists to fix (`controllable:false`
+ * meaning five different things; `active:true` on 15 loops that would never fire
+ * again) — a display collapsing distinct situations into one reassuring value.
+ */
+export type RoutineArmedState = 'armed' | 'disarmed' | 'unknown';
+
+/** The row's short status word, and whether it is a state we actually verified. */
+const ARMED_STATE_COPY: Record<RoutineArmedState, string> = {
+  armed: 'armed',
+  disarmed: 'not armed',
+  unknown: 'arm state unknown',
+};
+
+/**
+ * Derive the tri-state from schedule-inventory's raw `armed` field WITHOUT
+ * collapsing it. Pure and total: anything that is not a literal boolean is
+ * `unknown`, so a future source emitting `undefined` degrades to the honest
+ * state rather than the flattering one.
+ */
+export function routineArmedState(armed: boolean | null | undefined): RoutineArmedState {
+  if (armed === true) return 'armed';
+  if (armed === false) return 'disarmed';
+  return 'unknown';
+}
+
+/** Display copy for an armed state — kept beside the type so the two cannot drift. */
+export function armedStateLabel(state: RoutineArmedState): string {
+  return ARMED_STATE_COPY[state];
+}
+
+/**
  * Where this row's on/off switch actually lives.
  *
  * Replaces the old `controllable: boolean`, whose false case rendered a padlock

@@ -84,6 +84,15 @@ const ALLOW = new Set([
   //    — each is confirmed fully-shipped default-ON behavior with an opt-out kill-switch
   //    (`!== 'off'`), not a pending "should this be on?" capability decision. ──
   'PAPERCUSP_MEM0_CONVERSATION_CAPTURE', // default ON (operator converse mem0 capture); =off kill-switch
+  // ⚠ EI-18747066020546067 (2026-07-27): this "graduated" verdict rested on the entry
+  // being "confirmed fully-shipped and working" — but EI-18746586784230719 found the
+  // guard has NEVER actually executed in the live operator (createAnthropicJudge()
+  // silently no-ops with no ANTHROPIC_API_KEY set). It is also arguably a genuine
+  // product CAPABILITY (a memory-write contradiction guard), not ops config, per
+  // CLAUDE.md's "feature toggle → FLAGS, not process.env" rule — left here rather than
+  // migrated to avoid colliding with EI-18746586784230719's in-flight wiring fix;
+  // re-classify (FLAGS, or confirm ALLOW) once that item lands and the guard is
+  // verified to actually run.
   'PAPERCUSP_MEMORY_CONFLICT_CHECK', // default ON (memory:remember conflict-check); =off kill-switch
   'PAPERCUSP_SU_MEMORY_INJECTION', // default ON (P-050 su-session memory prelude); =off kill-switch
   // ── EI-2390 (2026-07-18 audit): 61 boolean PAPERCUSP_ gates newly classified — every one
@@ -129,6 +138,24 @@ const ALLOW = new Set([
   'PAPERCUSP_FLEET_SANDBOX_DENY_ALL_EGRESS', // sandbox LOCKDOWN switch (stricter, not a feature to promote)
   'PAPERCUSP_HTTP_BACKPRESSURE', // default-OFF perf: caller-marked load shedding
   'PAPERCUSP_HTTP_HANDLER_DEADLINE', // default-OFF perf: per-handler deadline enforcement
+  // ── EI-18747066020546067 (2026-07-27): 11 gates newly classified to clear the
+  //    strict-lint red. Each verified by reading its call site — internal ops/perf/dev
+  //    dials, none a user-facing capability a human would flip via /admin/features. ──
+  // gateway/cache-proxy prompt-cache perf dials (default-ON unless noted; internal algorithm tuning)
+  'PAPERCUSP_CACHE_POLICY', // default-ON perf: whether the cache-proxy/gateway apply Anthropic prompt-caching at all
+  'PAPERCUSP_CACHE_SPLIT_BOUNDARY', // default-ON perf: where the cache-proxy inserts the prompt cache-control boundary
+  'PAPERCUSP_CACHE_TOOLS_BREAKPOINT', // default-OFF opt-in perf: inject an extra cache breakpoint after the tools block
+  'PAPERCUSP_CACHE_PROXY_ROUTE', // psu-launcher boot-mode select: route spawned CLIs through the local cache-proxy sidecar (mirrors the other *_SIDECAR_MODE selectors above)
+  'PAPERCUSP_MCP_PROXY_ABSORB_BOOT', // default-ON internal mcp-proxy tuning: absorb boot-time 5xx bursts (mirrors PAPERCUSP_MCP_PROXY_ABSORB_429 above)
+  // ops watchdogs / alarms (default-ON, `=== '0'` opts out) — same bucket as the
+  // *_WATCHDOG / *_ALARM entries already classified above
+  'PAPERCUSP_COLD_BOOT_DRILL_AUTORUNNER', // periodic self-test that simulates a cold boot; internal health drill, not user-facing
+  'PAPERCUSP_ESCALATION_AGING_ALARM', // ops alarm: flags escalations aging past a threshold with no response
+  'PAPERCUSP_FEDERATION_JOIN_STALL_WATCHDOG', // ops watchdog: detects a stalled VM-federation join
+  'PAPERCUSP_ORIGIN_FRESHNESS_WATCHDOG', // ops watchdog: detects a stale git origin/release pipeline read
+  'PAPERCUSP_REPLICATION_ORPHAN_SWEEP', // default-ON dbos periodic sweep: reap orphaned replication state
+  // dev/debug
+  'PAPERCUSP_DEBUG_FIXTURE_DSN', // opt-in debug: point the coord test fixture at a real DSN instead of the in-memory default
 ]);
 
 // Real default-OFF CAPABILITIES deliberately kept on an env gate (infra routing /

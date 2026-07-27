@@ -55,10 +55,12 @@ import {
   routineControl,
   routineFamily,
   routineKind,
+  routineArmedState,
   routineLiveness,
   routineNeedsAttention,
   spendForTargetRole,
   spendReasonForTargetRole,
+  type RoutineArmedState,
   type RoutineControl,
   type RoutineFamily,
   type RoutineKind,
@@ -96,6 +98,26 @@ export interface AutomationRoutine {
   family: RoutineFamily;
   /** Is it actually going to run again? `active` alone cannot say (see routine-classification). */
   liveness: RoutineLiveness;
+  /**
+   * Is this schedule ARMED right now — and do we actually know?
+   *
+   * WI-6447 (owner-reported 2026-07-27): the pane rendered an unarmed sweep
+   * identically to a running one (both just showed their cadence, e.g. "every
+   * 1m"), so the owner could see neither the state nor a switch. Worse, the
+   * boolean it was derived through — `const active = row.armed !== false` —
+   * turned schedule-inventory's THIRD value into the optimistic one:
+   * `armed: null` means genuinely UNKNOWN (the external-process rows carry
+   * "static manifest — live fire-state requires P-014 federation"), and it was
+   * silently reading as active. The pane asserted "running" where nothing had
+   * checked.
+   *
+   * So this mirrors `spend: RoutineSpend | 'unknown'` directly above: the
+   * unverified case is its OWN state rather than defaulting to the reassuring
+   * one, so an unverifiable schedule cannot present itself as healthy — the
+   * same rule that made `spend` refuse to let a new system action present
+   * itself as free.
+   */
+  armedState: RoutineArmedState;
   /** Where this row's on/off switch lives — replaces the ambiguous `controllable: false` padlock. */
   control: RoutineControl;
   /**
@@ -374,6 +396,21 @@ export function collapseFanOut(rows: readonly AutomationRoutine[]): AutomationRo
         ? 'running'
         : 'dormant';
 
+  /**
+   * WI-6447: collapse a group's armed states without inventing certainty. A
+   * grouped row spreads `...head`, so without this the FIRST install's state
+   * would silently speak for all of them. If ANY install is unverifiable the
+   * group is `unknown` — the group cannot be more certain than its least
+   * certain member. Otherwise it mirrors `active = group.some(...)`: armed
+   * somewhere reads as armed.
+   */
+  const worstArmed = (xs: readonly AutomationRoutine[]): RoutineArmedState =>
+    xs.some((x) => x.armedState === 'unknown')
+      ? 'unknown'
+      : xs.some((x) => x.armedState === 'armed')
+        ? 'armed'
+        : 'disarmed';
+
   const maxIso = (xs: Array<string | null>): string | null =>
     xs.filter((x): x is string => Boolean(x)).sort().at(-1) ?? null;
   const minIso = (xs: Array<string | null>): string | null =>
@@ -392,6 +429,7 @@ export function collapseFanOut(rows: readonly AutomationRoutine[]): AutomationRo
       ...head,
       active,
       liveness,
+      armedState: worstArmed(group),
       needsAttention: routineNeedsAttention({
         liveness,
         control: head.control,
@@ -473,6 +511,9 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       kind,
       family: routineFamily(r.name, kind),
       liveness,
+      // A routines ROW has a real, stored `active` column — this is the one
+      // source where armed state is genuinely known, never `unknown` (WI-6447).
+      armedState: routineArmedState(active),
       control,
       controlWhy,
       flagKey: null,
@@ -517,6 +558,11 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
         const kind = routineKind({ name: row.name, syncTriggered });
         // `armed` is null for sources that cannot report it; treat unknown as
         // running, because claiming a live sweep is "off" is the worse error.
+        // WI-6447: keep the TRI-STATE. `active` stays a boolean because the
+        // control/pause plumbing is boolean, but `armed !== false` maps UNKNOWN
+        // onto true, so the honest value is derived separately and carried to the
+        // pane rather than being destroyed here.
+        const armedState = routineArmedState(row.armed);
         const active = row.armed !== false;
         const { spend, why: spendWhy } = inventorySpend(row);
         // Only a routines row has a `routines:set` switch. A sync-triggered sweep
@@ -552,6 +598,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
           kind,
           family: routineFamily(row.name, kind),
           liveness,
+          armedState,
           control,
           controlWhy,
           flagKey: typeof row.detail?.flag === 'string' ? row.detail.flag : null,

@@ -48,10 +48,42 @@ const LOCK_RETRY_BASE_DELAY_MS = 2000;
 const LOCK_RETRY_MAX_DELAY_MS = 30_000;
 
 /** True iff psql's stderr is PG's own "canceling statement due to lock
- *  timeout" — the ONLY failure class the retry loop below targets. Exported
- *  + pure for unit testing. */
+ *  timeout" (SQLSTATE 55P03). Exported + pure for unit testing. */
 export function isLockTimeoutFailure(stderr: string): boolean {
   return /canceling statement due to lock timeout/i.test(stderr);
+}
+
+/** True iff psql's stderr is PG's own "deadlock detected" (SQLSTATE 40P01).
+ *  EI-18747087108453188: a deadlock is if anything MORE retryable than a lock
+ *  timeout — Postgres has already broken the cycle by killing one side of it,
+ *  so an immediate retry usually succeeds — and it is the MORE LIKELY failure
+ *  on this box: any migration touching harness_shared.work_items also touches
+ *  its two dependent views (engineer_issues, harness_features_consolidated),
+ *  and a reader locks view-then-base while `ALTER TABLE …; CREATE OR REPLACE
+ *  VIEW …` locks base-then-view — a guaranteed lock-order inversion against
+ *  ordinary fleet read traffic that fires readily on a 122-agent box. Exported
+ *  + pure for unit testing. */
+export function isDeadlockFailure(stderr: string): boolean {
+  return /deadlock detected/i.test(stderr);
+}
+
+/** True iff psql's stderr is PG's own serialization-failure cancel (SQLSTATE
+ *  40001 — "could not serialize access due to concurrent update" / "...due to
+ *  read/write dependencies among transactions"), the third member of PG's
+ *  retryable-transaction-error family alongside lock timeout and deadlock.
+ *  Exported + pure for unit testing. */
+export function isSerializationFailure(stderr: string): boolean {
+  return /could not serialize access/i.test(stderr);
+}
+
+/** True iff `stderr` is ANY of the retryable transaction-contention failure
+ *  classes this loop rides out with backoff: lock timeout, deadlock, or
+ *  serialization failure. This is the ONLY predicate {@link
+ *  runMigrationWithLockRetry} uses to decide whether to retry — any other
+ *  psql error (syntax, constraint, …) fails immediately, unretried. Exported
+ *  + pure for unit testing. */
+export function isRetryableLockFailure(stderr: string): boolean {
+  return isLockTimeoutFailure(stderr) || isDeadlockFailure(stderr) || isSerializationFailure(stderr);
 }
 
 /** Exponential backoff (2s, 4s, 8s, 16s, capped at 30s) for attempt N
@@ -176,7 +208,7 @@ async function runMigrationWithLockRetry(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     result = spawn('psql', [url, '-v', 'ON_ERROR_STOP=1'], { input: script, encoding: 'utf8' });
     if (result.status === 0) return { result, attempts: attempt };
-    if (attempt >= maxAttempts || !isLockTimeoutFailure(result.stderr ?? '')) return { result, attempts: attempt };
+    if (attempt >= maxAttempts || !isRetryableLockFailure(result.stderr ?? '')) return { result, attempts: attempt };
     await sleep(lockRetryBackoffMs(attempt));
   }
   // Unreachable — the loop above always returns by its last iteration — but

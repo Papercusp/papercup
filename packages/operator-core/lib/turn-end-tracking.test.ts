@@ -12,6 +12,7 @@ import {
   isRewakeGuaranteed,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
+  settledMessagesCursor,
   unregisteredArtifactTripwire,
 } from './turn-end-tracking';
 
@@ -132,5 +133,62 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
     expect(t?.kind).toBe('unguarded-halt');
     expect(t?.note).toBe(UNGUARDED_HALT_NOTE);
     expect(t?.note).toContain('session:request-compaction');
+  });
+});
+
+/** unread-count-truthfulness-2026-07-27 P-008 / D-008 — the coord-cursor settle.
+ *  `messages_since_ts` becomes a strict, abort-safe FOLLOWER of the read receipt
+ *  `messages_shown_ts`: monotone (never regresses an OMP-reported value) and
+ *  clamped (never past what was demonstrably shown). */
+describe('settledMessagesCursor (D-008 coord-cursor settle)', () => {
+  const SHOWN = '2026-07-27T18:00:00.000Z';
+
+  it('THE BUG: a never-settled cursor advances to the read receipt', () => {
+    // The measured live shape: 14/14 clean-turn-end agents had a shown_ts and
+    // 0/14 a current since_ts. An empty since_ts reads as "never read
+    // anything" => count from log epoch => the 19k unread badge.
+    expect(settledMessagesCursor({ sinceTs: '', shownTs: SHOWN })).toBe(SHOWN);
+    expect(settledMessagesCursor({ sinceTs: null, shownTs: SHOWN })).toBe(SHOWN);
+    expect(settledMessagesCursor({ sinceTs: undefined, shownTs: SHOWN })).toBe(SHOWN);
+  });
+
+  it('advances a genuinely-behind cursor (the 35h-stale row this plan found)', () => {
+    expect(settledMessagesCursor({ sinceTs: '2026-07-26T07:02:52.000Z', shownTs: SHOWN })).toBe(SHOWN);
+  });
+
+  it('MONOTONE: never regresses a cursor that is already ahead', () => {
+    // writeWatermark is deliberately last-write-wins and makes ordering safety
+    // the caller's job — so an OMP session that reported a cursor AHEAD of the
+    // receipt must not be walked backward by this settle.
+    const ahead = '2026-07-27T19:00:00.000Z';
+    expect(settledMessagesCursor({ sinceTs: ahead, shownTs: SHOWN })).toBeNull();
+  });
+
+  it('no-ops when already exactly at the receipt (no redundant write)', () => {
+    expect(settledMessagesCursor({ sinceTs: SHOWN, shownTs: SHOWN })).toBeNull();
+  });
+
+  it('NEVER GUESSES: an absent receipt settles nothing rather than inventing "now"', () => {
+    // Advancing on a missing receipt would silently SKIP mail — strictly worse
+    // than the over-count this plan is fixing.
+    expect(settledMessagesCursor({ sinceTs: '', shownTs: '' })).toBeNull();
+    expect(settledMessagesCursor({ sinceTs: '', shownTs: null })).toBeNull();
+    expect(settledMessagesCursor({ sinceTs: SHOWN, shownTs: undefined })).toBeNull();
+  });
+
+  it('CLAMPED: the only value ever returned is the receipt itself', () => {
+    // P-008's `since_ts <= shown_ts` invariant holds BY CONSTRUCTION, matching
+    // the substrate's stated contract (shown_ts is always >= since_ts).
+    for (const sinceTs of ['', '2026-01-01T00:00:00.000Z', '2026-07-27T17:59:59.999Z']) {
+      const next = settledMessagesCursor({ sinceTs, shownTs: SHOWN });
+      expect(next).toBe(SHOWN);
+      expect(next! <= SHOWN).toBe(true);
+    }
+  });
+
+  it('is idempotent — settling twice writes once', () => {
+    const first = settledMessagesCursor({ sinceTs: '', shownTs: SHOWN });
+    expect(first).toBe(SHOWN);
+    expect(settledMessagesCursor({ sinceTs: first, shownTs: SHOWN })).toBeNull();
   });
 });
