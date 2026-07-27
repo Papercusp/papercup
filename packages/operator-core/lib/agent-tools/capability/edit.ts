@@ -78,7 +78,7 @@ export default defineTool({
       };
     });
 
-    return outcome.acquired ? outcome.result : await fileLockedResult(outcome.busy);
+    return outcome.acquired ? outcome.result : await fileLockedResult(outcome.busy, outcome.reader);
   },
 });
 

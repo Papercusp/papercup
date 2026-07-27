@@ -44,6 +44,7 @@ import { acquireWithContentionRetry, isWorkspaceContended } from './contention-r
 import { normalizePaths, tryAcquire, tryRelease, type AcquireBusy } from './su-lock-store';
 import { enrichBusy } from './enrich-busy';
 import { DEFAULT_LOCK_TTL_SEC } from './lock-config';
+import type { CellReader } from '../../cell-registry';
 
 /** Default lease — same as the PreToolUse hook (`ttl_sec: 1200`). The body runs
  *  while held and releases in a finally, so this is just the crash/abort
@@ -116,7 +117,9 @@ export async function guardFileLock<T>(
   rawPaths: string[],
   spec: FileLockSpec,
   run: () => Promise<T>,
-): Promise<{ acquired: true; result: T } | { acquired: false; busy: AcquireBusy[] }> {
+): Promise<
+  { acquired: true; result: T } | { acquired: false; busy: AcquireBusy[]; reader?: CellReader }
+> {
   const cwd = ctx.projectDir ?? process.cwd();
 
   // Resolve to the repo-relative keys the hook + server agree on. A path that
@@ -161,7 +164,11 @@ export async function guardFileLock<T>(
   }
 
   if (!acquired.ok) {
-    return { acquired: false, busy: acquired.busy };
+    // Carry the BLOCKED caller's identity out with the contention snapshot: it is
+    // resolved here and nowhere downstream, and P-026's holder context is
+    // reader-relative, so without it `fileLockedResult` would have to default the
+    // audience — which fails open. Absent ⇒ no context, never a wider one.
+    return { acquired: false, busy: acquired.busy, reader: { ownerId } };
   }
 
   const lockId = acquired.lock_id;
@@ -183,7 +190,10 @@ export async function guardFileLock<T>(
  * surfaces, so a blocked agent learns who holds the file and can replan. The
  * `enrichBusy` call hydrates each holder's declared coord intent + focus.
  */
-export async function fileLockedResult(busy: AcquireBusy[]): Promise<ToolResultLike> {
+export async function fileLockedResult(
+  busy: AcquireBusy[],
+  reader?: CellReader,
+): Promise<ToolResultLike> {
   return {
     content: [
       {
@@ -191,7 +201,7 @@ export async function fileLockedResult(busy: AcquireBusy[]): Promise<ToolResultL
         text: JSON.stringify({
           ok: false,
           reason: 'file_locked',
-          busy: await enrichBusy(busy),
+          busy: await enrichBusy(busy, reader),
           advice:
             'File(s) held by another agent. Wait and retry, pivot to other work, or coordinate with the holder. The lock releases when they finish their edit (or at TTL).',
         }),
@@ -220,6 +230,6 @@ export function withFileLock<A, C extends FileLockCtx>(
     const rawPaths = extractPaths(args, ctx);
     const outcome = await guardFileLock<ToolResultLike>(ctx, rawPaths, spec, async () => handler(args, ctx));
     if (outcome.acquired) return outcome.result;
-    return fileLockedResult(outcome.busy);
+    return fileLockedResult(outcome.busy, outcome.reader);
   };
 }

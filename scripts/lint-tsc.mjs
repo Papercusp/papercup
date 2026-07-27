@@ -67,6 +67,7 @@ import {
   decidePerFile,
   effectiveBaselineByFile,
   formatAttributionHeadline,
+  formatNewFileGuidance,
   runTscBaselineGate,
 } from './lib/tsc-baseline-gate.mjs';
 
@@ -79,6 +80,7 @@ export {
   decidePerFile,
   effectiveBaselineByFile,
   formatAttributionHeadline,
+  formatNewFileGuidance,
 };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

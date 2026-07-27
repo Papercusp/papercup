@@ -689,7 +689,7 @@ describe('runBootstrapLeg', () => {
     expect(openHiveGitDuplexToDeviceMock.mock.calls[1][1]).toBe(PEER_DEVICE_2);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
     const patch = routinePatchBody(routinesPatch().params);
-    expect(patch.bootstrap.ok).toBe(true);
+    expect((patch.bootstrap as { ok?: boolean }).ok).toBe(true);
   });
 
   it('iterates past a LIVE candidate whose fetch fails (ok:false) to a later one that succeeds', async () => {
@@ -704,7 +704,7 @@ describe('runBootstrapLeg', () => {
     await runBootstrapLeg(SLUG, WS);
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(2); // first failed → tried the second
     const patch = routinePatchBody(routinesPatch().params);
-    expect(patch.bootstrap.ok).toBe(true); // the final (successful) outcome wins
+    expect((patch.bootstrap as { ok?: boolean }).ok).toBe(true); // the final (successful) outcome wins
   });
 
   it('surfaces the peer refuse reason in the dialLog when a LIVE dial fails (duplex.errored)', async () => {
@@ -779,7 +779,7 @@ describe('runBootstrapLeg', () => {
       expect(warnMsg).toContain(`${PEER_DEVICE.slice(0, 8)}:no-path`);
       expect(warnMsg).toContain(`${PEER_DEVICE_2.slice(0, 8)}:no-path`);
       const patch = routinePatchBody(routinesPatch().params);
-      expect(patch.bootstrap.ok).toBe(false);
+      expect((patch.bootstrap as { ok?: boolean }).ok).toBe(false);
     } finally {
       warnSpy.mockRestore();
     }

@@ -46,6 +46,6 @@ export default defineTool({
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, path: abs, bytes, lines }) }] };
     });
 
-    return outcome.acquired ? outcome.result : await fileLockedResult(outcome.busy);
+    return outcome.acquired ? outcome.result : await fileLockedResult(outcome.busy, outcome.reader);
   },
 });

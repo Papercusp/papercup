@@ -82,3 +82,11 @@ export function parseExplicitFiles(argv: string[]): Set<string> | null;
  * `git status` on a tree the whole fleet shares) may not. EI-18788983174587495.
  */
 export function formatAttributionHeadline(opts: { count: number; explicit: boolean }): string;
+
+/**
+ * The explanation printed under a `fail-new-file` verdict, worded per how the changed-set was
+ * DERIVED. The verdict never moves (a new file has no baseline to drift from, so no scoping can
+ * exonerate it) — only the remedy does: under `--files` the caller already scoped, so telling
+ * them to "re-run with --files" reads as "you invoked it wrong". EI-18802204276510164.
+ */
+export function formatNewFileGuidance(opts: { explicit: boolean }): string[];

@@ -368,28 +368,43 @@ describe('EI-18799539619330782: git-sync routine-metadata access is tenant-scope
   const routineReads = () => templateCalls.filter((c) => c.text.includes('harness_shared.routines'));
   const routineWrites = () => unsafeCalls.filter((c) => c.text.includes('UPDATE harness_shared.routines'));
 
-  it('scopes EVERY routines read AND write to the ticking workspace — a peer tenant sharing the install_slug cannot be read or clobbered', async () => {
-    runGitSyncMock.mockResolvedValue(syncedOutcome);
+  /*
+   * Driven across EVERY tick outcome on purpose. A plain `synced` tick never reaches
+   * `resolverInFlight` / `contentFixerInFlight` — those reads sit behind the conflict and
+   * content-error paths. Proven, not assumed: reverting both a read AND the write predicate
+   * made ONLY the write assertion fire on a synced-only run, i.e. a synced-only guard would
+   * have let an unscoped conflict-path read straight through.
+   */
+  it.each([
+    ['synced', syncedOutcome],
+    ['conflict', conflictOutcome],
+    ['error', errorOutcome],
+    ['content-error', contentErrorOutcome],
+  ] as const)(
+    'scopes EVERY routines read AND write to the ticking workspace on a %s tick — a peer tenant sharing the install_slug cannot be read or clobbered',
+    async (_label, outcome) => {
+      runGitSyncMock.mockResolvedValue(outcome);
 
-    // A DIFFERENT workspace than the suite default ('ws-42'), so a hardcoded or
-    // defaulted scope cannot pass this by coincidence.
-    await action({ ...ctx, workspaceId: 'ws-99' });
+      // A DIFFERENT workspace than the suite default ('ws-42'), so a hardcoded or
+      // defaulted scope cannot pass this by coincidence.
+      await action({ ...ctx, workspaceId: 'ws-99' });
 
-    // Guard the guard: if a refactor stops issuing routines statements entirely,
-    // the per-statement loops below would vacuously pass.
-    expect(routineReads().length).toBeGreaterThan(0);
-    expect(routineWrites().length).toBeGreaterThan(0);
+      // Guard the guard: if a refactor stops issuing routines statements entirely,
+      // the per-statement loops below would vacuously pass.
+      expect(routineReads().length).toBeGreaterThan(0);
+      expect(routineWrites().length).toBeGreaterThan(0);
 
-    for (const read of routineReads()) {
-      expect(read.text).toContain('workspace_id =');
-      expect(read.values).toContain('ws-99');
-    }
-    for (const write of routineWrites()) {
-      // params are [slug, workspaceId, patch] — the predicate binds $2.
-      expect(write.text).toContain('workspace_id = $2');
-      expect(write.params[1]).toBe('ws-99');
-    }
-  });
+      for (const read of routineReads()) {
+        expect(read.text).toContain('workspace_id =');
+        expect(read.values).toContain('ws-99');
+      }
+      for (const write of routineWrites()) {
+        // params are [slug, workspaceId, patch] — the predicate binds $2.
+        expect(write.text).toContain('workspace_id = $2');
+        expect(write.params[1]).toBe('ws-99');
+      }
+    },
+  );
 
   it('binds the scope from the tick context, not a constant — a second tenant scopes to ITS own workspace', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);

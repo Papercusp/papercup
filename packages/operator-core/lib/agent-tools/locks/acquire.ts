@@ -358,7 +358,7 @@ export default defineTool({
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy) }),
+              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy, { ownerId }) }),
             },
           ],
         };
@@ -395,7 +395,7 @@ export default defineTool({
               await_id: awaitRow.id,
               queue_window_sec: WAKE_QUEUE_WINDOW_SEC,
               wake_handle: handleNote,
-              busy: await enrichBusy(first.busy),
+              busy: await enrichBusy(first.busy, { ownerId }),
               advice: pendingEdit
                 ? `Queued WITH your edit attached (apply-on-grant). END YOUR TURN. On grant the server applies your edit to ${pendingEdit.file} iff old_string still matches exactly once, then drops a PASSIVE inbox note (category lock-edit-applied) — you are NOT woken and the lock is released for you. Only if the region changed under the holder are you woken (granted:true) to redo it. Retract with locks:cancel_wait + events:cancel.`
                 : 'Queued. END YOUR TURN — you will be re-invoked when the grant cascade reaches your ticket (the wake carries lock_id + TTL, already running: edit, then locks:release). If the window lapses without a grant you are woken with granted:false. Retract with locks:cancel_wait + events:cancel.',
@@ -470,7 +470,7 @@ export default defineTool({
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy) }),
+              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy, { ownerId }) }),
             },
           ],
         };

@@ -339,6 +339,16 @@ interface ChannelState {
   /** Write callbacks parked because the muxer's stream said it was full;
    *  released by the channel's `ondrain` (or by close). See FrameDuplex._write. */
   drainWaiters: Array<() => void>;
+  /** The channel id (topic) this state is keyed by, and the muxer it lives on.
+   *  Carried purely so a refusal can NAME them: `not-serving` means "no serve
+   *  config registered for THIS (muxer, topic)", and a refusal that omits the
+   *  lookup key its own reason depends on is structurally undiagnosable — it
+   *  cannot distinguish a dialer/server channel-id MISMATCH (this muxer serves
+   *  other topics, just not the requested one) from a muxer that was never
+   *  wired at all. That ambiguity blocked the live rig<->tower papercusp
+   *  diagnosis for hours; see the refusal log in `handleReq`. */
+  topicHex: string;
+  mux: object | null;
 }
 
 const stateByMuxer = new WeakMap<object, Map<string, ChannelState>>();
@@ -373,8 +383,10 @@ function serveConfigsFor(mux: object): Map<string, { serverConfig: PotGitServeCo
  *  redundant re-registration on every `resolveMuxStream` call. */
 const potGitPairedMuxers = new WeakSet<object>();
 
-function newState(): ChannelState {
+function newState(topicHex: string, mux: object | null): ChannelState {
   return {
+    topicHex,
+    mux,
     channel: null,
     messages: null,
     opened: false,
@@ -698,11 +710,40 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     } catch {
       /* best-effort */
     }
-    const { log, suppressed } = shouldLogRefusal(`${reason}\x00${v.repoKey}\x00${peerTag(state)}`, Date.now());
+    // The topic is part of the dedup key, not just the message: two refusals
+    // that differ ONLY by the topic they arrived on are the single most
+    // diagnostic pair this log can emit, so they must never collapse into one
+    // another as "identical".
+    const topicTag = state.topicHex ? state.topicHex.slice(0, 16) : '<unknown>';
+    const { log, suppressed } = shouldLogRefusal(
+      `${reason}\x00${v.repoKey}\x00${peerTag(state)}\x00${state.topicHex}`,
+      Date.now(),
+    );
     if (log) {
+      // `not-serving` means `state.serverConfig` was null for THIS (muxer,
+      // topic). Naming the topic alone is not enough to act on: what decides
+      // the fix is whether this muxer serves OTHER topics. Non-empty but
+      // missing the requested topic => a dialer/server channel-id mismatch
+      // (the dial path opens a pot-git channel on whatever live socket reaches
+      // the device, while serve is registered per muxer+topic). Empty => the
+      // connection handler never wired serve on this muxer at all. Only
+      // computed for the reason that depends on it, and never throws.
+      let wiredTopics = '';
+      if (reason === 'not-serving') {
+        let wired: string;
+        try {
+          const m = state.mux ? serveConfigByMuxer.get(state.mux) : undefined;
+          const hexes = m ? [...m.keys()].map((h) => h.slice(0, 16)) : [];
+          wired = hexes.length > 0 ? hexes.join(',') : '<none>';
+        } catch {
+          wired = '<unreadable>';
+        }
+        wiredTopics = ` wiredTopics=${wired}`;
+      }
       potGitLog(
         'warn',
-        `[pot-git] serve REFUSED reason=${reason} repo=${v.repoKey} peer=${peerTag(state)} id=${v.id}` +
+        `[pot-git] serve REFUSED reason=${reason} repo=${v.repoKey} peer=${peerTag(state)} ` +
+          `topic=${topicTag}${wiredTopics} id=${v.id}` +
           (suppressed > 0 ? ` (+${suppressed} identical suppressed in the last ${REFUSE_LOG_WINDOW_MS / 1000}s)` : ''),
       );
     }
@@ -894,7 +935,7 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   const topicHex = topic.toString('hex');
   let state = states.get(topicHex);
   if (state) return state;
-  state = newState();
+  state = newState(topicHex, mux as unknown as object);
   states.set(topicHex, state);
   // Seed from the muxer-level serve config (see serveConfigByMuxer): a channel
   // re-created after the onclose eviction below — or materialized by the lazy

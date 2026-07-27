@@ -304,6 +304,48 @@ export function formatAttributionHeadline({ count, explicit }) {
 }
 
 /**
+ * The explanation printed under a `fail-new-file` verdict, worded per how the changed-set was
+ * DERIVED. The verdict itself never moves (EI-18766822535373909): a file the baseline has never
+ * seen has no known-good state to drift from, so NO scoping can exonerate it. Only the remedy
+ * differs.
+ *
+ * WHY IT BRANCHES (EI-18802204276510164). The single closing line used to read "re-run with
+ * --files=<paths>" unconditionally — including for a caller who had just passed `--files`, in a
+ * run that echoes `[--files]` in its own header two lines above. Prescribing the action already
+ * taken reads as "I invoked it wrong", so the reader goes to this script hunting their own
+ * mistake instead of to the actual next step, and it lands on precisely the agents doing the
+ * right thing: scoping their check exactly, at the moment they are deciding whether their change
+ * is safe to leave in the shared tree.
+ *
+ * @param {{explicit: boolean}} opts `explicit` — the changed-set came from `--files` (named by
+ *   the caller) rather than `--mine` (inferred from `git status`).
+ * @returns {string[]} console lines, already indented.
+ */
+export function formatNewFileGuidance({ explicit }) {
+  const NO_BASELINE =
+    `   These files are new, so every error in them is new — the baseline has no known-good state to drift from.`;
+  const TELL_THE_AUTHOR =
+    `   If a file here really isn't yours, its author needs to know — a bare run of this gate reds the fleet on it.`;
+
+  if (explicit) {
+    return [
+      NO_BASELINE,
+      `   They are OUTSIDE the --files set you named, and are reported anyway BECAUSE they are new:`,
+      `   scoping only exonerates a file the baseline already knows, and these have no baseline at all.`,
+      `   So this is not a bad invocation — naming them would not clear them either. If one is yours, fix it.`,
+      TELL_THE_AUTHOR,
+    ];
+  }
+  return [
+    NO_BASELINE,
+    `   They are not in your git-status changed set, but that does NOT establish they aren't yours: git-sync`,
+    `   auto-commits this shared tree every few minutes, which silently drops your own recent work out of that set.`,
+    TELL_THE_AUTHOR,
+    `   To scope this check to exactly the files you touched, re-run with --files=<comma-separated paths>.`,
+  ];
+}
+
+/**
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
  * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
  *
@@ -446,11 +488,11 @@ export function runTscBaselineGate({
       // new file is dirty for only a short window. Never greenwash this one.
       console.error(`❌ ${result.newFiles.length} NEW file(s) (not in the baseline) have type errors:`);
       for (const r of result.newFiles) console.error(formatRow(r));
-      console.error(`   These files are new, so every error in them is new — the baseline has no known-good state to drift from.`);
-      console.error(`   They are not in your git-status changed set, but that does NOT establish they aren't yours: git-sync`);
-      console.error(`   auto-commits this shared tree every few minutes, which silently drops your own recent work out of that set.`);
-      console.error(`   If a file here really isn't yours, its author needs to know — a bare run of this gate reds the fleet on it.`);
-      console.error(`   To scope this check to exactly the files you touched, re-run with --files=<comma-separated paths>.`);
+      // EI-18802204276510164 — the remedy is worded per how the changed-set was derived, so a
+      // caller who already passed --files is never told to pass --files.
+      for (const line of formatNewFileGuidance({ explicit: explicitFiles !== null })) {
+        console.error(line);
+      }
       process.exit(1);
       break;
     case 'ok-peer-drift':

@@ -22,6 +22,7 @@ import {
   decidePerFile,
   effectiveBaselineByFile,
   formatAttributionHeadline,
+  formatNewFileGuidance,
   TSC_COMMAND,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
@@ -103,6 +104,46 @@ describe('formatAttributionHeadline — the gate may only claim authorship it ca
     expect(headline).toContain('YOU NAMED');
     expect(headline).toContain('2 file(s)');
   });
+});
+
+describe('formatNewFileGuidance — never prescribe the flag the caller already passed', () => {
+  // WHY THIS IS PINNED (EI-18802204276510164). The `fail-new-file` verdict itself is correct and
+  // deliberate (EI-18766822535373909) and must not move: a file the baseline has never seen has no
+  // known-good state to drift from, so no scoping can exonerate it. What was wrong was only the
+  // remedy line — it closed with "re-run with --files=<paths>" even when the caller HAD passed
+  // --files (the run echoes `[--files]` in its own header two lines earlier). Prescribing the
+  // action already taken reads as "I invoked it wrong", so the reader goes to the script to find
+  // their mistake instead of to the actual next step. It lands specifically on the agents doing
+  // the right thing — scoping precisely — at the moment they are deciding whether their change is
+  // safe to leave in the tree.
+  const joined = (explicit: boolean) => formatNewFileGuidance({ explicit }).join('\n');
+
+  it('under --files: does NOT tell the caller to re-run with --files', () => {
+    expect(joined(true)).not.toMatch(/re-run with --files/i);
+  });
+
+  it('under --files: names the real next step (fix it, or tell its author) instead', () => {
+    const text = joined(true);
+    expect(text).toMatch(/outside the .*--files.* set|set you named/i);
+    expect(text).toMatch(/author/i);
+  });
+
+  it('under --mine: still offers --files= as the scoping remedy (it is genuinely next there)', () => {
+    const text = joined(false);
+    expect(text).toContain('--files=');
+    // The git-sync rationale is the whole reason --mine cannot exonerate; it must survive.
+    expect(text).toMatch(/git-sync/i);
+  });
+
+  // Non-vacuousness: the wording change must not soften the EI-18766822535373909 invariant in
+  // EITHER mode. If a future edit ever lets one branch imply the new file can be scoped away,
+  // this fails rather than silently greenwashing the verdict the guidance explains.
+  it.each([true, false])(
+    'explicit=%s: always states that a new file has no baseline to drift from',
+    (explicit) => {
+      expect(joined(explicit)).toMatch(/baseline has no known-good state|no baseline at all/i);
+    },
+  );
 });
 
 const SAMPLE = [
