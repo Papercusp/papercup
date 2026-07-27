@@ -339,6 +339,71 @@ export async function loadHiveOwnerDeviceBindings(
 }
 
 /**
+ * WI-559 — the CANONICAL (owner-authored) hive-home slug for `hivePubkey` as carried
+ * by the owner's signed directory announce (`DiscoveredHive.potId`), else null.
+ *
+ * WHY THIS EXISTS. A JOINER's local view slug is a LOCAL NAMING AFFORDANCE, not an
+ * identity: `join-hive.ts:265` derives it `freeSlug(kebab(opts.potId), taken)`, which
+ * deliberately SUFFIXES on a local name collision (`spoon-knife-pot-2`). So the local
+ * slug can legitimately differ from the owner's home slug on a perfectly healthy join —
+ * and it also differed on the WI-559 rig because `lookup-hive-for-repo` leg 3 fabricated
+ * the `potId` from a display TITLE. Either way, the joiner then bound every hive-home-
+ * grained projection to a slug the owner never uses, and the demux dropped EVERY inbound
+ * row for that hive (~12 projections: pot_members, pot_settings, agent_facts, memories,
+ * gym elites, policy, reports, epoch keys, p2p tags). Whole-hive federation blackout;
+ * presence was merely where it became visible.
+ *
+ * The pubkey is the Hive's real identity and already agrees across machines, so it is
+ * the only sound key to recover the owner's slug by. The announce is signature-verified
+ * upstream (`listDiscoveredHives` returns only ingest-admitted descriptors, exactly like
+ * the cache it feeds), so this cannot be steered by an unverified peer.
+ *
+ * Fail-CLOSED per source and overall: any miss returns null and the caller keeps its
+ * local slug (today's behavior) — never throws.
+ */
+export async function loadAnnouncedHiveHomeSlug(
+  workspaceId: string,
+  hivePubkey: string,
+): Promise<string | null> {
+  if (typeof hivePubkey !== 'string' || hivePubkey.length === 0) return null;
+  const pick = (h?: { hivePubkey?: string; potId?: string }): string | null => {
+    if (!h || h.hivePubkey !== hivePubkey) return null;
+    const potId = typeof h.potId === 'string' ? h.potId.trim() : '';
+    return potId.length > 0 ? potId : null;
+  };
+
+  // (1) LIVE in-process directory — present the instant the owner's fresh announce is
+  // heard, independent of the racy/workspace-scoped PG cache write (same leg ordering
+  // and rationale as loadHiveOwnerDeviceBindings above).
+  try {
+    const { getHiveDirectory } = await import('./hive-directory-deps');
+    for (const h of getHiveDirectory().listDiscoveredHives({ includeExpired: true })) {
+      const hit = pick(h);
+      if (hit) return hit;
+    }
+  } catch {
+    /* directory unavailable — fall through to the PG offline cache */
+  }
+
+  // (2) PG offline cache (migration 182) — the durable mirror. This is the leg that
+  // answers on a cold boot, before this process has re-heard the owner's announce.
+  try {
+    const { readOperatorState } = await import('./operator-state-pg');
+    const row = await readOperatorState<{
+      hives?: Array<{ hivePubkey?: string; potId?: string }>;
+    }>('pot_directory_cache', workspaceId).catch(() => null);
+    for (const h of row?.hives ?? []) {
+      const hit = pick(h);
+      if (hit) return hit;
+    }
+  } catch {
+    /* cache read failed — no canonical answer available here */
+  }
+
+  return null;
+}
+
+/**
  * Upsert a Hive member row (admission). On conflict the scalar fields are
  * updated and the device/revocation sets are MERGED, never replaced
  * (WI-1585, LIVE-1 second-device admission):

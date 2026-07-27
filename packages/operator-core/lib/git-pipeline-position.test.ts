@@ -1065,6 +1065,31 @@ describe('evaluateServing: process truth, never a git inference', () => {
     expect(sv.unknownReason?.detail).toMatch(/sha-only probe/);
   });
 
+  /**
+   * The case that earns the enum its keep (D-038 axis 2 corollary). All three
+   * unknowns above render as prose a human reads the same way — "we don't know"
+   * — but they demand THREE different responses, and only the code says which:
+   *   - sha-only probe        → not-applicable   → stop asking; there is no lever
+   *   - unreadable start time → resolver-failed  → retry, or escalate the probe
+   *   - start time but no code-as-of → insufficient-data → supply the missing
+   *     operand; retrying the identical call cannot help, because the half that
+   *     failed is not the half being retried.
+   * Before this change all three were `string | null` and a caller could only
+   * have told them apart by matching on prose, which nobody does.
+   */
+  it('a HALF-read comparison is insufficient-data, not resolver-failed — the probe succeeded', () => {
+    const sv = evaluateServing({
+      runtime: releaseRuntime,
+      process: { pid: 4242, startedAtMs: 5_000 },
+      codeAsOfMs: null,
+      codeAsOfSource: null,
+    });
+    expect(sv.startedSinceCodeChange).toBeNull();
+    expect(sv.unknownReason?.code).toBe('insufficient-data');
+    expect(sv.unknownReason?.code).not.toBe('resolver-failed');
+    expect(sv.unknownReason?.detail).toMatch(/cannot be compared/);
+  });
+
   it('a working-tree host compares against FILE MTIME, because it imports the tree — not the deploy', () => {
     // bg-host tsx-loads the working tree, so an uncommitted edit IS its code; the
     // deploy is irrelevant to it (EI-11120). Same comparison service-health's

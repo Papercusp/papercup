@@ -130,6 +130,68 @@ export async function potHomeSlugForHarness(
 }
 
 /**
+ * WI-559 — the CANONICAL hive-home slug to use as the FEDERATION DEMUX KEY for a
+ * harness: the owner-authored home slug when this harness's Hive is a JOINED
+ * (`remote_hive`) view and the owner's signed announce is resolvable by pubkey, else
+ * the local slug `potHomeSlugForHarness` returns.
+ *
+ * ── WHY THIS IS A SEPARATE FUNCTION AND NOT A CHANGE TO `potHomeSlugForHarness` ──
+ * Those are two DIFFERENT questions that happened to share an answer for an owned Hive:
+ *
+ *   potHomeSlugForHarness  → the LOCAL slug: which registry entry / `hives` identity row
+ *                            / local scope key is this harness's home. Must stay local —
+ *                            `resolveHiveSwarmBinding` immediately feeds it to
+ *                            `getHiveBySlug`, the registry lookups key on it, and ~40
+ *                            other consumers (hive-scoped tool reads, plans/source,
+ *                            learning/pot-scope, sync-resolver, the _mcp-handler subtree
+ *                            clamp, steering-lease, claim-lease) use it as a LOCAL key.
+ *                            Canonicalizing it wholesale would make `getHiveBySlug` miss
+ *                            on a joiner and kill the swarm binding outright.
+ *   canonicalHiveHomeSlug  → the FEDERATED slug: under which `hive_home` do this Hive's
+ *                            rows travel on the wire. That is the OWNER's slug, on every
+ *                            machine, by definition.
+ *
+ * A joiner's local slug is a naming AFFORDANCE (`join-hive.ts:265` suffixes it on a local
+ * collision via `freeSlug`), so it can differ from the owner's on a healthy join — it is
+ * structurally unfit to be a demux key. See `loadAnnouncedHiveHomeSlug` for the full
+ * failure mode.
+ *
+ * ── BOTH SCOPES MUST MOVE TOGETHER ── The projection WRITE scope
+ * (`boot.ts` resolveHiveHomeProjectionSlug → `joinerPotHomeSlug`) and the presence gate's
+ * READ scope (`wire-presence.ts` resolveHive → the topic binding's `potHomeSlug` →
+ * `presence-gossip-wiring.ts` listHiveMembers/loadRevokedHivePubkeys) resolve through
+ * DIFFERENT call paths and agree today only because both returned the same (wrong) local
+ * slug. Canonicalizing one alone would merely MOVE the mismatch — writing `pot_members`
+ * under the owner slug while the gate kept reading under the local one — a "fix" that
+ * passes unit tests and leaves the rig exactly as broken. Both defaults are switched to
+ * this function; do not re-point one of them back.
+ *
+ * GATED + FAIL-OPEN: an OWNED hive returns byte-for-byte what it returns today (the
+ * remote_hive check short-circuits first), and a joined view with no resolvable identity
+ * row or no matching announce keeps its local slug. Pure resolution; never throws.
+ */
+export async function canonicalHiveHomeSlug(
+  workspaceId: string,
+  harnessSlug: string,
+  opts?: { fresh?: boolean },
+): Promise<string | null> {
+  const local = await potHomeSlugForHarness(workspaceId, harnessSlug, opts);
+  if (!local) return null;
+  try {
+    const reg = await loadHarnessRegistry(workspaceId, opts);
+    // Only a JOINED view can disagree with the owner: an owned Hive IS the authority
+    // for its own slug, and rebinding it would double-apply its own rows as remote.
+    if (reg.projects.find((p) => p.slug === local)?.remote_hive !== true) return local;
+    const hive = await getHiveBySlug(workspaceId, local);
+    if (!hive?.pubkeyBase64) return local; // no identity row → nothing to match on
+    const { loadAnnouncedHiveHomeSlug } = await import('./hive-membership-store');
+    return (await loadAnnouncedHiveHomeSlug(workspaceId, hive.pubkeyBase64)) ?? local;
+  } catch {
+    return local; // fail-open: never let canonicalization break a working binding
+  }
+}
+
+/**
  * A-003 (shared-pot-release-testing Brief I): the HIVE-HOME slug a JOINER's
  * member harness must bind its `hive_members` / `hive_settings` projections to,
  * else null (no rebind — today's behavior).
@@ -183,6 +245,11 @@ export async function joinerPotHomeSlug(
   if (!home) return null;
   const reg = await loadHarnessRegistry(workspaceId, opts);
   const isRemoteJoined = reg.projects.find((p) => p.slug === home)?.remote_hive === true;
-  return isRemoteJoined ? home : null;
+  if (!isRemoteJoined) return null;
+  // WI-559: the GATE above must key on the LOCAL slug (that is what the registry is
+  // keyed by — canonicalizing first would make this lookup miss and silently disable the
+  // whole joiner rebind), but the RETURNED value is the federation demux key and must be
+  // the OWNER's slug. Fail-open to `home` is inside canonicalHiveHomeSlug.
+  return await canonicalHiveHomeSlug(workspaceId, harnessSlug, opts);
 }
 

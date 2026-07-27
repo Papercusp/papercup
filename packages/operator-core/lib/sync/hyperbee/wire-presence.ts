@@ -14,7 +14,8 @@
  * GATED: only a SHARED harness (swarmBinding present + a joined swarm) announces —
  * a private/local harness has no peers. Best-effort: a wiring/tick failure never
  * blocks boot (mirrors wire-outbox). The harness's home Hive slug is resolved ONCE
- * (potHomeSlugForHarness) and stamped on every announce so the federated row
+ * (WI-559: `canonicalHiveHomeSlug` — the OWNER-authored slug, which on a joiner may
+ * differ from the local view slug) and stamped on every announce so the federated row
  * carries hive_slug for the authority's `WHERE hive_slug` (mig 187).
  */
 import type { LocalWriteOp } from './boot';
@@ -29,7 +30,7 @@ import {
 import { resolveLocalAnnounceIdentity } from './local-announce-identity';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { machineFingerprint } from '../../identity/device-keychain-id';
-import { potHomeSlugForHarness } from '../../hive-federation';
+import { canonicalHiveHomeSlug } from '../../hive-federation';
 import { nodeRunsCadenceLoops } from '../../cadence-runner-capability';
 import type { SharedPresenceRow } from './projections/presence';
 import {
@@ -182,7 +183,14 @@ export async function wirePresenceAnnounceForHarness(
 
   // Resolve the harness's home Hive ONCE (stable for the boot session). Best-effort:
   // a failure → announce harness-scoped (hive_slug null), never blocks the loop.
-  const resolveHive = opts.resolveHiveSlug ?? potHomeSlugForHarness;
+  // WI-559: the CANONICAL (owner-authored) home slug, not the local view slug. This
+  // value becomes the topic binding's `potHomeSlug` below, which is the presence
+  // ADMISSION gate's read scope (presence-gossip-wiring listHiveMembers /
+  // loadRevokedHivePubkeys) AND the `hive_slug` stamped on every announce. It must match
+  // the projection WRITE scope (boot.ts resolveHiveHomeProjectionSlug → joinerPotHomeSlug,
+  // also canonicalized) or the joiner writes pot_members under one slug and admits under
+  // another — see canonicalHiveHomeSlug. Unchanged for an owned hive.
+  const resolveHive = opts.resolveHiveSlug ?? canonicalHiveHomeSlug;
   let potSlug: string | null = null;
   try {
     potSlug = await resolveHive(handle.workspaceId, handle.harnessSlug);
