@@ -8,6 +8,14 @@
 
 export {
   type CoordKind,
+  // D-014: the executable ↔ conversational split. `isExecutableCoordKind` is the
+  // single runtime authority for "may this line drive a state transition?" —
+  // exported so readers narrow through it instead of re-listing kinds locally.
+  type CoordExecutableKind,
+  type CoordConversationalKind,
+  COORD_EXECUTABLE_KINDS,
+  COORD_CONVERSATIONAL_KINDS,
+  isExecutableCoordKind,
   type CoordEnvelope,
   newMsgId,
   compareByTsThenId,

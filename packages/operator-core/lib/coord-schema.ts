@@ -25,7 +25,7 @@
  */
 
 import type { CoordKind } from '@papercusp/coordination/core';
-import { LIFECYCLE_CATEGORIES } from './coord-lifecycle/records';
+import { LIFECYCLE_CATEGORIES, type LifecycleCategory } from './coord-lifecycle/records';
 import {
   isCueInScopeFor,
   readCueAuthority,
@@ -57,35 +57,64 @@ export interface LegendEntry {
 }
 
 /**
- * The canonical line type → {glyph, name}. Keys are the lifecycle CATEGORIES
- * (completion/claim/intent/window/handoff/finding) plus the base `CoordKind`s.
- * A lifecycle message (kind=`message` + a lifecycle `category`) is keyed by its
- * category; everything else by its kind. Glyphs are distinct 1-token ASCII.
+ * Legend for the LIFECYCLE CATEGORIES — the common, high-volume cases. A lifecycle
+ * message (kind=`message` + a lifecycle `category`) is keyed by its category.
+ *
+ * Typed `Record<LifecycleCategory, …>`, so adding a category to
+ * `LIFECYCLE_CATEGORIES` without a glyph fails the BUILD, not a reader.
  */
-export const COORD_LEGEND: Record<string, LegendEntry> = {
-  // ── lifecycle categories (the common, high-volume cases) ──
+const LIFECYCLE_LEGEND: Record<LifecycleCategory, LegendEntry> = {
   intent: { glyph: '>', name: 'intent — now working on' },
   completion: { glyph: '*', name: 'completion — finished' },
   claim: { glyph: '+', name: 'claim — taking a work-item' },
   window: { glyph: '#', name: 'scope window — holding / draining / released (the verb says which)' },
   handoff: { glyph: '<', name: 'handoff — passing work to a peer' },
   finding: { glyph: '!', name: 'finding — a discovered problem' },
-  // ── base CoordKinds (non-lifecycle) ──
+};
+
+/**
+ * Legend for the wire `CoordKind`s, in the D-014 executable/conversational order.
+ *
+ * Typed `Record<CoordKind, …>` — this is the anti-drift guard, and it is the whole
+ * point of P-008. The defect was ONE vocabulary described by TWO hand-maintained
+ * maps (the kind union here, the lifecycle categories above), which drift silently
+ * because nothing fails when they disagree. Now a `CoordKind` added without a
+ * legend entry is a COMPILE error.
+ *
+ * That guard immediately repaid itself: `handoff_expired` had been a `CoordKind`
+ * since F-FIX-037 with NO legend entry, so every expiry line fell through to
+ * DEFAULT_GLYPH and rendered as `-` — visually identical to a free-text note, in
+ * the one place a reader needs to see that their handoff timed out.
+ */
+const KIND_LEGEND: Record<CoordKind, LegendEntry> = {
+  // ── executable: the runtime acts on these (COORD_EXECUTABLE_KINDS) ──
+  subscribe: { glyph: '.', name: 'subscribe' },
+  unsubscribe: { glyph: '.', name: 'unsubscribe' },
+  notify: { glyph: '.', name: 'notify — subscription delta' },
+  handoff: { glyph: '<', name: 'handoff — passing work to a peer' },
+  handoff_accepted: { glyph: '<', name: 'handoff accepted' },
+  handoff_expired: { glyph: '<', name: 'handoff EXPIRED — your offer timed out un-acked' },
+  handoff_repinged: { glyph: '<', name: 'handoff re-ping — your offer is still un-acked' },
+  contract: { glyph: '~', name: 'contract' },
+  plan_event: { glyph: '~', name: 'plan event' },
+  // turn-lifecycle-control Phase 4 (P-019): interrupt = wake's dual. A
+  // cooperative turn:interrupt — wrap up at a safe checkpoint + end your turn.
+  yield: { glyph: '|', name: 'yield — a peer asks you to wrap up + end your turn (turn:interrupt)' },
+  // ── conversational: pure talk, zero authority over runtime state ──
   message: { glyph: '-', name: 'message — free-text note' },
   ack: { glyph: '=', name: 'ack — acknowledgement' },
   escalation: { glyph: '^', name: 'escalation — needs attention' },
   escalation_resolved: { glyph: '=', name: 'escalation resolved' },
-  handoff_accepted: { glyph: '<', name: 'handoff accepted' },
-  handoff_repinged: { glyph: '<', name: 'handoff re-ping — your offer is still un-acked' },
-  notify: { glyph: '.', name: 'notify — subscription delta' },
-  plan_event: { glyph: '~', name: 'plan event' },
-  subscribe: { glyph: '.', name: 'subscribe' },
-  unsubscribe: { glyph: '.', name: 'unsubscribe' },
-  contract: { glyph: '~', name: 'contract' },
-  // turn-lifecycle-control Phase 4 (P-019): interrupt = wake's dual. A
-  // cooperative turn:interrupt — wrap up at a safe checkpoint + end your turn.
-  yield: { glyph: '|', name: 'yield — a peer asks you to wrap up + end your turn (turn:interrupt)' },
 };
+
+/**
+ * The canonical line type → {glyph, name}, DERIVED from the two typed maps above
+ * rather than hand-maintained a third time. Lifecycle categories come first (they
+ * are the high-volume cases and lead the rendered legend); `handoff` is
+ * deliberately BOTH a lifecycle category and a wire kind, and resolves to one
+ * shared entry. Glyphs are 1-token ASCII.
+ */
+export const COORD_LEGEND: Record<string, LegendEntry> = { ...LIFECYCLE_LEGEND, ...KIND_LEGEND };
 
 /** The default glyph for an unknown line type (defensive — never throws). */
 const DEFAULT_GLYPH = '-';

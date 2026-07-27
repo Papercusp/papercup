@@ -7,6 +7,11 @@ import {
   renderCoordLegend,
   type CoordLineSource,
 } from './coord-schema';
+import {
+  COORD_EXECUTABLE_KINDS,
+  COORD_CONVERSATIONAL_KINDS,
+  isExecutableCoordKind,
+} from '@papercusp/coordination/core';
 
 const e = (over: Partial<CoordLineSource>): CoordLineSource => ({
   from: 'su-ab53332d-3ecb-4f37-b89e-fd57ac3c03df',
@@ -535,5 +540,59 @@ describe('renderCoordLegend + anti-desync (P-002)', () => {
       const g = glyphFor({ kind: key });
       expect(legendGlyphs.has(g)).toBe(true);
     }
+  });
+});
+
+describe('P-008 / D-014: the executable ↔ conversational split is the ONE taxonomy', () => {
+  it('every wire CoordKind has its own legend entry — no kind silently falls back to the default glyph', () => {
+    // The regression this pins: `handoff_expired` was a CoordKind from F-FIX-037
+    // with NO legend entry, so every expiry line rendered as `-` — indistinguishable
+    // from a free-text note, in the one place a reader needs to see their handoff
+    // timed out. `Record<CoordKind, LegendEntry>` now makes that a COMPILE error;
+    // this asserts the same thing at runtime for a kind arriving off the wire.
+    for (const kind of [...COORD_EXECUTABLE_KINDS, ...COORD_CONVERSATIONAL_KINDS]) {
+      expect(COORD_LEGEND[kind], `CoordKind "${kind}" has no legend entry`).toBeDefined();
+      // Routed through its OWN entry, not the defensive fallback. (Asserting
+      // "glyph !== DEFAULT_GLYPH" would be wrong: `message` legitimately owns `-`.)
+      expect(glyphFor({ kind }), `CoordKind "${kind}" does not render its legend glyph`).toBe(
+        COORD_LEGEND[kind].glyph,
+      );
+    }
+  });
+
+  it('the two sets are disjoint and together cover the whole vocabulary', () => {
+    const exec = new Set<string>(COORD_EXECUTABLE_KINDS);
+    const talk = new Set<string>(COORD_CONVERSATIONAL_KINDS);
+    for (const k of talk) expect(exec.has(k), `"${k}" is in BOTH sets`).toBe(false);
+    expect(exec.size + talk.size).toBe(new Set([...exec, ...talk]).size);
+  });
+
+  it('the EXECUTABLE set is closed — widening what the runtime acts on is a deliberate edit', () => {
+    // P-009 ("the runtime never infers a state transition from prose") stands on
+    // this set being enumerable rather than conventional. Pinning it verbatim means
+    // a new kind cannot become runtime-executable as a side effect of being added
+    // to the union — this test fails first and forces the choice to be explicit.
+    expect([...COORD_EXECUTABLE_KINDS].sort()).toEqual(
+      [
+        'contract',
+        'handoff',
+        'handoff_accepted',
+        'handoff_expired',
+        'handoff_repinged',
+        'notify',
+        'plan_event',
+        'subscribe',
+        'unsubscribe',
+        'yield',
+      ].sort(),
+    );
+  });
+
+  it('isExecutableCoordKind is the single runtime authority, and conversational kinds are NOT executable', () => {
+    for (const k of COORD_EXECUTABLE_KINDS) expect(isExecutableCoordKind(k)).toBe(true);
+    // The load-bearing half: a peer asserting completion in prose carries no authority.
+    for (const k of COORD_CONVERSATIONAL_KINDS) expect(isExecutableCoordKind(k)).toBe(false);
+    expect(isExecutableCoordKind('message')).toBe(false);
+    expect(isExecutableCoordKind('definitely-not-a-kind')).toBe(false);
   });
 });
