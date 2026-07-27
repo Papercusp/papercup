@@ -27,6 +27,14 @@
  * injection renderer) imports the read/render halves without pulling the DB
  * graph — same house pattern as cue-authority.ts. IO lives in
  * ./relay-provenance-resolve.ts.
+ *
+ * SECOND AXIS (P-010, see the banner further down): this module also carries the
+ * EVIDENCE BAND for findings/escalations — how well-grounded a claim is
+ * (observed / tool-output / reported-by / inferred / assumed), with confidence
+ * DERIVED from the band and never self-reported. It lives here rather than in a
+ * third provenance module because it answers the same reader question — how much
+ * weight to give this claim — and `resolveClaimProvenance` composes the two with
+ * an explicit precedence (platform-verified relay beats self-declared band).
  */
 
 import { clampSnippet } from './ref-hydrate';
@@ -150,3 +158,215 @@ export function detectAuthorityClaim(text: string): 'owner' | 'queen' | null {
 
 /** The renderer's prefix tag for a claim the platform could not verify. */
 export const UNVERIFIED_CLAIM_TAG = '[UNVERIFIED authority claim]';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Evidence band (P-010, agent-protocol-authority-semantics-2026-07-26)
+//
+// Lives HERE, extending the existing provenance module, because the item is
+// explicit that coord-schema already imports relay-provenance + cue-authority and
+// a THIRD provenance surface is the failure to avoid. Relay-provenance answers
+// "is this relayed directive really from whom it claims"; the evidence band
+// answers "how well-grounded is this finding/escalation". Same axis — how much
+// weight a reader should give a claim — so they compose here (see
+// resolveClaimProvenance) rather than diverging into parallel vocabularies.
+//
+// D-015 (P-009) is BINDING on this: the band is DESCRIPTIVE. It informs a
+// reader's confidence and NEVER grants transition authority. Concretely, nothing
+// below is readable from `CoordTransitionIntent` (which has no provenance field
+// by construction) and no transition may branch on a band. `cue-authority` is
+// deliberately untouched: that is the CONTROL axis, and wiring evidence into it
+// is exactly the route P-009 closed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How a claim is grounded, weakest-to-strongest grounding made explicit:
+ *   observed     — the sender directly saw it in its own execution
+ *   tool-output  — backed by a tool result (the strongest routinely available)
+ *   reported-by  — relayed from another agent; carries `reportedBy`
+ *   inferred     — reasoned from other facts, not directly witnessed
+ *   assumed      — a working assumption with no grounding (incl. self-imposed
+ *                  discipline an agent wrote for itself)
+ */
+export const EVIDENCE_BANDS = [
+  'observed',
+  'tool-output',
+  'reported-by',
+  'inferred',
+  'assumed',
+] as const;
+
+export type EvidenceBand = (typeof EVIDENCE_BANDS)[number];
+
+const EVIDENCE_BAND_SET: ReadonlySet<string> = new Set(EVIDENCE_BANDS);
+
+export interface EvidenceStamp {
+  band: EvidenceBand;
+  /** REQUIRED for `reported-by` — who the claim is attributed to. */
+  reportedBy?: string;
+  /** Optional grounding pointer: a tool name, `file:line`, msg_id, or work-item id. */
+  ref?: string;
+}
+
+/** The reserved envelope field the stamp rides on (nested object — same
+ *  pass-through contract as cueAuthority / relayProvenance). */
+export const EVIDENCE_FIELD = 'evidence';
+
+/**
+ * Confidence is DERIVED from the band and is NEVER self-reported as a number.
+ *
+ * This is the Reasoning Contamination Effect the plan cites: a model asked to
+ * emit a numeric confidence produces one poorly correlated with accuracy, and the
+ * number then contaminates every downstream reader — who treats "0.9" as measured
+ * when it was generated. A closed band with a fixed mapping cannot be inflated:
+ * to claim high confidence you must claim you OBSERVED it or have TOOL OUTPUT,
+ * which is a checkable statement about the world rather than a vibe.
+ */
+export type DerivedConfidence = 'high' | 'medium' | 'low';
+
+const BAND_CONFIDENCE: Record<EvidenceBand, DerivedConfidence> = {
+  observed: 'high',
+  'tool-output': 'high',
+  'reported-by': 'medium',
+  inferred: 'low',
+  assumed: 'low',
+};
+
+/** The ONLY way to obtain a confidence for a claim. Total over the closed band
+ *  set, so a new band without a mapping is a COMPILE error (the D-004 pattern
+ *  P-008's legend already uses). */
+export function deriveConfidence(band: EvidenceBand): DerivedConfidence {
+  return BAND_CONFIDENCE[band];
+}
+
+/** Envelope fields a sender might use to smuggle a self-reported confidence past
+ *  the band. Detected so the renderer can flag + drop them rather than let a
+ *  fabricated number reach a reader. */
+const SELF_REPORTED_CONFIDENCE_FIELDS = ['confidence', 'certainty', 'probability'] as const;
+
+/**
+ * True if the envelope carries a SELF-REPORTED confidence/certainty value.
+ * Such a value is never read as authoritative — `deriveConfidence` is the only
+ * source — and the renderer surfaces it as fabricated.
+ */
+export function hasSelfReportedConfidence(
+  env: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!env) return false;
+  return SELF_REPORTED_CONFIDENCE_FIELDS.some((f) => {
+    const v = env[f];
+    return typeof v === 'number' || (typeof v === 'string' && /^[\d.]+%?$/.test(v.trim()));
+  });
+}
+
+/** The renderer's tag for a self-reported confidence the platform discarded. */
+export const SELF_REPORTED_CONFIDENCE_TAG = '[self-reported confidence DISCARDED — see band]';
+
+/**
+ * Read + validate an evidence stamp off an envelope. Defensive — absent/malformed
+ * → null, never throws. A `reported-by` band WITHOUT a `reportedBy` attribution is
+ * rejected: an unattributed relay is exactly the provenance collapse this field
+ * exists to prevent, so it degrades to null (no stamp) rather than a stamp that
+ * silently loses its source.
+ */
+export function readEvidence(
+  env: Record<string, unknown> | null | undefined,
+): EvidenceStamp | null {
+  const raw = env?.[EVIDENCE_FIELD];
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  if (typeof s.band !== 'string' || !EVIDENCE_BAND_SET.has(s.band)) return null;
+  const band = s.band as EvidenceBand;
+  const reportedBy =
+    typeof s.reportedBy === 'string' && s.reportedBy.trim() ? s.reportedBy.trim() : undefined;
+  if (band === 'reported-by' && !reportedBy) return null;
+  return {
+    band,
+    ...(reportedBy ? { reportedBy } : {}),
+    ...(typeof s.ref === 'string' && s.ref.trim() ? { ref: s.ref.trim() } : {}),
+  };
+}
+
+/**
+ * The scannable tag for an injection line, e.g.
+ * `tool-output (confidence: high)` or `reported-by:su-709bb (confidence: medium)`.
+ * Confidence is always rendered DERIVED, so a reader never has to wonder whether
+ * a number was measured or generated.
+ */
+export function renderEvidenceTag(stamp: EvidenceStamp): string {
+  const band =
+    stamp.band === 'reported-by' && stamp.reportedBy
+      ? `reported-by:${stamp.reportedBy}`
+      : stamp.band;
+  const ref = stamp.ref ? ` ${stamp.ref}` : '';
+  return `${band}${ref} (confidence: ${deriveConfidence(stamp.band)})`;
+}
+
+/**
+ * The legacy prose tags from the compaction-strategy doc — `[owner:<name>]`,
+ * `[self-imposed]`, `[peer:<sid>]`, `[inferred]` — mapped onto the band.
+ *
+ * These were a PROSE CONVENTION, which is the same provenance-collapse failure
+ * the literature names and which the compaction doc itself documents rotting in
+ * practice (WI-3532: an agent's own note-to-self was re-read across seven
+ * compactions until it rendered as an owner directive). Parsing them into the
+ * typed field is the migration path; the tags stay readable, but the authority
+ * now lives in a field instead of in punctuation.
+ *
+ * Note `[owner:…]` maps to `reported-by`, NOT to anything higher: a prose tag is
+ * a CLAIM of owner origin. Only a platform-verified relay tier can establish that
+ * (see resolveClaimProvenance), which is precisely the EI-9501 telephone game.
+ */
+const LEGACY_TAG_RE = /\[(owner:[^\]]+|peer:[^\]]+|self-imposed|inferred)\]/i;
+
+export function parseLegacyProvenanceTag(text: string): EvidenceStamp | null {
+  const m = LEGACY_TAG_RE.exec(text ?? '');
+  if (!m) return null;
+  const tag = m[1];
+  const lower = tag.toLowerCase();
+  if (lower.startsWith('owner:')) {
+    return { band: 'reported-by', reportedBy: tag.trim() };
+  }
+  if (lower.startsWith('peer:')) {
+    const sid = tag.slice('peer:'.length).trim();
+    return sid ? { band: 'reported-by', reportedBy: sid } : null;
+  }
+  if (lower === 'self-imposed') return { band: 'assumed' };
+  if (lower === 'inferred') return { band: 'inferred' };
+  return null;
+}
+
+/**
+ * The combined provenance view for one envelope, with PRECEDENCE made explicit:
+ * a platform-VERIFIED relay tier outranks a SELF-DECLARED evidence band, because
+ * the former was checked server-side against real stores and the latter is the
+ * sender's own assertion. When a verified relay stamp is present the reported
+ * confidence is 'high' regardless of band; an `unverified` relay tier does NOT
+ * outrank anything (it is a failed check, not a weak pass).
+ *
+ * Returns `selfReportedConfidenceDiscarded` so the renderer can flag a sender
+ * that tried to supply its own number.
+ */
+export function resolveClaimProvenance(env: Record<string, unknown> | null | undefined): {
+  evidence: EvidenceStamp | null;
+  relay: RelayProvenanceStamp | null;
+  confidence: DerivedConfidence | null;
+  basis: 'relay-verified' | 'evidence-band' | 'none';
+  selfReportedConfidenceDiscarded: boolean;
+} {
+  const relay = readRelayProvenance(env);
+  const evidence = readEvidence(env);
+  const relayVerified = relay !== null && relay.tier !== 'unverified';
+  const basis = relayVerified ? 'relay-verified' : evidence ? 'evidence-band' : 'none';
+  const confidence = relayVerified
+    ? 'high'
+    : evidence
+      ? deriveConfidence(evidence.band)
+      : null;
+  return {
+    evidence,
+    relay,
+    confidence,
+    basis,
+    selfReportedConfidenceDiscarded: hasSelfReportedConfidence(env),
+  };
+}
