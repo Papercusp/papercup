@@ -30,14 +30,8 @@
  * federation migrations (562/563/564) verbatim on top.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { buildMemoriesProjection } from '../projections/p2p-memories';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-// __tests__/ → hyperbee/ → sync/ → lib/ → operator-core/ → packages/ → papercup/
-const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
 
 const WS = 'ws_mem_fed';
 const SLUG = 'mem-fed-home';

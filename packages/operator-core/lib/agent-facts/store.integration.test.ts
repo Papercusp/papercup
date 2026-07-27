@@ -18,9 +18,7 @@
  * outbox dependency chain in; the wire SHAPE is asserted via to_jsonb directly).
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   assertFact,
   retractFact,
@@ -38,7 +36,6 @@ import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
 import { factsCellDelta } from './cells';
 import { assumptionSelectorsFor, resolveAssumptions } from './assumptions';
 
-const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-facts-int';
 
 let db: FreshPgDb;
