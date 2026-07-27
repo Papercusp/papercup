@@ -21,6 +21,13 @@ import { OPERATOR_CHAT_COLLAPSED_WIDTH } from '../operator-chat-layout';
 // isolated to this file under vitest's per-file module registry).
 configure({ asyncUtilTimeout: 5000 });
 
+/* hud-open-destinations-and-true-counts-2026-07-27 P-003: the drill-in now
+   opens the work-item/plan POPUPS by writing their nuqs params (`wpop`/`wppop`,
+   owned by OperatorChat) rather than always navigating. The nuqs mock therefore
+   has to be observable — record every write so a test can assert WHICH popup
+   opened, the same way routerPushSpy asserts a navigation. */
+const nuqsWrites = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
+
 vi.mock('nuqs', async () => {
   const React = await import('react');
   return {
@@ -41,8 +48,16 @@ vi.mock('nuqs', async () => {
         },
       };
     },
-    useQueryState(_key: string, parser?: { defaultValue?: boolean | string }) {
-      return React.useState(parser?.defaultValue ?? true);
+    useQueryState(key: string, parser?: { defaultValue?: boolean | string }) {
+      const [value, setValue] = React.useState(parser?.defaultValue ?? true);
+      const set = React.useCallback(
+        (next: unknown) => {
+          nuqsWrites.current[key] = next;
+          setValue(next as never);
+        },
+        [key],
+      );
+      return [value, set];
     },
     useQueryStates(spec: Record<string, { defaultValue?: unknown }>) {
       const [state, setState] = React.useState(() =>
@@ -70,17 +85,39 @@ vi.mock('../OperatorConversationProvider', () => ({
   }),
 }));
 
+/* The ref the drill-in trigger fires. P-003 gave refs of different KINDS
+   different destinations, so the ref can no longer be hardcoded — each test
+   sets the one it is about. */
+const drillState = vi.hoisted(() => ({ ref: 'wi:WI-1' }));
+
 vi.mock('../OperatorChat', () => ({
   // hud-consolidation-2026-07-26 P-004: exposes onDrillIn so tests can fire a
-  // curator card's drill-in and assert the HUD navigation it now produces.
-  OperatorChat: ({ onDrillIn }: { onDrillIn?: (ref: string) => void }) => (
-    <div data-testid="operator-chat">
+  // curator card's drill-in and assert the destination it produces.
+  // P-003 also asserts `harnessSlug` is actually PASSED — without it every
+  // WI-/EI-/F- ref pill in the chat is inert (OperatorChat's own
+  // handleWorkRefActivate returns early on a null harness).
+  OperatorChat: ({
+    onDrillIn,
+    harnessSlug,
+  }: {
+    onDrillIn?: (ref: string) => void;
+    harnessSlug?: string | null;
+  }) => (
+    <div data-testid="operator-chat" data-harness={harnessSlug ?? ''}>
       Operator chat
       {onDrillIn ? (
-        <button type="button" data-testid="drill-in-trigger" onClick={() => onDrillIn('wi:WI-1')} />
+        <button
+          type="button"
+          data-testid="drill-in-trigger"
+          onClick={() => onDrillIn(drillState.ref)}
+        />
       ) : null}
     </div>
   ),
+}));
+
+vi.mock('@/app/adv/create/use-create-data', () => ({
+  useResolvedHarnessSlug: () => 'papercusp',
 }));
 
 vi.mock('../chat/LocalCardHost', () => ({
@@ -151,6 +188,8 @@ const localStorageState = new Map<string, string>();
 beforeEach(() => {
   voiceModeState.muted = false;
   inboxState.pending = 0;
+  drillState.ref = 'wi:WI-1';
+  nuqsWrites.current = {};
   setVoiceOutputMutedSpy.mockReset();
   routerPushSpy.mockReset();
   localStorageState.clear();
@@ -489,25 +528,53 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     expect(screen.getByLabelText('132 inbox items need you').textContent).toBe('99+');
   });
 
-  it('a drill-in whose matched item HAS an owning agent navigates to that agent\'s HUD conversation', () => {
-    inboxState.items = [{ id: 'wi-1', itemRef: 'WI-1', planSlug: null, ownerAgentId: 'su-abc123' }];
+  /* hud-open-destinations-and-true-counts-2026-07-27 P-003 (owner report:
+     "clicking open on one of the papercup reports is supposed to open something
+     relevant but it isn't"). Before P-003 every one of these refs produced a
+     bare `/adv?tab=hud` unless the matched item happened to carry an
+     ownerAgentId — a visible no-op fired from a sidebar already on /adv. Each
+     kind of ref now opens the thing it NAMES. */
+
+  it('an escalation ref with an owning agent still opens that agent\'s HUD conversation', () => {
+    drillState.ref = 'escalation:msg-9';
+    inboxState.items = [
+      { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
+    ];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
     expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud&hudsession=su-abc123');
   });
 
-  it('a drill-in whose matched item has NO owning agent (P-002 unattributed ask) still lands on the HUD board, with no session param', () => {
+  it('a WORK-ITEM ref opens the work-item popup instead of navigating (the reported no-op)', () => {
+    drillState.ref = 'wi:WI-1';
     inboxState.items = [{ id: 'wi-1', itemRef: 'WI-1', planSlug: null, ownerAgentId: null }];
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByTestId('drill-in-trigger'));
+    // `wpop` is "<harnessSlug>::<id>" — the param OperatorChat's popup reads.
+    expect(nuqsWrites.current.wpop).toBe('papercusp::WI-1');
+    expect(routerPushSpy).not.toHaveBeenCalled();
+  });
+
+  it('a PLAN ref opens the plan popup instead of navigating', () => {
+    drillState.ref = 'plan:my-plan-2026-07-17';
+    inboxState.items = [];
+    render(<OperatorChatSidebar />);
+    fireEvent.click(screen.getByTestId('drill-in-trigger'));
+    expect(nuqsWrites.current.wppop).toBe('my-plan-2026-07-17');
+    expect(routerPushSpy).not.toHaveBeenCalled();
+  });
+
+  it('a drill-in with no live match at all (e.g. health:<panelId>) still lands on the HUD board', () => {
+    drillState.ref = 'health:some-panel';
+    inboxState.items = [];
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByTestId('drill-in-trigger'));
     expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud');
   });
 
-  it('a drill-in with no live match at all (e.g. health:<panelId>) still lands on the HUD board', () => {
-    inboxState.items = [];
+  it('passes harnessSlug to OperatorChat — without it every chat ref pill is inert', () => {
     render(<OperatorChatSidebar />);
-    fireEvent.click(screen.getByTestId('drill-in-trigger'));
-    expect(routerPushSpy).toHaveBeenCalledWith('/adv?tab=hud');
+    expect(screen.getByTestId('operator-chat').getAttribute('data-harness')).toBe('papercusp');
   });
 
   // WI-5162 (owner ask 2026-07-17): the Fleet + Peers panes moved out of the

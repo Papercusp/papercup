@@ -26,10 +26,11 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
 import { ChevronLeft, ChevronRight, ClipboardList, SlidersHorizontal, Volume2, VolumeX } from 'lucide-react';
-import { parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useRouter } from '@/lib/router-compat/navigation';
+import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import { OperatorChat } from './OperatorChat';
-import { resolveInboxDrillIn } from './chat/curator-card-drill-in';
+import { resolveRefDestination } from './chat/curator-card-drill-in';
 import { PotHealthPane } from './PotHealthPane';
 import { useInboxAttention, useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
@@ -316,29 +317,55 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const { items: inboxItems } = useInboxAttention();
   const inboxItemsRef = useRef(inboxItems);
   inboxItemsRef.current = inboxItems;
-  // hud-consolidation-2026-07-26 P-004: a curator status card's drill-in used
-  // to open the retired Inbox pane (opcv=inbox); it now opens the agent's
-  // conversation on the HUD tab instead — the SAME destination the HUD board
-  // itself opens a session with (HudView's `?hudsession=`), never a second
-  // chat renderer. `resolveInboxDrillIn` still does the RESOLUTION half
-  // (ref -> which live attention item, unchanged, P-002 gate already proved
-  // it covers ownerless asks too); only the navigation destination changed.
-  // An ownerless ask (or a ref with no live match, e.g. `health:<panelId>`)
-  // has no agent conversation to open — it still lands on the HUD board,
-  // where the P-002 unattributed lane already renders it, so there is
-  // nothing further to select.
+  // hud-consolidation-2026-07-26 P-004 pointed a curator card's drill-in at the
+  // agent's HUD conversation, replacing the retired Inbox pane. That covered
+  // exactly ONE of the things a report row can name, and every other ref fell
+  // through to a bare `/adv?tab=hud` with nothing selected — which, fired from
+  // this sidebar (already on /adv), is a visible no-op. That is the owner report
+  // of 2026-07-27 ("clicking open ... is supposed to open something relevant but
+  // it isn't").
+  //
+  // hud-open-destinations-and-true-counts-2026-07-27 P-003: route through the
+  // shared `resolveRefDestination` (P-001) instead, and open the thing the ref
+  // actually names. Work items and plans open the SAME popups the chat's own
+  // ref pills and the Plans pane already use — by writing the popups' nuqs
+  // params (`wpop`/`wppop`, owned by OperatorChat), never a second renderer.
+  // Only a genuine agent ref still navigates to the HUD conversation.
   const router = useRouter();
+  const harnessSlug = useResolvedHarnessSlug();
+  // The SAME two params OperatorChat declares for its own ref-pill popups —
+  // driving them from here is the whole reason this state is in the URL rather
+  // than in component state (repo convention: user-meaningful state is nuqs).
+  const [, setOpenWorkItem] = useQueryState('wpop', parseAsString);
+  const [, setOpenChatPlan] = useQueryState('wppop', parseAsString);
   const handleCardDrillIn = useCallback(
     (ref: string) => {
-      const { selId } = resolveInboxDrillIn(ref, inboxItemsRef.current);
-      const ownerAgentId = selId
-        ? (inboxItemsRef.current.find((i) => i.id === selId)?.ownerAgentId ?? null)
-        : null;
-      const params = new URLSearchParams({ tab: 'hud' });
-      if (ownerAgentId) params.set('hudsession', ownerAgentId);
-      router.push(`/adv?${params.toString()}`);
+      const dest = resolveRefDestination(ref, inboxItemsRef.current);
+      switch (dest.kind) {
+        case 'work-item':
+          // `wpop` encodes "<harnessSlug>::<id>" — workItems.detail is
+          // harness-scoped, so with no harness there is nothing safe to open
+          // (the same gate OperatorChat's handleWorkRefActivate applies).
+          if (harnessSlug) {
+            void setOpenWorkItem(`${harnessSlug}::${dest.id}`);
+            return;
+          }
+          break;
+        case 'plan':
+          void setOpenChatPlan(dest.slug);
+          return;
+        case 'session':
+          router.push(`/adv?tab=hud&hudsession=${encodeURIComponent(dest.ownerAgentId)}`);
+          return;
+        case 'none':
+          break;
+      }
+      // Nothing openable (a `health:<panelId>` ref, or a work-item ref with no
+      // harness context): fall back to the HUD board, where the unattributed
+      // lane (hud-consolidation P-002) renders the ask itself.
+      router.push('/adv?tab=hud');
     },
-    [router],
+    [router, harnessSlug, setOpenWorkItem, setOpenChatPlan],
   );
   // The lit extra face, if any — drives both the pill state and the body swap.
   const activeFace = extraFaces.find((f) => f.id === view) ?? null;
@@ -561,6 +588,11 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
             conversationId={conv.conversationId ?? undefined}
             workspaceId={workspaceId}
             onDrillIn={handleCardDrillIn}
+            /* Without this, OperatorChat's own handleWorkRefActivate hits its
+               `if (!harnessSlug) return` guard and EVERY WI-/EI-/F- ref pill in
+               the chat is inert — the same dead-click the curator card's
+               drill-in had (P-003). The sidebar never passed it. */
+            harnessSlug={harnessSlug}
           />
         )}
         {/* M6: askUserLocal renderer host. Mounted once per sidebar so any
