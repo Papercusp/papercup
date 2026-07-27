@@ -43,7 +43,7 @@ AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
-import json, os, re, sys, tempfile, urllib.request, urllib.parse
+import json, os, re, sys, tempfile, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 raw, operator_url, token, agent_id = sys.argv[1:5]
@@ -232,6 +232,152 @@ try:
                     break
 except Exception:
     pass  # advisory must never wedge a command
+
+# ── Background-log-read-race advisory (EI-18764990059061608) ───────────────
+# A backgrounded command's redirect-to-file output is, to a LATER `cat`/`head`/
+# `wc`/etc. of that same file, indistinguishable between "the job finished and
+# genuinely produced nothing" and "the job is still running and has not
+# flushed/finished yet" — both read as an empty (or short, stale) file. Hit
+# live 2026-07-27: an agent backgrounded a typecheck piped into a log file,
+# read the file moments later while it was STILL BEING WRITTEN, saw "Bash
+# completed with no output", and reported "typecheck clean" — five real type
+# errors landed several tool calls later when the job actually finished. This
+# is the READ-side sibling of the background-pipe exit-code advisory above
+# (that one warns about a masked exit code on the WRITE side).
+#
+# Tracking is a tiny, best-effort, host-shared JSON file: every
+# `run_in_background` command that redirects (`>`/`>>`/`| tee`) to a file
+# records {path -> started_at, cmd}; every subsequent command (this one
+# included) that mentions a tracked path has that path checked against a live
+# `/proc/*/fd` scan — if ANY process still holds it open, the job that writes
+# it has not finished, so a read right now proves nothing. No writer left open
+# ⇒ nothing to warn about (and the entry is dropped). Fail-open throughout:
+# any parse/IO/proc error silently skips the advisory and never blocks the
+# command — this is pure bookkeeping, not a safety gate.
+_BG_TRACK_FILE = os.path.expanduser('~/.papercusp/bg-output-tracking.json')
+_BG_TRACK_MAX_AGE_SEC = 2 * 60 * 60  # prune anything older than 2h regardless of liveness
+_BG_REDIRECT_RE = re.compile(r'(?<![<>&])\d*>{1,2}(?!&)\s*([^\s;&|)\n]+)')
+_BG_TEE_RE = re.compile(r'\btee\b\s+(?:-a\s+)?([^\s;&|)\n]+)')
+
+
+def _bg_track_load():
+    try:
+        with open(_BG_TRACK_FILE) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _bg_track_save(data):
+    try:
+        d = os.path.dirname(_BG_TRACK_FILE)
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d)
+        with os.fdopen(fd, 'w') as fh:
+            json.dump(data, fh)
+        os.replace(tmp, _BG_TRACK_FILE)
+    except Exception:
+        pass  # tracking is advisory bookkeeping — never let it raise
+
+
+def _bg_resolve(raw_path, cwd):
+    p = raw_path.strip().strip('\'"')
+    if not p or p.startswith('$') or '$(' in p or '`' in p or p.startswith('&'):
+        return None  # can't safely resolve a substitution/fd-dup target
+    if p in ('/dev/null', '/dev/stdout', '/dev/stderr'):
+        return None
+    if p.startswith('~/'):
+        p = os.path.join(os.path.expanduser('~'), p[2:])
+    if not os.path.isabs(p):
+        p = os.path.join(cwd, p)
+    return os.path.normpath(p)
+
+
+def _bg_redirect_targets(cmd, cwd):
+    out = set()
+    for pattern in (_BG_REDIRECT_RE, _BG_TEE_RE):
+        for m in pattern.finditer(cmd):
+            r = _bg_resolve(m.group(1), cwd)
+            if r:
+                out.add(r)
+    return out
+
+
+def _bg_open_writer_pids(path):
+    pids = []
+    try:
+        for pid_dir in os.listdir('/proc'):
+            if not pid_dir.isdigit():
+                continue
+            fd_dir = '/proc/%s/fd' % pid_dir
+            try:
+                fd_names = os.listdir(fd_dir)
+            except Exception:
+                continue
+            for fd_name in fd_names:
+                try:
+                    target = os.readlink(os.path.join(fd_dir, fd_name))
+                except Exception:
+                    continue
+                if target == path:
+                    pids.append(pid_dir)
+                    break
+    except Exception:
+        pass
+    return pids
+
+
+try:
+    _bg_cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
+    _bg_now = time.time()
+    _bg_state = _bg_track_load()
+
+    # Record side: this call backgrounds a command that redirects to a file.
+    if tool_name.lower() == 'bash' and tool_input.get('run_in_background'):
+        for _t in _bg_redirect_targets(command, _bg_cwd):
+            _bg_state[_t] = {'started_at': _bg_now, 'cmd': command[:200]}
+
+    # Bound growth regardless of whether anything below fires — age-based only;
+    # liveness for a survivor is re-checked fresh on the next read-side pass.
+    _bg_state = {
+        k: v for k, v in _bg_state.items()
+        if isinstance(v, dict) and (_bg_now - float(v.get('started_at', 0))) < _BG_TRACK_MAX_AGE_SEC
+    }
+
+    # Read side: does THIS command mention a tracked path? Deliberately a
+    # substring match (not just cat/head/tail) so it also catches `wc -l`,
+    # `grep`, `less`, `$(cat …)`, and so on — any way of looking at the file.
+    if not ADVISORY:
+        _bg_write_targets_this_call = _bg_redirect_targets(command, _bg_cwd)
+        for _path, _rec in list(_bg_state.items()):
+            if _path not in command:
+                continue
+            # Don't fire on the very call that is (re-)establishing the
+            # redirect to this same path — that is a write, not a read.
+            if _path in _bg_write_targets_this_call:
+                continue
+            _writers = _bg_open_writer_pids(_path)
+            if _writers:
+                _elapsed = int(_bg_now - float(_rec.get('started_at', _bg_now)))
+                ADVISORY = (
+                    'background-log-read-race advisory (EI-18764990059061608): `%s` is '
+                    'still OPEN for writing by a running background job (pid %s, started '
+                    '%ss ago via `%s`) — an empty or short read right now is NOT evidence '
+                    "the job finished cleanly (or at all); it may simply be mid-run and not "
+                    "yet flushed. Wait for that job's own completion notification (or check "
+                    '`ps -p %s`) before treating this read as a clean/green result. Advisory '
+                    'only; this command is proceeding as issued.'
+                    % (_path, _writers[0], _elapsed, _rec.get('cmd', '?')[:120], _writers[0])
+                )
+                break
+            # No writer left holding it open — the job that wrote it is done
+            # (or was killed); nothing left to warn about, so stop tracking it.
+            _bg_state.pop(_path, None)
+
+    _bg_track_save(_bg_state)
+except Exception:
+    pass  # advisory (and its bookkeeping) must never wedge a command
 
 # EI-10940: the refusal must answer the INTENT, not the token. `systemd-run` is
 # BOTH the scheduler (`--on-calendar=…`) and the only stock way to ask for cgroup

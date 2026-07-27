@@ -239,12 +239,42 @@ const EMPTY_READ_TOOLS = new Set([
   'harness:status',
 ]);
 
+/**
+ * Exec/write-capable tools whose hermetic default MUST be loud, not a silent
+ * benign `{ok:true}`. A bare `{ok:true}` with no output is indistinguishable
+ * to the SUT from "my script ran and produced nothing" — it burns turns
+ * debugging a phantom bug in its own script instead of recognizing the tool
+ * simply isn't stubbed in this scenario world (EI-18767979259669887: an
+ * S31-asymmetry-control run spent its whole 2-turn budget on this before
+ * giving up and routing around it). An explicit `ok:false` lets the SUT
+ * re-route in one turn instead of debugging a ghost.
+ */
+const EXEC_TOOLS = new Set([
+  'code:run',
+  'code:tools',
+  'capability:bash',
+  'capability:bash_output',
+  'capability:bash_kill',
+]);
+
 export function defaultToolResultForModel(name: string): ToolResult {
   if (EMPTY_READ_TOOLS.has(name)) {
     return {
       content: [
         {
           text: JSON.stringify({ ok: true, results: [], items: [], hits: [], rows: [] }),
+        },
+      ],
+    };
+  }
+  if (EXEC_TOOLS.has(name)) {
+    return {
+      content: [
+        {
+          text: JSON.stringify({
+            ok: false,
+            error: `tool ${name} is not available in this scenario world`,
+          }),
         },
       ],
     };
@@ -607,7 +637,10 @@ class SuSession implements ChatSession {
       }
     }
     const fallback = defaultToolResultForModel(name);
-    return { text: fallback.content[0]?.text ?? JSON.stringify({ ok: true }), isError: false };
+    return {
+      text: fallback.content[0]?.text ?? JSON.stringify({ ok: true }),
+      isError: EXEC_TOOLS.has(name),
+    };
   }
 }
 

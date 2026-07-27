@@ -296,6 +296,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:gate-canary-sweep': { spend: 'none', why: 'Sweeps stale gate canaries' },
   'system:autoloop-release-readiness-monitor': { spend: 'none', why: 'Reads release-readiness state' },
   'system:doc-anchor-reconcile': { spend: 'none', why: 'Reconciles doc anchors against HEAD (sha compare)' },
+  'system:gitnexus-reindex': { spend: 'none', why: 'Shells out to `gitnexus analyze` to refresh the code graph — subprocess CPU/FS only' },
   'system:knowledge-pack-delivery': { spend: 'none', why: 'Copies pack items into pools — no authoring' },
   'system:knowledge-pack-hygiene': { spend: 'none', why: 'Rule-based stale/contradiction sweep over pack rows' },
   'system:hive-git-gc': { spend: 'none', why: 'Garbage-collects hive git objects' },

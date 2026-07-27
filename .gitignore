@@ -226,3 +226,19 @@ probehome.*/
 # self-perpetuating freeze documented in the .appimage-extract entry above.
 # Ignored BEFORE the first index rather than after (WI-6445).
 .gitnexus/
+
+# V8 heap snapshots — a DIAGNOSTIC artifact, never source. Same class as the
+# entries above, but arriving from a different direction: they are written by
+# hand during a memory investigation (`--heapsnapshot-signal`, the inspector's
+# "take heap snapshot", or a heapdump call), land wherever the process's cwd
+# happened to be — usually the repo ROOT — and are named for the timestamp, so
+# each one is a NEW path that no previous ignore covers. A single snapshot of a
+# process this size is ~131MB, past GitHub's 100MB limit, so git-sync excludes it
+# and broadcasts "EXCLUDED oversized file(s) … they will never push" to the whole
+# fleet on EVERY tick for as long as it sits there (observed 2026-07-27 for
+# Heap.20260727.161321.85110.0.001.heapsnapshot, 130.6MB).
+# Ignoring the PATTERN rather than the file matters here: the next investigation
+# writes a differently-named snapshot and would re-arm the same fleet-wide noise.
+# Note this only silences git — the snapshot still occupies disk, and is still
+# its author's to delete when the investigation is done (WI-6463).
+*.heapsnapshot

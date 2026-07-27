@@ -25,6 +25,7 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { decode, type ResultFormat } from '@papercusp/result-encoding';
+import { parseJsonWithTrailer } from '@papercusp/tooldef';
 import { PROJECTED_DEPS } from '../projected-tool-deps';
 
 /**
@@ -83,6 +84,11 @@ function unwrap(
   try {
     return JSON.parse(text);
   } catch {
+    // WI-6458: a PROXIED upstream MCP tool (gitnexus) appends a `**Next:** READ …` chat
+    // affordance after valid JSON, so the parse throws and the composition would read an
+    // opaque string. Recover the leading value — same seam as tooldef's unwrapToolResult.
+    const withTrailer = parseJsonWithTrailer(text);
+    if (withTrailer) return withTrailer.value;
     return text;
   }
 }

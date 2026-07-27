@@ -3,8 +3,25 @@
  * (`system-actions.ts`). The routines engine imports this module once, so every
  * `system:<action>` handler is registered before the first tick dispatches.
  *
- * Add a new system action by importing its module here (the module body calls
- * `registerSystemAction(...)`).
+ * Add a new system action in TWO steps — the import alone is not enough:
+ *   1. Import its module here (the module body calls `registerSystemAction(...)`).
+ *   2. Classify its spend in `TARGET_ROLE_SPEND`
+ *      (`lib/automation/routine-classification.ts`) as `{ spend: 'llm' | 'none', why }`.
+ *      `llm` means a fire can DIRECTLY bill model turns — it spawns an agent, or
+ *      launches/wakes a session, or dispatches queued work to the pipeline.
+ *
+ * Step 2 is NOT optional and NOT deferrable: `routine-classification.registry.test.ts`
+ * cross-checks this registry against `TARGET_ROLE_SPEND` and fails on any unclassified
+ * action, so skipping it reds the green-checkpoint for the whole fleet hours later,
+ * far from the change that caused it. That has now happened three separate times
+ * (`system:scout-cycle`, `system:task-reconcile`, `system:gitnexus-reindex`) — every
+ * one an author who did step 1 and stopped, because this comment used to describe
+ * only step 1. Classify it in the same edit as the import.
+ *
+ * ⚠ Deliberate exception: an action that is a live `target_role` but is NOT actually
+ * registered here stays UNCLASSIFIED on purpose (see the `system:template-gym` note in
+ * routine-classification.ts) — classifying a never-registered action launders a silent
+ * no-op into a healthy-looking row. Classify what you register; leave the rest unknown.
  *
  * Registered handlers:
  *   - `system:git-sync` — git-sync-auto-commit P-005/P-009/P-010/P-012.
