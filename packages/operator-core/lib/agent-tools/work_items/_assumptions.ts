@@ -141,6 +141,9 @@ export async function resolveDeclaredAssumptions(args: {
     ownerId: args.ownerId,
     harnessSlug: args.harnessSlug,
   });
+  // Only a GENUINE absence refuses. `resolveAssumptions` fails open to
+  // `unresolved` when the ledger could not be read, so a PG blip never turns into
+  // a fleet-wide block on closing work — see isDanglingCondition.
   const resolved = await resolveAssumptions(args.declared, selectors);
   const dangling = resolved.filter((r) => isDanglingCondition(r.condition));
   if (dangling.length > 0) {

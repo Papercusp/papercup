@@ -11,7 +11,12 @@
  * near the end of this file.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { blankPng, contentPng } from '@papercusp/image-blankness/testing';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 
 const getWorkItem = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
@@ -451,6 +456,23 @@ describe('work_items:complete (keyed-array)', () => {
   // record-and-warn), this ONE claim is a genuine hard reject: it must FAIL on a synthetic
   // unbacked close, not just pass on a well-evidenced one.
   describe("completion-boundary screenshot guard — unbacked verifiedHow:'live-drove-ui' REJECTS the close (WI-5891)", () => {
+    // EI-18797014705631713: the guard now READS the artifact it was handed, so these
+    // fixtures have to be real files. That is not test bookkeeping — it is the fix. The
+    // two "a BACKED claim closes normally" cases below used to pass while citing paths
+    // that existed nowhere on the host, which is precisely the hole: under the old
+    // text-only check, the invented path and a real screenshot were indistinguishable.
+    let artifactDir: string;
+
+    beforeAll(async () => {
+      artifactDir = await mkdtemp(join(tmpdir(), 'complete-live-drove-ui-'));
+      await writeFile(join(artifactDir, 'hud-fix.png'), contentPng());
+      await writeFile(join(artifactDir, 'blank.png'), blankPng());
+    });
+
+    afterAll(async () => {
+      await rm(artifactDir, { recursive: true, force: true });
+    });
+
     it('SYNTHETIC UNBACKED CLOSE FAILS — citing only vitest runs (the exact WI-5874/P-001 shape)', async () => {
       getWorkItem.mockResolvedValue(item);
       const r = await one({
@@ -494,7 +516,7 @@ describe('work_items:complete (keyed-array)', () => {
         state: 'passed',
         completion: {
           summary: 'fixed the layout bug',
-          testResult: 'confirmed via tauri-agent-tools capture, saved /tmp/hud-fix.png',
+          testResult: `confirmed via tauri-agent-tools capture, saved ${artifactDir}/hud-fix.png`,
           verifiedHow: 'live-drove-ui',
         },
       });
@@ -513,7 +535,49 @@ describe('work_items:complete (keyed-array)', () => {
         completion: {
           summary: 'fixed the layout bug',
           verifiedHow: 'live-drove-ui',
-          filesChanged: ['apps/operator/app/adv/hud/hud.css', '/tmp/verification/hud-fix.png'],
+          filesChanged: ['apps/operator/app/adv/hud/hud.css', join(artifactDir, 'hud-fix.png')],
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    // EI-18797014705631713 — the laundering case. Everything here looks right: a real
+    // capture command, a real path, a real PNG on disk. The window just never painted.
+    it('A CITED-BUT-BLANK SCREENSHOT FAILS — an image path is not proof of pixels', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the layout bug',
+          testsRun: `tauri-agent-tools screenshot --pid 4242 --output ${artifactDir}/blank.png`,
+          testResult: 'captured the fixed HUD',
+          verifiedHow: 'live-drove-ui',
+        },
+      });
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/REJECTED/);
+      expect(r.error).toMatch(/BLANK/);
+      // Same discipline as the unbacked case: refused BEFORE any state write…
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      // …and the narrative is still never lost (EI-24).
+      expect(r.completion).toMatchObject({ summary: 'fixed the layout bug' });
+      // The rejection has to leave the agent somewhere to go, not just say no.
+      expect(r.error).toMatch(/tauri-agent-tools check/);
+    });
+
+    it('a falsifiable `check` run closes with no image on disk at all', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the layout bug',
+          testsRun: 'tauri-agent-tools check --pid 4242 --eval "getComputedStyle(el).gap" --json',
+          testResult: '{"passed":true} exit 0',
+          verifiedHow: 'live-drove-ui',
         },
       });
       expect(r.ok).toBe(true);

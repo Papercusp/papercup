@@ -15,17 +15,35 @@
  *
  * ## Why the correlator is the ref-announce plane, and why that is trustworthy
  * A signed ref-announcement (`ref-announce.ts`) carries
- * `{ device_pubkey, sigrefs_oid, MONOTONIC version }` and rides the fed-event
- * log keyed on the HIVE — therefore **independent of `repoKey` and of the
- * pot-git transport entirely**. That independence IS the whole point: a repoKey
- * divergence makes the two channels DISAGREE while each looks internally
- * healthy, so the disagreement is a signal no single-channel check can produce.
- * Comparing pot-git against itself can only ever re-confirm its own stale view.
+ * `{ device_pubkey, sigrefs_oid, version }` and rides the fed-event log keyed on
+ * the HIVE — therefore **independent of `repoKey` and of the pot-git transport
+ * entirely**. That independence IS the whole point: a repoKey divergence makes
+ * the two channels DISAGREE while each looks internally healthy, so the
+ * disagreement is a signal no single-channel check can produce. Comparing
+ * pot-git against itself can only ever re-confirm its own stale view.
  *
  * THE TEST: for each attested member device D, local `readSigrefs(repoPath, D)
- * .version` versus the highest signature-VERIFIED announced version for D.
+ * .version` versus the CURRENTLY-announced signature-verified version for D.
  * Local behind announced, PERSISTENTLY, = NOT CONVERGED — however many fetches
  * returned ok.
+ *
+ * ## `version` is NOT globally monotonic — it is monotonic WITHIN A LINEAGE
+ * The first cut of this probe took `max(version)` per device, on the stated
+ * premise that the sigrefs counter is monotonic. It is not, and the exception is
+ * routine rather than exotic: a **re-key starts a fresh store lineage and the
+ * counter legitimately restarts**. Observed live the same day this was written —
+ * the tower went v662 → v105 across a re-key. `max()` then pins the bar to 662,
+ * a high-water mark of a store THAT NO LONGER EXISTS, which local can never
+ * reach. The verdict latches `converged:false` forever, the persistence clock
+ * grows without bound, and the loud warning fires every tick about a device that
+ * is one version behind and perfectly healthy. That is the worst possible
+ * failure for a detector: not silence, but a permanent, confident false alarm
+ * that teaches the fleet to ignore the one field a release reviewer was told to
+ * trust.
+ *
+ * So the bar is the announcement most recently OBSERVED (greatest `sequence` —
+ * the fed-event log id, which unlike `version` IS globally monotonic and is
+ * lineage-independent), never the greatest `version`. See GUARD 7.
  *
  * ## Pure logic only
  * Mirrors this directory's established split (`federation-probe.ts` /
@@ -45,12 +63,24 @@
  *  genuinely stuck mirror is named within a quarter hour rather than a week. */
 export const DEFAULT_CONVERGENCE_PERSISTENCE_MS = 15 * 60 * 1000;
 
-/** The highest snapshot a device has ANNOUNCED (signature-verified by the
- *  caller before it gets here — see the guard note on {@link judgeConvergence}). */
+/** A snapshot a device has ANNOUNCED (signature-verified by the caller before it
+ *  gets here — see the guard note on {@link judgeConvergence}). */
 export interface AnnouncedSnapshot {
   devicePubkeyBase64: string;
-  /** The sigrefs monotonic counter (G-4b) carried in the announcement. */
+  /**
+   * The sigrefs counter (G-4b) carried in the announcement. Monotonic only
+   * WITHIN a store lineage — a re-key restarts it. Never order announcements by
+   * this; that is the WI-6372 defect. Use {@link AnnouncedSnapshot.sequence}.
+   */
   version: number;
+  /**
+   * Observation order — the `harness_shared.coord_event_log.id` the announcement
+   * was read from. Globally monotonic and lineage-independent, so it is the ONLY
+   * safe recency key. Optional purely so a caller that genuinely has no ordering
+   * degrades to array order (first wins, callers supply newest-first) instead of
+   * silently reverting to the max-version bug.
+   */
+  sequence?: number;
   sigrefsOid?: string;
 }
 
@@ -98,6 +128,14 @@ export interface ConvergenceVerdict {
   notConverged: LaggingDevice[];
   /** How many devices were judgeable at all (attested + has an announcement). */
   judged: number;
+  /**
+   * Devices whose announced counter went BACKWARDS since the last tick — i.e. a
+   * re-key started a fresh store lineage. Informational only: it never flips
+   * `converged` by itself (a lineage reset is a normal event, not a fault), but
+   * it is the fact that explains why a persistence clock was dropped, and it is
+   * what a debugger otherwise reconstructs by hand from two ticks of metadata.
+   */
+  lineageResets: Array<{ devicePubkeyBase64: string; priorAnnounced: number; announced: number }>;
   /** The state to persist for the next tick. */
   state: ConvergenceState;
 }
@@ -149,6 +187,22 @@ export interface JudgeConvergenceInput {
  *      UNCHANGED, and resets the moment we make any progress. Without this the
  *      detector would eventually fire on every busy, perfectly-healthy pot —
  *      the exact false-positive that would get it disabled.
+ *   7. THE BAR IS THE NEWEST ANNOUNCEMENT, NOT THE HIGHEST. `version` restarts
+ *      on a re-key, so `max()` pins the bar to a dead lineage's high-water mark
+ *      that local can never reach — a PERMANENT false alarm (see the header).
+ *      Devices are therefore keyed by greatest `sequence`, and an announced
+ *      counter that moved BACKWARDS is read as a lineage reset: the persistence
+ *      clock for that device is dropped rather than carried, because every
+ *      millisecond it accumulated was measured against the old lineage's bar.
+ *
+ *      Trade-off, stated explicitly: a REPLAYED older announcement (validly
+ *      signed, re-posted) would arrive with the newest `sequence` and so LOWER
+ *      the bar for a tick, costing us a detection. That is the conservative
+ *      direction this file already commits to — "a detector that cries wolf on a
+ *      healthy pair is strictly worse than none" — and the lag is re-detected on
+ *      the next genuine announcement. Ordering by `version` to dodge a transient
+ *      miss is what buys the permanent false alarm, which is the strictly worse
+ *      bargain.
  */
 export function judgeConvergence(input: JudgeConvergenceInput): ConvergenceVerdict {
   const persistenceMs = input.persistenceMs ?? DEFAULT_CONVERGENCE_PERSISTENCE_MS;
@@ -156,13 +210,25 @@ export function judgeConvergence(input: JudgeConvergenceInput): ConvergenceVerdi
   // GUARD 1 — the judgeable set.
   const judgeable = new Set(input.candidateDevicePubkeys);
 
-  // Highest announced version per judgeable device (GUARD 4 + GUARD 5).
-  const highestAnnounced = new Map<string, AnnouncedSnapshot>();
+  // GUARD 7 — the CURRENT announcement per judgeable device: greatest
+  // `sequence` (observation order), NOT greatest `version`. When no caller
+  // supplies `sequence` we fall back to array order, first-wins, matching the
+  // call site's documented `ORDER BY id DESC` newest-first read. Deliberately
+  // never `version`: see the header (a re-key restarts it and `max()` latches a
+  // permanent false alarm). GUARD 4 + GUARD 5 also apply here.
+  const currentAnnounced = new Map<string, AnnouncedSnapshot>();
   for (const a of input.announced) {
     if (!judgeable.has(a.devicePubkeyBase64)) continue; // GUARD 1
     if (!Number.isInteger(a.version) || a.version < 0) continue; // GUARD 5
-    const prev = highestAnnounced.get(a.devicePubkeyBase64);
-    if (prev === undefined || a.version > prev.version) highestAnnounced.set(a.devicePubkeyBase64, a);
+    const prev = currentAnnounced.get(a.devicePubkeyBase64);
+    if (prev === undefined) {
+      currentAnnounced.set(a.devicePubkeyBase64, a);
+      continue;
+    }
+    // A malformed/absent `sequence` must never displace a well-ordered one.
+    const aSeq = Number.isInteger(a.sequence as number) ? (a.sequence as number) : null;
+    const prevSeq = Number.isInteger(prev.sequence as number) ? (prev.sequence as number) : null;
+    if (aSeq !== null && (prevSeq === null || aSeq > prevSeq)) currentAnnounced.set(a.devicePubkeyBase64, a);
   }
 
   const localByDevice = new Map<string, number | null>();
@@ -174,20 +240,32 @@ export function judgeConvergence(input: JudgeConvergenceInput): ConvergenceVerdi
 
   const state: ConvergenceState = {};
   const behind: LaggingDevice[] = [];
+  const lineageResets: ConvergenceVerdict['lineageResets'] = [];
 
   // GUARD 2 — iterate the ANNOUNCED set: a device that never announced is
   // never even considered.
-  for (const [devicePubkeyBase64, announcement] of highestAnnounced) {
+  for (const [devicePubkeyBase64, announcement] of currentAnnounced) {
     const announced = announcement.version;
     const local = localByDevice.get(devicePubkeyBase64) ?? null;
+    const prior = input.priorState?.[devicePubkeyBase64];
+
+    // GUARD 7 — the announced counter moved BACKWARDS: the peer re-keyed and
+    // restarted its lineage. Record it, and treat the prior lag state as void —
+    // it was accumulated against a bar that no longer exists.
+    const lineageReset = prior !== undefined && prior.announced > announced;
+    if (lineageReset) {
+      lineageResets.push({ devicePubkeyBase64, priorAnnounced: prior.announced, announced });
+    }
 
     // GUARD 3 — level or ahead ⇒ converged, and the prior lag state is dropped
     // (deliberately NOT copied into `state`).
     if (local !== null && local >= announced) continue;
 
     // GUARD 6 — the persistence clock tracks LOCAL PROGRESS, not behind-ness.
-    const prior = input.priorState?.[devicePubkeyBase64];
-    const localUnchanged = prior !== undefined && prior.local === local;
+    // GUARD 7 — ...but a lineage reset voids the carried clock outright, so a
+    // re-keyed peer starts its lag measurement fresh instead of inheriting the
+    // (unbounded) time it spent behind an unreachable dead-lineage bar.
+    const localUnchanged = prior !== undefined && prior.local === local && !lineageReset;
     const since = localUnchanged ? prior.since : input.nowMs;
 
     // Clamp: a `since` in the future (clock skew, or metadata restored from
@@ -213,7 +291,8 @@ export function judgeConvergence(input: JudgeConvergenceInput): ConvergenceVerdi
     converged: notConverged.length === 0,
     behind,
     notConverged,
-    judged: highestAnnounced.size,
+    judged: currentAnnounced.size,
+    lineageResets,
     state,
   };
 }
@@ -224,15 +303,23 @@ export function judgeConvergence(input: JudgeConvergenceInput): ConvergenceVerdi
  * from a cross-machine log read.
  */
 export function formatConvergenceVerdict(verdict: ConvergenceVerdict): string {
+  // A re-key is the single most confusing thing to see in these logs (the peer's
+  // version appears to fall off a cliff), so it is named explicitly wherever it
+  // happened — including on the converged path, which is the common case.
+  const resets = verdict.lineageResets.length
+    ? ` [lineage reset: ${verdict.lineageResets
+        .map((r) => `${r.devicePubkeyBase64.slice(0, 8)} v${r.priorAnnounced}→v${r.announced} (re-key; clock dropped)`)
+        .join('; ')}]`
+    : '';
   if (verdict.judged === 0) return 'no announced peer snapshots to compare against yet';
   if (verdict.converged && verdict.behind.length === 0) {
-    return `converged with ${verdict.judged} announced peer snapshot(s)`;
+    return `converged with ${verdict.judged} announced peer snapshot(s)${resets}`;
   }
   const describe = (d: LaggingDevice): string =>
     `${d.devicePubkeyBase64.slice(0, 8)} local ${d.local === null ? 'ABSENT' : `v${d.local}`} < announced v${d.announced}` +
     ` (${Math.round(d.lagMs / 60_000)}m without local progress)`;
   if (verdict.converged) {
-    return `trailing (healthy, still advancing): ${verdict.behind.map(describe).join('; ')}`;
+    return `trailing (healthy, still advancing): ${verdict.behind.map(describe).join('; ')}${resets}`;
   }
-  return `NOT CONVERGED: ${verdict.notConverged.map(describe).join('; ')}`;
+  return `NOT CONVERGED: ${verdict.notConverged.map(describe).join('; ')}${resets}`;
 }

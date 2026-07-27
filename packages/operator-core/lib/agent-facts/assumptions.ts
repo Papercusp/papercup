@@ -72,11 +72,26 @@ export const ASSUMPTION_CONDITIONS = [
   'lapsed',
   'superseded',
   'retracted',
+  'unresolved',
   'dangling',
 ] as const;
 export type AssumptionCondition = (typeof ASSUMPTION_CONDITIONS)[number];
 
-/** The one condition that REFUSES a commitment (D-079 R3). */
+/**
+ * The one condition that REFUSES a commitment (D-079 R3).
+ *
+ * ⚠ `unresolved` is NOT dangling, and the distinction is load-bearing: "the
+ * ledger says this key does not exist" and "the ledger could not be consulted"
+ * are different facts, and only the first is laundering. Collapsing them makes
+ * Postgres availability a precondition for closing ANY work item — one blip and
+ * every terminal close in the fleet refuses, with a message blaming the closer
+ * for a key that is probably fine. This gate exists to stop a reference nobody
+ * can resolve, not to hold completions hostage to a read.
+ *
+ * So resolution FAILS OPEN on a read error and fails CLOSED on a real absence.
+ * The declaration is still persisted either way, carrying `unresolved` so a later
+ * audit (and P-011's detector) can tell which closes were never actually checked.
+ */
 export function isDanglingCondition(c: AssumptionCondition): boolean {
   return c === 'dangling';
 }
@@ -237,9 +252,6 @@ export async function resolveAssumptions(
     return parsed.map((p) => malformedOrDangling(p.declared, p.parsed));
   }
 
-  const sql = inject ?? getOrgPg().sql;
-  const ws = opts.workspaceId ?? activeWorkspaceId();
-
   // Absolute refs may name a scope OUTSIDE the closer's selector set — that is
   // the whole point of an absolute citation — so the read spans the union of both.
   const scopes = Array.from(
@@ -258,18 +270,40 @@ export async function resolveAssumptions(
   // The (scope, ref) pairs are matched EXACTLY in JS below; SQL takes the cheap
   // cross-product prefilter because the row set is tiny by construction (≤10
   // keys × the 50-per-scope cap) and a dynamic tuple-IN buys nothing here.
-  const rows = await sql<RawRow[]>`
-    SELECT id, scope, scope_ref, key, body,
-           retracted_at::text AS retracted_at,
-           superseded_at::text AS superseded_at,
-           (expires_at <= now()) AS expired
-      FROM harness_shared.agent_facts
-     WHERE workspace_id = ${ws}
-       AND source_hive IS NULL
-       AND key = ANY(${keys}::text[])
-       AND scope = ANY(${scopes as string[]}::text[])
-       AND coalesce(scope_ref,'') = ANY(${refs}::text[])
-     ORDER BY id DESC`;
+  let rows: RawRow[];
+  try {
+    // Resolving the pool and the active workspace sit INSIDE the try alongside the
+    // query: each can throw on its own (no configured org pg, no active workspace),
+    // and every one of those is "could not consult the ledger", not "your key is a
+    // dangling reference".
+    const sql = inject ?? getOrgPg().sql;
+    const ws = opts.workspaceId ?? activeWorkspaceId();
+    rows = await sql<RawRow[]>`
+      SELECT id, scope, scope_ref, key, body,
+             retracted_at::text AS retracted_at,
+             superseded_at::text AS superseded_at,
+             (expires_at <= now()) AS expired
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${ws}
+         AND source_hive IS NULL
+         AND key = ANY(${keys}::text[])
+         AND scope = ANY(${scopes as string[]}::text[])
+         AND coalesce(scope_ref,'') = ANY(${refs}::text[])
+       ORDER BY id DESC`;
+  } catch {
+    // FAIL OPEN — see isDanglingCondition. A read that could not run says nothing
+    // about whether these references exist, and refusing on it would make one PG
+    // blip block every terminal close in the fleet.
+    return parsed.map((p) => ({
+      declared: p.declared,
+      ref: null,
+      key: p.parsed?.key ?? p.declared,
+      scope: p.parsed?.scope ?? null,
+      scopeRef: p.parsed?.scopeRef ?? null,
+      versionId: p.parsed?.versionId ?? null,
+      condition: 'unresolved' as const,
+    }));
+  }
 
   return parsed.map((p) => resolveOne(p.declared, p.parsed, rows, selectors));
 }

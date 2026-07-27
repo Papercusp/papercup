@@ -12,6 +12,7 @@ import {
   danglingAssumptionsMessage,
   isDanglingCondition,
   parseAssumptionRef,
+  resolveAssumptions,
 } from './assumptions';
 
 describe('parseAssumptionRef', () => {
@@ -101,6 +102,33 @@ describe('D-079 R3 — what refuses', () => {
   it('refuses ONLY total non-existence', () => {
     const refusing = ASSUMPTION_CONDITIONS.filter(isDanglingCondition);
     expect(refusing).toEqual(['dangling']);
+  });
+
+  /**
+   * The distinction that keeps a PG blip from blocking every terminal close in
+   * the fleet: "the ledger says this key does not exist" (refuse) is not "the
+   * ledger could not be consulted" (proceed, and record that it was not checked).
+   */
+  it('does NOT refuse when the ledger could not be read', () => {
+    expect(isDanglingCondition('unresolved')).toBe(false);
+    expect(ASSUMPTION_CONDITIONS).toContain('unresolved');
+  });
+
+  it('fails OPEN to unresolved when the fact read throws', async () => {
+    const exploding = (() => {
+      throw new Error('connection refused');
+    }) as unknown as Parameters<typeof resolveAssumptions>[3];
+    const out = await resolveAssumptions(['some-key'], assumptionSelectorsFor({ ownerId: 'su-1' }), {}, exploding);
+    expect(out).toHaveLength(1);
+    expect(out[0].condition).toBe('unresolved');
+    expect(out[0].key).toBe('some-key');
+    // Still persisted, so an audit can tell WHICH closes were never checked.
+    expect(out[0].declared).toBe('some-key');
+  });
+
+  it('still refuses a MALFORMED absolute ref, which needs no ledger read at all', async () => {
+    const out = await resolveAssumptions(['fact:nonsense:k'], assumptionSelectorsFor({ ownerId: 'su-1' }), {});
+    expect(out[0].condition).toBe('dangling');
   });
 
   /**

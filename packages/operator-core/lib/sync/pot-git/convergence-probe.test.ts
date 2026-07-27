@@ -121,12 +121,12 @@ describe('judgeConvergence — never fires on a healthy case', () => {
     expect(v.state[PEER]).toBeUndefined();
   });
 
-  it('takes the HIGHEST announced version per device, so a replayed old announce cannot mask real lag', () => {
+  it('with no `sequence` anywhere, falls back to array order (newest-first) rather than to max-version', () => {
     const v = judgeConvergence({
       candidateDevicePubkeys: [PEER],
       announced: [
-        { devicePubkeyBase64: PEER, version: 9 },
-        { devicePubkeyBase64: PEER, version: 2 }, // replay of an older announcement, arriving later
+        { devicePubkeyBase64: PEER, version: 9 }, // caller supplies newest-first
+        { devicePubkeyBase64: PEER, version: 2 },
       ],
       local: [{ devicePubkeyBase64: PEER, version: 5 }],
       priorState: null,
@@ -134,6 +134,125 @@ describe('judgeConvergence — never fires on a healthy case', () => {
     });
     expect(v.behind).toHaveLength(1);
     expect(v.behind[0]!.announced).toBe(9);
+  });
+});
+
+describe('judgeConvergence — GUARD 7: the bar is the NEWEST announcement, never the highest', () => {
+  it('THE DEFECT: a re-keyed peer whose version restarted does NOT get judged against the dead lineage', () => {
+    // The live shape: the tower re-keyed and its counter went 662 -> 105 while
+    // our mirror sits at 104, i.e. ONE version behind and perfectly healthy.
+    // Taking max(version) pins the bar at 662 — unreachable forever.
+    const v = judgeConvergence({
+      candidateDevicePubkeys: [PEER],
+      announced: [
+        { devicePubkeyBase64: PEER, version: 105, sequence: 468842 }, // current lineage
+        { devicePubkeyBase64: PEER, version: 662, sequence: 455690 }, // dead lineage
+      ],
+      local: [{ devicePubkeyBase64: PEER, version: 104 }],
+      priorState: null,
+      nowMs: NOW,
+    });
+    expect(v.behind).toHaveLength(1);
+    expect(v.behind[0]!.announced).toBe(105); // NOT 662
+    expect(v.converged).toBe(true); // one version behind, transient — no alarm
+  });
+
+  it('orders by `sequence` regardless of the order the caller happens to pass them in', () => {
+    const v = judgeConvergence({
+      candidateDevicePubkeys: [PEER],
+      announced: [
+        { devicePubkeyBase64: PEER, version: 662, sequence: 455690 },
+        { devicePubkeyBase64: PEER, version: 105, sequence: 468842 },
+      ],
+      local: [{ devicePubkeyBase64: PEER, version: 104 }],
+      priorState: null,
+      nowMs: NOW,
+    });
+    expect(v.behind[0]!.announced).toBe(105);
+  });
+
+  it('a re-key DROPS the carried persistence clock instead of inheriting an unbounded one', () => {
+    // Without this, the clock accumulated against the 662 bar carries straight
+    // over and the device is instantly, permanently "persistently behind".
+    const priorState: ConvergenceState = {
+      [PEER]: { announced: 662, local: 104, since: NOW - 6 * 60 * 60 * 1000 }, // 6h of dead-lineage lag
+    };
+    const v = judgeConvergence({
+      candidateDevicePubkeys: [PEER],
+      announced: [{ devicePubkeyBase64: PEER, version: 105, sequence: 468842 }],
+      local: [{ devicePubkeyBase64: PEER, version: 104 }],
+      priorState,
+      nowMs: NOW,
+    });
+    expect(v.behind[0]!.since).toBe(NOW); // clock restarted
+    expect(v.behind[0]!.lagMs).toBe(0);
+    expect(v.notConverged).toHaveLength(0);
+    expect(v.converged).toBe(true);
+    expect(v.lineageResets).toEqual([{ devicePubkeyBase64: PEER, priorAnnounced: 662, announced: 105 }]);
+  });
+
+  it('a re-key is reported even when the device is otherwise fully converged', () => {
+    const priorState: ConvergenceState = { [PEER]: { announced: 662, local: 600, since: NOW - 60_000 } };
+    const v = judgeConvergence({
+      candidateDevicePubkeys: [PEER],
+      announced: [{ devicePubkeyBase64: PEER, version: 105, sequence: 468842 }],
+      local: [{ devicePubkeyBase64: PEER, version: 105 }], // caught up on the new lineage
+      priorState,
+      nowMs: NOW,
+    });
+    expect(v.converged).toBe(true);
+    expect(v.behind).toHaveLength(0);
+    expect(v.lineageResets).toHaveLength(1);
+    expect(formatConvergenceVerdict(v)).toContain('lineage reset');
+  });
+
+  it('a genuinely stuck mirror STILL goes persistent after a re-key — the alarm is not disarmed', () => {
+    // The fix must not become a blanket amnesty: once the clock restarts on the
+    // NEW lineage, a mirror that still does not move must fire as before.
+    const afterReset = judgeConvergence({
+      candidateDevicePubkeys: [PEER],
+      announced: [{ devicePubkeyBase64: PEER, version: 105, sequence: 468842 }],
+      local: [{ devicePubkeyBase64: PEER, version: 10 }],
+      priorState: { [PEER]: { announced: 662, local: 10, since: NOW - 6 * 60 * 60 * 1000 } },
+      nowMs: NOW,
+    });
+    expect(afterReset.converged).toBe(true); // clock dropped, starts clean
+
+    const laterStillStuck = judgeConvergence({
+      candidateDevicePubkeys: [PEER],
+      announced: [{ devicePubkeyBase64: PEER, version: 106, sequence: 468999 }],
+      local: [{ devicePubkeyBase64: PEER, version: 10 }], // never moved
+      priorState: afterReset.state,
+      nowMs: NOW + DEFAULT_CONVERGENCE_PERSISTENCE_MS + 1,
+    });
+    expect(laterStillStuck.converged).toBe(false);
+    expect(laterStillStuck.notConverged[0]!.announced).toBe(106);
+  });
+
+  it('an announced counter moving FORWARD is not a lineage reset', () => {
+    const v = judgeConvergence({
+      candidateDevicePubkeys: [PEER],
+      announced: [{ devicePubkeyBase64: PEER, version: 120, sequence: 5 }],
+      local: [{ devicePubkeyBase64: PEER, version: 100 }],
+      priorState: { [PEER]: { announced: 110, local: 100, since: NOW - 60_000 } },
+      nowMs: NOW,
+    });
+    expect(v.lineageResets).toHaveLength(0);
+    expect(v.behind[0]!.since).toBe(NOW - 60_000); // clock correctly CARRIED
+  });
+
+  it('a malformed `sequence` never displaces a well-ordered announcement', () => {
+    const v = judgeConvergence({
+      candidateDevicePubkeys: [PEER],
+      announced: [
+        { devicePubkeyBase64: PEER, version: 105, sequence: 468842 },
+        { devicePubkeyBase64: PEER, version: 662, sequence: Number.NaN },
+      ],
+      local: [{ devicePubkeyBase64: PEER, version: 104 }],
+      priorState: null,
+      nowMs: NOW,
+    });
+    expect(v.behind[0]!.announced).toBe(105);
   });
 });
 

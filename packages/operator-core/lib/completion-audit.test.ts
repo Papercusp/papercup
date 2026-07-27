@@ -14,10 +14,17 @@
  * matters — an audit silently keying on the wrong field — fails here, without needing
  * a live Postgres.
  */
-import { describe, it, expect } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { blankPng, contentPng } from '@papercusp/image-blankness/testing';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import {
   auditPredicateSql,
   auditPredicateSqlFor,
+  citedImagePaths,
+  citesAssertionBearingRun,
   citesScreenshotArtifact,
   completionAuthorityPredicateSql,
   COMPLETION_AUDITS,
@@ -28,6 +35,7 @@ import {
   looksLikeIntermittentClassification,
   RECONCILER_SYSTEM_ACTOR,
   touchesLayoutBearingFiles,
+  verifyLiveDroveUiArtifacts,
 } from './completion-audit';
 import { WORK_ITEM_COMPLETION_AUTHORITIES } from './work-item-completion-authority';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
@@ -308,6 +316,150 @@ describe('isBackedLiveDroveUiClaim (WI-5891)', () => {
     expect(isBackedLiveDroveUiClaim({})).toBe(true);
     expect(isBackedLiveDroveUiClaim(null)).toBe(true);
     expect(isBackedLiveDroveUiClaim(undefined)).toBe(true);
+  });
+});
+
+// EI-18797014705631713 — the artifact half. isBackedLiveDroveUiClaim above proves a
+// path was WRITTEN DOWN; these prove it was real. The gap between the two is the whole
+// bug: a capture of a window that never painted writes a valid PNG and exits 0, so the
+// most convincing-looking evidence type was the easiest to produce by accident.
+describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'completion-audit-artifacts-'));
+    await writeFile(join(dir, 'blank.png'), blankPng());
+    await writeFile(join(dir, 'real.png'), contentPng());
+    await writeFile(join(dir, 'empty.png'), Buffer.alloc(0));
+    await writeFile(join(dir, 'shot.jpg'), Buffer.from('not really a jpeg, but on disk'));
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('REJECTS the laundering case: a cited screenshot that is on disk but blank', async () => {
+    const verdict = await verifyLiveDroveUiArtifacts({
+      verifiedHow: 'live-drove-ui',
+      testsRun: `tauri-agent-tools screenshot --pid 1234 --output ${dir}/blank.png`,
+      testResult: 'captured the HUD with the modal open',
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain('BLANK');
+    // The message must name the file — an agent has to know WHICH artifact failed.
+    expect(verdict.reason).toContain('blank.png');
+    expect(verdict.artifacts[0].status).toBe('blank');
+  });
+
+  it('REJECTS the WI-5874/P-001 case: a cited path with no file behind it', async () => {
+    const verdict = await verifyLiveDroveUiArtifacts({
+      verifiedHow: 'live-drove-ui',
+      testResult: `verified live, see ${dir}/never-taken.png`,
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain('does not exist');
+    expect(verdict.artifacts[0].status).toBe('missing');
+  });
+
+  it('treats a 0-byte capture as blank, not as an unreadable file', async () => {
+    const verdict = await verifyLiveDroveUiArtifacts({
+      verifiedHow: 'live-drove-ui',
+      filesChanged: [join(dir, 'empty.png')],
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain('0-byte');
+  });
+
+  it('ACCEPTS a cited screenshot that actually rendered', async () => {
+    const verdict = await verifyLiveDroveUiArtifacts({
+      verifiedHow: 'live-drove-ui',
+      testsRun: `tauri-agent-tools screenshot --output ${dir}/real.png`,
+    });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.basis).toBe('image');
+    expect(verdict.artifacts[0].status).toBe('content');
+  });
+
+  it('ACCEPTS a falsifiable `check` run with no image at all — the path the rejection recommends', async () => {
+    const verdict = await verifyLiveDroveUiArtifacts({
+      verifiedHow: 'live-drove-ui',
+      testsRun: 'tauri-agent-tools check --pid 1234 --eval "document.querySelectorAll(\'[data-col]\').length" --json',
+      testResult: '{"passed":true}, exit 0',
+    });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.basis).toBe('assertion');
+    // A `check` asserts something and can fail, so it needs nothing on disk.
+    expect(verdict.artifacts).toHaveLength(0);
+  });
+
+  it('accepts when ANY cited artifact is real, even alongside a blank one', async () => {
+    const verdict = await verifyLiveDroveUiArtifacts({
+      verifiedHow: 'live-drove-ui',
+      testsRun: `first attempt ${dir}/blank.png, retried after fixing GL: ${dir}/real.png`,
+    });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.artifacts.map((a) => a.status).sort()).toEqual(['blank', 'content']);
+  });
+
+  // The direction of failure is the whole safety argument: a wrong rejection blocks a
+  // close on work that was genuinely done, so anything less than a confident negative
+  // must pass. Each case below is a way the check could be WRONG, not merely unsure.
+  describe('fails open wherever the evidence is only unclear', () => {
+    it('passes a format it cannot decode rather than guessing', async () => {
+      const verdict = await verifyLiveDroveUiArtifacts({
+        verifiedHow: 'live-drove-ui',
+        filesChanged: [join(dir, 'shot.jpg')],
+      });
+      expect(verdict.ok).toBe(true);
+      expect(verdict.artifacts[0].status).toBe('unjudged');
+    });
+
+    it('passes a bare filename with no directory — its location is unknowable, not absent', async () => {
+      const verdict = await verifyLiveDroveUiArtifacts({
+        verifiedHow: 'live-drove-ui',
+        testResult: 'saved as hud-verified.png',
+      });
+      expect(verdict.ok).toBe(true);
+      expect(verdict.artifacts[0].status).toBe('unresolvable');
+    });
+
+    it('never applies to any other verifiedHow, and never to a bare completion', async () => {
+      for (const verifiedHow of ['unit', 'integration', 'manual', 'already-passing'] as const) {
+        const verdict = await verifyLiveDroveUiArtifacts({ verifiedHow, filesChanged: [join(dir, 'blank.png')] });
+        expect(verdict).toMatchObject({ ok: true, basis: 'not-applicable' });
+      }
+      expect(await verifyLiveDroveUiArtifacts(null)).toMatchObject({ ok: true });
+      expect(await verifyLiveDroveUiArtifacts(undefined)).toMatchObject({ ok: true });
+      expect(await verifyLiveDroveUiArtifacts({})).toMatchObject({ ok: true });
+    });
+  });
+
+  it('resolves a relative citation against the given cwd', async () => {
+    const verdict = await verifyLiveDroveUiArtifacts(
+      { verifiedHow: 'live-drove-ui', testResult: 'see ./blank.png' },
+      { cwd: dir },
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.artifacts[0].resolved).toBe(join(dir, 'blank.png'));
+  });
+});
+
+describe('citedImagePaths / citesAssertionBearingRun (EI-18797014705631713)', () => {
+  it('pulls every distinct image path out of the evidence, across all three fields', () => {
+    expect(
+      citedImagePaths({
+        testsRun: 'tauri-agent-tools screenshot --output /tmp/a.png then /tmp/b.jpeg',
+        testResult: 'compare against /tmp/a.png',
+        filesChanged: ['apps/operator/app/x.tsx', '/tmp/c.webp'],
+      }),
+    ).toEqual(['/tmp/a.png', '/tmp/b.jpeg', '/tmp/c.webp']);
+  });
+
+  it('counts only `check` as assertion-bearing — screenshot and capture cannot fail', () => {
+    expect(citesAssertionBearingRun({ testsRun: 'tauri-agent-tools check --eval "x" --json' })).toBe(true);
+    // These two exit 0 whether or not anything painted, which is the entire bug.
+    expect(citesAssertionBearingRun({ testsRun: 'tauri-agent-tools screenshot --output /tmp/a.png' })).toBe(false);
+    expect(citesAssertionBearingRun({ testsRun: 'tauri-agent-tools capture --out /tmp/a.png' })).toBe(false);
   });
 });
 

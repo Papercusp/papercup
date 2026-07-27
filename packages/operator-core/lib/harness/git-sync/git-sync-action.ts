@@ -1654,12 +1654,18 @@ async function runConvergenceProbe(input: {
     // that cursor is a CONSUMPTION watermark and has already moved past exactly
     // the rows we need to judge against. Deliberately NO sql cast on `version`
     // (one garbage row would throw the whole query) and no ORDER BY on it —
-    // rows come back newest-first and the max per device is taken in JS AFTER
-    // the signature check. The 500-row bound is a scan ceiling: a device that
-    // has not announced within it simply cannot be judged, which is the
-    // conservative direction (no alarm) rather than a false one.
-    const rows = await sql<{ body: Record<string, unknown> }[]>`
-      SELECT body
+    // rows come back newest-first by `id` and the CURRENT (not highest) version
+    // per device is taken in JS AFTER the signature check. The 500-row bound is
+    // a scan ceiling: a device that has not announced within it simply cannot be
+    // judged, which is the conservative direction (no alarm) rather than a false
+    // one.
+    //
+    // `id` is selected and threaded through as `sequence` because it is the only
+    // recency key that survives a re-key: `version` restarts on a fresh store
+    // lineage, so ordering by it latches a permanent false alarm (WI-6372 fix D
+    // defect — see convergence-probe.ts GUARD 7).
+    const rows = await sql<{ id: string | number; body: Record<string, unknown> }[]>`
+      SELECT id, body
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${potHomeSlug}
@@ -1677,9 +1683,13 @@ async function runConvergenceProbe(input: {
       // able to pin this device NOT-CONVERGED forever. Verify against the
       // EMBEDDED key; hive membership is gated separately by the candidate set.
       if (!verifyRefAnnouncement(payload)) continue;
+      // `id` is a bigint and may arrive as a string — coerce, and drop an
+      // unparseable one rather than passing NaN into the recency comparison.
+      const seq = typeof row.id === 'number' ? row.id : Number.parseInt(String(row.id), 10);
       announced.push({
         devicePubkeyBase64: payload.device_pubkey,
         version: payload.version,
+        sequence: Number.isSafeInteger(seq) ? seq : undefined,
         sigrefsOid: payload.sigrefs_oid,
       });
     }
@@ -1728,6 +1738,14 @@ async function runConvergenceProbe(input: {
           stuckForMs: d.lagMs,
         })),
         summary: formatConvergenceVerdict(verdict),
+        // Re-keys observed this tick. Persisted because "the peer's version fell
+        // off a cliff" is otherwise reconstructed by hand across two ticks of
+        // metadata, and it is the reason a persistence clock was dropped.
+        lineageResets: verdict.lineageResets.map((r) => ({
+          device: r.devicePubkeyBase64.slice(0, 12),
+          priorAnnounced: r.priorAnnounced,
+          announced: r.announced,
+        })),
         // The per-device persistence watermark the NEXT tick carries forward.
         devices: verdict.state,
       },

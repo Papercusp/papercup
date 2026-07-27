@@ -9,6 +9,25 @@ import {
 import type { WrappedEpochKeyRow } from './hive-epoch-boundary';
 
 /**
+ * WI-6311 — the divergent-joiner topology, which is the ONLY topology where this bug is
+ * observable. `resolveFederatedPotScope` fails OPEN (returns the local handle) whenever it
+ * cannot resolve, which is exactly what happens in a hermetic test with no registry and no PG.
+ * So without this mock the resolved and unresolved scopes are byte-identical and a test that
+ * "passes" proves nothing at all. Here LOCAL !== CANONICAL, so the two are distinguishable and
+ * the assertions below can actually see which one each reader received.
+ */
+const LOCAL_HANDLE = 'shop-hive-2'; // what freeSlug produced on the joiner
+const CANONICAL = 'shop-hive'; // what the owner authored, and what the projections write under
+vi.mock('../../federated-pot-scope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../federated-pot-scope')>();
+  return {
+    ...actual,
+    resolveFederatedPotScope: async (_ws: string, local: string) =>
+      (local === LOCAL_HANDLE ? CANONICAL : local) as never,
+  };
+});
+
+/**
  * Hermetic glue tests for the P-004 boundary trigger (shared-hive-rekey-2026-06-19).
  * No PG, no real crypto — every seam injected. The load-bearing invariant is
  * `remaining = all − cutOff`: a bug here = the removed member keeps the new key =
@@ -504,6 +523,51 @@ describe('reconcileOwnedHiveEpochKeys (WI-887 gap-aware sweep)', () => {
     );
     expect(r).toEqual({ scanned: 1, reconciled: 1 - 1 }); // scanned 1, reconciled 0
     expect(derived).toEqual([]); // ← never derived a key: intact hive does NO crypto
+  });
+
+  // ── WI-6311: the epoch reads are federated-scoped; the member reader is not ──
+  //
+  // The sweep COMPARES the member set against the epoch-key set, so a half-resolved pair is
+  // worse than either extreme: members resolve (populated) while epoch keys do not (empty),
+  // the "everyone already holds the current key" guard can never be satisfied, and the O(E·M)
+  // crypto it exists to prevent runs on EVERY sweep — forever, for a hive that is fine.
+  it('DIVERGENT JOINER, steady state ⇒ epoch reads use the CANONICAL scope, members use the LOCAL handle, and the perf guard STILL fires', async () => {
+    const derived: number[] = [];
+    const epochScopes: string[] = [];
+    const memberScopes: string[] = [];
+
+    const r = await reconcileOwnedHiveEpochKeys(
+      { enabled: true },
+      {
+        ...cryptoSeams(derived),
+        listHives: async () => [{ workspaceId: 'w', potHomeSlug: LOCAL_HANDLE }],
+        getCurrentEpoch: async (_w: string, slug: string) => {
+          epochScopes.push(slug);
+          return 1;
+        },
+        loadMembers: async (_w: string, slug: string) => {
+          memberScopes.push(slug);
+          return [member(['A']), member(['B'])];
+        },
+        // The rows exist ONLY under the canonical scope — which is the whole point: this is
+        // what the projections actually wrote. Reading under the local handle returns [].
+        loadEpochKeyDevices: async (_w: string, slug: string) => {
+          epochScopes.push(slug);
+          return slug === CANONICAL ? ['A', 'B'] : [];
+        },
+      },
+    );
+
+    // Every epoch-keyed read resolved; the member reader got the local handle it wants
+    // (listHiveMembersForLocalPot resolves internally — resolving twice would be the other bug).
+    expect(epochScopes).toEqual([CANONICAL, CANONICAL]);
+    expect(memberScopes).toEqual([LOCAL_HANDLE]);
+
+    // The payoff: the guard fires, so NO crypto. Before the fix loadEpochKeyDevices was called
+    // with LOCAL_HANDLE, returned [], every device looked like a gap, and this asserted list
+    // would be non-empty on every single sweep.
+    expect(derived).toEqual([]);
+    expect(r).toEqual({ scanned: 1, reconciled: 0 });
   });
 
   it('GAP (a member missing the current key) ⇒ reconciles that hive', async () => {
