@@ -33,6 +33,7 @@ import {
   type FactDependency,
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
+import { factsCellDelta } from './cells';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-facts-int';
@@ -48,6 +49,13 @@ beforeAll(async () => {
     LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
   `);
   for (const m of [
+    // P-008 (c) / D-077: the HLC stamp regime — `hlc_clock`, `hlc_now()` and
+    // `stamp_local_federated_write()`. Needed BEFORE 693 attaches that trigger to
+    // agent_facts, and applied for real (not stubbed) so the cell version this
+    // store now selects is minted by the SAME function that mints it in
+    // production. ⚠ 314 also (re)defines `capture_substrate_outbox` — the outbox
+    // chain stays out of scope, so the no-op stub is re-applied after this loop.
+    '314-d001-hlc-ordering-key.sql',
     '444-agent-facts.sql',
     '455-agent-facts-shareable.sql',
     '461-agent-facts-federation.sql',
@@ -76,17 +84,94 @@ beforeAll(async () => {
     // added in the same edit as the migration, so a drift between the tier
     // vocabulary in TypeScript and the one in the DB reds HERE.
     '692-agent-facts-convention-enforcement.sql',
+    // P-008 (c) / D-077: `fed_hlc` + the stamp trigger — the migration that puts
+    // agent_facts into the LWW regime its siblings were already in, so a fact
+    // HAS a cell version to serve as the watermark cursor. Added in the SAME
+    // edit as the migration, which is the discipline the 498/505/664 drift
+    // comment above exists to enforce.
+    '693-agent-facts-federation-stamp-regime.sql',
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper
     // (lifted from this file's own former inline version).
     await applyMigrationForTest(db.sql, join(SQL_DIR, m));
   }
+  // Re-stub: migration 314 above replaced the no-op with the REAL capture
+  // function. The triggers already exist and resolve the body at call time, so
+  // replacing it here is enough to keep the outbox chain out of scope — while
+  // the HLC stamping 314 also brought stays genuine.
+  await db.sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
+  `);
 });
 afterAll(async () => {
   await db?.cleanup();
 });
 afterEach(async () => {
   await db.sql.unsafe('TRUNCATE harness_shared.agent_facts');
+});
+
+// P-008 (c) / D-012 / D-077 — the cell version is minted by the REAL stamp
+// trigger (mig 693) and must survive the fold, or the watermark surface has no
+// cursor to advance. This is the leg that would have silently no-op'd if the
+// trigger were stubbed: every fact would read cellVersion null and every delta
+// would be empty forever, with all unit tests still green.
+describe('P-008 (c) cell version (fed_hlc, migration 693)', () => {
+  it('a locally-asserted fact gets an HLC cell version, and the fold serves it', async () => {
+    await assertFact(
+      { scope: 'harness', scopeRef: 'papercusp', key: 'cellv', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const folded = await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql);
+    const f = folded.find((x) => x.key === 'cellv');
+    expect(f).toBeDefined();
+    expect(typeof f!.cellVersion).toBe('string');
+    expect(f!.cellVersion).not.toBe('');
+  });
+
+  it('a CORRECTION mints a STRICTLY GREATER version — this is what makes it a delta cursor', async () => {
+    await assertFact(
+      { scope: 'harness', scopeRef: 'papercusp', key: 'moving', body: 'v1', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const first = (await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql)).find(
+      (x) => x.key === 'moving',
+    )!.cellVersion!;
+
+    await assertFact(
+      { scope: 'harness', scopeRef: 'papercusp', key: 'moving', body: 'v2', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const second = (await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql)).find(
+      (x) => x.key === 'moving',
+    )!.cellVersion!;
+
+    // String comparison, because an HLC is a total order by construction — the
+    // property that lets the cursor be one opaque token (D-012).
+    expect(second > first).toBe(true);
+  });
+
+  it('the delta reports that correction as changed against the pre-correction cursor', async () => {
+    await assertFact(
+      { scope: 'harness', scopeRef: 'papercusp', key: 'watched', body: 'v1', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const before = await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql);
+    // Bootstrap: records the position, reports nothing.
+    const boot = factsCellDelta(before, '');
+    expect(boot.changed).toEqual([]);
+
+    await assertFact(
+      { scope: 'harness', scopeRef: 'papercusp', key: 'watched', body: 'v2', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const after = await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql);
+    const delta = factsCellDelta(after, boot.nextCursor);
+
+    expect(delta.changed.map((f) => f.key)).toEqual(['watched']);
+    expect(delta.changed[0].body).toBe('v2');
+    expect(delta.nextCursor > boot.nextCursor).toBe(true);
+  });
 });
 
 describe('assertFact against the REAL mig-461 identity index', () => {

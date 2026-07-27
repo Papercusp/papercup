@@ -30,6 +30,7 @@ import { buildParkedOnMap } from '../../fleet/assignments';
 import { overlayPresenceCursors } from '../presence-cursor-overlay';
 import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings';
 import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
+import { deriveCouplingsFromRoster } from '../../../coord/coupling-derivation';
 
 export default defineTool({
   name: 'coord:presence',
@@ -184,16 +185,24 @@ export default defineTool({
     // paths and provably independent of the modes/parkedOn/deafness/cursor
     // overlays below.
     //
-    // `derived: []` until P-013 builds the derivation — the union is already the
-    // call site, so P-013 plugs its half in here and nothing else changes. Being
-    // empty today is exactly why this is OPT-IN rather than always-on: paying a
+    // P-013 has now BUILT the derived half (D-078), so `derived` is no longer the
+    // empty list this call site was written around. It is derived purely from the
+    // snapshot rows already in hand, so the original opt-in rationale — "paying a
     // query on every read of a hot poll surface to append an empty array is the
-    // wrong trade, and P-013 owns the always-on decision.
+    // wrong trade" — no longer applies: there is no query, and the block is no
+    // longer provably empty. What remains behind `include_coupling` is a PAYLOAD
+    // SIZE trade on a hot poll surface, not a compute one.
     let coupling: Record<string, unknown> = {};
     if (args.include_coupling === true && self) {
       try {
         const edges = await listCouplingsFor(self.ownerId, c.workspaceId ?? undefined);
-        const peers = resolveCoupledPeers(self.ownerId, [], edges);
+        // P-013 (scoping ruling D-078): the derived half, plugged in exactly where
+        // this module always said it would go. It is computed from the SAME
+        // pre-overlay snapshot rows the block projects from, so it adds no query
+        // and — by construction, not by an access check — cannot surface a peer
+        // this caller could not already see (D-044 / D-078 (c)).
+        const derived = deriveCouplingsFromRoster(self.ownerId, snapshot.active);
+        const peers = resolveCoupledPeers(self.ownerId, derived, edges);
         const expansion = buildCoupledExpansion(peers, snapshot.active);
         coupling = {
           expanded: expansion.expanded,

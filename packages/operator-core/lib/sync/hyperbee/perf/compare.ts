@@ -185,7 +185,7 @@ export function compareArtifacts(
       // 0.170ms), appendCallMs (2.000ms) and deltaTick100Ms (5.233ms) each fired
       // on 100% of their comparisons, by construction rather than by regression.
       // Such a metric is not comparable in RELATIVE terms at all; say so.
-      if (false as boolean) {
+      if (absFloor > tolerance * baseVal) {
         report.notComparable.push({
           scenario: a.scenario,
           paramsKey: paramsKey(a.params),
