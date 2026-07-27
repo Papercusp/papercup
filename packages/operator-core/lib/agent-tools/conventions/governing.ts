@@ -114,17 +114,19 @@ export default defineTool({
     });
 
     return {
-      ok: true as const,
-      harness,
-      conventions: conventions.map((c) => projectConvention(c, args.full === true)),
-      counts,
-      // Stated rather than implied: a caller who passed no `about` got a
-      // deliberately partial answer, and should know which half is missing.
-      ...(args.about
-        ? {}
-        : {
-            note: 'No `about` given — DECLARED conventions only; plan decisions were not searched.',
-          }),
+      data: {
+        ok: true,
+        harness,
+        conventions: conventions.map((c) => projectConvention(c, args.full === true)),
+        counts,
+        // Stated rather than implied: a caller who passed no `about` got a
+        // deliberately partial answer, and should know which half is missing.
+        ...(args.about
+          ? {}
+          : {
+              note: 'No `about` given — DECLARED conventions only; plan decisions were not searched.',
+            }),
+      },
     };
   },
 });

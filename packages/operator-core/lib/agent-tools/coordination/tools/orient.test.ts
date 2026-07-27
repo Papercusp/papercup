@@ -992,6 +992,82 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     });
   });
 
+  // ── P-018: the fold projection is a WHITELIST, and it used to drop `kind` —
+  // so a normative convention arrived byte-identical to a settled conclusion at
+  // the one surface every agent reads every wake. Exactly the defect P-033 (e)
+  // found in `toAgentMessageRow`. These pin that it stays projected. ──
+  describe('P-018 facts fold: the MODALITY survives the projection', () => {
+    const baseFact = {
+      key: 'migrations-via-runner',
+      createdBy: 'x',
+      updatedAt: '2026-07-11T00:00:00Z',
+      expiresAt: '2026-07-18T00:00:00Z',
+      sourceRef: null,
+      audienceScope: null,
+      sourceProvenance: null,
+    };
+
+    it('projects kind + enforcement + a citable ref for a convention', async () => {
+      foldFactsMock.mockResolvedValue([
+        {
+          ...baseFact,
+          id: 12,
+          scope: 'workspace',
+          scopeRef: null,
+          body: 'Apply migrations via db:migrate.',
+          kind: 'convention',
+          enforcement: { tier: 'gate', floor: 0.6, reviewBy: '2026-09-01' },
+        },
+      ]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.facts).toEqual([
+        {
+          scope: 'workspace',
+          ref: null,
+          body: 'Apply migrations via db:migrate.',
+          src: null,
+          kind: 'convention',
+          enforcement: { tier: 'gate', floor: 0.6, reviewBy: '2026-09-01' },
+          // D-075 R1: the ref you cite it by, delivered with the rule itself.
+          cite: 'fact:workspace:migrations-via-runner@v12',
+        },
+      ]);
+    });
+
+    it('a convention and a conclusion with the SAME body are distinguishable', async () => {
+      const body = 'Apply migrations via db:migrate.';
+      const fold = async (kind: string) => {
+        foldFactsMock.mockResolvedValue([
+          { ...baseFact, id: 1, scope: 'workspace', scopeRef: null, body, kind },
+        ]);
+        const { call } = fakeCall({ ...CORE });
+        return (await composeOrient({}, call, 'me')).facts;
+      };
+      expect(await fold('convention')).not.toEqual(await fold('conclusion'));
+    });
+
+    it('adds NOTHING for a fact with no declared kind — the common case stays byte-identical', async () => {
+      foldFactsMock.mockResolvedValue([
+        { ...baseFact, id: 5, scope: 'workspace', scopeRef: null, body: 'b', kind: null },
+      ]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.facts).toEqual([{ scope: 'workspace', ref: null, body: 'b', src: null }]);
+    });
+
+    it('a conclusion carries its kind but NOT a citation (only conventions are cited)', async () => {
+      foldFactsMock.mockResolvedValue([
+        { ...baseFact, id: 5, scope: 'workspace', scopeRef: null, body: 'b', kind: 'conclusion' },
+      ]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.facts).toEqual([
+        { scope: 'workspace', ref: null, body: 'b', src: null, kind: 'conclusion' },
+      ]);
+    });
+  });
+
   // ── P-009 (coord-authority-hardening H4): fleet control-state fold — the
   // late-joiner read of a typed wind-down ──
   describe('P-009 fleet control-state fold', () => {
