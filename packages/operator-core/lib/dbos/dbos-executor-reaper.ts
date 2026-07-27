@@ -447,10 +447,21 @@ export function startExecutorReaper(
     staleSchedulerMs?: number;
     staleRoutineFireNoOutputMs?: number;
     staleRoutineFireOrphanMs?: number;
+    /** EI-18752434722211671: this process's own start time (epoch ms). Defaults to
+     *  `Date.now() - process.uptime() * 1000` (the same "derive true process start
+     *  from Node's own uptime counter" idiom already used by mug-warm-session.ts and
+     *  compaction-compliance-watchdog.ts) — reads the OS-backed uptime clock rather
+     *  than a module-load-time capture, so it is correct even if this module is
+     *  imported/evaluated a moment after the process actually started. Threaded into
+     *  EVERY reap call (boot + every periodic tick), not just the first: the value is
+     *  fixed for the process's lifetime, so it can only ever match rows that predate
+     *  this process — never one it creates itself later. */
+    processStartedAtMs?: number;
   } = {},
 ): void {
   if (process.env.PAPERCUSP_DBOS_EXECUTOR_REAPER === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_REAP_INTERVAL_MS;
+  const processStartedAtMs = opts.processStartedAtMs ?? Date.now() - process.uptime() * 1000;
 
   // EI-3673: `run` used to be `(): void` — it fired `reapDeadExecutorWorkflows(...)`
   // with `void promise.then(onSuccess)` and RETURNED IMMEDIATELY without waiting for
@@ -480,6 +491,7 @@ export function startExecutorReaper(
       opts.staleSchedulerMs,
       opts.staleRoutineFireNoOutputMs,
       opts.staleRoutineFireOrphanMs,
+      processStartedAtMs,
     ).then((r) => {
       if (r.cancelled > 0 || r.queuePurged > 0) {
         console.warn(

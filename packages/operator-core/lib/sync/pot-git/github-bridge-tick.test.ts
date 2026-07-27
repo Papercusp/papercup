@@ -276,3 +276,64 @@ describe('runGithubBridgeTick — composition', () => {
     expect(out).toMatchObject({ ran: false, skipped: 'not_bridge_writer' });
   });
 });
+
+describe('runGithubBridgeTick — EI-18751829787526583: a stale-but-PRESENT canonical must not read green', () => {
+  const WATERMARK = 'e'.repeat(40);
+
+  /** merge-base --is-ancestor CANONICAL WATERMARK → 0 (ancestor); rev-list --count → N. */
+  const staleGit = (behindCount: number) =>
+    async (args: string[]) => {
+      if (args[0] === 'rev-parse') return { code: 0, stdout: `${CANONICAL}\n`, stderr: '' };
+      if (args[0] === 'merge-base') return { code: 0, stdout: '', stderr: '' };
+      if (args[0] === 'rev-list') return { code: 0, stdout: `${behindCount}\n`, stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+  it('canonical behind the accepted watermark → escalate + egress-canonical-stale, still egresses (publishes the stale content)', async () => {
+    const { input, recorded, egressCalls } = bridgeInput(
+      { expectedCanonicalSha: WATERMARK },
+      { runGit: staleGit(21) },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.action).toBe('escalate');
+    expect(out.verdict.needsOwner).toBe(false); // self-heals via the catch-up pin / next integrator publish
+    expect(out.verdict.signals).toContainEqual({
+      kind: 'egress-canonical-stale',
+      canonicalSha: CANONICAL,
+      expectedSha: WATERMARK,
+      behindCount: 21,
+    });
+    expect(out.verdict.detail).toMatch(/STALE/);
+    expect(out.errors.some((e) => e.includes('STALE'))).toBe(true);
+    // egress still runs — it publishes exactly what canonical holds today.
+    expect(egressCalls).toHaveLength(1);
+    expect(recorded.at(-1)?.action).toBe('escalate');
+  });
+
+  it('canonical already equal to the watermark → no signal (the healthy case)', async () => {
+    const { input } = bridgeInput({ expectedCanonicalSha: CANONICAL });
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.signals.map((s) => s.kind)).not.toContain('egress-canonical-stale');
+  });
+
+  it('no expectedCanonicalSha given → staleness detection is skipped entirely (back-compat)', async () => {
+    const { input } = bridgeInput();
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.signals.map((s) => s.kind)).not.toContain('egress-canonical-stale');
+  });
+
+  it('canonical DIVERGED (not an ancestor) from the watermark → not flagged stale (a different problem)', async () => {
+    const { input } = bridgeInput(
+      { expectedCanonicalSha: WATERMARK },
+      {
+        runGit: async (args) => {
+          if (args[0] === 'rev-parse') return { code: 0, stdout: `${CANONICAL}\n`, stderr: '' };
+          if (args[0] === 'merge-base') return { code: 1, stdout: '', stderr: 'not an ancestor' };
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.signals.map((s) => s.kind)).not.toContain('egress-canonical-stale');
+  });
+});

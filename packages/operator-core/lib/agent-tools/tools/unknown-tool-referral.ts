@@ -76,6 +76,16 @@ export function unknownToolReferral(requested: string): string {
     `Any catalog tool is callable WITHOUT loading it: tools:invoke { name, args }. ` +
     `tools:find("<intent or name>") searches the FULL server-side catalog (your client's ` +
     `own tool search only indexes the advertised subset — a miss there does not mean the ` +
-    `tool doesn't exist) and activates matches for this session.`
+    `tool doesn't exist) and activates matches for this session. ` +
+    // EI-18752546668875973: a doc-cited name can genuinely miss for a THIRD reason besides
+    // "typo" and "the doc is wrong" — the tool exists in source but hasn't reached THIS
+    // operator's deployed code yet (a doc/prompt is spliced from the staging tree; this
+    // endpoint may be serving an older release checkout). Naming that possibility here, at
+    // the moment of failure, is cheaper than the misdiagnosis it prevents: an agent that
+    // concludes "the doc/registry must be wrong" and goes on to file a bug against either.
+    `If this name looks right and you recently saw it added/documented, it may exist in ` +
+    `source but not be deployed to THIS operator yet (a red release gate stalls the ` +
+    `staging→live window well past its normal <=15min) — check dev:pipeline_position before ` +
+    `concluding the doc or the registry itself is wrong.`
   );
 }

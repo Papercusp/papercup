@@ -43,6 +43,7 @@ vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
 }));
 
 import { runGithubBridgeLeg } from './git-sync-action';
+import { BRIDGE_CANONICAL_REF } from '../../sync/pot-git/github-bridge-tick';
 
 const SLUG = 'shop-hive';
 const WS = 'ws-1';
@@ -112,5 +113,54 @@ describe('runGithubBridgeLeg — WI-6282 cold-store catch-up pin', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe('runGithubBridgeLeg — EI-18751829787526583: a STALE-but-present canonical ref must also re-pin', () => {
+  const WATERMARK = 'a'.repeat(40);
+  const STALE = 'b'.repeat(40);
+
+  it('canonical exists but is a strict ancestor of the watermark → re-pins CAS\'d against the stale sha', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      pathExistsMock.mockResolvedValue(true);
+      sqlMock.mockResolvedValue([{ la: null, wb_sha: WATERMARK, prev_egress_head: null }]);
+      defaultRunGitMock.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'rev-parse') return { code: 0, stdout: `${STALE}\n`, stderr: '' };
+        if (args[0] === 'merge-base') return { code: 0, stdout: '', stderr: '' }; // STALE IS an ancestor of WATERMARK
+        return { code: 0, stdout: '', stderr: '' };
+      });
+      await runGithubBridgeLeg(SLUG, WS);
+      const calls = defaultRunGitMock.mock.calls.map((c) => c[0] as string[]);
+      expect(calls).toContainEqual(['merge-base', '--is-ancestor', STALE, WATERMARK]);
+      expect(calls).toContainEqual(['update-ref', BRIDGE_CANONICAL_REF, WATERMARK, STALE]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('was STALE'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('canonical DIVERGED from the watermark (not an ancestor) → never re-pinned (not this guard\'s problem)', async () => {
+    pathExistsMock.mockResolvedValue(true);
+    sqlMock.mockResolvedValue([{ la: null, wb_sha: WATERMARK, prev_egress_head: null }]);
+    defaultRunGitMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'rev-parse') return { code: 0, stdout: `${STALE}\n`, stderr: '' };
+      if (args[0] === 'merge-base') return { code: 1, stdout: '', stderr: 'not an ancestor' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    await runGithubBridgeLeg(SLUG, WS);
+    const calls = defaultRunGitMock.mock.calls.map((c) => c[0] as string[]);
+    expect(calls).not.toContainEqual(['update-ref', BRIDGE_CANONICAL_REF, WATERMARK, STALE]);
+  });
+
+  it('canonical already equals the watermark → no merge-base call at all (the healthy case)', async () => {
+    pathExistsMock.mockResolvedValue(true);
+    sqlMock.mockResolvedValue([{ la: null, wb_sha: WATERMARK, prev_egress_head: null }]);
+    defaultRunGitMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'rev-parse' ? { code: 0, stdout: `${WATERMARK}\n`, stderr: '' } : { code: 0, stdout: '', stderr: '' },
+    );
+    await runGithubBridgeLeg(SLUG, WS);
+    const argv0s = defaultRunGitMock.mock.calls.map((c) => (c[0] as string[])[0]);
+    expect(argv0s).not.toContain('merge-base');
   });
 });

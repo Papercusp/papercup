@@ -37,12 +37,24 @@
   background: var(--bg-2, rgba(255, 255, 255, 0.045));
 }
 
-/* ── pot label + selector + sub-pot toggle + New/Share (moved from AdvShell) ── */
+/* ── pot label + selector + sub-pot toggle + New/Share/Beacon/Workspaces/
+      Register sub-pots (moved from AdvShell) ── */
+/* WRAPS (2026-07-27). `.pc-potbar` already wrapped, but that only helps the
+   status pills — every control here lives in this INNER div, which did not wrap
+   and is `flex-shrink: 0`, so a narrow pane clipped the tail of the row off-screen
+   instead of reflowing it. That was survivable at five children; the Work tab's
+   beacon / Workspaces / Register sub-pots landed here the same day and made it
+   eight, and /adv routinely renders in a ~250px column next to the chat sidebar +
+   Mug pane, where the last four controls simply vanished. Wrapping is the fix —
+   `min-width: 0` so the row may actually shrink to its container, and an explicit
+   row-gap so a wrapped second line does not collide with the first. */
 .pc-advshell__selector {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  flex-shrink: 0;
+  row-gap: 6px;
+  min-width: 0;
 }
 .pc-advshell__selector-label {
   color: var(--fg-mute, #7f9bb4);
