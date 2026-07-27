@@ -4,6 +4,9 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/release/checkpoint-run.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const MAKE_CTX = (role = 'operator') =>
@@ -638,5 +641,32 @@ describe('release:checkpoint-run', () => {
     // Checked against the IN-FLIGHT candidate, never the hypothetical fresh one.
     expect(containmentSpy).toHaveBeenCalledWith({ candidateSha: 'inflight1', tipSha: 'tip1', paths: ['mine.ts'] });
     expect(b.containment_warning).toMatch(/cannot see mine\.ts/);
+  });
+});
+
+// EI-18773280958875269: a doc/prompt that quotes this tool's emitted wording has NO
+// drift guard of its own — release-fixer.md told agents to look for a
+// `⚠ quiet-cut EXCLUDED` banner this file stopped emitting (EI-18759622667757826 reworded
+// it to `⚠ PREDICTED exclusion: …` / `⚠ PREDICTION ONLY — …`). A stale quote reads as
+// "nothing was excluded" to a release-fixer agent following the prompt literally, on the
+// release-gate path. This is the POSITIVE-assertion counterpart of the vacuous-negative
+// lint's own motivating case (scripts/check-vacuous-negative-assertions.mjs) — pin the
+// prompt's quoted banner prefixes against the literals this file actually builds them
+// from, so rewording one without the other fails loudly instead of drifting silently.
+describe('release-fixer.md prompt banners stay in sync with this file', () => {
+  const PROMPT_PATH = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/release-fixer.md',
+  );
+
+  it('quotes the current PREDICTED-exclusion banner prefixes, not a retired one', () => {
+    const prompt = readFileSync(PROMPT_PATH, 'utf8');
+    // The two live prefixes checkpoint-run.ts builds the warning from (see the
+    // ` ⚠ PREDICTION ONLY — …` / ` ⚠ PREDICTED exclusion: …` template literals above).
+    expect(prompt).toContain('⚠ PREDICTED exclusion:');
+    expect(prompt).toContain('⚠ PREDICTION ONLY — and this one is probably PESSIMISTIC');
+    // The retired banner this class was filed over must not have crept back in — a
+    // literal reappearance here means someone quoted the OLD wording again.
+    expect(prompt).not.toMatch(/⚠ quiet-cut EXCLUDED/);
   });
 });

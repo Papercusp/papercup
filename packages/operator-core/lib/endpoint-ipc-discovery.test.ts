@@ -65,6 +65,65 @@ describe('endpoint-ipc discovery file', () => {
   });
 });
 
+describe('sibling discovery-file pruning (EI-18763945004822208 item 2)', () => {
+  const papercuspDir = () => join(h.home, '.papercusp');
+
+  it('deletes a sibling endpoint-ipc.<port>.json whose pid is dead', async () => {
+    await mkdir(papercuspDir(), { recursive: true });
+    const stalePath = join(papercuspDir(), 'endpoint-ipc.3271.json');
+    // A pid this high is never a real process — deterministically dead
+    // (same convention as the Rust-side DEFINITELY_DEAD_PID test const).
+    await writeFile(
+      stalePath,
+      JSON.stringify({ socketPath: '/tmp/dead.sock', pid: 2_000_000_000, startedAt: 1, port: 3271 }),
+      'utf8',
+    );
+
+    await writeEndpointIpcDiscovery('/tmp/sockets/fresh.sock');
+
+    await expect(readFile(stalePath, 'utf8')).rejects.toThrow();
+  });
+
+  it('leaves a sibling whose pid is alive untouched', async () => {
+    await mkdir(papercuspDir(), { recursive: true });
+    const livePath = join(papercuspDir(), 'endpoint-ipc.3070.json');
+    await writeFile(
+      livePath,
+      // process.pid — this test process itself is trivially alive.
+      JSON.stringify({ socketPath: '/tmp/live.sock', pid: process.pid, startedAt: 1, port: 3070 }),
+      'utf8',
+    );
+
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    try {
+      await writeEndpointIpcDiscovery('/tmp/sockets/fresh.sock');
+    } finally {
+      delete process.env.PAPERCUSP_HONO_PORT;
+    }
+
+    const raw = JSON.parse(await readFile(livePath, 'utf8'));
+    expect(raw).toMatchObject({ socketPath: '/tmp/live.sock', pid: process.pid });
+  });
+
+  it('never throws when the directory holds an unreadable/corrupt sibling', async () => {
+    await mkdir(papercuspDir(), { recursive: true });
+    await writeFile(join(papercuspDir(), 'endpoint-ipc.9999.json'), '{ not json', 'utf8');
+    await expect(writeEndpointIpcDiscovery('/tmp/sockets/fresh.sock')).resolves.toBeUndefined();
+  });
+
+  it('ignores a non-discovery file in the same directory', async () => {
+    await mkdir(papercuspDir(), { recursive: true });
+    const unrelated = join(papercuspDir(), 'embedded-pg.json');
+    await writeFile(unrelated, JSON.stringify({ pid: 2_000_000_000 }), 'utf8');
+
+    await writeEndpointIpcDiscovery('/tmp/sockets/fresh.sock');
+
+    // Never matched the endpoint-ipc(.port)?.json pattern, so untouched
+    // regardless of its (dead) pid.
+    await expect(readFile(unrelated, 'utf8')).resolves.toContain('2000000000');
+  });
+});
+
 describe('per-port discovery (EI-190)', () => {
   const savedPort = process.env.PAPERCUSP_HONO_PORT;
   afterEach(() => {

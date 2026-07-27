@@ -51,7 +51,12 @@ import {
   SETTLED_WORK_ITEM_STATES,
   type TerminalCompletionConflict,
 } from '../../work-items';
-import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
+import {
+  CompletionRecordSchema,
+  stripNulBytesDeep,
+  type CompletionRecord,
+  type CompletionVerificationEvidence,
+} from '../../coord-lifecycle/records';
 import { isBackedLiveDroveUiClaim, verifyLiveDroveUiArtifacts } from '../../completion-audit';
 import { authorityForCompletion, countsTowardBurnDown } from '../../work-item-completion-authority';
 import { renderCompletion } from '../../coord-lifecycle/render';
@@ -346,6 +351,22 @@ async function completeOne(
   // broadcast record) — it is purely an internal signal for the warning below.
   const shapeCoercedFromBareString = (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom === 'bare-string';
   if (shapeCoercedFromBareString) delete (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
+
+  // EI-18764241942332131: Postgres' jsonb text-input parser rejects a literal NUL
+  // byte with the opaque "unsupported Unicode escape sequence" — a caller who quotes
+  // raw source (e.g. evidence ABOUT a NUL byte, as the reporter did) into testResult/
+  // testsRun/summary/etc previously got a completion record that was RECORDED, then a
+  // terminal STATE WRITE that silently failed downstream in setWorkItemState's evidence
+  // merge, well after this tool had already accepted the call. Sanitize HERE, at the
+  // tool boundary, before evidence extraction / coord:emit rendering / anything else
+  // touches the record — so the state write and the completion record can never
+  // disagree about whether a NUL-bearing close landed (terminalPayloadMergeJson in
+  // coord-lifecycle/records.ts also sanitizes defensively, for callers other than this
+  // tool). The caller is told via `nulBytesStrippedWarning` below — this silently
+  // rewrites their evidence, which is worth surfacing even though it never blocks
+  // (EI-24 record-and-warn discipline).
+  const { value: sanitizedCompletion, stripped: nulBytesStripped } = stripNulBytesDeep(it.completion);
+  if (nulBytesStripped) it.completion = sanitizedCompletion;
 
   const existing = await getWorkItem(it.id, it.harness);
   if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
@@ -792,6 +813,11 @@ async function completeOne(
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     ...(stateError ? { stateError } : {}),
     ...(stateWarning ? { stateWarning } : {}),
+    ...(nulBytesStripped
+      ? {
+          nulBytesStrippedWarning: `completion for ${it.id} contained one or more raw NUL bytes (invisible in most editors/terminals — renders as nothing or a plain space) — they were silently removed before recording, because Postgres cannot store a NUL in a text/jsonb column ("unsupported Unicode escape sequence") and an unremoved one would have failed the state write while leaving the completion recorded (EI-18764241942332131). If the NUL was meaningful (e.g. you were quoting a literal NUL byte as evidence), describe it in prose instead (e.g. "a raw NUL / 0x00 byte") rather than embedding the literal character.`,
+        }
+      : {}),
     ...(aliased !== undefined ? { aliased, requestedState, appliedState } : {}),
     ...(aliasNote ? { aliasNote } : {}),
     ...(inferredCloseState

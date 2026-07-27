@@ -89,6 +89,11 @@ import '../../adv/sessions/SessionsRosterView.css';
 interface RosterPayload {
   active: HudRosterEntry[];
   pending?: HudRosterEntry[];
+  /** WI-6376's launch-record tier: sessions whose launch is durably recorded but
+   *  which have not registered in the roster yet. WI-6440 reads it here so the
+   *  boot window survives a reload — see `startingEntry` below. Deduped against
+   *  `active` server-side, so a row here is authoritatively still booting. */
+  starting?: HudRosterEntry[];
 }
 
 interface SessionListRow {
@@ -580,18 +585,49 @@ export default function SessionChatModal({
     return actionRosterEntry as unknown as RosterEntry;
   }, [actionRosterEntry]);
 
+  // WI-6440: the DURABLE half of the same signal. `pendingLaunch` below is
+  // client-local state that dies with the page, so before this a reload during
+  // the boot window dropped the modal back onto the gone-away copy for a session
+  // the board was concurrently rendering as "starting" — two surfaces
+  // contradicting each other about one session. This is the same `starting` tier
+  // the board reads (HudView's `entries`), so they cannot disagree.
+  //
+  // NOT folded into `actionRosterEntry` on purpose: that row drives the dossier,
+  // the footer and the action bar, and a session that has not registered has
+  // nothing to put in them — leaving it null is what routes AgentDossier to its
+  // "Starting up" note rather than a dossier full of blanks.
+  const startingEntry = useMemo<HudRosterEntry | null>(() => {
+    const payload = actionRoster.data?.[0];
+    if (!payload || !sessionOwnerId) return null;
+    return (payload.starting ?? []).find((e) => e.ownerId === sessionOwnerId) ?? null;
+  }, [actionRoster.data, sessionOwnerId]);
+
   // ── WI-6367: the "starting up" window ──────────────────────────────────────
-  // True while THIS modal is showing the session the caller just launched, and
-  // that session has neither registered in the roster nor produced a transcript
-  // yet. Both of those are reactive (advRoster.list pushes; the resolve effect
-  // re-runs), so this flips off on its own the moment the session comes online —
-  // no clearing handshake with the caller.
-  const startingUp =
-    pendingLaunch != null &&
-    sessionOwnerId != null &&
-    pendingLaunch.ownerId === sessionOwnerId &&
-    !actionRosterEntry &&
-    !resolved;
+  // True while THIS modal is showing a session that has neither registered in
+  // the roster nor produced a transcript yet, and that we have positive evidence
+  // was launched rather than lost: either the caller just launched it
+  // (`pendingLaunch`, zero-latency, fires before any roster refetch) or the
+  // server still lists it as starting (WI-6440, survives a reload). Both inputs
+  // are reactive (advRoster.list pushes; the resolve effect re-runs), so this
+  // flips off on its own the moment the session comes online — no clearing
+  // handshake with the caller.
+  const launchedByThisView =
+    pendingLaunch != null && sessionOwnerId != null && pendingLaunch.ownerId === sessionOwnerId;
+  const startingUp = !resolved && !actionRosterEntry && (launchedByThisView || startingEntry != null);
+
+  // When the boot window started, for the did-not-come-online fallback below.
+  // The caller's launch moment wins when we have it (it is the earlier and more
+  // precise of the two); otherwise fall back to the launch record's own
+  // timestamp, which is what makes the fallback work after a reload. An
+  // unparseable/absent `startedAt` yields null — we then never time out, matching
+  // the board's own `ageSec(...) == null` fallthrough rather than inventing a
+  // failure we cannot date.
+  const startedAtMs = useMemo<number | null>(() => {
+    if (launchedByThisView) return pendingLaunch!.startedAtMs;
+    if (!startingEntry?.startedAt) return null;
+    const t = Date.parse(startingEntry.startedAt);
+    return Number.isNaN(t) ? null : t;
+  }, [launchedByThisView, pendingLaunch?.startedAtMs, startingEntry?.startedAt]);
 
   // A launch that never comes online (psu exits at boot — e.g. no usable
   // display) would otherwise sit on "starting up" forever, which is the same
@@ -601,15 +637,15 @@ export default function SessionChatModal({
   const [startupTimedOut, setStartupTimedOut] = useState(false);
   useEffect(() => {
     setStartupTimedOut(false);
-    if (!startingUp) return;
-    const elapsed = Date.now() - pendingLaunch.startedAtMs;
+    if (!startingUp || startedAtMs == null) return;
+    const elapsed = Date.now() - startedAtMs;
     if (elapsed >= STARTUP_GRACE_MS) {
       setStartupTimedOut(true);
       return;
     }
     const t = setTimeout(() => setStartupTimedOut(true), STARTUP_GRACE_MS - elapsed);
     return () => clearTimeout(t);
-  }, [startingUp, pendingLaunch?.startedAtMs]);
+  }, [startingUp, startedAtMs]);
 
   // Open/collapsed state via nuqs (never useState) — deep-linkable + agent
   // -driveable, per the plan item's requirement. Defaults open: every
