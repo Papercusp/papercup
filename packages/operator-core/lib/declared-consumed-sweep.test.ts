@@ -11,6 +11,7 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs gate script, no type declarations by design
 import { stripComments, blankQuotedStrings, interfaceRanges, classifyTsField, classifySqlColumn, judgeConsumption, rollupSweep, looksGenerated, isTestFile, DECLARED_FIELDS, DECLARED_COLUMNS } from '../../../scripts/check-declared-consumed.mjs';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('judgeConsumption — the four-way split', () => {
@@ -309,6 +310,26 @@ describe('the census rows themselves', () => {
       expect(c.id).toBe(`${c.table}.${c.name}`);
       expect(c.migration).toMatch(/^\d{3}-.*\.sql$/);
     }
+  });
+
+  /**
+   * THE COVERAGE VACUITY. Every rule above stops the sweep lying about a field it
+   * WATCHES; none of them stop it from watching the wrong set. A new optional
+   * field added to `CellSpec` tomorrow is exactly the WI-6444 risk surface, and
+   * with no row here it is unwatched — the gate stays green while the defect
+   * class it exists for walks straight past it. So the field list is checked
+   * against the real interface rather than maintained by hope.
+   */
+  it('watches EVERY optional field on the real CellSpec, not a snapshot of them', () => {
+    const source = readFileSync(new URL('./cell-registry.ts', import.meta.url), 'utf8');
+    const body = stripComments(source).split('export interface CellSpec {')[1]?.split('\n}')[0];
+    expect(body, 'CellSpec interface not found — this test is watching nothing').toBeTruthy();
+
+    const optional = [...body.matchAll(/^\s{2}([a-zA-Z_][\w]*)\?\s*:/gm)].map((m) => m[1]).sort();
+    const watched = DECLARED_FIELDS.map((f: { name: string }) => f.name).sort();
+
+    expect(optional.length).toBeGreaterThan(0);
+    expect(watched).toEqual(optional);
   });
 
   it('covers all three migrations this plane shipped', () => {

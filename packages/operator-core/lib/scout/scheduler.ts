@@ -55,6 +55,40 @@ export interface ScoutRoutedRecord {
 }
 
 /**
+ * WI-6338: run `write` (a `recordRoutedIdea` call, in production) for each routed
+ * record with PER-RECORD error isolation.
+ *
+ * `persistRouted` (the {@link buildScoutTickDeps} production wiring below) runs
+ * AFTER the cycle already captured the underlying issues — `payload.sourceRole`
+ * and the `improvement-source:Scout` topic are set atomically together inside
+ * `captureImprovement` (capture-core.ts). Before this helper, an unguarded loop
+ * over `records` meant ONE record's `recordRoutedIdea` insert throwing aborted the
+ * whole `for` loop, silently dropping the `scout_routed_ideas` row for it AND
+ * every remaining record in the same cycle — while their issues stayed
+ * captured+tagged. That is exactly the "tagged Scout-source but no routed-ideas
+ * row" divergence class the provenance-divergence health leg
+ * (`system-health/compute.ts` `collectScout` → `ScoutHealth.provenanceDivergence`)
+ * now measures. Isolating per record means one bad write can't starve its
+ * siblings; a failure is reported via `onError` (production: `console.error`) but
+ * never aborts the batch. Exported + unit-tested directly (no PG needed — `write`
+ * is injected) since `persistRouted` itself closes over the real `recordRoutedIdea`
+ * and can't be exercised without a live database.
+ */
+export async function persistRoutedRecordsIsolated(
+  records: readonly ScoutRoutedRecord[],
+  write: (record: ScoutRoutedRecord) => Promise<void>,
+  onError: (record: ScoutRoutedRecord, error: unknown) => void = () => {},
+): Promise<void> {
+  for (const r of records) {
+    try {
+      await write(r);
+    } catch (e) {
+      onError(r, e);
+    }
+  }
+}
+
+/**
  * Minimal structural view of cb4b9's `ScoutCycleResult` — the scheduler only needs
  * the per-idea lens `provenance` (+ optional spend). cb4b9's full `ScoutCycleResult`
  * (which carries `provenance: ScoutRoutedIdea[]` + `costUsd`) satisfies this
@@ -742,19 +776,10 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
     },
     runCycle: opts.runCycle,
     async persistRouted(records, cycleId) {
-      // WI-6338: per-record error isolation. This ledger write happens AFTER the
-      // cycle already captured the underlying issues (payload.sourceRole +
-      // improvement-source:Scout topic, both set atomically in captureImprovement) —
-      // so an unguarded loop meant one record's insert throwing silently dropped the
-      // scout_routed_ideas row for it AND every remaining record in the same cycle,
-      // while their issues stayed captured+tagged: exactly the "tagged Scout-source
-      // but no routed-ideas row" divergence class the provenance-divergence health
-      // leg (system-health/compute.ts collectScout) now measures. Isolate per record
-      // so one bad insert can't starve its siblings; a failure is loud (console.error)
-      // but never aborts the cycle.
-      for (const r of records) {
-        try {
-          await recordRoutedIdea({
+      await persistRoutedRecordsIsolated(
+        records,
+        (r) =>
+          recordRoutedIdea({
             // LEDGER-GAP FIX (scorecard-blender-pipeline-fixes-2026-07-11 P-003):
             // the in-cycle idea id is POSITIONAL (`scout-idea-<lens>-<slot>-<n>`,
             // ideators.ts) — identical across cycles — and the ledger upserts
@@ -774,14 +799,13 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
             title: r.title,
             addressesPatternRefs: r.addressesPatternRefs,
             ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-          });
-        } catch (e) {
+          }),
+        (r, e) =>
           console.error(
             `[scout/scheduler] persistRouted: recordRoutedIdea failed for ${cycleId}:${r.ideaId} (routedRef=${r.routedRef}) — ` +
               `this idea's issue was already captured+tagged but will NOT have a scout_routed_ideas row (WI-6338 divergence): ${e instanceof Error ? e.message : e}`,
-          );
-        }
-      }
+          ),
+      );
     },
     async persistStageArtifacts(cycle, cycleId) {
       // Lazy import keeps the pure core free of the PG edge (module pattern).

@@ -265,6 +265,17 @@ jobs:
       - name: Lint no bespoke state read
         run: npm run lint:no-bespoke-state-read
 
+      # declared-vs-consumed sweep (agent-state-plane-verification-2026-07-27 P-002,
+      # generalising WI-6444): every optional CellSpec field and every column added by
+      # migrations 689/694/697 must have BOTH a non-test writer and a non-test reader.
+      # The defect class is a field that is declared, validated, documented and wired
+      # at one end only — individually correct halves, so no unit test can see it.
+      # The static twin of the P-001 producer census, and unlike that one it needs no
+      # database, which is why it can gate here.
+      # REPORTS (exit 0) for a gap with a filed `knownUnbuilt` ref; GATES on a new one.
+      - name: Lint declared vs consumed
+        run: npm run lint:declared-consumed
+
       # timer-classification guard (stop-discarded-dedup-and-audit-server-polling-
       # 2026-07-26 P-011): every managedSetInterval/PeriodicCheck registration must
       # declare a D-004 push-don't-poll classification (must-sample | timeout-reaper |
