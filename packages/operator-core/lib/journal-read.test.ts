@@ -13,13 +13,14 @@
  *    be silently undone by a refactor that filtered client-side instead.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildJournalctlArgs,
   clampLimit,
   classifyJournalctlFailure,
   collapseConsecutive,
   decodeMessage,
+  defaultUnitLoadProbe,
   decodePriority,
   decodeRealtime,
   decodeUnit,
@@ -37,6 +38,10 @@ function jsonLine(fields: Record<string, unknown>): string {
 }
 
 const execReturning = (stdout: string): JournalExec => async () => ({ stdout });
+
+/** Default probe stub for the cases that are not ABOUT unknown units — without
+ *  it an empty-result case would shell out to a real `systemctl`. */
+const noUnknownUnits = async () => [];
 
 describe('buildJournalctlArgs', () => {
   it('PUSHES grep down to --grep — the whole reason this tool exists', () => {
@@ -173,10 +178,24 @@ describe('field decoding', () => {
     expect(decodePriority(undefined)).toBeNull();
   });
 
+  it('prefers _SYSTEMD_USER_UNIT over _SYSTEMD_UNIT — the latter is the SESSION CONTAINER for a user unit', () => {
+    // Live verification caught this: every bg-host line came back attributed to
+    // `user@1000.service` because only `_SYSTEMD_UNIT` was read.
+    expect(decodeUnit({
+      _SYSTEMD_UNIT: 'user@1000.service',
+      _SYSTEMD_USER_UNIT: 'papercup-bg-host.service',
+    })).toBe('papercup-bg-host.service');
+  });
+
   it('falls back from _SYSTEMD_UNIT to SYSLOG_IDENTIFIER, then null', () => {
     expect(decodeUnit({ _SYSTEMD_UNIT: 'a.service', SYSLOG_IDENTIFIER: 'x' })).toBe('a.service');
     expect(decodeUnit({ SYSLOG_IDENTIFIER: 'oddsmith-alert' })).toBe('oddsmith-alert');
     expect(decodeUnit({})).toBeNull();
+  });
+
+  it('asks journalctl for the user-unit field, or the fix above can never fire', () => {
+    const flag = buildJournalctlArgs({ units: ['a.service'] }).find((a) => a.startsWith('--output-fields='));
+    expect(flag).toContain('_SYSTEMD_USER_UNIT');
   });
 
   it('decodeMessage passes a plain string straight through', () => {
@@ -221,7 +240,7 @@ describe('collapseConsecutive', () => {
 describe('readJournal', () => {
   it('reports a NO-MATCH exit as a clean readable window, NOT an error', async () => {
     const exec: JournalExec = async () => { throw Object.assign(new Error('exit 1'), { code: 1, stderr: '' }); };
-    const out = await readJournal({ units: ['a.service'], grep: 'nope' }, exec);
+    const out = await readJournal({ units: ['a.service'], grep: 'nope' }, exec, noUnknownUnits);
     expect(out.entries).toEqual([]);
     expect(out.journalAvailable).toBe(true);
     expect(out.journalError).toBeNull();
@@ -270,14 +289,72 @@ describe('readJournal', () => {
   });
 
   it('echoes the exact argv so any result is reproducible by hand', async () => {
-    const out = await readJournal({ units: ['a.service'], grep: 'boom' }, execReturning(''));
+    const out = await readJournal({ units: ['a.service'], grep: 'boom' }, execReturning(''), noUnknownUnits);
     expect(out.command).toContain('journalctl');
     expect(out.command).toContain('--grep boom');
     expect(out.command).toContain('-u a.service');
   });
 
   it('reports the window it actually used, including the defaulted one', async () => {
-    const out = await readJournal({ units: ['a.service'] }, execReturning(''));
+    const out = await readJournal({ units: ['a.service'] }, execReturning(''), noUnknownUnits);
     expect(out.window).toEqual({ since: JOURNAL_READ_DEFAULT_SINCE, until: null });
+  });
+});
+
+/**
+ * The trap this section guards: journalctl exits 0 with ZERO lines for a unit
+ * that has never existed. So a typo'd unit name is byte-identical to a healthy,
+ * silent service — the absent-evidence-reads-as-evidence-of-absence shape again,
+ * now in the one place a caller is most likely to act on it ("no errors logged").
+ */
+describe('readJournal — an empty result from a unit that does not exist', () => {
+  const probeSaying = (unknown: string[]) => async () => unknown;
+
+  it('names the unknown unit instead of reporting a clean window', async () => {
+    const out = await readJournal(
+      { units: ['papercup-typo.service'] },
+      execReturning(''),
+      probeSaying(['papercup-typo.service']),
+    );
+    expect(out.entries).toEqual([]);
+    expect(out.unitsUnknown).toEqual(['papercup-typo.service']);
+  });
+
+  it('reports no unknown units when the unit exists and the window is simply clean', async () => {
+    const out = await readJournal({ units: ['papercup-bg-host.service'] }, execReturning(''), probeSaying([]));
+    expect(out.unitsUnknown).toEqual([]);
+  });
+
+  it('also resolves the ambiguity on the --grep-matched-nothing exit path', async () => {
+    const exec: JournalExec = async () => { throw Object.assign(new Error('exit 1'), { code: 1, stderr: '' }); };
+    const out = await readJournal({ units: ['gone.service'], grep: 'x' }, exec, probeSaying(['gone.service']));
+    expect(out.journalError).toBeNull();
+    expect(out.unitsUnknown).toEqual(['gone.service']);
+  });
+
+  it('does NOT pay for the probe when lines came back', async () => {
+    const probe = vi.fn(async () => ['never.service']);
+    const out = await readJournal({ units: ['a.service'] }, execReturning(jsonLine({ MESSAGE: 'x' })), probe);
+    expect(probe).not.toHaveBeenCalled();
+    expect(out.unitsUnknown).toEqual([]);
+  });
+
+  it('does NOT probe when no unit was named — there is nothing to be wrong about', async () => {
+    const probe = vi.fn(async () => []);
+    await readJournal({ since: '-10 min' }, execReturning(''), probe);
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('does NOT probe when the host has no journal at all', async () => {
+    const probe = vi.fn(async () => []);
+    const exec: JournalExec = async () => { throw Object.assign(new Error('nope'), { code: 'ENOENT' }); };
+    await readJournal({ units: ['a.service'] }, exec, probe);
+    expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+describe('defaultUnitLoadProbe', () => {
+  it('is exported so the seam has a real implementation, not just a test double', () => {
+    expect(typeof defaultUnitLoadProbe).toBe('function');
   });
 });

@@ -88,7 +88,15 @@ export interface JournalEntry {
 
 export interface JournalReadResult {
   entries: JournalEntry[];
-  /** Journal lines journalctl actually emitted, BEFORE dedup and the row cap. */
+  /**
+   * Journal lines journalctl actually emitted, BEFORE dedup and the row cap.
+   *
+   * BOUNDED BY `limit + 1`, because the row cap is pushed down to journalctl's
+   * own `-n` (which bounds the SCAN, not just the output — strictly cheaper than
+   * slicing afterwards). So when `truncated` is true this is a FLOOR on the true
+   * match count, never the total. Narrow `grep`/`since` to learn the real number;
+   * do not report `matched` as "there were N matches" on a truncated read.
+   */
   matched: number;
   /** Lines removed by consecutive-identical collapsing. */
   collapsed: number;
@@ -100,6 +108,17 @@ export interface JournalReadResult {
   journalAvailable: boolean;
   /** Non-null ⇒ the read FAILED and `entries` is meaningless, not empty. */
   journalError: string | null;
+  /**
+   * Requested units systemd does not know about — the read returned nothing
+   * because the UNIT NAME IS WRONG, not because the window was clean.
+   *
+   * journalctl exits 0 with zero entries for a unit that has never existed, so
+   * a typo is otherwise INDISTINGUISHABLE from a healthy silent service. That is
+   * the same absent-evidence-reads-as-evidence-of-absence trap this whole module
+   * is built against, so it is checked (only on the empty path, so the common
+   * case pays nothing) rather than left for the caller to notice.
+   */
+  unitsUnknown: string[];
   /** The exact argv used, so a result is reproducible by hand. */
   command: string;
 }
@@ -128,6 +147,13 @@ export interface JournalReadOptions {
  *  the class of quiet wrongness this tool exists to remove. */
 export const JOURNAL_OUTPUT_FIELDS = [
   '__REALTIME_TIMESTAMP',
+  // `_SYSTEMD_USER_UNIT` MUST come with `_SYSTEMD_UNIT`, and must WIN. For a
+  // `--user` unit the systemd-level `_SYSTEMD_UNIT` is the SESSION CONTAINER
+  // (`user@1000.service`) and the real unit is only in `_SYSTEMD_USER_UNIT` —
+  // caught in live verification, where every bg-host line came back attributed
+  // to `user@1000.service`. A system read simply has no user-unit field, so
+  // preferring it is correct in both modes.
+  '_SYSTEMD_USER_UNIT',
   '_SYSTEMD_UNIT',
   'SYSLOG_IDENTIFIER',
   'PRIORITY',
@@ -230,12 +256,19 @@ export function decodeMessage(value: unknown): string | null {
   return null;
 }
 
-/** PURE — prefer the systemd unit, fall back to the syslog identifier. */
+/**
+ * PURE — resolve the unit an entry belongs to.
+ *
+ * `_SYSTEMD_USER_UNIT` FIRST: for a `--user` unit, `_SYSTEMD_UNIT` is the user
+ * session container (`user@1000.service`), not the service. Reading the wrong
+ * one attributes every line of every user unit to the same container, which is
+ * exactly what live verification showed before this fix.
+ */
 export function decodeUnit(rec: Record<string, unknown>): string | null {
-  const unit = rec._SYSTEMD_UNIT;
-  if (typeof unit === 'string' && unit) return unit;
-  const ident = rec.SYSLOG_IDENTIFIER;
-  if (typeof ident === 'string' && ident) return ident;
+  for (const key of ['_SYSTEMD_USER_UNIT', '_SYSTEMD_UNIT', 'SYSLOG_IDENTIFIER'] as const) {
+    const value = rec[key];
+    if (typeof value === 'string' && value) return value;
+  }
   return null;
 }
 
@@ -307,6 +340,33 @@ export type JournalExec = (args: string[]) => Promise<{ stdout: string }>;
 const defaultExec: JournalExec = (args) =>
   execFileAsync('journalctl', args, { timeout: JOURNAL_TIMEOUT_MS, maxBuffer: JOURNAL_MAX_BUFFER });
 
+/** Resolves each requested unit to whether systemd knows it. */
+export type UnitLoadProbe = (units: string[], system: boolean) => Promise<string[]>;
+
+/**
+ * Which of these units does systemd NOT know? `LoadState=not-found` is the
+ * determinate answer; anything else (including a probe failure) reports nothing,
+ * because a FALSE "that unit does not exist" is worse than saying nothing at all.
+ */
+export const defaultUnitLoadProbe: UnitLoadProbe = async (units, system) => {
+  const unknown: string[] = [];
+  await Promise.all(
+    units.map(async (unit) => {
+      try {
+        const { stdout } = await execFileAsync(
+          'systemctl',
+          [system ? '--system' : '--user', 'show', '-p', 'LoadState', unit],
+          { timeout: 3000 },
+        );
+        if (/^LoadState=not-found$/m.test(stdout.trim())) unknown.push(unit);
+      } catch {
+        // Cannot tell ⇒ say nothing.
+      }
+    }),
+  );
+  return unknown;
+};
+
 /**
  * Read the journal and return distilled entries.
  *
@@ -316,16 +376,25 @@ const defaultExec: JournalExec = (args) =>
 export async function readJournal(
   opts: JournalReadOptions,
   exec: JournalExec = defaultExec,
+  probeUnits: UnitLoadProbe = defaultUnitLoadProbe,
 ): Promise<JournalReadResult> {
   const limit = clampLimit(opts.limit);
   const args = buildJournalctlArgs({ ...opts, limit });
+  const units = opts.units ?? [];
   const base = {
     matched: 0,
     collapsed: 0,
     truncated: false,
     window: { since: opts.since ?? JOURNAL_READ_DEFAULT_SINCE, until: opts.until ?? null },
-    units: opts.units ?? [],
+    units,
+    unitsUnknown: [] as string[],
     command: `journalctl ${args.join(' ')}`,
+  };
+
+  /** Zero lines from a named unit is ambiguous — resolve it before returning. */
+  const withUnknownUnits = async (result: JournalReadResult): Promise<JournalReadResult> => {
+    if (result.entries.length || !units.length || !result.journalAvailable) return result;
+    return { ...result, unitsUnknown: await probeUnits(units, opts.system === true) };
   };
 
   let stdout: string;
@@ -334,7 +403,7 @@ export async function readJournal(
   } catch (err) {
     const { kind, message } = classifyJournalctlFailure(err);
     if (kind === 'no-match') {
-      return { ...base, entries: [], journalAvailable: true, journalError: null };
+      return withUnknownUnits({ ...base, entries: [], journalAvailable: true, journalError: null });
     }
     return {
       ...base,
@@ -351,7 +420,7 @@ export async function readJournal(
   const truncated = records.length > limit;
   const kept = truncated ? records.slice(records.length - limit) : records;
   const { entries, collapsed } = collapseConsecutive(kept);
-  return {
+  return withUnknownUnits({
     ...base,
     entries,
     matched: records.length,
@@ -359,5 +428,5 @@ export async function readJournal(
     truncated,
     journalAvailable: true,
     journalError: null,
-  };
+  });
 }

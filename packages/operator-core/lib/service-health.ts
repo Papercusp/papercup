@@ -378,6 +378,48 @@ export function evaluateBgHostCodeDrift(
   };
 }
 
+/** When a systemd --user unit's main process started, and its pid. */
+export interface UnitStart {
+  pid: number;
+  startedAtMs: number;
+}
+
+/**
+ * When did this systemd --user unit's main process START?
+ *
+ * MainPID → `ps -o etimes=` (elapsed SECONDS), deliberately not systemd's
+ * `ActiveEnterTimestamp`, which is a locale/TZ-formatted string and parses
+ * differently across hosts.
+ *
+ * Extracted from probeBgHostCodeDrift (WI-1867) so the "is this process older
+ * than the code it runs?" comparison can be asked about ANY unit, not just the
+ * bg-host (git-pipeline-agent-state-2026-07-26 D-001 — the `serving` stage
+ * generalises this rather than adding a second systemd/ps shell-out).
+ *
+ * Fail-soft at every step: no systemd, no such unit, an inactive unit (MainPID
+ * 0), or an unreadable pid ⇒ `null`, never a fabricated timestamp. A caller must
+ * treat null as UNKNOWN, never as "old" or "fresh".
+ */
+export async function probeUnitStart(unit: string, now: number = Date.now()): Promise<UnitStart | null> {
+  if (process.platform !== 'linux') return null;
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const unitName = /\.(service|timer|socket|target|scope|slice|mount|path)$/.test(unit) ? unit : `${unit}.service`;
+    const { stdout: pidOut } = await run('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', unitName], { timeout: 3000 });
+    const pid = Number(pidOut.trim());
+    // MainPID is 0 for an inactive/failed unit — that is "not running", not pid 0.
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    const { stdout: etimesOut } = await run('ps', ['-o', 'etimes=', '-p', String(pid)], { timeout: 3000 });
+    const etimes = Number(etimesOut.trim());
+    if (!Number.isFinite(etimes) || etimes < 0) return null;
+    return { pid, startedAtMs: now - etimes * 1000 };
+  } catch {
+    return null;
+  }
+}
+
 /** Probe bg-host code drift (WI-1867): unit MainPID elapsed-seconds vs the newest
  *  *.ts mtime under BG_HOST_HOT_PATHS in the integration tree (the working tree the
  *  bg-host tsx-loads from — mtime, not commit time, is what a restart would pick up).
@@ -406,17 +448,14 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
     const run = promisify(execFile);
-    // Boot time: MainPID → ps etimes (elapsed seconds). Robust across locales/TZ
-    // (systemd's ActiveEnterTimestamp is a locale/TZ-formatted string).
+    // Boot time via the shared unit-start probe (see probeUnitStart) — one
+    // systemctl+ps implementation, asked here about the bg-host unit.
     const unit = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercup-bg-host';
-    const { stdout: pidOut } = await run('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', `${unit}.service`], { timeout: 3000 });
-    const pid = Number(pidOut.trim());
-    if (!Number.isFinite(pid) || pid <= 0) {
+    const started = await probeUnitStart(unit, now);
+    if (!started) {
       return { ...evaluateBgHostCodeDrift(null, null), latencyMs: Date.now() - start };
     }
-    const { stdout: etimesOut } = await run('ps', ['-o', 'etimes=', '-p', String(pid)], { timeout: 3000 });
-    const etimes = Number(etimesOut.trim());
-    const bootMs = Number.isFinite(etimes) && etimes >= 0 ? now - etimes * 1000 : null;
+    const bootMs = started.startedAtMs;
     // Newest hot-path *.ts mtime in the integration tree (the tree the bg-host runs from).
     let integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? '';
     if (!integrationRoot) {
