@@ -629,6 +629,39 @@ describe('installPapercuspFiles', () => {
       process.chdir(prevCwd);
     }
   });
+
+  it('EI-18755593630003816: hook install writes atomically — no leftover temp file, full content lands', async () => {
+    // Regression guard for a non-atomic in-place fs.writeFile that let a
+    // concurrent PreToolUse hook invocation on this box observe a torn/
+    // truncated pretooluse-bash-resource-gate.sh mid-write and hard-refuse
+    // with a spurious shell-syntax error. installClaudeHooks must write via a
+    // same-directory temp file + rename(), never a direct truncating write to
+    // the live hook path — asserted here behaviorally: after install, the
+    // destination is byte-identical to the source and no `*.tmp` artifact is
+    // left behind in the hooks directory (a leftover tmp file would mean the
+    // rename step was skipped or the write path reverted to in-place).
+    const ccDir = path.join(tmpAppRoot, 'scripts', 'hooks', 'cc');
+    await fs.mkdir(ccDir, { recursive: true });
+    const gateSrc =
+      '#!/bin/bash\n# resource gate\npython3 <<\'PYEOF\'\nprint("(hi)")\nPYEOF\n';
+    await fs.writeFile(path.join(ccDir, 'pretooluse-locks-acquire.sh'), '#!/bin/bash\n', {
+      mode: 0o755,
+    });
+    await fs.writeFile(path.join(ccDir, 'pretooluse-bash-resource-gate.sh'), gateSrc, {
+      mode: 0o755,
+    });
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.claudeHooksInstalled).toContain('pretooluse-bash-resource-gate.sh');
+
+    const destDir = path.join(tmpHome, '.papercusp', 'hooks', 'cc');
+    const dest = path.join(destDir, 'pretooluse-bash-resource-gate.sh');
+    const written = await fs.readFile(dest, 'utf8');
+    expect(written).toBe(gateSrc); // full content, never a truncated prefix
+
+    const leftovers = (await fs.readdir(destDir)).filter((n) => n.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+  });
 });
 
 describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {

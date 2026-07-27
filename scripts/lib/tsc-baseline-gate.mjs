@@ -383,10 +383,18 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   brokenFiles: string[],
  *   updateFlag?: boolean,
  *   changedFiles?: Set<string> | null,
+ *   typeReferencedFiles?: Set<string> | null,
  * }} args
  * @returns {PerFileGateResult}
  */
-export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag = false, changedFiles = null }) {
+export function decidePerFile({
+  currentByFile,
+  baselineByFile,
+  brokenFiles,
+  updateFlag = false,
+  changedFiles = null,
+  typeReferencedFiles = null,
+}) {
   const total = sumValues(currentByFile);
   const baselineTotal = sumValues(baselineByFile);
   if (brokenFiles.length > 0) {
@@ -409,8 +417,17 @@ export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, upda
 
   if (regressions.length > 0) {
     if (changedFiles) {
-      const attributed = regressions.filter((r) => changedFiles.has(r.file));
-      const unattributed = regressions.filter((r) => !changedFiles.has(r.file));
+      // EI-18756182128903253 — cause-aware widening: a regression outside `changedFiles` is STILL
+      // attributed (not peer drift) when the file references an exported type/interface one of the
+      // changed files also exports — the shape of "I added a required field, the fixture that
+      // constructs it broke, and the fixture is not in my diff". `typeAttributed` is kept separate
+      // from the directly-changed subset so callers/reporting can say WHY a file outside the diff
+      // still gates.
+      const isTypeAttributed = (file) =>
+        !changedFiles.has(file) && !!typeReferencedFiles && typeReferencedFiles.has(file);
+      const attributed = regressions.filter((r) => changedFiles.has(r.file) || isTypeAttributed(r.file));
+      const typeAttributed = regressions.filter((r) => isTypeAttributed(r.file));
+      const unattributed = regressions.filter((r) => !changedFiles.has(r.file) && !isTypeAttributed(r.file));
       // EI-18766822535373909 — a regression in a file with NO baseline entry is a BRAND-NEW file,
       // and it must never be dismissed as peer drift. Two independent reasons:
       //
@@ -437,7 +454,7 @@ export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, upda
       // new the baseline has never seen it. Drift in KNOWN files you did not touch stays reported
       // but not gated — that is the "verify MY change is clean" affordance (EI-1984), and it is why
       // --mine is opt-in and never the CI default.
-      if (attributed.length > 0) return { verdict: 'fail-attributed', ...base, attributed, peerDrift, newFiles };
+      if (attributed.length > 0) return { verdict: 'fail-attributed', ...base, attributed, typeAttributed, peerDrift, newFiles };
       if (newFiles.length > 0) return { verdict: 'fail-new-file', ...base, attributed: [], peerDrift, newFiles };
       return { verdict: 'ok-peer-drift', ...base, attributed: [], peerDrift, newFiles: [] };
     }

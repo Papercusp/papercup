@@ -450,6 +450,13 @@ export async function startDbos(): Promise<void> {
       '../system-health/cold-boot-drill-autorunner'
     );
     startColdBootDrillAutorunner();
+    // EI-18754773151573358: the sibling of dead-workflow-monitor for the OTHER silent
+    // DBOS failure — a workflow DBOS keeps loyally RECOVERING forever because it hangs
+    // inside a step (never reaches a terminal ERROR/MAX_RECOVERY_ATTEMPTS_EXCEEDED
+    // state dead-workflow-monitor watches). Read-only; does not touch the reaper or
+    // recovery logic. Kill-switch: PAPERCUSP_DBOS_HANG_WATCHDOG='0'.
+    const { startDbosHangWatchdog } = await import('./dbos-hang-watchdog');
+    startDbosHangWatchdog(getOrgPg().sql);
   } catch (e) {
     console.warn('[stall-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }

@@ -70,7 +70,7 @@ const argsSchema = z.object({
   slug: z.string().min(1).describe('Plan slug (filename stem).'),
   decisionId: z.string().regex(/^D-\d{3,}$/, 'D-NNN form required'),
   body: hardText(5000).describe(
-    "The decision's new body (replaces the prior body). The `### D-NNN — title` head and the `Date:` line are preserved; everything else is replaced. To keep a `Related:` line, include it in the new body.",
+    "The decision's new body (replaces the prior body). HARD CAP 5000 chars — over-length is REJECTED, not truncated. The `### D-NNN — title` head and the `Date:` line are preserved; everything else is replaced. To keep a `Related:` line, include it in the new body.",
   ),
   rationale: softText(LIMITS.ANNOTATION)
     .optional()

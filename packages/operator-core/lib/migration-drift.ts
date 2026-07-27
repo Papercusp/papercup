@@ -100,6 +100,30 @@ export function resolveDeployedSqlDir(currentSqlDir: string | null): string | nu
 }
 
 /**
+ * EI-18757486483124756: the CANONICAL tree agents actually author migrations
+ * in (per CLAUDE.md — "the canonical staging tree… the tree every agent
+ * edits") independent of whichever tree THIS process happens to be serving
+ * from. `db:next-migration` already solved the identical problem (EI-353) by
+ * folding `PAPERCUSP_INTEGRATION_ROOT` (exported into the operator's unit env
+ * — see release-config.ts) into its filesystem scan; this mirrors that same
+ * env var so `db:check_drift` can no longer read `in_sync: true` while a
+ * just-authored migration sits unapplied in the tree every agent edits.
+ *
+ * Distinct from `resolveDeployedSqlDir`: that one recovers a SIBLING
+ * (`papercup-release`) of whatever tree is current, so when the CURRENT
+ * process already IS the release checkout (the common case — the papercusp-su
+ * MCP endpoint serves from :3070) it resolves to itself, a no-op that cannot
+ * see the canonical tree at all. This resolves the canonical tree directly,
+ * regardless of what "current" happens to be.
+ */
+export function resolveCanonicalStagingSqlDir(): string | null {
+  const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
+  if (!integrationRoot) return null;
+  const dir = path.resolve(integrationRoot, ...SQL_DIR_REL_SEGMENTS);
+  return fs.existsSync(dir) ? dir : null;
+}
+
+/**
  * Pure classifier: split `missing` (on-disk, unapplied) into what's genuinely
  * unapplied at the DEPLOYED tree (`missingDeployed` — the real hazard) versus
  * merely not-yet-deployed noise (`missingPendingDeploy` — present here, absent
@@ -162,6 +186,18 @@ export interface MigrationDrift {
    *  deployed tree: the NORMAL staging-ahead-of-release window. Always
    *  self-healing on the next deploy; never a runtime hazard on its own. */
   missingPendingDeploy: string[];
+  /** EI-18757486483124756: the CANONICAL tree every agent authors migrations
+   *  in (`PAPERCUSP_INTEGRATION_ROOT`), resolved independent of whichever tree
+   *  THIS process happens to be serving from. Null when unresolvable (env
+   *  unset, or unset AND process.cwd() genuinely doesn't have it — e.g. a
+   *  packaged/headless install with no canonical tree on this host at all). */
+  canonicalStagingSqlDir: string | null;
+  /** Runner-eligible files on disk in the canonical tree but NOT YET applied
+   *  to the live DB — THE field a "did my just-written migration land"
+   *  question should key on, regardless of which tree served this check. Empty
+   *  (not "unknown") when `canonicalStagingSqlDir` is null: there is nothing
+   *  to report from an unresolvable tree, same convention as `missing` itself. */
+  missingCanonical: string[];
 }
 
 /** Numeric NNN prefix of a migration filename, or null (template/manual files). */
@@ -227,21 +263,43 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
     deployedOnDisk,
   );
 
+  // EI-18757486483124756: independent of everything above (which is all
+  // relative to whichever tree THIS process happens to be running from), scan
+  // the CANONICAL tree agents actually author migrations in. When the
+  // canonical tree IS the current tree (a dev box running from staging) this
+  // duplicates `missing` harmlessly; when current is the release checkout
+  // (the papercusp-su MCP endpoint's normal case) this is the only leg that
+  // can see a just-authored, not-yet-deployed migration at all.
+  const canonicalStagingSqlDir = resolveCanonicalStagingSqlDir();
+  const missingCanonical = canonicalStagingSqlDir
+    ? fs
+        .readdirSync(canonicalStagingSqlDir)
+        .filter(isRunnerMigration)
+        .filter((f) => !appliedSet.has(f))
+        .sort()
+    : [];
+
   return {
     sqlDir,
     onDisk,
     applied,
     missing,
     extra,
-    // ACTIONABLE drift only: a non-empty `missing` means the live DB lags the
-    // on-disk migrations (restart / db:migrate to apply). `extra` is benign
-    // squashed-history noise and must NOT flip this false — doing so made
-    // in_sync permanently false on this fleet, masking real `missing` drift
-    // (infra round-3 F14).
-    inSync: missing.length === 0,
+    // ACTIONABLE drift: a non-empty `missing` means the live DB lags the
+    // on-disk migrations of whichever tree served this check (restart /
+    // db:migrate to apply). `extra` is benign squashed-history noise and must
+    // NOT flip this false — doing so made in_sync permanently false on this
+    // fleet, masking real `missing` drift (infra round-3 F14). ALSO gated on
+    // `missingCanonical` (EI-18757486483124756): `in_sync: true` must not be
+    // reachable while an unapplied migration sits in the tree every agent
+    // edits, even when the tree that served THIS check (often the release
+    // checkout) happens to already match its own on-disk set.
+    inSync: missing.length === 0 && missingCanonical.length === 0,
     schemaAhead: computeSchemaAhead(onDisk, applied),
     deployedSqlDir,
     missingDeployed,
     missingPendingDeploy,
+    canonicalStagingSqlDir,
+    missingCanonical,
   };
 }

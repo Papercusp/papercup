@@ -33,22 +33,41 @@ describe('checkMigrationDrift', () => {
       expect(onDiskSet.has(e)).toBe(false);
     }
     // inSync reflects ACTIONABLE drift ONLY (infra round-3 F14): it is driven by
-    // `missing` (on-disk migrations awaiting an apply), NOT by `extra`
+    // `missing` (on-disk migrations awaiting an apply) AND `missingCanonical`
+    // (EI-18757486483124756 — the canonical tree agents author in, checked
+    // independent of whichever tree served this call), NOT by `extra`
     // (squashed/renamed-migration history). A non-empty `extra` must NOT flip
     // inSync false — that used to make in_sync permanently false on this fleet
     // and masked real `missing` drift.
-    expect(d.inSync).toBe(d.missing.length === 0);
+    expect(d.inSync).toBe(d.missing.length === 0 && d.missingCanonical.length === 0);
   });
 
   it('extra (squashed-history) rows do not flip inSync false', async () => {
     const d = await checkMigrationDrift();
-    if (d.extra.length > 0 && d.missing.length === 0) {
+    if (d.extra.length > 0 && d.missing.length === 0 && d.missingCanonical.length === 0) {
       // The exact live condition this fix targets: history present, nothing
-      // awaiting apply ⇒ in sync.
+      // awaiting apply in either tree ⇒ in sync.
       expect(d.inSync).toBe(true);
     }
     // And the invariant always holds regardless of `extra`.
-    expect(d.inSync).toBe(d.missing.length === 0);
+    expect(d.inSync).toBe(d.missing.length === 0 && d.missingCanonical.length === 0);
+  });
+
+  // EI-18757486483124756: a migration authored in the canonical tree must be
+  // visible here even when the tree serving this call (often the release
+  // checkout) already matches its own on-disk set — the exact gap that let a
+  // just-written staging migration read `in_sync: true`.
+  it('missingCanonical is scanned against the canonical tree independent of sqlDir, and gates inSync', async () => {
+    const d = await checkMigrationDrift();
+    if (d.canonicalStagingSqlDir === null) {
+      // Not resolvable on this host/process (e.g. PAPERCUSP_INTEGRATION_ROOT unset) —
+      // fails toward reporting nothing extra, never toward a false positive.
+      expect(d.missingCanonical).toEqual([]);
+      return;
+    }
+    const appliedSet = new Set(d.applied);
+    for (const m of d.missingCanonical) expect(appliedSet.has(m)).toBe(false);
+    if (d.missingCanonical.length > 0) expect(d.inSync).toBe(false);
   });
 
   // WI-6037: `missingDeployed`/`missingPendingDeploy` must partition `missing` exactly —

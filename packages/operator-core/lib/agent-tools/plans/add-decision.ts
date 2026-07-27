@@ -46,7 +46,7 @@ const AFFECTS = z
 const itemSpec = z.object({
   slug: z.string().min(1),
   title: hardText(LIMITS.SHORT_TITLE),
-  body: hardText(5000),
+  body: hardText(5000).describe('The decision body. HARD CAP 5000 chars — over-length is REJECTED, not truncated, so split a long rationale or trim before calling.'),
   refs: REFS.optional(),
   itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
   affects: AFFECTS.optional(),
@@ -59,7 +59,7 @@ const argsSchema = z
     slug: z.string().min(1).optional(),
     harness: harnessArg,
     title: hardText(LIMITS.SHORT_TITLE).optional(),
-    body: hardText(5000).optional(),
+    body: hardText(5000).optional().describe('The decision body. HARD CAP 5000 chars — over-length is REJECTED, not truncated, so split a long rationale or trim before calling.'),
     refs: REFS.optional(),
     itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
     affects: AFFECTS.optional(),

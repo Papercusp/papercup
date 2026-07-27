@@ -16,16 +16,17 @@ import { checkMigrationDrift } from '../../migration-drift';
 export default defineTool({
   name: 'db:check_drift',
   description:
-    'Report DB migration drift — sql/*.sql files not yet applied (per harness_shared.schema_migrations). Detection only. `missing` = added since the last operator boot; restart the operator (boot auto-applies) or use db:migrate. `extra` = applied but file gone (investigate).',
+    'Report DB migration drift — sql/*.sql files not yet applied (per harness_shared.schema_migrations). Detection only. Checks BOTH the tree serving this call AND the canonical staging tree agents author migrations in (EI-18757486483124756) — `in_sync` is false if EITHER lags. `missing`/`missing_canonical` = added since the last operator boot; restart the operator (boot auto-applies) or use db:migrate. `extra` = applied but file gone (investigate).',
   guidance: {
     when: 'After adding a migration, or when a runtime "missing column/relation" error suggests the live DB lags the sql/ dir.',
     notWhen: 'Applying a migration — that is the boot auto-apply (restart) or db:migrate for a one-off.',
     chaining:
-      'missing non-empty → restart the operator (or db:migrate the file under exclusive(db-schema)). ' +
-      "EI-6955: the returned `sql_dir` is the RELEASE checkout's sql directory, NOT your staging tree — a migration " +
-      "you JUST added in staging is invisible here (not 'missing') until it reaches release. A clean/in-sync result " +
-      'does not mean your new staging migration needs no action; apply it directly via db:migrate { file: <absolute ' +
-      'staging-tree path> } regardless of what this tool reports.',
+      "missing or missing_canonical non-empty → restart the operator (or db:migrate the file under exclusive(db-schema)). " +
+      "EI-18757486483124756: `sql_dir` is whichever tree served THIS call (often the RELEASE checkout, e.g. via the " +
+      "papercusp-su MCP endpoint) — `canonical_sql_dir` is the SEPARATE staging tree agents author migrations in " +
+      "(resolved via PAPERCUSP_INTEGRATION_ROOT, independent of `sql_dir`). `missing_canonical` is scanned against " +
+      "that canonical tree directly, so a migration you JUST wrote in staging is caught there even when `sql_dir` " +
+      "points elsewhere and its own `missing` reads clean — `in_sync` is false whenever either is non-empty.",
     seeAlso: [
       'db:migrate (apply a pending migration)',
       'db:next-migration (scaffold the next migration file)',
@@ -49,6 +50,12 @@ export default defineTool({
             on_disk_count: d.onDisk.length,
             applied_count: d.applied.length,
             sql_dir: d.sqlDir,
+            // EI-18757486483124756: independent of `sql_dir` — the canonical
+            // tree every agent authors migrations in, so `in_sync` can no
+            // longer read true while a just-authored migration sits
+            // unapplied there, regardless of which tree served this call.
+            canonical_sql_dir: d.canonicalStagingSqlDir,
+            missing_canonical: d.missingCanonical,
           }),
         },
       ],
