@@ -49,7 +49,10 @@ export interface HiveMemberRecord {
 
 export interface UpsertHiveMemberInput {
   workspaceId: string;
-  potHomeSlug: string;
+  /** ⚠ SCOPE (WI-6312): the FEDERATED (owner-authored) scope. A row written under a
+   *  joiner's LOCAL handle is the exact mirror of the read bug — no federated reader will
+   *  ever see it, and the write reports success. */
+  potHomeSlug: FederatedPotScope;
   githubUserId: number;
   githubUsername: string;
   displayName?: string | null;
@@ -223,10 +226,17 @@ export async function listHiveMembers(
   return rows.map(rowToRecord);
 }
 
-/** The device pubkeys a member has bound to a Hive (for revoke targeting). */
+/**
+ * The device pubkeys a member has bound to a Hive (for revoke targeting).
+ *
+ * ⚠ SCOPE (WI-6312): FEDERATED scope. Attestations and revocations are columns of the SAME
+ * row, so this MUST be read under the same scope as `loadRevokedHivePubkeys` — reading one
+ * under the local handle and the other under the federated scope is how a revoked device
+ * passes an admission check.
+ */
 export async function loadHiveMemberDevicePubkeys(
   workspaceId: string,
-  potHomeSlug: string,
+  potHomeSlug: FederatedPotScope,
   githubUserId: number,
   sql?: Sql,
 ): Promise<string[]> {
@@ -585,7 +595,9 @@ export async function upsertHiveMember(
  */
 export async function addRevokedHivePubkeys(
   workspaceId: string,
-  potHomeSlug: string,
+  /** ⚠ SCOPE (WI-6312): FEDERATED. A revocation written under the local handle lands where
+   *  the admission union never looks — the revocation silently does nothing. */
+  potHomeSlug: FederatedPotScope,
   ownerGithubUserId: number,
   pubkeys: string[],
   sql?: Sql,
@@ -618,7 +630,10 @@ export async function addRevokedHivePubkeys(
  */
 export async function removeHiveMember(
   workspaceId: string,
-  potHomeSlug: string,
+  /** ⚠ SCOPE (WI-6312): FEDERATED. Under the local handle this deletes 0 rows and returns
+   *  0 — which is indistinguishable from the idempotent "already gone", so a departure
+   *  that never happened reads as a clean one. */
+  potHomeSlug: FederatedPotScope,
   githubUserId: number,
   sql?: Sql,
 ): Promise<number> {
@@ -642,7 +657,9 @@ export async function removeHiveMember(
  */
 export async function removeAllHiveMembers(
   workspaceId: string,
-  potHomeSlug: string,
+  /** ⚠ SCOPE (WI-6312): FEDERATED. Under the local handle a dissolve drops nothing and the
+   *  hive's members keep federating — the G24 teardown silently no-ops. */
+  potHomeSlug: FederatedPotScope,
   sql?: Sql,
 ): Promise<number> {
   assertStorableWorkspaceId(workspaceId, 'removeAllHiveMembers');

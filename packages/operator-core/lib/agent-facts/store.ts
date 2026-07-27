@@ -324,6 +324,21 @@ export interface AgentFact {
   supersededAt?: string | null;
   /** P-008 (a): the id of the version this one replaced; null for the first. */
   supersedesId?: number | null;
+  /**
+   * P-008 (c) / D-012 / D-077: this fact's CELL VERSION — the hybrid-logical-clock
+   * key stamped alongside `fed_ts` by `stamp_local_federated_write` (migration 693).
+   *
+   * An HLC is a TOTAL ORDER on its own (it embeds the wall clock, a counter and a
+   * node id), so it is directly comparable as a string — hence it, not the local
+   * `id` sequence, is the delta cursor. D-012's hard constraint is explicit that a
+   * cell version must ride this scheme: the `id` sequence is per-database, so two
+   * hives both mint id 5 and cells silently break under federation.
+   *
+   * `null` for any row written BEFORE migration 693 and not rewritten since — those
+   * carry no version, so no delta claim can be made about them (they are never
+   * reported as changed). They self-heal on their next write.
+   */
+  cellVersion?: string | null;
 }
 
 export interface AssertFactInput {
@@ -1027,7 +1042,10 @@ export async function foldFacts(
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
     const rows = await sql<AgentFactRow[]>`
       SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-             confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
+             confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text,
+             -- P-008 (c): the cell version, so the fold can mark what changed since
+             -- the reader's cursor without a second query.
+             fed_hlc
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws} AND scope = ${sel.scope}
          AND coalesce(scope_ref,'') = ${ref}
@@ -1348,6 +1366,8 @@ interface AgentFactRow {
   id?: string | number | null;
   superseded_at?: string | null;
   supersedes_id?: string | number | null;
+  /** P-008 (c) — migration 693. The HLC cell version; see AgentFact.cellVersion. */
+  fed_hlc?: string | null;
 }
 
 /** Defensive validation of a raw `confidence` DB value against the 3-tier
@@ -1414,6 +1434,10 @@ function rowToFact(r: AgentFactRow): AgentFact {
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,
+    // P-008 (c), migration 693. Absent when the read did not select it; null when
+    // the row predates 693 — kept distinguishable from '' so a caller can tell
+    // "not selected" from "carries no version".
+    ...(r.fed_hlc === undefined ? {} : { cellVersion: r.fed_hlc }),
     // P-008 (a): version identity, emitted ONLY when the query selected it —
     // omitted rather than nulled, so a reader can tell "this read did not ask
     // for version identity" from "this row has no predecessor" (`supersedesId:

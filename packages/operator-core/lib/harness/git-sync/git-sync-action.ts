@@ -2361,6 +2361,51 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
           (detail ? `: ${detail}` : ` (no stderr)`),
       );
     }
+    // WI-6364 (fix C) — THE SAME REPAIR, ON THE LEG THAT ACTUALLY RECEIVES IT.
+    //
+    // A `superseded-repo-key:<K>` refusal is the store holder telling us,
+    // first-hand, what its store is really named, and for an already-established
+    // member it is the ONLY repair channel left (the join link is long gone; the
+    // announce frame needs the owner already running a build that publishes it).
+    //
+    // It was originally wired ONLY into the bootstrap leg's dial path — and that
+    // is the bug this block fixes. The bootstrap leg returns early on any
+    // already-seeded store, and on a diverged pair it may never dial at all,
+    // while THIS leg keeps dialing and therefore keeps collecting the refusal
+    // every single tick. Live-caught tower<->rig 2026-07-27: the rig took five
+    // of these per tick for hours, running a build that CONTAINED the adoption
+    // code, with the canonical key sitting in plain text in the error — and
+    // adopted nothing, because the only receiver was on a leg it never reached.
+    // Structurally the same mistake as a detector placed below the warm gate: a
+    // repair the stuck machine cannot reach is not a repair.
+    //
+    // Idempotent by contract (`already-canonical` is a clean no-op on every
+    // later refused dial), so running it on both legs is safe by construction.
+    // One adoption per tick is enough — the re-key takes effect on the NEXT
+    // tick, so stop at the first refusal that resolves.
+    for (const f of cursorDecision.fetchFailed) {
+      const adoption = await adoptRefusedRepoKey(slug, f.stderr);
+      if (adoption.adopted) {
+        console.warn(
+          `[git-sync] ${slug}: pot-git RE-KEYED ${adoption.from ?? '(unpinned)'} → ${adoption.adopted} ` +
+            `— peer ${f.device.slice(0, 8)} refused the old key on the ref-announce leg as a store it has ` +
+            `abandoned. The next tick dials under the corrected key.`,
+        );
+        break;
+      }
+      // A refusal we RECEIVED and declined to act on is the failure mode that
+      // hid this bug for hours, so it must never be silent. `already-canonical`
+      // and `not-a-superseded-refusal` are the boring no-ops (every ordinary
+      // transport failure lands there); anything else means the repair arrived
+      // and we turned it down — say which guard did it.
+      if (adoption.skipped && adoption.skipped !== 'not-a-superseded-refusal' && adoption.skipped !== 'already-canonical') {
+        console.warn(
+          `[git-sync] ${slug}: pot-git did NOT adopt the key peer ${f.device.slice(0, 8)} named in its refusal ` +
+            `(${adoption.skipped}) — the pair stays diverged until this is resolved.`,
+        );
+        break;
+      }
+    }
     if (receiveOutcome.errors.length) {
       console.warn(`[git-sync] ${slug}: ref-announce receive reported errors: ${receiveOutcome.errors.join('; ')}`);
     }

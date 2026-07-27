@@ -166,3 +166,65 @@ describe('adoptRefusedRepoKey', () => {
     expect(res).toEqual({ adopted: null, skipped: 'registry-error' });
   });
 });
+
+/**
+ * EI-18798652713871439 — the REF-ANNOUNCE leg's input contract.
+ *
+ * Fix C was wired only into the bootstrap leg, so it never ran on the machine
+ * that was actually collecting the refusal: the rig took five of these per tick
+ * for hours, on a build that CONTAINED this adoption code, and healed nothing.
+ * The receiver now also runs on the ref-announce receive leg — and that leg
+ * hands it a DIFFERENTLY-WRAPPED string than the bootstrap leg does.
+ *
+ * The bootstrap leg reads `duplex.errored.message`. The ref-announce leg reads
+ * the fetch result's `stderr`, which carries an extra transport prefix. If that
+ * form did not parse, the new call site would be a silent no-op — the exact
+ * class of "wired up but inert" this whole fix exists to remove — so it is
+ * pinned here against the VERBATIM text observed in production.
+ */
+describe('adoptRefusedRepoKey — the ref-announce leg stderr form', () => {
+  /** Verbatim from the rig's /tmp/serve-current.log, 2026-07-27T11:51:22.768Z. */
+  const REF_ANNOUNCE_STDERR = 'duplex error: pot-git serve refused: superseded-repo-key:gh-1223568103';
+
+  it('parses the production stderr text and adopts, despite the extra transport prefix', async () => {
+    // The rig's real state: locally pinned to the SUPERSEDED key by the boot
+    // backfill ("pinned 3 repoKey(s) so they can no longer drift"), which is a
+    // local derivation — a guess — and so must lose to the peer's first-hand word.
+    const { state, deps } = fakes([rigPotHome({ pot_repo_key: 'papercusp', pot_repo_key_source: 'local' })]);
+
+    const res = await adoptRefusedRepoKey('papercusp', REF_ANNOUNCE_STDERR, deps);
+
+    expect(res.adopted).toBe('gh-1223568103');
+    expect(res.from).toBe('papercusp');
+    expect(state.stored.projects[0]!.pot_repo_key).toBe('gh-1223568103');
+    expect(state.stored.projects[0]!.pot_repo_key_source).toBe('peer');
+  });
+
+  it('is a clean no-op on the ordinary transport failures that share this leg', async () => {
+    // Every non-refusal failure on the ref-announce leg flows through the same
+    // loop, so the boring cases must stay boring — no writes, no log noise.
+    const { state, deps } = fakes([rigPotHome()]);
+
+    for (const stderr of [
+      '', // the SIGKILL/ceiling path writes no stderr at all (WI-6277)
+      'duplex error: pot-git serve refused: no-such-repo',
+      'fatal: could not read from remote repository',
+    ]) {
+      const res = await adoptRefusedRepoKey('papercusp', stderr, deps);
+      expect(res.adopted).toBeNull();
+      expect(res.skipped).toBe('not-a-superseded-refusal');
+    }
+    expect(state.saves).toBe(0);
+  });
+
+  it('re-running on every later tick is idempotent once the key has landed', async () => {
+    // The leg calls this on EVERY failed fetch, so a healed device must settle
+    // into a no-op rather than rewriting the registry on every tick forever.
+    const { state, deps } = fakes([rigPotHome({ pot_repo_key: 'gh-1223568103', pot_repo_key_source: 'peer' })]);
+
+    const res = await adoptRefusedRepoKey('papercusp', REF_ANNOUNCE_STDERR, deps);
+
+    expect(res).toEqual({ adopted: null, skipped: 'already-canonical' });
+    expect(state.saves).toBe(0);
+  });
+});
