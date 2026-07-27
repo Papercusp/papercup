@@ -68,6 +68,13 @@ export interface GitPipelineSnapshot {
     lastMerged: string[];
     lastConflicts: string[];
     lastErrors: string[];
+    /**
+     * The member's EFFECTIVE push mode this tick: `'push'`, or `'commit-only:<reason>'`
+     * where reason is the hive git mode (`bridged` / `p2p-only`) or `config`.
+     * `null` on rows written before git-sync recorded it — treat null as UNKNOWN, never
+     * as "it pushes" (EI-18812945811758018).
+     */
+    pushMode: string | null;
   };
 
   /** The merge-resolver (opus:xhigh) — model + last dispatch outcome. */
@@ -538,6 +545,10 @@ export async function gitPipelineSnapshot(
       lastMerged: strArr(meta.last_merged),
       lastConflicts: strArr(meta.last_conflicts),
       lastErrors: strArr(meta.last_errors),
+      // EI-18812945811758018: 'push' | 'commit-only:<reason>' | null (older rows, before
+      // git-sync recorded it). NEVER default this to 'push' — an absent mode is UNKNOWN,
+      // and guessing "it pushes" is what made an empty lastPushed read as a fault.
+      pushMode: typeof meta.push_mode === 'string' ? meta.push_mode : null,
     },
     resolver: {
       model: resolverModel(),

@@ -524,7 +524,15 @@ vi.mock("@papercusp/sync", () => ({
     }
     if (opts.queryName === "learning.scoutDrafts") {
       // The Improvements view's thin drafts read — empty by default.
-      return { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+      // WI-6395: enveloped, so the empty is `[{ items: [] }]` (an observed
+      // empty) rather than `[]`, which now means something different.
+      return {
+        data: [{ items: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
     }
     return opts.queryName === "learning.apiary"
         ? apiaryResult

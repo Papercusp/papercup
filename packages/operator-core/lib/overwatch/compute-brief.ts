@@ -231,13 +231,25 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       kind: 'gateway-admission-starved',
       severity: 'critical',
       subject: 'inference gateway',
-      detail: `Inference gateway admission backlog sustained deep vs its live ceiling for ≥5min with ${tokens.accountsAvailable} idle healthy account(s) unused — the queue isn't draining even though the pool has spare capacity.`,
+      // EI-15912 (2026-07-18, 5 consecutive reported "false positives"): this signal is the
+      // GATEWAY PROCESS's own internal admission queue (/stats admission.queued vs
+      // admission.maxConcurrent, read via gateway:status) — a DIFFERENT layer than the fleet
+      // rate-bucket governor dev:rate_governor_status reports (buildFleetRateStatus). The two
+      // can legitimately diverge (e.g. fleet.inFlight:0/cap:16 clean while the gateway's own
+      // admission queue is genuinely deep from other/Codex/cross-workspace traffic or a
+      // temporarily AIMD-clamped ceiling), so a dev:rate_governor_status read alone NEITHER
+      // confirms nor refutes this anomaly — every EI-15912 "verification" checked only that
+      // tool and never gateway:status, so none of the 5 reports actually ruled the alarm in or
+      // out. gateway:status's own guidance already says as much ("only once admission is RULED
+      // OUT" via gateway:status first) — this detail line + message repeat it here so the next
+      // responder doesn't rediscover the confusion from scratch.
+      detail: `Inference gateway admission backlog sustained deep vs its live ceiling for ≥5min with ${tokens.accountsAvailable} idle healthy account(s) unused — the queue isn't draining even though the pool has spare capacity. This reads the GATEWAY's own admission queue (gateway:status), NOT the fleet rate-bucket governor (dev:rate_governor_status) — the two are different layers and can disagree; verify with gateway:status before treating a clean dev:rate_governor_status read as a refutation.`,
       suggestedAction: {
         type: 'escalate',
         target: 'owner',
         conditionKey: anomalyConditionKey('gateway-admission-starved'),
         message:
-          `Admission starvation: ${tokens.accountsAvailable} idle account(s) available but the live admission ceiling is starving the queue. Raise the provider floor: operator:rate_limit_config { providerFloors: { anthropic: { maxConcurrent: <higher> } } } (mirrors the 2026-07-09 manual mitigation). Kettle cannot flip live rate-limit config itself (D-001).`,
+          `Admission starvation: ${tokens.accountsAvailable} idle account(s) available but the live admission ceiling is starving the queue. FIRST verify with gateway:status (the same admission.queued/admission.maxConcurrent this alarm reads) — a clean dev:rate_governor_status read does NOT rule this out, it reads a different subsystem (the fleet rate-bucket governor, not the gateway's own admission queue). If gateway:status confirms a deep queue below the ceiling, raise the provider floor: operator:rate_limit_config { providerFloors: { anthropic: { maxConcurrent: <higher> } } } (mirrors the 2026-07-09 manual mitigation). Kettle cannot flip live rate-limit config itself (D-001).`,
       },
     });
   }

@@ -584,11 +584,36 @@ export interface GitSyncLegs {
   syncAgeMs: number | null;
   /** >0 means the routine is FAULTING, not merely idle. */
   consecutiveErrorTicks: number;
-  /** Repos the last tick actually PUSHED. Empty with status 'synced' is the trap. */
+  /**
+   * Repos the last tick actually PUSHED. Empty with status 'synced' is the trap —
+   * BUT only when this member is supposed to push at all. Read `pushMode` first:
+   * on a commit-only member an empty list is the CORRECT, designed result.
+   */
   pushedRepos: string[];
   mergedRepos: string[];
   conflicts: string[];
   errors: string[];
+  /**
+   * EI-18812945811758018 — the member's EFFECTIVE push mode: `'push'`, or
+   * `'commit-only:<reason>'` (reason = the hive git mode `bridged`/`p2p-only`, or
+   * `config`). `null` = UNKNOWN (a routine row written before git-sync recorded it).
+   *
+   * This exists because an empty `pushedRepos` means OPPOSITE things in the two cases,
+   * and without the mode a reader cannot tell them apart: on a bridged hive git-sync is
+   * commit-only by design and the GitHub bridge is the sole origin pusher, so "nothing
+   * pushed" is healthy and `git-sync:run` can never change it.
+   */
+  pushMode: string | null;
+}
+
+/**
+ * True when this member does not push to origin at all, by design — so an empty
+ * `pushedRepos` / a lagging origin is NOT evidence of a fault, and no forced sync
+ * can help. `null` (unknown, pre-record rows) is deliberately NOT treated as
+ * commit-only: absent evidence must not silently suppress a real push fault.
+ */
+export function isCommitOnlyMember(legs: Pick<GitSyncLegs, 'pushMode'>): boolean {
+  return typeof legs.pushMode === 'string' && legs.pushMode.startsWith('commit-only');
 }
 
 /**
@@ -1203,6 +1228,15 @@ export function computeStages(
   // health here is what tells a caller whether waiting can possibly help.
   const gs = p.gitSync;
   const stale = gs.syncAgeMs !== null && gs.syncAgeMs > GIT_SYNC_STALE_AFTER_MS;
+  // EI-18812945811758018: a COMMIT-ONLY member never pushes to origin by design (bridged
+  // / p2p-only hive: the GitHub bridge writer is the sole origin pusher). Reporting that
+  // leg as 'advancing' with a `git-sync:run` lever is actively misleading — it reads as
+  // "the push is late / broken, force it", and the forced run commits and pushes nothing.
+  // 'disabled' is the honest health: this leg is not going to move here, ever.
+  //
+  // A genuine FAULT still outranks this: a commit-only member can still hit merge
+  // conflicts or error ticks on its commit/fetch/merge half, and those must stay loud.
+  const commitOnly = isCommitOnlyMember(gs);
   const pushedHealth: StageHealth =
     gs.consecutiveErrorTicks > 0 || gs.errors.length > 0
       ? 'broken'
@@ -1210,7 +1244,9 @@ export function computeStages(
         ? 'broken'
         : stale
           ? 'stalled'
-          : 'advancing';
+          : commitOnly
+            ? 'disabled'
+            : 'advancing';
   const pushedDetail = ((): string | null => {
     if (gs.consecutiveErrorTicks > 0 || gs.errors.length > 0) {
       return `git-sync is FAULTING (${gs.consecutiveErrorTicks} consecutive error tick(s))${
@@ -1222,6 +1258,14 @@ export function computeStages(
     }
     if (stale) {
       return `git-sync's last tick was ${Math.round((gs.syncAgeMs ?? 0) / 60_000)} min ago (ticks are ~10 min) — the leg is not advancing, so this is not simply "not yet".`;
+    }
+    if (commitOnly) {
+      // Say the DESIGN out loud, and name the lever that actually moves origin. Without
+      // this the reader sees "committed, not on origin, pushed NOTHING" and reasonably
+      // concludes the push is broken (EI-18812945811758018 was filed as a CRITICAL bug
+      // on exactly that reading, by an agent who had already forced a sync to no effect).
+      const reason = gs.pushMode?.slice('commit-only:'.length) || 'unknown';
+      return `This member is COMMIT-ONLY (${reason}) — it never pushes to origin, by design, so an empty push list is CORRECT and git-sync:run cannot change it. Origin advances when the GitHub bridge egresses ADMITTED (green-pinned) commits, so the lever is GREENING THE GATE, not forcing a sync.`;
     }
     if (!p.positions.onStaging) {
       return `Committed locally but NOT yet on origin/staging. Status "${gs.status ?? 'unknown'}" does NOT mean pushed — the last tick pushed ${
@@ -1238,7 +1282,11 @@ export function computeStages(
     ? gs.conflicts.length > 0
       ? 'a merge-resolver must clear the git-sync conflicts — this leg cannot self-heal'
       : pushedHealth === 'broken' || pushedHealth === 'stalled'
-        ? 'git-sync:run (the push leg is not advancing on its own)'
+        ? // A commit-only member still has a COMMIT leg that can stall, and git-sync:run
+          // does move that — but never describe it as fixing a push it will never do.
+          commitOnly
+          ? 'git-sync:run (the COMMIT leg is not advancing — this member never pushes; it will not put anything on origin)'
+          : 'git-sync:run (the push leg is not advancing on its own)'
         : null
     : null;
   stages.push({
@@ -2213,6 +2261,7 @@ export async function gitPipelinePosition(
       mergedRepos: snap.gitSync?.lastMerged ?? [],
       conflicts: snap.gitSync?.lastConflicts ?? [],
       errors: snap.gitSync?.lastErrors ?? [],
+      pushMode: snap.gitSync?.pushMode ?? null,
     },
     runtime,
     runtimes,

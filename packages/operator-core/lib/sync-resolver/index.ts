@@ -4402,7 +4402,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         // Same member-slug resolution as learning.scout — a pot's rows are its
         // member harnesses' rows (P-005), not just the home slug's.
         const memberSlugs = hive ? await resolveHiveMemberSlugs(hive, ws) : null;
-        return await routeWithWorkspace(async (tx) =>
+        // WI-6395: ENVELOPED. This is one of only two genuinely flat-array
+        // `learning.*` reads, and a flat array has nowhere to hang provenance —
+        // a failed read and "no drafts in iteration" were the same `[]`. Wrapping
+        // in a 1-element `{ items }` object is not a new convention: it is the
+        // shape the other 13 learning.* resolvers already use, so `unavailable`
+        // means the same thing everywhere rather than this read inventing a
+        // second mechanism (WI-6382).
+        const items = await routeWithWorkspace(async (tx) =>
           readScoutDraftIterations({
             workspaceId: ws,
             sql: tx,
@@ -4410,9 +4417,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             hiveMemberSlugs: memberSlugs,
           }),
         );
+        return [{ items }];
       } catch (err) {
         console.warn('[learning.scoutDrafts] read failed:', err instanceof Error ? err.message : err);
-        return [];
+        return [degraded({ items: [] }, err)];
       }
     },
   },
@@ -4556,14 +4564,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const { routeWithWorkspace } = await import('../route-workspace');
         const { PgExperimentLedger } = await import('../experiment/ledger');
         const ws = activeWorkspaceId();
-        return await routeWithWorkspace(async (tx) =>
+        // WI-6395: ENVELOPED — see learning.scoutDrafts for the rationale. The
+        // pre-migration case matters most here: this read is explicitly expected
+        // to fail with 42P01 on an install that has not applied the experiment
+        // tables yet, and it stayed SILENT about it (the warn is suppressed for
+        // exactly that code). "The experiment registry isn't installed" then
+        // rendered as "no experiments have run", which is a different statement
+        // about the system and sends the reader somewhere else entirely.
+        const items = await routeWithWorkspace(async (tx) =>
           new PgExperimentLedger(tx).listRecent(ws, { testId: a.testId, limit: a.limit ?? 20 }),
         );
+        return [{ items }];
       } catch (err) {
         if ((err as { code?: string }).code !== '42P01') {
           console.warn('[learning.experiments] read failed:', err instanceof Error ? err.message : err);
         }
-        return [];
+        return [degraded({ items: [] }, err)];
       }
     },
   },

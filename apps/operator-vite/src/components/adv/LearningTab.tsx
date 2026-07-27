@@ -1193,13 +1193,18 @@ function ImprovementsView({
   // WI-6385: same lens and same readiness gate as the two legs above. It
   // previously had neither, so under a selected pot this list showed every
   // pot's drafts beside two pot-scoped siblings.
-  const draftsSync = useSyncQuery<ScoutDraftIteration>({
+  // WI-6395: enveloped (`[{ items, unavailable? }]`) so a failed read stops
+  // arriving as "no drafts in iteration". This is a SECONDARY read on the
+  // Improvements view — its failure must not blank the primary list, so it
+  // degrades to an empty drafts section rather than an error page; the
+  // provenance is still carried for the section's own copy.
+  const draftsSync = useSyncQuery<{ items?: ScoutDraftIteration[] }>({
     queryName: "learning.scoutDrafts",
     args: hive ? { hive } : {},
     staleTime: 60_000,
     enabled: hiveReady,
   });
-  const drafts = draftsSync.data ?? [];
+  const drafts = draftsSync.data?.[0]?.items ?? [];
   const [lane, setLane] = useQueryState(
     "lane",
     parseAsStringEnum<Lane>([...LANES]).withDefault("all"),

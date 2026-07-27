@@ -25,6 +25,7 @@ import {
   LearningVisualEmpty,
   LearningVisualError,
 } from "./LearningVisuals";
+import { snapshotFault } from "./snapshot-fault";
 
 const TIER_TONE: Record<string, string> = {
   offline: "var(--accent-strong, var(--accent))",
@@ -55,14 +56,20 @@ export function ExperimentsPanel({
 }: {
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
 } = {}) {
-  const sync = useSyncQuery<ExperimentRunSummary>({
+  // WI-6395: the read is now enveloped (`[{ items, unavailable? }]`) so a failed
+  // or pre-migration read can say so instead of arriving as an empty list. The
+  // row filter stays: it guards against a malformed row, which is a different
+  // risk from a failed read and is still worth guarding.
+  const sync = useSyncQuery<{ items?: ExperimentRunSummary[] }>({
     queryName: "learning.experiments",
     args: {},
     staleTime: 30_000,
   });
-  const runs = Array.isArray(sync.data)
-    ? sync.data.filter((r) => r && typeof r.batteryId === "string")
+  const snap = sync.data?.[0];
+  const runs = Array.isArray(snap?.items)
+    ? snap.items.filter((r) => r && typeof r.batteryId === "string")
     : [];
+  const fault = snapshotFault(sync.error, snap, "The experiment registry");
   const latest = runs[0];
   const latestArms = latest && Array.isArray(latest.arms) ? latest.arms : [];
   const winnerArm = latestArms.find((arm) => arm.id === latest?.winner) ?? null;
@@ -70,19 +77,20 @@ export function ExperimentsPanel({
     latestArms.find((arm) => arm.id !== latest?.winner) ?? null;
   const visible = runs.slice(0, 4);
   const earlier = runs.slice(4);
+  // `fault.failed`, not `sync.error`: the resolver converts a data-layer failure
+  // into a SUCCESSFUL empty read, so sync.error only ever fired for transport.
+  const status = fault.failed
+    ? "bad"
+    : !latest
+      ? "neutral"
+      : latest.decision === "applied"
+        ? "good"
+        : latest.decision === "rejected"
+          ? "bad"
+          : "warn";
   useEffect(() => {
-    onStatus?.(
-      sync.error
-        ? "bad"
-        : !latest
-          ? "neutral"
-          : latest.decision === "applied"
-            ? "good"
-            : latest.decision === "rejected"
-              ? "bad"
-              : "warn",
-    );
-  }, [latest, onStatus, sync.error]);
+    onStatus?.(status);
+  }, [onStatus, status]);
 
   const renderRun = (r: (typeof runs)[number]) => {
     const arms = Array.isArray(r.arms) ? r.arms : [];
@@ -162,9 +170,9 @@ export function ExperimentsPanel({
         }
       />
 
-      {sync.error ? (
+      {fault.failed ? (
         <LearningVisualError
-          title="Experiments unavailable"
+          title={fault.message ?? "Experiments unavailable"}
           onRetry={() => sync.invalidate()}
         />
       ) : !latest ? (

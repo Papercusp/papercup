@@ -174,6 +174,14 @@ test('detectAnomalies — confirmed admission starvation WITH idle accounts abov
   assert.equal(a.suggestedAction.type, 'escalate');
   assert.equal(a.suggestedAction.target, 'owner');
   assert.match(a.suggestedAction.message ?? '', /rate_limit_config/);
+  // EI-15912: the message must steer verification to gateway:status (the same admission
+  // queue this alarm reads) and warn that dev:rate_governor_status reads a DIFFERENT
+  // subsystem (the fleet rate-bucket governor) and cannot by itself refute this alarm —
+  // the exact confusion that produced 5 reported "false positives" with no repro.
+  assert.match(a.suggestedAction.message ?? '', /gateway:status/);
+  assert.match(a.suggestedAction.message ?? '', /does NOT rule this out/);
+  assert.match(a.detail, /gateway:status/);
+  assert.match(a.detail, /dev:rate_governor_status/);
 });
 
 test('detectAnomalies — confirmed admission starvation with NO idle headroom does NOT flag (normal full-pool pressure)', () => {

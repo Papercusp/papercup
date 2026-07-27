@@ -254,7 +254,19 @@ describe('terminal writes structurally require completion evidence (P-005)', () 
  * two gates shared fixtures, either could be deleted without a test going red.
  */
 describe('terminal writes structurally require an assumption declaration (P-017 b#2)', () => {
-  const parse = (args: unknown) => (tool.args as { safeParse: (v: unknown) => { success: boolean } }).safeParse(args);
+  // A DISCRIMINATED union, not `{ success: boolean }`: the message-shape test below
+  // reads `r.error.issues` on the failure branch, and a plain boolean cannot narrow
+  // — it yields both "Property 'error' does not exist" and an implicitly-any `i` in
+  // the `.map`. Modelling only the two fields these tests actually touch keeps the
+  // cast honest about what it is asserting.
+  const parse = (args: unknown) =>
+    (
+      tool.args as {
+        safeParse: (
+          v: unknown,
+        ) => { success: true } | { success: false; error: { issues: { message: string }[] } };
+      }
+    ).safeParse(args);
   const REF = 'landed in abc123';
 
   it('rejects a terminal write with evidence but NO assumption declaration, in all three shapes', () => {
