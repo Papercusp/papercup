@@ -1087,6 +1087,130 @@ function ImprovementsView({
   const [railFilter, setRailFilter] = useQueryState("irail", parseAsString);
   const [traceOpen, setTraceOpen] = useQueryState("itrace", parseAsString);
 
+  // ── Grading, absorbed from the Ideas view. The note popover's open-state is
+  // URL state (`?grade=<ideaId>`) so agents can drive it; in-flight optimistic
+  // grades and errors are transient lifecycle, so they stay in useState. A
+  // grade from this surface is an OWNER grade (the server derives gradedBy from
+  // the caller), and owner regrade is always allowed, so the stars stay
+  // interactive on already-graded rows.
+  //
+  // This is the ONLY control on a row, by owner ruling: in a full-auto loop the
+  // human teaches the generator and does not approve the work ["the learning
+  // loops is designed to be full auto so needs a call makes no sense" — owner
+  // 2026-07-27].
+  const [gradeOpen, setGradeOpen] = useQueryState("grade", parseAsString);
+  const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>(
+    {},
+  );
+  const [savingId, setSavingId] = useState("");
+  const [gradeError, setGradeError] = useState("");
+  const effectiveGrade = useCallback(
+    (idea: ScoutRoutedItem): EffectiveGrade | null => {
+      const opt = optimistic[idea.ideaId];
+      if (opt) return opt;
+      if (idea.humanGrade == null) return null;
+      return {
+        grade: idea.humanGrade,
+        feedback: idea.humanFeedback ?? null,
+        gradedBy: idea.gradedBy ?? "owner",
+      };
+    },
+    [optimistic],
+  );
+  const submitGrade = async (
+    idea: ScoutRoutedItem,
+    grade: number,
+    feedback: string | null,
+  ) => {
+    setGradeError("");
+    setSavingId(idea.ideaId);
+    const prevEntry = optimistic[idea.ideaId] ?? null;
+    // Optimistic: show the new grade immediately; the refetched snapshot
+    // confirms it (or the catch below rolls it back).
+    setOptimistic((m) => ({
+      ...m,
+      [idea.ideaId]: { grade, feedback, gradedBy: "owner" },
+    }));
+    try {
+      const res = await fetch("/api/agent-tools/scout/grade-idea", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ideaId: idea.ideaId,
+          grade,
+          ...(feedback ? { feedback } : {}),
+        }),
+      });
+      const raw: unknown = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const result = unwrapToolResult(raw);
+      if (result.applied === false)
+        throw new Error(String(result.reason ?? "grade not applied"));
+      scoutSync.invalidate();
+    } catch (e) {
+      setOptimistic((m) => {
+        const next = { ...m };
+        if (prevEntry) next[idea.ideaId] = prevEntry;
+        else delete next[idea.ideaId];
+        return next;
+      });
+      setGradeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingId("");
+    }
+  };
+
+  // ── Deep-links out of a trace (all nuqs, so ui:dispatch can drive the same
+  // navigation). The merge simplifies the common case: an idea that routed to a
+  // work item no longer navigates ANYWHERE — its work is a row on this very
+  // list, so "open it" means select it here.
+  const [, setTab] = useQueryState("tab", parseAsString);
+  const [, setCreateView] = useQueryState("view", parseAsString);
+  const [, setPlanSel] = useQueryState("plan", parseAsString);
+  const [, setLviewTarget] = useQueryState("lview", parseAsString);
+  const [, setTopBarSlug] = useQueryState("slug", parseAsString);
+  const openPlan = useCallback(
+    (slug: string) => {
+      void setPlanSel(slug);
+      void setCreateView("plans");
+      void setTab("plans");
+    },
+    [setCreateView, setPlanSel, setTab],
+  );
+  // Select a work item ON THIS LIST, clearing the facets that could hide it —
+  // a sticky lane or rail filter would swallow the click and read as a no-op.
+  const openImprovement = useCallback(
+    (id: string) => {
+      void setLsel(id);
+      void setLane(null);
+      void setSrc(null);
+      void setRailFilter(null);
+    },
+    [setLane, setLsel, setRailFilter, setSrc],
+  );
+  const openRouted = useCallback(
+    (idea: ScoutRoutedItem) => {
+      if (idea.rail === "plan" && idea.routedRef.startsWith("plan:")) {
+        openPlan(idea.routedRef.slice("plan:".length));
+      } else if (idea.rail === "gym") {
+        // WI-5412: carry the idea's hive so the Gym opens on the seed's data.
+        // The ledger doesn't stamp harness_slug consistently (EI-10520) — treat
+        // absence as unknown and navigate without touching the selection.
+        if (idea.harnessSlug) void setTopBarSlug(idea.harnessSlug);
+        void setLviewTarget("gym");
+      } else if (idea.rail === "instance") {
+        void setLviewTarget("benchmark");
+      } else {
+        openImprovement(
+          idea.routedRef.startsWith("wi:")
+            ? idea.routedRef.slice("wi:".length)
+            : idea.routedRef,
+        );
+      }
+    },
+    [openImprovement, openPlan, setLviewTarget, setTopBarSlug],
+  );
+
   // ── The join. An idea records the artifact it became as a typed ref, so a
   // work-item routing is "wi:EI-…" and the two halves key on the work-item id.
   // An idea can be re-routed to the same item; keep the newest routing.
@@ -1227,6 +1351,31 @@ function ImprovementsView({
     Boolean(src) ||
     Boolean(railFilter);
 
+  // Everything a row needs, bundled once. A merged row draws on both halves of
+  // the view's state (selection, trace, grading, navigation), and threading a
+  // dozen props through the windowed list is how one of them silently goes
+  // stale — the row components take this object and nothing else.
+  // Deliberately NOT memoized: `onGrade` is a per-render closure over the
+  // in-flight grade state, so a dependency list would either omit it (and
+  // capture a stale rollback snapshot) or change every render anyway. The row
+  // components are not memo()'d, so a fresh object costs nothing.
+  const rowCtx: LoopRowContext = {
+    railMetaMap: RAIL_META,
+    groundingTitles,
+    brainWord: t("brain"),
+    traceOpen,
+    onToggleTrace: (id) => void setTraceOpen(id),
+    gradeOpen,
+    onGradeOpenChange: (id) => void setGradeOpen(id),
+    effectiveGrade,
+    onGrade: submitGrade,
+    savingId,
+    onOpenRouted: openRouted,
+    onOpenPlan: openPlan,
+    onOpenImprovement: openImprovement,
+    onDismissSelect: () => void setLsel(null),
+  };
+
   const resolved = digest?.byState?.resolved ?? 0;
   const showDashboard = (digest?.open ?? 0) >= 4;
   // The badge reports whether the LOOP is healthy, not whether the pile is big.
@@ -1256,32 +1405,155 @@ function ImprovementsView({
     <section className="pc-learning__section">
       <LearningPageHeader
         icon={Sparkles}
-        title="Backlog"
-        question="The work queue agents burn down — every capture, not just the ones an idea produced (grade ideas in Ideas)."
+        title="Improve"
+        question="What the learning loop produced — each idea and the work it became. Grading an idea is what teaches the generator."
         signal={digest ? `${digest.open} open` : undefined}
-        tone={digest && digest.open === 0 ? "good" : "accent"}
+        tone={
+          health.status !== "neutral"
+            ? health.status
+            : digest && digest.open === 0
+              ? "good"
+              : "accent"
+        }
         action={
           <button
             type="button"
             className="pc-learning__refresh"
-            aria-label="Reload the improvements feed"
-            disabled={sync.fetching}
-            onClick={() => sync.invalidate()}
+            aria-label="Reload the improve feed"
+            disabled={sync.fetching || scoutSync.fetching}
+            onClick={() => {
+              sync.invalidate();
+              scoutSync.invalidate();
+            }}
           >
             <RefreshCw size={13} aria-hidden />
           </button>
         }
       />
-      {/* Loop diagnostics behind ONE labelled disclosure (owner ask
-          2026-07-19b: the instrument clusters at the top of every learning
-          page were confusing — plain summary up top, gauges on demand). */}
+
+      {/* ONE plain-language glance line, absorbed from the Ideas view: what the
+          loop produced, what is still open, and when it next fires. Every gauge
+          stays behind the labelled disclosure below. */}
+      <p className="pc-learning__glance" aria-label="The loop at a glance">
+        <span title="Every idea a cycle turned into an artifact (work item, plan, gym seed, benchmark).">
+          <strong>{snap?.totalRouted ?? 0}</strong> ideas routed
+        </span>
+        {digest ? (
+          <span title="Work items from the loop that are still open.">
+            <strong>{digest.open}</strong> still open
+          </span>
+        ) : null}
+        {snap?.improveFunnel ? (
+          <span title="Ideas filed onto the improvement rail that are now resolved or closed.">
+            <strong>{snap.improveFunnel.done}</strong> shipped
+          </span>
+        ) : null}
+        {health.markers.length > 0 ? (
+          <span
+            className="is-warn"
+            title={health.markers
+              .map((m) => `${m.key.replace(/-/g, " ")}: ${m.summary}`)
+              .join("\n")}
+          >
+            <AlertTriangle size={11} aria-hidden />
+            {health.markers.length} loop warning
+            {health.markers.length === 1 ? "" : "s"}
+          </span>
+        ) : null}
+      </p>
+
+      {/* ── The scope bar. THE control that makes this list honest.
+          Measured 2026-07-27: 8,202 rows — 99.93% of the old Backlog — were
+          also on the Work tab, because this read applied no provenance filter
+          at all. Scoping to the loop's own output is the default; everything
+          else is one click away, and the way OUT is stated rather than left
+          for the reader to wonder about. */}
+      <div className="pc-learning__idea-filters" aria-label="Where these came from">
+        <button
+          type="button"
+          aria-pressed={scope === "loop"}
+          title="Only what the learning loop produced: ideas, and the work items they became."
+          onClick={() => void setScope("loop")}
+        >
+          <Radar size={11} aria-hidden />
+          From the loop{" "}
+          {digest && scope === "loop" ? <strong>{digest.total}</strong> : null}
+        </button>
+        {sources.map((s) => (
+          <button
+            key={s}
+            type="button"
+            aria-pressed={src === s}
+            title={`Filed by ${s}`}
+            onClick={() => void setSrc(src === s ? null : s)}
+          >
+            {s}
+          </button>
+        ))}
+        <button
+          type="button"
+          aria-pressed={scope === "all"}
+          title="Every capture in this workspace, including work that never came from the loop — the same population the Work tab lists."
+          onClick={() => void setScope("all")}
+        >
+          Every capture
+        </button>
+        {scope === "loop" ? (
+          <span
+            className="pc-learning__matchcount"
+            title="Captures that did not come from the learning loop are work, not learning — they live on the Work tab."
+          >
+            work not from the loop lives in Work →
+          </span>
+        ) : null}
+      </div>
+
+      {/* Every gauge behind ONE labelled disclosure: the cycle engine that
+          makes ideas, and the capture/resolve flow that burns them down. */}
       <LearningDisclosure
-        label="How the capture loop is doing"
-        subtitle="capture/resolve flow over 7 days, and whether adopted lessons hold"
+        label="How the loop is doing"
+        subtitle="what fires a cycle, the recent runs, and whether capture and resolve keep pace"
       >
+        <LoopEngineInstruments snap={snap} scoutWord={t("scout")} />
         {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
         <LearningEfficacyPanel />
       </LearningDisclosure>
+
+      <LensWeights snap={snap} scoutWord={t("scout")} />
+
+      {/* Rail facet — where each idea routed. Sits directly above the list it
+          filters (owner ask 2026-07-19). */}
+      {snap && rails.length > 0 ? (
+        <div className="pc-learning__idea-filters" aria-label="Idea routing">
+          <button
+            type="button"
+            aria-pressed={!railFilter}
+            onClick={() => void setRailFilter(null)}
+          >
+            <Radar size={11} aria-hidden />
+            All rails <strong>{snap.totalRouted}</strong>
+          </button>
+          {rails.map((rail) => {
+            const meta = RAIL_META[rail.rail];
+            return (
+              <Tooltip key={rail.rail} label={meta?.desc}>
+                <button
+                  type="button"
+                  aria-pressed={railFilter === rail.rail}
+                  onClick={() =>
+                    void setRailFilter(
+                      railFilter === rail.rail ? null : rail.rail,
+                    )
+                  }
+                >
+                  <i style={{ background: meta?.color }} aria-hidden />
+                  {meta?.label ?? rail.rail} <strong>{rail.count}</strong>
+                </button>
+              </Tooltip>
+            );
+          })}
+        </div>
+      ) : null}
 
       {digest && showDashboard ? (
         // The header signal already carries the headline "N open"; this line is the
@@ -1309,8 +1581,8 @@ function ImprovementsView({
                 type="text"
                 value={search ?? ""}
                 onChange={(e) => void setSearch(e.target.value)}
-                placeholder="Search improvements…"
-                aria-label="Search improvements"
+                placeholder="Search ideas and work…"
+                aria-label="Search ideas and work"
               />
             </label>
             <ColumnFilterBar
@@ -1324,27 +1596,17 @@ function ImprovementsView({
               aria-live="polite"
               title={
                 isFiltered
-                  ? "Rows matching the current filter / search, out of the backlog total."
-                  : "Backlog rows in this lane."
+                  ? "Rows matching the current filter / search, out of everything in scope."
+                  : "Rows in scope — ideas and the work they became."
               }
             >
               {isFiltered
                 ? `${visibleRows.length} of ${allRows.length}`
                 : `${rows.length} items`}
             </span>
-            {sources.length > 0 ? (
-              <Select
-                ariaLabel="Filter by who filed it"
-                value={src ?? "__any__"}
-                onChange={(v: string) =>
-                  void setSrc(v === "__any__" ? null : v)
-                }
-                options={[
-                  { value: "__any__", label: "Any source" },
-                  ...sources.map((s) => ({ value: s, label: s })),
-                ]}
-              />
-            ) : null}
+            {/* The "who filed it" facet is now a chip in the scope bar above —
+                provenance is the headline question on this surface, not a
+                dropdown to open. */}
             <div
               className="pc-learning__lanes"
               role="tablist"
@@ -1387,11 +1649,17 @@ function ImprovementsView({
         </div>
       ) : null}
 
+      {gradeError ? (
+        <p className="pc-learning__empty" role="alert">
+          Grade failed: {gradeError}
+        </p>
+      ) : null}
+
       {sync.loading && !digest ? (
-        <p className="pc-learning__empty">Loading the improvements backlog…</p>
+        <p className="pc-learning__empty">Loading what the loop produced…</p>
       ) : sync.error ? (
         <LearningVisualError
-          title="Improvements unavailable"
+          title="Improve unavailable"
           onRetry={() => sync.invalidate()}
         />
       ) : (showDashboard ? visibleRows : sparseRows).length === 0 ? (
@@ -1400,26 +1668,28 @@ function ImprovementsView({
           title={
             isFiltered
               ? "Nothing matches the current filter / search"
-              : "Nothing in this lane"
+              : "The loop has not produced anything here yet"
           }
+          body={
+            isFiltered
+              ? undefined
+              : `The ${t("scout")} reads this ${t("pot", { lower: true })}'s history on a cadence and routes surviving ideas here — cycles usually appear within the hour once armed.`
+          }
+          action={isFiltered ? undefined : { label: "Open Arming", onClick: openArming }}
         />
       ) : !showDashboard ? (
         <ul className="pc-learning__list pc-learning__list--direct">
-          {sparseRows.map((it) => (
-            <ImprovementRow
-              key={it.id}
-              item={it}
-              selected={it.id === lsel}
-              onDismissSelect={() => void setLsel(null)}
+          {sparseRows.map((row) => (
+            <LoopRowView
+              key={row.key}
+              row={row}
+              ctx={rowCtx}
+              selected={row.item?.id === lsel}
             />
           ))}
         </ul>
       ) : (
-        <WindowedImprovementList
-          rows={visibleRows}
-          lsel={lsel}
-          onDismissSelect={() => void setLsel(null)}
-        />
+        <WindowedImprovementList rows={visibleRows} lsel={lsel} ctx={rowCtx} />
       )}
 
       {/* Drafts in iteration (learning-tab-visibility P-005; moved here from
