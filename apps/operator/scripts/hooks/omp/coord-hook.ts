@@ -1446,9 +1446,24 @@ export interface CheckCommandVerdict {
  * already swallows and returns null). The 3s budget is tighter than the shell
  * hook's 4s because this call sits inside an OMP tool_call handler, where the
  * latency is paid before the tool starts rather than in a detached subprocess.
+ *
+ * `format: 'json'` is REQUIRED, not a nicety. `locks:check_command` returns a
+ * tabular `substitutions[]`, so the agent transport serializes it as TOON by
+ * default — and `callMcpTool` parses the text as JSON. Without this the parse
+ * throws, the helper returns null, and FAIL-OPEN does exactly what it promises:
+ * every resource hold and every substitution row silently stops being enforced,
+ * with no error anywhere. That is not hypothetical — it is the state this line
+ * was in when P-028 tried to ship the registry's first `deny` and found the
+ * gate had been dead on both hook paths (the suites never caught it because
+ * they stub the operator with JSON, which is the one thing it does not send).
+ * The parity is deliberate: the shell hook declares the same `_meta.format`.
  */
 export async function checkCommandVerdict(command: string): Promise<CheckCommandVerdict | null> {
-  const res = await callMcpTool('locks:check_command', { command }, { timeoutMs: 3000 });
+  const res = await callMcpTool(
+    'locks:check_command',
+    { command },
+    { timeoutMs: 3000, meta: { format: 'json' } },
+  );
   return res && typeof res === 'object' ? (res as CheckCommandVerdict) : null;
 }
 

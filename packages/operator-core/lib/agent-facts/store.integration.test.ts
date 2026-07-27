@@ -21,7 +21,14 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
-import { assertFact, retractFact, foldFacts, FACTS_PER_SCOPE_CAP, listLapsedWallFacts } from './store';
+import {
+  assertFact,
+  retractFact,
+  foldFacts,
+  factVersions,
+  FACTS_PER_SCOPE_CAP,
+  listLapsedWallFacts,
+} from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
@@ -42,7 +49,17 @@ beforeAll(async () => {
     '455-agent-facts-shareable.sql',
     '461-agent-facts-federation.sql',
     '462-agent-facts-fed-key.sql',
+    // ⚠ This list had DRIFTED from the real agent_facts migration set — 498,
+    // 505 and 664 all touch this table and none were here, so the fixture DB
+    // was a schema this store has not run against in production for months.
+    // 505 is the one that bit: it adds the surrogate `id` PK, without which
+    // P-008's version chain (`supersedes_id` → `id`) cannot even parse. A
+    // fixture that lags the real schema is the same blind spot as a stale
+    // ON CONFLICT spec — this file exists to catch exactly that.
+    '498-agent-facts-replica-identity.sql',
+    '505-agent-facts-surrogate-pk-replica-identity.sql',
     '574-agent-facts-audience-provenance.sql',
+    '664-widen-fact-body-cap.sql',
     '671-add-agent-facts-confidence.sql',
     // P-008 (a): swaps the identity index for its PARTIAL form. This list is
     // exactly the guard that catches an ON CONFLICT spec drifting away from the
@@ -77,7 +94,11 @@ describe('assertFact against the REAL mig-461 identity index', () => {
     expect(fact.key).toBe('k1');
   });
 
-  it('a RE-assert of the same identity takes the conflict-UPDATE path (refresh)', async () => {
+  it('a RE-assert APPENDS a version and leaves exactly ONE current (P-008 a — was: conflict-UPDATE)', async () => {
+    // Was "takes the conflict-UPDATE path (refresh)" and asserted count === 1.
+    // Migration 689 replaced that path: a correction no longer overwrites, so
+    // the row count is now the VERSION count and "one live value per identity"
+    // is carried by the partial unique index instead.
     const base = {
       scope: 'workspace' as const,
       key: 'k2',
@@ -87,8 +108,11 @@ describe('assertFact against the REAL mig-461 identity index', () => {
     await assertFact({ ...base, body: 'first' }, db.sql);
     const updated = await assertFact({ ...base, body: 'second' }, db.sql);
     expect(updated.body).toBe('second');
-    const rows = await db.sql`SELECT count(*)::int AS n FROM harness_shared.agent_facts WHERE key = 'k2'`;
-    expect(rows[0].n).toBe(1); // updated, not duplicated
+    const all = await db.sql`SELECT count(*)::int AS n FROM harness_shared.agent_facts WHERE key = 'k2'`;
+    expect(all[0].n).toBe(2); // appended, not overwritten
+    const live =
+      await db.sql`SELECT count(*)::int AS n FROM harness_shared.agent_facts WHERE key = 'k2' AND superseded_at IS NULL`;
+    expect(live[0].n).toBe(1); // exactly one CURRENT version
   });
 
   it('F1-1: potHomeSlug stamps harness_slug and the wire shape validates on peers', async () => {
@@ -123,8 +147,111 @@ describe('assertFact against the REAL mig-461 identity index', () => {
     };
     await assertFact({ ...base, body: 'v1', shareable: true, potHomeSlug: 'home' }, db.sql);
     await assertFact({ ...base, body: 'v2', shareable: true }, db.sql);
-    const rows = await db.sql`SELECT harness_slug FROM harness_shared.agent_facts WHERE key = 'keep-slug'`;
+    // P-008 (a): must name the CURRENT version explicitly — there are now two
+    // rows for this identity, and an unqualified `rows[0]` would be reading an
+    // arbitrary one. The carry-forward moved from the UPDATE branch's COALESCE
+    // to a subquery over the superseded row, so this is the test that pins it.
+    const rows = await db.sql`
+      SELECT harness_slug FROM harness_shared.agent_facts
+       WHERE key = 'keep-slug' AND superseded_at IS NULL`;
+    expect(rows).toHaveLength(1);
     expect(rows[0].harness_slug).toBe('home');
+  });
+});
+
+describe('P-008 (a) append-versioning — a correction APPENDS, it never destroys (D-003)', () => {
+  const base = { scope: 'owner' as const, scopeRef: 'su-v', key: 'ver', createdBy: 'su-int', workspaceId: WS };
+  const chain = () =>
+    db.sql`SELECT id, body, superseded_at, supersedes_id, retracted_at
+             FROM harness_shared.agent_facts WHERE key = 'ver' ORDER BY id`;
+
+  it('the first version has an id, supersedes nothing, and is current', async () => {
+    const v1 = await assertFact({ ...base, body: 'one' }, db.sql);
+    expect(typeof v1.id).toBe('number');
+    expect(v1.supersedesId).toBeNull();
+    expect(v1.supersededAt).toBeNull();
+  });
+
+  it('a correction keeps the OLD row intact and chains the new one to it', async () => {
+    const v1 = await assertFact({ ...base, body: 'one' }, db.sql);
+    const v2 = await assertFact({ ...base, body: 'two' }, db.sql);
+    expect(v2.id).not.toBe(v1.id);
+    expect(v2.supersedesId).toBe(v1.id);
+    const rows = await chain();
+    expect(rows).toHaveLength(2);
+    // THE POINT OF THE WHOLE ITEM: a pointer taken at v1 still resolves to what
+    // v1 said. Before 689 this row's body had been overwritten to 'two'.
+    expect(rows[0].body).toBe('one');
+    expect(rows[0].superseded_at).not.toBeNull();
+  });
+
+  it('reads serve ONLY the current version — a fold never shows a value beside its own correction', async () => {
+    await assertFact({ ...base, body: 'one' }, db.sql);
+    await assertFact({ ...base, body: 'two' }, db.sql);
+    const folded = await foldFacts([{ scope: 'owner', scopeRef: 'su-v' }], { workspaceId: WS, audiences: 'all' }, db.sql);
+    const mine = folded.filter((f) => f.key === 'ver');
+    expect(mine).toHaveLength(1);
+    expect(mine[0].body).toBe('two');
+  });
+
+  it('factVersions walks the chain, current first', async () => {
+    await assertFact({ ...base, body: 'one' }, db.sql);
+    await assertFact({ ...base, body: 'two' }, db.sql);
+    await assertFact({ ...base, body: 'three' }, db.sql);
+    const hist = await factVersions({ scope: 'owner', scopeRef: 'su-v', key: 'ver', workspaceId: WS }, db.sql);
+    expect(hist.map((h) => h.body)).toEqual(['three', 'two', 'one']);
+    expect(hist[0].supersededAt).toBeNull();
+    expect(hist[1].supersededAt).not.toBeNull();
+  });
+
+  it('⚠ a retraction SURVIVES on its own version — the old code erased it on revive', async () => {
+    await assertFact({ ...base, body: 'one' }, db.sql);
+    await retractFact({ scope: 'owner', scopeRef: 'su-v', key: 'ver', workspaceId: WS }, db.sql);
+    const retractedRows = await chain();
+    expect(retractedRows[0].retracted_at).not.toBeNull();
+    // Re-asserting revives the identity. Previously that was expressed as
+    // `retracted_at = NULL` on the mutated row — i.e. by destroying the record
+    // that it had ever been retracted. Now the retraction stays on the version
+    // that carried it, and the revival is a new version.
+    await assertFact({ ...base, body: 'revived' }, db.sql);
+    const rows = await chain();
+    expect(rows).toHaveLength(2);
+    expect(rows[0].retracted_at).not.toBeNull(); // history intact
+    expect(rows[1].retracted_at).toBeNull(); // the live version is not retracted
+    expect(rows[1].body).toBe('revived');
+  });
+
+  it('a retract marks the CURRENT version only and never rewrites history', async () => {
+    await assertFact({ ...base, body: 'one' }, db.sql);
+    await assertFact({ ...base, body: 'two' }, db.sql);
+    await retractFact({ scope: 'owner', scopeRef: 'su-v', key: 'ver', workspaceId: WS }, db.sql);
+    const rows = await chain();
+    expect(rows[0].retracted_at).toBeNull(); // the superseded version is untouched
+    expect(rows[1].retracted_at).not.toBeNull();
+  });
+
+  it('the partial unique index still forbids a SECOND current version', async () => {
+    await assertFact({ ...base, body: 'one' }, db.sql);
+    await expect(
+      db.sql`INSERT INTO harness_shared.agent_facts
+               (workspace_id, scope, scope_ref, key, body, created_by, expires_at)
+             VALUES (${WS}, 'owner', 'su-v', 'ver', 'illegal', 'su-int', now() + interval '1 day')`,
+    ).rejects.toThrow();
+  });
+
+  it('the cap counts CURRENT versions, so a heavily-corrected fact cannot evict its neighbours', async () => {
+    // One fact revised many times must not consume the (scope, ref) budget.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 5; i++) {
+      await assertFact({ ...base, body: `rev ${i}` }, db.sql);
+    }
+    const live = await foldFacts(
+      [{ scope: 'owner', scopeRef: 'su-v' }],
+      { workspaceId: WS, audiences: 'all', limitPerSelector: 100 },
+      db.sql,
+    );
+    expect(live.filter((f) => f.key === 'ver')).toHaveLength(1);
+    // …and it is the newest revision, not an evicted one.
+    expect(live.find((f) => f.key === 'ver')?.body).toBe(`rev ${FACTS_PER_SCOPE_CAP + 4}`);
   });
 });
 

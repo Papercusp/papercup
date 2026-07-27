@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { listFacts, FACT_SCOPES, type AgentFact } from '../../agent-facts/store';
+import { listFacts, factVersions, FACT_SCOPES, type AgentFact } from '../../agent-facts/store';
 import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
 import { markStaleSourceFacts, type FactSourceStaleness } from './stale-source';
 
@@ -58,7 +58,7 @@ export default defineTool({
     when:
       'Before asserting (avoid duplicates — re-assert the same key to refresh instead), when auditing what a role/harness is being told every turn, or when hunting a stale fact to retract.',
     notWhen: 'Semantic search over background knowledge — that is memory:search.',
-    chaining: 'facts:list → facts:assert (refresh) / facts:retract (stale).',
+    chaining: 'facts:list → facts:assert (refresh) / facts:retract (stale). Add versions:true + key to read what a fact said BEFORE it was corrected.',
     seeAlso: ['facts:assert', 'facts:retract'],
   },
   requirePrincipal: false,
@@ -77,6 +77,17 @@ export default defineTool({
       .describe(
         'Return COMPLETE fact bodies instead of excerpts. Default false — bodies are excerpted (with body_truncated + body_full_chars) so a busy scope cannot blow the tool-output budget (EI-10948). Use when you need a fact verbatim, ideally with a tighter `limit`.',
       ),
+    key: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Required with versions:true — the single fact key whose history to read. Ignored otherwise.'),
+    versions: z
+      .boolean()
+      .optional()
+      .describe(
+        'P-008: return the VERSION HISTORY of one `key` (newest first) instead of the live list — what this fact said before it was corrected, each version with its own immutable `id` and the `supersedesId` of the one it replaced. Requires `key`. Superseded versions are pruned 30d after replacement, so history is bounded.',
+      ),
   }),
   async handler(args, ctx) {
     // EI-7517: default an omitted scopeRef from the caller's context (owner = me,
@@ -84,6 +95,48 @@ export default defineTool({
     // lists YOUR facts without having to pass your own id — symmetry with assert.
     // EI-7371: resolve common misnamed aliases (scope_ref/ref/harness) first.
     const scopeRef = await resolveScopeRefFromCtx(args.scope, resolveScopeRefAlias(args.scope, args), ctx);
+    // P-008 (a): the version-history read. Deliberately a MODE on facts:list
+    // rather than a new `facts:versions` tool — same scope resolution, same
+    // projection, same aliases; a second tool would be a bespoke state-read
+    // surface for a question this one already answers ("what does this fact
+    // say"), just along the time axis.
+    if (args.versions === true) {
+      const key = (args.key ?? '').trim();
+      if (!key) {
+        return {
+          data: {
+            ok: false,
+            error: 'key_required',
+            detail: 'versions:true reads ONE fact\'s history — pass `key`. Omit `versions` for the live list.',
+          },
+        };
+      }
+      const versions = await factVersions({
+        scope: args.scope,
+        scopeRef: scopeRef ?? null,
+        key,
+        limit: args.limit ?? FACTS_LIST_DEFAULT_LIMIT,
+      });
+      return {
+        data: {
+          ok: true,
+          mode: 'versions',
+          key,
+          count: versions.length,
+          ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
+          // `current: true` is the reader's anchor — without it a history list
+          // reads as N equally-valid claims, which is the confusion versioning
+          // exists to remove.
+          versions: versions.map((v) => ({
+            ...projectFact(v, args.full === true),
+            id: v.id ?? null,
+            supersedesId: v.supersedesId ?? null,
+            supersededAt: v.supersededAt ?? null,
+            current: (v.supersededAt ?? null) === null,
+          })),
+        },
+      };
+    }
     const facts = await listFacts(
       { scope: args.scope, scopeRef: scopeRef ?? null },
       { limit: args.limit ?? FACTS_LIST_DEFAULT_LIMIT },
