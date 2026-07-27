@@ -71,15 +71,48 @@ const DEFINES_TOOL = /name:\s*'[a-z][a-z0-9_]*:[a-z0-9_]+'/;
 const SPAWNS_CHILD = /from\s+['"]node:child_process['"]|require\(['"](?:node:)?child_process['"]\)/;
 const OPTS_OUT = /skipWorkspaceTx:\s*true/;
 
+/** Exposed so the guard's own teeth are testable without mutating the shared tree. */
+export function violatesIdleTxInvariant(src: string): boolean {
+  return DEFINES_TOOL.test(src) && SPAWNS_CHILD.test(src) && !OPTS_OUT.test(src);
+}
+
+describe('idle-tx recurrence guard — the predicate has teeth', () => {
+  // A guard nobody has watched FAIL is decoration. These run the detection against
+  // synthetic sources, so we prove it catches a real violation without briefly
+  // committing one to a tree the whole fleet shares.
+  const spawning = `
+    import { execFile } from 'node:child_process';
+    export const tool = defineTool({ name: 'demo:slow', agentRoles: [] });
+  `;
+
+  it('flags a child-process tool that does NOT declare skipWorkspaceTx', () => {
+    expect(violatesIdleTxInvariant(spawning)).toBe(true);
+  });
+
+  it('clears the same tool once it declares skipWorkspaceTx', () => {
+    expect(violatesIdleTxInvariant(spawning.replace('name:', 'skipWorkspaceTx: true,\n name:'))).toBe(
+      false,
+    );
+  });
+
+  it('ignores a tool that never shells out', () => {
+    expect(
+      violatesIdleTxInvariant(`export const tool = defineTool({ name: 'demo:fast', agentRoles: [] });`),
+    ).toBe(false);
+  });
+
+  it('ignores a non-tool helper that shells out', () => {
+    expect(violatesIdleTxInvariant(`import { spawn } from 'node:child_process';`)).toBe(false);
+  });
+});
+
 describe('idle-tx recurrence guard (EI-18803497769946984)', () => {
   it('every tool that shells out to a child process declares skipWorkspaceTx', () => {
     const offenders: string[] = [];
 
     for (const file of walk(agentToolsDir)) {
       const src = readFileSync(file, 'utf8');
-      if (!DEFINES_TOOL.test(src)) continue;
-      if (!SPAWNS_CHILD.test(src)) continue;
-      if (OPTS_OUT.test(src)) continue;
+      if (!violatesIdleTxInvariant(src)) continue;
 
       const rel = relative(agentToolsDir, file);
       if (ALLOW.has(rel)) continue;
