@@ -6,7 +6,6 @@ import {
   classifyPathsAgainstCandidate,
   excludedCommitsTouchingPath,
   gitReadFromExecSync,
-  pathsTouchedByRange,
   uncommittedPaths,
   type GitRead,
 } from './candidate-contains';
@@ -232,13 +231,7 @@ describe('excluded-commit attribution (the resolution of "if your fix is among t
       return '';
     };
     expect(await excludedCommitsTouchingPath(git, 'same', 'same', 'a.ts')).toEqual([]);
-    expect(await pathsTouchedByRange(git, 'same', 'same')).toEqual([]);
     expect(calls).toBe(0);
-  });
-
-  it('de-duplicates the file footprint of the excluded window', async () => {
-    const git = fakeGit({ diff: 'a.ts\nb.ts\na.ts' });
-    expect(await pathsTouchedByRange(git, 'cand', 'tip')).toEqual(['a.ts', 'b.ts']);
   });
 });
 

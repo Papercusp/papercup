@@ -10,29 +10,73 @@
  * — agent-coordination-architecture-v2 §6.2/§6.3.)
  */
 
-export type CoordKind =
-  | 'message'
-  | 'ack'
-  | 'subscribe'
-  | 'unsubscribe'
-  | 'notify'
-  | 'handoff'
-  | 'handoff_accepted'
+/**
+ * EXECUTABLE kinds — the closed set the RUNTIME acts on. A line of one of these
+ * kinds drives machine behaviour: it mutates subscription/handoff/contract state,
+ * or asks a session to do something (`notify`, `yield`).
+ *
+ * This set is CLOSED on purpose (agent-protocol-authority-semantics-2026-07-26,
+ * D-014). "Executable" has to be something the runtime can ENUMERATE, not a
+ * convention each reader is trusted to honour — P-009 ("the runtime never infers a
+ * state transition from prose") stands on exactly this: only a kind listed here may
+ * drive a state transition, and everything else is talk. Adding a member is
+ * therefore a deliberate act that widens what the runtime will execute.
+ */
+export const COORD_EXECUTABLE_KINDS = [
+  'subscribe',
+  'unsubscribe',
+  'notify',
+  'handoff',
+  'handoff_accepted',
   // F-FIX-037: a sibling expiry record auto-written by the stale-handoff reconcile
   // when a handoff sits pending past the TTL (same immutable pattern as acceptance).
-  | 'handoff_expired'
+  'handoff_expired',
   // coord-dispatch-reliability P-003: a sibling RE-PING record auto-written by the
   // reconcile sweep when an OPEN handoff is still un-acked after ~30m (but < the
   // 12h expire TTL) — re-pings the OFFERER once. Same immutable sibling pattern;
   // the record itself is the idempotency marker (one re-ping per handoff).
-  | 'handoff_repinged'
-  | 'escalation'
-  | 'escalation_resolved'
-  | 'contract'
-  | 'plan_event'
+  'handoff_repinged',
+  'contract',
+  'plan_event',
   // turn-lifecycle-control Phase 4 (P-016/P-019): a cooperative turn:interrupt
   // yield — "wrap up + end your turn". The dual of a wake.
-  | 'yield';
+  'yield',
+] as const;
+
+/**
+ * CONVERSATIONAL kinds — pure talk with an open payload. Preserved in full for
+ * audit, but carrying ZERO authority over runtime state: a peer saying "this is
+ * done" in a `message` body is a claim, never a transition.
+ *
+ * Unlike the executable set this side is expected to grow (P-010 adds an
+ * evidence/provenance band to it), which is why the two are named separately
+ * rather than partitioned by a predicate over one flat union.
+ */
+export const COORD_CONVERSATIONAL_KINDS = ['message', 'ack', 'escalation', 'escalation_resolved'] as const;
+
+export type CoordExecutableKind = (typeof COORD_EXECUTABLE_KINDS)[number];
+export type CoordConversationalKind = (typeof COORD_CONVERSATIONAL_KINDS)[number];
+
+/**
+ * The wire vocabulary. Byte-identical to the flat union this replaced — D-014
+ * keeps every literal because each one is a value already persisted in
+ * coord_event_log rows, so collapsing the set (as XFlow/muACP's ~4-member
+ * vocabularies would suggest) is a WIRE change with a migration, not a type-level
+ * reorganization.
+ */
+export type CoordKind = CoordExecutableKind | CoordConversationalKind;
+
+const EXECUTABLE_KIND_SET: ReadonlySet<string> = new Set(COORD_EXECUTABLE_KINDS);
+
+/**
+ * Is this kind one the runtime may act on? The single runtime authority for the
+ * D-014 split — readers ask this instead of re-listing kinds at each call site
+ * (a re-listed set is how the two taxonomies drifted in the first place).
+ * Accepts a plain string so a value off the wire can be narrowed safely.
+ */
+export function isExecutableCoordKind(kind: string): kind is CoordExecutableKind {
+  return EXECUTABLE_KIND_SET.has(kind);
+}
 
 export interface CoordEnvelope {
   /** ISO-8601 UTC. */

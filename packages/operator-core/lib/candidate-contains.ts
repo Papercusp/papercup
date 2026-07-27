@@ -227,12 +227,12 @@ export async function excludedCommitsTouchingPath(
   return out ? out.split('\n').filter(Boolean) : [];
 }
 
-/** Every path touched by the commits in `(from, to]` — the excluded window's file footprint. */
-export async function pathsTouchedByRange(git: GitRead, from: string, to: string): Promise<string[]> {
-  if (from === to) return [];
-  const out = await git(['diff', '--name-only', from, to]);
-  return out ? [...new Set(out.split('\n').filter(Boolean))] : [];
-}
+/* NOTE: the "every path touched by (from, to]" read deliberately does NOT live here.
+ * Its only consumer is `willJudge.excludedPaths` in release-checkpoint-launch.ts, which
+ * must stay SYNCHRONOUS — that function's steps from the active-run check to `spawnFn`
+ * have to run in one tick (see its cancelStaleAwaits comment), so an async helper could
+ * not be used there. It is `pathsBetweenSync` in that module. An async twin here would be
+ * dead code that only its own test exercised. */
 
 /* ------------------------------------------------------------------------- *
  * Adapters for the two git-runner shapes already in the tree.

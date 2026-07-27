@@ -1047,13 +1047,20 @@ const realResolveGateCandidates = async (root: string): Promise<GateCandidates> 
       return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
     const active = checkActiveCheckpointRun(root, execFn);
-    const current = currentCheckpointCandidate(root, execFn);
+    // checkActiveCheckpointRun ALREADY resolves the quiet-cut candidate internally (it
+    // spreads `...current` into its result) whenever a run is active — only pay for the
+    // second resolution when it did not, or this hot path (CLAUDE.md points agents here
+    // for "is my edit live") runs the same 4-5 git reads twice per call.
+    const nextCandidateSha =
+      active.current_candidate !== undefined
+        ? active.current_candidate
+        : currentCheckpointCandidate(root, execFn).current_candidate;
     return {
       // Only a genuinely ACTIVE run has a judging sha. `current_candidate` describes a
       // HYPOTHETICAL fresh launch and must never be reported as "what is being judged"
       // (EI-18695275971973546 cost a wrong fleet-wide broadcast to that exact conflation).
       judgingSha: active.active ? (active.candidate ?? null) : null,
-      nextCandidateSha: current.current_candidate,
+      nextCandidateSha,
     };
   } catch {
     return { judgingSha: null, nextCandidateSha: null };

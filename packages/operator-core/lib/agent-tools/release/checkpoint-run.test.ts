@@ -251,6 +251,68 @@ describe('release:checkpoint-run', () => {
     expect(String(b.note)).toMatch(/Do NOT replace/i);
   });
 
+  // EI-18757736867106199 — the ADVICE must not recommend what the ENFORCEMENT refuses.
+  //
+  // classifyReplaceRequest already refuses to stop a `delivering` run at any age
+  // (EI-18757156963245979), but this tool's `note` was still computed from age ALONE. So for
+  // an OLD + stale + delivering run — a run whose suite is done and which is re-triaging a
+  // stale red, i.e. the gate self-healing — the tool said "Pass replaceStale:true to stop it"
+  // while the launch path would refuse to do it. Observed 2026-07-27: told by the tool that
+  // killing it was correct, a caller read the refusal as an obstacle and killed the run
+  // out-of-band instead, discarding an auto-refire that was working.
+  //
+  // Pinned here: at ANY age, a delivering run's note must steer to waiting, never to
+  // replaceStale — and the reply must expose WHY, so the refusal is self-explaining.
+  it('EI-18757736867106199: an OLD delivering run is never told to replaceStale — the note matches the policy', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: false,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      reason: 'already_running',
+      alreadyRunning: {
+        active: true,
+        unit: 'papercup-green-checkpoint-manual-1fxzuva',
+        candidate: '98817077fd79af9dfee00076a1c6e90445d268af',
+        current_head: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        current_candidate: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        candidate_stale: true,
+        quiet_cut_sec: 240,
+        started_at: new Date(Date.now() - 25 * 60_000).toISOString(),
+        // Past the age line (the e4a93f8b shape: suite ran 1180s vs a 1200s threshold) — an
+        // age-only rule calls this wedged and recommends the kill.
+        elapsed_sec: 25 * 60,
+        eta_sec: 1800,
+        delivering: true,
+        replace_refused_delivering: true,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ replaceStale: true }, MAKE_CTX())) as never);
+
+    expect(b).toMatchObject({
+      ok: false,
+      already_running: true,
+      candidate_stale: true,
+      delivering: true,
+      replace_refused_delivering: true,
+      // The policy verdict itself is now part of the reply, so the note can be checked
+      // against it rather than the two drifting apart again.
+      replace_allowed: false,
+      replace_refused_reason: 'delivering',
+    });
+    // The regression: age said "wedged", so this string used to be the replaceStale nudge.
+    expect(String(b.note)).not.toMatch(/Pass replaceStale:true/);
+    expect(String(b.note)).toMatch(/delivering/);
+    expect(String(b.note)).toMatch(/self-healing|SUITE IS DONE/i);
+    expect(String(b.note)).toContain('checkpoint:await');
+  });
+
   // WI-5685: the manual unit can be idle while the hourly CRON tick still holds the shared
   // run-lock — this is the class that used to sail past the pre-launch check entirely
   // (launched:true, then a silent skipped-locked inside the detached process a moment later).
