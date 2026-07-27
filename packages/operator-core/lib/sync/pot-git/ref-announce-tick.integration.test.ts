@@ -210,6 +210,93 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
     });
   });
 
+  /**
+   * WI-6249 — the tick must derive its genesis baseline PER REF and IN THIS
+   * STORE, not accept one worktree-derived sha for every ref of the namespace.
+   *
+   * THE RIG SHAPE: our namespace carries a `refs/heads/staging` MIRRORED from a
+   * peer, on a line of history our own mainline baseline cannot reach. Fed the
+   * mainline sha, the guard judged that entire divergent line — 7057 commits on
+   * the real box — and cat-file'd every blob in it into a JS string until the
+   * sidecar hit the 4GB heap limit (EI-18759477854494594).
+   *
+   * `genesisBaselineSha` below is deliberately the WRONG-for-this-ref mainline
+   * value the old code passed, so these cases fail if the per-ref derivation is
+   * ever dropped — the coverage gap a mutation test found: every other test here
+   * passes with the wiring reverted, because they only cover the helper.
+   */
+  describe('genesis baseline is per-ref, in this store (WI-6249)', () => {
+    const OVERSIZE_CAPS = { maxBlobBytes: 64 };
+    const devUs = mkDevice();
+    const devPeer = mkDevice();
+
+    /** commit-tree with a parent, so a real divergent line can be built. */
+    async function mintChild(repoPath: string, parent: string, path: string, content: string): Promise<string> {
+      const blob = await gitStdin(['hash-object', '-w', '--stdin'], repoPath, content);
+      expect(blob.code, blob.stderr).toBe(0);
+      const tree = await gitStdin(['mktree'], repoPath, `100644 blob ${blob.stdout.trim()}\t${path}\n`);
+      expect(tree.code, tree.stderr).toBe(0);
+      const c = await defaultRunGit(
+        ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', tree.stdout.trim(), '-p', parent, '-m', path],
+        repoPath,
+      );
+      expect(c.code, c.stderr).toBe(0);
+      return c.stdout.trim();
+    }
+
+    it('a ref mirrored from a peer is NOT re-judged — the peer already exposed it', async () => {
+      const repo = await ensurePotGitRepo('hive-a', 'repo-rig-shape');
+      const base = await mintCommitWithFile(repo, 'base.txt', 'base\n', 'base');
+      // The peer's line, carrying content that WOULD trip the guard.
+      const peerHead = await mintChild(repo, base, 'big.bin', 'x'.repeat(4096));
+      // Our own line: small and clean.
+      const ourHead = await mintChild(repo, base, 'ours.txt', 'ours\n');
+
+      // The peer published its line — proof that content already left a machine.
+      await writeNamespaceRef(repo, devPeer.pubkeyBase64, 'refs/heads/staging', peerHead);
+      // …and we mirror the identical sha under OUR namespace, as the rig does.
+      await writeNamespaceRef(repo, devUs.pubkeyBase64, 'refs/heads/staging', peerHead);
+      await writeNamespaceRef(repo, devUs.pubkeyBase64, 'refs/heads/main', ourHead);
+
+      const out = await runRefAnnouncePublishTick({
+        repoPath: repo,
+        devicePubkeyBase64: devUs.pubkeyBase64,
+        sign: devUs.sign,
+        nowMs: 1_000,
+        publishGuardCaps: OVERSIZE_CAPS,
+        // The OLD input: right for `main`, catastrophically wrong for `staging`.
+        genesisBaselineSha: base,
+      });
+
+      expect(out.refused).toBeNull();
+      expect(out.changed).toBe(true);
+      expect((await readSigrefs(repo, devUs.pubkeyBase64))?.version).toBe(1);
+    });
+
+    it('our OWN unexposed content is still judged — this narrows the range, it does not disable the guard', async () => {
+      const repo = await ensurePotGitRepo('hive-a', 'repo-rig-shape-guarded');
+      const base = await mintCommitWithFile(repo, 'base.txt', 'base\n', 'base');
+      const exposed = await mintChild(repo, base, 'shared.txt', 'shared\n');
+      // Only WE have this, and it is over the blob cap.
+      const ourHead = await mintChild(repo, exposed, 'big.bin', 'x'.repeat(4096));
+
+      await writeNamespaceRef(repo, devPeer.pubkeyBase64, 'refs/heads/main', exposed);
+      await writeNamespaceRef(repo, devUs.pubkeyBase64, 'refs/heads/main', ourHead);
+
+      const out = await runRefAnnouncePublishTick({
+        repoPath: repo,
+        devicePubkeyBase64: devUs.pubkeyBase64,
+        sign: devUs.sign,
+        nowMs: 1_000,
+        publishGuardCaps: OVERSIZE_CAPS,
+        genesisBaselineSha: base,
+      });
+
+      expect(out.changed).toBe(false);
+      expect(out.refused?.refusalCode).toBe('blob-over-cap');
+    });
+  });
+
   describe('receive tick', () => {
     let firstAnnouncement: SignedRefAnnouncement;
 

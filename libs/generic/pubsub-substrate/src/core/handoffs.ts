@@ -35,7 +35,11 @@ export type HandoffKind = (typeof HANDOFF_KINDS)[number];
 /** Compile-time proof that every handoff kind is an EXECUTABLE coord kind — so a
  *  handoff can drive a transition (P-009) and stays inside the closed set. If a
  *  handoff kind is ever dropped from COORD_EXECUTABLE_KINDS this stops compiling. */
-type _HandoffKindsAreExecutable = HandoffKind extends CoordExecutableKind ? true : never;
+// NB the tuple wrappers: a bare `HandoffKind extends CoordExecutableKind` is a
+// DISTRIBUTIVE conditional over the union, so a single non-executable member would
+// still yield `true | never` === `true` and compile. `[A] extends [B]` checks the
+// union as a whole, which is the assertion actually intended.
+type _HandoffKindsAreExecutable = [HandoffKind] extends [CoordExecutableKind] ? true : never;
 const _handoffKindsAreExecutable: _HandoffKindsAreExecutable = true;
 void _handoffKindsAreExecutable;
 
