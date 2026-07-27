@@ -953,6 +953,12 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 // implementation. Don't fork the SQL across transports.
 import { PROJECTED_DEPS } from '../../../projected-tool-deps';
 
+// EI-18803497769946984: names a tool that is holding the ambient workspace transaction
+// past ~45s, before Postgres's 60s idle timeout kills the backend and the caller gets a
+// bare CONNECTION_CLOSED naming neither. Its own module so it is unit-testable without
+// importing this handler's tool catalog + PG deps.
+import { warnIfHoldingWorkspaceTxTooLong } from './idle-tx-warning';
+
 /**
  * Bind the tx + principal a projected tool needs, then run `run` under that ctx.
  * The ONE place the "how does a projected tool get its workspace tx" decision
@@ -992,12 +998,6 @@ import { PROJECTED_DEPS } from '../../../projected-tool-deps';
  * `ctx.principal` not `ctx.tx`, is unaffected) and then runs the handler with
  * no ambient tx at all.
  */
-// EI-18803497769946984: names a tool that is holding the ambient workspace transaction
-// past ~45s, before Postgres's 60s idle timeout kills the backend and the caller gets a
-// bare CONNECTION_CLOSED naming neither. Its own module so it is unit-testable without
-// importing this handler's tool catalog + PG deps.
-import { warnIfHoldingWorkspaceTxTooLong } from './idle-tx-warning';
-
 async function dispatchWithSynthesizedTx<T>(
   tool: { name?: string; crossWorkspace?: boolean; skipWorkspaceTx?: boolean },
   spawnCtx: BuiltSpawnContext,

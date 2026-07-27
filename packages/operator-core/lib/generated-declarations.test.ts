@@ -75,6 +75,53 @@ describe('generated .d.mts declarations', () => {
     expect(migrations, 'const literal types collapsed').toMatch(/ENFORCED_FROM:\s*\d+/);
   });
 
+  // WI-6396 converted these four from HAND-WRITTEN declarations. The hand-written
+  // files carried real parameter types that the sources' JSDoc did not, so the
+  // conversion moved that information into the `.mjs` as `@param` tags. Each
+  // assertion below pins a type that exists ONLY because those tags are applied —
+  // i.e. it fails in exactly the case a byte-compare cannot see, where the tags are
+  // deleted or detached and generation quietly re-emits `any`. Before this item,
+  // dropping any of these was a silent loss of checking for every importer.
+  it('preserve the parameter types their hand-written predecessors carried (WI-6396)', () => {
+    const syncWrite = readDeclaration('scripts/lib/sync-write.d.mts');
+    expect(syncWrite, 'writeAllSync lost `fd: number` — a string fd would now typecheck').toMatch(
+      /writeAllSync\(fd:\s*number,\s*text:\s*unknown\):\s*void;/,
+    );
+    expect(syncWrite, 'outSync/errSync lost their optional-parameter shape').toMatch(
+      /outSync\(msg\?:\s*unknown\):\s*void;/,
+    );
+
+    const procGuard = readDeclaration('scripts/proc-guard.d.mts');
+    expect(procGuard, 'parseCmdline lost `Buffer | string`').toMatch(
+      /parseCmdline\(raw:\s*Buffer\s*\|\s*string\):\s*string;/,
+    );
+    // The richest type here: nothing in the implementation reveals the Map's value
+    // type, so this survives only via the `@param` tag.
+    expect(procGuard, 'getAncestryChain lost its Map<number, number | null> parameter type').toMatch(
+      /getAncestryChain\(pid:\s*number,\s*byPid:\s*Map<number,\s*number\s*\|\s*null>/,
+    );
+    expect(procGuard, 'ProcRow type collapsed').toMatch(/ppid:\s*number\s*\|\s*null;/);
+
+    const viteGate = readDeclaration('scripts/lint-tsc-operator-vite.d.mts');
+    // `@type {string}` deliberately widens the const off its literal type; losing
+    // the tag re-narrows it to the literal command string.
+    expect(viteGate, 'TSC_COMMAND lost its `@type {string}` annotation').toMatch(
+      /TSC_COMMAND:\s*string;/,
+    );
+    expect(viteGate, 'ForeignBaseline.label stopped being optional').toMatch(
+      /label\?:\s*string\s*\|\s*undefined;/,
+    );
+
+    // This module has no JSDoc parameter tags, so its parameters are legitimately
+    // `any`. Its RETURN types come from the implementation, which makes them the
+    // right canary for "did the emit collapse entirely" without asserting a
+    // precision the source does not claim.
+    const baselineGate = readDeclaration('scripts/lib/tsc-baseline-gate.d.mts');
+    expect(baselineGate, 'tsc-baseline-gate return types collapsed').toMatch(
+      /parseTscErrors\([^)]*\):\s*\(\{/,
+    );
+  });
+
   it('exist for every module the config lists — a missing one silently reverts that importer to `any`', () => {
     const raw = readFileSync(join(REPO_ROOT, 'tsconfig.declarations.json'), 'utf8');
     const files = (JSON.parse(raw.replace(/^\s*\/\/.*$/gm, '')) as { files: string[] }).files;

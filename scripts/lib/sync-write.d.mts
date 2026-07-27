@@ -1,3 +1,24 @@
+/**
+ * Write `text` FULLY and SYNCHRONOUSLY to `fd`, draining partial writes and
+ * transient EAGAIN (a momentarily-full non-blocking pipe). Accepts a string or
+ * Buffer; a null/empty value is a no-op.
+ *
+ * @param {number} fd - Target file descriptor (1 = stdout, 2 = stderr).
+ * @param {unknown} text - Buffer written as-is; anything else via `String(text)`.
+ * @returns {void}
+ */
 export function writeAllSync(fd: number, text: unknown): void;
+/**
+ * `console.log`-shaped synchronous stdout line (fd 1, appends a newline).
+ *
+ * @param {unknown} [msg] - Interpolated via a template literal, so any value is accepted.
+ * @returns {void}
+ */
 export function outSync(msg?: unknown): void;
+/**
+ * `console.error`/`console.warn`-shaped synchronous stderr line (fd 2, appends a newline).
+ *
+ * @param {unknown} [msg] - Interpolated via a template literal, so any value is accepted.
+ * @returns {void}
+ */
 export function errSync(msg?: unknown): void;

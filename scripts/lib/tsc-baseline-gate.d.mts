@@ -1,0 +1,232 @@
+#!/usr/bin/env node
+/** Parse tsc output into { file, code } entries (file null when unattributable). */
+export function parseTscErrors(tscOutput: any): ({
+    file: string;
+    code: string;
+} | {
+    file: null;
+    code: string;
+})[];
+/** Files carrying parse-level (TS1xxx) errors — they fail to compile at all. */
+export function syntaxBrokenFiles(errors: any): any[];
+/** Aggregate parsed errors into a { file: count } map. Unattributable errors bucket under '(unattributed)'. */
+export function countByFile(errors: any): {};
+export function sumValues(map: any): number;
+/**
+ * The set of repo-relative paths the caller has changed (staged, unstaged, or untracked), for
+ * `--mine` scoping. Fail-SOFT: a git failure (packaged install, detached state) returns an empty
+ * set, which under `--mine` means "attribute nothing to me" — never a crash, never a false pass on
+ * a real CI gate (CI runs bare, without `--mine`).
+ */
+export function gitChangedFiles(root: any): Set<any>;
+/**
+ * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
+ * files the caller changed THIS session, as an alternative to `--mine`'s implicit
+ * git-status-derived scoping.
+ *
+ * WHY: `gitChangedFiles` (above) attributes "mine" from working-tree dirt (`git status`), which
+ * on this concurrently-edited shared checkout includes every PEER's uncommitted edits too — not
+ * just the caller's own. Observed live: `--mine` reported a regression in a file the calling
+ * agent had never opened, because a peer had it mid-edit at that exact moment; re-running the
+ * gate a minute later (once the peer's edit settled) gave the opposite verdict on the identical
+ * command against the identical tree. `git status` cannot distinguish WHICH agent dirtied a
+ * file on a shared checkout — there is no session-scoped signal to read there.
+ *
+ * `--files=` sidesteps the ambiguity entirely: the caller states which files are theirs
+ * (e.g. from their own edit history / Edit-tool log this turn), and that explicit set is used
+ * VERBATIM instead of the git-status guess — no heuristic, no false attribution. Passing
+ * `--files=` also implies `--mine`-style scoping (a caller naming exact files obviously wants
+ * the check scoped to them), so `--mine` need not be passed alongside it.
+ *
+ * Returns `null` when the flag is absent (falls through to the existing `--mine`/bare behavior
+ * unchanged) — never an empty Set for "flag absent", so callers can tell "not scoped" apart from
+ * "scoped to zero files" (a malformed `--files=` with no content, which is now the caller's own
+ * bug to fix, not a silent no-op).
+ */
+export function parseExplicitFiles(argv: any): Set<any> | null;
+/**
+ * Resolve the EFFECTIVE per-file baseline, inheriting cross-package files from their OWNING
+ * package's baseline (EI-18649014117371738).
+ *
+ * ## Why this exists
+ *
+ * `decidePerFile` treats a file ABSENT from the baseline as an implicit 0 — correct for a file this
+ * gate OWNS (a fresh file that arrives with errors IS a named regression). It is WRONG for a file in
+ * ANOTHER package that has its own baseline gate: this gate's baseline was captured at some other
+ * moment, under a DIFFERENT tsconfig, so "absent" there means "this gate never recorded it", NOT
+ * "it was clean". Absent ⇒ 0 turns that gap into a phantom regression.
+ *
+ * That is not hypothetical: operator-core's baseline records e.g.
+ * `packages/operator-core/lib/agent-tools/memory/search.ts: 1` (a KNOWN, TOLERATED error), while
+ * apps/operator-vite's baseline — seeded four days later — never listed it. So `lint:tsc` PASSED and
+ * `lint:tsc:operator-vite` FAILED on the SAME source file, and 12 operator-core files read as
+ * regressions to an agent who had opened none of them. Two gates over one tree giving opposite
+ * verdicts makes neither number trustworthy — exactly the false-signal problem the per-file gate was
+ * built to kill (EI-847), reintroduced at the cross-package seam.
+ *
+ * ## The rule
+ *
+ * For a file this gate MEASURED but did not record, that lives under a `prefix` owned by a package
+ * with its own baseline, inherit that package's recorded count instead of defaulting to 0.
+ *
+ *   - Own baseline ALWAYS wins when present — an explicit entry is this gate's own measured truth
+ *     under its own tsconfig, and ratchet-only-down must never be loosened by a foreign number.
+ *   - Inheritance is scoped to files actually in `currentByFile`, so a foreign baseline can never
+ *     inject files this gate does not measure (that would fabricate phantom "improvements" and
+ *     inflate the reported total).
+ *   - Absent from BOTH is still an implicit 0 — a genuinely NEW error in a foreign file still gates.
+ *
+ * @param {{
+ *   baselineByFile: Record<string, number>,
+ *   currentByFile: Record<string, number>,
+ *   foreignBaselines?: {prefix:string, files:Record<string,number>, label?:string}[],
+ * }} args
+ * @returns {{ effective: Record<string, number>, inherited: {file:string,baseline:number,from:string}[] }}
+ */
+export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreignBaselines }: {
+    baselineByFile: Record<string, number>;
+    currentByFile: Record<string, number>;
+    foreignBaselines?: {
+        prefix: string;
+        files: Record<string, number>;
+        label?: string;
+    }[];
+}): {
+    effective: Record<string, number>;
+    inherited: {
+        file: string;
+        baseline: number;
+        from: string;
+    }[];
+};
+/**
+ * Pure per-file gate decision — the ONE place the policy lives, so it is unit-testable (EI-104).
+ * A file is a REGRESSION when its current error count exceeds its baseline (a file absent from the
+ * baseline has an implicit baseline of 0, so any new error in a fresh file is a named regression).
+ * Regressions always win over improvements, preserving ratchet-only-down.
+ *
+ * @param {{
+ *   currentByFile: Record<string, number>,
+ *   baselineByFile: Record<string, number>,
+ *   brokenFiles: string[],
+ *   updateFlag?: boolean,
+ *   changedFiles?: Set<string> | null,
+ * }} args
+ * @returns {{
+ *   verdict: 'fail-syntax'|'fail-regressed'|'fail-attributed'|'ok-peer-drift'|'ok-ratchet'|'ok-below'|'ok',
+ *   regressions: {file:string,baseline:number,current:number,delta:number}[],
+ *   improvements: {file:string,baseline:number,current:number,delta:number}[],
+ *   attributed?: {file:string,baseline:number,current:number,delta:number}[],
+ *   peerDrift?: {file:string,baseline:number,current:number,delta:number}[],
+ *   total: number,
+ *   baselineTotal: number,
+ *   newBaselineByFile?: Record<string, number>,
+ *   brokenFiles?: string[],
+ * }}
+ */
+export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles }: {
+    currentByFile: Record<string, number>;
+    baselineByFile: Record<string, number>;
+    brokenFiles: string[];
+    updateFlag?: boolean;
+    changedFiles?: Set<string> | null;
+}): {
+    verdict: "fail-syntax" | "fail-regressed" | "fail-attributed" | "ok-peer-drift" | "ok-ratchet" | "ok-below" | "ok";
+    regressions: {
+        file: string;
+        baseline: number;
+        current: number;
+        delta: number;
+    }[];
+    improvements: {
+        file: string;
+        baseline: number;
+        current: number;
+        delta: number;
+    }[];
+    attributed?: {
+        file: string;
+        baseline: number;
+        current: number;
+        delta: number;
+    }[];
+    peerDrift?: {
+        file: string;
+        baseline: number;
+        current: number;
+        delta: number;
+    }[];
+    total: number;
+    baselineTotal: number;
+    newBaselineByFile?: Record<string, number>;
+    brokenFiles?: string[];
+};
+/**
+ * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.
+ *
+ * This is a pure function purely so the wording is TESTABLE, because the wording is where
+ * the bug was. `--files` means the caller NAMED the files, so "you changed" is a fact.
+ * `--mine` infers them from `git status` — and this repo has ONE working tree shared by the
+ * whole fleet, with every agent's edits unstaged until the next git-sync tick, so that set is
+ * "dirty right now": yours AND every peer's. Claiming "YOU changed" over it is false, and it
+ * is expensively false in BOTH directions — you chase a peer's error believing it is yours,
+ * or your own genuine regression arrives amid peer noise under the same label and you dismiss
+ * the lot as fleet drift. Filed four separate times before the wording was fixed
+ * (EI-18731016038876755, which added `--files`, plus three later duplicates).
+ *
+ * @param {{count: number, explicit: boolean}} opts
+ * @returns {string}
+ */
+export function formatAttributionHeadline({ count, explicit }: {
+    count: number;
+    explicit: boolean;
+}): string;
+/**
+ * The explanation printed under a `fail-new-file` verdict, worded per how the changed-set was
+ * DERIVED. The verdict itself never moves (EI-18766822535373909): a file the baseline has never
+ * seen has no known-good state to drift from, so NO scoping can exonerate it. Only the remedy
+ * differs.
+ *
+ * WHY IT BRANCHES (EI-18802204276510164). The single closing line used to read "re-run with
+ * --files=<paths>" unconditionally — including for a caller who had just passed `--files`, in a
+ * run that echoes `[--files]` in its own header two lines above. Prescribing the action already
+ * taken reads as "I invoked it wrong", so the reader goes to this script hunting their own
+ * mistake instead of to the actual next step, and it lands on precisely the agents doing the
+ * right thing: scoping their check exactly, at the moment they are deciding whether their change
+ * is safe to leave in the shared tree.
+ *
+ * @param {{explicit: boolean}} opts `explicit` — the changed-set came from `--files` (named by
+ *   the caller) rather than `--mine` (inferred from `git status`).
+ * @returns {string[]} console lines, already indented.
+ */
+export function formatNewFileGuidance({ explicit }: {
+    explicit: boolean;
+}): string[];
+/**
+ * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
+ * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
+ *
+ * @param {{
+ *   root: string,           // cwd the tscCommand runs from (repo root)
+ *   tscCommand: string,     // e.g. 'npx tsc -p apps/foo/tsconfig.json --noEmit --incremental false'
+ *   baselineFile: string,   // absolute path to this project's .tsc-baseline.json
+ *   label: string,          // human label for console output, e.g. 'operator-core'
+ *   argv: string[],         // process.argv.slice(2)
+ *   countField?: string,    // baseline JSON field the derived total is written to on --update
+ *                           // (default 'errorCount'; operator-core keeps its legacy
+ *                           // 'operatorCoreErrorCount' name for back-compat with existing tooling).
+ *   foreignBaselines?: {prefix: string, baselineFile: string, label?: string}[],
+ *                           // Cross-package files this gate MEASURES but does not OWN: a file under
+ *                           // `prefix` that is absent from this gate's baseline inherits the owning
+ *                           // package's recorded count instead of an implicit 0. See
+ *                           // effectiveBaselineByFile (EI-18649014117371738).
+ * }}
+ */
+export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
+    root: string;
+    tscCommand: string;
+    baselineFile: string;
+    label: string;
+    argv: string[];
+    countField?: string;
+}): void;

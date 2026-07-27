@@ -32,8 +32,18 @@ const baselineFile = resolve(ROOT, 'apps/operator-vite/.tsc-baseline.json');
 // `--incremental false` for the same reason as operator-core's TSC_COMMAND (EI-487): a warm
 // tsconfig.tsbuildinfo can under-report errors in affected-but-not-yet-reindexed files, which
 // would silently ratchet a file's baseline down on `--update` and false-red a later fresh run.
+/** @type {string} */
 export const TSC_COMMAND =
   'npx tsc -p apps/operator-vite/tsconfig.json --noEmit --incremental false';
+
+/**
+ * A baseline owned by another package that this gate reads rather than maintains.
+ *
+ * @typedef {object} ForeignBaseline
+ * @property {string} prefix - Repo-relative path prefix the owning package covers.
+ * @property {string} baselineFile - Absolute path to that package's `.tsc-baseline.json`.
+ * @property {string} [label] - Display name for the owning package, if it differs from `prefix`.
+ */
 
 /**
  * Cross-package files this gate MEASURES but does not OWN (EI-18649014117371738).
@@ -45,6 +55,8 @@ export const TSC_COMMAND =
  * regression: `lint:tsc` passed and `lint:tsc:operator-vite` failed on the SAME untouched file.
  * Pointing at the OWNING package's baseline makes the two gates agree by construction rather than
  * by two hand-maintained files happening to stay in sync.
+ *
+ * @type {ForeignBaseline[]}
  */
 export const FOREIGN_BASELINES = [
   {

@@ -49,7 +49,21 @@ import path from 'node:path';
 
 const DEFAULT_PROC_ROOT = '/proc';
 
-/** Parse a NUL-separated /proc/<pid>/cmdline buffer into a display string (space-joined args). */
+/**
+ * One live process, as read out of `/proc`.
+ *
+ * @typedef {object} ProcRow
+ * @property {number} pid
+ * @property {number | null} ppid - null when `/proc/<pid>/stat` was unreadable or unparseable.
+ * @property {string} cmdline - Full command line, NUL separators replaced by spaces.
+ */
+
+/**
+ * Parse a NUL-separated /proc/<pid>/cmdline buffer into a display string (space-joined args).
+ *
+ * @param {Buffer | string} raw
+ * @returns {string}
+ */
 export function parseCmdline(raw) {
   return raw
     .toString('utf8')
@@ -63,6 +77,9 @@ export function parseCmdline(raw) {
  * parenthesized and may itself contain spaces/parens, so field-splitting must
  * resume from the LAST `)` rather than naively splitting on whitespace — the
  * kernel guarantees fields after that point never contain unescaped `)`.
+ *
+ * @param {string} statLine
+ * @returns {number | null}
  */
 export function parsePpid(statLine) {
   const closeParen = statLine.lastIndexOf(')');
@@ -73,14 +90,21 @@ export function parsePpid(statLine) {
   return Number.isFinite(ppid) ? ppid : null;
 }
 
-/** Enumerate every live process as { pid, ppid, cmdline }, from a /proc root (real or a test fixture). */
+/**
+ * Enumerate every live process as { pid, ppid, cmdline }, from a /proc root (real or a test fixture).
+ *
+ * @param {string} [procRoot] - Defaults to `/proc`; a fixture directory in tests.
+ * @returns {ProcRow[]}
+ */
 export function listProcesses(procRoot = DEFAULT_PROC_ROOT) {
+  /** @type {string[]} */
   let entries;
   try {
     entries = readdirSync(procRoot);
   } catch {
     return [];
   }
+  /** @type {ProcRow[]} */
   const out = [];
   for (const name of entries) {
     if (!/^\d+$/.test(name)) continue;
@@ -107,8 +131,14 @@ export function listProcesses(procRoot = DEFAULT_PROC_ROOT) {
  * pid + every ancestor up to (and including) pid 1, by walking `ppid` via
  * `byPid` (a Map<pid, ppid|null>). Cycle/depth-guarded so a corrupt or
  * adversarial ppid chain can't loop forever.
+ *
+ * @param {number} pid
+ * @param {Map<number, number | null>} byPid
+ * @param {number} [maxHops]
+ * @returns {Set<number>}
  */
 export function getAncestryChain(pid, byPid, maxHops = 512) {
+  /** @type {Set<number>} */
   const chain = new Set();
   let cur = pid;
   let hops = 0;
@@ -127,6 +157,10 @@ export function getAncestryChain(pid, byPid, maxHops = 512) {
  * `bash -c` / `-lic` wrapper whose own command line happens to contain
  * `pattern` is never reported as a match, while a genuinely unrelated external
  * process with the same pattern in its cmdline still is.
+ *
+ * @param {string} pattern - A RegExp source, matched against the full cmdline.
+ * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * @returns {ProcRow[]}
  */
 export function matchExternalProcesses(pattern, opts = {}) {
   const procRoot = opts.procRoot ?? DEFAULT_PROC_ROOT;
