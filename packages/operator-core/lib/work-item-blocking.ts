@@ -26,6 +26,27 @@ import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/front
  *  Narrow to ['done','dropped'] after the cleanup pass. */
 export const ISSUE_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['resolved', 'closed', 'done', 'dropped']);
 
+/** The terminal set SPLIT by outcome — "it landed" vs "it was abandoned".
+ *
+ *  `ISSUE_TERMINAL_STATUSES` answers "is this finished?", which is all a
+ *  blocking edge needs. Any surface REPORTING the loop's output needs the
+ *  finer question "did it SHIP?", and the two must never be summed: a dropped
+ *  idea is not a delivered one.
+ *
+ *  Each set pairs the unified spelling with its legacy alias (resolved≡done,
+ *  closed≡dropped) because both still exist in the union during the
+ *  work-item-status-full-unify transition. Hand-writing either list in a
+ *  `WHERE state IN (...)` is how EI-18792873324746237 happened: the Learning
+ *  tab's funnel filtered the PRE-flip spellings only, so 137 shipped ideas
+ *  counted as 0 — a plausible-looking zero that no type checker can catch.
+ *  Import these instead of retyping the members.
+ *
+ *  Invariant (asserted in work-item-blocking.test.ts): SHIPPED and ABANDONED
+ *  partition ISSUE_TERMINAL_STATUSES — disjoint, and together exhaustive. That
+ *  test is what fails if a future state joins the enum without being classified. */
+export const ISSUE_SHIPPED_STATUSES: ReadonlySet<string> = new Set(['done', 'resolved']);
+export const ISSUE_ABANDONED_STATUSES: ReadonlySet<string> = new Set(['dropped', 'closed']);
+
 /**
  * Cross-family terminal set (F2): feature {passed,deprecated} ∪ issue {resolved,closed}. A blocker
  * in EITHER family is "satisfied" when terminal in its own vocabulary. (Dissolved entirely once the

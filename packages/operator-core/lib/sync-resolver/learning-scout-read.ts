@@ -31,6 +31,11 @@
 import { term } from '@papercusp/lexicon';
 import type { Sql } from 'postgres';
 import { PLATFORM_POT_SLUG } from '../pot-membership';
+import {
+  ISSUE_ABANDONED_STATUSES,
+  ISSUE_SHIPPED_STATUSES,
+  ISSUE_TERMINAL_STATUSES,
+} from '../work-item-blocking';
 
 export interface ScoutRailCount {
   /** The routing rail: 'plan' | 'gym' | 'wi' (open set — render what arrives). */
@@ -263,10 +268,18 @@ export interface ScoutImproveFunnel {
   routed: number;
   /** Improvement-rail rows (wi: refs filed as work). */
   filed: number;
-  /** Filed items currently open AND assigned. */
+  /** Filed items an agent is working RIGHT NOW: non-terminal AND assigned.
+   *  Admits `wip` — under the unified enum that IS the in-flight state, and the
+   *  pre-flip `state='open' AND assignee IS NOT NULL` could not see it. */
   claimed: number;
-  /** Filed items resolved/closed. */
+  /** Filed items that LANDED (ISSUE_SHIPPED_STATUSES: done|resolved).
+   *  Deliberately excludes the abandoned terminals — see `dropped`. */
   done: number;
+  /** Filed items abandoned (ISSUE_ABANDONED_STATUSES: dropped|closed).
+   *  Reported separately and never folded into `done`: an idea the loop gave up
+   *  on is not one it delivered, and summing them overstates the loop's output
+   *  (EI-18792873324746237). */
+  dropped: number;
 }
 
 export interface ScoutSnapshot {
@@ -927,10 +940,25 @@ export async function readScoutSnapshot(
   // state. Best-effort like every other leg.
   let improveFunnel: ScoutImproveFunnel | null = null;
   try {
+    // The state predicates bind the SHARED constants rather than repeating the
+    // members inline. EI-18792873324746237: this query used to filter the
+    // pre-unify spellings only (`state IN ('resolved','closed')`), so after the
+    // work-item-status-full-unify writer-flip it matched zero live rows and the
+    // tab reported "0 shipped" against 137 that had actually shipped. A stale
+    // literal list is invisible to tsc and reads as a plausible zero, so the
+    // list must live in exactly one place.
+    const shipped = [...ISSUE_SHIPPED_STATUSES];
+    const abandoned = [...ISSUE_ABANDONED_STATUSES];
+    const terminal = [...ISSUE_TERMINAL_STATUSES];
     const funnelRows = (await sql`
       SELECT count(*)::int AS filed,
-             count(*) FILTER (WHERE ei.state = 'open' AND ei.assignee IS NOT NULL)::int AS claimed,
-             count(*) FILTER (WHERE ei.state IN ('resolved', 'closed'))::int AS done
+             count(*) FILTER (
+               WHERE ei.state IS NOT NULL
+                 AND NOT (ei.state = ANY(${terminal}::text[]))
+                 AND ei.assignee IS NOT NULL
+             )::int AS claimed,
+             count(*) FILTER (WHERE ei.state = ANY(${shipped}::text[]))::int AS done,
+             count(*) FILTER (WHERE ei.state = ANY(${abandoned}::text[]))::int AS dropped
         FROM harness_shared.scout_routed_ideas sri
         LEFT JOIN harness_shared.engineer_issues ei
           ON ei.workspace_id = ${workspaceId}
@@ -946,6 +974,7 @@ export async function readScoutSnapshot(
         filed: Number(row.filed ?? 0),
         claimed: Number(row.claimed ?? 0),
         done: Number(row.done ?? 0),
+        dropped: Number(row.dropped ?? 0),
       };
     }
   } catch (err) {

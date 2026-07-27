@@ -259,6 +259,27 @@ export async function sendMessage(
   if (env.auto === undefined && isMachineAuthoredSender(identity.ownerId)) {
     env.auto = true;
   }
+  // P-033 (d) / D-072: the ~25 SYSTEM emitters (service-health, severe-event,
+  // agent-governor, boot-migrate, the sweeps…) call this seam directly, so they
+  // never pass through the coord:send tool that requires `expects`. Their intent
+  // is never in doubt — a watchdog broadcast wants nothing back — so it is
+  // stamped here rather than hand-patched into every emitter, for exactly the
+  // reason the `auto` stamp above is: the next watchdog anyone writes is covered
+  // for free and cannot silently re-pollute the signal.
+  //
+  // ⚠ `expects:'none'` and NOTHING ELSE (D-072 §4). A system broadcast has no
+  // model of its receiver, so it gets no `forYouBecause`, no `premises`, no
+  // `youMayNotKnow` — inventing them would be the fill-rate theatre D-064 warns
+  // about, on the highest-volume traffic in the system.
+  //
+  // The value is DERIVED, so it is STAMPED as derived: adoption measurement must
+  // not count a machine default as sender intent. An explicit caller value always
+  // wins, so the coord:send tool (which sets `expects` itself) is untouched.
+  if (env.expects === undefined && isMachineAuthoredSender(identity.ownerId)) {
+    env.expects = 'none';
+    const existing = (env.fieldProvenance ?? {}) as Record<string, unknown>;
+    env.fieldProvenance = { ...existing, expects: 'system-emitter-derived' };
+  }
   // Park the envelope durably for each addressed slot (./slot-parked-store) —
   // drained into the spawnee's handoff when an agent spawns into the slot (P-023).
   if (slots.length) {

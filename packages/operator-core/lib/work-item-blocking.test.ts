@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { ISSUE_STATES } from './issues-engineer';
 import {
   ALL_TERMINAL_STATUSES,
+  ISSUE_ABANDONED_STATUSES,
+  ISSUE_SHIPPED_STATUSES,
   ISSUE_TERMINAL_STATUSES,
   isReady,
   partitionReady,
@@ -96,5 +99,58 @@ describe('toReadinessNodes', () => {
     const items = [{ id: 'A', status: 'todo', externalBlockers: ['event:deploy:ready'] }];
     const nodes = toReadinessNodes(items, new Map());
     expect(nodes).toEqual([{ id: 'A', status: 'todo', blockedBy: [], externalBlockers: ['event:deploy:ready'] }]);
+  });
+});
+
+/**
+ * Recurrence guard for EI-18792873324746237.
+ *
+ * The bug: the Learning tab's idea→work funnel filtered `state IN
+ * ('resolved','closed')` — the PRE-unify spellings. After the writer-flip every
+ * live row stores `done`/`dropped`, so the filter matched nothing and the tab
+ * reported "0 shipped" against 137 genuinely shipped ideas. Nothing failed;
+ * a wrong-but-well-formed enum member is invisible to tsc and to any test that
+ * only asserts on fixtures it wrote itself.
+ *
+ * These assertions are anchored to ISSUE_STATES — the enum itself — so adding a
+ * state to the union without classifying it FAILS HERE, at the definition,
+ * rather than silently zeroing a number in a panel nobody is currently reading.
+ */
+describe('issue terminal-state partition (EI-18792873324746237)', () => {
+  it('shipped and abandoned are disjoint — a dropped item is never counted as delivered', () => {
+    const overlap = [...ISSUE_SHIPPED_STATUSES].filter((s) => ISSUE_ABANDONED_STATUSES.has(s));
+    expect(overlap).toEqual([]);
+  });
+
+  it('shipped ∪ abandoned exactly covers the terminal set', () => {
+    const union = new Set([...ISSUE_SHIPPED_STATUSES, ...ISSUE_ABANDONED_STATUSES]);
+    expect([...union].sort()).toEqual([...ISSUE_TERMINAL_STATUSES].sort());
+  });
+
+  it('every terminal member of the live IssueState enum is classified', () => {
+    // The enum is the source of truth. A new terminal state added to
+    // ISSUE_STATES and to ISSUE_TERMINAL_STATUSES, but NOT to one of the two
+    // outcome sets, lands here as an unclassified member.
+    const unclassified = ISSUE_STATES.filter(
+      (s) =>
+        ISSUE_TERMINAL_STATUSES.has(s) &&
+        !ISSUE_SHIPPED_STATUSES.has(s) &&
+        !ISSUE_ABANDONED_STATUSES.has(s),
+    );
+    expect(unclassified).toEqual([]);
+  });
+
+  it('classifies the canonical unified spellings, not only the legacy aliases', () => {
+    // The exact regression: a set holding only {resolved, closed} passes every
+    // assertion above that does not name the post-flip spellings explicitly.
+    expect(ISSUE_SHIPPED_STATUSES.has('done')).toBe(true);
+    expect(ISSUE_ABANDONED_STATUSES.has('dropped')).toBe(true);
+  });
+
+  it('leaves every non-terminal state out of both sets', () => {
+    for (const s of ['open', 'wip', 'blocked', 'needs-human']) {
+      expect(ISSUE_SHIPPED_STATUSES.has(s)).toBe(false);
+      expect(ISSUE_ABANDONED_STATUSES.has(s)).toBe(false);
+    }
   });
 });

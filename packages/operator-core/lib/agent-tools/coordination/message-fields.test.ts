@@ -18,7 +18,74 @@ import {
   toSections,
   sectionsToText,
   ENVELOPE_ONLY_FIELDS,
+  renderAuthoredFieldsSuffix,
 } from './message-fields';
+
+describe('renderAuthoredFieldsSuffix — making the fields visible', () => {
+  it('renders nothing for an ordinary message (no sections stamped)', () => {
+    expect(renderAuthoredFieldsSuffix({ body: 'hi' })).toBe('');
+    expect(renderAuthoredFieldsSuffix({ sections: [] })).toBe('');
+  });
+
+  it('renders nothing when sections carry no authored fields', () => {
+    expect(renderAuthoredFieldsSuffix({ sections: [{ text: 'a' }, { text: 'b' }] })).toBe('');
+  });
+
+  it('names a single premise, but COUNTS several (the line shares a ~200-char cap)', () => {
+    expect(renderAuthoredFieldsSuffix({ sections: [{ text: 'a', premises: ['WI-1#completion'] }] })).toContain(
+      '⊨ WI-1#completion',
+    );
+    expect(
+      renderAuthoredFieldsSuffix({ sections: [{ text: 'a', premises: ['x#D-001', 'y#D-002', 'msg:z'] }] }),
+    ).toContain('⊨ 3 premises');
+  });
+
+  it('does NOT reuse `⊢` — that glyph already means the evidence band on this line', () => {
+    expect(renderAuthoredFieldsSuffix({ sections: [{ text: 'a', premises: ['WI-1#completion'] }] })).not.toContain(
+      '⊢',
+    );
+  });
+
+  it('SPELLS OUT couldNotDetermine — it marks a question OPEN, which is a different action', () => {
+    const out = renderAuthoredFieldsSuffix({
+      sections: [{ text: 'a', couldNotDetermine: [{ what: 'whether the deploy carries the fix' }] }],
+    });
+    expect(out).toContain('? undetermined: whether the deploy carries the fix');
+  });
+
+  it('surfaces blocking and the coupling relation', () => {
+    const out = renderAuthoredFieldsSuffix({
+      blocking: true,
+      sections: [{ text: 'a', forYouBecause: { relation: 'holds-a-lock-on', ref: 'x.ts' } }],
+    });
+    expect(out).toContain('BLOCKING');
+    expect(out).toContain('∵ holds-a-lock-on x.ts');
+  });
+
+  it('⚠ SUPPRESSES a DERIVED field (D-072) — a GUI default is not the sender\'s model of you', () => {
+    const out = renderAuthoredFieldsSuffix({
+      blocking: false,
+      sections: [{ text: 'a', forYouBecause: { relation: 'other', note: 'owner addressed you' } }],
+      fieldProvenance: { forYouBecause: 'owner-gui-derived', blocking: 'owner-gui-derived' },
+    });
+    expect(out).toBe('');
+  });
+
+  it('still renders the AUTHORED fields of a message whose OTHER fields were derived', () => {
+    const out = renderAuthoredFieldsSuffix({
+      sections: [
+        {
+          text: 'a',
+          forYouBecause: { relation: 'other', note: 'derived' },
+          couldNotDetermine: [{ what: 'the real question' }],
+        },
+      ],
+      fieldProvenance: { forYouBecause: 'owner-gui-derived' },
+    });
+    expect(out).not.toContain('∵');
+    expect(out).toContain('? undetermined: the real question');
+  });
+});
 
 describe('premise ref classification (D-026)', () => {
   it('classifies each admissible ref kind', () => {
