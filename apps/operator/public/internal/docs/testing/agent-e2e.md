@@ -1974,6 +1974,40 @@ exactly like a broken/blank app. The DOM is fine; the pixels just never render.
    `/dev/dri/renderD128` path; VGL rejects it ("Invalid EGL device").
    :::
 
+:::caution\[Check every screenshot you intend to CITE — a blank one exits 0 and looks like proof]
+`tauri-agent-tools screenshot` writes a valid PNG, prints the path and **exits 0 whether
+or not the window painted**, so its exit code tells you nothing about the thing you care
+about. The file is not obviously wrong either: the real one found on this box was 91KB
+at 1280x800 — a dark gradient and nothing else. File size is not a tell.
+
+That makes it worse than useless, because it is *citable*. `work_items:complete` requires
+a `verifiedHow:'live-drove-ui'` close to cite an artifact, and an agent who ran the
+capture, never opened it, and cited the path would have closed the item having verified
+no pixels at all — with a paper trail that reads as rigorous. (Two such captures were
+already sitting on this host when EI-18797014705631713 was filed.)
+
+**One command, the moment you take it** — exits 1 if the capture is blank:
+
+```sh
+npm run check:screenshot -- /tmp/my-shot.png
+```
+
+`work_items:complete` now runs the same check on whatever you cite and **rejects a close
+backed only by blank or missing captures** — so an unchecked screenshot costs you a
+rejected close rather than shipping a false claim.
+
+**Prefer the assertion anyway.** A `check` run is falsifiable, records *what* you
+asserted, and needs no image on disk — the completion gate accepts it on its own:
+
+```sh
+tauri-agent-tools check --pid <pid> --eval "<assertion>" --json   # exit 1 if it fails
+```
+
+Use a screenshot when you need to see *pixels* (layout, paint order, font rendering);
+use `check`/`dom` for anything the DOM can express. On a GL-less display the DOM path
+keeps working perfectly while every screenshot comes back empty.
+:::
+
 Recipe — isolated **GPU-accelerated** instance via VirtualGL (no focus-steal):
 
 ```sh

@@ -15,8 +15,15 @@
  * and a red gate blocks the entire fleet's deploys.
  *
  * So this test is the near latch — it fails in this package, in seconds, the
- * moment a fixture regains an identity, and it covers the munged form
- * (`-home-<user>-…`) that `scrubIdentity` deliberately declines to rewrite.
+ * moment a fixture regains an identity, in EITHER the slash form or the munged
+ * one (`-home-<user>-…`).
+ *
+ * It remains the backstop after EI-18802228732541554 taught `scrubIdentity` to
+ * rewrite the munged form as well: that rewrite covers only the EXTRACTING box's
+ * own username (the one name it can know exactly rather than guess at), so any
+ * other user's munged path still arrives here to fail loudly. The guard got
+ * narrower in practice, not weaker — do not relax it on the strength of the
+ * scrubber.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -111,6 +118,64 @@ describe('scrubIdentity', () => {
   it('leaves a command with no home path byte-identical', () => {
     const atom = 'git diff --stat 5421cd2ade 5e0af0a147';
     expect(scrubIdentity(atom)).toBe(atom);
+  });
+
+  // EI-18802228732541554 — the munged form used to be left to a hand scrub the author
+  // had to remember on EVERY fixture regeneration. `selfUser` is a parameter (not read
+  // straight from os.userInfo() at the call site) for two reasons: it makes the rewrite
+  // testable, and a test asserting on THIS box's real username would itself be the leak
+  // `lint:no-box-identity` exists to catch. `jdoe-smith` is a canonical fake with the
+  // dashes that made the original author decline this rewrite.
+  describe('munged form (-home-<user>-…, how Claude names a project dir)', () => {
+    it("rewrites this box's own munged home, dashed username and all", () => {
+      expect(
+        scrubIdentity('tail -30 "/tmp/claude-1000/-home-jdoe-smith-src-papercusp/f2/x.output"', 'jdoe-smith'),
+      ).toBe('tail -30 "/tmp/claude-1000/-home-dev-src-papercusp/f2/x.output"');
+    });
+
+    it('rewrites the macOS munged analog too', () => {
+      expect(scrubIdentity('cat /tmp/-Users-jdoe-smith-src-a.ts', 'jdoe-smith')).toBe(
+        'cat /tmp/-Users-dev-src-a.ts',
+      );
+    });
+
+    it('leaves ordinary kebab-case alone — it is anchored, not a substring match', () => {
+      const atom = 'grep -n "some-home-page-header" src/app.css';
+      expect(scrubIdentity(atom, 'jdoe-smith')).toBe(atom);
+    });
+
+    it('leaves ANOTHER user\'s munged path for the loud guard, never guessing at it', () => {
+      // The whole justification for rewriting at all is that the extracting box knows
+      // its OWN username exactly. A different user's name is exactly the guess the
+      // original code declined to make, so it must still fall through to corpus.test's
+      // fixture guard rather than being silently rewritten.
+      const atom = 'cat /tmp/claude-1000/-home-bob-src-x/y.output';
+      expect(scrubIdentity(atom, 'jdoe-smith')).toBe(atom);
+    });
+
+    it('is a no-op when this box already runs as an anonymous user', () => {
+      const atom = 'cat /tmp/claude-1000/-home-dev-src-x/y.output';
+      expect(scrubIdentity(atom, 'dev')).toBe(atom);
+    });
+
+    // ACCEPTED COARSENESS, pinned so it is a known boundary rather than a lurking
+    // surprise: a SECOND user whose name strictly EXTENDS this box's own (`jdoe` here vs
+    // `jdoe-smith`) is rewritten to `-home-dev-smith-…`, which the fixture guard then
+    // reads as clean. Ruling this out needs the one thing this rewrite deliberately
+    // refuses to do — guess where a dashed username ends. It requires another account on
+    // the extracting box whose name is a strict dash-extension of the extractor's AND
+    // whose home path appears in the extractor's own command history; the alternative is
+    // keeping the manual step that has already been skipped once in this file's history.
+    it('mangles a strict dash-extension of the self user (documented, accepted)', () => {
+      expect(scrubIdentity('cat /tmp/-home-jdoe-smith-x/y', 'jdoe')).toBe('cat /tmp/-home-dev-smith-x/y');
+    });
+
+    it('defaults to this box\'s real username when none is passed', () => {
+      // Asserted only on a clean atom — the point is that the default resolves and the
+      // scrub stays byte-exact on input that holds no identity at all.
+      const atom = 'git diff --stat 5421cd2ade 5e0af0a147';
+      expect(scrubIdentity(atom)).toBe(atom);
+    });
   });
 
   it('scrubs the atom shape that reddened the gate', () => {

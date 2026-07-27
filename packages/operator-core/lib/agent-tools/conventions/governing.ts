@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { InvalidInputError } from '@papercusp/tooldef';
-import { governingConventions, type Convention } from '../../conventions/registry';
+import { ALL_HARNESSES, governingConventions, type Convention } from '../../conventions/registry';
 import { renderEnforcement } from '../../agent-facts/store';
 
 /** Excerpt width — enough to judge whether a convention applies to you. */
@@ -68,7 +68,13 @@ export default defineTool({
       .describe(
         'What you are about to do, in a sentence. Ranks declared conventions and SELECTS which plan decisions are relevant. Omit to get declared conventions only — with nothing to rank against, arbitrary plan decisions would be noise dressed as governance.',
       ),
-    harness: z.string().max(120).optional().describe('Harness whose plan decisions to search (default: your session harness).'),
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        "Harness whose plan decisions to search (default: your session harness). `'*'` — which is what a workspace-scoped session resolves to — searches EVERY harness in the workspace rather than a harness named `*`.",
+      ),
     scopeRefs: z
       .array(z.string().max(120))
       .max(20)
@@ -84,6 +90,9 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const harness = (args.harness ?? ctx.harnessSlug ?? '').trim();
+    // D-086 R2: `''` means identity resolution FAILED — a different condition
+    // from "deliberately unscoped" (`'*'`, handled below), and never silently
+    // widened into a whole-workspace scan.
     if (!harness) {
       // InvalidInputError, not a 500 — a missing arg is the caller's to fix, and
       // EI-7463's class says a caller-input error must not inflate the tool's
@@ -126,6 +135,15 @@ export default defineTool({
           : {
               note: 'No `about` given — DECLARED conventions only; plan decisions were not searched.',
             }),
+        // D-086 R3: a zero that means "searched every harness, found nothing" and
+        // a zero that meant "searched nothing" are not the same answer, and
+        // `counts` alone cannot tell them apart. Say which one this is.
+        ...(harness === ALL_HARNESSES
+          ? {
+              harnessScope:
+                'workspace — no single harness in scope, so plan decisions were searched across EVERY harness in this workspace. Pass `harness` to narrow.',
+            }
+          : {}),
       },
     };
   },

@@ -16,6 +16,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { atomize } from './atomize';
@@ -134,25 +135,66 @@ const PLACEHOLDER_HOME_USER = 'dev';
  * caught by `lint:no-box-identity` — the most expensive place to learn it.
  * Scrubbing at BUILD time makes every future fixture clean by construction.
  *
- * Rewrites the `/home/<user>/…` and `/Users/<user>/…` form, which is the class
- * that actually appears in shell commands. The slash-munged form
- * (`-home-<user>-…`, how Claude names a project dir) is NOT rewritten here —
- * a username may span several dash segments, so a rewrite could only guess where
- * it ends and would silently mangle the evidence a verdict cites. That form is
- * caught instead by the fixture guard in `corpus.test.ts`, which fails loudly
- * in-package and tells the author to scrub, rather than committing mangled
- * evidence.
+ * Rewrites BOTH forms this class appears in:
+ *
+ *  1. `/home/<user>/…` and `/Users/<user>/…` — any personal user, since the
+ *     slashes delimit the name unambiguously.
+ *  2. The dash-munged `-home-<user>-…` / `-Users-<user>-…` (how Claude names a
+ *     session/project dir, e.g. inside a `/tmp/claude-1000/…` task-output path)
+ *     — but ONLY for `selfUser`, this box's own username.
+ *
+ * WHY (2) IS LIMITED TO THIS BOX (EI-18802228732541554). The original code declined
+ * the munged form entirely, on the sound ground that a username may span several
+ * dash segments so a general parser could only guess where it ends and would
+ * silently mangle the evidence a verdict cites. That objection holds for a general
+ * parser but not for the machine doing the extraction: it knows its own username
+ * exactly, so this is a literal replace with nothing to guess. Any OTHER user's
+ * munged path still falls through untouched to the loud fixture guard in
+ * `corpus.test.ts` — the safety property is unchanged, and what goes away is only
+ * the manual scrub step that recurred on every fixture regeneration and had already
+ * been skipped once (see above).
+ *
+ * Residual, pinned by a test rather than left to be rediscovered: a SECOND account
+ * whose name strictly dash-extends `selfUser` would be rewritten mid-name. Ruling
+ * that out needs the very guess this refuses to make, and it requires that account's
+ * home path to appear in the extractor's own command history.
+ *
+ * @param selfUser this box's username; injectable so the behaviour is testable
+ *   without writing the real username into a test file — which would itself be the
+ *   leak `lint:no-box-identity` exists to catch.
  */
-export function scrubIdentity(text: string): string {
-  return text.replace(/\/(home|Users)\/([A-Za-z0-9._-]+)/g, (whole, root: string, user: string) => {
-    // A home dir never ENDS in a dot, so trailing dots are sentence punctuation
-    // that the greedy class swallowed — preserve them (same reasoning as the
-    // lint's own `stripTrailingDots`).
-    const trailingDots = /\.+$/.exec(user)?.[0] ?? '';
-    const name = trailingDots ? user.slice(0, -trailingDots.length) : user;
-    if (!name || GENERIC_HOME_USERS.has(name)) return whole;
-    return `/${root}/${PLACEHOLDER_HOME_USER}${trailingDots}`;
-  });
+export function scrubIdentity(text: string, selfUser: string = userInfo().username): string {
+  const slashScrubbed = text.replace(
+    /\/(home|Users)\/([A-Za-z0-9._-]+)/g,
+    (whole, root: string, user: string) => {
+      // A home dir never ENDS in a dot, so trailing dots are sentence punctuation
+      // that the greedy class swallowed — preserve them (same reasoning as the
+      // lint's own `stripTrailingDots`).
+      const trailingDots = /\.+$/.exec(user)?.[0] ?? '';
+      const name = trailingDots ? user.slice(0, -trailingDots.length) : user;
+      if (!name || GENERIC_HOME_USERS.has(name)) return whole;
+      return `/${root}/${PLACEHOLDER_HOME_USER}${trailingDots}`;
+    },
+  );
+
+  if (!selfUser || GENERIC_HOME_USERS.has(selfUser)) return slashScrubbed;
+  // Anchored exactly like the lint's own `MUNGED_HOME` (a quote / slash / whitespace
+  // boundary, and a following dash) so ordinary kebab-case — "some-home-page-header" —
+  // cannot be rewritten. The two must agree: a scrub the detector disagrees with is a
+  // false green, not a fix.
+  const munged = new RegExp(
+    `(^|["'\`/\\s])-(home|Users)-${escapeRegExp(selfUser)}(?=-)`,
+    'g',
+  );
+  return slashScrubbed.replace(munged, (_whole, pre: string, root: string) =>
+    `${pre}-${root}-${PLACEHOLDER_HOME_USER}`,
+  );
+}
+
+/** A username is user-supplied data reaching a RegExp — escape it rather than
+ *  trusting that no account name ever holds a metacharacter. */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
 }
 
 /**

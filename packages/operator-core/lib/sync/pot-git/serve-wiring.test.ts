@@ -250,23 +250,23 @@ describe('serve-refusal diagnosability (a refusal must name its own lookup key)'
 
   it('DISTINGUISHES the two shapes of not-serving: an unwired muxer vs a channel-id mismatch', () => {
     // (1) nothing wired on this muxer at all
-    expect(formatRefusalTarget('not-serving', REQUESTED, [])).toContain('wiredTopics=<none>');
+    expect(formatRefusalTarget('not-serving', REQUESTED, [])).toContain('serveTopics=<none>');
     // (2) this muxer DOES serve — just not the requested topic. Distinct from
     // (1), and the pair is what identifies a dialer/server channel-id mismatch.
     const mismatch = formatRefusalTarget('not-serving', REQUESTED, [OTHER]);
-    expect(mismatch).toContain(`wiredTopics=${OTHER.slice(0, 16)}`);
+    expect(mismatch).toContain(`serveTopics=${OTHER.slice(0, 16)}`);
     expect(mismatch).not.toContain('<none>');
   });
 
   it('reports an unreadable registration set as distinct from an empty one', () => {
     // Collapsing these would let a broken probe read as a confident "nothing
     // is wired here" — the diagnosis and the fix differ.
-    expect(formatRefusalTarget('not-serving', REQUESTED, null)).toContain('wiredTopics=<unreadable>');
+    expect(formatRefusalTarget('not-serving', REQUESTED, null)).toContain('serveTopics=<unreadable>');
   });
 
-  it('omits wiredTopics for reasons that do not depend on it', () => {
+  it('omits serveTopics for reasons that do not depend on it', () => {
     // no-such-repo already proves serve WAS registered, so the set is noise.
-    expect(formatRefusalTarget('no-such-repo', REQUESTED, [OTHER])).not.toContain('wiredTopics');
+    expect(formatRefusalTarget('no-such-repo', REQUESTED, [OTHER])).not.toContain('serveTopics');
   });
 
   it('survives a state with no topic rather than printing a misleading empty key', () => {

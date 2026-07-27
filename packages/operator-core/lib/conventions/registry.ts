@@ -143,6 +143,13 @@ interface PlanDecisionRow {
 }
 
 /**
+ * The workspace-scoped sentinel: "no ONE harness", not a harness literally named
+ * `*`. A psu session that is not pinned to a harness carries this as its
+ * `ctx.harnessSlug`, so it arrives here on the default path.
+ */
+export const ALL_HARNESSES = '*';
+
+/**
  * The plan-decision half — decisions RELEVANT to `about`, across every live plan
  * in the harness, which is what makes "discovered without knowing which plan it
  * came from" true.
@@ -152,6 +159,13 @@ interface PlanDecisionRow {
  * would be the spilled-projection anti-pattern the repo conventions call out.
  * Terms are OR-ed, not AND-ed — `plainto_tsquery`/`websearch_to_tsquery` AND
  * their terms, so a prose intent of eight words would match almost nothing.
+ *
+ * ⚠ `harness: '*'` DROPS the harness predicate rather than matching it (D-086
+ * R1). No plan row has `harness_slug = '*'`, so comparing against the sentinel
+ * returned exactly zero decisions with `ok:true` and no note — for a
+ * workspace-scoped su, which is every psu session on this box. The
+ * `workspace_id` predicate is NEVER dropped: this widens the harness axis only,
+ * so it can never reach another tenant's plans.
  */
 async function relevantPlanDecisions(
   args: { harness: string; tokens: readonly string[]; limit: number; workspaceId: string },
@@ -161,6 +175,7 @@ async function relevantPlanDecisions(
   const sql = sqlOf(inject);
   // Safe: every token is `^[a-z0-9]+$` (see intentTokens).
   const tsquery = args.tokens.join(' | ');
+  const allHarnesses = args.harness === ALL_HARNESSES;
   return sql<PlanDecisionRow[]>`
     SELECT p.plan_slug,
            d->>'id'    AS decision_id,
@@ -170,7 +185,7 @@ async function relevantPlanDecisions(
       FROM harness_shared.harness_plans p,
            LATERAL jsonb_array_elements(p.decisions) d
      WHERE p.workspace_id = ${args.workspaceId}
-       AND p.harness_slug = ${args.harness}
+       ${allHarnesses ? sql`` : sql`AND p.harness_slug = ${args.harness}`}
        AND NOT p.archived
        AND d->>'id' IS NOT NULL
        AND to_tsvector('english', coalesce(d->>'title','') || ' ' || coalesce(d->>'body',''))

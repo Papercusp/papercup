@@ -56,9 +56,18 @@ an agent acts on. Filed as `EI-18804433041289369`; until it is fixed, pass **`ha
 framework docs, and confirm a "nothing exists" conclusion with `ls`/`grep` over
 `apps/operator-docs/src/content/docs/agent-insights/` before authoring anything.
 
+There is a **second, independent** reason a docs zero is not absence, found while verifying this
+very page: `docs:search` on `:3070` reads the **release checkout's** docs mirror, not your staging
+tree. Immediately after this page was written and built, the staging mirror held 622 insight pages
+and the release mirror held 621 — and `docs:search { harness: 'all' }` returned this page for
+**none** of three queries naming it almost verbatim. A newly authored insight is invisible to search
+until the deploy lands. So *"docs:search finds nothing"* has at least three readings — wrong corpus,
+not yet deployed, genuinely absent — and only the third licenses writing a new page.
+
 This is the ideal opening case because the failure is perfectly typical: the surface was
 authoritative, the answer was plausible, the conclusion was actionable, and it was **about a
-different corpus than the one I named**.
+different corpus than the one I named**. Note that both mechanisms are *scope substitutions*
+(axis 1) — and that the second one bit while checking the first.
 
 ## The discrimination test
 

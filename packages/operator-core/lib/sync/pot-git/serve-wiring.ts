@@ -711,12 +711,19 @@ async function resolveSupersededRepoKey(
  * its own reason depends on. Naming the topic alone still is not actionable;
  * what decides the fix is whether the muxer serves OTHER topics:
  *
- *   - `wiredTopics=<none>`      the connection handler never wired serve on this
+ *   - `serveTopics=<none>`      the connection handler never wired serve on this
  *                               muxer at all.
- *   - `wiredTopics=a…,b…` but   a dialer/server channel-id MISMATCH: the dial
+ *   - `serveTopics=a…,b…` but   a dialer/server channel-id MISMATCH: the dial
  *     not the requested topic   path opens a pot-git channel on whatever live
  *                               socket reaches the device, while serve is
  *                               registered per (muxer, topic).
+ *
+ * Deliberately NOT called `wiredTopics`: peer-dial-registry.ts already owns a
+ * module-level `wiredTopics` map, and that one is PROCESS-WIDE and belongs to
+ * the DIAL plane, whereas this set is per-MUXER and belongs to the SERVE plane.
+ * That difference in scope between the two planes is a prime suspect for the
+ * refusals this field exists to diagnose, so reusing the name across them would
+ * blur exactly the distinction a reader needs.
  *
  * Those two demand different fixes and were indistinguishable from the old log
  * line, which is what made the live rig<->tower papercusp standoff
@@ -724,24 +731,24 @@ async function resolveSupersededRepoKey(
  * directly assertable — `potGitLog` is a no-op under vitest, so a test cannot
  * observe the emitted line itself.
  *
- * @param wiredTopicHexes the muxer's serve-registered topics, or `null` if they
+ * @param serveTopicHexes the muxer's SERVE-registered topics, or `null` if they
  *   could not be read — rendered distinctly from a readable-but-empty set.
  */
 function formatRefusalTarget(
   reason: string,
   topicHex: string,
-  wiredTopicHexes: string[] | null,
+  serveTopicHexes: string[] | null,
 ): string {
   const short = (h: string): string => h.slice(0, 16);
   let tail = ` topic=${topicHex ? short(topicHex) : '<unknown>'}`;
   if (reason === 'not-serving') {
-    const wired =
-      wiredTopicHexes === null
+    const served =
+      serveTopicHexes === null
         ? '<unreadable>'
-        : wiredTopicHexes.length > 0
-          ? wiredTopicHexes.map(short).join(',')
+        : serveTopicHexes.length > 0
+          ? serveTopicHexes.map(short).join(',')
           : '<none>';
-    tail += ` wiredTopics=${wired}`;
+    tail += ` serveTopics=${served}`;
   }
   return tail;
 }
@@ -766,19 +773,19 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       // Read the muxer's serve registrations only for the reason that depends
       // on them. `null` => unreadable, which the formatter renders distinctly
       // from "readable and empty" (a very different diagnosis).
-      let wiredTopicHexes: string[] | null = [];
+      let serveTopicHexes: string[] | null = [];
       if (reason === 'not-serving') {
         try {
           const m = state.mux ? serveConfigByMuxer.get(state.mux) : undefined;
-          wiredTopicHexes = m ? [...m.keys()] : [];
+          serveTopicHexes = m ? [...m.keys()] : [];
         } catch {
-          wiredTopicHexes = null;
+          serveTopicHexes = null;
         }
       }
       potGitLog(
         'warn',
         `[pot-git] serve REFUSED reason=${reason} repo=${v.repoKey} peer=${peerTag(state)}` +
-          `${formatRefusalTarget(reason, state.topicHex, wiredTopicHexes)} id=${v.id}` +
+          `${formatRefusalTarget(reason, state.topicHex, serveTopicHexes)} id=${v.id}` +
           (suppressed > 0 ? ` (+${suppressed} identical suppressed in the last ${REFUSE_LOG_WINDOW_MS / 1000}s)` : ''),
       );
     }
