@@ -560,6 +560,10 @@ import LearningTab, {
 } from "./LearningTab";
 
 beforeEach(() => {
+  // Flags are a MODULE-level store, so an armed flag would leak into every later
+  // test in the file. Reset to defaults first (outer beforeEach runs before the
+  // nested ones), letting a suite that needs FLAGS.TESTING arm it explicitly.
+  setFlagPayload({ flags: {}, evaluatedAt: new Date().toISOString() });
   nuqsState.lview = "improvements";
   nuqsState.lane = "all";
   nuqsState.tab = null;
@@ -872,8 +876,17 @@ describe("LearningTab — Improvements view (default)", () => {
 });
 
 describe("LearningTab — Gym view", () => {
+  // The Gym rides FLAGS.TESTING (WI-6315) — arm it, or the tab redirects
+  // `?lview=gym` to the default view and none of these assertions can run.
   beforeEach(() => {
     nuqsState.lview = "gym";
+    setFlagPayload({
+      flags: { [FLAGS.TESTING]: true },
+      evaluatedAt: new Date().toISOString(),
+    });
+  });
+  afterEach(() => {
+    setFlagPayload({ flags: {}, evaluatedAt: new Date().toISOString() });
   });
 
   it("leads directly with sparse gym challengers", () => {
@@ -1634,6 +1647,12 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
 
   it("threads the inherited pot into the Gym query args", () => {
     nuqsState.lview = "gym";
+    // The Gym rides FLAGS.TESTING (WI-6315) — without it the view never mounts,
+    // so it would never issue the query whose args this asserts on.
+    setFlagPayload({
+      flags: { [FLAGS.TESTING]: true },
+      evaluatedAt: new Date().toISOString(),
+    });
     advScopeState.slug = "beta-hive";
     advScopeState.hive = "beta-hive";
     gymResult = {
@@ -1822,6 +1841,17 @@ describe("LearningTab — P-009 first-run orientation", () => {
  * carries the newest run's age, so recency is legible at any scroll position.
  */
 describe("GymView — recent-challengers header carries recency", () => {
+  // As above: the Gym rides FLAGS.TESTING (WI-6315).
+  beforeEach(() => {
+    setFlagPayload({
+      flags: { [FLAGS.TESTING]: true },
+      evaluatedAt: new Date().toISOString(),
+    });
+  });
+  afterEach(() => {
+    setFlagPayload({ flags: {}, evaluatedAt: new Date().toISOString() });
+  });
+
   it("stamps the newest run age + count into a sticky header", () => {
     nuqsState.lview = "gym";
     advScopeState.slug = "papercusp";

@@ -20,7 +20,8 @@
  * pot_members/pot_settings capture triggers + functions exist; assertions use the
  * RLS-bypass admin client.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
+import { __resetA003DropWarnThrottleForTest } from './hive-members';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { generateEd25519KeypairDer } from '../../../identity/ed25519';
 import { hiveKeychainId } from '../../../identity/hive-keypair';
@@ -101,10 +102,23 @@ beforeAll(async () => {
 afterAll(async () => {
   await db?.cleanup();
 });
+// EI-18771324701216281: half this suite deliberately exercises the cross-Hive DROP path,
+// which now emits a default-on warning — and `vitest-fail-on-console` fails any test that
+// warns unexpectedly. Install one spy for the whole file so an EXPECTED drop-warning is not
+// a failure, and let the tests that care assert against `warnSpy` directly.
+let warnSpy: ReturnType<typeof vi.spyOn>;
+beforeEach(() => {
+  warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
 afterEach(async () => {
   await db.adminSql.unsafe(
     'TRUNCATE harness_shared.pot_members, harness_shared.pot_settings, harness_shared.pots, harness_shared.federation_refused_op_counters CASCADE',
   );
+  warnSpy.mockRestore();
+  // The roster-drop warning is rate-limited per (boundSlug, rowHome) over a 60s window, so
+  // without this reset one test's drop SUPPRESSES a later test's identical one and the
+  // assertion counts silently depend on file order.
+  __resetA003DropWarnThrottleForTest();
 });
 
 async function seedHive(slug: string) {
@@ -128,6 +142,10 @@ describe('A-003 — pot_members/pot_settings reach a member-booted joiner', () =
     // The op is decoded + writeToPg is called, but the member-slug guard no-ops it.
     expect(await getHiveMember(WS, HOME, 7, db.adminSql)).toBeNull();
     expect(await getHiveSetting(WS, HOME, 'theme', db.adminSql)).toBeNull();
+    // EI-18771324701216281: this bug-reproducing drop is now AUDIBLE instead of silent.
+    // The warning firing here, on the exact shape of the original bug, is the point.
+    expect(warnSpy).toHaveBeenCalledTimes(1); // the members drop; settings has no such warning
+    expect(String(warnSpy.mock.calls[0][0])).toContain('NOT evidence of health');
   });
 
   it('GREEN (the fix): with potHomeSlug=HOME the same ops land under the home slug', async () => {
@@ -159,6 +177,9 @@ describe('A-003 — pot_members/pot_settings reach a member-booted joiner', () =
     expect(await getHiveMember(WS, HOME, 9, db.adminSql)).toBeNull(); // not under our home
     expect(await getHiveMember(WS, 'other-hive', 9, db.adminSql)).toBeNull(); // and not blindly accepted
     expect(await getHiveSetting(WS, 'other-hive', 'theme', db.adminSql)).toBeNull();
+    // EI-18771324701216281: same drop, now audible (rate-limited, default-on).
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toContain("'other-hive'");
   });
 });
 

@@ -41,6 +41,12 @@ beforeAll(async () => {
       PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
     )
   `);
+  // mig 682: `runs_routines`, the runner-election capability bit. The hand-built stub above
+  // predates it, but the REAL election query in checks.ts now writes and reads it — so the
+  // suite failed with `column "runs_routines" does not exist`, i.e. the stub had drifted from
+  // the migration it is imitating. Apply the REAL migration (ADD COLUMN IF NOT EXISTS, so it
+  // composes with the stub) rather than hand-adding the column, so this cannot drift again.
+  await db.sql.unsafe(readFileSync(join(SQL_DIR, '682-shared-presence-runs-routines.sql'), 'utf8'));
   // hives (184) + hive_members (185, FK → hives) — the admission-union check.
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '184-hives-table.sql'), 'utf8'));
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '185-hive-members-admission.sql'), 'utf8'));

@@ -988,8 +988,8 @@ const OP_CHAT_SIDEBAR_CSS = `
      reclaiming. That trade is now explicitly the owner's call and supersedes the
      WI-5162 "cut cleanly rather than squeeze" default FOR THIS ONE FACE — Fleet
      and Peers still collapse to icons, so the row gives up one label's width, not
-     three. The shared truncation treatment (`overflow:hidden; text-overflow:
-     ellipsis`) still applies, so if a narrow sidebar does run out of room the
+     three. The shared truncation treatment (overflow:hidden + text-overflow:
+     ellipsis) still applies, so if a narrow sidebar does run out of room the
      label ellipsises instead of overflowing the row. */
   .op-chat-header-main .op-chat-face-toggle--learning .op-chat-pot-toggle-label {
     display: block;
@@ -998,7 +998,7 @@ const OP_CHAT_SIDEBAR_CSS = `
      the tightened icon-only padding, so the two read as the matched pair the
      owner asked for. */
   .op-chat-header-main .op-chat-face-toggle--learning {
-    padding: 0 10px;
+    padding: 0 8px 0 6px;
   }
 }
 

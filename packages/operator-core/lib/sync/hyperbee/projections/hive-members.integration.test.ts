@@ -17,7 +17,12 @@ import { hiveKeychainId } from '../../../identity/hive-keypair';
 import { insertHiveIfAbsent } from '../../../hive-store';
 import { loadRevokedHivePubkeys, getHiveMember } from '../../../hive-membership-store';
 import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
-import { buildHiveMembersProjection, _testing, type HiveMemberRow } from './hive-members';
+import {
+  buildHiveMembersProjection,
+  _testing,
+  __resetA003DropWarnThrottleForTest,
+  type HiveMemberRow,
+} from './hive-members';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 import { applyPot557RenameAndFixups } from '../__tests__/_hive-substrate-rig';
@@ -74,6 +79,9 @@ afterEach(async () => {
   reconcileEpochKeysForCurrentMembers.mockReset().mockResolvedValue({ applied: true, newEpoch: 1, distributed: 1 });
   isHiveRekeyEnabledMock.mockReset().mockResolvedValue(true);
   _resetBootHistoryForTests();
+  // EI-18771324701216281: the roster-drop warning is rate-limited per (boundSlug, rowHome)
+  // over a 60s window — reset it so one test's drop cannot suppress a later test's.
+  __resetA003DropWarnThrottleForTest();
 });
 async function seedHive(slug = HIVE) {
   await insertHiveIfAbsent(
@@ -115,12 +123,25 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
     ]).toEqual(['bad-pk']);
   });
 
-  it('drops a cross-Hive op (pot_home_slug != the projection scope)', async () => {
+  it('drops a cross-Hive op (pot_home_slug != the projection scope) AND says so', async () => {
     await seedHive();
     await seedHive('beta');
-    await proj().writeToPg(memberRow({ pot_home_slug: 'beta', github_user_id: 9 }), { ts: 1, origin: 'remote', authorPubkey: 'peer' });
-    expect(await getHiveMember(WS, HIVE, 9, db.sql)).toBeNull(); // demuxed out
-    expect(await getHiveMember(WS, 'beta', 9, db.sql)).toBeNull(); // this projection is bound to HIVE
+    // EI-18771324701216281: this drop is no longer silent — it emits a default-on
+    // (rate-limited) warning. Assert it rather than merely tolerating it: a roster row
+    // vanishing without a trace is the exact failure mode that cost WI-559 its diagnosis.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await proj().writeToPg(memberRow({ pot_home_slug: 'beta', github_user_id: 9 }), { ts: 1, origin: 'remote', authorPubkey: 'peer' });
+      expect(await getHiveMember(WS, HIVE, 9, db.sql)).toBeNull(); // demuxed out
+      expect(await getHiveMember(WS, 'beta', 9, db.sql)).toBeNull(); // this projection is bound to HIVE
+      expect(warn).toHaveBeenCalledTimes(1);
+      const msg = String(warn.mock.calls[0][0]);
+      expect(msg).toContain(`'${HIVE}'`); // the slug it is bound to
+      expect(msg).toContain("'beta'"); // the incoming row's hive-home
+      expect(msg).toContain('NOT evidence of health');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('LWW: a newer fed_ts wins, an older one is dropped', async () => {

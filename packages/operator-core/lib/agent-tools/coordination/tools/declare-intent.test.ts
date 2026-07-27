@@ -422,8 +422,14 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
  * even if someone re-introduced the default here, because it never goes through the tool.
  */
 describe('current_files pass-through (EI-18776963284535761)', () => {
-  const filesArg = (): unknown =>
-    (writePresence.mock.calls.at(-1)?.[1] as { currentFiles?: unknown } | undefined)?.currentFiles;
+  // `writePresence` is declared as vi.fn(async () => {}), so its `calls` entries are
+  // typed as the empty tuple — cast to the real (identity, input) shape to read arg 1.
+  const filesArg = (): unknown => {
+    const call = writePresence.mock.calls.at(-1) as unknown as
+      | [unknown, { currentFiles?: unknown }]
+      | undefined;
+    return call?.[1]?.currentFiles;
+  };
 
   it('an OMITTED current_files reaches the store as undefined (untouched), not []', async () => {
     await tool.handler({ intent: 'a bare re-declare, exactly what coord:orient sends' }, ctx);
