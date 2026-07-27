@@ -323,6 +323,77 @@ describe('deriveCoordState', () => {
     });
   });
 
+  // unread-count-truthfulness-2026-07-27 D-012 — the BIRTH FLOOR.
+  //
+  // The bug these pin (owner-reported 2026-07-27): a BRAND-NEW session showed
+  // 1031 unread. A newborn has all three RECEIPT legs empty by construction —
+  // no watermark row, and it has not yet called coord:inbox/coord:orient — so
+  // the resolved cursor was null and the count fell back to the whole visible
+  // log. Reproduced through the real getAgentCoordState against the live log:
+  // two newborn owners both returned exactly 1031; after the floor, 0.
+  //
+  // D-007 measured this same no-cursor branch but reasoned about it ONLY as a
+  // REAPED agent (where a historical backlog is defensible). The newborn is the
+  // other end of that branch and is not: every counted message PREDATES the
+  // agent. The floor is the owner's session-birth ts folded in as a fourth leg
+  // of the same pickUnreadCursor max — so it can only ever move the cursor
+  // later, never raise a count.
+  describe('unread respects the birth floor (D-012)', () => {
+    it('counts nothing that predates a newborn agent, where receipts are all empty', () => {
+      const bornAt = isoMs(NOW - 5_000);
+      // The backlog the fleet accumulated long before this agent existed.
+      const messages: CoordEnvelope[] = Array.from({ length: 1031 }, (_, i) =>
+        msg({ msg_id: `pre-birth-${i}`, ts: isoMs(NOW - 3_600_000 + i * 1_000), from: 'su-9', to: ['*'] }),
+      );
+
+      // No receipts at all → the floor is the only thing bounding the count.
+      expect(pickUnreadCursor(pickUnreadCursor('', ''), null)).toBeNull();
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', null).unreadCount).toBe(1031);
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', bornAt).unreadCount).toBe(0);
+    });
+
+    it('still counts mail that arrived AFTER birth — the floor is not a blanket zero', () => {
+      const bornAt = isoMs(NOW - 60_000);
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'pre-birth', ts: isoMs(NOW - 120_000), from: 'su-2', to: ['*'] }),
+        msg({ msg_id: 'post-birth-1', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'post-birth-2', ts: isoMs(NOW - 10_000), from: 'su-3', to: ['su-1'] }),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', bornAt).unreadCount).toBe(2);
+    });
+
+    it('lets a LATER read receipt win over the birth floor (the floor never un-reads mail)', () => {
+      const bornAt = isoMs(NOW - 300_000);
+      const shownTs = isoMs(NOW - 60_000);
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'read-since-birth', ts: isoMs(NOW - 120_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'genuinely-unread', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['su-1'] }),
+      ];
+      // The fold takes the LATER of the two, so the receipt governs.
+      expect(pickUnreadCursor(shownTs, bornAt)).toBe(shownTs);
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', shownTs).unreadCount).toBe(1);
+    });
+
+    // The respawn trap: a coord owner id OUTLIVES any one session row, so the
+    // floor must come from the owner's EARLIEST session, not its latest. Using
+    // the latest would re-floor the cursor on every respawn and silently drop
+    // mail that arrived during an earlier leg of the same owner's life — a
+    // strictly worse bug than the over-count, since it HIDES real messages.
+    it('floors at the EARLIEST session start, so a respawn cannot hide mail', () => {
+      const firstStart = isoMs(NOW - 600_000);
+      const respawnedAt = isoMs(NOW - 60_000);
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'before-owner-existed', ts: isoMs(NOW - 900_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'during-first-leg', ts: isoMs(NOW - 300_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'after-respawn', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['su-1'] }),
+      ];
+      // Correct: the pre-existence one drops, both in-life ones survive.
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', firstStart).unreadCount).toBe(2);
+      // What flooring at the LATEST session would have done — mail lost.
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', respawnedAt).unreadCount).toBe(1);
+    });
+  });
+
   // unread-count-truthfulness-2026-07-27 Phase 2 (P-006), rule = D-006.
   //
   // Phase 1 gave the counter a read cursor. These pin the SECOND half: of what

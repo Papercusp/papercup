@@ -495,3 +495,116 @@ describe('bounds and determinism', () => {
     expect(out.coverage.callsExamined).toBe(2);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P-010 — the TERMINAL-GOAL filter (EI-18830083673617307)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The live defect this filter exists for, reproduced from the real report.
+ *
+ * `intent-divergence-detector` paged an agent that its "declared intent spans two
+ * goals (EI-18822892068318552 and EI-18828567391761902)" — and BOTH were already
+ * `done` with committed completion authority when the alert fired (re-verified
+ * against `harness_shared.work_items` on 2026-07-27: status `done` for each). The
+ * verdict was not wrong about the goal refs; it was computed against work that no
+ * longer existed, so there was no re-declaration the recipient could make that
+ * would reconcile it. Unactionable by construction.
+ *
+ * ⚠ ORDERED PROVE-CAPABLE FIRST. "No finding" is the output of a working filter AND
+ * of a detector that stopped detecting, so the live pair is asserted to FIRE before
+ * any silence is asserted. Every case below reuses the same two calls and varies
+ * only the terminal set — so a leg that quietly stopped comparing reddens the first
+ * case instead of passing all the rest.
+ */
+describe('P-010 — goals that are already terminal are not compared', () => {
+  const DONE_A = 'EI-18822892068318552';
+  const DONE_B = 'EI-18828567391761902';
+  const drifting: DivergenceCall[] = [
+    call({ id: 1, intentEventId: 77, goalRef: DONE_A }),
+    call({ id: 2, intentEventId: 77, goalRef: DONE_B }),
+  ];
+
+  it('CAPABILITY: the same pair DOES fire when both goals are live', () => {
+    const out = detectIntentActionDivergence(drifting, { terminalGoalRefs: new Set() });
+    expect(out.divergences.map((d) => d.kind)).toEqual(['goal-drift-within-intent']);
+    expect(out.coverage.comparableBuckets).toBe(1);
+    expect(out.coverage.terminalFilterApplied).toBe(true);
+    expect(out.coverage.terminalGoalCallsExcluded).toBe(0);
+  });
+
+  it('the real case: both goals terminal ⇒ no finding', () => {
+    const out = detectIntentActionDivergence(drifting, {
+      terminalGoalRefs: new Set([DONE_A, DONE_B]),
+    });
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.terminalGoalCallsExcluded).toBe(2);
+    expect(out.coverage.bucketsCollapsedByTerminal).toBe(1);
+  });
+
+  it('...and reports it as a STRUCTURAL zero naming the real cause, not agreement', () => {
+    const out = detectIntentActionDivergence(drifting, {
+      terminalGoalRefs: new Set([DONE_A, DONE_B]),
+    });
+    expect(out.structuralZero).toBe('all-goals-terminal');
+    expect(isStructuralZero(out.structuralZero)).toBe(true);
+    // The two wrong answers this reason exists to displace: `agreement` would claim
+    // a live pair was compared and agreed; `stamped-legs-empty` would blame a
+    // missing stamp and send the reader to fix P-009 instead of looking at goal
+    // state. Both are confidently wrong rather than merely unhelpful.
+    expect(out.structuralZero).not.toBe('agreement');
+    expect(out.structuralZero).not.toBe('stamped-legs-empty');
+    expect(explainZero(out.structuralZero!)).toMatch(/already CLOSED/);
+  });
+
+  it('one terminal + one live collapses the bucket — a pair needs two LIVE goals', () => {
+    const out = detectIntentActionDivergence(drifting, { terminalGoalRefs: new Set([DONE_A]) });
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.terminalGoalCallsExcluded).toBe(1);
+    expect(out.coverage.bucketsCollapsedByTerminal).toBe(1);
+  });
+
+  it('a live pair still fires even when OTHER goals in the window are terminal', () => {
+    const out = detectIntentActionDivergence(
+      [
+        ...drifting,
+        call({ id: 3, ownerId: 'su-b', intentEventId: 88, goalRef: 'WI-live-1' }),
+        call({ id: 4, ownerId: 'su-b', intentEventId: 88, goalRef: 'WI-live-2' }),
+      ],
+      { terminalGoalRefs: new Set([DONE_A, DONE_B]) },
+    );
+    expect(out.divergences.map((d) => d.ownerId)).toEqual(['su-b']);
+    expect(out.coverage.bucketsCollapsedByTerminal).toBe(1);
+    expect(out.coverage.comparableBuckets).toBe(1);
+  });
+
+  /**
+   * ⚠ OMITTED ≠ EMPTY, and this is the assertion that keeps the fix honest.
+   * `terminalGoalCallsExcluded: 0` is produced BOTH by "the filter ran and every
+   * goal was live" and by "no filter ran at all" — opposite states, one clean and
+   * one the bug. Only `terminalFilterApplied` separates them, so a caller that
+   * forgets to pass the set stays visible in coverage rather than silently
+   * reverting to the pre-P-010 behaviour.
+   */
+  it('records that NO filter ran when the set is omitted — not that nothing was excluded', () => {
+    const unfiltered = detectIntentActionDivergence(drifting);
+    expect(unfiltered.coverage.terminalFilterApplied).toBe(false);
+    expect(unfiltered.coverage.terminalGoalCallsExcluded).toBe(0);
+    // Back-compat: omitting the set preserves the old behaviour exactly.
+    expect(unfiltered.divergences.map((d) => d.kind)).toEqual(['goal-drift-within-intent']);
+
+    const filtered = detectIntentActionDivergence(drifting, { terminalGoalRefs: new Set() });
+    expect(filtered.coverage.terminalFilterApplied).toBe(true);
+    // Identical counter, opposite meaning — which is exactly why the boolean exists.
+    expect(filtered.coverage.terminalGoalCallsExcluded).toBe(
+      unfiltered.coverage.terminalGoalCallsExcluded,
+    );
+  });
+
+  it('the goal leg is not deliverable once every bucket collapsed', () => {
+    const out = detectIntentActionDivergence(drifting, {
+      terminalGoalRefs: new Set([DONE_A, DONE_B]),
+    });
+    expect(deliverableKinds(out.coverage)).not.toContain('goal-drift-within-intent');
+  });
+});

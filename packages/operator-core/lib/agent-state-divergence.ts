@@ -729,11 +729,16 @@ function round4(n: number): number {
 
 function zeroReasonFor(c: DivergenceCoverage): DivergenceZeroReason {
   if (c.callsExamined === 0) return 'no-calls';
-  if (!c.stampedLegRan && !c.samplingLegRan) return 'nothing-comparable';
-  // Ordered BEFORE `stamped-legs-empty`, which blames a missing stamp. When the
-  // stamp was present and the goals were merely finished, that explanation is
-  // wrong in a way that sends the reader to fix the wrong thing.
+  // ⚠ ORDERED FIRST among the did-not-run reasons — the MOST SPECIFIC true
+  // explanation wins, because each of the other two asserts something false here.
+  // `nothing-comparable` says "NONE carried an intent stamp and NONE failed" and
+  // `stamped-legs-empty` blames a zero fill rate; when a bucket collapsed on
+  // terminality the stamps and goal refs were both PRESENT. Either would send the
+  // reader to fix P-009's stamp instead of looking at goal state. (Caught by
+  // `agent-state-divergence.test.ts` — the original ordering put this last and a
+  // clean all-`ok` fixture fell through to `nothing-comparable`.)
   if (!c.stampedLegRan && c.bucketsCollapsedByTerminal > 0) return 'all-goals-terminal';
+  if (!c.stampedLegRan && !c.samplingLegRan) return 'nothing-comparable';
   if (!c.stampedLegRan) return 'stamped-legs-empty';
   return 'agreement';
 }

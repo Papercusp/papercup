@@ -43,6 +43,9 @@ function deps(over: Parameters<typeof divergenceSweep>[0] = {}) {
     claimWatchdogFire: vi.fn(async () => true),
     openEscalation: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => undefined),
+    // P-010: stubbed so these tests never reach PG. Default "nothing is terminal"
+    // keeps every pre-existing expectation meaning what it did before the filter.
+    loadTerminalGoalRefs: vi.fn(async () => new Set<string>()),
     // Comfortably past CONVERGENCE_SETTLE_MS from the flail's last failure, so
     // these delivery-ordering tests exercise delivery rather than the settle
     // rule (which has its own tests below).
@@ -225,5 +228,81 @@ describe('divergenceSweep — what it refuses to deliver', () => {
     } as never);
     const out = await divergenceSweep(d);
     expect(out.outcomes[0].outcome).toBe('error');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P-010 — terminal-goal resolution, and what happens when it fails
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Two calls under one intent, drifting between two goals — the shape of the real alert. */
+function goalDriftCalls(a = 'EI-1', b = 'EI-2'): DivergenceCall[] {
+  return [
+    { id: 1, ownerId: 'su-a', toolName: 'coord:orient', status: 'ok', invokedAt: new Date(T0).toISOString(), intentEventId: 42, goalRef: a },
+    { id: 2, ownerId: 'su-a', toolName: 'coord:orient', status: 'ok', invokedAt: new Date(T0 + 1000).toISOString(), intentEventId: 42, goalRef: b },
+  ];
+}
+
+describe('P-010 — the sweep resolves goal state before it pages anyone', () => {
+  it('CAPABILITY: pages when both goals are live', async () => {
+    const d = deps({ loadRecentCalls: vi.fn(async () => goalDriftCalls()) } as never);
+    const out = await divergenceSweep(d);
+    expect(out.outcomes.map((o) => o.outcome)).toEqual(['notified']);
+    expect(d.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends nothing when both goals are already terminal — the live defect', async () => {
+    const d = deps({
+      loadRecentCalls: vi.fn(async () => goalDriftCalls()),
+      loadTerminalGoalRefs: vi.fn(async () => new Set(['EI-1', 'EI-2'])),
+    } as never);
+    const out = await divergenceSweep(d);
+    expect(d.sendMessage).not.toHaveBeenCalled();
+    expect(out.report?.structuralZero).toBe('all-goals-terminal');
+    expect(out.outcomes[0].reason).toMatch(/STRUCTURAL ZERO/);
+  });
+
+  it('passes every cited goal ref to the resolver, deduped', async () => {
+    const d = deps({ loadRecentCalls: vi.fn(async () => goalDriftCalls('EI-1', 'EI-1')) } as never);
+    await divergenceSweep(d);
+    expect(d.loadTerminalGoalRefs).toHaveBeenCalledWith(
+      expect.objectContaining({ goalRefs: ['EI-1', 'EI-1'] }),
+    );
+  });
+
+  /**
+   * ⚠ FAIL CLOSED. The tempting fallback when goal state is unreadable is to run
+   * the detector unfiltered — but unfiltered IS the bug, so that would reinstate it
+   * at exactly the moment the database is least healthy, and the resulting page
+   * would look identical to a legitimate one. The goal leg is withheld instead.
+   */
+  it('withholds the goal leg — and says why — when goal state cannot be resolved', async () => {
+    const d = deps({
+      loadRecentCalls: vi.fn(async () => goalDriftCalls()),
+      loadTerminalGoalRefs: vi.fn(async () => {
+        throw new Error('pg down');
+      }),
+    } as never);
+    const out = await divergenceSweep(d);
+    expect(d.sendMessage).not.toHaveBeenCalled();
+    expect(out.outcomes[0].outcome).toBe('suppressed');
+    expect(out.outcomes[0].reason).toMatch(/goal state unresolvable/);
+    expect(out.outcomes[0].reason).toMatch(/pg down/);
+  });
+
+  /**
+   * ...but the failure is SCOPED to the leg that depends on it. The retry-loop leg
+   * reads no goal state, so a dead work_items read must not silence it — that would
+   * turn one unreadable table into a fleet-wide blind spot.
+   */
+  it('still delivers the sampling leg when goal resolution failed', async () => {
+    const d = deps({
+      loadTerminalGoalRefs: vi.fn(async () => {
+        throw new Error('pg down');
+      }),
+    } as never);
+    const out = await divergenceSweep(d);
+    expect(out.outcomes.map((o) => o.outcome)).toEqual(['notified']);
+    expect(d.sendMessage).toHaveBeenCalledTimes(1);
   });
 });

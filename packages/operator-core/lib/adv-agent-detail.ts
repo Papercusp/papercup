@@ -460,9 +460,42 @@ export async function getAgentLocks(owner: string): Promise<AgentLocks> {
 }
 
 /**
- * This agent's last read receipt (ISO), or null if it has none on record.
+ * This agent's unread cursor (ISO), or null if nothing on record bounds it.
  *
- * Three signals, folded by the shared `pickUnreadCursor` rule (the LATER wins):
+ * FOUR signals now, folded by the shared `pickUnreadCursor` rule (the LATER
+ * wins). The first three are read RECEIPTS ("what has this agent already
+ * read"); the fourth is a BIRTH FLOOR ("what could ever have reached it").
+ *
+ * unread-count-truthfulness-2026-07-27 D-012 (owner-reported 2026-07-27: a
+ * BRAND-NEW session showed 1031 unread). The three receipt legs are all empty
+ * by construction for a newborn — it has no watermark row, and it has not yet
+ * called coord:inbox/coord:orient — so `pickUnreadCursor` honestly returned
+ * null and the count fell back to the WHOLE visible log. D-007 measured that
+ * same no-cursor path but reasoned about it ONLY as a REAPED agent, where a
+ * historical backlog is defensible; the newborn is the opposite end of the same
+ * branch and is NOT defensible: every one of those messages predates the
+ * agent's existence.
+ *
+ * Why this is a truthfulness fix and not the display cap D-003 forbids: a
+ * `to:['*']` broadcast is a fan-out to the population ALIVE AT SEND TIME. An
+ * agent born afterwards was never in that population, so the message was never
+ * deliverable to it — "unread" would assert it was addressed to this agent and
+ * ignored, which is false. The floor changes which messages are CANDIDATES, not
+ * how a candidate count is rendered.
+ *
+ * It composes with the existing legs rather than replacing them, and cannot
+ * raise a count (`pickUnreadCursor` only ever moves the cursor later):
+ *   - newborn, no receipts        → floor wins    → counts only post-birth mail
+ *   - live agent with receipts    → receipt wins  → unchanged (receipts are later)
+ *   - reaped agent, row GC'd      → floor is null → unchanged, D-007 preserved
+ *   - reaped agent, row surviving → floor wins    → counts its LIFETIME, not all time
+ *
+ * Deliberately folded HERE and not inside `pickUnreadCursor` itself: that
+ * helper is shared with the continuation gate (loop/checkpoint.ts), and D-008 /
+ * D-011 define it as a pure max over cursor legs. Pushing a birth floor into it
+ * would silently change what makes a second consumer continue a turn.
+ *
+ * The receipt signals, unchanged:
  *   - `messages_since_ts` — the turn-END settle watermark. ATTACHED-ONLY, so a
  *     detached/headless session keeps its initial `''` forever; on its own it
  *     is a dead pointer for ~95% of rows.
@@ -478,14 +511,18 @@ export async function getAgentLocks(owner: string): Promise<AgentLocks> {
  */
 async function readUnreadCursor(owner: string): Promise<string | null> {
   try {
-    const [wm, lastReadByOwner] = await Promise.all([
+    const [wm, lastReadByOwner, bornAt] = await Promise.all([
       readWatermark(owner),
       lastInboxReadAtBatch([owner]),
+      // Fail-soft on its own, so a birth-time lookup failure degrades to the
+      // three-receipt behaviour rather than taking the whole cursor down.
+      firstAdvSessionStartByCoordOwner(owner).catch(() => null),
     ]);
-    return pickUnreadCursor(
+    const receipts = pickUnreadCursor(
       pickUnreadCursor(wm?.messages_since_ts, wm?.messages_shown_ts),
       lastReadByOwner.get(owner) ?? null,
     );
+    return pickUnreadCursor(receipts, bornAt);
   } catch {
     return null;
   }

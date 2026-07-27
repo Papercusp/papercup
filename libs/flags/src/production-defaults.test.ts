@@ -320,6 +320,28 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   'papercusp-improvement-auto-implement',
   'papercusp-lazy-substrate-boot',
   'papercusp-capability-envelope-overrides',
+  // 2026-07-27 (WI-6499) — papercusp-task-manager: a DELIBERATE new dark flag on an
+  // EXPLICIT owner directive ("put the task manager behind a testing flag it isn't
+  // ready yet"), issued the same day the flag shipped default-ON. case: incomplete.
+  //
+  // NOT the EI-7230 never-added-to-DARK_FLAGS class the entries above mostly are — its
+  // comment genuinely said DEFAULT ON and it genuinely derived ON. It is a reversal.
+  //
+  // It is also NOT the parking-lot abuse the watermark polices, though it superficially
+  // resembles it (finished-looking work going dark). The distinction: the owner is the
+  // one asking for the gate, on a subsystem that intercepts EVERY spawn on the box and
+  // has never run a sustained residue-classification window — the precondition plan
+  // D-010 already names before anything acts on `unaccounted`.
+  //
+  // What made the reversal urgent: the flag was DECORATIVE. It had two call sites (the
+  // pane's sync query, the /admin/tasks route), so OFF blanked the dashboard while every
+  // spawn stayed confined and ledgered, the 30s reconciler kept running, and a
+  // systemd-run probe still fired at module import — a kill-switch that reads as safe
+  // and isn't. WI-6499 made the gate real at the seams (task-manager/enabled.ts, the
+  // single authority, fail-CLOSED) so OFF is now byte-identical to the pre-feature box.
+  // Parking subset 13 → 14, so DARK_FLAGS_HIGH_WATERMARK raised 13 → 14 under the owner
+  // directive (the sign-off path the policy names). Count 32 → 33.
+  'papercusp-task-manager',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -541,7 +563,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // byte-identical-or-safer for each: papercusp-improvement-auto-implement,
     // papercusp-lazy-substrate-boot, papercusp-capability-envelope-overrides.
     // See PRE_INVERSION_DEFAULT_OFF above for the per-flag reasoning. Count 29 → 32.
-    expect(offCount).toBe(32);
+    // 2026-07-27 (WI-6499) — papercusp-task-manager: DELIBERATE reversal on an explicit
+    // owner directive the same day it shipped default-ON ("put the task manager behind a
+    // testing flag it isn't ready yet"). case: incomplete, so the parking subset and the
+    // watermark both move 13 → 14. Count 32 → 33.
+    expect(offCount).toBe(33);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {
