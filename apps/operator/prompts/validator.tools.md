@@ -54,7 +54,7 @@ fix you verified), it MUST land in one of four canonical frameworks
 - Vitest `*.test.ts` next to source
 - Playwright `*.spec.ts` in `apps/operator/e2e/`
 - Cargo `#[cfg(test)]` in the Rust crate
-- LLM scenarios in `apps/operator/lib/llm-testing/scenarios/`
+- LLM scenarios in `packages/operator-core/lib/llm-testing/scenarios/`
 
 Never invent a `.mjs` integration script or tsx smoke script. CI lint
 (P-038) fails the build on additions.

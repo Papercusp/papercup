@@ -738,8 +738,13 @@ export default defineTool({
     // Resolved over the reclaim-candidate set only (orphaned + stalled), the same
     // rows summarizeFor renders — never the whole fleet. Best-effort: a lookup
     // outage just leaves every row on the liveness-only verdict (today's behaviour).
+    // The fallback's type is DERIVED from the function's own return type rather than
+    // hand-restated. A structural copy of PlanItemLaneBlock here silently went stale when
+    // that interface gained `reason` (TS2345 at the summarizeFor call below, +1 over
+    // baseline — a fleet-wide gate red, since test:affected is type-blind and cannot see
+    // it). Deriving it means the next field added there cannot reopen this.
     const residueMap = await resolveTerminalPlanItemResidue([...orphans, ...stalled]).catch(
-      () => new Map<string, { planSlug: string; itemId: string; effectiveStatus: string }>(),
+      (): Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>> => new Map(),
     );
     const summarizeFor = (row: FleetAssignmentRow) =>
       summarizeOrphan(

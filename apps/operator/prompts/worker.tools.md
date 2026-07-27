@@ -51,7 +51,7 @@ New tests **always** go in one of the four canonical frameworks
   drives the browser.
 - `<crate>/src/<name>.rs` `#[cfg(test)] mod tests { … }` — Cargo. For
   Rust code.
-- `apps/operator/lib/llm-testing/scenarios/<role>/<name>.{ts,yaml}` —
+- `packages/operator-core/lib/llm-testing/scenarios/<role>/<name>.{ts,yaml}` —
   LLM scenarios. For judge-scored prompt tests.
 
 **Never** create a new `.mjs` integration script under
