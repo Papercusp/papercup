@@ -16,7 +16,11 @@ describe('P-006: git.pipelinePosition registers under the D-038 contract', () =>
 
   it('registers and is retrievable', () => {
     registerBuiltinCells();
-    expect(getCell('git.pipelinePosition')?.resolver).toContain('gitPipelinePosition()');
+    // P-019: reads are audience-scoped. This cell is workspace-visible, so any
+    // reader sees it — which is itself the assertion worth making here.
+    expect(getCell('git.pipelinePosition', { ownerId: 'su-anyone' })?.resolver).toContain(
+      'gitPipelinePosition()',
+    );
   });
 
   it('is idempotent — registering the built-ins twice does not throw', () => {

@@ -218,7 +218,7 @@ describe('restart-resume via PG-cursor (WI-2105 — the REV-leg fix)', () => {
     // decodes only the 10-op tail, NOT all 110 from 0. This is exactly what makes
     // a large orphaned log's fold complete across restarts instead of looping.
     const cursor2 = createMergeCursor();
-    await seedCursorFromPg(cursor2, store);
+    await seedCursorFromPg(cursor2, store, null);
     expect(cursor2.positions.get('logA')).toBe(100);
     const boot2 = await foldWithPersist(fakeLog('logA', [...ops]), cursor2, store);
     expect(boot2.decoded).toBe(10); // tail only — the resume win
@@ -233,7 +233,7 @@ describe('restart-resume via PG-cursor (WI-2105 — the REV-leg fix)', () => {
     for (let i = 0; i < 100; i++) ops.push(put('features_consolidated', `K${i}`, 1000 + i));
     const store = fakeStore(new Map([['logA', 60]])); // persisted mid-fold pre-crash
     const cursor = createMergeCursor();
-    await seedCursorFromPg(cursor, store);
+    await seedCursorFromPg(cursor, store, null);
     const applied: string[] = [];
     const result = await mergeAdmittedLogsIncremental([fakeLog('logA', ops)], cursor, {
       getTimeoutMs: 0,
