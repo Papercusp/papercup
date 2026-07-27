@@ -343,9 +343,20 @@ describe('LEG C — no production surface calls an unchecked accessor', () => {
       resolveRepoFile(__dirname, 'packages/operator-core/lib/cell-registry.ts'),
     );
     const repoRoot = path.resolve(libDir, '..', '..', '..');
-    const offenders = scanForBypassCallSites(libDir, repoRoot).filter(
-      (f) => !(f in CALL_SITE_ALLOWLIST),
-    );
+    const found = scanForBypassCallSites(libDir, repoRoot);
+
+    // ⚠ NON-VACUITY, and this assertion is load-bearing. A walk that silently scanned
+    // ZERO files — a moved directory, a bad anchor, an over-broad skip list — produces an
+    // empty `found`, which then filters to an empty `offenders` and reports GREEN. That is
+    // a gate that has stopped gating while still looking healthy, the exact shape this
+    // whole file exists to prevent. cell-registry.ts defines the bypasses, so it must
+    // always be found BEFORE the allowlist filter; if it is not, the scan is broken, not clean.
+    expect(
+      found,
+      'the bypass scan found nothing at all — it is not scanning the tree, so its GREEN is meaningless',
+    ).toContain('packages/operator-core/lib/cell-registry.ts');
+
+    const offenders = found.filter((f) => !(f in CALL_SITE_ALLOWLIST));
 
     expect(
       offenders,

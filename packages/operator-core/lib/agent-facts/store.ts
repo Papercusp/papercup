@@ -76,6 +76,45 @@ export type FactConfidence = (typeof FACT_CONFIDENCE_LEVELS)[number];
 export const FACT_KINDS = ['conclusion', 'assumption', 'convention'] as const;
 export type FactKind = (typeof FACT_KINDS)[number];
 
+/**
+ * P-018 / D-016: the enforcement tiers, STRONGEST FIRST — the order is the
+ * ruling ("always prefer this tier"), so keep it.
+ *
+ *   structural — impossible to do wrong; no agent decision is involved.
+ *   gate       — refused at a chokepoint.
+ *   detector   — measured and reported, never silently tolerated. LAST RESORT.
+ *
+ * ⚠ `prompt` is deliberately ABSENT. D-016: *"The prompt/playbook is NOT a tier.
+ * Adding 'agents should declare assumptions' to the su playbook is precisely the
+ * 47.1→34.9 mechanism."* A documentation-only convention must therefore be
+ * UNABLE to claim a tier — claiming one is exactly how prose exhortation passes
+ * itself off as structure. Such a convention is still declarable; it simply
+ * leaves `enforcement` unset and reads as untiered, which is the honest record.
+ */
+export const CONVENTION_ENFORCEMENT_TIERS = ['structural', 'gate', 'detector'] as const;
+export type ConventionEnforcementTier = (typeof CONVENTION_ENFORCEMENT_TIERS)[number];
+
+/** The tiers D-016 calls "tier-2 and tier-3" — the ones that ship with a floor. */
+const MEASURED_TIERS: ReadonlySet<ConventionEnforcementTier> = new Set<ConventionEnforcementTier>([
+  'gate',
+  'detector',
+]);
+
+/**
+ * P-018 / D-075 R2 — HOW a convention is enforced (migration 692).
+ *
+ * `floor`/`reviewBy` are REQUIRED for a measured tier and REFUSED for
+ * `structural`; see {@link validateConventionEnforcement} for why each direction
+ * is a refusal rather than a default.
+ */
+export interface ConventionEnforcement {
+  tier: ConventionEnforcementTier;
+  /** Adoption floor as a rate in (0,1]. D-016: below floor at review = failing. */
+  floor?: number;
+  /** ISO date the floor is judged at. D-016: "an adoption floor and a review date". */
+  reviewBy?: string;
+}
+
 // EI-18681984560352579 / migration 664 (2026-07-26): raised 500 -> 1200. The
 // old 500-char cap was silently amputating the OPERATIVE clause of facts
 // (which fold VERBATIM as binding context) — observed 3x in one session,
@@ -268,6 +307,10 @@ export interface AgentFact {
    *  e.g. `{ subject: 'cell:gate.greenCheckpoint.verdict', assertion: '…' }`.
    *  `body` remains the prose a human reads; null when none was filed. */
   claim: Record<string, unknown> | null;
+  /** P-018 / D-016: HOW this convention is enforced (migration 692). null = not
+   *  declared — including for every convention whose only enforcement is
+   *  documentation, which D-016 rules out as a tier. */
+  enforcement: ConventionEnforcement | null;
   createdBy: string;
   updatedAt: string;
   expiresAt: string;
@@ -315,6 +358,10 @@ export interface AssertFactInput {
   dependsOn?: readonly FactDependency[] | null;
   /** P-008 (b) / D-019 DEFECT 2: the optional typed assertion P-011 compares. */
   claim?: Record<string, unknown> | null;
+  /** P-018 / D-016: the enforcement tier. Validated by
+   *  {@link validateConventionEnforcement} — a tier on a non-convention, a
+   *  floorless gate/detector, and a floored structural are all REFUSED. */
+  enforcement?: ConventionEnforcement | null;
   createdBy: string;
   ttlSec?: number;
   workspaceId?: string;
@@ -408,6 +455,116 @@ export function validateAudienceScope(audienceScope: string | null | undefined):
     return `audienceScope '${a}' does not match the v1 grammar 'fleet:<slug>' — an unmatchable audience would hide the fact from everyone`;
   }
   return null;
+}
+
+/**
+ * P-018 / D-016 / D-075 R3 — validate an enforcement declaration against the
+ * fact's `kind`. Returns an error string or null. PURE.
+ *
+ * Three refusals, each with a reason that is NOT stylistic:
+ *
+ * 1. **An enforcement tier on a non-convention is refused.** A tier says how a
+ *    NORM is enforced; a conclusion and an assumption are not norms, so there is
+ *    no behaviour a tier could describe. Silently dropping it would be worse than
+ *    refusing — the caller would believe a tier was recorded.
+ *
+ * 2. **A `gate`/`detector` tier REQUIRES both `floor` and `reviewBy`.** This is
+ *    D-016 made mechanical: *"Every tier-2 and tier-3 behaviour ships with an
+ *    adoption floor and a review date"* and *"a detector without a floor is prose
+ *    exhortation in a costume."* Left as documentation, that sentence is itself
+ *    the prose-exhortation mechanism D-016 exists to reject — the rule only
+ *    survives contact as a typed refusal. A `floor` of 0 is refused for the same
+ *    reason: a floor nothing can fall below is not a floor.
+ *
+ * 3. **A `structural` tier REFUSES a floor/reviewBy.** D-016: structural "needs
+ *    no enforcement because there is no behaviour to enforce" — so there is
+ *    nothing to measure and the adoption rate is not merely unmeasured but
+ *    UNDEFINED. Accepting a floor there would put an uncomputable number on the
+ *    review docket, and an uncomputable floor reads as *failing* at review, which
+ *    under D-016's own rule ("below floor at review = the feature is failing; it
+ *    either moves up a tier or is cut") would get a working convention cut.
+ */
+export function validateConventionEnforcement(
+  kind: FactKind | null | undefined,
+  enforcement: ConventionEnforcement | null | undefined,
+): string | null {
+  if (enforcement == null) return null; // absent = untiered, always legal
+  if (kind !== 'convention') {
+    return (
+      `enforcement is only meaningful on kind:'convention' (got ${kind == null ? 'no kind' : `kind:'${kind}'`}) — ` +
+      `a tier describes how a NORM is enforced, and a ${kind ?? 'kind-less'} fact is not one`
+    );
+  }
+  const tier = enforcement.tier;
+  if (!(CONVENTION_ENFORCEMENT_TIERS as readonly string[]).includes(tier)) {
+    return (
+      `unknown enforcement tier '${tier}' — one of ${CONVENTION_ENFORCEMENT_TIERS.join('|')}. ` +
+      `Note 'prompt' is deliberately not a tier (D-016): a convention enforced only by ` +
+      `documentation leaves enforcement unset rather than claiming one`
+    );
+  }
+  const hasFloor = enforcement.floor != null;
+  const hasReview = (enforcement.reviewBy ?? '').trim() !== '';
+  if (MEASURED_TIERS.has(tier)) {
+    if (!hasFloor || !hasReview) {
+      const missing = [!hasFloor ? 'floor' : null, !hasReview ? 'reviewBy' : null]
+        .filter(Boolean)
+        .join(' and ');
+      return (
+        `tier '${tier}' requires ${missing} (D-016: every tier-2/tier-3 behaviour ships with an ` +
+        `adoption floor and a review date — "a detector without a floor is prose exhortation in a costume")`
+      );
+    }
+    const floor = enforcement.floor as number;
+    if (!Number.isFinite(floor) || floor <= 0 || floor > 1) {
+      return `floor must be a rate in (0,1] (got ${JSON.stringify(enforcement.floor)}) — a floor of 0 is not a floor`;
+    }
+    const reviewBy = (enforcement.reviewBy ?? '').trim();
+    const parsed = Date.parse(reviewBy);
+    if (!Number.isFinite(parsed)) {
+      return `reviewBy '${reviewBy}' is not a parseable date — an unparseable review date never comes due`;
+    }
+  } else {
+    if (hasFloor || hasReview) {
+      const extra = [hasFloor ? 'floor' : null, hasReview ? 'reviewBy' : null]
+        .filter(Boolean)
+        .join(' and ');
+      return (
+        `tier 'structural' takes no ${extra} — D-016: structural "needs no enforcement because there ` +
+        `is no behaviour to enforce", so the adoption rate is undefined, not merely unmeasured. An ` +
+        `uncomputable floor reads as FAILING at review and would get a working convention cut`
+      );
+    }
+  }
+  return null;
+}
+
+/**
+ * P-018: defensive read of the `enforcement` jsonb. Same dual text/object
+ * arrival handling as {@link parseFactDependencies}. An unrecognised tier reads
+ * as null rather than propagating a tier the contract does not have — the mig-692
+ * CHECK already rejects it at write time; this is the read-side backstop for the
+ * case a CHECK cannot cover (a LATER migration widening the vocabulary). PURE.
+ */
+export function parseConventionEnforcement(raw: unknown): ConventionEnforcement | null {
+  let v = raw;
+  if (typeof v === 'string') {
+    const t = v.trim();
+    if (!t) return null;
+    try {
+      v = JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const tier = typeof o.tier === 'string' ? o.tier : '';
+  if (!(CONVENTION_ENFORCEMENT_TIERS as readonly string[]).includes(tier)) return null;
+  const out: ConventionEnforcement = { tier: tier as ConventionEnforcementTier };
+  if (typeof o.floor === 'number' && Number.isFinite(o.floor)) out.floor = o.floor;
+  if (typeof o.reviewBy === 'string' && o.reviewBy.trim()) out.reviewBy = o.reviewBy.trim();
+  return out;
 }
 
 /**
@@ -688,6 +845,14 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     );
   }
   const kind = input.kind ?? null;
+  // P-018 / D-016 / D-075 R3. Validated here rather than only in the tool layer
+  // so a non-tool caller (a routine, a migration backfill) cannot write a
+  // floorless gate — the rule is D-016's substance, not the tool's manners.
+  const enforcementError = validateConventionEnforcement(kind, input.enforcement);
+  if (enforcementError) {
+    throw new InvalidInputError(`facts:assert — ${enforcementError}`);
+  }
+  const enforcement = input.enforcement ?? null;
   const dependsOn = normalizeFactDependencies(input.dependsOn);
   const claim = input.claim && typeof input.claim === 'object' ? input.claim : null;
   // P-008 (a): APPEND-VERSIONING, not upsert-in-place (migration 689).
@@ -733,7 +898,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     )
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
-       audience_scope, source_provenance, confidence, supersedes_id, kind, depends_on, claim)
+       audience_scope, source_provenance, confidence, supersedes_id, kind, depends_on, claim,
+       enforcement)
     VALUES
       (${ws},
        -- keep an already-stamped federation identity when a later assert omits
@@ -749,10 +915,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        (SELECT id FROM superseded),
        ${kind},
        ${dependsOn ? JSON.stringify(dependsOn) : null}::text::jsonb,
-       ${claim ? JSON.stringify(claim) : null}::text::jsonb)
+       ${claim ? JSON.stringify(claim) : null}::text::jsonb,
+       ${enforcement ? JSON.stringify(enforcement) : null}::text::jsonb)
     RETURNING id, superseded_at::text, supersedes_id,
               scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-              confidence, kind, depends_on, claim, created_by, updated_at::text, expires_at::text`;
+              confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text`;
   // Cap enforcement — evict oldest-updated live facts past the cap for this
   // (scope, ref). LOCAL partition only (H6): the local writer's cap must never
   // evict foreign-source observations (those are bounded per-source by the
@@ -854,8 +1021,8 @@ export async function foldFacts(
     const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
     const rows = await sql<AgentFactRow[]>`
-      SELECT scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-             confidence, kind, depends_on, claim, created_by, updated_at::text, expires_at::text
+      SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+             confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws} AND scope = ${sel.scope}
          AND coalesce(scope_ref,'') = ${ref}
@@ -1000,7 +1167,7 @@ export async function factVersions(
   const rows = await sql<AgentFactRow[]>`
     SELECT id, superseded_at::text, supersedes_id,
            scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, kind, depends_on, claim, created_by, updated_at::text, expires_at::text
+           confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
       FROM harness_shared.agent_facts
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${key}
@@ -1039,6 +1206,50 @@ export function federatableElite(e: { outcome?: string | null; grade?: number | 
  *  one line per fact — `[scope:ref] body (src, expires in Nd)`; P-007 adds the
  *  audience tag (`⊸fleet:x`, only ever present when the reader matched it) and
  *  the provenance-hydrated src form (verified quote / loud ✗unverified). */
+/**
+ * P-018 / D-075 R1 — the ONE citable id for a fact, in the grammar
+ * `classifyPremiseRef` already classifies as `kind:'fact'` (and therefore as
+ * invalidatable): `fact:<scope>[:<scopeRef>]:<key>[@v<N>]`.
+ *
+ * Exported because the conventions read model and this fold MUST agree on what a
+ * convention is CALLED. If discovery named one thing and the citation seam parsed
+ * another, every citation would degrade to `opaque` — declarable but never
+ * invalidatable — which is the near-synonym failure D-041 renamed to fix.
+ *
+ * The `@v<N>` suffix is omitted when the read did not select version identity;
+ * the ref still classifies, which is D-026's degrade-gracefully rule applied to
+ * our own grammar. PURE.
+ */
+export function factCitationRef(
+  f: Pick<AgentFact, 'scope' | 'scopeRef' | 'key'> & { id?: number },
+): string {
+  const ref = f.scope === 'workspace' ? '' : `${(f.scopeRef ?? '').trim()}:`;
+  return `fact:${f.scope}:${ref}${f.key}${f.id != null ? `@v${f.id}` : ''}`;
+}
+
+/**
+ * P-018: render an enforcement tier compactly — `structural`, or
+ * `gate ≥60% by 2026-09-01` for a measured tier (whose floor and review date are
+ * guaranteed present by {@link validateConventionEnforcement}). PURE.
+ */
+export function renderEnforcement(e: ConventionEnforcement): string {
+  if (e.floor == null && !e.reviewBy) return e.tier;
+  const floor = e.floor != null ? ` ≥${Math.round(e.floor * 100)}%` : '';
+  const by = e.reviewBy ? ` by ${e.reviewBy.slice(0, 10)}` : '';
+  return `${e.tier}${floor}${by}`;
+}
+
+/**
+ * P-018: the modality badge. Rendered ONLY for a declared `kind`, so an unbadged
+ * line still reads as "modality not declared" — mig 690's rule (absent means not
+ * declared, never silently 'conclusion') carried through to the surface.
+ */
+const KIND_BADGE: Readonly<Record<FactKind, string>> = {
+  conclusion: 'CONCLUSION',
+  assumption: 'ASSUMPTION',
+  convention: 'CONVENTION',
+};
+
 export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.now()): string {
   if (facts.length === 0) return '';
   const lines = facts.map((f) => {
@@ -1047,7 +1258,19 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
     const days = Math.max(0, Math.round((Date.parse(f.expiresAt) - now) / 86_400_000));
     const rendered = renderFactSrc(f);
     const src = rendered ? `, src ${rendered}` : '';
-    return `• [${scope}${aud}] ${f.body} (expires ~${days}d${src})`;
+    // P-018: the MODALITY, which this fold previously dropped entirely — so a
+    // normative convention was byte-indistinguishable from a settled conclusion
+    // at the one surface agents actually read. Same defect class as P-033 (e):
+    // a field nobody can see cannot be judged by its values, and D-069 §3 leaves
+    // those values as the only remaining check on this layer.
+    const tier = f.kind === 'convention' && f.enforcement ? ` · ${renderEnforcement(f.enforcement)}` : '';
+    const badge = f.kind ? `⟦${KIND_BADGE[f.kind]}${tier}⟧ ` : '';
+    // A convention is the modality meant to be CITED at the point of action
+    // (P-018), so it — and only it — carries its citable ref inline. Putting one
+    // on every fact would inflate every orient to make the other modalities
+    // citable in a fold that is not where they are cited from.
+    const cite = f.kind === 'convention' ? `, cite ${factCitationRef(f)}` : '';
+    return `• [${scope}${aud}] ${badge}${f.body} (expires ~${days}d${src}${cite})`;
   });
   return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}`;
 }
@@ -1065,6 +1288,8 @@ interface AgentFactRow {
   kind?: string | null;
   depends_on?: unknown;
   claim?: unknown;
+  /** P-018 — migration 692. */
+  enforcement?: unknown;
   created_by: string;
   updated_at: string;
   expires_at: string;
@@ -1131,6 +1356,10 @@ function rowToFact(r: AgentFactRow): AgentFact {
     kind: parseFactKind(r.kind),
     dependsOn: parseFactDependencies(r.depends_on),
     claim: parseFactClaim(r.claim),
+    // P-018, migration 692. Null-when-absent like `kind`/`claim` — an untiered
+    // convention and a convention whose tier failed to parse must both read as
+    // "no tier declared", never as a tier the row does not carry.
+    enforcement: parseConventionEnforcement(r.enforcement),
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,
