@@ -9,10 +9,8 @@
  * The script's pure functions are imported directly (same pattern as apps/operator's
  * psu-pty-host / ptool script tests).
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-// eslint-disable-next-line import/no-relative-packages
-import * as lintTscModule from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import {
   parseTscErrors,
@@ -56,32 +54,31 @@ describe('operator-vite TSC_COMMAND (EI-847)', () => {
   });
 });
 
-describe('scripts/lint-tsc.d.mts stays in sync with scripts/lint-tsc.mjs', () => {
-  // WHY. `packages/operator-core/tsconfig.json` sets `allowJs: false`, so TS never reads the
-  // .mjs — it reads the HAND-MAINTAINED `lint-tsc.d.mts` beside it. Add an export to the .mjs
-  // and forget the declaration and every importer gets `TS2305: has no exported member`, in a
-  // file whose only sin was importing it. That is not hypothetical: `parseExplicitFiles` was
-  // added by EI-18731016038876755 and never declared, so this test file carried a permanent
-  // baseline of 1 error that everyone had learned to look past — which is exactly how the NEXT
-  // one hides. (It duly did: `formatAttributionHeadline` made it 2.) A silent, hand-synced
-  // projection with no drift check is the same defect D-020 fixed for the substitution
-  // registry's CLAUDE.md/DB projections; this is that check for this one.
-  it('declares every runtime export (a missing declaration is TS2305 for every importer)', () => {
-    const dts = readFileSync(
-      new URL('../../../scripts/lint-tsc.d.mts', import.meta.url),
-      'utf8',
-    );
-    const declared = new Set(
-      [...dts.matchAll(/^export\s+(?:declare\s+)?(?:function|const)\s+([A-Za-z0-9_$]+)/gm)].map(
-        (m) => m[1],
-      ),
-    );
-    const runtimeExports = Object.keys(lintTscModule).filter((k) => k !== 'default');
-    const undeclared = runtimeExports.filter((name) => !declared.has(name));
-
-    expect(undeclared, `undeclared in lint-tsc.d.mts: ${undeclared.join(', ')}`).toEqual([]);
-  });
-});
+// REMOVED (WI-6396): `scripts/lint-tsc.d.mts stays in sync with scripts/lint-tsc.mjs`.
+//
+// That test existed only because the declaration was HAND-MAINTAINED. It parsed the
+// `.d.mts` for `export function|const` names and asserted every runtime export appeared
+// there — a hand-rolled drift check policing a hand-synced projection. It was written
+// after that projection had already drifted twice (`parseExplicitFiles`, then
+// `formatAttributionHeadline`), each drift costing this file a permanent baselined
+// TS2305 that everyone learned to look past.
+//
+// `scripts/lint-tsc.d.mts` is now GENERATED from source via `tsconfig.declarations.json`,
+// so an export cannot exist at runtime and be missing from the declaration: the
+// declaration is derived from the same file. Two guards replace this one, and both live
+// in `generated-declarations.test.ts`:
+//   - `gen:declarations:check` fails if any committed declaration is stale, and
+//   - semantic assertions fail if a type silently widens to `any`, which a byte-compare
+//     provably cannot catch.
+//
+// Deleting it was the point, not a side effect — the item's own check was that if this
+// block could NOT be removed, the conversion had not actually been done.
+//
+// Worth keeping in view: `lint-tsc.mjs` is a thin re-export shim over
+// `scripts/lib/tsc-baseline-gate.mjs`, so the hand-written declaration had been
+// hand-syncing a DIFFERENT module's contract across a file boundary — which is almost
+// certainly why it drifted both times. The generated declaration re-exports from that
+// module instead, so the types now follow the import.
 
 describe('formatAttributionHeadline — the gate may only claim authorship it can actually prove', () => {
   // WHY THIS IS PINNED. `--mine` derives "your" files from `git status`, and this repo has ONE

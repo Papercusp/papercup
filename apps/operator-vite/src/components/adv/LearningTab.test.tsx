@@ -496,6 +496,10 @@ let hiveResult: Record<string, unknown> = {
   error: null,
   invalidate: vi.fn(),
 };
+// WI-6383: when set, `learning.hiveThroughput` returns THIS — lets a test model
+// the DEGRADED snapshot the resolver returns for an unreadable substrate (a
+// successful read carrying `unavailable`, never a thrown transport error).
+let throughputResult: Record<string, unknown> | null = null;
 // Per-query args the tab passed — asserted by the P-042 hive-lens tests.
 const seenArgs: Record<string, unknown> = {};
 // When set, a hive-less (`{}`) learning.gym read returns THIS instead of
@@ -514,6 +518,9 @@ vi.mock("@papercusp/sync", () => ({
     if (opts.queryName === "learning.gym") {
       const hasHive = Boolean((opts.args as { hive?: string } | undefined)?.hive);
       return !hasHive && gymWideResult ? gymWideResult : gymResult;
+    }
+    if (opts.queryName === "learning.hiveThroughput" && throughputResult) {
+      return throughputResult;
     }
     if (opts.queryName === "learning.scoutDrafts") {
       // The Improvements view's thin drafts read — empty by default.
@@ -667,6 +674,7 @@ beforeEach(() => {
     error: null,
     invalidate: vi.fn(),
   };
+  throughputResult = null;
 });
 afterEach(() => cleanup());
 
@@ -1391,6 +1399,73 @@ describe("LearningTab — Benchmark view", () => {
     expect(screen.getByRole("tab", { name: "EKG" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Red Queen" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Experiments" })).toBeTruthy();
+  });
+
+  // WI-6383. The RENDER-layer half of the reachability fix — the layer the user
+  // actually sees. `learning-view-reachability.guard.test.ts` proves the catalog
+  // lists Throughput; this proves the catalog entry becomes a tab on screen and
+  // that opening the view lights the stage that owns it. Asserting only the
+  // catalog would repeat the WI-6384 mistake (a read-layer fix certified green
+  // while a render-layer short-circuit still discarded it).
+  it("restores Throughput as a clickable Verify view (WI-6383)", () => {
+    render(<LearningTab />);
+    const tab = screen.getByRole("tab", { name: "Throughput" });
+    expect(tab).toBeTruthy();
+    // Inside the Verify subtab row, not loose in the header: the 2026-07-12
+    // header removal was deliberate and is still pinned by the test below.
+    expect(
+      within(screen.getByRole("tablist", { name: "Verify views" })).getByRole(
+        "tab",
+        { name: "Throughput" },
+      ),
+    ).toBeTruthy();
+  });
+
+  it("opens the Throughput view and selects Verify for it (WI-6383)", () => {
+    nuqsState.lview = "throughput";
+    render(<LearningTab />);
+    expect(
+      screen.getByRole("tab", { name: "Verify" }).getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByRole("tab", { name: "Throughput" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    // The dispatch actually mounted ThroughputView — before this fix the view
+    // rendered fine here while being unreachable in the UI, so pin BOTH.
+    expect(screen.getByText("No throughput recorded yet")).toBeTruthy();
+  });
+
+  // WI-6382's panel sweep skipped ThroughputView because no user could open it.
+  // Making it reachable without this would ship the exact defect that item
+  // closed: an unreadable substrate rendering as a calm "nothing yet" card that
+  // then tells the reader to go start a pot and wait for data that can never
+  // arrive. The resolver returns a SUCCESSFUL snapshot for that case, so
+  // `sync.error` stays null — the provenance tag is the only signal.
+  it("shows a degraded Throughput read as a fault, not as 'nothing yet' (WI-6382)", () => {
+    nuqsState.lview = "throughput";
+    throughputResult = {
+      data: [
+        {
+          hives: [],
+          unavailable: true,
+          unavailableKind: "pre-migration",
+          unavailableReason: "hive_throughput_ticks does not exist",
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null, // the point: a data-layer fault with NO transport error
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.queryByText("No throughput recorded yet")).toBeNull();
+    expect(
+      screen.getByText(
+        "Throughput not available yet — this install hasn't created its storage (hive_throughput_ticks does not exist)",
+      ),
+    ).toBeTruthy();
   });
 
   it("renders Pot scoring (né Pot orchestration) as its own Verify view (HE-07)", () => {

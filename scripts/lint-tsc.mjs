@@ -101,6 +101,7 @@ const baselineFile = resolve(ROOT, 'packages/operator-core/.tsc-baseline.json');
  * main()) so lint-tsc.test.ts can assert it directly instead of only trusting
  * that nobody deletes it later.
  */
+/** @type {string} */
 export const TSC_COMMAND =
   'npx tsc -p packages/operator-core/tsconfig.json --noEmit --incremental false';
 

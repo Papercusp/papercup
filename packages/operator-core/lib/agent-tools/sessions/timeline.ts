@@ -46,6 +46,67 @@ export interface TimelineEntry {
   auto?: boolean;
   repeat_count?: number;
   oldest_ts?: string;
+  /**
+   * P-024 / D-046: the goal this call served, as a RESOLVED ref (`WI-6393`,
+   * `plan:slug#P-009`) — never a raw bigint, which is not a read surface. Comes
+   * straight off `tool_invocations.goal_ref`, which P-009 deliberately typed as
+   * text so this projection needs no join. `tool` rows only; null when the agent
+   * held no goal (or predates the stamp).
+   */
+  goal_ref?: string | null;
+  /**
+   * P-024: the assumption WATERMARK live at call time — every non-retracted,
+   * non-superseded assumption of this owner with `agent_facts.id <= this`.
+   * Resolving it to a COUNT is deliberately on-demand (see resolveAssumptionCounts).
+   */
+  assumption_set_id?: number | null;
+  /**
+   * P-024 (c): how many assumptions that watermark covers. Present ONLY on a
+   * `goalRef`/`assumptionSetId`-filtered read — never eagerly per row, because
+   * resolving it for every row of an unfiltered postmortem page is an N+1 over
+   * `agent_facts`. Absent ⇒ not resolved, which is NOT the same as zero.
+   */
+  assumption_count?: number;
+}
+
+/**
+ * P-024 (c): which assumption watermarks a page needs resolved — DISTINCT, and
+ * only from `tool` rows that actually carry one.
+ *
+ * Pure + exported so the N+1 guard is directly testable: the whole point is that
+ * a 300-row page resolves at most a handful of DISTINCT watermarks in ONE query,
+ * never one query per row. An agent's watermark only moves when it asserts an
+ * assumption (~0–3 per task), so in practice a long page collapses to 1–2 ids.
+ */
+export function assumptionSetIdsToResolve(rows: TimelineEntry[]): number[] {
+  const ids = new Set<number>();
+  for (const r of rows) {
+    if (r.kind !== 'tool') continue;
+    const id = r.assumption_set_id;
+    if (typeof id === 'number' && Number.isFinite(id)) ids.add(id);
+  }
+  return [...ids].sort((a, b) => a - b);
+}
+
+/**
+ * Attach `assumption_count` to each row from a watermark→count map.
+ *
+ * A watermark with NO entry in the map is left ABSENT rather than defaulted to
+ * 0 — "not resolved" and "resolved to zero" are different facts, and this
+ * column's producer is measured-empty today (D-089 §2), so a defaulted 0 would
+ * read as "checked, no assumptions" on every row forever. Same zero-must-name-
+ * itself discipline as D-086/D-087.
+ */
+export function attachAssumptionCounts(
+  rows: TimelineEntry[],
+  counts: ReadonlyMap<number, number>,
+): TimelineEntry[] {
+  return rows.map((r) => {
+    if (r.kind !== 'tool') return r;
+    const id = r.assumption_set_id;
+    if (typeof id !== 'number' || !counts.has(id)) return r;
+    return { ...r, assumption_count: counts.get(id) };
+  });
 }
 
 /** Collapse identical entries in one bounded window while preserving newest-first order. */
@@ -89,6 +150,14 @@ export default defineTool({
     kinds: z.array(z.enum(['turn', 'tool', 'coord'])).max(3).optional().describe('Only these entry kinds.'),
     tool: z.string().min(1).max(160).optional().describe('Exact tool name; implies tool entries.'),
     status: z.string().min(1).max(80).optional().describe('Exact tool-invocation status, e.g. invalid-input, error, timeout, ok.'),
+    goalRef: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'Only calls made while the agent held THIS goal (e.g. "WI-6393") — answers "what did they do under goal X" in one call. Implies tool entries, and resolves each row\'s assumption count.',
+      ),
     include_auto: z.boolean().optional().describe('Include automatic hook/status traffic such as activity:report, coord:glance, coord:inbox, and auto:true coord messages. Default false.'),
     group_repeated: z.boolean().optional().describe('Collapse identical entries in the returned window and add repeat_count/oldest_ts. Default false.'),
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:timeline call with the same filters.'),

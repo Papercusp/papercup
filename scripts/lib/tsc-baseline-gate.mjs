@@ -285,6 +285,7 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   newBaselineByFile?: Record<string, number>,
  *   brokenFiles?: string[],
  * }}
+ * @returns {PerFileGateResult}
  */
 export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag = false, changedFiles = null }) {
   const total = sumValues(currentByFile);

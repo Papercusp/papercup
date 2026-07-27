@@ -112,15 +112,6 @@ describe('generated .d.mts declarations', () => {
       /label\?:\s*string\s*\|\s*undefined;/,
     );
 
-    // This module has no JSDoc parameter tags, so its parameters are legitimately
-    // `any`. Its RETURN types come from the implementation, which makes them the
-    // right canary for "did the emit collapse entirely" without asserting a
-    // precision the source does not claim.
-    const baselineGate = readDeclaration('scripts/lib/tsc-baseline-gate.d.mts');
-    expect(baselineGate, 'tsc-baseline-gate return types collapsed').toMatch(
-      /parseTscErrors\([^)]*\):\s*\(\{/,
-    );
-
     const vacuous = readDeclaration('scripts/check-vacuous-negative-assertions.d.mts');
     // The named types are what the importing test drives the judge with; losing any of
     // them degrades that whole test file to `any` without failing anything.
@@ -138,6 +129,47 @@ describe('generated .d.mts declarations', () => {
     // spells it out, so this is the first thing to disappear if that tag is touched.
     expect(vacuous, 'driftFragment.residue decayed from a [string, string] tuple').toMatch(
       /residue:\s*\[string,\s*string\];/,
+    );
+
+    // scripts/lint-tsc.mjs is a thin re-export shim over tsc-baseline-gate.mjs, so its
+    // declaration inherits ITS types. That is the largest widening risk in this change:
+    // if tsc-baseline-gate loses its JSDoc, all nine re-exported functions degrade to
+    // `any` at once, in the module the whole fleet's type gate runs through.
+    const gate = readDeclaration('scripts/lib/tsc-baseline-gate.d.mts');
+    expect(gate, 'parseTscErrors lost `tscOutput: string`').toMatch(
+      /parseTscErrors\(tscOutput:\s*string\):\s*TscErrorEntry\[\]/,
+    );
+    expect(gate, 'syntaxBrokenFiles/countByFile stopped taking TscErrorEntry[]').toMatch(
+      /countByFile\(errors:\s*TscErrorEntry\[\]\):\s*Record<string,\s*number>/,
+    );
+    expect(gate, 'parseExplicitFiles lost its `Set<string> | null` contract').toMatch(
+      /parseExplicitFiles\(argv:\s*string\[\]\):\s*Set<string>\s*\|\s*null/,
+    );
+    // The verdict vocabulary is the gate's actual decision surface; a collapse to
+    // `string` would let any typo typecheck.
+    expect(gate, 'PerFileGateVerdict collapsed from its literal union').toMatch(
+      /PerFileGateVerdict\s*=\s*"fail-syntax"[\s\S]*?\|\s*"ok";/,
+    );
+  });
+
+  it('keep lint-tsc.d.mts a re-export of tsc-baseline-gate, not a second copy of its contract (WI-6396)', () => {
+    // The hand-written predecessor RESTATED all of tsc-baseline-gate's types beside a
+    // module that merely re-exports them, so an export added to the gate had to be
+    // remembered in a declaration one directory away. It was not, twice
+    // (`parseExplicitFiles`, `formatAttributionHeadline`), and each miss was TS2305 for
+    // every importer. Re-exporting makes that structurally impossible; restating it here
+    // by hand again would quietly reintroduce the whole defect class.
+    const lintTsc = readDeclaration('scripts/lint-tsc.d.mts');
+    expect(lintTsc, 'lint-tsc.d.mts no longer re-exports from the gate module').toMatch(
+      /from\s*'\.\/lib\/tsc-baseline-gate\.mjs'/,
+    );
+    expect(
+      lintTsc,
+      'lint-tsc.d.mts has started RESTATING the gate types instead of re-exporting them',
+    ).not.toMatch(/export\s+(?:declare\s+)?(?:type|interface)\s+(?:TscErrorEntry|PerFileGateResult)\b/);
+    // It owns exactly one thing.
+    expect(lintTsc, 'TSC_COMMAND lost its `@type {string}` annotation').toMatch(
+      /TSC_COMMAND:\s*string;/,
     );
   });
 

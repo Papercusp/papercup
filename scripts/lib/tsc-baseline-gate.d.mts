@@ -1,24 +1,88 @@
 #!/usr/bin/env node
-/** Parse tsc output into { file, code } entries (file null when unattributable). */
-export function parseTscErrors(tscOutput: any): ({
-    file: string;
-    code: string;
-} | {
-    file: null;
-    code: string;
-})[];
-/** Files carrying parse-level (TS1xxx) errors — they fail to compile at all. */
-export function syntaxBrokenFiles(errors: any): any[];
-/** Aggregate parsed errors into a { file: count } map. Unattributable errors bucket under '(unattributed)'. */
-export function countByFile(errors: any): {};
-export function sumValues(map: any): number;
+/**
+ * One diagnostic parsed out of tsc's output.
+ *
+ * @typedef {object} TscErrorEntry
+ * @property {string | null} file - null when the diagnostic carries no file (unattributable).
+ * @property {string} code - The `TSnnnn` code.
+ */
+/**
+ * One file's standing against its baseline.
+ *
+ * @typedef {object} PerFileGateEntry
+ * @property {string} file
+ * @property {number} baseline
+ * @property {number} current
+ * @property {number} delta - `current - baseline`; positive is a regression.
+ */
+/**
+ * A baseline owned by ANOTHER package, whose recorded counts this gate inherits for
+ * files under `prefix` rather than assuming an implicit 0 (EI-18649014117371738).
+ *
+ * @typedef {object} ForeignBaselineSource
+ * @property {string} prefix - Repo-relative path prefix of the files the other package owns.
+ * @property {Record<string, number>} files - That package's own per-file baseline map.
+ * @property {string} [label]
+ */
+/**
+ * The verdict vocabulary. `fail-new-file` is split out of `peerDrift` so `--mine` can
+ * never greenwash a brand-new file: absence from the git-status changed set does not
+ * prove a new file isn't yours, because git-sync auto-commits this shared tree every few
+ * minutes (EI-18766822535373909).
+ *
+ * @typedef {'fail-syntax' | 'fail-regressed' | 'fail-attributed' | 'fail-new-file' | 'ok-peer-drift' | 'ok-ratchet' | 'ok-below' | 'ok'} PerFileGateVerdict
+ */
+/**
+ * The full decision for one run.
+ *
+ * @typedef {object} PerFileGateResult
+ * @property {PerFileGateVerdict} verdict
+ * @property {PerFileGateEntry[]} regressions
+ * @property {PerFileGateEntry[]} improvements
+ * @property {PerFileGateEntry[]} [attributed]
+ * @property {PerFileGateEntry[]} [peerDrift]
+ * @property {PerFileGateEntry[]} [newFiles] - Regressions in files ABSENT from the baseline.
+ * @property {number} total
+ * @property {number} baselineTotal
+ * @property {Record<string, number>} [newBaselineByFile]
+ * @property {string[]} [brokenFiles]
+ */
+/**
+ * Parse tsc output into { file, code } entries (file null when unattributable).
+ *
+ * @param {string} tscOutput
+ * @returns {TscErrorEntry[]}
+ */
+export function parseTscErrors(tscOutput: string): TscErrorEntry[];
+/**
+ * Files carrying parse-level (TS1xxx) errors — they fail to compile at all.
+ *
+ * @param {TscErrorEntry[]} errors
+ * @returns {string[]}
+ */
+export function syntaxBrokenFiles(errors: TscErrorEntry[]): string[];
+/**
+ * Aggregate parsed errors into a { file: count } map. Unattributable errors bucket under '(unattributed)'.
+ *
+ * @param {TscErrorEntry[]} errors
+ * @returns {Record<string, number>}
+ */
+export function countByFile(errors: TscErrorEntry[]): Record<string, number>;
+/**
+ * @param {Record<string, number>} map
+ * @returns {number}
+ */
+export function sumValues(map: Record<string, number>): number;
 /**
  * The set of repo-relative paths the caller has changed (staged, unstaged, or untracked), for
  * `--mine` scoping. Fail-SOFT: a git failure (packaged install, detached state) returns an empty
  * set, which under `--mine` means "attribute nothing to me" — never a crash, never a false pass on
  * a real CI gate (CI runs bare, without `--mine`).
+ *
+ * @param {string} [root] - Repo root to run git in.
+ * @returns {Set<string>}
  */
-export function gitChangedFiles(root: any): Set<any>;
+export function gitChangedFiles(root?: string): Set<string>;
 /**
  * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
  * files the caller changed THIS session, as an alternative to `--mine`'s implicit
@@ -42,8 +106,11 @@ export function gitChangedFiles(root: any): Set<any>;
  * unchanged) — never an empty Set for "flag absent", so callers can tell "not scoped" apart from
  * "scoped to zero files" (a malformed `--files=` with no content, which is now the caller's own
  * bug to fix, not a silent no-op).
+ *
+ * @param {string[]} argv
+ * @returns {Set<string> | null} null when the flag is absent; an EMPTY set means "scoped to zero files".
  */
-export function parseExplicitFiles(argv: any): Set<any> | null;
+export function parseExplicitFiles(argv: string[]): Set<string> | null;
 /**
  * Resolve the EFFECTIVE per-file baseline, inheriting cross-package files from their OWNING
  * package's baseline (EI-18649014117371738).
@@ -123,6 +190,7 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   newBaselineByFile?: Record<string, number>,
  *   brokenFiles?: string[],
  * }}
+ * @returns {PerFileGateResult}
  */
 export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles }: {
     currentByFile: Record<string, number>;
@@ -230,3 +298,68 @@ export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv
     argv: string[];
     countField?: string;
 }): void;
+/**
+ * One diagnostic parsed out of tsc's output.
+ */
+export type TscErrorEntry = {
+    /**
+     * - null when the diagnostic carries no file (unattributable).
+     */
+    file: string | null;
+    /**
+     * - The `TSnnnn` code.
+     */
+    code: string;
+};
+/**
+ * One file's standing against its baseline.
+ */
+export type PerFileGateEntry = {
+    file: string;
+    baseline: number;
+    current: number;
+    /**
+     * - `current - baseline`; positive is a regression.
+     */
+    delta: number;
+};
+/**
+ * A baseline owned by ANOTHER package, whose recorded counts this gate inherits for
+ * files under `prefix` rather than assuming an implicit 0 (EI-18649014117371738).
+ */
+export type ForeignBaselineSource = {
+    /**
+     * - Repo-relative path prefix of the files the other package owns.
+     */
+    prefix: string;
+    /**
+     * - That package's own per-file baseline map.
+     */
+    files: Record<string, number>;
+    label?: string | undefined;
+};
+/**
+ * The verdict vocabulary. `fail-new-file` is split out of `peerDrift` so `--mine` can
+ * never greenwash a brand-new file: absence from the git-status changed set does not
+ * prove a new file isn't yours, because git-sync auto-commits this shared tree every few
+ * minutes (EI-18766822535373909).
+ */
+export type PerFileGateVerdict = "fail-syntax" | "fail-regressed" | "fail-attributed" | "fail-new-file" | "ok-peer-drift" | "ok-ratchet" | "ok-below" | "ok";
+/**
+ * The full decision for one run.
+ */
+export type PerFileGateResult = {
+    verdict: PerFileGateVerdict;
+    regressions: PerFileGateEntry[];
+    improvements: PerFileGateEntry[];
+    attributed?: PerFileGateEntry[] | undefined;
+    peerDrift?: PerFileGateEntry[] | undefined;
+    /**
+     * - Regressions in files ABSENT from the baseline.
+     */
+    newFiles?: PerFileGateEntry[] | undefined;
+    total: number;
+    baselineTotal: number;
+    newBaselineByFile?: Record<string, number> | undefined;
+    brokenFiles?: string[] | undefined;
+};

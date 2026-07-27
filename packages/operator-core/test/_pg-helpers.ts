@@ -17,7 +17,7 @@
  * up for reuse by the next test file (testcontainers `.withReuse()`), so a serial
  * integration run doesn't pay the ~2s boot per file.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
@@ -53,6 +53,169 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
     .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l.trim()))
     .join('\n');
   await sql.unsafe(sqlText);
+}
+
+/**
+ * ── EI-18808675015292160: the hand-maintained migration list, made self-checking
+ *
+ * Fixtures stand their schema up from a hardcoded list of migration filenames.
+ * Nothing linked that list to the migrations that actually exist, so when a
+ * migration landed on a table a fixture uses, the fixture kept applying the old
+ * set and the suite went red with an error naming a COLUMN — never the stale
+ * list. That cost 9 red tests across 3 files on 2026-07-27, and the same shape
+ * had already burned four separate tickets via `applyPlanItemClaimMigrations`
+ * below (EI-9508/9509/9513/9515).
+ *
+ * `applyMigrationsForTest` applies the list AND proves it is still complete, so
+ * the rot fails loudly and names itself instead of surfacing as a column error.
+ *
+ * ── How completeness is decided (and why not the obvious way) ───────────────
+ * Everything is derived FROM THE LIST — there is no second registry to keep in
+ * sync, which is what makes this unable to fall behind in turn:
+ *   1. parse the listed files for the tables they structurally CREATE/ALTER;
+ *   2. scan sql/ for HIGHER-numbered migrations touching those same tables;
+ *   3. throw naming the missing file(s) and the table that made each relevant.
+ *
+ * Two deliberate narrowings, each one a measured counterexample:
+ *
+ *  - STRUCTURAL statements only (`CREATE TABLE` / `ALTER TABLE`), never a mere
+ *    mention. The obvious "scan for the table name" rule pulls in migrations
+ *    that only reference the table in passing, and applying those fails
+ *    wholesale: 214 attaches triggers to a table list these fixtures have no
+ *    tables for (`harness_plans`), which is exactly the trap this replaces.
+ *
+ *  - A later migration is REQUIRED only when EVERY table it touches is already
+ *    in the fixture's own table set. A WIDE migration (488-federated-rls-backstop
+ *    touches agent_facts plus 3 unrelated tables) cannot be applied by a fixture
+ *    that only builds agent_facts, so demanding it would be an error nobody can
+ *    fix. Those are reported separately as advisory context, never as a failure.
+ */
+
+/** PURE — strip SQL comments so a table named only in prose never counts. */
+export function stripSqlComments(sqlText: string): string {
+  return sqlText.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
+}
+
+/**
+ * PURE — the schema-qualified tables a migration structurally CREATEs or ALTERs.
+ * Comment-only and passing references are excluded by construction.
+ */
+export function tablesTouchedBySql(sqlText: string): Set<string> {
+  const body = stripSqlComments(sqlText);
+  const out = new Set<string>();
+  const re = /\b(?:CREATE|ALTER)\s+TABLE\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)/gi;
+  for (const m of body.matchAll(re)) out.add(m[1].toLowerCase());
+  return out;
+}
+
+/** PURE — leading migration number (`689-agent-facts-…sql` → 689), else null. */
+export function migrationNumber(fileName: string): number | null {
+  const m = /^(\d+)-/.exec(fileName);
+  return m ? Number(m[1]) : null;
+}
+
+export interface MigrationListAudit {
+  /** Later migrations that touch ONLY the fixture's own tables — these are real,
+   *  actionable gaps and are what `applyMigrationsForTest` throws on. */
+  missing: { file: string; tables: string[] }[];
+  /** Later migrations touching the fixture's tables AND others — not applicable
+   *  to a partial fixture, so advisory context only, never a failure. */
+  wider: { file: string; tables: string[] }[];
+  /** The tables the declared list itself builds. */
+  tables: string[];
+}
+
+/**
+ * PURE — audit a fixture's migration list against the real migration directory.
+ * `allMigrations` is [fileName, sqlText] for every file in sql/.
+ */
+export function auditMigrationList(
+  declared: string[],
+  allMigrations: Iterable<readonly [string, string]>,
+): MigrationListAudit {
+  const declaredSet = new Set(declared);
+  const byFile = new Map<string, Set<string>>();
+  for (const [file, text] of allMigrations) byFile.set(file, tablesTouchedBySql(text));
+
+  const tables = new Set<string>();
+  for (const file of declared) for (const t of byFile.get(file) ?? []) tables.add(t);
+
+  // Only look PAST the newest declared migration: an older file the fixture
+  // deliberately omits is a choice, not rot.
+  const highestDeclared = Math.max(
+    0,
+    ...declared.map((f) => migrationNumber(f) ?? 0),
+  );
+
+  const missing: { file: string; tables: string[] }[] = [];
+  const wider: { file: string; tables: string[] }[] = [];
+  for (const [file, touched] of [...byFile].sort(
+    (a, b) => (migrationNumber(a[0]) ?? 0) - (migrationNumber(b[0]) ?? 0),
+  )) {
+    if (declaredSet.has(file)) continue;
+    const n = migrationNumber(file);
+    if (n === null || n <= highestDeclared) continue;
+    const overlap = [...touched].filter((t) => tables.has(t));
+    if (!overlap.length) continue;
+    // Every table it touches is one we already build ⇒ we can actually apply it.
+    if (touched.size === overlap.length) missing.push({ file, tables: overlap.sort() });
+    else wider.push({ file, tables: overlap.sort() });
+  }
+  return { missing, wider, tables: [...tables].sort() };
+}
+
+/** PURE — the self-describing failure text. Names the FILE and the TABLE that
+ *  made it relevant, which is precisely what the column-level error never did. */
+export function formatStaleMigrationList(audit: MigrationListAudit, label: string): string {
+  const lines = [
+    `${label}: this fixture's hardcoded migration list is STALE (EI-18808675015292160).`,
+    ``,
+    `It builds: ${audit.tables.join(', ')}`,
+    ``,
+    `Migrations landed since that touch ONLY those tables and are NOT in the list —`,
+    `add them (in numeric order) to fix this:`,
+    ...audit.missing.map((m) => `  + '${m.file}'   (touches ${m.tables.join(', ')})`),
+  ];
+  if (audit.wider.length) {
+    lines.push(
+      ``,
+      `FYI only — these also touch your tables but touch others too, so a partial`,
+      `fixture cannot apply them wholesale. Not a failure; listed for diagnosis:`,
+      ...audit.wider.map((m) => `  ~ ${m.file}   (overlaps ${m.tables.join(', ')})`),
+    );
+  }
+  return lines.join('\n');
+}
+
+/** Read every migration in sql/ as [fileName, sqlText]. */
+function readAllMigrations(): [string, string][] {
+  return readdirSync(SQL_DIR)
+    .filter((f) => f.endsWith('.sql'))
+    .map((f) => [f, readFileSync(resolve(SQL_DIR, f), 'utf8')] as [string, string]);
+}
+
+/**
+ * Apply a fixture's declared migration list in the given order, after proving
+ * the list has not fallen behind the migrations that actually exist.
+ *
+ * Drop-in for the `for (const m of [...]) await applyMigrationForTest(...)` loop
+ * every fixture hand-rolled. Set `auditOnly:false` to skip the check (there is
+ * no good reason; it exists so a fixture mid-repair can still run).
+ */
+export async function applyMigrationsForTest(
+  sql: postgres.Sql,
+  declared: string[],
+  opts: { label?: string; audit?: boolean } = {},
+): Promise<void> {
+  if (opts.audit !== false) {
+    const audit = auditMigrationList(declared, readAllMigrations());
+    if (audit.missing.length) {
+      throw new Error(formatStaleMigrationList(audit, opts.label ?? 'applyMigrationsForTest'));
+    }
+  }
+  for (const file of declared) {
+    await applyMigrationForTest(sql, resolve(SQL_DIR, file));
+  }
 }
 
 /**
