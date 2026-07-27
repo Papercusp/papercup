@@ -173,6 +173,7 @@ describe('collapseFanOut', () => {
     family: 'git-release',
     liveness: 'running',
     control: 'routine',
+    controlWhy: 'Pause or resume it right here.',
     needsAttention: false,
     installs: [over.installSlug],
     ownerId: null,
@@ -188,6 +189,8 @@ describe('collapseFanOut', () => {
     // Re-normalize after the spread: an explicit override still wins, an absent one
     // falls back to the declared default rather than landing as `undefined`.
     flagKey: over.flagKey ?? null,
+    // Same widening trap for the required `controlWhy: string` (WI-6313).
+    controlWhy: over.controlWhy ?? 'Pause or resume it right here.',
   });
 
   it('collapses one routine installed on many pots into a single row', () => {

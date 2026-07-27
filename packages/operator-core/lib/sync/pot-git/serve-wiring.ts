@@ -206,8 +206,14 @@ class FrameDuplex extends Duplex {
   bytesOut = 0;
   bytesIn = 0;
   constructor(
-    private readonly sendChunk: (chunk: Buffer) => void,
+    /** Returns protomux's `drained` flag — `false` means the wire is backed up
+     *  and this duplex must stop writing until `onBackpressure` resolves. */
+    private readonly sendChunk: (chunk: Buffer) => boolean | void,
     private readonly onLocalEnd: (code: number) => void,
+    /** Defer the pending write callback until the channel drains. Defaults to
+     *  resuming immediately, which preserves the old fire-and-forget behaviour
+     *  for the fail-soft/decoy duplexes that have no real channel behind them. */
+    private readonly onBackpressure: (resume: () => void) => void = (resume) => resume(),
   ) {
     super();
     // Fail-soft AT CONSTRUCTION (WI-5177 live crash, 2026-07-17): this module's
@@ -295,8 +301,10 @@ class FrameDuplex extends Duplex {
 interface ChannelMessages {
   req: { send(v: ReqFrame): void };
   refuse: { send(v: RefuseFrame): void };
-  dataToServer: { send(v: DataFrame): void };
-  dataToClient: { send(v: DataFrame): void };
+  // These two return protomux's `drained` flag (`stream.write()`'s result) —
+  // `false` means stop writing until the channel's `ondrain` fires.
+  dataToServer: { send(v: DataFrame): boolean | void };
+  dataToClient: { send(v: DataFrame): boolean | void };
   endToServer: { send(v: EndFrame): void };
   endToClient: { send(v: EndFrame): void };
 }
@@ -322,6 +330,9 @@ interface ChannelState {
   /** Highest live session total already reported by `noteSessionHighWater`, so
    *  a sustained leak reports once per NEW high-water instead of per session. */
   sessionWarnHighWater: number;
+  /** Write callbacks parked because the muxer's stream said it was full;
+   *  released by the channel's `ondrain` (or by close). See FrameDuplex._write. */
+  drainWaiters: Array<() => void>;
 }
 
 const stateByMuxer = new WeakMap<object, Map<string, ChannelState>>();
@@ -368,7 +379,22 @@ function newState(): ChannelState {
     clientSessions: new Map(),
     nextClientId: 1,
     sessionWarnHighWater: 0,
+    drainWaiters: [],
   };
+}
+
+/** Release every write parked on backpressure. Called on the channel's
+ *  `ondrain` (the wire can take more) AND on close (so a parked write unwinds
+ *  instead of stranding the pipe forever — the duplex is being destroyed
+ *  anyway, so resuming is always safe). */
+function flushDrainWaiters(state: ChannelState): void {
+  for (const resume of state.drainWaiters.splice(0)) {
+    try {
+      resume();
+    } catch {
+      /* a resumed write must never throw into the muxer */
+    }
+  }
 }
 
 function markOpened(state: ChannelState): void {
@@ -734,6 +760,7 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
           /* best-effort */
         }
       },
+      (resume) => state.drainWaiters.push(resume),
     );
     state.serverSessions.set(v.id, duplex);
     noteSessionHighWater(state);
@@ -837,8 +864,15 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
     onopen: () => {
       markOpened(state!);
     },
+    // The wire can accept more — release every write parked by _write.
+    ondrain: () => {
+      flushDrainWaiters(state!);
+    },
     onclose: () => {
       failAllSessions(state!);
+      // A parked write must not outlive the channel, or the pipe feeding it
+      // never unwinds.
+      flushDrainWaiters(state!);
       // WI-3496/WI-5177 drill: same dead-channel-cache class as
       // peer-dial-registry.ts — a closed channel cached forever poisons this
       // (muxer, topic): our next openHiveGitFetchDuplex resolves to a dead
@@ -1013,6 +1047,7 @@ export async function openHiveGitFetchDuplex(
         /* best-effort */
       }
     },
+    (resume) => state.drainWaiters.push(resume),
   );
   state.clientSessions.set(id, duplex);
   // EI-18765930091826096: release the session on ANY termination, not only the

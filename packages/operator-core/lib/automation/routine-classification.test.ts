@@ -15,6 +15,7 @@ import {
   SYSTEM_FAMILY_ORDER,
   TARGET_ROLE_SPEND,
   isLoopRoutine,
+  routineControl,
   routineFamily,
   routineKind,
   routineLiveness,
@@ -294,6 +295,103 @@ describe('routineFamily', () => {
     for (const n of names) {
       const fam = routineFamily(n, n.startsWith('loop-') ? 'loop' : 'scheduled');
       expect(all, `${n} → ${fam}`).toContain(fam);
+    }
+  });
+});
+
+/**
+ * The owner asked, looking at the shipped System pane: "why are there some things
+ * that say 'Runs as a managed schedule, not a routine — paused from its own
+ * subsystem'. should we not have all runs as routines?" (2026-07-26, WI-6313).
+ *
+ * These tests pin the ANSWER to that question, per category, so the pane keeps
+ * giving it. The reasons are genuinely different, and one of them — watchdog — is
+ * an invariant rather than a gap, so a future "let's just make everything a
+ * routine" change has to delete an explicit assertion saying why it must not.
+ */
+describe('routineControl — why a row has (or has not) a switch', () => {
+  it('gives a routines row its own switch', () => {
+    const c = routineControl({ source: 'routines' });
+    expect(c.control).toBe('routine');
+    expect(c.reason).toBeNull();
+  });
+
+  it('prefers the feature flag when one IS the armed state', () => {
+    const c = routineControl({ source: 'in-process', flagKey: 'papercusp-doc-steward' });
+    expect(c.control).toBe('flag');
+    expect(c.reason).toBeNull();
+    expect(c.why).toContain('papercusp-doc-steward');
+  });
+
+  it('a flag switch wins over the category, since it is a REAL control', () => {
+    // A flagged row must never fall through to a no-control reason just because
+    // its category also matches one — that regression would re-hide the one
+    // non-routine row that genuinely has a switch.
+    expect(routineControl({ source: 'in-process', category: 'watchdog', flagKey: 'f' }).control).toBe('flag');
+  });
+
+  it('classifies a watchdog as deliberately outside the control plane', () => {
+    const c = routineControl({ source: 'managed', category: 'watchdog' });
+    expect(c.control).toBe('none');
+    expect(c.reason).toBe('watchdog');
+    // The load-bearing claim: it is not an oversight, it is the point.
+    expect(c.why).toMatch(/scheduler/i);
+  });
+
+  it('classifies a per-process cache refresh as having no singleton to pause', () => {
+    expect(routineControl({ source: 'managed', category: 'cache' }).reason).toBe('per-process');
+  });
+
+  it('classifies a per-connection timer as not a schedule at all', () => {
+    expect(routineControl({ source: 'managed', category: 'lifecycle' }).reason).toBe('per-connection');
+  });
+
+  it('classifies a separate OS process as out of reach, not as a principle', () => {
+    // external-process wins over any category it may also carry: the process
+    // boundary is the binding constraint.
+    expect(routineControl({ source: 'external-process', category: 'external-process' }).reason).toBe('other-process');
+    expect(routineControl({ source: 'external-process', category: 'watchdog' }).reason).toBe('other-process');
+  });
+
+  it('classifies central in-process sweeps as the ephemeral tier', () => {
+    expect(routineControl({ source: 'managed', category: 'global-sweep' }).reason).toBe('ephemeral-tier');
+    expect(routineControl({ source: 'in-process', category: 'ephemeral-harness' }).reason).toBe('ephemeral-tier');
+  });
+
+  it('degrades an unknown category to a vague reason rather than throwing', () => {
+    // A new timer category must show a vague tooltip, never break the pane.
+    const c = routineControl({ source: 'managed', category: 'something-invented-later' });
+    expect(c.control).toBe('none');
+    expect(c.reason).toBe('unknown');
+    expect(c.why.length).toBeGreaterThan(0);
+  });
+
+  it('never returns empty copy for any outcome', () => {
+    const cases = [
+      { source: 'routines' },
+      { source: 'in-process', flagKey: 'x' },
+      { source: 'managed', category: 'watchdog' },
+      { source: 'managed', category: 'cache' },
+      { source: 'managed', category: 'lifecycle' },
+      { source: 'external-process' },
+      { source: 'managed', category: 'global-sweep' },
+      { source: 'dbos', category: 'dbos-scheduled' },
+    ];
+    for (const input of cases) {
+      const { why } = routineControl(input);
+      expect(why.trim(), JSON.stringify(input)).not.toBe('');
+    }
+  });
+
+  it('covers every live no-control category in the real inventory', () => {
+    // The five categories actually observed in `schedule:inventory` on 2026-07-26
+    // (26 managed + 7 external-process + 17 in-process). If a new one appears this
+    // still passes via `unknown` — but the assertion documents that vague copy is
+    // a KNOWN fallback, not the intended state for these five.
+    const live = ['watchdog', 'cache', 'lifecycle', 'global-sweep', 'external-process'];
+    for (const category of live) {
+      const source = category === 'external-process' ? 'external-process' : 'managed';
+      expect(routineControl({ source, category }).reason, category).not.toBe('unknown');
     }
   });
 });

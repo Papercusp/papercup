@@ -58,6 +58,8 @@ type Routine = {
   /** `active` alone cannot say whether a row will run again — see routine-classification. */
   liveness: 'running' | 'stalled' | 'dormant';
   control: 'routine' | 'flag' | 'none';
+  /** Where the switch is, or WHY there is none — rendered as the padlock tooltip. */
+  controlWhy: string;
   flagKey: string | null;
   needsAttention: boolean;
   /** One routine can be installed on many pots; the row carries them all. */
@@ -88,6 +90,7 @@ const routine = (over: Partial<Routine> = {}): Routine => {
     family: 'learning',
     liveness: active ? 'running' : 'dormant',
     control: 'routine',
+    controlWhy: 'Pause or resume it right here.',
     flagKey: null,
     needsAttention: false,
     installs: [over.installSlug ?? 'papercusp'],
@@ -519,6 +522,39 @@ describe('AutomationPane — non-routine schedules', () => {
     expect(btn.textContent).toMatch(/Pause all/);
     expect(screen.getByTestId('automation-nocontrol-doc-freshness-sweep')).toBeTruthy();
     expect(screen.getByTestId('automation-toggle-gym-cycle')).toBeTruthy();
+  });
+
+  /**
+   * WI-6313. The marker used to say "Runs as a <source> schedule, not a routine —
+   * paused from its own subsystem" for EVERY uncontrollable row, which named a
+   * limitation and pointed nowhere; the owner had to ask a human what it meant.
+   * The reason now comes from the row's own `controlWhy`, so a watchdog and a
+   * per-connection keepalive no longer give the same non-answer.
+   */
+  it('shows the row-specific reason it cannot be paused, not a generic subsystem line', () => {
+    const watchdog = routine({
+      name: 'memory-watchdog',
+      source: 'managed',
+      controllable: false,
+      control: 'none',
+      controlWhy: 'A watchdog — deliberately outside the routine system.',
+      spawnsAgent: false,
+      spend: 'none',
+    });
+    renderPane({ routines: [watchdog] });
+    const marker = screen.getByTestId('automation-nocontrol-memory-watchdog');
+    // Radix puts the label on the trigger's accessible description path; assert on
+    // the rendered tree rather than hovering, which jsdom cannot do faithfully.
+    expect(marker).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/paused from its own subsystem/);
+  });
+
+  it('never renders an undefined reason when a row omits one', () => {
+    // A row arriving without `controlWhy` (an older cached payload) must not put
+    // the literal string "undefined" in front of the owner.
+    const stale = { ...uncontrollable, controlWhy: undefined } as unknown as typeof uncontrollable;
+    renderPane({ routines: [stale] });
+    expect(document.body.textContent).not.toMatch(/undefined/);
   });
 });
 

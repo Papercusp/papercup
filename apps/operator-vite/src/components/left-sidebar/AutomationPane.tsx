@@ -611,12 +611,19 @@ export default function AutomationPane({
              marker names WHY — the old padlock meant four different things at
              once ("it's a DBOS workflow" / "a managed timer" / "a git-sync hook" /
              "its switch is a flag"), and the flag case has now been given a real
-             control above, so what remains here is only the truly uncontrollable. */
+             control above, so what remains here is only the truly uncontrollable.
+
+             The copy comes from `controlWhy` (catalog.ts → routineControl), NOT
+             from a string built here: "paused from its own subsystem" named a
+             limitation and pointed nowhere, which is why the owner had to ask a
+             human what it meant rather than reading the row (WI-6313). A watchdog
+             and a per-connection keepalive are uncontrollable for completely
+             different reasons, and the row should say which. */
           <Tooltip
             label={
               r.kind === 'triggered'
                 ? `Runs on its trigger (${r.triggerLabel ?? 'an event'}) — there is no schedule to pause`
-                : `Runs as a ${r.source} schedule, not a routine — paused from its own subsystem`
+                : r.controlWhy
             }
           >
             <span
