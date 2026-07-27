@@ -31,6 +31,14 @@ function ageSec(startedAt: string): number {
 export default defineTool({
   name: 'processes:list',
   profile: 'engineer',
+  // @not-a-cell live state, but a SINGLE DOOR: `listTasks()` (task-manager/store.ts) is the one
+  // derivation of the ledger join, and the only other surface over it — the /admin/tasks route —
+  // already CONSUMES that same function rather than re-deriving it, which is axis 5 satisfied
+  // without a registry entry. Nothing answers this question twice: `ps` and `dev:processes` answer
+  // the KERNEL-shaped question (what exists), frozen at six agent kinds by task-manager D-002, and
+  // `scheduler:running` answers bee-run liveness. Registering a cell here would add a door without
+  // removing one — the D-010 failure this gate exists to prevent (see WI-6464 and the exemption's
+  // reason-class (ii)). Revisit the moment a SECOND surface derives the inventory independently.
   description:
     'Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, live RSS/CPU/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered. Pass `live:true` to reconcile against the kernel first (slower, authoritative).',
   capability: 'intel:read',

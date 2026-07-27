@@ -466,6 +466,37 @@ describe('summarizeOrphan — WI-5975', () => {
       expect(s.verdict).toBe('held-by-live-agent');
       expect(isReclaimCandidate(s)).toBe(false);
     });
+
+    // EI-18779583390738111: a claim row read holder_present:true/verdict:held-by-live-agent
+    // while the SAME payload's agents[] row for the SAME holder read alive:false/
+    // sessionState:'ended'/verdict:dead — because the old fusion let ANY recent tool
+    // call override EVERY confirmed-gone sessionState, `ended` included. `ended` fires
+    // only on the SessionEnd/Stop lifecycle event, which already unconditionally
+    // released every claim that session held (session-death-claim-release-2026-07-11) —
+    // a confirmed, PERMANENT termination that a tool call made before death cannot
+    // walk back. Unlike `suspect`/`draining` (still overridable — see above), `ended`
+    // must NEVER be reported held-by-live-agent, however fresh the last tool call.
+    it('sessionState "ended" is NEVER overridden by a fresh tool call — unlike suspect/draining', () => {
+      const s = summarizeOrphan(heldByLive, { sessionState: 'ended', lastToolCallAt: agoMs(30_000) }, NOW);
+      expect(s.verdict).toBe('orphan');
+      expect(s.action).toBe('reclaim');
+      expect(isReclaimCandidate(s)).toBe(true);
+    });
+
+    // The cross-row invariant the bug's own recurrence guard asks for, checkable
+    // without a live fleet: for `ended` specifically — the state agents[]-row alive
+    // derivation treats identically to suspect/draining for `alive:false`, but which
+    // (unlike suspect/draining) represents a CONFIRMED, non-heuristic termination —
+    // summarizeOrphan must never report held-by-live-agent/ask, at ANY tool-call
+    // recency, so a claim row can never contradict the same payload's agents[] row.
+    it.each([agoMs(1_000), agoMs(5 * 60_000), agoMs(6 * 60 * 60_000), null, undefined])(
+      'sessionState "ended" never contradicts agents[]-row alive:false, regardless of lastToolCallAt=%s',
+      (lastToolCallAt) => {
+        const s = summarizeOrphan(heldByLive, { sessionState: 'ended', lastToolCallAt }, NOW);
+        expect(s.verdict).toBe('orphan');
+        expect(s.action).toBe('reclaim');
+      },
+    );
   });
 
   // Pins the structurally-declared HolderActivity union to the real oracle type,
@@ -484,11 +515,12 @@ describe('summarizeOrphan — WI-5975', () => {
   // passed) must OVERRIDE the liveness-derived verdict entirely, in BOTH
   // directions (a dead holder AND a demonstrably live one).
   describe('residue overrides the liveness verdict entirely (EI-18763117665515043)', () => {
-    // `reason` is REQUIRED on PlanItemLaneBlock (scheduler/plan-item-lane-guard.ts).
-    // Worded exactly as the real terminal/residue producer emits it (same file, the
-    // `is already <status> — its work-item is stale residue…` branch) so the
-    // `toEqual(residue)` assertions below compare against a realistic block rather
-    // than a stub that could drift from what production actually hands us.
+    // The INPUT is a full PlanItemLaneBlock — `reason` is required on it
+    // (scheduler/plan-item-lane-guard.ts), and is worded here exactly as the real
+    // terminal/residue producer emits it (same file, the `is already <status> — its
+    // work-item is stale residue…` branch). The explicit type annotation is the point:
+    // it binds this fixture to the interface, so the NEXT required field added there
+    // reds this one line instead of silently drifting.
     const residue: PlanItemLaneBlock = {
       planSlug: 'p',
       itemId: 'P-007',
@@ -497,11 +529,21 @@ describe('summarizeOrphan — WI-5975', () => {
         'plan-item p#P-007 is already done — its work-item is stale residue of completed/abandoned work, not open work',
     };
 
+    // The OUTPUT is deliberately NARROWER than the input: summarizeOrphan projects the
+    // lane block down to the three identifying fields and drops `reason` to keep the
+    // per-row payload small (assignments.ts — the `residue:` construction, and the
+    // structural output type on the SummarizedOrphan interface). Assert against that
+    // projection explicitly rather than against the input fixture: comparing to the
+    // input only ever passed because the fixture was missing `reason`, i.e. the two
+    // shapes coincided by accident. Pinning it here means a future change that starts
+    // or stops forwarding a field fails loudly instead of silently altering the payload.
+    const residueProjection = { planSlug: 'p', itemId: 'P-007', effectiveStatus: 'done' };
+
     it('a DEAD holder whose claim is residue reports residue/close, not orphan/reclaim', () => {
       const deadResidue = summarizeOrphan(heldByLive, { sessionState: 'ended' }, undefined, residue);
       expect(deadResidue.verdict).toBe('residue');
       expect(deadResidue.action).toBe('close');
-      expect(deadResidue.residue).toEqual(residue);
+      expect(deadResidue.residue).toEqual(residueProjection);
       expect(isReclaimCandidate(deadResidue)).toBe(false);
       expect(isResidueCandidate(deadResidue)).toBe(true);
     });

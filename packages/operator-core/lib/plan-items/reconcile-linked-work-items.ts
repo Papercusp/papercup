@@ -228,10 +228,28 @@ export async function reconcileLinkedWorkItemsForPlanItem(
         out.skippedAlreadyTerminal.push(wi.id);
         continue;
       }
-      if (wi.lastProgressAt) {
-        // Independent in-flight progress recorded on THIS item — a sibling
-        // completed the plan item, but this one is genuinely still being
-        // worked. Never clobber it.
+      if (wi.lastProgressAt && wi.assignee) {
+        // Independent in-flight progress recorded on THIS item AND someone
+        // currently holds it — a sibling completed the plan item, but this one
+        // is genuinely still being worked. Never clobber it.
+        //
+        // WI-6303: `lastProgressAt` alone is NOT a safe in-flight signal — three
+        // reclaim paths (work-items-stale-claims.ts's dead/stalled-holder reaper,
+        // shared-pot-loop/fleet-monitors.ts's sweepOrphanedTakenBy, and
+        // fleet/pg-stores.ts's fleet:cancel claim release) clear `taken_by`/
+        // `taken_at` on reclaim but leave `last_progress_at` stamped from
+        // whatever the dead/orphaned holder last did — unlike the voluntary
+        // release path and the terminal-transition path, which both clear it
+        // (see the "release clears the progress signal too" comment on
+        // releaseWorkItem). A work-item reclaimed by any of those three paths
+        // then reads as "genuinely active" FOREVER (no staleness decay, no
+        // re-check), permanently hiding it from this reconciler even with zero
+        // claimant — the live-verified root cause of WI-5130/WI-5136/WI-5137
+        // drifting from their already-`done` plan items P-104/P-301/P-402 for
+        // 10+ days. Requiring a CURRENT assignee closes the gap for both new
+        // occurrences (once the three reclaim paths below are fixed to clear
+        // last_progress_at) and existing corrupted rows (an unclaimed item with
+        // a stale timestamp is no longer treated as in-flight).
         out.skippedInFlight.push(wi.id);
         continue;
       }

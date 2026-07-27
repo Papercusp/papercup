@@ -59,7 +59,22 @@
  *            it. This is the intended path.
  *
  *     // @not-a-cell <reason, >= 24 chars>
- *          → an explicit, reasoned exemption.
+ *          → an explicit, reasoned exemption. TWO reason-classes are legitimate,
+ *            and naming only the first is what made an honest exemption read as a
+ *            dishonest one (WI-6464):
+ *
+ *            (i)  NOT LIVE STATE — a record read, a catalog, a report.
+ *            (ii) LIVE STATE, SINGLE DOOR — genuinely current system state, but
+ *                 exactly one tool answers the question and nothing re-derives it.
+ *                 The VERDICTS map below already calls this "the most important
+ *                 reason-class": promoting a single door adds a registry entry
+ *                 WITHOUT removing one, which is precisely the D-010 failure
+ *                 (`predicate_watches`: shipped, correct, 0 rows, surface #29).
+ *                 The registry earns its keep by collapsing DUPLICATED derivations.
+ *
+ *            So "it is live state" does NOT by itself oblige a `@cell-lens`, and an
+ *            author who believes it does will either register a cell nobody reads or
+ *            write a false reason. Both are worse than a stated single-door verdict.
  *
  * The exemption is what stops this gate from blocking legitimate non-cell reads
  * that trip the signature. It is also the thing most likely to rot into a rubber
@@ -137,6 +152,12 @@ export const MUTATING_VERBS = [
   'pause', 'resume', 'arm', 'disarm', 'emit', 'send', 'write', 'clear',
   'reset', 'restart', 'promote', 'retract', 'cancel', 'apply', 'install',
   'uninstall', 'publish', 'revoke', 'grant', 'ack', 'assign', 'claim',
+  // WI-6464 backstop pass. `freeze`/`limit` are the two that actually bit (a
+  // cgroup freeze and a live re-budget both read as state reads for hours); the
+  // rest come from auditing the tree's mutating verbs that carry a state noun.
+  // ⚠ This list is the BACKSTOP, never the mechanism — see capabilityEffect().
+  'freeze', 'thaw', 'limit', 'throttle', 'drain', 'park', 'couple', 'decouple',
+  'admit', 'wake',
 ];
 
 /** Does the verb half of `group:verb` begin with a mutating verb? */
@@ -145,20 +166,80 @@ export function isMutatingVerb(verb) {
 }
 
 /**
+ * ──────────────────────────────────────────────────────────────────────────────
+ * THE DECLARED-EFFECT ORACLE — a MIRROR of `inferCapabilityEffect` in
+ * `libs/generic/tooldef/src/define-tool.ts`, which is what `defineTool` itself
+ * applies to every tool in the tree.
+ *
+ * WHY MIRRORED RATHER THAN IMPORTED. This is a plain `.mjs` CI gate: it must run
+ * with bare `node`, before any build, with no TS loader — so it cannot import the
+ * TS module that owns this knowledge. Copying it is therefore forced, and copied
+ * knowledge drifts.
+ *
+ * So the copy is PINNED, not trusted: `no-bespoke-state-read-guard.test.ts`
+ * imports tooldef's exported set and this one and asserts they are identical. A
+ * capability added there and not here reds that unit test immediately — which is
+ * the whole difference between this and the hand-maintained MUTATING_VERBS list
+ * that caused WI-6464 in the first place.
+ */
+export const WRITE_CAPABILITY_SUFFIXES = [':write', ':admin', ':delete', ':manage', ':execute'];
+export const WRITE_CAPABILITIES = new Set([
+  'capability:bash',
+  'capability:fs-write',
+  'capability:edit',
+  'capability:write',
+  'capability:git',
+  'capability:computer',
+  'capability:net',
+  'processes:kill',
+  'processes:control',
+  'turn:interrupt',
+  'ui:dispatch',
+  'tui:dispatch',
+  'operator:converse',
+  'activity:report',
+]);
+
+/** `capability -> 'read' | 'write'`, exactly as `defineTool` resolves it. */
+export function capabilityEffect(capability) {
+  const cap = String(capability).toLowerCase();
+  if (WRITE_CAPABILITIES.has(cap)) return 'write';
+  return WRITE_CAPABILITY_SUFFIXES.some((s) => cap.endsWith(s)) ? 'write' : 'read';
+}
+
+/**
  * THE PREDICATE. Pure ({ name, capability } -> boolean) so the "flags a NEW state
  * read / does not flag a mutation or a record read" property is unit-testable
  * without executing a tree scan.
  *
- * Note the capability test is "NOT a write" rather than "IS a read": `coord:presence`
- * — the canonical presence cell, and the very surface D-038 axis 5 cites as its
- * model — declares NO capability field at all, so an is-a-read conjunction misses
- * exactly the tool this plane is built around.
+ * Two independent tests, in this order, and the order is the fix for WI-6464:
+ *
+ *  1. the DECLARED EFFECT (structural). If the tool declares a capability, ask the
+ *     same oracle `defineTool` asks. A capability the platform treats as mutating
+ *     is not a state read, whatever the tool is named. This is what `:write`-suffix
+ *     matching used to approximate and got wrong: `processes:freeze` and
+ *     `processes:limit` declare `processes:control` — a control capability that
+ *     tooldef has classified as a WRITE since 2026-06-20 — so the gate reported two
+ *     mutations as undeclared state reads while the authoritative answer sat one
+ *     lib away.
+ *  2. the mutating-verb list (backstop). Catches an undeclared-capability mutation,
+ *     which (1) cannot see.
+ *
+ * ⚠ The effect test deliberately reads "is a declared WRITE" rather than "is a
+ * declared READ". An is-a-read conjunction would be a coverage regression, and a
+ * MEASURED one — `fleet:status` declares `capability: 'fleet:status'`, which is
+ * neither a read nor a write name, and it is a genuine grandfathered state read
+ * (P-020 verdict: `delegates`). Requiring a read capability drops it, and drops it
+ * SILENTLY, into a non-fatal "stale baseline entry" note. Same argument holds for
+ * a tool declaring no capability at all: `coord:presence`, the canonical presence
+ * cell and the surface D-038 axis 5 cites as its model, is the one this plane is
+ * built around. Not-a-write keeps both; is-a-read loses both.
  */
 export function isStateReadCandidate({ name, capability }) {
   if (!name || !name.includes(':')) return false;
   const verb = name.slice(name.indexOf(':') + 1);
+  if (capability && capabilityEffect(capability) === 'write') return false;
   if (isMutatingVerb(verb)) return false;
-  if (capability && /:write$/.test(capability)) return false;
   return STATE_NOUN_RE.test(name);
 }
 
@@ -541,8 +622,11 @@ function main() {
     console.error('        packages/operator-core/lib/cell-registry.ts — one object literal — then');
     console.error('        point at it. This is the intended path and the cheaper one.');
     console.error('\n    // @not-a-cell <reason, at least ' + MIN_EXEMPTION_REASON + ' chars>');
-    console.error('        This read is genuinely not live system state (a record read, a catalog,');
-    console.error('        a report). State WHY; the count of exemptions is printed on every run.');
+    console.error('        Either (i) this read is genuinely not live system state (a record read,');
+    console.error('        a catalog, a report), OR (ii) it IS live state but is a SINGLE DOOR —');
+    console.error('        one tool answers the question and nothing re-derives it, so a cell would');
+    console.error('        add a registry entry without removing one (the D-010 failure).');
+    console.error('        State WHICH and WHY; the count of exemptions is printed on every run.');
     console.error(`\n  ${offenders.length} offender(s). Do NOT add to BASELINE — it is shrink-only (P-020 empties it).`);
     process.exit(1);
   }

@@ -15,7 +15,8 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup } from '../../../scripts/check-no-bespoke-state-read.mjs';
+import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup, capabilityEffect, WRITE_CAPABILITIES as GUARD_WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES as GUARD_WRITE_CAPABILITY_SUFFIXES } from '../../../scripts/check-no-bespoke-state-read.mjs';
+import { inferCapabilityEffect, WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES } from '@papercusp/tooldef';
 
 /** Build the text of a defineTool literal, optionally carrying a marker. */
 const toolSrc = (name: string, opts: { capability?: string; marker?: string } = {}) => `
@@ -53,6 +54,77 @@ describe('no-bespoke-state-read guard:the state-read signature', () => {
 
   it('does NOT flag a write-capability tool', () => {
     expect(isStateReadCandidate({ name: 'dev:thing_status', capability: 'harness:write' })).toBe(false);
+  });
+
+  it('does NOT flag a MUTATION whose capability is a control capability — WI-6464', () => {
+    // The bug this test exists for. Both tools are mutations of a live cgroup
+    // (freeze/thaw a subtree; re-budget it in place) and both declare
+    // `processes:control`, which tooldef has classified as a WRITE since 2026-06-20.
+    // The gate used to test `/:write$/` on the capability NAME, which `processes:control`
+    // does not match, and `freeze`/`limit` were missing from MUTATING_VERBS — so two
+    // heuristics both missed and the gate reported 2 mutations as undeclared state reads
+    // for hours, with 2 of its 3 rows wrong. A gate that cries wolf gets routed around.
+    expect(isStateReadCandidate({ name: 'processes:freeze', capability: 'processes:control' })).toBe(false);
+    expect(isStateReadCandidate({ name: 'processes:limit', capability: 'processes:control' })).toBe(false);
+  });
+
+  it('still flags the genuine read in the SAME group — the fix must not blanket-exempt it', () => {
+    // processes:list declares `intel:read` and IS live system state. Silencing the two
+    // false positives by exempting the group would have taken the true positive with them.
+    expect(isStateReadCandidate({ name: 'processes:list', capability: 'intel:read' })).toBe(true);
+  });
+
+  it('keeps a state read whose capability is neither a read nor a write NAME', () => {
+    // MEASURED coverage regression, and the reason the predicate tests "is a declared
+    // WRITE" rather than "is a declared READ". `fleet:status` declares
+    // `capability: 'fleet:status'` — verb-shaped, polarity-free — and is a genuine
+    // grandfathered state read (P-020 verdict: `delegates`). An is-a-read conjunction
+    // drops it, and drops it SILENTLY into a non-fatal "stale baseline entry" note.
+    expect(capabilityEffect('fleet:status')).toBe('read');
+    expect(isStateReadCandidate({ name: 'fleet:status', capability: 'fleet:status' })).toBe(true);
+    expect(BASELINE.has('fleet:status')).toBe(true);
+  });
+
+  it('backstops an undeclared-capability mutation via the verb list', () => {
+    // Defence in depth for the case the effect oracle cannot see: no capability declared.
+    for (const verb of ['freeze', 'thaw', 'limit', 'throttle', 'drain', 'park', 'couple', 'decouple', 'admit', 'wake']) {
+      expect(isMutatingVerb(verb), `${verb} should read as mutating`).toBe(true);
+    }
+    expect(isStateReadCandidate({ name: 'processes:freeze_status', capability: null })).toBe(false);
+    // Prefix-token discipline holds for the new verbs too: `limits_status` is not `limit`.
+    expect(isMutatingVerb('limits_status')).toBe(false);
+    expect(isMutatingVerb('waker_status')).toBe(false);
+  });
+});
+
+describe('no-bespoke-state-read guard:the declared-effect oracle is a PINNED mirror', () => {
+  // WI-6464's root cause was one hand-maintained list drifting from reality. The fix
+  // replaces it with tooldef's authoritative oracle — but this gate is plain `.mjs` run
+  // by bare `node` in CI, so it cannot import the TS module and must copy the sets.
+  // A copy nobody checks is the same bug again, so it is pinned here instead: a
+  // capability added to tooldef and not to the gate reds THIS test immediately.
+  it('mirrors tooldef WRITE_CAPABILITIES exactly', () => {
+    expect([...GUARD_WRITE_CAPABILITIES].sort()).toEqual([...WRITE_CAPABILITIES].sort());
+  });
+
+  it('mirrors tooldef WRITE_CAPABILITY_SUFFIXES exactly', () => {
+    expect([...GUARD_WRITE_CAPABILITY_SUFFIXES]).toEqual([...WRITE_CAPABILITY_SUFFIXES]);
+  });
+
+  it('agrees with tooldef on every capability declared in the tree', () => {
+    for (const cap of [
+      'processes:control', 'processes:kill', 'intel:read', 'harness:write', 'coord:read',
+      'fleet:status', 'capability:bash', 'capability:fs-read', 'ui:dispatch', 'ui:read',
+      'activity:report', 'activity:read', 'operator:converse', 'operator:read',
+      'secrets:operator-credentials:read', 'plans:write', 'turn:interrupt',
+    ]) {
+      expect(capabilityEffect(cap), `${cap}`).toBe(inferCapabilityEffect(cap));
+    }
+  });
+
+  it('classifies the control capability as a write — the specific miss', () => {
+    expect(capabilityEffect('processes:control')).toBe('write');
+    expect(inferCapabilityEffect('processes:control')).toBe('write');
   });
 
   it('does NOT flag an ordinary record read', () => {
