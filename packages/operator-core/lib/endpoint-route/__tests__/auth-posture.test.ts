@@ -169,6 +169,17 @@ const RULES: ReadonlyArray<{
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).
       { method: 'GET',  path: '/admin/inference-gateway/stats', auth: VTL },
+      // WI-6486 — same EI-338 cookie-less desktop-webview path, found by driving
+      // the HUD in the Tauri shell: the conversation pane 403-blanked because
+      // `sessions:list` (the owner→session lookup behind ?hudsession=) proxies
+      // through here. That is load-bearing rather than cosmetic —
+      // hud-consolidation-2026-07-26 D-001 RETIRED the sidebar Inbox on the
+      // grounds that asks "now open as a HUD conversation instead", so the 403
+      // left a human ask with no surface at all. Backstopped by the
+      // requireAllowedOriginOr403 CSRF guard at the top of its dispatch, which is
+      // what makes admitting a cookie-less caller safe on a proxy that reaches
+      // write verbs (topics:create, conversations:post/answer/resolve, coord:ask).
+      { method: 'POST', path: '/admin/coordination/:group/:verb', auth: VTL },
       // Same cookie-less desktop-webview rationale (EI-338): the packaged Mac/
       // Windows desktop app hits this route as a diagnostic from localhost with
       // no session cookie to present (EI-8816) — see the route's own auth
