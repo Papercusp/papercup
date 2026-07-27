@@ -133,7 +133,11 @@ export async function sweepOrphanedTakenBy(
          FOR UPDATE
     )
     UPDATE harness_shared.harness_features_consolidated f
-       SET taken_by = NULL, taken_at = NULL, updated_ts = ${nowMs}
+       -- WI-6303: clear last_progress_at with the claim — an orphaned reclaim must
+       -- not leave a stale progress stamp that later reads as genuinely in-flight
+       -- work (see work-items-stale-claims.ts's identical WI-6303 fix for the
+       -- live-verified root-cause writeup).
+       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${nowMs}
       FROM victims v
      WHERE f.harness_slug = v.harness_slug AND f.feature_id = v.feature_id
     RETURNING v.feature_id, v.taken_by, v.updated_ts`;

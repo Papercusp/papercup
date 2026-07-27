@@ -497,6 +497,18 @@ export async function reclaimStaleWorkItemClaims(
     UPDATE harness_shared.work_items f
        SET taken_by = NULL,
            taken_at = NULL,
+           -- WI-6303: the reclaimed holder's progress signal must not outlive the
+           -- claim it was earned under, same as the voluntary release path
+           -- (work-items.ts's releaseWorkItem — "release clears the progress
+           -- signal too"). Leaving it set made a dead-holder's reclaim
+           -- indistinguishable from genuine in-flight work to every downstream
+           -- reader (the plan-item terminal reconciler, the plan-lane gate sync,
+           -- classifyItemActivity) — live-verified: WI-5130/WI-5136/WI-5137 sat
+           -- unclaimed for 10+ days, reclaimed by this exact reaper on
+           -- 2026-07-17, yet still read as "genuinely active" against their
+           -- already-`done` plan items P-104/P-301/P-402 because last_progress_at
+           -- was never cleared here.
+           last_progress_at = NULL,
            -- WI-6039 (fixes the EI-6992 special-case, now STALE): EI-6992 special-cased
            -- issue-family (bug/change/task) to NEVER have status/requeue_count touched,
            -- reasoning "issue-family claimability is orthogonal to status" — true under

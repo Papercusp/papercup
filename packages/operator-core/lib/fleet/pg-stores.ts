@@ -279,7 +279,11 @@ export async function cancelActiveSubtreePg(
     if (claimNodes.length > 0) {
       const released = await tx<{ feature_id: string }[]>`
         UPDATE harness_shared.harness_features_consolidated f
-           SET taken_by = NULL, taken_at = NULL, updated_ts = ${Date.now()}
+           -- WI-6303: clear last_progress_at with the claim — a fleet:cancel
+           -- release must not leave a stale progress stamp that later reads as
+           -- genuinely in-flight work (see work-items-stale-claims.ts's identical
+           -- WI-6303 fix for the live-verified root-cause writeup).
+           SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${Date.now()}
           FROM unnest(
                  ${claimNodes.map((n) => n.harnessSlug!)}::text[],
                  ${claimNodes.map((n) => n.featureId!)}::text[],

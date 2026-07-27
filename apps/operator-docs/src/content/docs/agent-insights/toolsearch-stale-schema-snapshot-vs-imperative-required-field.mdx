@@ -1,0 +1,114 @@
+---
+title: "A stale ToolSearch/tools/list schema (missing a field, wrong enum) is a connection-time snapshot going stale — not a schema-generation bug"
+description: "EI-18783407644768125 reported that ToolSearch's published coord:send schema disagreed with the server's live validation (advertised `expectsReply`, omitted the now-required `expects`). Settled: this is mechanism (a) — an MCP session's tools/list is fetched ONCE at connect and never refreshed for an existing tool's schema CONTENT changing (only for session tool-surface GROWTH, and Claude gets neither) — not mechanism (b), a JSON-Schema-generation defect. A live re-fetch in a fresh session reproduces the CURRENT, correct schema every time. Distinguish the two before proposing a fix; a blanket published-vs-parse required-set equality test would false-positive on the legitimate 'shorthand + items[] duality enforced via preprocess' pattern coord:send and work_items:set_state both use on purpose."
+discovered: 2026-07-27
+tags: [mcp, tools-list, toolsearch, schema, coord-send, zod, list-changed, stale-cache]
+status: current
+documents:
+  - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
+  - packages/operator-core/lib/agent-tools/coordination/tools/send.ts
+  - libs/generic/tooldef/src/define-tool.ts
+  - libs/generic/tooldef/src/schema-adapter.ts
+---
+
+## What was reported (EI-18783407644768125)
+
+An agent loaded `coord:send`'s schema via `ToolSearch({query:"select:mcp__papercusp-su__coord_send"})`
+in a cold-wake CLI process at ~07:50Z on 2026-07-27. The schema it got back
+advertised the OLD, removed `expectsReply` field and did **not** contain
+`expects` at all. A call built faithfully from that advertised schema was
+refused server-side: `expects` is required (D-048), no default. The agent
+recovered in one retry from the (excellent) error message, but flagged that
+the published and validating schemas disagreed in the same live process, and
+asked whoever picked it up to settle which of two mechanisms was responsible
+before proposing a fix:
+
+- **(a)** the ToolSearch deferred-tool index is a snapshot not rebuilt on a
+  tool-definition hot-reload, or
+- **(b)** the MCP `inputSchema` is generated separately from the parsing
+  schema and the two structurally drift.
+
+## Settled: (a), not (b) — reproduced live
+
+A fresh `ToolSearch({query:"select:mcp__papercusp-su__coord_send"})` call in a
+**different, freshly-connected** session (same day, same running operator)
+returned the **current, correct** schema: `expects` present, `enum:
+["ack","answer","action","none"]`, description leading with "REQUIRED",
+`expectsReply` nowhere in the schema. This rules out (b) as a generation
+defect — `toArgsJsonSchema` (`libs/generic/tooldef/src/define-tool.ts`) calls
+Zod 4's `toJSONSchema` fresh, with no caching layer sitting between a tool's
+currently-registered `args` schema and what gets served; it faithfully
+reflects whatever `send.ts` currently exports.
+
+What actually happened: the agent's session had been connected (MCP
+`tools/list` fetched once at connect) from **before** the D-048 code change
+took effect for that operator process (this dev box hot-reloads tool
+definitions in-process via `PAPERCUSP_RELOAD_PROMPTS=1`, without restarting —
+see `CLAUDE.md` § Prompts are auto-generated). Its cached tools/list snapshot
+was simply older than the running code.
+
+## Why an already-connected session never gets told to refresh
+
+`packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts`
+declares `tools: { listChanged: true }` and fires
+`notifications/tools/list_changed` from exactly one call site: `activateTools`
+(`ctx.activateTools`, driven by `tools:find`), when a **seeded** session's tool
+**surface grows** (a previously-invisible tool becomes callable). That is the
+*only* trigger. Two consequences:
+
+1. **It never fires for an existing, already-visible tool's schema CONTENT
+   changing** — only for a tool becoming newly visible. A hot-reload edit to
+   `send.ts`'s `args` schema does not touch surface membership, so no
+   notification is sent to anyone because of it.
+2. **Claude sessions are explicitly exempted even from that**: "Claude is
+   never sent the notification (it launches un-seeded → no surface → no
+   fire)" (`_mcp-handler.ts` ~L1294). Claude gets the full catalog directly in
+   `tools/list` at connect and is expected to keep re-deriving from that one
+   snapshot for the rest of the session's life; `ToolSearch`'s deferred-tool
+   index is built from that same one-time snapshot.
+
+So for a Claude/psu session specifically, `tools/list` (and therefore
+ToolSearch's index) is fixed for the **entire lifetime of the MCP
+connection**, with no in-repo mechanism to refresh it short of a fresh
+connection. A normal `:3070`/`:3170` service restart (a real deploy) drops the
+connection and forces a reconnect, which picks up the current schema — so in
+practice this staleness window is bounded by **dev-mode in-process hot-reload
+without a restart**, which is exactly this box's normal edit-loop.
+
+## Why this is not (and should not become) "fix schema generation" work
+
+The reported symptom (a field silently missing from the advertised schema)
+made this look like (b) — a structural JSON-Schema-vs-Zod-validation drift.
+It is worth checking that hypothesis for any given tool, because a real
+version of it *does* exist, deliberately, elsewhere in the same file: `to`,
+`summary`, and `expects` are all `.optional()` on `coord:send`'s top-level
+object schema (so an `items[]`-only call need not carry them), with the
+single-message form's true requirement enforced imperatively inside a
+`z.preprocess` (see the `D-048` / `D-016` comments at
+`coordination/tools/send.ts` ~L1224-1268; `work_items:set_state` uses the same
+pattern for its own shorthand-vs-structured duality, P-005/D-006). That
+tradeoff is intentional, documented, and already covered by direct
+`tool.args.safeParse` tests in `send.test.ts` (`describe('coord:send
+`expects` gate ...')`) — a blanket "published `required` set must equal
+runtime-enforced required set" test, as the original ticket's recurrence-guard
+suggestion proposed, would immediately false-positive against this legitimate
+pattern and any other tool built the same way. Don't add that test catalog-wide;
+if you want a guard for a *specific* tool's shorthand-required field, assert
+against `tool.args.safeParse` (as `send.test.ts` already does), not against the
+generated JSON Schema's `required` array.
+
+## What to do when you hit this
+
+- A schema that looks wrong/stale for a tool you *just* loaded via ToolSearch,
+  in a session that has been running a while: suspect connection-time
+  staleness first, especially on a dev box with `PAPERCUSP_RELOAD_PROMPTS=1`.
+  Confirm by loading the same tool's schema from a **fresh** session/process —
+  if that shows the current, correct shape, the mismatch was staleness, not a
+  live bug.
+- Read the server's validation error carefully before re-filing — as this
+  ticket itself noted, the message is usually complete enough to recover from
+  in one retry (self-healing), which is why this class of defect is "major but
+  not critical."
+- Don't propose a catalog-wide published-schema-equals-parse-schema equality
+  test without first checking whether the tool uses the intentional
+  shorthand/items-duality pattern above — it is not unique to `coord:send`.

@@ -233,6 +233,52 @@ try:
 except Exception:
     pass  # advisory must never wedge a command
 
+# ── Foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592) ───────
+# `cmd | head -N` is a DIFFERENT hazard from the background-pipe exit-code
+# trap above, and it applies in the FOREGROUND too (that advisory only fires
+# when `run_in_background` is set): once `head` reads its N lines and exits,
+# the upstream writer gets SIGPIPE and is KILLED mid-run — not a masked exit
+# code, the command genuinely stops executing. The truncated output is
+# byte-identical to a successful run's first N lines, so nothing in it
+# signals the kill. `tail` is comparatively safe (it must consume all input
+# to find the last N lines); `head` is the one that kills. Live incident: an
+# agent piped a long-running live-DB schema-pull into `| head -3`, concluded
+# the run had completed, and recorded a false "verified end-to-end" work-item
+# completion for a run that had in fact written nothing — retracted a wake
+# later only because a peer independently noticed the inconsistency.
+#
+# Backgrounded `| head` is already covered by the exit-code advisory above
+# (which lists head alongside tail/grep/tee/…) and takes the one ADVISORY
+# slot first, so this block only adds the FOREGROUND case — the gap the
+# incident actually fell through. Skipped when the writer is already
+# protected (`cat >/dev/null` anywhere after head keeps the pipe drained so
+# the writer never sees SIGPIPE).
+try:
+    if tool_name.lower() == 'bash' and not tool_input.get('run_in_background') and not ADVISORY:
+        if 'cat >/dev/null' not in command and 'cat > /dev/null' not in command:
+            _head_cmd = _strip_shell_quotes(command)
+            _HEAD_PIPE_RE = re.compile(r'(?<!\|)\|(?!\|)\s*(?:\S*/)?head\b[^|;&\n]*$')
+            for _pseg in re.split(r'&&|\|\||;|\n', _head_cmd):
+                if _HEAD_PIPE_RE.search(_pseg.strip()):
+                    ADVISORY = (
+                        'foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592): '
+                        'once `head` reads its N lines and exits, the upstream command gets '
+                        'SIGPIPE and is KILLED mid-run — this is a genuine kill, not just a '
+                        'masked exit code (that trap is covered separately for backgrounded '
+                        "pipes). The truncated output looks byte-identical to a successful "
+                        "run's first N lines, so nothing in it signals the kill — easy to "
+                        'wrongly conclude the run completed, especially for a side-effecting '
+                        'command (writes/migrations/deploys) where that conclusion becomes a '
+                        'false verification claim. `tail` is safe here (it consumes all '
+                        'input); redirect to a log file and read that instead (`cmd > '
+                        '/tmp/x.log 2>&1; head -N /tmp/x.log`), or protect the writer '
+                        '(`cmd | { head -N; cat >/dev/null; }`) if you need the live pipe. '
+                        'Advisory only; this command is proceeding as issued.'
+                    )
+                    break
+except Exception:
+    pass  # advisory must never wedge a command
+
 # ── Background-log-read-race advisory (EI-18764990059061608) ───────────────
 # A backgrounded command's redirect-to-file output is, to a LATER `cat`/`head`/
 # `wc`/etc. of that same file, indistinguishable between "the job finished and
