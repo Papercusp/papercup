@@ -20,6 +20,7 @@ import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { HeartPulse, RefreshCw } from "lucide-react";
 import type { MttshVitals } from "@papercusp/operator-core/lib/red-queen/mttsh";
+import { snapshotFault } from "./snapshot-fault";
 import {
   LearningEvidenceRail,
   LearningHeroMetric,
@@ -70,9 +71,14 @@ export function RedQueenPanel({
   const unresolved = snap
     ? Math.max(0, snap.totalRuns - snap.totalResolved)
     : 0;
+  // WI-6382: a data-layer failure reaches this branch too — it used to be
+  // converted server-side into a successful empty snapshot, so `sync.error`
+  // stayed null and the panel said "No self-heal drills" while the substrate
+  // was unreadable.
+  const fault = snapshotFault(sync.error, snap, "Red Queen");
   useEffect(() => {
     onStatus?.(
-      sync.error
+      fault.failed
         ? "bad"
         : classes.length === 0 || !snap
           ? "neutral"
@@ -82,7 +88,7 @@ export function RedQueenPanel({
               ? "warn"
               : "good",
     );
-  }, [classes.length, onStatus, snap, sync.error, unresolved]);
+  }, [classes.length, onStatus, snap, fault.failed, unresolved]);
 
   return (
     <section
@@ -119,9 +125,9 @@ export function RedQueenPanel({
         }
       />
 
-      {sync.error ? (
+      {fault.failed ? (
         <LearningVisualError
-          title="Red Queen unavailable"
+          title={fault.message ?? "Red Queen unavailable"}
           onRetry={() => sync.invalidate()}
         />
       ) : classes.length === 0 ? (

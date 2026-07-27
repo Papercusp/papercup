@@ -19,6 +19,7 @@ import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { Activity, RefreshCw } from "lucide-react";
 import type { EkgSnapshot } from "@papercusp/operator-core/lib/fleet-ekg/ekg-read";
+import { snapshotFault } from "./snapshot-fault";
 import {
   LearningDisclosure,
   LearningEvidenceRail,
@@ -67,9 +68,14 @@ export function EkgPanel({
   const major = shifts.filter((shift) => shift.severity === "major").length;
   const visible = shifts.slice(0, 8);
   const earlier = shifts.slice(8);
+  // WI-6382: a data-layer failure now reaches this branch too. It used to be
+  // swallowed server-side into a successful empty snapshot, so `sync.error`
+  // stayed null and the panel reported "No behavioral shifts" — calm, confident
+  // and false — while the substrate was unreadable.
+  const fault = snapshotFault(sync.error, snap, "EKG");
   useEffect(() => {
     onStatus?.(
-      sync.error
+      fault.failed
         ? "bad"
         : shifts.length === 0
           ? "neutral"
@@ -77,7 +83,7 @@ export function EkgPanel({
             ? "warn"
             : "good",
     );
-  }, [major, onStatus, shifts.length, snap?.unattributedShifts, sync.error]);
+  }, [major, onStatus, shifts.length, snap?.unattributedShifts, fault.failed]);
 
   const renderShift = (s: (typeof shifts)[number]) => (
     <li key={s.id} className="pc-ekg__row">
@@ -158,9 +164,9 @@ export function EkgPanel({
         }
       />
 
-      {sync.error ? (
+      {fault.failed ? (
         <LearningVisualError
-          title="EKG unavailable"
+          title={fault.message ?? "EKG unavailable"}
           onRetry={() => sync.invalidate()}
         />
       ) : shifts.length === 0 ? (

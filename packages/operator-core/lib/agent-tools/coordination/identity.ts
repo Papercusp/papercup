@@ -96,6 +96,47 @@ export interface AgentIdentity {
 }
 
 /**
+ * The last-resort workspace partition. Writing a row here means the row is
+ * MIS-SCOPED — invisible to a workspace-scoped reader. It exists only so a
+ * fail-soft write path cannot crash; it is never a correct destination.
+ */
+export const UNSCOPED_WORKSPACE_ID = 'default';
+
+/**
+ * Resolve the workspace a row MUST be written to (data-scoping-audit-2026-06-22
+ * D-005 / P-007). This is the single seam replacing the two silent mechanisms
+ * that produced the live 'default' corruption:
+ *   - mechanism A: the writer OMITS workspace_id and the DDL `DEFAULT 'default'`
+ *     fires (invisible at the call site — the whole table lands mis-scoped);
+ *   - mechanism B: the writer inlines `identity.workspaceId ?? 'default'`
+ *     (invisible in aggregate — no one can count how often it fired).
+ *
+ * Here the fallback is LOUD and attributable: it warns with the caller's
+ * context, so the residual is measurable instead of silent. Callers pass the
+ * result explicitly, which is what lets P-007's migration drop the DDL default
+ * without turning silent mis-scoping into live NOT NULL crashes.
+ *
+ * Deliberately NON-throwing: the first callers are fail-soft turn-end paths
+ * where crashing would lose the journal outright. Once the caller audit
+ * (P-007/B1) shows the warn never fires in practice, this is the ONE place to
+ * flip to a throw — which is the entire reason it is a function and not 32
+ * inline `?? 'default'` expressions.
+ */
+export function requireWorkspaceId(
+  identity: Pick<AgentIdentity, 'workspaceId'>,
+  context: string,
+): string {
+  const ws = identity.workspaceId?.trim();
+  if (ws) return ws;
+  console.warn(
+    `[workspace-scope] ${context}: no workspaceId on the agent identity — writing to ` +
+      `'${UNSCOPED_WORKSPACE_ID}'. This row is MIS-SCOPED and invisible to a ` +
+      `workspace-scoped reader (data-scoping-audit-2026-06-22 D-005).`,
+  );
+  return UNSCOPED_WORKSPACE_ID;
+}
+
+/**
  * Derive the agent's durable ROLE for presence-v2 (D-004). Role isn't stored on
  * the identity today — it's surrogated by `source`. The explicit
  * `PAPERCUSP_AGENT_ROLE` env wins when a spawn sets the FINE role (e.g.

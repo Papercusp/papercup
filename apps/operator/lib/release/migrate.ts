@@ -20,21 +20,15 @@
 import postgres from 'postgres';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-// embedded-postgres-server is plain JS (no .d.ts) — type the one export we use.
-// @ts-expect-error untyped JS package.
-import { applyPendingMigrations as _applyPendingMigrations } from '@papercusp/embedded-postgres-server';
+// Types come from the package's generated `src/index.d.ts` (EI-18804531117413708).
+// This was the THIRD verbatim copy of the same `@ts-expect-error` + hand-written
+// `ApplyPendingMigrations` cast (with db-boot-migrate.ts and
+// release-preflight-migration-boot-smoke.integration.test.ts). Being outside
+// operator-core, it was invisible to `lint:tsc` — so it never even showed up as
+// a TS7016; only the duplicated shape gave it away.
+import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
 import { readMigratePolicy } from '@papercusp/operator-core/lib/migrate-policy';
-
-type ApplyPendingMigrations = (args: {
-  client: unknown;
-  sqlDir: string;
-  log?: (s: string) => void;
-  skipFile?: (f: string) => boolean;
-  continueOnError?: boolean;
-}) => Promise<{ appliedCount: number; totalKnown: number; failed: Array<{ file: string; error: string }> }>;
-
-const applyPendingMigrations = _applyPendingMigrations as ApplyPendingMigrations;
 
 export interface MigrateOpts {
   /** Defaults to <releaseRoot>/libs/papercusp/libs/db/sql, else cwd-relative. */

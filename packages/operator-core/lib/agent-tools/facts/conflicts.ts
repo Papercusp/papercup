@@ -44,7 +44,10 @@ export function projectConflict(c: AssumptionConflict, full: boolean): Record<st
       // (what an inlined template produces) does not parse and would degrade
       // every such citation to `opaque` — the near-synonym failure D-041 exists
       // to prevent. Quotable straight into `premises` / `restsOn` (D-023).
-      ref: factCitationRef(s),
+      // `id: null` (the read did not select version identity) must arrive as
+      // ABSENT, not null — factCitationRef takes `id?: number` and omits the
+      // `@v<N>` pin when it is missing, which is D-026's degrade-gracefully rule.
+      ref: factCitationRef({ ...s, id: s.id ?? undefined }),
       by: s.createdBy,
       updatedAt: s.updatedAt,
       assertion: s.assertion,
@@ -119,8 +122,12 @@ export default defineTool({
         coverage: report.coverage,
         ...(report.structuralZero
           ? {
-              zero: report.structuralZero,
-              structuralZero: isStructuralZero(report.structuralZero),
+              zeroReason: report.structuralZero,
+              // The one field a caller must branch on: TRUE means nothing was
+              // compared, so this is not evidence of agreement. Named for the
+              // question rather than the mechanism — `structuralZero: false`
+              // alongside a `zeroReason` string reads as a contradiction.
+              nothingCompared: isStructuralZero(report.structuralZero),
               note: explainZero(report.structuralZero),
             }
           : {}),

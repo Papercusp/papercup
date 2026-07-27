@@ -34,6 +34,9 @@ export function ambientCursorEnabled(): boolean {
 }
 
 export interface BuildAndPersistCursorInput {
+  /** REQUIRED — threaded to the cursor upsert (D-005 / P-007). See
+   *  UpsertSessionCursorInput.workspaceId. */
+  workspaceId: string;
   sessionId: string;
   ownerId: string | null;
   harnessSlug: string | null;
@@ -90,6 +93,7 @@ export async function buildAndPersistCursor(
 
   const cursor = buildCursor(notes, { ...input.cursorOptions, sessionId: input.sessionId });
   await upsertSessionCursor({
+    workspaceId: input.workspaceId,
     sessionId: input.sessionId,
     ownerId: input.ownerId,
     harnessSlug: input.harnessSlug,

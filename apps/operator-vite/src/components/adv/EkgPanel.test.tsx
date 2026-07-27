@@ -136,6 +136,65 @@ describe("EkgPanel", () => {
     expect(screen.getByText("No behavioral shifts")).toBeTruthy();
   });
 
+  // WI-6382. Same DATA as the test above (`shifts: []`), opposite FACT: the
+  // read failed. Before the fix these two were byte-identical on the wire, so
+  // this case rendered the calm "No behavioral shifts" — the panel's own error
+  // branch was unreachable for a data-layer fault because the resolver had
+  // already converted the failure into a success. Asserted at the RENDER layer
+  // deliberately: a read-layer assertion cannot see a render-layer refusal
+  // (the WI-6384 lesson).
+  it("renders the ERROR state — not the empty state — for a degraded snapshot", () => {
+    ekgResult = {
+      data: [
+        {
+          shifts: [],
+          totalShifts: 0,
+          unattributedShifts: 0,
+          sessionsEmbedded: 0,
+          sessions7d: 0,
+          scannedAt: null,
+          unavailable: true,
+          unavailableKind: "read-failed",
+          unavailableReason: "permission denied for relation behavioral_shifts",
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null, // NB: no transport error — this is the whole point.
+      invalidate: vi.fn(),
+    };
+    render(<EkgPanel />);
+    expect(screen.queryByText("No behavioral shifts")).toBeNull();
+    expect(document.body.textContent).toContain(
+      "permission denied for relation behavioral_shifts",
+    );
+  });
+
+  it("names the pre-migration case as such rather than as an idle empty", () => {
+    ekgResult = {
+      data: [
+        {
+          shifts: [],
+          totalShifts: 0,
+          unattributedShifts: 0,
+          sessionsEmbedded: 0,
+          sessions7d: 0,
+          scannedAt: null,
+          unavailable: true,
+          unavailableKind: "pre-migration",
+          unavailableReason: 'relation "behavioral_shifts" does not exist',
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<EkgPanel />);
+    expect(screen.queryByText("No behavioral shifts")).toBeNull();
+    expect(document.body.textContent).toContain("not available yet");
+  });
+
   it("keeps older shifts collapsed until requested", () => {
     const shifts = Array.from({ length: 10 }, (_, i) => ({
       ...snapshot.shifts[0],

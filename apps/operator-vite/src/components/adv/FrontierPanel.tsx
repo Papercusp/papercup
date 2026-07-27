@@ -20,6 +20,7 @@ import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { Radar, RefreshCw } from "lucide-react";
 import type { FrontierSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-frontier-read";
+import { snapshotFault } from "./snapshot-fault";
 import {
   LearningPageHeader,
   LearningVisualEmpty,
@@ -100,9 +101,11 @@ export function FrontierPanel({
 
   // View health for the stage chip: an always-on loop dark/stale/absent is bad;
   // a collision, a stale frontier lane, or an armed-but-unbudgeted lane warns.
+  // WI-6382: a degraded read is a FAULT, not an idle "no lanes yet".
+  const fault = snapshotFault(sync.error, snap, "The frontier read");
   const status: "neutral" | "good" | "warn" | "bad" =
     lanes.length === 0
-      ? sync.error
+      ? fault.failed
         ? "bad"
         : "neutral"
       : lanes.some(
@@ -143,9 +146,9 @@ export function FrontierPanel({
           </button>
         }
       />
-      {sync.error ? (
+      {fault.failed ? (
         <LearningVisualError
-          title="The frontier read failed"
+          title={fault.message ?? "The frontier read failed"}
           onRetry={() => sync.invalidate()}
         />
       ) : sync.loading && !snap ? (

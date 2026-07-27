@@ -24,6 +24,15 @@ export interface TurnJournalRow {
 }
 
 export interface RecordTurnJournalInput {
+  /**
+   * REQUIRED (data-scoping-audit-2026-06-22 D-005 / P-007 mechanism A). The
+   * writer must supply the workspace explicitly — this INSERT used to OMIT the
+   * column and let the DDL `DEFAULT 'default'` fire silently, which is why all
+   * 10,361 live rows landed in the shared 'default' partition. Resolve it with
+   * `requireWorkspaceId(identity, ...)` at the call site, never `?? 'default'`
+   * inline (that is mechanism B, the same corruption one layer up).
+   */
+  workspaceId: string;
   ownerId: string | null;
   agent: string | null;
   sourceKind: string;
@@ -51,8 +60,9 @@ export async function recordTurnJournal(
   const turnTsIso = input.turnTs ? input.turnTs.toISOString() : null;
   const inserted = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.session_turn_journal
-      (owner_id, agent, source_kind, session_id, turn_ts, note, source, flagged, tripwire, harness_slug)
+      (workspace_id, owner_id, agent, source_kind, session_id, turn_ts, note, source, flagged, tripwire, harness_slug)
     VALUES (
+      ${input.workspaceId},
       ${input.ownerId}, ${input.agent}, ${input.sourceKind}, ${input.sessionId},
       ${turnTsIso}::timestamptz, ${input.note}, ${input.source}, ${input.flagged},
       ${tripwireJson}::text::jsonb, ${input.harnessSlug}

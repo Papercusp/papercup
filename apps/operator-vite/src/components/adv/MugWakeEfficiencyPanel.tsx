@@ -20,6 +20,7 @@ import { useSyncQuery } from "@papercusp/sync";
 import { Coffee, RefreshCw } from "lucide-react";
 import { useLexicon } from "@/lib/useLexicon";
 import type { MugWakeEfficiency } from "@papercusp/operator-core/lib/pot/mug-wake-efficiency";
+import { snapshotFault } from "./snapshot-fault";
 import {
   LearningComparisonBars,
   LearningDisclosure,
@@ -59,9 +60,12 @@ export function MugWakeEfficiencyPanel({
   const recent = samples.slice(0, 8);
   const visible = recent.slice(0, 4);
   const earlier = recent.slice(4);
+  // WI-6382: see EkgPanel — a degraded snapshot now reaches the error branch
+  // instead of rendering as a confident "no wakes yet".
+  const fault = snapshotFault(sync.error, snap, `${t("brain")} efficiency`);
   useEffect(() => {
     onStatus?.(
-      sync.error
+      fault.failed
         ? "bad"
         : !snap || wakes === 0
           ? "neutral"
@@ -69,7 +73,7 @@ export function MugWakeEfficiencyPanel({
             ? "good"
             : "warn",
     );
-  }, [onStatus, snap, sync.error, wakes]);
+  }, [onStatus, snap, fault.failed, wakes]);
 
   const renderWake = (s: (typeof recent)[number], i: number) => {
     const prompt = s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;
@@ -118,9 +122,9 @@ export function MugWakeEfficiencyPanel({
         }
       />
 
-      {sync.error ? (
+      {fault.failed ? (
         <LearningVisualError
-          title={`${t("brain")} efficiency unavailable`}
+          title={fault.message ?? `${t("brain")} efficiency unavailable`}
           onRetry={() => sync.invalidate()}
         />
       ) : wakes === 0 ? (

@@ -32,6 +32,13 @@ export interface SessionCursorRow {
 }
 
 export interface UpsertSessionCursorInput {
+  /**
+   * REQUIRED (data-scoping-audit-2026-06-22 D-005 / P-007 mechanism A). See the
+   * note on RecordTurnJournalInput.workspaceId — this INSERT likewise omitted
+   * the column and relied on the DDL `DEFAULT 'default'`. Resolve it with
+   * `requireWorkspaceId(identity, ...)`, never an inline `?? 'default'`.
+   */
+  workspaceId: string;
   sessionId: string;
   ownerId: string | null;
   harnessSlug: string | null;
@@ -59,13 +66,14 @@ export async function upsertSessionCursor(input: UpsertSessionCursorInput): Prom
         : input.turnTs.toISOString();
   await sql`
     INSERT INTO harness_shared.session_cursor
-      (session_id, owner_id, harness_slug, turn_ts, note_count, term_count, terms, updated_at)
+      (session_id, workspace_id, owner_id, harness_slug, turn_ts, note_count, term_count, terms, updated_at)
     VALUES (
-      ${input.sessionId}, ${input.ownerId}, ${input.harnessSlug},
+      ${input.sessionId}, ${input.workspaceId}, ${input.ownerId}, ${input.harnessSlug},
       ${turnTsIso}::timestamptz, ${input.cursor.noteCount ?? 0}, ${terms.length},
       ${termsJson}::text::jsonb, now()
     )
     ON CONFLICT (session_id) DO UPDATE SET
+      workspace_id = EXCLUDED.workspace_id,
       owner_id     = EXCLUDED.owner_id,
       harness_slug = EXCLUDED.harness_slug,
       turn_ts      = EXCLUDED.turn_ts,
