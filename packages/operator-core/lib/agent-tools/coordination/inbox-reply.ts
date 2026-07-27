@@ -39,6 +39,7 @@ import { sendMessage } from './messages';
 import { wakeRecipients } from './inbox-wake';
 import { ADMIN_COORD_UI_OWNER } from './identity';
 import type { AgentIdentity } from './identity';
+import { ownerMessageDefaults } from './owner-message';
 
 /** Payload marker wake-executor's `tagWakeText` reads to choose the
  *  `coord-inject:owner` turn-provenance origin instead of the generic
@@ -105,12 +106,37 @@ export async function deliverInboxOwnerReply(input: {
   if (!live) return { live: false, delivered: false, woken: 0 };
 
   const identity = inboxReplyIdentity(input.workspaceId);
+  // P-033 (c): the OTHER owner-authored send path. It calls sendMessage directly
+  // — deliberately, so an agent cannot forge this route's `coord-inject:owner`
+  // provenance through the agent-callable tool — so it never hit the `expects`
+  // break, but it also carried none of the new fields.
+  //
+  // `expects` is passed EXPLICITLY rather than derived: this is a REPLY to a
+  // question the asker already asked, so nothing further is expected back. The
+  // wrapper's shape-derivation would read the body and say 'action', which would
+  // wrongly park the owner's own answer in `unanswered_directed` forever.
+  const ownerFields = ownerMessageDefaults({
+    body: input.text,
+    expects: 'none',
+    forYouBecause: {
+      relation: 'other',
+      note: 'the owner is answering the question you asked',
+    },
+  });
   const env = await sendMessage(identity, {
     to: [input.askerId],
     summary: input.summary,
     body: input.text,
     plan_slug: input.planSlug,
     expectsReply: false,
+    extra: {
+      expects: ownerFields.expects,
+      blocking: ownerFields.blocking,
+      sections: [{ text: input.text, forYouBecause: ownerFields.forYouBecause }],
+      ...(Object.keys(ownerFields.fieldProvenance).length
+        ? { fieldProvenance: ownerFields.fieldProvenance }
+        : {}),
+    },
   });
   const fan = await wakeRecipients([input.askerId], {
     summary: input.summary,
