@@ -60,6 +60,24 @@ const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
 // survives the provider unmount/remount that happens on some route swaps.
 const queryClient = new QueryClient();
 
+/**
+ * WI-6253: the sync concurrency gate's 24-wide default is tuned for the
+ * Tauri webview→sidecar IPC path, which has no real per-host connection cap.
+ * A plain (non-Tauri) browser tab pointed at the dev server has NO IPC bridge
+ * at all — `fetch()` always opens a real WebKitGTK/browser HTTP connection —
+ * so it must use the connection-capped value instead of inheriting the
+ * IPC-tuned one. (The Tauri shell's own pre-IPC-ready startup window is a
+ * separate, currently-unwired case — see query-fetcher.ts's
+ * `CONNECTION_CAPPED_MAX_IN_FLIGHT` doc + follow-up WI-6460.)
+ *
+ * Exported as a pure function (rather than inlined in the component) so this
+ * decision is unit-testable without mounting React.
+ */
+export function resolveMaxInFlightFetches(isTauriEnv: boolean): number | undefined {
+  // undefined ⇒ SyncProvider's own default (DEFAULT_MAX_IN_FLIGHT, IPC-tuned).
+  return isTauriEnv ? undefined : CONNECTION_CAPPED_MAX_IN_FLIGHT;
+}
+
 // One rows-delta codec for the app lifetime (P-006). Injected into @papercusp/sync only while
 // FLAGS.SYNC_RESOURCE_DELTA is ON (the effect below); OFF ⇒ no codec ⇒ full re-fetches, as today.
 const syncDeltaCodec = createSyncDeltaCodec();
@@ -89,6 +107,7 @@ export function HarnessSyncProvider({
         userId={userID}
         restEndpoint={DEFAULT_REST_ENDPOINT}
         ssePollIntervalMs={ssePollIntervalMs}
+        maxInFlightFetches={resolveMaxInFlightFetches(isTauri())}
       >
         {children}
       </SyncProvider>

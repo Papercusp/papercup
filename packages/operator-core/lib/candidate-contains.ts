@@ -233,6 +233,18 @@ async function classifySubmodulePath(
  * commit and EMPTY on a clean miss, so "absent at that commit" is a DEFINITIVE negative
  * while a failed read stays `null`. A `false` here therefore never comes from a broken
  * git call — the failure this module exists to prevent.
+ *
+ * ⚠ SUBMODULE CAUTION (EI-18828378090895599). Unlike `classifyPathsAgainstCandidate`,
+ * this function is NOT submodule-aware, and here that would be actively dangerous: for a
+ * path inside a submodule, `ls-tree <superSha> -- <sub>/<file>` returns '' — which the
+ * rule above reads as a DEFINITIVE negative, i.e. a confident "your change is NOT in the
+ * candidate". That is the precise misread `marker` was added to kill, inverted.
+ *
+ * It is currently UNREACHABLE: `dev:pipeline_position` computes marker containment only
+ * inside `if (relPath && !submodule)`. That guard is load-bearing — do NOT remove it to
+ * "let submodule paths use markers" without first resolving the gitlink here (as
+ * `classifySubmodulePath` does) and reading inside the submodule. Removing it alone
+ * silently converts an honest "unknown" into a confident wrong answer.
  */
 export interface MarkerContainment {
   marker: string;
