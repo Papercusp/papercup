@@ -26,6 +26,7 @@ import './boot-integrity-first';
 import './boot-flag-store';
 import cluster from 'node:cluster';
 import { createAdaptorServer } from '@hono/node-server';
+import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
 import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
 import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
 import { handler } from './host-handler';
@@ -172,46 +173,15 @@ const hostname = resolveBindHost();
 // event with no listener attached, which Node re-raises as an uncaught
 // exception straight into the process-level handler above ("[hono-host] fatal
 // uncaughtException — exiting") — instant, no recovery, even though the
-// straggler is typically gone within a second or two. Retry a BOUNDED number
-// of times with a short fixed delay before giving up: this absorbs a
+// straggler is typically gone within a second or two.
+// listenWithEaddrinuseRetry (packages/operator-core/lib) retries a BOUNDED
+// number of times with a short fixed delay before giving up: this absorbs a
 // transient squatter without masking a genuine, persistent port conflict
 // (which still fails — just a few seconds later — with the SAME fatal
 // message callers already grep for, e.g. verify-tauri-headless.sh's own
 // `EADDRINUSE.*:$DEV_PORT` check).
 const LISTEN_RETRY_MAX_ATTEMPTS = Number(process.env.PAPERCUSP_LISTEN_EADDRINUSE_RETRIES ?? 8);
 const LISTEN_RETRY_DELAY_MS = Number(process.env.PAPERCUSP_LISTEN_EADDRINUSE_RETRY_MS ?? 1000);
-function listenWithEaddrinuseRetry(
-  srv: import('node:http').Server,
-  listenOpts: { port: number; host: string; reusePort?: boolean },
-  onBound: () => void,
-  attempt = 1,
-): void {
-  const onError = (err: NodeJS.ErrnoException): void => {
-    srv.removeListener('error', onError);
-    if (err?.code === 'EADDRINUSE' && attempt < LISTEN_RETRY_MAX_ATTEMPTS) {
-      console.warn(
-        `[hono-host] listen EADDRINUSE on ${listenOpts.host}:${listenOpts.port} ` +
-          `(attempt ${attempt}/${LISTEN_RETRY_MAX_ATTEMPTS}) — retrying in ${LISTEN_RETRY_DELAY_MS}ms ` +
-          `(transient-straggler recovery, EI-18734124566158657)`,
-      );
-      setTimeout(() => {
-        listenWithEaddrinuseRetry(srv, listenOpts, onBound, attempt + 1);
-      }, LISTEN_RETRY_DELAY_MS);
-      return;
-    }
-    // Exhausted retries, or a non-EADDRINUSE error: re-throw so the existing
-    // process-level `uncaughtException` handler logs + exits exactly as before
-    // (same message, same exit code — only a genuinely persistent conflict or
-    // a different error class ever reaches this branch).
-    throw err;
-  };
-  srv.once('error', onError);
-  if (listenOpts.reusePort) {
-    srv.listen({ port: listenOpts.port, host: listenOpts.host, reusePort: true }, onBound);
-  } else {
-    srv.listen(listenOpts.port, listenOpts.host, onBound);
-  }
-}
 
 /**
  * Start the request-serving plane: the HTTP server + per-process loop monitors +

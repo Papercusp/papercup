@@ -47,6 +47,22 @@ export default defineTool({
   args: z.object({
     path: z.string().min(1).max(400).optional(),
     sha: z.string().min(4).max(64).optional(),
+    /**
+     * EI-18797292094433710. Kept OPTIONAL rather than folded into `path` because it is a
+     * different KIND of input — the caller's own change, which nothing on this box can
+     * derive: git-sync commits the whole shared tree under one identity, so there is no
+     * commit that is identifiably "yours" to test ancestry against.
+     */
+    marker: z
+      .string()
+      .min(3)
+      .max(200)
+      .optional()
+      .describe(
+        'A distinctive LITERAL string from YOUR change (a new function name, an added error message, an id). ' +
+          'Answers "is MY change in the commit the gate is judging?" definitively — which the default containment check CANNOT, ' +
+          'because it compares the file byte-for-byte and any peer commit to the same file breaks that permanently. Use it whenever you see missingReason:"newer-commit".',
+      ),
   }),
   async handler(args) {
     /**
@@ -70,7 +86,7 @@ export default defineTool({
      * that the per-path legs are unanswerable; they simply also get the facts that do
      * not depend on a path.
      */
-    const result = await gitPipelinePosition({ path: args.path, sha: args.sha });
+    const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker });
 
     // WI-5440: a path can have MORE THAN ONE consumer on DIFFERENT activation
     // routes (e.g. a file read by both a bg-host-only routine and an

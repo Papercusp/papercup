@@ -66,6 +66,7 @@ import {
   isDanglingCondition,
   resolveAssumptions,
 } from '../../agent-facts/assumptions';
+import { getWorkItem } from '../../work-items';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 
 /** The literal a caller passes to declare, explicitly, that this commitment rests

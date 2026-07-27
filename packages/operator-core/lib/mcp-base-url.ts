@@ -48,3 +48,39 @@ export function resolveInheritedOperatorBaseUrl(raw: string | undefined): string
   const base = trimmed.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
   return resolveAgentMcpBaseUrl(base);
 }
+
+/**
+ * Resolve THIS process's OWN operator base URL, for use as the callback/API-signing
+ * env of a child THIS process spawns (a desktop terminal, an ad-hoc agent, a fleet
+ * member, …) — WI-6154.
+ *
+ * BUG CLASS THIS FIXES: `apps/operator/.env.local` unconditionally sets
+ * `PAPERCUSP_OPERATOR_URL="http://localhost:3070/api/mcp"` (the LIVE operator), and
+ * that value is inherited by EVERY operator process that sources `.env.local` —
+ * including the `:3170` staging host (which additionally exports its own
+ * `PAPERCUSP_HONO_PORT=3170` on top) and any hermetic gym/smoke instance. Five spawn
+ * sites (capability:launch-agent, capability:terminal, fleet:launch-on-plan,
+ * fleet-headcount-action, delegated-spawn-honor) each hand-rolled an identical
+ * resolver that checked the inherited `PAPERCUSP_OPERATOR_URL` FIRST — so a terminal
+ * or agent spawned FROM the staging host got wired to talk to the LIVE :3070
+ * operator instead of its actual spawner (matching the gym-worker root cause of
+ * WI-6154: every gym eval agent handshook :3070, where `role=worker` has zero
+ * granted capabilities, so 100% of runs escalated with an empty diff).
+ *
+ * FIX: when THIS process knows its own serving port (`PAPERCUSP_HONO_PORT` is set —
+ * true for every operator host: live, staging, hermetic gym/smoke), that identity
+ * wins over any inherited `PAPERCUSP_OPERATOR_URL`, which may just be leaked-through
+ * config for a DIFFERENT host. Only a process with no server identity of its own (a
+ * bare client/agent session, never itself hosting an operator) falls back to the
+ * inherited value — which there correctly names the operator it is actually talking
+ * to (dbos/orchestrator-runner.ts's `spawnInvokeOnce` pin, EI-286 leg (b), already
+ * uses this exact precedence for its own spawn path; this is the same fix for the
+ * other five).
+ */
+export function resolveSpawnHostOperatorBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const honoPort = env.PAPERCUSP_HONO_PORT?.trim();
+  if (honoPort) return `http://localhost:${honoPort}`;
+  const fromEnv = env.PAPERCUSP_OPERATOR_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
+  return 'http://localhost:3070';
+}

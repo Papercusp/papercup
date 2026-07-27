@@ -864,7 +864,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
             await sendMessage(emitterIdentity('await-event', headline.workspaceId), {
               to: [subscriberId],
               summary: `[await-event] ${headline.eventKey} fired — wake parked (${outcome.reason})`,
-              body: `${headline.summary ?? ''}\nIf you act on this now, ack it with events:cancel { delivery_id: ${headline.id} } so you are not also resumed for it later.`.trim(),
+              body: `${headline.summary ?? ''}\nIf you act on this now, ack it with events:cancel { delivery_id: ${headline.id} } so you are not also resumed for it later. If events:cancel is not in your loaded tool set, do not skip the ack — reach it via tools:find("events:cancel") or tools:invoke { name: "events:cancel", args: { delivery_id: ${headline.id} } }, both of which always resolve the tool regardless of what a generic tool-search surfaces.`.trim(),
               category: 'event',
               extra: { auto: true, event_key: headline.eventKey, wake_delivery_id: headline.id },
             });

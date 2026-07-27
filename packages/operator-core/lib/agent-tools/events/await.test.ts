@@ -72,6 +72,12 @@ vi.mock('../../plan-items/claims', () => ({
 vi.mock('../plans/source', () => ({
   resolvePlanScope: vi.fn(async () => ({ workspaceId: 'ws-x', harnessSlug: 'papercup' })),
 }));
+// EI-18734910825871393: the plan-item:done:<slug>:<id> registration latch's live-status
+// probe. Defaults to null (undeterminable) so every PRE-EXISTING test above is unaffected;
+// overridden per-test below to exercise the already_done short-circuit.
+vi.mock('../../plan-items/assignments', () => ({
+  planItemEffectiveStatus: vi.fn(async () => null as string | null),
+}));
 // EI-13846: the claim-spec read behind the `work-item:claimable` payload_filter
 // default. Defaults to 'default' (no spec) so every PRE-EXISTING test above (none
 // of which awaits 'work-item:claimable') is unaffected; overridden per-test below.
@@ -87,6 +93,7 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import { liveSettledProbe, liveAssigneeProbe } from '../../work-items-events';
+import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 
@@ -563,6 +570,56 @@ describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-awa
   it('non-done keys never probe (no per-registration tax on unrelated awaits)', async () => {
     await call({ event: 'lock:grant:t9' });
     expect(liveSettledProbe).not.toHaveBeenCalled();
+  });
+});
+
+describe('the plan-item-done registration LATCH (EI-18734910825871393 — the 76s-late-registration race)', () => {
+  it('awaiting plan-item:done:<slug>:<id> for an ALREADY-done item answers already_done and registers NOTHING', async () => {
+    vi.mocked(planItemEffectiveStatus).mockResolvedValueOnce('done');
+    const out = await call({ event: 'plan-item:done:retire-work-item-mail-surface-2026-07-26:P-008' });
+    expect(out).toMatchObject({
+      ok: true,
+      already_done: true,
+      event: 'plan-item:done:retire-work-item-mail-surface-2026-07-26:P-008',
+      item_state: 'done',
+    });
+    expect(out.advice).toContain('Do not wait');
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(planItemEffectiveStatus).toHaveBeenCalledWith('papercup', 'retire-work-item-mail-surface-2026-07-26', 'P-008');
+  });
+
+  it('a TODO/WIP item registers exactly as before (the latch only answers on done)', async () => {
+    vi.mocked(planItemEffectiveStatus).mockResolvedValueOnce('wip');
+    const out = await call({ event: 'plan-item:done:my-plan:P-3' });
+    expect(out.already_done).toBeUndefined();
+    expect(out.await_id).toBe(99);
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('plan-item:done:my-plan:P-3');
+  });
+
+  it('a DROPPED item is NOT treated as already_done (the done-event never fires for it, so it must keep waiting to the timeout)', async () => {
+    vi.mocked(planItemEffectiveStatus).mockResolvedValueOnce('dropped');
+    const out = await call({ event: 'plan-item:done:my-plan:P-4' });
+    expect(out.already_done).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('an UNDETERMINABLE probe (null — missing plan/item) fails OPEN — the registration proceeds', async () => {
+    vi.mocked(planItemEffectiveStatus).mockResolvedValueOnce(null);
+    const out = await call({ event: 'plan-item:done:my-plan:P-404' });
+    expect(out.already_done).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('a PATTERN await (plan-item:done:my-plan:*) never probes — patterns can always match a future key', async () => {
+    const out = await call({ event: 'plan-item:done:my-plan:*' });
+    expect(planItemEffectiveStatus).not.toHaveBeenCalled();
+    expect(out.pattern).toBe(true);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-plan-item-done keys never probe (no per-registration tax on unrelated awaits)', async () => {
+    await call({ event: 'lock:grant:t9' });
+    expect(planItemEffectiveStatus).not.toHaveBeenCalled();
   });
 });
 

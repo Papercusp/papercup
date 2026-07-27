@@ -1311,7 +1311,20 @@ export function computeStages(
     // expensive one (re-debugging a correct fix). So when the candidate provably does
     // not carry this file, that fact LEADS the gate detail, ahead of the red count.
     const cic = p.changeInCandidate;
-    const notInCandidate = cic.judgingContainsPath === false || cic.nextContainsPath === false;
+    /**
+     * EI-18797292094433710: a MARKER verdict outranks blob identity everywhere the old
+     * reading drove behaviour, not just in the phrasing. When the caller named a marker
+     * and the judged commit carries it, the candidate DOES contain the change even
+     * though the file is no longer byte-identical (a peer moved it) — so this must not
+     * count as `notInCandidate`, or the warning and the lever both keep firing on a
+     * question that has already been answered.
+     */
+    const markerSaysPresent =
+      cic.markerJudging?.present === true || (!cic.judgingSha && cic.markerNext?.present === true);
+    const notInCandidate =
+      !markerSaysPresent && (cic.judgingContainsPath === false || cic.nextContainsPath === false);
+    /** The judged run demonstrably covers this change — by identity OR by marker. */
+    const judgedRunCoversChange = cic.judgingContainsPath === true || markerSaysPresent;
     stages.push({
       name: 'gate',
       position: p.positions.inMain ? 'past' : 'pending',
@@ -1356,7 +1369,7 @@ export function computeStages(
             // reaching for replaceStale to "unstick" it is the EI-11667 replace-storm that
             // starved the gate of every verdict for 2h. Found by dogfooding this surface on
             // a live stale red whose in-flight run already carried the fix.
-            cic.judgingSha && cic.judgingContainsPath === true
+            cic.judgingSha && judgedRunCoversChange
             ? null
             : g.fireStale
               ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
@@ -1792,9 +1805,16 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
   // every tick above it — the ticks describe where the change IS, this describes whether
   // the verdict about to land is even about it. Appended last so it is the final thing
   // read, which is where a caller stops.
-  const candidateNote =
-    p.changeInCandidate.judgingContainsPath === false || p.changeInCandidate.nextContainsPath === false
-      ? ` ⚠ ${p.changeInCandidate.detail}`
+  // EI-18797292094433710: a marker that CONFIRMS containment is still worth saying — the
+  // caller asked — but it is reassurance, not a warning, and rendering it behind ⚠ would
+  // re-create the alarm this fix exists to silence.
+  const cicSum = p.changeInCandidate;
+  const markerConfirmed = cicSum.markerJudging?.present === true || (!cicSum.judgingSha && cicSum.markerNext?.present === true);
+  const markerDenied = cicSum.markerJudging?.present === false || (!cicSum.judgingSha && cicSum.markerNext?.present === false);
+  const candidateNote = markerConfirmed
+    ? ` ✓ ${cicSum.detail}`
+    : markerDenied || cicSum.judgingContainsPath === false || cicSum.nextContainsPath === false
+      ? ` ⚠ ${cicSum.detail}`
       : '';
   return `${leadClause(p)}${label} @${p.targetShortSha}${subj}: committed ${tick(p.positions.committedLocal)} · staging ${tick(
     p.positions.onStaging,
@@ -1820,6 +1840,9 @@ export async function gitPipelinePosition(
   let submodule: string | null = null;
   let gitDir = root;
   let relPath = inp.path ? inp.path.replace(/^\.?\//, '') : null;
+  // EI-18797292094433710: an all-whitespace marker would match everywhere and read as a
+  // confident positive, so it is treated as "not supplied" rather than trusted.
+  const marker = inp.marker?.trim() ? inp.marker : null;
   if (relPath) {
     const subs = await submodulePaths(git, root);
     const hit = subs.find((s) => relPath === s || relPath!.startsWith(s + '/'));
@@ -2153,7 +2176,16 @@ export async function gitPipelinePosition(
       markerJudging: candidates.judgingSha ? (markerBySha.get(candidates.judgingSha) ?? null) : null,
       markerNext: candidates.nextCandidateSha ? (markerBySha.get(candidates.nextCandidateSha) ?? null) : null,
     });
-    if (changeInCandidate.judgingContainsPath === false || changeInCandidate.nextContainsPath === false) {
+    // EI-18797292094433710: suppressed when a marker proved the judged commit carries the
+    // change — the file not being byte-identical is then a peer's edit, not a miss, and
+    // shouting "DOES NOT CONTAIN" at that is the false alarm that cost the outage.
+    const markerProvedPresent =
+      changeInCandidate.markerJudging?.present === true ||
+      (!changeInCandidate.judgingSha && changeInCandidate.markerNext?.present === true);
+    if (
+      !markerProvedPresent &&
+      (changeInCandidate.judgingContainsPath === false || changeInCandidate.nextContainsPath === false)
+    ) {
       notes.push(`CANDIDATE DOES NOT CONTAIN THIS FILE: ${changeInCandidate.detail}`);
     }
   } else if (relPath && submodule) {
