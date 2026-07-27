@@ -945,11 +945,17 @@ describe('checkpointCandidateContainment (P-004)', () => {
   const BLOB_OLD = '0'.repeat(40);
   const BLOB_NEW = 'f'.repeat(40);
 
-  /** A git that answers by arg shape; status non-zero ⇒ the read FAILED (never ""). */
+  /**
+   * A git that answers by arg shape; status non-zero ⇒ the read FAILED (never "").
+   * `<sha>^{commit}` resolves by default — the containment check probes that the candidate
+   * COMMIT exists before judging any path, so a fixture that did not answer it would make
+   * every case fall into the unknown branch.
+   */
   const fakeExec =
     (answers: Record<string, string>) =>
     (_cmd: string, args: string[]) => {
       const key = args.slice(2).join(' ');
+      if (key.endsWith('^{commit}') && !(key in answers)) return { status: 0, stdout: 'c'.repeat(40), stderr: '' };
       return key in answers
         ? { status: 0, stdout: answers[key], stderr: '' }
         : { status: 128, stdout: '', stderr: 'fatal' };

@@ -1420,6 +1420,9 @@ describe('changeInCandidate (P-004)', () => {
         if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
         if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
         if (args[0] === 'rev-list') return '0';
+        // The candidate COMMIT must resolve before any path verdict is computed — an
+        // unresolvable sha is UNKNOWN, not a blanket "absent".
+        if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
         // The candidate carries an OLD blob; the working tree has a new one. (Both must be
         // real hex — the reader rejects non-sha output rather than trusting it.)
         if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'judging1:a.ts') return '0'.repeat(40);

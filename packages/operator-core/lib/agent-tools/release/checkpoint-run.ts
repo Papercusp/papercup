@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   checkpointCandidateContainment,
+  classifyReplaceRequest,
   launchDetachedCheckpoint,
   REPLACE_STALE_MIN_AGE_SEC,
 } from '../../release-checkpoint-launch';
@@ -96,6 +97,17 @@ export default defineTool({
         tipSha: a.current_head ?? null,
         paths: args.paths,
       });
+      // EI-18757736867106199: the ADVICE must come from the SAME oracle as the ENFORCEMENT.
+      // classifyReplaceRequest (EI-18757156963245979) already refuses to stop a `delivering`
+      // run at any age — but this note was still computed from age ALONE, so the tool went on
+      // telling callers "Pass replaceStale:true to stop it" about runs it would then refuse to
+      // stop. That disagreement is not cosmetic: it is the documented path to the harm. On
+      // 2026-07-27 a caller followed this very string against a run 85s into its stale-red
+      // re-triage; being told by the tool that killing it was correct, the refusal read as an
+      // obstacle rather than an answer, and the run was killed out-of-band instead — discarding
+      // an auto-refire that was working. Deriving both from one call makes that class
+      // unreachable: the string can no longer recommend a move the policy rejects.
+      const replaceDecision = classifyReplaceRequest(a);
       return {
         content: [
           {
@@ -113,6 +125,15 @@ export default defineTool({
               elapsed_sec: a.elapsed_sec ?? null,
               eta_sec: a.eta_sec ?? null,
               replace_refused_young: a.replace_refused_young ?? false,
+              // EI-18757736867106199: expose the phase signal the decision actually turns on.
+              // It was computed and enforced but never returned, so a caller could not see WHY
+              // a replace was refused — only that it was.
+              delivering: a.delivering ?? null,
+              replace_refused_delivering: a.replace_refused_delivering ?? false,
+              /** The policy's own verdict on `replaceStale` for THIS run — the same call the
+               *  launch path enforces, so the note below can never recommend a rejected move. */
+              replace_allowed: replaceDecision.replace,
+              replace_refused_reason: replaceDecision.replace ? null : replaceDecision.reason,
               held_externally: a.held_externally ?? false,
               callerEditsInCandidate: containment,
               // Lead with it: the caller's next move differs entirely depending on whether
@@ -132,11 +153,18 @@ export default defineTool({
                   // run testing", never `current_candidate`/`candidate_stale` below, which describe a
                   // HYPOTHETICAL run started fresh right now, not the one actually in flight.
                   `A checkpoint run for this root is already in flight, held by a DIFFERENT process than the manual unit (almost certainly the hourly cron tick — it runs as a plain child process, not this unit, so this tool cannot see or control it directly). ${a.candidate ? `The in-flight run is judging candidate ${a.candidate.slice(0, 12)} (read from the isolated checkpoint checkout's HEAD) — verify your fix against THAT sha, not current_candidate below.` : "This run's exact candidate could not be resolved (the checkpoint checkout wasn't readable) — do not assume it matches current_candidate below, which is only what a NEW run would pick if launched now."} force:true and replaceStale CANNOT free this slot — a forced launch would just spawn a second process that loses the identical run-lock race a moment later and silently produces no verdict (the exact failure this check exists to prevent). Wait for it instead: checkpoint:await (omit candidateSha to wake on this run\'s verdict regardless of exact sha, then release:trace to confirm your commit is included).`
-                : a.candidate_stale
-                  ? typeof a.elapsed_sec === 'number' && a.elapsed_sec >= REPLACE_STALE_MIN_AGE_SEC
-                    ? 'A checkpoint run for this root is already in flight, judging an older candidate than current staging, and it is OLD enough that it should have verdicted by now (EI-9672: likely wedged in post-verdict salvage/refire on a superseded commit). Pass replaceStale:true to stop it and launch a fresh run for the current candidate — force:true alone will NOT help (systemd still refuses the collision).'
-                    : 'A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Wait for its verdict (see eta_sec); replaceStale only unlocks once the run is ≥20 min old.'
-                  : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
+                : replaceDecision.replace
+                  ? 'A checkpoint run for this root is already in flight, judging an older candidate than current staging; it is OLD enough that it should have verdicted by now AND it has not published the `delivering` phase (EI-9672: the genuine wedged-salvage case). Pass replaceStale:true to stop it and launch a fresh run for the current candidate — force:true alone will NOT help (systemd still refuses the collision).'
+                  : replaceDecision.reason === 'delivering'
+                    ? // EI-18757736867106199: the case that used to read "pass replaceStale:true".
+                      // A run here has FINISHED its suite and is in the verdict path — it may be
+                      // re-triaging a stale red and auto-refiring onto a newer tip, which is the
+                      // gate repairing itself. Age cannot distinguish this from wedged; the phase
+                      // can, and it is decisive.
+                      'A checkpoint run for this root is already in flight and has published the `delivering` phase: its SUITE IS DONE and it is in the verdict path (stale-red re-triage → auto-refire → prefix salvage). It is seconds-to-minutes from a verdict, and may VOID a stale red and re-fire itself onto a newer tip — this is the gate self-healing, not a wedge. It is NOT replaceable at any age: replaceStale:true will be refused (replace_refused_delivering), and killing it out-of-band DISCARDS the salvage (that is exactly how four consecutive runs died on 2026-07-27 with nothing actually broken). Wait for it: checkpoint:await, then release:trace to confirm your commit is included.'
+                    : replaceDecision.reason === 'young'
+                      ? `A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Wait for its verdict (see eta_sec); replaceStale only unlocks once the run is ≥${Math.round(REPLACE_STALE_MIN_AGE_SEC / 60)} min old AND not delivering.`
+                      : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
             }),
           },
         ],

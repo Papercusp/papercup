@@ -1420,9 +1420,33 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
  * needed, never less. Ancestry is verified so a diverged/rewound remote can
  * never smuggle a non-ancestor baseline in; any failure falls back to null —
  * the strict full-history judge.
+ *
+ * WI-6243 (live-caught on the P-302 rig, 2026-07-27) — why this is no longer
+ * `origin/<branch>`-or-nothing: the original form required BOTH a registry
+ * `github_remote` AND a remote-tracking ref named exactly after the branch. A
+ * pot created by the seed-snapshot clone path satisfies NEITHER — its registry
+ * entry carries `github_remote: null`, and its only remote-tracking ref is
+ * `refs/remotes/origin/papercusp-seed-snapshot-<uuid>` while the local branch
+ * is `main`. So the mitigation was inert exactly where it was needed and
+ * genesis judged the FULL history on EVERY tick: own-head-publish burned
+ * 27.5 min per fire (vs ≤63s for every other git-sync step) holding the DBOS
+ * dedup pin, the guard then refused, no namespace ref was ever written,
+ * `priorSha` stayed null — and it repeated forever. Net effect: the device
+ * never published its own head at all, i.e. a total non-participant in p2p
+ * replication, with the whole git-sync cadence throttled 5min → ~30min behind
+ * it.
+ *
+ * The registry field was only ever a PROXY for the real question. The
+ * git-level facts are both stricter and more direct: a remote-tracking ref
+ * EXISTS (so a fetch from that remote really happened) and the remote it
+ * tracks is NOT a path on this machine. That is what is required now, and the
+ * baseline search widens from one hard-coded ref name to the tightest
+ * already-exposed frontier over ALL remote-tracking refs.
  */
-async function deriveGenesisBaselineSha(entry: ProjectEntry, branch: string | undefined): Promise<string | null> {
-  if (!entry.github_remote) return null;
+export async function deriveGenesisBaselineSha(
+  entry: ProjectEntry,
+  branch: string | undefined,
+): Promise<string | null> {
   try {
     // Resolve the branch EXACTLY as the publish ticks do (explicit cfg wins,
     // else the worktree's checked-out branch) so baseline and publish agree.
@@ -1432,14 +1456,111 @@ async function deriveGenesisBaselineSha(entry: ProjectEntry, branch: string | un
       wtBranch = sym.code === 0 ? sym.stdout.trim() : null;
     }
     if (!wtBranch) return null;
+    // "Already exposed off-box" gate. The registry's github_remote is a fast
+    // path; absent it (every seed-snapshot pot), fall back to the git-level
+    // truth — at least one configured remote with a non-local URL.
+    if (!entry.github_remote && !(await hasExternalRemote(entry.path))) return null;
+
+    const branchRef = `refs/heads/${wtBranch}`;
+    // 1. The exact upstream for this branch — cheapest and the intended case.
     const tip = await defaultRunGit(['rev-parse', '--verify', '-q', `refs/remotes/origin/${wtBranch}^{commit}`], entry.path);
     const tipSha = tip.code === 0 ? tip.stdout.trim() : '';
-    if (!tipSha) return null;
-    const anc = await defaultRunGit(['merge-base', '--is-ancestor', tipSha, `refs/heads/${wtBranch}`], entry.path);
-    return anc.code === 0 ? tipSha : null;
+    if (tipSha) {
+      const anc = await defaultRunGit(['merge-base', '--is-ancestor', tipSha, branchRef], entry.path);
+      if (anc.code === 0) return tipSha;
+    }
+    // 2. WI-6243: no branch-named upstream (or it diverged) — use the tightest
+    //    already-exposed frontier across every remote-tracking ref instead.
+    return await deriveRemoteFrontierBaseline(entry.path, branchRef);
   } catch {
     return null; // strict fallback
   }
+}
+
+/** A remote URL that is NOT a path on this machine. Matches http(s)://,
+ *  ssh://, git://, and the scp-like `user@host:path` form; a bare/relative
+ *  filesystem path (`/srv/mirror.git`, `../other`, `file://…`) deliberately
+ *  does NOT count as exposure off this box. */
+const EXTERNAL_REMOTE_URL_RE = /^(?:https?:\/\/|ssh:\/\/|git:\/\/|[^\s/@]+@[^\s:/]+:)/;
+
+/** True when the repo has at least one configured remote whose URL is external
+ *  (WI-6243). Proof that content fetched from it left this machine. */
+async function hasExternalRemote(repoPath: string): Promise<boolean> {
+  const res = await defaultRunGit(['remote', '-v'], repoPath);
+  if (res.code !== 0) return false;
+  return res.stdout.split('\n').some((line) => {
+    const url = line.trim().split(/\s+/)[1];
+    return !!url && EXTERNAL_REMOTE_URL_RE.test(url);
+  });
+}
+
+/** Cost bound on the frontier walk below — a branch with more unexposed
+ *  commits than this still yields a SAFE (merely less tight) baseline, because
+ *  a truncated walk can only surface FEWER boundary commits, never a
+ *  non-remote-reachable one. */
+const MAX_FRONTIER_WALK_COMMITS = 50_000;
+/** How many boundary commits to price before picking; a merge can produce
+ *  several and any ONE of them is safe (see below), so this only bounds how
+ *  hard we try for the tightest. */
+const MAX_FRONTIER_CANDIDATES = 16;
+
+/**
+ * WI-6243: the tightest baseline that is provably already exposed off-box.
+ *
+ * `git rev-list --boundary <branch> --not --remotes` walks the commits on
+ * `<branch>` that NO remote-tracking ref reaches, and prints — prefixed with
+ * '-' — exactly the commits it stopped at: remote-reachable parents of those
+ * commits. That set IS the already-exposed frontier, found in one walk.
+ *
+ * Safety argument for picking a single boundary B: every commit U unreachable
+ * from any remote ref is also unreachable from B (B is remote-reachable, so
+ * everything reachable from B is too), and U is reachable from head. Hence
+ * U ∈ (B, head] for ANY boundary B — the judged range is always a SUPERSET of
+ * the genuinely-unexposed set. Choosing several-boundaries-worth of extra
+ * commits only ever judges MORE, never less, so this can never under-guard.
+ */
+async function deriveRemoteFrontierBaseline(repoPath: string, branchRef: string): Promise<string | null> {
+  const anyRemoteRef = await defaultRunGit(
+    ['for-each-ref', '--count=1', '--format=%(objectname)', 'refs/remotes/'],
+    repoPath,
+  );
+  if (anyRemoteRef.code !== 0 || !anyRemoteRef.stdout.trim()) return null;
+
+  const walk = await defaultRunGit(
+    ['rev-list', '--boundary', `--max-count=${MAX_FRONTIER_WALK_COMMITS}`, branchRef, '--not', '--remotes'],
+    repoPath,
+  );
+  if (walk.code !== 0) return null;
+  const lines = walk.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  if (lines.length === 0) {
+    // Nothing on this branch is unexposed — a remote already serves the whole
+    // branch. The head itself is the baseline: an empty range to judge.
+    const head = await defaultRunGit(['rev-parse', '--verify', '-q', `${branchRef}^{commit}`], repoPath);
+    return head.code === 0 ? head.stdout.trim() || null : null;
+  }
+
+  const boundary = lines.filter((l) => l.startsWith('-')).map((l) => l.slice(1)).filter(Boolean);
+  // No boundary at all ⇒ the unexposed history reaches a root: there is no
+  // already-exposed content to lean on. Fall back to the strict full judge.
+  if (boundary.length === 0) return null;
+
+  let best: string | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of boundary.slice(0, MAX_FRONTIER_CANDIDATES)) {
+    // Belt-and-braces, mirroring the fast path: never accept a non-ancestor.
+    const anc = await defaultRunGit(['merge-base', '--is-ancestor', candidate, branchRef], repoPath);
+    if (anc.code !== 0) continue;
+    if (boundary.length === 1) return candidate;
+    const count = await defaultRunGit(['rev-list', '--count', `${candidate}..${branchRef}`], repoPath);
+    const distance = count.code === 0 ? Number.parseInt(count.stdout.trim(), 10) : Number.NaN;
+    if (!Number.isFinite(distance)) continue;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  return best;
 }
 
 async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: string | undefined): Promise<void> {

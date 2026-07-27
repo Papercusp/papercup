@@ -36,10 +36,14 @@ function fakeGit(opts: {
   lsFiles?: string;
   /** Simulate a total git failure (bad repo, missing binary). */
   allFail?: boolean;
+  /** Does `<sha>^{commit}` resolve? Default true — a bogus candidate sets it false. */
+  resolvesCommit?: boolean;
 }): GitRead {
   return async (args) => {
     if (opts.allFail) return null;
     if (args[0] === 'rev-parse' && args[1] === '--verify') {
+      // The candidate-commit existence probe, distinct from a `<sha>:<path>` blob read.
+      if (args[2].endsWith('^{commit}')) return opts.resolvesCommit === false ? null : 'c'.repeat(40);
       return opts.blobs?.[args[2]] ?? null;
     }
     if (args[0] === 'hash-object') {
@@ -149,7 +153,7 @@ describe('classifyPathsAgainstCandidate', () => {
    * is exactly how a detector teaches people to ignore it.
    */
   it('a candidate sha that does not RESOLVE is UNKNOWN — never a blanket "absent"', async () => {
-    const git = fakeGit({ tree: { 'a.ts': SAME } }); // no blobs ⇒ rev-parse fails for everything
+    const git = fakeGit({ tree: { 'a.ts': SAME }, resolvesCommit: false });
     const rs = await classifyPathsAgainstCandidate(git, 'deadbeefdeadbeef', ['a.ts', 'b.ts']);
     expect(rs.map((r) => r.inCandidate)).toEqual([null, null]);
     expect(rs[0].reason).toBeNull();
@@ -158,10 +162,7 @@ describe('classifyPathsAgainstCandidate', () => {
 
   it('…but a RESOLVING candidate that truly lacks the path still reports absent', async () => {
     // The guard above must not swallow the genuine new-file case it sits in front of.
-    const git = fakeGit({
-      blobs: { 'deadbeefdeadbeef^{commit}': 'a'.repeat(40) },
-      tree: { 'new.ts': OTHER },
-    });
+    const git = fakeGit({ tree: { 'new.ts': OTHER } }); // commit resolves; the PATH is absent
     const [r] = await classifyPathsAgainstCandidate(git, 'deadbeefdeadbeef', ['new.ts']);
     expect(r.inCandidate).toBe(false);
     expect(r.reason).toBe('absent');
