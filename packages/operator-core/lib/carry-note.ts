@@ -263,6 +263,85 @@ export function parseCarryNote(text: string): CarryNoteFields {
   return fields;
 }
 
+// ── Rescue-by-parse of a tag-serialized structured write (EI-18833865002636933) ──
+//
+// This module never RENDERS an XML tag shape — `renderCarryNote` emits `## Heading`
+// sections and nothing else. The vocabulary below exists ONLY to recognize a caller
+// mistake seen live: an agent serialized its ENTIRE structured write as one tagged
+// string into `did`, so the note reached the next cold wake as a single `## Did`
+// section containing literal `</did><left>…<checks>[…]` text — demoting typed `checks`
+// rows to inert JSON prose and losing the ✓/? badges that tell a successor which claims
+// still need re-probing. The carry-note is a cold wake's ONLY continuity.
+//
+// We RESCUE rather than reject, following this surface's established precedent for
+// "right content, wrong shape" (loop/checkpoint.ts's `checks` z.preprocess parses a
+// JSON-string array instead of refusing the write). Refusing would have produced a
+// FOURTH consecutive failed checkpoint in the live incident and possibly no note at all.
+
+/** Sibling tags whose CLOSE form, alongside a literal `</did>`, completes the
+ *  malformed-write signature. Deliberately strict: notes routinely quote code, JSX and
+ *  shell, so a bare `<` — or a lone `</did>` — must never trigger a rewrite. */
+const CARRY_NOTE_RESCUE_SIGNATURE = /<\/(?:left|insight|next|checks|walls)>/;
+
+function taggedSection(text: string, tag: string): string | undefined {
+  const m = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(text);
+  const v = (m?.[1] ?? '').trim();
+  return v.length > 0 ? v : undefined;
+}
+
+/** Recover row entries from a rescued `<checks>`/`<walls>` block, which an agent may
+ *  have written either as a JSON array or as already-rendered rows. Anything else
+ *  yields no rows — a malformed block degrades to "no rows", never a failed rescue. */
+function taggedRows<T>(raw: string | undefined, parseLine: (line: string) => T | null): T[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const rows = parsed.filter(
+        (r): r is T =>
+          !!r && typeof r === 'object' && typeof (r as { claim?: unknown }).claim === 'string' &&
+          (r as { claim: string }).claim.trim().length > 0,
+      );
+      if (rows.length > 0) return rows;
+    }
+  } catch {
+    /* not JSON — fall through to the rendered-row form */
+  }
+  return raw.split('\n').map(parseLine).filter((r): r is T => r !== null);
+}
+
+/**
+ * Recognize a `did` value that is really a whole structured note serialized as one
+ * XML-tagged string, and split it back into typed {@link CarryNoteFields}.
+ *
+ * Returns `null` — meaning "store this verbatim, it is ordinary prose" — unless the
+ * FULL signature is present: a literal `</did>` close tag AND at least one sibling
+ * close tag. Both halves are required precisely because carry-notes quote code so
+ * often; an over-eager matcher would silently mangle honest notes, which is a strictly
+ * worse failure than the one being fixed.
+ */
+export function rescueTaggedCarryNoteBlob(blob: string | null | undefined): CarryNoteFields | null {
+  const text = blob ?? '';
+  const close = text.indexOf('</did>');
+  if (close < 0 || !CARRY_NOTE_RESCUE_SIGNATURE.test(text)) return null;
+
+  const fields: CarryNoteFields = {};
+  const did = text.slice(0, close).replace(/^\s*<did>/, '').trim();
+  if (did) fields.did = did;
+  // NB: tag name ≠ heading name — CARRY_NOTE_SECTIONS maps insight → 'Key insight'
+  // and next → 'Next action'. Drive off the KEYS here, never the headings.
+  for (const { key } of CARRY_NOTE_SECTIONS) {
+    if (key === 'did') continue;
+    const v = taggedSection(text, key);
+    if (v) fields[key] = v;
+  }
+  const checks = taggedRows(taggedSection(text, 'checks'), parseCheckLine);
+  if (checks.length > 0) fields.checks = checks;
+  const walls = taggedRows(taggedSection(text, 'walls'), parseWallLine);
+  if (walls.length > 0) fields.walls = walls;
+  return fields;
+}
+
 /** Shared row-section splitter: strip one `## <heading>` section of parseable rows
  *  out of a note, returning the remaining body + the parsed rows. Non-row lines
  *  inside the section (legend, prose) are dropped with it. */

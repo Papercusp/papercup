@@ -161,8 +161,33 @@ export async function realRunUnderDeployLock<T>(
   );
   if (outcome.acquired) return { acquired: true, result: outcome.result };
   const exclusiveHolder = outcome.holders.find((h) => h.mode === 'exclusive');
-  const holder = (exclusiveHolder ?? outcome.holders[0])?.owner_label ?? (exclusiveHolder ?? outcome.holders[0])?.owner ?? null;
-  return { acquired: false, holder };
+  const blocking = exclusiveHolder ?? outcome.holders[0];
+  // EI-18833814302562374: report the FULL owner (`release-deploy:<pid>:<uuid>`),
+  // not the `owner_label` — the label is the constant string "release-deploy",
+  // which is what made the observed refusal ("holders: release-deploy") useless
+  // for deciding whether anything was actually running.
+  const holder = blocking?.owner ?? blocking?.owner_label ?? null;
+  return { acquired: false, holder, holderAlive: hostLocalOwnerAlive(blocking?.owner) };
+}
+
+/**
+ * EI-18833814302562374: is the holder's host-local pid still running?
+ *   true  — running (a genuine concurrent deploy; coalescing is correct)
+ *   false — verifiably gone (a LEAKED lease; the reclaim should have taken it)
+ *   null  — owner carries no host-local pid, so liveness is genuinely unknowable
+ * Never throws: liveness reporting must not be able to fail a deploy.
+ */
+function hostLocalOwnerAlive(owner: string | undefined): boolean | null {
+  if (!owner) return null;
+  const pid = parseDeployOwnerPid(owner);
+  if (pid == null) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // ESRCH = no such process. EPERM = exists but owned by another user.
+    return (e as NodeJS.ErrnoException)?.code === 'ESRCH' ? false : true;
+  }
 }
 
 function safeWorkspaceId(): string | null {

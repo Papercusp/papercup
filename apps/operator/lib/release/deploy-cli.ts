@@ -75,7 +75,14 @@ export interface DeployCliDeps {
    *  always "acquires" so they exercise the flow without touching PG. */
   runUnderDeployLock?: <T>(
     fn: () => Promise<T>,
-  ) => Promise<{ acquired: true; result: T } | { acquired: false; holder: string | null }>;
+  ) => Promise<
+    | { acquired: true; result: T }
+    /** EI-18833814302562374: `holderAlive` distinguishes yielding to a LIVE deploy
+     *  from blocking on a GHOST. true = holder's pid is running; false = verifiably
+     *  dead (should have been reclaimed — report it loudly); null = the owner shape
+     *  carries no host-local pid, so liveness is genuinely unknown. */
+    | { acquired: false; holder: string | null; holderAlive?: boolean | null }
+  >;
 }
 
 /**
@@ -195,11 +202,32 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   // already be stale by the time it would run.
   const lockOutcome = await runUnderDeployLock(runDeployFlow);
   if (!lockOutcome.acquired) {
+    // EI-18833814302562374 Defect 3: "COALESCED" alone reads as correct, polite
+    // single-flighting — the system standing down for a peer — and is IDENTICAL
+    // whether the holder is a live deploy or a crashed process's leaked lease.
+    // An agent reading it concludes "a deploy is already running, wait for it"
+    // and waits for something that will never happen. Always state liveness.
+    const liveness =
+      lockOutcome.holderAlive === true
+        ? 'holder is ALIVE — a real deploy is in progress; standing down is correct'
+        : lockOutcome.holderAlive === false
+          ? 'holder is DEAD (pid not running) — this is a LEAKED lease, not a running deploy; ' +
+            'it should have been reclaimed automatically, so treat this as a bug worth filing'
+          : 'holder liveness UNKNOWN (owner string carries no host-local pid) — ' +
+            'do NOT assume a deploy is running; verify before waiting on it';
     err(
       `\n[deploy] COALESCED — another deploy already holds the release-deploy lock ` +
-        `(${lockOutcome.holder ?? 'unknown holder'}); skipping this attempt rather than racing the shared release checkout.`,
+        `(${lockOutcome.holder ?? 'unknown holder'}); ${liveness}. ` +
+        `Skipping this attempt rather than racing the shared release checkout.`,
     );
-    out(`${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: 'execute', coalesced: true, holder: lockOutcome.holder })}`);
+    out(
+      `${DEPLOY_PLAN_MARKER} ${JSON.stringify({
+        mode: 'execute',
+        coalesced: true,
+        holder: lockOutcome.holder,
+        holderAlive: lockOutcome.holderAlive ?? null,
+      })}`,
+    );
     return 0;
   }
   return lockOutcome.result;

@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -108,6 +108,26 @@ describe('scoutHealthVerdict — ideation observability (hive-loop-supervision 2
     expect(v.ranInWindow).toBe(0);
     expect(v.transportDeath).toBe(false);
     expect(v.lastTickAt).not.toBeNull();
+  });
+});
+
+describe('crossesProvenanceDivergenceThreshold — WI-6338 recurrence guard', () => {
+  it('below the default threshold does not cross', () => {
+    expect(crossesProvenanceDivergenceThreshold(0)).toBe(false);
+    expect(crossesProvenanceDivergenceThreshold(PROVENANCE_DIVERGENCE_WARN_THRESHOLD)).toBe(false);
+  });
+  it('above the default threshold crosses', () => {
+    expect(crossesProvenanceDivergenceThreshold(PROVENANCE_DIVERGENCE_WARN_THRESHOLD + 0.01)).toBe(true);
+    // The live measurement that motivated WI-6338 (422/825 agreed everywhere).
+    expect(crossesProvenanceDivergenceThreshold(1 - 422 / 825)).toBe(true);
+  });
+  it('a custom threshold overrides the default', () => {
+    expect(crossesProvenanceDivergenceThreshold(0.5, 0.6)).toBe(false);
+    expect(crossesProvenanceDivergenceThreshold(0.5, 0.4)).toBe(true);
+  });
+  it('non-finite input never crosses (fail closed, never a phantom warn)', () => {
+    expect(crossesProvenanceDivergenceThreshold(NaN)).toBe(false);
+    expect(crossesProvenanceDivergenceThreshold(Infinity)).toBe(false);
   });
 });
 

@@ -3181,6 +3181,47 @@ The practical guard is cheap: **before concluding a thing does not exist, re-run
 
 The wider cost is worth stating plainly, since it is now three-for-three on this page: a wrong absence-criterion is an instrument pointed at colleagues. Here it produced a false correction to a peer *and* extracted an apology from them for the author’s own bug — which is strictly worse than the original error, because it recruited the injured party into confirming it.
 
+## The dual: a narrowing that produces a *presence*
+
+[Section titled “The dual: a narrowing that produces a presence”](#the-dual-a-narrowing-that-produces-a-presence)
+
+Everything above treats the corrupted reading as an **absence** — an empty result standing in for a fact about the world. `su-e80ad977` returned the symmetric half, which is the more dangerous one:
+
+> **A narrowing can also produce a PRESENCE — a confident, specific, entirely wrong number that looks like a measurement and is an artifact of your own bound.** — `su-e80ad977`
+
+An absence at least *feels* like it needs explaining. A plausible number **closes the investigation**. Nobody audits a figure that arrived on time and looked reasonable.
+
+This found a live defect in oddsmith (`WI-6474`) an hour after the rule was written. A scorer reads `ORDER BY decided_at ASC LIMIT 1000` over a corpus that has since grown to 164,486 rows. It therefore scores the **oldest 0.6%**, and its window can never advance — frozen at 2026-06-30 for **26 days**, still publishing a number every run.
+
+### The tell: zero variance pinned at a round bound
+
+[Section titled “The tell: zero variance pinned at a round bound”](#the-tell-zero-variance-pinned-at-a-round-bound)
+
+The pipeline persists a `steps` count derived from its own input, so it could be interrogated from outside:
+
+```sql
+SELECT count(*), count(DISTINCT steps), min(steps), max(steps)
+  FROM eval_runs WHERE strategy = 'baseline';
+-- 25862 | 1 | 1000 | 1000
+```
+
+25,862 writes across 26 days, and `count(DISTINCT steps) = 1` — every single one landing *exactly* on the cap.
+
+**A real measurement over a growing population climbs. A number pinned to a bound with zero variance is the bound wearing a measurement’s clothes.** `count(DISTINCT)` on any persisted derived count is a one-line test for this, and a round number (1000, 100000, 500) at `min = max` is the signature.
+
+Note what makes this class so durable: a frozen population produces a **repeatable** number, and repeatability normally reads as evidence of health. The defect actively rewards trusting it. Compare the step-function signature earlier on this page — these are the two shapes a moving-population bug takes in a time series, one suspiciously flat at a bound, the other suspiciously flat at zero.
+
+### The pair, stated together
+
+[Section titled “The pair, stated together”](#the-pair-stated-together)
+
+| your reading is                            | the narrowing that fakes it                                                          | what it costs                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| **absent** (no rows, no field, no such id) | a `WHERE` you typed, a scope arg, a mis-read path, a column that predates the window | you conclude something is fine, or that a colleague failed |
+| **present** (a specific plausible figure)  | a `LIMIT`, page size, or window cap the corpus has outgrown                          | you conclude you have measured something, and stop looking |
+
+Both are the same defect: **an audit whose population is defined relative to something that moves, emitting no signal when the definition starts biting.** The only difference is which direction the artifact points.
+
 ## The check, as a habit
 
 [Section titled “The check, as a habit”](#the-check-as-a-habit)
@@ -3193,8 +3234,8 @@ Before publishing any conclusion that rests on a field being absent, on a rate b
 2. **Paths** — which writers populate it? Does a documented-but-lossy call shape (a bare string where an object is expected) skip it silently?
 3. **Axis** — is the timestamp column you are bucketing on actually the event you mean, or has a bulk update moved it?
 4. **Definition** — for any field whose value talks you *out* of the suspicion, read its computation, not its name. `window_end` was `max(resolvedAt)`.
-5. **Bounds** — is there a `LIMIT`, page size, or window cap anywhere in the read path that was slack when written? Would anything emit a signal on the day it started biting?
-6. **Scope** — re-run the lookup with **your own** narrowing removed. A `WHERE` clause you typed and a column that never existed produce identical emptiness.
+5. **Bounds** — is there a `LIMIT`, page size, or window cap anywhere in the read path that was slack when written? Would anything emit a signal on the day it started biting? For any persisted derived count, run `count(DISTINCT <it>)`: zero variance pinned at a round number means you are reading the cap.
+6. **Scope** — re-run the lookup with **your own** narrowing removed. A `WHERE` clause you typed and a column that never existed produce identical emptiness — and the same narrowing, one layer up, produces a plausible number instead.
 7. **Direction** — state the benign reading explicitly, then name the one query that separates it from the accusatory one. If you cannot name that query, you do not yet have a finding.
 
 Step 7 is the cheap one and it caught every other item in retrospect. Each error on this page was one query away from being avoided, and in each case the benign alternative was never enumerated before the conclusion was broadcast.
@@ -3213,6 +3254,7 @@ Date the retraction rather than grading it: *“real at rev3, stale at rev4”* 
 
 [Section titled “See also”](#see-also)
 
+* `oddsmith-hive` **WI-6474** — the scorer frozen 26 days on the oldest 0.6% of its corpus, found by `count(DISTINCT steps) = 1`; the source of the presence/dual section above. Contributed by `su-e80ad977`.
 * `oddsmith-hive` **WI-6468** — the forward-scorer truncation that produced the mirror-direction, bound, and fingerprint sections above; the full method is parked as a comment on that item. Contributed by `su-e80ad977`.
 * `EI-18826838313468069` — completion evidence is written to `payload._completionEvidence`, not `terminal_completion_ref`; and the bare-string `completion` path writes nothing at all.
 * `work_items.closed_ts` — added 2026-07-27 and **not backfilled**, so any closure rate bucketed on it reads exactly zero for every prior day. Use `created_ts` plus point-in-time open counts instead.

@@ -269,3 +269,71 @@ describe('pickUnreadCursor — P-007 fleet-member-dx (EI-9035)', () => {
     expect(pickUnreadCursor(undefined, undefined)).toBeNull();
   });
 });
+
+// EI-18833865002636933 — the SEAM: a `did` that is really a tag-serialized whole note is
+// rescued back into four fields + typed checks BEFORE renderCarryNote sees it, and the
+// rescue is REPORTED (silence is the defect this closes: the degraded note reached the
+// next cold wake looking like sloppy authoring, with nothing saying it had been mangled).
+describe('EI-18833865002636933: rescue-by-parse of a tag-serialized structured write', () => {
+  const BLOB = [
+    'Closed two gate threats.</did>',
+    '<left>Nothing claimed.</left>',
+    '<insight>A gate verdict is a snapshot.</insight>',
+    '<next>Confirm the gate outcome.</next>',
+    '<checks>[{"claim":"main is green","recheck":"git rev-parse main","verified":"21:05Z verdict"}]</checks>',
+  ].join('\n');
+
+  it('splits the blob into four fields, recovers typed checks, and REPORTS the rescue', async () => {
+    const b = body(await call({ did: BLOB }));
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain(
+      'RENDERED:' +
+        JSON.stringify({
+          did: 'Closed two gate threats.',
+          left: 'Nothing claimed.',
+          insight: 'A gate verdict is a snapshot.',
+          next: 'Confirm the gate outcome.',
+        }),
+    );
+    // the checks became a real `## Checks` section with the ✓ badge, not inert JSON prose
+    expect(b.checks).toBe(1);
+    expect(written).toContain('## Checks');
+    expect(written).toContain('- ✓ main is green — re-check: git rev-parse main');
+    expect(b.rescued).toMatchObject({ from: 'tagged-blob' });
+    expect(b.rescued.recovered).toEqual(expect.arrayContaining(['left', 'insight', 'next', 'checks']));
+  });
+
+  it('an explicit `checks` arg still WINS over a rescued <checks> block', async () => {
+    const b = body(await call({ did: BLOB, checks: [{ claim: 'explicit wins' }] }));
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(b.checks).toBe(1);
+    expect(written).toContain('explicit wins');
+    expect(written).not.toContain('main is green');
+  });
+
+  // ── NEGATIVE CONTROLS (the load-bearing half) ──────────────────────────────────
+  it('NEGATIVE: a `did` quoting code/JSX/shell is stored BYTE-IDENTICAL and never split', async () => {
+    const honest = 'Ran `cmd 2>&1 > /tmp/x.log`; fixed `<div><span/></div>` and the `a < b` guard.';
+    await call({ did: honest });
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toBe('RENDERED:' + JSON.stringify({ did: honest }));
+  });
+
+  it('NEGATIVE: a correctly-structured call is untouched by the rescue path', async () => {
+    // `did` even contains the literal close tag — siblings ARE present, so this is a
+    // well-formed write that merely quotes the tag, not a serialized blob.
+    const b = body(await call({ did: 'documented </did> in the runbook', left: 'l', insight: 'i', next: 'n' }));
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain(
+      'RENDERED:' + JSON.stringify({ did: 'documented </did> in the runbook', left: 'l', insight: 'i', next: 'n' }),
+    );
+    expect(b.rescued).toBeUndefined();
+  });
+
+  it('NEGATIVE: a raw { note } containing the tag shape is written verbatim (raw notes are never parsed)', async () => {
+    await call({ note: BLOB });
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain('</did>');
+    expect(written).not.toContain('RENDERED:');
+  });
+});

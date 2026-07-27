@@ -22,6 +22,7 @@ import {
   normalizeWallEntries,
   normalizeCheckEntries,
   lintUncheckedExternalClaims,
+  rescueTaggedCarryNoteBlob,
   appendCarryJournal,
   CARRY_JOURNAL_MAX_ENTRIES,
   CARRY_JOURNAL_NOTE_MAX_CHARS,
@@ -363,5 +364,104 @@ describe('appendCarryJournal — the bounded trajectory ring', () => {
     const total = ring.reduce((n, e) => n + e.note.length, 0);
     expect(total).toBeLessThanOrEqual(CARRY_JOURNAL_TOTAL_MAX_CHARS);
     expect(ring.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── EI-18833865002636933: rescue-by-parse of a tag-serialized structured write ──
+//
+// The observed live failure (cold-wake #85's own carry-note): an agent serialized the
+// ENTIRE structured write as one XML-tagged string into `did`, so the note reached the
+// next cold wake as a single `## Did` section with literal `</did><left>…<checks>[…]`
+// text in it — demoting typed `checks` rows to inert JSON prose and losing the
+// verified/PREDICTED badges that tell a successor which claims to re-probe.
+//
+// This module never RENDERS that tag shape; the vocabulary exists only to recognize the
+// mistake. The rescue follows the file's established precedent for "right content, wrong
+// shape" (checkpoint.ts's `checks` z.preprocess, which PARSES a JSON-string array rather
+// than rejecting the write) — rejecting instead would have produced a FOURTH consecutive
+// failed checkpoint and possibly no note at all for the cold wake.
+describe('rescueTaggedCarryNoteBlob — recovering a tag-serialized structured write', () => {
+  const BLOB = [
+    'Closed two gate threats.</did>',
+    '<left>Nothing claimed, nothing half-landed.</left>',
+    '<insight>A gate verdict is a timestamped snapshot.</insight>',
+    '<next>Confirm the gate outcome; do not force it.</next>',
+    '<checks>[{"claim":"main is green","recheck":"git rev-parse main","verified":"21:05Z verdict green"}]</checks>',
+  ].join('\n');
+
+  it('splits the blob back into the four narrative fields', () => {
+    expect(rescueTaggedCarryNoteBlob(BLOB)).toMatchObject({
+      did: 'Closed two gate threats.',
+      left: 'Nothing claimed, nothing half-landed.',
+      insight: 'A gate verdict is a timestamped snapshot.',
+      next: 'Confirm the gate outcome; do not force it.',
+    });
+  });
+
+  it('recovers a <checks> JSON payload as TYPED rows (the whole point — the badges survive)', () => {
+    expect(rescueTaggedCarryNoteBlob(BLOB)?.checks).toEqual([
+      { claim: 'main is green', recheck: 'git rev-parse main', verified: '21:05Z verdict green' },
+    ]);
+  });
+
+  it('recovers a <checks>/<walls> block written as RENDERED rows, not JSON', () => {
+    const f = rescueTaggedCarryNoteBlob(
+      [
+        'did text</did>',
+        '<next>go</next>',
+        '<checks>\n- ✓ gate green — re-check: git rev-parse main — evidence: 21:05Z\n</checks>',
+        '<walls>\n- owner must arm capital — re-check: ask the owner\n</walls>',
+      ].join('\n'),
+    );
+    expect(f?.checks).toEqual([{ claim: 'gate green', recheck: 'git rev-parse main', verified: '21:05Z' }]);
+    expect(f?.walls).toEqual([{ claim: 'owner must arm capital', recheck: 'ask the owner' }]);
+  });
+
+  it('tolerates a leading <did> opener (the caller may or may not have emitted one)', () => {
+    expect(rescueTaggedCarryNoteBlob('<did>alpha</did>\n<next>beta</next>')).toMatchObject({
+      did: 'alpha',
+      next: 'beta',
+    });
+  });
+
+  // ── NEGATIVE CONTROLS — these matter MORE than the positive assertions above.
+  // Notes routinely quote code, shell and JSX, so an over-eager matcher would silently
+  // mangle most real carry-notes. Only the FULL signature (a literal `</did>` close tag
+  // PLUS at least one sibling close tag) may trigger the rescue — never a bare '<'.
+  it('NEGATIVE: honest prose with angle brackets, JSX, shell redirects and fenced code is NOT rescued', () => {
+    const honest = [
+      'Fixed the `cmd 2>&1 > /tmp/x.log` idiom and the `a < b && c > d` guard.',
+      '```jsx',
+      '<div className="x"><span/></div>',
+      '```',
+      'Also touched </footer> in the retired template.',
+    ].join('\n');
+    expect(rescueTaggedCarryNoteBlob(honest)).toBeNull();
+  });
+
+  it('NEGATIVE: a lone </did> with NO sibling section tag is NOT rescued (half a signature is not one)', () => {
+    expect(rescueTaggedCarryNoteBlob('I documented the </did> tag in the runbook.')).toBeNull();
+  });
+
+  it('NEGATIVE: an empty / absent blob is NOT rescued', () => {
+    expect(rescueTaggedCarryNoteBlob('')).toBeNull();
+    expect(rescueTaggedCarryNoteBlob(null)).toBeNull();
+    expect(rescueTaggedCarryNoteBlob(undefined)).toBeNull();
+  });
+
+  it('a malformed <checks> payload degrades to no checks rather than failing the whole rescue', () => {
+    const f = rescueTaggedCarryNoteBlob('did</did>\n<left>l</left>\n<checks>{not json at all</checks>');
+    expect(f).toMatchObject({ did: 'did', left: 'l' });
+    expect(f?.checks).toBeUndefined();
+  });
+
+  it('a rescued note round-trips through renderCarryNote into real headings + typed rows', () => {
+    const rendered = renderCarryNote(rescueTaggedCarryNoteBlob(BLOB)!);
+    expect(rendered).toContain('## Did');
+    expect(rendered).toContain('## Left');
+    expect(rendered).toContain('## Key insight'); // NB: tag name `insight` ≠ heading 'Key insight'
+    expect(rendered).toContain('## Next action'); // NB: tag name `next` ≠ heading 'Next action'
+    expect(rendered).toContain('- ✓ main is green — re-check: git rev-parse main');
+    expect(rendered).not.toContain('</did>');
   });
 });

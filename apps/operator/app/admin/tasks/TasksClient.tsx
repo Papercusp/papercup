@@ -202,8 +202,8 @@ export default function TasksClient(): ReactElement {
     staleTime: 5_000,
   });
 
-  const data = q.data?.[0] ?? null;
-  const error = q.error ? String((q.error as Error).message ?? q.error) : null;
+  const data = q.data[0] ?? null;
+  const error = q.error?.message ?? null;
 
   const live = data?.live ?? null;
   const unaccountedGroups = useMemo(() => {
