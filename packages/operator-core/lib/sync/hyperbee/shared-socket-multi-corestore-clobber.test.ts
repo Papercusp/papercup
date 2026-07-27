@@ -45,9 +45,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- no types shipped; this is the exact stream a Hyperswarm
-// connection hands to `store.replicate(socket)`, so the probe must use it.
+// This is the exact stream a Hyperswarm connection hands to `store.replicate(socket)`,
+// so the probe must use it. Upstream ships no types; the shim lives with the rest of the
+// Holepunch shims in ./holepunch.d.ts, so the `NoiseSecretStream` annotation below is a
+// real type rather than the `any` a `@ts-ignore` here used to leave it as.
 import NoiseSecretStream from '@hyperswarm/secret-stream';
 import { openOwnLog, openRemoteLog } from './peer-log';
 import { __resetRemoteCoreHostsForTest, registerStoreMachine } from './remote-core-host';

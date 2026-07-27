@@ -86,8 +86,8 @@ describe('readHiveLearnings', () => {
         listPool: async (scope) => {
           seen.push(scope);
           return [
-            { id: 'm1', text: 'from alpha', kind: 'reference', metadata: { created_by: 'mug' } },
-            { id: 'm2', text: 'from beta', kind: 'reference', metadata: { created_by: 'mug' } },
+            { id: 'm1', text: 'from alpha', kind: 'reference', scope: 'hive:alpha', metadata: { created_by: 'mug' } },
+            { id: 'm2', text: 'from beta', kind: 'reference', scope: 'hive:beta', metadata: { created_by: 'mug' } },
           ];
         },
         loadPack: async () => null,
@@ -134,7 +134,7 @@ describe('readHiveLearnings', () => {
 
     it('a caller that cannot serve the rollup says so instead of returning empty', async () => {
       const snap = await readHiveLearnings('', {
-        listPool: async () => [{ id: 'x', text: 'should not be read' }],
+        listPool: async () => [{ id: 'x', text: 'should not be read', scope: 'hive:alpha' }],
         loadPack: async () => null,
         // no listPotSlugs
       });

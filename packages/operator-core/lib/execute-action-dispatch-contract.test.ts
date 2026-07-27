@@ -59,7 +59,16 @@ for (const m of extractDispatchBody(EXECUTE_ACTION_SRC).matchAll(/case\s+'([a-zA
 // ─── EMITTED_OPS: every op:'literal' in a file referencing the dispatch surface ──
 
 const TRIGGER_SUBSTRINGS = ['/api/agent-mcp/operator-dispatch', 'executeAction(', 'dispatchAction('];
-const SCAN_DIRS = ['apps/operator/app', 'packages/operator-core/lib', 'packages/agent-mcp/src'];
+// Every tree that can hold a CALLER. `apps/operator-vite/src` carries no
+// dispatch caller today, but it is the live desktop UI tree — leaving it
+// unscanned would let a future panel there re-open exactly the P-001 hole
+// (a string op-code drifting from its handler) with the guard still green.
+const SCAN_DIRS = [
+  'apps/operator/app',
+  'apps/operator-vite/src',
+  'packages/operator-core/lib',
+  'packages/agent-mcp/src',
+];
 // The dispatcher's own definition + its test DEFINE the contract; scanning
 // them as a "caller" would just rediscover LIVE_OPS as EMITTED_OPS, which is
 // not what P-002 guards against (a caller drifting from the handler).

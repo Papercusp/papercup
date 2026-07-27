@@ -183,6 +183,28 @@ declare module 'hyperbee' {
   }
 }
 
+declare module '@hyperswarm/secret-stream' {
+  import type { Duplex } from 'node:stream';
+  // The Noise-encrypted, MESSAGE-FRAMED duplex a real Hyperswarm connection hands to
+  // `store.replicate(socket)`. Tests construct one directly over a raw socket pair to
+  // reproduce the real wire without touching the DHT (serve-wiring.integration.test.ts,
+  // shared-socket-multi-corestore-clobber.test.ts) — a bare net.Socket is byte-streamed,
+  // not framed, so protomux mis-parses it (WI-3490).
+  //
+  // Declared here rather than suppressed at the import site: it was carried as a permanent
+  // baselined TS7016 in one test and a `@ts-ignore` in the other, and a suppression also
+  // discards the TYPE (the clobber test annotates a pair with it), so the annotation was
+  // silently `any`. Minimal surface — construct, await `opened`, and the Duplex members;
+  // corestore/protomux take the stream as `unknown`, so nothing else needs typing.
+  export default class NoiseSecretStream extends Duplex {
+    constructor(isInitiator: boolean, rawStream?: unknown, opts?: Record<string, unknown>);
+    /** Resolves when the Noise handshake completes. */
+    readonly opened: Promise<boolean>;
+    /** Where `corestore.replicate(stream)` attaches the shared muxer. */
+    userData: unknown;
+  }
+}
+
 // hyperdht + blind-relay: the Holepunch DHT + hole-punch relay used by the P2P
 // voice relay (voice-node/voice-relay.ts) and the swarm (sync/hyperbee/swarm.ts).
 // Upstream ships no .d.ts, so a bare import is implicit-`any` (TS7016). Declared
