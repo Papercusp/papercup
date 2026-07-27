@@ -96,6 +96,18 @@ describe('collectDivergenceSignals — folds the mechanism residues', () => {
     });
     expect(s).toEqual([{ kind: 'admission-blocked', head: 'z', basis: 'error', blockedAuthors: [], errors: ['pg down'] }]);
   });
+
+  // EI-18751829787526583: canonical EXISTS but is stale — the sibling gap to
+  // egress-canonical-missing (a ref that is ABSENT). A green-reading 3h freeze
+  // was caused by this case, not the absent one.
+  it('a stale-but-present canonical ref is its own signal', () => {
+    const s = collectDivergenceSignals({
+      canonicalStale: { canonicalSha: 'c'.repeat(40), expectedSha: 'e'.repeat(40), behindCount: 21 },
+    });
+    expect(s).toEqual([
+      { kind: 'egress-canonical-stale', canonicalSha: 'c'.repeat(40), expectedSha: 'e'.repeat(40), behindCount: 21 },
+    ]);
+  });
 });
 
 describe('classifyDivergence — policy', () => {

@@ -41,10 +41,11 @@ vi.mock('node:child_process', async (importOriginal) => ({
 // So pin the answer and neuter the warm-up. The subject of this file is the argv that
 // reaches spawn() on a host that CAN make scopes — not the probe's own plumbing,
 // which managed-spawn's tests own.
+const S = vi.hoisted(() => ({ probe: { ok: true } as { ok: boolean; reason?: string } | null }));
 vi.mock('../task-manager/managed-spawn', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../task-manager/managed-spawn')>()),
   warmScopeProbe: () => {},
-  scopeSupportKnown: () => ({ ok: true }),
+  scopeSupportKnown: () => S.probe,
 }));
 
 const H = vi.hoisted(() => ({
@@ -80,6 +81,7 @@ const savedScopeEnv = process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
 const savedMemEnv = process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G;
 
 beforeEach(() => {
+  S.probe = { ok: true }; // default: a host that CAN make user scopes
   H.cmd = { command: '/x/invoke-once', args: ['--role', 'cup'], env: process.env };
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -103,14 +105,51 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     const [cmd, args, spawnOpts] = spawnMock.mock.calls[0] as [string, string[], { detached?: boolean }];
     expect(cmd).toBe('systemd-run');
     expect(args).toContain('--user');
-    expect(args).toContain('--scope'); // --scope (never --unit): child stays OUR pgid
+    // --scope (never --service): the payload stays OUR child, so piped stdio, env
+    // inheritance and the pgid tree-kill all keep working. It is additionally NAMED
+    // (`--unit=papercusp-task-<id>.scope`) since task-manager-no-escape P-009 — that
+    // name is the ledger key that makes the subtree addressable, and naming a scope
+    // does not change its child-of-us semantics.
+    expect(args).toContain('--scope'); // child stays OUR pgid
     expect(args).toContain('--collect');
-    expect(args).toContain('--property=MemoryMax=6G'); // agentSpawnScopeMemoryMaxG() default
+    // agentSpawnScopeMemoryMaxG() default, in BYTES — buildTaskScopeArgv emits the
+    // raw integer rather than systemd's `6G` shorthand, so assert the value the cap
+    // actually carries. Spelled as the arithmetic, not a magic 6442450944, so a
+    // change to the default GiB reads as a one-token diff.
+    expect(args).toContain(`--property=MemoryMax=${6 * 1024 ** 3}`);
     expect(args).toContain('--property=MemorySwapMax=0');
     // The wrapped payload (command + its own args) is appended verbatim at the tail.
     expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
     expect(args.join(' ')).toContain('/x/invoke-once --role cup');
     expect(spawnOpts.detached).toBe(true); // pgid tree-kill still covers the scope wrapper
+  });
+
+  // The other half of the enrolment contract (task-manager-no-escape P-009). Confinement
+  // is gated on a CACHED probe, so there are two legitimate ways to get an UNCONFINED
+  // spawn — the probe has not landed yet (first turn after boot), or this host cannot
+  // make user scopes at all. Both must still run the turn: "a task manager that is still
+  // warming up must never be the reason a command does not run."
+  //
+  // This is the regression guard the gate needed and did not have. When the wrapper moved
+  // behind this seam, the confined path silently stopped being exercised and the suite's
+  // only signal was three assertions failing in a way that read like a lost feature. Pin
+  // BOTH branches, so a future refactor that drops confinement fails loudly and
+  // specifically instead of looking like a stale test.
+  it.each([
+    ['the probe has not landed yet (first turn after boot)', null],
+    ['the host cannot make user scopes at all', { ok: false, reason: 'no user bus' }],
+  ] as const)('spawns DIRECT (unconfined but still ledgered) when %s', async (_label, probe) => {
+    delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+    S.probe = probe;
+    spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
+    expect(r.exitCode).toBe(0);
+    // One spawn, not two: an unconfined spawn is the FIRST choice here, not a retry
+    // after a failed wrapper — nothing was wrapped, so there is nothing to fall back from.
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('/x/invoke-once');
+    expect(args).toEqual(['--role', 'cup']);
   });
 
   it('honors PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G to size the scope cap', async () => {
@@ -119,7 +158,7 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     spawnMock.mockImplementationOnce(() => fakeSpawn({ code: 0 }));
     await spawnInvokeOnce(process.cwd(), 'mug', [], {});
     const [, args] = spawnMock.mock.calls[0] as [string, string[]];
-    expect(args).toContain('--property=MemoryMax=12G');
+    expect(args).toContain(`--property=MemoryMax=${12 * 1024 ** 3}`);
   });
 
   it('falls back to a DIRECT spawn once when the scope cannot launch (no user bus) — the turn never fails on infra', async () => {

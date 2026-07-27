@@ -110,6 +110,27 @@ export async function reapDeadExecutorWorkflows(
   staleSchedulerMs: number = DEFAULT_STALE_SCHEDULER_MS,
   staleRoutineFireNoOutputMs: number = DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS,
   staleRoutineFireOrphanMs: number = DEFAULT_STALE_ROUTINE_FIRE_ORPHAN_MS,
+  /**
+   * EI-18752434722211671: this process's OWN start time (epoch ms), when known.
+   * `executor_id` is the constant string 'local' for every DBOS-enabled process on
+   * this device that does not set an explicit DBOS__VMID (bootstrap.ts requires every
+   * OTHER concurrent DBOS host on a device — bg-host, staging, gym instances — to pin
+   * its own distinct VMID/APPVERSION), so 'local' is exclusively the ONE primary
+   * operator process at any given time. That makes the following safe: a non-terminal
+   * `routineFire` row still tagged executor_id='local' whose `created_at` PREDATES
+   * *this* process's own start cannot belong to this process — it can only be a wedge
+   * left by the PRIOR 'local' process, which died (this process would not otherwise be
+   * booting). It is therefore reapable immediately, without waiting out
+   * `staleRoutineFireNoOutputMs` (185m) — that generic window exists to protect an
+   * ACTIVE first step from a live executor, which is not this case (the row's original
+   * executor is provably gone). The existing "no DBOS operation output recorded" guard
+   * still applies unchanged — this only widens WHEN the check runs for this one
+   * evidenced-dead-executor case, not WHAT counts as safe to reap. A restart that lands
+   * mid-git-sync-tick therefore no longer has to wait ~3h for the routine's dedup pin
+   * to free (the observed live incident) — it is freed at this process's own next boot
+   * (or next 2-min reap tick) reap pass.
+   */
+  processStartedAtMs?: number,
 ): Promise<ExecutorReaperResult> {
   const empty: ExecutorReaperResult = {
     cancelled: 0,
@@ -126,6 +147,16 @@ export async function reapDeadExecutorWorkflows(
     const staleRoutineFireOrphanAt = now - staleRoutineFireOrphanMs;
     let cancelled = 0;
     let queuePurged = 0;
+
+    // EI-18752434722211671: when this process knows its own start time, a
+    // 'local'-executor routineFire created before that instant is provably
+    // orphaned (its executor is dead — see the param doc above) and reapable
+    // immediately, independent of staleRoutineFireNoOutputMs. `sql\`\`` (empty) is a
+    // no-op fragment when processStartedAtMs is unset, so every existing caller
+    // (the 2-min periodic tick before this fix, and any other embedder) is
+    // byte-for-byte unaffected.
+    const localDeadExecutorFragment =
+      processStartedAtMs != null ? sql`OR (executor_id = 'local' AND created_at < ${processStartedAtMs})` : sql``;
 
     // Dead executors: stale (no workflow_status update in the window) AND still
     // holding at least one non-terminal workflow worth reaping.
@@ -235,6 +266,7 @@ export async function reapDeadExecutorWorkflows(
                          AND w2.status IN ('PENDING', 'SUCCESS', 'ERROR')
                     )
                   )
+                  ${localDeadExecutorFragment}
                 )
                 AND NOT EXISTS (
                   SELECT 1
@@ -284,6 +316,7 @@ export async function reapDeadExecutorWorkflows(
                       AND w2.status IN ('PENDING', 'SUCCESS', 'ERROR')
                  )
                )
+               ${localDeadExecutorFragment}
              )
              AND NOT EXISTS (
                SELECT 1

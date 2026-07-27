@@ -12,7 +12,7 @@
  * `confirm` step (no payload) reuses the same plumbing via a synthetic
  * single-option card; declining (Skip) cancels the run.
  */
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { z } from 'zod';
 import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
 // Import the BARREL, not `chat-actions/registry` directly: the barrel's
@@ -39,6 +39,43 @@ async function confirmed(action: ChatAction, ctx: ChatActionContext): Promise<bo
   });
   return r.action === 'submit';
 }
+
+/**
+ * Inline styles, deliberately — `.chat-action-bar` / `.chat-action-bar-button`
+ * were emitted by this component but defined in NO stylesheet in the repo, so
+ * the bar rendered as bare UA buttons with the icon jammed against the label
+ * ("↻Resume in new terminal"). The chat surface and AgentInspectorModal both
+ * style inline rather than via a sheet, so this matches the surrounding
+ * convention instead of introducing a stylesheet only this component loads.
+ *
+ * The button values are copied from AgentInspectorModal's resume/fork/focus
+ * buttons so the two surfaces render as visibly the same control — which is
+ * the actual ask behind P-015 ("the same ones that show up in the turn
+ * history"). The classNames are kept for tests and for any future sheet.
+ */
+const BAR_STYLE: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 6,
+  padding: '6px 8px',
+};
+
+const BUTTON_STYLE: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  font: 'inherit',
+  fontSize: 11,
+  lineHeight: 1.4,
+  padding: '2px 8px',
+  borderRadius: 5,
+  border: '1px solid var(--border)',
+  background: 'var(--bg-1)',
+  color: 'var(--fg)',
+};
+
+const GROUP_STYLE: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6 };
 
 interface GroupedActions {
   group: string;
@@ -89,17 +126,19 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
   };
 
   return (
-    <div className="chat-action-bar" role="toolbar" aria-label="Chat actions" data-testid="chat-action-bar">
+    <div className="chat-action-bar" role="toolbar" aria-label="Chat actions" data-testid="chat-action-bar" style={BAR_STYLE}>
       {groupActions(actions).map(({ group, actions: groupItems }) => (
-        <div className="chat-action-bar-group" key={group || '_'} data-group={group || undefined}>
+        <div className="chat-action-bar-group" key={group || '_'} data-group={group || undefined} style={GROUP_STYLE}>
           {groupItems.map((action) => (
             <button
               key={action.id}
               type="button"
               className="chat-action-bar-button"
+              data-testid={`chat-action-${action.id}`}
               onClick={() => void invoke(action)}
               disabled={runningId !== null}
               aria-busy={runningId === action.id}
+              style={{ ...BUTTON_STYLE, cursor: runningId !== null ? 'default' : 'pointer' }}
             >
               {action.icon}
               <span>{action.label}</span>
