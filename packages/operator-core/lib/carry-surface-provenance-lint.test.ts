@@ -144,6 +144,23 @@ describe('lintCarrySurfaceProvenance', () => {
       expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(true);
       expect(r.matches.some((m) => m.kind === 'possible-owner-tag-mention')).toBe(false);
     });
+
+    // EI-18762822878138952 (filed repro): a bare `|`-separated ENUMERATION of the P-010
+    // evidence-band vocabulary (observed / tool-output / reported-by / inferred / assumed)
+    // — no brackets, no owner attribution, no completed-action claim. None of the tag/
+    // attribution/action regexes require brackets or an assertive verb be absent, so this
+    // was never actually reachable through the bracket-gated OWNER_TAG_RE path; locking it
+    // in here as a named regression so a future tightening of any of the line-scoped
+    // detectors can't reintroduce a false positive on vocabulary-listing prose like this.
+    it('EI-18762822878138952: does NOT flag a bare enumeration of the evidence-band vocabulary', () => {
+      const line =
+        'Shipped the evidence band INSIDE relay-provenance.ts (the item forbids a third provenance surface): ' +
+        'observed | tool-output | reported-by | inferred | assumed. Confidence is DERIVED via a total mapping';
+      expect(lintCarrySurfaceProvenance(line)).toEqual({ flagged: false, matches: [] });
+      expect(
+        lintCarrySurfaceProvenance('observed | tool-output | reported-by | inferred | assumed'),
+      ).toEqual({ flagged: false, matches: [] });
+    });
   });
 
   it('P-014: a [turn:<session>@<ts>] ref clears the line — with or without an owner tag', () => {
