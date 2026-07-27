@@ -1831,6 +1831,139 @@ describe("GymView — recent-challengers header carries recency", () => {
     expect(recency?.textContent).toContain("2 listed");
   });
 
+  /**
+   * Owner ask 2026-07-27 ("why isn't RECENT CHALLENGERS just cards like the other
+   * section?"): the compact lines duplicated the proposal cards (measured 15 of 17
+   * overlapping) because WI-5696's promised dedupe was never written, and the cards
+   * were a 1-of-N carousel so the lines were silently doing overview duty. Now each
+   * challenger is ONE grid card carrying both halves, and a line renders only for an
+   * execution with no proposal.
+   */
+  it("renders one card per challenger — all at once (no 1-of-N carousel) and newest first", () => {
+    nuqsState.lview = "gym";
+    advScopeState.slug = "papercusp";
+    advScopeState.hive = "papercusp";
+    const now = Date.now();
+    const mkProp = (id: string, variantId: string, createdAt: number, role = "worker") => ({
+      id,
+      variantId,
+      role,
+      status: "rejected",
+      cycle: 1,
+      createdAt,
+      harnessSlug: "papercusp",
+    });
+    gymResult = {
+      data: [
+        {
+          autoloops: [],
+          archiveSeeds: [],
+          cycles: [],
+          proposals: [
+            mkProp("p-old", "cand-old", now - 9 * 3600_000),
+            mkProp("p-new", "cand-new", now - 1 * 3600_000),
+            mkProp("p-mid", "cand-mid", now - 5 * 3600_000, "director"),
+          ],
+          runs: [
+            {
+              harnessSlug: "papercusp",
+              variantId: "cand-new",
+              cycle: 1,
+              runCount: 3,
+              states: ["escalated"],
+              startedAt: now - 2 * 3600_000,
+              finishedAt: now - 1 * 3600_000,
+              decision: null,
+              isBaseline: false,
+            },
+          ],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+
+    const cards = document.querySelectorAll(".pc-learning__gymcard");
+    expect(cards).toHaveLength(3); // every challenger visible simultaneously
+    // Newest first: p-new (1h) → p-mid (5h) → p-old (9h).
+    const labels = [...cards].map((c) => c.getAttribute("aria-label") ?? "");
+    expect(labels[0]).toContain("cand-new");
+    expect(labels[2]).toContain("cand-old");
+    // Role survives on the card (it used to be the deck's grouping).
+    expect(labels[1]).toContain("director");
+    // The matching run group's execution facts are folded into the card…
+    expect(cards[0]!.textContent).toContain("3 runs");
+    expect(cards[0]!.textContent).toContain("escalated");
+    // …and that run no longer ALSO renders a duplicate compact line.
+    expect(document.querySelector(".pc-learning__gymcycles")).toBeNull();
+  });
+
+  it("keeps a compact line ONLY for an execution with no proposal (the baseline)", () => {
+    nuqsState.lview = "gym";
+    advScopeState.slug = "papercusp";
+    advScopeState.hive = "papercusp";
+    const now = Date.now();
+    gymResult = {
+      data: [
+        {
+          autoloops: [],
+          archiveSeeds: [],
+          cycles: [],
+          proposals: [
+            {
+              id: "p1",
+              variantId: "cand-carded",
+              role: "worker",
+              status: "accepted",
+              cycle: 1,
+              createdAt: now - 3600_000,
+              harnessSlug: "papercusp",
+            },
+          ],
+          runs: [
+            {
+              harnessSlug: "papercusp",
+              variantId: "cand-carded",
+              cycle: 1,
+              runCount: 3,
+              states: ["escalated"],
+              startedAt: now - 2 * 3600_000,
+              finishedAt: now - 3600_000,
+              decision: "accept",
+              isBaseline: false,
+            },
+            {
+              harnessSlug: "papercusp",
+              variantId: "baseline",
+              cycle: 0,
+              runCount: 3,
+              states: ["escalated"],
+              startedAt: now - 4 * 3600_000,
+              finishedAt: now - 3 * 3600_000,
+              decision: null,
+              isBaseline: true,
+            },
+          ],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+
+    expect(document.querySelectorAll(".pc-learning__gymcard")).toHaveLength(1);
+    const lines = document.querySelector(".pc-learning__gymcycles");
+    expect(lines).toBeTruthy(); // the baseline has no card, so it keeps its line
+    expect(lines!.children).toHaveLength(1);
+    expect(lines!.textContent).toContain("baseline");
+    expect(lines!.textContent).not.toContain("cand-carded"); // no duplicate
+  });
+
   it("omits the recency chip when there are no runs (no bogus 'newest')", () => {
     nuqsState.lview = "gym";
     advScopeState.slug = "papercusp";
