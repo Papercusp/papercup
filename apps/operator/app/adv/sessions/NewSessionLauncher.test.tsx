@@ -83,6 +83,7 @@ vi.mock('@/app/harness/Combobox', () => ({
 
 import NewSessionLauncher, {
   composeModelSpec,
+  modelBackend,
   PLAN_SELECT_PLACEHOLDER,
   OMP_MODEL_OPTIONS,
   EFFORT_OPTIONS,

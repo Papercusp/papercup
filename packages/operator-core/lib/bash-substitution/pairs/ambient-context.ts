@@ -42,6 +42,22 @@
  *    over arbitrary paths and globs is exploration, and a fixed field is not a
  *    substitute for it.
  *
+ * ── The atomizer artifact every pattern here has to survive ─────────────────
+ * `atomize` splits on `|`, INCLUDING a `|` inside a quoted regex alternation.
+ * So `grep -n "MONO_ROOT=\|npm install\|npm ci" bin/build.sh` yields an atom
+ * that begins `npm ci" bin/build.sh` — a fragment of a SEARCH STRING that looks
+ * exactly like a command. Measured on this family: 9% of `^uptime\b` matches and
+ * 1% of `^date\b` matches were such fragments.
+ *
+ * Two consequences, both handled by pattern shape rather than by `cover()`:
+ *  • `\b` is too weak an anchor. `^free\b` matched `free-port-base\.ts" /tmp/…`
+ *    — a grep for a FILENAME — because `\b` matches between `free` and `-`. The
+ *    zero-argument reads therefore anchor the WHOLE atom (`…$`), and the clock
+ *    uses `(?=\s|$)`, which a hyphenated filename cannot satisfy.
+ *  • An advisory that fires on someone's grep is worse than one that misses:
+ *    the agent learns the guidance is noise. That cost is why this is fixed at
+ *    the pattern, not tolerated as a rounding error.
+ *
  * ── Deliberately NOT claiming `cat /proc/loadavg` ───────────────────────────
  * The 64 `cat /proc/loadavg` atoms are ALREADY claimed by `file-read.cat-file`
  * (the P-026 overlap test measured exactly this: 75 of 370 family atoms, 20%).
@@ -64,9 +80,13 @@ import type { CoverageResult, SubstitutionPair } from '../types';
 const DATE_OTHER_INSTANT = /(?:^|\s)(?:-d\b|--date\b|-r\b|--reference\b|-s\b|--set\b|-f\b|--file\b)/;
 
 /** `^date` MINUS the different-question forms: a different instant (-d/-r/-s/-f)
- *  or nanosecond precision the millisecond field cannot express. */
+ *  or nanosecond precision the millisecond field cannot express.
+ *
+ *  Note `(?=\s|$)` rather than `\b`: `\b` matches between `date` and a hyphen,
+ *  so a bare `\b` also claims a FILENAME like `date-utils.ts` appearing at the
+ *  head of an atom. See the atomizer-artifact note on {@link AMBIENT_CONTEXT_PAIRS}. */
 const DATE_READ_PATTERN =
-  /^date\b(?!.*(?:\s-[drsf]\b|\s--(?:date|reference|set|file)\b|%N))/;
+  /^date(?=\s|$)(?!.*(?:\s-[drsf]\b|\s--(?:date|reference|set|file)\b|%N))/;
 
 /**
  * P-027 — the standalone clock read.
@@ -125,9 +145,10 @@ export const clockRead: SubstitutionPair = {
 export const loadRead: SubstitutionPair = {
   id: 'ambient.uptime',
   intentLabel: 'host-load',
-  // `-p`/`-s` ask for uptime/boot time — a different question, excluded by
-  // pattern per D-008 rather than failed in cover().
-  bashPattern: /^uptime\b(?!.*(?:\s-[ps]\b|\s--(?:pretty|since)\b))/,
+  // Whole-command shape only: the verb, optionally with short flags, and nothing
+  // else. `-p`/`-s` ask for uptime/boot time (a different question, excluded by
+  // pattern per D-008); the `$` anchor drops the atomizer's quote fragments.
+  bashPattern: /^uptime(?:\s+-(?!p\b|s\b)[A-Za-z]+)*$/,
   toolName: 'coord:orient',
   advisoryText:
     'Load average ALREADY ARRIVED — `host.load` (1/5/15m) plus `host.cores` as the denominator, on your last coord:orient. Read it there; do not call anything. NB high load is not on its own a reason to wait: the playbook requires a mechanism, not a load number.',
@@ -158,7 +179,7 @@ export const loadRead: SubstitutionPair = {
 export const coreCountRead: SubstitutionPair = {
   id: 'ambient.nproc',
   intentLabel: 'host-cores',
-  bashPattern: /^nproc\b/,
+  bashPattern: /^nproc(?:\s+--all)?$/,
   toolName: 'coord:orient',
   advisoryText:
     "Core count ALREADY ARRIVED — `host.cores` on your last coord:orient, and it is the machine's logical core count exactly as `nproc` reports it. This is an invariant of the box; read it there and do not call anything.",
@@ -190,8 +211,10 @@ export const coreCountRead: SubstitutionPair = {
 export const memoryRead: SubstitutionPair = {
   id: 'ambient.free',
   intentLabel: 'host-memory',
-  // `free -s N` is a continuous poll — a stream, not a reading (D-008).
-  bashPattern: /^free\b(?!.*(?:\s-s\b|\s--seconds\b))/,
+  // Whole-command shape only. `free -s N` is a continuous poll — a stream, not a
+  // reading (D-008). A bare `\b` here also matched `free-port-base…​.ts` inside a
+  // grep, which is the artifact documented on {@link AMBIENT_CONTEXT_PAIRS}.
+  bashPattern: /^free(?:\s+-(?!s\b)[A-Za-z]+)*$/,
   toolName: 'coord:orient',
   advisoryText:
     'Memory ALREADY ARRIVED — `host.memFreePct` + `host.memTotalGb` on your last coord:orient, plus `host.psiMemSome60` (the PSI pressure the watchdog itself alarms on, which a free-byte count cannot tell you). Read it there; do not call anything.',
