@@ -1751,47 +1751,72 @@ function ImprovementsView({
  *  first page so a selection is never hidden behind the disclosure. */
 const IMPROVEMENTS_PAGE = 60;
 
+/** Everything a merged row needs from the view, in one object — see the note at
+ *  its construction site for why it is passed whole rather than as props. */
+interface LoopRowContext {
+  railMetaMap: ReturnType<typeof railMeta>;
+  /** Server-resolved titles for the opaque `wi:` grounding refs. */
+  groundingTitles: Record<string, string>;
+  /** Lexicon word for the grading brain — packs rename it. */
+  brainWord: string;
+  traceOpen: string | null;
+  onToggleTrace: (ideaId: string | null) => void;
+  gradeOpen: string | null;
+  onGradeOpenChange: (ideaId: string | null) => void;
+  effectiveGrade: (idea: ScoutRoutedItem) => EffectiveGrade | null;
+  onGrade: (
+    idea: ScoutRoutedItem,
+    grade: number,
+    feedback: string | null,
+  ) => Promise<void>;
+  savingId: string;
+  onOpenRouted: (idea: ScoutRoutedItem) => void;
+  onOpenPlan: (slug: string) => void;
+  onOpenImprovement: (id: string) => void;
+  onDismissSelect: () => void;
+}
+
 function WindowedImprovementList({
   rows,
   lsel,
-  onDismissSelect,
+  ctx,
 }: {
-  rows: ScoredItem[];
+  rows: LoopRow[];
   lsel: string | null;
-  onDismissSelect: () => void;
+  ctx: LoopRowContext;
 }) {
   const { page, rest } = useMemo(() => {
     const head = rows.slice(0, IMPROVEMENTS_PAGE);
     const tail = rows.slice(IMPROVEMENTS_PAGE);
     if (!lsel) return { page: head, rest: tail };
-    const selectedInTail = tail.find((it) => it.id === lsel);
+    const selectedInTail = tail.find((row) => row.item?.id === lsel);
     if (!selectedInTail) return { page: head, rest: tail };
     return {
       page: [selectedInTail, ...head],
-      rest: tail.filter((it) => it.id !== lsel),
+      rest: tail.filter((row) => row.item?.id !== lsel),
     };
   }, [rows, lsel]);
   return (
     <>
       <ul className="pc-learning__list">
-        {page.map((it) => (
-          <ImprovementRow
-            key={it.id}
-            item={it}
-            selected={it.id === lsel}
-            onDismissSelect={onDismissSelect}
+        {page.map((row) => (
+          <LoopRowView
+            key={row.key}
+            row={row}
+            ctx={ctx}
+            selected={row.item?.id === lsel}
           />
         ))}
       </ul>
       {rest.length > 0 ? (
         <LearningDisclosure label="Earlier items" count={rest.length}>
           <ul className="pc-learning__list">
-            {rest.map((it) => (
-              <ImprovementRow
-                key={it.id}
-                item={it}
-                selected={it.id === lsel}
-                onDismissSelect={onDismissSelect}
+            {rest.map((row) => (
+              <LoopRowView
+                key={row.key}
+                row={row}
+                ctx={ctx}
+                selected={row.item?.id === lsel}
               />
             ))}
           </ul>
@@ -1801,77 +1826,372 @@ function WindowedImprovementList({
   );
 }
 
-function ImprovementRow({
-  item,
-  selected = false,
-  onDismissSelect,
+/**
+ * The pipeline trace: an idea's whole loop as one stack of stages — grounding
+ * evidence → lens → routed artifact → grade → outcome. Every field comes from
+ * the same ledger read the list renders, and a missing stage renders dimmed
+ * because THE GAP IS THE SIGNAL (an "ungraded" row on a starving grading loop
+ * is the finding, not a rendering hole to paper over).
+ */
+function IdeaTrace({
+  idea,
+  ctx,
 }: {
-  item: ScoredItem;
+  idea: ScoutRoutedItem;
+  ctx: LoopRowContext;
+}) {
+  const meta = ctx.railMetaMap[idea.rail] ?? {
+    label: idea.rail,
+    desc: "Routed idea",
+    color: "#94a3b8",
+  };
+  const refs = idea.addressesPatternRefs ?? [];
+  const eff = ctx.effectiveGrade(idea);
+  const outcome = idea.outcome ?? "pending";
+  const outcomeTone =
+    outcome === "won" ? "good" : outcome === "lost" ? "bad" : "missing";
+  // Display the ref WITHOUT its rail prefix — the rail chip already names the
+  // destination (owner ask 2026-07-19: "gym gym:SP-004" doubles were unreadable).
+  const shortRef = idea.routedRef.replace(/^[a-z]+:/i, "");
+
+  const groundingChip = (ref: string) => {
+    const sep = ref.indexOf(":");
+    const kind = sep > 0 ? ref.slice(0, sep) : "ref";
+    const rest = sep > 0 ? ref.slice(sep + 1) : ref;
+    if (kind === "wi") {
+      const title = ctx.groundingTitles[ref];
+      return (
+        <Tooltip
+          key={ref}
+          label={title ? `${rest} — ${title} (select in this list)` : `${rest} — select in this list`}
+        >
+          <button
+            type="button"
+            className="pc-learning__tracechip pc-learning__tracechip--link"
+            onClick={() => ctx.onOpenImprovement(rest)}
+          >
+            <i>{kind}</i>
+            <span className="pc-learning__tracechip-text">{title ?? rest}</span>
+          </button>
+        </Tooltip>
+      );
+    }
+    if (kind === "plan") {
+      return (
+        <Tooltip key={ref} label={`${rest} — open the plan in Create → Plans`}>
+          <button
+            type="button"
+            className="pc-learning__tracechip pc-learning__tracechip--link"
+            onClick={() => ctx.onOpenPlan(rest)}
+          >
+            <i>{kind}</i>
+            <span className="pc-learning__tracechip-text">{rest}</span>
+          </button>
+        </Tooltip>
+      );
+    }
+    return (
+      <span key={ref} className="pc-learning__tracechip" title={ref}>
+        <i>{kind}</i>
+        <span className="pc-learning__tracechip-text">{rest}</span>
+      </span>
+    );
+  };
+
+  return (
+    <div
+      className="pc-learning__trace"
+      aria-label={`Pipeline trace for ${idea.title ?? idea.routedRef}`}
+    >
+      <div
+        className={`pc-learning__tracerow${refs.length === 0 ? " is-missing" : ""}`}
+      >
+        <em>grounded in</em>
+        <span className="pc-learning__tracechips">
+          {refs.length > 0 ? (
+            refs.map(groundingChip)
+          ) : (
+            <strong title="No grounding evidence was recorded for this idea (su-ideate filings often ground informally).">
+              none recorded
+            </strong>
+          )}
+        </span>
+      </div>
+      <div className="pc-learning__tracerow">
+        <em>lens</em>
+        <strong
+          title={
+            idea.cycleId
+              ? `Produced by the '${idea.lens}' lens in cycle ${idea.cycleId}`
+              : `Produced by the '${idea.lens}' lens`
+          }
+        >
+          {idea.lens}
+          {idea.origin ? <i> · {idea.origin}</i> : null}
+        </strong>
+      </div>
+      <div className="pc-learning__tracerow">
+        <em>routed to</em>
+        <span className="pc-learning__tracechips">
+          <Tooltip label={`${meta.desc} — open ${idea.routedRef}`}>
+            <button
+              type="button"
+              className="pc-learning__tracechip pc-learning__tracechip--link"
+              onClick={() => ctx.onOpenRouted(idea)}
+            >
+              <i
+                className="pc-learning__tracedot"
+                style={{ background: meta.color }}
+                aria-hidden
+              />
+              <span>{meta.label}</span>
+              <b className="pc-learning__tracechip-text">{shortRef}</b>
+            </button>
+          </Tooltip>
+        </span>
+      </div>
+      <div className={`pc-learning__tracerow${eff ? "" : " is-missing"}`}>
+        <em>grade</em>
+        <strong
+          title={
+            eff
+              ? (eff.feedback ?? `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}`)
+              : "Ungraded — the grade→learn half of the loop has not seen this idea."
+          }
+        >
+          {eff
+            ? `★${eff.grade} · ${graderLabel(eff.gradedBy, ctx.brainWord)}`
+            : "ungraded"}
+        </strong>
+      </div>
+      <div
+        className={`pc-learning__tracerow${outcomeTone === "missing" ? " is-missing" : ` is-${outcomeTone}`}`}
+      >
+        <em>outcome</em>
+        <strong title="Outcome derived from the change feed (won / lost / pending) — did the routed artifact pan out?">
+          {outcome}
+        </strong>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One row of the merged list: the idea, the work it became, or both.
+ *
+ * The two old rows were near-identical shapes over the same population — the
+ * Ideas row led with a rail and carried a grade, the Backlog row led with a
+ * severity and carried a triage score. This renders whichever halves the row
+ * actually has, so an idea that became work reads as ONE thing with one origin
+ * and one fate, rather than as two rows on two tabs that never referenced each
+ * other.
+ */
+function LoopRowView({
+  row,
+  ctx,
+  selected = false,
+}: {
+  row: LoopRow;
+  ctx: LoopRowContext;
   /** Deep-link target (?lsel) — highlighted + scrolled into view; click dismisses. */
   selected?: boolean;
-  onDismissSelect?: () => void;
 }) {
-  const sevColor = SEVERITY[item.severity ?? "minor"].solid;
-  const human = item.tier === "human";
+  const { item, idea } = row;
+  const meta = idea
+    ? (ctx.railMetaMap[idea.rail] ?? {
+        label: idea.rail,
+        desc: "Routed idea",
+        color: "#94a3b8",
+      })
+    : null;
+  const sevColor = item ? SEVERITY[item.severity ?? "minor"].solid : null;
+  const human = item?.tier === "human";
+  const eff = idea ? ctx.effectiveGrade(idea) : null;
+  const isTraceOpen = Boolean(idea) && ctx.traceOpen === idea?.ideaId;
+  const isGradeOpen = Boolean(idea) && ctx.gradeOpen === idea?.ideaId;
+  const saving = Boolean(idea) && ctx.savingId === idea?.ideaId;
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
     if (selected)
       ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [selected]);
+
+  // The leading id: the work item when there is one (it is the thing you act
+  // on), otherwise the rail the idea went to.
+  const leadLabel = item ? item.id : (meta?.label ?? "idea");
+  const leadColor = item ? undefined : meta?.color;
+  const title = item?.title ?? idea?.title ?? idea?.routedRef ?? "";
+
   return (
     <li
       ref={ref}
       className={`pc-learning__row${selected ? " pc-learning__row--selected" : ""}`}
-      title={item.tierReason}
-      onClick={selected ? onDismissSelect : undefined}
+      title={item?.tierReason}
+      onClick={selected ? ctx.onDismissSelect : undefined}
     >
       <span
         className="pc-learning__sev"
-        style={{ background: sevColor }}
+        style={{ background: sevColor ?? meta?.color ?? "#94a3b8" }}
         aria-hidden
       />
-      <span className="pc-learning__id">{item.id}</span>
-      <span className="pc-learning__title">{item.title}</span>
-      <span className="pc-learning__meta">
-        <span
-          className="pc-learning__chip"
-          style={{ color: sevColor, borderColor: sevColor }}
+      {idea ? (
+        // Only an idea-bearing row is expandable — the trace IS the idea's
+        // record, so a capture with no idea behind it has nothing to expand.
+        <Tooltip
+          label={
+            isTraceOpen
+              ? "Hide this idea's trace"
+              : "Show where this came from — grounding, lens, route, grade, outcome"
+          }
         >
-          {item.severity ?? "—"}
-        </span>
-        {item.ideaType ? (
+          <button
+            type="button"
+            className="pc-learning__rowmain"
+            aria-expanded={isTraceOpen}
+            onClick={() =>
+              ctx.onToggleTrace(isTraceOpen ? null : idea.ideaId)
+            }
+          >
+            <span className="pc-learning__id" style={{ color: leadColor }}>
+              {leadLabel}
+            </span>
+            <span className="pc-learning__title">{title}</span>
+          </button>
+        </Tooltip>
+      ) : (
+        <>
+          <span className="pc-learning__id">{leadLabel}</span>
+          <span className="pc-learning__title">{title}</span>
+        </>
+      )}
+      <span className="pc-learning__meta">
+        {idea ? (
+          <span
+            className="pc-learning__chip pc-learning__chip--idea"
+            style={{ color: lensColor(idea.lens), borderColor: lensColor(idea.lens) }}
+            title="The creative lens that produced this idea"
+          >
+            {idea.lens}
+          </span>
+        ) : null}
+        {item ? (
+          <span
+            className="pc-learning__chip"
+            style={{ color: sevColor ?? undefined, borderColor: sevColor ?? undefined }}
+          >
+            {item.severity ?? "—"}
+          </span>
+        ) : null}
+        {item?.ideaType ? (
           <span className="pc-learning__chip pc-learning__chip--idea">
             {item.ideaType}
           </span>
         ) : null}
-        {item.source ? (
+        {item?.source ? (
           <span className="pc-learning__chip" title={`Filed by ${item.source}`}>
             {item.source}
           </span>
         ) : null}
-        <span
-          className={`pc-learning__chip pc-learning__chip--${human ? "human" : "auto"}`}
-          title={
-            human ? "Waits for your review" : "An agent may fix this on its own"
-          }
-        >
-          {human ? (
-            <UserRound size={10} aria-hidden />
-          ) : (
-            <ShieldCheck size={10} aria-hidden />
-          )}
-          {human ? "review" : "auto"}
-        </span>
+        {item ? (
+          <span
+            className={`pc-learning__chip pc-learning__chip--${human ? "human" : "auto"}`}
+            title={
+              human
+                ? "Waits for your review"
+                : "An agent may fix this on its own"
+            }
+          >
+            {human ? (
+              <UserRound size={10} aria-hidden />
+            ) : (
+              <ShieldCheck size={10} aria-hidden />
+            )}
+            {human ? "review" : "auto"}
+          </span>
+        ) : (
+          // No work item yet — the idea exists, the work does not. P-004 gives
+          // this the real pipeline word ("not ready yet"); today it states the
+          // fact plainly rather than leaving the row's status blank.
+          <span
+            className="pc-learning__chip"
+            title="This idea has not been filed as work yet."
+          >
+            not filed yet
+          </span>
+        )}
         <span className="pc-learning__age" title="How long ago this was filed">
-          {ageLabel(item.ageDays)}
+          {item
+            ? ageLabel(item.ageDays)
+            : idea?.routedAt
+              ? whenLabel(Date.parse(idea.routedAt))
+              : ""}
         </span>
-        <span
-          className="pc-learning__score"
-          title="Triage priority (severity + age) — higher means more urgent"
-        >
-          {item.score}
-        </span>
+        {item ? (
+          <span
+            className="pc-learning__score"
+            title="Triage priority (severity + age) — higher means more urgent"
+          >
+            {item.score}
+          </span>
+        ) : null}
+        {/* The ONLY control on a row (owner ruling 2026-07-27): in a full-auto
+            loop the human teaches the generator, never approves the work. */}
+        {idea ? (
+          <span
+            className="pc-learning__grade"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            {eff ? (
+              <span
+                className="pc-learning__gradechip"
+                title={
+                  eff.feedback
+                    ? `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}: “${eff.feedback}”`
+                    : `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}`
+                }
+              >
+                ★{eff.grade} · {graderLabel(eff.gradedBy, ctx.brainWord)}
+              </span>
+            ) : null}
+            <Popover
+              open={isGradeOpen}
+              onOpenChange={(open) =>
+                ctx.onGradeOpenChange(open ? idea.ideaId : null)
+              }
+              trigger={
+                <button
+                  type="button"
+                  className="pc-learning__notebtn"
+                  aria-label={eff ? "Review idea grade" : "Grade this idea"}
+                  aria-expanded={isGradeOpen}
+                >
+                  {eff ? (
+                    <Star size={12} fill="currentColor" aria-hidden />
+                  ) : (
+                    <MessageSquarePlus size={12} aria-hidden />
+                  )}
+                </button>
+              }
+              tooltipLabel={eff ? "Review this grade" : "Grade this idea"}
+              ariaLabel={`Grade ${title}`}
+              contentClassName="pc-learning__gradepopover"
+            >
+              <GradePanel
+                current={eff}
+                busy={saving}
+                onSave={(grade, feedback) => {
+                  void ctx
+                    .onGrade(idea, grade, feedback)
+                    .then(() => ctx.onGradeOpenChange(null));
+                }}
+                onClose={() => ctx.onGradeOpenChange(null)}
+              />
+            </Popover>
+          </span>
+        ) : null}
       </span>
+      {isTraceOpen && idea ? <IdeaTrace idea={idea} ctx={ctx} /> : null}
     </li>
   );
 }

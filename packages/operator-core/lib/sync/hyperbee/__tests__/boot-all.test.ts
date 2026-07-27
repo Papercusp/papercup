@@ -51,6 +51,13 @@ const loadHarnessRegistryMock = vi.fn(async (_ws?: string) => ({
 // transitive import from silently reintroducing the same break.
 vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: (ws?: string) => loadHarnessRegistryMock(ws),
+  // boot-all → pinRepoKeysForWorkspace (pot-git/pin-repo-keys.ts) falls back to
+  // this export when no `deps.saveRegistry` is injected. A factory mock is
+  // TOTAL — anything it omits is simply undefined — so the day pin-repo-keys
+  // started calling it, all 9 tests in this file died on "No saveHarnessRegistry
+  // export is defined on the mock" even though nothing here changed. Keep this
+  // in step with harness-registry's real surface.
+  saveHarnessRegistry: vi.fn(async () => {}),
   isEphemeralForeignProject: (p: { ephemeral_foreign?: boolean }) => p.ephemeral_foreign === true,
   ephemeralForeignHarnessSlug: (offerId: string) => `foreign-${offerId}`,
   registerEphemeralForeignHarness: vi.fn(),

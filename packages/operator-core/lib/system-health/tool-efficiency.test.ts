@@ -19,23 +19,45 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const grade = (rating: string, evidence: string) => ({ rating, evidence });
 
+/** Per-aggregate call counters. Counted INSIDE the mock factories rather than via
+ *  spies captured from an imported namespace: the SUT resolves its own dynamic
+ *  import, which need not hand back the same namespace object the test imported,
+ *  so a `toHaveBeenCalled` on a captured spy can read 0 even though the mock ran. */
+const calls = { adoption: 0, limit: 0, orient: 0, empty: 0 };
+
 function mockRollupModules() {
+  calls.adoption = 0;
+  calls.limit = 0;
+  calls.orient = 0;
+  calls.empty = 0;
   vi.doMock('../code-run-adoption', () => ({
-    readCodeRunAdoption: vi.fn(async () => ['summary']),
-    rollupAdoption: vi.fn(() => ({ adoptionRate: 0.42 })),
-    gradeToolUtilization: vi.fn(() => grade('degraded', 'adoption evidence')),
+    readCodeRunAdoption: async () => {
+      calls.adoption += 1;
+      return ['summary'];
+    },
+    rollupAdoption: () => ({ adoptionRate: 0.42 }),
+    gradeToolUtilization: () => grade('degraded', 'adoption evidence'),
   }));
   vi.doMock('../limit-failure-rate', () => ({
-    readLimitFailureRate: vi.fn(async () => ({ totalErrs: 7, byTool: [] })),
-    gradeLimitFailureRate: vi.fn(() => grade('healthy', 'limit evidence')),
+    readLimitFailureRate: async () => {
+      calls.limit += 1;
+      return { totalErrs: 7, byTool: [] };
+    },
+    gradeLimitFailureRate: () => grade('healthy', 'limit evidence'),
   }));
   vi.doMock('../orient-dedup-rate', () => ({
-    readOrientDedupRate: vi.fn(async () => ({ pctRedundant: 12 })),
-    gradeOrientDedupRate: vi.fn(() => grade('healthy', 'orient evidence')),
+    readOrientDedupRate: async () => {
+      calls.orient += 1;
+      return { pctRedundant: 12 };
+    },
+    gradeOrientDedupRate: () => grade('healthy', 'orient evidence'),
   }));
   vi.doMock('../empty-result-rate', () => ({
-    readEmptyResultRate: vi.fn(async () => ({ pctEmpty: 30, totalEmptyRuns: 9 })),
-    gradeEmptyResultRate: vi.fn(() => grade('broken', 'empty evidence')),
+    readEmptyResultRate: async () => {
+      calls.empty += 1;
+      return { pctEmpty: 30, totalEmptyRuns: 9 };
+    },
+    gradeEmptyResultRate: () => grade('broken', 'empty evidence'),
   }));
 }
 
@@ -76,12 +98,6 @@ describe('computeToolEfficiencyHealth (P-010/P-011 precompute)', () => {
   it('runs ALL FOUR aggregates behind the one precompute — none may stay on the read path', async () => {
     vi.resetModules();
     mockRollupModules();
-    const [adoption, limit, orient, empty] = await Promise.all([
-      import('../code-run-adoption'),
-      import('../limit-failure-rate'),
-      import('../orient-dedup-rate'),
-      import('../empty-result-rate'),
-    ]);
     const { computeToolEfficiencyHealth } = await import('./tool-efficiency');
 
     await computeToolEfficiencyHealth(async () => []);
@@ -89,10 +105,7 @@ describe('computeToolEfficiencyHealth (P-010/P-011 precompute)', () => {
     // The whole point of D-008: the three lockstep statements share ONE caller,
     // so they must be precomputed TOGETHER. If a future edit moves any single
     // read back onto the collector, this fails.
-    expect(adoption.readCodeRunAdoption).toHaveBeenCalledTimes(1);
-    expect(limit.readLimitFailureRate).toHaveBeenCalledTimes(1);
-    expect(orient.readOrientDedupRate).toHaveBeenCalledTimes(1);
-    expect(empty.readEmptyResultRate).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual({ adoption: 1, limit: 1, orient: 1, empty: 1 });
   });
 
   it('preserves a null adoption rate rather than coercing it to 0%', async () => {

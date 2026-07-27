@@ -336,6 +336,24 @@ function bareName(ident) {
  * never its definition, so it is unknowable from this file; and since two-phase is
  * always possible, "dropped it in the same migration" is sufficient to flag.
  *
+ * BOTH SIDES ALSO COUNT THEIR CONSTRAINT-BACKED FORM. A UNIQUE *constraint* is
+ * implemented BY a unique index and is inferable by `ON CONFLICT` in exactly the
+ * same way, so `ALTER TABLE t ADD CONSTRAINT c UNIQUE (...)` creates the same
+ * hazard as `CREATE UNIQUE INDEX`, and `ALTER TABLE t DROP CONSTRAINT c` destroys
+ * an inference target as surely as `DROP INDEX`. Matching only the INDEX spelling
+ * left the check with a bypass reachable by an idiom this repo already uses 14
+ * times (`ADD CONSTRAINT … UNIQUE`): the identical 689 outage authored as
+ * `ALTER TABLE … DROP CONSTRAINT` + `CREATE UNIQUE INDEX … WHERE` sailed straight
+ * through. A guard whose whole purpose is to be mechanical rather than a review
+ * note must not have a spelling-shaped hole in it.
+ *
+ * A constraint action names its table in the `ALTER TABLE`, so for those drops the
+ * table is matched EXACTLY and the `<table>_` name heuristic is skipped — that
+ * heuristic exists only because a bare `DROP INDEX` does not say which table it
+ * belonged to. Exact beats heuristic in both directions: it catches a constraint
+ * whose name does not begin with its table (`uniq_facts_ident` on `agent_facts`),
+ * and it will not fire on a same-named constraint dropped from a DIFFERENT table.
+ *
  * ESCAPE HATCH. A swap that is genuinely safe (a brand-new table with no
  * deployed readers, an index no `ON CONFLICT` can target) may carry
  *
@@ -355,29 +373,85 @@ export function findUniqueIndexShapeSwap(sqlText) {
 
   const stripped = stripSqlBodies(raw);
 
-  const dropped = [];
-  const dropRe = /\bDROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?((?:"?[\w$]+"?\.)?"?[\w$]+"?)/gi;
-  let d;
-  while ((d = dropRe.exec(stripped)) !== null) dropped.push(bareName(d[1]));
-  if (!dropped.length) return [];
+  const IDENT = '(?:"?[\\w$]+"?\\.)?"?[\\w$]+"?';
 
-  const hits = [];
-  const createRe =
-    /\bCREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?((?:"?[\w$]+"?\.)?"?[\w$]+"?)\s+ON\s+((?:"?[\w$]+"?\.)?"?[\w$]+"?)([^;]*)/gi;
+  // Drops, each as { name, table }. `table` is null for a bare DROP INDEX (the
+  // statement does not say which table the index belonged to) and exact for a
+  // constraint drop, which always names its table in the ALTER TABLE.
+  const dropped = [];
+  const dropRe = new RegExp(
+    `\\bDROP\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+EXISTS\\s+)?(${IDENT})`,
+    'gi',
+  );
+  let d;
+  while ((d = dropRe.exec(stripped)) !== null) dropped.push({ name: bareName(d[1]), table: null });
+
+  // Creates, each as { index, table, partial }.
+  const created = [];
+  const createRe = new RegExp(
+    `\\bCREATE\\s+UNIQUE\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENT})\\s+ON\\s+(${IDENT})([^;]*)`,
+    'gi',
+  );
   let c;
   while ((c = createRe.exec(stripped)) !== null) {
-    const index = bareName(c[1]);
-    const table = bareName(c[2]);
-    // Same-table drops: PG's conventional index naming is `<table>_<cols>_idx`,
-    // and an identity index is named for its table. Require the table name as a
-    // prefix so an unrelated drop elsewhere in a large migration does not match.
-    const conflicts = dropped.filter((n) => n === table || n.startsWith(`${table}_`));
+    created.push({
+      index: bareName(c[1]),
+      table: bareName(c[2]),
+      partial: /\bWHERE\b/i.test(c[3] ?? ''),
+    });
+  }
+
+  // The constraint-backed spelling of BOTH sides. One ALTER TABLE can carry
+  // several comma-separated actions (`ADD CONSTRAINT a UNIQUE (x), DROP
+  // CONSTRAINT b`), so scan each statement's action list rather than assuming one
+  // action per statement.
+  const alterRe = new RegExp(`\\bALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(${IDENT})([^;]*)`, 'gi');
+  let a;
+  while ((a = alterRe.exec(stripped)) !== null) {
+    const table = bareName(a[1]);
+    const actions = a[2] ?? '';
+
+    const dropConRe = new RegExp(`\\bDROP\\s+CONSTRAINT\\s+(?:IF\\s+EXISTS\\s+)?(${IDENT})`, 'gi');
+    let dc;
+    while ((dc = dropConRe.exec(actions)) !== null) {
+      dropped.push({ name: bareName(dc[1]), table });
+    }
+
+    // `UNIQUE (` — the parenthesis is required so a column-level `ADD COLUMN x
+    // text UNIQUE` (which creates no new inference target for existing writers)
+    // is not mistaken for a table-level unique constraint. The constraint name is
+    // optional: `ADD UNIQUE (cols)` is legal and PG names it for you.
+    const addConRe = new RegExp(`\\bADD\\s+(?:CONSTRAINT\\s+(${IDENT})\\s+)?UNIQUE\\s*\\(`, 'gi');
+    let ac;
+    while ((ac = addConRe.exec(actions)) !== null) {
+      created.push({
+        index: ac[1] ? bareName(ac[1]) : `${table} (unnamed UNIQUE constraint)`,
+        table,
+        // A UNIQUE constraint cannot carry a predicate, so it is never partial.
+        partial: false,
+      });
+    }
+  }
+
+  if (!dropped.length || !created.length) return [];
+
+  const hits = [];
+  for (const { index, table, partial } of created) {
+    const conflicts = dropped.filter((dr) =>
+      dr.table === null
+        ? // PG's conventional index naming is `<table>_<cols>_idx`, and an identity
+          // index is named for its table. Require the table name as a prefix so an
+          // unrelated drop elsewhere in a large migration does not match.
+          dr.name === table || dr.name.startsWith(`${table}_`)
+        : // Constraint drop: the table is stated, so compare it exactly.
+          dr.table === table,
+    );
     if (!conflicts.length) continue;
     hits.push({
       index,
       table,
-      partial: /\bWHERE\b/i.test(c[3] ?? ''),
-      dropped: [...new Set(conflicts)],
+      partial,
+      dropped: [...new Set(conflicts.map((dr) => dr.name))],
     });
   }
   return hits;
