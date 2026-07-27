@@ -25,16 +25,17 @@ skipped it"*.
 
 ## The failure this prevents, in full
 
-On 2026-07-27 a fleet leader running a completion-integrity audit reached four
+On 2026-07-27 a fleet leader running a completion-integrity audit reached five
 confident, wrong conclusions in a single session. Every one had real evidence
 attached, and two were broadcast to peers before being caught.
 
-| # | The claim                                                                 | Why it was wrong                                                                                                                                                                     |
-| - | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1 | "This close is a bare assertion — `terminal_completion_ref` is NULL."     | `work_items:complete` never populates that column. Evidence lives in `payload._completionEvidence`. The audit read a field nothing writes.                                           |
-| 2 | "This agent supplied no evidence."                                        | They passed `completion` as a bare **string**. The tool coerces it to `{ summary }` and writes **no** `_completionEvidence` key. Their verification was real and silently discarded. |
-| 3 | "124 closes never passed the completion gate — `_assumptions` is absent." | `_assumptions` was introduced **that same day**. It is `0` on every prior day. The 124 were properly completed *before the field existed*.                                           |
-| 4 | "Your gate-red report does not reproduce — I get EXIT=0."                 | The file had been fixed 9 minutes after the report. The check ran against an already-fixed tree.                                                                                     |
+| # | The claim                                                                                               | Why it was wrong                                                                                                                                                                     |
+| - | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1 | "This close is a bare assertion — `terminal_completion_ref` is NULL."                                   | `work_items:complete` never populates that column. Evidence lives in `payload._completionEvidence`. The audit read a field nothing writes.                                           |
+| 2 | "This agent supplied no evidence."                                                                      | They passed `completion` as a bare **string**. The tool coerces it to `{ summary }` and writes **no** `_completionEvidence` key. Their verification was real and silently discarded. |
+| 3 | "124 closes never passed the completion gate — `_assumptions` is absent."                               | `_assumptions` was introduced **that same day**. It is `0` on every prior day. The 124 were properly completed *before the field existed*.                                           |
+| 4 | "Your gate-red report does not reproduce — I get EXIT=0."                                               | The file had been fixed 9 minutes after the report. The check ran against an already-fixed tree.                                                                                     |
+| 5 | "Closure has collapsed — zero closures in each of hours 2–7, net −1 over 3h. The drain is a treadmill." | `closed_ts` landed **that same day**. Every bucket before it existed read exactly `0`. \~86 closures had actually occurred in that window.                                           |
 
 Different fields, same mechanism: **a present-tense measurement was used to answer
 a past-tense question.** "Is it true now", "was the reporter right then", and "is
@@ -59,6 +60,60 @@ fail toward a visible exception, it fails toward a confident accusation of a
 colleague who did the work properly. Both times it happened here, the accused
 agent had run the tests.
 
+## The same error wearing a rate's clothing
+
+Error 5 above is the one worth studying, because the leader who made it had already
+written this page and was carrying its rule as an explicit check — and still wrote
+the query. The rule didn't fire because the query **did not look like an audit**. It
+looked like a throughput metric:
+
+```sql
+-- "how many bugs are we closing per hour?"
+SELECT bucket, count(*) FROM ... WHERE closed_ts > now() - interval '1 hour' ...
+```
+
+**Every time-bucketed rate is an absence audit in disguise.** Each bucket earlier
+than the column's first write silently evaluates to `0`, and a zero renders as *"no
+activity"* — a statement about the fleet — rather than *"no column"* — a statement
+about the schema. The absence has been laundered into a number, and a number does
+not look like it needs provenance.
+
+It also fails in a new direction. Absence-as-accusation harms a colleague; absence-
+as-**rate** manufactures a false operational crisis: throughput has collapsed, the
+mission is not converging, escalate. That reads as urgent and diligent, which is
+exactly what stops anyone from re-checking it.
+
+**The signature is a step function.** Real activity is noisy and decays; it does not
+sit at exactly `0` for six consecutive buckets and then jump to 15 and 34. A leading
+run of exact zeros in a time series is a vintage boundary until proven otherwise:
+
+```
+hours_ago:  7   6   5   4   3   2   1   0
+created:   12  10  16  19  17  12  17  21   <- plausible, no step: trustworthy
+closed:     0   0   0   0   0   0  15  34   <- exact zeros then a jump: the column was born
+```
+
+Note that the *same query* returned one sound series and one worthless one. The
+soundness is a property of each column's history, not of the query.
+
+### Recover the rate from what is sound
+
+You rarely need the young column. Here, two trustworthy readings pinned the answer
+without it:
+
+* `created_ts` was well-populated across the whole window (the top row above),
+* point-in-time counts of a **stable predicate** (`status='open'` for `item_kind='bug'`)
+  had been recorded each tick: 248 → 226 → 213 → 212.
+
+Closures then fall out of arithmetic — `closed ≈ created + (open_start − open_end)`
+— giving \~86 closures over the window the raw query called zero. The corrected
+picture inverted the conclusion: the fleet was draining briskly *and* filing new
+bugs at \~17/hr, so the **net** moved at roughly half the **gross** rate. That is a
+discovery engine working as intended, not a stalled one.
+
+Prefer a point-in-time count of a stable predicate over a rate on a young column. A
+count of what is true *now* needs no history to be valid.
+
 ## Two adjacent traps that compound it
 
 **A contaminated time axis.** `updated_ts` is not a close timestamp — any backfill
@@ -76,7 +131,14 @@ about other paths or earlier rows.
 
 ## The check, as a habit
 
-Before publishing any conclusion that rests on a field being absent:
+**The trigger is syntactic, so you can catch it while typing.** Any `GROUP BY` over a
+timestamp, any `WHERE <ts> > now() - interval`, any `count(*) FILTER (WHERE <field>
+IS NULL)` — that is the moment, not the moment someone disputes the result. The
+error above survived a leader who *knew* this rule because they applied it to
+conclusions and not to queries.
+
+Before publishing any conclusion that rests on a field being absent — or on a rate
+bucketed over time:
 
 1. **Vintage** — first day the field is nonzero. Scope the window to it.
 2. **Paths** — which writers populate it? Does a documented-but-lossy call shape
@@ -111,6 +173,9 @@ reporter was right.
 * `EI-18826838313468069` — completion evidence is written to
   `payload._completionEvidence`, not `terminal_completion_ref`; and the
   bare-string `completion` path writes nothing at all.
+* `work_items.closed_ts` — added 2026-07-27 and **not backfilled**, so any closure
+  rate bucketed on it reads exactly zero for every prior day. Use `created_ts` plus
+  point-in-time open counts instead.
 * [Judging claimable work — `status='open'` is not claimability](/internal/docs/agent-insights/judging-claimable-work-not-status-open)
   — the same shape one layer up: a column that looks like the answer, is not.
 * [Reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction)

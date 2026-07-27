@@ -24,6 +24,7 @@ import { promisify } from 'node:util';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { gitSidecarEnabled, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
+import { type CellUnknown, cellUnknown, formatCellUnknown } from './cell-contract';
 
 const pexec = promisify(execFile);
 
@@ -207,13 +208,40 @@ function resolveConfig(): Pick<
   };
 }
 
-/** sha + commit date + subject for a ref in `repo`, or null on any failure. */
-async function commitRef(repo: string, ref: string): Promise<CommitRef | null> {
+// EI-18788901632987174: git exits 128 for BOTH "the ref doesn't exist" and most
+// other invocation failures, so exit code alone can't separate them — only the
+// stderr text can. This is git's OWN wording for "the revision genuinely does
+// not resolve" (verified live against git log -1 <bad-ref>^{commit}); anything
+// else that reaches the catch below (a missing repo dir, "not a git
+// repository", a lock, an exec/ENOENT failure, a sidecar fault) is a REAL
+// invocation failure, not an absent ref, and must NOT match this.
+const REF_ABSENT_STDERR = /unknown revision or path not in the working tree|not a valid object name|bad revision/i;
+
+/**
+ * Resolve a ref's sha + commit date + subject in `repo`. Distinguishes the two
+ * ways this can fail (cell-contract.ts's in-band-unknown discipline) instead of
+ * collapsing both into the same bare `null`:
+ *   - the ref genuinely does not exist (`not-applicable` — final, no lever:
+ *     retrying resolves nothing, e.g. a fresh clone, `main` never promoted);
+ *   - the git invocation itself failed (`resolver-failed` — retry-or-escalate:
+ *     the value may well exist; a broken repo, an fs/lock error, an exec
+ *     failure, a sidecar fault that also failed locally).
+ * `ref` is `null` in both cases — every existing caller that treats the return
+ * value as `CommitRef | null` (a truthy/falsy check) is UNCHANGED; `unknown`
+ * is the new, additive, in-band reason a caller MAY branch on.
+ */
+interface CommitRefResult {
+  ref: CommitRef | null;
+  /** Non-null iff `ref` is null — WHY it's null, per cell-contract.ts. */
+  unknown: CellUnknown | null;
+}
+
+async function commitRef(repo: string, ref: string): Promise<CommitRefResult> {
   try {
     // ONE `git log -1` fork/exec resolves+peels the ref AND formats sha + committer
     // epoch + subject, replacing the former 3-exec fan-out (rev-parse --verify ^{commit}
     // + show -s %ct + show -s %s). `log -1 <ref>^{commit}` peels a branch/tag to its
-    // commit and exits non-zero (→ caught → null) on an unresolvable ref — the exact
+    // commit and exits non-zero (→ caught → unknown) on an unresolvable ref — the exact
     // same contract as the old rev-parse --verify. %s is git's single-LINE subject, so
     // the two %n separators split cleanly (sha \n ct \n subject); an empty subject
     // yields a trailing empty field, handled by `rest.join`. Cutting commitRef 3→1 exec
@@ -224,13 +252,22 @@ async function commitRef(repo: string, ref: string): Promise<CommitRef | null> {
     const out = await git(repo, ['log', '-1', '--format=%H%n%ct%n%s', ref + '^{commit}']);
     const [sha, ct, ...rest] = out.split('\n');
     return {
-      sha,
-      shortSha: sha.slice(0, 8),
-      committedAtMs: Number(ct) * 1000,
-      subject: rest.join('\n'),
+      ref: {
+        sha,
+        shortSha: sha.slice(0, 8),
+        committedAtMs: Number(ct) * 1000,
+        subject: rest.join('\n'),
+      },
+      unknown: null,
     };
-  } catch {
-    return null;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      ref: null,
+      unknown: REF_ABSENT_STDERR.test(message)
+        ? cellUnknown('not-applicable', `ref ${ref} does not exist in ${repo}`)
+        : cellUnknown('resolver-failed', `git failed resolving ${ref} in ${repo}: ${message}`),
+    };
   }
 }
 

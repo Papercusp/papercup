@@ -69,6 +69,7 @@ import {
   diagnoseFleetScopeIssueFloorMiss,
   fleetScopeLeaderRemedy,
   fleetScopedMiss,
+  hasLiveFleetRouteTarget,
   notifyFleetScopeRefusal,
   readFleetPauseState,
   reconcileFleetScopeClaims,
@@ -1150,6 +1151,129 @@ describe('fleet scope assignment admission (P-016)', () => {
       // …AND the leader now gets the one-call widen action instead of "re-steer somehow".
       expect(payload.body).toMatch(/scheduler:set_claim_spec/);
       expect(payload.body).not.toMatch(/Re-steer the member's claim spec or route the work elsewhere\./);
+    });
+  });
+
+  // WI-6326 (residual half of EI-18784357226895330): "route the work elsewhere" named an
+  // exit with no liveness check — a refused member found the fleet was themself plus one
+  // idle member and had to escalate by hand. hasLiveFleetRouteTarget + the code-conditional
+  // remedy text close that gap.
+  describe('WI-6326: the "route elsewhere" exit is code-conditional on a real presence read', () => {
+    const scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'p2p-release-verify',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'p2p-release-verify-lane',
+          revision: 20,
+          view: { filter: { field: 'kind', op: '=' as const, value: 'bug' } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+        },
+        revision: 20,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+    const violation: Extract<FleetScopeAdmission, { allowed: false }> = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
+      scope,
+    };
+
+    describe('hasLiveFleetRouteTarget', () => {
+      it('reports false when every OTHER row in the fleet is present-but-not-alive or absent', async () => {
+        admissionMocks.listFleetAssignments.mockResolvedValue([
+          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-member', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: true },
+          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-leader', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: false },
+        ]);
+        // Excludes the caller itself (su-member) — the question is whether ANYONE ELSE
+        // can receive routed work, not whether the caller is alive (it obviously is).
+        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(false);
+      });
+
+      it('reports true when another member/leader in the fleet is present and alive', async () => {
+        admissionMocks.listFleetAssignments.mockResolvedValue([
+          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-member', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: true },
+          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-other', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: true },
+        ]);
+        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(true);
+      });
+
+      it('ignores rows from a DIFFERENT fleet', async () => {
+        admissionMocks.listFleetAssignments.mockResolvedValue([
+          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-other', fleetSlug: 'some-other-fleet', holderPresent: true, holderAlive: true },
+        ]);
+        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(false);
+      });
+
+      it('degrades to null (unknown) on a lookup failure rather than a false negative', async () => {
+        admissionMocks.listFleetAssignments.mockRejectedValue(new Error('pg unavailable'));
+        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBeNull();
+      });
+    });
+
+    describe('fleetScopeLeaderRemedy liveRouteTarget wiring', () => {
+      it('keeps the original unconditional wording when a live target exists', () => {
+        const remedy = fleetScopeLeaderRemedy(violation, true);
+        expect(remedy).toMatch(/\(Or route the work elsewhere \/ complete it yourself\.\)/);
+      });
+
+      it('keeps the original unconditional wording when liveness is UNKNOWN (null/undefined) — never asserts a false negative', () => {
+        expect(fleetScopeLeaderRemedy(violation, null)).toMatch(/\(Or route the work elsewhere \/ complete it yourself\.\)/);
+        expect(fleetScopeLeaderRemedy(violation)).toMatch(/\(Or route the work elsewhere \/ complete it yourself\.\)/);
+      });
+
+      it('replaces the "route elsewhere" exit with an honest closed-exit statement + the ledger fallback when no live target exists', () => {
+        const remedy = fleetScopeLeaderRemedy(violation, false);
+        expect(remedy).not.toMatch(/\(Or route the work elsewhere \/ complete it yourself\.\)/);
+        expect(remedy).toMatch(/Do NOT rely on "route the work elsewhere"/);
+        expect(remedy).toMatch(/no other live agent/);
+        expect(remedy).toMatch(/stays filed, unassigned, on the ledger/);
+        // The widen action is still named regardless — that exit was never closed.
+        expect(remedy).toMatch(/scheduler:set_claim_spec/);
+      });
+
+      it('never applies the liveness note to a fleet_winding_down refusal (that branch never mentions "route elsewhere")', () => {
+        const paused: Extract<FleetScopeAdmission, { allowed: false }> = {
+          ...violation,
+          code: 'fleet_winding_down',
+          reason: 'fleet \'p2p-release-verify\' is winding-down (paused)',
+        };
+        const remedy = fleetScopeLeaderRemedy(paused, false);
+        expect(remedy).toMatch(/fleet:resume/);
+        expect(remedy).not.toMatch(/Do NOT rely on "route the work elsewhere"/);
+      });
+    });
+
+    it('notifyFleetScopeRefusal returns the liveRouteTarget verdict AND reflects it in the leader message body', async () => {
+      admissionMocks.listFleetAssignments.mockResolvedValue([
+        { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-member', fleetSlug: 'p2p-release-verify', present: true, alive: true },
+      ]);
+      const result = await notifyFleetScopeRefusal(
+        { ownerId: 'su-member' } as never,
+        violation,
+        'work_items:claim WI-5700 → su-member',
+      );
+      expect(result).toEqual({ liveRouteTarget: false });
+      const payload = admissionMocks.sendMessage.mock.calls[0]?.[1] as { body: string };
+      expect(payload.body).toMatch(/Do NOT rely on "route the work elsewhere"/);
+    });
+
+    it('notifyFleetScopeRefusal skips the liveness lookup entirely for a fleet_winding_down refusal', async () => {
+      const paused: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation,
+        code: 'fleet_winding_down',
+        reason: 'fleet \'p2p-release-verify\' is winding-down (paused)',
+      };
+      const result = await notifyFleetScopeRefusal({ ownerId: 'su-member' } as never, paused, 'work_items:claim WI-5700 → su-member');
+      expect(result).toEqual({ liveRouteTarget: null });
+      expect(admissionMocks.listFleetAssignments).not.toHaveBeenCalled();
     });
   });
 

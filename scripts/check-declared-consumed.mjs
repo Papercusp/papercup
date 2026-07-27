@@ -1,0 +1,537 @@
+#!/usr/bin/env node
+/**
+ * check-declared-consumed.mjs — THE DECLARED-VS-CONSUMED SWEEP
+ * (agent-state-plane-verification-2026-07-27 P-002, generalising WI-6444 / D-100).
+ *
+ * ── WHY THIS EXISTS ──────────────────────────────────────────────────────────
+ *
+ * P-001's producer census asks a RUNTIME question: is anything writing this
+ * column in production data? This gate asks the STATIC twin, which catches the
+ * same defect class one step earlier and without needing a populated database:
+ *
+ *     For every field/column this plane DECLARED — does the tree contain both a
+ *     non-test WRITER and a non-test READER of it?
+ *
+ * WI-6444 is the canonical instance. `unknownHoist` was declared on `CellSpec`,
+ * enforced by `validateCellSpec`, and set by six cell registrations — and read
+ * by NOTHING that emitted it. Every half was individually correct and fully
+ * unit-tested. Three lines of grep separated 6 declaration sites + 1 validator
+ * from 0 consumers; this file makes that grep a standing check.
+ *
+ * ── ⚠ THE FOUR VACUOUS PASSES THIS GATE IS BUILT TO AVOID ────────────────────
+ *
+ * The naive implementation greps the identifier name and passes when it finds
+ * hits. That gate is green on WI-6444 for FOUR independent reasons, and each one
+ * had to be closed separately:
+ *
+ *  (1) A DECLARATION IS NOT A USE. `unknownHoist?: string` in an interface is a
+ *      hit. So is `ordered?: { stages: string[] }`. A name-only grep counts the
+ *      very declaration whose consumption is in question as evidence that it is
+ *      consumed. Closed by {@link interfaceRanges}: a property inside an
+ *      `interface`/`type` body is a DECLARATION, one outside it is a WRITE, and
+ *      the two are told apart structurally rather than by guessing at the RHS.
+ *
+ *  (2) A COMMENT IS NOT A USE. `cell-read.ts` mentions "`spec.unknownHoist`"
+ *      inside a docblock, and `cell-registry.ts` names `materiality` in nine
+ *      rejection MESSAGES. Both read as property accesses to a grep. Closed by
+ *      {@link stripComments} — and this is not a nicety: the single densest
+ *      concentration of a field's name in this codebase is the prose explaining
+ *      it, so an un-stripped sweep is *most* confident exactly where a field is
+ *      best documented and least used.
+ *
+ *  (3) THE DECLARING MODULE IS NOT A CONSUMER. `validateCellSpec` reads
+ *      `spec.unknownHoist` twice — in the same file that declares it. Counting
+ *      that, the sweep stays green after deleting the real emission in
+ *      `cell-read.ts`, i.e. it does not re-derive WI-6444, which is the one
+ *      thing it must do. A type validating its own field proves the field is
+ *      well-formed, never that anyone wants it. Closed by `declaredIn`.
+ *
+ *  (4) RETIRED CODE IS NOT A CONSUMER. A read from `_retired/` is a read by
+ *      something deliberately not deployed. Closed by {@link SKIP_DIRS}.
+ *
+ * ── AND THE FIFTH: A ROW THAT NO LONGER MATCHES ANYTHING ─────────────────────
+ *
+ * If a field is renamed, its row here matches zero declarations. "No reader and
+ * no writer" is then not a defect report, it is the gate describing a target
+ * that has ceased to exist — the static analogue of P-001's `no-data`, where a
+ * count of zero means "we looked at nothing" rather than "nothing is there".
+ * Reporting it as a defect sends someone hunting a consumer for a field that is
+ * gone; reporting it as a pass is a green tick over an unwatched surface. So
+ * `not-declared` is its own verdict with its own message, and it fails as a GATE
+ * MAINTENANCE error rather than as a missing consumer.
+ *
+ * ── HEURISTIC, AND WHICH WAY IT LEANS ────────────────────────────────────────
+ *
+ * This is regex-and-brace-depth over stripped source, not a typechecker. Its
+ * blind spots are deliberate and one-directional: a write spread across lines,
+ * or a mid-line object-literal property, is MISSED — which understates writers
+ * and reads as a failure. Every rule therefore errs toward failing loudly, never
+ * toward passing quietly, and the report prints the file:line of every site it
+ * counted so a disputed verdict can be audited in one look rather than trusted.
+ */
+
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
+
+const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+
+/** Directories a live consumer cannot live in. `_retired` is vacuous-pass (4). */
+export const SKIP_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', '.next', 'target', 'coverage',
+  '_retired', '.turbo', 'out', '.venv', 'venv', '__pycache__',
+]);
+
+const SCAN_EXT = new Set(['.ts', '.tsx', '.mts', '.mjs', '.js']);
+
+/** A test file proves a field is reachable, never that anything ships using it. */
+export function isTestFile(rel) {
+  return /\.(test|spec)\.[cm]?[jt]sx?$/.test(rel) || /(^|\/)(e2e|__tests__|__mocks__|test-fixtures)\//.test(rel);
+}
+
+// ── THE TARGETS ─────────────────────────────────────────────────────────────
+
+/**
+ * Every OPTIONAL field on `CellSpec`. Optional is the whole risk surface: a
+ * required field cannot be silently unwritten, because omitting it fails to
+ * compile. An optional one is exactly the field that can be declared, validated,
+ * documented and never touched — which is what WI-6444 was.
+ */
+export const DECLARED_FIELDS = [
+  {
+    id: 'CellSpec.unknownHoist',
+    name: 'unknownHoist',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: 'a cell registration setting `unknownHoist: <resultField>`',
+    consumer: 'cell-read.ts emitting the hoisted field into the result',
+    why: 'WI-6444 ITSELF. Declared on 6 cells and enforced at registration, but emitted by nothing — every nullable cell read as a bare `value: null` with the reason dropped. This row is the regression test for that fix: revert the cell-read.ts emission and this row MUST go red.',
+  },
+  {
+    id: 'CellSpec.materiality',
+    name: 'materiality',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: 'a cell registration declaring `materiality: { path, why }`',
+    consumer: 'cell-read.ts resolving `spec.materiality.path` against the resolver result',
+    why: 'P-021. Materiality SUPPRESSES change notifications, so an unconsumed declaration is the worst kind: the author believes noise is being filtered and the subscriber is told nothing was filtered. It fails silently and in the confident direction.',
+  },
+  {
+    id: 'CellSpec.ordered',
+    name: 'ordered',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: 'a cell registration declaring `ordered: { stages: [...] }`',
+    consumer: 'anything that uses the declared stage order to rank or compare cell values',
+    why: 'Axis 6. The stage order exists so a reader can say which of two positions is FURTHER ALONG. Declared and written but never read, the ordering claim is decorative: a caller comparing stages still has to hardcode the sequence, which is the duplication the axis was added to remove.',
+  },
+];
+
+/**
+ * Every column added by the three migrations this plane shipped.
+ *
+ * `table` is not decoration — it is the scan filter. A file that never names the
+ * table cannot be reading or writing its columns in SQL, and without that scope
+ * a column called `summary` or `metrics` matches half the tree and the sweep
+ * reports a confident pass built entirely from unrelated identifiers.
+ */
+export const DECLARED_COLUMNS = [
+  // ── 689 — agent_facts append-versioning.
+  { id: 'agent_facts.superseded_at', table: 'agent_facts', name: 'superseded_at', migration: '689-agent-facts-append-versioning.sql',
+    why: 'P-008 (a). The append-version tombstone: every current-fact read filters on it. Unwritten, superseded facts stay live and a fold returns two contradictory versions of the same fact.' },
+  { id: 'agent_facts.supersedes_id', table: 'agent_facts', name: 'supersedes_id', migration: '689-agent-facts-append-versioning.sql',
+    why: 'The back-pointer that makes the version chain walkable. Without it a superseded fact is merely hidden, and "what did this fact say before" is unanswerable.' },
+
+  // ── 694 — tool_invocations agent-state stamp.
+  { id: 'tool_invocations.intent_event_id', table: 'tool_invocations', name: 'intent_event_id', migration: '694-tool-invocations-agent-state-stamp.sql',
+    why: "P-010's divergence detector buckets calls by this id. No stamp, no buckets, and the detector reports the same clean zero a perfectly-disciplined fleet would." },
+  { id: 'tool_invocations.assumption_set_id', table: 'tool_invocations', name: 'assumption_set_id', migration: '694-tool-invocations-agent-state-stamp.sql',
+    why: 'WI-6465. P-024 cannot resolve the assumption set behind a historical call without it.' },
+  { id: 'tool_invocations.goal_ref', table: 'tool_invocations', name: 'goal_ref', migration: '694-tool-invocations-agent-state-stamp.sql',
+    why: '"What did this agent do while holding goal X" filters on it; unstamped calls are invisible to every postmortem.' },
+
+  // ── 697 — agent_plane_measurements (P-015's own instrument).
+  { id: 'agent_plane_measurements.workspace_id', table: 'agent_plane_measurements', name: 'workspace_id', migration: '697-agent-plane-measurements.sql',
+    why: 'Tenant scope. An unfiltered read mixes workspaces into one meaningless series.' },
+  { id: 'agent_plane_measurements.harness_slug', table: 'agent_plane_measurements', name: 'harness_slug', migration: '697-agent-plane-measurements.sql',
+    why: 'The second half of the tenant key.' },
+  { id: 'agent_plane_measurements.measured_at', table: 'agent_plane_measurements', name: 'measured_at', migration: '697-agent-plane-measurements.sql',
+    why: 'When the measurement was taken — the series order.' },
+  { id: 'agent_plane_measurements.window_start', table: 'agent_plane_measurements', name: 'window_start', migration: '697-agent-plane-measurements.sql',
+    why: 'The window described, as opposed to when it was taken. Both exist precisely so a reader comparing a lagging sweep\'s rows does not silently compare wall-clock instead.' },
+  { id: 'agent_plane_measurements.window_end', table: 'agent_plane_measurements', name: 'window_end', migration: '697-agent-plane-measurements.sql',
+    why: 'The other end of that window; unread, the guarantee above is not actually delivered.' },
+  { id: 'agent_plane_measurements.metrics', table: 'agent_plane_measurements', name: 'metrics', migration: '697-agent-plane-measurements.sql',
+    why: 'The composed PlaneMeasurement — the full funnel per metric. The row\'s entire payload.' },
+  { id: 'agent_plane_measurements.interpretable_count', table: 'agent_plane_measurements', name: 'interpretable_count', migration: '697-agent-plane-measurements.sql',
+    why: 'P-003 ratchets on this. It is the denormalised answer to "is the plane measurable yet?", and if nothing reads it the ratchet has nothing to ratchet on.' },
+  { id: 'agent_plane_measurements.metric_count', table: 'agent_plane_measurements', name: 'metric_count', migration: '697-agent-plane-measurements.sql',
+    why: 'The denominator of that ratio. A count of interpretable metrics without a total is not a measurement.' },
+  { id: 'agent_plane_measurements.summary', table: 'agent_plane_measurements', name: 'summary', migration: '697-agent-plane-measurements.sql',
+    why: 'The human-readable headline stored alongside the numbers.' },
+  { id: 'agent_plane_measurements.producer_version', table: 'agent_plane_measurements', name: 'producer_version', migration: '697-agent-plane-measurements.sql',
+    why: 'Bumped when a derivation changes, so a trend is never drawn across a definition change without the reader being able to see it happened. Unread, that is exactly what happens.' },
+];
+
+// ── SOURCE NORMALISATION ────────────────────────────────────────────────────
+
+/**
+ * Blank every comment, preserving byte offsets and line numbers so reported
+ * line:col still points at real source. Closes vacuous pass (2).
+ *
+ * String and template literals are LEFT INTACT: SQL lives in template literals,
+ * so blanking them would blank the very column references this gate counts.
+ */
+export function stripComments(src) {
+  const out = new Array(src.length);
+  let i = 0;
+  const blank = (c) => (c === '\n' ? '\n' : ' ');
+  while (i < src.length) {
+    const c = src[i];
+    const d = src[i + 1];
+    if (c === '/' && d === '/') {
+      while (i < src.length && src[i] !== '\n') out[i] = ' ', i++;
+      continue;
+    }
+    if (c === '/' && d === '*') {
+      out[i] = ' '; out[i + 1] = ' '; i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) out[i] = blank(src[i]), i++;
+      if (i < src.length) { out[i] = ' '; out[i + 1] = ' '; i += 2; }
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      out[i] = c; i++;
+      while (i < src.length && src[i] !== c) {
+        if (src[i] === '\\') { out[i] = src[i]; i++; if (i < src.length) { out[i] = src[i]; i++; } continue; }
+        out[i] = src[i]; i++;
+      }
+      if (i < src.length) { out[i] = c; i++; }
+      continue;
+    }
+    out[i] = c; i++;
+  }
+  return out.join('');
+}
+
+/**
+ * Blank the CONTENTS of single/double-quoted strings, keeping the quotes and the
+ * length. Template literals survive untouched — they carry the SQL.
+ *
+ * Used only for the TS-field pass: a rejection message reading "`materiality`
+ * must name a `path`" is prose that happens to live in a string, and counting it
+ * is vacuous pass (2) wearing a different hat.
+ */
+export function blankQuotedStrings(src) {
+  const out = src.split('');
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "'" || c === '"') {
+      i++;
+      while (i < src.length && src[i] !== c) {
+        if (src[i] === '\\') { out[i] = ' '; i++; if (i < src.length) out[i] = ' '; i++; continue; }
+        if (src[i] !== '\n') out[i] = ' ';
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (c === '`') {
+      i++;
+      while (i < src.length && src[i] !== '`') {
+        if (src[i] === '\\') { i += 2; continue; }
+        i++;
+      }
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return out.join('');
+}
+
+/**
+ * Line ranges (1-based, inclusive) covered by an `interface X { … }` or
+ * `type X = { … }` body. A property inside one is a DECLARATION; the same text
+ * outside one is an object-literal WRITE. Closes vacuous pass (1).
+ *
+ * Brace depth is counted on comment-stripped source, so a `{` in a docblock
+ * cannot desynchronise the range.
+ */
+export function interfaceRanges(src) {
+  const lines = src.split('\n');
+  const ranges = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s*(?:export\s+)?(?:declare\s+)?(?:interface\s+\w|type\s+\w[\w<>,\s]*=)/.test(lines[i])) continue;
+    // Only a BRACED body declares properties; `type X = 'a' | 'b';` declares none.
+    let depth = 0;
+    let opened = false;
+    let j = i;
+    for (; j < lines.length; j++) {
+      for (const ch of lines[j]) {
+        if (ch === '{') { depth++; opened = true; }
+        else if (ch === '}') depth--;
+      }
+      if (opened && depth <= 0) break;
+      // An unbraced type alias terminates at its `;` without ever opening.
+      if (!opened && /;\s*$/.test(lines[j])) break;
+    }
+    if (opened) {
+      ranges.push({ start: i + 1, end: Math.min(j, lines.length - 1) + 1 });
+      i = j;
+    }
+  }
+  return ranges;
+}
+
+const inRanges = (line, ranges) => ranges.some((r) => line >= r.start && line <= r.end);
+
+// ── CLASSIFIERS ─────────────────────────────────────────────────────────────
+
+/**
+ * Classify every occurrence of a TS property `name` in one file's source.
+ * Returns `{ declarations, writes, reads }` of 1-based line numbers.
+ *
+ * The rules, in the order they are tried:
+ *   · `name:` / `name?:` at the start of a line INSIDE an interface body  → declaration
+ *   · `name:` at the start of a line outside one (object-literal property) → write
+ *   · `.name =` with a single `=`                                          → write
+ *   · `.name` anywhere else                                                → read
+ *   · `const { … name … } =`                                               → read
+ */
+export function classifyTsField(source, name) {
+  const src = blankQuotedStrings(stripComments(source));
+  const ranges = interfaceRanges(src);
+  const lines = src.split('\n');
+  const declarations = [];
+  const writes = [];
+  const reads = [];
+
+  const propAtLineStart = new RegExp(`^\\s*(?:readonly\\s+)?${name}\\s*\\??\\s*:`);
+  // `.name` NOT followed by `=` (but `==`/`===`/`=>` are comparisons, not writes).
+  const assign = new RegExp(`\\.\\s*${name}\\s*=(?!=|>)`);
+  const access = new RegExp(`\\.\\s*${name}\\b`);
+  const destructure = new RegExp(`\\{[^{}]*\\b${name}\\b[^{}]*\\}\\s*=[^=]`);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const ln = i + 1;
+    if (propAtLineStart.test(line)) {
+      (inRanges(ln, ranges) ? declarations : writes).push(ln);
+    }
+    if (assign.test(line)) writes.push(ln);
+    else if (access.test(line)) reads.push(ln);
+    else if (destructure.test(line)) reads.push(ln);
+  }
+  return { declarations, writes, reads };
+}
+
+/** SQL clauses that put a column on the WRITE side of a statement. */
+const SQL_WRITE_KEYWORDS = new Set(['insert into', 'set', 'do update set']);
+const SQL_CLAUSE_RE = /\b(insert\s+into|do\s+update\s+set|set|select|where|and|or|from|join|on|returning|values|order\s+by|group\s+by|having|coalesce)\b/gi;
+
+/**
+ * Classify occurrences of a SQL `column` by the nearest preceding SQL clause
+ * keyword — the cheapest thing that is actually *about* SQL rather than about
+ * text. `SET col =` and an `INSERT INTO t (…col…)` column list are writes;
+ * everything else naming the column (a `WHERE` predicate, a select list, a
+ * `RETURNING`, a `.col` on a result row) is a read.
+ *
+ * Occurrences inside an interface body are skipped: `superseded_at: string | null`
+ * in a row type mirrors the column, it does not touch it — vacuous pass (1)
+ * again, in its SQL costume.
+ */
+export function classifySqlColumn(source, column) {
+  const src = stripComments(source);
+  const ranges = interfaceRanges(src);
+  const writes = [];
+  const reads = [];
+
+  const clauses = [];
+  SQL_CLAUSE_RE.lastIndex = 0;
+  for (let m; (m = SQL_CLAUSE_RE.exec(src)); ) {
+    clauses.push({ index: m.index, kw: m[1].toLowerCase().replace(/\s+/g, ' ') });
+  }
+
+  const lineOf = (idx) => src.slice(0, idx).split('\n').length;
+  const occ = new RegExp(`\\b${column}\\b`, 'g');
+  for (let m; (m = occ.exec(src)); ) {
+    const ln = lineOf(m.index);
+    if (inRanges(ln, ranges)) continue;
+    let lo = 0;
+    let hi = clauses.length - 1;
+    let nearest = null;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (clauses[mid].index < m.index) { nearest = clauses[mid]; lo = mid + 1; } else hi = mid - 1;
+    }
+    (nearest && SQL_WRITE_KEYWORDS.has(nearest.kw) ? writes : reads).push(ln);
+  }
+  return { writes, reads };
+}
+
+// ── VERDICTS ────────────────────────────────────────────────────────────────
+
+export const CONSUMPTION_VERDICTS = ['consumed', 'write-only', 'read-only', 'inert', 'not-declared'];
+
+/**
+ * Judge one target. Pure, so every distinction this gate exists to make is
+ * unit-testable against literal source strings with no filesystem.
+ *
+ * ⚠ `not-declared` is neither pass nor fail-for-the-usual-reason — see the
+ * header. It means the ROW is stale, not that the field lost its consumers.
+ */
+export function judgeConsumption({ declarations, writes, reads }) {
+  if (!declarations || declarations <= 0) return 'not-declared';
+  if (writes > 0 && reads > 0) return 'consumed';
+  if (writes > 0) return 'write-only';
+  if (reads > 0) return 'read-only';
+  return 'inert';
+}
+
+/**
+ * Roll judged rows up into an exit decision.
+ *
+ * A row carrying `knownUnbuilt` is REPORTED but does not fail the build: the gap
+ * is already filed and owned, and re-failing for a known-open bug is how a gate
+ * becomes noise the fleet routes around (WI-6464 nearly died that way). Deleting
+ * the row to green the gate is the one response that is never acceptable — the
+ * field stops being watched at exactly the moment it is known to be broken.
+ */
+export function rollupSweep(rows) {
+  const bad = rows.filter((r) => r.verdict !== 'consumed' && r.verdict !== 'not-declared');
+  return {
+    consumed: rows.filter((r) => r.verdict === 'consumed').length,
+    knownUnbuilt: bad.filter((r) => r.knownUnbuilt).length,
+    stale: rows.filter((r) => r.verdict === 'not-declared'),
+    failures: bad.filter((r) => !r.knownUnbuilt),
+  };
+}
+
+// ── TREE WALK ───────────────────────────────────────────────────────────────
+
+export function* walkSource(dir, rel = '') {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (e.name.startsWith('.') && e.name !== '.') continue;
+    const abs = path.join(dir, e.name);
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      yield* walkSource(abs, r);
+    } else if (e.isFile() && SCAN_EXT.has(path.extname(e.name))) {
+      if (isTestFile(r)) continue;
+      yield { abs, rel: r };
+    }
+  }
+}
+
+const ROOTS = ['packages', 'libs', 'apps', 'scripts', 'bin'];
+
+async function main() {
+  const files = [];
+  for (const root of ROOTS) {
+    const abs = path.join(REPO_ROOT, root);
+    try { if (!statSync(abs).isDirectory()) continue; } catch { continue; }
+    for (const f of walkSource(abs, root)) files.push(f);
+  }
+
+  const rows = [];
+
+  for (const target of DECLARED_FIELDS) {
+    const acc = { declarations: [], writes: [], reads: [] };
+    for (const f of files) {
+      let src;
+      try { src = readFileSync(f.abs, 'utf8'); } catch { continue; }
+      if (!src.includes(target.name)) continue;
+      const c = classifyTsField(src, target.name);
+      // Vacuous pass (3): the declaring module never counts as its own consumer.
+      const isDeclaring = f.rel === target.declaredIn;
+      for (const ln of c.declarations) acc.declarations.push(`${f.rel}:${ln}`);
+      if (isDeclaring) continue;
+      for (const ln of c.writes) acc.writes.push(`${f.rel}:${ln}`);
+      for (const ln of c.reads) acc.reads.push(`${f.rel}:${ln}`);
+    }
+    rows.push({
+      ...target,
+      kind: 'field',
+      sites: acc,
+      verdict: judgeConsumption({ declarations: acc.declarations.length, writes: acc.writes.length, reads: acc.reads.length }),
+    });
+  }
+
+  for (const target of DECLARED_COLUMNS) {
+    const acc = { writes: [], reads: [] };
+    for (const f of files) {
+      let src;
+      try { src = readFileSync(f.abs, 'utf8'); } catch { continue; }
+      // Scope: only a file that names the TABLE can be touching its columns.
+      if (!src.includes(target.table) || !src.includes(target.name)) continue;
+      const c = classifySqlColumn(src, target.name);
+      for (const ln of c.writes) acc.writes.push(`${f.rel}:${ln}`);
+      for (const ln of c.reads) acc.reads.push(`${f.rel}:${ln}`);
+    }
+    // A column's DECLARATION is its migration — the static analogue of `no-data`.
+    let declared = 0;
+    try {
+      const mig = readFileSync(path.join(REPO_ROOT, 'libs/papercusp/libs/db/sql', target.migration), 'utf8');
+      declared = new RegExp(`\\b${target.name}\\b`).test(mig) ? 1 : 0;
+    } catch { declared = 0; }
+    rows.push({
+      ...target,
+      kind: 'column',
+      sites: { declarations: declared ? [target.migration] : [], ...acc },
+      verdict: judgeConsumption({ declarations: declared, writes: acc.writes.length, reads: acc.reads.length }),
+    });
+  }
+
+  const roll = rollupSweep(rows);
+  const mark = { consumed: '✓', 'write-only': '✗', 'read-only': '✗', inert: '✗', 'not-declared': '?' };
+
+  console.log('\nDECLARED-VS-CONSUMED SWEEP — agent-state plane (P-002)\n');
+  console.log(`  scanned ${files.length} non-test source files under ${ROOTS.join(', ')}\n`);
+  for (const r of rows) {
+    const w = r.sites.writes.length;
+    const rd = r.sites.reads.length;
+    console.log(`  ${mark[r.verdict]} ${r.id.padEnd(44)} ${String(w).padStart(3)}W ${String(rd).padStart(4)}R   ${r.verdict}`);
+    if (r.verdict === 'consumed') continue;
+    if (r.verdict === 'not-declared') {
+      console.log(`      NOT DECLARED — this row matches no declaration site. The field was renamed or`);
+      console.log(`      removed, so this gate has been watching nothing. Fix the ROW, not the code.`);
+      continue;
+    }
+    console.log(`      writer:  ${r.producer ?? 'an INSERT/UPDATE naming the column'}${w ? ` — ${r.sites.writes.slice(0, 3).join(', ')}` : ' — NONE FOUND'}`);
+    console.log(`      reader:  ${r.consumer ?? 'a SELECT/WHERE naming the column'}${rd ? ` — ${r.sites.reads.slice(0, 3).join(', ')}` : ' — NONE FOUND'}`);
+    console.log(`      breaks:  ${r.why}`);
+    if (r.knownUnbuilt) console.log(`      KNOWN:   ${r.knownUnbuilt} — reported, not failing the build`);
+  }
+
+  console.log(
+    `\n  ${roll.consumed} consumed · ${roll.failures.length} UNCONSUMED · ${roll.knownUnbuilt} known-unbuilt · ${roll.stale.length} stale-row\n`,
+  );
+
+  if (roll.stale.length > 0) {
+    console.error('✗ declared-vs-consumed: a row in this gate matches no declaration — it is watching nothing.\n');
+    for (const f of roll.stale) console.error(`    ${f.id}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (roll.failures.length > 0) {
+    console.error('✗ declared-vs-consumed: a declared field/column is missing a live reader or writer.\n');
+    for (const f of roll.failures) console.error(`    ${f.id} — ${f.verdict}`);
+    console.error(
+      '\n  This is the WI-6444 defect class: a field that is declared, validated and\n' +
+        '  documented, with one end of the wire never connected. Either wire the missing\n' +
+        '  end, or file the gap and add its ref as `knownUnbuilt` so the sweep reports it\n' +
+        '  instead of failing — but do NOT delete the row to green the gate.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  console.log('✓ every declared field/column of this plane has both a live writer and a live reader.\n');
+}
+
+// Only run when invoked directly — the predicates above are imported by the test.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error('declared-vs-consumed sweep failed to run:', err?.message ?? err);
+    process.exitCode = 1;
+  });
+}
