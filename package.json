@@ -86,7 +86,8 @@
     "libs/generic/resumable-download",
     "libs/generic/tauri-verify",
     "libs/generic/gui-readiness",
-    "libs/generic/release-profile"
+    "libs/generic/release-profile",
+    "libs/generic/image-blankness"
   ],
   "scripts": {
     "preinstall": "npx --yes only-allow npm",

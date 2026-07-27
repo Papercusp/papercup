@@ -426,6 +426,10 @@ export function citesScreenshotArtifact(text: string | null | undefined): boolea
  * Returns `true` (nothing to enforce) for every OTHER `verifiedHow` value, including
  * absent — this gate is scoped narrowly to the one enum member making the specific
  * factual claim "I drove the running UI and looked at it".
+ *
+ * This is the TEXT-level half of the gate and is deliberately kept as-is: it asks only
+ * whether an artifact was cited at all. Whether that artifact is REAL is
+ * {@link verifyLiveDroveUiArtifacts}, which is what `work_items:complete` calls.
  */
 export function isBackedLiveDroveUiClaim(evidence: CompletionVerificationEvidence | null | undefined): boolean {
   if (!evidence || evidence.verifiedHow !== 'live-drove-ui') return true;
@@ -433,6 +437,186 @@ export function isBackedLiveDroveUiClaim(evidence: CompletionVerificationEvidenc
   if (citesScreenshotArtifact(evidence.testResult)) return true;
   if (evidence.filesChanged?.some((f) => citesScreenshotArtifact(f))) return true;
   return false;
+}
+
+/**
+ * EI-18797014705631713 — the hole the text-level gate above left open, and the reason
+ * it is not enough on its own.
+ *
+ * `tauri-agent-tools screenshot` writes a valid PNG, prints its path and exits 0 even
+ * when the window it grabbed never painted — a known trap on this box, which
+ * `verify-tauri-headless.sh` already warns about at launch ("no real GPU GL detected —
+ * screenshots will be blank"). So the strongest-looking evidence type is the easiest
+ * one to produce accidentally: an agent runs the capture, never opens the file, cites
+ * the path, and the close is ACCEPTED having verified no pixels whatsoever. That is
+ * precisely the failure WI-5891 was built to stop, now carrying a paper trail that
+ * looks rigorous. The reporter only escaped it by opening the image by hand; nothing
+ * required that. Scanning this host found 4 such captures already on disk — including
+ * a 91KB, 1280x800 file (`/tmp/wi6352-attached-to-pill-resolves.png`) that is nothing
+ * but a dark gradient, which is also why file SIZE cannot stand in for this check.
+ *
+ * Two citation kinds, judged differently — the distinction the reporter drew, and the
+ * right one:
+ *
+ *  - An ASSERTION-BEARING invocation (`tauri-agent-tools check --eval …`) states a
+ *    proposition and exits non-zero when it is false. It is falsifiable on its face, so
+ *    it needs no artifact on disk. This is the cheaper AND stronger path, and the
+ *    rejection text points at it.
+ *  - A bare IMAGE PATH asserts nothing. `screenshot` and `capture` both fall here —
+ *    neither can fail — so the file itself has to be produced and inspected.
+ *
+ * Fail-open everywhere the evidence is merely unclear: an unreadable file, a format the
+ * detector does not decode, a bare filename with no directory that resolves nowhere.
+ * A close is refused ONLY when every cited artifact is confidently bad — decoded and
+ * empty, or a real path that is not on disk. The cost of a wrong rejection is a blocked
+ * close on work that was genuinely done, so the burden sits on this function to be sure.
+ */
+export type CitedArtifactStatus =
+  /** Decoded, carries rendered pixels — real evidence. */
+  | 'content'
+  /** Decoded, carries nothing — the window did not paint. */
+  | 'blank'
+  /** A path with a directory in it that is not on disk. */
+  | 'missing'
+  /** A bare filename that resolved nowhere — location unknowable, not a confident miss. */
+  | 'unresolvable'
+  /** On disk but unreadable, oversized, or not a format the detector decodes. */
+  | 'unjudged';
+
+export interface CitedArtifact {
+  /** The path exactly as it appeared in the completion text. */
+  cited: string;
+  /** Absolute path it resolved to, when one could be formed. */
+  resolved: string | null;
+  status: CitedArtifactStatus;
+  /** Human-readable detail — the blankness reason, or why it could not be judged. */
+  detail?: string;
+}
+
+export interface LiveDroveUiArtifactVerdict {
+  /** May this close land? */
+  ok: boolean;
+  /** What carried it (or would have): a falsifiable assertion, or a real image. */
+  basis: 'not-applicable' | 'assertion' | 'image' | 'none';
+  /** Populated only when `ok` is false — the rejection text, ready to show. */
+  reason?: string;
+  artifacts: CitedArtifact[];
+}
+
+/** Anything past this is not worth reading into memory to judge blankness. */
+const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * `tauri-agent-tools check` is the only subcommand that ASSERTS something — it takes an
+ * `--eval`/`--text` proposition and exits non-zero when it does not hold. `screenshot`
+ * and `capture` produce output and always succeed, so citing them proves only that a
+ * command ran.
+ */
+const ASSERTION_BEARING_PATTERN = /\btauri-agent-tools\b[^\n]{0,80}\bcheck\b/i;
+
+const IMAGE_PATH_PATTERN = /[\w./~-]*[\w~-]\.(?:png|jpe?g|webp|gif)\b/gi;
+
+/** Every image path cited anywhere in the evidence, de-duplicated, order preserved. */
+export function citedImagePaths(evidence: CompletionVerificationEvidence | null | undefined): string[] {
+  if (!evidence) return [];
+  const found = new Set<string>();
+  const sources = [evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])];
+  for (const source of sources) {
+    if (!source) continue;
+    for (const match of source.matchAll(IMAGE_PATH_PATTERN)) found.add(match[0]);
+  }
+  return [...found];
+}
+
+/** Does the evidence cite an invocation that could have failed? */
+export function citesAssertionBearingRun(evidence: CompletionVerificationEvidence | null | undefined): boolean {
+  if (!evidence) return false;
+  return [evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])].some(
+    (text) => !!text && ASSERTION_BEARING_PATTERN.test(text),
+  );
+}
+
+async function inspectCitedArtifact(cited: string, cwd: string): Promise<CitedArtifact> {
+  const hasDirectory = cited.includes('/');
+  const resolved = isAbsolute(cited) ? cited : hasDirectory ? resolvePath(cwd, cited) : null;
+  if (!resolved) {
+    return { cited, resolved: null, status: 'unresolvable', detail: 'bare filename — no directory to resolve against' };
+  }
+
+  let size: number;
+  try {
+    const info = await stat(resolved);
+    if (!info.isFile()) return { cited, resolved, status: 'unjudged', detail: 'not a regular file' };
+    size = info.size;
+  } catch {
+    return { cited, resolved, status: 'missing', detail: 'no such file on this host' };
+  }
+
+  if (size === 0) {
+    return { cited, resolved, status: 'blank', detail: 'the capture wrote an empty (0-byte) file' };
+  }
+  if (size > MAX_ARTIFACT_BYTES) {
+    return { cited, resolved, status: 'unjudged', detail: `too large to inspect (${size} bytes)` };
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(resolved);
+  } catch (e) {
+    return { cited, resolved, status: 'unjudged', detail: `unreadable: ${(e as Error).message}` };
+  }
+
+  const report = analyzeImageBlankness(new Uint8Array(bytes));
+  if (report.verdict === 'blank') return { cited, resolved, status: 'blank', detail: report.reason };
+  if (report.verdict === 'has-content') return { cited, resolved, status: 'content', detail: report.reason };
+  return { cited, resolved, status: 'unjudged', detail: report.reason };
+}
+
+/**
+ * The artifact half of the `live-drove-ui` gate — see the block comment above for what
+ * it refuses and, more importantly, what it deliberately lets through.
+ */
+export async function verifyLiveDroveUiArtifacts(
+  evidence: CompletionVerificationEvidence | null | undefined,
+  opts: { cwd?: string } = {},
+): Promise<LiveDroveUiArtifactVerdict> {
+  if (!evidence || evidence.verifiedHow !== 'live-drove-ui') {
+    return { ok: true, basis: 'not-applicable', artifacts: [] };
+  }
+  // A falsifiable run stands on its own: it had to assert something to exit 0.
+  if (citesAssertionBearingRun(evidence)) return { ok: true, basis: 'assertion', artifacts: [] };
+
+  const paths = citedImagePaths(evidence);
+  if (paths.length === 0) {
+    // No artifact of either kind. isBackedLiveDroveUiClaim already covers this case;
+    // reported here too so one call answers the whole question.
+    return { ok: false, basis: 'none', artifacts: [], reason: 'cites no artifact of any kind' };
+  }
+
+  const cwd = opts.cwd ?? process.cwd();
+  const artifacts = await Promise.all(paths.map((p) => inspectCitedArtifact(p, cwd)));
+
+  // Any single artifact that is real (or that we cannot confidently condemn) carries it.
+  if (artifacts.some((a) => a.status !== 'blank' && a.status !== 'missing')) {
+    return { ok: true, basis: 'image', artifacts };
+  }
+
+  const blank = artifacts.filter((a) => a.status === 'blank');
+  const missing = artifacts.filter((a) => a.status === 'missing');
+  const parts: string[] = [];
+  if (blank.length > 0) {
+    parts.push(
+      `${blank.length === 1 ? 'the cited capture is BLANK' : `all ${blank.length} cited captures are BLANK`}: ` +
+        blank.map((a) => `${a.cited} — ${a.detail}`).join('; '),
+    );
+  }
+  if (missing.length > 0) {
+    parts.push(
+      `${missing.length === 1 ? 'the cited artifact does not exist' : `none of the ${missing.length} cited artifacts exist`}: ` +
+        missing.map((a) => a.cited).join(', '),
+    );
+  }
+  return { ok: false, basis: 'image', artifacts, reason: parts.join(' — and ') };
 }
 
 /**

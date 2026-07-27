@@ -35,9 +35,21 @@ import type { HiveMemberRecord } from '../../hive-membership-store';
 // *ForLocalPot wrappers are correct for both entry points; passing a local handle straight
 // through would read an empty roster (no devices wrapped) and an empty revocation set (a
 // revoked device silently re-granted the current epoch key, the C-001 failure).
+//
+// WI-6311 completes that: the MEMBERSHIP half above was resolved, but the EPOCH-KEY reads on
+// the same lines were not — and `pot_epoch_keys` is a hiveScoped projection, i.e. written under
+// the federated scope too. Because both reconcile paths COMPARE the member set against the
+// epoch-key set, the half-fix was worse than either extreme: on a divergent joiner the members
+// resolve (populated) while the epoch reads do not (empty), so the "does every live device
+// already hold the current key" perf guard can never be satisfied and the O(E·M) crypto it
+// exists to prevent runs on every apply, forever, for a hive that is already correct.
+// Both reconcile paths now resolve for the epoch reads while keeping the LOCAL handle for the
+// *ForLocalPot member readers, which want it. `grantEpochKeysToMembers` deliberately does NOT
+// resolve — see the note at its getCurrentEpoch call.
 import {
   listHiveMembersForLocalPot,
   loadRevokedHivePubkeysForLocalPot,
+  resolveFederatedPotScope,
 } from '../../federated-pot-scope';
 import { loadHivePubkey } from '../../identity/hive-keypair';
 
@@ -251,6 +263,11 @@ export async function grantEpochKeysToMembers(
   if (!author) return { applied: false, reason: 'no-author' };
 
   const crypto = await resolveCrypto(true);
+  // ⚠ SCOPE (WI-6311): deliberately NOT resolved, unlike the two reconcile paths below. The
+  // owner self-gate above already returned `no-author` on every box that is not the Pot owner,
+  // and on the OWNER canonical == local by construction — so this line is unreachable with a
+  // divergent handle. Do not "fix" it: a resolve here is a guaranteed no-op that adds a
+  // registry read to the hot per-member grant path.
   const current = await getCurrentEpoch(opts.workspaceId, opts.potHomeSlug, opts.sql);
 
   // Grant EVERY epoch key [0..current] — content is encrypted-once per epoch + never
@@ -396,9 +413,18 @@ export async function reconcileEpochKeysForCurrentMembers(
   if (!opts.refederate && !opts.onlyDevices && pubkeys.length > 0) {
     const getCurrentEpoch = seams.getCurrentEpoch ?? getHiveEpoch;
     const loadEpochKeyDevices = seams.loadEpochKeyDevices ?? defaultLoadEpochKeyDevices;
-    const currentEpoch = await getCurrentEpoch(opts.workspaceId, opts.potHomeSlug, opts.sql);
+    // ⚠ SCOPE (WI-6311): `pubkeys` came from loadMembers = listHiveMembersForLocalPot, which
+    // RESOLVES the federated scope internally. The epoch reads below do not — and the guard
+    // COMPARES the two. On a divergent joiner that mismatch is not a no-op: `have` reads empty
+    // while `pubkeys` is populated, so `every` is false, the guard never fires, and the O(E·M)
+    // crypto it exists to prevent runs on EVERY apply, forever, for a hive that is actually fine.
+    // Resolve for the epoch-keyed reads; keep opts.potHomeSlug (local) for the member reader.
+    const potScope = await resolveFederatedPotScope(opts.workspaceId, opts.potHomeSlug, {
+      sql: opts.sql,
+    });
+    const currentEpoch = await getCurrentEpoch(opts.workspaceId, potScope, opts.sql);
     const have = new Set(
-      await loadEpochKeyDevices(opts.workspaceId, opts.potHomeSlug, currentEpoch, opts.sql),
+      await loadEpochKeyDevices(opts.workspaceId, potScope, currentEpoch, opts.sql),
     );
     if (pubkeys.every((pk) => have.has(pk))) {
       return { applied: false, reason: 'no-gap' };
@@ -470,7 +496,18 @@ export async function reconcileOwnedHiveEpochKeys(
   let gapsFound = 0;
   for (const { workspaceId, potHomeSlug } of hives) {
     try {
-      const current = await getCurrentEpoch(workspaceId, potHomeSlug, opts.sql);
+      // ⚠ SCOPE (WI-6311): the enumeration above selects `pots.pot_home_slug` — the LOCAL
+      // handle. `loadMembers` (listHiveMembersForLocalPot) WANTS that and resolves internally,
+      // but pot_epoch_keys is a hiveScoped projection written under the FEDERATED scope, so the
+      // epoch reads need the resolved value. Keeping both, named apart, because this loop
+      // compares one against the other (see the gap check below).
+      //
+      // Deliberately resolved per row rather than COALESCE(canonical_pot_home_slug, …) in the
+      // SQL: the column is only the SECOND source of truth. resolveFederatedPotScope consults
+      // canonicalHiveHomeSlug FIRST — the same function the WRITE side resolves through — so it
+      // agrees with the writers by construction, even mid-reconcile.
+      const potScope = await resolveFederatedPotScope(workspaceId, potHomeSlug, { sql: opts.sql });
+      const current = await getCurrentEpoch(workspaceId, potScope, opts.sql);
       const members = await loadMembers(workspaceId, potHomeSlug, opts.sql);
       const revoked = new Set<string>();
       for (const m of members) for (const pk of m.revokedPubkeys ?? []) revoked.add(pk);
@@ -482,7 +519,7 @@ export async function reconcileOwnedHiveEpochKeys(
         }
       }
       if (liveDevices.length === 0) continue;
-      const have = new Set(await loadEpochKeyDevices(workspaceId, potHomeSlug, current, opts.sql));
+      const have = new Set(await loadEpochKeyDevices(workspaceId, potScope, current, opts.sql));
       const hasGap = liveDevices.some((pk) => !have.has(pk));
       if (!hasGap) continue; // steady state — NO crypto (perf guard)
       gapsFound += 1;

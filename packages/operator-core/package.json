@@ -33,6 +33,7 @@
     "@papercusp/event-reaction": "*",
     "@papercusp/failure-detector": "*",
     "@papercusp/flags": "*",
+    "@papercusp/image-blankness": "*",
     "@papercusp/kokoro-tts": "*",
     "@papercusp/locks-core": "*",
     "@papercusp/memory": "*",

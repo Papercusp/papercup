@@ -28,7 +28,13 @@
  */
 
 import { z } from 'zod';
-import { assumptionsArg, hasAssumptionDeclaration, ASSUMPTIONS_REQUIRED_MESSAGE } from './_assumptions';
+import {
+  assumptionsArg,
+  hasAssumptionDeclaration,
+  resolveDeclaredAssumptions,
+  ASSUMPTIONS_REQUIRED_MESSAGE,
+} from './_assumptions';
+import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
@@ -46,7 +52,7 @@ import {
   type TerminalCompletionConflict,
 } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
-import { isBackedLiveDroveUiClaim } from '../../completion-audit';
+import { isBackedLiveDroveUiClaim, verifyLiveDroveUiArtifacts } from '../../completion-audit';
 import { authorityForCompletion, countsTowardBurnDown } from '../../work-item-completion-authority';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -465,13 +471,60 @@ async function completeOne(
   const completionAuthority = authorityForCompletion(completionEvidenceForGate);
   const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceForGate);
 
-  if (unbackedLiveDroveUiClose) {
+  // EI-18797014705631713: citing an artifact is not the same as HAVING one. The text
+  // check above proves a path was written down; this reads the file. A screenshot of a
+  // window that never painted is a valid PNG at a valid path proving nothing, and it is
+  // produced by the same command as a real one — so the strongest-looking evidence type
+  // was the easiest to fake by accident. Deliberately fail-open: it refuses only when
+  // every cited artifact is confidently bad (see verifyLiveDroveUiArtifacts).
+  const artifactVerdict = closeIntentRequested
+    ? await verifyLiveDroveUiArtifacts(completionEvidenceForGate)
+    : null;
+  const falseLiveDroveUiClose = !unbackedLiveDroveUiClose && artifactVerdict?.ok === false;
+
+  // P-008 (d) / D-050 / D-079: resolve the declared assumptions BEFORE the state
+  // write, so a dangling reference cannot land a close.
+  //
+  // ⚠ Deliberately NOT a throw, unlike work_items:set_state. A throw here would
+  // discard the completion narrative the caller wrote, which is exactly what this
+  // file's record-and-warn discipline (EI-24: "the narrative is never lost")
+  // forbids. The precedent is `unbackedLiveDroveUiClose` immediately below — the
+  // same shape of failure, an unbacked claim — which blocks the CLOSE via
+  // `stateError` and still returns the record. So a dangling assumption refuses
+  // the commitment (the item stays claimable) without costing the caller the
+  // write-up. `set_state` has no narrative to lose, so it throws.
+  let resolvedAssumptions: StoredAssumptionDeclaration | undefined;
+  let assumptionsError: string | undefined;
+  try {
+    resolvedAssumptions = await resolveDeclaredAssumptions({
+      declared: it.assumptions,
+      workItemId: it.id,
+      ownerId: ident.ownerId,
+      harnessSlug: it.harness,
+    });
+  } catch (e) {
+    assumptionsError = e instanceof Error ? e.message : String(e);
+  }
+
+  if (assumptionsError) {
+    stateError = `REJECTED — ${assumptionsError}`;
+  } else if (unbackedLiveDroveUiClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
       'artifact (a screenshot/capture image path, or a recorded tauri-agent-tools capture/screenshot/check ' +
       "invocation) in testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past " +
       "its own author: unit tests verify structure, not pixels. Either cite the artifact, or honestly set " +
       "verifiedHow to 'unit'/'manual'/'integration' and re-send.";
+  } else if (falseLiveDroveUiClose) {
+    stateError =
+      `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} and cites an artifact, ` +
+      `but the artifact is not evidence: ${artifactVerdict?.reason}. A capture of a window that never painted ` +
+      'exits 0 and writes a normal-looking file, so citing it proves a command ran, not that any UI was seen ' +
+      '(scripts/verify-tauri-headless.sh warns about exactly this when the box has no real GPU GL). ' +
+      'Strongest fix, and cheaper than another screenshot: cite a `tauri-agent-tools check --pid <pid> --eval ' +
+      '"<assertion>" --json` run — it exits non-zero when the assertion is false, so it is falsifiable and ' +
+      'records WHAT you asserted. Otherwise re-capture, OPEN the image to confirm it rendered, and cite that ' +
+      "path — or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send.";
   } else if (effectiveState) {
     try {
       const res = await setWorkItemStateWithAliasInfo(it.id, effectiveState, {
@@ -481,6 +534,9 @@ async function completeOne(
         // it is persisted on the completion record itself, which is where a reader
         // should look for the narrative. What lands on the row is the judgement.
         completionEvidence: completionEvidenceForGate,
+        // P-008 (d): the resolved declaration, persisted under
+        // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
+        assumptions: resolvedAssumptions,
         completionAuthority,
         onTerminalConflict: (info) => {
           terminalConflict = info;
