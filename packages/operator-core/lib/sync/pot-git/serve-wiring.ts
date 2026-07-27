@@ -512,6 +512,50 @@ function shouldLogRefusal(key: string, now: number): { log: boolean; suppressed:
   return { log: true, suppressed };
 }
 
+/**
+ * EI-18765930091826096 RECURRENCE GUARD — the detector whose absence let a
+ * session leak run invisibly for days.
+ *
+ * That incident was not only a lifecycle bug; it was a MONITORING gap. Sessions
+ * live in per-(muxer, topic) private maps with no observable surface — the
+ * `_testing.sessionCounts` seam below exists only for tests — so on a live peer
+ * the leak was unreadable. It presented as "the channel degrades until it can
+ * serve nothing, and only a restart clears it", and the only signals available
+ * were indirect (RSS growth, zombie `git upload-pack` processes). Root-causing
+ * it took days precisely because the decisive number could not be read.
+ *
+ * WHAT HEALTHY LOOKS LIKE, so the threshold is not arbitrary: a session is
+ * per-fetch and is released when the fetch settles, so the live count sits at
+ * 0-1 and returns to 0. A cold-join deepen ladder (`bootstrap.ts`
+ * INITIAL_DEEPEN_COMMITS 64 -> MAX_DEEPEN_COMMITS 8192) runs its rungs
+ * SEQUENTIALLY, so even a full ladder never holds many at once. A leak, by
+ * contrast, is MONOTONIC — abandoned sessions are never collected — so it
+ * crosses any fixed threshold quickly and keeps going. The gap between "0-1
+ * normally" and "grows without bound" is what makes a single fixed threshold
+ * reliable here rather than a tuning problem.
+ *
+ * Volume is controlled the same way the refusal log is (see `potGitLog`): this
+ * is release-grade observability, NOT an env-gated debug trace — a leak that
+ * only reports when someone already suspected it and set a flag is no detector
+ * at all. It is silent in healthy operation, and a sustained leak reports once
+ * per NEW high-water rather than once per session, so it can never itself
+ * become the storm.
+ */
+const SESSION_LEAK_WARN_AT = 8;
+
+function noteSessionHighWater(state: ChannelState): void {
+  const client = state.clientSessions.size;
+  const server = state.serverSessions.size;
+  const total = client + server;
+  if (total < SESSION_LEAK_WARN_AT || total <= state.sessionWarnHighWater) return;
+  state.sessionWarnHighWater = total;
+  potGitLog(
+    'warn',
+    `[pot-git] sessions HIGH client=${client} server=${server} peer=${peerTag(state)} ` +
+      `(>= ${SESSION_LEAK_WARN_AT}; sessions are released per-fetch, so a climbing count is a LEAK — see EI-18765930091826096)`,
+  );
+}
+
 /** Short, log-safe tag for the peer that opened this serve session. Uses the
  *  SIGNATURE-VERIFIED device identity where one exists (never the wire frame's
  *  self-reported fields) so the tag can be trusted in a forensic read. */
@@ -630,6 +674,7 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       },
     );
     state.serverSessions.set(v.id, duplex);
+    noteSessionHighWater(state);
     try {
       const res = await serveUploadPack(repoPath, duplex, { timeoutMs: cfg.timeoutMs, scopeServeGrant });
       // WI-6184: the one line that says a real fetch was served, and how it
@@ -904,6 +949,7 @@ export async function openHiveGitFetchDuplex(
   duplex.once('close', () => {
     if (state.clientSessions.get(id) === duplex) state.clientSessions.delete(id);
   });
+  noteSessionHighWater(state);
   try {
     messages.req.send({ id, repoKey: req.repoKey, peerGithubUserId: req.peerGithubUserId ?? 0 });
   } catch (e) {
@@ -934,4 +980,12 @@ export const _testing = {
   /** The framed per-fetch duplex, so `pushChunk`'s fail-closed drop is directly
    *  assertable rather than only reachable through a live two-peer fetch. */
   FrameDuplex,
+  /** The leak DETECTOR (`noteSessionHighWater`) and a bare state to drive it.
+   *  Exposed because `potGitLog` is a no-op under vitest (the repo runs
+   *  `vitest-fail-on-console`), so the warn itself is unobservable in a test —
+   *  the high-water bookkeeping is set on the SAME branch as the warn, so
+   *  asserting it is asserting that the detector fired. */
+  SESSION_LEAK_WARN_AT,
+  noteSessionHighWater,
+  newChannelState: newState,
 };

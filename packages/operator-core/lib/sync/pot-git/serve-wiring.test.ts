@@ -1,0 +1,96 @@
+/**
+ * serve-wiring.test.ts — unit coverage for EI-18765930091826096's session-leak
+ * DETECTOR (`noteSessionHighWater`).
+ *
+ * WHY A UNIT SIBLING rather than more cases in serve-wiring.integration.test.ts:
+ * the detector is pure decision logic over two map sizes, and the property that
+ * matters most — that it stays SILENT in healthy operation and reports ONCE per
+ * new high-water rather than per session — is about what it does NOT emit. That
+ * is awkward to pin down through a real socket + real `git upload-pack`, where
+ * session counts are timing-dependent; here every count is exact and chosen.
+ *
+ * WHY THESE ASSERT ON `sessionWarnHighWater` AND NOT ON THE LOG LINE: `potGitLog`
+ * is a deliberate no-op under vitest (the repo runs `vitest-fail-on-console`, so
+ * an unconditional diagnostic would fail every suite touching this path), which
+ * makes the warn itself unobservable in-process. The high-water is written on
+ * the SAME branch that emits the warn, so asserting the bookkeeping IS asserting
+ * the detector fired. Confirmed non-vacuous: stubbing `noteSessionHighWater` to a
+ * no-op fails the "fires" and "new high-water" cases below.
+ */
+import { describe, it, expect } from 'vitest';
+import { _testing } from './serve-wiring';
+
+const { SESSION_LEAK_WARN_AT, noteSessionHighWater, newChannelState } = _testing;
+
+/** The detector reads only `.size` off the two session maps, so a plain filler
+ *  object per slot is sufficient and keeps these cases free of socket plumbing. */
+function withSessions(client: number, server: number): ReturnType<typeof newChannelState> {
+  const state = newChannelState();
+  for (let i = 0; i < client; i++) state.clientSessions.set(i, {} as never);
+  for (let i = 0; i < server; i++) state.serverSessions.set(i, {} as never);
+  return state;
+}
+
+describe('pot-git session-leak detector (EI-18765930091826096 recurrence guard)', () => {
+  it('the threshold sits above healthy operation (sessions are per-fetch, so healthy is 0-1)', () => {
+    // Guards the constant itself: a threshold at 0/1 would fire on every normal
+    // fetch and train readers to ignore the line — the failure mode that makes a
+    // detector worse than none.
+    expect(SESSION_LEAK_WARN_AT).toBeGreaterThan(1);
+  });
+
+  it('stays SILENT below the threshold — a healthy peer never emits this line', () => {
+    const state = withSessions(SESSION_LEAK_WARN_AT - 1, 0);
+    noteSessionHighWater(state);
+    expect(state.sessionWarnHighWater).toBe(0);
+  });
+
+  it('fires once the live session total reaches the threshold', () => {
+    const state = withSessions(SESSION_LEAK_WARN_AT, 0);
+    noteSessionHighWater(state);
+    expect(state.sessionWarnHighWater).toBe(SESSION_LEAK_WARN_AT);
+  });
+
+  it('counts BOTH directions — a leak on the serving side is just as real', () => {
+    // Splitting the same total across client+server must still trip it: the
+    // incident leaked client sessions, but abandoned rungs also strand the
+    // serving side's `git upload-pack`.
+    const client = Math.floor(SESSION_LEAK_WARN_AT / 2);
+    const state = withSessions(client, SESSION_LEAK_WARN_AT - client);
+    noteSessionHighWater(state);
+    expect(state.sessionWarnHighWater).toBe(SESSION_LEAK_WARN_AT);
+  });
+
+  it('does NOT re-report at the same level — a sustained leak cannot become the storm', () => {
+    const state = withSessions(SESSION_LEAK_WARN_AT, 0);
+    noteSessionHighWater(state);
+    const afterFirst = state.sessionWarnHighWater;
+    // Re-registering at an unchanged count (the shape a steady leak produces
+    // while it plateaus) must be a no-op.
+    noteSessionHighWater(state);
+    noteSessionHighWater(state);
+    expect(state.sessionWarnHighWater).toBe(afterFirst);
+  });
+
+  it('reports again only on a NEW high-water — which is the signal that it is still climbing', () => {
+    const state = withSessions(SESSION_LEAK_WARN_AT, 0);
+    noteSessionHighWater(state);
+    state.clientSessions.set(999, {} as never);
+    noteSessionHighWater(state);
+    expect(state.sessionWarnHighWater).toBe(SESSION_LEAK_WARN_AT + 1);
+  });
+
+  it('stays quiet when sessions DRAIN and re-climb below the previous peak (the fix working)', () => {
+    // This is the post-fix shape: counts rise under load and fall back as fetches
+    // settle. Re-reporting every oscillation would make a HEALTHY peer noisy and
+    // bury a real climb.
+    const state = withSessions(SESSION_LEAK_WARN_AT + 4, 0);
+    noteSessionHighWater(state);
+    const peak = state.sessionWarnHighWater;
+    state.clientSessions.clear();
+    noteSessionHighWater(state);
+    for (let i = 0; i < SESSION_LEAK_WARN_AT + 1; i++) state.clientSessions.set(i, {} as never);
+    noteSessionHighWater(state);
+    expect(state.sessionWarnHighWater).toBe(peak);
+  });
+});
