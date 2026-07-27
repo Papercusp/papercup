@@ -266,7 +266,10 @@ export const BASELINE = new Set([
   'dev:dogfood_substrate_status',
   'dev:listening_ports',
   'dev:pg_health',
-  'dev:pipeline_position',
+  // dev:pipeline_position — RETIRED FROM THE BASELINE 2026-07-27 (P-020, the first
+  // shrink). It now declares `@cell-lens git.pipelinePosition`, so the gate accepts it
+  // on the intended path and it no longer needs grandfathering. Its verdict survives in
+  // VERDICTS with `adopted` set. 38 -> 37.
   'dev:processes',
   'dev:rate_governor_status',
   'dev:service_health',
@@ -362,7 +365,8 @@ export const VERDICTS = new Map([
 
   // ── Cluster C — "is my code live?" (already the 5 registered cells)
   ['dev:pipeline_position', { verdict: 'cell', cluster: 'pipeline', calls: 310,
-    reason: 'ALREADY the resolver behind all five registered cells (git.pipelinePosition, gate.greenCheckpoint.verdict/.candidate, deploy.3070.sha, git.mainBehindStaging). Owes only its `@cell-lens` declaration; P-007 already made its no-arg call legal so global cells resolve.' }],
+    reason: 'ALREADY the resolver behind all five registered cells (git.pipelinePosition, gate.greenCheckpoint.verdict/.candidate, deploy.3070.sha, git.mainBehindStaging). Owed only its `@cell-lens` declaration; P-007 already made its no-arg call legal so global cells resolve.',
+    adopted: 'Declared `@cell-lens git.pipelinePosition` and removed from BASELINE on 2026-07-27 — the first entry P-020 retired, taking the grandfather list 38 -> 37.' }],
   ['dev:build_status', { verdict: 'delegates', cluster: 'pipeline', calls: 46,
     reason: 'Local build mtime + server reachability duplicates dev:service_health probing and the serving leg of git.pipelinePosition. Consume both rather than answering a third time.' }],
   ['deploy:status', { verdict: 'bespoke', cluster: 'pipeline', calls: 34,
@@ -434,7 +438,13 @@ export const VERDICTS = new Map([
  */
 export function verdictGaps() {
   const missing = [...BASELINE].filter((n) => !VERDICTS.has(n));
-  const extra = [...VERDICTS.keys()].filter((n) => !BASELINE.has(n));
+  // A verdict MAY name a tool that has left BASELINE — but only if it records HOW it
+  // left, in `adopted`. Without that carve-out the inventory would erode exactly as the
+  // work succeeded: every retirement deleting the record of what was decided and why.
+  // With it, BASELINE shrinks (the ratchet) while VERDICTS accumulates the history.
+  const extra = [...VERDICTS.entries()]
+    .filter(([n, v]) => !BASELINE.has(n) && !(typeof v.adopted === 'string' && v.adopted.length >= MIN_EXEMPTION_REASON))
+    .map(([n]) => n);
   const badKind = [...VERDICTS.entries()]
     .filter(([, v]) => !VERDICT_KINDS.includes(v.verdict))
     .map(([n]) => n);
@@ -561,6 +571,7 @@ function main() {
     process.exit(1);
   }
 
+  const roll = verdictRollup();
   const parts = [
     `${scanned} state-read tool(s) in scope`,
     `${BASELINE.size} grandfathered (shrink-only, P-020)`,
@@ -568,6 +579,12 @@ function main() {
     `${exemptions.length} reasoned exemption(s)`,
   ];
   console.log(`✓ no UNDECLARED state-read tool — ${parts.join(' · ')}.`);
+  const adopted = [...VERDICTS.values()].filter((v) => typeof v.adopted === 'string').length;
+  console.log(
+    `  P-020 inventory: ${VERDICTS.size} tool(s) verdicted — ${roll.cell} become a cell · ` +
+      `${roll.delegates} delegate to one · ${roll.bespoke} stay bespoke; ` +
+      `${adopted} adopted so far, ${BASELINE.size} still grandfathered.`,
+  );
   if (exemptions.length > 0) {
     console.log('  exemptions (visible on purpose — growth here means the gate is being routed around):');
     for (const e of exemptions) console.log(`    ${e.name} — ${e.reason}`);

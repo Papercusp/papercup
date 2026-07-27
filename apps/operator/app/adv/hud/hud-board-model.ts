@@ -471,6 +471,32 @@ export function deriveColumn(
       sinceSec: null,
     };
   }
+  // 1c. Fresh — launched but has never taken a turn (owner ask 2026-07-27: "all
+  //     fresh sessions start as needs you"). These used to land in `parked`, which
+  //     was precisely backwards: a session you just launched is not idle-and-fine,
+  //     it is sitting there with no task, and the ONLY thing that starts it moving
+  //     is you telling it what to work on. That is the definition of this column —
+  //     the one whose fix is the human's to apply.
+  //
+  //     `lastActiveAt == null` is the honest "never took a turn" signal: the
+  //     pending tier synthesizes it as null (adv-roster's pendingLaunchesToRosterEntries)
+  //     and a real session sets it on its first tool call, so a session leaves this
+  //     column on its own the moment it starts working — no timer, no cleanup.
+  //
+  //     Guarded on !stale so a session that was recorded, never ran, and has since
+  //     died is NOT advertised as fresh; that one is genuinely parked (dead), and
+  //     calling it "needs you" would put unfixable rows in the column whose whole
+  //     value is that everything in it is actionable.
+  if (e.lastActiveAt == null && !e.stale && e.liveness !== 'stale') {
+    return {
+      column: 'needs-you',
+      reason:
+        e.liveness === 'pending'
+          ? 'Fresh session — launched, not started yet. Tell it what to work on.'
+          : 'Fresh session — no turn taken yet. Tell it what to work on.',
+      sinceSec: null,
+    };
+  }
 
   // 2. Blocked — parked on a REAL gate, and we know which one. An
   //    infrastructure await (the always-armed inbox wake every agent holds) is

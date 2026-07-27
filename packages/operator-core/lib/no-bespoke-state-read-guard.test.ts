@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired } from '../../../scripts/check-no-bespoke-state-read.mjs';
+import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup } from '../../../scripts/check-no-bespoke-state-read.mjs';
 
 /** Build the text of a defineTool literal, optionally carrying a marker. */
 const toolSrc = (name: string, opts: { capability?: string; marker?: string } = {}) => `
@@ -198,6 +198,48 @@ describe('no-bespoke-state-read guard:the shrink-only baseline', () => {
     // Guards the branch order: size check must come before the date compare.
     const emptied = new Set();
     expect(emptied.size > 0 && '2099-01-01' > BASELINE_REVIEW_BY).toBe(false);
+  });
+
+  it('carries a P-020 verdict for every grandfathered tool, and none for a tool it does not cover', () => {
+    // This is P-020's done-condition made MECHANICAL rather than asserted in prose.
+    // A doc listing the verdicts would drift from BASELINE the first time BASELINE
+    // moved; keyed to the same set, it cannot.
+    const gaps = verdictGaps();
+    expect(gaps.missing, `grandfathered with no verdict: ${gaps.missing.join(', ')}`).toEqual([]);
+    expect(gaps.extra, `verdict for a tool that left BASELINE without an 'adopted' note: ${gaps.extra.join(', ')}`).toEqual([]);
+    expect(gaps.badKind).toEqual([]);
+    expect(gaps.unreasoned, `verdict with no real reason: ${gaps.unreasoned.join(', ')}`).toEqual([]);
+  });
+
+  it('only admits the three non-overlapping verdicts', () => {
+    expect(VERDICT_KINDS).toEqual(['cell', 'delegates', 'bespoke']);
+    for (const [name, v] of VERDICTS) {
+      expect(VERDICT_KINDS, `${name} has verdict "${v.verdict}"`).toContain(v.verdict);
+    }
+  });
+
+  it('lets a verdict OUTLIVE its baseline entry, but only when it records how the tool left', () => {
+    // The inventory must not erode as the work succeeds: every retirement would
+    // otherwise delete the record of what was decided and why. `adopted` is the
+    // carve-out, and it is held to the same anti-rubber-stamp length as an exemption.
+    const adopted = [...VERDICTS.entries()].filter(([n]) => !BASELINE.has(n));
+    for (const [name, v] of adopted) {
+      expect(typeof v.adopted, `${name} left BASELINE and must say how`).toBe('string');
+      expect(v.adopted.length, `${name}'s adopted note is a rubber stamp`).toBeGreaterThanOrEqual(MIN_EXEMPTION_REASON);
+    }
+    // dev:pipeline_position is the first one P-020 actually retired — it declares
+    // `@cell-lens git.pipelinePosition` and is the resolver behind all five cells.
+    expect(BASELINE.has('dev:pipeline_position')).toBe(false);
+    expect(VERDICTS.get('dev:pipeline_position')?.verdict).toBe('cell');
+    expect(VERDICTS.get('dev:pipeline_position')?.adopted).toBeTruthy();
+  });
+
+  it('rolls the verdicts up so the disposition stays visible on every run', () => {
+    const roll = verdictRollup();
+    expect(roll.cell + roll.delegates + roll.bespoke).toBe(VERDICTS.size);
+    // A registry that swallowed everything would be the D-010 failure at cell scale:
+    // most reads are single-door and correctly stay bespoke.
+    expect(roll.bespoke).toBeGreaterThan(roll.cell);
   });
 
   it('exports the state nouns it was calibrated from', () => {

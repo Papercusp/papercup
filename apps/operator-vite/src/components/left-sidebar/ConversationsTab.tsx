@@ -25,6 +25,20 @@
  *     conversations pane") — see AskAgentPane. This pane reads; it never asks.
  *   • The raw coordination-event firehose, and the live agent-chat composer:
  *     both are debugging-desk work that belongs where there is room.
+ *   • The Q&A source (owner, 2026-07-27: "remove the q&a tab no one is using
+ *     that feature"). The rail stops READING `conversations.questionsList`;
+ *     /adv keeps it, because the store is live (94 conversations updated in
+ *     the last 30 days) and the Agents-tab Ask composer still writes into it —
+ *     so this is a per-surface opt-out, not a retirement (plan D-001).
+ *     `QuestionDetail` below survives on purpose: a `?lsc=threads:<id>` deep
+ *     link handed out before today must still open something.
+ *
+ * The fourth source, ADDED here (plan D-002): agent↔agent `coord:send` traffic.
+ * It is the highest-volume conversation type in the system — 82,440 envelopes,
+ * 10,633 in a single week — and had no curated home at all, which is exactly
+ * why this pane read as near-empty (owner: "I see agents sending messages to
+ * each other all the time but I only see 51 chat messages and 85 decision
+ * messages").
  *
  * Replying to (and resolving) an OPEN question stays here, because that is
  * answering the thing you just read, not composing a new one — and it goes
@@ -38,7 +52,7 @@
  * State is in the URL via nuqs (CLAUDE.md): `?lsc=<source>:<id>` selection,
  * `?lscq` search, `?lscs` source filter — deep-linkable and agent-driveable.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import {
@@ -47,6 +61,7 @@ import {
   Bot,
   CheckCircle2,
   Inbox,
+  Megaphone,
   MessageCircle,
   MessagesSquare,
   RefreshCw,
@@ -56,55 +71,69 @@ import {
 import { useNavigate } from '@tanstack/react-router';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 // Relative, not `@/…`: the `@` alias points at the operator (Next) tree, so an
 // intra-operator-vite import must be a relative path or it won't resolve.
 import {
+  asConversationRefKind,
   composeUnifiedConversationRows,
   conversationErrText,
   conversationMatchesQuery,
   coordFetch,
   fmtConversationAge,
   fmtConversationTs,
+  parseAudienceRef,
   SOURCE_LABEL,
   turnText,
   type AgentChatDetail,
   type AgentChatRow,
+  type AgentMessageDetail,
+  type AgentMessageRow,
   type ConvDetailT,
-  type ConvRow,
+  type ConversationRef,
   type ConversationSource,
   type DeliberationDetail,
   type ThreadRow,
   type UnifiedConversationRow,
 } from '../conversations/unified-conversations';
+import {
+  ConversationRefLink,
+  LinkifiedText,
+  useConversationRefPopup,
+} from '../conversations/ConversationRefs';
 
 /** The rail is a navigation surface, not an archive export — one bounded window
  *  per source, merged. Matches /adv's per-source cap so both read the same slice. */
 const LIST_LIMIT = 100;
 const UNIFIED_LIMIT = LIST_LIMIT * 4;
 
-const SOURCES = ['all', 'threads', 'deliberations', 'agentchats'] as const;
+/** `threads` (Q&A) is absent by design — see the header note / plan D-001. */
+const SOURCES = ['all', 'messages', 'deliberations', 'agentchats'] as const;
 type SourceFilter = (typeof SOURCES)[number];
 
 /** Short chip labels — "Questions & discussions" does not fit a 300px chip row. */
 const CHIP_LABEL: Record<SourceFilter, string> = {
   all: 'All',
-  threads: 'Q&A',
+  messages: 'Messages',
   deliberations: 'Decisions',
   agentchats: 'Chat',
 };
 
 /** The stripe label on a row: shorter still, because it shares the top line
- *  with a state pill and the age. */
+ *  with a state pill and the age. `threads` stays mapped so a legacy
+ *  `?lsc=threads:<id>` deep link still renders a labelled detail. */
 const STRIPE_LABEL: Record<ConversationSource, string> = {
   threads: 'Q&A',
   deliberations: 'Decision',
   agentchats: 'Agent chat',
+  messages: 'Message',
 };
 
 const SOURCE_ICON: Record<ConversationSource, typeof MessageCircle> = {
   threads: MessageCircle,
   deliberations: MessagesSquare,
   agentchats: Bot,
+  messages: Send,
 };
 
 /** Which /adv route + params open this row on the wide surface. */
@@ -114,8 +143,19 @@ function advSearchFor(row: UnifiedConversationRow): Record<string, string> {
       ? 'conversation'
       : row.source === 'deliberations'
         ? 'thread'
-        : 'chat';
+        : row.source === 'messages'
+          ? 'cmsg'
+          : 'chat';
   return { tab: 'conversations', conv: row.source, [key]: row.sourceId };
+}
+
+/**
+ * The rail's own related-work ref for a row, when it has one it can open.
+ * `relatedKind` is set by the composer from each store's own typed parent — a
+ * ref with no kind is text we cannot safely route, so it renders plain.
+ */
+function rowRef(row: UnifiedConversationRow): ConversationRef | null {
+  return row.relatedRef && row.relatedKind ? { kind: row.relatedKind, ref: row.relatedRef } : null;
 }
 
 /** State pills carry the semantic colours; the source stripe never does. */
@@ -188,7 +228,15 @@ function ConversationRow({
 
 // ─── detail bodies, one per source ──────────────────────────────────────────
 
-function QuestionDetail({ id, summary }: { id: string; summary?: UnifiedConversationRow }) {
+/** Every detail body takes the surface's ref opener, so a reference in a
+ *  callout or a post body opens the thing it names (owner, 2026-07-27). */
+interface DetailBodyProps {
+  id: string;
+  summary?: UnifiedConversationRow;
+  onOpenRef: (ref: ConversationRef) => void;
+}
+
+function QuestionDetail({ id, summary, onOpenRef }: DetailBodyProps) {
   const q = useSyncQuery<ConvDetailT>({
     queryName: 'conversations.questionDetail',
     args: { id },
@@ -262,14 +310,24 @@ function QuestionDetail({ id, summary }: { id: string; summary?: UnifiedConversa
           </div>
         )}
 
-        {detail.body && <p className="pclsb-conv__body">{detail.body}</p>}
+        {detail.body && (
+          <p className="pclsb-conv__body">
+            <LinkifiedText text={detail.body} harnessSlug={detail.harness_slug} onOpen={onOpenRef} />
+          </p>
+        )}
 
         {detail.accepted_answer && (
           <div className="pclsb-conv__callout is-good">
             <CheckCircle2 size={13} aria-hidden />
             <div>
               <b>Accepted answer</b>
-              <p>{detail.accepted_answer}</p>
+              <p>
+                <LinkifiedText
+                  text={detail.accepted_answer}
+                  harnessSlug={detail.harness_slug}
+                  onOpen={onOpenRef}
+                />
+              </p>
             </div>
           </div>
         )}
@@ -279,7 +337,14 @@ function QuestionDetail({ id, summary }: { id: string; summary?: UnifiedConversa
             <ArrowUpRight size={13} aria-hidden />
             <div>
               <b>Linked work-item</b>
-              <p>{detail.promoted_issue_id}</p>
+              <p>
+                <ConversationRefLink
+                  refValue={{ kind: 'issue', ref: detail.promoted_issue_id }}
+                  harnessSlug={detail.harness_slug}
+                  onOpen={onOpenRef}
+                  size="sm"
+                />
+              </p>
             </div>
           </div>
         )}
@@ -298,7 +363,9 @@ function QuestionDetail({ id, summary }: { id: string; summary?: UnifiedConversa
                 <b>{p.author_id ?? 'unknown'}</b>
                 {p.created_ts ? <span>{fmtConversationTs(p.created_ts)}</span> : null}
               </span>
-              <p>{p.body}</p>
+              <p>
+                <LinkifiedText text={p.body} harnessSlug={detail.harness_slug} onOpen={onOpenRef} />
+              </p>
             </div>
           ))
         )}
@@ -352,7 +419,7 @@ function QuestionDetail({ id, summary }: { id: string; summary?: UnifiedConversa
   );
 }
 
-function DeliberationDetailBody({ id, summary }: { id: string; summary?: UnifiedConversationRow }) {
+function DeliberationDetailBody({ id, summary, onOpenRef }: DetailBodyProps) {
   const q = useSyncQuery<DeliberationDetail>({
     queryName: 'conversations.deliberationDetail',
     args: { id },
@@ -363,6 +430,12 @@ function DeliberationDetailBody({ id, summary }: { id: string; summary?: Unified
   const detail = raw && raw.thread?.thread_id === id ? raw : undefined;
   const head = detail?.thread;
   const posts = detail?.posts ?? [];
+  // `parent_kind` is the store's OWN typed parent (issue · feature ·
+  // conversation), so no guessing from the ref string is needed.
+  const attachedRef: ConversationRef | null = useMemo(() => {
+    const kind = asConversationRefKind(head?.parent_kind);
+    return kind && head?.parent_ref ? { kind, ref: head.parent_ref } : null;
+  }, [head?.parent_kind, head?.parent_ref]);
 
   return (
     <>
@@ -388,7 +461,18 @@ function DeliberationDetailBody({ id, summary }: { id: string; summary?: Unified
               <b>Attached to</b>
               <p>
                 {head.parent_kind ? `${head.parent_kind} · ` : ''}
-                {head.parent_ref}
+                {/* The owner's headline case: this used to be dead text naming a
+                    work item you then had to go find by hand. */}
+                {attachedRef ? (
+                  <ConversationRefLink
+                    refValue={attachedRef}
+                    harnessSlug={head.harness_slug}
+                    onOpen={onOpenRef}
+                    size="sm"
+                  />
+                ) : (
+                  head.parent_ref
+                )}
               </p>
             </div>
           </div>
@@ -409,7 +493,9 @@ function DeliberationDetailBody({ id, summary }: { id: string; summary?: Unified
                   <b>{p.author_id ?? 'unknown'}</b>
                   <span>{fmtConversationTs(p.created_at)}</span>
                 </span>
-                <p>{p.body}</p>
+                <p>
+                  <LinkifiedText text={p.body} harnessSlug={p.harness_slug} onOpen={onOpenRef} />
+                </p>
               </div>
             ))}
           </>
@@ -422,7 +508,7 @@ function DeliberationDetailBody({ id, summary }: { id: string; summary?: Unified
   );
 }
 
-function AgentChatDetailBody({ id, summary }: { id: string; summary?: UnifiedConversationRow }) {
+function AgentChatDetailBody({ id, summary, onOpenRef }: DetailBodyProps) {
   const q = useSyncQuery<AgentChatDetail>({
     queryName: 'conversations.agentChatDetail',
     args: { id },
@@ -472,7 +558,13 @@ function AgentChatDetailBody({ id, summary }: { id: string; summary?: UnifiedCon
                   <b>{t.role ?? 'turn'}</b>
                   {t.ts ? <span>{fmtConversationTs(t.ts)}</span> : null}
                 </span>
-                <p>{turnText(t.content)}</p>
+                <p>
+                  <LinkifiedText
+                    text={turnText(t.content)}
+                    harnessSlug={detail.harness_slug}
+                    onOpen={onOpenRef}
+                  />
+                </p>
               </div>
             ))}
           </>
@@ -480,6 +572,143 @@ function AgentChatDetailBody({ id, summary }: { id: string; summary?: UnifiedCon
       </div>
       <p className="pclsb-conv__readonly">
         <ArrowUpRight size={11} aria-hidden /> Read-only — the live composer stays in the full view.
+      </p>
+    </>
+  );
+}
+
+/**
+ * An agent↔agent coord message and its reply chain.
+ *
+ * A `coord:send` envelope carries strictly more routing than the other three
+ * sources — who it went to, which audience SELECTORS it targeted, the lifecycle
+ * beat it declared, and the plan it was declared against — and that routing is
+ * the whole point of reading agent traffic ("who told whom what"). So the head
+ * shows it explicitly rather than flattening it into one prose line.
+ */
+function AgentMessageDetailBody({ id, summary, onOpenRef }: DetailBodyProps) {
+  const q = useSyncQuery<AgentMessageDetail>({
+    queryName: 'conversations.agentMessageDetail',
+    args: { id },
+    enabled: !!id,
+    staleTime: 30_000,
+  });
+  // usePollingQuery keeps previous data warm, so a just-switched selection can
+  // hand back the PREVIOUS message mislabeled as this one (the /adv guard).
+  const raw = q.data?.[0] ?? null;
+  const detail = raw && raw.message?.msg_id === id ? raw : null;
+  const head = detail?.message;
+  const replies = detail?.replies ?? [];
+  const audienceRef = useMemo(() => parseAudienceRef(head?.audience), [head?.audience]);
+
+  return (
+    <>
+      <div className="pclsb-conv__detail">
+        <div className="pclsb-conv__kicker">
+          <span className="pclsb-conv__src">{SOURCE_LABEL.messages}</span>
+          {head?.kind ? <span className="pclsb-conv__state is-neutral">{head.kind}</span> : null}
+          {head?.lifecycle ? (
+            <span className="pclsb-conv__state is-neutral">{head.lifecycle}</span>
+          ) : null}
+        </div>
+        <h2 className="pclsb-conv__h">{head?.summary ?? summary?.title ?? id}</h2>
+        {head ? (
+          <div className="pclsb-conv__stats">
+            <span>from {head.from}</span>
+            <span>
+              {head.broadcast
+                ? 'broadcast'
+                : head.to.length === 0
+                  ? 'no direct recipient'
+                  : `to ${head.to.join(', ')}`}
+            </span>
+            {head.harness_slug ? <span>{head.harness_slug}</span> : null}
+            <span>{fmtConversationTs(head.ts)}</span>
+          </div>
+        ) : null}
+
+        {/* Audience SELECTORS are how coord:send actually addresses — an
+            `@object:issue:WI-1` is the message's related work, and the only one
+            of these that names an openable object gets a real link. */}
+        {head && head.audience.length > 0 && (
+          <div className="pclsb-conv__tags">
+            {head.audience.map((a) => (
+              <span key={a} className="pclsb-conv__tag">
+                {a}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {audienceRef && (
+          <div className="pclsb-conv__callout is-link">
+            <ArrowUpRight size={13} aria-hidden />
+            <div>
+              <b>About</b>
+              <p>
+                <ConversationRefLink
+                  refValue={audienceRef}
+                  harnessSlug={head?.harness_slug}
+                  onOpen={onOpenRef}
+                  size="sm"
+                />
+              </p>
+            </div>
+          </div>
+        )}
+
+        {head?.plan_slug && !audienceRef && (
+          <div className="pclsb-conv__callout is-link">
+            <ArrowUpRight size={13} aria-hidden />
+            <div>
+              <b>Plan</b>
+              <p>
+                <ConversationRefLink
+                  refValue={{ kind: 'plan', ref: head.plan_slug }}
+                  harnessSlug={head.harness_slug}
+                  onOpen={onOpenRef}
+                  size="sm"
+                />
+              </p>
+            </div>
+          </div>
+        )}
+
+        {head?.body && (
+          <p className="pclsb-conv__body">
+            <LinkifiedText text={head.body} harnessSlug={head.harness_slug} onOpen={onOpenRef} />
+          </p>
+        )}
+
+        {!detail ? (
+          <p className="pclsb-conv__loading">Loading message…</p>
+        ) : replies.length === 0 ? (
+          <p className="pclsb-conv__empty">No replies — nobody acked or answered this yet.</p>
+        ) : (
+          <>
+            <div className="pclsb-conv__seclabel">
+              {replies.length} {replies.length === 1 ? 'reply' : 'replies'}
+            </div>
+            {replies.map((r) => (
+              <div key={r.msg_id} className="pclsb-conv__post">
+                <span className="who">
+                  <b>{r.from || 'unknown'}</b>
+                  <span>{fmtConversationTs(r.ts)}</span>
+                </span>
+                <p>
+                  <LinkifiedText
+                    text={r.body ?? r.summary}
+                    harnessSlug={head?.harness_slug}
+                    onOpen={onOpenRef}
+                  />
+                </p>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+      <p className="pclsb-conv__readonly">
+        <Megaphone size={11} aria-hidden /> Read-only — agents talk through coord:send.
       </p>
     </>
   );
@@ -496,15 +725,10 @@ export default function ConversationsTab({ active }: { active: boolean }) {
   );
   const navigate = useNavigate();
 
-  // The three curated stores — the SAME cached reads /adv consumes, so opening
-  // this tab after visiting /adv (or the reverse) hits a warm cache rather than
+  // The curated stores — the SAME cached reads /adv consumes, so opening this
+  // tab after visiting /adv (or the reverse) hits a warm cache rather than
   // re-fetching. All gate on `active`: an unopened tab costs nothing.
-  const questions = useSyncQuery<ConvRow>({
-    queryName: 'conversations.questionsList',
-    args: { limit: LIST_LIMIT },
-    enabled: active,
-    staleTime: 30_000,
-  });
+  // `conversations.questionsList` is deliberately NOT read here (D-001).
   const deliberations = useSyncQuery<ThreadRow>({
     queryName: 'conversations.deliberationList',
     args: { limit: LIST_LIMIT },
@@ -517,27 +741,55 @@ export default function ConversationsTab({ active }: { active: boolean }) {
     enabled: active,
     staleTime: 30_000,
   });
+  const agentMessages = useSyncQuery<AgentMessageRow>({
+    queryName: 'conversations.agentMessageList',
+    args: { limit: LIST_LIMIT },
+    enabled: active,
+    staleTime: 30_000,
+  });
   const rows = useMemo(
     () =>
       composeUnifiedConversationRows(
-        questions.data ?? [],
-        deliberations.data ?? [],
-        agentChats.data ?? [],
+        {
+          deliberations: deliberations.data ?? [],
+          agentChats: agentChats.data ?? [],
+          agentMessages: agentMessages.data ?? [],
+        },
         UNIFIED_LIMIT,
       ),
-    [questions.data, deliberations.data, agentChats.data],
+    [deliberations.data, agentChats.data, agentMessages.data],
   );
 
   const counts = useMemo(() => {
     const c: Record<SourceFilter, number> = {
       all: rows.length,
-      threads: 0,
+      messages: 0,
       deliberations: 0,
       agentchats: 0,
     };
-    for (const r of rows) c[r.source] += 1;
+    // A legacy `threads` row can only arrive via a deep link, never the list.
+    for (const r of rows) if (r.source in c) c[r.source as SourceFilter] += 1;
     return c;
   }, [rows]);
+
+  /**
+   * The TRUE store count behind each capped window (`_meta.total`, attached
+   * server-side by attachListMeta).
+   *
+   * Without this the pane lies: every source reads `LIMIT 100`, so "Decisions
+   * 85" was rendered while 5,744 threads existed, and the number read as "that
+   * is all there is" (owner, 2026-07-27). A capped source now renders `85+`.
+   */
+  const totals = useMemo(
+    () => ({
+      messages: readListTotal(agentMessages.data),
+      deliberations: readListTotal(deliberations.data),
+      agentchats: readListTotal(agentChats.data),
+    }),
+    [agentMessages.data, deliberations.data, agentChats.data],
+  );
+  const capped = (s: SourceFilter): boolean =>
+    s !== 'all' && (totals[s] ?? 0) > (counts[s] ?? 0);
 
   const visible = useMemo(
     () =>
@@ -547,7 +799,7 @@ export default function ConversationsTab({ active }: { active: boolean }) {
     [rows, source, search],
   );
 
-  const queries = [questions, deliberations, agentChats];
+  const queries = [deliberations, agentChats, agentMessages];
   const loading = queries.some((q) => q.loading);
   const error = queries.find((q) => q.error)?.error ?? null;
   const invalidate = () => queries.forEach((q) => q.invalidate());
@@ -556,6 +808,26 @@ export default function ConversationsTab({ active }: { active: boolean }) {
   const selectedRow = selected
     ? rows.find((r) => r.id === `${selected.source}:${selected.id}`)
     : undefined;
+
+  /**
+   * The ref → popup host (owner ask, 2026-07-27). `?lscref` is the rail's own
+   * namespace so it cannot collide with /adv's when both are mounted.
+   *
+   * A `conversation` ref is NOT a popup: the thing it names is another row of
+   * THIS pane, so it re-targets the selection in place — drilling sideways,
+   * not stacking a modal over the pane you are already reading.
+   */
+  const refPopup = useConversationRefPopup('lscref', selectedRow?.harnessSlug ?? null);
+  const onOpenRef = useCallback(
+    (ref: ConversationRef) => {
+      if (ref.kind === 'conversation') {
+        void setSelection(`threads:${ref.ref}`);
+        return;
+      }
+      refPopup.open(ref);
+    },
+    [refPopup, setSelection],
+  );
 
   // A list scroll position is worth keeping across a drill-in/back round trip:
   // returning to the top of a 200-row stream after reading one conversation is
@@ -615,12 +887,15 @@ export default function ConversationsTab({ active }: { active: boolean }) {
           </Tooltip>
         </div>
         {selected.source === 'threads' ? (
-          <QuestionDetail id={selected.id} summary={selectedRow} />
+          <QuestionDetail id={selected.id} summary={selectedRow} onOpenRef={onOpenRef} />
         ) : selected.source === 'deliberations' ? (
-          <DeliberationDetailBody id={selected.id} summary={selectedRow} />
+          <DeliberationDetailBody id={selected.id} summary={selectedRow} onOpenRef={onOpenRef} />
+        ) : selected.source === 'messages' ? (
+          <AgentMessageDetailBody id={selected.id} summary={selectedRow} onOpenRef={onOpenRef} />
         ) : (
-          <AgentChatDetailBody id={selected.id} summary={selectedRow} />
+          <AgentChatDetailBody id={selected.id} summary={selectedRow} onOpenRef={onOpenRef} />
         )}
+        {refPopup.element}
       </div>
       </TooltipPrimitive.Provider>
     );
@@ -669,7 +944,12 @@ export default function ConversationsTab({ active }: { active: boolean }) {
           >
             <span className="dot" aria-hidden />
             {CHIP_LABEL[s]}
-            <span className="ct">{counts[s]}</span>
+            {/* `85+` — the window is capped at LIST_LIMIT per source, so a bare
+                count would read as the store total (it is not). */}
+            <span className="ct">
+              {counts[s]}
+              {capped(s) ? '+' : ''}
+            </span>
           </button>
         ))}
       </div>

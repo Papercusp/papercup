@@ -146,6 +146,20 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     args: { workspaceId, endedLimit: 50 },
   });
 
+  /**
+   * Owner ask 2026-07-27: "when you click +new session the gui chat with them
+   * should show up". The launcher hands back the `adv_sessions` id it just
+   * recorded; the chat is keyed by ROSTER OWNER ID, which does not exist yet at
+   * that moment — so park the id here and let the effect below open the chat as
+   * soon as the roster carries a row for it.
+   *
+   * Deliberately `useState` rather than nuqs: this is a one-shot handoff between
+   * the launch call and the next roster push (a lifecycle value), and it is
+   * CONSUMED — cleared the instant it resolves. The user-meaningful result, which
+   * session's chat is open, is already in the URL as `hudsession`.
+   */
+  const [awaitingLaunchId, setAwaitingLaunchId] = useState<number | null>(null);
+
   const attention = useInboxAttention();
 
   /** The asks addressed to the human, narrowed by the SAME scoping the inbox
@@ -178,9 +192,35 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     const payload = roster.data?.[0];
     if (!payload) return [];
     // Pending launches are recorded-but-not-started sessions; they belong on the
-    // board (they are real, the human asked for them) and classify as parked.
+    // board (they are real, the human asked for them) and classify as `needs-you`
+    // — owner ask 2026-07-27, "all fresh sessions start as needs you". They used
+    // to land in `parked`; see deriveColumn step 1c for why that was backwards.
     return [...(payload.active ?? []), ...(payload.pending ?? [])];
   }, [roster.data]);
+
+  /**
+   * Open the chat for a session the human just launched (owner ask 2026-07-27).
+   *
+   * Why it resolves through the roster instead of opening an id directly: the
+   * launcher only knows the `adv_sessions` row id, and a session's owner id is
+   * DIFFERENT depending on how far it has booted — `pending:adv:<id>` while it is
+   * still a recorded-but-unstarted row, then its real coord owner id once it comes
+   * up. Matching on `advSessionId` is the one key that is stable across that
+   * transition, so this opens the chat at whichever stage the roster reaches first
+   * and never races the boot.
+   *
+   * `entries` includes the pending tier, so in the common case the row is already
+   * there on the next SSE push and the chat opens immediately. If it never arrives
+   * (a launch that recorded no row), nothing opens and `awaitingLaunchId` simply
+   * stays set until the next launch replaces it — no spurious modal, no timer.
+   */
+  useEffect(() => {
+    if (awaitingLaunchId == null) return;
+    const match = entries.find((e) => e.advSessionId === awaitingLaunchId);
+    if (!match) return;
+    setAwaitingLaunchId(null);
+    void setOpenOwner(match.ownerId);
+  }, [awaitingLaunchId, entries, setOpenOwner]);
 
   // `null` in the URL array marks the solo group — encoded as the literal
   // "solo" because a URL array cannot carry a null.
@@ -418,7 +458,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         sessionQuery={rawSessionQuery}
         onSessionQuery={(q) => void setSessionQuery(q === '' ? null : q)}
         searchActive={searchOwners !== null}
-        headerAction={<NewSessionLauncher />}
+        headerAction={<NewSessionLauncher onLaunched={(id) => setAwaitingLaunchId(id)} />}
         tab={tab as HudTabId}
         onSelectTab={(next) => void setTab(next)}
         entityView={entityView}

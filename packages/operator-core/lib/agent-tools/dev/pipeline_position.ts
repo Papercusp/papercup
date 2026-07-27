@@ -18,6 +18,12 @@ export default defineTool({
   profile: 'engineer',
   description:
     '"Is my edit live YET — and what actually makes it live?" Read-only. Pass a repo-relative `path` (preferred) or a `sha`: returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary — AND, from the path, WHICH PROCESS RUNS THAT CODE. That second half matters: the gateway (:8788), bg-host (routines/DBOS) and embed-sidecar all run tsx STRAIGHT FROM THE STAGING TREE, so a deploy NEVER carries their code — the edit is already on their disk and a `dev:restart { target }` is what loads it. For those paths this returns an `activation` block (the exact restart call) and deliberately does NOT tell you to wait on the deploy. A few paths have 2 consumers on different routes — those return `activations` (plural) instead.',
+  // @cell-lens git.pipelinePosition
+  // This tool is the RESOLVER behind all five registered cells (git.pipelinePosition,
+  // gate.greenCheckpoint.verdict/.candidate, deploy.3070.sha, git.mainBehindStaging) —
+  // see packages/operator-core/lib/cell-registrations.ts. It already satisfies D-038
+  // axis 5: those cells project this one derivation rather than recomputing it, and a
+  // no-arg call is legal precisely so the three GLOBAL cells resolve (P-007 / D-067).
   capability: 'intel:read',
   guidance: {
     when: 'After leaving an edit in the tree (git-sync owns commit/push): to confirm it reached staging/main/:3070, to see WHY it is stuck (gate red/stalled) — or, whenever the code you touched might not be operator code, to find out whether a deploy or a RESTART is what activates it. Pass `path`, not `sha`: the sha cannot tell you which host runs the code.',

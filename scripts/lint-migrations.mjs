@@ -19,7 +19,8 @@
  *      ENFORCED_FROM like the reservation check: 51 already-applied legacy
  *      files (116–200) carry their own BEGIN/COMMIT from before the
  *      runner-wraps contract — they are ledgered history (editing them would
- *      break their recorded sha256) and are reported informationally only.
+ *      NOT re-run them; see the note on ENFORCED_FROM below) and are reported
+ *      informationally only.
  *   3. UNGUARDED RENAME CONSTRAINT — a bare top-level `RENAME CONSTRAINT`.
  *      `ALTER TABLE IF EXISTS … RENAME CONSTRAINT` guards the TABLE, not the
  *      CONSTRAINT, so it throws 42704 whenever the constraint is absent — which
@@ -59,8 +60,9 @@ const SQL_DIR = join(ROOT, 'libs/papercusp/libs/db/sql');
  * a manual `npm run lint:migrations` invoked it, which nobody ran — so real
  * violations (3 duplicate-NNN pairs, 41 raw-tx-control files, ~75 unreserved
  * numbers) accumulated PAST 215 ungated for months, all already applied and
- * ledgered (immutable — editing them now would break their recorded
- * checksums). Re-baselined to the current on-disk max (2026-07-04) so this
+ * ledgered (effectively frozen — editing one now is a silent no-op on every DB
+ * that already ran it; see WHY APPLIED FILES ARE FROZEN below).
+ * Re-baselined to the current on-disk max (2026-07-04) so this
  * boundary reflects reality: everything through 493 is grandfathered as
  * already-tolerated legacy, and enforcement is now WIRED into the automated
  * suite (lint-migrations.test.ts's "real sql/ directory" describe block, which
@@ -69,6 +71,35 @@ const SQL_DIR = join(ROOT, 'libs/papercusp/libs/db/sql');
  * exact gap. Bump this again only when deliberately re-grandfathering more
  * historical debt — never to silence a genuinely NEW violation. */
 export const ENFORCED_FROM = 494;
+
+/**
+ * WHY APPLIED FILES ARE FROZEN (and why it is NOT a checksum guard).
+ *
+ * Earlier revisions of this file claimed applied migrations are protected
+ * because "the runner verifies each by sha256, so editing one would break its
+ * recorded checksum". That is FALSE, and worth stating plainly because the
+ * truth is a WORSE hazard, not a milder one.
+ *
+ * The runner (embedded-postgres-server/src/migration-runner.js) keys purely on
+ * FILENAME: `harness_shared.schema_migrations` has `filename` as its PRIMARY
+ * KEY, the applied set is built with `SELECT filename FROM …`, and the skip is
+ * a bare `if (applied.has(f)) continue;`. A sha256 IS computed and INSERTed
+ * alongside each row — but it is never SELECTed back, never compared, by the
+ * runner or by anything else in the repo (migration-drift.ts likewise reads
+ * `SELECT filename … ORDER BY filename`). It is a write-only audit column.
+ *
+ * So editing an already-applied migration does not break anything loudly. It
+ * does something quieter and worse:
+ *   - on every DB that already applied the file, the edit is a NO-OP — the
+ *     file is skipped by filename and the new DDL never runs;
+ *   - on a FRESH DB, the edited version DOES apply.
+ * The two populations silently diverge, and because no checksum is ever
+ * validated, NOTHING detects the divergence.
+ *
+ * Practical consequence: to change already-applied schema, always author a NEW
+ * numbered migration (`node scripts/next-migration.mjs`). Do not edit the old
+ * file, and do not bother "fixing" its sha256 row — no code reads it.
+ */
 
 /**
  * Strip dollar-quoted bodies ($$…$$ / $tag$…$tag$), quoted strings, and
@@ -273,9 +304,10 @@ export function duplicateNumberGroups(filenames, enforcedFrom = ENFORCED_FROM) {
  *
  * Deliberately its OWN boundary rather than the shared ENFORCED_FROM: three
  * already-applied files (113, 461, 564, 689) carry this pattern, and two of them
- * (564, 689) sit ABOVE ENFORCED_FROM. Applied migrations are immutable — the
- * runner verifies each by sha256, so editing one now would break its recorded
- * checksum — so they are grandfathered and this lint exists to stop the NEXT one.
+ * (564, 689) sit ABOVE ENFORCED_FROM. Applied migrations are effectively frozen
+ * — editing one now would NOT re-run it on any DB that already applied it (see
+ * WHY APPLIED FILES ARE FROZEN above) — so they are grandfathered and this lint
+ * exists to stop the NEXT one.
  * 690 is the current max on disk; enforcement starts at the next number.
  *
  * Bump this ONLY when deliberately re-grandfathering more applied history —

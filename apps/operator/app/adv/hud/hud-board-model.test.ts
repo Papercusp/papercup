@@ -307,6 +307,53 @@ describe('deriveColumn — precedence', () => {
     expect(deriveColumn(entry({ liveness: 'stale', stale: true }), undefined, OPTS).reason).toContain('ended');
     expect(deriveColumn(entry({ liveness: 'pending' }), undefined, OPTS).reason).toContain('not started');
   });
+
+  /**
+   * Owner ask 2026-07-27: "all fresh sessions start as needs you". A just-launched
+   * session used to land in `parked`, which read as "idle, fine" for the one case
+   * where the human is the only thing that can move it forward.
+   */
+  describe('fresh sessions (never taken a turn)', () => {
+    it('puts a pending launch in needs-you, not parked', () => {
+      const v = deriveColumn(entry({ liveness: 'pending', lastActiveAt: null }), undefined, OPTS);
+      expect(v.column).toBe('needs-you');
+      expect(v.reason).toMatch(/Fresh session/);
+      expect(v.reason).toMatch(/not started yet/);
+    });
+
+    it('puts a booted-but-never-active session in needs-you too', () => {
+      const v = deriveColumn(entry({ liveness: 'live', lastActiveAt: null }), undefined, OPTS);
+      expect(v.column).toBe('needs-you');
+      expect(v.reason).toMatch(/no turn taken yet/);
+    });
+
+    it('does NOT call a never-active session that has since DIED fresh — that one is parked', () => {
+      // The column's value is that everything in it is actionable; a dead session
+      // is not, however little it ever ran.
+      expect(deriveColumn(entry({ liveness: 'stale', stale: true, lastActiveAt: null }), undefined, OPTS).column).toBe(
+        'parked',
+      );
+      expect(deriveColumn(entry({ liveness: 'stale', stale: false, lastActiveAt: null }), undefined, OPTS).column).toBe(
+        'parked',
+      );
+    });
+
+    it('still shows a real ask ahead of the generic fresh reason', () => {
+      const v = deriveColumn(entry({ liveness: 'pending', lastActiveAt: null }), [ask()], OPTS);
+      expect(v.column).toBe('needs-you');
+      expect(v.reason).not.toMatch(/Fresh session/);
+    });
+
+    it('leaves a session that HAS taken a turn classified exactly as before', () => {
+      // Non-vacuity guard: the same accessor returns a different column once
+      // lastActiveAt is set, so the assertions above cannot be passing trivially.
+      expect(deriveColumn(entry({ liveness: 'live' }), undefined, OPTS).column).toBe('working');
+      expect(
+        deriveColumn(entry({ liveness: 'idle', lastActiveAt: iso(120_000), intentDeclaredAt: iso(120_000) }), undefined, OPTS)
+          .column,
+      ).toBe('parked');
+    });
+  });
 });
 
 describe('deriveBadges', () => {

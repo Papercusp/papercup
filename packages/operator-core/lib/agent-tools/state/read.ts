@@ -34,6 +34,10 @@ export default defineTool({
     chaining:
       'state:read { cell } → act. status:"unknown" → branch on unknown.code: not-measured means ask for access/enablement (retrying is pointless), resolver-failed means retry-or-escalate, insufficient-data means supply more input (often `as`). status:"absent" → the cell is not yours to read; do not reconstruct it from another surface.',
   },
+  // @not-a-cell This IS the cell registry's read door, not a bespoke read competing with
+  // it — the one tool the gate's name signature cannot classify, because it reads EVERY
+  // cell rather than projecting one. A `@cell-lens` marker would be a category error (it
+  // names no single cell), so the exemption is the correct declaration, not a dodge.
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

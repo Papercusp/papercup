@@ -26,7 +26,7 @@
  * gives the body more vertical room).
  */
 
-import { useCallback, useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
 import { ArrowUpRight, Coffee, CupSoda, Thermometer } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import ReactMarkdown from 'react-markdown';
@@ -122,7 +122,25 @@ interface WorkRefPillHastNode {
  * can't carry. A 'work-item' destination ignores it; harmlessly `undefined`
  * when the message carries no plan_slug.
  */
-function ChatMessageContent({
+/**
+ * MEMOIZED — owner bug 2026-07-27 ("typing into the chat is incredibly laggy").
+ *
+ * The composer's text lives in `OperatorChat`'s `input` state and is threaded down
+ * as ChatConversation's `inputValue` prop, so EVERY KEYSTROKE re-renders this whole
+ * component tree. Without this memo that re-ran `ReactMarkdown` — a full parse with
+ * `remarkGfm` + `remarkWorkRefs` — for every message currently on screen, on every
+ * character typed. Virtualization caps that at the visible window rather than the
+ * whole transcript, which is why it degrades with a tall pane rather than a long
+ * conversation, but a dozen re-parses per keystroke is still far past the frame
+ * budget and is exactly what the lag was.
+ *
+ * The memo holds because every prop here is stable across a keystroke: `content` /
+ * `harnessSlug` / `planSlug` are primitives off the message, and the one function,
+ * `onWorkRefActivate`, is `useCallback`-memoized at its source (OperatorChat's
+ * `handleWorkRefActivate`). If a future caller passes an inline arrow for it this
+ * silently stops memoizing and the lag returns — keep it stable.
+ */
+const ChatMessageContent = memo(function ChatMessageContent({
   content,
   harnessSlug,
   planSlug,
@@ -160,7 +178,7 @@ function ChatMessageContent({
       {withHardBreaks(content)}
     </ReactMarkdown>
   );
-}
+});
 
 /**
  * Discord's ↑-to-edit-last, adapted for an agent chat (discord-shortcuts

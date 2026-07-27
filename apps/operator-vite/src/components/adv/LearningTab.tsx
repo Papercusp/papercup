@@ -79,7 +79,6 @@ import { AnalyzePanel } from "./AnalyzePanel";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
 import { MugWakeEfficiencyPanel } from "./MugWakeEfficiencyPanel";
 import { ExperimentsPanel } from "./ExperimentsPanel";
-import { Select } from "@/app/harness/Select";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { Popover } from "@/app/harness/Popover";
 import { CardStack } from "@papercusp/card-stack";
@@ -1308,17 +1307,31 @@ function ImprovementsView({
     if (railFilter) out = out.filter((row) => row.idea?.rail === railFilter);
     return out;
   }, [allRows, railFilter, src]);
-  const sparseRows = useMemo<LoopRow[]>(
-    () =>
-      [...(digest?.autoEligible ?? []), ...(digest?.humanQueue ?? [])].map(
-        (item) => ({
-          key: item.id,
-          item,
-          idea: ideaByItemId.get(item.id) ?? null,
-        }),
-      ),
-    [digest, ideaByItemId],
-  );
+  // The small-queue path: no dashboard, no facets, just the list. It must span
+  // BOTH halves — a pot with routed ideas but nothing filed yet has a perfectly
+  // non-empty Improve list, and rendering only the work items there would show
+  // "the loop has not produced anything" while sitting on the loop's output.
+  // (It ignores the lane facet by design: sparse mode renders no lane control.)
+  const sparseRows = useMemo<LoopRow[]>(() => {
+    const items = [
+      ...(digest?.autoEligible ?? []),
+      ...(digest?.humanQueue ?? []),
+    ];
+    const filed = new Set(items.map((item) => item.id));
+    return [
+      ...items.map((item) => ({
+        key: item.id,
+        item,
+        idea: ideaByItemId.get(item.id) ?? null,
+      })),
+      ...routed
+        .filter((idea) => {
+          if (!idea.routedRef.startsWith("wi:")) return true;
+          return !filed.has(idea.routedRef.slice("wi:".length));
+        })
+        .map((idea) => ({ key: idea.ideaId, item: null, idea })),
+    ];
+  }, [digest, ideaByItemId, routed]);
   // Shared column filters + quick-search (owner ask 2026-07-19: mimic the
   // Working tab's Work Queue): the shared filter engine (`impf` param) over
   // the lane/source-scoped rows, plus a global substring quick-search

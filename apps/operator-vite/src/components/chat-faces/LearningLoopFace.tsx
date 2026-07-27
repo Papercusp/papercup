@@ -38,7 +38,10 @@ interface GymFaceSnapshot {
 const STAGE_LINKS: ReadonlyArray<{ id: string; label: string; lview: string }> = [
   { id: "observe", label: "Observe", lview: "signals" },
   { id: "analyze", label: "Analyze", lview: "pipeline" },
-  { id: "improve", label: "Improve", lview: "ideas" },
+  // `ideas` was retired 2026-07-27 (learning-tab-surface-public-release P-003):
+  // the Ideas ledger merged into Improvements. The tab redirects a stale id, so
+  // this kept working — but it would have written a URL naming a dead view.
+  { id: "improve", label: "Improve", lview: "improvements" },
   { id: "retain", label: "Retain", lview: "learnings" },
   { id: "verify", label: "Verify", lview: "benchmark" },
 ];

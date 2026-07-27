@@ -68,6 +68,7 @@ import { hiveHomeLabel } from '@/lib/hive-label';
 // duplicating them. This file stays the source of the WIDE surface; what a
 // conversation IS now lives in one place both surfaces import.
 import {
+  asConversationRefKind,
   composeUnifiedConversationRows,
   conversationEpoch,
   conversationErrText,
@@ -77,19 +78,28 @@ import {
   fmtConversationTs,
   isSystemConversationActor,
   normalizedConversationText,
+  parseAudienceRef,
   turnText,
   unifiedConversationSignature,
   type AgentChatDetail,
   type AgentChatRow,
   type AgentChatTurn,
+  type AgentMessageDetail,
+  type AgentMessageRow,
   type ConvDetailT,
   type ConvPost,
   type ConvRow,
+  type ConversationRef,
   type DeliberationDetail,
   type ThreadPost,
   type ThreadRow,
   type UnifiedConversationRow,
 } from '../conversations/unified-conversations';
+import {
+  ConversationRefLink,
+  LinkifiedText,
+  useConversationRefPopup,
+} from '../conversations/ConversationRefs';
 import AskComposer from '../conversations/AskComposer';
 import '@/app/admin/coordination/coordination.css';
 import '@/app/adv/harnesses/adv-panel-chrome.css';
@@ -164,7 +174,7 @@ const railRowProps = () => RAIL_ROW_PROPS;
 const streamRowProps = () => STREAM_ROW_PROPS;
 
 // ─── View switch ─────────────────────────────────────────────────────
-const CONV_VIEWS = ['inbox', 'threads', 'deliberations', 'agentchats', 'feed'] as const;
+const CONV_VIEWS = ['inbox', 'threads', 'deliberations', 'agentchats', 'messages', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
 const CONVERSATION_ROUTE_PARAMS = {
@@ -172,6 +182,10 @@ const CONVERSATION_ROUTE_PARAMS = {
   conversation: parseAsString,
   thread: parseAsString,
   chat: parseAsString,
+  /** The open agent↔agent coord message (conversations-agent-messages P-007).
+   *  Deliberately NOT `fmsg`: that one addresses the RAW feed, and reusing it
+   *  would make a curated selection and a firehose selection fight. */
+  cmsg: parseAsString,
   fmsg: parseAsString,
 };
 
@@ -179,6 +193,7 @@ const EMPTY_CONVERSATION_SELECTION = {
   conversation: null,
   thread: null,
   chat: null,
+  cmsg: null,
   fmsg: null,
 } as const;
 
@@ -200,6 +215,7 @@ const VIEW_DEFS: ReadonlyArray<ViewDef> = [
   { id: 'threads', label: 'Questions & discussions', desc: 'Questions and discussions between you and the agents.', group: 'curated', Icon: MessageCircle },
   { id: 'deliberations', label: 'Group decisions', desc: 'Coord threads, proposals, and votes.', group: 'curated', Icon: MessagesSquare },
   { id: 'agentchats', label: 'Agent chat', desc: "An agent's full multi-turn transcript.", group: 'curated', Icon: Bot },
+  { id: 'messages', label: 'Agent messages', desc: 'Agent-to-agent coord:send traffic — who told whom what, with the reply chain.', group: 'curated', Icon: Send },
   { id: 'feed', label: 'Raw events', desc: 'The system message log — system-origin coordination (watchdog, routines, infra), newest first. The diagnostic traffic the curated conversations filter out.', group: 'raw', Icon: Radio },
 ];
 const CURATED_VIEW_DEFS = VIEW_DEFS.filter((v) => v.id === 'inbox');
@@ -214,6 +230,7 @@ const VIEW_ACCENT: Record<ConvView, string> = {
   threads: 'var(--accent)',
   deliberations: 'var(--accent)',
   agentchats: 'var(--accent)',
+  messages: 'var(--accent)',
   feed: 'var(--fg-mute)',
 };
 
@@ -275,9 +292,18 @@ function UnifiedInboxView() {
   const questions = useSyncQuery<ConvRow>({ queryName: 'conversations.questionsList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const deliberations = useSyncQuery<ThreadRow>({ queryName: 'conversations.deliberationList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const agentChats = useSyncQuery<AgentChatRow>({ queryName: 'conversations.agentChatList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
+  const agentMessages = useSyncQuery<AgentMessageRow>({ queryName: 'conversations.agentMessageList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const rows = useMemo(
-    () => composeUnifiedConversationRows(questions.data ?? [], deliberations.data ?? [], agentChats.data ?? [], UNIFIED_LIST_LIMIT),
-    [questions.data, deliberations.data, agentChats.data],
+    () => composeUnifiedConversationRows(
+      {
+        questions: questions.data ?? [],
+        deliberations: deliberations.data ?? [],
+        agentChats: agentChats.data ?? [],
+        agentMessages: agentMessages.data ?? [],
+      },
+      UNIFIED_LIST_LIMIT,
+    ),
+    [questions.data, deliberations.data, agentChats.data, agentMessages.data],
   );
   const columnFilters = useColumnFilters(UNIFIED_FILTER_COLUMNS, rows, { ns: 'cv' });
   const filteredRows = useMemo(() => {
@@ -296,7 +322,7 @@ function UnifiedInboxView() {
     ].some((value) => normalizedConversationText(value).includes(query)));
   }, [columnFilters.rows, debouncedSearch]);
   const filtersActive = columnFilters.hasActive || search.trim() !== '';
-  const queries = [questions, deliberations, agentChats];
+  const queries = [questions, deliberations, agentChats, agentMessages];
   const loading = queries.some((query) => query.loading);
   const error = queries.find((query) => query.error)?.error ?? null;
   const invalidate = () => queries.forEach((query) => query.invalidate());
@@ -330,6 +356,7 @@ function UnifiedInboxView() {
     conversation: row.source === 'threads' ? row.sourceId : null,
     thread: row.source === 'deliberations' ? row.sourceId : null,
     chat: row.source === 'agentchats' ? row.sourceId : null,
+    cmsg: row.source === 'messages' ? row.sourceId : null,
     fmsg: null,
   });
   const selectedSourceId = route.conv === 'threads'
@@ -338,7 +365,9 @@ function UnifiedInboxView() {
       ? route.thread
       : route.conv === 'agentchats'
         ? route.chat
-        : null;
+        : route.conv === 'messages'
+          ? route.cmsg
+          : null;
   const selectedUnifiedId = selectedSourceId ? `${route.conv}:${selectedSourceId}` : null;
   const selectedRow = selectedUnifiedId ? rows.find((row) => row.id === selectedUnifiedId) : undefined;
   const closeDetail = () => setRoute({ conv: 'inbox', ...EMPTY_CONVERSATION_SELECTION });
@@ -348,7 +377,9 @@ function UnifiedInboxView() {
       ? <DeliberationsView detailOnly loadingSummary={selectedRow} />
       : route.conv === 'agentchats' && route.chat
         ? <AgentChatsView detailOnly loadingSummary={selectedRow} />
-        : (
+        : route.conv === 'messages' && route.cmsg
+          ? <AgentMessagesView detailOnly loadingSummary={selectedRow} />
+          : (
           <section className="pc-coord__detail">
             <EmptyState
               style={{ minHeight: '100%' }}
@@ -524,6 +555,7 @@ function ConvFrame({
       conversation: preserveActiveSelection && nextView === 'threads' ? route.conversation : null,
       thread: preserveActiveSelection && nextView === 'deliberations' ? route.thread : null,
       chat: preserveActiveSelection && nextView === 'agentchats' ? route.chat : null,
+      cmsg: preserveActiveSelection && nextView === 'messages' ? route.cmsg : null,
       fmsg: preserveActiveSelection && nextView === 'feed' ? route.fmsg : null,
     });
   };
@@ -2160,6 +2192,174 @@ function AgentChatsView({
   );
 }
 
+// ─── Agent messages — agent↔agent coord:send traffic ───────────────────
+//
+// The highest-volume conversation type in the system (82,440 agent-authored
+// envelopes; 10,633 `message` in a single week) and, until
+// conversations-agent-messages-2026-07-27, one with no curated home: it existed
+// only inside Raw events, which defaults to `system_only` and therefore SHOWED
+// the ~1.6k system envelopes while FILTERING OUT the ~10.6k agent ones. Owner,
+// 2026-07-27: "I see agents sending messages to each other all the time but I
+// only see 51 chat messages and 85 decision messages."
+//
+// Raw events keeps its system-only default on purpose (plan D-004): with agent
+// traffic curated HERE, that view is genuinely the system-diagnostic complement
+// its own description already claims it is.
+
+function AgentMessagesView({
+  detailOnly = false,
+  loadingSummary,
+}: {
+  detailOnly?: boolean;
+  loadingSummary?: UnifiedConversationRow;
+}) {
+  const [route, setRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
+  const sel = route.cmsg;
+  // No list read here: `messages` is an INTERNAL detail route (the unified
+  // inbox owns the list, and it already holds a warm `agentMessageList` cache).
+  const detailQuery = useSyncQuery<AgentMessageDetail>({
+    queryName: 'conversations.agentMessageDetail',
+    args: { id: sel ?? '' },
+    enabled: !!sel,
+    staleTime: 30_000,
+  });
+  // The warm-previous-data guard every sibling detail view carries (WI-4142):
+  // only trust a payload whose own id matches the current selection.
+  const raw = detailQuery.data?.[0] ?? null;
+  const detail = raw && raw.message?.msg_id === sel ? raw : null;
+  const head = detail?.message;
+  const replies = detail?.replies ?? [];
+
+  const refPopup = useConversationRefPopup('cref', head?.harness_slug ?? null);
+  const onOpenRef = useCallback(
+    (ref: ConversationRef) => {
+      if (ref.kind === 'conversation') {
+        void setRoute({ conv: 'threads', ...EMPTY_CONVERSATION_SELECTION, conversation: ref.ref });
+        return;
+      }
+      refPopup.open(ref);
+    },
+    [refPopup, setRoute],
+  );
+  const audienceRef = useMemo(() => parseAudienceRef(head?.audience), [head?.audience]);
+
+  return (
+    <ConvFrame
+      detailOnly={detailOnly}
+      detail={
+        <section className="pc-coord__detail">
+          {sel && !head ? (
+            <ConversationDetailLoading row={loadingSummary} label="Loading message" />
+          ) : !head ? (
+            <EmptyState
+              style={{ minHeight: '100%' }}
+              icon={<Send size={22} aria-hidden />}
+              title="Select a message"
+              desc="Open an agent message to read its body and reply chain."
+            />
+          ) : (
+            <article className="pc-coord__card">
+              <header className="pc-advconv__detailhead">
+                <div>
+                  <p className="pc-advconv__detailkicker">
+                    <span className="pc-coord__kind">{head.kind}</span>
+                    {head.lifecycle ? (
+                      <span className="pc-advconv__statepill">{head.lifecycle}</span>
+                    ) : null}
+                    {head.broadcast ? (
+                      <span className="pc-advconv__statepill">
+                        <Megaphone size={10} aria-hidden /> broadcast
+                      </span>
+                    ) : null}
+                  </p>
+                  <h2>{head.summary ?? loadingSummary?.title ?? head.msg_id}</h2>
+                </div>
+                <div className="pc-advconv__detailstats" aria-label="Message metadata">
+                  <span>{head.harness_slug ? hiveHomeLabel(head.harness_slug) : 'workspace'}</span>
+                  <span>
+                    <strong>{replies.length}</strong> replies
+                  </span>
+                  <span>{fmtTs(head.ts)}</span>
+                </div>
+              </header>
+
+              <div className="pc-advconv__detailstats" aria-label="Routing">
+                <span>from {head.from}</span>
+                <span>
+                  {head.broadcast
+                    ? 'to everyone'
+                    : head.to.length === 0
+                      ? 'no direct recipient'
+                      : `to ${head.to.join(', ')}`}
+                </span>
+                {/* Audience selectors are how coord:send actually addresses; the
+                    one that names an openable object becomes a real link. */}
+                {audienceRef ? (
+                  <span>
+                    about{' '}
+                    <ConversationRefLink
+                      refValue={audienceRef}
+                      harnessSlug={head.harness_slug}
+                      onOpen={onOpenRef}
+                      size="sm"
+                    />
+                  </span>
+                ) : head.plan_slug ? (
+                  <span>
+                    plan{' '}
+                    <ConversationRefLink
+                      refValue={{ kind: 'plan', ref: head.plan_slug }}
+                      harnessSlug={head.harness_slug}
+                      onOpen={onOpenRef}
+                      size="sm"
+                    />
+                  </span>
+                ) : null}
+              </div>
+
+              {head.body ? (
+                <p className="pc-advconv__body">
+                  <LinkifiedText
+                    text={head.body}
+                    harnessSlug={head.harness_slug}
+                    onOpen={onOpenRef}
+                  />
+                </p>
+              ) : null}
+
+              {replies.length === 0 ? (
+                <EmptyState
+                  icon={<Send size={22} aria-hidden />}
+                  title="No replies"
+                  desc="Nobody has acked or answered this message."
+                />
+              ) : (
+                <ol className="pc-coord__thread pc-advconv__transcript">
+                  {replies.map((r) => (
+                    <li key={r.msg_id} className="pc-advconv__turn">
+                      <span className="pc-advconv__postmeta">
+                        <strong>{r.from || 'unknown'}</strong>
+                        <span>{fmtTs(r.ts)}</span>
+                      </span>
+                      <p>
+                        <LinkifiedText
+                          text={r.body ?? r.summary}
+                          harnessSlug={head.harness_slug}
+                          onOpen={onOpenRef}
+                        />
+                      </p>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {refPopup.element}
+            </article>
+          )}
+        </section>
+      }
+    />
+  );
+}
 
 // ─── Styles ──────────────────────────────────────────────────────────
 

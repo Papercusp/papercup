@@ -692,8 +692,11 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(
       screen.queryByText("cup:spawn children are coordination-MUTE"),
     ).toBeNull();
-    // The match count reads shown-of-total while a search is active.
-    expect(screen.getByText("1 of 2")).toBeTruthy();
+    // The match count reads shown-of-total while a search is active. Post-merge
+    // the TOTAL spans both halves of the loop's output — the work items plus
+    // the routed ideas not yet filed as work — so it is deliberately larger
+    // than the digest's own row count.
+    expect(screen.getByText(/^1 of \d+$/)).toBeTruthy();
     nuqsState.impq = "";
   });
 
@@ -764,7 +767,17 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(document.querySelector(".pc-learning__copy")).toBeNull();
   });
 
-  it("renders the empty state when no improvements match the lane", () => {
+  it("renders the empty state only when BOTH halves of the loop's output are empty", () => {
+    // Post-merge, "nothing here" means no work items AND no routed ideas: a pot
+    // with ideas the loop has not filed yet has a non-empty Improve list, so
+    // emptying only the digest must NOT produce the empty state.
+    scoutResult = {
+      data: [{ totalRouted: 0, railCounts: [], recent: [], lastTick: null }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
     improvementsResult = {
       data: [
         {
@@ -785,6 +798,35 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(
       screen.getByText("The loop has not produced anything here yet"),
     ).toBeTruthy();
+  });
+
+  it("lists routed ideas that have no work item yet, even when the digest is empty (P-003)", () => {
+    // [owner 2026-07-27 verbatim] "THE IMPROVE SHOULD JUST BE THE IDEAS BEFORE
+    // THEY GET INTO WORK ITEMS OR THE WORK ITEMS THAT CAME FROM IDEAS" — the
+    // pre-filing half of the loop's output is IN scope. Regression guard: the
+    // small-queue path once rendered work items only, which showed an empty
+    // state while the pot held routed ideas.
+    improvementsResult = {
+      data: [
+        {
+          ...improvementsDigest,
+          total: 0,
+          open: 0,
+          autoEligible: [],
+          humanQueue: [],
+          byState: {},
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.queryByText("The loop has not produced anything here yet")).toBeNull();
+    expect(screen.getByText("Cache-warmup plan draft")).toBeTruthy();
+    // An unfiled idea states its pipeline position rather than leaving it blank.
+    expect(screen.getAllByText("not filed yet").length).toBeGreaterThanOrEqual(1);
   });
 
   it("skips the dashboard and duplicate decision rail for a sparse queue", () => {

@@ -245,8 +245,18 @@ export interface NewSessionLauncherProps {
    *  already sync-driven (e.g. AdvSessionsClient's polled list) can use this
    *  to force a refresh. The HUD board needs no such hook: its roster read
    *  (`advRoster.list`) is SSE-invalidated on any `adv_sessions` write, so
-   *  the new session appears on its own. */
-  onLaunched?: () => void;
+   *  the new session appears on its own.
+   *
+   *  Owner ask 2026-07-27: it also carries `advSessionId` — the id of the
+   *  `adv_sessions` row just recorded — so a caller can OPEN the new session's
+   *  chat instead of leaving the human to find it on a board. It is the only
+   *  handle to the new session that exists at this moment: the roster's owner
+   *  id does not exist yet (a pending launch is keyed `pending:adv:<id>`, and
+   *  a booted one gets its real coord owner id later), so a caller resolves it
+   *  by matching `advSessionId` on the roster rather than guessing either form.
+   *  `null` when the launch reported success without an id (a warning-path
+   *  launch that may not have opened a window). */
+  onLaunched?: (advSessionId: number | null) => void;
 }
 
 /**
@@ -330,13 +340,13 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
           `Agent launch ${target}${chosenModel ? ` (${chosenModel})` : ''} may not have opened a window.`,
           { description: result.warning, duration: 8000 },
         );
-        onLaunched?.();
+        onLaunched?.(result.advSessionId ?? null);
       } else if (result.ok) {
         toast.success(
           `Agent launched ${target}${chosenModel ? ` (${chosenModel})` : ''}.`,
           { duration: 3000 },
         );
-        onLaunched?.();
+        onLaunched?.(result.advSessionId ?? null);
       } else if (result.installCmd) {
         toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
       } else {
