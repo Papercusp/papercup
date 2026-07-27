@@ -184,7 +184,7 @@ describe('coord:send', () => {
   afterEach(() => resetCoordLog());
 
   it('default (wake omitted) ENQUEUES the message and fires NO wake (P-040 cheap inject)', async () => {
-    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none' }), ctx);
     const lines = await log.readLines('messages');
     expect(lines).toHaveLength(1); // enqueued to the inbox
     expect(lines[0].to).toEqual(['su-bee-1']);
@@ -195,7 +195,7 @@ describe('coord:send', () => {
   it('default path REPORTS an idle recipient (no watcher) as notWoken, without firing a wake (P-001)', async () => {
     // su-bee-1 is in the roster (not federated) with zero active watchers → idle.
     listActiveAwaitsForKey.mockResolvedValue([]);
-    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none' }), ctx);
     // delivery still happened, and STILL no wake was fired (report-only).
     expect(await log.readLines('messages')).toHaveLength(1);
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
@@ -209,14 +209,14 @@ describe('coord:send', () => {
 
   it('default path does NOT report a recipient with a live watcher (P-001)', async () => {
     listActiveAwaitsForKey.mockResolvedValue([{ id: 1 }]); // one active watcher
-    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none' }), ctx);
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
     expect(send1(res).notWoken).toBeUndefined();
   });
 
   it('default path NEVER reports a federated recipient (not in the local roster) as idle (P-001 invariant c)', async () => {
     // su-remote isn't in the roster → unknown/advisory, never falsely flagged idle.
-    const res = await coordSend.handler(parse(coordSend, { to: ['su-remote'], summary: 'fyi' }), ctx);
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-remote'], summary: 'fyi', expects: 'none' }), ctx);
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
     expect(send1(res).notWoken).toBeUndefined();
   });
@@ -227,7 +227,7 @@ describe('coord:send', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     listPresence.mockReset();
     listPresence.mockRejectedValue(new Error('roster down'));
-    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi' }), ctx);
+    const res = await coordSend.handler(parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none' }), ctx);
     expect(out(res).ok).toBe(true); // the send succeeding is sacred
     const body = send1(res);
     expect(body.notWoken).toBeUndefined();
@@ -238,7 +238,7 @@ describe('coord:send', () => {
   it("wake:'required' path does NOT emit a notWoken idle report (the wake path owns liveness via recipient_absent)", async () => {
     listActiveAwaitsForKey.mockResolvedValue([]);
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', wake: 'required' }),
       ctx,
     );
     expect(send1(res).notWoken).toBeUndefined();
@@ -248,7 +248,7 @@ describe('coord:send', () => {
 
   it('wake:true ENQUEUES the message AND fires exactly the recipient keys (P-040)', async () => {
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', wake: true }),
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', wake: true }),
       ctx,
     );
     // enqueue half (durable inbox) still happened
@@ -263,7 +263,7 @@ describe('coord:send', () => {
 
   it('NEVER fires a broadcast key — "*" and "human" are not wakeable (P-042)', async () => {
     await coordSend.handler(
-      parse(coordSend, { to: ['*', 'human', 'su-bee-3'], summary: 'mixed', wake: true }),
+      parse(coordSend, { to: ['*', 'human', 'su-bee-3'], summary: 'mixed', expects: 'none', wake: true }),
       ctx,
     );
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
@@ -275,7 +275,7 @@ describe('coord:send', () => {
 
   it('a send to ONLY "*" fires no wake at all (P-042 — no thunder-herd)', async () => {
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['*'], summary: 'broadcast', wake: true }),
+      parse(coordSend, { to: ['*'], summary: 'broadcast', expects: 'none', wake: true }),
       ctx,
     );
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
@@ -300,7 +300,7 @@ describe('coord:send', () => {
       msgId: null,
     });
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', wake: 'required' }),
       ctx,
     );
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
@@ -325,7 +325,7 @@ describe('coord:send', () => {
       msgId: null,
     });
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: true }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', wake: true }),
       ctx,
     );
     const { wake } = send1(res);
@@ -344,7 +344,7 @@ describe('coord:send', () => {
     const res = await coordSend.handler(
       // Backstop declared → optimistic miss is SILENT (no recipient_absent).
       // Without a backstop the code now reports the miss loudly (recipient_absent:true).
-      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', wake: 'optimistic', backstop: 'queen-survey re-dispatches' }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none', wake: 'optimistic', backstop: 'queen-survey re-dispatches' }),
       ctx,
     );
     const { wake } = send1(res);
@@ -357,7 +357,7 @@ describe('coord:send', () => {
   it("wake:'required' that DOES wake returns NO recipient_absent (woken>0 control)", async () => {
     // default mock returns woken:1 per emit → two targets ⇒ woken:2.
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', wake: 'required' }),
       ctx,
     );
     const { wake } = send1(res);
@@ -372,7 +372,7 @@ describe('coord:send', () => {
     // never got the directive. The fix surfaces it LOUDLY.
     resolveWakeMode.mockResolvedValue('manual');
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1'], summary: 'stand down', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'stand down', expects: 'action', wake: 'required' }),
       ctx,
     );
     // it STAGED, not fired: no wake emitted, the pending-wake was recorded
@@ -400,7 +400,7 @@ describe('coord:send', () => {
       ownerId === 'su-bee-2' ? 'manual' : 'auto',
     );
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', wake: 'required' }),
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', expects: 'action', wake: 'required' }),
       ctx,
     );
     // only the auto target's key fired
@@ -417,7 +417,7 @@ describe('coord:send', () => {
 
   it("broadcast-only with wake:'required' is EXEMPT from recipient_absent (P-005 — '*' was never wakeable)", async () => {
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['*'], summary: 'b', wake: 'required' }),
+      parse(coordSend, { to: ['*'], summary: 'b', expects: 'none', wake: 'required' }),
       ctx,
     );
     expect(emitAwaitedEvent).not.toHaveBeenCalled();

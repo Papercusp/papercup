@@ -16,6 +16,7 @@ import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { generateEd25519KeypairDer } from './identity/ed25519';
 import { hiveKeychainId } from './identity/hive-keypair';
 import { insertHiveIfAbsent, deleteHive } from './hive-store';
+import { unsafeFederatedPotScope } from './federated-pot-scope';
 import {
   upsertHiveMember,
   getHiveMember,
@@ -31,6 +32,11 @@ import { applyPot557RenameAndFixups } from './sync/hyperbee/__tests__/_hive-subs
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-p006';
 const HIVE = 'alpha';
+// EI-18777176681958978: the readers take the FEDERATED pot scope. This fixture writes and
+// reads the same synthetic slug (no joiner topology), so certifying it is correct here — the
+// joiner divergence itself is covered by federated-pot-scope.test.ts + the integration test
+// in federated-pot-scope.integration.test.ts.
+const HIVE_SCOPE = unsafeFederatedPotScope(HIVE, 'integration fixture: one synthetic pot slug, written and read');
 
 function dev(pubkey: string): DeviceAttestationEntry {
   return { device_pubkey: pubkey, gist_id: 'g', gist_url: 'u', device_label: 'd', created_at: 1, signature_by_device: 's' };
@@ -91,7 +97,7 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     await seedHive();
     await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'octo' }, db.sql);
     await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 7, githubUsername: 'octo-renamed' }, db.sql);
-    const members = await listHiveMembers(WS, HIVE, db.sql);
+    const members = await listHiveMembers(WS, HIVE_SCOPE, db.sql);
     expect(members).toHaveLength(1);
     expect(members[0].githubUsername).toBe('octo-renamed');
   });
@@ -149,7 +155,7 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
       expect(read?.revokedPubkeys).toEqual(['dev-evil']); // sticky
       // …and the revoked device's attestation is dropped by the merge filter.
       expect(read?.deviceAttestations.map((d) => d.device_pubkey)).toEqual(['dev-a']);
-      expect([...(await loadRevokedHivePubkeys(WS, HIVE, db.sql))]).toEqual(['dev-evil']);
+      expect([...(await loadRevokedHivePubkeys(WS, HIVE_SCOPE, db.sql))]).toEqual(['dev-evil']);
     });
   });
 
@@ -157,7 +163,7 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     await seedHive();
     await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['x', 'y'] }, db.sql);
     await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 2, githubUsername: 'b', revokedPubkeys: ['y', 'z'] }, db.sql);
-    const revoked = await loadRevokedHivePubkeys(WS, HIVE, db.sql);
+    const revoked = await loadRevokedHivePubkeys(WS, HIVE_SCOPE, db.sql);
     expect([...revoked].sort()).toEqual(['x', 'y', 'z']);
   });
 
@@ -181,15 +187,15 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
   it('is workspace-scoped: a member in one workspace is invisible to another', async () => {
     await seedHive();
     await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['x'] }, db.sql);
-    expect([...(await loadRevokedHivePubkeys('ws-other', HIVE, db.sql))]).toEqual([]);
-    expect(await listHiveMembers('ws-other', HIVE, db.sql)).toHaveLength(0);
+    expect([...(await loadRevokedHivePubkeys('ws-other', HIVE_SCOPE, db.sql))]).toEqual([]);
+    expect(await listHiveMembers('ws-other', HIVE_SCOPE, db.sql)).toHaveLength(0);
   });
 
   it('FK cascade: deleting the Hive removes its members', async () => {
     await seedHive();
     await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a' }, db.sql);
     await deleteHive(WS, HIVE, db.sql);
-    expect(await listHiveMembers(WS, HIVE, db.sql)).toHaveLength(0);
+    expect(await listHiveMembers(WS, HIVE_SCOPE, db.sql)).toHaveLength(0);
   });
 
   describe('WI-892 / EI-3409 — the "*" read sentinel must never become a stored workspace_id', () => {
@@ -205,7 +211,7 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
         db.sql,
       );
       // The operator's authoritative read…
-      const view = await listHiveMembers(WS, HIVE, db.sql);
+      const view = await listHiveMembers(WS, HIVE_SCOPE, db.sql);
       // …vs the raw table rows for the same (workspace, hive).
       const raw = (await db.sql.unsafe(
         `SELECT github_user_id FROM harness_shared.pot_members
@@ -249,7 +255,7 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     await upsertHiveMember({ workspaceId: WS, potHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['bad-pk'] }, db.sql);
 
     // The Hive-scoped revoked union feeds the SAME decider used for per-harness admission.
-    const revoked = await loadRevokedHivePubkeys(WS, HIVE, db.sql);
+    const revoked = await loadRevokedHivePubkeys(WS, HIVE_SCOPE, db.sql);
     const decide = makeAdmissionDecider({ revoked, verifyBinding: async () => 'verified' });
 
     // a revoked pubkey is denied even with a valid sig + binding...

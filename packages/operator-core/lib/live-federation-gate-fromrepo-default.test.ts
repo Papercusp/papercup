@@ -1,28 +1,36 @@
 /**
- * live-federation-gate-fromrepo-default.test.ts — regression guard for WI-5629/WI-5628.
+ * live-federation-gate-fromrepo-default.test.ts — default-drift guard for the gate's
+ * `from-repo` leg (originally WI-5629/WI-5628; re-pointed to D-016 on 2026-07-27).
  *
- * The live-federation gate (papercusp-desktop/bin/live-federation-gate.sh) has a `from-repo`
- * leg that is EXPECTED to fail while WI-971 (outbox drain never wired for joined/created hive
- * harnesses) is open. The production systemd unit already sets
- * `Environment=SKIP_FROMREPO=1` to suppress that known-red — but the SCRIPT's own default
- * used to disagree (0), so any manual/ad-hoc invocation (the kind the gate's own
- * GATE_DISPLAY doc-comment explicitly anticipates, e.g. reproducing a red for debugging)
- * silently re-ran the known WI-971 red and:
- *   (a) filed a confusing "NEW regression — investigate" bug for a condition that isn't new
- *       (live case: WI-5628), and
- *   (b) fed that RED into check_staleness(), filing a spurious "no green run" staleness EI
- *       too (live case: WI-5629), even though the production timer's own state was healthy.
+ * HISTORY. The live-federation gate (papercusp-desktop/bin/live-federation-gate.sh) has a
+ * `from-repo` leg that was EXPECTED to fail while WI-971 (outbox drain never wired for
+ * joined/created hive harnesses) was open, so the script defaulted SKIP_FROMREPO=1 to keep
+ * an ad-hoc invocation from re-running a known-red and filing a confusing "NEW regression"
+ * bug (WI-5628) plus a spurious staleness EI (WI-5629).
  *
- * Fix: default SKIP_FROMREPO to 1 in the script itself, so the script's default now matches
- * documented production intent regardless of caller. An explicit `SKIP_FROMREPO=0` override
- * still opts back in (e.g. to verify WI-971's fix once it lands).
+ * CURRENT INTENT (what this file now guards). Both written conditions for that skip have
+ * closed, so the p2p-release lane FLIPPED the default 1 -> 0 — the leg RUNS by default:
+ *   • WI-971 is RESOLVED and live-verified twice on the packaged binary (WI-5775), and
+ *   • WI-5783 (the WITNESS sub-probe's unrelated failure) is RESOLVED.
+ * Ratified as D-016 on plan `p2p-public-release-remaining-lanes-2026-07-16`, which also
+ * records WHY it matters: with the skip in place the gate could report GREEN while never
+ * running this leg — and a skipped leg is NOT a green leg (D-015).
  *
- * STATIC leg (all platforms): pins the exact default-value shape in source, so a later edit
- * cannot silently regress the default back to 0.
+ * So the guard's DIRECTION is inverted, not its purpose: the default must stay pinned and
+ * explicit so it cannot silently drift again (in EITHER direction) without someone editing
+ * this file and restating the intent. To opt out for a one-off ad-hoc run, pass
+ * SKIP_FROMREPO=1; do not restore 1 as the standing default to quiet a red.
+ *
+ * STATIC leg (all platforms): pins the exact default-value shape in source.
  * BEHAVIORAL leg (all platforms — plain bash parameter expansion, no OS-specific bits):
  * extracts the REAL default-resolution line from the shipping script and evals it under bash,
- * proving (1) a bare/unset invocation resolves to "1" (skip — matches production intent) and
- * (2) an explicit `SKIP_FROMREPO=0` override still resolves to "0" (opt-in path intact).
+ * proving (1) a bare/unset invocation resolves to "0" (run — matches D-016) and (2) an
+ * explicit `SKIP_FROMREPO=1` override still opts out (the ad-hoc escape hatch is intact).
+ *
+ * NOTE for future editors: the behavioral legs append `echo` on its OWN LINE, never
+ * `;`-joined. The extracted source line carries a trailing `# …` comment, and a `;`-joined
+ * echo lands INSIDE that comment — which silently yields '' and makes these tests fail for
+ * a reason that has nothing to do with the default they guard.
  *
  *   cd packages/operator-core && npx vitest run lib/live-federation-gate-fromrepo-default.test.ts
  */
@@ -49,29 +57,49 @@ const ROOT = repoRoot();
 const GATE_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
 const gate = readFileSync(GATE_PATH, 'utf8');
 
-describe('WI-5629/WI-5628: live-federation-gate.sh SKIP_FROMREPO defaults to 1 (skip)', () => {
-  it('source pins the default-resolution shape to :-1, not :-0', () => {
-    expect(gate).toMatch(/SKIP_FROMREPO="\$\{SKIP_FROMREPO:-1\}"/);
-    expect(gate).not.toMatch(/SKIP_FROMREPO="\$\{SKIP_FROMREPO:-0\}"/);
+/**
+ * Extract the shipping script's REAL default-resolution line and resolve it under bash.
+ *
+ * `echo` goes on its OWN LINE (a newline terminates a trailing `#` comment) — a `;`-joined
+ * echo would be swallowed by the comment the line now carries and always return ''.
+ */
+function resolveSkipFromRepo(env: NodeJS.ProcessEnv): string {
+  const line = gate.match(/^SKIP_MATRIX=.*SKIP_FROMREPO=.*$/m)?.[0];
+  expect(
+    line,
+    'could not locate the SKIP_MATRIX/SKIP_FROMREPO default-resolution line in the gate source',
+  ).toBeTruthy();
+  return execFileSync('bash', ['-c', `${line}\necho "$SKIP_FROMREPO"`], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH ?? '', ...env },
+  }).trim();
+}
+
+describe('D-016: live-federation-gate.sh SKIP_FROMREPO defaults to 0 (run the leg)', () => {
+  it('source pins the default-resolution shape to :-0, not :-1', () => {
+    expect(gate).toMatch(/SKIP_FROMREPO="\$\{SKIP_FROMREPO:-0\}"/);
+    expect(gate).not.toMatch(/SKIP_FROMREPO="\$\{SKIP_FROMREPO:-1\}"/);
   });
 
-  it('behaviorally: a bare invocation resolves SKIP_FROMREPO to 1 (matches prod intent without any env override)', () => {
-    const line = gate.match(/^SKIP_MATRIX=.*SKIP_FROMREPO=.*$/m)?.[0];
-    expect(line, 'could not locate the SKIP_MATRIX/SKIP_FROMREPO default-resolution line in the gate source').toBeTruthy();
-    const out = execFileSync('bash', ['-c', `${line}; echo "$SKIP_FROMREPO"`], {
-      encoding: 'utf8',
-      env: { PATH: process.env.PATH ?? '' }, // deliberately no SKIP_FROMREPO in the child env
-    }).trim();
-    expect(out).toBe('1');
+  it('behaviorally: a bare invocation resolves SKIP_FROMREPO to 0 (the leg RUNS — a skipped leg is not a green leg, D-015)', () => {
+    // deliberately no SKIP_FROMREPO in the child env
+    expect(resolveSkipFromRepo({})).toBe('0');
   });
 
-  it('behaviorally: an explicit SKIP_FROMREPO=0 override still opts back in (e.g. to verify WI-971 once it lands)', () => {
-    const line = gate.match(/^SKIP_MATRIX=.*SKIP_FROMREPO=.*$/m)?.[0];
-    expect(line).toBeTruthy();
-    const out = execFileSync('bash', ['-c', `${line}; echo "$SKIP_FROMREPO"`], {
+  it('behaviorally: an explicit SKIP_FROMREPO=1 override still opts out (the one-off ad-hoc escape hatch)', () => {
+    expect(resolveSkipFromRepo({ SKIP_FROMREPO: '1' })).toBe('1');
+  });
+
+  it('the behavioral probe is comment-proof — the extracted line ends in a trailing # comment, and the echo must survive it', () => {
+    // Guards the exact latent break that made both legs above return '' regardless of
+    // the default: a `;`-joined echo lands inside the trailing comment.
+    const line = gate.match(/^SKIP_MATRIX=.*SKIP_FROMREPO=.*$/m)?.[0] ?? '';
+    expect(line).toMatch(/#/); // the line really does carry a trailing comment today
+    const semicolonJoined = execFileSync('bash', ['-c', `${line}; echo "$SKIP_FROMREPO"`], {
       encoding: 'utf8',
-      env: { PATH: process.env.PATH ?? '', SKIP_FROMREPO: '0' },
+      env: { PATH: process.env.PATH ?? '' },
     }).trim();
-    expect(out).toBe('0');
+    expect(semicolonJoined).toBe(''); // …and would silently swallow the probe
+    expect(resolveSkipFromRepo({})).not.toBe(''); // the newline form does not
   });
 });

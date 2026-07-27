@@ -39,10 +39,13 @@
  * untrusted author. The error is logged, never thrown.
  */
 import type { Sql } from 'postgres';
-import {
-  loadHiveMemberDevicePubkeys,
-  loadRevokedHivePubkeys,
-} from '../hive-membership-store';
+import { loadHiveMemberDevicePubkeys, loadRevokedHivePubkeys } from '../hive-membership-store';
+// EI-18777176681958978 (found by the branded-scope typecheck, NOT in the filing's site list):
+// `potHomeSlug` reaches this gate from the PR-host caller as a LOCAL pot handle. Reading
+// revocations under it on a joiner returns an EMPTY union, so this gate — whose whole job is
+// denying a revoked contributor's PR — would admit every revoked device. The resolved scope is
+// used for the DEVICE read too, since `pot_members` rows live under the same federated scope.
+import { resolveFederatedPotScope, type FederatedPotScope } from '../federated-pot-scope';
 
 export interface IsHiveContributorRevokedOpts {
   workspaceId: string;
@@ -57,8 +60,13 @@ export interface IsHiveContributorRevokedOpts {
     githubUserId: number,
     sql?: Sql,
   ) => Promise<string[]>;
-  /** Injected: the Hive's revoked-pubkey union. Default: loadRevokedHivePubkeys. */
-  loadRevoked?: (workspaceId: string, potHomeSlug: string, sql?: Sql) => Promise<Set<string>>;
+  /** Injected: the Hive's revoked-pubkey union. Default: loadRevokedHivePubkeys — called with
+   *  the FEDERATED scope this fn resolves from `potHomeSlug` (EI-18777176681958978). */
+  loadRevoked?: (
+    workspaceId: string,
+    potHomeSlug: FederatedPotScope,
+    sql?: Sql,
+  ) => Promise<Set<string>>;
   /** Injected logger (tests). */
   log?: (msg: string) => void;
   sql?: Sql;
@@ -79,16 +87,24 @@ export async function isHiveContributorRevoked(
   const loadRevoked = opts.loadRevoked ?? loadRevokedHivePubkeys;
 
   try {
+    // Resolve ONCE and use the same scope for both reads: the device attestations and the
+    // revocation union are columns of the SAME pot_members row, so reading them under
+    // different scopes could "find no devices" while a revocation for them exists (or
+    // vice-versa). An injected `loadRevoked` seam is handed the resolved scope too — a test
+    // stub sees a value equal to its own input whenever local == federated.
+    const scope = await resolveFederatedPotScope(opts.workspaceId, opts.potHomeSlug, {
+      ...(opts.sql ? { sql: opts.sql } : {}),
+    });
     const devices = await loadDevicePubkeys(
       opts.workspaceId,
-      opts.potHomeSlug,
+      scope,
       opts.githubUserId,
       opts.sql,
     );
     // No bound device ⇒ not a "revoked member" — the trust gate handles unknowns.
     if (devices.length === 0) return false;
 
-    const revoked = await loadRevoked(opts.workspaceId, opts.potHomeSlug, opts.sql);
+    const revoked = await loadRevoked(opts.workspaceId, scope, opts.sql);
     // Revoked iff EVERY bound device is in the revoked union (no active device).
     return devices.every((pk) => revoked.has(pk));
   } catch (e) {

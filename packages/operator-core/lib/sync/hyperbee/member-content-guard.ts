@@ -32,12 +32,17 @@
  */
 import type { Sql } from 'postgres';
 import { resolveHiveMemberDeviceSet, type MemberDeviceSetDeps } from './hive-member-identity-set';
-import { loadRevokedHivePubkeys } from '../../hive-membership-store';
+// EI-18777176681958978 (found by the branded-scope typecheck, NOT in the filing's site list):
+// `opts.potHomeSlug` here is the content projection's member-set home, which on a joiner can
+// be the LOCAL handle — reading revocations under it returns an EMPTY set, so a revoked
+// member's WRITE would be applied instead of hard-dropped (the exact gate the comment below
+// says this branch exists to enforce). Resolve; idempotent when already federated.
+import { loadRevokedHivePubkeysForLocalPot } from '../../federated-pot-scope';
 
 /** {@link MemberDeviceSetDeps} plus an injectable revoked-pubkey loader (EI-1895 test seam). */
 export interface MemberContentGuardDeps extends MemberDeviceSetDeps {
   /** Injectable for hermetic tests (default: the real federated revoked-pubkey union). */
-  loadRevoked?: typeof loadRevokedHivePubkeys;
+  loadRevoked?: typeof loadRevokedHivePubkeysForLocalPot;
 }
 
 export interface MemberContentGuardOpts {
@@ -103,7 +108,7 @@ export async function decideMemberContentOp(
   // write is HARD-DROPPED — never merely deferred, which could re-apply it on a later retry once the
   // (buggy, unfiltered) member set is re-resolved.
   if (memberSet.has(sourceLogDevicePubkey)) {
-    const loadRevoked = deps?.loadRevoked ?? loadRevokedHivePubkeys;
+    const loadRevoked = deps?.loadRevoked ?? loadRevokedHivePubkeysForLocalPot;
     const revoked = await loadRevoked(opts.workspaceId, opts.potHomeSlug, undefined);
     if (revoked.has(sourceLogDevicePubkey)) {
       return traceMemberDecision('drop', 'revoked', rowHarnessSlug, opts, sourceLogDevicePubkey);

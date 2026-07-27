@@ -50,16 +50,21 @@ function row(over: Partial<HiveMemberRow> = {}): HiveMemberRow {
 
 describe('EI-18771324701216281 — a cross-Hive roster drop warns by default, rate-limited', () => {
   let warn: ReturnType<typeof vi.spyOn>;
+  let nowSpy: ReturnType<typeof vi.spyOn>;
+  let nowMs = 0;
 
+  // Control ONLY Date.now() (the throttle's clock) — deliberately NOT vi.useFakeTimers().
+  // Faking every timer stalls the real write path this file also exercises (the
+  // matching-row case hangs), and that write path is not what we are time-travelling.
   beforeEach(() => {
     __resetA003DropWarnThrottleForTest();
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-27T00:00:00Z'));
+    nowMs = Date.parse('2026-07-27T00:00:00Z');
+    nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
   afterEach(() => {
     warn.mockRestore();
-    vi.useRealTimers();
+    nowSpy.mockRestore();
   });
 
   it('warns on the FIRST drop with NO env var set — the regression this fixes', async () => {
@@ -82,7 +87,7 @@ describe('EI-18771324701216281 — a cross-Hive roster drop warns by default, ra
     expect(warn).toHaveBeenCalledTimes(1); // 500 drops, 1 line — not an outage
 
     // Next window: one line, carrying the 499 it swallowed. The magnitude is not lost.
-    vi.setSystemTime(new Date('2026-07-27T00:01:30Z'));
+    nowMs += 90_000;
     await p.writeToPg(row(), undefined);
     expect(warn).toHaveBeenCalledTimes(2);
     expect(String(warn.mock.calls[1][0])).toContain('499 further drop(s) suppressed');
