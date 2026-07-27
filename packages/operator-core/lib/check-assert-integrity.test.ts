@@ -20,7 +20,7 @@ import { describe, expect, it } from 'vitest';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs lint script, no type declarations
-import { scan } from '../../../scripts/check-assert-integrity.mjs';
+import { scan, scriptsInScope, ROOT } from '../../../scripts/check-assert-integrity.mjs';
 
 type Finding = { file: string; line: number; rule: string; msg: string };
 

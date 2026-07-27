@@ -17,6 +17,7 @@ import {
   ISOLATION_MAX_NAMED_CASES,
   stripAnsi,
   classifyRedAgainstTip,
+  nonTestGateIdsFrom,
   autoRefireCapFromEnv,
   evaluateDeployStaleness,
   buildGreenCheckpointEnv,
@@ -864,6 +865,153 @@ describe('runGreenCheckpoint', () => {
       expect(calls).toContain('runTestsAtRef'); // triaged first...
       expect(calls).toContain('commitsInRange'); // ...then genuinely salvaged
       expect(calls.indexOf('runTestsAtRef')).toBeLessThan(calls.indexOf('commitsInRange'));
+    });
+  });
+
+  // EI-18759362119598634: a LINT/TYPECHECK red never populates `failingFiles` (that list
+  // is test-FILE-only), so it used to fall straight past the whole re-triage above with
+  // nothing to re-run — a lint fixed 90s after the quiet-cut still held the gate red
+  // forever. These pin the sibling rescue: `runGateAtRef` re-verifies the named gate
+  // script(s) directly, the same stale-vs-real classification + auto-refire the
+  // file-based rescue already gets.
+  describe('EI-18759362119598634: gate-only (lint/typecheck) stale-red re-triage', () => {
+    function gatePathWired(opts: { passesAtTip: boolean }) {
+      const calls: string[] = [];
+      const { deps } = stubDeps(false, ['lint:identity-leak']); // no failingFiles ⇒ gate-only red
+      deps.resolveTip = async () => revParse(repo, 'HEAD');
+      deps.runGateAtRef = async (_ref, gateIds) => {
+        calls.push('runGateAtRef');
+        return { pass: opts.passesAtTip, summary: opts.passesAtTip ? `${gateIds.join(',')}: pass at tip` : `${gateIds.join(',')}: FAIL at tip` };
+      };
+      deps.commitsInRange = async () => {
+        calls.push('commitsInRange');
+        return [];
+      };
+      deps.affectedWorkspacesForRange = async () => {
+        calls.push('affectedWorkspacesForRange');
+        return ['@papercusp/web'];
+      };
+      return { deps, calls };
+    }
+
+    it('a STALE gate red (the lint fix already landed at tip) REFIRES and can advance', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2'); // the candidate the quiet-cut judges — still has the leak
+      const c3 = await commit('b', '2', 'c3 — fixes the identity-leak lint'); // tip: already fixed
+      const { deps, calls } = gatePathWired({ passesAtTip: true });
+      let run = 0;
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        run += 1;
+        return run === 1
+          ? { green: false, summary: '1 failed', failingTests: ['lint:identity-leak'] } // no failingFiles
+          : { green: true, summary: 'all pass' };
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(calls).toContain('runGateAtRef');
+      expect(r.green).toBe(true);
+      expect(r.advanced).toBe(true);
+      expect(r.candidate).toBe(c3); // advanced to the TIP, not held on the stale lint red
+    });
+
+    it('a REAL gate red (still fails at tip) holds the gate and still gets the prefix salvage', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      await commit('unrelated.ts', 'x', 'c3');
+      const { deps, calls } = gatePathWired({ passesAtTip: false });
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(calls).toContain('runGateAtRef'); // triaged...
+      expect(r.retriage).toMatchObject({ classification: 'real-red', autoRefire: false });
+      expect(r.advanced).toBe(false);
+      expect(calls).toContain('commitsInRange'); // ...then genuinely salvaged, same as a real test red
+    });
+
+    it('a mixed red (a failing test file ALONGSIDE a gate id) goes through the FILE-based rescue, not the gate one', async () => {
+      // failingFiles is non-empty here, so the existing file rescue applies unchanged;
+      // the gate path must not also fire (it would double-rescue the same red).
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      await commit('unrelated.ts', 'x', 'c3'); // tip strictly newer than the judged candidate
+      const calls: string[] = [];
+      const { deps } = stubDeps(false, ['@papercusp/web', 'lint:identity-leak']);
+      deps.runGreen = async () => ({
+        green: false,
+        summary: '1 failed + 1 lint',
+        failingTests: ['@papercusp/web', 'lint:identity-leak'],
+        failingFiles: [{ file: 'src/failing.test.ts', workspace: '@papercusp/web' }],
+      });
+      deps.resolveTip = async () => revParse(repo, 'HEAD');
+      deps.runTestsAtRef = async () => {
+        calls.push('runTestsAtRef');
+        return { pass: false, summary: 'still red at tip' };
+      };
+      deps.runGateAtRef = async () => {
+        calls.push('runGateAtRef');
+        return { pass: true, summary: 'pass at tip' };
+      };
+
+      await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(calls).toContain('runTestsAtRef');
+      expect(calls).not.toContain('runGateAtRef');
+    });
+
+    it('absent runGateAtRef (existing stub) never rescues a gate-only red — today\'s plain-red behaviour preserved', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      const { deps } = stubDeps(false, ['lint:identity-leak']);
+      deps.resolveTip = async () => revParse(repo, 'HEAD');
+      expect(deps.runGateAtRef).toBeUndefined();
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(r.advanced).toBe(false);
+      expect(r.retriage).toBeUndefined();
+    });
+
+    it('an unmapped/unknown signature (not in NON_TEST_GATE_SCRIPTS) is never guessed at — no gate rescue attempted', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      const calls: string[] = [];
+      // '@papercusp/operator-vite' (a build break) is deliberately NOT in NON_TEST_GATE_SCRIPTS.
+      const { deps } = stubDeps(false, ['@papercusp/operator-vite']);
+      deps.resolveTip = async () => revParse(repo, 'HEAD');
+      deps.runGateAtRef = async () => {
+        calls.push('runGateAtRef');
+        return { pass: true, summary: 'pass at tip' };
+      };
+
+      await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(calls).not.toContain('runGateAtRef');
+    });
+  });
+
+  describe('nonTestGateIdsFrom (EI-18759362119598634, pure)', () => {
+    it('returns the ids when every failingTests entry is a known non-test gate signature', () => {
+      expect(nonTestGateIdsFrom(['lint:identity-leak'])).toEqual(['lint:identity-leak']);
+      expect(nonTestGateIdsFrom(['lint:tsc', 'lint:design-primitives'])).toEqual(['lint:tsc', 'lint:design-primitives']);
+    });
+
+    it('returns [] for an empty/undefined list — nothing to do', () => {
+      expect(nonTestGateIdsFrom(undefined)).toEqual([]);
+      expect(nonTestGateIdsFrom([])).toEqual([]);
+    });
+
+    it('returns [] when ANY entry is not a known gate id (a test file/workspace, or an unmapped signature)', () => {
+      expect(nonTestGateIdsFrom(['@papercusp/web'])).toEqual([]);
+      expect(nonTestGateIdsFrom(['lint:identity-leak', '@papercusp/web'])).toEqual([]);
+      expect(nonTestGateIdsFrom(['@papercusp/operator-vite'])).toEqual([]);
+      expect(nonTestGateIdsFrom(['package.json-unreadable'])).toEqual([]);
     });
   });
 

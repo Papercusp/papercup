@@ -155,6 +155,44 @@ export function errorsIntroduced(baseline: LintFinding[], proposed: LintFinding[
  *  `allowShrink: true` (EI-83 / audit P-040). */
 export const SUSPICIOUS_SHRINK_RATIO = 0.2;
 
+/**
+ * One item that was TERMINAL (`done`/`dropped`) in the live plan but is
+ * proposed to move BACKWARD to a non-terminal status (EI-18756269998422483).
+ */
+export interface StatusRegressionEntry {
+  id: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Items whose stored status would REGRESS off a terminal state
+ * (EI-18756269998422483: "a plan item's `done` status silently reverted to
+ * `todo` mid-session ... completion state is being lost, not just
+ * mis-displayed"). Root-caused to exactly this shape: a whole-document write
+ * built from a STALE read (no CAS baseline carried forward) silently
+ * clobbered an unrelated item's status back to whatever the caller's stale
+ * copy said, even though the write never named that item. The structured
+ * verbs (plans:set-status) cannot do this — each touches exactly one named
+ * item — so this guard exists only for the genuinely unstructured writers
+ * (set-content / set-content-chunk).
+ */
+export function detectStatusRegressions(
+  currentParsed: ParsedPlan,
+  proposed: ParsedPlan,
+): StatusRegressionEntry[] {
+  const proposedById = new Map(proposed.items.map((it) => [it.id, it]));
+  const out: StatusRegressionEntry[] = [];
+  for (const cur of currentParsed.items) {
+    if (cur.storedStatus !== 'done' && cur.storedStatus !== 'dropped') continue;
+    const next = proposedById.get(cur.id);
+    if (next && next.storedStatus !== cur.storedStatus) {
+      out.push({ id: cur.id, from: cur.storedStatus, to: next.storedStatus });
+    }
+  }
+  return out;
+}
+
 /** Once a plan carries at least this many items+decisions, wiping most of
  *  them is a red flag rather than ordinary churn. Below it the byte-ratio
  *  guard is the only shrink check — a tiny plan legitimately rewrites its

@@ -296,4 +296,4 @@ function main() {
 const invokedPath = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : '';
 if (import.meta.url === invokedPath) main();
 
-export { scan };
+export { scan, scriptsInScope, ROOT };

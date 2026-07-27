@@ -78,6 +78,9 @@
  * @property {PerFileGateEntry[]} regressions
  * @property {PerFileGateEntry[]} improvements
  * @property {PerFileGateEntry[]} [attributed]
+ * @property {PerFileGateEntry[]} [typeAttributed] - Subset of `attributed` NOT in the caller's
+ *   changed-file set, attributed instead because the file references an exported type/interface
+ *   one of the changed files also exports (EI-18756182128903253's cause-aware widening).
  * @property {PerFileGateEntry[]} [peerDrift]
  * @property {PerFileGateEntry[]} [newFiles] - Regressions in files ABSENT from the baseline.
  * @property {number} total
@@ -150,6 +153,44 @@ export function gitChangedFiles(root?: string): Set<string>;
  */
 export function parseExplicitFiles(argv: string[]): Set<string> | null;
 /**
+ * EI-18756182128903253 — the cause-aware widening (fix option 1 of the filed bug): `--mine` /
+ * `--files` scope attribution to the literal set of files the caller changed, which is
+ * structurally BLIND to the single most common gate-redding change shape — adding a REQUIRED
+ * field to a shared exported interface. By definition, the new type errors that causes land in
+ * OTHER files (the fixtures/constructors that build that type and were never updated), not in
+ * the file the caller edited. So the caller's own `--mine` reads clean, and the break first
+ * surfaces hours later at green-checkpoint, redding the gate for the whole fleet.
+ *
+ * The fix: when a changed file exports a type/interface/class/enum, treat every OTHER file that
+ * textually references that name as ALSO attributed to the caller if it regresses — not just the
+ * changed file itself. This is a coarse, name-based proxy (it does not diff which specific
+ * declaration line changed, and cannot tell a real reference from an unrelated identifier of the
+ * same name) — deliberately so: for a lint GATE, the dangerous failure direction is a false
+ * negative (silently missing the real cause), not a false positive (a name collision needlessly
+ * widening attribution by one entry). Widening is always safe; missing is what cost the fleet a
+ * gate cycle four times in 24 hours.
+ *
+ * Exported top-level type/interface/class/enum names declared in the given files' CURRENT
+ * on-disk content.
+ *
+ * @param {string} root
+ * @param {Iterable<string>} files
+ * @returns {Set<string>}
+ */
+export function exportedTypeNames(root: string, files: Iterable<string>): Set<string>;
+/**
+ * Which of `candidateFiles` reference any of `typeNames` as a standalone identifier — the other
+ * half of `exportedTypeNames` above (EI-18756182128903253): cross-reference a changed file's
+ * exported type names against every OTHER file, so a fixture that never added the new required
+ * field gets attributed to the change that added it, instead of reported as unrelated peer drift.
+ *
+ * @param {string} root
+ * @param {Iterable<string>} candidateFiles
+ * @param {Set<string>} typeNames
+ * @returns {Set<string>}
+ */
+export function filesReferencingTypeNames(root: string, candidateFiles: Iterable<string>, typeNames: Set<string>): Set<string>;
+/**
  * Resolve the EFFECTIVE per-file baseline, inheriting cross-package files from their OWNING
  * package's baseline (EI-18649014117371738).
  *
@@ -216,15 +257,17 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   brokenFiles: string[],
  *   updateFlag?: boolean,
  *   changedFiles?: Set<string> | null,
+ *   typeReferencedFiles?: Set<string> | null,
  * }} args
  * @returns {PerFileGateResult}
  */
-export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles }: {
+export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles, }: {
     currentByFile: Record<string, number>;
     baselineByFile: Record<string, number>;
     brokenFiles: string[];
     updateFlag?: boolean;
     changedFiles?: Set<string> | null;
+    typeReferencedFiles?: Set<string> | null;
 }): PerFileGateResult;
 /**
  * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.
@@ -391,6 +434,12 @@ export type PerFileGateResult = {
     regressions: PerFileGateEntry[];
     improvements: PerFileGateEntry[];
     attributed?: PerFileGateEntry[] | undefined;
+    /**
+     * - Subset of `attributed` NOT in the caller's
+     * changed-file set, attributed instead because the file references an exported type/interface
+     * one of the changed files also exports (EI-18756182128903253's cause-aware widening).
+     */
+    typeAttributed?: PerFileGateEntry[] | undefined;
     peerDrift?: PerFileGateEntry[] | undefined;
     /**
      * - Regressions in files ABSENT from the baseline.
