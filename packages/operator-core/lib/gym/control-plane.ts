@@ -23,6 +23,7 @@ import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { recordBehaviorChange } from '../change-ledger/change-ledger';
 import type { LoopProposalRecord } from './loop';
 import { recordChampionAcceptance } from './post-acceptance-outcomes';
+import type { GymJudgedCorpus } from './task-corpus';
 
 /** The judge rubric is edited like a role prompt but isn't an AGENT_ROLES role. */
 export const JUDGE_PROMPT_KEY = 'judge';
@@ -57,6 +58,12 @@ export interface GymProposalRow {
   status: string;
   createdAt: number;
   decidedAt: number | null;
+  /**
+   * The corpus this challenger was judged on — 'synthetic' | 'real' | 'mixed'
+   * (P-003). Surfaced on the Gym card so a champion earned on the generated 4-line
+   * stub can never be misread as one earned on real work.
+   */
+  taskCorpus: GymJudgedCorpus;
 }
 
 export interface GymAutoloopConfig {
@@ -121,6 +128,12 @@ function mapProposal(r: Row): GymProposalRow {
     status: str(r.status),
     createdAt: Number(r.created_at),
     decidedAt: numOrNull(r.decided_at),
+    // Unknown/absent provenance reads as 'synthetic', never 'real' (P-003) — the
+    // same one-way default the DB column and the TS coercer use.
+    taskCorpus:
+      r.task_corpus === 'real' || r.task_corpus === 'mixed'
+        ? (r.task_corpus as GymJudgedCorpus)
+        : 'synthetic',
   };
 }
 
@@ -193,6 +206,14 @@ export interface RecordProposalInput {
   /** Override the generated id (defaults to a deterministic variant+role key). */
   id?: string;
   now?: number;
+  /**
+   * The corpus this challenger was JUDGED on (gym-real-fitness-signal-2026-07-27
+   * P-003) — 'synthetic' | 'real' | 'mixed', from judgedCorpusFromTasks over the
+   * cycle's actual task set. OMITTED ⇒ persisted as 'synthetic', because every
+   * champion crowned before P-001 was earned on a generated 4-line stub and must
+   * never read as though it were earned on real work.
+   */
+  taskCorpus?: GymJudgedCorpus;
 }
 
 /**
@@ -206,14 +227,16 @@ export async function recordProposal(sql: Sql, input: RecordProposalInput): Prom
   await sql`
     INSERT INTO harness_shared.gym_proposals
       (id, workspace_id, harness_slug, cycle, variant_id, role, original_md, proposed_md, rationale,
-       dev_anchor_delta, cost_delta, probe_status, status, created_at)
+       dev_anchor_delta, cost_delta, probe_status, status, task_corpus, created_at)
     VALUES (${id}, ${input.workspaceId}, ${input.harnessSlug}, ${input.cycle}, ${input.variantId ?? null}, ${input.role},
        ${input.originalMd ?? null}, ${input.proposedMd}, ${input.rationale ?? null},
-       ${input.devAnchorDelta ?? null}, ${input.costDelta ?? null}, ${input.probeStatus ?? null}, 'pending', ${now})
+       ${input.devAnchorDelta ?? null}, ${input.costDelta ?? null}, ${input.probeStatus ?? null}, 'pending',
+       ${input.taskCorpus ?? 'synthetic'}, ${now})
     ON CONFLICT (id) DO UPDATE SET
        proposed_md = EXCLUDED.proposed_md, original_md = EXCLUDED.original_md, rationale = EXCLUDED.rationale,
        dev_anchor_delta = EXCLUDED.dev_anchor_delta, cost_delta = EXCLUDED.cost_delta,
-       probe_status = EXCLUDED.probe_status, cycle = EXCLUDED.cycle
+       probe_status = EXCLUDED.probe_status, cycle = EXCLUDED.cycle,
+       task_corpus = EXCLUDED.task_corpus
      WHERE gym_proposals.status = 'pending'`;
   // Push-on-write for the Learning tab's Gym view (owner report 2026-07-26 —
   // learning.gym had no producer; pg_notify fans out cross-process).

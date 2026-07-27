@@ -27,6 +27,7 @@ import { rubricHash, type GymJudgeRubric } from './judge-scoring';
 import type { VariantOverlay } from './variant-overlay';
 import type { VariantComparisonRow } from './store';
 import type { RatePauseDeps } from './rate-pause';
+import type { GymTaskCorpus } from './task-corpus';
 
 export interface AbVariant {
   variantId: string;
@@ -43,6 +44,14 @@ export interface AbTask {
   intent: string;
   /** Repo summary the judge weighs spec-gaps against. */
   projectContext: string;
+  /**
+   * Which corpus this task belongs to (gym-real-fitness-signal-2026-07-27 P-003).
+   * 'synthetic' = a generated stub substrate (proves the MECHANISM only); 'real' =
+   * derived from genuinely shipped work with a known outcome. OMITTED ⇒ treated as
+   * 'synthetic' everywhere downstream, so an unlabelled task can never inflate a
+   * champion's provenance. Read by the `fitness-signal-is-real` release gate.
+   */
+  corpus?: GymTaskCorpus;
 }
 
 export interface AbConfig {

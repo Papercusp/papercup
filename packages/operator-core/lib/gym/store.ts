@@ -10,6 +10,7 @@ import type { Sql } from 'postgres';
 import type { VariantOverlay } from './variant-overlay';
 import type { GymScore } from './judge';
 import { assertGymTaskNotContaminated } from './report-set-firewall';
+import { asGymTaskCorpus } from './task-corpus';
 
 type Row = Record<string, unknown>;
 
@@ -59,9 +60,10 @@ export async function insertTask(sql: Sql, t: TaskRow): Promise<void> {
     generatedBy: t.generatedBy,
   });
   await sql`
-    INSERT INTO harness_gym.gym_tasks (task_id, pool, repo_url, repo_commit, spec, intent, planted_bug, generated_by)
+    INSERT INTO harness_gym.gym_tasks (task_id, pool, repo_url, repo_commit, spec, intent, planted_bug, generated_by, corpus)
     VALUES (${t.taskId}, ${t.pool}, ${t.repoUrl}, ${t.repoCommit}, ${t.spec}, ${t.intent},
-            ${t.plantedBug ? JSON.stringify(t.plantedBug) : null}::text::jsonb, ${t.generatedBy ?? null})
+            ${t.plantedBug ? JSON.stringify(t.plantedBug) : null}::text::jsonb, ${t.generatedBy ?? null},
+            ${asGymTaskCorpus((t as { corpus?: unknown }).corpus)})
     ON CONFLICT (task_id) DO NOTHING`;
 }
 
@@ -188,7 +190,7 @@ export async function copyRunAnalyticsToDurable(
   const hs = scope.harnessSlug;
 
   const [tasks, variants, runs, scores, cycles] = await Promise.all([
-    src`SELECT task_id, pool, spec, intent, repo_url, repo_commit, generated_by, created_at
+    src`SELECT task_id, pool, spec, intent, repo_url, repo_commit, generated_by, corpus, created_at
           FROM harness_gym.gym_tasks` as Promise<Row[]>,
     src`SELECT variant_id, parent_id, label, prompt_overrides, diff_from_parent, proposer_rationale, status, created_at
           FROM harness_gym.gym_variants` as Promise<Row[]>,
@@ -203,12 +205,12 @@ export async function copyRunAnalyticsToDurable(
   await dst.begin(async (tx) => {
     for (const r of tasks) {
       await tx`
-        INSERT INTO harness_gym_durable.gym_tasks (workspace_id, harness_slug, task_id, pool, spec, intent, repo_url, repo_commit, generated_by, created_at)
+        INSERT INTO harness_gym_durable.gym_tasks (workspace_id, harness_slug, task_id, pool, spec, intent, repo_url, repo_commit, generated_by, corpus, created_at)
         VALUES (${ws}, ${hs}, ${r.task_id as string}, ${r.pool as string}, ${(r.spec ?? null) as string | null}, ${(r.intent ?? null) as string | null},
                 ${(r.repo_url ?? null) as string | null}, ${(r.repo_commit ?? null) as string | null}, ${(r.generated_by ?? null) as string | null},
-                ${(r.created_at ?? new Date()) as Date})
+                ${asGymTaskCorpus(r.corpus)}, ${(r.created_at ?? new Date()) as Date})
         ON CONFLICT (workspace_id, harness_slug, task_id) DO UPDATE
-          SET pool = EXCLUDED.pool, spec = EXCLUDED.spec, intent = EXCLUDED.intent`;
+          SET pool = EXCLUDED.pool, spec = EXCLUDED.spec, intent = EXCLUDED.intent, corpus = EXCLUDED.corpus`;
     }
     for (const r of variants) {
       await tx`

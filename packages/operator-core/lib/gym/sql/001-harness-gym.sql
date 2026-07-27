@@ -20,8 +20,19 @@ CREATE TABLE IF NOT EXISTS harness_gym.gym_tasks (
   planted_bug  JSONB,
   generated_by TEXT,
   metadata     JSONB,
+  -- Which corpus this task belongs to (gym-real-fitness-signal-2026-07-27 P-003).
+  -- 'synthetic' = a generated stub substrate that proves only the MECHANISM;
+  -- 'real' = derived from genuinely shipped work with a known outcome. Defaults to
+  -- 'synthetic' so an unlabelled task can never inflate a champion's provenance,
+  -- and rides the durable copy into harness_gym_durable.gym_tasks.corpus, which the
+  -- `fitness-signal-is-real` release gate reads.
+  corpus       TEXT NOT NULL DEFAULT 'synthetic' CHECK (corpus IN ('synthetic','real')),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Idempotent add for gym DBs provisioned before P-003 (this file is re-applied per
+-- ephemeral gym boot, but a long-lived gym DB may predate the column).
+ALTER TABLE harness_gym.gym_tasks
+  ADD COLUMN IF NOT EXISTS corpus TEXT NOT NULL DEFAULT 'synthetic';
 
 -- Prompt-overlay variants + lineage (D-010/D-015). models is reserved (D-015).
 CREATE TABLE IF NOT EXISTS harness_gym.gym_variants (

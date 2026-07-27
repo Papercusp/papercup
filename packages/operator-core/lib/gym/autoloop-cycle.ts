@@ -76,9 +76,18 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Mask credentials in postgres DSNs (safe for logs / reports). */
 export const maskDsn = (s: string): string => s.replace(/(postgres(?:ql)?:\/\/[^:@\s/]+:)[^@\s/]*(@)/g, '$1***$2');
 
-/** Two pools on one tiny substrate: a train task (drives the proposer) + a frozen dev-anchor. */
+/** Two pools on one tiny substrate: a train task (drives the proposer) + a frozen dev-anchor.
+ *
+ *  ⚠ EVERY TASK HERE IS `corpus: 'synthetic'` AND SAYS SO (P-003). These three tasks
+ *  ("add /health", "expose /version", "add /ready") run against `substrateFiles`
+ *  below — a 4-line generated stub whose only build gate is `node --check`. A prompt
+ *  that wins here has proven it can edit a toy file, nothing more. The label is what
+ *  makes that legible downstream: it rides into gym_tasks.corpus and is what the
+ *  `fitness-signal-is-real` release gate (P-011) fails on. Replacing this function
+ *  with a REAL corpus is P-001; until then the honest reading of every champion
+ *  crowned from it is "synthetic". */
 function fixedTasks(): { tasks: LoopTask[]; substrateFiles: Array<{ path: string; content: string }> } {
-  const common = { repoUrl: '__SET_AT_RUNTIME__', repoCommit: '__SET_AT_RUNTIME__', projectContext: 'A tiny Node service (index.js) with a minimal HTTP handler.' };
+  const common = { repoUrl: '__SET_AT_RUNTIME__', repoCommit: '__SET_AT_RUNTIME__', projectContext: 'A tiny Node service (index.js) with a minimal HTTP handler.', corpus: 'synthetic' as const };
   return {
     tasks: [
       { taskId: 'gym-loop-health', pool: 'train', spec: 'Add a health endpoint so operators can check the service is alive.', intent: 'Operators need a liveness probe for the service.', ...common },
