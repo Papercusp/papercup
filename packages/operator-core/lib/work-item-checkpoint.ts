@@ -24,6 +24,16 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 import { setCarryNote, setCarryNoteWithPrior, getCarryNote, workItemScope } from './carry-note';
+import {
+  DECLARED_DEPS_VERSION,
+  computeFreshness,
+  parseDeclaredDeps,
+  shouldMarkRecomputed,
+  type DeclaredDeps,
+  type DepStamp,
+  type FreshnessResult,
+} from './freshness';
+import { resolveCurrentTokens, validateDep } from './freshness/resolvers';
 
 export interface WorkItemCheckpointRef {
   /**
@@ -125,6 +135,15 @@ export interface WorkItemCheckpointWithPriorResult {
   /** EI-18140632570924965: present when `guard` blocked this write — nothing was
    *  written; `stored` echoes the UNCHANGED prior checkpoint. */
   blockedReason?: string;
+  /** P-007/D-013: declared dependencies this write could not resolve, so they were
+   *  NOT stamped. Surfaced (never fatal) because a dep that can never resolve is
+   *  worse than no dep — it looks declared but can never invalidate. */
+  depsWarnings?: string[];
+  /** P-007/D-013: how many declared dependencies were stamped on this write. */
+  depsStamped?: number;
+  /** P-007/D-013: true when the note this write REPLACED had already gone stale —
+   *  the new note is marked `recomputed` for its readers. */
+  recomputed?: boolean;
 }
 
 /** Same semantics + same progress-anchor bump as {@link setWorkItemCheckpoint}, plus
@@ -133,7 +152,16 @@ export interface WorkItemCheckpointWithPriorResult {
 export async function setWorkItemCheckpointWithPrior(
   ref: WorkItemCheckpointRef,
   checkpoint: string | null | undefined,
-  opts?: { guard?: (priorNote: string | null, priorLength: number) => string | null },
+  opts?: {
+    guard?: (priorNote: string | null, priorLength: number) => string | null;
+    /**
+     * P-007/D-013 declared dependencies as `kind:ref` tags (see
+     * {@link SUPPORTED_DEP_KINDS}). Tri-state, matching the substrate:
+     * `undefined` ⇒ preserve the existing declaration, `[]`/`null` ⇒ clear it,
+     * a non-empty list ⇒ resolve each to a version token and stamp it.
+     */
+    dependsOn?: readonly string[] | null;
+  },
 ): Promise<WorkItemCheckpointWithPriorResult> {
   // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
   // the unscoped-session wildcard '*' (or nothing) must never key a row under a
@@ -144,6 +172,56 @@ export async function setWorkItemCheckpointWithPrior(
   if (!ws || !ref.workItemId) {
     throw new Error('setWorkItemCheckpoint — workspaceId and workItemId are required');
   }
+  // P-007/D-013: resolve + stamp the declared dependencies BEFORE the write, so the
+  // stamp records the world as it was when the note was authored.
+  const depsSpecified = opts !== undefined && 'dependsOn' in opts;
+  let depsPayload: DeclaredDeps | null | undefined;
+  let depsWarnings: string[] | undefined;
+  let recomputed = false;
+
+  if (depsSpecified) {
+    const declared = [...new Set(opts?.dependsOn ?? [])];
+    if (declared.length === 0) {
+      depsPayload = null; // explicit clear
+    } else {
+      const priorDeps = await getWorkItemCheckpointDeps(ref);
+      // Resolve the UNION so the prior note's verdict (which decides `recomputed`)
+      // is computed against real tokens even when the dep set changed.
+      const union = [...new Set([...declared, ...(priorDeps?.stamps.map((s) => s.dep) ?? [])])];
+      const tokens = await resolveCurrentTokens(union, {
+        workspaceId: ws,
+        harness: ref.harness,
+      });
+      recomputed = shouldMarkRecomputed(
+        priorDeps ? computeFreshness({ deps: priorDeps, currentTokens: tokens }).verdict : null,
+      );
+
+      const now = Date.now();
+      const stamps: DepStamp[] = [];
+      const warnings: string[] = [];
+      for (const dep of declared) {
+        const invalid = validateDep(dep);
+        if (invalid) {
+          warnings.push(invalid);
+          continue;
+        }
+        const token = tokens.get(dep);
+        if (token == null) {
+          // Stamping an unresolvable dep would make it read as CHANGED the moment
+          // it first resolves — a manufactured false stale. Drop it and say so.
+          warnings.push(`"${dep}" could not be resolved right now and was not stamped`);
+          continue;
+        }
+        stamps.push({ dep, token, at: now });
+      }
+      depsPayload =
+        stamps.length > 0
+          ? { v: DECLARED_DEPS_VERSION, stamps, ...(recomputed ? { recomputed: true } : {}) }
+          : null;
+      if (warnings.length > 0) depsWarnings = warnings;
+    }
+  }
+
   // journal:false — the bee checkpoint is a pure note (no trajectory ring): a
   // clear DELETES the row (the next invocation re-derives from the dossier —
   // graceful degradation, mig 281 semantics), byte-identical to the pre-P-001 store.
@@ -152,11 +230,59 @@ export async function setWorkItemCheckpointWithPrior(
   const { stored, priorLength, blockedReason } = await setCarryNoteWithPrior(
     { scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws },
     checkpoint,
-    { journal: false, guard: opts?.guard },
+    // Only pass `deps` when the caller spoke — otherwise the substrate preserves
+    // the existing declaration (see setCarryNoteWithPrior's `deps` tri-state).
+    { journal: false, guard: opts?.guard, ...(depsSpecified ? { deps: depsPayload } : {}) },
   );
   // A blocked write is a no-op — never bump the progress anchor for it.
   if (stored !== null && !blockedReason) await bumpCheckpointProgressAnchor(ref, ws);
-  return { stored, priorLength, blockedReason };
+  return {
+    stored,
+    priorLength,
+    blockedReason,
+    ...(depsWarnings ? { depsWarnings } : {}),
+    ...(depsSpecified ? { depsStamped: depsPayload?.stamps.length ?? 0 } : {}),
+    ...(recomputed ? { recomputed: true } : {}),
+  };
+}
+
+/** Read a work-item checkpoint's declared dependencies, or `null` when it declared
+ *  none (or the payload is malformed — which always means undeclared, never stale). */
+export async function getWorkItemCheckpointDeps(ref: WorkItemCheckpointRef): Promise<DeclaredDeps | null> {
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId);
+  if (!ws || !ref.workItemId) return null;
+  const scope = workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId);
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ deps: unknown }[]>`
+      SELECT deps FROM harness_shared.carry_notes
+       WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
+    return parseDeclaredDeps(rows[0]?.deps);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The READ side of the freshness axis: resolve a checkpoint's declared dependencies
+ * against the world NOW and return the verdict.
+ *
+ * Returns `undefined` when the checkpoint declared nothing — the caller then falls
+ * back to the existing time heuristics (D-013's precedence rule: a declared verdict
+ * OVERRIDES them; they remain the fallback for undeclared notes).
+ */
+export async function getWorkItemCheckpointFreshness(
+  ref: WorkItemCheckpointRef,
+): Promise<FreshnessResult | undefined> {
+  const deps = await getWorkItemCheckpointDeps(ref);
+  if (!deps) return undefined;
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId);
+  if (!ws) return undefined;
+  const tokens = await resolveCurrentTokens(
+    deps.stamps.map((s) => s.dep),
+    { workspaceId: ws, harness: ref.harness },
+  );
+  return computeFreshness({ deps, currentTokens: tokens });
 }
 
 /**

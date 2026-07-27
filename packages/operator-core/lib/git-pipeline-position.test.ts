@@ -924,11 +924,21 @@ describe('computeStages: position x health', () => {
   it('the 4x-filed class: `serving` is NEVER advancing from git state alone', () => {
     // EI-18740960754854672 + 3 duplicates: `deployed ✓` was read as "live" while the
     // process served older code. Git state can never justify claiming a process is
-    // serving something, so this stage must not claim it (P-003 supplies the truth).
-    const s = computeStages(input());
+    // serving something. P-003 supplies that truth from a process probe — and this
+    // asserts the OTHER half of the same rule: when the probe cannot answer, the
+    // stage degrades to `unknown`, never back to `advancing`. Every stage around it
+    // is fully green here, so only a git-derived inference could turn this green.
+    const noProcessEvidence = evaluateServing({
+      runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
+      process: null,
+      codeAsOfMs: Date.now(),
+      codeAsOfSource: 'deploy',
+    });
+    const s = computeStages(input({ serving: noProcessEvidence }));
     expect(stage(s, 'deployed').position).toBe('past');
-    expect(stage(s, 'serving').health).not.toBe('advancing');
-    expect(stage(s, 'serving').detail).toMatch(/"deployed" is not "running"/);
+    expect(stage(s, 'serving').health).toBe('unknown');
+    expect(stage(s, 'serving').position).toBe('pending');
+    expect(stage(s, 'serving').detail).toMatch(/not the same as "live"/);
   });
 
   it('is pure: no git calls, and stages are ordered source->live', () => {

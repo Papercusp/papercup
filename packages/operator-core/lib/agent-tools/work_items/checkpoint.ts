@@ -159,6 +159,7 @@ const itemSpec = z.object({
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
       'more than half is BLOCKED (`shrink_blocked`) by default. Pass true to confirm the replace is intentional.',
   ),
+  dependsOn: dependsOnSpec(),
 });
 
 export default defineTool({
@@ -305,24 +306,35 @@ export default defineTool({
         let priorLength: number | null = null;
         let stored: string | null;
         let blockedReason: string | undefined;
-        if (!wantsAppend && checkpointToStore && checkpointToStore.length > 0) {
-          const newLength = checkpointToStore.length;
-          const res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
-            guard: wantsConfirmShrink
-              ? undefined
-              : (_priorNote, priorLen) =>
+        // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
+        // existing declaration, [] ⇒ clear, list ⇒ re-stamp), so only forward the
+        // key when the caller actually supplied one.
+        const declaredDeps = it.dependsOn ?? args.dependsOn;
+        const depsOpt = declaredDeps !== undefined ? { dependsOn: declaredDeps } : {};
+        // Both branches go through setWorkItemCheckpointWithPrior — the plain
+        // setWorkItemCheckpoint is only a wrapper over it, so unifying costs nothing
+        // and lets the shrink guard, the prior length AND the P-007 dependency
+        // stamping apply on the append/clear paths too.
+        const isPlainReplace = !wantsAppend && !!checkpointToStore && checkpointToStore.length > 0;
+        const newLength = checkpointToStore?.length ?? 0;
+        const res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
+          guard:
+            isPlainReplace && !wantsConfirmShrink
+              ? (_priorNote, priorLen) =>
                   priorLen > 500 && newLength < priorLen * 0.5
                     ? `plain replace would shrink the checkpoint from ${priorLen} to ${newLength} chars (>50% loss). ` +
                       'Pass { append: true } to join onto the existing checkpoint instead, or { confirmShrink: true } ' +
                       'if this replace is intentional.'
-                    : null,
-          });
-          stored = res.stored;
-          priorLength = res.priorLength;
-          blockedReason = res.blockedReason;
-        } else {
-          stored = await setWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }, checkpointToStore);
-        }
+                    : null
+              : undefined,
+          ...depsOpt,
+        });
+        stored = res.stored;
+        priorLength = res.priorLength;
+        blockedReason = res.blockedReason;
+        const depsWarnings = res.depsWarnings;
+        const depsStamped = res.depsStamped;
+        const depsRecomputed = res.recomputed;
         if (blockedReason) {
           return { ok: false as const, id: it.id, error: `shrink_blocked — ${blockedReason}` };
         }

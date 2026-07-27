@@ -75,7 +75,8 @@ import { guardResource } from '../locks/resource-lock-guard';
 import { resourceLockDomain } from '../locks/coordination-domain';
 import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
-import { probeServiceStart, RESTART_TARGET_UNITS } from './systemd-service-probe';
+import { probeServiceStart } from './systemd-service-probe';
+import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 const MAX_DRAIN_SEC = 300;

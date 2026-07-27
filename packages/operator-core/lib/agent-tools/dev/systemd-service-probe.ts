@@ -25,27 +25,6 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 
-/** A `dev:restart { target }` value. */
-export type RestartTargetName = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar';
-
-/**
- * The systemd --user unit behind each restart target — THE one source of these
- * unit names.
- *
- * It lives in this dependency-light module (rather than in dev/restart.ts, which
- * pulls zod + agent-mcp + db-org + the whole locks stack) so that a READ-ONLY
- * caller can ask "which unit runs this?" without importing the restart tool.
- * git-pipeline-agent-state-2026-07-26 P-003 is the second such caller; the unit
- * strings must never be re-typed at a call site.
- */
-export const RESTART_TARGET_UNITS: Record<RestartTargetName, string> = {
-  dev: 'papercup-dev-api.service',
-  staging: 'papercup-staging-api.service',
-  gateway: 'papercup-inference-gateway.service',
-  'bg-host': 'papercup-bg-host.service',
-  'embed-sidecar': 'papercup-embed-sidecar.service',
-};
-
 export interface ServiceStartInfo {
   /** false ⇒ could not determine (no systemd / non-linux / probe error) —
    *  the caller should fall back to trusting the lock marker. */

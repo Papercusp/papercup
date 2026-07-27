@@ -25,7 +25,8 @@ import { promisify } from 'node:util';
 import * as path from 'node:path';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
-import { probeServiceStart, RESTART_TARGET_UNITS } from './agent-tools/dev/systemd-service-probe';
+import { probeServiceStart } from './agent-tools/dev/systemd-service-probe';
+import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 
 const pexec = promisify(execFile);
 

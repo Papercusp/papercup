@@ -573,6 +573,10 @@ export interface SetCarryNoteResult {
    *  write — the write did NOT happen (no DELETE/INSERT ran); `stored` echoes the
    *  UNCHANGED prior note instead of the would-be new one. */
   blockedReason?: string;
+  /** P-007/D-013: the raw `deps` payload this write REPLACED, so a caller can tell
+   *  what the previous note declared without a second read. `null` when the prior
+   *  note declared nothing. */
+  priorDeps?: unknown;
 }
 
 /** Same semantics as {@link setCarryNote}, plus the prior note's length (EI-9325) —
@@ -586,39 +590,61 @@ export interface SetCarryNoteResult {
 export async function setCarryNoteWithPrior(
   ref: CarryNoteRef | string,
   note: string | null | undefined,
-  opts?: { journal?: boolean; guard?: (priorNote: string | null, priorLength: number) => string | null },
+  opts?: {
+    journal?: boolean;
+    guard?: (priorNote: string | null, priorLength: number) => string | null;
+    /**
+     * P-007/D-013 declared-dependency freshness stamps for the note being written.
+     * Tri-state on purpose:
+     *   `undefined` ⇒ PRESERVE whatever the row already declared (so a plain
+     *      re-write or an append does not silently drop a declaration and with it
+     *      the note's only non-guessed freshness signal);
+     *   `null`      ⇒ CLEAR the declaration (explicitly undeclared);
+     *   an object   ⇒ REPLACE it.
+     * The caller resolves + stamps the tokens; this layer only persists them.
+     */
+    deps?: unknown;
+  },
 ): Promise<SetCarryNoteResult> {
   const journalEnabled = opts?.journal ?? true;
   const { ws, scope } = resolveRef(ref);
   const { sql } = getOrgPg();
   const trimmed = (note ?? '').trim();
   const now = Date.now();
+  const depsSpecified = opts !== undefined && 'deps' in opts;
   return (await sql.begin(async (tx) => {
-    const rows = await tx<{ journal: unknown; note: string | null }[]>`
-      SELECT journal, note FROM harness_shared.carry_notes
+    const rows = await tx<{ journal: unknown; note: string | null; deps: unknown }[]>`
+      SELECT journal, note, deps FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} FOR UPDATE`;
     const prevJournal = normalizeJournal(rows[0]?.journal);
     const priorNote = rows[0]?.note ?? null;
+    const priorDeps = rows[0]?.deps ?? null;
     const priorLength = (priorNote ?? '').length;
     if (opts?.guard) {
       const blockedReason = opts.guard(priorNote, priorLength);
-      if (blockedReason) return { stored: priorNote, priorLength, blockedReason };
+      if (blockedReason) return { stored: priorNote, priorLength, blockedReason, priorDeps };
     }
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;
+    // Unspecified ⇒ carry the prior declaration forward (see the `deps` opt doc).
+    const depsCol = depsSpecified ? (opts?.deps ?? null) : priorDeps;
 
     if (noteCol === null && journal.length === 0) {
       // Nothing to store (cleared with no surviving journal) — delete the row.
       await tx`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${ws} AND scope = ${scope}`;
-      return { stored: null, priorLength };
+      return { stored: null, priorLength, priorDeps };
     }
+    // jsonb bound as ${json}::text::jsonb — sql.json() throws on the org pool
+    // (agent-insights/postgres-js-jsonb-binding).
     await tx`
-      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts)
-      VALUES (${ws}, ${scope}, ${noteCol}, ${JSON.stringify(journal)}::text::jsonb, ${now})
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts, deps)
+      VALUES (${ws}, ${scope}, ${noteCol}, ${JSON.stringify(journal)}::text::jsonb, ${now},
+              ${depsCol === null ? null : JSON.stringify(depsCol)}::text::jsonb)
       ON CONFLICT (workspace_id, scope) DO UPDATE
-        SET note = EXCLUDED.note, journal = EXCLUDED.journal, updated_ts = EXCLUDED.updated_ts`;
-    return { stored: noteCol, priorLength };
+        SET note = EXCLUDED.note, journal = EXCLUDED.journal, updated_ts = EXCLUDED.updated_ts,
+            deps = EXCLUDED.deps`;
+    return { stored: noteCol, priorLength, priorDeps };
   })) as SetCarryNoteResult;
 }
 
