@@ -956,6 +956,23 @@ def _shell_write_guard():
     # half, an interpreter's OWN open()/writeFileSync() call inside inline
     # code, is a different shape and handled by _interpreter_write_guard
     # below since there is no shell-level flag to key on there).
+    # `awk -i inplace ... FILE...` (EI-18809538554039853). gawk's in-place edit is
+    # NOT a bundled flag like the others — `-i` is the generic "include a library"
+    # option and the rewrite only happens for the `inplace` library specifically, so
+    # this keys on that library NAME rather than on the flag. Keying on a bare `-i`
+    # here would deny every unrelated `awk -i <lib>`. Also accepts the long spelling
+    # (`--include inplace`) and the attached forms (`-iinplace`, `--include=inplace`).
+    for _m in re.finditer(r'\b(?:g?awk)\b([^;&|\n]*)', _clean):
+        _seg = _m.group(1)
+        if not re.search(r'(?:^|\s)(?:-i\s*|--include(?:=|\s+))inplace\b', _seg):
+            continue
+        if _segment_has_unsplittable_expansion(_seg):
+            continue
+        for _tok in _strip_redirect_tokens(_seg.split()):
+            # `inplace` is the library operand, not a target.
+            if not _tok.startswith('-') and _tok != 'inplace':
+                _targets.append((_tok, '`awk -i inplace`'))
+
     for _m in re.finditer(r'\b(perl|ruby)\b([^;&|\n]*)', _clean):
         _seg = _m.group(2)
         if not _has_inplace_flag(_seg, _m.group(1)):

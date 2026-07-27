@@ -1370,7 +1370,29 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
    * common and none of them in-place. Perl/sed short flags that take a VALUE consume
    * the rest of their token, so the scan must stop at the first such flag.
    */
+  /**
+   * gawk's in-place edit is a THIRD shape: `-i` is the generic include-a-library
+   * option, and the rewrite happens only for the `inplace` library. The guard had no
+   * awk leg at all, so this was an unguarded write path — a different root cause from
+   * the bundling bug above, fixed here because leaving a known bypass in a write
+   * guard is worse than the bug that surfaced it.
+   */
+  const AWK_INPLACE: Array<[string, string]> = [
+    ['`awk -i inplace`', "awk -i inplace '{print}' apps/operator/foo.ts"],
+    ['`gawk -i inplace`', "gawk -i inplace '{print}' apps/operator/foo.ts"],
+    ['the attached spelling `-iinplace`', "awk -iinplace '{print}' apps/operator/foo.ts"],
+    ['the long spelling `--include=inplace`', "awk --include=inplace '{print}' apps/operator/foo.ts"],
+  ];
+  for (const [label, command] of AWK_INPLACE) {
+    it(`denies ${label} rewriting a tree file`, () => {
+      const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain('EI-18664655909328670');
+    });
+  }
+
   const NOT_INPLACE: Array<[string, string]> = [
+    ['`awk` with no inplace library — reading, not writing', "awk '{print}' apps/operator/foo.ts"],
+    ['`awk -i` including some OTHER library', "awk -i somelib '{print}' apps/operator/foo.ts"],
     ['`-Mstrict` — the module name merely contains an i', "perl -Mstrict -e 'print 1' apps/operator/foo.ts"],
     ['`-Ilib` — an include dir containing an i', "perl -Ilib/inc -e 'print 1' apps/operator/foo.ts"],
     ['`-e` code containing the letter i', "perl -e 'print if 1' apps/operator/foo.ts"],
