@@ -48,6 +48,7 @@ import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
 import { softText } from '../limits';
 
 // Most-permissive (owner directive 2026-06-25): open to every role; the capability envelope is the
@@ -493,6 +494,18 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       intent: `plans:set-status ${it.itemId} → wip`,
     });
     if (!outcome.ok) {
+      // P-027 / D-055 A5 — the PLAN-ITEM analog of the work-item claim conflict.
+      // Today this reports only THAT a live peer holds the item; the reader's
+      // actual question is whether to wait for them. Advisory + total: the
+      // refusal above is already decided and cannot be changed here.
+      //
+      // D-094: the plan-item ref is the subject, so the holder is never reported
+      // as also competing on the very item whose refusal is being explained.
+      const holderContext = await resolveHolderAdvisory({
+        holder: outcome.holder?.owner,
+        reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
+        subjectRef: it.itemId,
+      });
       return {
         ok: false,
         slug: it.slug,
@@ -500,6 +513,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         error: 'claim_conflict',
         reason: outcome.reason,
         holder: outcome.holder ?? null,
+        ...(holderContext ? { holderContext } : {}),
         hint: 'the item is being worked by a live peer — coordinate with the holder (coord:send) or pick another item; fleet:assignments { plan } shows who holds what',
       };
     }
@@ -552,6 +566,15 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     );
     const conflict = terminalFlipConflict({ status: it.status, agentOwnerId: agentId.ownerId, holder });
     if (conflict) {
+      // P-027: the same disclosure on the TERMINAL-flip refusal. This is the
+      // sharper of the two cases — you believe the item is finished and the
+      // holder does not, so what they are still doing on it is exactly the
+      // disagreement to resolve before escalating.
+      const holderContext = await resolveHolderAdvisory({
+        holder: conflict.owner,
+        reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
+        subjectRef: it.itemId,
+      });
       return {
         ok: false,
         slug: it.slug,
@@ -559,6 +582,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         error: 'claim_conflict',
         reason: `${it.status} refused — ${conflict.ownerLabel ?? conflict.owner} holds a live claim on this item; only the holder closes it`,
         holder: conflict,
+        ...(holderContext ? { holderContext } : {}),
         hint: 'a live peer is working this item — coordinate with the holder (coord:send) and let them close it, or pick another item; fleet:assignments { plan } shows who holds what',
       };
     }

@@ -51,16 +51,46 @@ export default defineTool({
       }),
     );
 
+    /**
+     * P-027 / D-055 A4 — "you are queued behind a holder and need to know WHAT you
+     * are queued behind, not merely THAT you are."
+     *
+     * Decorates the ACTIVE LOCKS, because those are the rows that actually block:
+     * a waiter ahead of you is queued, not holding. One resolution per DISTINCT
+     * holder, so a peer holding twelve paths costs one.
+     *
+     * ⚠ NO `subjectRef` HERE, AND THAT IS CORRECT RATHER THAN AN OMISSION. D-094's
+     * subtraction removes the subject from `competing`, which is a list of ITEM
+     * refs (WI-/EI-/plan-item). A lock's subject is a FILE PATH, which can never
+     * appear in that list, so there is nothing to subtract — passing the path
+     * would be a no-op that implies a relationship between the two namespaces
+     * that does not exist. `locks:acquire`'s own busy enrichment (P-012,
+     * enrich-busy.ts) omits it for the same reason.
+     *
+     * ⚠ ADVISORY: this is a read-only diagnostic and cannot alter a lock verdict.
+     * `requirePrincipal: false` above makes an unattributable caller legitimate,
+     * so the guarded reader yields null and the rows return undecorated.
+     */
+    const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
+    const advisory = await resolveHolderAdvisoryMap(
+      result.active_locks.map((l) => l.owner),
+      reader,
+    );
+
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
-            active_locks: result.active_locks.map((l) => ({
-              ...l,
-              acquired_ts: l.acquired_ts.toISOString(),
-              expires_ts: l.expires_ts.toISOString(),
-            })),
+            active_locks: result.active_locks.map((l) => {
+              const holder_context = advisory.forRow(l.owner);
+              return {
+                ...l,
+                acquired_ts: l.acquired_ts.toISOString(),
+                expires_ts: l.expires_ts.toISOString(),
+                ...(holder_context ? { holder_context } : {}),
+              };
+            }),
             waiting: result.waiting.map((w) => ({
               ...w,
               queued_ts: w.queued_ts.toISOString(),

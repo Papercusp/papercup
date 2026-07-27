@@ -16,6 +16,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
+import { stripVitestAnsi } from './lib/vitest-summary.mjs';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -178,15 +179,21 @@ export function evaluateMatch({ routes, matched, listStatus }) {
  * @returns {boolean} true when the run failed with zero per-suite/per-test error detail
  */
 export function looksLikeSilentCollectionFailure(output) {
-  if (!/Test Files\s+\d+ failed/.test(output)) return false;
+  // EI-18819483316574031: strip ANSI FIRST. vitest colourises both the summary row and the
+  // `❯ <file> (0 test)` tree rows, inserting SGR escapes between `Test Files` and its count
+  // and around the `❯`/parens — so every matcher below silently missed on real (coloured)
+  // output and this detector never fired outside tests, which all use clean text. Same root
+  // cause, same day, as the green-checkpoint guard that let a red suite advance the pin.
+  const plain = stripVitestAnsi(output ?? '');
+  if (!/Test Files\s+\d+ failed/.test(plain)) return false;
   // A "Failed Suites"/"Failed Tests" block means Vitest DID print the underlying error for at
   // least one file — the single-collection-failure case, which is unaffected by this bug.
-  if (/Failed Suites|Failed Tests/.test(output)) return false;
+  if (/Failed Suites|Failed Tests/.test(plain)) return false;
   // Each file whose collection failed renders as "❯ <file> (0 test)" in the tree with nothing
   // beneath it (a normal per-test failure instead renders "(N test | M failed)" plus a `×` line
   // per failing test — real detail). Two or more zero-test files with no Failed-Suites block is
   // exactly the reproduced silent-failure signature (a single one always gets its own block).
-  const zeroTestFiles = (output.match(/❯\s*\S+\s*\(0 test\)/g) ?? []).length;
+  const zeroTestFiles = (plain.match(/❯\s*\S+\s*\(0 test\)/g) ?? []).length;
   return zeroTestFiles >= 2;
 }
 

@@ -323,6 +323,180 @@ describe('deriveCoordState', () => {
     });
   });
 
+  // unread-count-truthfulness-2026-07-27 Phase 2 (P-006), rule = D-006.
+  //
+  // Phase 1 gave the counter a read cursor. These pin the SECOND half: of what
+  // survives the cursor, count only what a DEFAULT `coord:inbox` read would
+  // actually SHOW the agent. Anything the agent is never shown cannot honestly
+  // be "unread". The predicates are coord:inbox's own (relocated to
+  // agent-tools/coordination/inbox-visibility.ts and imported, never copied),
+  // so these tests fail if the two ever drift apart.
+  describe('unread counts only what coord:inbox actually shows (D-006)', () => {
+    const cursor = isoMs(NOW - 600_000);
+
+    it('excludes ambient system broadcasts, which are broadcast-only', () => {
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'real', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'], summary: 'a real ask' }),
+        ...(['service-health', 'agent-governor', 'doc-drift'] as const).map((category, i) =>
+          msg({
+            msg_id: `ambient-${i}`,
+            ts: isoMs(NOW - 20_000 + i * 100),
+            from: 'system',
+            to: ['*'],
+            summary: `ambient ${i}`,
+            category,
+          } as Partial<CoordEnvelope>),
+        ),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(1);
+    });
+
+    it('keeps a same-category message addressed DIRECTLY to the agent (suppression is broadcast-only)', () => {
+      // The guard that stops the ambient rule from hiding addressed work: a
+      // category label describes content, not delivery importance.
+      const messages: CoordEnvelope[] = [
+        msg({
+          msg_id: 'directed-health',
+          ts: isoMs(NOW - 30_000),
+          from: 'system',
+          to: ['su-1'],
+          summary: 'your service is down',
+          category: 'service-health',
+        } as Partial<CoordEnvelope>),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(1);
+    });
+
+    // The leg the plan's own premise missed: intent declares are NOT broadcasts.
+    // They fan out ADDRESSED to each @plan/@fleet subscriber, so the recipient
+    // predicate counts every one. Measured live 2026-07-27: 506 in 24h, and up
+    // to 68% of a single agent's counted messages over 12h — the LARGER of the
+    // two Phase-2 legs, not ambient.
+    it("excludes peers' auto `now working on:` intent declares", () => {
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'real', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'], summary: 'a real ask' }),
+        ...Array.from({ length: 20 }, (_, i) =>
+          msg({
+            msg_id: `intent-${i}`,
+            ts: isoMs(NOW - 25_000 + i * 100),
+            from: `su-peer-${i}`,
+            to: ['su-1'],
+            summary: 'now working on: something',
+            lifecycle: 'intent',
+            auto: true,
+          } as Partial<CoordEnvelope>),
+        ),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(1);
+    });
+
+    it('keeps a HUMAN-authored message that merely carries the intent lifecycle label', () => {
+      // `auto:true` is the authoritative projection stamp — a directed,
+      // contextual message must not vanish because a producer reused the label.
+      const messages: CoordEnvelope[] = [
+        msg({
+          msg_id: 'manual-intent',
+          ts: isoMs(NOW - 30_000),
+          from: 'su-2',
+          to: ['su-1'],
+          summary: 'I am taking P-004',
+          lifecycle: 'intent',
+        } as Partial<CoordEnvelope>),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(1);
+    });
+
+    it('counts a coalesced repeat group ONCE — it is one row in the reader', () => {
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'real', ts: isoMs(NOW - 40_000), from: 'su-2', to: ['su-1'], summary: 'a real ask' }),
+        // Same sender + kind + category + verbatim summary, broadcast: exactly
+        // the watchdog firehose shape coord:inbox folds into one row.
+        ...Array.from({ length: 12 }, (_, i) =>
+          msg({
+            msg_id: `repeat-${i}`,
+            ts: isoMs(NOW - 30_000 + i * 100),
+            from: 'watchdog',
+            to: ['*'],
+            summary: 'red gate on papercusp',
+            category: 'gate',
+          } as Partial<CoordEnvelope>),
+        ),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(2);
+    });
+
+    it('excludes a retracted message even when the retraction notice predates the cursor', () => {
+      // Retraction ids are collected from the FULL raw window, not the unread
+      // slice — the "disregard that" marker can sit either side of the cursor.
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'kept', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'] }),
+        msg({ msg_id: 'withdrawn', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['su-1'] }),
+        msg({
+          msg_id: 'notice',
+          ts: isoMs(NOW - 900_000),
+          from: 'su-2',
+          to: ['su-1'],
+          summary: 'disregard that',
+          retracts: 'withdrawn',
+        } as Partial<CoordEnvelope>),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(1);
+    });
+
+    // The rule is an INTERSECTION, so it can only ever REDUCE the number.
+    // Reading "agree with coord:inbox" literally would ADD acks/handoffs and
+    // RAISE it, which is the opposite of this plan's purpose (D-006).
+    it('never counts a non-message kind, even though a default coord:inbox read shows them', () => {
+      const messages: CoordEnvelope[] = [
+        msg({ msg_id: 'm', ts: isoMs(NOW - 30_000), from: 'su-2', to: ['su-1'], kind: 'message' }),
+        msg({ msg_id: 'a', ts: isoMs(NOW - 25_000), from: 'su-2', to: ['su-1'], kind: 'ack' }),
+        msg({ msg_id: 'h', ts: isoMs(NOW - 20_000), from: 'su-2', to: ['su-1'], kind: 'handoff' }),
+        msg({ msg_id: 'p', ts: isoMs(NOW - 15_000), from: 'su-2', to: ['su-1'], kind: 'plan_event' }),
+      ];
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(1);
+    });
+
+    it('does NOT cap at a display page size — a genuinely-behind agent still gets the real number', () => {
+      // D-003 forbade capping, and a badge capped at coord:inbox's 50-entry
+      // page would be a new lie. 120 distinct directed messages => 120.
+      const messages: CoordEnvelope[] = Array.from({ length: 120 }, (_, i) =>
+        msg({ msg_id: `m-${i}`, ts: isoMs(NOW - 300_000 + i * 100), from: 'su-2', to: ['su-1'], summary: `ask ${i}` }),
+      );
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(120);
+    });
+
+    // The end-to-end shape, in the proportions the live 12–24h measurement
+    // found: mostly intent declares + ambient broadcasts, a few real asks.
+    it('reduces a realistic mixed window to just the messages the agent is shown', () => {
+      const messages: CoordEnvelope[] = [
+        ...Array.from({ length: 21 }, (_, i) =>
+          msg({
+            msg_id: `intent-${i}`, ts: isoMs(NOW - 300_000 + i * 100), from: `su-peer-${i}`, to: ['su-1'],
+            summary: 'now working on: x', lifecycle: 'intent', auto: true,
+          } as Partial<CoordEnvelope>),
+        ),
+        ...Array.from({ length: 8 }, (_, i) =>
+          msg({
+            msg_id: `ambient-${i}`, ts: isoMs(NOW - 200_000 + i * 100), from: 'system', to: ['*'],
+            summary: `service check ${i}`, category: 'service-health',
+          } as Partial<CoordEnvelope>),
+        ),
+        ...Array.from({ length: 5 }, (_, i) =>
+          msg({
+            msg_id: `dupe-${i}`, ts: isoMs(NOW - 100_000 + i * 100), from: 'watchdog', to: ['*'],
+            summary: 'main is behind staging', category: 'pipeline',
+          } as Partial<CoordEnvelope>),
+        ),
+        msg({ msg_id: 'ask-1', ts: isoMs(NOW - 50_000), from: 'su-2', to: ['su-1'], summary: 'can you review P-005?' }),
+        msg({ msg_id: 'ask-2', ts: isoMs(NOW - 40_000), from: 'su-3', to: ['su-1'], summary: 'blocked on your lane' }),
+      ];
+      // 21 intents + 8 ambient dropped; 5 identical broadcasts fold to 1; 2 real
+      // asks remain => 3. The same window with the OLD (cursor-only) rule was 36.
+      expect(deriveCoordState(messages, new Set(), [], [], 'su-1', cursor).unreadCount).toBe(3);
+      expect(messages.filter((m) => m.kind === 'message' && m.ts > cursor).length).toBe(36);
+    });
+  });
+
   it('lists open handoffs in/out with direction + accepted flag', () => {
     const handoffs: HandoffWithAcceptance[] = [
       {

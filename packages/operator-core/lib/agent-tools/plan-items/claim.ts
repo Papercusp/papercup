@@ -27,7 +27,45 @@ import { convertPlanItem } from '../../plan-items/convert';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
+import type { CellReader } from '../../cell-registry';
 import type { LivenessMode } from '../../plan-items/claims';
+
+/**
+ * P-027 / D-055 A5 — attach the blocking holder's goal to a plan-item claim
+ * CONFLICT, and to nothing else.
+ *
+ * Shared by the two result paths (bare claim and auto-convert) because they
+ * return the same conflict shape by design — "a refused/conflict convert maps
+ * back to the same claim-shaped failure the bare path returns". Two copies of
+ * the injection would be the drift D-038 axis 5 forbids at the smallest possible
+ * scale, and this is precisely where such copies are easiest to miss.
+ *
+ * ⚠ CONFLICT ONLY. A `claimed` result means nothing is blocking you, and a
+ * non-conflict refusal (assignment policy, work-group membership) has no holder
+ * to name — decorating either would attach an unrelated agent's goal to a
+ * verdict they had no part in.
+ *
+ * ⚠ ADVISORY: returns a spreadable `{}` on every path where there is nothing to
+ * say, so it can never alter the `ok` verdict or the `result` payload it rides
+ * beside. Total — `resolveHolderAdvisory` never throws.
+ */
+async function planItemConflictAdvisory(
+  result: unknown,
+  itemId: string,
+  reader: CellReader | null,
+): Promise<{ holderContext?: unknown }> {
+  const r = result as { status?: string; conflict?: { owner?: string } } | null | undefined;
+  if (r?.status !== 'conflict' || !r.conflict?.owner) return {};
+  const holderContext = await resolveHolderAdvisory({
+    holder: r.conflict.owner,
+    reader,
+    // D-094: the plan item IS the subject, so the holder must never be reported
+    // as also competing on the very item whose refusal is being explained.
+    subjectRef: itemId,
+  });
+  return holderContext ? { holderContext } : {};
+}
 
 interface ClaimSpecItem {
   plan: string;
@@ -119,6 +157,11 @@ export default defineTool({
     // layer, like convert.ts does for COMPILED_BRIEFS — keeps the core flag-mock-free).
     const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
 
+    // P-027 / D-055 A5 — resolved ONCE for the batch (the advisory is
+    // reader-relative and every item shares one reader). Guarded, so an
+    // unattributable caller gets no advisory rather than a failed claim.
+    const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
+
     const list: ClaimSpecItem[] = args.items?.length
       ? args.items.map((it) => ({
           plan: it.plan,
@@ -165,7 +208,13 @@ export default defineTool({
               workItem: { id: conv.workItem.id, kind: conv.workItem.kind, harness: conv.workItem.harness ?? null },
             };
           }
-          return { ok: false, plan: it.plan, item: it.item, result: conv };
+          return {
+            ok: false,
+            plan: it.plan,
+            item: it.item,
+            result: conv,
+            ...(await planItemConflictAdvisory(conv, it.item, reader)),
+          };
         }
 
         const result = await claimPlanItem({
@@ -181,7 +230,13 @@ export default defineTool({
           livenessMode: it.mode,
           ttlSec: it.ttl_sec,
         });
-        return { ok: result.status === 'claimed', plan: it.plan, item: it.item, result };
+        return {
+          ok: result.status === 'claimed',
+          plan: it.plan,
+          item: it.item,
+          result,
+          ...(await planItemConflictAdvisory(result, it.item, reader)),
+        };
       },
       { keyOf: (it) => ({ plan: it.plan, item: it.item }) },
     );

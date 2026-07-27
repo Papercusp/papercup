@@ -215,6 +215,32 @@ lib/bad.test.tsx:3:0: ERROR: Unterminated string literal
     expect(looksLikeSilentCollectionFailure(' Test Files  2 passed (2)\n      Tests  5 passed (5)\n')).toBe(false);
   });
 
+  // EI-18819483316574031: vitest COLOURISES this output in practice. Every matcher here is
+  // shape-anchored, so before the ANSI strip this detector silently returned false on real
+  // runs while all of its tests (clean text) stayed green — the same blindness that let the
+  // green-checkpoint exit-code cross-check pass a genuinely red suite the same day.
+  it('flags the silent-failure signature through ANSI colour codes', () => {
+    // Built from an explicit ESC constant so the escapes are VISIBLE in source. A fixture
+    // written with raw control bytes is invisible to a reader and trivially lost to a
+    // formatter/copy-paste — and a fixture that quietly loses its ESC bytes stops testing
+    // the very thing it names (hit exactly that while writing this guard).
+    const E = String.fromCharCode(27); // ESC — pure ASCII in source
+    const coloured =
+      `${E}[2m Test Files ${E}[22m ${E}[1m${E}[31m2 failed${E}[39m${E}[22m${E}[90m (2)${E}[39m\n` +
+      ` ${E}[31m❯${E}[39m src/a.test.ts ${E}[2m(0 test)${E}[22m\n` +
+      ` ${E}[31m❯${E}[39m src/b.test.ts ${E}[2m(0 test)${E}[22m\n`;
+    expect(coloured).toContain(String.fromCharCode(27) + '['); // the fixture really is coloured
+    expect(looksLikeSilentCollectionFailure(coloured)).toBe(true);
+  });
+
+  it('does NOT flag a COLOURISED green run (no false positives from the strip)', () => {
+    const E = String.fromCharCode(27); // ESC — pure ASCII in source
+    const colouredGreen =
+      `${E}[2m Test Files ${E}[22m ${E}[1m${E}[32m2 passed${E}[39m${E}[22m${E}[90m (2)${E}[39m\n` +
+      `${E}[2m      Tests ${E}[22m ${E}[1m${E}[32m5 passed${E}[39m${E}[22m${E}[90m (5)${E}[39m\n`;
+    expect(looksLikeSilentCollectionFailure(colouredGreen)).toBe(false);
+  });
+
   it('does NOT flag a run with per-test assertion detail (a real, diagnosable failure) — captured verbatim from a real vitest 4.1.8 run', () => {
     const withAssertionDetail = `
  RUN  v4.1.8 /repo
