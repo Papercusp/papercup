@@ -91,7 +91,15 @@ export function distAtomicWritesPlugin(): Plugin {
     buildStart() {
       stashedHtml = [];
     },
-    generateBundle(_opts, bundle) {
+    // order:'post' on the HOOK (not just the plugin): vite's own `build-html`
+    // plugin emits index.html into the bundle from ITS generateBundle, which
+    // runs after user plugins' normal-order handlers — without this the html
+    // is not in the bundle yet when we look, and vite writes it in place
+    // (verified 2026-07-26: same-inode index.html after a build with the
+    // plugin active; with order:'post' the inode changes = rename path).
+    generateBundle: {
+      order: 'post',
+      handler(_opts, bundle) {
       stashedHtml = [];
       for (const [key, item] of Object.entries(bundle)) {
         const { fileName } = item;
@@ -122,6 +130,7 @@ export function distAtomicWritesPlugin(): Plugin {
           }
         }
       }
+      },
     },
     // writeBundle (not closeBundle): runs only after every remaining asset was
     // written successfully, so index.html never points at chunks that a failed

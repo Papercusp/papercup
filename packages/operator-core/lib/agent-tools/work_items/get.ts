@@ -21,7 +21,6 @@ import { detectBgJobCheckpointClaim } from "../../checkpoint-bg-job-claim";
 import { getPresence } from "../coordination/presence";
 import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
 import { planItemClaimCollision } from "../../scheduler/plan-item-claim-collision";
-import { looksLikeCitedProseEvidence } from "../../completion-audit";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -61,7 +60,7 @@ export default defineTool({
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     returns:
-      "{ ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, auditProseEvidenceLikely?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointStale` — the assignee kept working after that checkpoint.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `auditProseEvidenceLikely` — structured completion evidence is empty but a `terminalCompletionRef` exists, so the real proof is likely PROSE in completion.summary. Read it before reopening a close as bare.",
+      "{ ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointStale` — the assignee kept working after that checkpoint.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.",
     notWhen:
       "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
     chaining:
@@ -192,23 +191,6 @@ export default defineTool({
         // at close time via a plan-item claim conflict. Fails open (undefined) on any
         // lookup error or when there is no divergence.
         const claimCollision = await planItemClaimCollision(workItem).catch(() => null);
-        // EI-13845: completion evidence lives on TWO surfaces — the STRUCTURED
-        // `terminalCompletionEvidence` (testsRun/testResult/verifiedHow/…, populated only
-        // when the closer filled those specific fields) and the PROSE `terminalCompletionRef`
-        // (`completion.summary`, which many closers use to write the real verification detail
-        // instead — "535 tests green; unblocked P-005" cites nothing the structured fields
-        // capture). A reader of a SINGLE item via work_items:get had no way to tell "never
-        // said how" apart from "said how, in prose" — work_items:list's `audit:'no-evidence'`
-        // path already stamps this signal (looksLikeCitedProseEvidence, EI-13424) but only on
-        // that bulk sweep, not here, so an auditor who pulled the one item straight (as in the
-        // WI-5153 near-wrongful-reopen this closes) saw only the empty structured field and
-        // read it as "no evidence at all". Stamp the same best-effort signal here whenever the
-        // structured surface is empty but a completion ref exists, so both surfaces are visible
-        // together wherever completion evidence is read — never just the possibly-empty one.
-        const auditProseEvidenceLikely =
-          !workItem.terminalCompletionEvidence && workItem.terminalCompletionRef
-            ? looksLikeCitedProseEvidence(workItem.terminalCompletionRef)
-            : undefined;
         // EI-18654296679612119: the checkpoint may cite a background job/task as evidence of
         // in-flight or completed work — that bookkeeping lives in the WRITER'S own process/shell
         // and can die silently across a session teardown / loop-carry respawn / compaction with
@@ -227,7 +209,6 @@ export default defineTool({
           ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),
           ...(planItemBlocked ? { planItemBlocked } : {}),
           ...(claimCollision ? { planItemClaimCollision: claimCollision } : {}),
-          ...(auditProseEvidenceLikely !== undefined ? { auditProseEvidenceLikely } : {}),
         };
       },
       { keyOf: (id) => ({ id }) },

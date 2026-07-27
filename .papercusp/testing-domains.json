@@ -1667,6 +1667,14 @@
                 "papercusp-desktop/bin/lib/roster-scope.selftest.sh"
               ],
               "label": "roster-gate workspace + pot scoping (WI-6181)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh"
+              ],
+              "label": "rig deployed-state: uniform sidecar + build provenance + DHT isolation (WI-6212)"
             }
           ]
         }

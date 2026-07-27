@@ -173,6 +173,29 @@ describe("computeConditionStates (pure)", () => {
       "resolved-new",
     ]);
   });
+
+  it("WI-6228: folds the emitter's one_shot declaration onto the state", () => {
+    const [s] = computeConditionStates([
+      { ...alarm(1, "origin-freshness:papercusp"), one_shot: true },
+    ]);
+    expect(s!.one_shot).toBe(true);
+  });
+
+  it("WI-6228: an undeclared alarm folds to one_shot false (legacy emitters unchanged)", () => {
+    const [s] = computeConditionStates([alarm(1, "git-sync-stall:pot")]);
+    expect(s!.one_shot).toBe(false);
+  });
+
+  it("WI-6228: the LATEST alarm decides one_shot — a re-alarm that drops the flag clears it", () => {
+    // An emitter converted from one-shot to level-triggered must stop being
+    // exempt from absence-resolution; the newest alarm describes it.
+    const [s] = computeConditionStates([
+      { ...alarm(1, "green-stall:pot"), one_shot: true },
+      alarm(5, "green-stall:pot"),
+    ]);
+    expect(s!.one_shot).toBe(false);
+    expect(s!.last_seen).toBe(at(5));
+  });
 });
 
 describe("coord:conditions handler", () => {

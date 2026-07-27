@@ -12,7 +12,7 @@ import {
   type WorkItemKind,
 } from "../../work-items";
 import { boundRowField } from "../_bound-output";
-import { COMPLETION_AUDITS, looksLikeCitedProseEvidence } from "../../completion-audit";
+import { COMPLETION_AUDITS } from "../../completion-audit";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 
 /**
@@ -58,20 +58,12 @@ const WORK_ITEM_ROW = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   /** The completion prose recorded at terminal transition (work_items:complete's
-   *  `completion.summary`), if any — always present on the row; documented here so
-   *  `audit:'no-evidence'` callers know where to read it before acting (EI-13424). */
+   *  `completion.summary`), if any — always present on the row. */
   terminalCompletionRef: z.string().nullable().optional(),
   /** Structured verification evidence (testsRun/testResult/verifiedHow/filesChanged/
-   *  addedTests), if the completion supplied any. This is exactly what `audit:'no-evidence'`
-   *  tests for the ABSENCE of. */
+   *  addedTests), if the completion supplied any. P-004 makes this REQUIRED for a close
+   *  to reach `committed`; a close without it lands `authority:'proposed'` instead. */
   terminalCompletionEvidence: z.record(z.string(), z.unknown()).nullable().optional(),
-  /** EI-13424: ONLY set when `audit:'no-evidence'` is the active filter. A best-effort
-   *  signal — true means `terminalCompletionRef`'s prose already cites something a bare
-   *  "done" would not (a sha, a file:line, a tool call, a test-count ratio, a drillId) —
-   *  read the ref before re-opening a row where this is true; it is verified-looking, not
-   *  bare. false/absent does NOT mean bare either — it means the heuristic found nothing,
-   *  which is exactly why every `no-evidence` hit still deserves a read, not an auto-reopen. */
-  auditProseEvidenceLikely: z.boolean().optional(),
 });
 
 // EI-1597: bound each list row's summary so a large backlog can't overflow the agent
@@ -234,7 +226,7 @@ export default defineTool({
       .enum(COMPLETION_AUDITS)
       .optional()
       .describe(
-        "P-005 completion-integrity audit — the DRAIN leader's stale-done spot-audit as one filter. 'no-evidence' = TERMINAL items with no STRUCTURED verification evidence (testsRun/testResult/verifiedHow/filesChanged) — a candidate to re-open or re-verify, NOT a confirmed-bare list: EI-13424 — many of these wrote real verification detail as PROSE in `completion.summary` instead of the structured fields, so read each row's `terminalCompletionRef` (or check the stamped `auditProseEvidenceLikely` signal) before re-opening; a long ref citing a sha/file:line/tool-call/test-count/drillId is evidence, not a bare assertion. 'no-completion-record' = the rarer bare set_state close that bypassed work_items:complete entirely — MOST of these are the benign, EXPECTED system skipCompletionGate dedup flips (watchdog/hygiene/orphan/bee-exit/revert), not bare human assertions. 'no-completion-record-suspicious' (EI-18676290701611705) = the ACTIONABLE subset: a bare ref NOT credited to one of those recognized system identities — this combination should be structurally impossible (every other caller is gated), so a hit here is a real completion-integrity bug, not routine housekeeping — investigate it directly. 'geometry-unverified' (WI-5891) = a terminal row touching a layout-bearing file (*.css/*.tsx/*.jsx) whose verifiedHow is 'unit' or absent — structure-passing, pixel-failing risk. 'intermittent-underevidenced' (EI-18716652701919665) = a terminal row titled intermittent/flaky/racy that DOES carry structured evidence (so 'no-evidence' misses it) but that evidence is only a streak of consecutive passes — no stated failure rate, root cause, or deterministic regression test — which cannot falsify 'we sampled the passing branch N times' for a bug whose own title says it fails intermittently. EI-10867: 'no-evidence' USED to key on terminal_completion_ref, which the completion gate forces to be non-null — so it could never fire, and reported 69% of unverified closes as clean. Newest-first, so recent closes surface above the pre-gate legacy backlog. Composes with `state`.",
+        "Completion-integrity diagnostics over TERMINAL rows. NOTE (P-006): the old 'no-evidence' bareness sweep is GONE — evidence is now required at WRITE time, so a close without it lands `authority:'proposed'` (out of burn-down, still owned by its closer) rather than needing a later audit. Every bucket below fires on rows that PASS that gate. 'no-completion-record' = no completionRef AND no authority: a legacy/pre-gate close — mostly the benign, EXPECTED system skipCompletionGate flips (watchdog/hygiene/orphan/bee-exit/revert). 'no-completion-record-suspicious' = the ACTIONABLE subset: same shape but NOT credited to one of those recognized system identities — structurally impossible for a gated caller, so a hit means an undiscovered write path slipped past the gate; investigate directly. 'geometry-unverified' = touches a layout-bearing file (*.css/*.tsx/*.jsx) with verifiedHow 'unit' or absent — structure-passing, pixel-failing risk. 'intermittent-underevidenced' = titled intermittent/flaky/racy, carries evidence, but only a streak of consecutive passes — no failure rate, root cause, or deterministic repro, which cannot falsify 'we sampled the passing branch N times'. 'reconciler-sourced' = closed by the plan-item reconciler, which MIRRORS a linked plan item's status and is by construction never independently verified — a mis-flipped plan item silently marks a live defect fixed. Newest-first. Composes with `state`.",
       ),
     includeObservations: z
       .boolean()
@@ -315,20 +307,9 @@ export default defineTool({
           includeObservations: args.includeObservations,
           limit: args.limit,
         });
-        // EI-13424: on the 'no-evidence' spot-audit, stamp the best-effort prose-evidence
-        // signal on each row BEFORE bounding — a caller (the DRAIN leader) reads this to
-        // avoid re-opening a completion whose prose already cites real verification detail
-        // (see looksLikeCitedProseEvidence's doc for what this is/is-not).
-        const withAuditSignal =
-          args.audit === "no-evidence"
-            ? rows.map((r) => ({
-                ...r,
-                auditProseEvidenceLikely: looksLikeCitedProseEvidence(r.terminalCompletionRef),
-              }))
-            : rows;
         // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent
         // result cap. Full body via work_items:get { id }.
-        return boundSummaries(withAuditSignal);
+        return boundSummaries(rows);
       },
     );
     return { data: items };

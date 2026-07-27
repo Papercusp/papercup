@@ -450,9 +450,149 @@ export interface PipelinePosition {
    * WRONG for at least one of them. `null` for a sha-only probe.
    */
   runtimes: RuntimeOwnership[] | null;
+  /**
+   * git-pipeline-agent-state-2026-07-26 P-001: per-stage POSITION x HEALTH,
+   * ordered source->live.
+   *
+   * `positions` above answers only "is my change past this stage?". A boolean
+   * cannot distinguish "not yet, wait" from "this leg is dead, waiting is
+   * futile" — and that single missing dimension is behind most filed pipeline
+   * confusion (a 2h52m push freeze read as "not yet"; `deployed ✓` read as
+   * "live" while the process served older code, filed 4x independently).
+   */
+  stages: StageState[];
   /** One human-readable line. */
   summary: string;
   notes: string[];
+}
+
+/** A stage a change must clear to be live, ordered source->live. */
+export type StageName = 'committed' | 'pushed' | 'gate' | 'main' | 'deployed' | 'serving';
+
+/** Where MY change sits relative to a stage. `na` = this stage is not on my change's activation route at all. */
+export type StagePosition = 'past' | 'pending' | 'na';
+
+/**
+ * Whether the stage ITSELF is moving — the dimension a position boolean cannot express.
+ * `advancing` normal · `stalled` not progressing, waiting will probably not help ·
+ * `disabled` deliberately off · `broken` faulted · `unknown` not measured here.
+ */
+export type StageHealth = 'advancing' | 'stalled' | 'disabled' | 'broken' | 'unknown';
+
+export interface StageState {
+  name: StageName;
+  position: StagePosition;
+  health: StageHealth;
+  /** Why it reads this way, and the concrete lever when it is not advancing. */
+  detail: string | null;
+}
+
+/**
+ * Derive the stage table from state the caller ALREADY computed — this function
+ * makes no git calls and adds no measurement, so it is pure and unit-testable.
+ * P-002/P-003/P-004 replace the `unknown` healths with real signals.
+ */
+export function computeStages(
+  p: Pick<
+    PipelinePosition,
+    'dirtyUncommitted' | 'positions' | 'gate' | 'verdictProvenance' | 'runtime' | 'gitSyncLastStatus'
+  >,
+): StageState[] {
+  // A path whose runtime does NOT go through the release pipeline (bg-host, gateway,
+  // embed-sidecar) is never carried by staging->main->:3070 at all: reporting those
+  // stages as "pending" would tell the caller to wait for something that will never
+  // happen to their file. EI-11120 cost a real deploy-and-wait cycle to this exact
+  // misreading, so those stages are `na` with the activation lever attached.
+  const rt = p.runtime;
+  const releaseApplies = rt ? rt.releasePipelineApplies : true;
+  const naDetail = rt
+    ? `Not on this path's activation route — it runs in ${rt.host}, which does not read the release checkout. It goes live on RESTART: dev:restart { target: "${rt.restartTarget}", confirm: true }.`
+    : null;
+  const off = (name: StageName): StageState => ({
+    name,
+    position: 'na',
+    health: 'disabled',
+    detail: naDetail,
+  });
+
+  const stages: StageState[] = [];
+
+  // committed — about MY CHANGE, not merely the path. `positions.committedLocal`
+  // means "this path exists at some commit", which reads as "my change is
+  // committed" and is the single most-misread signal in this surface.
+  stages.push({
+    name: 'committed',
+    position: p.positions.committedLocal && !p.dirtyUncommitted ? 'past' : 'pending',
+    health: p.dirtyUncommitted ? 'stalled' : 'advancing',
+    detail: p.dirtyUncommitted
+      ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.'
+      : null,
+  });
+
+  stages.push({
+    name: 'pushed',
+    position: p.positions.onStaging ? 'past' : 'pending',
+    health: 'unknown',
+    detail: p.positions.onStaging
+      ? null
+      : `Not on origin/staging yet. git-sync's last status was "${p.gitSyncLastStatus ?? 'unknown'}" — that word does NOT distinguish "committed locally" from "pushed to origin".`,
+  });
+
+  if (!releaseApplies) {
+    stages.push(off('gate'), off('main'), off('deployed'));
+  } else {
+    const g = p.gate;
+    const gateHealth: StageHealth = g.fireStale
+      ? 'broken'
+      : g.stalled || g.consecutiveReds > 0
+        ? 'stalled'
+        : 'advancing';
+    stages.push({
+      name: 'gate',
+      position: p.positions.inMain ? 'past' : 'pending',
+      health: gateHealth,
+      detail: g.fireStale
+        ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
+        : gateHealth === 'stalled'
+          ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
+          : null,
+    });
+
+    stages.push({
+      name: 'main',
+      position: p.positions.inMain ? 'past' : 'pending',
+      health: p.verdictProvenance.mainFastForwarded === false ? 'stalled' : 'advancing',
+      detail:
+        p.verdictProvenance.mainFastForwarded === false
+          ? 'main is not fast-forwarded to the newest green pin — un-gated commits sit ahead of it.'
+          : null,
+    });
+
+    // 'ahead-of-gate' means the live code was force-deployed PAST the gate, so
+    // "deployed" does not imply "tested" — the existing deployOrigin comment says
+    // to flag exactly this, so surface it as a health, not a footnote.
+    const ahead = p.verdictProvenance.deployOrigin === 'ahead-of-gate';
+    stages.push({
+      name: 'deployed',
+      position: p.positions.deployed ? 'past' : 'pending',
+      health: ahead ? 'broken' : 'advancing',
+      detail: ahead
+        ? 'The deployed sha carries commits the green pin does NOT — it was force-deployed past the gate. "deployed" does not mean "tested" here.'
+        : null,
+    });
+  }
+
+  // serving — process truth, deliberately NOT derived from git. P-003 fills it in;
+  // until then it is honestly `unknown` rather than silently implying "live".
+  stages.push({
+    name: 'serving',
+    position: 'pending',
+    health: 'unknown',
+    detail:
+      'Whether the running process actually loaded this code is not derived from git state. "deployed" is not "running".',
+  });
+
+  return stages;
 }
 
 export interface PipelinePositionDeps {
@@ -727,7 +867,7 @@ export async function gitPipelinePosition(
   const caveat = runtime?.releasePipelineApplies ? sharedHostCaveat(inp.path ?? null) : null;
   if (caveat) notes.push(caveat);
 
-  const base: Omit<PipelinePosition, 'summary'> = {
+  const preStages: Omit<PipelinePosition, 'summary' | 'stages'> = {
     input: { path: inp.path ?? null, sha: inp.sha ?? null },
     repoRoot: root,
     submodule,
@@ -745,5 +885,6 @@ export async function gitPipelinePosition(
     runtimes,
     notes,
   };
+  const base: Omit<PipelinePosition, 'summary'> = { ...preStages, stages: computeStages(preStages) };
   return { ...base, summary: summarizePosition(base) };
 }

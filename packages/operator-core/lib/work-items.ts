@@ -528,35 +528,22 @@ export interface ListWorkItemsFilter {
    */
   admissibleOnly?: boolean;
   /**
-   * fleet-leader-frictions P-005: completion-integrity audit filters.
+   * Completion-integrity diagnostics. See {@link CompletionAudit} in completion-audit.ts
+   * for the per-bucket contract; the buckets themselves are declared there, once.
    *
-   * EI-10867 — 'no-evidence' USED TO KEY ON `terminal_completion_ref IS NULL`, which
-   * made it STRUCTURALLY INCAPABLE of catching what it is named for. The completion
-   * gate in setWorkItemState/setIssueState REJECTS any terminal transition without a
-   * completionRef, and work_items:complete auto-fills it from `completion.summary` —
-   * so for every item closed through the sanctioned path the column is non-null BY
-   * CONSTRUCTION, whether or not the agent ever said how it verified anything. It was
-   * auditing "did a completion record exist", not "was this actually verified".
-   *
-   * Measured on the live store when this was found: of 5,979 terminal rows carrying a
-   * completion ref, 4,119 (69%) had NO structured verification evidence at all — and
-   * the audit reported every one of them as clean. A leader running the stale-done
-   * spot-audit got an empty list and concluded the fleet's completions were sound.
-   *
-   *  - 'no-evidence'         → terminal AND no structured verification evidence
-   *                            (`payload->'_completionEvidence'` absent): the unit
-   *                            asserted done without ever stating HOW it was verified.
-   *                            This is the stale-done close the audit exists to catch.
-   *  - 'no-completion-record' → terminal AND `terminal_completion_ref IS NULL`: a bare
-   *                            set_state close that bypassed the completion path
-   *                            entirely (the OLD 'no-evidence' predicate, kept because
-   *                            it is a real and distinct defect — just a rarer one).
+   * P-006/D-003 DELETED the 'no-evidence' bareness sweep: P-004 made structured evidence
+   * required at WRITE time (an evidence-less close lands `authority:'proposed'`, out of
+   * burn-down and still owned by its closer), so there is no longer a wrong value for a
+   * later pass to re-verify. D-012 kept the remaining buckets because each fires on rows
+   * that PASS that gate — an evidence-SHAPE defect ('geometry-unverified',
+   * 'intermittent-underevidenced'), a gate-BYPASS alarm ('no-completion-record',
+   * '-suspicious'), or an actor whose closes are never independently verified
+   * ('reconciler-sourced') — none of which P-004 closes.
    *
    * Composes with `state` (an explicit terminal state narrows the audit to it); without
    * `state` it spans the whole cross-family terminal set. Non-terminal rows never match
-   * (an open item owes no evidence yet). Results are ordered newest-first, so a DRAIN
-   * leader's spot-audit surfaces the RECENT unverified closes first even though the
-   * pre-gate legacy backlog also (correctly) matches.
+   * (an open item owes no evidence yet). Results are ordered newest-first, so recent
+   * closes surface above the pre-gate legacy backlog.
    */
   audit?: CompletionAudit;
   /**

@@ -90,7 +90,7 @@ describe('distAtomicWritesPlugin', () => {
       },
     };
     writeFileSync(join(assets, 'grew-Ef56Gh78.js'), 'short'); // size mismatch → rewrite
-    (plugin.generateBundle as (o: unknown, b: unknown) => void)({}, bundle);
+    (plugin.generateBundle as { handler: (o: unknown, b: unknown) => void }).handler({}, bundle);
 
     expect(Object.keys(bundle).sort()).toEqual(['assets/grew-Ef56Gh78.js', 'assets/new-Ab12Cd34.js']);
     expect(statSync(existing).mtimeMs).toBeGreaterThan(beforeMtime); // prune-TTL keep-alive
@@ -103,7 +103,7 @@ describe('distAtomicWritesPlugin', () => {
     const bundle: Record<string, { fileName: string; type: string; source?: string }> = {
       'index.html': { fileName: 'index.html', type: 'asset', source: '<html>new</html>' },
     };
-    (plugin.generateBundle as (o: unknown, b: unknown) => void)({}, bundle);
+    (plugin.generateBundle as { handler: (o: unknown, b: unknown) => void }).handler({}, bundle);
     expect(Object.keys(bundle)).toEqual([]); // vite will not write it non-atomically
     expect(() => readFileSync(join(dir, 'index.html'))).toThrow(); // not yet written
 

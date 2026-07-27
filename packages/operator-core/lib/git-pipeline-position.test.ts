@@ -4,8 +4,11 @@ import {
   summarizePosition,
   classifyRuntimeOwner,
   classifyRuntimeOwners,
+  computeStages,
   type GitRunner,
   type PipelinePosition,
+  type StageName,
+  type StageState,
 } from './git-pipeline-position';
 import type { DevDeployState } from './dev-deploy-state';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
@@ -485,6 +488,7 @@ describe('gitPipelinePosition (P-002)', () => {
       runtime: classifyRuntimeOwner('a.ts'),
       runtimes: classifyRuntimeOwners('a.ts'),
       notes: [],
+      stages: [],
     };
     expect(summarizePosition(base)).toContain('deployed ✗');
     expect(summarizePosition(base)).not.toContain('(live)');
@@ -705,5 +709,124 @@ describe('runtime-owner map (EI-10895)', () => {
       expect(res.summary).toContain('bg-host');
       expect(res.summary).toContain('operator-release');
     });
+  });
+});
+
+/**
+ * git-pipeline-agent-state-2026-07-26 P-001 — the stage table.
+ *
+ * These assert the BEHAVIOURS that caused real filed incidents, not the shape of
+ * the object. Each case names the incident it encodes so a future edit that
+ * flattens health back into a boolean fails with the reason attached.
+ */
+describe('computeStages: position x health', () => {
+  type StageInput = Parameters<typeof computeStages>[0];
+
+  const input = (over: Partial<StageInput> = {}): StageInput => ({
+    dirtyUncommitted: false,
+    positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    verdictProvenance: {
+      lastGreenSha: 'g',
+      lastGreenShortSha: 'g',
+      lastGreenAgeMs: 1,
+      mainFastForwarded: true,
+      deployedBehindGreenPin: 0,
+      deployOrigin: 'gate-green',
+    },
+    gitSyncLastStatus: 'synced',
+    runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
+    ...over,
+  });
+
+  const stage = (stages: StageState[], name: StageName): StageState => {
+    const s = stages.find((x) => x.name === name);
+    if (!s) throw new Error(`no stage ${name}`);
+    return s;
+  };
+
+  it('EI-18752644493166307: an UNCOMMITTED edit is not "committed" even when the path is committed', () => {
+    // The exact misread that fired the gate twice against candidates lacking the fix:
+    // positions.committedLocal means "this PATH exists at a commit", which reads as
+    // "my change is committed". The stage table must answer about the CHANGE.
+    const s = computeStages(input({ dirtyUncommitted: true }));
+    expect(stage(s, 'committed').position).toBe('pending');
+    expect(stage(s, 'committed').health).toBe('stalled');
+    // and it must say WHY, naming the gate's committed-candidate semantics
+    expect(stage(s, 'committed').detail).toMatch(/COMMITTED candidate/);
+    expect(stage(s, 'committed').detail).toMatch(/git-sync:run/);
+  });
+
+  it('a clean committed path reads past/advancing with no noise', () => {
+    const s = computeStages(input());
+    expect(stage(s, 'committed')).toMatchObject({ position: 'past', health: 'advancing', detail: null });
+  });
+
+  it('EI-18753105351266788: the pushed stage warns that the git-sync status word hides push', () => {
+    const s = computeStages(input({ positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false } }));
+    expect(stage(s, 'pushed').position).toBe('pending');
+    expect(stage(s, 'pushed').detail).toMatch(/does NOT distinguish/i);
+  });
+
+  it('EI-11120: stages off the release route are `na`, never "pending" — waiting would never end', () => {
+    // A bg-host path is not carried by staging->main->:3070 at all. Reporting those
+    // stages as pending told an agent to wait for something that could not happen.
+    const bg = classifyRuntimeOwner('packages/operator-core/lib/harness/git-sync/git-sync-action.ts');
+    expect(bg?.releasePipelineApplies).toBe(false);
+    const s = computeStages(input({ runtime: bg }));
+    for (const name of ['gate', 'main', 'deployed'] as StageName[]) {
+      expect(stage(s, name).position).toBe('na');
+      expect(stage(s, name).health).toBe('disabled');
+      expect(stage(s, name).detail).toMatch(/dev:restart/);
+    }
+  });
+
+  it('WI-282: a non-firing gate is `broken` and says waiting will not help', () => {
+    const s = computeStages(
+      input({ gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: true, fireStaleReason: 'paused' } }),
+    );
+    expect(stage(s, 'gate').health).toBe('broken');
+    expect(stage(s, 'gate').detail).toMatch(/Waiting will not help/i);
+    expect(stage(s, 'gate').detail).toMatch(/paused/);
+  });
+
+  it('a red gate is `stalled` and framed as yours to fix, not a queue to wait in', () => {
+    const s = computeStages(
+      input({ gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null } }),
+    );
+    expect(stage(s, 'gate').health).toBe('stalled');
+    expect(stage(s, 'gate').detail).toMatch(/RED \(3 consecutive\)/);
+  });
+
+  it('EI-7846: a force-deployed sha is `broken` — "deployed" must not imply "tested"', () => {
+    const s = computeStages(
+      input({
+        verdictProvenance: {
+          lastGreenSha: 'g',
+          lastGreenShortSha: 'g',
+          lastGreenAgeMs: 1,
+          mainFastForwarded: true,
+          deployedBehindGreenPin: 0,
+          deployOrigin: 'ahead-of-gate',
+        },
+      }),
+    );
+    expect(stage(s, 'deployed').health).toBe('broken');
+    expect(stage(s, 'deployed').detail).toMatch(/does not mean "tested"/);
+  });
+
+  it('the 4x-filed class: `serving` is NEVER advancing from git state alone', () => {
+    // EI-18740960754854672 + 3 duplicates: `deployed ✓` was read as "live" while the
+    // process served older code. Git state can never justify claiming a process is
+    // serving something, so this stage must not claim it (P-003 supplies the truth).
+    const s = computeStages(input());
+    expect(stage(s, 'deployed').position).toBe('past');
+    expect(stage(s, 'serving').health).not.toBe('advancing');
+    expect(stage(s, 'serving').detail).toMatch(/"deployed" is not "running"/);
+  });
+
+  it('is pure: no git calls, and stages are ordered source->live', () => {
+    const names = computeStages(input()).map((s) => s.name);
+    expect(names).toEqual(['committed', 'pushed', 'gate', 'main', 'deployed', 'serving']);
   });
 });

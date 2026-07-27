@@ -1,33 +1,36 @@
 /**
- * completion-audit — the ONE predicate both work-item families use to answer
- * "was this unit actually verified, or did it just assert done?" (EI-10867).
+ * completion-audit — the completion-integrity predicates both work-item families
+ * share, plus the write-path helpers that stamp a terminal transition.
  *
- * ## The bug this exists to prevent
+ * ## What this module is, AFTER P-006
  *
- * `work_items:list { audit: 'no-evidence' }` is the DRAIN leader's stale-done
- * spot-audit — the check that is supposed to catch a unit closed on a bare
- * assertion. It keyed on `terminal_completion_ref IS NULL`.
+ * It is deliberately NO LONGER the "was this actually verified?" sweep. That question
+ * is now answered at WRITE time by the `authority` column (P-003/P-004): an
+ * evidence-less close lands `authority:'proposed'`, is excluded from burn-down, stays
+ * owned by its closer, and the closer is told so in the response to the call that did
+ * it. D-003 deleted the after-the-fact bareness audit rather than extending it —
+ * a verify-later layer over a value that can no longer be wrong is dead weight, and
+ * keeping it invites the band-aid pattern back.
  *
- * But `terminal_completion_ref` is not evidence. It is the completion-integrity
- * gate's OWN bookkeeping: `setWorkItemState` / `setIssueState` REJECT any terminal
- * transition that does not carry a `completionRef`, and `work_items:complete`
- * auto-fills it from `completion.summary`. So for every item closed through the
- * sanctioned path the column is non-null BY CONSTRUCTION — regardless of whether
- * the agent ever said how (or whether) it verified anything.
+ * ## Why the historical bug is still worth knowing (EI-10867)
  *
- * The audit was therefore structurally incapable of returning the thing it is named
- * for. Measured on the live store when this was found: of 5,979 terminal rows
- * carrying a completion ref, 4,119 (69%) had NO structured verification evidence at
- * all, and the audit reported every one of them as clean. The leader who ran it saw
- * an empty list and concluded the fleet's completions were sound. A completion-
- * integrity check with a 69% false-negative rate is worse than none: it launders
- * unverified work as audited.
+ * The deleted `no-evidence` audit had keyed on `terminal_completion_ref IS NULL` — but
+ * that column is not evidence, it is the gate's OWN bookkeeping, non-null BY
+ * CONSTRUCTION for anything closed through the sanctioned path. Measured on the live
+ * store: of 5,979 terminal rows carrying a completion ref, 4,119 (69%) had NO
+ * structured verification evidence, and the audit reported every one as clean. A
+ * leader ran it, saw an empty list, and concluded the fleet's completions were sound.
+ * The root cause was a write/read split-brain — the WRITERS agreed on
+ * `payload._completionEvidence` while the READER keyed on a different column, and
+ * nothing forced them to agree.
  *
- * The root cause is a classic write/read split-brain: the WRITERS agreed on
- * `payload._completionEvidence` (declared twice, privately, in work-items.ts and
- * issues-engineer.ts) while the READER keyed on a different column entirely. Nothing
- * forced them to agree. Now one module owns the key AND the predicate, and both
- * families import it — so a write and an audit cannot drift apart again.
+ * That failure mode is the reason for this module's standing discipline, which
+ * outlives the audit it was written for: **any key, actor identity, or marker that a
+ * write path stamps and a read path tests is declared HERE, once, and imported by
+ * both** — never re-typed as a bare string at either end. See
+ * {@link KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES} and
+ * {@link RECONCILER_SYSTEM_ACTOR}, both of which are written by one module and read by
+ * another precisely under that rule.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -165,8 +168,8 @@ export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
  * ever mirrors an ADJACENT plan item's terminal status onto this work-item, which is
  * exactly how a mis-flip (the wrong plan item flipped `done`) silently marks a live
  * defect "fixed" with a completionRef that reads as genuine prose (see the module doc
- * above + `auditPredicateSql`'s `no-evidence` branch, which always flags this actor
- * regardless of whether a `_completionEvidence` key is ever added).
+ * above + `auditPredicateSql`'s `reconciler-sourced` branch, which flags this actor on
+ * identity alone, regardless of whether a `_completionEvidence` key is ever added).
  */
 export const RECONCILER_SYSTEM_ACTOR = 'system:plan-item-reconcile' as const;
 
@@ -176,11 +179,9 @@ export const RECONCILER_SYSTEM_ACTOR = 'system:plan-item-reconcile' as const;
  * included too because `filesChanged` carries only PATHS (no diff content to check
  * for an actual `className`/`style` edit more precisely) — deliberately biased
  * toward flagging a touched component file rather than missing a real geometry
- * change. This is the OPPOSITE bias from {@link looksLikeCitedProseEvidence} (which
- * leans toward NOT flagging): an audit DETECTION bucket is cheap to over-flag (a
- * wasted read) but expensive to under-flag (a shipped pixel regression), so the two
- * heuristics in this module correctly point in opposite directions for their
- * respective jobs.
+ * change. An audit DETECTION bucket is cheap to over-flag (a wasted read) but
+ * expensive to under-flag (a shipped pixel regression), so this heuristic leans
+ * deliberately toward flagging.
  */
 const LAYOUT_BEARING_FILE_RE = /\.(?:css|tsx|jsx)$/i;
 
@@ -249,7 +250,8 @@ const INTERMITTENT_EVIDENCE_SQL_RE =
 /** The `intermittent-underevidenced` WHERE fragment, parameterized on the title + the two
  *  evidence-text jsonb-path expressions the two callers below alias differently (unaliased
  *  vs `ei.`). Only fires when structured evidence EXISTS (testResult/testsRun non-NULL) but
- *  is the wrong SHAPE — a row with no evidence at all is the `no-evidence` bucket's job. */
+ *  is the wrong SHAPE — a row with no evidence at all never reaches `committed` in the
+ *  first place (P-004), so there is no bareness case for this bucket to cover. */
 function intermittentUnderevidencedWhereSql(sql: OrgSql, titleExpr: unknown, testResultExpr: unknown, testsRunExpr: unknown) {
   return sql`(
     ${titleExpr as string} ~* ${INTERMITTENT_TITLE_SQL_RE}
@@ -389,10 +391,8 @@ export function isBackedLiveDroveUiClaim(evidence: CompletionVerificationEvidenc
  *
  * This is deliberately NOT prose evidence — it names the bypass + the closing actor + a
  * timestamp, so the audit can never again find a bare-NULL ref for a sanctioned system
- * write, while `looksLikeCitedProseEvidence` still correctly reads it as non-evidence
- * (it carries none of the file:line / test-ratio / sha / uuid citation patterns) — a
- * reader can tell at a glance "system bypass, not a real fix" rather than mistaking it
- * for genuine verification.
+ * write, while a reader can still tell at a glance "system bypass, not a real fix"
+ * rather than mistaking it for genuine verification.
  */
 export function skipGateCompletionRef(by: string | null | undefined): string {
   return (
