@@ -33,8 +33,26 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const PKG_DIR = fileURLToPath(new URL('../../../libs/papercusp/packages/embedded-postgres-server/', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const PKG_DIR = join(REPO_ROOT, 'libs/papercusp/packages/embedded-postgres-server/');
 const DECLARATIONS = ['index.d.ts', 'migration-runner.d.ts'] as const;
+
+// The repo's own compiler, by absolute path. `npx tsc` would be resolved
+// relative to the temp working directory below — which has no node_modules, so
+// npx would try to FETCH a TypeScript (offline: fail; online: a version that is
+// not the one the repo pins, silently changing the emit).
+const TSC = join(REPO_ROOT, 'node_modules/.bin/tsc');
+
+/** Run tsc, surfacing its own output on failure — a bare "Command failed" hides
+ *  the diagnostic that says what actually broke. */
+function runTsc(cwd: string): void {
+  try {
+    execFileSync(TSC, ['-p', 'tsconfig.types.json'], { cwd, encoding: 'utf8', stdio: 'pipe' });
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; message?: string };
+    throw new Error(`tsc failed in ${cwd}:\n${e.stdout ?? ''}${e.stderr ?? ''}\n${e.message ?? ''}`);
+  }
+}
 
 const REGEN = 'npm run gen:types --prefix libs/papercusp/packages/embedded-postgres-server';
 
@@ -61,11 +79,7 @@ describe('@papercusp/embedded-postgres-server generated declarations', () => {
       // The real config — so the test and `gen:types` can never disagree about flags.
       writeFileSync(join(work, 'tsconfig.types.json'), readFileSync(join(PKG_DIR, 'tsconfig.types.json'), 'utf8'));
 
-      execFileSync('npx', ['tsc', '-p', 'tsconfig.types.json'], {
-        cwd: work,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      });
+      runTsc(work);
 
       for (const name of DECLARATIONS) {
         const committed = readFileSync(join(PKG_DIR, 'src', name), 'utf8');
