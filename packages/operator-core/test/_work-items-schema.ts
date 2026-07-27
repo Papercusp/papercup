@@ -508,6 +508,7 @@ export const CARRY_NOTES_DDL = `
     note         TEXT,
     journal      JSONB NOT NULL DEFAULT '[]'::jsonb,
     updated_ts   BIGINT NOT NULL,
+    deps         JSONB,
     PRIMARY KEY (workspace_id, scope)
   )`;
 

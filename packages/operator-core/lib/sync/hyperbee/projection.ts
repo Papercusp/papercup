@@ -389,11 +389,11 @@ export async function applyHyperbeeOpToPg(op: OpEnvelope): Promise<boolean> {
   // AUDIBLE, and it is the recurrence guard for it: the failure was invisible in
   // both the logs and the database, which is the only reason it survived four
   // gate runs and three wrong diagnoses. The stack names the caller.
-  const p = registry.get(op.tableTag);
+  const p = op.table ? registry.get(op.table) : undefined;
   if (p?.skipOwnOps === true && op.type === 'put') {
     console.warn(
       `[projection] GLOBAL apply (no ownLogKeyHex) for a skipOwnOps table — provenance will be ` +
-        `stamped origin='local' and this host's own echo cannot be skipped: table=${op.tableTag} ` +
+        `stamped origin='local' and this host's own echo cannot be skipped: table=${op.table} ` +
         `key=${op.hbKey ?? '?'} sourceLog=${op.sourceLogKeyHex?.slice(0, 8) ?? 'none'} ` +
         `(WI-6210). Caller should pass ownLogKeyHex / use buildHarnessProjectionApply.\n` +
         `${new Error('global-apply call site').stack ?? ''}`,

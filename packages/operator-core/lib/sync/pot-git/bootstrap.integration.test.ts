@@ -487,4 +487,75 @@ describe('bootstrap resumability (WI-6189: durable progress across channel death
     expect(done.ok, done.stderr).toBe(true);
     expect(await readNamespaceRef(joiner, devDeep, WORK_REF)).toBe(tipSha);
   });
+
+  /**
+   * WI-6241 — the escalation latch must SURVIVE the call that sets it.
+   *
+   * Production shape: a peer serves exactly one fetch per channel, so `dial()`
+   * returns null for every rung after the first. When a deepen rung lands but
+   * moves the shallow boundary not at all, the ladder escalates to
+   * `--unshallow` — and then needs a channel it cannot get, because the one
+   * good channel was already spent on the no-op deepen. Held per-call, that
+   * escalation was forgotten and every tick repeated it: "+1 rung, still
+   * shallow" forever, with `papercusp.bootstrapDeepen` pinned at its initial
+   * value (the no-op branch skips adaptation). Persisting the latch is what
+   * lets the NEXT tick spend its first, always-available duplex on the rung
+   * that can actually converge.
+   */
+  const latchKey = 'papercusp.bootstrapForceUnshallow';
+  const readLatch = async (repo: string): Promise<string> =>
+    (await defaultRunGit(['config', '--get', latchKey], repo)).stdout.trim();
+
+  it('REGRESSION (WI-6241): a persisted escalation latch makes the NEXT tick open in `unshallow`, spending its ONLY channel on the rung that converges', async () => {
+    const joiner = await freshJoiner();
+
+    // Tick 1: one rung, no second channel — the real per-tick shape. Leaves the
+    // joiner exactly where production sits: quarantine staged, still shallow.
+    const first = await bootstrapFromPeer(joiner, await dial(), {
+      timeoutMs: 30_000,
+      dial: async () => null,
+    });
+    expect(first.quarantineRefs).toBeGreaterThan(0);
+    expect(first.shallow).toBe(true);
+
+    // Stand in for "a deepen rung landed but the boundary did not move" — the
+    // condition the ladder detects and records.
+    expect((await defaultRunGit(['config', latchKey, 'true'], joiner)).code).toBe(0);
+    // Pin the rung size BELOW the peer's history so a deepen rung provably
+    // cannot finish the join. Without this the test is not discriminating: the
+    // default rung (64) exceeds HISTORY (40), so a deepen rung would converge
+    // on its own and the assertion below would hold even with the latch
+    // ignored — i.e. it would pass against the very bug it guards.
+    expect(MIN_DEEPEN_COMMITS).toBeLessThan(HISTORY);
+    await defaultRunGit(['config', 'papercusp.bootstrapDeepen', String(MIN_DEEPEN_COMMITS)], joiner);
+
+    // Tick 2 gets ONE channel and no re-dial, exactly like tick 1 — so it has
+    // budget for exactly one rung and must pick the RIGHT one. Honouring the
+    // latch spends it on `--unshallow`, which converges in that single rung.
+    // Ignoring it (pre-fix) spends it on a deepen rung too small to finish,
+    // leaving the repo shallow with no channel left to escalate on.
+    const escalated = await bootstrapFromPeer(joiner, await dial(), {
+      timeoutMs: 30_000,
+      dial: async () => null,
+    });
+    expect(escalated.steps).toBe(1);
+    expect(escalated.shallow).toBe(false);
+    expect(escalated.ok, escalated.stderr).toBe(true);
+    expect(await readNamespaceRef(joiner, devDeep, WORK_REF)).toBe(tipSha);
+  });
+
+  it('REGRESSION (WI-6241): the latch is CLEARED once history is whole, so a converged repo never re-runs `--unshallow`', async () => {
+    const joiner = await freshJoiner();
+    await bootstrapFromPeer(joiner, await dial(), { timeoutMs: 30_000, dial: async () => null });
+    await defaultRunGit(['config', latchKey, 'true'], joiner);
+    expect(await readLatch(joiner)).toBe('true');
+
+    // Run to convergence with a working dial.
+    const done = await bootstrapFromPeer(joiner, await dial(), { timeoutMs: 30_000, dial });
+    expect(done.ok, done.stderr).toBe(true);
+    expect(done.shallow).toBe(false);
+
+    // A latch left set would make every future tick re-fetch a complete repo.
+    expect(await readLatch(joiner)).toBe('');
+  });
 });

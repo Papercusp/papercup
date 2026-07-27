@@ -47,6 +47,7 @@ const CARRY_NOTES_DDL = `
     note text,
     journal jsonb NOT NULL DEFAULT '[]'::jsonb,
     updated_ts bigint NOT NULL,
+    deps jsonb,
     PRIMARY KEY (workspace_id, scope))`;
 
 let db: FreshPgDb;
