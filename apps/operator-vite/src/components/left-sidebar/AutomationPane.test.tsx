@@ -532,20 +532,15 @@ describe('AutomationPane — non-routine schedules', () => {
    * per-connection keepalive no longer give the same non-answer.
    */
   it('shows the row-specific reason it cannot be paused, not a generic subsystem line', () => {
-    const watchdog = routine({
-      name: 'memory-watchdog',
-      source: 'managed',
-      controllable: false,
-      control: 'none',
+    // Built on `uncontrollable` deliberately: a spend:'none' healthy row folds into
+    // the collapsed Running bucket and would not be in the DOM to assert against.
+    const watchdog = {
+      ...uncontrollable,
       controlWhy: 'A watchdog — deliberately outside the routine system.',
-      spawnsAgent: false,
-      spend: 'none',
-    });
+    };
     renderPane({ routines: [watchdog] });
-    const marker = screen.getByTestId('automation-nocontrol-memory-watchdog');
-    // Radix puts the label on the trigger's accessible description path; assert on
-    // the rendered tree rather than hovering, which jsdom cannot do faithfully.
-    expect(marker).toBeTruthy();
+    expect(screen.getByTestId('automation-nocontrol-doc-freshness-sweep')).toBeTruthy();
+    // The old generic copy must be gone wherever the reason is rendered.
     expect(document.body.textContent).not.toMatch(/paused from its own subsystem/);
   });
 

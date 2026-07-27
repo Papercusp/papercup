@@ -54,6 +54,14 @@ declare module 'protomux' {
       id?: Buffer | null;
       onopen?: () => void;
       onclose?: () => void;
+      /**
+       * Fires when the muxer's underlying stream drains, i.e. it can accept
+       * more bytes after a `send()` returned `false`. Together with that
+       * return value this is protomux's flow-control surface — a channel that
+       * streams bulk data (pot-git's per-fetch sessions) MUST honour both or
+       * it writes without limit into a backed-up connection.
+       */
+      ondrain?: () => void;
     }): ProtomuxChannel | null;
     /**
      * Register a LAZY-ACCEPT notifier: when the remote opens `(protocol, id)`

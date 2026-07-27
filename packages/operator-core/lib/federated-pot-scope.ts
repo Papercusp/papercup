@@ -124,21 +124,25 @@ export async function resolveFederatedPotScope(
 ): Promise<FederatedPotScope> {
   const local = localPotHomeSlug;
   const resolveByAnnounce = opts?.seams?.canonicalHiveHomeSlug ?? canonicalHiveHomeSlug;
-  // SOURCE 1 (authoritative — the same function the WRITE scope resolves through).
+  // SOURCE 1 — AUTHORITATIVE, and authoritative even when it answers `local`. This is the
+  // same function the WRITE scope resolves through, so whatever it says here is the scope the
+  // projections actually persisted under: an answer of `local` means the writers wrote under
+  // `local`, and reading `local` is then CORRECT. Returning it immediately is what keeps
+  // reader == writer, and it also keeps the owner path (the overwhelmingly common case) at
+  // ZERO extra PG reads — an unconditional second read would add one per git-sync tick.
   const announced = await resolveByAnnounce(
     workspaceId,
     local,
     opts?.fresh ? { fresh: true } : undefined,
   ).catch(() => null);
-  if (announced && announced !== local) return announced as FederatedPotScope;
-  // SOURCE 2 (corroborating — migration 686's column, reconciled by pubkey). Reached when
-  // source 1 could not answer in this process (no registry entry / no org-PG) but the
-  // stored column already carries the owner's slug.
+  if (announced) return announced as FederatedPotScope;
+  // SOURCE 2 — only reached when source 1 could not answer AT ALL (null: no registry entry /
+  // no resolvable home in this process, or it threw). Migration 686's column is reconciled BY
+  // PUBKEY from the signed announce (`reconcilePotCanonicalSlug`), so it can still know the
+  // owner's slug when the registry/announce read here cannot.
   const readPot = opts?.seams?.getHiveBySlug ?? getHiveBySlug;
   const pot = await readPot(workspaceId, local, opts?.sql).catch(() => null);
-  if (pot?.canonicalHomeSlug && pot.canonicalHomeSlug !== local) {
-    return pot.canonicalHomeSlug as FederatedPotScope;
-  }
+  if (pot?.canonicalHomeSlug) return pot.canonicalHomeSlug as FederatedPotScope;
   return local as FederatedPotScope;
 }
 
@@ -153,7 +157,13 @@ export async function listHiveMembersForLocalPot(
   sql?: Sql,
 ): Promise<HiveMemberRecord[]> {
   const scope = await resolveFederatedPotScope(workspaceId, localPotHomeSlug, { sql });
-  return listHiveMembers(workspaceId, scope, sql);
+  // Forward `sql` only when the caller supplied one, so the underlying call ARITY is
+  // byte-identical to the pre-fix direct call. On a shared tree that matters: mocks across
+  // the suite assert `toHaveBeenCalledWith(ws, slug)`, and an appended explicit `undefined`
+  // would red them for a difference that does not exist at runtime.
+  return sql === undefined
+    ? listHiveMembers(workspaceId, scope)
+    : listHiveMembers(workspaceId, scope, sql);
 }
 
 /**
@@ -167,5 +177,7 @@ export async function loadRevokedHivePubkeysForLocalPot(
   sql?: Sql,
 ): Promise<Set<string>> {
   const scope = await resolveFederatedPotScope(workspaceId, localPotHomeSlug, { sql });
-  return loadRevokedHivePubkeys(workspaceId, scope, sql);
+  return sql === undefined
+    ? loadRevokedHivePubkeys(workspaceId, scope)
+    : loadRevokedHivePubkeys(workspaceId, scope, sql);
 }

@@ -95,3 +95,70 @@ describe('pot-git session-leak detector (EI-18765930091826096 recurrence guard)'
     expect(state.sessionWarnHighWater).toBe(peak);
   });
 });
+
+/**
+ * EI-18776567787336109 — the per-fetch duplex must honour protomux's flow
+ * control.
+ *
+ * THE BUG: `_write` called its callback unconditionally, so node was always
+ * told "that write landed, send more" no matter how backed up the muxer's
+ * stream was. A warm fetch (100-650 ms) never notices; a multi-GB cold join
+ * shovels the entire pack into the connection as fast as upload-pack can
+ * produce it, because nothing upstream can apply the brakes.
+ *
+ * protomux reports the pressure both ways — `send()` returns the muxer's
+ * `drained` flag, and a channel gets an `ondrain` callback — so honouring it is
+ * what makes this duplex a properly flow-controlled stream: the deferred write
+ * callback pauses `child.stdout` through the existing pipe.
+ */
+describe('FrameDuplex backpressure (EI-18776567787336109)', () => {
+  const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  it('PARKS the write callback while the wire is backed up, and resumes on drain', async () => {
+    const resumes: Array<() => void> = [];
+    let sent = 0;
+    const d = new _testing.FrameDuplex(
+      () => {
+        sent++;
+        return false; // protomux: "stream is full, stop writing"
+      },
+      () => {},
+      (resume) => resumes.push(resume),
+    );
+
+    let writeDone = false;
+    d.write(Buffer.from('pack-bytes'), () => {
+      writeDone = true;
+    });
+    await tick();
+
+    // The bytes went out, but the write is NOT acknowledged — that unacknowledged
+    // callback is the entire braking mechanism.
+    expect(sent).toBe(1);
+    expect(writeDone).toBe(false);
+    expect(resumes).toHaveLength(1);
+
+    // The channel drains -> the parked write completes.
+    for (const r of resumes.splice(0)) r();
+    await tick();
+    expect(writeDone).toBe(true);
+  });
+
+  it('does NOT park when the wire reports it is drained', async () => {
+    const resumes: Array<() => void> = [];
+    const d = new _testing.FrameDuplex(
+      () => true, // protomux: "plenty of room"
+      () => {},
+      (resume) => resumes.push(resume),
+    );
+
+    let writeDone = false;
+    d.write(Buffer.from('x'), () => {
+      writeDone = true;
+    });
+    await tick();
+
+    expect(writeDone).toBe(true);
+    expect(resumes).toHaveLength(0);
+  });
+});
